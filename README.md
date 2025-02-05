@@ -36,8 +36,8 @@ cd wlroots
 meson build -Dprefix=/usr
 sudo ninja -C build install
 
-git clone https://github.com/DreamMaoMao/plume.git
-cd plume
+git clone https://github.com/DreamMaoMao/maomao.git
+cd maomao
 meson build -Dprefix=/usr
 sudo ninja -C build install
 
