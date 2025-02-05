@@ -1073,7 +1073,7 @@ applyrules(Client *c)
 		}
 
 	if(!(c->tags & ( 1 << (selmon->pertag->curtag - 1) ))){
-		view(&(Arg){.ui = c->tags},false);
+		view(&(Arg){.ui = c->tags},true);
 	}
 }
 
@@ -2437,7 +2437,7 @@ void dwl_ipc_output_set_tags(struct wl_client *client, struct wl_resource *resou
 
     monitor->tagset[monitor->seltags] = newtags;
     focusclient(focustop(monitor), 1);
-    arrange(monitor,false);
+    arrange(monitor,true);
     printstatus();
 }
 
