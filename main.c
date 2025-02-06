@@ -822,7 +822,7 @@ void client_apply_clip(Client *c) {
 }
 
 bool client_draw_frame(Client *c) {
-  if (!c || !c->mon || !client_surface(c)->mapped)
+  if (!c || !client_surface(c)->mapped)
     return false;
   // if (!VISIBLEON(c, c->mon))
   // 	return false;
