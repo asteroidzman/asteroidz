@@ -129,6 +129,7 @@ struct dwl_animation {
   bool tagining;
   bool tagouted;
   bool tagouting;
+  bool begin_fade_in;
   uint32_t total_frames;
   uint32_t passed_frames;
   struct wlr_box initial;
@@ -685,13 +686,24 @@ client_animation_next_tick(Client *c)
 		.width = width,
 		.height = height,
 	};
-	
-	if(c->is_open_animation && animation_fade_in)
+
+	if(!c->iskilling && (c->is_open_animation||c->animation.begin_fade_in) && animation_fade_in) {
+		c->animation.begin_fade_in = true;
 		client_set_opacity(c,animation_passed);
+	}
+
+	if(c->iskilling) {
+		client_set_opacity(c,1 - animation_passed );	
+	}
+
+	c->is_open_animation = false;
 
 	if (animation_passed == 1.0)
 	{	
-		c->is_open_animation = false;
+		if(c->animation.begin_fade_in) {
+			c->animation.begin_fade_in = false;
+		}
+
 		c->animation.running = false;
 		if(c->iskilling) {
 			c->iskilling = false;
@@ -2616,7 +2628,7 @@ focustop(Monitor *m)
 {
 	Client *c;
 	wl_list_for_each(c, &fstack, flink) {
-		if(c->iskilling || c->animation.tagouting || c->animation.tagouted)
+		if(c->iskilling)
 			continue;
 		if (VISIBLEON(c, m))
 			return c;
@@ -3785,6 +3797,11 @@ resize(Client *c, struct wlr_box geo, int interact)
 	client_set_bounds(c, geo.width, geo.height); //去掉这个推荐的窗口大小,因为有时推荐的窗口特别大导致平铺异常
 	c->geom = geo;
 	applybounds(c, bbox);//去掉这个推荐的窗口大小,因为有时推荐的窗口特别大导致平铺异常
+
+	if(!c->is_open_animation) {
+		c->animation.begin_fade_in = false;
+		client_set_opacity(c,1);
+	}
 
 	// 动画起始位置大小设置
 	if(c->animation.tagouting) {
