@@ -707,7 +707,6 @@ client_animation_next_tick(Client *c)
 
 		c->animation.running = false;
 		if(c->iskilling) {
-			c->iskilling = false;
 			client_send_close(c);
 			return false;
 		}
@@ -3712,11 +3711,11 @@ int is_special_animaiton_rule(Client *c) {
 	int visible_client_number = 0;
 	Client *count_c;
 	wl_list_for_each(count_c, &clients, link)
-	if (count_c && VISIBLEON(count_c,selmon) && !count_c->isminied){
+	if (count_c && VISIBLEON(count_c,selmon) && !count_c->isminied && !c->iskilling){
 		visible_client_number++;
 	}
 
-	if (visible_client_number == 1 && !c->isfloating) {
+	if (visible_client_number < 2 && !c->isfloating) {
 		return DOWN;
 	} else if (visible_client_number == 2 && !c->isfloating && !new_is_master) {
 		return RIGHT;
@@ -4915,6 +4914,7 @@ unmapnotify(struct wl_listener *listener, void *data)
 	}
 
 	wlr_scene_node_destroy(&c->scene->node);
+	printstatus();
 }
 
 void //0.5
