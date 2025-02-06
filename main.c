@@ -3914,7 +3914,7 @@ setfloating(Client *c, int floating) {
   struct wlr_box target_box, backup_box;
   c->isfloating = floating;
 
-  if (!c || !c->mon || !client_surface(c)->mapped)
+  if (!c || !c->mon || !client_surface(c)->mapped || c->iskilling)
     return;
 
   wlr_scene_node_reparent(&c->scene->node,
@@ -3956,7 +3956,7 @@ setfloating(Client *c, int floating) {
 
 void setfakefullscreen(Client *c, int fakefullscreen) {
   struct wlr_box fakefullscreen_box;
-  if (!c || !c->mon || !client_surface(c)->mapped)
+  if (!c || !c->mon || !client_surface(c)->mapped || c->iskilling)
     return;
 
   c->isfakefullscreen = fakefullscreen;
@@ -4002,7 +4002,7 @@ void setfullscreen(Client *c, int fullscreen) // 用自定义全屏代理自带�
 {
   c->isfullscreen = fullscreen;
 
-  if (!c || !c->mon || !client_surface(c)->mapped)
+  if (!c || !c->mon || !client_surface(c)->mapped || c->iskilling)
     return;
 
   client_set_fullscreen(c, fullscreen);
