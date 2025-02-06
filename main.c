@@ -2403,6 +2403,8 @@ void dwl_ipc_output_printstatus_to(DwlIpcOutput *ipc_output) {
         state |= ZDWL_IPC_OUTPUT_V2_TAG_STATE_ACTIVE;
 
       wl_list_for_each(c, &clients, link) {
+        if (c->iskilling)
+          continue;
         if (c->mon != monitor)
           continue;
         if (!(c->tags & tagmask))
