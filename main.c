@@ -132,6 +132,7 @@ struct dwl_animation {
   bool begin_fade_in;
   uint32_t total_frames;
   uint32_t passed_frames;
+  uint32_t duration;
   struct wlr_box initial;
   struct wlr_box current;
 };
@@ -1702,7 +1703,7 @@ void client_commit(Client *c)
 	{
 		// 设置动画速度
 		c->animation.passed_frames = 0;
-		c->animation.total_frames = animation_duration / output_frame_duration_ms(c);
+		c->animation.total_frames = c->animation.duration / output_frame_duration_ms(c);
 
 		// 标记动画开始
 		c->animation.running = true;
@@ -3801,6 +3802,18 @@ resize(Client *c, struct wlr_box geo, int interact)
 	if(!c->is_open_animation) {
 		c->animation.begin_fade_in = false;
 		client_set_opacity(c,1);
+	}
+
+	if(c->iskilling) {
+		c->animation.duration = animation_duration_close;
+	} else if(c->animation.tagouting) {
+		c->animation.duration = animation_duration_tag;
+	} else if(c->animation.tagining) {
+		c->animation.duration = animation_duration_tag;
+	} else if(c->is_open_animation) {
+		c->animation.duration = animation_duration_open;
+	} else {
+		c->animation.duration = animation_duration_move;
 	}
 
 	// 动画起始位置大小设置
