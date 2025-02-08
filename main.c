@@ -2884,7 +2884,7 @@ keypressmod(struct wl_listener *listener, void *data) {
 }
 
 void pending_kill_client(Client *c) {
-  c->iskilling = 1;
+  // c->iskilling = 1; //不可以提前标记已经杀掉，因为有些客户端可能拒绝
   client_send_close(c);
 }
 
