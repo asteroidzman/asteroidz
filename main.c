@@ -744,10 +744,6 @@ bool client_animation_next_tick(Client *c) {
     client_set_opacity(c, MIN(animation_passed + fadein_begin_opacity, 1.0));
   }
 
-  if (c->iskilling) {
-    client_set_opacity(c, MAX(fadeout_begin_opacity - animation_passed, 0.1));
-  }
-
   c->is_open_animation = false;
 
   if (animation_passed == 1.0) {
@@ -3758,9 +3754,7 @@ void resize(Client *c, struct wlr_box geo, int interact) {
     client_set_opacity(c, 1);
   }
 
-  if (c->iskilling) {
-    c->animation.duration = animation_duration_close;
-  } else if (c->animation.tagouting) {
+  if (c->animation.tagouting) {
     c->animation.duration = animation_duration_tag;
   } else if (c->animation.tagining) {
     c->animation.duration = animation_duration_tag;
