@@ -1725,10 +1725,7 @@ void client_set_pending_state(Client *c) {
              (!c->is_open_animation &&
               wlr_box_equal(&c->current, &c->pending))) {
     c->animation.should_animate = false;
-  } else if (c->is_restoring_from_ov) {
-    c->is_restoring_from_ov = false;
-    c->animation.should_animate = false;
-  } else {
+  }  else {
     c->animation.should_animate = true;
     c->animation.initial = c->animainit_geom;
   }
@@ -1760,12 +1757,14 @@ void client_commit(Client *c) {
   wlr_output_schedule_frame(c->mon->wlr_output);
 }
 
-void // 0.5
+void 
 commitnotify(struct wl_listener *listener, void *data) {
   Client *c = wl_container_of(listener, c, commit);
 
   if(!c || c->iskilling)
     return;
+  // if don't do this, some client may resize uncompleted
+  resize(c, c->geom, (c->isfloating && !c->isfullscreen));
 
 }
 
@@ -4622,8 +4621,11 @@ void overview_restore(Client *c, const Arg *arg) {
       client_set_fullscreen(c, false);
     }
   } else {
-    resizeclient(c, c->overview_backup_x, c->overview_backup_y,
-                 c->overview_backup_w, c->overview_backup_h, 0);
+    if(c->is_restoring_from_ov ) {
+      c->is_restoring_from_ov = false;
+      resizeclient(c, c->overview_backup_x, c->overview_backup_y,
+                   c->overview_backup_w, c->overview_backup_h, 0);
+    }
   }
 
   if (c->bw == 0 && !c->isnoborder &&
