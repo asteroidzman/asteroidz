@@ -1754,7 +1754,7 @@ void client_commit(Client *c) {
   wlr_output_schedule_frame(c->mon->wlr_output);
 }
 
-void 
+void
 commitnotify(struct wl_listener *listener, void *data) {
   Client *c = wl_container_of(listener, c, commit);
 
@@ -3096,7 +3096,7 @@ minimizenotify(struct wl_listener *listener, void *data) {
   // 	wlr_xdg_surface_schedule_configure(c->surface.xdg);
   // togglefakefullscreen(&(Arg){0});
   Client *c = wl_container_of(listener, c, minimize);
-  
+
   if(!c || c->iskilling)
     return;
 
@@ -3776,7 +3776,7 @@ void resize(Client *c, struct wlr_box geo, int interact) {
     set_open_animaiton(c, c->geom);
   } else {
     c->animainit_geom = c->animation.current;
-  } 
+  }
 
   if (c->isnoborder || c->iskilling) {
     c->bw = 0;
@@ -4835,6 +4835,8 @@ void unmapnotify(struct wl_listener *listener, void *data) {
   /* Called when the surface is unmapped, and should no longer be shown. */
   Client *c = wl_container_of(listener, c, unmap);
 
+  c->iskilling = 1;
+
   if (c == grabc) {
     cursor_mode = CurNormal;
     grabc = NULL;
@@ -5391,7 +5393,7 @@ void activatex11(struct wl_listener *listener, void *data) {
 void // 0.7
 configurex11(struct wl_listener *listener, void *data) {
   Client *c = wl_container_of(listener, c, configure);
-  
+
   if(!c || c->iskilling)
     return;
 
