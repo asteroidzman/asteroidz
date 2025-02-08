@@ -761,6 +761,7 @@ bool client_animation_next_tick(Client *c) {
       wlr_scene_node_set_enabled(&c->scene->node, false);
       client_set_suspended(c, true);
       c->animation.tagouted = true;
+      c->animation.current = c->geom;
     }
     return false;
   } else {
@@ -3775,7 +3776,7 @@ void resize(Client *c, struct wlr_box geo, int interact) {
     set_open_animaiton(c, c->geom);
   } else {
     c->animainit_geom = c->animation.current;
-  }
+  } 
 
   if (c->isnoborder || c->iskilling) {
     c->bw = 0;
