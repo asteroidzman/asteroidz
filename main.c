@@ -3774,7 +3774,7 @@ void resize(Client *c, struct wlr_box geo, int interact) {
   } else if (c->is_open_animation) {
     set_open_animaiton(c, c->geom);
   } else {
-    c->animainit_geom = oldgeom;
+    c->animainit_geom = c->animation.current;
   }
 
   if (c->isnoborder || c->iskilling) {
