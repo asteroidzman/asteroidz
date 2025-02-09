@@ -39,7 +39,7 @@ static unsigned int borderpx = 5;  /* Border pixel of windows */
 static const float rootcolor[] = COLOR(0x323232ff);
 static const float bordercolor[] = COLOR(0x444444ff);
 static const float focuscolor[] = COLOR(0xad741fff);
-static const float fakefullscreencolor[] = COLOR(0x89aa61ff);
+static const float maxmizescreencolor[] = COLOR(0x89aa61ff);
 static const float urgentcolor[] = COLOR(0xad401fff);
 static const float scratchpadcolor[] = COLOR(0x516c93ff);
 static const float globalcolor[] = COLOR(0xb153a7ff);
@@ -217,7 +217,7 @@ static const Key keys[] = {
 	{ WLR_MODIFIER_CTRL|WLR_MODIFIER_LOGO,  XKB_KEY_g,          	setlayout,      			{.v = &layouts[1]} },
 	{ WLR_MODIFIER_LOGO,                    XKB_KEY_n,          	switch_layout,      		{0} },
 	{ WLR_MODIFIER_ALT, 					XKB_KEY_backslash,      togglefloating, 			{0} },
-	{ MODKEY,                    			XKB_KEY_a,          	togglefakefullscreen, 		{0} },
+	{ MODKEY,                    			XKB_KEY_a,          	togglemaxmizescreen, 		{0} },
 	{ MODKEY,                    			XKB_KEY_f,          	togglefullscreen, 		{0} },
 	{ WLR_MODIFIER_LOGO,                    XKB_KEY_i,          	minized, 					{0} },  // Minimize, move to scratchpad
 	{ WLR_MODIFIER_LOGO|WLR_MODIFIER_SHIFT, XKB_KEY_I,          	restore_minized, 			{0} },
@@ -249,7 +249,7 @@ static const Key keys[] = {
 
 static const Button buttons[] = {
 	{ WLR_MODIFIER_LOGO, 	BTN_LEFT,   	moveresize,     			{.ui = CurMove } },
-	{ 0, 					BTN_MIDDLE, 	togglefakefullscreen, 		{0} }, // Middle button triggers fake fullscreen
+	{ 0, 					BTN_MIDDLE, 	togglemaxmizescreen, 		{0} }, // Middle button triggers fake fullscreen
 	{ WLR_MODIFIER_LOGO, 	BTN_RIGHT,  	moveresize,     			{.ui = CurResize } },
 	{ WLR_MODIFIER_ALT|WLR_MODIFIER_CTRL, 	BTN_LEFT,  		spawn,						SHCMD("bash ~/tool/shotTranslate.sh shot")},
 	{ 0, 					BTN_LEFT,  		toggleoverview,     		{0} },
