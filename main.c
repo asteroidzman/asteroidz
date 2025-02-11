@@ -1206,11 +1206,11 @@ arrange(Monitor *m, bool want_animation) {
           c->animation.tagouting = true;
           if (m->pertag->curtag > m->pertag->prevtag) {
             c->pending = c->geom;
-            c->pending.x -= c->geom.x + m->m.width;
+            c->pending.x = c->mon->m.x - c->geom.width;
             resize(c, c->geom, 0);
           } else {
             c->pending = c->geom;
-            c->pending.x -= c->geom.x - m->m.width;
+            c->pending.x = c->geom.x + c->mon->m.width - (c->geom.x - c->mon->m.x);
             resize(c, c->geom, 0);
           }
         } else {
