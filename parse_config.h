@@ -349,6 +349,12 @@ FuncType parse_func_name(char *func_name,Arg *arg, char *arg_value) {
         func = viewtoright_have_client;
     } else if (strcmp(func_name, "reload_config") == 0) {
         func = reload_config;
+    } else if (strcmp(func_name, "tag") == 0) {
+        func = tag;
+        (*arg).i = 1 << atoi(arg_value);
+    } else if (strcmp(func_name, "view") == 0) {
+        func = bind_to_view;
+        (*arg).i = 1 << atoi(arg_value);
     } else {
         return NULL;
     }
@@ -533,7 +539,6 @@ void parse_config_line(Config *config, const char *line) {
                     rule->isfloating = atoi(val);
                 } else if (strcmp(key, "title") == 0) {
                     rule->title = strdup(val);
-                    logtofile(rule->title);
                 } else if (strcmp(key, "appid") == 0) {
                     rule->id = strdup(val);
                 } else if (strcmp(key, "animation_type") == 0) {
@@ -544,10 +549,8 @@ void parse_config_line(Config *config, const char *line) {
                     rule->monitor = atoi(val);
                 } else if (strcmp(key, "width") == 0) {
                     rule->width = atoi(val);
-                    lognumtofile(rule->width);
                 } else if (strcmp(key, "height") == 0) {
                     rule->height = atoi(val);
-                    lognumtofile(rule->height);
                 } else if (strcmp(key, "isnoborder") == 0) {
                     rule->isnoborder = atoi(val);
                 } else if (strcmp(key, "scroller_proportion") == 0) {
