@@ -1,3 +1,8 @@
+#include <stdint.h>
+#include <string.h>
+#include <ctype.h>
+#include <stdbool.h>
+
 typedef struct {
     const char *id;
     const char *title;
@@ -43,6 +48,7 @@ typedef struct {
     Arg arg;
 } AxisBinding;
 
+
 typedef struct {
     int animations;
     char animation_type[10];
@@ -82,13 +88,13 @@ typedef struct {
     unsigned int gappoh;
     unsigned int gappov;
     unsigned int borderpx;
-    int rootcolor;
-    int bordercolor;
-    int focuscolor;
-    int maxmizescreencolor;
-    int urgentcolor;
-    int scratchpadcolor;
-    int globalcolor;
+    float rootcolor[4];
+    float bordercolor[4];
+    float focuscolor[4];
+    float maxmizescreencolor[4];
+    float urgentcolor[4];
+    float scratchpadcolor[4];
+    float globalcolor[4];
 
     char autostart[3][256];
 
@@ -114,6 +120,30 @@ typedef struct {
 
 } Config;
 
+int parseDirection(const char* str) {
+    // 将输入字符串转换为小写
+    char lowerStr[10];
+    int i = 0;
+    while (str[i] && i < 9) {
+        lowerStr[i] = tolower(str[i]);
+        i++;
+    }
+    lowerStr[i] = '\0';
+
+    // 根据转换后的小写字符串返回对应的枚举值
+    if (strcmp(lowerStr, "up") == 0) {
+        return UP;
+    } else if (strcmp(lowerStr, "down") == 0) {
+        return DOWN;
+    } else if (strcmp(lowerStr, "left") == 0) {
+        return LEFT;
+    } else if (strcmp(lowerStr, "right") == 0) {
+        return RIGHT;
+    } else {
+        return UNDIR;
+    }
+}
+
 long int parse_color(const char *hex_str) {
     char *endptr;
     long int hex_num = strtol(hex_str, &endptr, 16);
@@ -123,12 +153,43 @@ long int parse_color(const char *hex_str) {
     return hex_num;
 }
 
+// 辅助函数：检查字符串是否以指定的前缀开头（忽略大小写）
+static bool starts_with_ignore_case(const char *str, const char *prefix) {
+    while (*prefix) {
+        if (tolower(*str) != tolower(*prefix)) {
+            return false;
+        }
+        str++;
+        prefix++;
+    }
+    return true;
+}
+
 uint32_t parse_mod(const char *mod_str) {
     uint32_t mod = 0;
-    if (strstr(mod_str, "SUPER")) mod |= WLR_MODIFIER_LOGO;
-    if (strstr(mod_str, "CTRL")) mod |= WLR_MODIFIER_CTRL;
-    if (strstr(mod_str, "SHIFT")) mod |= WLR_MODIFIER_SHIFT;
-    if (strstr(mod_str, "ALT")) mod |= WLR_MODIFIER_ALT;
+    char lower_str[64];  // 假设输入的字符串长度不超过 64
+    int i = 0;
+
+    // 将 mod_str 转换为全小写
+    for (i = 0; mod_str[i] && i < sizeof(lower_str) - 1; i++) {
+        lower_str[i] = tolower(mod_str[i]);
+    }
+    lower_str[i] = '\0';  // 确保字符串以 NULL 结尾
+
+    // 检查修饰键，忽略左右键标识（如 "_l" 和 "_r"）
+    if (strstr(lower_str, "super") || strstr(lower_str, "super_l") || strstr(lower_str, "super_r")) {
+        mod |= WLR_MODIFIER_LOGO;
+    }
+    if (strstr(lower_str, "ctrl") || strstr(lower_str, "ctrl_l") || strstr(lower_str, "ctrl_r")) {
+        mod |= WLR_MODIFIER_CTRL;
+    }
+    if (strstr(lower_str, "shift") || strstr(lower_str, "shift_l") || strstr(lower_str, "shift_r")) {
+        mod |= WLR_MODIFIER_SHIFT;
+    }
+    if (strstr(lower_str, "alt") || strstr(lower_str, "alt_l") || strstr(lower_str, "alt_r")) {
+        mod |= WLR_MODIFIER_ALT;
+    }
+
     return mod;
 }
 
@@ -137,6 +198,71 @@ xkb_keysym_t parse_keysym(const char *keysym_str) {
 }
 
 typedef void (*FuncType)(const Arg *);
+
+
+int parseButton(const char *str) {
+    // 将输入字符串转换为小写
+    char lowerStr[20];
+    int i = 0;
+    while (str[i] && i < 19) {
+        lowerStr[i] = tolower(str[i]);
+        i++;
+    }
+    lowerStr[i] = '\0'; // 确保字符串正确终止
+
+    // 根据转换后的小写字符串返回对应的按钮编号
+    if (strcmp(lowerStr, "btn_left") == 0) {
+        return BTN_LEFT;
+    } else if (strcmp(lowerStr, "btn_right") == 0) {
+        return BTN_RIGHT;
+    } else if (strcmp(lowerStr, "btn_middle") == 0) {
+        return BTN_MIDDLE;
+    } else if (strcmp(lowerStr, "btn_side") == 0) {
+        return BTN_SIDE;
+    } else if (strcmp(lowerStr, "btn_extra") == 0) {
+        return BTN_EXTRA;
+    } else if (strcmp(lowerStr, "btn_forward") == 0) {
+        return BTN_FORWARD;
+    } else if (strcmp(lowerStr, "btn_back") == 0) {
+        return BTN_BACK;
+    } else if (strcmp(lowerStr, "btn_task") == 0) {
+        return BTN_TASK;
+    } else {
+        return 0;
+    }
+}
+
+
+int parseMouseAction(const char *str) {
+    // 将输入字符串转换为小写
+    char lowerStr[20];
+    int i = 0;
+    while (str[i] && i < 19) {
+        lowerStr[i] = tolower(str[i]);
+        i++;
+    }
+    lowerStr[i] = '\0'; // 确保字符串正确终止
+
+    // 根据转换后的小写字符串返回对应的按钮编号
+    if (strcmp(lowerStr, "curmove") == 0) {
+        return CurMove;
+    } else if (strcmp(lowerStr, "curresize") == 0) {
+        return CurResize;
+    } else if (strcmp(lowerStr, "curnormal") == 0) {
+        return CurNormal;
+    } else if (strcmp(lowerStr, "curpressed") == 0) {
+        return CurPressed;
+    } else {
+        return 0;
+    }
+}
+
+void parseColoer(float *color,unsigned long int hex) {
+    color[0] = ((hex >> 24) & 0xFF) / 255.0f;
+    color[1] = ((hex >> 16) & 0xFF) / 255.0f;
+    color[2] = ((hex >> 8) & 0xFF) / 255.0f;
+    color[3] = (hex & 0xFF) / 255.0f;
+}
 
 FuncType parse_func_name(char *func_name,Arg *arg, char *arg_value) {
     
@@ -148,7 +274,7 @@ FuncType parse_func_name(char *func_name,Arg *arg, char *arg_value) {
         (*arg).i = atoi(arg_value);
     } else if (strcmp(func_name, "focusdir") == 0) {
         func = focusdir;
-        (*arg).i = atoi(arg_value);
+        (*arg).i = parseDirection(arg_value);
     } else if (strcmp(func_name, "incnmaster") == 0) {
         func = incnmaster;
         (*arg).i = atoi(arg_value);
@@ -214,7 +340,7 @@ FuncType parse_func_name(char *func_name,Arg *arg, char *arg_value) {
         func = quit;
     } else if (strcmp(func_name, "moveresize") == 0) {
         func = moveresize;
-        (*arg).ui = atoi(arg_value);
+        (*arg).ui = parseMouseAction(arg_value);
     } else if (strcmp(func_name, "togglemaxmizescreen") == 0) {
         func = togglemaxmizescreen;
     } else if (strcmp(func_name, "viewtoleft_have_client") == 0) {
@@ -309,49 +435,49 @@ void parse_config_line(Config *config, const char *line) {
         if (color == -1) {
             fprintf(stderr, "Error: Invalid rootcolor format: %s\n", value);
         } else {
-            config->rootcolor = color;
+            parseColoer(config->rootcolor,color);
         }
     } else if (strcmp(key, "bordercolor") == 0) {
         long int color = parse_color(value);
         if (color == -1) {
             fprintf(stderr, "Error: Invalid bordercolor format: %s\n", value);
         } else {
-            config->bordercolor = color;
+            parseColoer(config->bordercolor,color);
         }
     } else if (strcmp(key, "focuscolor") == 0) {
         long int color = parse_color(value);
         if (color == -1) {
             fprintf(stderr, "Error: Invalid focuscolor format: %s\n", value);
         } else {
-            config->focuscolor = color;
+            parseColoer(config->focuscolor,color);
         }
     } else if (strcmp(key, "maxmizescreencolor") == 0) {
         long int color = parse_color(value);
         if (color == -1) {
             fprintf(stderr, "Error: Invalid maxmizescreencolor format: %s\n", value);
         } else {
-            config->maxmizescreencolor = color;
+            parseColoer(config->maxmizescreencolor,color);
         }
     } else if (strcmp(key, "urgentcolor") == 0) {
         long int color = parse_color(value);
         if (color == -1) {
             fprintf(stderr, "Error: Invalid urgentcolor format: %s\n", value);
         } else {
-            config->urgentcolor = color;
+            parseColoer(config->urgentcolor,color);
         }
     } else if (strcmp(key, "scratchpadcolor") == 0) {
         long int color = parse_color(value);
         if (color == -1) {
             fprintf(stderr, "Error: Invalid scratchpadcolor format: %s\n", value);
         } else {
-            config->scratchpadcolor = color;
+            parseColoer(config->scratchpadcolor,color);
         }
     } else if (strcmp(key, "globalcolor") == 0) {
         long int color = parse_color(value);
         if (color == -1) {
             fprintf(stderr, "Error: Invalid globalcolor format: %s\n", value);
         } else {
-            config->globalcolor = color;
+            parseColoer(config->globalcolor,color);
         }
     } else if (strcmp(key, "autostart") == 0) {
         if (sscanf(value, "%[^,],%[^,],%[^,]", config->autostart[0], config->autostart[1], config->autostart[2]) != 3) {
@@ -494,7 +620,7 @@ void parse_config_line(Config *config, const char *line) {
         }
 
         binding->mod = parse_mod(mod_str);
-        binding->button = atoi(button_str);
+        binding->button = parseButton(button_str);
         binding->arg.v = NULL;
         binding->func = parse_func_name(func_name, &binding->arg, arg_value);
         if (!binding->func){
@@ -519,7 +645,7 @@ void parse_config_line(Config *config, const char *line) {
         }
 
         binding->mod = parse_mod(mod_str);
-        binding->dir = atoi(dir_str);
+        binding->dir = parseDirection(dir_str);
         binding->arg.v = NULL;
         binding->func = parse_func_name(func_name, &binding->arg, arg_value);
 

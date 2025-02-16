@@ -20,7 +20,7 @@ static const double animation_curve[4] = {0.46,1.0,0.29,0.99}; // Animation curv
 /* scroller layout setting*/
 static const int scroller_structs = 20;
 static const float scroller_default_proportion = 0.8;
-static bool scoller_foucs_center = false;
+static bool scoller_focus_center = false;
 static const float scroller_proportion_preset[] = {0.5,0.8,1.0};
 
 /* master-stack layout setting*/

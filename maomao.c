@@ -97,7 +97,7 @@
 /* enums */
 enum { CurNormal, CurPressed, CurMove, CurResize }; /* cursor */
 enum { XDGShell, LayerShell, X11 };                 /* client types */
-enum { AxisUp, AxisRight, AxisDown, AxisLeft };     // 滚轮滚动的方向
+enum { AxisUp,AxisDown, AxisLeft, AxisRight};     // 滚轮滚动的方向
 enum {
   LyrBg,
   LyrBottom,
@@ -635,7 +635,7 @@ static Atom netatom[NetLast];
 #endif
 
 /* configuration, allows nested code to access above variables */
-#include "config.h"
+#include "preset_config.h"
 #include "parse_config.h"
 
 /* attempt to encapsulate suck into one file */
@@ -1533,7 +1533,7 @@ axisnotify(struct wl_listener *listener, void *data) {
   struct wlr_pointer_axis_event *event = data;
   struct wlr_keyboard *keyboard;
   uint32_t mods;
-  const AxisBinding *a;
+  AxisBinding *a;
   int ji;
   unsigned int adir;
   // IDLE_NOTIFY_ACTIVITY;
@@ -4340,7 +4340,8 @@ void signalhandler(int signalnumber)
 
 void free_config(void) {
    // 释放内存
-    for (int i = 0; i < config.window_rules_count; i++) {
+   int i;
+    for (i = 0; i < config.window_rules_count; i++) {
         ConfigWinRule *rule = &config.window_rules[i];
         if (rule->id) free((void *)rule->id);
         if (rule->title) free((void *)rule->title);
@@ -4348,31 +4349,83 @@ void free_config(void) {
     }
     free(config.window_rules);
 
-    for (int i = 0; i < config.monitor_rules_count; i++) {
+    for ( i = 0; i < config.monitor_rules_count; i++) {
         ConfigMonitorRule *rule = &config.monitor_rules[i];
         if (rule->name) free((void *)rule->name);
         if (rule->layout) free((void *)rule->layout);
     }
     free(config.monitor_rules);
 
-    for (int i = 0; i < config.key_bindings_count; i++) {
+    for ( i = 0; i < config.key_bindings_count; i++) {
         if (config.key_bindings[i].arg.v) free((void *)config.key_bindings[i].arg.v);
     }
     free(config.key_bindings);
 
-    for (int i = 0; i < config.mouse_bindings_count; i++) {
+    for ( i = 0; i < config.mouse_bindings_count; i++) {
         if (config.mouse_bindings[i].arg.v) free((void *)config.mouse_bindings[i].arg.v);
     }
     free(config.mouse_bindings);
 
-    for (int i = 0; i < config.axis_bindings_count; i++) {
+    for (i = 0; i < config.axis_bindings_count; i++) {
         if (config.axis_bindings[i].arg.v) free((void *)config.axis_bindings[i].arg.v);
     }
     free(config.axis_bindings);
 
 }
 
+void override_config(void) {
+    animations = config.animations;
+    animation_type = config.animation_type;
+    animation_fade_in = config.animation_fade_in;
+    zoom_initial_ratio = config.zoom_initial_ratio;
+    fadein_begin_opacity = config.fadein_begin_opacity;
+    animation_duration_move = config.animation_duration_move;
+    animation_duration_open = config.animation_duration_open;
+    animation_duration_tag = config.animation_duration_tag;
+
+    // 复制数组类型的变量
+    memcpy(animation_curve, config.animation_curve, sizeof(animation_curve));
+    memcpy(scroller_proportion_preset, config.scroller_proportion_preset, sizeof(scroller_proportion_preset));
+
+    scroller_structs = config.scroller_structs;
+    scroller_default_proportion = config.scroller_default_proportion;
+    scoller_focus_center = config.scoller_focus_center;
+
+    new_is_master = config.new_is_master;
+    default_mfact = config.default_mfact;
+    default_nmaster = config.default_nmaster;
+    hotarea_size = config.hotarea_size;
+    enable_hotarea = config.enable_hotarea;
+    ov_tab_mode = config.ov_tab_mode;
+    overviewgappi = config.overviewgappi;
+    overviewgappo = config.overviewgappo;
+    axis_bind_apply_timeout = config.axis_bind_apply_timeout;
+    focus_on_activate = config.focus_on_activate;
+    numlockon = config.numlockon;
+    bypass_surface_visibility = config.bypass_surface_visibility;
+    sloppyfocus = config.sloppyfocus;
+    warpcursor = config.warpcursor;
+    smartgaps = config.smartgaps;
+    gappih = config.gappih;
+    gappiv = config.gappiv;
+    gappoh = config.gappoh;
+    gappov = config.gappov;
+    borderpx = config.borderpx;
+
+    // 复制颜色数组
+    memcpy(rootcolor, config.rootcolor, sizeof(rootcolor));
+    memcpy(bordercolor, config.bordercolor, sizeof(bordercolor));
+    memcpy(focuscolor, config.focuscolor, sizeof(focuscolor));
+    memcpy(maxmizescreencolor, config.maxmizescreencolor, sizeof(maxmizescreencolor));
+    memcpy(urgentcolor, config.urgentcolor, sizeof(urgentcolor));
+    memcpy(scratchpadcolor, config.scratchpadcolor, sizeof(scratchpadcolor));
+    memcpy(globalcolor, config.globalcolor, sizeof(globalcolor));
+}
+
 void parse_config(void) {
+
+  char filename[1024];
+
   memset(&config, 0, sizeof(config));
   config.window_rules = NULL;
   config.window_rules_count = 0;
@@ -4385,7 +4438,21 @@ void parse_config(void) {
   config.axis_bindings = NULL;
   config.axis_bindings_count = 0;
 
-  parse_config_file(&config, "/home/wrq/.config/maomao/config.conf");  
+    // 获取当前用户家目录
+    const char *homedir = getenv("HOME");
+    if (!homedir) {
+        // 如果获取失败，则无法继续
+        return;
+    }
+
+  // 构建日志文件路径
+  snprintf(filename, sizeof(filename), "%s/.config/maomao/config.conf", homedir);
+
+
+  parse_config_file(&config, filename);  
+
+  override_config();
+
 }
 
 void setup(void) {
@@ -4656,13 +4723,25 @@ void sigchld(int unused) {
   }
 }
 
-void // 17
-spawn(const Arg *arg) {
+void spawn(const Arg *arg) {
+
   if (fork() == 0) {
-    dup2(STDERR_FILENO, STDOUT_FILENO);
-    setsid();
-    execvp(((char **)arg->v)[0], (char **)arg->v);
-    die("dwl: execvp %s failed:", ((char **)arg->v)[0]);
+      dup2(STDERR_FILENO, STDOUT_FILENO);
+      setsid();
+
+      // 将 arg->v 拆分为字符串数组
+      char *argv[64];  // 假设最多有 64 个参数
+      int argc = 0;
+      char *token = strtok((char *)arg->v, " ");
+      while (token != NULL && argc < 63) {
+          argv[argc++] = token;
+          token = strtok(NULL, " ");
+      }
+      argv[argc] = NULL;  // execvp 需要以 NULL 结尾的数组
+
+      // 执行命令
+      execvp(argv[0], argv);
+      die("dwl: execvp %s failed:", argv[0]);
   }
 }
 
@@ -4902,7 +4981,7 @@ void scroller(Monitor *m, unsigned int gappo, unsigned int gappi) {
   target_geom.y = m->w.y + (m->w.height - target_geom.height) / 2;
 
   if (need_scroller) {
-    if (scoller_foucs_center ||
+    if (scoller_focus_center ||
         selmon->prevsel == NULL ||
         (selmon->prevsel->scroller_proportion * max_client_width) + (root_client->scroller_proportion * max_client_width) > m->w.width - 2 * scroller_structs - gappih) {
       target_geom.x = m->w.x + (m->w.width - target_geom.width) / 2;
