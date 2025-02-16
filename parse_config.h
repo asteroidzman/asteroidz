@@ -351,10 +351,10 @@ FuncType parse_func_name(char *func_name,Arg *arg, char *arg_value) {
         func = reload_config;
     } else if (strcmp(func_name, "tag") == 0) {
         func = tag;
-        (*arg).ui = 1 << atoi(arg_value);
+        (*arg).ui = 1 << (atoi(arg_value) -1);
     } else if (strcmp(func_name, "view") == 0) {
         func = bind_to_view;
-        (*arg).ui = 1 << atoi(arg_value);
+        (*arg).ui = 1 << (atoi(arg_value) - 1);
     } else {
         return NULL;
     }
