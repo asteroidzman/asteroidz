@@ -371,7 +371,6 @@ static void autostartexec(void); // 自启动命令执行
 static void axisnotify(struct wl_listener *listener, void *data); // 滚轮事件处理
 static void buttonpress(struct wl_listener *listener,
                         void *data); // 鼠标按键事件处理
-static void chvt(const Arg *arg);
 static void checkidleinhibitor(struct wlr_surface *exclude);
 static void cleanup(void); // 退出清理
 static void cleanupkeyboard(struct wl_listener *listener,
@@ -395,7 +394,6 @@ static void cursorconstrain(struct wlr_pointer_constraint_v1 *constraint);
 static void cursorframe(struct wl_listener *listener, void *data);
 static void cursorwarptohint(void);
 static void destroydecoration(struct wl_listener *listener, void *data);
-static void defaultgaps(const Arg *arg);
 static void destroydragicon(struct wl_listener *listener, void *data);
 static void destroyidleinhibitor(struct wl_listener *listener, void *data);
 static void destroylayersurfacenotify(struct wl_listener *listener, void *data);
@@ -431,26 +429,17 @@ static void dwl_ipc_output_set_tags(struct wl_client *client,
 static void dwl_ipc_output_release(struct wl_client *client,
                                    struct wl_resource *resource);
 static void focusclient(Client *c, int lift);
-static void focusmon(const Arg *arg);
-static void focusstack(const Arg *arg);
+
 static void setborder_color(Client *c);
 static Client *focustop(Monitor *m);
 static void fullscreennotify(struct wl_listener *listener, void *data);
-static void incnmaster(const Arg *arg);
-static void incgaps(const Arg *arg);
-static void incigaps(const Arg *arg);
+
 static int keyrepeat(void *data);
-static void incihgaps(const Arg *arg);
-static void incivgaps(const Arg *arg);
-static void incogaps(const Arg *arg);
-static void incohgaps(const Arg *arg);
-static void incovgaps(const Arg *arg);
-static void toggleglobal(const Arg *arg);
+
 static void inputdevice(struct wl_listener *listener, void *data);
 static int keybinding(uint32_t mods, xkb_keysym_t sym);
 static void keypress(struct wl_listener *listener, void *data);
 static void keypressmod(struct wl_listener *listener, void *data);
-static void killclient(const Arg *arg);
 static void locksession(struct wl_listener *listener, void *data);
 static void maplayersurfacenotify(struct wl_listener *listener, void *data);
 static void mapnotify(struct wl_listener *listener, void *data);
@@ -462,8 +451,7 @@ static void motionnotify(uint32_t time, struct wlr_input_device *device,
                          double sx, double sy, double sx_unaccel,
                          double sy_unaccel);
 static void motionrelative(struct wl_listener *listener, void *data);
-static void moveresize(const Arg *arg);
-static void exchange_client(const Arg *arg);
+
 static void reset_foreign_tolevel(Client *c);
 static void exchange_two_client(Client *c1, Client *c2);
 static void outputmgrapply(struct wl_listener *listener, void *data);
@@ -473,7 +461,6 @@ static void outputmgrtest(struct wl_listener *listener, void *data);
 static void pointerfocus(Client *c, struct wlr_surface *surface, double sx,
                          double sy, uint32_t time);
 static void printstatus(void);
-static void quit(const Arg *arg);
 static void quitsignal(int signo);
 static void rendermon(struct wl_listener *listener, void *data);
 static void requestdecorationmode(struct wl_listener *listener, void *data);
@@ -486,29 +473,20 @@ static void setfloating(Client *c, int floating);
 static void setfullscreen(Client *c, int fullscreen);
 static void setmaxmizescreen(Client *c, int maxmizescreen);
 static void setgaps(int oh, int ov, int ih, int iv);
-static void setlayout(const Arg *arg);
-static void switch_layout(const Arg *arg);
-static void setmfact(const Arg *arg);
+
 static void setmon(Client *c, Monitor *m, unsigned int newtags);
 static void setpsel(struct wl_listener *listener, void *data);
 static void setsel(struct wl_listener *listener, void *data);
 static void setup(void);
 static void sigchld(int unused);
-static void spawn(const Arg *arg);
 static void startdrag(struct wl_listener *listener, void *data);
-static void tag(const Arg *arg);
-static void tagmon(const Arg *arg);
+
 static void setgamma(struct wl_listener *listener, void *data);
 static void tile(Monitor *m, unsigned int gappo, unsigned int uappi);
 static void overview(Monitor *m, unsigned int gappo, unsigned int gappi);
 static void grid(Monitor *m, unsigned int gappo, unsigned int uappi);
 static void scroller(Monitor *m, unsigned int gappo, unsigned int uappi);
-static void togglefloating(const Arg *arg);
-static void togglefullscreen(const Arg *arg);
-static void togglemaxmizescreen(const Arg *arg);
-static void togglegaps(const Arg *arg);
-static void toggletag(const Arg *arg);
-static void toggleview(const Arg *arg);
+
 static void unlocksession(struct wl_listener *listener, void *data);
 static void unmaplayersurfacenotify(struct wl_listener *listener, void *data);
 static void unmapnotify(struct wl_listener *listener, void *data);
@@ -516,36 +494,24 @@ static void updatemons(struct wl_listener *listener, void *data);
 static void updatetitle(struct wl_listener *listener, void *data);
 static void urgent(struct wl_listener *listener, void *data);
 static void view(const Arg *arg, bool want_animation);
-static void bind_to_view(const Arg *arg);
-static void viewtoleft_have_client(const Arg *arg);
-static void viewtoright_have_client(const Arg *arg);
-static void viewtoleft(const Arg *arg);
-static void viewtoright(const Arg *arg);
+
 static void handlesig(int signo);
-static void tagtoleft(const Arg *arg);
-static void tagtoright(const Arg *arg);
+
 static void virtualkeyboard(struct wl_listener *listener, void *data);
 static void virtualpointer(struct wl_listener *listener, void *data);
 static void warp_cursor(const Client *c);
 static Monitor *xytomon(double x, double y);
 static void xytonode(double x, double y, struct wlr_surface **psurface,
                      Client **pc, LayerSurface **pl, double *nx, double *ny);
-static void zoom(const Arg *arg);
 static void clear_fullscreen_flag(Client *c);
-static Client *direction_select(const Arg *arg);
-static void focusdir(const Arg *arg);
-static void toggleoverview(const Arg *arg);
-static void set_proportion(const Arg *arg);
-static void switch_proportion_preset(const Arg *arg);
+
 static void warp_cursor_to_selmon(const Monitor *m);
 unsigned int want_restore_fullscreen(Client *target_client);
 static void overview_restore(Client *c, const Arg *arg);
 static void overview_backup(Client *c);
 static int applyrulesgeom(Client *c);
 static void set_minized(Client *c);
-static void minized(const Arg *arg);
-static void restore_minized(const Arg *arg);
-static void toggle_scratchpad(const Arg *arg);
+
 static void show_scratchpad(Client *c);
 static void show_hide_client(Client *c);
 static void tag_client(const Arg *arg, Client *target_client);
@@ -565,6 +531,21 @@ void client_commit(Client *c);
 void apply_border(Client *c, struct wlr_box clip_box,int offset);
 void client_set_opacity(Client *c, double opacity);
 void init_baked_points(void);
+
+Client *direction_select(const Arg *arg);
+void bind_to_view(const Arg *arg);
+void toggletag(const Arg *arg);
+void toggleview(const Arg *arg);
+void tag(const Arg *arg);
+void incihgaps(const Arg *arg);
+void incivgaps(const Arg *arg);
+void incogaps(const Arg *arg);
+void incohgaps(const Arg *arg);
+void incovgaps(const Arg *arg);
+void incigaps(const Arg *arg);
+void defaultgaps(const Arg *arg);
+
+#include "dispatch.h"
 
 /* variables */
 static const char broken[] = "broken";
@@ -646,6 +627,7 @@ static void associatex11(struct wl_listener *listener, void *data);
 static Atom getatom(xcb_connection_t *xc, const char *name);
 static void sethints(struct wl_listener *listener, void *data);
 static void xwaylandready(struct wl_listener *listener, void *data);
+void free_config(void);
 // static struct wl_listener new_xwayland_surface = {.notify = createnotifyx11};
 // static struct wl_listener xwayland_ready = {.notify = xwaylandready};
 static struct wlr_xwayland *xwayland;
@@ -654,12 +636,15 @@ static Atom netatom[NetLast];
 
 /* configuration, allows nested code to access above variables */
 #include "config.h"
+#include "parse_config.h"
 
 /* attempt to encapsulate suck into one file */
 #include "client.h"
 #ifdef IM
 #include "IM.h"
 #endif
+
+Config config;
 
 /* compile-time check if all tags fit into an unsigned int bit array. */
 struct NumTags {
@@ -1122,15 +1107,17 @@ int // 0.5
 applyrulesgeom(Client *c) {
   /* rule matching */
   const char *appid, *title;
-  const Rule *r;
+  ConfigWinRule *r;
   int hit = 0;
+  int i;
 
   if (!(appid = client_get_appid(c)))
     appid = broken;
   if (!(title = client_get_title(c)))
     title = broken;
 
-  for (r = rules; r < END(rules); r++) {
+  for (i = 0; i < config.window_rules_count; i++) {
+    r = &config.window_rules[i];
     if ((!r->title || strstr(title, r->title)) &&
         (!r->id || strstr(appid, r->id)) && r->width != 0 && r->height != 0) {
       c->geom.width = r->width;
@@ -1149,7 +1136,8 @@ applyrules(Client *c) {
   /* rule matching */
   const char *appid, *title;
   uint32_t i, newtags = 0;
-  const Rule *r;
+  int ji;
+  const ConfigWinRule *r;
   Monitor *mon = selmon, *m;
 
   c->isfloating = client_is_float_type(c);
@@ -1158,7 +1146,8 @@ applyrules(Client *c) {
   if (!(title = client_get_title(c)))
     title = broken;
 
-  for (r = rules; r < END(rules); r++) {
+  for (ji = 0; ji < config.window_rules_count; ji++) {
+    r = &config.window_rules[ji];
     if ((!r->title || strstr(title, r->title)) &&
         (!r->id || strstr(appid, r->id))) {
       c->isfloating = r->isfloating;
@@ -1544,7 +1533,8 @@ axisnotify(struct wl_listener *listener, void *data) {
   struct wlr_pointer_axis_event *event = data;
   struct wlr_keyboard *keyboard;
   uint32_t mods;
-  const Axis *a;
+  const AxisBinding *a;
+  int ji;
   unsigned int adir;
   // IDLE_NOTIFY_ACTIVITY;
   wlr_idle_notifier_v1_notify_activity(idle_notifier, seat);
@@ -1558,7 +1548,8 @@ axisnotify(struct wl_listener *listener, void *data) {
   else
     adir = event->delta > 0 ? AxisRight : AxisLeft;
 
-  for (a = axes; a < END(axes); a++) {
+  for (ji = 0; ji < config.axis_bindings_count; ji++) {
+    a = &config.axis_bindings[ji];
     if (CLEANMASK(mods) == CLEANMASK(a->mod) && // 按键一致
         adir == a->dir && a->func) { // 滚轮方向判断一致且处理函数存在
       if (event->time_msec - axis_apply_time > axis_bind_apply_timeout) {
@@ -1587,7 +1578,8 @@ buttonpress(struct wl_listener *listener, void *data) {
   struct wlr_keyboard *keyboard;
   uint32_t mods;
   Client *c;
-  const Button *b;
+  int ji;
+  const MouseBinding *b;
   struct wlr_surface *surface;
 
   wlr_idle_notifier_v1_notify_activity(idle_notifier, seat);
@@ -1609,7 +1601,8 @@ buttonpress(struct wl_listener *listener, void *data) {
 
     keyboard = wlr_seat_get_keyboard(seat);
     mods = keyboard ? wlr_keyboard_get_modifiers(keyboard) : 0;
-    for (b = buttons; b < END(buttons); b++) {
+    for (ji = 0; ji < config.mouse_bindings_count; ji++) {
+      b = &config.mouse_bindings[ji];
       if (CLEANMASK(mods) == CLEANMASK(b->mod) && event->button == b->button &&
           b->func && (selmon->isoverview == 1 || b->button == BTN_MIDDLE) &&
           c) {
@@ -2003,8 +1996,9 @@ createmon(struct wl_listener *listener, void *data) {
   /* This event is raised by the backend when a new output (aka a display or
    * monitor) becomes available. */
   struct wlr_output *wlr_output = data;
-  const MonitorRule *r;
+  const ConfigMonitorRule *r;
   size_t i;
+  int ji,jk;
   Monitor *m = wlr_output->data = ecalloc(1, sizeof(*m));
   m->wlr_output = wlr_output;
 
@@ -2034,14 +2028,20 @@ createmon(struct wl_listener *listener, void *data) {
   } else {
     m->lt[0] = m->lt[1] = &layouts[0];
   }
-  for (r = monrules; r < END(monrules); r++) {
+  for (ji = 0; ji < config.monitor_rules_count; ji++) {
+    r = &config.monitor_rules[ji];
     if (!r->name || strstr(wlr_output->name, r->name)) {
       m->mfact = r->mfact;
       m->nmaster = r->nmaster;
       m->m.x = r->x;
       m->m.y = r->y;
-      if (r->lt)
-        m->lt[0] = m->lt[1] = r->lt;
+      if (r->layout) {
+        for (jk = 0; jk < LENGTH(layouts); jk++) {
+          if(strcmp(layouts[jk].name , r->layout) == 0) {
+            m->lt[0] = m->lt[1] = &layouts[jk];
+          }
+        }
+      }
       scale = r->scale;
       rr = r->rr;
       break;
@@ -2889,8 +2889,10 @@ keybinding(uint32_t mods, xkb_keysym_t sym) {
    * processing.
    */
   int handled = 0;
-  const Key *k;
-  for (k = keys; k < END(keys); k++) {
+  const KeyBinding *k;
+  int i;
+  for (i =0; i < config.key_bindings_count; i++) {
+    k = &config.key_bindings[i];
     if (CLEANMASK(mods) == CLEANMASK(k->mod) && sym == k->keysym && k->func) {
       k->func(&k->arg);
       handled = 1;
@@ -3556,6 +3558,7 @@ printstatus(void) {
 void // 0.5
 quit(const Arg *arg) {
   wl_display_terminate(dpy);
+  free_config();
 }
 
 void quitsignal(int signo) { quit(NULL); }
@@ -4335,10 +4338,62 @@ void signalhandler(int signalnumber)
     // 不调用 exit 以允许生成核心转储文件
 }
 
+void free_config(void) {
+   // 释放内存
+    for (int i = 0; i < config.window_rules_count; i++) {
+        ConfigWinRule *rule = &config.window_rules[i];
+        if (rule->id) free((void *)rule->id);
+        if (rule->title) free((void *)rule->title);
+        if (rule->animation_type) free((void *)rule->animation_type);
+    }
+    free(config.window_rules);
+
+    for (int i = 0; i < config.monitor_rules_count; i++) {
+        ConfigMonitorRule *rule = &config.monitor_rules[i];
+        if (rule->name) free((void *)rule->name);
+        if (rule->layout) free((void *)rule->layout);
+    }
+    free(config.monitor_rules);
+
+    for (int i = 0; i < config.key_bindings_count; i++) {
+        if (config.key_bindings[i].arg.v) free((void *)config.key_bindings[i].arg.v);
+    }
+    free(config.key_bindings);
+
+    for (int i = 0; i < config.mouse_bindings_count; i++) {
+        if (config.mouse_bindings[i].arg.v) free((void *)config.mouse_bindings[i].arg.v);
+    }
+    free(config.mouse_bindings);
+
+    for (int i = 0; i < config.axis_bindings_count; i++) {
+        if (config.axis_bindings[i].arg.v) free((void *)config.axis_bindings[i].arg.v);
+    }
+    free(config.axis_bindings);
+
+}
+
+void parse_config(void) {
+  memset(&config, 0, sizeof(config));
+  config.window_rules = NULL;
+  config.window_rules_count = 0;
+  config.monitor_rules = NULL;
+  config.monitor_rules_count = 0;
+  config.key_bindings = NULL;
+  config.key_bindings_count = 0;
+  config.mouse_bindings = NULL;
+  config.mouse_bindings_count = 0;
+  config.axis_bindings = NULL;
+  config.axis_bindings_count = 0;
+
+  parse_config_file(&config, "/home/wrq/.config/maomao/config.conf");  
+}
 
 void setup(void) {
 
+
   signal(SIGSEGV, signalhandler);
+
+  parse_config();
 
   init_baked_points();
 
