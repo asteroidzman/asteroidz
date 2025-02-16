@@ -3,6 +3,7 @@
  */
 #include <getopt.h>
 #include <libinput.h>
+#include <wordexp.h>
 #include <signal.h>
 #include <execinfo.h>
 #include <limits.h>
@@ -4735,7 +4736,6 @@ void sigchld(int unused) {
 }
 
 void spawn(const Arg *arg) {
-
   if (fork() == 0) {
       dup2(STDERR_FILENO, STDOUT_FILENO);
       setsid();
@@ -4745,7 +4745,13 @@ void spawn(const Arg *arg) {
       int argc = 0;
       char *token = strtok((char *)arg->v, " ");
       while (token != NULL && argc < 63) {
-          argv[argc++] = token;
+          // 扩展 ~ 为家目录路径
+          wordexp_t p;
+          if (wordexp(token, &p, 0) == 0) {
+              argv[argc++] = p.we_wordv[0];
+          } else {
+              argv[argc++] = token;  // 如果扩展失败，使用原始 token
+          }
           token = strtok(NULL, " ");
       }
       argv[argc] = NULL;  // execvp 需要以 NULL 结尾的数组
