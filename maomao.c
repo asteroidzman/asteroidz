@@ -4355,7 +4355,6 @@ void free_config(void) {
 
     for ( i = 0; i < config.key_bindings_count; i++) {
         if (config.key_bindings[i].arg.v) {
-          logtofile(config.key_bindings[i].arg.v);
           free((void *)config.key_bindings[i].arg.v);
           config.key_bindings[i].arg.v = NULL;  // 避免重复释放
         } 
