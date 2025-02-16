@@ -285,7 +285,7 @@ FuncType parse_func_name(char *func_name,Arg *arg, char *arg_value) {
         func = zoom;
     } else if (strcmp(func_name, "exchange_client") == 0) {
         func = exchange_client;
-        (*arg).i = atoi(arg_value);
+        (*arg).i = parseDirection(arg_value);
     } else if (strcmp(func_name, "toggleglobal") == 0) {
         func = toggleglobal;
     } else if (strcmp(func_name, "toggleoverview") == 0) {
