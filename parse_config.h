@@ -13,8 +13,8 @@ typedef struct {
     const char *animation_type;
     int isnoborder;
     int monitor;
-    unsigned int width;
-    unsigned int height;
+    int width;
+    int height;
 } ConfigWinRule;
 
 typedef struct {
@@ -506,6 +506,19 @@ void parse_config_line(Config *config, const char *line) {
         ConfigWinRule *rule = &config->window_rules[config->window_rules_count];
         memset(rule, 0, sizeof(ConfigWinRule));
 
+        rule->isfloating = -1;
+        rule->isfullscreen = -1;
+        rule->isnoborder = -1;
+        rule->monitor = -1;
+        rule->width = -1;
+        rule->height = -1;
+        rule->animation_type = NULL;
+        rule->scroller_proportion = -1;
+        rule->id = NULL;
+        rule->title = NULL;
+        rule->tags = 0;
+
+
         char *token = strtok(value, ",");
         while (token != NULL) {
             char *colon = strchr(token, ':');
@@ -518,6 +531,7 @@ void parse_config_line(Config *config, const char *line) {
                     rule->isfloating = atoi(val);
                 } else if (strcmp(key, "title") == 0) {
                     rule->title = strdup(val);
+                    logtofile(rule->title);
                 } else if (strcmp(key, "appid") == 0) {
                     rule->id = strdup(val);
                 } else if (strcmp(key, "animation_type") == 0) {
@@ -528,8 +542,10 @@ void parse_config_line(Config *config, const char *line) {
                     rule->monitor = atoi(val);
                 } else if (strcmp(key, "width") == 0) {
                     rule->width = atoi(val);
+                    lognumtofile(rule->width);
                 } else if (strcmp(key, "height") == 0) {
                     rule->height = atoi(val);
+                    lognumtofile(rule->height);
                 } else if (strcmp(key, "isnoborder") == 0) {
                     rule->isnoborder = atoi(val);
                 } else if (strcmp(key, "scroller_proportion") == 0) {

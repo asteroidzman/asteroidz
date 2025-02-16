@@ -1109,23 +1109,22 @@ applyrulesgeom(Client *c) {
   const char *appid, *title;
   ConfigWinRule *r;
   int hit = 0;
-  int i;
+  int ji;
 
   if (!(appid = client_get_appid(c)))
     appid = broken;
   if (!(title = client_get_title(c)))
     title = broken;
 
-  for (i = 0; i < config.window_rules_count; i++) {
-    r = &config.window_rules[i];
-    if ((!r->title || strstr(title, r->title)) &&
-        (!r->id || strstr(appid, r->id)) && r->width != 0 && r->height != 0) {
-      c->geom.width = r->width;
-      c->geom.height = r->height;
+  for (ji = 0; ji < config.window_rules_count; ji++) {
+    r = &config.window_rules[ji];
+    if ( (r->title && strstr(title, r->title)) || (r->id && strstr(appid, r->id))) {
+      c->geom.width = r->width > 0 ? r->width : c->geom.width;
+      c->geom.height = r->height > 0 ? r->height : c->geom.height;
       // 重新计算居中的坐标
+      lognumtofile(r->width);
       c->geom = setclient_coordinate_center(c->geom);
       hit = 1;
-      break;
     }
   }
   return hit;
@@ -1148,27 +1147,31 @@ applyrules(Client *c) {
 
   for (ji = 0; ji < config.window_rules_count; ji++) {
     r = &config.window_rules[ji];
-    if ((!r->title || strstr(title, r->title)) &&
-        (!r->id || strstr(appid, r->id))) {
-      c->isfloating = r->isfloating;
-      c->animation_type = r->animation_type;
+
+    if ( (r->title && strstr(title, r->title)) || (r->id && strstr(appid, r->id))) {
+      c->isfloating = r->isfloating > 0 ? r->isfloating : c->isfloating;
+      logtofile("isfloating");
+      lognumtofile(c->isfloating);
+      c->animation_type = r->animation_type == NULL ? c->animation_type : r->animation_type;  
       c->scroller_proportion = r->scroller_proportion > 0 ? r->scroller_proportion : scroller_default_proportion;
-      c->isnoborder = r->isnoborder;
-      newtags |= r->tags;
+      c->isnoborder = r->isnoborder > 0 ? r->isnoborder : c->isnoborder;
+      newtags = r->tags > 0 ? r->tags|newtags : newtags;
       i = 0;
       wl_list_for_each(m, &mons, link) if (r->monitor == i++) mon = m;
 
-      if (c->isfloating && r->width != 0 && r->height != 0) {
-        c->geom.width = r->width;
-        c->geom.height = r->height;
+      if (c->isfloating) {
+        c->geom.width = r->width > 0 ? r->width : c->geom.width;
+        c->geom.height = r->height > 0 ? r->height : c->geom.height;
         // 重新计算居中的坐标
+        logtofile("width");
+        lognumtofile(c->geom.width);
+        lognumtofile(c->geom.height);
         c->geom = setclient_coordinate_center(c->geom);
       }
-      if (r->isfullscreen) {
+      if (r->isfullscreen && r->isfullscreen > 0) {
         c->isfullscreen = 1;
         c->ignore_clear_fullscreen = 1;
       }
-      break;
     }
   }
 
