@@ -4452,6 +4452,11 @@ void parse_config(void) {
 
 }
 
+void reload_config(const Arg *arg) {
+  free_config();
+  parse_config();
+}
+
 void setup(void) {
 
 

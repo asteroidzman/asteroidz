@@ -31,3 +31,4 @@ void incgaps(const Arg *arg);
 void focusmon(const Arg *arg);
 void focusstack(const Arg *arg);
 void chvt(const Arg *arg);
+void reload_config(const Arg *arg);
