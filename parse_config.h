@@ -351,10 +351,10 @@ FuncType parse_func_name(char *func_name,Arg *arg, char *arg_value) {
         func = reload_config;
     } else if (strcmp(func_name, "tag") == 0) {
         func = tag;
-        (*arg).i = 1 << atoi(arg_value);
+        (*arg).ui = 1 << atoi(arg_value);
     } else if (strcmp(func_name, "view") == 0) {
         func = bind_to_view;
-        (*arg).i = 1 << atoi(arg_value);
+        (*arg).ui = 1 << atoi(arg_value);
     } else {
         return NULL;
     }
@@ -544,7 +544,7 @@ void parse_config_line(Config *config, const char *line) {
                 } else if (strcmp(key, "animation_type") == 0) {
                     rule->animation_type = strdup(val);
                 } else if (strcmp(key, "tags") == 0) {
-                    rule->tags = atoi(val);
+                    rule->tags = 1 << (atoi(val) - 1);
                 } else if (strcmp(key, "monitor") == 0) {
                     rule->monitor = atoi(val);
                 } else if (strcmp(key, "width") == 0) {
