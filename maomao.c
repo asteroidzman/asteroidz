@@ -123,11 +123,11 @@ enum {
 #endif
 enum { UP, DOWN, LEFT, RIGHT, UNDIR }; /* movewin */
 
-typedef union {
+typedef struct {
   int i;
-  unsigned int ui;
   float f;
-  const void *v;
+  char *v;
+  unsigned int ui;
 } Arg;
 
 typedef struct {
@@ -4138,7 +4138,7 @@ void // 17
 setlayout(const Arg *arg) {
   if (!selmon)
     return;
-  if (!arg || !arg->v || arg->v != selmon->lt[selmon->sellt])
+  if (!arg || !arg->v || strcmp(arg->v, selmon->lt[selmon->sellt]->name))
     selmon->sellt ^= 1;
   if (arg && arg->v) {
     selmon->lt[selmon->sellt] = (Layout *)arg->v;
@@ -4354,17 +4354,27 @@ void free_config(void) {
     free(config.monitor_rules);
 
     for ( i = 0; i < config.key_bindings_count; i++) {
-        if (config.key_bindings[i].arg.v) free((void *)config.key_bindings[i].arg.v);
+        if (config.key_bindings[i].arg.v) {
+          logtofile(config.key_bindings[i].arg.v);
+          free((void *)config.key_bindings[i].arg.v);
+          config.key_bindings[i].arg.v = NULL;  // 避免重复释放
+        } 
     }
     free(config.key_bindings);
 
     for ( i = 0; i < config.mouse_bindings_count; i++) {
-        if (config.mouse_bindings[i].arg.v) free((void *)config.mouse_bindings[i].arg.v);
+        if (config.mouse_bindings[i].arg.v) {
+          free((void *)config.mouse_bindings[i].arg.v);
+          config.mouse_bindings[i].arg.v = NULL;  // 避免重复释放
+        } 
     }
     free(config.mouse_bindings);
 
     for (i = 0; i < config.axis_bindings_count; i++) {
-        if (config.axis_bindings[i].arg.v) free((void *)config.axis_bindings[i].arg.v);
+        if (config.axis_bindings[i].arg.v) {
+          free((void *)config.axis_bindings[i].arg.v);
+          config.axis_bindings[i].arg.v = NULL;  // 避免重复释放
+        } 
     }
     free(config.axis_bindings);
 
