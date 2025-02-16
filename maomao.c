@@ -1122,7 +1122,6 @@ applyrulesgeom(Client *c) {
       c->geom.width = r->width > 0 ? r->width : c->geom.width;
       c->geom.height = r->height > 0 ? r->height : c->geom.height;
       // 重新计算居中的坐标
-      lognumtofile(r->width);
       c->geom = setclient_coordinate_center(c->geom);
       hit = 1;
     }
@@ -1150,8 +1149,6 @@ applyrules(Client *c) {
 
     if ( (r->title && strstr(title, r->title)) || (r->id && strstr(appid, r->id))) {
       c->isfloating = r->isfloating > 0 ? r->isfloating : c->isfloating;
-      logtofile("isfloating");
-      lognumtofile(c->isfloating);
       c->animation_type = r->animation_type == NULL ? c->animation_type : r->animation_type;  
       c->scroller_proportion = r->scroller_proportion > 0 ? r->scroller_proportion : scroller_default_proportion;
       c->isnoborder = r->isnoborder > 0 ? r->isnoborder : c->isnoborder;
@@ -1163,9 +1160,6 @@ applyrules(Client *c) {
         c->geom.width = r->width > 0 ? r->width : c->geom.width;
         c->geom.height = r->height > 0 ? r->height : c->geom.height;
         // 重新计算居中的坐标
-        logtofile("width");
-        lognumtofile(c->geom.width);
-        lognumtofile(c->geom.height);
         c->geom = setclient_coordinate_center(c->geom);
       }
       if (r->isfullscreen && r->isfullscreen > 0) {
