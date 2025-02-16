@@ -4137,32 +4137,37 @@ void setgaps(int oh, int ov, int ih, int iv) {
 
 void // 17
 setlayout(const Arg *arg) {
-  if (!selmon)
-    return;
-  if (!arg || !arg->v || strcmp(arg->v, selmon->lt[selmon->sellt]->name))
-    selmon->sellt ^= 1;
-  if (arg && arg->v) {
-    selmon->lt[selmon->sellt] = (Layout *)arg->v;
-    selmon->pertag->sellts[selmon->pertag->curtag] = selmon->sellt;
-    selmon->pertag->ltidxs[selmon->pertag->curtag][selmon->sellt] =
-        selmon->lt[selmon->sellt];
-  }
-  strncpy(selmon->ltsymbol, selmon->lt[selmon->sellt]->symbol,
-          LENGTH(selmon->ltsymbol));
-  arrange(selmon, false);
-  printstatus();
+  int jk;
+   for (jk = 0; jk < LENGTH(layouts); jk++) {
+      if(strcmp(layouts[jk].name , arg->v) == 0) {
+        selmon->lt[selmon->sellt] = &layouts[jk];
+        selmon->pertag->sellts[selmon->pertag->curtag] = selmon->sellt;
+        selmon->pertag->ltidxs[selmon->pertag->curtag][selmon->sellt] =
+            selmon->lt[selmon->sellt];
+    
+        strncpy(selmon->ltsymbol, selmon->lt[selmon->sellt]->symbol,
+                LENGTH(selmon->ltsymbol));
+        arrange(selmon, false);
+        printstatus();
+        return;
+      }
+    }
 }
 
 void switch_layout(const Arg *arg) {
-  if (!selmon)
-    return;
 
-  selmon->sellt ^= 1;
-  selmon->pertag->sellts[selmon->pertag->curtag] = selmon->sellt;
+  int jk;
+   for (jk = 0; jk < LENGTH(layouts); jk++) {
+      if(strcmp(layouts[jk].name , selmon->lt[selmon->sellt]->name)) {
+        selmon->lt[selmon->sellt] = &layouts[jk];
+        selmon->pertag->sellts[selmon->pertag->curtag] = selmon->sellt;
+        arrange(selmon, false);
+        printstatus();
+        return;
+      }
+   }
 
-  /* TODO change layout symbol? */
-  arrange(selmon, false);
-  printstatus();
+
 }
 
 /* arg > 1.0 will set mfact absolutely */
