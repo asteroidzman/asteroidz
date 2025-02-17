@@ -4894,8 +4894,9 @@ void fibonacci(Monitor *mon, int s) {
 				nw = mon->w.width - gappoh - nw;
 			i++;
 		}
+    
 		resize(c, (struct wlr_box){.x = nx, .y = ny,
-			.width = nw - 2 * c->bw, .height = nh - 2 * c->bw}, 0);
+			.width = nw - gappih, .height = nh - gappiv}, 0);
 	}
 }
 
