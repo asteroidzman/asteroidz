@@ -3641,6 +3641,14 @@ rendermon(struct wl_listener *listener, void *data) {
   struct timespec now;
   bool need_more_frames = false;
 
+  wl_list_for_each(c, &clients, link) {
+    need_more_frames = client_draw_frame(c);
+  }
+
+  if (need_more_frames) {
+    wlr_output_schedule_frame(m->wlr_output);
+  }
+
   /* Render if no XDG clients have an outstanding resize and are visible on
    * this monitor. */
   wl_list_for_each(c, &clients, link) {
@@ -3678,14 +3686,6 @@ rendermon(struct wl_listener *listener, void *data) {
   }
 
 skip:
-
-  wl_list_for_each(c, &clients, link) {
-    need_more_frames = client_draw_frame(c);
-  }
-
-  if (need_more_frames) {
-    wlr_output_schedule_frame(m->wlr_output);
-  }
 
   struct wlr_scene_output *scene_output =
   wlr_scene_get_scene_output(scene, m->wlr_output);
