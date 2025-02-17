@@ -1121,6 +1121,8 @@ applyrulesgeom(Client *c) {
     title = broken;
 
   for (ji = 0; ji < config.window_rules_count; ji++) {
+    if(config.window_rules_count < 1)
+      break;
     r = &config.window_rules[ji];
     if ( (r->title && strstr(title, r->title)) || (r->id && strstr(appid, r->id))) {
       c->geom.width = r->width > 0 ? r->width : c->geom.width;
@@ -1149,6 +1151,8 @@ applyrules(Client *c) {
     title = broken;
 
   for (ji = 0; ji < config.window_rules_count; ji++) {
+    if(config.window_rules_count < 1)
+      break;
     r = &config.window_rules[ji];
 
     if ( (r->title && strstr(title, r->title)) || (r->id && strstr(appid, r->id))) {
@@ -1549,6 +1553,8 @@ axisnotify(struct wl_listener *listener, void *data) {
     adir = event->delta > 0 ? AxisRight : AxisLeft;
 
   for (ji = 0; ji < config.axis_bindings_count; ji++) {
+    if(config.axis_bindings_count < 1)
+      break;
     a = &config.axis_bindings[ji];
     if (CLEANMASK(mods) == CLEANMASK(a->mod) && // 按键一致
         adir == a->dir && a->func) { // 滚轮方向判断一致且处理函数存在
@@ -1602,6 +1608,8 @@ buttonpress(struct wl_listener *listener, void *data) {
     keyboard = wlr_seat_get_keyboard(seat);
     mods = keyboard ? wlr_keyboard_get_modifiers(keyboard) : 0;
     for (ji = 0; ji < config.mouse_bindings_count; ji++) {
+      if(config.mouse_bindings_count < 1)
+        break;
       b = &config.mouse_bindings[ji];
       if (CLEANMASK(mods) == CLEANMASK(b->mod) && event->button == b->button &&
           b->func && (selmon->isoverview == 1 || b->button == BTN_MIDDLE) &&
@@ -2025,6 +2033,9 @@ createmon(struct wl_listener *listener, void *data) {
   m->lt = &layouts[0];
   
   for (ji = 0; ji < config.monitor_rules_count; ji++) {
+    if (config.monitor_rules_count < 1)
+      break;
+
     r = &config.monitor_rules[ji];
     if (!r->name || strstr(wlr_output->name, r->name)) {
       m->mfact = r->mfact;
@@ -2892,9 +2903,11 @@ keybinding(uint32_t mods, xkb_keysym_t sym) {
    */
   int handled = 0;
   const KeyBinding *k;
-  int i;
-  for (i =0; i < config.key_bindings_count; i++) {
-    k = &config.key_bindings[i];
+  int ji;
+  for (ji =0; ji < config.key_bindings_count; ji++) {
+    if(config.key_bindings_count < 1)
+      break;
+    k = &config.key_bindings[ji];
     if (CLEANMASK(mods) == CLEANMASK(k->mod) && sym == k->keysym && k->func) {
       k->func(&k->arg);
       handled = 1;
