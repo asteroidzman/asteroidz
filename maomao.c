@@ -227,7 +227,7 @@ typedef struct {
   bool is_open_animation;
   bool is_restoring_from_ov;
   float scroller_proportion;
-
+  bool need_set_position;
   struct dwl_animation animation;
 
 } Client;
@@ -874,19 +874,22 @@ void client_apply_clip(Client *c) {
 bool client_draw_frame(Client *c) {
   if (!c || !client_surface(c)->mapped)
     return false;
-  // if (!VISIBLEON(c, c->mon))
-  // 	return false;
+
+  if (!c->need_set_position)
+    return false;
+
   bool need_more_frames = false;
   if (c->animation.running) {
     if (client_animation_next_tick(c)) {
       need_more_frames = true;
     }
+    client_apply_clip(c);
   } else {
     wlr_scene_node_set_position(&c->scene->node, c->pending.x, c->pending.y);
     apply_border(c, c->pending, 0);
+    client_apply_clip(c);
+    c->need_set_position = false;
   }
-
-  client_apply_clip(c);
 
   return need_more_frames;
 }
@@ -1873,6 +1876,10 @@ void commitnotify(struct wl_listener *listener, void *data) {
     return;
   // if don't do this, some client may resize uncompleted
   resize(c, c->geom, (c->isfloating && !c->isfullscreen));
+
+	if (c->configure_serial && c->configure_serial <= c->surface.xdg->current.configure_serial)
+		c->configure_serial = 0;
+
 }
 
 void // 0.5
@@ -3636,21 +3643,12 @@ rendermon(struct wl_listener *listener, void *data) {
 
   /* Render if no XDG clients have an outstanding resize and are visible on
    * this monitor. */
-  // wl_list_for_each(c, &clients, link) {
-  // 	if (c->resize && !c->isfloating && client_is_rendered_on_mon(c, m) &&
-  // !client_is_stopped(c)) 		goto skip;
-  // }
-
   wl_list_for_each(c, &clients, link) {
-    // if (client_is_rendered_on_mon(c, m) && !client_is_stopped(c))
-    need_more_frames = client_draw_frame(c);
-    // the opacity is usabel, but don't enable temporarily
-    // client_handle_opacity(c);
+  	if (c->configure_serial && !c->isfloating && client_is_rendered_on_mon(c, m) &&
+  !client_is_stopped(c)) 		
+    goto skip;
   }
 
-  if (need_more_frames) {
-    wlr_output_schedule_frame(m->wlr_output);
-  }
 
   /*
    * HACK: The "correct" way to set the gamma is to commit it together with
@@ -3679,19 +3677,21 @@ rendermon(struct wl_listener *listener, void *data) {
     wlr_scene_output_commit(m->scene_output, NULL);
   }
 
-  // skip:
-  // 	/* Let clients know a frame has been rendered */
-  // 	clock_gettime(CLOCK_MONOTONIC, &now);
-  // 	wlr_scene_output_send_frame_done(m->scene_output, &now);
-  // wlr_output_state_finish(&pending);
-  struct wlr_scene_output *scene_output =
-      wlr_scene_get_scene_output(scene, m->wlr_output);
+skip:
 
+  wl_list_for_each(c, &clients, link) {
+    need_more_frames = client_draw_frame(c);
+  }
+
+  if (need_more_frames) {
+    wlr_output_schedule_frame(m->wlr_output);
+  }
+
+  struct wlr_scene_output *scene_output =
+  wlr_scene_get_scene_output(scene, m->wlr_output);
   wlr_scene_output_commit(scene_output, NULL);
 
-  //   struct timespec now;
   clock_gettime(CLOCK_MONOTONIC, &now);
-
   wlr_scene_output_send_frame_done(scene_output, &now);
   wlr_output_state_finish(&pending);
 }
@@ -3905,6 +3905,8 @@ void resize(Client *c, struct wlr_box geo, int interact) {
 
   if (!c->mon)
     return;
+
+  c->need_set_position = true;
   // oldgeom = c->geom;
   bbox = interact ? &sgeom : &c->mon->w;
 
@@ -3953,7 +3955,7 @@ void resize(Client *c, struct wlr_box geo, int interact) {
   }
 
   // c->geom 是真实的窗口大小和位置，跟过度的动画无关，用于计算布局
-  c->resize =
+  c->configure_serial =
       client_set_size(c, c->geom.width - 2 * c->bw, c->geom.height - 2 * c->bw);
 
   // 如果不是工作区切换时划出去的窗口，就让动画的结束位置，就是上面的真实位置和大小
