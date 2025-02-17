@@ -485,7 +485,8 @@ static void tile(Monitor *m, unsigned int gappo, unsigned int uappi);
 static void overview(Monitor *m, unsigned int gappo, unsigned int gappi);
 static void grid(Monitor *m, unsigned int gappo, unsigned int uappi);
 static void scroller(Monitor *m, unsigned int gappo, unsigned int uappi);
-
+static void dwindle(Monitor *mon, unsigned int gappo, unsigned int gappi);
+static void spiral(Monitor *mon, unsigned int gappo, unsigned int gappi);
 static void unlocksession(struct wl_listener *listener, void *data);
 static void unmaplayersurfacenotify(struct wl_listener *listener, void *data);
 static void unmapnotify(struct wl_listener *listener, void *data);
@@ -3245,7 +3246,7 @@ monocle(Monitor *m,unsigned int gappo, unsigned int gappi) {
   int n = 0;
 
   wl_list_for_each(c, &clients, link) {
-    if (!VISIBLEON(c, m) || c->isfloating || c->isfullscreen)
+    if (!VISIBLEON(c, m) || c->isfloating || c->isfullscreen || c->ismaxmizescreen || c->iskilling || c->animation.tagouting)
       continue;
     resize(c, m->w, 0);
     n++;
@@ -4831,6 +4832,77 @@ void tagmon(const Arg *arg) {
 
 void overview(Monitor *m, unsigned int gappo, unsigned int gappi) {
   grid(m, overviewgappo, overviewgappi);
+}
+
+
+void fibonacci(Monitor *mon, int s) {
+	unsigned int i=0, n=0, nx, ny, nw, nh;
+	Client *c;
+
+	wl_list_for_each(c, &clients, link)
+		if (VISIBLEON(c, mon) && !c->isfloating)
+			n++;
+	if(n == 0)
+		return;
+
+	nx = mon->w.x;
+	ny = 0;
+	nw = mon->w.width;
+	nh = mon->w.height;
+
+	wl_list_for_each(c, &clients, link)
+		if (VISIBLEON(c, mon) && !c->isfloating){
+		if((i % 2 && nh / 2 > 2 * c->bw)
+		   || (!(i % 2) && nw / 2 > 2 * c->bw)) {
+			if(i < n - 1) {
+				if(i % 2)
+					nh /= 2;
+				else
+					nw /= 2;
+				if((i % 4) == 2 && !s)
+					nx += nw;
+				else if((i % 4) == 3 && !s)
+					ny += nh;
+			}
+			if((i % 4) == 0) {
+				if(s)
+					ny += nh;
+				else
+					ny -= nh;
+			}
+			else if((i % 4) == 1)
+				nx += nw;
+			else if((i % 4) == 2)
+				ny += nh;
+			else if((i % 4) == 3) {
+				if(s)
+					nx += nw;
+				else
+					nx -= nw;
+			}
+			if(i == 0)
+			{
+				if(n != 1)
+					nw = mon->w.width * mon->mfact;
+				ny = mon->w.y;
+			}
+			else if(i == 1)
+				nw = mon->w.width - nw;
+			i++;
+		}
+		resize(c, (struct wlr_box){.x = nx, .y = ny,
+			.width = nw - 2 * c->bw, .height = nh - 2 * c->bw}, 0);
+	}
+}
+
+void
+dwindle(Monitor *mon,unsigned int gappo, unsigned int gappi) {
+	fibonacci(mon, 1);
+}
+
+void
+spiral(Monitor *mon, unsigned int gappo, unsigned int gappi) {
+	fibonacci(mon, 0);
 }
 
 // 网格布局窗口大小和位置计算
