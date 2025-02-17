@@ -2072,13 +2072,13 @@ createmon(struct wl_listener *listener, void *data) {
   m->pertag = calloc(1, sizeof(Pertag));
   m->pertag->curtag = m->pertag->prevtag = 1;
 
-  for (i = 1; i <= LENGTH(tags); i++) {
+  for (i = 0; i <= LENGTH(tags); i++) {
     m->pertag->nmasters[i] = m->nmaster;
     m->pertag->mfacts[i] = m->mfact;
 
     m->pertag->ltidxs[i] = m->lt;
 
-    if(strlen(config.tags[i-1].layout_name) > 0) {
+    if(i > 0 && strlen(config.tags[i-1].layout_name) > 0) {
       for (jk = 0; jk < LENGTH(layouts); jk++) {
         if(strcmp(layouts[jk].name , config.tags[i-1].layout_name) == 0) {
           m->pertag->ltidxs[i] = &layouts[jk];
