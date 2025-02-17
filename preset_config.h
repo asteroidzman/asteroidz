@@ -69,6 +69,8 @@ Layout layouts[] = { //最少两个,不能删除少于两个
 	/* symbol     arrange function   name */
 	{ "⬌",      scroller, "scroller" },	//滚动布局
 	{ "󱞬",      tile, "tile" },	//堆栈布局
+	{"󰃇", grid, "grid"},
+	{"M",monocle,"monocle"},
 };
 
 

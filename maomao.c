@@ -444,7 +444,7 @@ static void maplayersurfacenotify(struct wl_listener *listener, void *data);
 static void mapnotify(struct wl_listener *listener, void *data);
 static void maximizenotify(struct wl_listener *listener, void *data);
 static void minimizenotify(struct wl_listener *listener, void *data);
-static void monocle(Monitor *m);
+static void monocle(Monitor *m,unsigned int gappo, unsigned int gappi);
 static void motionabsolute(struct wl_listener *listener, void *data);
 static void motionnotify(uint32_t time, struct wlr_input_device *device,
                          double sx, double sy, double sx_unaccel,
@@ -3227,7 +3227,7 @@ minimizenotify(struct wl_listener *listener, void *data) {
 }
 
 void // 17
-monocle(Monitor *m) {
+monocle(Monitor *m,unsigned int gappo, unsigned int gappi) {
   Client *c;
   int n = 0;
 
