@@ -4845,10 +4845,10 @@ void fibonacci(Monitor *mon, int s) {
 	if(n == 0)
 		return;
 
-	nx = mon->w.x;
-	ny = 0;
-	nw = mon->w.width;
-	nh = mon->w.height;
+	nx = mon->w.x + gappoh;
+	ny = mon->w.y + gappov;
+	nw = mon->w.width - gappoh;
+	nh = mon->w.height - gappov;
 
 	wl_list_for_each(c, &clients, link)
 		if (VISIBLEON(c, mon) && !c->isfloating){
@@ -4883,11 +4883,11 @@ void fibonacci(Monitor *mon, int s) {
 			if(i == 0)
 			{
 				if(n != 1)
-					nw = mon->w.width * mon->mfact;
-				ny = mon->w.y;
+					nw = (mon->w.width - gappoh) * mon->mfact;
+				ny = mon->w.y + gappov;
 			}
 			else if(i == 1)
-				nw = mon->w.width - nw;
+				nw = mon->w.width - gappoh - nw;
 			i++;
 		}
 		resize(c, (struct wlr_box){.x = nx, .y = ny,
