@@ -100,7 +100,7 @@ typedef struct {
 
     struct {
         int id;
-        char name[256];
+        char layout_name[256];
     } tags[9];
 
     ConfigWinRule *window_rules;
@@ -494,11 +494,11 @@ void parse_config_line(Config *config, const char *line) {
         }
     } else if (strcmp(key, "tags") == 0) {
         int id;
-        char name[256];
-        if (sscanf(value, "id:%d,name:%255[^\n]", &id, name) == 2) {
+        char layout_name[256];
+        if (sscanf(value, "id:%d,layout_name:%255[^\n]", &id, layout_name) == 2) {
             if (id >= 1 && id <= 9) {
                 config->tags[id - 1].id = id;
-                strncpy(config->tags[id - 1].name, name, sizeof(config->tags[id - 1].name));
+                strncpy(config->tags[id - 1].layout_name, layout_name, sizeof(config->tags[id - 1].layout_name));
             } else {
                 fprintf(stderr, "Error: Invalid tag id: %d\n", id);
             }

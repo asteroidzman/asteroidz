@@ -1201,7 +1201,6 @@ arrange(Monitor *m, bool want_animation) {
 
   if (!m->wlr_output->enabled)
     return;
-
  
   wl_list_for_each(c, &clients, link) {
     if (c->iskilling)
@@ -2073,11 +2072,20 @@ createmon(struct wl_listener *listener, void *data) {
   m->pertag = calloc(1, sizeof(Pertag));
   m->pertag->curtag = m->pertag->prevtag = 1;
 
-  for (i = 0; i <= LENGTH(tags); i++) {
+  for (i = 1; i <= LENGTH(tags); i++) {
     m->pertag->nmasters[i] = m->nmaster;
     m->pertag->mfacts[i] = m->mfact;
 
     m->pertag->ltidxs[i] = m->lt;
+
+    if(strlen(config.tags[i-1].layout_name) > 0) {
+      for (jk = 0; jk < LENGTH(layouts); jk++) {
+        if(strcmp(layouts[jk].name , config.tags[i-1].layout_name) == 0) {
+          m->pertag->ltidxs[i] = &layouts[jk];
+        }
+      }      
+    }
+
   }
 
   printstatus();
@@ -5556,7 +5564,6 @@ void view(const Arg *arg, bool want_animation) {
   if (!selmon || (arg->ui != ~0 && selmon->isoverview)) {
     return;
   }
-
   if ((selmon->tagset[selmon->seltags] & arg->ui & TAGMASK) != 0) {
     want_animation = false;
   }
