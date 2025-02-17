@@ -4887,7 +4887,7 @@ void fibonacci(Monitor *mon, int s) {
 			if(i == 0)
 			{
 				if(n != 1)
-					nw = (mon->w.width - gappoh) * mon->mfact;
+					nw = (mon->w.width - gappoh) * mon->pertag->mfacts[mon->pertag->curtag];
 				ny = mon->w.y + gappov;
 			}
 			else if(i == 1)
