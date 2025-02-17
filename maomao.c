@@ -4840,7 +4840,9 @@ void fibonacci(Monitor *mon, int s) {
 	Client *c;
 
 	wl_list_for_each(c, &clients, link)
-		if (VISIBLEON(c, mon) && !c->isfloating)
+		if (VISIBLEON(c, mon) && !c->isfloating && !c->iskilling
+      && !c->isfullscreen && !c->ismaxmizescreen
+      && !c->animation.tagouting)
 			n++;
 	if(n == 0)
 		return;
@@ -4851,7 +4853,9 @@ void fibonacci(Monitor *mon, int s) {
 	nh = mon->w.height - gappov;
 
 	wl_list_for_each(c, &clients, link)
-		if (VISIBLEON(c, mon) && !c->isfloating){
+		if (VISIBLEON(c, mon) && !c->isfloating && !c->iskilling
+      && !c->isfullscreen && !c->ismaxmizescreen
+      && !c->animation.tagouting) {
 		if((i % 2 && nh / 2 > 2 * c->bw)
 		   || (!(i % 2) && nw / 2 > 2 * c->bw)) {
 			if(i < n - 1) {
