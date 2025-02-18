@@ -544,6 +544,7 @@ void incohgaps(const Arg *arg);
 void incovgaps(const Arg *arg);
 void incigaps(const Arg *arg);
 void defaultgaps(const Arg *arg);
+void buffer_set_size(Client *c, struct wlr_box box);
 
 #include "dispatch.h"
 
@@ -773,13 +774,9 @@ bool client_animation_next_tick(Client *c) {
 }
 
 void client_actual_size(Client *c, uint32_t *width, uint32_t *height) {
-  *width = c->animation.running
-               ? MIN(c->animation.current.width, c->current.width)
-               : c->current.width;
+  *width = c->animation.current.width;
 
-  *height = c->animation.running
-                ? MIN(c->animation.current.height, c->current.height)
-                : c->current.height;
+  *height = c->animation.current.height;
 }
 
 void apply_border(Client *c, struct wlr_box clip_box, int offset) {
@@ -865,6 +862,7 @@ void client_apply_clip(Client *c) {
     }
   }
 
+  buffer_set_size(c, clip_box);
   wlr_scene_subsurface_tree_set_clip(&c->scene_surface->node, &clip_box);
   apply_border(c, clip_box, offset);
 }
@@ -3609,6 +3607,16 @@ void quitsignal(int signo) { quit(NULL); }
 void scene_buffer_apply_opacity(struct wlr_scene_buffer *buffer, int sx, int sy,
                                 void *data) {
   wlr_scene_buffer_set_opacity(buffer, *(double *)data);
+}
+
+void scene_buffer_apply_size(struct wlr_scene_buffer *buffer, int sx, int sy, void *data) {
+  struct wlr_box *box = (struct wlr_box *)data;
+  wlr_scene_buffer_set_dest_size(buffer, box->width, box->height);
+}
+
+void buffer_set_size(Client *c, struct wlr_box box) {
+  wlr_scene_node_for_each_buffer(&c->scene_surface->node,
+    scene_buffer_apply_size, &box);
 }
 
 void client_set_opacity(Client *c, double opacity) {
