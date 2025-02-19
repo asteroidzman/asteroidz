@@ -787,6 +787,9 @@ void client_actual_size(Client *c, uint32_t *width, uint32_t *height) {
 
 void apply_border(Client *c, struct wlr_box clip_box, int offset) {
 
+  if(c->iskilling || !client_surface(c)->mapped)
+    return;
+
   wlr_scene_node_set_position(&c->scene_surface->node, c->bw, c->bw);
   wlr_scene_rect_set_size(c->border[0], clip_box.width, c->bw);
   wlr_scene_rect_set_size(c->border[1], clip_box.width, c->bw);
@@ -835,6 +838,10 @@ void apply_border(Client *c, struct wlr_box clip_box, int offset) {
 }
 
 void client_apply_clip(Client *c) {
+
+  if(c->iskilling || !client_surface(c)->mapped)
+    return;
+
   uint32_t width, height;
   client_actual_size(c, &width, &height);
   int offset = 0;
