@@ -869,8 +869,8 @@ void client_apply_clip(Client *c) {
   }
 
   animationScale scale_data;
-  scale_data.width = clip_box.width;
-  scale_data.height = clip_box.height;
+  scale_data.width = clip_box.width - 2*c->bw;
+  scale_data.height = clip_box.height -2*c->bw;
 
   if(c->animation.running) {
     scale_data.scale = (float)clip_box.width/c->geom.width;
@@ -3633,15 +3633,12 @@ void scene_buffer_apply_size(struct wlr_scene_buffer *buffer, int sx, int sy, vo
   } else {
     wlr_scene_buffer_set_dest_size(buffer, scale_data->width, scale_data->height);
   }
-  // else {
-  //   wlr_scene_buffer_set_dest_size(buffer, buffer->dst_width * *scale_factor, buffer->dst_height * *scale_factor);
-  // }
-    // return;
-  // wlr_scene_buffer_set_dest_size(buffer, -1, -1);
-  // lognumtofile(buffer->dst_width **scale_factor);
 }
 
 void buffer_set_size(Client *c, animationScale data) {
+  if(c->iskilling|| c->animation.tagouting || c->animation.tagining || c->animation.tagouted) {
+    return;
+  }
   wlr_scene_node_for_each_buffer(&c->scene_surface->node,
     scene_buffer_apply_size, &data);
 }
