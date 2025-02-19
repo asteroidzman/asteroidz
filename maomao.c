@@ -3674,11 +3674,9 @@ void rendermon(struct wl_listener *listener, void *data) {
   Monitor *m = wl_container_of(listener, m, frame);
   Client *c;
   struct wlr_output_state pending = {0};
-  struct wlr_gamma_control_v1 *gamma_control = NULL;
+
   struct timespec now;
   bool need_more_frames = false;
-  bool has_commit = false;
-  bool is_commit_pending = false;
 
   // Draw frames for all clients
   wl_list_for_each(c, &clients, link) {
@@ -3689,50 +3687,13 @@ void rendermon(struct wl_listener *listener, void *data) {
     wlr_output_schedule_frame(m->wlr_output);
   }
 
-  // Check if we should skip rendering
-  wl_list_for_each(c, &clients, link) {
-    if (c->configure_serial && !c->isfloating && client_is_rendered_on_mon(c, m) &&
-        !client_is_stopped(c)) {
-      goto skip;
-    }
-  }
-
-  // Handle Gamma LUT changes
-  if (m->gamma_lut_changed) {
-    gamma_control = wlr_gamma_control_manager_v1_get_control(gamma_control_mgr, m->wlr_output);
-    m->gamma_lut_changed = 0;
-
-    if (!wlr_gamma_control_v1_apply(gamma_control, &pending)) {
-      goto commit;
-    }
-
-    if (!wlr_output_test_state(m->wlr_output, &pending)) {
-      wlr_gamma_control_v1_send_failed_and_destroy(gamma_control);
-      goto commit;
-    }
-
-    wlr_output_commit_state(m->wlr_output, &pending);
-    wlr_output_schedule_frame(m->wlr_output);
-    is_commit_pending = true;
-    has_commit = true; // Gamma commit succeeded
-  }
-
-commit:
-  if (!has_commit) {
-    wlr_scene_output_commit(m->scene_output, NULL);
-    has_commit = true;
-  }
-
-skip:
-  if (!has_commit && !is_commit_pending) {
-    wlr_scene_output_commit(m->scene_output, NULL);
-  }
+  wlr_scene_output_commit(m->scene_output, NULL);
 
   // Send frame done notification
   clock_gettime(CLOCK_MONOTONIC, &now);
   wlr_scene_output_send_frame_done(m->scene_output, &now);
 
-  // Clean up pending state
+  // // Clean up pending state
   wlr_output_state_finish(&pending);
 }
 
