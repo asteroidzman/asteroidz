@@ -131,6 +131,12 @@ typedef struct {
 } Arg;
 
 typedef struct {
+  float scale;
+  int width;
+  int height;
+} animationScale;
+
+typedef struct {
   unsigned int mod;
   unsigned int button;
   void (*func)(const Arg *);
@@ -354,7 +360,7 @@ typedef struct {
 
 /* function declarations */
 static void logtofile(const char *fmt, ...); // 日志函数
-static void lognumtofile(unsigned int num);  // 日志函数
+static void lognumtofile(float num);  // 日志函数
 static void applybounds(
     Client *c,
     struct wlr_box *bbox); // 设置边界规则,能让一些窗口拥有比较适合的大小
@@ -544,7 +550,7 @@ void incohgaps(const Arg *arg);
 void incovgaps(const Arg *arg);
 void incigaps(const Arg *arg);
 void defaultgaps(const Arg *arg);
-void buffer_set_size(Client *c, struct wlr_box box);
+void buffer_set_size(Client *c, animationScale scale_data);
 
 #include "dispatch.h"
 
@@ -765,7 +771,7 @@ bool client_animation_next_tick(Client *c) {
     if (surface && pointer_c == selmon->sel) {
       wlr_seat_pointer_notify_enter(seat, surface, sx, sy);
     }
-
+    c->need_set_position = false;
     return false;
   } else {
     c->animation.passed_frames++;
@@ -862,7 +868,17 @@ void client_apply_clip(Client *c) {
     }
   }
 
-  buffer_set_size(c, clip_box);
+  animationScale scale_data;
+  scale_data.width = clip_box.width - 2*c->bw;
+  scale_data.height = clip_box.height -2*c->bw;
+
+  if(c->animation.running) {
+    scale_data.scale = (float)clip_box.width/c->geom.width;
+    buffer_set_size(c, scale_data);
+  } else {
+    scale_data.scale = 1.0;
+    buffer_set_size(c, scale_data);
+  }
   wlr_scene_subsurface_tree_set_clip(&c->scene_surface->node, &clip_box);
   apply_border(c, clip_box, offset);
 }
@@ -1102,9 +1118,9 @@ void logtofile(const char *fmt, ...) {
 }
 
 /* function implementations */
-void lognumtofile(unsigned int num) {
+void lognumtofile(float num) {
   char cmd[256];
-  sprintf(cmd, "echo '%d' >> ~/log", num);
+  sprintf(cmd, "echo '%f' >> ~/log", num);
   system(cmd);
 }
 
@@ -3610,13 +3626,21 @@ void scene_buffer_apply_opacity(struct wlr_scene_buffer *buffer, int sx, int sy,
 }
 
 void scene_buffer_apply_size(struct wlr_scene_buffer *buffer, int sx, int sy, void *data) {
-  struct wlr_box *box = (struct wlr_box *)data;
-  wlr_scene_buffer_set_dest_size(buffer, box->width, box->height);
+  animationScale *scale_data = (animationScale *)data;
+  struct wlr_scene_surface *surface = wlr_scene_surface_try_from_buffer(buffer);
+  if(wlr_subsurface_try_from_wlr_surface(surface->surface) != NULL) {
+    wlr_scene_buffer_set_dest_size(buffer, buffer->dst_width * scale_data->scale, buffer->dst_height * scale_data->scale);
+  } else {
+    wlr_scene_buffer_set_dest_size(buffer, scale_data->width, scale_data->height);
+  }
 }
 
-void buffer_set_size(Client *c, struct wlr_box box) {
+void buffer_set_size(Client *c, animationScale data) {
+  if(c->iskilling|| c->animation.tagouting || c->animation.tagining || c->animation.tagouted) {
+    return;
+  }
   wlr_scene_node_for_each_buffer(&c->scene_surface->node,
-    scene_buffer_apply_size, &box);
+    scene_buffer_apply_size, &data);
 }
 
 void client_set_opacity(Client *c, double opacity) {
