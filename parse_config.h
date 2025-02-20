@@ -874,6 +874,16 @@ void parse_config(void) {
 }
 
 void reload_config(const Arg *arg) {
+  Client *c;
   free_config();
   parse_config();
+  init_baked_points();
+  wl_list_for_each(c, &clients, link) {
+    if (c&& !c->iskilling) {
+      if (c->bw) {
+        c->bw = borderpx;
+      }
+    }
+  }  
+  arrange(selmon,false);
 }
