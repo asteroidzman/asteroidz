@@ -875,9 +875,10 @@ void client_apply_clip(Client *c) {
   }
 
   animationScale scale_data;
-  scale_data.width = clip_box.width - 2*c->bw;
-  scale_data.height = clip_box.height -2*c->bw;
-
+  scale_data.width = clip_box.width - c->bw;
+  scale_data.height = clip_box.height -c->bw;
+  wlr_scene_subsurface_tree_set_clip(&c->scene_surface->node, &clip_box);
+  apply_border(c, clip_box, offset);
   if(c->animation.running) {
     scale_data.width_scale = (float)clip_box.width/c->current.width;
     scale_data.height_scale = (float)clip_box.height/c->current.height;
@@ -887,8 +888,6 @@ void client_apply_clip(Client *c) {
     scale_data.height_scale = 1.0;
     buffer_set_size(c, scale_data);
   }
-  wlr_scene_subsurface_tree_set_clip(&c->scene_surface->node, &clip_box);
-  apply_border(c, clip_box, offset);
 }
 
 bool client_draw_frame(Client *c) {
