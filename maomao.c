@@ -614,6 +614,7 @@ static Monitor *selmon;
 
 static int enablegaps = 1; /* enables gaps, used by togglegaps */
 static int axis_apply_time = 0;
+static int axis_apply_dir = 0;
 
 /* global event handlers */
 static struct zdwl_ipc_manager_v2_interface dwl_manager_implementation = {
@@ -1597,11 +1598,14 @@ axisnotify(struct wl_listener *listener, void *data) {
     a = &config.axis_bindings[ji];
     if (CLEANMASK(mods) == CLEANMASK(a->mod) && // 按键一致
         adir == a->dir && a->func) { // 滚轮方向判断一致且处理函数存在
-      if (event->time_msec - axis_apply_time > axis_bind_apply_timeout) {
+      if (event->time_msec - axis_apply_time > axis_bind_apply_timeout ||
+        axis_apply_dir * event->delta < 0) {
         a->func(&a->arg);
         axis_apply_time = event->time_msec;
+        axis_apply_dir = event->delta > 0 ? 1 : -1;
         return; // 如果成功匹配就不把这个滚轮事件传送给客户端了
       } else {
+        axis_apply_dir = event->delta > 0 ? 1 : -1;
         axis_apply_time = event->time_msec;
         return;
       }
