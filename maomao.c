@@ -3815,7 +3815,7 @@ int is_special_animaiton_rule(Client *c) {
   Client *count_c;
   wl_list_for_each(count_c, &clients, link) {
     if (count_c && VISIBLEON(count_c, selmon) && !count_c->isminied &&
-        !count_c->iskilling) {
+        !count_c->iskilling && !count_c->isfloating) {
       visible_client_number++;
     }
   }
