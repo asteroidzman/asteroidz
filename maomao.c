@@ -721,6 +721,7 @@ double find_animation_curve_at(double t) {
   return baked_points[up].y;
 }
 
+// 有 bug,只是让上面那根透明了
 void apply_opacity_to_rect_nodes(struct wlr_scene_node *node, double opacity) {
   if (node->type == WLR_SCENE_NODE_RECT) {
     struct wlr_scene_rect *rect = wlr_scene_rect_from_node(node);
@@ -769,7 +770,7 @@ void fadeout_client_animation_next_tick(Client *c) {
   wlr_scene_node_for_each_buffer(&c->snapshot_scene->node,
                                  scene_buffer_apply_opacity, &opacity);
 
-  apply_opacity_to_rect_nodes(&c->snapshot_scene->node, opacity);
+  // apply_opacity_to_rect_nodes(&c->snapshot_scene->node, opacity);
 
   if (animation_passed == 1.0) {
     wl_list_remove(&c->fadeout_link);
