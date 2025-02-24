@@ -726,7 +726,11 @@ void apply_opacity_to_rect_nodes(struct wlr_scene_node *node, double opacity) {
   if (node->type == WLR_SCENE_NODE_RECT) {
     struct wlr_scene_rect *rect = wlr_scene_rect_from_node(node);
     // Assuming the rect has a color field and we can modify it
-    rect->color[3] = opacity; // Set the alpha channel of the color
+    // rect->color[0] = opacity * rect->color[3] * rect->color[0] ; // Set the red channel of the color
+    // rect->color[1] = opacity * rect->color[3] * rect->color[1] ; // Set the green channel of the color
+    // rect->color[2] = opacity * rect->color[3] * rect->color[2] ; // Set the blue channel of the color
+    rect->color[3] = opacity ; // Set the alpha channel of the color
+    wlr_scene_rect_set_color(rect, rect->color);
   }
 
   // If the node is a tree, recursively traverse its children
