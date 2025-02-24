@@ -5597,12 +5597,26 @@ unmaplayersurfacenotify(struct wl_listener *listener, void *data) {
 
 void init_fadeout_client(Client *c) {
 
-  if(!c->mon)
+  if(!c->mon || client_is_unmanaged(c))
     return;
+
+  if(!c->snapshot_scene) {
+    wlr_scene_node_destroy(&c->snapshot_scene->node);
+  }
+  
   Client *fadeout_cient =  ecalloc(1, sizeof(*fadeout_cient));
+
+  wlr_scene_node_set_enabled(&c->scene->node, true);
+  fadeout_cient->snapshot_scene = wlr_scene_tree_snapshot(&c->scene->node, layers[LyrFadeOut]);
+  wlr_scene_node_set_enabled(&c->scene->node, false);
+
+  if(!fadeout_cient->snapshot_scene) {
+    free(fadeout_cient);
+    return;
+  }
+
   fadeout_cient->animation.duration = animation_duration_close;
-  fadeout_cient->animainit_geom = c->animation.initial = c->animation.current;
-  fadeout_cient->current = c->animation.current;
+  fadeout_cient->current = fadeout_cient->animainit_geom = c->animation.initial = c->animation.current;
   fadeout_cient->mon = c->mon;
   // 这里snap节点的坐标设置是使用的相对坐标，所以不能加上原来坐标
   // 这根普通node有区别
@@ -5611,7 +5625,6 @@ void init_fadeout_client(Client *c) {
   fadeout_cient->animation.passed_frames = 0;
   fadeout_cient->animation.total_frames =
   fadeout_cient->animation.duration / output_frame_duration_ms(c);
-  fadeout_cient->snapshot_scene = c->snapshot_scene;
   fadeout_cient->is_fadeout_client =true;
   wlr_scene_node_set_enabled(&fadeout_cient->snapshot_scene->node,true);
   wl_list_insert(&fadeout_clients, &fadeout_cient->fadeout_link);
