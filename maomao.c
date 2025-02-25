@@ -3787,46 +3787,12 @@ pointerfocus(Client *c, struct wlr_surface *surface, double sx, double sy,
 void // 17
 printstatus(void) {
   Monitor *m = NULL;
-  Client *c;
-  uint32_t occ, urg, sel;
-  const char *appid, *title;
-
   wl_list_for_each(m, &mons, link) {
     if (!m->wlr_output->enabled) {
       continue;
     }
-    occ = urg = 0;
-    wl_list_for_each(c, &clients, link) {
-      if (c->mon != m)
-        continue;
-      occ |= c->tags;
-      if (c->isurgent)
-        urg |= c->tags;
-    }
-    if ((c = focustop(m))) {
-      title = client_get_title(c);
-      appid = client_get_appid(c);
-      printf("%s title %s\n", m->wlr_output->name, title ? title : broken);
-      printf("%s appid %s\n", m->wlr_output->name, appid ? appid : broken);
-      printf("%s fullscreen %u\n", m->wlr_output->name, c->isfullscreen);
-      printf("%s floating %u\n", m->wlr_output->name, c->isfloating);
-      sel = c->tags;
-    } else {
-      printf("%s title \n", m->wlr_output->name);
-      printf("%s appid \n", m->wlr_output->name);
-      printf("%s fullscreen \n", m->wlr_output->name);
-      printf("%s floating \n", m->wlr_output->name);
-      sel = 0;
-    }
-
-    printf("%s selmon %u\n", m->wlr_output->name, m == selmon);
-    printf("%s tags %u %u %u %u\n", m->wlr_output->name, occ,
-           m->tagset[m->seltags], sel, urg);
-    printf("%s layout %s\n", m->wlr_output->name,
-           m->pertag->ltidxs[m->pertag->curtag]->symbol);
     dwl_ipc_output_printstatus(m); // 更新waybar上tag的状态 这里很关键
   }
-  fflush(stdout);
 }
 
 void // 0.5
