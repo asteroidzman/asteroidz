@@ -878,8 +878,7 @@ void apply_border(Client *c, struct wlr_box clip_box, int offset) {
   wlr_scene_rect_set_size(c->border[0], clip_box.width, c->bw);
   wlr_scene_rect_set_size(c->border[1], clip_box.width, c->bw);
 
-  if (c->animation.tagining || c->animation.tagouted ||
-      c->animation.tagouting) {
+  if (c->animation.running) {
     if (c->animation.current.x < c->mon->m.x) {
       wlr_scene_rect_set_size(c->border[2], 0, 0);
       wlr_scene_rect_set_size(c->border[3], c->bw, clip_box.height - 2 * c->bw);
@@ -945,8 +944,7 @@ void client_apply_clip(Client *c) {
   }
 
   // make tagout tagin animations not visible in other monitors
-  if (c->animation.tagouting || c->animation.tagining ||
-      c->animation.tagouted) {
+  if (c->animation.running) {
     if (c->animation.current.x <= c->mon->m.x) {
       offset = c->mon->m.x - c->animation.current.x;
       clip_box.x = clip_box.x + offset;
