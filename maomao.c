@@ -12,6 +12,7 @@
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
+#include <wlr/types/wlr_fractional_scale_v1.h>
 #include <wayland-server-core.h>
 #include <wlr/backend.h>
 #include <wlr/backend/libinput.h>
