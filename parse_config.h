@@ -84,6 +84,9 @@ typedef struct {
   float *scroller_proportion_preset;
   int scroller_proportion_preset_count;
 
+  char **circle_layout;
+  int circle_layout_count;
+
   unsigned int new_is_master;
   float default_mfact;
   unsigned int default_nmaster;
@@ -154,6 +157,17 @@ typedef struct {
 
 typedef void (*FuncType)(const Arg *);
 Config config;
+
+// 清理字符串中的不可见字符（包括 \r, \n, 空格等）
+char* sanitize_string(char *str) {
+  // 去除首部不可见字符
+  while (*str != '\0' && !isprint((unsigned char)*str)) str++;
+  // 去除尾部不可见字符
+  char *end = str + strlen(str) - 1;
+  while (end > str && !isprint((unsigned char)*end)) end--;
+  *(end + 1) = '\0';
+  return str;
+}
 
 int parse_circle_direction(const char *str) {
   // 将输入字符串转换为小写
@@ -523,6 +537,64 @@ void parse_config_line(Config *config, const char *line) {
 
     // 5. 释放临时复制的字符串
     free(value_copy);
+ } else if (strcmp(key, "circle_layout") == 0) {
+  // 1. 统计 value 中有多少个逗号，确定需要解析的字符串个数
+  int count = 0; // 初始化为 0
+  for (const char *p = value; *p; p++) {
+      if (*p == ',') count++;
+  }
+  int string_count = count + 1; // 字符串的数量是逗号数量加 1
+
+  // 2. 动态分配内存，存储字符串指针
+  config->circle_layout = (char **)malloc(string_count * sizeof(char *));
+  memset(config->circle_layout, 0, string_count * sizeof(char *));
+  if (!config->circle_layout) {
+      fprintf(stderr, "Error: Memory allocation failed\n");
+      return;
+  }
+
+  // 3. 解析 value 中的字符串
+  char *value_copy = strdup(value); // 复制 value，因为 strtok 会修改原字符串
+  char *token = strtok(value_copy, ",");
+  int i = 0;
+  char *cleaned_token;
+  while (token != NULL && i < string_count) {
+      // 为每个字符串分配内存并复制内容
+      cleaned_token = sanitize_string(token);
+      config->circle_layout[i] = strdup(cleaned_token);
+      if (!config->circle_layout[i]) {
+          fprintf(stderr, "Error: Memory allocation failed for string: %s\n", token);
+          // 释放之前分配的内存
+          for (int j = 0; j < i; j++) {
+              free(config->circle_layout[j]);
+          }
+          free(config->circle_layout);
+          free(value_copy);
+          config->circle_layout = NULL; // 防止野指针
+          config->circle_layout_count = 0;
+          return;
+      }
+      token = strtok(NULL, ",");
+      i++;
+  }
+
+  // 4. 检查解析的字符串数量是否匹配
+  if (i != string_count) {
+      fprintf(stderr, "Error: Invalid circle_layout format: %s\n", value);
+      // 释放之前分配的内存
+      for (int j = 0; j < i; j++) {
+          free(config->circle_layout[j]);
+      }
+      free(config->circle_layout);
+      free(value_copy);
+      config->circle_layout = NULL; // 防止野指针
+      config->circle_layout_count = 0;
+      return;
+  }
+  config->circle_layout_count = string_count;
+
+  // 5. 释放临时复制的字符串
+  free(value_copy);
  } else if (strcmp(key, "new_is_master") == 0) {
     config->new_is_master = atoi(value);
   } else if (strcmp(key, "default_mfact") == 0) {
@@ -875,6 +947,22 @@ void parse_config_file(Config *config, const char *file_path) {
   fclose(file);
 }
 
+void free_circle_layout(Config *config) {
+  if (config->circle_layout) {
+      // 释放每个字符串
+      for (int i = 0; i < config->circle_layout_count; i++) {
+          if (config->circle_layout[i]) {
+              free(config->circle_layout[i]); // 释放单个字符串
+              config->circle_layout[i] = NULL; // 防止野指针
+          }
+      }
+      // 释放 circle_layout 数组本身
+      free(config->circle_layout);
+      config->circle_layout = NULL; // 防止野指针
+  }
+  config->circle_layout_count = 0; // 重置计数
+}
+
 void free_config(void) {
   // 释放内存
   int i;
@@ -925,6 +1013,8 @@ void free_config(void) {
   free(config.scroller_proportion_preset);
   config.scroller_proportion_preset = NULL;
   config.scroller_proportion_preset_count = 0;
+
+  free_circle_layout(&config);
 }
 
 void override_config(void) {

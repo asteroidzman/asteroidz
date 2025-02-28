@@ -4406,7 +4406,38 @@ setlayout(const Arg *arg) {
 
 void switch_layout(const Arg *arg) {
 
-  int jk;
+  int jk,ji;
+  char *target_layout_name=NULL;
+  size_t len;
+
+  if(config.circle_layout_count != 0) {
+    for(jk = 0; jk < config.circle_layout_count; jk++) {
+
+      len = MAX(strlen(config.circle_layout[jk]), strlen(selmon->pertag->ltidxs[selmon->pertag->curtag]->name));
+
+      if(strncmp(config.circle_layout[jk], selmon->pertag->ltidxs[selmon->pertag->curtag]->name,len) == 0) {
+        target_layout_name = jk == config.circle_layout_count - 1 ? config.circle_layout[0] : config.circle_layout[jk + 1];
+        break;
+      }
+    }
+
+    if(!target_layout_name) {
+      target_layout_name = config.circle_layout[0];
+    }
+
+    for (ji = 0; ji < LENGTH(layouts); ji++) {
+      len = MAX(strlen(layouts[ji].name), strlen(target_layout_name));
+      if (strncmp(layouts[ji].name,target_layout_name,len) == 0) {
+        selmon->pertag->ltidxs[selmon->pertag->curtag] =  &layouts[ji];
+        break;
+      }
+    }
+
+    arrange(selmon, false);
+    printstatus();
+    return;
+  }
+
   for (jk = 0; jk < LENGTH(layouts); jk++) {
     if (strcmp(layouts[jk].name,
                selmon->pertag->ltidxs[selmon->pertag->curtag]->name) == 0) {
