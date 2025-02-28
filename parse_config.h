@@ -81,7 +81,8 @@ typedef struct {
   int scroller_structs;
   float scroller_default_proportion;
   int scoller_focus_center;
-  float scroller_proportion_preset[3];
+  float *scroller_proportion_preset;
+  int scroller_proportion_preset_count;
 
   unsigned int new_is_master;
   float default_mfact;
@@ -478,13 +479,51 @@ void parse_config_line(Config *config, const char *line) {
   } else if (strcmp(key, "scoller_focus_center") == 0) {
     config->scoller_focus_center = atoi(value);
   } else if (strcmp(key, "scroller_proportion_preset") == 0) {
-    if (sscanf(value, "%f,%f,%f", &config->scroller_proportion_preset[0],
-               &config->scroller_proportion_preset[1],
-               &config->scroller_proportion_preset[2]) != 3) {
-      fprintf(stderr, "Error: Invalid scroller_proportion_preset format: %s\n",
-              value);
+    // 1. 统计 value 中有多少个逗号，确定需要解析的浮点数个数
+    int count = 0; // 初始化为 0
+    for (const char *p = value; *p; p++) {
+        if (*p == ',') count++;
     }
-  } else if (strcmp(key, "new_is_master") == 0) {
+    int float_count = count + 1; // 浮点数的数量是逗号数量加 1
+
+    // 2. 动态分配内存，存储浮点数
+    config->scroller_proportion_preset = (float *)malloc(float_count * sizeof(float));
+    if (!config->scroller_proportion_preset) {
+        fprintf(stderr, "Error: Memory allocation failed\n");
+        return;
+    }
+
+    // 3. 解析 value 中的浮点数
+    char *value_copy = strdup(value); // 复制 value，因为 strtok 会修改原字符串
+    char *token = strtok(value_copy, ",");
+    int i = 0;
+
+    while (token != NULL && i < float_count) {
+        if (sscanf(token, "%f", &config->scroller_proportion_preset[i]) != 1) {
+            fprintf(stderr, "Error: Invalid float value in scroller_proportion_preset: %s\n", token);
+            free(value_copy);
+            free(config->scroller_proportion_preset); // 释放已分配的内存
+            config->scroller_proportion_preset = NULL; // 防止野指针
+            return;
+        }
+        token = strtok(NULL, ",");
+        i++;
+    }
+
+    // 4. 检查解析的浮点数数量是否匹配
+    if (i != float_count) {
+        fprintf(stderr, "Error: Invalid scroller_proportion_preset format: %s\n", value);
+        free(value_copy);
+        free(config->scroller_proportion_preset); // 释放已分配的内存
+        config->scroller_proportion_preset = NULL; // 防止野指针
+        config->scroller_proportion_preset_count = 0;
+        return;
+    }
+    config->scroller_proportion_preset_count = float_count;
+
+    // 5. 释放临时复制的字符串
+    free(value_copy);
+ } else if (strcmp(key, "new_is_master") == 0) {
     config->new_is_master = atoi(value);
   } else if (strcmp(key, "default_mfact") == 0) {
     config->default_mfact = atof(value);
@@ -882,6 +921,10 @@ void free_config(void) {
     }
   }
   free(config.axis_bindings);
+
+  free(config.scroller_proportion_preset);
+  config.scroller_proportion_preset = NULL;
+  config.scroller_proportion_preset_count = 0;
 }
 
 void override_config(void) {
@@ -898,8 +941,6 @@ void override_config(void) {
 
   // 复制数组类型的变量
   memcpy(animation_curve, config.animation_curve, sizeof(animation_curve));
-  memcpy(scroller_proportion_preset, config.scroller_proportion_preset,
-         sizeof(scroller_proportion_preset));
 
   scroller_structs = config.scroller_structs;
   scroller_default_proportion = config.scroller_default_proportion;

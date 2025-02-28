@@ -5339,26 +5339,26 @@ void overview_restore(Client *c, const Arg *arg) {
 void switch_proportion_preset(const Arg *arg) {
   float target_proportion = 0;
 
-  if (LENGTH(scroller_proportion_preset) == 0) {
+  if (config.scroller_proportion_preset_count == 0) {
     return;
   }
 
   if (selmon->sel) {
 
-    for (int i = 0; i < LENGTH(scroller_proportion_preset); i++) {
-      if (scroller_proportion_preset[i] == selmon->sel->scroller_proportion) {
-        if (i == LENGTH(scroller_proportion_preset) - 1) {
-          target_proportion = scroller_proportion_preset[0];
+    for (int i = 0; i < config.scroller_proportion_preset_count; i++) {
+      if (config.scroller_proportion_preset[i] == selmon->sel->scroller_proportion) {
+        if (i == config.scroller_proportion_preset_count - 1) {
+          target_proportion = config.scroller_proportion_preset[0];
           break;
         } else {
-          target_proportion = scroller_proportion_preset[i + 1];
+          target_proportion = config.scroller_proportion_preset[i + 1];
           break;
         }
       }
     }
 
     if (target_proportion == 0) {
-      target_proportion = scroller_proportion_preset[0];
+      target_proportion = config.scroller_proportion_preset[0];
     }
 
     unsigned int max_client_width =
