@@ -41,6 +41,7 @@ int32_t switch_layout(const Arg *arg);
 int32_t setmfact(const Arg *arg);
 int32_t quit(const Arg *arg);
 int32_t restart(const Arg *arg);
+int32_t screenshot_ui(const Arg *arg);
 int32_t set_sdr_luminance(const Arg *arg);
 int32_t toggle_hdr(const Arg *arg);
 int32_t moveresize(const Arg *arg);

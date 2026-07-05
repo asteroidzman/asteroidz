@@ -1256,6 +1256,9 @@ FuncType parse_func_name(char *func_name, Arg *arg, char *arg_value,
 		func = quit;
 	} else if (strcmp(func_name, "restart") == 0) {
 		func = restart;
+	} else if (strcmp(func_name, "screenshot_ui") == 0) {
+		func = screenshot_ui;
+		(*arg).v = strdup(arg_value && arg_value[0] != '\0' ? arg_value : "region");
 	} else if (strcmp(func_name, "toggle_hdr") == 0) {
 		func = toggle_hdr;
 	} else if (strcmp(func_name, "set_sdr_luminance") == 0) {

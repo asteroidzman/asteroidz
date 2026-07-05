@@ -204,6 +204,13 @@ Suggested scroller binds (not bound by default — uncomment to use):
 | `enable_monitor` | `monitor_spec` | Power on monitor. Accepts a [monitor spec](/docs/configuration/monitors#monitor-spec-format). |
 | `toggle_monitor` | `monitor_spec` | Toggle monitor power. Accepts a [monitor spec](/docs/configuration/monitors#monitor-spec-format). |
 | `chvt` | `1-9` | Change virtual terminal (tty, equivalent to using ctrl+alt+Fkeys) |
+| `screenshot_ui` | `[screen/region/window]` | Compositor-native screenshot UI (defaults to `region`). Freezes the focused output and shows it full-screen while you pick what to capture; saves to `~/Pictures/Screenshots/screenshot_<timestamp>.png` and copies it to the clipboard (requires `wl-copy`). `region` lets you drag a selection rectangle (Escape cancels, release confirms); `window` captures whatever window you click; `screen` captures the whole focused output immediately, with no interaction. |
+
+```ini
+bind=SUPER,S,screenshot_ui,region
+bind=SUPER SHIFT,S,screenshot_ui,window
+bind=SUPER CTRL,S,screenshot_ui,screen
+```
 
 ### Cursor Zoom
 

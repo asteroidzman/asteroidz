@@ -119,7 +119,7 @@ void xytonode(double x, double y, struct wlr_surface **psurface, Client **pc,
 		*gb = NULL;
 
 	for (layer = NUM_LAYERS - 1; layer >= 0; layer--) {
-		if (layer == LyrFadeOut)
+		if (layer == LyrFadeOut || layer == LyrScreenshot)
 			continue;
 
 		node = wlr_scene_node_at(&layers[layer]->node, x, y, nx, ny);

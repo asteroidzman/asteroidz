@@ -2558,3 +2558,467 @@ int32_t focusid(const Arg *arg) {
 	client_active(c);
 	return 0;
 }
+
+/* ------------------------------------------------------------------------ *
+ * screenshot_ui: compositor-native screenshot UI.
+ *
+ * Flow: the dispatcher only arms a capture request (want_capture); rendermon()
+ * fulfills it the next time it actually renders that monitor, handing us a
+ * locked reference to that frame's fully-rendered buffer before it is handed
+ * to the output (see the screenshot_ui.want_capture branch in rendermon()).
+ * That buffer becomes a full-screen scene_buffer in a dedicated top-most
+ * scene layer (LyrScreenshot), which is how the desktop appears "paused"
+ * while everything keeps rendering underneath, unseen. Region/window
+ * selection is drawn with plain scene rects (dim mask + border) driven from
+ * buttonpress()/motionnotify()/keypress() while shotui.active is set; on
+ * confirm the selected area is cropped out of the frozen buffer via
+ * wlr_texture_read_pixels(), handed to cairo for PNG encoding, saved under
+ * ~/Pictures/Screenshots, and piped into wl-copy for the clipboard.
+ * ------------------------------------------------------------------------ */
+
+static double screenshot_ui_clampd(double v, double lo, double hi) {
+	return v < lo ? lo : (v > hi ? hi : v);
+}
+
+static void screenshot_ui_reset_cursor(void) {
+	wlr_cursor_set_xcursor(cursor, cursor_mgr, "default");
+	wlr_seat_pointer_clear_focus(seat);
+	motionnotify(0, NULL, 0, 0, 0, 0);
+}
+
+static void screenshot_ui_teardown(void) {
+	if (shotui.label) {
+		mango_jump_label_node_destroy(shotui.label);
+		shotui.label = NULL;
+	}
+	if (shotui.tree) {
+		wlr_scene_node_destroy(&shotui.tree->node);
+		shotui.tree = NULL;
+	}
+	shotui.frame_node = NULL;
+	for (int32_t i = 0; i < 4; i++) {
+		shotui.dim[i] = NULL;
+		shotui.border[i] = NULL;
+	}
+	if (shotui.frame) {
+		wlr_buffer_unlock(shotui.frame);
+		shotui.frame = NULL;
+	}
+	shotui.mon = NULL;
+	shotui.active = false;
+	shotui.dragging = false;
+
+	screenshot_ui_reset_cursor();
+}
+
+static void screenshot_ui_cancel(void) {
+	if (!shotui.active) {
+		/* also cancel an armed-but-not-yet-fulfilled capture request */
+		shotui.want_capture = false;
+		shotui.capture_mon = NULL;
+		return;
+	}
+	screenshot_ui_teardown();
+}
+
+/* position/size the dim mask (outside the selection) and border (framing
+ * it) from shotui.sel; both are expressed in the overlay tree's local
+ * coordinates, i.e. monitor-relative */
+static void screenshot_ui_layout_dim_and_border(void) {
+	Monitor *m = shotui.mon;
+	if (!m || !shotui.tree)
+		return;
+
+	int32_t sx = shotui.sel.x - m->m.x;
+	int32_t sy = shotui.sel.y - m->m.y;
+	int32_t sw = shotui.sel.width;
+	int32_t sh = shotui.sel.height;
+	int32_t mw = m->m.width;
+	int32_t mh = m->m.height;
+
+	wlr_scene_node_set_position(&shotui.dim[0]->node, 0, 0);
+	wlr_scene_rect_set_size(shotui.dim[0], mw, sy);
+
+	wlr_scene_node_set_position(&shotui.dim[1]->node, 0, sy + sh);
+	wlr_scene_rect_set_size(shotui.dim[1], mw, mh - (sy + sh));
+
+	wlr_scene_node_set_position(&shotui.dim[2]->node, 0, sy);
+	wlr_scene_rect_set_size(shotui.dim[2], sx, sh);
+
+	wlr_scene_node_set_position(&shotui.dim[3]->node, sx + sw, sy);
+	wlr_scene_rect_set_size(shotui.dim[3], mw - (sx + sw), sh);
+
+	const int32_t bw = 2;
+	bool have_sel = sw > 0 && sh > 0;
+
+	wlr_scene_node_set_position(&shotui.border[0]->node, sx, sy);
+	wlr_scene_rect_set_size(shotui.border[0], sw, bw);
+
+	wlr_scene_node_set_position(&shotui.border[1]->node, sx, sy + sh - bw);
+	wlr_scene_rect_set_size(shotui.border[1], sw, bw);
+
+	wlr_scene_node_set_position(&shotui.border[2]->node, sx, sy);
+	wlr_scene_rect_set_size(shotui.border[2], bw, sh);
+
+	wlr_scene_node_set_position(&shotui.border[3]->node, sx + sw - bw, sy);
+	wlr_scene_rect_set_size(shotui.border[3], bw, sh);
+
+	for (int32_t i = 0; i < 4; i++)
+		wlr_scene_node_set_enabled(&shotui.border[i]->node, have_sel);
+}
+
+static void screenshot_ui_update_label(void) {
+	Monitor *m = shotui.mon;
+	if (!shotui.label || !m)
+		return;
+
+	char text[32];
+	snprintf(text, sizeof(text), "%d x %d", shotui.sel.width,
+			shotui.sel.height);
+	mango_jump_label_node_update(shotui.label, text, 1.0f);
+
+	int32_t lx = shotui.sel.x - m->m.x;
+	int32_t ly = shotui.sel.y - m->m.y - shotui.label->logical_height - 8;
+	if (ly < 0)
+		ly = shotui.sel.y - m->m.y + shotui.sel.height + 8;
+	wlr_scene_node_set_position(&shotui.label->scene_buffer->node, lx, ly);
+
+	bool have_sel = shotui.sel.width > 0 && shotui.sel.height > 0;
+	wlr_scene_node_set_enabled(&shotui.label->scene_buffer->node, have_sel);
+}
+
+static void screenshot_ui_update_selection(double cx, double cy) {
+	Monitor *m = shotui.mon;
+	if (!m)
+		return;
+
+	double lo_x = m->m.x, hi_x = m->m.x + m->m.width;
+	double lo_y = m->m.y, hi_y = m->m.y + m->m.height;
+
+	double ax = screenshot_ui_clampd(shotui.start_x, lo_x, hi_x);
+	double ay = screenshot_ui_clampd(shotui.start_y, lo_y, hi_y);
+	double bx = screenshot_ui_clampd(cx, lo_x, hi_x);
+	double by = screenshot_ui_clampd(cy, lo_y, hi_y);
+
+	int32_t left = (int32_t)round(fmin(ax, bx));
+	int32_t top = (int32_t)round(fmin(ay, by));
+	int32_t right = (int32_t)round(fmax(ax, bx));
+	int32_t bottom = (int32_t)round(fmax(ay, by));
+
+	shotui.sel = (struct wlr_box){
+		.x = left, .y = top, .width = right - left, .height = bottom - top};
+
+	screenshot_ui_layout_dim_and_border();
+	screenshot_ui_update_label();
+}
+
+static Client *screenshot_ui_client_at(double x, double y) {
+	Client *c = NULL;
+	/* xytonode skips LyrScreenshot, so this drills straight through our
+	 * own overlay to whatever real client is under the cursor */
+	xytonode(x, y, NULL, &c, NULL, NULL, NULL, NULL);
+	if (c && client_is_unmanaged(c))
+		c = NULL;
+	return c;
+}
+
+static void screenshot_ui_hover_window(double cx, double cy) {
+	Monitor *m = shotui.mon;
+	if (!m)
+		return;
+
+	Client *c = screenshot_ui_client_at(cx, cy);
+	struct wlr_box box;
+	if (c && c->mon == m) {
+		box = c->geom;
+	} else {
+		box = (struct wlr_box){.x = (int32_t)round(cx), .y = (int32_t)round(cy),
+								.width = 0, .height = 0};
+	}
+
+	int32_t x2 = box.x + box.width, y2 = box.y + box.height;
+	if (box.x < m->m.x)
+		box.x = m->m.x;
+	if (box.y < m->m.y)
+		box.y = m->m.y;
+	if (x2 > m->m.x + m->m.width)
+		x2 = m->m.x + m->m.width;
+	if (y2 > m->m.y + m->m.height)
+		y2 = m->m.y + m->m.height;
+	box.width = x2 > box.x ? x2 - box.x : 0;
+	box.height = y2 > box.y ? y2 - box.y : 0;
+
+	shotui.sel = box;
+	screenshot_ui_layout_dim_and_border();
+	screenshot_ui_update_label();
+}
+
+/* ~/Pictures/Screenshots/screenshot_<timestamp>.png, matching the naming
+ * used by the DMS shell's own screenshot tool */
+static char *screenshot_ui_build_path(void) {
+	const char *home = getenv("HOME");
+	if (!home || !*home)
+		home = "/tmp";
+
+	char *dir = string_printf("%s/Pictures/Screenshots", home);
+	if (!dir)
+		return NULL;
+
+	for (char *p = dir + 1; *p; p++) {
+		if (*p == '/') {
+			*p = '\0';
+			mkdir(dir, 0755);
+			*p = '/';
+		}
+	}
+	mkdir(dir, 0755);
+
+	time_t now = time(NULL);
+	struct tm tm_now;
+	localtime_r(&now, &tm_now);
+	char stamp[32];
+	strftime(stamp, sizeof(stamp), "%Y-%m-%d_%H-%M-%S", &tm_now);
+
+	char *path = string_printf("%s/screenshot_%s.png", dir, stamp);
+	free(dir);
+	return path;
+}
+
+static void screenshot_ui_copy_to_clipboard(const char *path) {
+	char *cmd = string_printf("wl-copy --type image/png < '%s'", path);
+	if (!cmd)
+		return;
+	spawn_shell(&(Arg){.v = cmd});
+	free(cmd);
+}
+
+/* crop [sel] (layout coords) out of [frame] and save+copy it as a PNG */
+static bool screenshot_ui_save_and_copy(struct wlr_buffer *frame, Monitor *m,
+										struct wlr_box sel) {
+	if (!frame || !m || sel.width <= 0 || sel.height <= 0)
+		return false;
+
+	double sx = m->m.width > 0 ? (double)frame->width / m->m.width : 1.0;
+	double sy = m->m.height > 0 ? (double)frame->height / m->m.height : 1.0;
+
+	int32_t rel_x = sel.x - m->m.x;
+	int32_t rel_y = sel.y - m->m.y;
+	if (rel_x < 0)
+		rel_x = 0;
+	if (rel_y < 0)
+		rel_y = 0;
+	int32_t rel_x2 = rel_x + sel.width;
+	int32_t rel_y2 = rel_y + sel.height;
+	if (rel_x2 > m->m.width)
+		rel_x2 = m->m.width;
+	if (rel_y2 > m->m.height)
+		rel_y2 = m->m.height;
+	if (rel_x2 <= rel_x || rel_y2 <= rel_y)
+		return false;
+
+	int32_t px_x = (int32_t)round(rel_x * sx);
+	int32_t px_y = (int32_t)round(rel_y * sy);
+	int32_t px_w = (int32_t)round((rel_x2 - rel_x) * sx);
+	int32_t px_h = (int32_t)round((rel_y2 - rel_y) * sy);
+	if (px_x < 0)
+		px_x = 0;
+	if (px_y < 0)
+		px_y = 0;
+	if (px_x + px_w > frame->width)
+		px_w = frame->width - px_x;
+	if (px_y + px_h > frame->height)
+		px_h = frame->height - px_y;
+	if (px_w <= 0 || px_h <= 0)
+		return false;
+
+	struct wlr_texture *tex = wlr_texture_from_buffer(drw, frame);
+	if (!tex) {
+		wlr_log(WLR_ERROR, "screenshot_ui: failed to import frame as texture");
+		return false;
+	}
+
+	int32_t stride = cairo_format_stride_for_width(CAIRO_FORMAT_ARGB32, px_w);
+	uint8_t *pixels = stride > 0 ? calloc((size_t)stride, (size_t)px_h) : NULL;
+	if (!pixels) {
+		wlr_texture_destroy(tex);
+		return false;
+	}
+
+	struct wlr_texture_read_pixels_options opts = {
+		.data = pixels,
+		.format = DRM_FORMAT_ARGB8888,
+		.stride = (uint32_t)stride,
+		.dst_x = 0,
+		.dst_y = 0,
+		.src_box = (struct wlr_box){
+			.x = px_x, .y = px_y, .width = px_w, .height = px_h},
+	};
+	bool read_ok = wlr_texture_read_pixels(tex, &opts);
+	wlr_texture_destroy(tex);
+
+	if (!read_ok) {
+		wlr_log(WLR_ERROR, "screenshot_ui: failed to read back pixels");
+		free(pixels);
+		return false;
+	}
+
+	cairo_surface_t *surf = cairo_image_surface_create_for_data(
+		pixels, CAIRO_FORMAT_ARGB32, px_w, px_h, stride);
+	bool ok = surf && cairo_surface_status(surf) == CAIRO_STATUS_SUCCESS;
+
+	char *path = ok ? screenshot_ui_build_path() : NULL;
+	if (ok && path) {
+		ok = cairo_surface_write_to_png(surf, path) == CAIRO_STATUS_SUCCESS;
+		if (ok) {
+			wlr_log(WLR_INFO, "screenshot_ui: saved %s", path);
+			screenshot_ui_copy_to_clipboard(path);
+		} else {
+			wlr_log(WLR_ERROR, "screenshot_ui: failed to write %s", path);
+		}
+	} else {
+		ok = false;
+	}
+
+	if (surf)
+		cairo_surface_destroy(surf);
+	free(pixels);
+	free(path);
+	return ok;
+}
+
+static void screenshot_ui_confirm(void) {
+	screenshot_ui_save_and_copy(shotui.frame, shotui.mon, shotui.sel);
+	screenshot_ui_teardown();
+}
+
+/* called from rendermon() once the requested capture has actually landed;
+ * frame is already locked for our use (see rendermon()) */
+static void screenshot_ui_on_captured(Monitor *m, ScreenshotMode mode,
+									  struct wlr_buffer *frame) {
+	if (!frame)
+		return;
+
+	if (mode == ShotScreen) {
+		screenshot_ui_save_and_copy(frame, m, m->m);
+		wlr_buffer_unlock(frame);
+		return;
+	}
+
+	shotui.mode = mode;
+	shotui.mon = m;
+	shotui.frame = frame;
+	shotui.dragging = false;
+
+	shotui.tree = wlr_scene_tree_create(layers[LyrScreenshot]);
+	wlr_scene_node_set_position(&shotui.tree->node, m->m.x, m->m.y);
+
+	shotui.frame_node = wlr_scene_buffer_create(shotui.tree, frame);
+	wlr_scene_buffer_set_dest_size(shotui.frame_node, m->m.width, m->m.height);
+
+	static const float dim_color[4] = {0.0f, 0.0f, 0.0f, 0.55f};
+	static const float border_color[4] = {0.30f, 0.65f, 1.0f, 1.0f};
+	for (int32_t i = 0; i < 4; i++) {
+		shotui.dim[i] = wlr_scene_rect_create(shotui.tree, 0, 0, dim_color);
+		shotui.border[i] =
+			wlr_scene_rect_create(shotui.tree, 0, 0, border_color);
+	}
+
+	shotui.label =
+		mango_jump_label_node_create(shotui.tree, config.jumplabeldata);
+	if (shotui.label)
+		wlr_scene_node_set_enabled(&shotui.label->scene_buffer->node, false);
+
+	double start_x = cursor->x, start_y = cursor->y;
+	if (start_x < m->m.x || start_x > m->m.x + m->m.width)
+		start_x = m->m.x;
+	if (start_y < m->m.y || start_y > m->m.y + m->m.height)
+		start_y = m->m.y;
+	shotui.start_x = start_x;
+	shotui.start_y = start_y;
+
+	shotui.active = true;
+
+	if (mode == ShotWindow)
+		screenshot_ui_hover_window(cursor->x, cursor->y);
+	else
+		screenshot_ui_update_selection(start_x, start_y);
+
+	wlr_cursor_set_xcursor(cursor, cursor_mgr, "crosshair");
+}
+
+/* returns true if the event was consumed by the screenshot UI */
+bool screenshot_ui_handle_button(struct wlr_pointer_button_event *event) {
+	if (!shotui.active)
+		return false;
+
+	if (shotui.mode == ShotRegion) {
+		if (event->state == WL_POINTER_BUTTON_STATE_PRESSED) {
+			if (event->button != BTN_LEFT) {
+				screenshot_ui_cancel();
+				return true;
+			}
+			shotui.dragging = true;
+			shotui.start_x = cursor->x;
+			shotui.start_y = cursor->y;
+			screenshot_ui_update_selection(cursor->x, cursor->y);
+		} else if (event->state == WL_POINTER_BUTTON_STATE_RELEASED &&
+				  shotui.dragging) {
+			shotui.dragging = false;
+			screenshot_ui_confirm();
+		}
+	} else if (shotui.mode == ShotWindow) {
+		if (event->state == WL_POINTER_BUTTON_STATE_PRESSED) {
+			if (event->button != BTN_LEFT) {
+				screenshot_ui_cancel();
+				return true;
+			}
+			screenshot_ui_hover_window(cursor->x, cursor->y);
+			if (shotui.sel.width > 0 && shotui.sel.height > 0)
+				screenshot_ui_confirm();
+			else
+				screenshot_ui_cancel();
+		}
+	}
+	return true;
+}
+
+/* called on every pointer move while the UI is active */
+void screenshot_ui_handle_motion(void) {
+	if (!shotui.active)
+		return;
+	if (shotui.mode == ShotRegion) {
+		if (shotui.dragging)
+			screenshot_ui_update_selection(cursor->x, cursor->y);
+	} else if (shotui.mode == ShotWindow) {
+		screenshot_ui_hover_window(cursor->x, cursor->y);
+	}
+}
+
+/* called for every keysym on key press while the UI is active */
+void screenshot_ui_handle_key(xkb_keysym_t sym) {
+	if (sym == XKB_KEY_Escape)
+		screenshot_ui_cancel();
+}
+
+int32_t screenshot_ui(const Arg *arg) {
+	if (locked || shotui.active || shotui.want_capture)
+		return 0;
+
+	Monitor *m = selmon;
+	if (!m || !m->wlr_output || !m->wlr_output->enabled || !m->scene_output)
+		return 0;
+
+	ScreenshotMode mode = ShotRegion;
+	if (arg && arg->v && *arg->v) {
+		if (!strcmp(arg->v, "screen"))
+			mode = ShotScreen;
+		else if (!strcmp(arg->v, "window"))
+			mode = ShotWindow;
+	}
+
+	shotui.capture_mode = mode;
+	shotui.capture_mon = m;
+	shotui.want_capture = true;
+	wlr_output_schedule_frame(m->wlr_output);
+	return 0;
+}

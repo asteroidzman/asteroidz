@@ -4,12 +4,14 @@
 #include "wlr-layer-shell-unstable-v1-protocol.h"
 #include "wlr/util/box.h"
 #include "wlr/util/edges.h"
+#include <cairo.h>
 #include <fcntl.h>
 #include <getopt.h>
 #include <drm_fourcc.h>
 #include <libinput.h>
 #include <limits.h>
 #include <linux/input-event-codes.h>
+#include <math.h>
 #include <scenefx/render/fx_renderer/fx_renderer.h>
 #include <scenefx/types/fx/blur_data.h>
 #include <scenefx/types/fx/clipped_region.h>
@@ -20,6 +22,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -33,8 +36,10 @@
 #include <wlr/interfaces/wlr_keyboard.h>
 #include <wlr/render/allocator.h>
 #include <wlr/render/wlr_renderer.h>
+#include <wlr/render/wlr_texture.h>
 #include <wlr/types/wlr_alpha_modifier_v1.h>
 #include <wlr/render/color.h>
+#include <wlr/types/wlr_buffer.h>
 #include <wlr/types/wlr_color_management_v1.h>
 #include <wlr/types/wlr_color_representation_v1.h>
 #include <wlr/types/wlr_compositor.h>
@@ -219,6 +224,7 @@ enum {
 	LyrOverlay,
 	LyrIMPopup, // text-input layer
 	LyrBlock,
+	LyrScreenshot, // in-compositor screenshot overlay, always topmost
 	NUM_LAYERS
 }; /* scene layers */
 
@@ -1116,6 +1122,43 @@ static struct wlr_output_layout *output_layout;
 static struct wlr_box sgeom;
 static struct wl_list mons;
 static Monitor *selmon;
+
+/* compositor-native screenshot UI (screenshot_ui dispatcher): freezes the
+ * focused output's most recently rendered frame into a full-screen overlay,
+ * then lets the user pick a region/window/whole-screen to save + copy. */
+typedef enum {
+	ShotScreen,
+	ShotRegion,
+	ShotWindow,
+} ScreenshotMode;
+
+typedef struct {
+	/* armed by the dispatcher; fulfilled by rendermon() the next time it
+	 * renders capture_mon, which hands us a locked reference to that
+	 * frame's fully-rendered buffer before it is committed to the output */
+	bool want_capture;
+	Monitor *capture_mon;
+	ScreenshotMode capture_mode;
+
+	/* live overlay state once a frame has actually been captured */
+	bool active;
+	ScreenshotMode mode;
+	Monitor *mon;
+	struct wlr_buffer *frame; /* frozen frame, locked for our own use */
+
+	struct wlr_scene_tree *tree;		 /* root of the overlay, in LyrScreenshot */
+	struct wlr_scene_buffer *frame_node; /* the frozen frame, full-screen */
+	struct wlr_scene_rect *dim[4];		 /* dim mask: top, bottom, left, right */
+	struct wlr_scene_rect *border[4];	 /* selection border: same order */
+	struct mango_jump_label_node *label; /* "WxH" dimension tooltip */
+
+	bool dragging;
+	double start_x, start_y; /* layout coords, region drag anchor */
+	struct wlr_box sel;		 /* layout coords, current selection/hover box */
+} ScreenshotUI;
+
+/* named shotui, not screenshot_ui: that name is the dispatcher function */
+static ScreenshotUI shotui = {0};
 
 static int32_t enablegaps = 1; /* enables gaps, used by togglegaps */
 static int32_t axis_apply_time = 0;
@@ -2643,6 +2686,11 @@ void // 鼠标按键事件
 buttonpress(struct wl_listener *listener, void *data) {
 	struct wlr_pointer_button_event *event = data;
 
+	if (shotui.active) {
+		screenshot_ui_handle_button(event);
+		return;
+	}
+
 	if (!handle_buttonpress(event))
 		wlr_seat_pointer_notify_button(seat, event->time_msec, event->button,
 									   event->state);
@@ -2929,6 +2977,14 @@ void cleanupmon(struct wl_listener *listener, void *data) {
 	Monitor *m = wl_container_of(listener, m, destroy);
 	LayerSurface *l = NULL, *tmp = NULL;
 	uint32_t i;
+
+	/* don't leave the screenshot UI pointing at a monitor that's going away */
+	if (shotui.capture_mon == m) {
+		shotui.want_capture = false;
+		shotui.capture_mon = NULL;
+	}
+	if (shotui.mon == m)
+		screenshot_ui_cancel();
 
 	m->iscleanuping = true;
 
@@ -4864,6 +4920,17 @@ void keypress(struct wl_listener *listener, void *data) {
 
 	wlr_idle_notifier_v1_notify_activity(idle_notifier, seat);
 
+	/* the screenshot overlay owns the keyboard outright while active:
+	 * Escape cancels it, everything else is swallowed so global shortcuts
+	 * and clients underneath the frozen frame don't react to it */
+	if (shotui.active) {
+		if (event->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
+			for (i = 0; i < nsyms; i++)
+				screenshot_ui_handle_key(syms[i]);
+		}
+		return;
+	}
+
 	/* xdg-desktop-portal global shortcuts get first pick (push-to-talk
 	 * needs both key edges, and matched keys are not forwarded) */
 	if (!locked) {
@@ -5592,6 +5659,12 @@ void motionnotify(uint32_t time, struct wlr_input_device *device, double dx,
 
 	cursor_zoom_update();
 
+	if (shotui.active) {
+		if (time)
+			screenshot_ui_handle_motion();
+		return;
+	}
+
 	/* Find the client under the pointer and send the event along. */
 	xytonode(cursor->x, cursor->y, &surface, &c, NULL, NULL, &sx, &sy);
 
@@ -5997,6 +6070,39 @@ void rendermon(struct wl_listener *listener, void *data) {
 	// 只有在需要帧时才构建和提交状态
 	if (config.allow_tearing && frame_allow_tearing) {
 		apply_tear_state(m);
+	} else if (shotui.want_capture && shotui.capture_mon == m) {
+		/* screenshot_ui asked to freeze this monitor: build+commit this
+		 * frame ourselves (unconditionally, ignoring needs_frame) so we
+		 * can grab a locked reference to its rendered buffer before it's
+		 * handed to the output */
+		struct wlr_output_state state;
+		wlr_output_state_init(&state);
+		struct wlr_scene_output_state_options icc_options = {
+			.color_transform = m->wlr_output->image_description == NULL
+				? m->icc_transform
+				: NULL,
+		};
+		struct wlr_buffer *captured = NULL;
+		if (wlr_scene_output_build_state(m->scene_output, &state,
+										 &icc_options)) {
+			if (state.buffer)
+				captured = wlr_buffer_lock(state.buffer);
+			if (!wlr_output_commit_state(m->wlr_output, &state))
+				wlr_log(WLR_ERROR,
+						"screenshot_ui: failed to commit capture frame on %s",
+						m->wlr_output->name);
+		} else {
+			wlr_log(WLR_ERROR,
+					"screenshot_ui: failed to build capture state for %s",
+					m->wlr_output->name);
+		}
+		wlr_output_state_finish(&state);
+
+		ScreenshotMode captured_mode = shotui.capture_mode;
+		shotui.want_capture = false;
+		shotui.capture_mon = NULL;
+		if (captured)
+			screenshot_ui_on_captured(m, captured_mode, captured);
 	} else {
 		wlr_scene_output_commit(
 			m->scene_output,
