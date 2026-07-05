@@ -43,6 +43,9 @@ The Scroller layout positions windows in a scrollable strip, similar to PaperWM.
 | `scroller_proportion_preset` | `0.5,0.8,1.0` | Presets for cycling window widths. |
 | `scroller_ignore_proportion_single` | `1` | Ignore proportion adjustments for single windows. |
 | `scroller_default_proportion_single` | `1.0` | Default proportion for single windows in scroller. **Requires `scroller_ignore_proportion_single=0` to take effect.** |
+| `scroller_edge_scroll` | `0` | Advance to the next/prev column by hovering the pointer against a screen edge (top/bottom for `vertical_scroller`, left/right otherwise), instead of only via keybinds (1 = enable). |
+| `scroller_edge_scroll_size` | `15` | Width in pixels of the hot edge zone that triggers `scroller_edge_scroll`. |
+| `scroller_edge_scroll_delay` | `500` | Milliseconds the pointer must dwell at the edge before advancing; repeats at the same interval while it stays there. |
 
 > **Warning:** `scroller_prefer_overspread`, `scroller_focus_center`, and `scroller_prefer_center` interact with each other. Their priority order is:
 >
@@ -62,6 +65,9 @@ edge_scroller_pointer_focus=1
 edge_scroller_focus_allow_speed=0.0
 scroller_default_proportion_single=1.0
 scroller_proportion_preset=0.5,0.8,1.0
+scroller_edge_scroll=0
+scroller_edge_scroll_size=15
+scroller_edge_scroll_delay=500
 ```
 
 ---

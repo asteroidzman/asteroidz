@@ -842,7 +842,7 @@ static void reset_foreign_tolevel(Client *c, Monitor *oldmon, Monitor *newmon);
 static void add_foreign_topleve(Client *c);
 static void exchange_two_client(Client *c1, Client *c2);
 static void outputmgrapply(struct wl_listener *listener, void *data);
-static void outputmgrapplyortest(struct wlr_output_configuration_v1 *config,
+static void outputmgrapplyortest(struct wlr_output_configuration_v1 *output_config,
 								 int32_t test);
 static void outputmgrtest(struct wl_listener *listener, void *data);
 static void pointerfocus(Client *c, struct wlr_surface *surface, double sx,
@@ -850,12 +850,15 @@ static void pointerfocus(Client *c, struct wlr_surface *surface, double sx,
 static void printstatus(enum ipc_watch_type type);
 static void quitsignal(int32_t signo);
 static void powermgrsetmode(struct wl_listener *listener, void *data);
+static void wake_monitor(Monitor *m);
+static void wake_sleeping_monitors(void);
 static void rendermon(struct wl_listener *listener, void *data);
 static void requestdecorationmode(struct wl_listener *listener, void *data);
 static void requestdrmlease(struct wl_listener *listener, void *data);
 static void requeststartdrag(struct wl_listener *listener, void *data);
 static void resize(Client *c, struct wlr_box geo, int32_t interact);
 static void run(char *startup_cmd);
+static void set_activation_env(void);
 static void setcursor(struct wl_listener *listener, void *data);
 static void setfloating(Client *c, int32_t floating);
 static void setfakefullscreen(Client *c, int32_t fakefullscreen);
@@ -939,6 +942,8 @@ static void set_rect_size(struct wlr_scene_rect *rect, int32_t width,
 static Client *center_tiled_select(Monitor *m);
 static void handlecursoractivity(void);
 static int32_t hidecursor(void *data);
+static void check_scroller_edge_scroll(int32_t x_root, int32_t y_root);
+static int32_t scroller_edge_scroll_timeout(void *data);
 static bool check_hit_no_border(Client *c);
 static void reset_keyboard_layout(void);
 static void client_update_oldmonname_record(Client *c, Monitor *m);
@@ -1185,6 +1190,8 @@ struct dvec2 *baked_points_opafadeout;
 
 static struct wl_event_source *hide_cursor_source;
 static struct wl_event_source *keep_idle_inhibit_source;
+static struct wl_event_source *scroller_edge_scroll_source;
+static int32_t scroller_edge_scroll_dir = UNDIR;
 static bool cursor_hidden = false;
 static bool tag_combo = false;
 static const char *cli_config_path = NULL;
@@ -1813,6 +1820,66 @@ void toggle_hotarea(int32_t x_root, int32_t y_root) {
 	}
 }
 
+/* hovering the pointer against a screen edge for scroller_edge_scroll_delay
+ * ms advances to the next/prev column (or row, for the vertical scroller);
+ * it keeps advancing at that same interval while the pointer stays put */
+void check_scroller_edge_scroll(int32_t x_root, int32_t y_root) {
+	int32_t new_dir = UNDIR;
+
+	if (config.scroller_edge_scroll && selmon && !grabc &&
+		!selmon->isoverview && is_scroller_layout(selmon)) {
+		int32_t size = config.scroller_edge_scroll_size;
+		int32_t layout_id = selmon->pertag->ltidxs[selmon->pertag->curtag]->id;
+
+		if (layout_id == VERTICAL_SCROLLER) {
+			if (y_root >= selmon->m.y && y_root < selmon->m.y + size)
+				new_dir = UP;
+			else if (y_root < selmon->m.y + selmon->m.height &&
+					 y_root >= selmon->m.y + selmon->m.height - size)
+				new_dir = DOWN;
+		} else {
+			if (x_root >= selmon->m.x && x_root < selmon->m.x + size)
+				new_dir = LEFT;
+			else if (x_root < selmon->m.x + selmon->m.width &&
+					 x_root >= selmon->m.x + selmon->m.width - size)
+				new_dir = RIGHT;
+		}
+	}
+
+	if (new_dir == scroller_edge_scroll_dir)
+		return;
+
+	scroller_edge_scroll_dir = new_dir;
+	wl_event_source_timer_update(scroller_edge_scroll_source,
+								 new_dir == UNDIR
+									 ? 0
+									 : (uint32_t)config.scroller_edge_scroll_delay);
+}
+
+int32_t scroller_edge_scroll_timeout(void *data) {
+	if (scroller_edge_scroll_dir == UNDIR || !selmon || grabc ||
+		selmon->isoverview || !is_scroller_layout(selmon)) {
+		scroller_edge_scroll_dir = UNDIR;
+		return 0;
+	}
+
+	Arg arg = {.i = scroller_edge_scroll_dir};
+	Client *c = direction_select(&arg);
+	if (!c) {
+		/* reached the last column/row: stop until the pointer leaves and
+		 * re-enters the edge */
+		scroller_edge_scroll_dir = UNDIR;
+		return 0;
+	}
+
+	focusclient(c, 1);
+	if (config.warpcursor)
+		warp_cursor(c);
+	wl_event_source_timer_update(scroller_edge_scroll_source,
+								 (uint32_t)config.scroller_edge_scroll_delay);
+	return 0;
+}
+
 static void apply_rule_properties(Client *c, const ConfigWinRule *r) {
 	APPLY_INT_PROP(c, r, isterm);
 	APPLY_INT_PROP(c, r, allow_csd);
@@ -2375,6 +2442,7 @@ axisnotify(struct wl_listener *listener, void *data) {
 	// IDLE_NOTIFY_ACTIVITY;
 	handlecursoractivity();
 	wlr_idle_notifier_v1_notify_activity(idle_notifier, seat);
+	wake_sleeping_monitors();
 
 	if (check_trackpad_disabled(event->pointer)) {
 		return;
@@ -2710,6 +2778,8 @@ bool handle_buttonpress(struct wlr_pointer_button_event *event) {
 
 	handlecursoractivity();
 	wlr_idle_notifier_v1_notify_activity(idle_notifier, seat);
+	if (event->state == WL_POINTER_BUTTON_STATE_PRESSED)
+		wake_sleeping_monitors();
 
 	if (event->pointer && check_trackpad_disabled(event->pointer)) {
 		return true;
@@ -4918,6 +4988,8 @@ void keypress(struct wl_listener *listener, void *data) {
 	uint32_t mods = wlr_keyboard_get_modifiers(&group->wlr_group->keyboard);
 
 	wlr_idle_notifier_v1_notify_activity(idle_notifier, seat);
+	if (event->state == WL_KEYBOARD_KEY_STATE_PRESSED)
+		wake_sleeping_monitors();
 
 	/* the screenshot overlay owns the keyboard outright while active:
 	 * Escape cancels it, everything else is swallowed so global shortcuts
@@ -5659,6 +5731,7 @@ void motionnotify(uint32_t time, struct wlr_input_device *device, double dx,
 		wlr_cursor_move(cursor, device, dx, dy);
 		handlecursoractivity();
 		wlr_idle_notifier_v1_notify_activity(idle_notifier, seat);
+		wake_sleeping_monitors();
 
 		/* Update selmon (even while dragging a window) */
 		if (config.sloppyfocus)
@@ -5788,6 +5861,7 @@ void motionrelative(struct wl_listener *listener, void *data) {
 	motionnotify(event->time_msec, &event->pointer->base, event->delta_x,
 				 event->delta_y, event->unaccel_dx, event->unaccel_dy);
 	toggle_hotarea(cursor->x, cursor->y);
+	check_scroller_edge_scroll((int32_t)cursor->x, (int32_t)cursor->y);
 }
 
 void outputmgrapply(struct wl_listener *listener, void *data) {
@@ -5796,7 +5870,7 @@ void outputmgrapply(struct wl_listener *listener, void *data) {
 }
 
 void // 0.7 custom
-outputmgrapplyortest(struct wlr_output_configuration_v1 *config, int32_t test) {
+outputmgrapplyortest(struct wlr_output_configuration_v1 *output_config, int32_t test) {
 	/*
 	 * Called when a client such as wlr-randr requests a change in output
 	 * configuration. This is only one way that the layout can be changed,
@@ -5806,7 +5880,7 @@ outputmgrapplyortest(struct wlr_output_configuration_v1 *config, int32_t test) {
 	struct wlr_output_configuration_head_v1 *config_head;
 	int32_t ok = 1;
 
-	wl_list_for_each(config_head, &config->heads, link) {
+	wl_list_for_each(config_head, &output_config->heads, link) {
 		struct wlr_output *wlr_output = config_head->state.output;
 		Monitor *m = wlr_output->data;
 		struct wlr_output_state state;
@@ -5833,9 +5907,24 @@ outputmgrapplyortest(struct wlr_output_configuration_v1 *config, int32_t test) {
 		wlr_output_state_set_adaptive_sync_enabled(
 			&state, config_head->state.adaptive_sync_enabled);
 
-	apply_or_test:
-		ok &= test ? wlr_output_test_state(wlr_output, &state)
-				   : wlr_output_commit_state(wlr_output, &state);
+	apply_or_test: {
+		bool head_committed = test ? wlr_output_test_state(wlr_output, &state)
+								  : wlr_output_commit_state(wlr_output, &state);
+		ok &= head_committed;
+
+		/* clients like DMS's own idle-monitor-off feature (and wlr-randr)
+		 * enable/disable outputs through wlr-output-management-v1 instead
+		 * of wlr_output_power_manager_v1, bypassing powermgrsetmode()
+		 * entirely; give this path the same DSC-decoder recovery safety
+		 * net so a DMS-driven sleep/wake doesn't leave the panel wedged */
+		if (!test) {
+			if (config_head->state.enabled &&
+				(config.dpms_wake_retrain || !head_committed))
+				monitor_start_retrain(m, head_committed ? 700 : 50);
+			else if (!config_head->state.enabled && !head_committed)
+				monitor_start_retrain(m, 50);
+		}
+	}
 
 		/* Don't move monitors if position wouldn't change, this to avoid
 		 * wlroots marking the output as manually configured.
@@ -5849,10 +5938,10 @@ outputmgrapplyortest(struct wlr_output_configuration_v1 *config, int32_t test) {
 	}
 
 	if (ok)
-		wlr_output_configuration_v1_send_succeeded(config);
+		wlr_output_configuration_v1_send_succeeded(output_config);
 	else
-		wlr_output_configuration_v1_send_failed(config);
-	wlr_output_configuration_v1_destroy(config);
+		wlr_output_configuration_v1_send_failed(output_config);
+	wlr_output_configuration_v1_destroy(output_config);
 
 	/* https://codeberg.org/dwl/dwl/issues/577 */
 	updatemons(NULL, NULL);
@@ -5969,22 +6058,24 @@ void monitor_start_retrain(Monitor *m, uint32_t delay_ms) {
 	wl_event_source_timer_update(m->retrain_timer, delay_ms ? delay_ms : 1);
 }
 
-void powermgrsetmode(struct wl_listener *listener, void *data) {
-	struct wlr_output_power_v1_set_mode_event *event = data;
+/* re-enable a DPMS'd-off output. Shared by the wlr_output_power_manager_v1
+ * path and by wake-on-input-activity, since neither wlr-dpms nor any other
+ * client re-issues a wake automatically on keyboard/pointer activity --
+ * unlike sway/Hyprland/niri, asteroidz has no idle daemon built in, so
+ * without this an output put to sleep via DPMS never comes back on its own. */
+void wake_monitor(Monitor *m) {
 	struct wlr_output_state state = {0};
-	Monitor *m = event->output->data;
 
-	if (!m)
+	if (!m->asleep)
 		return;
 
-	wlr_output_state_set_enabled(&state, event->mode);
+	wlr_output_state_set_enabled(&state, true);
 	bool committed = wlr_output_commit_state(m->wlr_output, &state);
 	if (!committed)
-		wlr_log(WLR_ERROR,
-				"powermgrsetmode: failed to commit enabled=%d for %s",
-				event->mode, m->wlr_output->name);
+		wlr_log(WLR_ERROR, "wake_monitor: failed to commit enabled=1 for %s",
+				m->wlr_output->name);
 
-	m->asleep = !event->mode;
+	m->asleep = 0;
 	updatemons(NULL, NULL);
 
 	/* some sinks (DSC panels) come back with a corrupted decoder after
@@ -5993,8 +6084,38 @@ void powermgrsetmode(struct wl_listener *listener, void *data) {
 	 * dpms_wake_retrain: that option is for the cosmetic flicker case,
 	 * but a commit that outright failed needs the recovery attempt
 	 * regardless. */
-	if (event->mode && (config.dpms_wake_retrain || !committed))
+	if (config.dpms_wake_retrain || !committed)
 		monitor_start_retrain(m, committed ? 700 : 50);
+}
+
+void wake_sleeping_monitors(void) {
+	Monitor *m;
+	wl_list_for_each(m, &mons, link) {
+		if (m->asleep)
+			wake_monitor(m);
+	}
+}
+
+void powermgrsetmode(struct wl_listener *listener, void *data) {
+	struct wlr_output_power_v1_set_mode_event *event = data;
+	Monitor *m = event->output->data;
+
+	if (!m)
+		return;
+
+	if (event->mode) {
+		wake_monitor(m);
+		return;
+	}
+
+	struct wlr_output_state state = {0};
+	wlr_output_state_set_enabled(&state, false);
+	if (!wlr_output_commit_state(m->wlr_output, &state))
+		wlr_log(WLR_ERROR, "powermgrsetmode: failed to commit enabled=0 for %s",
+				m->wlr_output->name);
+
+	m->asleep = 1;
+	updatemons(NULL, NULL);
 }
 
 void quitsignal(int32_t signo) { quit(NULL); }
@@ -6244,7 +6365,7 @@ void exchange_two_client(Client *c1, Client *c2) {
 	finish_exchange_arrange_and_focus(c1, c2, m1, m2);
 }
 
-void set_activation_env() {
+static void set_activation_env(void) {
 	if (!getenv("DBUS_SESSION_BUS_ADDRESS")) {
 		wlr_log(WLR_INFO, "Not updating dbus execution environment: "
 						  "DBUS_SESSION_BUS_ADDRESS not set");
@@ -7199,6 +7320,8 @@ void setup(void) {
 				  &request_set_cursor_shape);
 	hide_cursor_source = wl_event_loop_add_timer(wl_display_get_event_loop(dpy),
 												 hidecursor, cursor);
+	scroller_edge_scroll_source = wl_event_loop_add_timer(
+		wl_display_get_event_loop(dpy), scroller_edge_scroll_timeout, NULL);
 	/*
 	 * Configures a seat, which is a single "seat" at which a user sits and
 	 * operates the computer. This conceptually includes up to one keyboard,

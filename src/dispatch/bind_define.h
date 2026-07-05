@@ -2232,9 +2232,14 @@ int32_t dpms_on_monitor(const Arg *arg) {
 	wl_list_for_each(m, &mons, link) {
 		if (match_monitor_spec(arg->v, m)) {
 			wlr_output_state_set_enabled(&state, true);
-			wlr_output_commit_state(m->wlr_output, &state);
+			bool committed = wlr_output_commit_state(m->wlr_output, &state);
 			m->asleep = 0;
 			updatemons(NULL, NULL);
+			/* mirrors powermgrsetmode: some DSC panels come back with a
+			 * corrupted decoder after DPMS, so this needs the same
+			 * mode-cycle recovery as the wlr_output_power_manager_v1 path */
+			if (config.dpms_wake_retrain || !committed)
+				monitor_start_retrain(m, committed ? 700 : 50);
 			break;
 		}
 	}
@@ -2274,9 +2279,11 @@ int32_t enable_monitor(const Arg *arg) {
 	wl_list_for_each(m, &mons, link) {
 		if (match_monitor_spec(arg->v, m)) {
 			wlr_output_state_set_enabled(&state, true);
-			wlr_output_commit_state(m->wlr_output, &state);
+			bool committed = wlr_output_commit_state(m->wlr_output, &state);
 			m->asleep = 0;
 			updatemons(NULL, NULL);
+			if (config.dpms_wake_retrain || !committed)
+				monitor_start_retrain(m, committed ? 700 : 50);
 			break;
 		}
 	}
