@@ -42,9 +42,13 @@ that stays out of your way.
 
 ## Building
 
-Dependencies: wlroots 0.20, the companion scenefx 0.5 fork (built with
-`--prefix=/usr`), wayland, libinput, xkbcommon, pango/cairo, gdk-pixbuf,
-cJSON, pcre2, libsystemd.
+Dependencies: wlroots 0.20, the companion
+[asteroidz-scenefx](https://github.com/ralfwierzbicki/asteroidz-scenefx)
+fork (built with `--prefix=/usr`), wayland, libinput, xkbcommon,
+pango/cairo, gdk-pixbuf, cJSON, pcre2, libsystemd.
+
+A matching shell/bar is available as
+[asteroidz-dms](https://github.com/ralfwierzbicki/asteroidz-dms).
 
 ```bash
 meson setup build --prefix=/usr
