@@ -201,6 +201,8 @@ static cJSON *build_monitor_json(Monitor *m) {
 	cJSON_AddItemToObject(resp, "keymode", cJSON_CreateString(keymode.mode));
 	cJSON_AddItemToObject(resp, "keyboardlayout",
 						  cJSON_CreateString(ipc_get_layout_str()));
+	cJSON_AddStringToObject(resp, "active_special",
+							m->active_special ? m->active_special : "");
 	return resp;
 }
 

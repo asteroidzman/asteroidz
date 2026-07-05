@@ -102,6 +102,8 @@ bindr=Super,Super_L,spawn,rofi -show run
 | `restore_minimized` | - | Restore window from scratchpad. |
 | `toggle_scratchpad` | - | Toggle scratchpad. |
 | `toggle_named_scratchpad` | `appid,title,cmd` | Toggle named scratchpad. Launches app if not running, otherwise shows/hides it. |
+| `togglespecialworkspace` | `name` | Toggle the named [special workspace](/docs/window-management/special-workspaces) `name` on the focused monitor: slides it in on top of the current tag, or slides it back out if it is already showing. Opening one implicitly closes any other special workspace already showing on that monitor. |
+| `movetospecialworkspace` | `name` (optional) | Move the focused window into named special workspace `name`. Called with no name (or an empty one), moves the window back out to the normal tag it came from. |
 
 ### Focus & Movement
 

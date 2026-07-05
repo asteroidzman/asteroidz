@@ -1608,6 +1608,67 @@ int32_t toggle_scratchpad(const Arg *arg) {
 	return 0;
 }
 
+/* Toggle the named special workspace `arg->v` on the focused monitor.
+ * If it is already the one showing there, slide it back out; otherwise
+ * slide it in, implicitly closing any other special workspace that may
+ * already be showing on that monitor (a monitor only ever shows one at a
+ * time). The workspace does not need to contain any client yet: toggling
+ * an empty name just opens/closes an empty overlay that clients can later
+ * be moved into with movetospecialworkspace. */
+int32_t togglespecialworkspace(const Arg *arg) {
+	char *interned = NULL;
+
+	if (!selmon || selmon->isoverview)
+		return 0;
+
+	interned = intern_special_workspace_name(arg->v);
+	if (!interned)
+		return 0;
+
+	if (selmon->active_special == interned)
+		close_special_workspace(selmon, true);
+	else
+		open_special_workspace(selmon, interned, true);
+
+	return 0;
+}
+
+/* Move the focused client into named special workspace `arg->v`. With an
+ * empty/NULL name, move the client back out into its normal tag view
+ * (its existing Client::tags is untouched the whole time it is in a
+ * special workspace, so this just needs to clear special_name for the
+ * client to reappear wherever it already was tagged). */
+int32_t movetospecialworkspace(const Arg *arg) {
+	Client *c = NULL;
+	char *interned = NULL;
+
+	if (!selmon || selmon->isoverview)
+		return 0;
+
+	c = arg->tc ? arg->tc : selmon->sel;
+	if (!c || !c->mon)
+		return 0;
+
+	if (!arg->v || !arg->v[0]) {
+		if (!c->special_name)
+			return 0;
+		c->special_name = NULL;
+		arrange(c->mon, false, false);
+		focusclient(c, true);
+		printstatus(IPC_WATCH_ARRANGGE);
+		return 0;
+	}
+
+	interned = intern_special_workspace_name(arg->v);
+	if (!interned)
+		return 0;
+
+	c->special_name = interned;
+	arrange(c->mon, false, false);
+	printstatus(IPC_WATCH_ARRANGGE);
+	return 0;
+}
+
 int32_t togglefakefullscreen(const Arg *arg) {
 	if (!selmon)
 		return 0;

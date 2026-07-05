@@ -101,8 +101,9 @@ windowrule=Parameter:Values,Parameter:Values,appid:Values,title:Values
 | `globalkeybinding` | string | `[mod combination][-][key]` | Global keybinding (only works for Wayland apps) |
 | `isunglobal` | integer | `0` / `1` | Open as unmanaged global window (for desktop pets or camera windows) |
 | `isnamedscratchpad` | integer | `0` / `1` | 0: disable, 1: named scratchpad |
+| `special_workspace` | string | Any | Assign the window to the named [special workspace](/docs/window-management/special-workspaces) on map |
 
-> **Tip:** For scratchpad usage, see the [Scratchpad](/docs/window-management/scratchpad) page for detailed configuration examples.
+> **Tip:** For scratchpad usage, see the [Scratchpad](/docs/window-management/scratchpad) page for detailed configuration examples. For named, tiled overlay workspaces, see [Special Workspaces](/docs/window-management/special-workspaces).
 
 ### Performance & Tearing
 
@@ -153,6 +154,10 @@ windowrule=isunglobal:1,appid:cheese
 
 # Named scratchpad toggle
 bind=alt,h,toggle_named_scratchpad,st-yazi,none,st -c st-yazi -e yazi
+
+# Named special workspace for a terminal (see Special Workspaces docs)
+windowrule=special_workspace:term,appid:kitty
+bind=SUPER,s,togglespecialworkspace,term
 ```
 
 ---

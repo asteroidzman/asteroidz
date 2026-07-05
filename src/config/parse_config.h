@@ -56,6 +56,8 @@ typedef struct {
 	const char *id;
 	const char *title;
 	const char *toplevel_tag; // matches xdg-toplevel-tag-v1 tag
+	const char *special_workspace; // assigns matching windows to this named
+									// special workspace on map
 	uint32_t tags;
 	int32_t isfloating;
 	int32_t isfullscreen;
@@ -1353,6 +1355,12 @@ FuncType parse_func_name(char *func_name, Arg *arg, char *arg_value,
 		(*arg).v = strdup(arg_value);
 		(*arg).v2 = strdup(arg_value2);
 		(*arg).v3 = strdup(arg_value3);
+	} else if (strcmp(func_name, "togglespecialworkspace") == 0) {
+		func = togglespecialworkspace;
+		(*arg).v = strdup(arg_value);
+	} else if (strcmp(func_name, "movetospecialworkspace") == 0) {
+		func = movetospecialworkspace;
+		(*arg).v = strdup(arg_value);
 	} else if (strcmp(func_name, "disable_monitor") == 0) {
 		func = disable_monitor;
 		(*arg).v = strdup(arg_value);
@@ -2669,6 +2677,7 @@ bool parse_option(Config *config, char *key, char *value) {
 		rule->id = NULL;
 		rule->title = NULL;
 		rule->toplevel_tag = NULL;
+		rule->special_workspace = NULL;
 
 		rule->globalkeybinding = (KeyBinding){0};
 
@@ -2692,6 +2701,8 @@ bool parse_option(Config *config, char *key, char *value) {
 					rule->id = strdup(val);
 				} else if (strcmp(key, "toplevel_tag") == 0) {
 					rule->toplevel_tag = strdup(val);
+				} else if (strcmp(key, "special_workspace") == 0) {
+					rule->special_workspace = strdup(val);
 				} else if (strcmp(key, "animation_type_open") == 0) {
 					rule->animation_type_open = strdup(val);
 				} else if (strcmp(key, "animation_type_close") == 0) {
@@ -3471,11 +3482,14 @@ void free_config(void) {
 				free((void *)rule->animation_type_close);
 			if (rule->monitor)
 				free((void *)rule->monitor);
+			if (rule->special_workspace)
+				free((void *)rule->special_workspace);
 			rule->id = NULL;
 			rule->title = NULL;
 			rule->animation_type_open = NULL;
 			rule->animation_type_close = NULL;
 			rule->monitor = NULL;
+			rule->special_workspace = NULL;
 			// 释放 globalkeybinding 的 arg.v（如果动态分配）
 			if (rule->globalkeybinding.arg.v) {
 				free((void *)rule->globalkeybinding.arg.v);

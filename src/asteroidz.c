@@ -135,10 +135,24 @@
 #define ISFAKETILED(A)                                                         \
 	(A && !(A)->isfloating && !(A)->isminimized && !(A)->iskilling &&          \
 	 !(A)->isunglobal)
-#define VISIBLEON(C, M)                                                        \
+/* Named special workspaces (Hyprland-style) overlay whatever tag is active
+ * on a monitor: (M)->active_special is NULL when no special workspace is
+ * showing on that monitor, or the interned name of the one that is. Clients
+ * carry the interned name of the special workspace they belong to in
+ * (C)->special_name (NULL for ordinary clients). A client whose
+ * special_name is set is only visible while its monitor's active_special
+ * points at that same interned string; every other (non-special) client is
+ * hidden while any special workspace is showing, exactly like switching to
+ * an overlay tag. Pinned/global/unglobal clients keep their previous
+ * "always visible" exemption so they still show through on top of a special
+ * workspace, matching how they are exempted from tag-switch animations. */
+#define VISIBLEON(C, M)                                                       \
 	((C) && (M) && (C)->mon == (M) &&                                          \
-	 (((C)->tags & (M)->tagset[(M)->seltags] || (C)->isglobal ||               \
-	   (C)->isunglobal || (C)->ispinned)))
+	 ((C)->isglobal || (C)->isunglobal || (C)->ispinned ||                     \
+	  ((C)->special_name != NULL                                              \
+		   ? (C)->special_name == (M)->active_special                         \
+		   : ((M)->active_special == NULL &&                                  \
+			  ((C)->tags & (M)->tagset[(M)->seltags])))))
 
 #define TAGMATCH(C, M)                                                         \
 	((C) && (M) && (C)->mon == (M) && (((C)->tags & (M)->tagset[(M)->seltags])))
@@ -455,6 +469,8 @@ struct Client {
 	int32_t iskilling;
 	int32_t istagswitching;
 	int32_t isnamedscratchpad;
+	char *special_name; /* interned name of the named special workspace this
+						 * client belongs to, NULL if not in one */
 	bool is_monocle_hide;
 	bool is_pending_open_animation;
 	bool is_restoring_from_ov;
@@ -655,6 +671,12 @@ struct Monitor {
 	struct wlr_ext_workspace_group_handle_v1 *ext_group;
 	bool iscleanuping;
 	int8_t carousel_anim_dir;
+	char *active_special;	   /* interned name of the named special workspace
+								* currently shown on top of this monitor, NULL
+								* if none */
+	bool special_transitioning; /* true while an arrange() call is animating a
+								 * special-workspace open/close/switch, used to
+								 * pick the slide animation in animation/tag.h */
 };
 
 typedef struct {
@@ -941,6 +963,10 @@ static void apply_named_scratchpad(Client *target_client);
 static Client *get_client_by_id_or_title(const char *arg_id,
 										 const char *arg_title);
 static bool switch_scratchpad_client_state(Client *c);
+static char *intern_special_workspace_name(const char *name);
+static void close_special_workspace(Monitor *m, bool want_animation);
+static void open_special_workspace(Monitor *m, char *interned,
+								   bool want_animation);
 static bool check_trackpad_disabled(struct wlr_pointer *pointer);
 static uint32_t get_tag_status(uint32_t tag, Monitor *m);
 static void enable_adaptive_sync(Monitor *m, struct wlr_output_state *state);
@@ -1354,6 +1380,7 @@ void client_replace(Client *c, Client *w, bool is_group_change_member,
 	c->isurgent = w->isurgent;
 	c->is_in_scratchpad = w->is_in_scratchpad;
 	c->is_scratchpad_show = w->is_scratchpad_show;
+	c->special_name = w->special_name;
 	c->tags = w->tags;
 	c->geom = w->geom;
 	c->float_geom = w->float_geom;
@@ -1561,6 +1588,83 @@ void apply_named_scratchpad(Client *target_client) {
 		switch_scratchpad_client_state(target_client);
 	} else
 		switch_scratchpad_client_state(target_client);
+}
+
+/* ---------------- named special workspaces (Hyprland-style) -------------
+ *
+ * Unlike the (floating, single-instance-per-name) scratchpad above, a named
+ * special workspace is a per-monitor overlay that can hold any number of
+ * tiled or floating clients and slides in on top of whatever tag is
+ * currently selected. Membership is tracked with Client::special_name
+ * (NULL == not in a special workspace); visibility is driven purely by
+ * comparing that against Monitor::active_special inside VISIBLEON(), so the
+ * normal arrange()/layout code hides/shows/tiles special-workspace clients
+ * for free. Names are interned so membership checks are pointer
+ * comparisons instead of repeated strcmp() calls inside the hot VISIBLEON()
+ * macro. */
+
+#define MAX_SPECIAL_WORKSPACE_NAMES 64
+static char *special_workspace_names[MAX_SPECIAL_WORKSPACE_NAMES];
+static int32_t special_workspace_name_count = 0;
+
+char *intern_special_workspace_name(const char *name) {
+	if (!name || !name[0])
+		return NULL;
+
+	for (int32_t i = 0; i < special_workspace_name_count; i++) {
+		if (strcmp(special_workspace_names[i], name) == 0)
+			return special_workspace_names[i];
+	}
+
+	if (special_workspace_name_count >= MAX_SPECIAL_WORKSPACE_NAMES) {
+		fprintf(stderr,
+				"\033[1m\033[31m[ERROR]:\033[33m too many distinct named "
+				"special workspaces (max %d), ignoring \"%s\"\n",
+				MAX_SPECIAL_WORKSPACE_NAMES, name);
+		return NULL;
+	}
+
+	special_workspace_names[special_workspace_name_count] = strdup(name);
+	return special_workspace_names[special_workspace_name_count++];
+}
+
+/* Slides the special workspace currently showing on `m` (if any) back out
+ * and returns to the plain tag view underneath. */
+void close_special_workspace(Monitor *m, bool want_animation) {
+	if (!m || !m->active_special)
+		return;
+
+	m->active_special = NULL;
+	m->special_transitioning = want_animation && config.animations;
+	arrange(m, want_animation, false);
+	m->special_transitioning = false;
+	focusclient(focustop(m), 1);
+	printstatus(IPC_WATCH_ARRANGGE);
+}
+
+/* Shows named special workspace `interned` on top of whatever tag is
+ * currently active on `m`. A monitor can only show one special workspace
+ * at a time, so if another one is already showing it is implicitly closed
+ * (slid out) in the same arrange() pass. */
+void open_special_workspace(Monitor *m, char *interned, bool want_animation) {
+	Client *c = NULL;
+
+	if (!m || !interned || m->active_special == interned)
+		return;
+
+	m->active_special = interned;
+	m->special_transitioning = want_animation && config.animations;
+	arrange(m, want_animation, false);
+	m->special_transitioning = false;
+
+	wl_list_for_each(c, &clients, link) {
+		if (c->mon == m && c->special_name == interned) {
+			focusclient(c, true);
+			break;
+		}
+	}
+
+	printstatus(IPC_WATCH_ARRANGGE);
 }
 
 void gpureset(struct wl_listener *listener, void *data) {
@@ -1828,6 +1932,12 @@ void applyrules(Client *c) {
 
 		if (c->isnamedscratchpad) {
 			c->isfloating = 1;
+		}
+
+		// assign to a named special workspace (tiled or floating, unlike the
+		// scratchpad above)
+		if (r->special_workspace && r->special_workspace[0]) {
+			c->special_name = intern_special_workspace_name(r->special_workspace);
 		}
 
 		// pinned windows are always floating
@@ -5016,6 +5126,7 @@ void init_client_properties(Client *c) {
 	c->is_in_scratchpad = 0;
 	c->isnamedscratchpad = 0;
 	c->is_scratchpad_show = 0;
+	c->special_name = NULL;
 	c->need_float_size_reduce = 0;
 	c->is_clip_to_hide = 0;
 	c->is_restoring_from_ov = 0;

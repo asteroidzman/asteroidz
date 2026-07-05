@@ -1246,6 +1246,75 @@ void pre_caculate_before_arrange(Monitor *m, bool want_animation,
 		total_master_inner_percent, master_num, stack_num);
 }
 
+/* Tiling layout used inside a named special workspace. Special-workspace
+ * clients are deliberately kept out of the per-tag layout state
+ * (m->pertag->{nmasters,mfacts,dwindle_root,scroller_state}[...]) since
+ * that state is keyed by the underlying tag that stays selected while the
+ * special workspace overlays it; reusing it here would corrupt whichever
+ * normal tag is currently hidden underneath. Instead this is a small
+ * self-contained master/stack ("tile") layout, using the global
+ * config.default_nmaster/config.default_mfact as its master count/ratio,
+ * so opening any special workspace always gets a real tiling layout
+ * without needing a per-name copy of every layout's persistent state. */
+void arrange_special(Monitor *m) {
+	Client *c = NULL;
+	int32_t i, n = 0, h, r;
+	int32_t ie = enablegaps;
+	int32_t mw, my, ty;
+	int32_t nmaster = config.default_nmaster > 0 ? (int32_t)config.default_nmaster : 1;
+	double mfact = config.default_mfact > 0.0f ? config.default_mfact : 0.5;
+
+	n = m->visible_fake_tiling_clients;
+	if (n == 0)
+		return;
+
+	int32_t cur_gappiv = enablegaps ? m->gappiv : 0;
+	int32_t cur_gappih = enablegaps ? m->gappih : 0;
+	int32_t cur_gappov = enablegaps ? m->gappov : 0;
+	int32_t cur_gappoh = enablegaps ? m->gappoh : 0;
+
+	if (config.smartgaps && n == 1) {
+		cur_gappiv = cur_gappih = cur_gappov = cur_gappoh = 0;
+	}
+
+	if (n > nmaster)
+		mw = nmaster ? (m->w.width + cur_gappih * ie) * mfact : 0;
+	else
+		mw = m->w.width - 2 * cur_gappoh + cur_gappih * ie;
+
+	i = 0;
+	my = ty = cur_gappov;
+
+	wl_list_for_each(c, &clients, link) {
+		if (!VISIBLEON(c, m) || !ISFAKETILED(c))
+			continue;
+
+		if (i < nmaster) {
+			r = MANGO_MIN(n, nmaster) - i;
+			h = (m->w.height - my - cur_gappov - cur_gappiv * ie * (r - 1)) / r;
+			client_tile_resize(c,
+							   (struct wlr_box){.x = m->w.x + cur_gappoh,
+												.y = m->w.y + my,
+												.width = mw - cur_gappih * ie,
+												.height = h},
+							   0);
+			my += h + cur_gappiv * ie;
+		} else {
+			r = n - i;
+			h = (m->w.height - ty - cur_gappov - cur_gappiv * ie * (r - 1)) / r;
+			client_tile_resize(
+				c,
+				(struct wlr_box){.x = m->w.x + mw + cur_gappoh,
+								 .y = m->w.y + ty,
+								 .width = m->w.width - mw - 2 * cur_gappoh,
+								 .height = h},
+				0);
+			ty += h + cur_gappiv * ie;
+		}
+		i++;
+	}
+}
+
 void // 17
 arrange(Monitor *m, bool want_animation, bool from_view) {
 
@@ -1263,6 +1332,8 @@ arrange(Monitor *m, bool want_animation, bool from_view) {
 
 	if (m->isoverview) {
 		overviewlayout.arrange(m);
+	} else if (m->active_special) {
+		arrange_special(m);
 	} else {
 		m->pertag->ltidxs[m->pertag->curtag]->arrange(m);
 	}
