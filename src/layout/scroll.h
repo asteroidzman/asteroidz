@@ -413,8 +413,20 @@ void scroller(Monitor *m) {
 		}
 	}
 
+	/* scroller_focus_center == 2: 仅当焦点列无法与上一个焦点列
+	 * 同时完整显示时才居中（溢出时居中） */
+	bool focus_center_on_overflow =
+		config.scroller_focus_center == 2 && !need_apply_overspread &&
+		(!m->prevsel ||
+		 (ISSCROLLTILED(m->prevsel) &&
+		  (m->prevsel->scroller_proportion * max_client_width) +
+				  (heads[focus_index]->scroller_proportion *
+				   max_client_width) >
+			  m->w.width - 2 * config.scroller_structs - cur_gappih));
+
 	bool need_apply_center =
-		config.scroller_focus_center || n_heads == 1 ||
+		config.scroller_focus_center == 1 || focus_center_on_overflow ||
+		n_heads == 1 ||
 		(config.scroller_prefer_center && !need_apply_overspread &&
 		 (!m->prevsel ||
 		  (ISSCROLLTILED(m->prevsel) &&
@@ -423,7 +435,8 @@ void scroller(Monitor *m) {
 					max_client_width) >
 			   m->w.width - 2 * config.scroller_structs - cur_gappih)));
 
-	if (n_heads == 1 && scroller_ignore_proportion_single) {
+	if (n_heads == 1 &&
+		(scroller_ignore_proportion_single || config.scroller_center_single)) {
 		need_scroller = true;
 	}
 	if (start_drag_window)
@@ -635,8 +648,20 @@ void vertical_scroller(Monitor *m) {
 		}
 	}
 
+	/* scroller_focus_center == 2: 仅当焦点列无法与上一个焦点列
+	 * 同时完整显示时才居中（溢出时居中） */
+	bool focus_center_on_overflow =
+		config.scroller_focus_center == 2 && !need_apply_overspread &&
+		(!m->prevsel ||
+		 (ISSCROLLTILED(m->prevsel) &&
+		  (m->prevsel->scroller_proportion * max_client_height) +
+				  (heads[focus_index]->scroller_proportion *
+				   max_client_height) >
+			  m->w.height - 2 * config.scroller_structs - cur_gappiv));
+
 	bool need_apply_center =
-		config.scroller_focus_center || n_heads == 1 ||
+		config.scroller_focus_center == 1 || focus_center_on_overflow ||
+		n_heads == 1 ||
 		(config.scroller_prefer_center && !need_apply_overspread &&
 		 (!m->prevsel ||
 		  (ISSCROLLTILED(m->prevsel) &&
@@ -645,7 +670,8 @@ void vertical_scroller(Monitor *m) {
 					max_client_height) >
 			   m->w.height - 2 * config.scroller_structs - cur_gappiv)));
 
-	if (n_heads == 1 && scroller_ignore_proportion_single) {
+	if (n_heads == 1 &&
+		(scroller_ignore_proportion_single || config.scroller_center_single)) {
 		need_scroller = true;
 	}
 	if (start_drag_window)

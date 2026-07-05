@@ -157,13 +157,24 @@ bindr=Super,Super_L,spawn,rofi -show run
 | `incnmaster` | `+1/-1` | Increase/Decrease number of master windows. |
 | `setmfact` | `+0.05` | Increase/Decrease master area size. |
 | `set_proportion` | `float` | Set scroller window proportion (0.0–1.0). |
-| `switch_proportion_preset` | - | Cycle proportion presets of scroller window. |
+| `switch_proportion_preset` | `[next/prev]` | Cycle proportion presets of scroller window forwards or backwards (default `next`). |
 | `scroller_stack` | `left/right/up/down` | Move window inside/outside scroller stack by direction. |
+| `scroller_consume` | - | Pull the next column's window into the focused window's scroller stack. No-op for pinned or grouped windows. |
+| `scroller_expel` | - | Pop the focused window out of its scroller stack into its own column placed after the current one. No-op for pinned or grouped windows. |
 | `incgaps` | `+/-value` | Adjust gap size. |
 | `togglegaps` | - | Toggle gaps. |
 |  `dwindle_toggle_split_direction` | - | Toggle split direction in dwindle layout. |
 | `dwindle_split_horizontal` | - | Set split window direction to horizontal in dwindle layout. |
 | `dwindle_split_vertical` | - | Set split window direction to vertical in dwindle layout. |
+
+Suggested scroller binds (not bound by default — uncomment to use):
+
+```ini
+# bind=SUPER,r,switch_proportion_preset,next
+# bind=SUPER+SHIFT,r,switch_proportion_preset,prev
+# bind=SUPER,i,scroller_consume
+# bind=SUPER,o,scroller_expel
+```
 
 ### System
 

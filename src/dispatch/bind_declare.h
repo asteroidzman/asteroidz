@@ -84,6 +84,8 @@ int32_t dpms_on_monitor(const Arg *arg);
 int32_t dpms_toggle_monitor(const Arg *arg);
 int32_t retrain_monitor(const Arg *arg);
 int32_t scroller_stack(const Arg *arg);
+int32_t scroller_consume(const Arg *arg);
+int32_t scroller_expel(const Arg *arg);
 int32_t toggle_all_floating(const Arg *arg);
 int32_t dwindle_toggle_split_direction(const Arg *arg);
 int32_t dwindle_split_horizontal(const Arg *arg);

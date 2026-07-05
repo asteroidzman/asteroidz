@@ -234,6 +234,7 @@ typedef struct {
 	int32_t scroller_ignore_proportion_single;
 	int32_t scroller_focus_center;
 	int32_t scroller_prefer_center;
+	int32_t scroller_center_single;
 	int32_t scroller_prefer_overspread;
 	int32_t edge_scroller_pointer_focus;
 	double edge_scroller_focus_allow_speed;
@@ -1104,7 +1105,11 @@ FuncType parse_func_name(char *func_name, Arg *arg, char *arg_value,
 		(*arg).f = atof(arg_value);
 	} else if (strcmp(func_name, "switch_proportion_preset") == 0) {
 		func = switch_proportion_preset;
-		(*arg).i = parse_circle_direction(arg_value);
+		/* 未传方向参数时默认向后循环 */
+		if (arg_value[0] == '\0' || strcmp(arg_value, "0") == 0)
+			(*arg).i = NEXT;
+		else
+			(*arg).i = parse_circle_direction(arg_value);
 	} else if (strcmp(func_name, "viewtoleft") == 0) {
 		func = viewtoleft;
 		(*arg).i = atoi(arg_value);
@@ -1362,6 +1367,10 @@ FuncType parse_func_name(char *func_name, Arg *arg, char *arg_value,
 	} else if (strcmp(func_name, "scroller_stack") == 0) {
 		func = scroller_stack;
 		(*arg).i = parse_direction(arg_value);
+	} else if (strcmp(func_name, "scroller_consume") == 0) {
+		func = scroller_consume;
+	} else if (strcmp(func_name, "scroller_expel") == 0) {
+		func = scroller_expel;
 	} else if (strcmp(func_name, "toggle_all_floating") == 0) {
 		func = toggle_all_floating;
 	} else if (strcmp(func_name, "dwindle_toggle_split_direction") == 0) {
@@ -1531,9 +1540,11 @@ bool parse_option(Config *config, char *key, char *value) {
 	} else if (strcmp(key, "scroller_ignore_proportion_single") == 0) {
 		config->scroller_ignore_proportion_single = atoi(value);
 	} else if (strcmp(key, "scroller_focus_center") == 0) {
-		config->scroller_focus_center = atoi(value);
+		config->scroller_focus_center = CLAMP_INT(atoi(value), 0, 2);
 	} else if (strcmp(key, "scroller_prefer_center") == 0) {
 		config->scroller_prefer_center = atoi(value);
+	} else if (strcmp(key, "scroller_center_single") == 0) {
+		config->scroller_center_single = CLAMP_INT(atoi(value), 0, 1);
 	} else if (strcmp(key, "scroller_prefer_overspread") == 0) {
 		config->scroller_prefer_overspread = atoi(value);
 	} else if (strcmp(key, "edge_scroller_pointer_focus") == 0) {
@@ -3955,6 +3966,7 @@ void set_value_default() {
 	config.scroller_ignore_proportion_single = 1;
 	config.scroller_focus_center = 0;
 	config.scroller_prefer_center = 0;
+	config.scroller_center_single = 0;
 	config.scroller_prefer_overspread = 1;
 	config.edge_scroller_pointer_focus = 1;
 	config.edge_scroller_focus_allow_speed = 0.0f;

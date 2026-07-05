@@ -2305,6 +2305,92 @@ int32_t scroller_stack(const Arg *arg) {
 	return scroller_apply_stack(c, target_client, arg->i);
 }
 
+/* 把下一列的头窗口吸入当前焦点窗口所在的堆叠尾部 */
+int32_t scroller_consume(const Arg *arg) {
+	Client *c, *tc, *next_head = NULL;
+	if (!selmon || selmon->isoverview || !is_scroller_layout(selmon))
+		return 0;
+
+	c = arg->tc ? arg->tc : selmon->sel;
+	if (!c || !c->mon || c->isfloating || !ISSCROLLTILED(c) ||
+		!VISIBLEON(c, selmon))
+		return 0;
+
+	/* 固定窗口和窗口组成员不参与堆叠 */
+	if (c->ispinned || c->group_next || c->group_prev)
+		return 0;
+
+	Monitor *m = c->mon;
+	uint32_t tag = m->pertag->curtag;
+	struct TagScrollerState *st = ensure_scroller_state(m, tag);
+	if (!find_scroller_node(st, c))
+		return 0;
+
+	Client *tail = scroll_get_stack_tail_client(c);
+
+	/* 堆叠在客户端链表中是连续的，
+	 * 尾节点之后第一个可见的平铺窗口就是下一列的头 */
+	bool passed = false;
+	wl_list_for_each(tc, &clients, link) {
+		if (tc == tail) {
+			passed = true;
+			continue;
+		}
+		if (!passed || !VISIBLEON(tc, m) || !ISSCROLLTILED(tc))
+			continue;
+		next_head = tc;
+		break;
+	}
+
+	if (!next_head || next_head->ispinned || next_head->group_next ||
+		next_head->group_prev)
+		return 0;
+
+	scroller_apply_stack(next_head, tail, UNDIR);
+	return 0;
+}
+
+/* 把焦点窗口从堆叠中弹出，成为紧随当前列之后的独立列 */
+int32_t scroller_expel(const Arg *arg) {
+	Client *c;
+	if (!selmon || selmon->isoverview || !is_scroller_layout(selmon))
+		return 0;
+
+	c = arg->tc ? arg->tc : selmon->sel;
+	if (!c || !c->mon || c->isfloating || !ISSCROLLTILED(c) ||
+		!VISIBLEON(c, selmon))
+		return 0;
+
+	/* 固定窗口和窗口组成员不参与堆叠 */
+	if (c->ispinned || c->group_next || c->group_prev)
+		return 0;
+
+	Monitor *m = c->mon;
+	uint32_t tag = m->pertag->curtag;
+	struct TagScrollerState *st = ensure_scroller_state(m, tag);
+	struct ScrollerStackNode *cnode = find_scroller_node(st, c);
+
+	/* 不在堆叠中就无事可做 */
+	if (!cnode || (!cnode->prev_in_stack && !cnode->next_in_stack))
+		return 0;
+
+	struct ScrollerStackNode *refer_node =
+		cnode->prev_in_stack ? cnode->prev_in_stack : cnode->next_in_stack;
+	scroller_node_remove(st, cnode);
+
+	update_scroller_state(m);
+
+	/* 弹出后放到原堆叠尾部之后，成为下一列 */
+	Client *stack_tail = scroll_get_stack_tail_client(refer_node->client);
+	if (c != stack_tail) {
+		wl_list_safe_reinsert_next(&stack_tail->link, &c->link);
+	}
+
+	sync_scroller_state_to_clients(m, tag);
+	arrange(m, false, false);
+	return 0;
+}
+
 int32_t toggle_all_floating(const Arg *arg) {
 	if (!selmon)
 		return 0;
