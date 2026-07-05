@@ -8307,7 +8307,7 @@ int32_t main(int32_t argc, char *argv[]) {
 		} else if (c == 'd') {
 			cli_debug_log = true;
 		} else if (c == 'v') {
-			printf("mango " VERSION "\n");
+			printf("asteroidz " VERSION "\n");
 			return EXIT_SUCCESS;
 		} else if (c == 'c') {
 			cli_config_path = optarg;
@@ -8331,7 +8331,7 @@ int32_t main(int32_t argc, char *argv[]) {
 
 	return EXIT_SUCCESS;
 usage:
-	printf("Usage: mango [OPTIONS]\n"
+	printf("Usage: asteroidz [OPTIONS]\n"
 		   "\n"
 		   "Options:\n"
 		   "  -v             Show mango version\n"
