@@ -211,7 +211,7 @@ enum {
 	GroupBar
 }; /* client types (the tag lives in the first struct member so generic
 	  scene node.data walks in xytonode can identify the owner) */
-enum { AxisUp, AxisDown, AxisLeft, AxisRight }; // 滚轮滚动的方向
+enum { AxisUp, AxisDown, AxisLeft, AxisRight }; // scroll wheel direction
 enum {
 	LyrBg,
 	LyrBlur,
@@ -312,7 +312,7 @@ typedef struct {
 	uint32_t button;
 	int32_t (*func)(const Arg *);
 	const Arg arg;
-} Button; // 鼠标按键
+} Button; // mouse button
 
 typedef struct {
 	char mode[28];
@@ -729,7 +729,7 @@ struct ScrollerStackNode {
 };
 
 struct TagScrollerState {
-	struct ScrollerStackNode *all_first; /* 所有节点的单链表头 */
+	struct ScrollerStackNode *all_first; /* singly-linked list head of all nodes */
 	int count;
 };
 
@@ -744,18 +744,18 @@ typedef struct {
 /* function declarations */
 static void applybounds(
 	Client *c,
-	struct wlr_box *bbox); // 设置边界规则,能让一些窗口拥有比较适合的大小
-static void applyrules(Client *c); // 窗口规则应用,应用config.h中定义的窗口规则
+	struct wlr_box *bbox); // apply bounds rules, giving some windows a more suitable size
+static void applyrules(Client *c); // apply window rules, applies the window rules defined in config.h
 static void arrange(Monitor *m, bool want_animation,
-					bool from_view); // 布局函数,让窗口俺平铺规则移动和重置大小
+					bool from_view); // layout function, moves/resizes windows according to the tiling rules
 static void arrangelayer(Monitor *m, struct wl_list *list,
 						 struct wlr_box *usable_area, int32_t exclusive);
 static void arrangelayers(Monitor *m);
 static void handle_print_status(struct wl_listener *listener, void *data);
 static void axisnotify(struct wl_listener *listener,
-					   void *data); // 滚轮事件处理
+					   void *data); // scroll wheel event handling
 static void buttonpress(struct wl_listener *listener,
-						void *data); // 鼠标按键事件处理
+						void *data); // mouse button event handling
 static bool handle_buttonpress(struct wlr_pointer_button_event *event);
 static int32_t ongesture(struct wlr_pointer_swipe_end_event *event);
 static void swipe_begin(struct wl_listener *listener, void *data);
@@ -767,11 +767,11 @@ static void pinch_end(struct wl_listener *listener, void *data);
 static void hold_begin(struct wl_listener *listener, void *data);
 static void hold_end(struct wl_listener *listener, void *data);
 static void checkidleinhibitor(struct wlr_surface *exclude);
-static void cleanup(void);										  // 退出清理
-static void cleanupmon(struct wl_listener *listener, void *data); // 退出清理
+static void cleanup(void);										  // exit cleanup
+static void cleanupmon(struct wl_listener *listener, void *data); // exit cleanup
 static void closemon(Monitor *m);
 static void cleanuplisteners(void);
-static void toggle_hotarea(int32_t x_root, int32_t y_root); // 触发热区
+static void toggle_hotarea(int32_t x_root, int32_t y_root); // trigger hot corner
 static void maplayersurfacenotify(struct wl_listener *listener, void *data);
 static void commitlayersurfacenotify(struct wl_listener *listener, void *data);
 static void commitnotify(struct wl_listener *listener, void *data);
@@ -1335,7 +1335,7 @@ void clear_fullscreen_and_maximized_state(Monitor *m) {
 	}
 }
 
-/*清除全屏标志,还原全屏时清0的border*/
+/* clear the fullscreen flag, restoring the border that was zeroed while fullscreen */
 void clear_fullscreen_flag(Client *c) {
 
 	if ((c->mon->pertag->ltidxs[get_tags_first_tag_num(c->tags)]->id ==
@@ -1394,7 +1394,7 @@ void show_scratchpad(Client *c) {
 		c->geom.height =
 			c->iscustomsize ? c->float_geom.height
 							: c->mon->w.height * config.scratchpad_height_ratio;
-		// 重新计算居中的坐标
+		// recompute the centered coordinates
 		c->float_geom = c->geom = c->animainit_geom = c->animation.current =
 			setclient_coordinate_center(c, c->mon, c->geom, 0, 0);
 		c->iscustomsize = 1;
@@ -1402,8 +1402,8 @@ void show_scratchpad(Client *c) {
 	}
 
 	c->oldtags = c->mon->tagset[c->mon->seltags];
-	wl_list_remove(&c->link);					  // 从原来位置移除
-	wl_list_insert(clients.prev->next, &c->link); // 插入开头
+	wl_list_remove(&c->link);					  // remove from its old position
+	wl_list_insert(clients.prev->next, &c->link); // insert at the head
 	show_hide_client(c);
 	setborder_color(c);
 }
@@ -1464,7 +1464,7 @@ void client_replace(Client *c, Client *w, bool is_group_change_member,
 		wlr_scene_node_set_enabled(&w->group_bar->scene_buffer->node, false);
 	}
 
-	/* 全局链表替换: the fork keeps replaced/hidden clients OUT of the
+	/* global list swap: the fork keeps replaced/hidden clients OUT of the
 	 * client lists, so use guarded remove/insert instead of upstream's
 	 * is_logic_hide-based wl_list_safe_reinsert_* form */
 	if (c->link.prev && c->link.next && c->link.prev != &c->link) {
@@ -1541,12 +1541,12 @@ void client_replace(Client *c, Client *w, bool is_group_change_member,
 				struct TagScrollerState *st = w->mon->pertag->scroller_state[t];
 				if (!st)
 					continue;
-				/* 先移除 c 在任意 tag 中的旧节点 */
+				/* first remove c's old node in any tag */
 				struct ScrollerStackNode *cn = find_scroller_node(st, c);
 				if (cn)
 					scroller_node_remove(st, cn);
 
-				/* 将 w 的节点（如果存在）转给 c */
+				/* transfer w's node (if it exists) to c */
 				struct ScrollerStackNode *wn = find_scroller_node(st, w);
 				if (wn)
 					wn->client = c;
@@ -1554,7 +1554,7 @@ void client_replace(Client *c, Client *w, bool is_group_change_member,
 		}
 	}
 
-	/* 同步当前活动 tag 的全局客户端字段 */
+	/* sync the global client fields for the currently active tag */
 	if (layout->id == SCROLLER || layout->id == VERTICAL_SCROLLER) {
 		sync_scroller_state_to_clients(w->mon, w->mon->pertag->curtag);
 	}
@@ -1564,14 +1564,14 @@ bool switch_scratchpad_client_state(Client *c) {
 
 	if (config.scratchpad_cross_monitor && selmon && c->mon != selmon &&
 		c->is_in_scratchpad) {
-		// 保存原始monitor用于尺寸计算
+		// save the original monitor for size calculations
 		Monitor *oldmon = c->mon;
 		c->scratchpad_switching_mon = true;
 		c->mon = selmon;
 		reset_foreign_tolevel(c, oldmon, c->mon);
 		client_update_oldmonname_record(c, selmon);
 
-		// 根据新monitor调整窗口尺寸
+		// adjust window size for the new monitor
 		c->float_geom.width =
 			(int32_t)(c->float_geom.width * c->mon->w.width / oldmon->w.width);
 		c->float_geom.height = (int32_t)(c->float_geom.height *
@@ -1580,7 +1580,7 @@ bool switch_scratchpad_client_state(Client *c) {
 		c->float_geom =
 			setclient_coordinate_center(c, c->mon, c->float_geom, 0, 0);
 
-		// 只有显示状态的scratchpad才需要聚焦和返回true
+		// only a visible scratchpad needs to be focused and return true
 		if (c->is_scratchpad_show) {
 			c->tags = get_tags_first_tag(selmon->tagset[selmon->seltags]);
 			resize(c, c->float_geom, 0);
@@ -1745,59 +1745,59 @@ void handlesig(int32_t signo) {
 }
 
 void toggle_hotarea(int32_t x_root, int32_t y_root) {
-	// 左下角热区坐标计算,兼容多显示屏
+	// bottom-left hot area coordinate calculation, multi-monitor aware
 	Arg arg = {0};
 
-	// 在刚启动的时候,selmon为NULL,但鼠标可能已经处于热区,
-	// 必须判断避免奔溃
+	// right at startup selmon may be NULL, but the pointer might already be
+	// in the hot area, so we must guard against that to avoid a crash
 	if (!selmon)
 		return;
 
 	if (grabc)
 		return;
 
-	// 根据热角位置计算不同的热区坐标
+	// compute the hot area coordinates based on the configured corner
 	unsigned hx, hy;
 
 	switch (config.hotarea_corner) {
-	case BOTTOM_RIGHT: // 右下角
+	case BOTTOM_RIGHT: // bottom-right
 		hx = selmon->m.x + selmon->m.width - config.hotarea_size;
 		hy = selmon->m.y + selmon->m.height - config.hotarea_size;
 		break;
-	case TOP_LEFT: // 左上角
+	case TOP_LEFT: // top-left
 		hx = selmon->m.x + config.hotarea_size;
 		hy = selmon->m.y + config.hotarea_size;
 		break;
-	case TOP_RIGHT: // 右上角
+	case TOP_RIGHT: // top-right
 		hx = selmon->m.x + selmon->m.width - config.hotarea_size;
 		hy = selmon->m.y + config.hotarea_size;
 		break;
-	case BOTTOM_LEFT: // 左下角（默认）
+	case BOTTOM_LEFT: // bottom-left (default)
 	default:
 		hx = selmon->m.x + config.hotarea_size;
 		hy = selmon->m.y + selmon->m.height - config.hotarea_size;
 		break;
 	}
 
-	// 判断鼠标是否在热区内
+	// check whether the pointer is within the hot area
 	int in_hotarea = 0;
 
 	switch (config.hotarea_corner) {
-	case BOTTOM_RIGHT: // 右下角
+	case BOTTOM_RIGHT: // bottom-right
 		in_hotarea = (y_root > hy && x_root > hx &&
 					  x_root <= (selmon->m.x + selmon->m.width) &&
 					  y_root <= (selmon->m.y + selmon->m.height));
 		break;
-	case TOP_LEFT: // 左上角
+	case TOP_LEFT: // top-left
 		in_hotarea = (y_root < hy && x_root < hx && x_root >= selmon->m.x &&
 					  y_root >= selmon->m.y);
 		break;
-	case TOP_RIGHT: // 右上角
+	case TOP_RIGHT: // top-right
 		in_hotarea = (y_root < hy && x_root > hx &&
 					  x_root <= (selmon->m.x + selmon->m.width) &&
 					  y_root >= selmon->m.y);
 		break;
-	case BOTTOM_LEFT: // 左下角（默认）
+	case BOTTOM_LEFT: // bottom-left (default)
 	default:
 		in_hotarea = (y_root > hy && x_root < hx && x_root >= selmon->m.x &&
 					  y_root <= (selmon->m.y + selmon->m.height));
@@ -2362,7 +2362,7 @@ bool pointer_is_trackpad(struct wlr_pointer *pointer) {
 	return false;
 }
 
-void // 鼠标滚轮事件
+void // mouse scroll wheel event
 axisnotify(struct wl_listener *listener, void *data) {
 	/* This event is forwarded by the cursor when a pointer emits an axis event,
 	 * for example when you move the scroll wheel. */
@@ -2419,15 +2419,15 @@ axisnotify(struct wl_listener *listener, void *data) {
 		if (config.axis_bindings_count < 1)
 			break;
 		a = &config.axis_bindings[ji];
-		if (CLEANMASK(mods) == CLEANMASK(a->mod) && // 按键一致
-			adir == a->dir && a->func) { // 滚轮方向判断一致且处理函数存在
+		if (CLEANMASK(mods) == CLEANMASK(a->mod) && // modifiers match
+			adir == a->dir && a->func) { // scroll direction matches and a handler exists
 			if (event->time_msec - axis_apply_time >
 					config.axis_bind_apply_timeout ||
 				axis_apply_dir * event->delta < 0) {
 				a->func(&a->arg);
 				axis_apply_time = event->time_msec;
 				axis_apply_dir = event->delta > 0 ? 1 : -1;
-				return; // 如果成功匹配就不把这个滚轮事件传送给客户端了
+				return; // on a successful match, don't forward this scroll event to the client
 			} else {
 				axis_apply_dir = event->delta > 0 ? 1 : -1;
 				axis_apply_time = event->time_msec;
@@ -2446,7 +2446,7 @@ axisnotify(struct wl_listener *listener, void *data) {
 							   : config.axis_scroll_factor;
 
 	wlr_seat_pointer_notify_axis(
-		seat, // 滚轮事件发送给客户端也就是窗口
+		seat, // forward the scroll event to the client, i.e. the window
 		event->time_msec, event->orientation,
 		event->delta * target_scroll_factor,
 		roundf(event->delta_discrete * target_scroll_factor), event->source,
@@ -2682,7 +2682,7 @@ bool check_trackpad_disabled(struct wlr_pointer *pointer) {
 	return pointer_is_trackpad(pointer);
 }
 
-void // 鼠标按键事件
+void // mouse button event
 buttonpress(struct wl_listener *listener, void *data) {
 	struct wlr_pointer_button_event *event = data;
 
@@ -2734,7 +2734,7 @@ bool handle_buttonpress(struct wlr_pointer_button_event *event) {
 				motionnotify(0, NULL, 0, 0, 0, 0);
 			}
 
-			// 聚焦按需要交互焦点的layer，但注意不能抢占独占焦点的layer
+			// focus an on-demand-interactive layer, but must not steal focus from an exclusive-focus layer
 			if (l && !exclusive_focus &&
 				l->layer_surface->current.keyboard_interactive ==
 					ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_ON_DEMAND) {
@@ -2742,7 +2742,7 @@ bool handle_buttonpress(struct wlr_pointer_button_event *event) {
 			}
 		}
 
-		// overview模式下鼠标左键跳转，右键关闭窗口
+		// in overview mode, left click jumps to the window, right click closes it
 		if (selmon && selmon->isoverview && event->button == BTN_LEFT && c) {
 			toggleoverview(&(Arg){.i = 1});
 			return true;
@@ -2767,8 +2767,8 @@ bool handle_buttonpress(struct wlr_pointer_button_event *event) {
 		// handle click on a group bar segment
 		client_handle_decorate_click(gb);
 
-		// 当鼠标焦点在layer上的时候，不检测虚拟键盘的mod状态，
-		// 避免layer虚拟键盘锁死mod按键状态
+		// while pointer focus is on a layer, don't check the virtual keyboard's mod state,
+		// to avoid the layer's virtual keyboard getting stuck with a mod key held
 		hard_keyboard = &kb_group->wlr_group->keyboard;
 		hard_mods =
 			hard_keyboard ? wlr_keyboard_get_modifiers(hard_keyboard) : 0;
@@ -3174,7 +3174,7 @@ void layer_flush_blur_background(LayerSurface *l) {
 	if (!config.blur)
 		return;
 
-	// 如果背景层发生变化,标记优化的模糊背景缓存需要更新
+	// if the background layer changed, mark the optimized blur background cache dirty
 	if (l->layer_surface->current.layer ==
 		ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND) {
 		if (l->mon) {
@@ -3194,11 +3194,11 @@ void maplayersurfacenotify(struct wl_listener *listener, void *data) {
 	if (!l->mon)
 		return;
 	strncpy(l->mon->last_open_surface, layer_surface->namespace,
-			sizeof(l->mon->last_open_surface) - 1); // 最多拷贝255个字符
+			sizeof(l->mon->last_open_surface) - 1); // copy at most 255 characters
 	l->mon->last_open_surface[sizeof(l->mon->last_open_surface) - 1] =
-		'\0'; // 确保字符串以null结尾
+		'\0'; // ensure the string is null-terminated
 
-	// 初始化几何位置
+	// initialize geometry
 	get_layer_target_geometry(l, &l->geom);
 
 	l->noanim = 0;
@@ -3208,7 +3208,7 @@ void maplayersurfacenotify(struct wl_listener *listener, void *data) {
 	l->shield_when_capture = 0;
 	l->need_output_flush = true;
 
-	// 应用layer规则
+	// apply layer rules
 	for (ji = 0; ji < config.layer_rules_count; ji++) {
 		if (config.layer_rules_count < 1)
 			break;
@@ -3232,7 +3232,7 @@ void maplayersurfacenotify(struct wl_listener *listener, void *data) {
 	wlr_scene_node_lower_to_bottom(&l->shield->node);
 	wlr_scene_node_set_enabled(&l->shield->node, false);
 
-	// 初始化阴影
+	// initialize the shadow
 	if (layer_surface->current.exclusive_zone == 0 &&
 		layer_surface->current.layer != ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM &&
 		layer_surface->current.layer != ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND) {
@@ -3243,13 +3243,13 @@ void maplayersurfacenotify(struct wl_listener *listener, void *data) {
 		wlr_scene_node_set_enabled(&l->shadow->node, true);
 	}
 
-	// 初始化动画
+	// initialize the animation
 	if (config.animations && config.layer_animations && !l->noanim) {
 		l->animation.duration = config.animation_duration_open;
 		l->animation.action = OPEN;
 		layer_set_pending_state(l);
 	}
-	// 刷新布局，让窗口能感应到exclude_zone变化以及设置独占表面
+	// re-arrange the layout so windows react to the exclude_zone change and exclusive surfaces get set
 	arrangelayers(l->mon);
 	reset_exclusive_layers_focus(l->mon);
 }
@@ -3271,7 +3271,7 @@ void commitlayersurfacenotify(struct wl_listener *listener, void *data) {
 		l->layer_surface->current = l->layer_surface->pending;
 		arrangelayers(l->mon);
 		l->layer_surface->current = old_state;
-		// 按需交互layer只在map之前设置焦点
+		// an on-demand-interactive layer only gets focus set before it's mapped
 		if (!exclusive_focus &&
 			l->layer_surface->current.keyboard_interactive ==
 				ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_ON_DEMAND) {
@@ -3280,8 +3280,8 @@ void commitlayersurfacenotify(struct wl_listener *listener, void *data) {
 		return;
 	}
 
-	// 检查surface是否有buffer
-	// 空buffer，只是隐藏，不改变mapped状态
+	// check whether the surface has a buffer
+	// an empty buffer just means hidden, it doesn't change the mapped state
 	if (l->mapped && !layer_surface->surface->buffer) {
 		wlr_scene_node_set_enabled(&l->scene->node, false);
 		return;
@@ -3802,7 +3802,7 @@ bool monitor_merge_rules(Monitor *m, ConfigMonitorRule *out) {
 	return matched;
 }
 
-/* 将规则中的显示参数应用到 wlr_output_state 中，返回是否设置了自定义模式 */
+/* apply the display parameters from the rule to wlr_output_state, returning whether a custom mode was set */
 bool apply_rule_to_state(Monitor *m, const ConfigMonitorRule *rule,
 						 struct wlr_output_state *state, int vrr, int custom) {
 	bool mode_set = false;
@@ -4143,30 +4143,30 @@ void destroyinputdevice(struct wl_listener *listener, void *data) {
 	InputDevice *input_dev =
 		wl_container_of(listener, input_dev, destroy_listener);
 
-	// 清理设备特定数据
+	// clean up device-specific data
 	if (input_dev->device_data) {
-		// 根据设备类型进行特定清理
+		// perform cleanup specific to the device type
 		switch (input_dev->wlr_device->type) {
 		case WLR_INPUT_DEVICE_SWITCH: {
 			Switch *sw = (Switch *)input_dev->device_data;
-			// 移除 toggle 监听器
+			// remove the toggle listener
 			wl_list_remove(&sw->toggle.link);
-			// 释放 Switch 内存
+			// free the Switch memory
 			free(sw);
 			break;
 		}
-		// 可以添加其他设备类型的清理代码
+		// cleanup code for other device types can be added here
 		default:
 			break;
 		}
 		input_dev->device_data = NULL;
 	}
 
-	// 从设备列表中移除
+	// remove from the device list
 	wl_list_remove(&input_dev->link);
-	// 移除 destroy 监听器
+	// remove the destroy listener
 	wl_list_remove(&input_dev->destroy_listener.link);
-	// 释放内存
+	// free the memory
 	free(input_dev);
 }
 
@@ -4252,10 +4252,10 @@ void createpointer(struct wlr_pointer *pointer) {
 }
 
 void switch_toggle(struct wl_listener *listener, void *data) {
-	// 获取包含监听器的结构体
+	// get the struct containing the listener
 	Switch *sw = wl_container_of(listener, sw, toggle);
 
-	// 处理切换事件
+	// handle the toggle event
 	struct wlr_switch_toggle_event *event = data;
 	SwitchBinding *s;
 	int32_t ji;
@@ -4281,25 +4281,25 @@ void createswitch(struct wlr_switch *switch_device) {
 		InputDevice *input_dev = calloc(1, sizeof(InputDevice));
 		input_dev->wlr_device = &switch_device->base;
 		input_dev->libinput_device = device;
-		input_dev->device_data = NULL; // 初始化为 NULL
+		input_dev->device_data = NULL; // initialize to NULL
 
 		input_dev->destroy_listener.notify = destroyinputdevice;
 		wl_signal_add(&switch_device->base.events.destroy,
 					  &input_dev->destroy_listener);
 
-		// 创建 Switch 特定数据
+		// create Switch-specific data
 		Switch *sw = calloc(1, sizeof(Switch));
 		sw->wlr_switch = switch_device;
 		sw->toggle.notify = switch_toggle;
 		sw->input_dev = input_dev;
 
-		// 将 Switch 指针保存到 input_device 中
+		// save the Switch pointer into input_device
 		input_dev->device_data = sw;
 
-		// 添加 toggle 监听器
+		// add the toggle listener
 		wl_signal_add(&switch_device->events.toggle, &sw->toggle);
 
-		// 添加到全局列表
+		// add to the global list
 		wl_list_insert(&inputdevices, &input_dev->link);
 	}
 }
@@ -4520,7 +4520,7 @@ void focusclient(Client *c, int32_t lift) {
 	/* Raise client in stacking order if requested */
 	if (c && lift) {
 		client_raise_group(c);
-		wlr_scene_node_raise_to_top(&c->scene->node); // 将视图提升到顶层
+		wlr_scene_node_raise_to_top(&c->scene->node); // raise the view to the top
 	}
 
 	if (c && client_surface(c) == old_keyboard_focus_surface && selmon &&
@@ -5360,7 +5360,7 @@ mapnotify(struct wl_listener *listener, void *data) {
 
 	if (config.new_is_master && selmon && !is_scroller_layout(selmon))
 		// tile at the top
-		wl_list_insert(&clients, &c->link); // 新窗口是master,头部入栈
+		wl_list_insert(&clients, &c->link); // new window is master, push at the head
 	else if (selmon && is_scroller_layout(selmon) &&
 			 selmon->visible_scroll_tiling_clients > 0) {
 
@@ -5374,10 +5374,10 @@ mapnotify(struct wl_listener *listener, void *data) {
 		if (at_client) {
 			wl_list_insert(&at_client->link, &c->link);
 		} else {
-			wl_list_insert(clients.prev, &c->link); // 尾部入栈
+			wl_list_insert(clients.prev, &c->link); // push at the tail
 		}
 	} else
-		wl_list_insert(clients.prev, &c->link); // 尾部入栈
+		wl_list_insert(clients.prev, &c->link); // push at the tail
 
 	wl_list_insert(&fstack, &c->flink);
 
@@ -5464,8 +5464,8 @@ void set_minimized(Client *c) {
 		wlr_foreign_toplevel_handle_v1_set_activated(c->foreign_toplevel,
 													 false);
 
-	wl_list_remove(&c->link);				// 从原来位置移除
-	wl_list_insert(clients.prev, &c->link); // 插入尾部
+	wl_list_remove(&c->link);				// remove from its old position
+	wl_list_insert(clients.prev, &c->link); // insert at the tail
 }
 
 void minimizenotify(struct wl_listener *listener, void *data) {
@@ -5890,7 +5890,7 @@ void pointerfocus(Client *c, struct wlr_surface *surface, double sx, double sy,
 	wlr_seat_pointer_notify_motion(seat, time, sx, sy);
 }
 
-// 修改printstatus函数，接受掩码参数
+// modified printstatus function to accept a mask parameter
 void printstatus(enum ipc_watch_type type) {
 	wl_signal_emit(&mango_print_status, &type);
 }
@@ -6034,7 +6034,7 @@ void rendermon(struct wl_listener *listener, void *data) {
 
 	frame_allow_tearing = check_tearing_frame_allow(m);
 
-	// 绘制层和淡出效果
+	// draw layers and fade-out effects
 	for (i = 0; i < LENGTH(m->layers); i++) {
 		layer_list = &m->layers[i];
 		wl_list_for_each_safe(l, tmpl, layer_list, link) {
@@ -6050,10 +6050,10 @@ void rendermon(struct wl_listener *listener, void *data) {
 		need_more_frames = layer_draw_fadeout_frame(l) || need_more_frames;
 	}
 
-	// 光标缩放视图追踪(set_zoom 自带损坏与帧调度)
+	// cursor zoom view tracking (set_zoom handles its own damage and frame scheduling)
 	cursor_zoom_frame(m);
 
-	// 绘制客户端
+	// draw clients
 	wl_list_for_each(c, &clients, link) {
 		need_more_frames = client_draw_frame(c) || need_more_frames;
 		if (!config.animations && !grabc && c->configure_serial &&
@@ -6067,7 +6067,7 @@ void rendermon(struct wl_listener *listener, void *data) {
 		monitor_stop_skip_frame_timer(m);
 	}
 
-	// 只有在需要帧时才构建和提交状态
+	// only build and commit state when a frame is actually needed
 	if (config.allow_tearing && frame_allow_tearing) {
 		apply_tear_state(m);
 	} else if (shotui.want_capture && shotui.capture_mon == m) {
@@ -6114,11 +6114,11 @@ void rendermon(struct wl_listener *listener, void *data) {
 	}
 
 skip:
-	// 发送帧完成通知
+	// send the frame-done notification
 	clock_gettime(CLOCK_MONOTONIC, &now);
 	wlr_scene_output_send_frame_done(m->scene_output, &now);
 
-	// 如果需要更多帧，确保安排下一帧
+	// if more frames are needed, make sure the next frame is scheduled
 	if (need_more_frames && allow_frame_scheduling) {
 		request_fresh_all_monitors();
 	}
@@ -6129,11 +6129,11 @@ void requestdecorationmode(struct wl_listener *listener, void *data) {
 	struct wlr_xdg_toplevel_decoration_v1 *deco = data;
 
 	if (c->surface.xdg->initialized) {
-		// 获取客户端请求的模式
+		// get the mode requested by the client
 		enum wlr_xdg_toplevel_decoration_v1_mode requested_mode =
 			deco->requested_mode;
 
-		// 如果客户端没有指定，使用默认模式
+		// if the client didn't specify one, use the default mode
 		if (!c->allow_csd) {
 			requested_mode = WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE;
 		}
@@ -6387,7 +6387,7 @@ setfloating(Client *c, int32_t floating) {
 		client_pending_maximized_state(c, 0);
 		exit_scroller_stack(c);
 
-		// 重新计算居中的坐标
+		// recompute the centered coordinates
 		if (!client_is_x11(c) && !c->iscustompos)
 			target_box =
 				setclient_coordinate_center(c, c->mon, target_box, 0, 0);
@@ -6423,7 +6423,7 @@ setfloating(Client *c, int32_t floating) {
 		c->is_scratchpad_show = 0;
 		c->is_in_scratchpad = 0;
 		c->isnamedscratchpad = 0;
-		// 让当前tag中的全屏窗口退出全屏参与平铺
+		// make fullscreen windows on the current tag exit fullscreen and join the tiling
 		wl_list_for_each(fc, &clients,
 						 link) if (fc && fc != c && VISIBLEON(fc, c->mon) &&
 								   c->tags & fc->tags && ISFULLSCREEN(fc) &&
@@ -6493,7 +6493,7 @@ void exit_scroller_stack(Client *c) {
 		struct ScrollerStackNode *n = find_scroller_node(st, c);
 		if (n) {
 			scroller_node_remove(st, n);
-			return; /* 节点已移除，客户端指针已在函数内清空 */
+			return; /* node removed; the client pointer was already cleared inside the function */
 		}
 	}
 }
@@ -6564,7 +6564,7 @@ void setfakefullscreen(Client *c, int32_t fakefullscreen) {
 }
 
 void setfullscreen(Client *c, int32_t fullscreen,
-				   bool rearrange) // 用自定义全屏代理自带全屏
+				   bool rearrange) // use the custom fullscreen proxy's own fullscreen
 {
 
 	if (!c || !c->mon || !client_surface(c)->mapped || c->iskilling)
@@ -6590,7 +6590,7 @@ void setfullscreen(Client *c, int32_t fullscreen,
 		c->isfakefullscreen = 0;
 
 		c->bw = 0;
-		wlr_scene_node_raise_to_top(&c->scene->node); // 将视图提升到顶层
+		wlr_scene_node_raise_to_top(&c->scene->node); // raise the view to the top
 		if (!is_scroller_layout(c->mon) || c->isfloating)
 			resize(c, c->mon->m, 1);
 
@@ -6656,13 +6656,13 @@ void reset_keyboard_layout(void) {
 	struct xkb_keymap *new_keymap = xkb_keymap_new_from_names(
 		context, &config.xkb_rules, XKB_KEYMAP_COMPILE_NO_FLAGS);
 	if (!new_keymap) {
-		// 理论上这里不应该失败，因为前面已经验证过了
+		// this should theoretically never fail, since it was already validated above
 		wlr_log(WLR_ERROR,
 				"Unexpected failure to create keymap after validation");
 		goto cleanup_context;
 	}
 
-	// 验证新keymap是否有布局
+	// verify the new keymap has layouts
 	const int32_t new_num_layouts = xkb_keymap_num_layouts(new_keymap);
 	if (new_num_layouts < 1) {
 		wlr_log(WLR_ERROR, "New keymap has no layouts");
@@ -6670,7 +6670,7 @@ void reset_keyboard_layout(void) {
 		goto cleanup_context;
 	}
 
-	// 确保当前布局索引在新keymap中有效
+	// make sure the current layout index is valid in the new keymap
 	if (current >= new_num_layouts) {
 		wlr_log(WLR_INFO,
 				"Current layout index %u out of range for new keymap, "
@@ -6705,7 +6705,7 @@ void reset_keyboard_layout(void) {
 		wlr_keyboard_notify_modifiers(tkb, depressed, latched, locked, 0);
 		tkb->modifiers.group = 0;
 
-		// 7. 更新 seat
+		// 7. update seat
 		wlr_seat_set_keyboard(seat, tkb);
 		wlr_seat_keyboard_notify_modifiers(seat, &tkb->modifiers);
 	}
@@ -6812,7 +6812,7 @@ void create_output(struct wlr_backend *backend, void *data) {
 #endif
 }
 
-// 修改信号处理函数，接收掩码参数
+// modified signal-handling function to accept a mask parameter
 void handle_print_status(struct wl_listener *listener, void *data) {
 
 	enum ipc_watch_type type = *(enum ipc_watch_type *)data;
@@ -6882,14 +6882,14 @@ void setup(void) {
 
 	int32_t drm_fd, i;
 	int32_t sig[] = {SIGCHLD, SIGINT,
-					 SIGTERM}; // 不设置SIGPIPE,因为ipc发送失败不应该影响主程序
+					 SIGTERM}; // don't set SIGPIPE, since an ipc send failure shouldn't affect the main program
 	struct sigaction sa = {.sa_flags = SA_RESTART, .sa_handler = handlesig};
 	sigemptyset(&sa.sa_mask);
 
 	for (i = 0; i < LENGTH(sig); i++)
 		sigaction(sig[i], &sa, NULL);
 
-	// 单独为 SIGPIPE 设置忽略
+	// separately set SIGPIPE to be ignored
 	struct sigaction sa_pipe = {.sa_flags = 0, .sa_handler = SIG_IGN};
 	sigemptyset(&sa_pipe.sa_mask);
 	sigaction(SIGPIPE, &sa_pipe, NULL);
@@ -6984,7 +6984,7 @@ void setup(void) {
 	wlr_ext_data_control_manager_v1_create(dpy, 1);
 	background_effect_manager_create(dpy);
 
-	// 在 setup 函数中
+	// inside the setup function
 	wl_signal_init(&mango_print_status);
 	wl_signal_add(&mango_print_status, &print_status_listener);
 
@@ -7141,7 +7141,7 @@ void setup(void) {
 	wl_signal_add(&cursor->events.tablet_tool_button, &tablet_tool_button);
 	wl_signal_add(&cursor->events.tablet_tool_tip, &tablet_tool_tip);
 
-	// 这两句代码会造成obs窗口里的鼠标光标消失,不知道注释有什么影响
+	// these two lines make the cursor disappear inside OBS windows; unclear what commenting them out would affect
 	cursor_shape_mgr = wlr_cursor_shape_manager_v1_create(dpy, 1);
 	wl_signal_add(&cursor_shape_mgr->events.request_set_shape,
 				  &request_set_cursor_shape);
@@ -7218,14 +7218,14 @@ void setup(void) {
 	wl_global_create(dpy, &zdwl_ipc_manager_v2_interface, 2, NULL,
 					 dwl_ipc_manager_bind);
 
-	// 创建顶层管理句柄
+	// create the toplevel management handle
 	foreign_toplevel_manager = wlr_foreign_toplevel_manager_v1_create(dpy);
 	struct wlr_xdg_foreign_registry *foreign_registry =
 		wlr_xdg_foreign_registry_create(dpy);
 	wlr_xdg_foreign_v1_create(dpy, foreign_registry);
 	wlr_xdg_foreign_v2_create(dpy, foreign_registry);
 
-	// ext-workspace协议
+	// ext-workspace protocol
 	workspaces_init();
 #ifdef XWAYLAND
 	/*
@@ -7280,7 +7280,7 @@ void tag_client(const Arg *arg, Client *target_client) {
 	printstatus(IPC_WATCH_ARRANGGE);
 }
 
-// 目标窗口有其他窗口和它同个tag就返回0
+// return 0 if another window shares the same tag as the target window
 uint32_t want_restore_fullscreen(Client *target_client) {
 	Client *c = NULL;
 	wl_list_for_each(c, &clients, link) {
@@ -7327,7 +7327,7 @@ void overview_backup_surface(Client *c) {
 	wlr_scene_node_set_enabled(&c->scene_surface->node, true);
 }
 
-// 普通视图切换到overview时保存窗口的旧状态
+// save the window's old state when switching from the normal view to overview
 void overview_backup(Client *c) {
 	c->overview_isfloatingbak = c->isfloating;
 	c->overview_isfullscreenbak = c->isfullscreen;
@@ -7347,7 +7347,7 @@ void overview_backup(Client *c) {
 	}
 
 	if (c->isfullscreen || c->ismaximizescreen) {
-		client_pending_fullscreen_state(c, 0); // 清除窗口全屏标志
+		client_pending_fullscreen_state(c, 0); // clear the window's fullscreen flag
 		client_pending_maximized_state(c, 0);
 	}
 	c->bw = c->isnoborder ? 0 : config.borderpx;
@@ -7356,7 +7356,7 @@ void overview_backup(Client *c) {
 							WLR_EDGE_RIGHT);
 }
 
-// overview切回到普通视图还原窗口的状态
+// restore the window's state when switching from overview back to the normal view
 void overview_restore(Client *c, const Arg *arg) {
 	c->isfloating = c->overview_isfloatingbak;
 	c->isfullscreen = c->overview_isfullscreenbak;
@@ -7378,7 +7378,7 @@ void overview_restore(Client *c, const Arg *arg) {
 	}
 
 	if (c->isfloating) {
-		// XRaiseWindow(dpy, c->win); // 提升悬浮窗口到顶层
+		// XRaiseWindow(dpy, c->win); // raise the floating window to the top
 		resize(c, c->overview_backup_geom, 0);
 	} else if (c->isfullscreen || c->ismaximizescreen) {
 		if (want_restore_fullscreen(c) && c->ismaximizescreen) {
@@ -7398,7 +7398,7 @@ void overview_restore(Client *c, const Arg *arg) {
 	}
 
 	if (c->bw == 0 &&
-		!c->isfullscreen) { // 如果是在ov模式中创建的窗口,没有bw记录
+		!c->isfullscreen) { // if this window was created while in overview mode, it has no recorded bw
 		c->bw = c->isnoborder ? 0 : config.borderpx;
 	}
 
@@ -8091,7 +8091,7 @@ void fix_xwayland_coordinate(struct wlr_box *geom) {
 	if (!selmon)
 		return;
 
-	// 1. 如果窗口已经在当前活动显示器内，直接返回
+	// 1. if the window is already within the currently active monitor, return immediately
 	if (geom->x >= selmon->m.x && geom->x <= selmon->m.x + selmon->m.width &&
 		geom->y >= selmon->m.y && geom->y <= selmon->m.y + selmon->m.height)
 		return;

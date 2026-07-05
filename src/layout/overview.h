@@ -232,8 +232,8 @@ void overview_scale(Monitor *m) {
 		float base_x = m->w.x + target_gappo + dx;
 		float base_y = m->w.y + target_gappo + dy;
 
-		// 收集所有客户端的目标几何，最后统一调用 client_tile_resize
-		struct wlr_box overview_boxes[n]; // C99 VLA，n > 0 时有效
+		// collect target geometry for all clients, then call client_tile_resize once at the end
+		struct wlr_box overview_boxes[n]; // C99 VLA, valid when n > 0
 		for (int k = 0; k < n; k++) {
 			float w = items[k].orig_w * best_s;
 			float h = items[k].orig_h * best_s;
@@ -284,7 +284,7 @@ void overview_resize(Monitor *m) {
 		return;
 	}
 
-	// 临时存储每个客户端的目标几何
+	// temporarily store each client's target geometry
 	struct wlr_box boxes[n]; // C99 VLA
 
 	if (n == 1) {
@@ -344,7 +344,7 @@ void overview_resize(Monitor *m) {
 		}
 	}
 
-	// 统一应用所有几何变更，使用 client_tile_resize
+	// apply all geometry changes at once via client_tile_resize
 	for (int k = 0; k < n; k++) {
 		client_tile_resize(c_arr[k], boxes[k], 0);
 	}
@@ -364,7 +364,7 @@ void create_jump_hints(Monitor *m) {
 			char c_char = jump_labels[label_idx];
 			c->jump_char = c_char;
 
-			// 把字符变成字符串
+			// turn the character into a string
 			char label_text[2] = {c_char, '\0'};
 
 			mango_jump_label_node_update(c->jump_label_node, label_text, 1.0f);

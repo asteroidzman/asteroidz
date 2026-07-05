@@ -338,7 +338,7 @@ void mango_jump_label_node_update(struct mango_jump_label_node *node,
 	if (scale <= 0.0f)
 		scale = 1.0f;
 
-	/* 脏检查，加入 focused 状态 */
+	/* dirty check, includes focused state */
 	if (node->cached_scale == scale && node->cached_font_desc &&
 		strcmp(node->cached_font_desc, node->font_desc) == 0 &&
 		node->cached_text && strcmp(node->cached_text, text) == 0 &&
@@ -360,7 +360,7 @@ void mango_jump_label_node_update(struct mango_jump_label_node *node,
 		return;
 	}
 
-	/* 更新缓存 */
+	/* update cache */
 	g_free(node->cached_text);
 	node->cached_text = g_strdup(text);
 	g_free(node->cached_font_desc);
@@ -462,7 +462,7 @@ void mango_jump_label_node_update(struct mango_jump_label_node *node,
 	const float *active_fg =
 		node->focused ? node->focus_fg_color : node->fg_color;
 
-	bool draw_bg = (active_bg[3] > 0.0f); // 使用 active_bg
+	bool draw_bg = (active_bg[3] > 0.0f); // use active_bg
 	bool draw_border =
 		(node->border_width > 0) && (node->border_color[3] > 0.0f);
 
@@ -550,7 +550,7 @@ void mango_jump_label_node_set_focus(struct mango_jump_label_node *node,
 	if (!node || node->focused == focused)
 		return;
 	node->focused = focused;
-	// 使用缓存的文本和缩放触发重绘（如果无文本则不重绘）
+	// trigger a redraw using the cached text and scale (skip if no text)
 	if (node->cached_text && node->cached_scale > 0.0f) {
 		mango_jump_label_node_update(node, node->cached_text,
 									 node->cached_scale);
@@ -762,10 +762,10 @@ void mango_tab_bar_node_update(struct mango_tab_bar_node *node,
 	char *safe_text = g_strdup(text);
 
 	g_free(node->last_text);
-	node->last_text = safe_text; // 所有权转移
+	node->last_text = safe_text; // ownership transferred
 	node->last_scale = scale;
 
-	// 脏检查加入 focused
+	// dirty check, includes focused
 	if (node->cached_scale == scale && node->cached_font_desc &&
 		strcmp(node->cached_font_desc, node->font_desc) == 0 &&
 		node->cached_text && strcmp(node->cached_text, safe_text) == 0 &&
@@ -790,7 +790,7 @@ void mango_tab_bar_node_update(struct mango_tab_bar_node *node,
 		return;
 	}
 
-	// 更新缓存
+	// update cache
 	g_free(node->cached_text);
 	node->cached_text = g_strdup(safe_text);
 
@@ -1232,10 +1232,10 @@ void mango_group_bar_update(MangoGroupBar *node, const char *text,
 	char *safe_text = g_strdup(text);
 
 	g_free(node->last_text);
-	node->last_text = safe_text; // 所有权转移
+	node->last_text = safe_text; // ownership transferred
 	node->last_scale = scale;
 
-	// 脏检查
+	// dirty check
 	if (node->cached_scale == scale && node->cached_font_desc &&
 		strcmp(node->cached_font_desc, node->font_desc) == 0 &&
 		node->cached_text && strcmp(node->cached_text, safe_text) == 0 &&
@@ -1259,7 +1259,7 @@ void mango_group_bar_update(MangoGroupBar *node, const char *text,
 		return;
 	}
 
-	// 更新缓存
+	// update cache
 	g_free(node->cached_text);
 	node->cached_text = g_strdup(safe_text);
 
@@ -1305,13 +1305,13 @@ void mango_group_bar_update(MangoGroupBar *node, const char *text,
 	if (box_logical_h < 0)
 		box_logical_h = 0;
 
-	// surface 物理尺寸包含边框，避免边框绘制越界
+	// surface pixel size includes the border, to avoid the border drawing out of bounds
 	int32_t required_pixel_w = (int32_t)(node->target_width * scale + 0.5f);
 	int32_t required_pixel_h = (int32_t)(node->target_height * scale + 0.5f);
-	// 如果边框会伸出 target 区域，则扩展 surface 尺寸以完全容纳
+	// if the border would extend past the target area, grow the surface to fully contain it
 	double border_phys = node->border_width * scale;
 	if (border_phys > 0.0) {
-		// 边框描边会向外延伸 half line width，所以需要额外空间
+		// the border stroke extends outward by half the line width, so extra space is needed
 		int extra_w = (int32_t)ceil(border_phys * 0.5);
 		int extra_h = (int32_t)ceil(border_phys * 0.5);
 		required_pixel_w += extra_w;
@@ -1387,7 +1387,7 @@ void mango_group_bar_update(MangoGroupBar *node, const char *text,
 		}
 	}
 
-	// 仅在背景区域有空间时进行
+	// only proceed if the background area has room
 	if (bg_w > 0.0 && bg_h > 0.0) {
 		int32_t text_area_logical_w = box_logical_w - 2 * node->padding_x;
 		int32_t text_area_logical_h = box_logical_h - 2 * node->padding_y;
@@ -1440,7 +1440,7 @@ void mango_group_bar_update(MangoGroupBar *node, const char *text,
 		double bw = bg_w + border_phys;
 		double bh = bg_h + border_phys;
 
-		// 确保边框矩形不越界且宽高为正
+		// ensure the border rect stays in bounds with positive width/height
 		if (bx < 0.0) {
 			bw += bx;
 			bx = 0.0;

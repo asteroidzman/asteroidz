@@ -59,7 +59,7 @@ struct dvec2 calculate_animation_curve_at(double t, int32_t type) {
 
 void handle_snapshot_meta_destroy(struct wl_listener *listener, void *data) {
 	SnapshotMetadata *meta = wl_container_of(listener, meta, destroy);
-	wl_list_remove(&meta->destroy.link); // 安全移除监听器
+	wl_list_remove(&meta->destroy.link); // Safely remove the listener
 	free(meta);
 }
 
@@ -192,14 +192,14 @@ static bool scene_node_snapshot(struct wlr_scene_node *node, int32_t lx,
 		struct wlr_scene_buffer *scene_buffer =
 			wlr_scene_buffer_from_node(node);
 
-		//  创建中间包装树节点
+		//  Create an intermediate wrapper tree node
 		struct wlr_scene_tree *wrapper = wlr_scene_tree_create(snapshot_tree);
 		if (wrapper == NULL) {
 			return false;
 		}
-		snapshot_node = &wrapper->node; // 坐标位移应用在外层包装盒上
+		snapshot_node = &wrapper->node; // Position offset is applied on the outer wrapper box
 
-		// 收集表面状态并保存为元数据
+		// Collect the surface state and save it as metadata
 		SnapshotMetadata *meta = calloc(1, sizeof(SnapshotMetadata));
 		if (meta == NULL) {
 			wlr_scene_node_destroy(&wrapper->node);
@@ -216,12 +216,13 @@ static bool scene_node_snapshot(struct wlr_scene_node *node, int32_t lx,
 				!!wlr_subsurface_try_from_wlr_surface(scene_surface->surface);
 		}
 
-		// 绑定销毁回调监听，随包装节点销毁而释放内存
+		// Hook up the destroy callback listener, freeing the memory when the
+		// wrapper node is destroyed
 		meta->destroy.notify = handle_snapshot_meta_destroy;
 		wl_signal_add(&wrapper->node.events.destroy, &meta->destroy);
 		wrapper->node.data = meta;
 
-		// 将真正的 buffer 挂靠在 wrapper 下面（相对坐标0,0）
+		// Attach the real buffer under the wrapper (at relative coordinates 0,0)
 		struct wlr_scene_buffer *snapshot_buffer =
 			wlr_scene_buffer_create(wrapper, NULL);
 		if (snapshot_buffer == NULL) {
@@ -229,7 +230,8 @@ static bool scene_node_snapshot(struct wlr_scene_node *node, int32_t lx,
 			return false;
 		}
 
-		// 保留原生的 data 指针（如 Client*），防止事件派发/焦点获取失效
+		// Preserve the original data pointer (e.g. Client*), so event dispatch
+		// and focus lookup still work
 		snapshot_buffer->node.data = scene_buffer->node.data;
 
 		wlr_scene_buffer_set_dest_size(snapshot_buffer, scene_buffer->dst_width,

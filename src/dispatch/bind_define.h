@@ -254,7 +254,7 @@ int32_t groupjoin(const Arg *arg) {
 	client_focus_group_member(need_join_client);
 	arrange(need_join_client->mon, false, false);
 
-	// oldmon可能已经死掉了
+	// oldmon may already be dead
 	if (oldmon) {
 		arrange(oldmon, false, false);
 	}
@@ -2383,7 +2383,7 @@ int32_t scroller_stack(const Arg *arg) {
 	return scroller_apply_stack(c, target_client, arg->i);
 }
 
-/* 把下一列的头窗口吸入当前焦点窗口所在的堆叠尾部 */
+/* pull the head window of the next column into the tail of the stack containing the focused window */
 int32_t scroller_consume(const Arg *arg) {
 	Client *c, *tc, *next_head = NULL;
 	if (!selmon || selmon->isoverview || !is_scroller_layout(selmon))
@@ -2394,7 +2394,7 @@ int32_t scroller_consume(const Arg *arg) {
 		!VISIBLEON(c, selmon))
 		return 0;
 
-	/* 固定窗口和窗口组成员不参与堆叠 */
+	/* pinned windows and window group members don't participate in stacking */
 	if (c->ispinned || c->group_next || c->group_prev)
 		return 0;
 
@@ -2406,8 +2406,8 @@ int32_t scroller_consume(const Arg *arg) {
 
 	Client *tail = scroll_get_stack_tail_client(c);
 
-	/* 堆叠在客户端链表中是连续的，
-	 * 尾节点之后第一个可见的平铺窗口就是下一列的头 */
+	/* the stack is contiguous in the client list,
+	 * so the first visible tiled window after the tail is the head of the next column */
 	bool passed = false;
 	wl_list_for_each(tc, &clients, link) {
 		if (tc == tail) {
@@ -2428,7 +2428,7 @@ int32_t scroller_consume(const Arg *arg) {
 	return 0;
 }
 
-/* 把焦点窗口从堆叠中弹出，成为紧随当前列之后的独立列 */
+/* pop the focused window out of the stack, making it its own column right after the current one */
 int32_t scroller_expel(const Arg *arg) {
 	Client *c;
 	if (!selmon || selmon->isoverview || !is_scroller_layout(selmon))
@@ -2439,7 +2439,7 @@ int32_t scroller_expel(const Arg *arg) {
 		!VISIBLEON(c, selmon))
 		return 0;
 
-	/* 固定窗口和窗口组成员不参与堆叠 */
+	/* pinned windows and window group members don't participate in stacking */
 	if (c->ispinned || c->group_next || c->group_prev)
 		return 0;
 
@@ -2448,7 +2448,7 @@ int32_t scroller_expel(const Arg *arg) {
 	struct TagScrollerState *st = ensure_scroller_state(m, tag);
 	struct ScrollerStackNode *cnode = find_scroller_node(st, c);
 
-	/* 不在堆叠中就无事可做 */
+	/* nothing to do if it's not in a stack */
 	if (!cnode || (!cnode->prev_in_stack && !cnode->next_in_stack))
 		return 0;
 
@@ -2458,7 +2458,7 @@ int32_t scroller_expel(const Arg *arg) {
 
 	update_scroller_state(m);
 
-	/* 弹出后放到原堆叠尾部之后，成为下一列 */
+	/* after popping, place it after the original stack's tail, making it the next column */
 	Client *stack_tail = scroll_get_stack_tail_client(refer_node->client);
 	if (c != stack_tail) {
 		wl_list_safe_reinsert_next(&stack_tail->link, &c->link);

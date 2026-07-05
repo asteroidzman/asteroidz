@@ -41,7 +41,7 @@ struct ipc_client_state {
 static void ipc_remove_watch_client(struct ipc_watch_client *wc);
 static void ipc_notify_json_to_fd(int fd, cJSON *json);
 
-/* ---------- 工具函数 ---------- */
+/* ---------- utility functions ---------- */
 
 static Monitor *monitor_by_name(const char *name) {
 	Monitor *m;
@@ -236,7 +236,7 @@ static void send_static_json(int fd, const char *json_str) {
 	send(fd, json_str, len, 0);
 }
 
-/* ---------- 一次性命令处理 ---------- */
+/* ---------- one-shot command handling ---------- */
 static void handle_command(int client_fd, const char *cmd_raw) {
 	cJSON *resp = NULL;
 	char *json_str = NULL;
@@ -447,7 +447,7 @@ static void handle_command(int client_fd, const char *cmd_raw) {
 	}
 }
 
-/* ---------- Watch 模式支持 ---------- */
+/* ---------- watch mode support ---------- */
 static void ipc_notify_json_to_fd(int fd, cJSON *json) {
 	char *str = cJSON_PrintUnformatted(json);
 	if (!str)
@@ -555,7 +555,7 @@ static bool handle_watch_command(int fd, const char *cmd,
 		ipc_watch_data_handler, wc);
 	wl_list_insert(&watch_clients, &wc->link);
 
-	/* 推送初始状态 */
+	/* push the initial state */
 	cJSON *json = NULL;
 	switch (type) {
 	case IPC_WATCH_MONITOR: {
@@ -648,7 +648,7 @@ static bool handle_watch_command(int fd, const char *cmd,
 	return true;
 }
 
-/* ---------- Socket 事件处理 ---------- */
+/* ---------- socket event handling ---------- */
 static int ipc_handle_client_data(int fd, uint32_t mask, void *data) {
 	struct ipc_client_state *client = data;
 	if (mask & (WL_EVENT_HANGUP | WL_EVENT_ERROR))
@@ -707,10 +707,10 @@ static int ipc_handle_connection(int fd, uint32_t mask, void *data) {
 	if (client_fd < 0)
 		return 0;
 
-	// 设置 O_NONBLOCK
+	// set O_NONBLOCK
 	int flags = fcntl(client_fd, F_GETFL, 0);
 	fcntl(client_fd, F_SETFL, flags | O_NONBLOCK);
-	// 设置 FD_CLOEXEC
+	// set FD_CLOEXEC
 	flags = fcntl(client_fd, F_GETFD, 0);
 	fcntl(client_fd, F_SETFD, flags | FD_CLOEXEC);
 
@@ -723,7 +723,7 @@ static int ipc_handle_connection(int fd, uint32_t mask, void *data) {
 	return 0;
 }
 
-/* ---------- 外部通知接口 ---------- */
+/* ---------- external notification interface ---------- */
 
 void ipc_notify_monitor(Monitor *m) {
 	char *json_str = NULL;
@@ -1011,7 +1011,7 @@ void ipc_notify_kb_layout(void) {
 		free(json_str);
 }
 
-/* ---------- 初始化与清理 ---------- */
+/* ---------- init and cleanup ---------- */
 static int ipc_sock_fd = -1;
 static struct wl_event_source *ipc_event_source = NULL;
 static char ipc_socket_path[256];
@@ -1030,14 +1030,14 @@ void ipc_init(struct wl_event_loop *event_loop) {
 	if (ipc_sock_fd < 0)
 		return;
 
-	// 设置 FD_CLOEXEC
+	// set FD_CLOEXEC
 	int flags = fcntl(ipc_sock_fd, F_GETFD, 0);
 	if (flags == -1 || fcntl(ipc_sock_fd, F_SETFD, flags | FD_CLOEXEC) == -1) {
 		wlr_log(WLR_ERROR, "failed to set FD_CLOEXEC on IPC socket");
 		close(ipc_sock_fd);
 		return;
 	}
-	// 设置 O_NONBLOCK
+	// set O_NONBLOCK
 	flags = fcntl(ipc_sock_fd, F_GETFL, 0);
 	if (flags == -1 || fcntl(ipc_sock_fd, F_SETFL, flags | O_NONBLOCK) == -1) {
 		wlr_log(WLR_ERROR, "failed to set O_NONBLOCK on IPC socket");

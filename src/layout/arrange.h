@@ -65,7 +65,7 @@ void resize_tile_master_horizontal(Client *grabc, bool isdrag, int32_t offsetx,
 	bool begin_find_nextnext = false;
 	bool begin_find_prevprev = false;
 
-	/* 寻找 next / nextnext */
+	/* find next / nextnext */
 	for (node = grabc->link.next; node != &clients; node = node->next) {
 		tc = wl_container_of(node, tc, link);
 		if (begin_find_nextnext && VISIBLEON(tc, grabc->mon) && ISTILED(tc)) {
@@ -79,7 +79,7 @@ void resize_tile_master_horizontal(Client *grabc, bool isdrag, int32_t offsetx,
 		}
 	}
 
-	/* 寻找 prev / prevprev */
+	/* find prev / prevprev */
 	for (node = grabc->link.prev; node != &clients; node = node->prev) {
 		tc = wl_container_of(node, tc, link);
 		if (begin_find_prevprev && VISIBLEON(tc, grabc->mon) && ISTILED(tc)) {
@@ -195,11 +195,12 @@ void resize_tile_master_horizontal(Client *grabc, bool isdrag, int32_t offsetx,
 		new_master_inner_per = fmaxf(0.1f, fminf(0.9f, new_master_inner_per));
 		new_stack_inner_per = fmaxf(0.1f, fminf(0.9f, new_stack_inner_per));
 
-		// 实时缩放同组其他窗口的比例，保持组内总和为 1,
-		// 不然增加的比例并不是排布后的比例
+		// live-rescale the other windows' proportions in the same group so the
+		// group total stays 1, otherwise the added proportion doesn't match
+		// what gets arranged
 		if (isdrag) {
 			if (grabc->ismaster) {
-				/* 主窗口组：调整所有主窗口的 master_inner_per */
+				/* master group: adjust master_inner_per for all master windows */
 				float cur_other_sum = 1.0f - grabc->master_inner_per;
 				float new_other_sum = 1.0f - new_master_inner_per;
 				if (cur_other_sum > 0.001f) {
@@ -211,9 +212,9 @@ void resize_tile_master_horizontal(Client *grabc, bool isdrag, int32_t offsetx,
 					}
 				}
 			} else {
-				/* 栈窗口组：根据布局类型分开处理 */
+				/* stack group: handle differently depending on layout type */
 				if (type == CENTER_TILE) {
-					/* 仅缩放同侧栈窗口的 stack_inner_per */
+					/* only rescale stack_inner_per for stack windows on the same side */
 					float cur_other_sum = 1.0f - grabc->stack_inner_per;
 					float new_other_sum = 1.0f - new_stack_inner_per;
 					if (cur_other_sum > 0.001f) {
@@ -226,7 +227,7 @@ void resize_tile_master_horizontal(Client *grabc, bool isdrag, int32_t offsetx,
 						}
 					}
 				} else {
-					/* TILE / RIGHT_TILE / DECK：所有栈窗口共用一个比例组 */
+					/* TILE / RIGHT_TILE / DECK: all stack windows share one proportion group */
 					float cur_other_sum = 1.0f - grabc->stack_inner_per;
 					float new_other_sum = 1.0f - new_stack_inner_per;
 					if (cur_other_sum > 0.001f) {
@@ -240,7 +241,7 @@ void resize_tile_master_horizontal(Client *grabc, bool isdrag, int32_t offsetx,
 				}
 			}
 		} else {
-			/* 键盘步进 */
+			/* keyboard stepping */
 			wl_list_for_each(tc, &clients, link) {
 				if (!VISIBLEON(tc, grabc->mon) || !ISTILED(tc))
 					continue;
@@ -262,11 +263,11 @@ void resize_tile_master_horizontal(Client *grabc, bool isdrag, int32_t offsetx,
 			}
 		}
 
-		/* 将新比例应用到抓取窗口本身 */
+		/* apply the new proportions to the grabbed window itself */
 		grabc->master_inner_per = new_master_inner_per;
 		grabc->stack_inner_per = new_stack_inner_per;
 
-		/* 广播 master_mfact_per 到所有平铺窗口 */
+		/* broadcast master_mfact_per to all tiled windows */
 		wl_list_for_each(tc, &clients, link) {
 			if (VISIBLEON(tc, grabc->mon) && ISTILED(tc))
 				tc->master_mfact_per = new_master_mfact_per;
@@ -293,7 +294,7 @@ void resize_tile_master_vertical(Client *grabc, bool isdrag, int32_t offsetx,
 	Client *prev = NULL;
 	struct wl_list *node;
 
-	/* 寻找 next */
+	/* find next */
 	for (node = grabc->link.next; node != &clients; node = node->next) {
 		tc = wl_container_of(node, tc, link);
 		if (VISIBLEON(tc, grabc->mon) && ISTILED(tc)) {
@@ -302,7 +303,7 @@ void resize_tile_master_vertical(Client *grabc, bool isdrag, int32_t offsetx,
 		}
 	}
 
-	/* 寻找 prev */
+	/* find prev */
 	for (node = grabc->link.prev; node != &clients; node = node->prev) {
 		tc = wl_container_of(node, tc, link);
 		if (VISIBLEON(tc, grabc->mon) && ISTILED(tc)) {
@@ -392,8 +393,9 @@ void resize_tile_master_vertical(Client *grabc, bool isdrag, int32_t offsetx,
 		new_master_inner_per = fmaxf(0.1f, fminf(0.9f, new_master_inner_per));
 		new_stack_inner_per = fmaxf(0.1f, fminf(0.9f, new_stack_inner_per));
 
-		// 实时缩放同组其他窗口的比例，保持组内总和为 1,
-		// 不然增加的比例并不是排布后的比例
+		// live-rescale the other windows' proportions in the same group so the
+		// group total stays 1, otherwise the added proportion doesn't match
+		// what gets arranged
 
 		if (isdrag) {
 			if (grabc->ismaster) {
@@ -408,7 +410,7 @@ void resize_tile_master_vertical(Client *grabc, bool isdrag, int32_t offsetx,
 					}
 				}
 			} else {
-				/* 所有栈窗口（垂直布局没有左侧/右侧区分） */
+				/* all stack windows (vertical layout has no left/right distinction) */
 				float cur_other_sum = 1.0f - grabc->stack_inner_per;
 				float new_other_sum = 1.0f - new_stack_inner_per;
 				if (cur_other_sum > 0.001f) {
@@ -421,7 +423,7 @@ void resize_tile_master_vertical(Client *grabc, bool isdrag, int32_t offsetx,
 				}
 			}
 		} else {
-			/* 键盘步进 */
+			/* keyboard stepping */
 			wl_list_for_each(tc, &clients, link) {
 				if (!VISIBLEON(tc, grabc->mon) || !ISTILED(tc))
 					continue;
@@ -444,7 +446,7 @@ void resize_tile_master_vertical(Client *grabc, bool isdrag, int32_t offsetx,
 		grabc->master_inner_per = new_master_inner_per;
 		grabc->stack_inner_per = new_stack_inner_per;
 
-		/* 广播 master_mfact_per */
+		/* broadcast master_mfact_per */
 		wl_list_for_each(tc, &clients, link) {
 			if (VISIBLEON(tc, grabc->mon) && ISTILED(tc))
 				tc->master_mfact_per = new_master_mfact_per;
@@ -489,7 +491,7 @@ void resize_tile_grid_fair(Client *grabc, bool isdrag, int32_t offsetx,
 	if (m->visible_tiling_clients <= 1)
 		return;
 
-	// 获取当前布局 ID
+	// get the current layout ID
 	const Layout *current_layout = m->pertag->ltidxs[m->pertag->curtag];
 
 	if (!start_drag_window && isdrag) {
@@ -530,7 +532,7 @@ void resize_tile_grid_fair(Client *grabc, bool isdrag, int32_t offsetx,
 			grabc->cursor_in_left_half = false;
 		}
 
-		// 以屏幕分辨率为基准算出缩放比变化的量
+		// compute the scale-ratio change relative to the screen resolution
 		float delta_x = (float)offsetx * grabc->old_grid_col_per /
 						grabc->drag_begin_geom.width;
 		float delta_y = (float)offsety * grabc->old_grid_row_per /
@@ -557,7 +559,7 @@ void resize_tile_grid_fair(Client *grabc, bool isdrag, int32_t offsetx,
 				sign_y = 1.0f;
 			}
 		}
-		// 键盘热键逻辑不变
+		// keyboard hotkey logic unchanged
 		int max_col = -1, max_row = -1, min_col = INT32_MAX,
 			min_row = INT32_MAX;
 		Client *tmp;
@@ -613,7 +615,7 @@ void resize_tile_grid_fair(Client *grabc, bool isdrag, int32_t offsetx,
 				adj_old_row = c->old_grid_row_per;
 		}
 
-		// 应用列宽调节
+		// apply the column-width adjustment
 		if (adj_old_col > 0.0f) {
 			float dx_clamped = dx;
 			if (my_old_col + dx_clamped < 0.1f)
@@ -624,7 +626,7 @@ void resize_tile_grid_fair(Client *grabc, bool isdrag, int32_t offsetx,
 			float new_my_col = my_old_col + dx_clamped;
 			float new_adj_col = adj_old_col - dx_clamped;
 
-			// 处理被强行锁死在 1.0f 的列边界，头部是个错位窗口
+			// handle a column boundary forced to lock at 1.0f, where the head is a misaligned window
 			if (current_layout && current_layout->id == VERTICAL_FAIR) {
 				int32_t n_tiling = m->visible_tiling_clients;
 				int32_t l_rows;
@@ -633,8 +635,8 @@ void resize_tile_grid_fair(Client *grabc, bool isdrag, int32_t offsetx,
 						break;
 				}
 				int32_t base_cols = n_tiling / l_rows;
-				// 当调节边界恰好处于非对称的锁死列（如 3 窗口下的 col 0 与 col
-				// 1 之间）
+				// when the adjustment boundary falls exactly on an asymmetric
+				// locked column (e.g. between col 0 and col 1 with 3 windows)
 				if ((grabc->grid_col_idx == base_cols - 1 &&
 					 adj_c_idx == base_cols) ||
 					(grabc->grid_col_idx == base_cols &&
@@ -649,7 +651,7 @@ void resize_tile_grid_fair(Client *grabc, bool isdrag, int32_t offsetx,
 					if (p_col > 0.99f)
 						p_col = 0.99f;
 
-					// 反推非线性真实权重值
+					// back-derive the actual nonlinear weight value
 					float new_r_var_per = p_col / (1.0f - p_col);
 					if (new_r_var_per < 0.1f)
 						new_r_var_per = 0.1f;
@@ -687,7 +689,7 @@ void resize_tile_grid_fair(Client *grabc, bool isdrag, int32_t offsetx,
 			}
 		}
 
-		// 应用行高调节
+		// apply the row-height adjustment
 		if (adj_old_row > 0.0f) {
 			float dy_clamped = dy;
 			if (my_old_row + dy_clamped < 0.1f)
@@ -698,7 +700,7 @@ void resize_tile_grid_fair(Client *grabc, bool isdrag, int32_t offsetx,
 			float new_my_row = my_old_row + dy_clamped;
 			float new_adj_row = adj_old_row - dy_clamped;
 
-			// 处理被强行锁死在 1.0f 的行边界，头部是个错位窗口
+			// handle a row boundary forced to lock at 1.0f, where the head is a misaligned window
 			if (current_layout && current_layout->id == FAIR) {
 				int32_t n_tiling = m->visible_tiling_clients;
 				int32_t l_cols;
@@ -707,8 +709,8 @@ void resize_tile_grid_fair(Client *grabc, bool isdrag, int32_t offsetx,
 						break;
 				}
 				int32_t base_rows = n_tiling / l_cols;
-				// 当调节边界恰好处于非对称的锁死行（如 3 窗口下的 row 0 与 row
-				// 1 之间）
+				// when the adjustment boundary falls exactly on an asymmetric
+				// locked row (e.g. between row 0 and row 1 with 3 windows)
 				if ((grabc->grid_row_idx == base_rows - 1 &&
 					 adj_r_idx == base_rows) ||
 					(grabc->grid_row_idx == base_rows &&
@@ -723,7 +725,7 @@ void resize_tile_grid_fair(Client *grabc, bool isdrag, int32_t offsetx,
 					if (p_row > 0.99f)
 						p_row = 0.99f;
 
-					// 反推非线性真实权重值
+					// back-derive the actual nonlinear weight value
 					float new_r_var_per = p_row / (1.0f - p_row);
 					if (new_r_var_per < 0.1f)
 						new_r_var_per = 0.1f;
@@ -937,7 +939,7 @@ void resize_tile_scroller(Client *grabc, bool isdrag, int32_t offsetx,
 			fmaxf(0.1f, fminf(1.0f, new_scroller_proportion));
 		new_stack_proportion = fmaxf(0.1f, fminf(0.9f, new_stack_proportion));
 
-		// 保持总和为 1，避免后续 arrange 归一化吞掉位移
+		// keep the total at 1 so the later arrange normalization doesn't eat the offset
 		if (isdrag) {
 			float current_other_sum = 1.0f - curnode->stack_proportion;
 			float new_other_sum = 1.0f - new_stack_proportion;
@@ -951,7 +953,7 @@ void resize_tile_scroller(Client *grabc, bool isdrag, int32_t offsetx,
 				}
 			}
 		} else {
-			// 键盘步进
+			// keyboard stepping
 			if (grabc->old_stack_proportion != 1.0f) {
 				for (struct ScrollerStackNode *tc = headnode; tc;
 					 tc = tc->next_in_stack) {
@@ -968,7 +970,7 @@ void resize_tile_scroller(Client *grabc, bool isdrag, int32_t offsetx,
 		curnode->stack_proportion = new_stack_proportion;
 		headnode->scroller_proportion = new_scroller_proportion;
 
-		/* 同步回全局字段 */
+		/* sync back to the global fields */
 		sync_scroller_state_to_clients(m, tag);
 
 		if (!isdrag) {
@@ -1179,10 +1181,10 @@ void pre_caculate_before_arrange(Monitor *m, bool want_animation,
 			if (ISTILED(c)) {
 				m->visible_tiling_clients++;
 
-				/* 更新可见滚动客户端计数 */
+				/* update the visible scroll-tiling client count */
 				if (st) {
 					struct ScrollerStackNode *n = find_scroller_node(st, c);
-					if (n && !n->prev_in_stack) /* 是堆叠头部 */
+					if (n && !n->prev_in_stack) /* is the stack head */
 						m->visible_scroll_tiling_clients++;
 				} else if (ISSCROLLTILED(c)) {
 					m->visible_scroll_tiling_clients++;

@@ -79,7 +79,7 @@ void vertical_tile(Monitor *m) {
 												.width = w,
 												.height = mh - cur_gapiv * ie},
 							   0);
-			mx += w + cur_gapih * ie; // 使用理论宽度累加
+			mx += w + cur_gapih * ie; // accumulate using the theoretical width
 		} else {
 			r = n - i;
 			if (c->stack_inner_per > 0.0f) {
@@ -103,7 +103,7 @@ void vertical_tile(Monitor *m) {
 								 .width = w,
 								 .height = m->w.height - mh - 2 * cur_gapov},
 				0);
-			tx += w + cur_gapih * ie; // 使用理论宽度累加
+			tx += w + cur_gapih * ie; // accumulate using the theoretical width
 		}
 		i++;
 	}
@@ -216,7 +216,7 @@ void vertical_grid(Monitor *m) {
 
 	if (n == 2) {
 		float row_pers[2] = {1.0f, 1.0f};
-		// 先提取这两个窗口现有的行比例
+		// first extract the existing row ratios for these two windows
 		i = 0;
 		wl_list_for_each(c, &clients, link) {
 			if (c->mon != m)
@@ -232,7 +232,7 @@ void vertical_grid(Monitor *m) {
 
 		float sum_row = row_pers[0] + row_pers[1];
 		float avail_h = m->w.height - 2 * target_gappo - target_gappi;
-		cw = (m->w.width - 2 * target_gappo) * 0.65; // 依然保持 0.65 的美观宽度
+		cw = (m->w.width - 2 * target_gappo) * 0.65; // still keep the 0.65 aesthetic width
 
 		i = 0;
 		wl_list_for_each(c, &clients, link) {
@@ -245,14 +245,14 @@ void vertical_grid(Monitor *m) {
 				c->grid_col_per = 1.0f;
 				c->grid_row_per = row_pers[i];
 
-				// 根据分配的权重动态计算当前窗口的高度
+				// dynamically compute the current window's height based on its assigned weight
 				ch = avail_h * (row_pers[i] / sum_row);
 
 				target_geom.x = m->w.x + (m->w.width - cw) / 2 + target_gappo;
 				if (i == 0) {
 					target_geom.y = m->w.y + target_gappo;
 				} else if (i == 1) {
-					// 第二个窗口的 Y 坐标紧跟第一个窗口下面
+					// the second window's Y coordinate follows right below the first
 					float ch0 = avail_h * (row_pers[0] / sum_row);
 					target_geom.y = m->w.y + target_gappo + ch0 + target_gappi;
 				}

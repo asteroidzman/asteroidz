@@ -53,7 +53,7 @@ struct wlr_input_method_manager_v2 *input_method_manager;
 struct wlr_text_input_manager_v3 *text_input_manager;
 struct dwl_input_method_relay *dwl_input_method_relay;
 
-/*-------------------封装给外部调用-------------------------------*/
+/*-------------------wrappers for external callers-------------------------------*/
 bool dwl_im_keyboard_grab_forward_key(KeyboardGroup *keyboard,
 									  struct wlr_keyboard_key_event *event);
 
@@ -67,7 +67,7 @@ void dwl_im_relay_set_focus(struct dwl_input_method_relay *relay,
 							struct wlr_surface *surface);
 /*----------------------------------------------------------*/
 
-/*------------------协议内部代码------------------------------*/
+/*------------------internal protocol code------------------------------*/
 Monitor *output_from_wlr_output(struct wlr_output *wlr_output) {
 	Monitor *m = NULL;
 	wl_list_for_each(m, &mons, link) {
@@ -103,7 +103,7 @@ get_keyboard_grab(KeyboardGroup *keyboard) {
 		return NULL;
 	}
 
-	// kb_group是一个物理键盘组，它不应该被过滤掉
+	// kb_group is a physical keyboard group and shouldn't be filtered out
 	if (keyboard != kb_group)
 		return NULL;
 

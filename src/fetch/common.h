@@ -8,7 +8,7 @@ pid_t getparentprocess(pid_t p) {
 	if (!(f = fopen(buf, "r")))
 		return 0;
 
-	// 检查fscanf返回值，确保成功读取了1个参数
+	// check fscanf's return value to make sure 1 field was read successfully
 	if (fscanf(f, "%*u %*s %*c %u", &v) != 1) {
 		fclose(f);
 		return 0;
@@ -27,10 +27,10 @@ int32_t isdescprocess(pid_t p, pid_t c) {
 }
 
 void get_layout_abbr(char *abbr, const char *full_name) {
-	// 清空输出缓冲区
+	// clear the output buffer
 	abbr[0] = '\0';
 
-	// 1. 尝试在映射表中查找
+	// 1. try to look it up in the mapping table
 	for (int32_t i = 0; layout_mappings[i].full_name != NULL; i++) {
 		if (strcmp(full_name, layout_mappings[i].full_name) == 0) {
 			strcpy(abbr, layout_mappings[i].abbr);
@@ -38,13 +38,13 @@ void get_layout_abbr(char *abbr, const char *full_name) {
 		}
 	}
 
-	// 2. 尝试从名称中提取并转换为小写
+	// 2. try to extract from the name and lowercase it
 	const char *open = strrchr(full_name, '(');
 	const char *close = strrchr(full_name, ')');
 	if (open && close && close > open) {
 		uint32_t len = close - open - 1;
 		if (len > 0 && len <= 4) {
-			// 提取并转换为小写
+			// extract and lowercase
 			for (uint32_t j = 0; j < len; j++) {
 				abbr[j] = tolower(open[j + 1]);
 			}
@@ -53,7 +53,7 @@ void get_layout_abbr(char *abbr, const char *full_name) {
 		}
 	}
 
-	// 3. 提取前2-3个字母并转换为小写
+	// 3. take the first 2-3 letters and lowercase them
 	uint32_t j = 0;
 	for (uint32_t i = 0; full_name[i] != '\0' && j < 3; i++) {
 		if (isalpha(full_name[i])) {
@@ -62,17 +62,17 @@ void get_layout_abbr(char *abbr, const char *full_name) {
 	}
 	abbr[j] = '\0';
 
-	// 确保至少2个字符
+	// make sure we have at least 2 characters
 	if (j >= 2) {
 		return;
 	}
 
-	// 4. 回退方案：使用首字母小写
+	// 4. fallback: lowercase the first letter
 	if (j == 1) {
 		abbr[1] = full_name[1] ? tolower(full_name[1]) : '\0';
 		abbr[2] = '\0';
 	} else {
-		// 5. 最终回退：返回 "xx"
+		// 5. final fallback: return "xx"
 		strcpy(abbr, "xx");
 	}
 }

@@ -80,7 +80,7 @@ Client *get_client_by_id_or_title(const char *arg_id, const char *arg_title) {
 	}
 	return target_client;
 }
-struct wlr_box // 计算客户端居中坐标
+struct wlr_box // compute centered client coordinates
 setclient_coordinate_center(Client *c, Monitor *tm, struct wlr_box geom,
 							int32_t offsetx, int32_t offsety) {
 	struct wlr_box tempbox;
@@ -109,7 +109,7 @@ setclient_coordinate_center(Client *c, Monitor *tm, struct wlr_box geom,
 		offset = len * (offsetx / 100.0);
 		tempbox.x += offset;
 
-		// 限制窗口在屏幕内
+		// clamp the window inside the screen
 		if (tempbox.x < m->m.x) {
 			tempbox.x = m->m.x - cbw;
 		}
@@ -122,7 +122,7 @@ setclient_coordinate_center(Client *c, Monitor *tm, struct wlr_box geom,
 		offset = len * (offsety / 100.0);
 		tempbox.y += offset;
 
-		// 限制窗口在屏幕内
+		// clamp the window inside the screen
 		if (tempbox.y < m->m.y) {
 			tempbox.y = m->m.y - cbw;
 		}
@@ -271,15 +271,15 @@ Client *find_client_by_direction(Client *tc, const Arg *arg,
 
 			int64_t penalty = 0;
 			if (main_dist < 0) {
-				penalty = 10000000000LL; // 主方向重叠（反方向）的极大惩罚
+				penalty = 10000000000LL; // huge penalty for overlap in the main direction (wrong side)
 				main_dist = -main_dist;
 			}
 
-			// 正交方向无重叠惩罚，优先选择在同一行/列的窗口
+			// penalty for no overlap in the orthogonal direction, prefer windows in the same row/column
 			int64_t no_overlap_penalty = 0;
 			if (orth_dist > 0) {
-				// LEFT/RIGHT 时 orth_dist 是垂直间距，>0 表示垂直无重叠
-				// UP/DOWN  时 orth_dist 是水平间距，>0 表示水平无重叠
+				// for LEFT/RIGHT, orth_dist is the vertical gap; >0 means no vertical overlap
+				// for UP/DOWN, orth_dist is the horizontal gap; >0 means no horizontal overlap
 				no_overlap_penalty = 10000000LL;
 			}
 

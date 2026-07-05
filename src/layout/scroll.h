@@ -1,4 +1,4 @@
-/* 获取或创建指定 monitor 某个 tag 的 scroller 状态 */
+/* get or create the scroller state for a given monitor's tag */
 static struct TagScrollerState *ensure_scroller_state(Monitor *m,
 													  uint32_t tag) {
 	if (!m->pertag->scroller_state[tag]) {
@@ -9,7 +9,7 @@ static struct TagScrollerState *ensure_scroller_state(Monitor *m,
 	return m->pertag->scroller_state[tag];
 }
 
-/* 在 tag 状态中查找客户端对应的节点（无则返回 NULL） */
+/* look up the node for a client in the tag state (returns NULL if absent) */
 static struct ScrollerStackNode *find_scroller_node(struct TagScrollerState *st,
 													Client *c) {
 	if (!st)
@@ -20,7 +20,7 @@ static struct ScrollerStackNode *find_scroller_node(struct TagScrollerState *st,
 	return NULL;
 }
 
-/* 创建一个新节点并插入到 tag 状态的 all 链表中 */
+/* create a new node and insert it into the tag state's all list */
 static struct ScrollerStackNode *
 scroller_node_create(struct TagScrollerState *st, Client *c) {
 	struct ScrollerStackNode *n = calloc(1, sizeof(*n));
@@ -36,23 +36,23 @@ scroller_node_create(struct TagScrollerState *st, Client *c) {
 	return n;
 }
 
-/* 从 tag 状态中移除一个节点并释放 */
+/* remove a node from the tag state and free it */
 static void scroller_node_remove(struct TagScrollerState *st,
 								 struct ScrollerStackNode *target) {
 	if (!st || !target)
 		return;
 
-	/* 保存邻居 */
+	/* save the neighbors */
 	struct ScrollerStackNode *prev = target->prev_in_stack;
 	struct ScrollerStackNode *next = target->next_in_stack;
 
-	/* 从堆叠链表中摘除 */
+	/* unlink from the stack list */
 	if (prev)
 		prev->next_in_stack = next;
 	if (next)
 		next->prev_in_stack = prev;
 
-	/* 从 all 链表摘除 */
+	/* unlink from the all list */
 	struct ScrollerStackNode **indirect = &st->all_first;
 	while (*indirect && *indirect != target)
 		indirect = &(*indirect)->all_next;
@@ -63,7 +63,7 @@ static void scroller_node_remove(struct TagScrollerState *st,
 	free(target);
 }
 
-/* 清空一个 tag 的全部 scroller 状态 */
+/* clear all scroller state for a tag */
 static void clear_scroller_state(struct TagScrollerState *st) {
 	if (!st)
 		return;
@@ -76,7 +76,7 @@ static void clear_scroller_state(struct TagScrollerState *st) {
 	free(st);
 }
 
-/* 在 Monitor 销毁时清理所有 tag 的 scroller 状态 */
+/* clean up scroller state for all tags when the Monitor is destroyed */
 static void cleanup_monitor_scroller(Monitor *m) {
 	for (int t = 0; t < LENGTH(tags) + 1; t++) {
 		if (m->pertag->scroller_state[t]) {
@@ -86,7 +86,7 @@ static void cleanup_monitor_scroller(Monitor *m) {
 	}
 }
 
-/* 将某个 tag 的状态同步回所有客户端的全局字段 */
+/* sync a tag's state back to the global fields on all its clients */
 static void sync_scroller_state_to_clients(Monitor *m, uint32_t tag) {
 	struct TagScrollerState *st = m->pertag->scroller_state[tag];
 	if (!st)
@@ -193,7 +193,7 @@ void arrange_stack_node(struct ScrollerStackNode *head, struct wlr_box geometry,
 	if (stack_size == 0)
 		return;
 
-	/* 归一化比例 */
+	/* normalize the proportions */
 	float total_proportion = 0.0f;
 	iter = head;
 	while (iter) {
@@ -209,7 +209,7 @@ void arrange_stack_node(struct ScrollerStackNode *head, struct wlr_box geometry,
 		iter = iter->next_in_stack;
 	}
 
-	/* 竖向排列（水平堆叠） */
+	/* vertical arrangement (horizontal stacking) */
 	int32_t client_height;
 	int32_t current_y = geometry.y;
 	int32_t remain_client_height = geometry.height - (stack_size - 1) * gappiv;
@@ -242,7 +242,7 @@ void arrange_stack_vertical_node(struct ScrollerStackNode *head,
 	if (stack_size == 0)
 		return;
 
-	/* 归一化比例 */
+	/* normalize the proportions */
 	float total_proportion = 0.0f;
 	iter = head;
 	while (iter) {
@@ -258,7 +258,7 @@ void arrange_stack_vertical_node(struct ScrollerStackNode *head,
 		iter = iter->next_in_stack;
 	}
 
-	/* 横向排列（垂直堆叠） */
+	/* horizontal arrangement (vertical stacking) */
 	int32_t client_width;
 	int32_t current_x = geometry.x;
 	int32_t remain_client_width = geometry.width - (stack_size - 1) * gappih;
@@ -289,7 +289,7 @@ void scroller(Monitor *m) {
 	int32_t scroller_ignore_proportion_single =
 		m->pertag->scroller_ignore_proportion_single[tag];
 
-	/* 按全局客户端链表顺序收集所有堆叠头，确保视觉顺序正确 */
+	/* collect all stack heads in global client-list order, to keep the visual order correct */
 	struct ScrollerStackNode *heads[64];
 	int32_t n_heads = 0;
 	wl_list_for_each(c, &clients, link) {
@@ -326,7 +326,7 @@ void scroller(Monitor *m) {
 	int32_t max_client_width =
 		m->w.width - 2 * config.scroller_structs - cur_gappih;
 
-	/* 单客户端特例 */
+	/* special case for a single client */
 	if (n_heads == 1 && !scroller_ignore_proportion_single &&
 		!heads[0]->client->isfullscreen &&
 		!heads[0]->client->ismaximizescreen) {
@@ -361,7 +361,7 @@ void scroller(Monitor *m) {
 		}
 	}
 	if (!root_node)
-		root_node = heads[n_heads / 2]; /* 简单回退 */
+		root_node = heads[n_heads / 2]; /* simple fallback */
 
 	int32_t focus_index = -1;
 	for (int i = 0; i < n_heads; i++) {
@@ -373,7 +373,7 @@ void scroller(Monitor *m) {
 	if (focus_index < 0)
 		focus_index = n_heads / 2;
 
-	/* 判断是否需要滚动、overspread、center */
+	/* determine whether scrolling, overspread, or centering is needed */
 	bool need_scroller = false;
 	bool over_overspread_to_left = false;
 	Client *root_client = root_node->client;
@@ -413,8 +413,8 @@ void scroller(Monitor *m) {
 		}
 	}
 
-	/* scroller_focus_center == 2: 仅当焦点列无法与上一个焦点列
-	 * 同时完整显示时才居中（溢出时居中） */
+	/* scroller_focus_center == 2: only center when the focused column can't be
+	 * fully shown together with the previously focused column (center on overflow) */
 	bool focus_center_on_overflow =
 		config.scroller_focus_center == 2 && !need_apply_overspread &&
 		(!m->prevsel ||
@@ -492,7 +492,7 @@ void scroller(Monitor *m) {
 		arrange_stack_node(heads[focus_index], target_geom, cur_gappiv);
 	}
 
-	/* 排列左侧的堆叠 */
+	/* arrange the stacks on the left */
 	for (int i = 1; i <= focus_index; i++) {
 		struct ScrollerStackNode *cur = heads[focus_index - i];
 		struct wlr_box left_geom;
@@ -504,7 +504,7 @@ void scroller(Monitor *m) {
 		arrange_stack_node(cur, left_geom, cur_gappiv);
 	}
 
-	/* 排列右侧的堆叠 */
+	/* arrange the stacks on the right */
 	for (int i = 1; i < n_heads - focus_index; i++) {
 		struct ScrollerStackNode *cur = heads[focus_index + i];
 		struct wlr_box right_geom;
@@ -529,7 +529,7 @@ void vertical_scroller(Monitor *m) {
 	int32_t scroller_ignore_proportion_single =
 		m->pertag->scroller_ignore_proportion_single[tag];
 
-	/* 按全局顺序收集堆叠头 */
+	/* collect stack heads in global order */
 	struct ScrollerStackNode *heads[64];
 	int32_t n_heads = 0;
 	wl_list_for_each(c, &clients, link) {
@@ -648,8 +648,8 @@ void vertical_scroller(Monitor *m) {
 		}
 	}
 
-	/* scroller_focus_center == 2: 仅当焦点列无法与上一个焦点列
-	 * 同时完整显示时才居中（溢出时居中） */
+	/* scroller_focus_center == 2: only center when the focused column can't be
+	 * fully shown together with the previously focused column (center on overflow) */
 	bool focus_center_on_overflow =
 		config.scroller_focus_center == 2 && !need_apply_overspread &&
 		(!m->prevsel ||
@@ -805,7 +805,7 @@ void scroller_insert_stack(Client *c, Client *target_client,
 		tnode = scroller_node_create(st, target_client);
 
 	struct ScrollerStackNode *newnode = scroller_node_create(st, c);
-	/* 将新节点插入到 tnode 的前面或后面 */
+	/* insert the new node before or after tnode */
 	if (insert_before) {
 		newnode->next_in_stack = tnode;
 		newnode->prev_in_stack = tnode->prev_in_stack;
@@ -822,7 +822,7 @@ void scroller_insert_stack(Client *c, Client *target_client,
 		wl_list_safe_reinsert_next(&tnode->client->link, &c->link);
 	}
 
-	/* 处理堆叠头部的全屏/最大化状态*/
+	/* handle the fullscreen/maximized state of the stack head */
 	struct ScrollerStackNode *head = tnode;
 	while (head->prev_in_stack)
 		head = head->prev_in_stack;
@@ -832,7 +832,7 @@ void scroller_insert_stack(Client *c, Client *target_client,
 	if (stack_head->isfullscreen)
 		setfullscreen(stack_head, 0, true);
 
-	/* 同步到 Client 字段 */
+	/* sync back to the Client fields */
 	sync_scroller_state_to_clients(m, tag);
 
 	arrange(m, false, false);
@@ -840,8 +840,8 @@ void scroller_insert_stack(Client *c, Client *target_client,
 
 void scroller_drop_tile(Client *c, Client *closest, int vertical) {
 
-	// 必须先更新，不然里面节点还存着的是cnode的信息，
-	// 会造成stach_head/stack_tail指向的客户端不对
+	// must update first, otherwise the nodes still hold cnode's info,
+	// which would make stack_head/stack_tail point to the wrong client
 	update_scroller_state(c->mon);
 
 	Client *stack_head = scroll_get_stack_head_client(closest);
@@ -924,7 +924,7 @@ static void update_scroller_state(Monitor *m) {
 	uint32_t tag = m->pertag->curtag;
 	struct TagScrollerState *st = ensure_scroller_state(m, tag);
 
-	/* 收集当前可见的所有 scroller 平铺窗口 */
+	/* collect all currently visible scroller-tiled windows */
 	Client *vis[512];
 	int32_t count = 0;
 	Client *c;
@@ -935,7 +935,7 @@ static void update_scroller_state(Monitor *m) {
 			break;
 	}
 
-	/* 移除不再可见的节点 */
+	/* remove nodes that are no longer visible */
 	struct ScrollerStackNode *n = st->all_first;
 	while (n) {
 		bool found = false;
@@ -951,7 +951,7 @@ static void update_scroller_state(Monitor *m) {
 		n = next;
 	}
 
-	/* 为新的可见窗口创建节点 */
+	/* create nodes for newly visible windows */
 	for (int i = 0; i < count; i++) {
 		if (!find_scroller_node(st, vis[i])) {
 			scroller_node_create(st, vis[i]);

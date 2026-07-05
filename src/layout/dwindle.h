@@ -7,7 +7,7 @@ static DwindleNode *dwindle_new_leaf(Client *c) {
 	return n;
 }
 
-// 统计同方向上的节点总和 (N_old)
+// count nodes sharing the same split direction (N_old)
 static int count_block_items(DwindleNode *node, bool split_h) {
 	if (!node)
 		return 0;
@@ -17,7 +17,7 @@ static int count_block_items(DwindleNode *node, bool split_h) {
 		   count_block_items(node->second, split_h);
 }
 
-// 向上查找方向块路径，并计算每个祖先节点的绝对占比
+// walk up to find the directional block path, and compute each ancestor's absolute share
 static int get_block_path_and_ratios(DwindleNode *target, bool split_h,
 									 DwindleNode **path, float *p) {
 	int path_len = 0;
@@ -28,7 +28,7 @@ static int get_block_path_and_ratios(DwindleNode *target, bool split_h,
 		curr = curr->parent;
 	}
 
-	p[path_len - 1] = 1.0f; // 方向块根节点占比为 100%
+	p[path_len - 1] = 1.0f; // the directional block's root node has a 100% share
 	for (int i = path_len - 1; i > 0; i--) {
 		DwindleNode *S = path[i];
 		DwindleNode *child = path[i - 1];
@@ -80,7 +80,7 @@ static void dwindle_insert(DwindleNode **root, Client *new_c, Client *focused,
 	if (!target)
 		target = dwindle_first_leaf(*root);
 
-	// ================= 保持其他窗口比例缩减逻辑 =================
+	// ================= logic to shrink other windows' proportions =================
 	if (config.dwindle_manual_split) {
 		DwindleNode *path[512];
 		float p[512];
@@ -130,7 +130,7 @@ static void dwindle_insert(DwindleNode **root, Client *new_c, Client *focused,
 		split->second = new_leaf;
 	}
 
-	// 通用逻辑
+	// common logic
 	split->ratio = ratio;
 
 	split->parent = target->parent;
@@ -165,9 +165,9 @@ static void dwindle_remove(DwindleNode **root, Client *c) {
 		return;
 	}
 
-	// 开始删除空间的比例回退逻辑
+	// begin the proportion-rollback logic for the removed space
 
-	// 查找连续的同方向块路径
+	// find the contiguous same-direction block path
 	if (config.dwindle_manual_split) {
 		bool split_h = parent->split_h;
 		DwindleNode *path[512];
@@ -179,7 +179,7 @@ static void dwindle_remove(DwindleNode **root, Client *c) {
 			curr = curr->parent;
 		}
 
-		// 计算各祖先的旧绝对占比
+		// compute each ancestor's old absolute share
 		float p[512];
 		p[path_len - 1] = 1.0f;
 		for (int i = path_len - 1; i > 0; i--) {
@@ -191,13 +191,15 @@ static void dwindle_remove(DwindleNode **root, Client *c) {
 				p[i - 1] = p[i] * (1.0f - S->ratio);
 		}
 
-		// 计算即将被删除的叶子节点，在该方向块中所占的绝对面积比例 (P_del)
+		// compute the absolute area share (P_del) the leaf about to be removed
+		// holds within this directional block
 		float p_del = p[0] * (parent->first == leaf ? parent->ratio
 													: (1.0f - parent->ratio));
 		if (p_del > 0.999f)
-			p_del = 0.999f; // 兜底
+			p_del = 0.999f; // safety clamp
 
-		// 重算祖先比例：将 P_del 空出来的空间，按原定比例无缝分配给其他窗口
+		// recompute ancestor ratios: distribute the space freed up by P_del
+		// back to the other windows according to their original proportions
 		for (int i = path_len - 1; i > 0; i--) {
 			DwindleNode *S = path[i];
 			DwindleNode *child = path[i - 1];
@@ -221,9 +223,9 @@ static void dwindle_remove(DwindleNode **root, Client *c) {
 		}
 	}
 
-	// 比例重算结束
+	// end of proportion recomputation
 
-	// 基础的二叉树摘除节点逻辑
+	// basic binary-tree node removal logic
 	DwindleNode *sibling =
 		(parent->first == leaf) ? parent->second : parent->first;
 	DwindleNode *grandparent = parent->parent;
@@ -510,13 +512,13 @@ static void dwindle_insert_with_config(DwindleNode **root, Client *new_c,
 	if (!target && *root)
 		target = dwindle_first_leaf(*root);
 
-	// 当且仅当 manual_split=1 时，计算精确的 1/N 新节点比例
+	// only when manual_split=1, compute the exact 1/N ratio for the new node
 	if (config.dwindle_manual_split && target) {
 		split_h = target->custom_leaf_split_h;
 		lock = true;
 		as_first = false;
 
-		// ================= 计算新节点的 1/N 比例 =================
+		// ================= compute the new node's 1/N ratio =================
 		DwindleNode *path[512];
 		float p[512];
 		int path_len = get_block_path_and_ratios(target, split_h, path, p);
@@ -543,7 +545,7 @@ static void dwindle_insert_with_config(DwindleNode **root, Client *new_c,
 		// =========================================================
 	}
 
-	// 调用通用插入函数
+	// call the common insert function
 	dwindle_insert(root, new_c, focused, ratio, as_first, split_h, lock);
 }
 
@@ -566,7 +568,7 @@ void dwindle(Monitor *m) {
 			break;
 	}
 
-	// 清理树中已不存在的客户端
+	// clean up clients that no longer exist in the tree
 	{
 		DwindleNode *leaves[512];
 		int32_t lc = 0;
@@ -604,7 +606,7 @@ void dwindle(Monitor *m) {
 		}
 	}
 
-	// 获得焦点客户端，若为空则用第一个可见平铺客户端兜底
+	// get the focused client, falling back to the first visible tiled client if none
 	Client *focused = focustop(m);
 	if (focused && !dwindle_find_leaf(*root, focused))
 		focused = m->sel;

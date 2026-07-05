@@ -8,7 +8,7 @@
 #include <stdint.h>
 #include <scenefx/types/wlr_scene.h>
 
-// 原有结构体，假设已存在
+// Pre-existing struct, assumed to already exist
 typedef struct {
 	float fg_color[4];
 	float bg_color[4];
@@ -44,7 +44,7 @@ struct mango_jump_label_node {
 	int32_t padding_y;
 	char *font_desc;
 
-	// 缓存
+	// cache
 	char *cached_text;
 	char *cached_font_desc;
 	float cached_scale;
@@ -61,7 +61,7 @@ struct mango_jump_label_node {
 
 	bool focused;
 
-	// 测量
+	// measurement
 	cairo_surface_t *measure_surface;
 	cairo_t *measure_cr;
 	PangoContext *measure_context;
@@ -88,7 +88,7 @@ struct mango_tab_bar_node {
 	cairo_surface_t *surface;
 	int surface_pixel_w, surface_pixel_h;
 
-	// 初始配置
+	// initial config
 	float fg_color[4];
 	float bg_color[4];
 	float focus_fg_color[4];
@@ -100,11 +100,11 @@ struct mango_tab_bar_node {
 	int32_t padding_y;
 	char *font_desc;
 
-	// 尺寸
+	// size
 	int32_t target_width;
 	int32_t target_height;
 
-	// 缓存
+	// cache
 	char *cached_text;
 	char *cached_font_desc;
 	float cached_scale;
@@ -123,11 +123,11 @@ struct mango_tab_bar_node {
 
 	bool focused;
 
-	// 上次绘制参数（用于尺寸变化重绘）
+	// last draw params (used to redraw on size change)
 	char *last_text;
 	float last_scale;
 
-	// 测量
+	// measurement
 	cairo_surface_t *measure_surface;
 	cairo_t *measure_cr;
 	PangoContext *measure_context;
@@ -149,7 +149,7 @@ typedef struct {
 	int surface_pixel_w, surface_pixel_h;
 	void *node_data; // owning Client pointer
 
-	// 初始配置
+	// initial config
 	float fg_color[4];
 	float bg_color[4];
 	float focus_fg_color[4];
@@ -161,11 +161,11 @@ typedef struct {
 	int32_t padding_y;
 	char *font_desc;
 
-	// 尺寸
+	// size
 	int32_t target_width;
 	int32_t target_height;
 
-	// 缓存
+	// cache
 	char *cached_text;
 	char *cached_font_desc;
 	float cached_scale;
@@ -184,11 +184,11 @@ typedef struct {
 
 	bool focused;
 
-	// 上次绘制参数（用于尺寸变化重绘）
+	// last draw params (used to redraw on size change)
 	char *last_text;
 	float last_scale;
 
-	// 测量
+	// measurement
 	cairo_surface_t *measure_surface;
 	cairo_t *measure_cr;
 	PangoContext *measure_context;

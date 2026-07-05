@@ -400,7 +400,7 @@ static inline int32_t client_is_x11_popup(Client *c) {
 #ifdef XWAYLAND
 	if (client_is_x11(c)) {
 		struct wlr_xwayland_surface *surface = c->surface.xwayland;
-		// 处理不需要焦点的窗口类型
+		// window types that should never receive focus
 		const uint32_t no_focus_types[] = {
 			WLR_XWAYLAND_NET_WM_WINDOW_TYPE_COMBO,
 			WLR_XWAYLAND_NET_WM_WINDOW_TYPE_DND,
@@ -411,7 +411,7 @@ static inline int32_t client_is_x11_popup(Client *c) {
 			WLR_XWAYLAND_NET_WM_WINDOW_TYPE_SPLASH,
 			WLR_XWAYLAND_NET_WM_WINDOW_TYPE_TOOLTIP,
 			WLR_XWAYLAND_NET_WM_WINDOW_TYPE_UTILITY};
-		// 检查窗口类型是否需要禁止焦点
+		// check whether the window type should be denied focus
 		for (size_t i = 0;
 			 i < sizeof(no_focus_types) / sizeof(no_focus_types[0]); ++i) {
 			if (wlr_xwayland_surface_has_window_type(surface,
