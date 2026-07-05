@@ -1,0 +1,12 @@
+/.cache
+/.vscode
+/result
+config.h
+mango
+mango.o
+util.o
+*-protocol.h
+*-protocol.c
+*-protocol.o
+build/
+resume-claude

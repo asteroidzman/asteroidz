@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <!-- asteroidz: original vector-wireframe mark in the spirit of 1979
+       arcade space shooters — white strokes on black, no fills -->
+  <rect width="256" height="256" fill="#000000"/>
+  <g stroke="#ffffff" stroke-width="4" fill="none" stroke-linejoin="round" stroke-linecap="round">
+    <!-- large asteroid: jagged wireframe polygon -->
+    <polygon points="76,34 118,44 138,72 128,102 142,128 118,158 78,166 48,140 34,104 44,66"/>
+    <!-- crater notch detail -->
+    <polyline points="76,34 88,62 118,44"/>
+    <!-- small asteroid -->
+    <polygon points="196,52 220,60 228,82 214,98 192,94 184,72"/>
+    <!-- the ship: classic wedge with open tail -->
+    <g transform="translate(172,186) rotate(-32)">
+      <polyline points="0,-26 16,22 0,12 -16,22 0,-26"/>
+      <!-- thrust flame -->
+      <polyline points="-6,18 0,32 6,18" stroke-width="3"/>
+    </g>
+    <!-- shots -->
+    <line x1="150" y1="150" x2="150" y2="144"/>
+    <line x1="132" y1="120" x2="132" y2="114"/>
+  </g>
+</svg>
