@@ -5,7 +5,7 @@ void set_tagin_animation(Monitor *m, Client *c) {
 		return;
 	}
 
-	if ((c->isglobal || c->isunglobal) ||
+	if ((c->isglobal || c->isunglobal || c->ispinned) ||
 		(c->tags & (1 << (m->pertag->prevtag - 1)) &&
 		 c->tags & (1 << (m->pertag->curtag - 1)))) {
 		c->animation.tagouting = false;
@@ -71,7 +71,7 @@ void set_arrange_visible(Monitor *m, Client *c, bool want_animation) {
 
 void set_tagout_animation(Monitor *m, Client *c) {
 
-	if ((c->isglobal || c->isunglobal) ||
+	if ((c->isglobal || c->isunglobal || c->ispinned) ||
 		(c->tags & (1 << (m->pertag->prevtag - 1)) &&
 		 c->tags & (1 << (m->pertag->curtag - 1)))) {
 		c->animation.tagouting = false;

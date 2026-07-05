@@ -219,6 +219,15 @@ int32_t groupjoin(const Arg *arg) {
 	if (need_join_client == need_replace_client)
 		return 0;
 
+	/* locked groups refuse membership changes: neither pull a window into
+	 * a locked target group nor rip one out of its locked group */
+	if (need_replace_client->group_locked || need_join_client->group_locked)
+		return 0;
+
+	/* deny_group windows can never be pulled into a group */
+	if (need_join_client->deny_group || need_replace_client->deny_group)
+		return 0;
+
 	if (need_join_client->group_next || need_join_client->group_prev) {
 		groupleave(&(Arg){.tc = need_join_client});
 	}
@@ -383,6 +392,99 @@ int32_t groupfocus(const Arg *arg) {
 
 	client_focus_group_member(tc);
 	arrange(tc->mon, false, false);
+	return 0;
+}
+
+int32_t grouplock(const Arg *arg) {
+	if (!selmon)
+		return 0;
+
+	Client *c = arg->tc ? arg->tc : selmon->sel;
+	if (!c || !c->mon)
+		return 0;
+
+	if (!c->group_prev && !c->group_next)
+		return 0;
+
+	bool lock_state = !c->group_locked;
+
+	Client *head = c;
+	while (head->group_prev)
+		head = head->group_prev;
+
+	/* keep the lock state in sync on every member of the group */
+	for (Client *cur = head; cur; cur = cur->group_next)
+		cur->group_locked = lock_state;
+
+	return 0;
+}
+
+int32_t movegroupwindow(const Arg *arg) {
+	if (!selmon)
+		return 0;
+
+	Client *c = arg->tc ? arg->tc : selmon->sel;
+	if (!c || !c->mon)
+		return 0;
+
+	if (!c->group_prev && !c->group_next)
+		return 0;
+
+	if (c->mon->isoverview)
+		return 0;
+
+	Client *n = arg->i == NEXT ? c->group_next : c->group_prev;
+	if (!n) /* no wraparound */
+		return 0;
+
+	if (arg->i == NEXT) {
+		/* ... p, c, n, q ... -> ... p, n, c, q ... */
+		Client *p = c->group_prev, *q = n->group_next;
+		n->group_prev = p;
+		if (p)
+			p->group_next = n;
+		n->group_next = c;
+		c->group_prev = n;
+		c->group_next = q;
+		if (q)
+			q->group_prev = c;
+	} else {
+		/* ... p, n, c, q ... -> ... p, c, n, q ... */
+		Client *p = n->group_prev, *q = c->group_next;
+		c->group_prev = p;
+		if (p)
+			p->group_next = c;
+		c->group_next = n;
+		n->group_prev = c;
+		n->group_next = q;
+		if (q)
+			q->group_prev = n;
+	}
+
+	client_draw_title(c);
+	arrange(c->mon, false, false);
+	return 0;
+}
+
+int32_t pin(const Arg *arg) {
+	if (!selmon)
+		return 0;
+
+	Client *c = arg->tc ? arg->tc : selmon->sel;
+	if (!c || !c->mon || c->iskilling)
+		return 0;
+
+	c->ispinned = !c->ispinned;
+
+	if (c->ispinned) {
+		if (!c->isfloating)
+			setfloating(c, 1);
+		wlr_scene_node_raise_to_top(&c->scene->node);
+		client_raise_group(c);
+	}
+
+	arrange(c->mon, false, false);
+	printstatus(IPC_WATCH_CLIENT);
 	return 0;
 }
 

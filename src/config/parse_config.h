@@ -69,6 +69,8 @@ typedef struct {
 	int32_t isnoshadow;
 	int32_t vrr_only_fullscreen;
 	int32_t shield_when_capture;
+	int32_t deny_group;
+	int32_t ispinned;
 	int32_t isnoradius;
 	int32_t isnoanimation;
 	int32_t isopensilent;
@@ -1066,6 +1068,13 @@ FuncType parse_func_name(char *func_name, Arg *arg, char *arg_value,
 		(*arg).i = parse_direction(arg_value);
 	} else if (strcmp(func_name, "groupleave") == 0) {
 		func = groupleave;
+	} else if (strcmp(func_name, "grouplock") == 0) {
+		func = grouplock;
+	} else if (strcmp(func_name, "movegroupwindow") == 0) {
+		func = movegroupwindow;
+		(*arg).i = parse_circle_direction(arg_value);
+	} else if (strcmp(func_name, "pin") == 0) {
+		func = pin;
 	} else if (strcmp(func_name, "focusid") == 0) {
 		func = focusid;
 	} else if (strcmp(func_name, "incnmaster") == 0) {
@@ -2588,6 +2597,8 @@ bool parse_option(Config *config, char *key, char *value) {
 		rule->isnoshadow = -1;
 		rule->vrr_only_fullscreen = -1;
 		rule->shield_when_capture = -1;
+		rule->deny_group = -1;
+		rule->ispinned = -1;
 		rule->isnoradius = -1;
 		rule->isnoanimation = -1;
 		rule->isopensilent = -1;
@@ -2686,6 +2697,10 @@ bool parse_option(Config *config, char *key, char *value) {
 					rule->vrr_only_fullscreen = atoi(val);
 				} else if (strcmp(key, "shield_when_capture") == 0) {
 					rule->shield_when_capture = atoi(val);
+				} else if (strcmp(key, "deny_group") == 0) {
+					rule->deny_group = atoi(val);
+				} else if (strcmp(key, "ispinned") == 0) {
+					rule->ispinned = atoi(val);
 				} else if (strcmp(key, "isnoshadow") == 0) {
 					rule->isnoshadow = atoi(val);
 				} else if (strcmp(key, "isnoradius") == 0) {

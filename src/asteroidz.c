@@ -138,7 +138,7 @@
 #define VISIBLEON(C, M)                                                        \
 	((C) && (M) && (C)->mon == (M) &&                                          \
 	 (((C)->tags & (M)->tagset[(M)->seltags] || (C)->isglobal ||               \
-	   (C)->isunglobal)))
+	   (C)->isunglobal || (C)->ispinned)))
 
 #define TAGMATCH(C, M)                                                         \
 	((C) && (M) && (C)->mon == (M) && (((C)->tags & (M)->tagset[(M)->seltags])))
@@ -509,6 +509,9 @@ struct Client {
 	Client *group_prev;
 	Client *group_next;
 	bool isgroupfocusing;
+	bool group_locked;
+	int32_t deny_group;
+	int32_t ispinned;
 };
 
 typedef struct {
@@ -1675,6 +1678,8 @@ static void apply_rule_properties(Client *c, const ConfigWinRule *r) {
 	APPLY_INT_PROP(c, r, isnoshadow);
 	APPLY_INT_PROP(c, r, vrr_only_fullscreen);
 	APPLY_INT_PROP(c, r, shield_when_capture);
+	APPLY_INT_PROP(c, r, deny_group);
+	APPLY_INT_PROP(c, r, ispinned);
 	APPLY_INT_PROP(c, r, isnoradius);
 	APPLY_INT_PROP(c, r, isnoanimation);
 	APPLY_INT_PROP(c, r, isopensilent);
@@ -1818,6 +1823,11 @@ void applyrules(Client *c) {
 			c->isfloating = 1;
 		}
 
+		// pinned windows are always floating
+		if (c->ispinned) {
+			c->isfloating = 1;
+		}
+
 		if (r->scroller_proportion > 0.0f) {
 			c->iscustom_scroller_proportion = 1;
 		}
@@ -1958,6 +1968,11 @@ void applyrules(Client *c) {
 	// apply overlay rule
 	if (c->isoverlay && c->scene) {
 		wlr_scene_node_reparent(&c->scene->node, layers[LyrOverlay]);
+		wlr_scene_node_raise_to_top(&c->scene->node);
+	}
+
+	// apply pin rule: keep pinned windows above their siblings
+	if (c->ispinned && c->scene) {
 		wlr_scene_node_raise_to_top(&c->scene->node);
 	}
 }
@@ -2213,6 +2228,27 @@ axisnotify(struct wl_listener *listener, void *data) {
 	mods = keyboard ? wlr_keyboard_get_modifiers(keyboard) : 0;
 
 	mods = mods | hard_mods;
+
+	// scrolling over a group bar cycles the focused group member
+	if (!locked && CLEANMASK(mods) == 0) {
+		MangoGroupBar *gb = NULL;
+		Client *gc = NULL, *tc = NULL;
+		xytonode(cursor->x, cursor->y, NULL, NULL, NULL, &gb, NULL, NULL);
+		if (gb && gb->node_data) {
+			gc = gb->node_data;
+			while (gc->group_prev)
+				gc = gc->group_prev;
+			for (; gc; gc = gc->group_next)
+				if (gc->isgroupfocusing)
+					break;
+			if (gc)
+				tc = event->delta > 0 ? gc->group_next : gc->group_prev;
+			if (tc) {
+				client_focus_group_member(tc);
+				return;
+			}
+		}
+	}
 
 	if (event->orientation == WL_POINTER_AXIS_VERTICAL_SCROLL)
 		adir = event->delta > 0 ? AxisDown : AxisUp;
@@ -5228,6 +5264,7 @@ void set_minimized(Client *c) {
 		return;
 
 	c->isglobal = 0;
+	c->ispinned = 0;
 	c->oldtags = c->mon->tagset[c->mon->seltags];
 	c->mini_restore_tag = c->tags;
 	c->tags = 0;
@@ -6027,6 +6064,10 @@ setfloating(Client *c, int32_t floating) {
 
 	if (!c || !c->mon || !client_surface(c)->mapped || c->iskilling)
 		return;
+
+	// pinned windows are forced floating; tiling one drops the pin
+	if (!floating && c->ispinned)
+		c->ispinned = 0;
 
 	target_box = c->geom;
 

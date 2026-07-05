@@ -95,6 +95,7 @@ bindr=Super,Super_L,spawn,rofi -show run
 | `togglefakefullscreen` | - | Toggle "fake" fullscreen (remains constrained). |
 | `togglemaximizescreen` | - | Maximize window (keep decoration/bar). |
 | `toggleglobal` | - | Pin window to all tags. |
+| `pin` | - | Toggle pinned state: the window is forced floating, kept on top and stays visible on every tag of its monitor (it does not slide with tag-switch animations). |
 | `toggle_render_border` | - | Toggle border rendering. |
 | `centerwin` | - | Center the floating window. |
 | `minimized` | - | Minimize window to scratchpad. |
@@ -113,6 +114,18 @@ bindr=Super,Super_L,spawn,rofi -show run
 | `exchange_client` | `left/right/up/down` | Swap window with neighbor in direction. |
 | `exchange_stack_client` | `next/prev` | Exchange window position in stack. |
 | `zoom` | - | Swap focused window with Master. |
+
+### Window Groups
+
+| Command | Param | Description |
+| :--- | :--- | :--- |
+| `groupjoin` | `left/right/up/down` | Join the group of (or form a group with) the window in the given direction. |
+| `groupleave` | - | Leave the current group. |
+| `groupfocus` | `next/prev` | Focus the next/previous member of the current group. |
+| `grouplock` | - | Toggle the group lock. A locked group refuses new members and keeps its current ones (`groupjoin` into or out of it is denied). |
+| `movegroupwindow` | `next/prev` | Swap the focused window with its next/previous neighbor inside the group bar (no wraparound). |
+
+> **Tip:** Scrolling the mouse wheel over a group bar also cycles through the group members. Windows matched by the `deny_group` window rule can never be pulled into a group.
 
 ### Tags & Monitors
 

@@ -25,6 +25,8 @@ windowrule=Parameter:Values,Parameter:Values,appid:Values,title:Values
 | `isfullscreen` | integer | `0` / `1` | Force fullscreen state |
 | `isfakefullscreen` | integer | `0` / `1` | Force fake-fullscreen state (window stays constrained) |
 | `isglobal` | integer | `0` / `1` | Open as global window (sticky across tags) |
+| `ispinned` | integer | `0` / `1` | Open pinned: forced floating, kept on top and visible on every tag of its monitor |
+| `deny_group` | integer | `0` / `1` | Window can never be pulled into a window group |
 | `isoverlay` | integer | `0` / `1` | Make it always in top layer |
 | `isopensilent` | integer | `0` / `1` | Open without focus |
 | `istagsilent` | integer | `0` / `1` | Don't focus if client is not in current view tag |

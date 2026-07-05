@@ -317,6 +317,7 @@ void client_group_detach(Client *c) {
 	c->group_prev = NULL;
 	c->group_next = NULL;
 	c->isgroupfocusing = false;
+	c->group_locked = false;
 }
 
 void client_group_replace(Client *old, Client *new) {
@@ -333,7 +334,10 @@ void client_group_replace(Client *old, Client *new) {
 
 	if (!new->group_prev && !new->group_next) {
 		new->isgroupfocusing = false;
+		new->group_locked = false;
 	} else {
 		new->isgroupfocusing = old->isgroupfocusing;
+		new->group_locked = old->group_locked;
 	}
+	old->group_locked = false;
 }
