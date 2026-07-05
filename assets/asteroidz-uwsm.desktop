@@ -1,0 +1,8 @@
+[Desktop Entry]
+Encoding=UTF-8
+Name=Asteroidz (UWSM)
+DesktopNames=asteroidz;wlroots
+Comment=asteroidz WM, managed by UWSM/systemd
+Exec=uwsm start -D asteroidz:wlroots -N Asteroidz -C "asteroidz WM" asteroidz
+Icon=asteroidz
+Type=Application

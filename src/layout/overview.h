@@ -367,7 +367,7 @@ void create_jump_hints(Monitor *m) {
 			// turn the character into a string
 			char label_text[2] = {c_char, '\0'};
 
-			mango_jump_label_node_update(c->jump_label_node, label_text, 1.0f);
+			asteroidz_jump_label_node_update(c->jump_label_node, label_text, 1.0f);
 			wlr_scene_node_set_enabled(&c->jump_label_node->scene_buffer->node,
 									   true);
 			wlr_scene_node_raise_to_top(

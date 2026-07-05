@@ -51,7 +51,7 @@ You can divide key bindings into named modes. Rules:
 2. If no `keymode` is set before a bind, it belongs to the `default` mode.
 3. The special `common` keymode applies its binds **across all modes**.
 
-Use `setkeymode` to switch modes, and `mmsg get keymode` to query the current mode.
+Use `setkeymode` to switch modes, and `amsg get keymode` to query the current mode.
 
 ```ini
 # Binds in 'common' apply in every mode
@@ -109,7 +109,7 @@ bindr=Super,Super_L,spawn,rofi -show run
 
 | Command | Param | Description |
 | :--- | :--- | :--- |
-| `focusid` | - | Focus window (can target any window via IPC: `mmsg dispatch focusid client,<id>`) |
+| `focusid` | - | Focus window (can target any window via IPC: `amsg dispatch focusid client,<id>`) |
 | `focusdir` | `left/right/up/down` | Focus window in direction. |
 | `focusstack` | `next/prev` | Cycle focus within the stack. |
 | `focuslast` | - | Focus the previously active window. |
@@ -186,8 +186,8 @@ Suggested scroller binds (not bound by default — uncomment to use):
 | `spawn_shell` | `cmd` | Execute shell command (supports pipes `\|`). |
 | `spawn_on_empty` | `cmd,tagnumber` | Open command on empty tag. |
 | `reload_config` | - | Hot-reload configuration. |
-| `quit` | - | Exit mangowm. |
-| `restart` | - | Restart mangowm in place (re-exec, keeps the login session; running clients are restarted). |
+| `quit` | - | Exit asteroidz. |
+| `restart` | - | Restart asteroidz in place (re-exec, keeps the login session; running clients are restarted). |
 | `toggleoverview` | - | Toggle overview mode. |
 | `togglejump` | - | Toggle overview with jump mode. |
 | `create_virtual_output` | - | Create a headless monitor (for VNC/Sunshine). |

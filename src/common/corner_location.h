@@ -1,10 +1,10 @@
-#ifndef MANGO_COMMON_CORNER_LOCATION_H
-#define MANGO_COMMON_CORNER_LOCATION_H
+#ifndef ASTEROIDZ_COMMON_CORNER_LOCATION_H
+#define ASTEROIDZ_COMMON_CORNER_LOCATION_H
 
 #include <scenefx/types/fx/clipped_region.h>
 
 /* scenefx 0.5 removed enum corner_location in favor of struct
- * fx_corner_radii. Mango still tracks which corners of a client should be
+ * fx_corner_radii. Asteroidz still tracks which corners of a client should be
  * rounded as a bitmask, so keep the old enum locally and convert at the
  * scenefx API boundary. */
 enum corner_location {

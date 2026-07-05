@@ -43,7 +43,7 @@ void monocle_set_focus(Client *c, bool focused) {
 		return;
 
 	c->is_monocle_hide = !focused;
-	mango_tab_bar_node_set_focus(c->tab_bar_node, focused);
+	asteroidz_tab_bar_node_set_focus(c->tab_bar_node, focused);
 	wlr_scene_node_set_enabled(&c->scene->node, focused);
 
 	if (!focused) {
@@ -1155,7 +1155,7 @@ void pre_caculate_before_arrange(Monitor *m, bool want_animation,
 		}
 
 		if (c->tab_bar_node && c->mon == m) {
-			mango_tab_bar_node_set_enabled(c->tab_bar_node, false);
+			asteroidz_tab_bar_node_set_enabled(c->tab_bar_node, false);
 		}
 
 		if (c->group_bar && c->group_bar->scene_buffer->node.enabled) {
@@ -1292,7 +1292,7 @@ void arrange_special(Monitor *m) {
 			continue;
 
 		if (i < nmaster) {
-			r = MANGO_MIN(n, nmaster) - i;
+			r = ASTEROIDZ_MIN(n, nmaster) - i;
 			h = (m->w.height - my - cur_gappov - cur_gappiv * ie * (r - 1)) / r;
 			client_tile_resize(c,
 							   (struct wlr_box){.x = m->w.x + cur_gappoh,

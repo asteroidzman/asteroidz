@@ -22,14 +22,14 @@ typedef struct {
 	const char *font_desc;
 } DecorateDrawData;
 
-struct mango_text_buffer {
+struct asteroidz_text_buffer {
 	struct wlr_buffer base;
 	cairo_surface_t *surface;
 };
 
-struct mango_jump_label_node {
+struct asteroidz_jump_label_node {
 	struct wlr_scene_buffer *scene_buffer;
-	struct mango_text_buffer *buffer;
+	struct asteroidz_text_buffer *buffer;
 	cairo_surface_t *surface;
 	int surface_pixel_w, surface_pixel_h;
 
@@ -72,7 +72,7 @@ struct mango_jump_label_node {
 	int32_t logical_height;
 };
 
-struct mango_tab_bar_node {
+struct asteroidz_tab_bar_node {
 	struct wlr_scene_buffer *scene_buffer;
 	struct wlr_scene_tree *parent_tree;
 	/* soft shadow rendered below the pill (scenefx shadow node) */
@@ -84,7 +84,7 @@ struct mango_tab_bar_node {
 	/* app icon drawn before the title; owned by the shared icon cache */
 	cairo_surface_t *icon_surface;
 	cairo_surface_t *cached_icon;
-	struct mango_text_buffer *buffer;
+	struct asteroidz_text_buffer *buffer;
 	cairo_surface_t *surface;
 	int surface_pixel_w, surface_pixel_h;
 
@@ -144,7 +144,7 @@ struct mango_tab_bar_node {
 typedef struct {
 	uint32_t type; // must be first in struct
 	struct wlr_scene_buffer *scene_buffer;
-	struct mango_text_buffer *buffer;
+	struct asteroidz_text_buffer *buffer;
 	cairo_surface_t *surface;
 	int surface_pixel_w, surface_pixel_h;
 	void *node_data; // owning Client pointer
@@ -197,65 +197,65 @@ typedef struct {
 
 	int32_t logical_width;
 	int32_t logical_height;
-} MangoGroupBar;
+} AsteroidzGroupBar;
 
-void mango_text_global_finish(void);
-struct mango_jump_label_node *
-mango_jump_label_node_create(struct wlr_scene_tree *parent,
+void asteroidz_text_global_finish(void);
+struct asteroidz_jump_label_node *
+asteroidz_jump_label_node_create(struct wlr_scene_tree *parent,
 							 DecorateDrawData data);
-void mango_jump_label_node_destroy(struct mango_jump_label_node *node);
-void mango_jump_label_node_set_background(struct mango_jump_label_node *node,
+void asteroidz_jump_label_node_destroy(struct asteroidz_jump_label_node *node);
+void asteroidz_jump_label_node_set_background(struct asteroidz_jump_label_node *node,
 										  float r, float g, float b, float a);
-void mango_jump_label_node_set_border(struct mango_jump_label_node *node,
+void asteroidz_jump_label_node_set_border(struct asteroidz_jump_label_node *node,
 									  float r, float g, float b, float a,
 									  int32_t width, int32_t radius);
-void mango_jump_label_node_set_padding(struct mango_jump_label_node *node,
+void asteroidz_jump_label_node_set_padding(struct asteroidz_jump_label_node *node,
 									   int32_t pad_x, int32_t pad_y);
-void mango_jump_label_node_update(struct mango_jump_label_node *node,
+void asteroidz_jump_label_node_update(struct asteroidz_jump_label_node *node,
 								  const char *text, float scale);
 
-struct mango_tab_bar_node *
-mango_tab_bar_node_create(void *mango_node_data, struct wlr_scene_tree *parent,
+struct asteroidz_tab_bar_node *
+asteroidz_tab_bar_node_create(void *asteroidz_node_data, struct wlr_scene_tree *parent,
 						  DecorateDrawData data, int32_t width, int32_t height);
-void mango_tab_bar_node_destroy(struct mango_tab_bar_node *node);
-void mango_tab_bar_node_set_size(struct mango_tab_bar_node *node, int32_t width,
+void asteroidz_tab_bar_node_destroy(struct asteroidz_tab_bar_node *node);
+void asteroidz_tab_bar_node_set_size(struct asteroidz_tab_bar_node *node, int32_t width,
 								 int32_t height);
-void mango_tab_bar_node_set_enabled(struct mango_tab_bar_node *node,
+void asteroidz_tab_bar_node_set_enabled(struct asteroidz_tab_bar_node *node,
 									bool enabled);
-void mango_tab_bar_node_set_position(struct mango_tab_bar_node *node,
+void asteroidz_tab_bar_node_set_position(struct asteroidz_tab_bar_node *node,
 									 int32_t x, int32_t y);
-void mango_tab_bar_node_set_shadow(struct mango_tab_bar_node *node,
+void asteroidz_tab_bar_node_set_shadow(struct asteroidz_tab_bar_node *node,
 								   bool enabled, float sigma, int32_t offset_y,
 								   const float color[4]);
-void mango_tab_bar_node_set_icon(struct mango_tab_bar_node *node,
+void asteroidz_tab_bar_node_set_icon(struct asteroidz_tab_bar_node *node,
 								 const char *icon_name);
-void mango_text_node_set_icon_theme(const char *theme);
-void mango_tab_bar_node_update(struct mango_tab_bar_node *node,
+void asteroidz_text_node_set_icon_theme(const char *theme);
+void asteroidz_tab_bar_node_update(struct asteroidz_tab_bar_node *node,
 							   const char *text, float scale);
 
-void mango_jump_label_node_set_focus(struct mango_jump_label_node *node,
+void asteroidz_jump_label_node_set_focus(struct asteroidz_jump_label_node *node,
 									 bool focused);
-void mango_tab_bar_node_set_focus(struct mango_tab_bar_node *node,
+void asteroidz_tab_bar_node_set_focus(struct asteroidz_tab_bar_node *node,
 								  bool focused);
 
-void mango_tab_bar_node_set_colors(struct mango_tab_bar_node *node,
+void asteroidz_tab_bar_node_set_colors(struct asteroidz_tab_bar_node *node,
 								   const float fg[4], const float bg[4]);
 
-MangoGroupBar *mango_group_bar_create(void *cdata, uint32_t type,
+AsteroidzGroupBar *asteroidz_group_bar_create(void *cdata, uint32_t type,
 									  struct wlr_scene_tree *parent,
 									  DecorateDrawData data, int32_t width,
 									  int32_t height);
-void mango_group_bar_destroy(MangoGroupBar *node);
-void mango_group_bar_set_size(MangoGroupBar *node, int32_t width,
+void asteroidz_group_bar_destroy(AsteroidzGroupBar *node);
+void asteroidz_group_bar_set_size(AsteroidzGroupBar *node, int32_t width,
 							  int32_t height);
-void mango_group_bar_update(MangoGroupBar *node, const char *text, float scale);
-void mango_group_bar_set_focus(MangoGroupBar *node, bool focused);
-void mango_group_bar_set_colors(MangoGroupBar *node, const float fg[4],
+void asteroidz_group_bar_update(AsteroidzGroupBar *node, const char *text, float scale);
+void asteroidz_group_bar_set_focus(AsteroidzGroupBar *node, bool focused);
+void asteroidz_group_bar_set_colors(AsteroidzGroupBar *node, const float fg[4],
 								const float bg[4]);
-void mango_group_bar_apply_config(MangoGroupBar *node,
+void asteroidz_group_bar_apply_config(AsteroidzGroupBar *node,
 								  const DecorateDrawData *data);
-void mango_jump_label_node_apply_config(struct mango_jump_label_node *node,
+void asteroidz_jump_label_node_apply_config(struct asteroidz_jump_label_node *node,
 										const DecorateDrawData *data);
-void mango_tab_bar_node_apply_config(struct mango_tab_bar_node *node,
+void asteroidz_tab_bar_node_apply_config(struct asteroidz_tab_bar_node *node,
 									 const DecorateDrawData *data);
 #endif // jump_label_node_H

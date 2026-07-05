@@ -117,8 +117,8 @@
 #include "draw/text-node.h"
 
 /* macros */
-#define MANGO_MAX(A, B) ((A) > (B) ? (A) : (B))
-#define MANGO_MIN(A, B) ((A) < (B) ? (A) : (B))
+#define ASTEROIDZ_MAX(A, B) ((A) > (B) ? (A) : (B))
+#define ASTEROIDZ_MIN(A, B) ((A) < (B) ? (A) : (B))
 #define GEZERO(A) ((A) >= 0 ? (A) : 0)
 #define CLEANMASK(mask) (mask & ~WLR_MODIFIER_CAPS)
 #define INSIDEMON(A)                                                           \
@@ -229,11 +229,11 @@ enum {
 }; /* scene layers */
 
 /* values must not collide with the client-type enum above: tab bar nodes
- * store a MangoNodeData whose first member is this enum, and xytonode now
+ * store a AsteroidzNodeData whose first member is this enum, and xytonode now
  * reads the first uint32_t of node.data generically */
-enum mango_node_type {
-	MANGO_TITLE_NODE = 100,
-	MANGO_jump_label_node
+enum asteroidz_node_type {
+	ASTEROIDZ_TITLE_NODE = 100,
+	ASTEROIDZ_jump_label_node
 };
 
 #ifdef XWAYLAND
@@ -303,9 +303,9 @@ typedef struct {
 } Arg;
 
 typedef struct {
-	enum mango_node_type type;
+	enum asteroidz_node_type type;
 	void *node_data;
-} MangoNodeData;
+} AsteroidzNodeData;
 
 typedef struct {
 	uint32_t mod;
@@ -400,9 +400,9 @@ struct Client {
 	struct wlr_scene_blur *blur_node;
 	struct wlr_scene_tree *scene_surface;
 	struct wlr_scene_tree *overview_scene_surface;
-	struct mango_jump_label_node *jump_label_node;
-	struct mango_tab_bar_node *tab_bar_node;
-	MangoGroupBar *group_bar;
+	struct asteroidz_jump_label_node *jump_label_node;
+	struct asteroidz_tab_bar_node *tab_bar_node;
+	AsteroidzGroupBar *group_bar;
 	struct wl_list link;
 	struct wl_list flink;
 	struct wl_list fadeout_link;
@@ -888,7 +888,7 @@ static void virtualpointer(struct wl_listener *listener, void *data);
 static void warp_cursor(const Client *c);
 static Monitor *xytomon(double x, double y);
 static void xytonode(double x, double y, struct wlr_surface **psurface,
-					 Client **pc, LayerSurface **pl, MangoGroupBar **gb,
+					 Client **pc, LayerSurface **pl, AsteroidzGroupBar **gb,
 					 double *nx, double *ny);
 static void clear_fullscreen_flag(Client *c);
 static pid_t getparentprocess(pid_t p);
@@ -1088,7 +1088,7 @@ static struct wlr_virtual_pointer_manager_v1 *virtual_pointer_mgr;
 static struct wlr_output_power_manager_v1 *power_mgr;
 static struct wlr_pointer_gestures_v1 *pointer_gestures;
 static struct wlr_drm_lease_v1_manager *drm_lease_manager;
-struct mango_print_status_manager *print_status_manager;
+struct asteroidz_print_status_manager *print_status_manager;
 
 static struct wlr_cursor *cursor;
 static struct wlr_xcursor_manager *cursor_mgr;
@@ -1150,7 +1150,7 @@ typedef struct {
 	struct wlr_scene_buffer *frame_node; /* the frozen frame, full-screen */
 	struct wlr_scene_rect *dim[4];		 /* dim mask: top, bottom, left, right */
 	struct wlr_scene_rect *border[4];	 /* selection border: same order */
-	struct mango_jump_label_node *label; /* "WxH" dimension tooltip */
+	struct asteroidz_jump_label_node *label; /* "WxH" dimension tooltip */
 
 	bool dragging;
 	double start_x, start_y; /* layout coords, region drag anchor */
@@ -1201,7 +1201,6 @@ static char *env_vars[] = {"DISPLAY",
 						   "XCURSOR_THEME",
 						   "XCURSOR_SIZE",
 						   "ASTEROIDZ_INSTANCE_SIGNATURE",
-						   "MANGO_INSTANCE_SIGNATURE",
 						   NULL};
 static struct {
 	enum wp_cursor_shape_device_v1_shape shape;
@@ -1228,7 +1227,7 @@ struct Pertag {
 };
 #include "config/parse_config.h"
 
-static struct wl_signal mango_print_status;
+static struct wl_signal asteroidz_print_status;
 
 static struct wl_listener print_status_listener = {.notify =
 													   handle_print_status};
@@ -1313,8 +1312,8 @@ void client_change_mon(Client *c, Monitor *m) {
 
 void applybounds(Client *c, struct wlr_box *bbox) {
 	/* set minimum possible */
-	c->geom.width = MANGO_MAX(1 + 2 * (int32_t)c->bw, c->geom.width);
-	c->geom.height = MANGO_MAX(1 + 2 * (int32_t)c->bw, c->geom.height);
+	c->geom.width = ASTEROIDZ_MAX(1 + 2 * (int32_t)c->bw, c->geom.width);
+	c->geom.height = ASTEROIDZ_MAX(1 + 2 * (int32_t)c->bw, c->geom.height);
 
 	if (c->geom.x >= bbox->x + bbox->width)
 		c->geom.x = bbox->x + bbox->width - c->geom.width;
@@ -1440,7 +1439,7 @@ void client_replace(Client *c, Client *w, bool is_group_change_member,
 		client_group_replace(w, c);
 	}
 
-	mango_group_bar_set_focus(c->group_bar, c->isgroupfocusing);
+	asteroidz_group_bar_set_focus(c->group_bar, c->isgroupfocusing);
 
 	if (w->overview_scene_surface) {
 
@@ -1457,7 +1456,7 @@ void client_replace(Client *c, Client *w, bool is_group_change_member,
 	}
 
 	if (w->tab_bar_node) {
-		mango_tab_bar_node_set_enabled(w->tab_bar_node, false);
+		asteroidz_tab_bar_node_set_enabled(w->tab_bar_node, false);
 	}
 
 	if (w->group_bar && !is_group_change_member) {
@@ -1865,7 +1864,7 @@ void set_float_malposition(Client *tc) {
 	y = tc->geom.y;
 	xreverse = 1;
 	yreverse = 1;
-	offset = MANGO_MIN(tc->mon->w.width / 20, tc->mon->w.height / 20);
+	offset = ASTEROIDZ_MIN(tc->mon->w.width / 20, tc->mon->w.height / 20);
 
 	wl_list_for_each(c, &clients, link) {
 		if (c->isfloating && c != tc && VISIBLEON(c, tc->mon) &&
@@ -2391,7 +2390,7 @@ axisnotify(struct wl_listener *listener, void *data) {
 
 	// scrolling over a group bar cycles the focused group member
 	if (!locked && CLEANMASK(mods) == 0) {
-		MangoGroupBar *gb = NULL;
+		AsteroidzGroupBar *gb = NULL;
 		Client *gc = NULL, *tc = NULL;
 		xytonode(cursor->x, cursor->y, NULL, NULL, NULL, &gb, NULL, NULL);
 		if (gb && gb->node_data) {
@@ -2701,7 +2700,7 @@ bool handle_buttonpress(struct wlr_pointer_button_event *event) {
 	uint32_t hard_mods, mods;
 	Client *c = NULL;
 	LayerSurface *l = NULL;
-	MangoGroupBar *gb = NULL;
+	AsteroidzGroupBar *gb = NULL;
 	struct wlr_surface *surface;
 	Client *tmpc = NULL;
 	int32_t ji;
@@ -2757,9 +2756,9 @@ bool handle_buttonpress(struct wlr_pointer_button_event *event) {
 		struct wlr_scene_node *node = wlr_scene_node_at(
 			&layers[LyrDecorate]->node, cursor->x, cursor->y, NULL, NULL);
 		if (node && node->data) {
-			MangoNodeData *mangonodedata = (MangoNodeData *)node->data;
-			if (mangonodedata->type == MANGO_TITLE_NODE) {
-				Client *c = mangonodedata->node_data;
+			AsteroidzNodeData *nodedata = (AsteroidzNodeData *)node->data;
+			if (nodedata->type == ASTEROIDZ_TITLE_NODE) {
+				Client *c = nodedata->node_data;
 				focusclient(c, 1);
 			}
 		}
@@ -2970,7 +2969,7 @@ void cleanup(void) {
 	   destroyed) to avoid destroying them with an invalid scene output. */
 	wlr_scene_node_destroy(&scene->tree.node);
 
-	mango_text_global_finish();
+	asteroidz_text_global_finish();
 }
 
 void cleanupmon(struct wl_listener *listener, void *data) {
@@ -4928,6 +4927,15 @@ void keypress(struct wl_listener *listener, void *data) {
 			for (i = 0; i < nsyms; i++)
 				screenshot_ui_handle_key(syms[i]);
 		}
+		/* the key repeat timer armed by the very press that opened this
+		 * overlay (handled *before* shotui.active went true on the next
+		 * frame) never reaches the disarm logic below while we keep
+		 * early-returning here. Left alone it fires forever via
+		 * keyrepeat(), which calls keybinding() directly and re-triggers
+		 * screenshot_ui() the instant teardown() clears shotui.active --
+		 * an infinite relaunch loop that eats all keyboard input. */
+		group->nsyms = 0;
+		wl_event_source_timer_update(group->key_repeat_source, 0);
 		return;
 	}
 
@@ -5892,7 +5900,7 @@ void pointerfocus(Client *c, struct wlr_surface *surface, double sx, double sy,
 
 // modified printstatus function to accept a mask parameter
 void printstatus(enum ipc_watch_type type) {
-	wl_signal_emit(&mango_print_status, &type);
+	wl_signal_emit(&asteroidz_print_status, &type);
 }
 
 static int monitor_retrain_step(void *data) {
@@ -5900,7 +5908,11 @@ static int monitor_retrain_step(void *data) {
 	struct wlr_output_state state;
 	struct wlr_output_mode *cur, *alt = NULL, *mode;
 
-	if (!m || !m->wlr_output || !m->wlr_output->enabled || m->iscleanuping)
+	/* Deliberately not gated on m->wlr_output->enabled: this can run as a
+	 * recovery attempt after a DPMS-on commit that itself failed to bring
+	 * the output back (see powermgrsetmode()), in which case the output
+	 * may still be reporting disabled. */
+	if (!m || !m->wlr_output || m->iscleanuping)
 		return 0;
 
 	wlr_output_state_init(&state);
@@ -5909,6 +5921,10 @@ static int monitor_retrain_step(void *data) {
 		 * resolution, like the console does on a VT switch */
 		cur = m->wlr_output->current_mode;
 		if (!cur) {
+			wlr_log(WLR_ERROR,
+					"monitor_retrain_step: %s has no current_mode, "
+					"cannot retrain",
+					m->wlr_output->name);
 			wlr_output_state_finish(&state);
 			return 0;
 		}
@@ -5920,6 +5936,10 @@ static int monitor_retrain_step(void *data) {
 				alt = mode;
 		}
 		if (!alt) {
+			wlr_log(WLR_ERROR,
+					"monitor_retrain_step: %s has no alternate mode at "
+					"%dx%d to cycle through, cannot retrain",
+					m->wlr_output->name, cur->width, cur->height);
 			wlr_output_state_finish(&state);
 			return 0;
 		}
@@ -5958,15 +5978,23 @@ void powermgrsetmode(struct wl_listener *listener, void *data) {
 		return;
 
 	wlr_output_state_set_enabled(&state, event->mode);
-	wlr_output_commit_state(m->wlr_output, &state);
+	bool committed = wlr_output_commit_state(m->wlr_output, &state);
+	if (!committed)
+		wlr_log(WLR_ERROR,
+				"powermgrsetmode: failed to commit enabled=%d for %s",
+				event->mode, m->wlr_output->name);
 
 	m->asleep = !event->mode;
 	updatemons(NULL, NULL);
 
 	/* some sinks (DSC panels) come back with a corrupted decoder after
-	 * DPMS; schedule a mode-cycle once the panel electronics are awake */
-	if (event->mode && config.dpms_wake_retrain)
-		monitor_start_retrain(m, 700);
+	 * DPMS; schedule a mode-cycle once the panel electronics are awake.
+	 * Always attempt this on a failed wake commit even without
+	 * dpms_wake_retrain: that option is for the cosmetic flicker case,
+	 * but a commit that outright failed needs the recovery attempt
+	 * regardless. */
+	if (event->mode && (config.dpms_wake_retrain || !committed))
+		monitor_start_retrain(m, committed ? 700 : 50);
 }
 
 void quitsignal(int32_t signo) { quit(NULL); }
@@ -6225,7 +6253,30 @@ void set_activation_env() {
 
 	wlr_log(WLR_INFO, "Updating dbus execution environment");
 
-	char *env_keys = join_strings(env_vars, " ");
+	/* env_vars is a fixed built-in list; systemd --user units (e.g.
+	 * dms.service, which isn't a child of ours and so never inherits our
+	 * process environment) only ever see what we hand them here. Append
+	 * the user's own `env = NAME,VALUE` config entries so things like
+	 * QT_SCALE_FACTOR/GDK_DPI_SCALE reach those services too. */
+	size_t nfixed = LENGTH(env_vars) - 1;
+	char **keys = calloc(nfixed + (size_t)config.env_count + 1, sizeof(char *));
+	if (!keys) {
+		wlr_log(WLR_ERROR, "Failed to allocate activation-env key list");
+		return;
+	}
+	size_t n = 0;
+	for (size_t i = 0; i < nfixed; i++)
+		keys[n++] = env_vars[i];
+	for (int32_t i = 0; i < config.env_count; i++)
+		keys[n++] = config.env[i]->type;
+	keys[n] = NULL;
+
+	char *env_keys = join_strings(keys, " ");
+	free(keys);
+	if (!env_keys) {
+		wlr_log(WLR_ERROR, "Failed to allocate activation-env key string");
+		return;
+	}
 
 	// first command: dbus-update-activation-environment
 	const char *arg1 = env_keys;
@@ -6618,10 +6669,10 @@ void setfullscreen(Client *c, int32_t fullscreen,
 }
 
 void setgaps(int32_t oh, int32_t ov, int32_t ih, int32_t iv) {
-	selmon->gappoh = MANGO_MAX(oh, 0);
-	selmon->gappov = MANGO_MAX(ov, 0);
-	selmon->gappih = MANGO_MAX(ih, 0);
-	selmon->gappiv = MANGO_MAX(iv, 0);
+	selmon->gappoh = ASTEROIDZ_MAX(oh, 0);
+	selmon->gappov = ASTEROIDZ_MAX(ov, 0);
+	selmon->gappih = ASTEROIDZ_MAX(ih, 0);
+	selmon->gappiv = ASTEROIDZ_MAX(iv, 0);
 	arrange(selmon, false, false);
 }
 
@@ -6872,6 +6923,7 @@ void handle_print_status(struct wl_listener *listener, void *data) {
 void setup(void) {
 
 	setenv("XDG_CURRENT_DESKTOP", "asteroidz", 1);
+	setenv("XDG_SESSION_TYPE", "wayland", 1);
 	setenv("_JAVA_AWT_WM_NONREPARENTING", "1", 1);
 
 	parse_config();
@@ -6985,8 +7037,8 @@ void setup(void) {
 	background_effect_manager_create(dpy);
 
 	// inside the setup function
-	wl_signal_init(&mango_print_status);
-	wl_signal_add(&mango_print_status, &print_status_listener);
+	wl_signal_init(&asteroidz_print_status);
+	wl_signal_add(&asteroidz_print_status, &print_status_listener);
 
 	/* Initializes the interface used to implement urgency hints */
 	activation = wlr_xdg_activation_v1_create(dpy);
@@ -7723,15 +7775,15 @@ void unmapnotify(struct wl_listener *listener, void *data) {
 	c->stack_proportion = 0.0f;
 
 	if (c->jump_label_node) {
-		mango_jump_label_node_destroy(c->jump_label_node);
+		asteroidz_jump_label_node_destroy(c->jump_label_node);
 		c->jump_label_node = NULL;
 	}
 	if (c->tab_bar_node) {
-		mango_tab_bar_node_destroy(c->tab_bar_node);
+		asteroidz_tab_bar_node_destroy(c->tab_bar_node);
 		c->tab_bar_node = NULL;
 	}
 	if (c->group_bar) {
-		mango_group_bar_destroy(c->group_bar);
+		asteroidz_group_bar_destroy(c->group_bar);
 		c->group_bar = NULL;
 	}
 
@@ -7887,8 +7939,8 @@ void updatetitle(struct wl_listener *listener, void *data) {
 
 	const char *title;
 	title = client_get_title(c);
-	mango_tab_bar_node_update(c->tab_bar_node, title, 1.0);
-	mango_group_bar_update(c->group_bar, title,
+	asteroidz_tab_bar_node_update(c->tab_bar_node, title, 1.0);
+	asteroidz_group_bar_update(c->group_bar, title,
 						   c->mon	? c->mon->wlr_output->scale
 						   : selmon ? selmon->wlr_output->scale
 									: 1.0f);
@@ -8288,12 +8340,67 @@ static void setgeometrynotify(struct wl_listener *listener, void *data) {
 }
 #endif
 
+/* Compositor stdout/stderr normally land on the raw VT (tty1) and are lost
+ * once the console scrolls past them. Mirror stderr into a small rotating
+ * log file so post-mortem debugging (e.g. a monitor that never came back
+ * from DPMS) has something to look at after the fact. */
+static void init_persistent_log(void) {
+	const char *home = getenv("HOME");
+	if (!home || !*home)
+		return;
+
+	char *dir = string_printf("%s/.local/state/asteroidz", home);
+	if (!dir)
+		return;
+
+	for (char *p = dir + 1; *p; p++) {
+		if (*p == '/') {
+			*p = '\0';
+			mkdir(dir, 0755);
+			*p = '/';
+		}
+	}
+	mkdir(dir, 0755);
+
+	char *path = string_printf("%s/asteroidz.log", dir);
+	free(dir);
+	if (!path)
+		return;
+
+	struct stat st;
+	if (stat(path, &st) == 0 && st.st_size > 5 * 1024 * 1024) {
+		char *old_path = string_printf("%s.old", path);
+		if (old_path) {
+			rename(path, old_path);
+			free(old_path);
+		}
+	}
+
+	int32_t fd = open(path, O_WRONLY | O_CREAT | O_APPEND, 0644);
+	free(path);
+	if (fd < 0)
+		return;
+
+	dup2(fd, STDERR_FILENO);
+	close(fd);
+
+	time_t now = time(NULL);
+	struct tm tm_now;
+	localtime_r(&now, &tm_now);
+	char stamp[32];
+	strftime(stamp, sizeof(stamp), "%Y-%m-%d %H:%M:%S", &tm_now);
+	fprintf(stderr, "\n===== asteroidz " VERSION " starting (%s) =====\n",
+			stamp);
+}
+
 int32_t main(int32_t argc, char *argv[]) {
 	char *startup_cmd = NULL;
 	int32_t c;
 
+	init_persistent_log();
+
 	restart_argv = argv;
-	if (getenv("ASTEROIDZ_RESTARTED") || getenv("MANGO_RESTARTED")) {
+	if (getenv("ASTEROIDZ_RESTARTED")) {
 		cli_debug_log = true;
 		/* belt and braces: never let a previous instance's session env
 		 * steer backend autodetection after an in-place restart */
@@ -8334,7 +8441,7 @@ usage:
 	printf("Usage: asteroidz [OPTIONS]\n"
 		   "\n"
 		   "Options:\n"
-		   "  -v             Show mango version\n"
+		   "  -v             Show asteroidz version\n"
 		   "  -d             Enable debug log\n"
 		   "  -c <file>      Use custom configuration file\n"
 		   "  -s <command>   Execute startup command\n"

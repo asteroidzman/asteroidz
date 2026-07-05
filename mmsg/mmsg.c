@@ -8,7 +8,7 @@
 #include <unistd.h>
 
 static void usage(void) {
-	printf("Usage: mmsg <command> [args...]\n\n");
+	printf("Usage: amsg <command> [args...]\n\n");
 	printf("One-shot queries (get):\n");
 	printf(
 		"  get version                              Show compositor version\n");
@@ -65,7 +65,7 @@ static void usage(void) {
 	printf("Environment:\n");
 	printf("  ASTEROIDZ_INSTANCE_SIGNATURE  IPC socket path (set by the "
 		   "compositor)\n\n");
-	printf("Run 'mmsg --help', '-h' or 'help' to see this message.\n");
+	printf("Run 'amsg --help', '-h' or 'help' to see this message.\n");
 }
 
 int main(int argc, char *argv[]) {
@@ -77,18 +77,17 @@ int main(int argc, char *argv[]) {
 	}
 
 	if (argc < 2) {
-		fprintf(stderr, "Usage: mmsg <command> [args...]\n");
+		fprintf(stderr, "Usage: amsg <command> [args...]\n");
 		fprintf(stderr, "  get <type> ...      one-shot request\n");
 		fprintf(stderr, "  watch <type> ...    persistent stream\n");
 		return EXIT_FAILURE;
 	}
 
 	const char *socket_path = getenv("ASTEROIDZ_INSTANCE_SIGNATURE");
-	if (!socket_path)
-		socket_path = getenv("MANGO_INSTANCE_SIGNATURE");
 	if (!socket_path) {
-		fprintf(stderr, "Error: MANGO_INSTANCE_SIGNATURE is not set. Did you "
-						"run 'mmsg' in mango?\n");
+		fprintf(stderr,
+				"Error: ASTEROIDZ_INSTANCE_SIGNATURE is not set. Did you "
+				"run 'amsg' inside asteroidz?\n");
 		return EXIT_FAILURE;
 	}
 

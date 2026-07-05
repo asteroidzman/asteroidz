@@ -492,7 +492,7 @@ int32_t incnmaster(const Arg *arg) {
 	if (!arg || !selmon)
 		return 0;
 	selmon->pertag->nmasters[selmon->pertag->curtag] =
-		MANGO_MAX(selmon->pertag->nmasters[selmon->pertag->curtag] + arg->i, 0);
+		ASTEROIDZ_MAX(selmon->pertag->nmasters[selmon->pertag->curtag] + arg->i, 0);
 	arrange(selmon, false, false);
 	return 0;
 }
@@ -737,7 +737,7 @@ int32_t restart(const Arg *arg) {
 	 * CLOEXEC, so the kernel releases them atomically and the fresh
 	 * instance re-acquires the seat and reclaims wayland-0. If exec
 	 * fails the session simply keeps running. */
-	int logfd = open("/tmp/mango-restart.log",
+	int logfd = open("/tmp/asteroidz-restart.log",
 					 O_CREAT | O_WRONLY | O_APPEND, 0600);
 	if (logfd >= 0) {
 		dprintf(logfd, "== asteroidz re-exec: %s\n", restart_argv[0]);
@@ -753,7 +753,6 @@ int32_t restart(const Arg *arg) {
 	unsetenv("WAYLAND_DISPLAY");
 	unsetenv("DISPLAY");
 	unsetenv("ASTEROIDZ_INSTANCE_SIGNATURE");
-	unsetenv("MANGO_INSTANCE_SIGNATURE");
 	execvp(restart_argv[0], restart_argv);
 	/* argv[0] may not resolve via PATH depending on how the session was
 	 * started; fall back to the installed binary */
@@ -1029,12 +1028,12 @@ int32_t smartmovewin(const Arg *arg) {
 				continue;
 			buttom = tc->geom.y + tc->geom.height + config.gappiv;
 			if (top > buttom && ny < buttom) {
-				tar = MANGO_MAX(tar, buttom);
+				tar = ASTEROIDZ_MAX(tar, buttom);
 			};
 		}
 
 		ny = tar == -99999 ? ny : tar;
-		ny = MANGO_MAX(ny, c->mon->w.y + c->mon->gappov);
+		ny = ASTEROIDZ_MAX(ny, c->mon->w.y + c->mon->gappov);
 		break;
 	case DOWN:
 		tar = 99999;
@@ -1049,11 +1048,11 @@ int32_t smartmovewin(const Arg *arg) {
 				continue;
 			top = tc->geom.y - config.gappiv;
 			if (buttom < top && (ny + c->geom.height) > top) {
-				tar = MANGO_MIN(tar, top - c->geom.height);
+				tar = ASTEROIDZ_MIN(tar, top - c->geom.height);
 			};
 		}
 		ny = tar == 99999 ? ny : tar;
-		ny = MANGO_MIN(ny, c->mon->w.y + c->mon->w.height - c->geom.height -
+		ny = ASTEROIDZ_MIN(ny, c->mon->w.y + c->mon->w.height - c->geom.height -
 							   c->mon->gappov);
 		break;
 	case LEFT:
@@ -1069,12 +1068,12 @@ int32_t smartmovewin(const Arg *arg) {
 				continue;
 			right = tc->geom.x + tc->geom.width + config.gappih;
 			if (left > right && nx < right) {
-				tar = MANGO_MAX(tar, right);
+				tar = ASTEROIDZ_MAX(tar, right);
 			};
 		}
 
 		nx = tar == -99999 ? nx : tar;
-		nx = MANGO_MAX(nx, c->mon->w.x + c->mon->gappoh);
+		nx = ASTEROIDZ_MAX(nx, c->mon->w.x + c->mon->gappoh);
 		break;
 	case RIGHT:
 		tar = 99999;
@@ -1088,11 +1087,11 @@ int32_t smartmovewin(const Arg *arg) {
 				continue;
 			left = tc->geom.x - config.gappih;
 			if (right < left && (nx + c->geom.width) > left) {
-				tar = MANGO_MIN(tar, left - c->geom.width);
+				tar = ASTEROIDZ_MIN(tar, left - c->geom.width);
 			};
 		}
 		nx = tar == 99999 ? nx : tar;
-		nx = MANGO_MIN(nx, c->mon->w.x + c->mon->w.width - c->geom.width -
+		nx = ASTEROIDZ_MIN(nx, c->mon->w.x + c->mon->w.width - c->geom.width -
 							   c->mon->gappoh);
 		break;
 	}
@@ -1121,7 +1120,7 @@ int32_t smartresizewin(const Arg *arg) {
 	switch (arg->i) {
 	case UP:
 		nh -= selmon->w.height / 8;
-		nh = MANGO_MAX(nh, selmon->w.height / 10);
+		nh = ASTEROIDZ_MAX(nh, selmon->w.height / 10);
 		break;
 	case DOWN:
 		tar = -99999;
@@ -1136,7 +1135,7 @@ int32_t smartresizewin(const Arg *arg) {
 				continue;
 			top = tc->geom.y - config.gappiv;
 			if (buttom < top && (nh + c->geom.y) > top) {
-				tar = MANGO_MAX(tar, top - c->geom.y);
+				tar = ASTEROIDZ_MAX(tar, top - c->geom.y);
 			};
 		}
 		nh = tar == -99999 ? nh : tar;
@@ -1145,7 +1144,7 @@ int32_t smartresizewin(const Arg *arg) {
 		break;
 	case LEFT:
 		nw -= selmon->w.width / 16;
-		nw = MANGO_MAX(nw, selmon->w.width / 10);
+		nw = ASTEROIDZ_MAX(nw, selmon->w.width / 10);
 		break;
 	case RIGHT:
 		tar = 99999;
@@ -1159,7 +1158,7 @@ int32_t smartresizewin(const Arg *arg) {
 				continue;
 			left = tc->geom.x - config.gappih;
 			if (right < left && (nw + c->geom.x) > left) {
-				tar = MANGO_MIN(tar, left - c->geom.x);
+				tar = ASTEROIDZ_MIN(tar, left - c->geom.x);
 			};
 		}
 
@@ -1227,7 +1226,7 @@ int32_t spawn_shell(const Arg *arg) {
 		execlp("bash", "bash", "-c", arg->v, (char *)NULL);
 
 		wlr_log(WLR_DEBUG,
-				"mango: failed to execute command '%s' with shell: %s\n",
+				"asteroidz: failed to execute command '%s' with shell: %s\n",
 				(char *)arg->v, strerror(errno));
 		_exit(EXIT_FAILURE);
 	}
@@ -1256,14 +1255,14 @@ int32_t spawn(const Arg *arg) {
 
 		wordexp_t p;
 		if (wordexp(arg->v, &p, 0) != 0) {
-			wlr_log(WLR_DEBUG, "mango: wordexp failed for '%s'\n",
+			wlr_log(WLR_DEBUG, "asteroidz: wordexp failed for '%s'\n",
 					(char *)arg->v);
 			_exit(EXIT_FAILURE);
 		}
 
 		execvp(p.we_wordv[0], p.we_wordv);
 
-		wlr_log(WLR_DEBUG, "mango: execvp '%s' failed: %s\n", p.we_wordv[0],
+		wlr_log(WLR_DEBUG, "asteroidz: execvp '%s' failed: %s\n", p.we_wordv[0],
 				strerror(errno));
 		wordfree(&p);
 		_exit(EXIT_FAILURE);
@@ -1356,7 +1355,7 @@ int32_t switch_layout(const Arg *arg) {
 	if (config.circle_layout_count != 0) {
 		for (jk = 0; jk < config.circle_layout_count; jk++) {
 
-			len = MANGO_MAX(
+			len = ASTEROIDZ_MAX(
 				strlen(config.circle_layout[jk]),
 				strlen(selmon->pertag->ltidxs[selmon->pertag->curtag]->name));
 
@@ -1376,7 +1375,7 @@ int32_t switch_layout(const Arg *arg) {
 
 		for (ji = 0; ji < LENGTH(layouts); ji++) {
 			len =
-				MANGO_MAX(strlen(layouts[ji].name), strlen(target_layout_name));
+				ASTEROIDZ_MAX(strlen(layouts[ji].name), strlen(target_layout_name));
 			if (strncmp(layouts[ji].name, target_layout_name, len) == 0) {
 				selmon->pertag->ltidxs[selmon->pertag->curtag] = &layouts[ji];
 
@@ -2588,7 +2587,7 @@ static void screenshot_ui_reset_cursor(void) {
 
 static void screenshot_ui_teardown(void) {
 	if (shotui.label) {
-		mango_jump_label_node_destroy(shotui.label);
+		asteroidz_jump_label_node_destroy(shotui.label);
 		shotui.label = NULL;
 	}
 	if (shotui.tree) {
@@ -2648,7 +2647,8 @@ static void screenshot_ui_layout_dim_and_border(void) {
 	wlr_scene_node_set_position(&shotui.dim[3]->node, sx + sw, sy);
 	wlr_scene_rect_set_size(shotui.dim[3], mw - (sx + sw), sh);
 
-	const int32_t bw = 2;
+	const int32_t bw =
+		config.pilldata.border_width > 0 ? config.pilldata.border_width : 2;
 	bool have_sel = sw > 0 && sh > 0;
 
 	wlr_scene_node_set_position(&shotui.border[0]->node, sx, sy);
@@ -2675,7 +2675,7 @@ static void screenshot_ui_update_label(void) {
 	char text[32];
 	snprintf(text, sizeof(text), "%d x %d", shotui.sel.width,
 			shotui.sel.height);
-	mango_jump_label_node_update(shotui.label, text, 1.0f);
+	asteroidz_jump_label_node_update(shotui.label, text, 1.0f);
 
 	int32_t lx = shotui.sel.x - m->m.x;
 	int32_t ly = shotui.sel.y - m->m.y - shotui.label->logical_height - 8;
@@ -2915,18 +2915,21 @@ static void screenshot_ui_on_captured(Monitor *m, ScreenshotMode mode,
 	shotui.frame_node = wlr_scene_buffer_create(shotui.tree, frame);
 	wlr_scene_buffer_set_dest_size(shotui.frame_node, m->m.width, m->m.height);
 
+	/* border and label both pull from config.pilldata so the overlay matches
+	 * the monocle tab bar's pill theme (colors/radius/border/font) instead
+	 * of carrying their own one-off look */
 	static const float dim_color[4] = {0.0f, 0.0f, 0.0f, 0.55f};
-	static const float border_color[4] = {0.30f, 0.65f, 1.0f, 1.0f};
 	for (int32_t i = 0; i < 4; i++) {
 		shotui.dim[i] = wlr_scene_rect_create(shotui.tree, 0, 0, dim_color);
-		shotui.border[i] =
-			wlr_scene_rect_create(shotui.tree, 0, 0, border_color);
+		shotui.border[i] = wlr_scene_rect_create(shotui.tree, 0, 0,
+												 config.pilldata.border_color);
 	}
 
-	shotui.label =
-		mango_jump_label_node_create(shotui.tree, config.jumplabeldata);
-	if (shotui.label)
+	shotui.label = asteroidz_jump_label_node_create(shotui.tree, config.pilldata);
+	if (shotui.label) {
+		asteroidz_jump_label_node_set_focus(shotui.label, true);
 		wlr_scene_node_set_enabled(&shotui.label->scene_buffer->node, false);
+	}
 
 	double start_x = cursor->x, start_y = cursor->y;
 	if (start_x < m->m.x || start_x > m->m.x + m->m.width)

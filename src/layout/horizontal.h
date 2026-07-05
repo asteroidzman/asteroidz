@@ -62,7 +62,7 @@ void tile(Monitor *m) {
 		if (!VISIBLEON(c, m) || !ISFAKETILED(c))
 			continue;
 		if (i < m->pertag->nmasters[m->pertag->curtag]) {
-			r = MANGO_MIN(n, m->pertag->nmasters[m->pertag->curtag]) - i;
+			r = ASTEROIDZ_MIN(n, m->pertag->nmasters[m->pertag->curtag]) - i;
 			if (c->master_inner_per > 0.0f) {
 				h = master_surplus_height * c->master_inner_per /
 					master_surplus_ratio;
@@ -179,7 +179,7 @@ void right_tile(Monitor *m) {
 		if (!VISIBLEON(c, m) || !ISFAKETILED(c))
 			continue;
 		if (i < m->pertag->nmasters[m->pertag->curtag]) {
-			r = MANGO_MIN(n, m->pertag->nmasters[m->pertag->curtag]) - i;
+			r = ASTEROIDZ_MIN(n, m->pertag->nmasters[m->pertag->curtag]) - i;
 			if (c->master_inner_per > 0.0f) {
 				h = master_surplus_height * c->master_inner_per /
 					master_surplus_ratio;
@@ -345,7 +345,7 @@ void center_tile(Monitor *m) {
 
 		if (i < nmasters) {
 			// master area window
-			r = MANGO_MIN(n, nmasters) - i;
+			r = ASTEROIDZ_MIN(n, nmasters) - i;
 			if (c->master_inner_per > 0.0f) {
 				h = master_surplus_height * c->master_inner_per /
 					master_surplus_ratio;
@@ -519,7 +519,7 @@ void deck(Monitor *m) {
 		if (i < nmasters) {
 			c->master_mfact_per = mfact;
 			int32_t h = (m->w.height - 2 * cur_gappov - my) /
-						(MANGO_MIN(n, nmasters) - i);
+						(ASTEROIDZ_MIN(n, nmasters) - i);
 			client_tile_resize(c,
 							   (struct wlr_box){.x = m->w.x + cur_gappoh,
 												.y = m->w.y + cur_gappov + my,
@@ -580,16 +580,16 @@ void monocle(Monitor *m) {
 		return;
 	}
 
-	int tab_bar_height = config.tab_bar_height;
+	int monocle_tab_height = config.monocle_tab_height;
 
-	int tab_bar_inner_gap_height =
-		config.tab_bar_height > 0 ? 2 * cur_gapiv : 0;
-	int tab_bar_y_offset = config.tab_bar_height > 0 ? cur_gapiv : 0;
+	int monocle_tab_inner_gap_height =
+		config.monocle_tab_height > 0 ? 2 * cur_gapiv : 0;
+	int monocle_tab_y_offset = config.monocle_tab_height > 0 ? cur_gapiv : 0;
 
 	int tab_y = m->w.y + cur_gappov;
-	int main_y = tab_y + tab_bar_height + tab_bar_y_offset;
-	int main_height = m->w.height - 2 * cur_gappov - tab_bar_inner_gap_height -
-					  tab_bar_height;
+	int main_y = tab_y + monocle_tab_height + monocle_tab_y_offset;
+	int main_height = m->w.height - 2 * cur_gappov - monocle_tab_inner_gap_height -
+					  monocle_tab_height;
 
 	int tab_area_width = m->w.width - 2 * cur_gappoh;
 
@@ -601,9 +601,9 @@ void monocle(Monitor *m) {
 
 	/* cap tab width so pills don't stretch across the whole screen; the
 	 * capped row is centered in the tab area */
-	if (config.tab_bar_max_tab_width > 0 &&
-		base_width > config.tab_bar_max_tab_width) {
-		base_width = config.tab_bar_max_tab_width;
+	if (config.monocle_tab_max_width > 0 &&
+		base_width > config.monocle_tab_max_width) {
+		base_width = config.monocle_tab_max_width;
 		remainder = 0;
 		tab_x += (tab_area_width - (n * base_width + total_gaps)) / 2;
 	}
@@ -626,7 +626,7 @@ void monocle(Monitor *m) {
 		client_tile_resize(c, geom, 0);
 
 		int tw = base_width + (idx < remainder ? 1 : 0);
-		global_draw_tab_bar(c, tab_x, tab_y, tw, tab_bar_height);
+		global_draw_tab_bar(c, tab_x, tab_y, tw, monocle_tab_height);
 
 		tab_x += tw + cur_gapih;
 		idx++;

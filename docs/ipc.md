@@ -1,22 +1,22 @@
 ---
 title: IPC
-description: Control mangowm programmatically using mmsg.
+description: Control asteroidz programmatically using amsg.
 ---
 
-# mmsg(1) - User Manual
+# amsg(1) - User Manual
 
-`mmsg` is the command-line interface for the Mango compositor's Inter-Process Communication (IPC) system. It allows users and scripts to query the state of the compositor or subscribe to real-time events.
+`amsg` is the command-line interface for asteroidz's Inter-Process Communication (IPC) system. It allows users and scripts to query the state of the compositor or subscribe to real-time events.
 
 ## SYNOPSIS
-`mmsg <command> [arguments...]`
+`amsg <command> [arguments...]`
 
 ## DESCRIPTION
-`mmsg` acts as a client that connects to the Mango compositor via a Unix domain socket defined by the `MANGO_INSTANCE_SIGNATURE` environment variable. It supports two primary modes of operation:
+`amsg` acts as a client that connects to the asteroidz compositor via a Unix domain socket defined by the `ASTEROIDZ_INSTANCE_SIGNATURE` environment variable. It supports two primary modes of operation:
 1. **One-shot Request (`get`)**: Sends a query to the compositor, receives a single JSON response, and terminates.
 2. **Persistent Stream (`watch`)**: Subscribes to a specific state, receiving continuous JSON updates whenever that state changes.
 
 ## ENVIRONMENT VARIABLES
-* **`MANGO_INSTANCE_SIGNATURE`**: Must be set to the path of the Unix socket created by the running Mango instance. This is typically handled automatically when running `mmsg` from within a terminal spawned by the compositor.
+* **`ASTEROIDZ_INSTANCE_SIGNATURE`**: Must be set to the path of the Unix socket created by the running asteroidz instance. This is typically handled automatically when running `amsg` from within a terminal spawned by the compositor.
 
 ## COMMANDS
 
@@ -39,10 +39,10 @@ description: Control mangowm programmatically using mmsg.
 
 *Example:*
 ```bash
-mmsg get monitor eDP-1
-mmsg get all-clients
-mmsg get all-monitors
-mmsg get cursorpos
+amsg get monitor eDP-1
+amsg get all-clients
+amsg get all-monitors
+amsg get cursorpos
 ```
 
 ### WATCH (Event Subscription)
@@ -62,9 +62,9 @@ Subscribes the client to real-time updates. When the state changes, the server p
 *Example:*
 ```bash
 # watch all monitors
-mmsg watch all-monitors
+amsg watch all-monitors
 # watch all tags
-mmsg watch all-tags
+amsg watch all-tags
 ```
 
 ### DISPATCH
@@ -74,7 +74,7 @@ Allows sending commands to the compositor to alter its state.
 *Example:* 
 ```bash   
 # operate specific client by id
-mmsg dispatch exchange_client,left client,375
+amsg dispatch exchange_client,left client,375
 # operate current client
-mmsg dispatch exchange_client,left
+amsg dispatch exchange_client,left
 ````

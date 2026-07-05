@@ -64,5 +64,5 @@ visible and simply settle in place instead of sliding.
 ## IPC
 
 The name of the special workspace currently showing on a monitor (empty string if none) is exposed
-as `active_special` in `mmsg get monitors` / `mmsg get monitor <name>`. See [IPC](/docs/ipc) for
+as `active_special` in `amsg get monitors` / `amsg get monitor <name>`. See [IPC](/docs/ipc) for
 details.

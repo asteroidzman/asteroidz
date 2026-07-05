@@ -2,7 +2,7 @@
  * ext-background-effect-v1: lets clients request background effects (blur)
  * behind their surfaces, with a surface-local region.
  *
- * Policy: mango already applies blur per its own config rules. A client
+ * Policy: asteroidz already applies blur per its own config rules. A client
  * region refines that: a non-empty region clips the surface's blur node to
  * the region's extents, an explicitly empty region disables blur for the
  * surface, and a NULL region (or destroying the object) restores the
@@ -89,7 +89,7 @@ static void background_effect_surface_addon_destroy(struct wlr_addon *addon) {
 }
 
 static const struct wlr_addon_interface background_effect_surface_addon_impl = {
-	.name = "mango_background_effect_surface",
+	.name = "asteroidz_background_effect_surface",
 	.destroy = background_effect_surface_addon_destroy,
 };
 

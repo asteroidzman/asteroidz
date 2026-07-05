@@ -158,10 +158,11 @@ mandir = get_option('mandir')
 desktop_install_dir = join_paths(prefix, 'share/wayland-sessions')
 portal_install_dir = join_paths(prefix, 'share/xdg-desktop-portal')
 install_data('assets/asteroidz.desktop', install_dir : desktop_install_dir)
+install_data('assets/asteroidz-uwsm.desktop', install_dir : desktop_install_dir)
 install_data('assets/asteroidz-portals.conf', install_dir : portal_install_dir)
 install_data('assets/asteroidz.portal', install_dir : join_paths(prefix, 'share/xdg-desktop-portal/portals'))
 install_data('assets/config.conf', install_dir : join_paths(sysconfdir, 'asteroidz'))
-install_data('mmsg/mmsg.1', install_dir : join_paths(mandir, 'man1'))
+install_data('mmsg/amsg.1', install_dir : join_paths(mandir, 'man1'))
 
 # compat: old tool name keeps working
 install_symlink('mmsg', pointing_to: 'amsg', install_dir: get_option('bindir'))

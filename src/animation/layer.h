@@ -303,7 +303,7 @@ void fadeout_layer_animation_next_tick(LayerSurface *l) {
 	double percent = config.fadeout_begin_opacity -
 					 (opacity_eased_progress * config.fadeout_begin_opacity);
 
-	double opacity = MANGO_MAX(percent, 0.0f);
+	double opacity = ASTEROIDZ_MAX(percent, 0.0f);
 
 	if (config.animation_fade_out)
 		wlr_scene_node_for_each_buffer(&l->scene->node,
@@ -347,7 +347,7 @@ void layer_animation_next_tick(LayerSurface *l) {
 	double opacity_eased_progress =
 		find_animation_curve_at(animation_passed, OPAFADEIN);
 
-	double opacity = MANGO_MIN(config.fadein_begin_opacity +
+	double opacity = ASTEROIDZ_MIN(config.fadein_begin_opacity +
 								   opacity_eased_progress *
 									   (1.0 - config.fadein_begin_opacity),
 							   1.0f);

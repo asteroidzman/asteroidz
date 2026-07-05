@@ -366,10 +366,10 @@ static void client_draw_one_shadow(Client *c, struct wlr_scene_shadow *shadow,
 		top_offset = GEZERO(c->mon->m.y - absolute_shadow_box.y);
 	}
 
-	left_offset = MANGO_MIN(left_offset, shadow_box.width);
-	right_offset = MANGO_MIN(right_offset, shadow_box.width);
-	top_offset = MANGO_MIN(top_offset, shadow_box.height);
-	bottom_offset = MANGO_MIN(bottom_offset, shadow_box.height);
+	left_offset = ASTEROIDZ_MIN(left_offset, shadow_box.width);
+	right_offset = ASTEROIDZ_MIN(right_offset, shadow_box.width);
+	top_offset = ASTEROIDZ_MIN(top_offset, shadow_box.height);
+	bottom_offset = ASTEROIDZ_MIN(bottom_offset, shadow_box.height);
 
 	wlr_scene_node_set_position(&shadow->node, shadow_box.x + left_offset,
 								shadow_box.y + top_offset);
@@ -428,7 +428,7 @@ void client_draw_shadow(Client *c) {
 			c->contact_shadow, config.shadows_contact_blur * state_scale);
 		client_draw_one_shadow(
 			c, c->contact_shadow,
-			(int32_t)MANGO_MAX(config.shadows_contact_size * state_scale, 2),
+			(int32_t)ASTEROIDZ_MAX(config.shadows_contact_size * state_scale, 2),
 			(int32_t)(config.shadows_contact_position_x * state_scale),
 			(int32_t)(config.shadows_contact_position_y * state_scale),
 			current_corner_location, hit_no_border);
@@ -441,16 +441,16 @@ void global_draw_tab_bar(Client *c, int32_t x, int32_t y, int32_t width,
 		return;
 
 	if (height <= 0) {
-		mango_tab_bar_node_set_enabled(c->tab_bar_node, false);
+		asteroidz_tab_bar_node_set_enabled(c->tab_bar_node, false);
 	}
 
-	mango_tab_bar_node_set_enabled(c->tab_bar_node, true);
-	mango_tab_bar_node_set_position(c->tab_bar_node, x, y);
-	mango_tab_bar_node_set_icon(c->tab_bar_node,
-								!config.tab_bar_icons ? NULL
+	asteroidz_tab_bar_node_set_enabled(c->tab_bar_node, true);
+	asteroidz_tab_bar_node_set_position(c->tab_bar_node, x, y);
+	asteroidz_tab_bar_node_set_icon(c->tab_bar_node,
+								!config.monocle_tab_icons ? NULL
 								: c->icon_name		  ? c->icon_name
 													  : client_get_appid(c));
-	mango_tab_bar_node_set_size(c->tab_bar_node, width, height);
+	asteroidz_tab_bar_node_set_size(c->tab_bar_node, width, height);
 }
 
 void global_draw_group_bar(Client *c, int32_t x, int32_t y, int32_t width,
@@ -459,7 +459,7 @@ void global_draw_group_bar(Client *c, int32_t x, int32_t y, int32_t width,
 		return;
 
 	wlr_scene_node_set_position(&c->group_bar->scene_buffer->node, x, y);
-	mango_group_bar_set_size(c->group_bar, width, height);
+	asteroidz_group_bar_set_size(c->group_bar, width, height);
 }
 
 void client_draw_title(Client *c) {
@@ -731,12 +731,12 @@ void apply_border(Client *c) {
 
 	if (right_offset > 0) {
 		inner_surface_width =
-			MANGO_MIN(clip_box.width, inner_surface_width + right_offset);
+			ASTEROIDZ_MIN(clip_box.width, inner_surface_width + right_offset);
 	}
 
 	if (bottom_offset > 0) {
 		inner_surface_height =
-			MANGO_MIN(clip_box.height, inner_surface_height + bottom_offset);
+			ASTEROIDZ_MIN(clip_box.height, inner_surface_height + bottom_offset);
 	}
 
 	struct clipped_region clipped_region = {
@@ -1245,7 +1245,7 @@ void fadeout_client_animation_next_tick(Client *c) {
 	double percent = config.fadeout_begin_opacity -
 					 (opacity_eased_progress * config.fadeout_begin_opacity);
 
-	double opacity = MANGO_MAX(percent, 0);
+	double opacity = ASTEROIDZ_MAX(percent, 0);
 
 	if (config.animation_fade_out && !c->nofadeout)
 		wlr_scene_node_for_each_buffer(&c->scene->node,
@@ -1290,7 +1290,7 @@ void client_animation_next_tick(Client *c) {
 	 * popping to full strength on the first frame */
 	if (c->blur_node && c->animation.action == OPEN) {
 		float blur_p = animation_passed >= 1.0 ? 1.0f
-			: (float)MANGO_MAX(0.0, MANGO_MIN(factor, 1.0));
+			: (float)ASTEROIDZ_MAX(0.0, ASTEROIDZ_MIN(factor, 1.0));
 		wlr_scene_blur_set_strength(c->blur_node, blur_p);
 		wlr_scene_blur_set_alpha(c->blur_node, blur_p);
 	}
@@ -1534,8 +1534,8 @@ void resize(Client *c, struct wlr_box geo, int32_t interact) {
 
 	if (is_scroller_layout(c->mon) && (!c->isfloating || c == grabc)) {
 		c->geom = geo;
-		c->geom.width = MANGO_MAX(1 + 2 * (int32_t)c->bw, c->geom.width);
-		c->geom.height = MANGO_MAX(1 + 2 * (int32_t)c->bw, c->geom.height);
+		c->geom.width = ASTEROIDZ_MAX(1 + 2 * (int32_t)c->bw, c->geom.width);
+		c->geom.height = ASTEROIDZ_MAX(1 + 2 * (int32_t)c->bw, c->geom.height);
 	} else { // this clamps the window so it can't be moved off-screen
 		c->geom = geo;
 		applybounds(
@@ -1818,7 +1818,7 @@ bool client_apply_focus_opacity(Client *c) {
 			 c->opacity_animation.initial_effect) *
 				(float)eased_progress;
 		client_apply_focus_effects(
-			c, MANGO_MAX(0.0f, MANGO_MIN(effect, 1.0f)));
+			c, ASTEROIDZ_MAX(0.0f, ASTEROIDZ_MIN(effect, 1.0f)));
 
 		c->opacity_animation.current_opacity =
 			c->opacity_animation.initial_opacity +

@@ -3,7 +3,7 @@ title: Scratchpad
 description: Manage hidden "scratchpad" windows for quick access.
 ---
 
-mangowm supports two types of scratchpads: the standard pool (Sway-like) and named scratchpads.
+asteroidz supports two types of scratchpads: the standard pool (Sway-like) and named scratchpads.
 
 ## Standard Scratchpad
 
@@ -26,7 +26,7 @@ bind=SUPER+SHIFT,i,restore_minimized
 
 ## Named Scratchpad
 
-Named scratchpads are bound to specific keys and applications. When triggered, mangowm will either launch the app (if not running) or toggle its visibility.
+Named scratchpads are bound to specific keys and applications. When triggered, asteroidz will either launch the app (if not running) or toggle its visibility.
 
 **1. Define the Window Rule**
 

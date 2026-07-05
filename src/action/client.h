@@ -105,29 +105,29 @@ void client_pending_force_kill(Client *c) {
 
 void client_add_jump_label_node(Client *c) {
 	c->jump_label_node =
-		mango_jump_label_node_create(c->scene, config.jumplabeldata);
+		asteroidz_jump_label_node_create(c->scene, config.pilldata);
 	wlr_scene_node_lower_to_bottom(&c->jump_label_node->scene_buffer->node);
 	wlr_scene_node_set_enabled(&c->jump_label_node->scene_buffer->node, false);
 }
 
 void client_add_tab_bar_node(Client *c) {
 
-	if (config.tab_bar_height <= 0) {
+	if (config.monocle_tab_height <= 0) {
 		return;
 	}
 
-	MangoNodeData *mangonodedata = ecalloc(1, sizeof(MangoNodeData));
-	mangonodedata->node_data = c;
-	mangonodedata->type = MANGO_TITLE_NODE;
+	AsteroidzNodeData *nodedata = ecalloc(1, sizeof(AsteroidzNodeData));
+	nodedata->node_data = c;
+	nodedata->type = ASTEROIDZ_TITLE_NODE;
 
-	c->tab_bar_node = mango_tab_bar_node_create(
-		mangonodedata, layers[LyrDecorate], config.tabdata, 0, 0);
+	c->tab_bar_node = asteroidz_tab_bar_node_create(
+		nodedata, layers[LyrDecorate], config.pilldata, 0, 0);
 	wlr_scene_node_lower_to_bottom(&c->tab_bar_node->scene_buffer->node);
-	mango_tab_bar_node_set_enabled(c->tab_bar_node, false);
-	mango_tab_bar_node_set_shadow(c->tab_bar_node, config.shadows,
+	asteroidz_tab_bar_node_set_enabled(c->tab_bar_node, false);
+	asteroidz_tab_bar_node_set_shadow(c->tab_bar_node, config.shadows,
 								  config.shadows_blur * 2.0f, 2,
 								  config.shadowscolor);
-	mango_tab_bar_node_update(c->tab_bar_node, client_get_title(c), 1.0);
+	asteroidz_tab_bar_node_update(c->tab_bar_node, client_get_title(c), 1.0);
 }
 
 void client_add_group_bar(Client *c) {
@@ -141,11 +141,11 @@ void client_add_group_bar(Client *c) {
 					 : c->ismaximizescreen				? LyrMaximize
 														: LyrTile;
 
-	c->group_bar = mango_group_bar_create(c, GroupBar, layers[layer],
-										  config.groupbardata, 0, 0);
+	c->group_bar = asteroidz_group_bar_create(c, GroupBar, layers[layer],
+										  config.pilldata, 0, 0);
 	wlr_scene_node_lower_to_bottom(&c->group_bar->scene_buffer->node);
 	wlr_scene_node_set_enabled(&c->group_bar->scene_buffer->node, false);
-	mango_group_bar_update(c->group_bar, client_get_title(c),
+	asteroidz_group_bar_update(c->group_bar, client_get_title(c),
 						   c->mon	? c->mon->wlr_output->scale
 						   : selmon ? selmon->wlr_output->scale
 									: 1.0f);
@@ -180,10 +180,10 @@ void client_focus_group_member(Client *c) {
 	cur_focusing->isgroupfocusing = false;
 	c->mon = cur_focusing->mon;
 	client_replace(c, cur_focusing, true, false);
-	mango_group_bar_set_focus(cur_focusing->group_bar, false);
+	asteroidz_group_bar_set_focus(cur_focusing->group_bar, false);
 
 	c->isgroupfocusing = true;
-	mango_group_bar_set_focus(c->group_bar, true);
+	asteroidz_group_bar_set_focus(c->group_bar, true);
 
 	client_reparent_group(c);
 
@@ -265,7 +265,7 @@ void client_reparent_group(Client *c) {
 	}
 }
 
-void client_handle_decorate_click(MangoGroupBar *gb) {
+void client_handle_decorate_click(AsteroidzGroupBar *gb) {
 
 	if (!gb)
 		return;
@@ -295,16 +295,16 @@ void client_set_group_config(Client *c) {
 
 	Client *cur = head;
 	while (cur) {
-		mango_jump_label_node_apply_config(cur->jump_label_node,
-										   &config.jumplabeldata);
-		mango_tab_bar_node_apply_config(cur->tab_bar_node, &config.tabdata);
-		mango_tab_bar_node_set_shadow(cur->tab_bar_node, config.shadows,
+		asteroidz_jump_label_node_apply_config(cur->jump_label_node,
+										   &config.pilldata);
+		asteroidz_tab_bar_node_apply_config(cur->tab_bar_node, &config.pilldata);
+		asteroidz_tab_bar_node_set_shadow(cur->tab_bar_node, config.shadows,
 									  config.shadows_blur * 2.0f, 2,
 									  config.shadowscolor);
 		wlr_scene_rect_set_color(cur->droparea, config.dropcolor);
 		wlr_scene_rect_set_color(cur->splitindicator[0], config.splitcolor);
 		wlr_scene_rect_set_color(cur->splitindicator[1], config.splitcolor);
-		mango_group_bar_apply_config(cur->group_bar, &config.groupbardata);
+		asteroidz_group_bar_apply_config(cur->group_bar, &config.pilldata);
 		cur = cur->group_next;
 	}
 }

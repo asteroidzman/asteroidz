@@ -166,6 +166,8 @@ static cJSON *build_client_json(Client *c) {
 	cJSON_AddBoolToObject(obj, "is_urgent", c->isurgent);
 	cJSON_AddBoolToObject(obj, "is_scratchpad", c->is_in_scratchpad);
 	cJSON_AddBoolToObject(obj, "is_namedscratchpad", c->isnamedscratchpad);
+	cJSON_AddStringToObject(obj, "special_workspace",
+							c->special_name ? c->special_name : "");
 	cJSON_AddBoolToObject(obj, "pinned", c->ispinned);
 	cJSON_AddNumberToObject(obj, "x", c->geom.x);
 	cJSON_AddNumberToObject(obj, "y", c->geom.y);
@@ -1056,8 +1058,6 @@ void ipc_init(struct wl_event_loop *event_loop) {
 	listen(ipc_sock_fd, 16);
 
 	setenv("ASTEROIDZ_INSTANCE_SIGNATURE", ipc_socket_path, 1);
-	/* legacy name kept during the rename transition */
-	setenv("MANGO_INSTANCE_SIGNATURE", ipc_socket_path, 1);
 
 	ipc_event_source =
 		wl_event_loop_add_fd(event_loop, ipc_sock_fd, WL_EVENT_READABLE,
@@ -1071,7 +1071,6 @@ void ipc_cleanup(void) {
 		close(ipc_sock_fd);
 	unlink(ipc_socket_path);
 	unsetenv("ASTEROIDZ_INSTANCE_SIGNATURE");
-	unsetenv("MANGO_INSTANCE_SIGNATURE");
 
 	struct ipc_watch_client *wc, *tmp;
 	wl_list_for_each_safe(wc, tmp, &watch_clients, link)

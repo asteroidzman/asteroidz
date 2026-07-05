@@ -1,52 +1,52 @@
 ---
 title: Quick Start
-description: Basic configuration and first steps with mangowm.
+description: Basic configuration and first steps with asteroidz.
 ---
 
-Now that you have mangowm installed, let's get your environment set up.
+Now that you have asteroidz installed, let's get your environment set up.
 
 ## Initial Setup
 
 1. **Create Configuration Directory**
 
-   mangowm looks for configuration files in `~/.config/mango/`.
+   asteroidz looks for configuration files in `~/.config/asteroidz/`.
 
    ```bash
-   mkdir -p ~/.config/mango
+   mkdir -p ~/.config/asteroidz
    ```
 
 2. **Copy Default Config**
 
-   A default configuration file is provided at `/etc/mango/config.conf`. Copy it to your local directory to start customizing.
+   A default configuration file is provided at `/etc/asteroidz/config.conf`. Copy it to your local directory to start customizing.
 
    ```bash
-   cp /etc/mango/config.conf ~/.config/mango/config.conf
+   cp /etc/asteroidz/config.conf ~/.config/asteroidz/config.conf
    ```
 
-3. **Launch mangowm**
+3. **Launch asteroidz**
 
    You can now start the compositor from your TTY.
 
    ```bash
-   mango
+   asteroidz
    ```
 
    Optional: To specify a custom config file path:
 
    ```bash
-   mango -c /path/to/your/config.conf
+   asteroidz -c /path/to/your/config.conf
    ```
 
 ## Essential Keybindings
 
-mangowm uses the following keybinds by default:
+asteroidz uses the following keybinds by default:
 
 | Key Combination | Action |
 | :--- | :--- |
 | `Alt` + `Return` | Open Terminal (defaults to `foot`) |
 | `Alt` + `Space` | Open Launcher (defaults to `rofi`) |
 | `Alt` + `Q` | Close (Kill) the active window |
-| `Super` + `M` | Quit mangowm |
+| `Super` + `M` | Quit asteroidz |
 | `Super` + `F` | Toggle Fullscreen |
 | `Alt` + `Arrow Keys` | Move focus (Left, Right, Up, Down) |
 | `Ctrl` + `1-9` | Switch to Tag 1-9 |
@@ -73,15 +73,21 @@ To get a fully functional desktop experience, we recommend installing the follow
 
 ## Example Configuration
 
-Check out the [example configuration](https://github.com/DreamMaoMao/mango-config) by the creator of mangowm, including complete setups for mangowm, Waybar, Rofi, and more.
+Check out the [example configuration](https://github.com/DreamMaoMao/mango-config) by the creator of upstream mango, including complete setups for mango, Waybar, Rofi, and more.
+
+> **Note:** This is an upstream mango config, not asteroidz-specific. Several
+> options referenced there (`tab_bar_decorate_*`, `group_bar_decorate_*`,
+> `jump_label_decorate_*`, `~/.config/mango`) have since been renamed or
+> merged in this fork — see [Theming](/docs/visuals/theming) — so treat it as
+> a starting point to adapt, not a drop-in config.
 
 ```bash
-git clone https://github.com/DreamMaoMao/mango-config.git ~/.config/mango
+git clone https://github.com/DreamMaoMao/mango-config.git ~/.config/asteroidz
 ```
 
 ## Next Steps
 
-Now that you are up and running, dive deeper into customizing mangowm:
+Now that you are up and running, dive deeper into customizing asteroidz:
 
 - [Configure Monitors](/docs/configuration/monitors) — Set up resolution, scaling, and multi-monitor layouts.
 - [Window Rules](/docs/window-management/rules#window-rules) — Define how specific applications should behave.

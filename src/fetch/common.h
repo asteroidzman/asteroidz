@@ -100,12 +100,12 @@ static bool layer_ignores_focus(LayerSurface *l) {
 }
 
 void xytonode(double x, double y, struct wlr_surface **psurface, Client **pc,
-			  LayerSurface **pl, MangoGroupBar **gb, double *nx, double *ny) {
+			  LayerSurface **pl, AsteroidzGroupBar **gb, double *nx, double *ny) {
 	struct wlr_scene_node *node = NULL, *pnode = NULL;
 	struct wlr_surface *surface = NULL;
 	Client *c = NULL;
 	LayerSurface *l = NULL;
-	MangoGroupBar *mangogroupbar = NULL;
+	AsteroidzGroupBar *groupbar = NULL;
 	int32_t layer;
 	Client *ovc = NULL;
 
@@ -152,7 +152,7 @@ void xytonode(double x, double y, struct wlr_surface **psurface, Client **pc,
 				if (temp_c->type == LayerShell) {
 					l = (LayerSurface *)temp_c;
 				} else if (temp_c->type == GroupBar) {
-					mangogroupbar = (MangoGroupBar *)temp_c;
+					groupbar = (AsteroidzGroupBar *)temp_c;
 				} else if (temp_c->type == XDGShell || temp_c->type == X11) {
 					c = temp_c;
 				}
@@ -175,7 +175,7 @@ void xytonode(double x, double y, struct wlr_surface **psurface, Client **pc,
 	if (pl)
 		*pl = l;
 	if (gb)
-		*gb = mangogroupbar;
+		*gb = groupbar;
 
 	if (selmon && selmon->isoverview && config.ov_no_resize) {
 		ovc = xytoclient(x, y);

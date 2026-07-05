@@ -52,34 +52,35 @@ You can also color-code windows based on their state:
 
 > **Tip:** For scratchpad window sizing, see [Scratchpad](/docs/window-management/scratchpad) configuration.
 
-### Overview Jump Mode
-| Setting | Default | Description |
-| :--- | :--- | :--- |
-| `jump_label_decorate_fg_color` | `0xc4939dff` | text color. |
-| `jump_label_decorate_bg_color` | `0x201b14ff` | background color.|
-| `jump_label_decorate_focus_fg_color` | `0x201b14ff` |  text color for focus. |
-| `jump_label_decorate_focus_bg_color` | `0xc4939dff` | background color for focus.|
-| `jump_label_decorate_border_color` | `0x8BAA9Bff` | border color.|
-| `jump_label_decorate_border_width` | `4` | border width.|
-| `jump_label_decorate_corner_radius` | `5` | corner radius.|
-| `jump_label_decorate_padding_x` | `10` | horizontal padding.|
-| `jump_label_decorate_padding_y` | `10` | vertical padding.|
-| `jump_label_decorate_font_desc` | `monospace Bold 16` | font set.|
+### Pill Theme
 
-### Tab Bar For Monocle Layout
+Every native "pill" overlay — the monocle layout's tab bar, window-group bars
+(`groupjoin`), overview jump-mode letter labels, and the `screenshot_ui` size
+badge and selection border — shares this single style. There's no separate
+theming for any of them; changing a `pill_decorate_*` key restyles all of
+them at once.
+
+Dimensions and behavior specific to the monocle layout's own tab strip (not
+shared with the other pill overlays) are still their own keys:
+
 | Setting | Default | Description |
 | :--- | :--- | :--- |
-| `tab_bar_height` | `50` | Height of the tab bar for monocle layout. |
-| `tab_bar_decorate_fg_color` | `0xc4939dff` | text color.
-| `tab_bar_decorate_bg_color` | `0x201b14ff` | background color.|
-| `tab_bar_decorate_focus_fg_color` | `0x201b14ff` | text color for focus. |
-| `tab_bar_decorate_focus_bg_color` | `0xc4939dff` | background color for focus.|
-| `tab_bar_decorate_border_color` | `0x8BAA9Bff` | border color.|
-| `tab_bar_decorate_border_width` | `4` | border width.|
-| `tab_bar_decorate_corner_radius` | `5` | corner radius.|
-| `tab_bar_decorate_padding_x` | `0` | horizontal padding.|
-| `tab_bar_decorate_padding_y` | `0` | vertical padding.|
-| `tab_bar_decorate_font_desc` | `monospace Bold 16` | font set.|
+| `monocle_tab_height` | `50` | Height of the tab bar for monocle layout. |
+| `monocle_tab_max_width` | `0` | Cap each tab's width; `0` lets tabs split the full row width. |
+| `monocle_tab_icons` | `0` | Draw app icons in monocle tab pills. |
+
+| Setting | Default | Description |
+| :--- | :--- | :--- |
+| `pill_decorate_fg_color` | `0xc4939dff` | text color.
+| `pill_decorate_bg_color` | `0x201b14ff` | background color.|
+| `pill_decorate_focus_fg_color` | `0x201b14ff` | text color for focus. |
+| `pill_decorate_focus_bg_color` | `0xc4939dff` | background color for focus.|
+| `pill_decorate_border_color` | `0x8BAA9Bff` | border color.|
+| `pill_decorate_border_width` | `4` | border width.|
+| `pill_decorate_corner_radius` | `5` | corner radius.|
+| `pill_decorate_padding_x` | `0` | horizontal padding.|
+| `pill_decorate_padding_y` | `0` | vertical padding.|
+| `pill_decorate_font_desc` | `monospace Bold 16` | font set.|
 
 ## Borders
 

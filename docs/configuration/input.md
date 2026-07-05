@@ -5,7 +5,7 @@ description: Configure keyboard layouts, mouse sensitivity, and touchpad gesture
 
 ## Device Configuration
 
-mangowm provides granular control over different input devices.
+asteroidz provides granular control over different input devices.
 
 ### Keyboard Settings
 
@@ -131,7 +131,7 @@ Or bind it manually to a key:
 bind=alt,shift_l,switch_keyboard_layout
 ```
 
-Use `mmsg get keyboardlayout` to query the current layout.
+Use `amsg get keyboardlayout` to query the current layout.
 
 ---
 

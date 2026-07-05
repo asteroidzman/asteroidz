@@ -4,13 +4,13 @@ description: A lightweight and feature-rich Wayland compositor based on dwl.
 ---
 
 
-**mango** is a Wayland compositor based on [dwl](https://codeberg.org/dwl/dwl/). It aims to be as lightweight as `dwl` and can be built completely within a few seconds, without compromising on functionality.
+**asteroidz** is a Wayland compositor based on [dwl](https://codeberg.org/dwl/dwl/) (by way of [mango](https://github.com/mangowm/mango), of which it is a fork). It aims to be as lightweight as `dwl` and can be built completely within a few seconds, without compromising on functionality.
 
-> **Philosophy:** **Lightweight & Fast**: mango is designed to be minimal yet functional. It compiles in seconds and offers a robust set of features out of the box.
+> **Philosophy:** **Lightweight & Fast**: asteroidz is designed to be minimal yet functional. It compiles in seconds and offers a robust set of features out of the box.
 
 ## Feature Highlights
 
-Beyond basic window management, mangowm provides a rich set of features designed for a modern Wayland experience.
+Beyond basic window management, asteroidz provides a rich set of features designed for a modern Wayland experience.
 
 - **[Animations](/docs/visuals/animations)** — Smooth, customizable animations for opening, moving, closing windows and tag switching.
 - **[Layouts](/docs/window-management/layouts)** — Supports Scroller, Master-Stack, Monocle, Grid, Deck, and more, with per-tag layouts.
@@ -28,13 +28,14 @@ Beyond basic window management, mangowm provides a rich set of features designed
 
 ## Community
 
-- **[Join the mangowm Discord](https://discord.gg/CPjbDxesh5)** — Chat with the community, get support, share your setup, and stay updated with the latest mangowm news.
-- **[Join the GitHub Discussions](https://github.com/mangowm/mango/discussions)** — Ask questions, request features, report issues, or share ideas directly with contributors and other users.
+- **[asteroidz on GitHub](https://github.com/ralfwierzbicki/asteroidz)** — Report issues or browse the source.
+- **[Join the mangowm Discord](https://discord.gg/CPjbDxesh5)** — for the upstream mango project this is forked from; general Wayland-compositor/dwl-lineage discussion, not asteroidz-specific support.
 
 ## Acknowledgements
 
 This project is built upon the hard work of several open-source projects:
 
+- **[mango](https://github.com/mangowm/mango)** — the compositor this project was forked from.
 - **[wlroots](https://gitlab.freedesktop.org/wlroots/wlroots)** — Implementation of the Wayland protocol.
 - **[mwc](https://github.com/nikoloc/mwc)** — Basal window animation reference.
 - **[dwl](https://codeberg.org/dwl/dwl)** — Basal dwl features.

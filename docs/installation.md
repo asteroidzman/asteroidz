@@ -1,117 +1,13 @@
 ---
 title: Installation
-description: Install mangowm on AerynOS, Arch, Fedora, Gentoo, Guix System, NixOS, PikaOS, or build from source.
+description: Build asteroidz from source, or install its NixOS/Home Manager module.
 ---
 
-## Package Installation
-
-mangowm is available as a pre-built package on several distributions. Choose your distribution below.
-
----
-
-### AerynOS
-
-mangowm is available in the **AerynOS package repository**.
-
-You can install it using the `moss` package manager:
-
-```bash
-sudo moss install mangowm
-```
-* The Default config will be located at `/usr/share/defaults/mango`.
-
----
-
-### Arch Linux
-
-mangowm is available in the **Arch User Repository (AUR)**.
-
-You can install it using an AUR helper like `yay` or `paru`:
-
-```bash
-yay -S mangowm-git
-```
-
-> **Tip:** This package pulls the latest git version, ensuring you have the newest features and fixes.
-
----
-
-### Fedora
-
-The package is in the third-party **Terra repository**. First, add the Terra Repository.
-
-> **Warning:** Both commands require root privileges. Use `sudo` if needed.
-
-```bash
-dnf install --nogpgcheck --repofrompath 'terra,https://repos.fyralabs.com/terra$releasever' terra-release
-```
-
-Then, install the package:
-
-```bash
-dnf install mangowm
-```
-
----
-
-### Gentoo
-
-The package is hosted in the community-maintained **GURU** repository.
-
-1. **Add the GURU repository**
-
-   ```bash
-   emerge --ask --verbose eselect-repository
-   eselect repository enable guru
-   emerge --sync guru
-   ```
-
-2. **Unmask packages**
-   Add the required packages to your `package.accept_keywords` file:
-   - `gui-libs/scenefx`
-   - `gui-wm/mangowm`
-
-3. **Install mango**
-   ```bash
-   emerge --ask --verbose gui-wm/mangowm
-   ```
-
----
-
-### Guix System
-
-The package definition is described in the source repository.
-
-1. **Add mango channel**
-   Add to `$HOME/.config/guix/channels.scm`:
-
-   ```scheme
-   (cons (channel
-           (name 'mangowm)
-           (url "https://github.com/mangowm/mango.git")
-           (branch "main"))
-         %default-channels)
-   ```
-
-2. **Install**
-   After running `guix pull`, you can install mangowm:
-
-   ```bash
-   guix install mangowm
-   ```
-
-   Or add it to your system configuration using the mangowm module:
-
-   ```scheme
-   (use-modules (mangowm))
-
-   (packages (cons*
-               mangowm-git
-               ... ;; Other packages
-               %base-packages))
-   ```
-
-> **Tip:** For more information, see the [Guix System documentation](https://guix.gnu.org/manual/devel/en/html_node/Channels.html).
+> **Note:** asteroidz is a personal fork of [mango](https://github.com/mangowm/mango) and
+> isn't packaged on any distribution — there's no AerynOS/AUR/Fedora/Gentoo/Guix/PikaOS
+> package for it. If you want a distro-packaged install and don't need anything
+> asteroidz-specific, those channels exist for upstream mango instead. To run
+> asteroidz itself, build it from source or use its Nix flake below.
 
 ---
 
@@ -126,8 +22,8 @@ The repository provides a Flake with a NixOS module.
    {
      inputs = {
        nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-       mangowm = {
-         url = "github:mangowm/mango";
+       asteroidz = {
+         url = "github:ralfwierzbicki/asteroidz";
          inputs.nixpkgs.follows = "nixpkgs";
        };
        # other inputs ...
@@ -143,7 +39,7 @@ The repository provides a Flake with a NixOS module.
    # configuration.nix (or any other file that you import)
    {inputs, ...}: {
      imports = [
-       inputs.mangowm.nixosModules.mango
+       inputs.asteroidz.nixosModules.mango
        # .. other imports ...
      ];
 
@@ -158,19 +54,24 @@ The repository provides a Flake with a NixOS module.
    {
      # ...
 
-     outputs = { self, nixpkgs, mangowm, ...}@inputs: let
+     outputs = { self, nixpkgs, asteroidz, ...}@inputs: let
        inherit (nixpkgs) lib;
        # ...
      in {
        nixosConfigurations.YourHostName = lib.nixosSystem {
          modules = [
-           mangowm.nixosModules.mango # or inputs.mangowm.nixosModules.mango
+           asteroidz.nixosModules.mango # or inputs.asteroidz.nixosModules.mango
            # other imports ...
          ];
        };
      }
    }
    ```
+
+   > **Note:** the module/option is still named `mango`/`programs.mango` internally
+   > (not yet renamed to match the compositor's `asteroidz` identity) — that's a
+   > separate, breaking change for a future pass. The flake input alias above
+   > (`asteroidz`) is just your own name for it and can be anything.
 
 3. **Enable the module**
 
@@ -181,7 +82,7 @@ The repository provides a Flake with a NixOS module.
    }
    ```
 
-4. **Start mango on login**
+4. **Start asteroidz on login**
 
    The following are common examples. Refer to the official NixOS documentation for full configuration options.
 
@@ -192,22 +93,22 @@ The repository provides a Flake with a NixOS module.
      enable = true;
      settings = {
        initial_session = {
-         command = "mango";
+         command = "asteroidz";
          user = "your-username"; # auto-login on first start, no password required
        };
        default_session = {
-         command = "${pkgs.greetd.tuigreet}/bin/tuigreet --cmd mango";
+         command = "${pkgs.greetd.tuigreet}/bin/tuigreet --cmd asteroidz";
          user = "greeter";
        };
      };
    };
    ```
 
-   **Option B — Display manager autologin:** Autologin via an existing display manager (e.g. SDDM, GDM). [`addLoginEntry`](/docs/nix-options#addloginentry) (default: `true`) automatically registers mango as a session.
+   **Option B — Display manager autologin:** Autologin via an existing display manager (e.g. SDDM, GDM). [`addLoginEntry`](/docs/nix-options#addloginentry) (default: `true`) automatically registers asteroidz as a session.
 
    ```nix
    services.displayManager = {
-     defaultSession = "mango"; # derived from mango.desktop filename
+     defaultSession = "asteroidz"; # derived from asteroidz.desktop filename
      autoLogin = {
        enable = true;
        user = "your-username";
@@ -215,7 +116,7 @@ The repository provides a Flake with a NixOS module.
    };
    ```
 
-   **Option C — getty autologin:** No login screen, boots directly into mango on TTY1.
+   **Option C — getty autologin:** No login screen, boots directly into asteroidz on TTY1.
 
    For bash/zsh:
 
@@ -223,7 +124,7 @@ The repository provides a Flake with a NixOS module.
    services.getty.autologinUser = "your-username";
 
    environment.loginShellInit = ''
-     [ "$(tty)" = /dev/tty1 ] && exec mango
+     [ "$(tty)" = /dev/tty1 ] && exec asteroidz
    '';
    ```
 
@@ -234,7 +135,7 @@ The repository provides a Flake with a NixOS module.
 
    programs.fish.loginShellInit = ''
      if test (tty) = /dev/tty1
-         exec mango
+         exec asteroidz
      end
    '';
    ```
@@ -245,21 +146,7 @@ The repository provides a Flake with a NixOS module.
 
 ---
 
-### PikaOS
-
-mangowm is available in the **PikaOS package repository**.
-
-You can install it using the `pikman` package manager:
-
-```bash
-pikman install mangowm
-```
-
----
-
 ## Building from Source
-
-If your distribution isn't listed above, or you want the latest unreleased changes, you can build mangowm from source.
 
 > **Info:** Ensure the following dependencies are installed before proceeding:
 >
@@ -279,34 +166,41 @@ If your distribution isn't listed above, or you want the latest unreleased chang
 > - `pixman`
 > - `xorg-xwayland`
 > - `libxcb`
+> - `libsystemd`
+> - `gdk-pixbuf`
 
-You will need to build `wlroots` and `scenefx` manually as well.
+You will need to build `wlroots` and asteroidz's `scenefx` fork manually as well.
 
 1. **Build wlroots**
-   Clone and install the specific version required (check README for latest version).
+   asteroidz currently tracks wlroots 0.20 (check `meson.build` for the exact
+   required version).
 
    ```bash
-   git clone -b 0.19.3 https://gitlab.freedesktop.org/wlroots/wlroots.git
+   git clone -b 0.20.0 https://gitlab.freedesktop.org/wlroots/wlroots.git
    cd wlroots
    meson build -Dprefix=/usr
    sudo ninja -C build install
    ```
 
-2. **Build scenefx**
-   This library handles the visual effects.
+2. **Build asteroidz-scenefx**
+   This library handles the visual effects. asteroidz requires its own fork,
+   not upstream `wlrfx/scenefx` — the two are not interchangeable.
 
    ```bash
-   git clone -b 0.4.1 https://github.com/wlrfx/scenefx.git
-   cd scenefx
+   git clone https://github.com/ralfwierzbicki/asteroidz-scenefx.git
+   cd asteroidz-scenefx
    meson build -Dprefix=/usr
    sudo ninja -C build install
    ```
 
-3. **Build mangowm**
+3. **Build asteroidz**
    Finally, compile the compositor itself.
    ```bash
-   git clone https://github.com/mangowm/mango.git
-   cd mango
+   git clone https://github.com/ralfwierzbicki/asteroidz.git
+   cd asteroidz
    meson build -Dprefix=/usr
    sudo ninja -C build install
    ```
+
+   This installs the `asteroidz` binary, the `amsg` IPC tool, a wayland
+   session entry, and the GlobalShortcuts portal definition.

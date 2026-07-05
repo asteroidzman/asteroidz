@@ -113,13 +113,13 @@ name:xxx&&make:xxx&&model:xxx&&serial:xxx
 
 ```bash
 # By name (shorthand)
-mmsg dispatch toggle_monitor,eDP-1
+amsg dispatch toggle_monitor,eDP-1
 
 # By make and model
-mmsg dispatch toggle_monitor,make:Chimei Innolux Corporation&&model:0x15F5
+amsg dispatch toggle_monitor,make:Chimei Innolux Corporation&&model:0x15F5
 
 # By serial
-mmsg dispatch toggle_monitor,serial:12345678
+amsg dispatch toggle_monitor,serial:12345678
 ```
 
 ---
@@ -158,7 +158,7 @@ windowrule=force_tearing:1,title:vkcube
 
 ### Graphics Card Compatibility
 
-> **Warning:** Some graphics cards require setting the `WLR_DRM_NO_ATOMIC` environment variable before mango starts to successfully enable tearing.
+> **Warning:** Some graphics cards require setting the `WLR_DRM_NO_ATOMIC` environment variable before asteroidz starts to successfully enable tearing.
 
 Add this to `/etc/environment` and reboot:
 
@@ -166,24 +166,24 @@ Add this to `/etc/environment` and reboot:
 WLR_DRM_NO_ATOMIC=1
 ```
 
-Or run mango with the environment variable:
+Or run asteroidz with the environment variable:
 
 ```bash
-WLR_DRM_NO_ATOMIC=1 mango
+WLR_DRM_NO_ATOMIC=1 asteroidz
 ```
 
 ---
 
 ## GPU Compatibility
 
-If mango cannot display correctly or shows a black screen, try selecting a specific GPU:
+If asteroidz cannot display correctly or shows a black screen, try selecting a specific GPU:
 
 ```bash
 # Use a single GPU
-WLR_DRM_DEVICES=/dev/dri/card1 mango
+WLR_DRM_DEVICES=/dev/dri/card1 asteroidz
 
 # Use multiple GPUs
-WLR_DRM_DEVICES=/dev/dri/card0:/dev/dri/card1 mango
+WLR_DRM_DEVICES=/dev/dri/card0:/dev/dri/card1 asteroidz
 ```
 
 Some GPUs have compatibility issues with `syncobj_enable=1` — it may crash apps like `kitty` that use syncobj. Set `WLR_DRM_NO_ATOMIC=1` in `/etc/environment` and reboot to resolve this.
@@ -192,19 +192,19 @@ Some GPUs have compatibility issues with `syncobj_enable=1` — it may crash app
 
 ## Power Management
 
-You can control monitor power using the `mmsg` IPC tool.
+You can control monitor power using the `amsg` IPC tool.
 > Notice: This command does not remove the monitor, it only turns it off.
 > if you want completely remove monitor, just use `wlr-randr`
 
 ```bash
 # Turn off
-mmsg dispatch disable_monitor,eDP-1
+amsg dispatch disable_monitor,eDP-1
 
 # Turn on
-mmsg dispatch enable_monitor,eDP-1
+amsg dispatch enable_monitor,eDP-1
 
 # Toggle
-mmsg dispatch toggle_monitor,eDP-1
+amsg dispatch toggle_monitor,eDP-1
 ```
 
 You can also use `wlr-randr` for monitor management:
@@ -279,7 +279,7 @@ exec-once=xwayland-satellite :2
 monitorrule=name:eDP-1,width:1920,height:1080,refresh:60,x:0,y:0,scale:1.4,vrr:0,rr:0
 ```
 
-> **Warning:** Use a `DISPLAY` value other than `:1` to avoid conflicting with mangowm.
+> **Warning:** Use a `DISPLAY` value other than `:1` to avoid conflicting with asteroidz.
 
 ---
 
@@ -289,10 +289,10 @@ You can create and manage virtual displays through IPC commands:
 
 ```bash
 # Create virtual output
-mmsg dispatch create_virtual_output
+amsg dispatch create_virtual_output
 
 # Destroy all virtual outputs
-mmsg dispatch destroy_all_virtual_output
+amsg dispatch destroy_all_virtual_output
 ```
 
 You can configure virtual monitors using `wlr-randr`:
