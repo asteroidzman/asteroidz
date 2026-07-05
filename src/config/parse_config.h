@@ -284,6 +284,8 @@ typedef struct {
 	int32_t overviewgappo;
 	uint32_t cursor_hide_timeout;
 	uint32_t cursor_hide_on_keypress;
+	int32_t cursor_zoom_rigid;
+	float cursor_zoom_step;
 
 	uint32_t axis_bind_apply_timeout;
 	uint32_t focus_on_activate;
@@ -1086,6 +1088,14 @@ FuncType parse_func_name(char *func_name, Arg *arg, char *arg_value,
 		(*arg).f = atof(arg_value);
 	} else if (strcmp(func_name, "zoom") == 0) {
 		func = zoom;
+	} else if (strcmp(func_name, "zoom_in") == 0) {
+		func = zoom_in;
+		(*arg).f = atof(arg_value);
+	} else if (strcmp(func_name, "zoom_out") == 0) {
+		func = zoom_out;
+		(*arg).f = atof(arg_value);
+	} else if (strcmp(func_name, "zoom_reset") == 0) {
+		func = zoom_reset;
 	} else if (strcmp(func_name, "exchange_client") == 0) {
 		func = exchange_client;
 		(*arg).i = parse_direction(arg_value);
@@ -1877,6 +1887,10 @@ bool parse_option(Config *config, char *key, char *value) {
 		config->cursor_hide_timeout = atoi(value);
 	} else if (strcmp(key, "cursor_hide_on_keypress") == 0) {
 		config->cursor_hide_on_keypress = atoi(value);
+	} else if (strcmp(key, "cursor_zoom_rigid") == 0) {
+		config->cursor_zoom_rigid = atoi(value);
+	} else if (strcmp(key, "cursor_zoom_step") == 0) {
+		config->cursor_zoom_step = atof(value);
 	} else if (strcmp(key, "axis_bind_apply_timeout") == 0) {
 		config->axis_bind_apply_timeout = atoi(value);
 	} else if (strcmp(key, "focus_on_activate") == 0) {
@@ -3812,6 +3826,8 @@ void override_config(void) {
 		CLAMP_INT(config.cursor_hide_timeout, 0, 36000);
 	config.cursor_hide_on_keypress =
 		CLAMP_INT(config.cursor_hide_on_keypress, 0, 1);
+	config.cursor_zoom_rigid = CLAMP_INT(config.cursor_zoom_rigid, 0, 1);
+	config.cursor_zoom_step = CLAMP_FLOAT(config.cursor_zoom_step, 0.01f, 7.0f);
 	config.single_scratchpad = CLAMP_INT(config.single_scratchpad, 0, 1);
 	config.repeat_rate = CLAMP_INT(config.repeat_rate, 1, 1000);
 	config.repeat_delay = CLAMP_INT(config.repeat_delay, 1, 20000);
@@ -4006,6 +4022,8 @@ void set_value_default() {
 	config.overviewgappo = 30;
 	config.cursor_hide_timeout = 0;
 	config.cursor_hide_on_keypress = 0;
+	config.cursor_zoom_rigid = 0;
+	config.cursor_zoom_step = 0.1f;
 
 	config.warpcursor = 1;
 	config.drag_corner = 3;

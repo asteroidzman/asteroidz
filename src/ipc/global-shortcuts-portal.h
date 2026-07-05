@@ -1,11 +1,11 @@
 /*
  * org.freedesktop.impl.portal.GlobalShortcuts backend, so portal-aware
  * clients (Discord, ashpd apps, ...) get global shortcuts / push-to-talk
- * on mango. Sessions and shortcuts are registered over D-Bus; matching
+ * on asteroidz. Sessions and shortcuts are registered over D-Bus; matching
  * key presses/releases emit Activated/Deactivated and are consumed.
  *
- * Registered as the "mango" portal backend via
- * /usr/share/xdg-desktop-portal/portals/mango.portal.
+ * Registered as the "asteroidz" portal backend via
+ * /usr/share/xdg-desktop-portal/portals/asteroidz.portal.
  */
 #include <strings.h>
 #include <systemd/sd-bus.h>

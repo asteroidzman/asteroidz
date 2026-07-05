@@ -648,6 +648,9 @@ struct Monitor {
 	struct wlr_color_transform *icc_transform;
 	char icc_path[256];
 	struct wlr_scene_optimized_blur *blur;
+	float cursor_zoom;		 /* output magnification, 1.0 = off */
+	double zoom_cx, zoom_cy; /* zoom view center, output-local coords */
+	bool zoom_cursor_locked; /* software cursors forced while zoomed */
 	char last_open_surface[256];
 	struct wlr_ext_workspace_group_handle_v1 *ext_group;
 	bool iscleanuping;
@@ -803,6 +806,9 @@ static void motionnotify(uint32_t time, struct wlr_input_device *device,
 						 double sx, double sy, double sx_unaccel,
 						 double sy_unaccel);
 static void motionrelative(struct wl_listener *listener, void *data);
+static void cursor_zoom_set_factor(float factor);
+static void cursor_zoom_update(void);
+static void cursor_zoom_frame(Monitor *m);
 
 static void reset_foreign_tolevel(Client *c, Monitor *oldmon, Monitor *newmon);
 static void add_foreign_topleve(Client *c);
@@ -1055,6 +1061,7 @@ struct mango_print_status_manager *print_status_manager;
 static struct wlr_cursor *cursor;
 static struct wlr_xcursor_manager *cursor_mgr;
 static struct wlr_session *session;
+static float cursor_zoom_factor = 1.0f; /* runtime state, not config */
 
 static struct wlr_scene_rect *root_bg;
 static struct wlr_session_lock_manager_v1 *session_lock_mgr;
@@ -3917,6 +3924,7 @@ void createmon(struct wl_listener *listener, void *data) {
 	 * output (such as DPI, scale factor, manufacturer, etc).
 	 */
 	m->scene_output = wlr_scene_output_create(scene, wlr_output);
+	m->cursor_zoom = 1.0f;
 	if (m->m.x == INT32_MAX || m->m.y == INT32_MAX)
 		wlr_output_layout_add_auto(output_layout, wlr_output);
 	else
@@ -5349,6 +5357,82 @@ void resize_floating_window(Client *grabc) {
 	grabcy += cdy;
 }
 
+static void cursor_zoom_apply(Monitor *m) {
+	if (!m->scene_output)
+		return;
+	wlr_scene_output_set_zoom(m->scene_output, m->cursor_zoom, m->zoom_cx,
+							  m->zoom_cy);
+}
+
+/* Apply the runtime zoom factor to the monitor under the cursor and
+ * release every other one */
+void cursor_zoom_update(void) {
+	Monitor *m, *zoom_mon = NULL;
+	bool active, was_active;
+
+	if (cursor_zoom_factor > 1.0f)
+		zoom_mon = xytomon(cursor->x, cursor->y);
+
+	wl_list_for_each(m, &mons, link) {
+		active = m == zoom_mon;
+		was_active = m->cursor_zoom > 1.0f;
+
+		if (active != m->zoom_cursor_locked) {
+			/* hardware cursor planes are not magnified */
+			wlr_output_lock_software_cursors(m->wlr_output, active);
+			m->zoom_cursor_locked = active;
+		}
+
+		if (!active) {
+			m->cursor_zoom = 1.0f;
+			cursor_zoom_apply(m);
+			continue;
+		}
+
+		/* snap the view to the cursor; when non-rigid the per-frame lerp
+		 * in rendermon chases it instead */
+		if (!was_active || config.cursor_zoom_rigid) {
+			m->zoom_cx = cursor->x - m->m.x;
+			m->zoom_cy = cursor->y - m->m.y;
+		}
+		m->cursor_zoom = cursor_zoom_factor;
+		cursor_zoom_apply(m);
+	}
+}
+
+void cursor_zoom_set_factor(float factor) {
+	cursor_zoom_factor = CLAMP_FLOAT(factor, 1.0f, 8.0f);
+	cursor_zoom_update();
+}
+
+/* Per-frame view update: rigid views stick to the cursor, lazy views
+ * chase it a step each frame until they converge */
+void cursor_zoom_frame(Monitor *m) {
+	double tx, ty, dx, dy;
+
+	if (m->cursor_zoom <= 1.0f)
+		return;
+
+	tx = cursor->x - m->m.x;
+	ty = cursor->y - m->m.y;
+
+	if (config.cursor_zoom_rigid) {
+		m->zoom_cx = tx;
+		m->zoom_cy = ty;
+	} else {
+		dx = tx - m->zoom_cx;
+		dy = ty - m->zoom_cy;
+		if (fabs(dx) < 0.5 && fabs(dy) < 0.5) {
+			m->zoom_cx = tx;
+			m->zoom_cy = ty;
+		} else {
+			m->zoom_cx += dx * 0.2;
+			m->zoom_cy += dy * 0.2;
+		}
+	}
+	cursor_zoom_apply(m);
+}
+
 void motionnotify(uint32_t time, struct wlr_input_device *device, double dx,
 				  double dy, double dx_unaccel, double dy_unaccel) {
 	double sx = 0, sy = 0, sx_confined, sy_confined;
@@ -5394,6 +5478,8 @@ void motionnotify(uint32_t time, struct wlr_input_device *device, double dx,
 		if (config.sloppyfocus)
 			selmon = xytomon(cursor->x, cursor->y);
 	}
+
+	cursor_zoom_update();
 
 	/* Find the client under the pointer and send the event along. */
 	xytonode(cursor->x, cursor->y, &surface, &c, NULL, NULL, &sx, &sy);
@@ -5779,6 +5865,9 @@ void rendermon(struct wl_listener *listener, void *data) {
 	wl_list_for_each_safe(l, tmpl, &fadeout_layers, fadeout_link) {
 		need_more_frames = layer_draw_fadeout_frame(l) || need_more_frames;
 	}
+
+	// 光标缩放视图追踪(set_zoom 自带损坏与帧调度)
+	cursor_zoom_frame(m);
 
 	// 绘制客户端
 	wl_list_for_each(c, &clients, link) {

@@ -1986,6 +1986,23 @@ int32_t zoom(const Arg *arg) {
 	return 0;
 }
 
+int32_t zoom_in(const Arg *arg) {
+	float step = arg->f > 0.0f ? arg->f : config.cursor_zoom_step;
+	cursor_zoom_set_factor(cursor_zoom_factor + step);
+	return 0;
+}
+
+int32_t zoom_out(const Arg *arg) {
+	float step = arg->f > 0.0f ? arg->f : config.cursor_zoom_step;
+	cursor_zoom_set_factor(cursor_zoom_factor - step);
+	return 0;
+}
+
+int32_t zoom_reset(const Arg *arg) {
+	cursor_zoom_set_factor(1.0f);
+	return 0;
+}
+
 int32_t setoption(const Arg *arg) {
 	parse_option(&config, arg->v, arg->v2);
 	override_config();

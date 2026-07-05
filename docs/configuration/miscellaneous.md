@@ -22,6 +22,8 @@ description: Advanced settings for XWayland, focus behavior, and system integrat
 | `warpcursor` | `1` | Warp the cursor to the center of the window when focus changes via keyboard. |
 | `cursor_hide_timeout` | `0` | Hide the cursor after `N` seconds of inactivity (`0` to disable). |
 | `cursor_hide_on_keypress` | `0` | Hide the cursor on keypress. |
+| `cursor_zoom_rigid` | `0` | Cursor zoom follow mode: `0` = the zoomed view lazily chases the cursor, `1` = the view is locked exactly to the cursor. See [`zoom_in`/`zoom_out`/`zoom_reset`](/docs/bindings/keys#cursor-zoom). |
+| `cursor_zoom_step` | `0.1` | Default step added/removed per `zoom_in`/`zoom_out` call when no explicit step is given. |
 | `drag_tile_to_tile` | `0` | Allow dragging a tiled window onto another to swap their positions. |
 | `drag_tile_small` | `1` | Allow dragging a tiled window temporarily to small size.|
 | `drag_corner` | `3` | Corner for drag-to-tile detection (0: none, 1–3: corners, 4: auto-detect). |

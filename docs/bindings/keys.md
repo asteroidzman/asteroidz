@@ -203,6 +203,25 @@ Suggested scroller binds (not bound by default — uncomment to use):
 | `toggle_monitor` | `monitor_spec` | Toggle monitor power. Accepts a [monitor spec](/docs/configuration/monitors#monitor-spec-format). |
 | `chvt` | `1-9` | Change virtual terminal (tty, equivalent to using ctrl+alt+Fkeys) |
 
+### Cursor Zoom
+
+Output-level magnifier centered on the cursor, similar to Hyprland's `zoom_factor`. The zoom factor is runtime-only state (not saved to config); see [`cursor_zoom_rigid` and `cursor_zoom_step`](/docs/configuration/miscellaneous) for the related config options.
+
+| Command | Param | Description |
+| :--- | :--- | :--- |
+| `zoom_in` | `[step]` | Increase cursor zoom. Defaults to `cursor_zoom_step`. |
+| `zoom_out` | `[step]` | Decrease cursor zoom. Defaults to `cursor_zoom_step`. |
+| `zoom_reset` | - | Reset cursor zoom to 1.0 (off). |
+
+```ini
+bind=SUPER,Equal,zoom_in
+bind=SUPER,Minus,zoom_out
+bind=SUPER,0,zoom_reset
+
+# also works as an axis binding (mouse wheel), see /docs/bindings/mouse-gestures
+axisbind=SUPER,UP,zoom_in
+axisbind=SUPER,DOWN,zoom_out
+```
 
 ### Media Controls
 
