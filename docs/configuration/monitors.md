@@ -104,6 +104,8 @@ hdr_capture_fallback=0
 
 See [XDG Portals → 10-bit / HDR Screencasting](./xdg-portals.md#10-bit--hdr-screencasting) for details.
 
+The built-in `screenshot_ui` (see [Keybindings](../bindings/keys.md#screenshot_ui)) doesn't go through this fallback at all — it reads the composited buffer back directly instead of via `ext-image-copy-capture`, so `hdr_capture_fallback` never applies to it either way. Since it owns the whole pixel pipeline, it tonemaps PQ down to sRGB itself (decode against `sdr_reference_luminance`, re-encode as sRGB) before writing the PNG, so screenshots come out correct without ever toggling the output's live HDR state — no flash, no retrain delay.
+
 ---
 
 ## Monitor Spec Format

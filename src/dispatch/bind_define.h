@@ -2813,6 +2813,82 @@ static void screenshot_ui_copy_to_clipboard(const char *path) {
 	free(cmd);
 }
 
+/* SMPTE ST 2084 (PQ) EOTF: normalized code value -> linear light, in units
+ * where 1.0 == 10000 nits. */
+static float screenshot_pq_eotf(float v) {
+	const float m1 = 0.1593017578125f;
+	const float m2 = 78.84375f;
+	const float c1 = 0.8359375f;
+	const float c2 = 18.8515625f;
+	const float c3 = 18.6875f;
+	if (v <= 0.0f)
+		return 0.0f;
+	float vp = powf(v, 1.0f / m2);
+	float num = fmaxf(vp - c1, 0.0f);
+	float den = c2 - c3 * vp;
+	if (den <= 0.0f)
+		return 0.0f;
+	return powf(num / den, 1.0f / m1);
+}
+
+static float screenshot_srgb_oetf(float l) {
+	l = fmaxf(0.0f, fminf(1.0f, l));
+	if (l <= 0.0031308f)
+		return 12.92f * l;
+	return 1.055f * powf(l, 1.0f / 2.4f) - 0.055f;
+}
+
+/* screenshot_ui reads back the raw composited buffer directly (not through
+ * wlr-screencopy/ext-image-copy-capture), so it never gets the benefit of
+ * config.hdr_capture_fallback's "drop the output to SDR for the capture"
+ * workaround -- and even if it did, that workaround visibly flashes the
+ * real display and can take 1-1.5s on a retrain fallback, which is a bad
+ * trade for a single freeze-frame. Since PQ-encoded samples carry no
+ * colorimetry metadata, writing them straight to a PNG makes it look flat
+ * and washed out (the same caveat documented for external capture tools).
+ * Decode PQ -> linear, normalize against the configured SDR reference
+ * white, and re-encode as sRGB instead, entirely in software, so the
+ * screenshot looks correct without ever touching the monitor's live HDR
+ * state. */
+static void screenshot_tonemap_pq_to_srgb(uint8_t *pixels, int32_t width,
+										  int32_t height, int32_t stride) {
+	float reference_nits = config.sdr_reference_luminance > 0.0f
+								? config.sdr_reference_luminance
+								: 203.0f;
+
+	for (int32_t y = 0; y < height; y++) {
+		uint32_t *row = (uint32_t *)(pixels + (size_t)y * stride);
+		for (int32_t x = 0; x < width; x++) {
+			uint32_t px = row[x];
+			uint8_t a = (px >> 24) & 0xFF;
+			if (a == 0)
+				continue;
+			uint8_t r = (px >> 16) & 0xFF;
+			uint8_t g = (px >> 8) & 0xFF;
+			uint8_t b = px & 0xFF;
+
+			float fa = a / 255.0f;
+			float fr = (r / 255.0f) / fa;
+			float fg = (g / 255.0f) / fa;
+			float fb = (b / 255.0f) / fa;
+
+			fr = screenshot_srgb_oetf(
+				screenshot_pq_eotf(fr) * 10000.0f / reference_nits);
+			fg = screenshot_srgb_oetf(
+				screenshot_pq_eotf(fg) * 10000.0f / reference_nits);
+			fb = screenshot_srgb_oetf(
+				screenshot_pq_eotf(fb) * 10000.0f / reference_nits);
+
+			r = (uint8_t)(CLAMP_FLOAT(fr * fa, 0.0f, 1.0f) * 255.0f + 0.5f);
+			g = (uint8_t)(CLAMP_FLOAT(fg * fa, 0.0f, 1.0f) * 255.0f + 0.5f);
+			b = (uint8_t)(CLAMP_FLOAT(fb * fa, 0.0f, 1.0f) * 255.0f + 0.5f);
+
+			row[x] = ((uint32_t)a << 24) | ((uint32_t)r << 16) |
+					 ((uint32_t)g << 8) | (uint32_t)b;
+		}
+	}
+}
+
 /* crop [sel] (layout coords) out of [frame] and save+copy it as a PNG */
 static bool screenshot_ui_save_and_copy(struct wlr_buffer *frame, Monitor *m,
 										struct wlr_box sel) {
@@ -2882,6 +2958,9 @@ static bool screenshot_ui_save_and_copy(struct wlr_buffer *frame, Monitor *m,
 		free(pixels);
 		return false;
 	}
+
+	if (m->hdr)
+		screenshot_tonemap_pq_to_srgb(pixels, px_w, px_h, stride);
 
 	cairo_surface_t *surf = cairo_image_surface_create_for_data(
 		pixels, CAIRO_FORMAT_ARGB32, px_w, px_h, stride);
