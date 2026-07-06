@@ -27,25 +27,46 @@ enum corner_location set_client_corner_location(Client *c) {
 		c->mon->m.y + c->mon->m.height) {
 		current_corner_location &= ~CORNER_LOCATION_BOTTOM;
 	}
+	/* the titlebar's close button (leftmost) owns the rounded top-left
+	 * corner; square off the window's own top-left corner so the two
+	 * pieces read as one shape. The title tab no longer reaches the
+	 * window's right edge, so the top-right corner stays rounded. In
+	 * monocle with more than one window, the titlebar row is left-aligned:
+	 * it only spans the full width (and so only squares both top corners)
+	 * when segments aren't capped by monocle_tab_max_width. */
+	if ((config.enable_titlebar || is_monocle_layout(c->mon)) &&
+		c->titlebar_node && !c->isfullscreen && ISFAKETILED(c)) {
+		bool monocle_row_full_width = false;
+		if (is_monocle_layout(c->mon) && c->mon->visible_fake_tiling_clients > 1) {
+			int32_t n = c->mon->visible_fake_tiling_clients;
+			int32_t cur_gappoh = enablegaps ? c->mon->gappoh : 0;
+			int32_t cur_gapih = enablegaps ? c->mon->gappih : 0;
+			int32_t tab_area_width = c->mon->w.width - 2 * cur_gappoh;
+			int32_t total_gaps = (n - 1) * cur_gapih;
+			int32_t base_width = (tab_area_width - total_gaps) / n;
+			monocle_row_full_width = !(config.monocle_tab_max_width > 0 &&
+									  base_width > config.monocle_tab_max_width);
+		}
+		if (is_monocle_layout(c->mon) && c->mon->visible_fake_tiling_clients > 1 &&
+			monocle_row_full_width) {
+			current_corner_location &= ~CORNER_LOCATION_TOP;
+		} else {
+			current_corner_location &= ~CORNER_LOCATION_TOP_LEFT;
+		}
+	}
 	return current_corner_location;
 }
 
+/* master/stack proportion-group layouts (tile, deck, center_tile,
+ * right_tile) were removed; dwindle/monocle/scroller each manage their own
+ * per-node geometry instead of a shared master/stack split. */
 bool is_horizontal_stack_layout(Monitor *m) {
-
-	if (m->pertag->curtag &&
-		(m->pertag->ltidxs[m->pertag->curtag]->id == TILE ||
-		 m->pertag->ltidxs[m->pertag->curtag]->id == DECK))
-		return true;
-
+	(void)m;
 	return false;
 }
 
 bool is_horizontal_right_stack_layout(Monitor *m) {
-
-	if (m->pertag->curtag &&
-		(m->pertag->ltidxs[m->pertag->curtag]->id == RIGHT_TILE))
-		return true;
-
+	(void)m;
 	return false;
 }
 
@@ -435,22 +456,69 @@ void client_draw_shadow(Client *c) {
 	}
 }
 
-void global_draw_tab_bar(Client *c, int32_t x, int32_t y, int32_t width,
-						 int32_t height) {
-	if (!c->tab_bar_node)
+/* monocle with more than one window: each client's own titlebar becomes one
+ * segment of a shared row instead of a separate tab-bar widget. is_first/
+ * is_last control which outer corner (if any) this segment rounds, matching
+ * a browser-style tab strip: only the outermost segments round, and only on
+ * their outward-facing side. The focused segment additionally gets a close
+ * button (leftmost within its own segment); background segments are
+ * title-only, click-to-focus (handled generically in handle_buttonpress). */
+void client_draw_monocle_titlebar_segment(Client *c, int32_t x, int32_t y,
+										  int32_t w, bool focused,
+										  bool is_first, bool is_last) {
+	if (!c || !c->titlebar_node)
 		return;
 
-	if (height <= 0) {
-		asteroidz_tab_bar_node_set_enabled(c->tab_bar_node, false);
+	int32_t th = config.titlebar_height;
+	if (th <= 0 || w <= 0) {
+		asteroidz_tab_bar_node_set_enabled(c->titlebar_node, false);
+		if (c->titlebar_close_node)
+			asteroidz_tab_bar_node_set_enabled(c->titlebar_close_node, false);
+		return;
 	}
 
-	asteroidz_tab_bar_node_set_enabled(c->tab_bar_node, true);
-	asteroidz_tab_bar_node_set_position(c->tab_bar_node, x, y);
-	asteroidz_tab_bar_node_set_icon(c->tab_bar_node,
-								!config.monocle_tab_icons ? NULL
-								: c->icon_name		  ? c->icon_name
-													  : client_get_appid(c));
-	asteroidz_tab_bar_node_set_size(c->tab_bar_node, width, height);
+	enum corner_location tab_mask =
+		(is_first ? CORNER_LOCATION_TOP_LEFT : CORNER_LOCATION_NONE) |
+		(is_last ? CORNER_LOCATION_TOP_RIGHT : CORNER_LOCATION_NONE);
+
+	if (focused) {
+		int32_t close_w = ASTEROIDZ_MIN(th, w);
+		int32_t tab_w = w - close_w;
+		if (tab_w < 0)
+			tab_w = 0;
+
+		if (c->titlebar_close_node) {
+			asteroidz_tab_bar_node_set_enabled(c->titlebar_close_node, true);
+			asteroidz_tab_bar_node_set_position(c->titlebar_close_node, x, y);
+			asteroidz_tab_bar_node_set_size(c->titlebar_close_node, close_w,
+										  th);
+			asteroidz_tab_bar_node_set_corner_mask(
+				c->titlebar_close_node,
+				is_first ? CORNER_LOCATION_TOP_LEFT : CORNER_LOCATION_NONE);
+			asteroidz_tab_bar_node_set_focus(c->titlebar_close_node, true);
+		}
+
+		asteroidz_tab_bar_node_set_enabled(c->titlebar_node, true);
+		asteroidz_tab_bar_node_set_position(c->titlebar_node, x + close_w, y);
+		asteroidz_tab_bar_node_set_size(c->titlebar_node, tab_w, th);
+		asteroidz_tab_bar_node_set_corner_mask(
+			c->titlebar_node,
+			is_last ? CORNER_LOCATION_TOP_RIGHT : CORNER_LOCATION_NONE);
+		asteroidz_tab_bar_node_update(c->titlebar_node, client_get_title(c),
+								  1.0);
+		asteroidz_tab_bar_node_set_focus(c->titlebar_node, true);
+	} else {
+		if (c->titlebar_close_node)
+			asteroidz_tab_bar_node_set_enabled(c->titlebar_close_node, false);
+
+		asteroidz_tab_bar_node_set_enabled(c->titlebar_node, true);
+		asteroidz_tab_bar_node_set_position(c->titlebar_node, x, y);
+		asteroidz_tab_bar_node_set_size(c->titlebar_node, w, th);
+		asteroidz_tab_bar_node_set_corner_mask(c->titlebar_node, tab_mask);
+		asteroidz_tab_bar_node_update(c->titlebar_node, client_get_title(c),
+								  1.0);
+		asteroidz_tab_bar_node_set_focus(c->titlebar_node, false);
+	}
 }
 
 void global_draw_group_bar(Client *c, int32_t x, int32_t y, int32_t width,
@@ -460,6 +528,66 @@ void global_draw_group_bar(Client *c, int32_t x, int32_t y, int32_t width,
 
 	wlr_scene_node_set_position(&c->group_bar->scene_buffer->node, x, y);
 	asteroidz_group_bar_set_size(c->group_bar, width, height);
+}
+
+/* position the titlebar strip just above the client's current (animated)
+ * geometry. BeOS-style: a compact tab sized to a fraction of the window
+ * width (not a full-width strip), left-aligned, with the close button
+ * immediately to its right rather than pinned to the window's far edge.
+ * Mirrors client_draw_title()'s geometry-linked update pattern, but is
+ * unconditional (not gated on group membership) since a titlebar applies to
+ * any tiled client while config.enable_titlebar is set. */
+void client_draw_titlebar(Client *c) {
+	if (!c || !c->mon || !c->titlebar_node)
+		return;
+
+	/* with more than one window, monocle lays its titlebars out as a row of
+	 * segments itself (see client_draw_monocle_titlebar_segment, called from
+	 * monocle() in horizontal.h) rather than one compact per-window tab. */
+	if (is_monocle_layout(c->mon) && c->mon->visible_fake_tiling_clients > 1)
+		return;
+
+	bool titlebar_wanted = config.enable_titlebar || is_monocle_layout(c->mon);
+	if (!titlebar_wanted || c->isfullscreen || c->is_monocle_hide ||
+		!ISFAKETILED(c) || !VISIBLEON(c, c->mon)) {
+		if (c->titlebar_node->scene_buffer->node.enabled)
+			wlr_scene_node_set_enabled(&c->titlebar_node->scene_buffer->node,
+									   false);
+		if (c->titlebar_close_node &&
+			c->titlebar_close_node->scene_buffer->node.enabled)
+			wlr_scene_node_set_enabled(
+				&c->titlebar_close_node->scene_buffer->node, false);
+		return;
+	}
+
+	int32_t th = config.titlebar_height;
+	int32_t tb_x = c->animation.current.x;
+	int32_t tb_y = c->animation.current.y - th;
+	int32_t tb_w = c->animation.current.width;
+	int32_t close_w = ASTEROIDZ_MIN(th, tb_w);
+
+	/* BeOS-style: a small, roughly fixed-width tab rather than a strip that
+	 * scales with the window; only widen it on genuinely narrow windows. */
+	int32_t tab_w = ASTEROIDZ_MIN(280, (int32_t)(tb_w * 0.6f));
+	tab_w = ASTEROIDZ_MAX(tab_w, ASTEROIDZ_MIN(160, tb_w - close_w));
+	tab_w = ASTEROIDZ_MIN(tab_w, tb_w - close_w);
+	if (tab_w < 0)
+		tab_w = 0;
+
+	bool focused = c == selmon->sel;
+
+	if (c->titlebar_close_node) {
+		asteroidz_tab_bar_node_set_enabled(c->titlebar_close_node, true);
+		asteroidz_tab_bar_node_set_position(c->titlebar_close_node, tb_x, tb_y);
+		asteroidz_tab_bar_node_set_size(c->titlebar_close_node, close_w, th);
+		asteroidz_tab_bar_node_set_focus(c->titlebar_close_node, focused);
+	}
+
+	asteroidz_tab_bar_node_set_enabled(c->titlebar_node, true);
+	asteroidz_tab_bar_node_set_position(c->titlebar_node, tb_x + close_w, tb_y);
+	asteroidz_tab_bar_node_set_size(c->titlebar_node, tab_w, th);
+	asteroidz_tab_bar_node_update(c->titlebar_node, client_get_title(c), 1.0);
+	asteroidz_tab_bar_node_set_focus(c->titlebar_node, focused);
 }
 
 void client_draw_title(Client *c) {
@@ -922,87 +1050,6 @@ void client_set_drop_area(Client *c) {
 					client_height - (int32_t)(client_height * ratio);
 			}
 		}
-	} else if (cur_layout->id == TILE || cur_layout->id == DECK ||
-			   cur_layout->id == CENTER_TILE || cur_layout->id == RIGHT_TILE) {
-
-		if (c->ismaster) {
-			if (c->mon->visible_tiling_clients == 1) {
-				if (rel_x < client_width * 0.5) {
-					drop_direction = LEFT;
-					drop_box.x = bw;
-					drop_box.y = bw;
-					drop_box.width = client_width / 2;
-					drop_box.height = client_height;
-				} else {
-					drop_direction = RIGHT;
-					drop_box.x = bw + client_width / 2;
-					drop_box.y = bw;
-					drop_box.width = client_width / 2;
-					drop_box.height = client_height;
-				}
-			} else {
-				drop_box.x = bw;
-				drop_box.y = bw;
-				drop_box.width = client_width;
-				drop_box.height = client_height;
-				drop_direction = UNDIR;
-			}
-		} else {
-			if (rel_y < client_height * 0.5) {
-				drop_direction = UP;
-				drop_box.x = bw;
-				drop_box.y = bw;
-				drop_box.width = client_width;
-				drop_box.height = client_height / 2;
-			} else {
-				drop_direction = DOWN;
-				drop_box.x = bw;
-				drop_box.y = bw + client_height / 2;
-				drop_box.width = client_width;
-				drop_box.height = client_height / 2;
-			}
-		}
-	} else if (cur_layout->id == VERTICAL_TILE ||
-			   cur_layout->id == VERTICAL_DECK) {
-		if (c->ismaster) {
-			if (c->mon->visible_tiling_clients == 1) {
-				if (rel_y < client_height * 0.5) {
-					drop_direction = UP;
-					drop_box.x = bw;
-					drop_box.y = bw;
-					drop_box.width = client_width;
-					drop_box.height = client_height / 2;
-				} else {
-					drop_direction = DOWN;
-					drop_box.x = bw;
-					drop_box.y = bw + client_height / 2;
-					drop_box.width = client_width;
-					drop_box.height = client_height / 2;
-				}
-			} else {
-				drop_box.x = bw;
-				drop_box.y = bw;
-				drop_box.width = client_width;
-				drop_box.height = client_height;
-				drop_direction = UNDIR;
-			}
-
-		} else {
-			if (rel_x < client_width * 0.5) {
-				drop_direction = LEFT;
-				drop_box.x = bw;
-				drop_box.y = bw;
-				drop_box.width = client_width / 2;
-				drop_box.height = client_height;
-			} else {
-				drop_direction = RIGHT;
-				drop_box.x = bw + client_width / 2;
-				drop_box.y = bw;
-				drop_box.width = client_width / 2;
-				drop_box.height = client_height;
-			}
-		}
-
 	} else {
 		double dist_left = rel_x;
 		double dist_right = client_width - rel_x;
@@ -1073,6 +1120,7 @@ void client_apply_clip(Client *c, float factor) {
 		client_draw_shadow(c);
 
 		client_draw_title(c);
+		client_draw_titlebar(c);
 
 		if (clip_box.width <= 0 || clip_box.height <= 0) {
 			return;
@@ -1118,6 +1166,7 @@ void client_apply_clip(Client *c, float factor) {
 	client_draw_shadow(c);
 
 	client_draw_title(c);
+	client_draw_titlebar(c);
 
 	// Skip rendering the window surface if the clip area has shrunk to 0
 	if (clip_box.width <= 0 || clip_box.height <= 0) {
@@ -1616,6 +1665,7 @@ void resize(Client *c, struct wlr_box geo, int32_t interact) {
 		client_draw_shadow(c);
 		apply_border(c);
 		client_draw_title(c);
+		client_draw_titlebar(c);
 		client_get_clip(c, &clip);
 		wlr_scene_subsurface_tree_set_clip(&c->scene_surface->node, &clip);
 		client_draw_shield(c, clip);

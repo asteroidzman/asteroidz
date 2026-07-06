@@ -1,56 +1,22 @@
-static void tile(Monitor *m);
-static void center_tile(Monitor *m);
-static void right_tile(Monitor *m);
 static void overview(Monitor *m);
-static void grid(Monitor *m);
 static void scroller(Monitor *m);
-static void deck(Monitor *mon);
 static void monocle(Monitor *m);
-static void vertical_tile(Monitor *m);
-static void vertical_overview(Monitor *m);
-static void vertical_grid(Monitor *m);
-static void vertical_scroller(Monitor *m);
-static void vertical_deck(Monitor *mon);
 static void dwindle(Monitor *m);
-static void fair(Monitor *m);
-static void vertical_fair(Monitor *m);
 
 /* layout(s) */
 Layout overviewlayout = {"󰃇", overview, "overview"};
 
 enum {
-	TILE,
-	SCROLLER,
-	GRID,
-	MONOCLE,
-	DECK,
-	CENTER_TILE,
-	VERTICAL_SCROLLER,
-	VERTICAL_TILE,
-	VERTICAL_GRID,
-	VERTICAL_DECK,
-	RIGHT_TILE,
 	DWINDLE,
-	FAIR,
-	VERTICAL_FAIR,
+	SCROLLER,
+	MONOCLE,
 };
 
 Layout layouts[] = {
 	// at least two entries; don't shrink this below two
+	// layouts[0] is the default for freshly-created tags/monitors
 	/* symbol     arrange function   name */
-	{"T", tile, "tile", TILE},						 // tiled layout
-	{"S", scroller, "scroller", SCROLLER},			 // scroller layout
-	{"G", grid, "grid", GRID},						 // grid layout
-	{"M", monocle, "monocle", MONOCLE},				 // monocle layout
-	{"K", deck, "deck", DECK},						 // deck layout
-	{"CT", center_tile, "center_tile", CENTER_TILE}, // center-tile layout
-	{"RT", right_tile, "right_tile", RIGHT_TILE},	 // right-tile layout
-	{"VS", vertical_scroller, "vertical_scroller",
-	 VERTICAL_SCROLLER},								   // vertical scroller layout
-	{"VT", vertical_tile, "vertical_tile", VERTICAL_TILE}, // vertical tile layout
-	{"VG", vertical_grid, "vertical_grid", VERTICAL_GRID}, // vertical grid layout
-	{"VK", vertical_deck, "vertical_deck", VERTICAL_DECK}, // vertical deck layout
-	{"DW", dwindle, "dwindle", DWINDLE},
-	{"F", fair, "fair", FAIR},
-	{"VF", vertical_fair, "vertical_fair", VERTICAL_FAIR},
+	{"T", dwindle, "tile", DWINDLE},		 // manual-control tiled layout (i3-like)
+	{"S", scroller, "scroller", SCROLLER},	 // scroller layout
+	{"M", monocle, "monocle", MONOCLE},	 // monocle layout
 };

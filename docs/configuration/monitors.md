@@ -93,6 +93,17 @@ sdr_reference_luminance=350
 
 Takes effect on config reload without a restart.
 
+### Recording/screenshotting an HDR output
+
+Screencopy protocols don't carry colorimetry metadata, so captures of an HDR output look washed out by default. asteroidz automatically drops an output out of HDR for as long as it's being captured via `ext-image-copy-capture`, restoring it afterward. Disable with the global option (not part of `monitorrule`) if you'd rather keep true HDR on screen during capture, at the cost of washed-out recordings:
+
+```ini
+# 1 = auto-disable HDR while an output is being captured (default)
+hdr_capture_fallback=0
+```
+
+See [XDG Portals → 10-bit / HDR Screencasting](./xdg-portals.md#10-bit--hdr-screencasting) for details.
+
 ---
 
 ## Monitor Spec Format

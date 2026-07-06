@@ -62,6 +62,12 @@ void client_tile_resize(Client *c, struct wlr_box geo, int32_t interact) {
 		geo.height -= config.group_bar_height;
 	}
 
+	if ((config.enable_titlebar || is_monocle_layout(c->mon)) &&
+		!c->isfullscreen) {
+		geo.y = geo.y + config.titlebar_height;
+		geo.height -= config.titlebar_height;
+	}
+
 	if ((!c->isfullscreen && !c->ismaximizescreen) ||
 		is_scroller_layout(c->mon)) {
 		resize(c, geo, interact);
@@ -110,24 +116,45 @@ void client_add_jump_label_node(Client *c) {
 	wlr_scene_node_set_enabled(&c->jump_label_node->scene_buffer->node, false);
 }
 
-void client_add_tab_bar_node(Client *c) {
+void client_add_titlebar(Client *c) {
 
-	if (config.monocle_tab_height <= 0) {
+	if (config.titlebar_height == 0) {
 		return;
 	}
 
+	/* close button is leftmost: it owns the window's top-left corner */
+	AsteroidzNodeData *closedata = ecalloc(1, sizeof(AsteroidzNodeData));
+	closedata->node_data = c;
+	closedata->type = ASTEROIDZ_TITLEBAR_CLOSE_NODE;
+
+	c->titlebar_close_node = asteroidz_tab_bar_node_create(
+		closedata, layers[LyrDecorate], config.pilldata, 0, 0);
+	asteroidz_tab_bar_node_set_enabled(c->titlebar_close_node, false);
+	asteroidz_tab_bar_node_set_corner_mask(c->titlebar_close_node,
+									   CORNER_LOCATION_TOP_LEFT);
+	/* the close button is a small square, not a padded pill: the pill's
+	 * usual padding_x (~16px) leaves almost no room for the × glyph at this
+	 * width, so it gets ellipsized into "..." */
+	asteroidz_tab_bar_node_set_padding(c->titlebar_close_node, 4, 4);
+	asteroidz_tab_bar_node_update(c->titlebar_close_node, "×", 1.0);
+
+	/* title tab sits immediately to the close button's right */
 	AsteroidzNodeData *nodedata = ecalloc(1, sizeof(AsteroidzNodeData));
 	nodedata->node_data = c;
-	nodedata->type = ASTEROIDZ_TITLE_NODE;
+	nodedata->type = ASTEROIDZ_TITLEBAR_NODE;
 
-	c->tab_bar_node = asteroidz_tab_bar_node_create(
+	c->titlebar_node = asteroidz_tab_bar_node_create(
 		nodedata, layers[LyrDecorate], config.pilldata, 0, 0);
-	wlr_scene_node_lower_to_bottom(&c->tab_bar_node->scene_buffer->node);
-	asteroidz_tab_bar_node_set_enabled(c->tab_bar_node, false);
-	asteroidz_tab_bar_node_set_shadow(c->tab_bar_node, config.shadows,
+	asteroidz_tab_bar_node_set_enabled(c->titlebar_node, false);
+	asteroidz_tab_bar_node_set_shadow(c->titlebar_node, config.shadows,
 								  config.shadows_blur * 2.0f, 2,
 								  config.shadowscolor);
-	asteroidz_tab_bar_node_update(c->tab_bar_node, client_get_title(c), 1.0);
+	asteroidz_tab_bar_node_set_corner_mask(c->titlebar_node,
+									   CORNER_LOCATION_TOP_RIGHT);
+	asteroidz_tab_bar_node_set_text_align_left(c->titlebar_node, true);
+	asteroidz_tab_bar_node_set_icon(
+		c->titlebar_node, c->icon_name ? c->icon_name : client_get_appid(c));
+	asteroidz_tab_bar_node_update(c->titlebar_node, client_get_title(c), 1.0);
 }
 
 void client_add_group_bar(Client *c) {
@@ -297,10 +324,13 @@ void client_set_group_config(Client *c) {
 	while (cur) {
 		asteroidz_jump_label_node_apply_config(cur->jump_label_node,
 										   &config.pilldata);
-		asteroidz_tab_bar_node_apply_config(cur->tab_bar_node, &config.pilldata);
-		asteroidz_tab_bar_node_set_shadow(cur->tab_bar_node, config.shadows,
+		asteroidz_tab_bar_node_apply_config(cur->titlebar_node, &config.pilldata);
+		asteroidz_tab_bar_node_set_shadow(cur->titlebar_node, config.shadows,
 									  config.shadows_blur * 2.0f, 2,
 									  config.shadowscolor);
+		asteroidz_tab_bar_node_apply_config(cur->titlebar_close_node,
+										&config.pilldata);
+		asteroidz_tab_bar_node_set_padding(cur->titlebar_close_node, 4, 4);
 		wlr_scene_rect_set_color(cur->droparea, config.dropcolor);
 		wlr_scene_rect_set_color(cur->splitindicator[0], config.splitcolor);
 		wlr_scene_rect_set_color(cur->splitindicator[1], config.splitcolor);

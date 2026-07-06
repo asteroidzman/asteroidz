@@ -138,7 +138,16 @@ double find_animation_curve_at(double t, int32_t type) {
 		}
 		middle = (up + down) / 2;
 	}
-	return baked_points[up].y;
+
+	/* interpolate between the two bracketing samples instead of snapping to
+	 * the upper one: 256 samples is coarse relative to how many real frames
+	 * a slow fade spans, and nearest-sample lookup was visibly steppy */
+	double x0 = baked_points[down].x, x1 = baked_points[up].x;
+	double y0 = baked_points[down].y, y1 = baked_points[up].y;
+	double span = x1 - x0;
+	double frac = span > 0.0 ? (t - x0) / span : 0.0;
+	frac = ASTEROIDZ_MAX(0.0, ASTEROIDZ_MIN(1.0, frac));
+	return y0 + (y1 - y0) * frac;
 }
 
 static bool scene_node_snapshot(struct wlr_scene_node *node, int32_t lx,

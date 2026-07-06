@@ -331,6 +331,26 @@ static void draw_rounded_rect(cairo_t *cr, double x, double y, double w,
 	cairo_close_path(cr);
 }
 
+/* like draw_rounded_rect, but only rounds the corners set in `mask`; masked-out
+ * corners are drawn square. Used for titlebar segments, where two adjacent
+ * pills (close button, title tab) should only round their outermost corner. */
+static void draw_rounded_rect_masked(cairo_t *cr, double x, double y, double w,
+									 double h, double r,
+									 enum corner_location mask) {
+	double degrees = G_PI / 180.0;
+	double tr = (mask & CORNER_LOCATION_TOP_RIGHT) ? r : 0;
+	double br = (mask & CORNER_LOCATION_BOTTOM_RIGHT) ? r : 0;
+	double bl = (mask & CORNER_LOCATION_BOTTOM_LEFT) ? r : 0;
+	double tl = (mask & CORNER_LOCATION_TOP_LEFT) ? r : 0;
+
+	cairo_new_sub_path(cr);
+	cairo_arc(cr, x + w - tr, y + tr, tr, -90 * degrees, 0 * degrees);
+	cairo_arc(cr, x + w - br, y + h - br, br, 0 * degrees, 90 * degrees);
+	cairo_arc(cr, x + bl, y + h - bl, bl, 90 * degrees, 180 * degrees);
+	cairo_arc(cr, x + tl, y + tl, tl, 180 * degrees, 270 * degrees);
+	cairo_close_path(cr);
+}
+
 void asteroidz_jump_label_node_update(struct asteroidz_jump_label_node *node,
 								  const char *text, float scale) {
 	if (!node || !text)
@@ -590,6 +610,8 @@ asteroidz_tab_bar_node_create(void *asteroidz_node_data, struct wlr_scene_tree *
 	node->target_height = height;
 	node->focused = false;
 	node->cached_focused = false;
+	node->corner_mask = CORNER_LOCATION_ALL;
+	node->text_align_left = false;
 
 	node->measure_surface =
 		cairo_image_surface_create(CAIRO_FORMAT_ARGB32, 1, 1);
@@ -682,7 +704,53 @@ void asteroidz_tab_bar_node_set_icon(struct asteroidz_tab_bar_node *node,
 		surf = get_cached_icon(icon_name);
 	if (surf == node->icon_surface)
 		return;
+	/* the icon cache hands out a borrowed pointer shared across every node
+	 * using that icon name; take our own reference so clearing/replacing
+	 * the cache (icon theme change) can't leave this node with a dangling
+	 * pointer to a surface it doesn't actually own. */
+	if (surf)
+		cairo_surface_reference(surf);
+	if (node->icon_surface)
+		cairo_surface_destroy(node->icon_surface);
 	node->icon_surface = surf;
+	if (node->last_text)
+		asteroidz_tab_bar_node_update(node, node->last_text,
+								  node->last_scale > 0 ? node->last_scale
+													   : 1.0f);
+}
+
+void asteroidz_tab_bar_node_set_corner_mask(struct asteroidz_tab_bar_node *node,
+										enum corner_location mask) {
+	if (!node || node->corner_mask == mask)
+		return;
+	node->corner_mask = mask;
+	if (node->last_text)
+		asteroidz_tab_bar_node_update(node, node->last_text,
+								  node->last_scale > 0 ? node->last_scale
+													   : 1.0f);
+}
+
+void asteroidz_tab_bar_node_set_text_align_left(struct asteroidz_tab_bar_node *node,
+											bool align_left) {
+	if (!node || node->text_align_left == align_left)
+		return;
+	node->text_align_left = align_left;
+	if (node->last_text)
+		asteroidz_tab_bar_node_update(node, node->last_text,
+								  node->last_scale > 0 ? node->last_scale
+													   : 1.0f);
+}
+
+void asteroidz_tab_bar_node_set_padding(struct asteroidz_tab_bar_node *node,
+									int32_t padding_x, int32_t padding_y) {
+	if (!node)
+		return;
+	padding_x = padding_x >= 0 ? padding_x : 0;
+	padding_y = padding_y >= 0 ? padding_y : 0;
+	if (node->padding_x == padding_x && node->padding_y == padding_y)
+		return;
+	node->padding_x = padding_x;
+	node->padding_y = padding_y;
 	if (node->last_text)
 		asteroidz_tab_bar_node_update(node, node->last_text,
 								  node->last_scale > 0 ? node->last_scale
@@ -692,6 +760,11 @@ void asteroidz_tab_bar_node_set_icon(struct asteroidz_tab_bar_node *node,
 void asteroidz_tab_bar_node_destroy(struct asteroidz_tab_bar_node *node) {
 	if (!node)
 		return;
+
+	if (node->icon_surface) {
+		cairo_surface_destroy(node->icon_surface);
+		node->icon_surface = NULL;
+	}
 
 	if (node->buffer) {
 		wlr_buffer_drop(&node->buffer->base);
@@ -900,7 +973,11 @@ void asteroidz_tab_bar_node_update(struct asteroidz_tab_bar_node *node,
 		cairo_set_source_rgba(cr, active_bg[0], active_bg[1], active_bg[2],
 							  active_bg[3]);
 		if (radius > 0.0) {
-			draw_rounded_rect(cr, bg_x, bg_y, bg_w, bg_h, radius);
+			if (node->corner_mask != CORNER_LOCATION_ALL)
+				draw_rounded_rect_masked(cr, bg_x, bg_y, bg_w, bg_h, radius,
+										 node->corner_mask);
+			else
+				draw_rounded_rect(cr, bg_x, bg_y, bg_w, bg_h, radius);
 			cairo_fill(cr);
 		} else {
 			cairo_rectangle(cr, bg_x, bg_y, bg_w, bg_h);
@@ -937,9 +1014,9 @@ void asteroidz_tab_bar_node_update(struct asteroidz_tab_bar_node *node,
 		double avail_text_w = text_area_w - icon_px - icon_gap;
 		if (avail_text_w < 0)
 			avail_text_w = 0;
-		pango_layout_set_alignment(layout, node->icon_surface
-											   ? PANGO_ALIGN_LEFT
-											   : PANGO_ALIGN_CENTER);
+		bool align_left = node->text_align_left || node->icon_surface;
+		pango_layout_set_alignment(layout, align_left ? PANGO_ALIGN_LEFT
+													  : PANGO_ALIGN_CENTER);
 		pango_layout_set_width(layout, (int)(avail_text_w * PANGO_SCALE));
 
 		int text_pixel_w, text_pixel_h;
@@ -952,7 +1029,9 @@ void asteroidz_tab_bar_node_update(struct asteroidz_tab_bar_node *node,
 			double group_w = icon_px + icon_gap +
 							 (text_pixel_w < avail_text_w ? text_pixel_w
 														  : avail_text_w);
-			double group_x = text_x + (text_area_w - group_w) / 2.0;
+			double group_x = node->text_align_left
+								 ? text_x
+								 : text_x + (text_area_w - group_w) / 2.0;
 			if (group_x < text_x)
 				group_x = text_x;
 
@@ -1002,7 +1081,11 @@ void asteroidz_tab_bar_node_update(struct asteroidz_tab_bar_node *node,
 			double outer_radius = radius + half_lw;
 			if (outer_radius < 0.0)
 				outer_radius = 0.0;
-			draw_rounded_rect(cr, bx, by, bw, bh, outer_radius);
+			if (node->corner_mask != CORNER_LOCATION_ALL)
+				draw_rounded_rect_masked(cr, bx, by, bw, bh, outer_radius,
+										 node->corner_mask);
+			else
+				draw_rounded_rect(cr, bx, by, bw, bh, outer_radius);
 		} else {
 			cairo_rectangle(cr, bx, by, bw, bh);
 		}

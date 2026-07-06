@@ -5,22 +5,13 @@ description: Configure and switch between different window layouts.
 
 ## Supported Layouts
 
-asteroidz supports a variety of layouts that can be assigned per tag.
+asteroidz keeps a deliberately small set of layouts, assignable per tag:
 
-- `tile`
-- `scroller`
-- `monocle`
-- `grid`
-- `deck`
-- `center_tile`
-- `vertical_tile`
-- `right_tile`
-- `vertical_scroller`
-- `vertical_grid`
-- `vertical_deck`
-- `dwindle`
-- `fair`
-- `vertical_fair`
+- `tile` — a manual-control binary-tree tiler (i3-like: you choose where the next window splits)
+- `scroller` — a scrollable strip of columns, similar to PaperWM
+- `monocle` — one window fullscreen-ish at a time, with a tab bar for the rest
+
+Fullscreen is a per-window state (`togglefullscreen`), independent of layout, and works in any of them.
 
 ---
 
@@ -43,7 +34,7 @@ The Scroller layout positions windows in a scrollable strip, similar to PaperWM.
 | `scroller_proportion_preset` | `0.5,0.8,1.0` | Presets for cycling window widths. |
 | `scroller_ignore_proportion_single` | `1` | Ignore proportion adjustments for single windows. |
 | `scroller_default_proportion_single` | `1.0` | Default proportion for single windows in scroller. **Requires `scroller_ignore_proportion_single=0` to take effect.** |
-| `scroller_edge_scroll` | `0` | Advance to the next/prev column by hovering the pointer against a screen edge (top/bottom for `vertical_scroller`, left/right otherwise), instead of only via keybinds (1 = enable). |
+| `scroller_edge_scroll` | `0` | Advance to the next/prev column by hovering the pointer against a screen edge (left/right), instead of only via keybinds (1 = enable). |
 | `scroller_edge_scroll_size` | `15` | Width in pixels of the hot edge zone that triggers `scroller_edge_scroll`. |
 | `scroller_edge_scroll_delay` | `500` | Milliseconds the pointer must dwell at the edge before advancing; repeats at the same interval while it stays there. |
 
@@ -72,32 +63,9 @@ scroller_edge_scroll_delay=500
 
 ---
 
-## Master-Stack Layouts
+## Tile Layout
 
-These settings apply to layouts like `tile` and `center_tile`.
-
-| Setting | Default | Description |
-| :--- | :--- | :--- |
-| `new_is_master` | `1` | New windows become the master window. |
-| `default_mfact` | `0.55` | The split ratio between master and stack areas. |
-| `default_nmaster` | `1` | Number of allowed master windows. |
-| `smartgaps` | `0` | Disable gaps when only one window is present. |
-| `center_master_overspread` | `0` | (Center Tile) Master spreads across screen if no stack exists. |
-| `center_when_single_stack` | `1` | (Center Tile) Center master when only one stack window exists. |
-
-```ini
-# Example master-stack configuration
-new_is_master=1
-smartgaps=0
-default_mfact=0.55
-default_nmaster=1
-```
-
----
-
-## Dwindle Layout
-
-The Dwindle layout arranges windows as a binary tree of recursive splits. Each new window splits the focused window's container, producing a spiral-like tiling.
+`tile` arranges windows as a binary tree of recursive splits (internally "dwindle"). Each new window splits the focused window's container. By default the split axis is chosen automatically; with `dwindle_manual_split=1` it becomes an i3-like manual tiler instead — you explicitly set the split direction for the focused container, and it sticks for any window opened there until you change it again.
 
 ### Configuration
 
@@ -110,10 +78,10 @@ The Dwindle layout arranges windows as a binary tree of recursive splits. Each n
 | `dwindle_preserve_split` | `0` | Keep the sibling's split orientation when a window is closed. |
 | `dwindle_smart_resize` | `0` | When dragging to resize, move the split toward the cursor regardless of which side was grabbed. |
 | `dwindle_drop_simple_split` | `1` | Drag-to-tile drop preview. `1` = 2-zone preview matching `dwindle_split_ratio`, `0` = 4-quadrant preview. |
-| `dwindle_manual_split` | `0` | Manually split windows mode. |
+| `dwindle_manual_split` | `0` | i3-like manual split mode: the focused container's split direction is set explicitly (see below) rather than auto-picked, and persists for future windows opened there. |
 
 ```ini
-# Example dwindle configuration
+# Example tile (dwindle) configuration
 dwindle_split_ratio=0.5
 dwindle_smart_split=0
 dwindle_hsplit=0
@@ -121,6 +89,22 @@ dwindle_vsplit=0
 dwindle_preserve_split=0
 dwindle_smart_resize=0
 dwindle_drop_simple_split=1
+```
+
+### Manual split direction (i3-like)
+
+With `dwindle_manual_split=1`, bind these dispatches to control where the *next* window opened on the focused container will go — matching i3's `split h`/`split v`:
+
+| Command | Description |
+| :--- | :--- |
+| `dwindle_split_horizontal` | Set the focused container to split left/right. |
+| `dwindle_split_vertical` | Set the focused container to split top/bottom. |
+| `dwindle_toggle_split_direction` | Toggle the focused container's split direction. |
+
+```ini
+dwindle_manual_split=1
+bind=SUPER,b,dwindle_split_horizontal
+bind=SUPER+SHIFT,b,dwindle_split_vertical
 ```
 
 ---
@@ -136,7 +120,7 @@ You can switch layouts dynamically or set a default for specific tags using [Tag
 
 ```ini
 # Cycle through layouts
-circle_layout=grid,scroller,tile
+circle_layout=monocle,scroller,tile
 bind=SUPER,n,switch_layout
 
 # Set specific layout

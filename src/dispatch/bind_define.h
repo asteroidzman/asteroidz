@@ -462,6 +462,7 @@ int32_t movegroupwindow(const Arg *arg) {
 	}
 
 	client_draw_title(c);
+	client_draw_titlebar(c);
 	arrange(c->mon, false, false);
 	return 0;
 }
@@ -587,10 +588,14 @@ int32_t killclient(const Arg *arg) {
 	return 0;
 }
 
-int32_t moveresize(const Arg *arg) {
-	const char *cursors[] = {"nw-resize", "ne-resize", "sw-resize",
-							 "se-resize"};
+/* Shared by moveresize() (mod+drag, target resolved via xytonode at the
+ * cursor) and titlebar drag-to-move (target already known from the clicked
+ * node, which may sit outside the client's own surface bounds so xytonode
+ * can't be used to (re)resolve it). Assumes `target` is already validated
+ * (managed, not fullscreen/maximized) and cursor_mode is CurNormal/CurPressed. */
+int32_t begin_move_or_resize(Client *target, uint32_t mode);
 
+int32_t moveresize(const Arg *arg) {
 	if (cursor_mode != CurNormal && cursor_mode != CurPressed)
 		return 0;
 	xytonode(cursor->x, cursor->y, NULL, &grabc, NULL, NULL, NULL, NULL);
@@ -599,7 +604,15 @@ int32_t moveresize(const Arg *arg) {
 		grabc = NULL;
 		return 0;
 	}
-	if (grabc->isfloating == 0 && arg->ui == CurMove) {
+	return begin_move_or_resize(grabc, arg->ui);
+}
+
+int32_t begin_move_or_resize(Client *target, uint32_t mode) {
+	const char *cursors[] = {"nw-resize", "ne-resize", "sw-resize",
+							 "se-resize"};
+
+	grabc = target;
+	if (grabc->isfloating == 0 && mode == CurMove) {
 		grabc->drag_to_tile = true;
 		exit_scroller_stack(grabc);
 		setfloating(grabc, 1);
@@ -617,7 +630,7 @@ int32_t moveresize(const Arg *arg) {
 		resize(grabc, grabc->geom, 1);
 	}
 
-	switch (cursor_mode = arg->ui) {
+	switch (cursor_mode = mode) {
 	case CurMove:
 		grabcx = cursor->x - grabc->geom.x;
 		grabcy = cursor->y - grabc->geom.y;
@@ -699,17 +712,18 @@ int32_t quit(const Arg *arg) {
 
 int32_t toggle_hdr(const Arg *arg) {
 	Monitor *m = selmon;
-	struct wlr_output_state state;
 
 	if (!m)
 		return 0;
+	/* manual toggle takes precedence over the capture-triggered HDR
+	 * fallback; don't let a later capture-session end auto-flip it back */
+	m->hdr_forced_off_for_capture = false;
 	m->hdr = !m->hdr;
-	wlr_output_state_init(&state);
-	mon_state_apply_color(m, &state);
-	if (!wlr_output_commit_state(m->wlr_output, &state))
-		wlr_log(WLR_ERROR, "HDR toggle commit failed on %s",
-				m->wlr_output->name);
-	wlr_output_state_finish(&state);
+	/* deferred to rendermon()'s next frame commit, not committed here
+	 * directly: an out-of-band commit can race an in-flight page-flip and
+	 * get rejected by the DRM backend */
+	m->hdr_pending_change = true;
+	wlr_output_schedule_frame(m->wlr_output);
 	wlr_log(WLR_INFO, "HDR %s on %s", m->hdr ? "enabled" : "disabled",
 			m->wlr_output->name);
 	printstatus(IPC_WATCH_ARRANGGE);

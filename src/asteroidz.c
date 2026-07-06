@@ -233,7 +233,9 @@ enum {
  * reads the first uint32_t of node.data generically */
 enum asteroidz_node_type {
 	ASTEROIDZ_TITLE_NODE = 100,
-	ASTEROIDZ_jump_label_node
+	ASTEROIDZ_jump_label_node,
+	ASTEROIDZ_TITLEBAR_NODE,
+	ASTEROIDZ_TITLEBAR_CLOSE_NODE
 };
 
 #ifdef XWAYLAND
@@ -401,8 +403,9 @@ struct Client {
 	struct wlr_scene_tree *scene_surface;
 	struct wlr_scene_tree *overview_scene_surface;
 	struct asteroidz_jump_label_node *jump_label_node;
-	struct asteroidz_tab_bar_node *tab_bar_node;
 	AsteroidzGroupBar *group_bar;
+	struct asteroidz_tab_bar_node *titlebar_node;
+	struct asteroidz_tab_bar_node *titlebar_close_node;
 	struct wl_list link;
 	struct wl_list flink;
 	struct wl_list fadeout_link;
@@ -683,6 +686,20 @@ struct Monitor {
 	bool special_transitioning; /* true while an arrange() call is animating a
 								 * special-workspace open/close/switch, used to
 								 * pick the slide animation in animation/tag.h */
+
+	/* HDR capture fallback: while an ext-image-copy-capture session targets
+	 * this output, screencopy clients receive PQ-encoded samples with no
+	 * colorimetry metadata (wlr-screencopy/ext-image-copy-capture carry
+	 * none), so recordings look washed out. As a workaround, temporarily
+	 * drop this output out of HDR for the duration of any capture. */
+	uint32_t hdr_capture_count;		 /* active capture sessions on this output */
+	bool hdr_forced_off_for_capture;	 /* true while we're overriding hdr off */
+	struct wl_event_source *hdr_capture_debounce_timer;
+	/* an HDR-affecting commit issued out-of-band (outside the normal frame
+	 * cycle) can race an in-flight page-flip and get rejected by the DRM
+	 * backend. Instead, set this and let rendermon() fold the color-state
+	 * change into the next regular frame's own commit. */
+	bool hdr_pending_change;
 };
 
 typedef struct {
@@ -967,7 +984,6 @@ wlr_scene_tree_snapshot(struct wlr_scene_node *node,
 						struct wlr_scene_tree *parent);
 static bool is_scroller_layout(Monitor *m);
 static bool is_monocle_layout(Monitor *m);
-static bool is_centertile_layout(Monitor *m);
 static void create_output(struct wlr_backend *backend, void *data);
 static void get_layout_abbr(char *abbr, const char *full_name);
 static void apply_named_scratchpad(Client *target_client);
@@ -1010,6 +1026,8 @@ static void check_keep_idle_inhibit(Client *c);
 static void check_vrr_enable(Client *c);
 static int monitor_retrain_step(void *data);
 void monitor_start_retrain(Monitor *m, uint32_t delay_ms);
+static int32_t hdr_capture_debounce_timeout(void *data);
+static void update_hdr_capture_override(Monitor *m);
 static void handle_image_copy_capture_new_session(struct wl_listener *listener,
 												  void *data);
 static void refresh_shielded_surfaces(void);
@@ -1307,7 +1325,6 @@ static struct wl_event_source *sync_keymap;
 #include "layout/horizontal.h"
 #include "layout/overview.h"
 #include "layout/scroll.h"
-#include "layout/vertical.h"
 
 void client_change_mon(Client *c, Monitor *m) {
 	setmon(c, m, c->tags, true);
@@ -1344,10 +1361,8 @@ void clear_fullscreen_and_maximized_state(Monitor *m) {
 /* clear the fullscreen flag, restoring the border that was zeroed while fullscreen */
 void clear_fullscreen_flag(Client *c) {
 
-	if ((c->mon->pertag->ltidxs[get_tags_first_tag_num(c->tags)]->id ==
-			 SCROLLER ||
-		 c->mon->pertag->ltidxs[get_tags_first_tag_num(c->tags)]->id ==
-			 VERTICAL_SCROLLER) &&
+	if (c->mon->pertag->ltidxs[get_tags_first_tag_num(c->tags)]->id ==
+			SCROLLER &&
 		!c->isfloating) {
 		return;
 	}
@@ -1462,8 +1477,11 @@ void client_replace(Client *c, Client *w, bool is_group_change_member,
 		overview_backup_surface(c);
 	}
 
-	if (w->tab_bar_node) {
-		asteroidz_tab_bar_node_set_enabled(w->tab_bar_node, false);
+	if (w->titlebar_node) {
+		asteroidz_tab_bar_node_set_enabled(w->titlebar_node, false);
+	}
+	if (w->titlebar_close_node) {
+		asteroidz_tab_bar_node_set_enabled(w->titlebar_close_node, false);
 	}
 
 	if (w->group_bar && !is_group_change_member) {
@@ -1527,8 +1545,7 @@ void client_replace(Client *c, Client *w, bool is_group_change_member,
 
 	const Layout *layout = w->mon->pertag->ltidxs[w->mon->pertag->curtag];
 
-	if (layout->id == DWINDLE || layout->id == SCROLLER ||
-		layout->id == VERTICAL_SCROLLER) {
+	if (layout->id == DWINDLE || layout->id == SCROLLER) {
 
 		for (uint32_t t = 0; t < LENGTH(tags) + 1; t++) {
 			/* dwindle */
@@ -1543,7 +1560,7 @@ void client_replace(Client *c, Client *w, bool is_group_change_member,
 			}
 
 			// scroller
-			if (layout->id == SCROLLER || layout->id == VERTICAL_SCROLLER) {
+			if (layout->id == SCROLLER) {
 				struct TagScrollerState *st = w->mon->pertag->scroller_state[t];
 				if (!st)
 					continue;
@@ -1561,7 +1578,7 @@ void client_replace(Client *c, Client *w, bool is_group_change_member,
 	}
 
 	/* sync the global client fields for the currently active tag */
-	if (layout->id == SCROLLER || layout->id == VERTICAL_SCROLLER) {
+	if (layout->id == SCROLLER) {
 		sync_scroller_state_to_clients(w->mon, w->mon->pertag->curtag);
 	}
 }
@@ -1821,29 +1838,20 @@ void toggle_hotarea(int32_t x_root, int32_t y_root) {
 }
 
 /* hovering the pointer against a screen edge for scroller_edge_scroll_delay
- * ms advances to the next/prev column (or row, for the vertical scroller);
- * it keeps advancing at that same interval while the pointer stays put */
+ * ms advances to the next/prev column; it keeps advancing at that same
+ * interval while the pointer stays put */
 void check_scroller_edge_scroll(int32_t x_root, int32_t y_root) {
 	int32_t new_dir = UNDIR;
 
 	if (config.scroller_edge_scroll && selmon && !grabc &&
 		!selmon->isoverview && is_scroller_layout(selmon)) {
 		int32_t size = config.scroller_edge_scroll_size;
-		int32_t layout_id = selmon->pertag->ltidxs[selmon->pertag->curtag]->id;
 
-		if (layout_id == VERTICAL_SCROLLER) {
-			if (y_root >= selmon->m.y && y_root < selmon->m.y + size)
-				new_dir = UP;
-			else if (y_root < selmon->m.y + selmon->m.height &&
-					 y_root >= selmon->m.y + selmon->m.height - size)
-				new_dir = DOWN;
-		} else {
-			if (x_root >= selmon->m.x && x_root < selmon->m.x + size)
-				new_dir = LEFT;
-			else if (x_root < selmon->m.x + selmon->m.width &&
-					 x_root >= selmon->m.x + selmon->m.width - size)
-				new_dir = RIGHT;
-		}
+		if (x_root >= selmon->m.x && x_root < selmon->m.x + size)
+			new_dir = LEFT;
+		else if (x_root < selmon->m.x + selmon->m.width &&
+				 x_root >= selmon->m.x + selmon->m.width - size)
+			new_dir = RIGHT;
 	}
 
 	if (new_dir == scroller_edge_scroll_dir)
@@ -2712,10 +2720,6 @@ void place_drag_tile_client(Client *c) {
 			scroller_drop_tile(c, closest, 0);
 			return;
 		}
-		if (layout->id == VERTICAL_SCROLLER) {
-			scroller_drop_tile(c, closest, 1);
-			return;
-		}
 		if (layout->id == DWINDLE) {
 			uint32_t tag = c->mon->pertag->curtag;
 			bool insert_before = (closest->drop_direction == LEFT ||
@@ -2830,6 +2834,25 @@ bool handle_buttonpress(struct wlr_pointer_button_event *event) {
 			if (nodedata->type == ASTEROIDZ_TITLE_NODE) {
 				Client *c = nodedata->node_data;
 				focusclient(c, 1);
+			} else if (nodedata->type == ASTEROIDZ_TITLEBAR_CLOSE_NODE) {
+				Client *c = nodedata->node_data;
+				if (event->button == BTN_LEFT)
+					pending_kill_client(c);
+			} else if (nodedata->type == ASTEROIDZ_TITLEBAR_NODE) {
+				Client *c = nodedata->node_data;
+				/* a monocle background tab (not currently shown) should
+				 * just switch focus, not start a move grab: it isn't
+				 * really floating under the pointer, it's stacked behind
+				 * the visible window. */
+				bool is_monocle_bg_tab =
+					c->mon && is_monocle_layout(c->mon) && c->is_monocle_hide;
+				focusclient(c, 1);
+				if (event->button == BTN_LEFT && !is_monocle_bg_tab &&
+					(cursor_mode == CurNormal || cursor_mode == CurPressed) &&
+					!client_is_unmanaged(c) && !c->isfullscreen &&
+					!c->ismaximizescreen) {
+					begin_move_or_resize(c, CurMove);
+				}
 			}
 		}
 
@@ -3091,6 +3114,10 @@ void cleanupmon(struct wl_listener *listener, void *data) {
 	if (m->retrain_timer) {
 		wl_event_source_remove(m->retrain_timer);
 		m->retrain_timer = NULL;
+	}
+	if (m->hdr_capture_debounce_timer) {
+		wl_event_source_remove(m->hdr_capture_debounce_timer);
+		m->hdr_capture_debounce_timer = NULL;
 	}
 	m->wlr_output->data = NULL;
 
@@ -4008,12 +4035,14 @@ void mon_state_apply_color(Monitor *m, struct wlr_output_state *state) {
 		}
 	}
 
-	if (m->hdr && !wlr_output_test_state(wlr_output, state)) {
-		wlr_log(WLR_ERROR, "HDR mode rejected by backend on output %s",
-				wlr_output->name);
-		wlr_output_state_set_image_description(state, NULL);
-		m->hdr = 0;
-	}
+	/* Deliberately no extra wlr_output_test_state() pre-check here: the
+	 * static capability check above is enough, and testing this exact
+	 * state again separately just doubles exposure to backend timing
+	 * sensitivities around swapchain reconfiguration (seen in practice
+	 * as spurious "swapchain failed test" rejections that only affect
+	 * the HDR-enable direction, since disable never had this extra
+	 * check). The real commit right after this call is the actual
+	 * source of truth; its caller falls back to a retrain on failure. */
 }
 
 void createmon(struct wl_listener *listener, void *data) {
@@ -4046,6 +4075,8 @@ void createmon(struct wl_listener *listener, void *data) {
 	m->skip_frame_timeout =
 		wl_event_loop_add_timer(loop, monitor_skip_frame_timeout_callback, m);
 	m->retrain_timer = wl_event_loop_add_timer(loop, monitor_retrain_step, m);
+	m->hdr_capture_debounce_timer =
+		wl_event_loop_add_timer(loop, hdr_capture_debounce_timeout, m);
 	m->skiping_frame = false;
 	m->resizing_count_pending = 0;
 	m->resizing_count_current = 0;
@@ -5236,8 +5267,9 @@ void init_client_properties(Client *c) {
 	c->grid_row_per = 1.0f;
 	c->is_monocle_hide = false;
 	c->jump_label_node = NULL;
-	c->tab_bar_node = NULL;
 	c->group_bar = NULL;
+	c->titlebar_node = NULL;
+	c->titlebar_close_node = NULL;
 	c->blur_node = NULL;
 	c->overview_scene_surface = NULL;
 	c->drop_direction = UNDIR;
@@ -5400,6 +5432,7 @@ mapnotify(struct wl_listener *listener, void *data) {
 	}
 
 	client_add_group_bar(c);
+	client_add_titlebar(c);
 
 	c->droparea = wlr_scene_rect_create(c->scene, 0, 0, config.dropcolor);
 	wlr_scene_node_lower_to_bottom(&c->droparea->node);
@@ -6252,6 +6285,35 @@ void rendermon(struct wl_listener *listener, void *data) {
 		shotui.capture_mon = NULL;
 		if (captured)
 			screenshot_ui_on_captured(m, captured_mode, captured);
+	} else if (m->hdr_pending_change) {
+		/* fold a pending HDR/color-state change into this frame's own
+		 * commit (which carries a fresh buffer) instead of issuing a
+		 * separate out-of-band commit that could race an in-flight
+		 * page-flip and get rejected by the DRM backend */
+		struct wlr_output_state state;
+		wlr_output_state_init(&state);
+		mon_state_apply_color(m, &state);
+		struct wlr_scene_output_state_options options = {
+			.color_transform = m->hdr ? NULL : m->icc_transform,
+		};
+		if (wlr_scene_output_build_state(m->scene_output, &state, &options)) {
+			if (!wlr_output_commit_state(m->wlr_output, &state)) {
+				wlr_log(WLR_ERROR,
+						"HDR pending-change commit failed on %s, retraining",
+						m->wlr_output->name);
+				monitor_start_retrain(m, 50);
+			}
+		} else {
+			wlr_log(WLR_ERROR,
+					"HDR pending-change: failed to build state for %s, retraining",
+					m->wlr_output->name);
+			/* don't silently give up: without the retrain, the output is
+			 * left rendering the OLD color state indefinitely, while
+			 * m->hdr already reports the new (unapplied) value */
+			monitor_start_retrain(m, 50);
+		}
+		wlr_output_state_finish(&state);
+		m->hdr_pending_change = false;
 	} else {
 		wlr_scene_output_commit(
 			m->scene_output,
@@ -6343,8 +6405,7 @@ void exchange_two_client(Client *c1, Client *c2) {
 	const Layout *layout1 = m1->pertag->ltidxs[m1->pertag->curtag];
 	const Layout *layout2 = m2->pertag->ltidxs[m2->pertag->curtag];
 
-	if (layout1->id == SCROLLER || layout2->id == SCROLLER ||
-		layout1->id == VERTICAL_SCROLLER || layout2->id == VERTICAL_SCROLLER) {
+	if (layout1->id == SCROLLER || layout2->id == SCROLLER) {
 		exchange_two_scroller_clients(c1, c2);
 		return;
 	}
@@ -7462,9 +7523,7 @@ uint32_t want_restore_fullscreen(Client *target_client) {
 		if (c && c != target_client && c->tags == target_client->tags &&
 			c == selmon->sel &&
 			c->mon->pertag->ltidxs[get_tags_first_tag_num(c->tags)]->id !=
-				SCROLLER &&
-			c->mon->pertag->ltidxs[get_tags_first_tag_num(c->tags)]->id !=
-				VERTICAL_SCROLLER) {
+				SCROLLER) {
 			return 0;
 		}
 	}
@@ -7608,6 +7667,7 @@ int32_t hidecursor(void *data) {
 struct capture_session_tracker {
 	struct wlr_ext_image_copy_capture_session_v1 *session;
 	struct wl_listener session_destroy;
+	Monitor *mon; /* resolved at session start; NULL if not an output source */
 };
 
 /* re-evaluate every shielded surface's cover state */
@@ -7643,6 +7703,11 @@ static void handle_capture_session_destroy(struct wl_listener *listener,
 	refresh_shielded_surfaces();
 	wlr_log(WLR_DEBUG, "capture session ended, active count: %d",
 			active_capture_count);
+
+	if (tracker->mon) {
+		tracker->mon->hdr_capture_count--;
+		update_hdr_capture_override(tracker->mon);
+	}
 	free(tracker);
 }
 
@@ -7657,10 +7722,65 @@ void handle_image_copy_capture_new_session(struct wl_listener *listener,
 	tracker->session_destroy.notify = handle_capture_session_destroy;
 	wl_signal_add(&session->events.destroy, &tracker->session_destroy);
 
+	struct wlr_output *capture_output =
+		wlr_output_try_from_ext_image_capture_source_v1(session->source);
+	tracker->mon = capture_output ? capture_output->data : NULL;
+
 	active_capture_count++;
 	refresh_shielded_surfaces();
 	wlr_log(WLR_DEBUG, "capture session started, active count: %d",
 			active_capture_count);
+
+	if (tracker->mon) {
+		tracker->mon->hdr_capture_count++;
+		update_hdr_capture_override(tracker->mon);
+	}
+}
+
+/* Delay (ms) a capture session must stay open before we force HDR off, so a
+ * quick screenshot doesn't cause a visible flash on the real display. */
+#define HDR_CAPTURE_DEBOUNCE_MS 300
+
+/* wlr-screencopy and ext-image-copy-capture hand out PQ-encoded samples
+ * with no colorimetry metadata, so capture clients decode them as plain
+ * gamma and recordings look washed out. Temporarily drop the output out
+ * of HDR for as long as it's being captured, as a workaround. */
+static void hdr_capture_apply(Monitor *m, bool force_off) {
+	m->hdr = force_off ? 0 : 1;
+	m->hdr_pending_change = true;
+	wlr_output_schedule_frame(m->wlr_output);
+	wlr_log(WLR_INFO, "HDR %s on %s (capture fallback)",
+			force_off ? "disabled" : "restored", m->wlr_output->name);
+	printstatus(IPC_WATCH_ARRANGGE);
+}
+
+static int32_t hdr_capture_debounce_timeout(void *data) {
+	Monitor *m = data;
+	if (config.hdr_capture_fallback && m->hdr_capture_count > 0 && m->hdr &&
+		!m->hdr_forced_off_for_capture) {
+		m->hdr_forced_off_for_capture = true;
+		hdr_capture_apply(m, true);
+	}
+	return 0;
+}
+
+/* Re-evaluate whether output m's HDR should be forced off because it's
+ * being captured. Called whenever a capture session on m starts or ends. */
+static void update_hdr_capture_override(Monitor *m) {
+	if (!config.hdr_capture_fallback)
+		return;
+
+	if (m->hdr_capture_count > 0) {
+		if (!m->hdr_forced_off_for_capture)
+			wl_event_source_timer_update(m->hdr_capture_debounce_timer,
+										  HDR_CAPTURE_DEBOUNCE_MS);
+	} else {
+		wl_event_source_timer_update(m->hdr_capture_debounce_timer, 0);
+		if (m->hdr_forced_off_for_capture) {
+			m->hdr_forced_off_for_capture = false;
+			hdr_capture_apply(m, false);
+		}
+	}
 }
 
 static void commit_vrr_state(Monitor *m, bool enable) {
@@ -7901,13 +8021,17 @@ void unmapnotify(struct wl_listener *listener, void *data) {
 		asteroidz_jump_label_node_destroy(c->jump_label_node);
 		c->jump_label_node = NULL;
 	}
-	if (c->tab_bar_node) {
-		asteroidz_tab_bar_node_destroy(c->tab_bar_node);
-		c->tab_bar_node = NULL;
-	}
 	if (c->group_bar) {
 		asteroidz_group_bar_destroy(c->group_bar);
 		c->group_bar = NULL;
+	}
+	if (c->titlebar_node) {
+		asteroidz_tab_bar_node_destroy(c->titlebar_node);
+		c->titlebar_node = NULL;
+	}
+	if (c->titlebar_close_node) {
+		asteroidz_tab_bar_node_destroy(c->titlebar_close_node);
+		c->titlebar_close_node = NULL;
 	}
 
 	wlr_scene_node_destroy(&c->scene->node);
@@ -8062,7 +8186,7 @@ void updatetitle(struct wl_listener *listener, void *data) {
 
 	const char *title;
 	title = client_get_title(c);
-	asteroidz_tab_bar_node_update(c->tab_bar_node, title, 1.0);
+	asteroidz_tab_bar_node_update(c->titlebar_node, title, 1.0);
 	asteroidz_group_bar_update(c->group_bar, title,
 						   c->mon	? c->mon->wlr_output->scale
 						   : selmon ? selmon->wlr_output->scale

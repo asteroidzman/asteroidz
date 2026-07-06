@@ -7,6 +7,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <scenefx/types/wlr_scene.h>
+#include "../common/corner_location.h"
 
 // Pre-existing struct, assumed to already exist
 typedef struct {
@@ -99,6 +100,8 @@ struct asteroidz_tab_bar_node {
 	int32_t padding_x;
 	int32_t padding_y;
 	char *font_desc;
+	enum corner_location corner_mask;
+	bool text_align_left;
 
 	// size
 	int32_t target_width;
@@ -229,6 +232,12 @@ void asteroidz_tab_bar_node_set_shadow(struct asteroidz_tab_bar_node *node,
 								   const float color[4]);
 void asteroidz_tab_bar_node_set_icon(struct asteroidz_tab_bar_node *node,
 								 const char *icon_name);
+void asteroidz_tab_bar_node_set_corner_mask(struct asteroidz_tab_bar_node *node,
+										enum corner_location mask);
+void asteroidz_tab_bar_node_set_text_align_left(struct asteroidz_tab_bar_node *node,
+											bool align_left);
+void asteroidz_tab_bar_node_set_padding(struct asteroidz_tab_bar_node *node,
+									int32_t padding_x, int32_t padding_y);
 void asteroidz_text_node_set_icon_theme(const char *theme);
 void asteroidz_tab_bar_node_update(struct asteroidz_tab_bar_node *node,
 							   const char *text, float scale);

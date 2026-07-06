@@ -243,6 +243,7 @@ typedef struct {
 	int32_t scroller_edge_scroll;
 	int32_t scroller_edge_scroll_size;
 	int32_t scroller_edge_scroll_delay;
+	int32_t hdr_capture_fallback;
 	int32_t focus_cross_monitor;
 	int32_t exchange_cross_monitor;
 	int32_t scratchpad_cross_monitor;
@@ -377,10 +378,10 @@ typedef struct {
 	uint32_t gappoh;
 	uint32_t gappov;
 	uint32_t borderpx;
-	uint32_t monocle_tab_height;
 	uint32_t group_bar_height;
-	int32_t monocle_tab_max_width; // 0 = tabs split the full width
-	int32_t monocle_tab_icons;		   // draw app icons in monocle tab pills
+	int32_t enable_titlebar;
+	uint32_t titlebar_height;
+	int32_t monocle_tab_max_width; // 0 = tab segments split the full width
 	char icon_theme[64];		   // icon theme for tab pill icons
 	float scratchpad_width_ratio;
 	float scratchpad_height_ratio;
@@ -1579,6 +1580,8 @@ bool parse_option(Config *config, char *key, char *value) {
 		config->scroller_edge_scroll_size = atoi(value);
 	} else if (strcmp(key, "scroller_edge_scroll_delay") == 0) {
 		config->scroller_edge_scroll_delay = atoi(value);
+	} else if (strcmp(key, "hdr_capture_fallback") == 0) {
+		config->hdr_capture_fallback = atoi(value);
 	} else if (strcmp(key, "focus_cross_monitor") == 0) {
 		config->focus_cross_monitor = atoi(value);
 	} else if (strcmp(key, "exchange_cross_monitor") == 0) {
@@ -2064,14 +2067,14 @@ bool parse_option(Config *config, char *key, char *value) {
 		config->scratchpad_height_ratio = atof(value);
 	} else if (strcmp(key, "borderpx") == 0) {
 		config->borderpx = atoi(value);
-	} else if (strcmp(key, "monocle_tab_height") == 0) {
-		config->monocle_tab_height = atoi(value);
 	} else if (strcmp(key, "group_bar_height") == 0) {
 		config->group_bar_height = atoi(value);
+	} else if (strcmp(key, "enable_titlebar") == 0) {
+		config->enable_titlebar = atoi(value);
+	} else if (strcmp(key, "titlebar_height") == 0) {
+		config->titlebar_height = atoi(value);
 	} else if (strcmp(key, "monocle_tab_max_width") == 0) {
 		config->monocle_tab_max_width = CLAMP_INT(atoi(value), 0, 10000);
-	} else if (strcmp(key, "monocle_tab_icons") == 0) {
-		config->monocle_tab_icons = CLAMP_INT(atoi(value), 0, 1);
 	} else if (strcmp(key, "icon_theme") == 0) {
 		snprintf(config->icon_theme, sizeof(config->icon_theme), "%s", value);
 	} else if (strcmp(key, "rootcolor") == 0) {
@@ -3651,6 +3654,7 @@ void override_config(void) {
 		CLAMP_INT(config.scroller_edge_scroll_size, 1, 500);
 	config.scroller_edge_scroll_delay =
 		CLAMP_INT(config.scroller_edge_scroll_delay, 50, 5000);
+	config.hdr_capture_fallback = CLAMP_INT(config.hdr_capture_fallback, 0, 1);
 	config.scroller_structs = CLAMP_INT(config.scroller_structs, 0, 1000);
 	config.default_mfact = CLAMP_FLOAT(config.default_mfact, 0.1f, 0.9f);
 	config.default_nmaster = CLAMP_INT(config.default_nmaster, 1, 1000);
@@ -3761,8 +3765,9 @@ void override_config(void) {
 	config.scratchpad_height_ratio =
 		CLAMP_FLOAT(config.scratchpad_height_ratio, 0.1f, 1.0f);
 	config.borderpx = CLAMP_INT(config.borderpx, 0, 200);
-	config.monocle_tab_height = CLAMP_INT(config.monocle_tab_height, 0, 500);
 	config.group_bar_height = CLAMP_INT(config.group_bar_height, 0, 500);
+	config.enable_titlebar = CLAMP_INT(config.enable_titlebar, 0, 1);
+	config.titlebar_height = CLAMP_INT(config.titlebar_height, 0, 200);
 	config.smartgaps = CLAMP_INT(config.smartgaps, 0, 1);
 	config.blur = CLAMP_INT(config.blur, 0, 1);
 	config.blur_layer = CLAMP_INT(config.blur_layer, 0, 1);
@@ -3862,6 +3867,7 @@ void set_value_default() {
 	config.scroller_edge_scroll = 0;
 	config.scroller_edge_scroll_size = 15;
 	config.scroller_edge_scroll_delay = 500;
+	config.hdr_capture_fallback = 1;
 	config.focus_cross_monitor = 0;
 	config.exchange_cross_monitor = 0;
 	config.scratchpad_cross_monitor = 0;
@@ -3889,10 +3895,10 @@ void set_value_default() {
 	config.idleinhibit_ignore_visible = 0;
 
 	config.borderpx = 4;
-	config.monocle_tab_height = 50;
 	config.group_bar_height = 50;
+	config.enable_titlebar = 0;
+	config.titlebar_height = 28;
 	config.monocle_tab_max_width = 0;
-	config.monocle_tab_icons = 0;
 	config.icon_theme[0] = '\0';
 	config.overviewgappi = 5;
 	config.overviewgappo = 30;

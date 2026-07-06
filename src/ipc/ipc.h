@@ -192,11 +192,35 @@ static cJSON *build_monitor_json(Monitor *m) {
 	cJSON_AddStringToObject(resp, "layout_symbol",
 							m->pertag->ltidxs[m->pertag->curtag]->symbol);
 	cJSON_AddStringToObject(resp, "last_open_surface", m->last_open_surface);
-	cJSON_AddBoolToObject(resp, "hdr", m->hdr);
+	/* "hdr"/"vrr" report the actual, currently-committed hardware state
+	 * (queried straight from wlroots, not our own intent bookkeeping) --
+	 * a commit can be pending, rejected, or mid-retrain, so m->hdr / the
+	 * configured vrr flag alone can briefly (or, if something's stuck,
+	 * indefinitely) disagree with what the display is really doing.
+	 * "*_enabled" is the persisted/intended setting (what a config UI
+	 * should read/write); "*_capable" is a static hardware capability
+	 * check. */
+	cJSON_AddBoolToObject(resp, "hdr", m->wlr_output->image_description != NULL);
+	cJSON_AddBoolToObject(resp, "hdr_enabled", m->hdr);
+	cJSON_AddBoolToObject(resp, "hdr_capable",
+						  (m->wlr_output->supported_primaries &
+						   WLR_COLOR_NAMED_PRIMARIES_BT2020) &&
+							  (m->wlr_output->supported_transfer_functions &
+							   WLR_COLOR_TRANSFER_FUNCTION_ST2084_PQ));
+	cJSON_AddNumberToObject(resp, "bitdepth", m->bitdepth);
+	cJSON_AddNumberToObject(resp, "hdr_max_luminance", m->hdr_max_luminance);
+	cJSON_AddNumberToObject(resp, "hdr_min_luminance", m->hdr_min_luminance);
+	cJSON_AddNumberToObject(resp, "hdr_max_fall", m->hdr_max_fall);
+	cJSON_AddStringToObject(resp, "icc_profile", m->icc_path);
 	cJSON_AddNumberToObject(resp, "sdr_luminance",
 							config.sdr_reference_luminance > 0
 								? config.sdr_reference_luminance
 								: 203);
+	cJSON_AddBoolToObject(resp, "vrr",
+						  m->wlr_output->adaptive_sync_status ==
+							  WLR_OUTPUT_ADAPTIVE_SYNC_ENABLED);
+	cJSON_AddBoolToObject(resp, "vrr_enabled", m->vrr_global_enable);
+	cJSON_AddBoolToObject(resp, "vrr_capable", m->wlr_output->adaptive_sync_supported);
 	cJSON_AddItemToObject(resp, "tags", build_tags_json(m));
 	cJSON_AddItemToObject(resp, "active_tags", monitor_active_tags(m));
 	cJSON_AddItemToObject(resp, "active_client", monitor_active_client(m));

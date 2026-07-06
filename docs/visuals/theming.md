@@ -69,6 +69,20 @@ shared with the other pill overlays) are still their own keys:
 | `monocle_tab_max_width` | `0` | Cap each tab's width; `0` lets tabs split the full row width. |
 | `monocle_tab_icons` | `0` | Draw app icons in monocle tab pills. |
 
+### Titlebar
+
+An optional server-side titlebar, reserving real space above each tiled window's content (the window doesn't grow to compensate — enabling this shrinks the usable content area by `titlebar_height`). Off by default. Uses the same shared pill theme as everything else in this section. Drag the title area to move/re-tile the window; click the "×" to close it.
+
+| Setting | Default | Description |
+| :--- | :--- | :--- |
+| `enable_titlebar` | `0` | Show a titlebar on tiled windows (1 = enable). |
+| `titlebar_height` | `28` | Titlebar height in pixels. |
+
+```ini
+enable_titlebar=1
+titlebar_height=28
+```
+
 | Setting | Default | Description |
 | :--- | :--- | :--- |
 | `pill_decorate_fg_color` | `0xc4939dff` | text color.

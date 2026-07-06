@@ -365,8 +365,17 @@ Client *get_next_stack_client(Client *c, bool reverse) {
 
 float *get_border_color(Client *c) {
 
+	/* an inactive window sitting under a titlebar should read as one piece
+	 * with it, so match the titlebar's own inactive pill color instead of
+	 * the generic border color. */
+	bool has_titlebar = c->titlebar_node && c->mon &&
+					   (config.enable_titlebar || is_monocle_layout(c->mon)) &&
+					   ISFAKETILED(c);
+	float *inactive_color =
+		has_titlebar ? config.pilldata.bg_color : config.bordercolor;
+
 	if (c->mon != selmon) {
-		return config.bordercolor;
+		return inactive_color;
 	} else if (c->isurgent) {
 		return config.urgentcolor;
 	} else if (c->is_in_scratchpad && selmon && c == selmon->sel) {
@@ -380,7 +389,7 @@ float *get_border_color(Client *c) {
 	} else if (selmon && c == selmon->sel) {
 		return config.focuscolor;
 	} else {
-		return config.bordercolor;
+		return inactive_color;
 	}
 }
 
@@ -401,46 +410,19 @@ bool client_is_in_same_stack(Client *sc, Client *tc, Client *fc) {
 
 	uint32_t id = sc->mon->pertag->ltidxs[sc->mon->pertag->curtag]->id;
 
-	if (id != SCROLLER && id != VERTICAL_SCROLLER && id != TILE &&
-		id != VERTICAL_TILE && id != DECK && id != VERTICAL_DECK &&
-		id != CENTER_TILE && id != RIGHT_TILE)
+	if (id != SCROLLER)
 		return false;
 
-	if (id == SCROLLER || id == VERTICAL_SCROLLER) {
-		Client *source_stack_head = scroll_get_stack_head_client(sc);
-		Client *target_stack_head = scroll_get_stack_head_client(tc);
-		Client *fc_head = fc ? scroll_get_stack_head_client(fc) : NULL;
+	Client *source_stack_head = scroll_get_stack_head_client(sc);
+	Client *target_stack_head = scroll_get_stack_head_client(tc);
+	Client *fc_head = fc ? scroll_get_stack_head_client(fc) : NULL;
 
-		if (fc && fc_head == source_stack_head)
-			return false;
-		if (source_stack_head == target_stack_head)
-			return true;
-		else
-			return false;
-	}
-
-	if (id == TILE || id == VERTICAL_TILE || id == DECK ||
-		id == VERTICAL_DECK || id == RIGHT_TILE) {
-		if (tc->ismaster ^ sc->ismaster)
-			return false;
-		if (fc && !(fc->ismaster ^ sc->ismaster))
-			return false;
-		else
-			return true;
-	}
-
-	if (id == CENTER_TILE) {
-		if (tc->ismaster ^ sc->ismaster)
-			return false;
-		if (fc && !(fc->ismaster ^ sc->ismaster))
-			return false;
-		if (sc->geom.x == tc->geom.x)
-			return true;
-		else
-			return false;
-	}
-
-	return false;
+	if (fc && fc_head == source_stack_head)
+		return false;
+	if (source_stack_head == target_stack_head)
+		return true;
+	else
+		return false;
 }
 
 Client *get_focused_stack_client(Client *sc, Client *custom_focus_client) {
