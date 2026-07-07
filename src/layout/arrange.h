@@ -567,8 +567,10 @@ arrange(Monitor *m, bool want_animation, bool from_view) {
 	if (m->isoverview) {
 		overviewlayout.arrange(m);
 	} else if (m->active_special) {
+		overview_hide_chrome(m);
 		arrange_special(m);
 	} else {
+		overview_hide_chrome(m);
 		m->pertag->ltidxs[m->pertag->curtag]->arrange(m);
 	}
 

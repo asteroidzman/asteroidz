@@ -165,6 +165,10 @@
 #define LENGTH(X) (sizeof X / sizeof X[0])
 #define END(A) ((A) + LENGTH(A))
 #define TAGMASK ((1 << LENGTH(tags)) - 1)
+/* upper bound on overview tag-cells; `tags` (LENGTH(tags)) isn't defined
+ * until preset.h is included below the Monitor struct, so per-monitor
+ * overview arrays use this fixed cap and clamp to LENGTH(tags) at runtime */
+#define OV_TAG_CELLS 32
 #define LISTEN(E, L, H) wl_signal_add((E), ((L)->notify = (H), (L)))
 #define ISFULLSCREEN(A)                                                        \
 	((A)->isfullscreen || (A)->ismaximizescreen ||                             \
@@ -654,6 +658,13 @@ struct Monitor {
 	Client *sel, *prevsel;
 	int32_t isoverview;
 	int32_t is_jump_mode;
+	/* macOS-Mission-Control-style overview chrome: a dim backdrop, and per
+	 * tag-cell a translucent background panel + a tag-name label. The
+	 * overview groups windows by tag, each tag drawn in its own cell with
+	 * its layout preserved (scaled down). */
+	struct wlr_scene_rect *ov_dim;
+	struct wlr_scene_rect *ov_cell_bg[OV_TAG_CELLS];
+	struct asteroidz_jump_label_node *ov_cell_label[OV_TAG_CELLS];
 	int32_t is_in_hotarea;
 	int32_t asleep;
 	bool vrr_global_enable; // monitorrule vrr:1 = VRR always on
@@ -984,6 +995,8 @@ wlr_scene_tree_snapshot(struct wlr_scene_node *node,
 						struct wlr_scene_tree *parent);
 static bool is_scroller_layout(Monitor *m);
 static bool is_monocle_layout(Monitor *m);
+static void tag_display_name(Monitor *m, uint32_t tag, char *buf, size_t len);
+void overview_hide_chrome(Monitor *m);
 static void create_output(struct wlr_backend *backend, void *data);
 static void get_layout_abbr(char *abbr, const char *full_name);
 static void apply_named_scratchpad(Client *target_client);
@@ -1238,6 +1251,10 @@ static struct {
 #include "config/preset.h"
 struct Pertag {
 	uint32_t curtag, prevtag;
+	/* optional user-facing name per tag (NULL = fall back to the tag
+	 * number). Set from `tagrule=id:N,name:...` or the set_tag_name
+	 * dispatcher; index 0 is the overview pseudo-tag. */
+	char *names[LENGTH(tags) + 1];
 	int32_t nmasters[LENGTH(tags) + 1];
 	float mfacts[LENGTH(tags) + 1];
 	int32_t no_hide[LENGTH(tags) + 1];
@@ -1692,6 +1709,19 @@ char *intern_special_workspace_name(const char *name) {
 
 	special_workspace_names[special_workspace_name_count] = strdup(name);
 	return special_workspace_names[special_workspace_name_count++];
+}
+
+/* Fill `buf` with tag `tag`'s user-facing name: the custom name if one was
+ * set (via tagrule name: or set_tag_name), otherwise the tag number. */
+static void tag_display_name(Monitor *m, uint32_t tag, char *buf, size_t len) {
+	if (len == 0)
+		return;
+	if (m && m->pertag && tag <= LENGTH(tags) && m->pertag->names[tag] &&
+		m->pertag->names[tag][0]) {
+		snprintf(buf, len, "%s", m->pertag->names[tag]);
+		return;
+	}
+	snprintf(buf, len, "%u", tag);
 }
 
 /* Slides the special workspace currently showing on `m` (if any) back out
@@ -3124,6 +3154,23 @@ void cleanupmon(struct wl_listener *listener, void *data) {
 	cleanup_monitor_dwindle(m);
 	cleanup_monitor_scroller(m);
 
+	if (m->ov_dim) {
+		wlr_scene_node_destroy(&m->ov_dim->node);
+		m->ov_dim = NULL;
+	}
+	for (int32_t oi = 0; oi < OV_TAG_CELLS; oi++) {
+		if (m->ov_cell_bg[oi]) {
+			wlr_scene_node_destroy(&m->ov_cell_bg[oi]->node);
+			m->ov_cell_bg[oi] = NULL;
+		}
+		if (m->ov_cell_label[oi]) {
+			asteroidz_jump_label_node_destroy(m->ov_cell_label[oi]);
+			m->ov_cell_label[oi] = NULL;
+		}
+	}
+	for (uint32_t ti = 0; ti <= LENGTH(tags); ti++)
+		free(m->pertag->names[ti]);
+
 	free(m->pertag);
 	free(m);
 }
@@ -4095,6 +4142,11 @@ void createmon(struct wl_listener *listener, void *data) {
 	m->gappoh = config.gappoh;
 	m->gappov = config.gappov;
 	m->isoverview = 0;
+	m->ov_dim = NULL;
+	for (int32_t oi = 0; oi < OV_TAG_CELLS; oi++) {
+		m->ov_cell_bg[oi] = NULL;
+		m->ov_cell_label[oi] = NULL;
+	}
 	m->sel = NULL;
 	m->is_in_hotarea = 0;
 	m->m.x = INT32_MAX;
@@ -4880,6 +4932,13 @@ keybinding(uint32_t state, bool locked, uint32_t mods, xkb_keysym_t sym,
 
 	if (is_keyboard_shortcut_inhibitor(seat->keyboard_state.focused_surface)) {
 		return false;
+	}
+
+	/* Escape closes the overview (and jump mode) */
+	if (state == WL_KEYBOARD_KEY_STATE_PRESSED && sym == XKB_KEY_Escape &&
+		selmon && selmon->isoverview) {
+		toggleoverview(&(Arg){.i = 1});
+		return true;
 	}
 
 	for (ji = 0; ji < config.key_bindings_count; ji++) {

@@ -186,6 +186,7 @@ tagrule=id:Values,monitor_make:xxx,monitor_model:xxx,Parameter:Values
 | `monitor_model` | string | monitor model | Match by monitor model |
 | `monitor_serial` | string | monitor serial | Match by monitor serial number |
 | `layout_name` | string | layout name | Layout name to set |
+| `name` | string | tag name | User-facing tag name (shown in the overview and exposed to the bar via IPC). Rename at runtime with the `set_tag_name` dispatcher. |
 | `no_render_border` | integer | `0` / `1` | Disable render border |
 | `open_as_floating` | integer | `0` / `1` | New open window will be floating|
 | `no_hide` | integer | `0` / `1` | Not hide even if the tag is empty |
@@ -215,6 +216,12 @@ tagrule=id:4,monitor_name:eDP-1,no_hide:1,layout_name:scroller
 # Advanced tag configuration with master layout settings
 tagrule=id:5,layout_name:tile,nmaster:2,mfact:0.6
 tagrule=id:6,monitor_name:HDMI-A-1,layout_name:monocle,no_render_border:1
+
+# Named tags (shown in the overview / exposed to the bar); rename at
+# runtime with:  bind=SUPER,n,set_tag_name,mail
+tagrule=id:1,name:web
+tagrule=id:2,name:code
+tagrule=id:3,name:chat
 
 # set scroller proportion for specific tag
 tagrule=id:1,layout_name:scroller,scroller_default_proportion_single:0.5,scroller_ignore_proportion_single:0,scroller_default_proportion:0.9,monitor_name:HDMI-A-1

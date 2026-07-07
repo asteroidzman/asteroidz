@@ -63,7 +63,7 @@ void client_tile_resize(Client *c, struct wlr_box geo, int32_t interact) {
 	}
 
 	if ((config.enable_titlebar || is_monocle_layout(c->mon)) &&
-		!c->isfullscreen) {
+		!c->isfullscreen && !c->mon->isoverview) {
 		geo.y = geo.y + config.titlebar_height;
 		geo.height -= config.titlebar_height;
 	}

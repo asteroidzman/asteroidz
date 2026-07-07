@@ -21,7 +21,9 @@ description: Configure the overview mode for window navigation.
 - `hotarea_size` — Size of the hot area trigger zone in pixels.
 - `hotarea_corner` — Corner that triggers the hot area (0: top-left, 1: top-right, 2: bottom-left, 3: bottom-right).
 - `ov_tab_mode` — Circles focus through windows in overview; releasing the mod key exits overview.
-- `ov_no_resize` — Disables resizing of windows in overview mode(use snap to display).
+- `ov_no_resize` — Disables resizing of windows in overview mode(use snap to display). When enabled (the default), the overview is a macOS-Exposé-style spread: every window is scaled down at its real aspect ratio and bin-packed so nothing overlaps.
+
+The name of the tag you came from is shown as a label centered at the top of the overview. Give tags names with the `name:` [tag rule](./rules.md#tag-rules) or the `set_tag_name` dispatcher (e.g. `bind=SUPER,n,set_tag_name,web`); unnamed tags show their number.
 
 ### Mouse Interaction in Overview
 
