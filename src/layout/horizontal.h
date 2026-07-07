@@ -38,11 +38,11 @@ void monocle(Monitor *m) {
 
 	/* more than one window: each client's own titlebar becomes one segment
 	 * of a shared row (browser-tab-strip style) instead of a separate
-	 * tab-bar widget. */
+	 * tab-bar widget. Segments touch edge-to-edge (no inter-segment gap) so
+	 * the row reads as one continuous strip. */
 	int tab_area_width = geom.width;
-	int total_gaps = (n - 1) * cur_gapih;
-	int base_width = (tab_area_width - total_gaps) / n;
-	int remainder = (tab_area_width - total_gaps) % n;
+	int base_width = tab_area_width / n;
+	int remainder = tab_area_width % n;
 	int tab_x = geom.x;
 
 	/* cap segment width so pills don't stretch across the whole screen; the
@@ -66,7 +66,7 @@ void monocle(Monitor *m) {
 		client_draw_monocle_titlebar_segment(c, tab_x, geom.y, tw, focused,
 											 idx == 0, idx == n - 1);
 
-		tab_x += tw + cur_gapih;
+		tab_x += tw;
 		idx++;
 	}
 }

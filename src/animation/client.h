@@ -477,48 +477,48 @@ void client_draw_monocle_titlebar_segment(Client *c, int32_t x, int32_t y,
 		return;
 	}
 
-	enum corner_location tab_mask =
-		(is_first ? CORNER_LOCATION_TOP_LEFT : CORNER_LOCATION_NONE) |
-		(is_last ? CORNER_LOCATION_TOP_RIGHT : CORNER_LOCATION_NONE);
+	/* Every segment is close-button (left) + title tab (right), whether
+	 * focused or not -- so each window in the monocle strip can be closed
+	 * directly. The segments touch to form one continuous strip; only the
+	 * strip's outer corners round (first's top-left, last's top-right) and
+	 * a separator divides each non-last segment from the next so adjacent
+	 * same-colored (inactive) segments don't blend into one bar. */
+	int32_t close_w = ASTEROIDZ_MIN(th, w);
+	int32_t tab_w = w - close_w;
+	if (tab_w < 0)
+		tab_w = 0;
 
-	if (focused) {
-		int32_t close_w = ASTEROIDZ_MIN(th, w);
-		int32_t tab_w = w - close_w;
-		if (tab_w < 0)
-			tab_w = 0;
-
-		if (c->titlebar_close_node) {
-			asteroidz_tab_bar_node_set_enabled(c->titlebar_close_node, true);
-			asteroidz_tab_bar_node_set_position(c->titlebar_close_node, x, y);
-			asteroidz_tab_bar_node_set_size(c->titlebar_close_node, close_w,
-										  th);
-			asteroidz_tab_bar_node_set_corner_mask(
-				c->titlebar_close_node,
-				is_first ? CORNER_LOCATION_TOP_LEFT : CORNER_LOCATION_NONE);
-			asteroidz_tab_bar_node_set_focus(c->titlebar_close_node, true);
-		}
-
-		asteroidz_tab_bar_node_set_enabled(c->titlebar_node, true);
-		asteroidz_tab_bar_node_set_position(c->titlebar_node, x + close_w, y);
-		asteroidz_tab_bar_node_set_size(c->titlebar_node, tab_w, th);
+	if (c->titlebar_close_node) {
+		asteroidz_tab_bar_node_set_enabled(c->titlebar_close_node, true);
+		asteroidz_tab_bar_node_set_position(c->titlebar_close_node, x, y);
+		asteroidz_tab_bar_node_set_size(c->titlebar_close_node, close_w, th);
+		/* close is the segment's left part: it owns the strip's top-left
+		 * round + left border when the segment is leftmost; its right side
+		 * touches this segment's own tab, so no border/separator there */
 		asteroidz_tab_bar_node_set_corner_mask(
-			c->titlebar_node,
-			is_last ? CORNER_LOCATION_TOP_RIGHT : CORNER_LOCATION_NONE);
-		asteroidz_tab_bar_node_update(c->titlebar_node, client_get_title(c),
-								  1.0);
-		asteroidz_tab_bar_node_set_focus(c->titlebar_node, true);
-	} else {
-		if (c->titlebar_close_node)
-			asteroidz_tab_bar_node_set_enabled(c->titlebar_close_node, false);
-
-		asteroidz_tab_bar_node_set_enabled(c->titlebar_node, true);
-		asteroidz_tab_bar_node_set_position(c->titlebar_node, x, y);
-		asteroidz_tab_bar_node_set_size(c->titlebar_node, w, th);
-		asteroidz_tab_bar_node_set_corner_mask(c->titlebar_node, tab_mask);
-		asteroidz_tab_bar_node_update(c->titlebar_node, client_get_title(c),
-								  1.0);
-		asteroidz_tab_bar_node_set_focus(c->titlebar_node, false);
+			c->titlebar_close_node,
+			is_first ? CORNER_LOCATION_TOP_LEFT : CORNER_LOCATION_NONE);
+		asteroidz_tab_bar_node_set_titlebar_border(
+			c->titlebar_close_node, config.borderpx, is_first, false);
+		asteroidz_tab_bar_node_set_titlebar_separator(c->titlebar_close_node,
+												  false);
+		asteroidz_tab_bar_node_set_focus(c->titlebar_close_node, focused);
 	}
+
+	asteroidz_tab_bar_node_set_enabled(c->titlebar_node, true);
+	asteroidz_tab_bar_node_set_position(c->titlebar_node, x + close_w, y);
+	asteroidz_tab_bar_node_set_size(c->titlebar_node, tab_w, th);
+	asteroidz_tab_bar_node_set_corner_mask(
+		c->titlebar_node,
+		is_last ? CORNER_LOCATION_TOP_RIGHT : CORNER_LOCATION_NONE);
+	/* tab is the segment's right part: right border only when this is the
+	 * rightmost segment; otherwise a separator divides it from the next
+	 * segment. Its left touches this segment's close button (no left border). */
+	asteroidz_tab_bar_node_set_titlebar_border(c->titlebar_node, config.borderpx,
+										   false, is_last);
+	asteroidz_tab_bar_node_set_titlebar_separator(c->titlebar_node, !is_last);
+	asteroidz_tab_bar_node_update(c->titlebar_node, client_get_title(c), 1.0);
+	asteroidz_tab_bar_node_set_focus(c->titlebar_node, focused);
 }
 
 void global_draw_group_bar(Client *c, int32_t x, int32_t y, int32_t width,
@@ -576,16 +576,26 @@ void client_draw_titlebar(Client *c) {
 
 	bool focused = c == selmon->sel;
 
+	/* close (left) + tab (right) form one compact titlebar: close borders
+	 * left+top, tab borders right+top, and the touching inner seam is
+	 * left unbordered. */
 	if (c->titlebar_close_node) {
 		asteroidz_tab_bar_node_set_enabled(c->titlebar_close_node, true);
 		asteroidz_tab_bar_node_set_position(c->titlebar_close_node, tb_x, tb_y);
 		asteroidz_tab_bar_node_set_size(c->titlebar_close_node, close_w, th);
+		asteroidz_tab_bar_node_set_titlebar_border(c->titlebar_close_node,
+											   config.borderpx, true, false);
 		asteroidz_tab_bar_node_set_focus(c->titlebar_close_node, focused);
 	}
 
 	asteroidz_tab_bar_node_set_enabled(c->titlebar_node, true);
 	asteroidz_tab_bar_node_set_position(c->titlebar_node, tb_x + close_w, tb_y);
 	asteroidz_tab_bar_node_set_size(c->titlebar_node, tab_w, th);
+	asteroidz_tab_bar_node_set_titlebar_border(c->titlebar_node, config.borderpx,
+										   false, true);
+	/* no separators in tile: each window is its own standalone titlebar, not
+	 * a shared strip (reset in case this window came from a monocle tag) */
+	asteroidz_tab_bar_node_set_titlebar_separator(c->titlebar_node, false);
 	asteroidz_tab_bar_node_update(c->titlebar_node, client_get_title(c), 1.0);
 	asteroidz_tab_bar_node_set_focus(c->titlebar_node, focused);
 }
@@ -1813,6 +1823,21 @@ void client_set_unfocused_opacity_animation(Client *c) {
 }
 
 bool client_apply_focus_opacity(Client *c) {
+	/* Keep the titlebar's focus color in sync with the actually-focused
+	 * client on every render. focusclient() doesn't recompute titlebar
+	 * geometry for tile layouts (it only re-arranges scroller/monocle, and
+	 * a plain focus change sets no need_output_flush), so without this a
+	 * window's titlebar keeps whatever focus state it had the last time its
+	 * geometry changed -- leaving several "active"-looking titlebars at
+	 * once. set_focus is dirty-checked, so this is a no-op when unchanged. */
+	if (c->titlebar_node) {
+		bool tb_focused = (selmon && c == selmon->sel);
+		asteroidz_tab_bar_node_set_focus(c->titlebar_node, tb_focused);
+		if (c->titlebar_close_node)
+			asteroidz_tab_bar_node_set_focus(c->titlebar_close_node,
+										 tb_focused);
+	}
+
 	// Animate focus transitions (opacity + border color)
 	float *border_color = get_border_color(c);
 	if (c->isfullscreen) {

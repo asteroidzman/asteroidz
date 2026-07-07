@@ -351,6 +351,53 @@ static void draw_rounded_rect_masked(cairo_t *cr, double x, double y, double w,
 	cairo_close_path(cr);
 }
 
+/* Build an OPEN path tracing the top edge plus (optionally) the left and/or
+ * right edges of a (possibly top-rounded) box -- never the bottom -- inset
+ * by lw/2 so a stroke of width lw sits fully inside [x,y,w,h]. Used for
+ * titlebar pills: the bottom is flush against the window, and adjacent
+ * pills omit the border on their touching internal seam via the
+ * draw_left/draw_right flags. */
+static void draw_titlebar_border_path(cairo_t *cr, double x, double y, double w,
+									  double h, double r,
+									  enum corner_location mask, double lw,
+									  bool draw_left, bool draw_right) {
+	double degrees = G_PI / 180.0;
+	double hw = lw * 0.5;
+	double top = y + hw;
+	double bottom = y + h; /* bottom edge is open, so not inset */
+	double left_edge = x + hw;
+	double right_edge = x + w - hw;
+	double rr = r - hw;
+	if (rr < 0.0)
+		rr = 0.0;
+	/* only round a top corner if its edge is actually drawn */
+	double tl = (draw_left && (mask & CORNER_LOCATION_TOP_LEFT)) ? rr : 0;
+	double tr = (draw_right && (mask & CORNER_LOCATION_TOP_RIGHT)) ? rr : 0;
+	/* the top edge insets by hw only on a side that has its own vertical
+	 * border; on an unbordered (internal-seam) side it runs to the full
+	 * extent so it meets the neighbouring segment's top edge with no gap. */
+	double top_left = draw_left ? left_edge : x;
+	double top_right = draw_right ? right_edge : x + w;
+
+	cairo_new_path(cr);
+	if (draw_left) {
+		cairo_move_to(cr, left_edge, bottom);
+		cairo_line_to(cr, left_edge, top + tl);
+		if (tl > 0.0)
+			cairo_arc(cr, left_edge + tl, top + tl, tl, 180 * degrees,
+					  270 * degrees);
+	} else {
+		cairo_move_to(cr, top_left, top);
+	}
+	cairo_line_to(cr, top_right - tr, top);
+	if (draw_right) {
+		if (tr > 0.0)
+			cairo_arc(cr, right_edge - tr, top + tr, tr, -90 * degrees,
+					  0 * degrees);
+		cairo_line_to(cr, right_edge, bottom);
+	}
+}
+
 void asteroidz_jump_label_node_update(struct asteroidz_jump_label_node *node,
 								  const char *text, float scale) {
 	if (!node || !text)
@@ -757,6 +804,37 @@ void asteroidz_tab_bar_node_set_padding(struct asteroidz_tab_bar_node *node,
 													   : 1.0f);
 }
 
+void asteroidz_tab_bar_node_set_titlebar_border(struct asteroidz_tab_bar_node *node,
+											int32_t width, bool border_left,
+											bool border_right) {
+	if (!node)
+		return;
+	if (width < 0)
+		width = 0;
+	if (node->titlebar_border_width == width &&
+		node->titlebar_border_left == border_left &&
+		node->titlebar_border_right == border_right)
+		return;
+	node->titlebar_border_width = width;
+	node->titlebar_border_left = border_left;
+	node->titlebar_border_right = border_right;
+	if (node->last_text)
+		asteroidz_tab_bar_node_update(node, node->last_text,
+								  node->last_scale > 0 ? node->last_scale
+													   : 1.0f);
+}
+
+void asteroidz_tab_bar_node_set_titlebar_separator(
+	struct asteroidz_tab_bar_node *node, bool separator_right) {
+	if (!node || node->titlebar_separator_right == separator_right)
+		return;
+	node->titlebar_separator_right = separator_right;
+	if (node->last_text)
+		asteroidz_tab_bar_node_update(node, node->last_text,
+								  node->last_scale > 0 ? node->last_scale
+													   : 1.0f);
+}
+
 void asteroidz_tab_bar_node_destroy(struct asteroidz_tab_bar_node *node) {
 	if (!node)
 		return;
@@ -859,6 +937,12 @@ void asteroidz_tab_bar_node_update(struct asteroidz_tab_bar_node *node,
 		node->cached_target_width == node->target_width &&
 		node->cached_target_height == node->target_height &&
 		node->cached_icon == node->icon_surface &&
+		node->cached_corner_mask == node->corner_mask &&
+		node->cached_titlebar_border_width == node->titlebar_border_width &&
+		node->cached_titlebar_border_left == node->titlebar_border_left &&
+		node->cached_titlebar_border_right == node->titlebar_border_right &&
+		node->cached_titlebar_separator_right ==
+			node->titlebar_separator_right &&
 		node->cached_focused == node->focused) {
 		return;
 	}
@@ -885,6 +969,11 @@ void asteroidz_tab_bar_node_update(struct asteroidz_tab_bar_node *node,
 	node->cached_target_width = node->target_width;
 	node->cached_target_height = node->target_height;
 	node->cached_icon = node->icon_surface;
+	node->cached_corner_mask = node->corner_mask;
+	node->cached_titlebar_border_width = node->titlebar_border_width;
+	node->cached_titlebar_border_left = node->titlebar_border_left;
+	node->cached_titlebar_border_right = node->titlebar_border_right;
+	node->cached_titlebar_separator_right = node->titlebar_separator_right;
 	node->cached_focused = node->focused;
 
 	if (node->target_width <= 0 || node->target_height <= 0) {
@@ -1090,6 +1179,45 @@ void asteroidz_tab_bar_node_update(struct asteroidz_tab_bar_node *node,
 			cairo_rectangle(cr, bx, by, bw, bh);
 		}
 		cairo_stroke(cr);
+	}
+
+	/* titlebar border: left/top/right only, inset so it aligns with the
+	 * window's own border. The focused pill borders in the focused bg color
+	 * and the unfocused in the unfocused bg color. Drawn over the bg, which
+	 * fills to the bottom edge (border_width stays 0 for these). */
+	if (node->titlebar_border_width > 0) {
+		double tlw = node->titlebar_border_width * scale;
+		const float *tb_border =
+			node->focused ? node->focus_bg_color : node->bg_color;
+		if (tb_border[3] > 0.0f && tlw > 0.0) {
+			cairo_set_source_rgba(cr, tb_border[0], tb_border[1], tb_border[2],
+								  tb_border[3]);
+			cairo_set_line_width(cr, tlw);
+			draw_titlebar_border_path(cr, bg_x, bg_y, bg_w, bg_h, radius,
+									  node->corner_mask, tlw,
+									  node->titlebar_border_left,
+									  node->titlebar_border_right);
+			cairo_stroke(cr);
+		}
+	}
+
+	/* separator dividing this segment from the next one in a monocle strip:
+	 * a full-height vertical line at the right edge in the fg/contrast color,
+	 * so two adjacent same-colored (inactive) segments don't blend together. */
+	if (node->titlebar_separator_right) {
+		double slw = node->titlebar_border_width > 0
+						 ? node->titlebar_border_width * scale
+						 : scale;
+		const float *sep =
+			node->focused ? node->focus_fg_color : node->fg_color;
+		if (sep[3] > 0.0f && slw > 0.0) {
+			double sx = bg_x + bg_w - slw * 0.5;
+			cairo_set_source_rgba(cr, sep[0], sep[1], sep[2], sep[3]);
+			cairo_set_line_width(cr, slw);
+			cairo_move_to(cr, sx, bg_y);
+			cairo_line_to(cr, sx, bg_y + bg_h);
+			cairo_stroke(cr);
+		}
 	}
 
 	cairo_surface_flush(node->surface);
