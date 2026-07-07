@@ -59,6 +59,43 @@ sudo ninja -C build install
 This installs the `asteroidz` binary, the `amsg` IPC tool, a wayland
 session entry, and the GlobalShortcuts portal definition.
 
+### Arch Linux
+
+Everything asteroidz needs is in the official repos except the scenefx
+fork, which you build from source. `wlroots0.20` lives in `extra`; the
+stock `scenefx` packages are 0.3/0.4, so the 0.5 fork is a manual step.
+
+Install the toolchain and dependencies:
+
+```bash
+sudo pacman -S --needed base-devel git meson ninja \
+  wlroots0.20 wayland wayland-protocols libxkbcommon libinput \
+  pcre2 pixman cjson pango gdk-pixbuf2 libdrm systemd-libs \
+  libxcb xcb-util-wm xorg-xwayland
+```
+
+Build and install the scenefx fork (`scenefx-0.5`), then asteroidz:
+
+```bash
+git clone https://github.com/ralfwierzbicki/asteroidz-scenefx.git
+cd asteroidz-scenefx
+meson setup build --prefix=/usr
+ninja -C build
+sudo ninja -C build install
+cd ..
+
+git clone https://github.com/ralfwierzbicki/asteroidz.git
+cd asteroidz
+meson setup build --prefix=/usr
+ninja -C build
+sudo ninja -C build install
+```
+
+Log out and pick **asteroidz** from your display manager's session
+list, or launch it from a TTY with `dbus-run-session asteroidz`.
+(`xorg-xwayland` is only needed if you want X11 app support; drop it and
+build with `-Dxwayland=disabled` for a pure-Wayland setup.)
+
 ## Configuration
 
 Config lives at `~/.config/asteroidz/config.conf` (falling back to
