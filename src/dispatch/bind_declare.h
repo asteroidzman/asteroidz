@@ -82,6 +82,7 @@ int32_t destroy_all_virtual_output(const Arg *arg);
 int32_t focuslast(const Arg *arg);
 int32_t toggle_trackpad_enable(const Arg *arg);
 int32_t setoption(const Arg *arg);
+int32_t set_tag_name(const Arg *arg);
 int32_t disable_monitor(const Arg *arg);
 int32_t enable_monitor(const Arg *arg);
 int32_t toggle_monitor(const Arg *arg);

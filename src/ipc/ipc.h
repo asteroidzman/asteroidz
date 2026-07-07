@@ -97,8 +97,11 @@ static cJSON *build_tags_json(Monitor *m) {
 				is_urgent = true;
 			numclients++;
 		}
+		char tagname[64];
+		tag_display_name(m, tag, tagname, sizeof(tagname));
 		cJSON *tag_obj = cJSON_CreateObject();
 		cJSON_AddNumberToObject(tag_obj, "index", tag);
+		cJSON_AddStringToObject(tag_obj, "name", tagname);
 		cJSON_AddBoolToObject(tag_obj, "is_active", is_active);
 		cJSON_AddBoolToObject(tag_obj, "is_urgent", is_urgent);
 		cJSON_AddStringToObject(tag_obj, "layout",

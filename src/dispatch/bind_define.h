@@ -2208,6 +2208,28 @@ int32_t togglejump(const Arg *arg) {
 	return 0;
 }
 
+/* Rename the currently-selected tag on selmon. arg->v is the new name
+ * (empty/NULL clears it back to the tag number). Reachable from a keybind
+ * or `amsg dispatch set_tag_name,<name>`. */
+int32_t set_tag_name(const Arg *arg) {
+	if (!selmon || !selmon->pertag)
+		return 0;
+	uint32_t tag = selmon->pertag->curtag;
+	if (tag > LENGTH(tags))
+		return 0;
+
+	free(selmon->pertag->names[tag]);
+	if (arg && arg->v && *(const char *)arg->v)
+		selmon->pertag->names[tag] = strdup((const char *)arg->v);
+	else
+		selmon->pertag->names[tag] = NULL;
+
+	/* refresh the overview label (if showing) and notify the bar/IPC */
+	arrange(selmon, false, false);
+	printstatus(IPC_WATCH_ARRANGGE);
+	return 0;
+}
+
 int32_t disable_monitor(const Arg *arg) {
 	Monitor *m = NULL;
 	struct wlr_output_state state = {0};

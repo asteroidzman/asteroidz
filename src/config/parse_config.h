@@ -175,6 +175,7 @@ typedef struct {
 typedef struct {
 	int32_t id;
 	char *layout_name;
+	char *name; /* user-facing tag name */
 	char *monitor_name;
 	char *monitor_make;
 	char *monitor_model;
@@ -1366,6 +1367,9 @@ FuncType parse_func_name(char *func_name, Arg *arg, char *arg_value,
 	} else if (strcmp(func_name, "movetospecialworkspace") == 0) {
 		func = movetospecialworkspace;
 		(*arg).v = strdup(arg_value);
+	} else if (strcmp(func_name, "set_tag_name") == 0) {
+		func = set_tag_name;
+		(*arg).v = strdup(arg_value);
 	} else if (strcmp(func_name, "disable_monitor") == 0) {
 		func = disable_monitor;
 		(*arg).v = strdup(arg_value);
@@ -2340,6 +2344,7 @@ bool parse_option(Config *config, char *key, char *value) {
 		// Set default values
 		rule->id = 0;
 		rule->layout_name = NULL;
+		rule->name = NULL;
 		rule->monitor_name = NULL;
 		rule->monitor_make = NULL;
 		rule->monitor_model = NULL;
@@ -2369,6 +2374,8 @@ bool parse_option(Config *config, char *key, char *value) {
 					rule->id = CLAMP_INT(atoi(val), 0, LENGTH(tags));
 				} else if (strcmp(key, "layout_name") == 0) {
 					rule->layout_name = strdup(val);
+				} else if (strcmp(key, "name") == 0) {
+					rule->name = strdup(val);
 				} else if (strcmp(key, "monitor_name") == 0) {
 					rule->monitor_name = strdup(val);
 				} else if (strcmp(key, "monitor_make") == 0) {
@@ -3495,6 +3502,8 @@ void free_config(void) {
 		for (int32_t i = 0; i < config.tag_rules_count; i++) {
 			if (config.tag_rules[i].layout_name)
 				free((void *)config.tag_rules[i].layout_name);
+			if (config.tag_rules[i].name)
+				free((void *)config.tag_rules[i].name);
 			if (config.tag_rules[i].monitor_name)
 				free((void *)config.tag_rules[i].monitor_name);
 			if (config.tag_rules[i].monitor_make)
@@ -4397,6 +4406,12 @@ void parse_tagrule(Monitor *m) {
 	bool match_rule = false;
 
 	for (i = 0; i <= LENGTH(tags); i++) {
+		/* cleared here so a tagrule name: removed from the config doesn't
+		 * leave a stale name behind on reload (runtime set_tag_name names
+		 * are also reset, which is acceptable -- config is the source of
+		 * truth on reload) */
+		free(m->pertag->names[i]);
+		m->pertag->names[i] = NULL;
 		m->pertag->nmasters[i] = config.default_nmaster;
 		m->pertag->mfacts[i] = config.default_mfact;
 		m->pertag->scroller_default_proportion[i] =
@@ -4447,6 +4462,11 @@ void parse_tagrule(Monitor *m) {
 					strcmp(layouts[jk].name, tr.layout_name) == 0) {
 					m->pertag->ltidxs[tr.id] = &layouts[jk];
 				}
+			}
+
+			if (tr.name && tr.id >= 0 && tr.id <= LENGTH(tags)) {
+				free(m->pertag->names[tr.id]);
+				m->pertag->names[tr.id] = strdup(tr.name);
 			}
 
 			if (tr.no_hide >= 0)

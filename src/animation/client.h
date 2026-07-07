@@ -549,7 +549,7 @@ void client_draw_titlebar(Client *c) {
 
 	bool titlebar_wanted = config.enable_titlebar || is_monocle_layout(c->mon);
 	if (!titlebar_wanted || c->isfullscreen || c->is_monocle_hide ||
-		!ISFAKETILED(c) || !VISIBLEON(c, c->mon)) {
+		c->mon->isoverview || !ISFAKETILED(c) || !VISIBLEON(c, c->mon)) {
 		if (c->titlebar_node->scene_buffer->node.enabled)
 			wlr_scene_node_set_enabled(&c->titlebar_node->scene_buffer->node,
 									   false);
