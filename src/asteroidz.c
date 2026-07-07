@@ -5918,14 +5918,25 @@ outputmgrapplyortest(struct wlr_output_configuration_v1 *output_config, int32_t 
 		Monitor *m = wlr_output->data;
 		struct wlr_output_state state;
 
-		/* Ensure displays previously disabled by
-		 * wlr-output-power-management-v1 are properly handled*/
-		m->asleep = 0;
-
 		wlr_output_state_init(&state);
 		wlr_output_state_set_enabled(&state, config_head->state.enabled);
-		if (!config_head->state.enabled)
+		if (!config_head->state.enabled) {
+			/* clients like DMS's idle-monitor-off feature disable outputs
+			 * through this protocol instead of wlr_output_power_manager_v1,
+			 * bypassing powermgrsetmode() -- mark the monitor asleep the
+			 * same way it would, so wake-on-input-activity actually notices
+			 * and re-enables it later. Previously this was left at 0
+			 * unconditionally, so wake_monitor()'s `if (!m->asleep) return`
+			 * silently no-oped on every input event and the output never
+			 * came back until a manual VT switch forced a fresh commit. */
+			m->asleep = 1;
 			goto apply_or_test;
+		}
+
+		/* Ensure displays previously disabled by
+		 * wlr-output-power-management-v1 (or by this same path) are
+		 * properly handled when re-enabled here */
+		m->asleep = 0;
 
 		if (config_head->state.mode)
 			wlr_output_state_set_mode(&state, config_head->state.mode);
