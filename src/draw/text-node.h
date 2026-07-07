@@ -102,6 +102,21 @@ struct asteroidz_tab_bar_node {
 	char *font_desc;
 	enum corner_location corner_mask;
 	bool text_align_left;
+	/* when > 0, draw a titlebar-style border inset so it aligns with the
+	 * window's own border. The top edge is always drawn and the bottom
+	 * never (it's flush against the window); the left/right edges are drawn
+	 * only where the flags say so, letting adjacent segments/pills (close
+	 * button + title tab, monocle segments in a row) omit the borders on
+	 * their touching internal seams. The color is swapped by focus state
+	 * (the focused pill borders in the unfocused bg color and vice versa)
+	 * rather than using border_color. Kept separate from border_width so
+	 * the pill background still fills to the bottom edge. */
+	int32_t titlebar_border_width;
+	bool titlebar_border_left;
+	bool titlebar_border_right;
+	/* draw a separator (in the fg/contrast color) on the right edge, to
+	 * divide adjacent same-colored titlebar segments in a monocle strip */
+	bool titlebar_separator_right;
 
 	// size
 	int32_t target_width;
@@ -123,6 +138,11 @@ struct asteroidz_tab_bar_node {
 	int32_t cached_target_width;
 	int32_t cached_target_height;
 	bool cached_focused;
+	enum corner_location cached_corner_mask;
+	int32_t cached_titlebar_border_width;
+	bool cached_titlebar_border_left;
+	bool cached_titlebar_border_right;
+	bool cached_titlebar_separator_right;
 
 	bool focused;
 
@@ -184,6 +204,11 @@ typedef struct {
 	int32_t cached_target_width;
 	int32_t cached_target_height;
 	bool cached_focused;
+	enum corner_location cached_corner_mask;
+	int32_t cached_titlebar_border_width;
+	bool cached_titlebar_border_left;
+	bool cached_titlebar_border_right;
+	bool cached_titlebar_separator_right;
 
 	bool focused;
 
@@ -238,6 +263,11 @@ void asteroidz_tab_bar_node_set_text_align_left(struct asteroidz_tab_bar_node *n
 											bool align_left);
 void asteroidz_tab_bar_node_set_padding(struct asteroidz_tab_bar_node *node,
 									int32_t padding_x, int32_t padding_y);
+void asteroidz_tab_bar_node_set_titlebar_border(struct asteroidz_tab_bar_node *node,
+											int32_t width, bool border_left,
+											bool border_right);
+void asteroidz_tab_bar_node_set_titlebar_separator(
+	struct asteroidz_tab_bar_node *node, bool separator_right);
 void asteroidz_text_node_set_icon_theme(const char *theme);
 void asteroidz_tab_bar_node_update(struct asteroidz_tab_bar_node *node,
 							   const char *text, float scale);

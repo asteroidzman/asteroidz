@@ -130,6 +130,12 @@ void client_add_titlebar(Client *c) {
 	c->titlebar_close_node = asteroidz_tab_bar_node_create(
 		closedata, layers[LyrDecorate], config.pilldata, 0, 0);
 	asteroidz_tab_bar_node_set_enabled(c->titlebar_close_node, false);
+	/* same drop shadow as the window itself (tiled scale), so the titlebar
+	 * casts a matching shadow */
+	asteroidz_tab_bar_node_set_shadow(
+		c->titlebar_close_node, config.shadows,
+		config.shadows_blur * config.shadows_tiled_scale,
+		(int32_t)config.shadows_position_y, config.shadowscolor);
 	asteroidz_tab_bar_node_set_corner_mask(c->titlebar_close_node,
 									   CORNER_LOCATION_TOP_LEFT);
 	/* the close button is a small square, not a padded pill: the pill's
@@ -146,9 +152,10 @@ void client_add_titlebar(Client *c) {
 	c->titlebar_node = asteroidz_tab_bar_node_create(
 		nodedata, layers[LyrDecorate], config.pilldata, 0, 0);
 	asteroidz_tab_bar_node_set_enabled(c->titlebar_node, false);
-	asteroidz_tab_bar_node_set_shadow(c->titlebar_node, config.shadows,
-								  config.shadows_blur * 2.0f, 2,
-								  config.shadowscolor);
+	asteroidz_tab_bar_node_set_shadow(
+		c->titlebar_node, config.shadows,
+		config.shadows_blur * config.shadows_tiled_scale,
+		(int32_t)config.shadows_position_y, config.shadowscolor);
 	asteroidz_tab_bar_node_set_corner_mask(c->titlebar_node,
 									   CORNER_LOCATION_TOP_RIGHT);
 	asteroidz_tab_bar_node_set_text_align_left(c->titlebar_node, true);
@@ -325,11 +332,16 @@ void client_set_group_config(Client *c) {
 		asteroidz_jump_label_node_apply_config(cur->jump_label_node,
 										   &config.pilldata);
 		asteroidz_tab_bar_node_apply_config(cur->titlebar_node, &config.pilldata);
-		asteroidz_tab_bar_node_set_shadow(cur->titlebar_node, config.shadows,
-									  config.shadows_blur * 2.0f, 2,
-									  config.shadowscolor);
+		asteroidz_tab_bar_node_set_shadow(
+			cur->titlebar_node, config.shadows,
+			config.shadows_blur * config.shadows_tiled_scale,
+			(int32_t)config.shadows_position_y, config.shadowscolor);
 		asteroidz_tab_bar_node_apply_config(cur->titlebar_close_node,
 										&config.pilldata);
+		asteroidz_tab_bar_node_set_shadow(
+			cur->titlebar_close_node, config.shadows,
+			config.shadows_blur * config.shadows_tiled_scale,
+			(int32_t)config.shadows_position_y, config.shadowscolor);
 		asteroidz_tab_bar_node_set_padding(cur->titlebar_close_node, 4, 4);
 		wlr_scene_rect_set_color(cur->droparea, config.dropcolor);
 		wlr_scene_rect_set_color(cur->splitindicator[0], config.splitcolor);
