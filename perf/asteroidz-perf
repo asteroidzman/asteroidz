@@ -1,0 +1,19 @@
+#!/bin/sh
+# asteroidz-perf: launch asteroidz with profiling instrumentation and a
+# background metrics collector. Used by the "Asteroidz (perf)" session entry.
+#
+# Env toggles:
+#   ASTEROIDZ_PERF_DAMAGE=1  -> tint re-rendered regions (overdraw viz)
+#   ASTEROIDZ_PERF_INTERVAL  -> collector sample interval seconds (default 2)
+
+# offload GL dispatch to a helper thread (reduces GL-driver CPU on the render path)
+export MESA_GLTHREAD=true
+
+[ "$ASTEROIDZ_PERF_DAMAGE" = "1" ] && export WLR_SCENE_DEBUG_DAMAGE=highlight
+
+LOG="$HOME/asteroidz-perf-$(date +%Y%m%d-%H%M%S).csv"
+# start collector once the compositor is up; it self-finds the PID
+( sleep 4; exec asteroidz-perf-collect "${ASTEROIDZ_PERF_INTERVAL:-2}" > "$LOG" 2>/dev/null ) &
+
+echo "asteroidz-perf: metrics -> $LOG" >&2
+exec asteroidz "$@"

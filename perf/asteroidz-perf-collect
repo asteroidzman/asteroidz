@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Samples the running asteroidz compositor + GPU every INTERVAL seconds to a CSV.
+# Columns: iso_time, comp_cpu%, comp_gfx%, comp_vram_mb, gpu_gfx%, gpu_media%, gpu_vram_used_mb
+# comp_* = the compositor's own usage (via /proc + DRM fdinfo); gpu_* = whole-GPU (amdgpu_top).
+INTERVAL="${1:-2}"
+HZ=$(getconf CLK_TCK)
+gfx_ns() { awk '/drm-client-id:/{c=$2} /drm-engine-gfx/{g[c]=$2} END{s=0;for(k in g)s+=g[k];print s+0}' /proc/$1/fdinfo/* 2>/dev/null; }
+cpu_j()  { awk '{print $14+$15}' /proc/$1/stat 2>/dev/null; }
+comp_vram(){ awk '/drm-memory-vram/{s+=$2} END{printf "%.0f", s/1024}' /proc/$1/fdinfo/* 2>/dev/null; }
+
+echo "time,comp_cpu%,comp_gfx%,comp_vram_mb,gpu_gfx%,gpu_media%,gpu_vram_mb"
+while :; do
+  PID=$(pgrep -x asteroidz | head -1)
+  [[ -z "$PID" ]] && { sleep "$INTERVAL"; continue; }
+  c0=$(cpu_j "$PID"); g0=$(gfx_ns "$PID"); t0=$(date +%s.%N)
+  sleep "$INTERVAL"
+  c1=$(cpu_j "$PID"); g1=$(gfx_ns "$PID"); t1=$(date +%s.%N)
+  w=$(echo "$t1-$t0"|bc)
+  cpu=$(echo "scale=1;($c1-$c0)/$HZ/$w*100"|bc)
+  gfx=$(echo "scale=1;($g1-$g0)/1000000000/$w*100"|bc)
+  vram=$(comp_vram "$PID")
+  # whole-GPU snapshot (dGPU); tolerate amdgpu_top absence
+  read ggfx gmedia gvram < <(timeout 3 amdgpu_top -J -n 1 2>/dev/null | python3 -c "
+import sys,json
+raw=sys.stdin.read()
+try: d=json.loads(raw)
+except Exception:
+    import json as j; d=j.JSONDecoder().raw_decode(raw.lstrip())[0]
+dev=d.get('devices',[d])[0] if 'devices' in d else d
+a=dev.get('gpu_activity',{}); v=dev.get('VRAM',{})
+g=lambda x:(x.get('value') if isinstance(x,dict) else x)
+print(g(a.get('GFX',0)), g(a.get('MediaEngine',0)), g(v.get('Total VRAM Usage',0)))
+" 2>/dev/null || echo "0 0 0")
+  printf "%s,%s,%s,%s,%s,%s,%s\n" "$(date -Is)" "$cpu" "$gfx" "$vram" "${ggfx:-0}" "${gmedia:-0}" "${gvram:-0}"
+done
