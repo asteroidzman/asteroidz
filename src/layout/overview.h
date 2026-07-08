@@ -578,8 +578,13 @@ void overview_tags(Monitor *m) {
 			float y = c->overview_backup_geom.y;
 			float w = c->overview_backup_geom.width;
 			float h = c->overview_backup_geom.height;
-			bool on_screen = (x + w > m->w.x) && (x < m->w.x + m->w.width) &&
-							 (y + h > m->w.y) && (y < m->w.y + m->w.height);
+			/* a window "belongs" to the viewport if its centre is on screen;
+			 * this drops both fully-off and barely-peeking edge windows into
+			 * the "+N" badge instead of drawing them as thin slivers */
+			float wcx = x + w / 2.0f, wcy = y + h / 2.0f;
+			bool on_screen =
+				(wcx >= m->w.x) && (wcx < m->w.x + m->w.width) &&
+				(wcy >= m->w.y) && (wcy < m->w.y + m->w.height);
 			if (!on_screen)
 				hidden++;
 		}
@@ -599,10 +604,24 @@ void overview_tags(Monitor *m) {
 			float cy0 = c->overview_backup_geom.y;
 			float cw0 = c->overview_backup_geom.width;
 			float ch0 = c->overview_backup_geom.height;
-			/* skip windows scrolled fully off the viewport (counted in +N) */
-			if (!((cx0 + cw0 > m->w.x) && (cx0 < m->w.x + m->w.width) &&
-				  (cy0 + ch0 > m->w.y) && (cy0 < m->w.y + m->w.height)))
+			/* Windows whose centre is off the viewport (scrolled away in a
+			 * scroller) are counted in the "+N" badge and must NOT be drawn.
+			 * They can't be pushed off-screen (applybounds() clamps geometry
+			 * back on-screen -> strays), so hide their scene node directly and
+			 * flag them; client_draw_frame keeps them hidden until overview
+			 * exit clears the flag. */
+			float wcx = cx0 + cw0 / 2.0f, wcy = cy0 + ch0 / 2.0f;
+			if (!((wcx >= m->w.x) && (wcx < m->w.x + m->w.width) &&
+				  (wcy >= m->w.y) && (wcy < m->w.y + m->w.height))) {
+				c->is_overview_hidden = true;
+				wlr_scene_node_set_enabled(&c->scene->node, false);
 				continue;
+			}
+			/* on-viewport: make sure a previously-hidden window is shown */
+			if (c->is_overview_hidden) {
+				c->is_overview_hidden = false;
+				wlr_scene_node_set_enabled(&c->scene->node, true);
+			}
 
 			float rx = cx0 - m->w.x;
 			float ry = cy0 - m->w.y;

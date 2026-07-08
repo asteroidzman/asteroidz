@@ -191,19 +191,25 @@ void scene_buffer_apply_effect(struct wlr_scene_buffer *buffer, int32_t sx,
 							   int32_t sy, void *data) {
 	BufferData *buffer_data = (BufferData *)data;
 
-	if (buffer_data->should_scale && buffer_data->height_scale < 1 &&
-		buffer_data->width_scale < 1) {
-		buffer_data->should_scale = false;
-	}
+	/* Normally the surface is resized to match its geometry, so scaling it
+	 * DOWN would be wrong -- these guards disable scaling when shrinking.
+	 * In the overview live thumbnail the surface keeps its full size and must
+	 * actually be shrunk into its cell, so skip the guards there. */
+	if (!buffer_data->ov_live) {
+		if (buffer_data->should_scale && buffer_data->height_scale < 1 &&
+			buffer_data->width_scale < 1) {
+			buffer_data->should_scale = false;
+		}
 
-	if (buffer_data->should_scale && buffer_data->height_scale == 1 &&
-		buffer_data->width_scale < 1) {
-		buffer_data->should_scale = false;
-	}
+		if (buffer_data->should_scale && buffer_data->height_scale == 1 &&
+			buffer_data->width_scale < 1) {
+			buffer_data->should_scale = false;
+		}
 
-	if (buffer_data->should_scale && buffer_data->height_scale < 1 &&
-		buffer_data->width_scale == 1) {
-		buffer_data->should_scale = false;
+		if (buffer_data->should_scale && buffer_data->height_scale < 1 &&
+			buffer_data->width_scale == 1) {
+			buffer_data->should_scale = false;
+		}
 	}
 
 	struct wlr_scene_surface *scene_surface =
@@ -1116,7 +1122,8 @@ void client_apply_clip(Client *c, float factor) {
 	enum corner_location current_corner_location =
 		set_client_corner_location(c);
 
-	if (!config.animations && !c->overview_scene_surface) {
+	if (!config.animations && !c->overview_scene_surface &&
+		!(c->mon && c->mon->isoverview && config.ov_no_resize)) {
 		c->animation.running = false;
 		c->need_output_flush = false;
 		c->animainit_geom = c->current = c->pending = c->animation.current =
@@ -1151,6 +1158,12 @@ void client_apply_clip(Client *c, float factor) {
 	// Get the window's current animated position rect
 	int32_t width, height;
 	client_actual_size(c, &width, &height);
+
+	/* overview thumbnail: the surface keeps its full size and is only scaled
+	 * down (dest-size) into its cell, so the clip must cover the WHOLE surface
+	 * -- clipping to the small cell size would crop the window to its
+	 * top-left corner instead of shrinking it */
+	bool ov_live = c->mon && c->mon->isoverview && config.ov_no_resize;
 
 	// Compute the actual clip size excluding the border
 	struct wlr_box geometry;
@@ -1194,7 +1207,25 @@ void client_apply_clip(Client *c, float factor) {
 
 	// Apply the window surface clip
 	if (!c->overview_scene_surface) {
-		wlr_scene_subsurface_tree_set_clip(&c->scene_surface->node, &clip_box);
+		if (ov_live) {
+			/* clip to the full natural surface; the dest-size scaling below
+			 * shrinks the whole window into its cell */
+			struct wlr_box full_clip = {
+				.x = geometry.x,
+				.y = geometry.y,
+				.width = geometry.width,
+				.height = geometry.height,
+			};
+			if (client_is_x11(c)) {
+				full_clip.x = 0;
+				full_clip.y = 0;
+			}
+			wlr_scene_subsurface_tree_set_clip(&c->scene_surface->node,
+											   &full_clip);
+		} else {
+			wlr_scene_subsurface_tree_set_clip(&c->scene_surface->node,
+											   &clip_box);
+		}
 	}
 	client_draw_shield(c, clip_box);
 
@@ -1209,8 +1240,13 @@ void client_apply_clip(Client *c, float factor) {
 	buffer_data.width = clip_box.width;
 	buffer_data.height = clip_box.height;
 	buffer_data.corner_location = current_corner_location;
+	buffer_data.ov_live = ov_live;
 
-	if (factor == 1.0 && !c->overview_scene_surface) {
+	/* in overview (ov_no_resize) the surface stays full-size and is only
+	 * scaled visually, so it must keep its real down-scale even once the
+	 * animation has settled (factor == 1.0) -- otherwise the live thumbnail
+	 * would snap to full size */
+	if (factor == 1.0 && !c->overview_scene_surface && !ov_live) {
 		buffer_data.width_scale = 1.0;
 		buffer_data.height_scale = 1.0;
 	} else {
@@ -1937,6 +1973,14 @@ bool client_draw_frame(Client *c) {
 
 	if (!c || !client_surface(c)->mapped)
 		return false;
+
+	/* overview: window scrolled off the viewport -- keep it hidden (don't let
+	 * the draw/clip path re-enable it) until overview exit clears the flag */
+	if (c->is_overview_hidden) {
+		if (c->scene->node.enabled)
+			wlr_scene_node_set_enabled(&c->scene->node, false);
+		return false;
+	}
 
 	if (!c->need_output_flush) {
 		return client_apply_focus_opacity(c);
