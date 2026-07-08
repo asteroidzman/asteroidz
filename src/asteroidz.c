@@ -387,6 +387,7 @@ typedef struct {
 	int32_t height;
 	enum corner_location corner_location;
 	bool should_scale;
+	bool ov_live; /* overview live thumbnail: allow down-scaling the surface */
 } BufferData;
 
 struct Client {
@@ -500,6 +501,11 @@ struct Client {
 	pid_t pid;
 	Client *swallowing, *swallowedby;
 	bool is_clip_to_hide;
+	/* overview: window is off the viewport (scrolled away) so it's hidden
+	 * from its Mission-Control cell and counted in the "+N" badge; cleared on
+	 * overview exit. applybounds() clamps off-screen geometry back on-screen,
+	 * so the only reliable way to hide it is disabling its scene node. */
+	bool is_overview_hidden;
 	bool drag_to_tile;
 	bool scratchpad_switching_mon;
 	bool fake_no_border;
@@ -5367,6 +5373,7 @@ void init_client_properties(Client *c) {
 	c->special_name = NULL;
 	c->need_float_size_reduce = 0;
 	c->is_clip_to_hide = 0;
+	c->is_overview_hidden = false;
 	c->is_restoring_from_ov = 0;
 	c->isurgent = 0;
 	c->need_output_flush = 0;
@@ -7596,33 +7603,14 @@ uint32_t want_restore_fullscreen(Client *target_client) {
 }
 
 void overview_backup_surface(Client *c) {
-
-	if (c->overview_scene_surface) {
-		return;
-	}
-
-	struct wlr_box geometry;
-	client_get_geometry(c, &geometry);
-	struct wlr_box clip_box = (struct wlr_box){
-		.x = geometry.x,
-		.y = geometry.y,
-		.width = c->overview_backup_geom.width - 2 * config.borderpx,
-		.height = c->overview_backup_geom.height - 2 * config.borderpx,
-	};
-
-	if (client_is_x11(c)) {
-		clip_box.x = 0;
-		clip_box.y = 0;
-	}
-
-	c->overview_scene_surface = c->scene_surface;
-	wlr_scene_node_set_enabled(&c->scene_surface->node, true);
-	wlr_scene_node_set_position(&c->scene_surface->node, 0, 0);
-	wlr_scene_subsurface_tree_set_clip(&c->scene_surface->node, &clip_box);
-	c->scene_surface =
-		wlr_scene_tree_snapshot(&c->scene_surface->node, c->scene);
-	wlr_scene_node_set_enabled(&c->overview_scene_surface->node, false);
-	wlr_scene_node_set_enabled(&c->scene_surface->node, true);
+	/* Overview thumbnails show the LIVE surface, scaled down into its cell
+	 * (see the ov_no_resize live-scaling path in client_apply_clip), rather
+	 * than a static snapshot. A snapshot froze each thumbnail at the instant
+	 * the overview opened and cut the app's frame callbacks; keeping the real
+	 * surface means video, terminals, etc. keep updating in the overview.
+	 * Left as a no-op (rather than deleting call sites) so the overview
+	 * enter/map/group paths that call it stay simple. */
+	(void)c;
 }
 
 // save the window's old state when switching from the normal view to overview
@@ -7656,6 +7644,12 @@ void overview_backup(Client *c) {
 
 // restore the window's state when switching from overview back to the normal view
 void overview_restore(Client *c, const Arg *arg) {
+	/* undo any overview scene-node hide; the following view()/arrange re-runs
+	 * the normal visibility logic (clip_to_hide / tag show) */
+	if (c->is_overview_hidden) {
+		c->is_overview_hidden = false;
+		wlr_scene_node_set_enabled(&c->scene->node, true);
+	}
 	c->isfloating = c->overview_isfloatingbak;
 	c->isfullscreen = c->overview_isfullscreenbak;
 	c->ismaximizescreen = c->overview_ismaximizescreenbak;
