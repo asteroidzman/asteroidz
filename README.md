@@ -25,9 +25,11 @@ that stays out of your way.
 - **Dynamic VRR & tearing** — VRR that follows fullscreen games
   (`vrr_only_fullscreen` window rule) and content-type-aware tearing;
   video never tears, games can
-- **Window effects** — blur (with pixel-accurate ext-background-effect-v1
-  regions), soft shadows, rounded corners, gradient borders, spring
-  animation curves (via a scenefx fork)
+- **Vulkan renderer** (default) — the full effect suite runs on the
+  `asteroidz-scenefx` `fx_vk` renderer: blur (with pixel-accurate
+  ext-background-effect-v1 regions), soft shadows, rounded corners, gradient
+  borders, spring animation curves, plus HDR/SDR colour. GLES2 stays
+  available as a fallback session
 - **Window groups** — i3-style grouping with a rendered group bar
   (`groupjoin` / `groupleave` / `groupfocus`)
 - **Privacy shield** — `shield_when_capture` window and layer rules cover
@@ -42,10 +44,20 @@ that stays out of your way.
 
 ## Building
 
-Dependencies: wlroots 0.20, the companion
+asteroidz renders on **Vulkan by default** — the companion
 [asteroidz-scenefx](https://github.com/ralfwierzbicki/asteroidz-scenefx)
-fork (built with `--prefix=/usr`), wayland, libinput, xkbcommon,
-pango/cairo, gdk-pixbuf, cJSON, pcre2, libsystemd.
+fork's `fx_vk` renderer (HDR10, rounded corners, blur, shadows, gradient
+borders, SDR colour) — with **GLES2 as a fallback**. It's one binary; the
+renderer is chosen per session via `WLR_RENDERER`.
+
+Dependencies: wlroots 0.20, `asteroidz-scenefx` (built with `--prefix=/usr`
+and both renderers), wayland, libinput, xkbcommon, pango/cairo, gdk-pixbuf,
+cJSON, pcre2, libsystemd. The Vulkan renderer additionally needs the Vulkan
+loader/headers and `glslang` (to compile the effect shaders to SPIR-V).
+
+> The scenefx fork is renamed to **asteroidz-scenefx** — it installs as
+> `libasteroidz-scenefx-0.5` / `asteroidz-scenefx-0.5.pc` and builds with the
+> `gles2,vulkan` renderers, so it won't clash with an upstream `scenefx`.
 
 A matching shell/bar is available as
 [asteroidz-dms](https://github.com/ralfwierzbicki/asteroidz-dms).
@@ -56,30 +68,35 @@ ninja -C build
 sudo ninja -C build install
 ```
 
-This installs the `asteroidz` binary, the `amsg` IPC tool, a wayland
-session entry, and the GlobalShortcuts portal definition.
+This installs the `asteroidz` binary, the `amsg` IPC tool, two wayland
+session entries — **Asteroidz** (Vulkan) and **Asteroidz (GLES fallback)** —
+and the GlobalShortcuts portal definition.
 
 ### Arch Linux
 
 Everything asteroidz needs is in the official repos except the scenefx
 fork, which you build from source. `wlroots0.20` lives in `extra`; the
-stock `scenefx` packages are 0.3/0.4, so the 0.5 fork is a manual step.
+stock `scenefx` packages are 0.3/0.4, so the renamed 0.5 fork
+(`asteroidz-scenefx`) is a manual step.
 
-Install the toolchain and dependencies:
+Install the toolchain and dependencies (Vulkan loader/headers + `glslang`
+are needed for the default Vulkan renderer):
 
 ```bash
 sudo pacman -S --needed base-devel git meson ninja \
   wlroots0.20 wayland wayland-protocols libxkbcommon libinput \
   pcre2 pixman cjson pango gdk-pixbuf2 libdrm systemd-libs \
+  vulkan-icd-loader vulkan-headers glslang \
   libxcb xcb-util-wm xorg-xwayland
 ```
 
-Build and install the scenefx fork (`scenefx-0.5`), then asteroidz:
+Build and install the `asteroidz-scenefx` fork with both renderers, then
+asteroidz:
 
 ```bash
 git clone https://github.com/ralfwierzbicki/asteroidz-scenefx.git
 cd asteroidz-scenefx
-meson setup build --prefix=/usr
+meson setup build --prefix=/usr -Drenderers=gles2,vulkan
 ninja -C build
 sudo ninja -C build install
 cd ..
@@ -91,15 +108,19 @@ ninja -C build
 sudo ninja -C build install
 ```
 
-Log out and pick **asteroidz** from your display manager's session
-list, or launch it from a TTY with `dbus-run-session asteroidz`.
-(`xorg-xwayland` is only needed if you want X11 app support; drop it and
-build with `-Dxwayland=disabled` for a pure-Wayland setup.)
+Log out and pick **Asteroidz** (Vulkan) from your display manager's session
+list, or **Asteroidz (GLES fallback)** for GLES2. From a TTY:
+`dbus-run-session env WLR_RENDERER=vulkan asteroidz`.
+
+(`xorg-xwayland` is only needed for X11 app support; drop it and build with
+`-Dxwayland=disabled` for pure Wayland. Note: some native-Wayland GPU apps —
+notably Electron — don't yet import on the Vulkan renderer and render blank;
+run them under XWayland, or use the GLES fallback session.)
 
 ## Configuration
 
-Config lives at `~/.config/asteroidz/config.conf` (falling back to
-`/etc/asteroidz/config.conf`). Changes hot-reload with
+Config lives at `~/.config/asteroidz/config.kdl` (falling back to
+`/etc/asteroidz/config.kdl`). Changes hot-reload with
 `amsg dispatch reload_config`; `SUPER+CTRL+R` restarts in place without
 ending the session.
 
