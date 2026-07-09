@@ -168,6 +168,7 @@ The repository provides a Flake with a NixOS module.
 > - `libxcb`
 > - `libsystemd`
 > - `gdk-pixbuf`
+> - `vulkan-icd-loader`, `vulkan-headers`, `glslang` (for the default Vulkan renderer)
 
 You will need to build `wlroots` and asteroidz's `scenefx` fork manually as well.
 
@@ -184,12 +185,15 @@ You will need to build `wlroots` and asteroidz's `scenefx` fork manually as well
 
 2. **Build asteroidz-scenefx**
    This library handles the visual effects. asteroidz requires its own fork,
-   not upstream `wlrfx/scenefx` — the two are not interchangeable.
+   not upstream `wlrfx/scenefx` — the two are not interchangeable. The fork is
+   renamed (`libasteroidz-scenefx-0.5` / `asteroidz-scenefx-0.5.pc`) so it
+   won't clash with an upstream `scenefx`, and builds with both the GLES2 and
+   Vulkan (`fx_vk`) renderers.
 
    ```bash
    git clone https://github.com/ralfwierzbicki/asteroidz-scenefx.git
    cd asteroidz-scenefx
-   meson build -Dprefix=/usr
+   meson build -Dprefix=/usr -Drenderers=gles2,vulkan
    sudo ninja -C build install
    ```
 
@@ -202,5 +206,11 @@ You will need to build `wlroots` and asteroidz's `scenefx` fork manually as well
    sudo ninja -C build install
    ```
 
-   This installs the `asteroidz` binary, the `amsg` IPC tool, a wayland
-   session entry, and the GlobalShortcuts portal definition.
+   This installs the `asteroidz` binary, the `amsg` IPC tool, two wayland
+   session entries (**Asteroidz** = Vulkan, the default; **Asteroidz (GLES
+   fallback)** = GLES2), and the GlobalShortcuts portal definition.
+
+   asteroidz uses the Vulkan renderer by default; the renderer is selected
+   per session via `WLR_RENDERER` (`vulkan` or `gles2`). Some native-Wayland
+   GPU apps (e.g. Electron) don't yet import on the Vulkan renderer — run
+   them under XWayland or use the GLES fallback session.
