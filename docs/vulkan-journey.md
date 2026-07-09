@@ -8,13 +8,18 @@ Goal: run asteroidz on a Vulkan renderer for HDR10 output, native explicit
 (timeline) sync, compute-shader blur, and a cleaner color pipeline — parity with
 sway 1.12's Vulkan/HDR10 path. Not for raw FPS.
 
-## The three build configurations (how to switch)
+## The two build configurations (how to switch)
 
 | Config | Renderer | scenefx? | wlroots | Colors/effects | Status |
 |--------|----------|----------|---------|----------------|--------|
 | **A. scenefx + GLES** (original) | scenefx GLES2 | yes | 0.20 | full (blur/shadow/rounded/SDR color) | rock solid — the daily driver |
 | **B. scenefx + fx_vk (Vulkan)** | scenefx `fx_vk` (vendored wlroots Vulkan) | yes | 0.21 | **rounded corners (2.1) + box shadow (2.2) + blur (2.3) + gradients + SDR colour all working; only colour-LUT + minor blur polish left** | near-parity with config A: windows, rounded corners/borders, drop shadows, blur, 2-stop gradient borders, SDR colours all correct |
-| **C. wlroots built-in Vulkan (no scenefx)** | wlroots vulkan | no (nofx.h) | 0.20 | none (nofx stubs) | boots, renders windows; kept only as a reference point |
+
+Config C (wlroots built-in Vulkan, no scenefx, `nofx.h`) was **dropped**. It was
+only ever a reference point; asteroidz always builds against scenefx
+(`meson.build` deps `scenefx-0.5` unconditionally) and there is no `nofx.h` in
+the tree. Removing it let us revert the border z-order workaround (below) — the
+only reason for it was config C's no-op clip.
 
 Switching:
 - **A (fall back to the working desktop):** `git checkout main` (scenefx+GLES), rebuild, log into the plain **Asteroidz** session. This is always the safe fallback.
@@ -41,17 +46,18 @@ Switching:
    rendered focused windows. (This change is NOT in the current `vulkan` branch
    tip — see "Current state".)
 
-3. **Unfocused windows blank (the long one)** — NOT a renderer bug. `Client.border`
-   is a single **full-window solid `wlr_scene_rect`** (`asteroidz.c` ~5523). In
-   the scenefx build `apply_border()` carves it hollow via
-   `wlr_scene_rect_set_clipped_region()`. Both `nofx.h` (config C) **and** our
-   `fx_vk` dispatch (config B) turn that clip into a **no-op**, so the border
-   rect stays **fully solid**. On focus-out asteroidz did
-   `wlr_scene_node_raise_to_top(&c->border->node)` → the opaque rect covered the
-   whole client → gray/black blank; refocus lowered it. **FIX (kept):
-   `src/animation/client.h` unfocus path lowers the border instead of raising
-   it**, so content stays visible in both focus states (matches sway, which
-   never restacks on focus).
+3. **Unfocused windows blank (the long one)** — NOT a renderer bug, and now
+   **REVERTED** (the workaround is gone). `Client.border` is a single
+   **full-window solid `wlr_scene_rect`** carved hollow via
+   `wlr_scene_rect_set_clipped_region()`. This only blanked on **config C**
+   (`nofx.h`), which no-oped the clip → raising the solid rect on focus-out
+   covered the client. The interim fix lowered the border instead of raising it.
+   Once `fx_vk` gained the rounded-rect clip cutout (step 2.1) the border renders
+   as a proper hollow ring on config B, and config C was dropped — so the
+   `src/animation/client.h` unfocus path was **reverted to the original
+   `wlr_scene_node_raise_to_top`**. Verified on config B: unfocused windows stay
+   visible (the border is a hollow ring, so raising it paints only the frame).
+   (History only; nothing to re-chase.)
 
 4. **Colors too bright / wrong on Vulkan — RESOLVED / was never an fx_vk gap.**
    (Historic note; superseded.) The SDR settings (`reference-luminance 280`,
