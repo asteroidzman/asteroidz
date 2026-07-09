@@ -13,7 +13,7 @@ sway 1.12's Vulkan/HDR10 path. Not for raw FPS.
 | Config | Renderer | scenefx? | wlroots | Colors/effects | Status |
 |--------|----------|----------|---------|----------------|--------|
 | **A. scenefx + GLES** (original) | scenefx GLES2 | yes | 0.20 | full (blur/shadow/rounded/SDR color) | rock solid — the daily driver |
-| **B. scenefx + fx_vk (Vulkan)** | scenefx `fx_vk` (vendored wlroots Vulkan) | yes | 0.21 | **rounded corners (2.1) + box shadow (2.2) ported; blur/real-gradient + SDR color still NO-OP (WIP)** | boots, renders windows + rounded corners/borders + drop shadows; SDR colors still wrong, no blur |
+| **B. scenefx + fx_vk (Vulkan)** | scenefx `fx_vk` (vendored wlroots Vulkan) | yes | 0.21 | **rounded corners (2.1) + box shadow (2.2) + blur (2.3) ported; real-gradient + SDR color still NO-OP (WIP)** | boots, renders windows + rounded corners/borders + drop shadows + blur; SDR colors still wrong |
 | **C. wlroots built-in Vulkan (no scenefx)** | wlroots vulkan | no (nofx.h) | 0.20 | none (nofx stubs) | boots, renders windows; kept only as a reference point |
 
 Switching:
@@ -186,6 +186,29 @@ lighter optimized-only path. Phased; commits on the scenefx `vulkan` branch.
   blur hook is added — isolates "restructure broke normal rendering?" from
   "does blur work?". Fallback if the restructure misbehaves: scenefx `5271449`
   (blur inert, renderer works as before).
+- **Phase C DONE + VERIFIED (scenefx `1a6a8b3` restructure, `ff680ef` wiring;
+  merged to `vulkan`).** Built on branch `vulkan-blur-restructure`,
+  restart-tested (normal rendering identical after the restructure), blur wiring
+  added, restart-tested again (blur renders correctly — no flip/corruption),
+  then fast-forward merged into `vulkan`. Blur is live on config B.
+  - Restructure (`1a6a8b3`): scene/blend image now `COLOR_ATTACHMENT|SAMPLED` in
+    `GENERAL` for life; the 2-subpass pass split into a scene pass
+    (`render_setup->render_pass` via `two_pass.scene_framebuffer`) + standalone
+    `output_render_pass`; `output.frag` samples `sampler2D` at
+    `gl_FragCoord/textureSize` (1:1 with the old subpassLoad); output DS is
+    `COMBINED_IMAGE_SAMPLER` + `renderer->output_sampler`; `render_pass_submit`
+    ends the scene pass then runs the separate output pass.
+  - Blur wiring (`ff680ef`): `fx_vk_render_pass_add_optimized_blur` splits the
+    scene pass (end → `vkCmdCopyImage` scene image into `optimized_no_blur` →
+    `fx_vk_render_pass_blur` → copy into the `optimized_blur` cache → restart
+    with `loadOp=LOAD`); `fx_vk_render_pass_add_blur` draws the cache at the node
+    box (`render_effect_image`); fx_vk `scene_pass_*` branches +
+    `fx_vk_render_pass_init_blur` (per-output effect buffers, full-damage path so
+    no `blur_padding_region` machinery).
+  - First-cut simplifications still open (revisit): `blur_strength` partial mixing
+    and `ignore_transparent`/transparency-mask stenciling not implemented;
+    per-window blur always samples the whole-background cache; blur only on the
+    two-pass path. None block the daily-driver look.
 
 ### Border/pill colour sharing (DMS, not renderer)
 - Window borders now share the DMS pill palette: matugen template
