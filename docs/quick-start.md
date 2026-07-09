@@ -17,10 +17,10 @@ Now that you have asteroidz installed, let's get your environment set up.
 
 2. **Copy Default Config**
 
-   A default configuration file is provided at `/etc/asteroidz/config.conf`. Copy it to your local directory to start customizing.
+   A default configuration file is provided at `/etc/asteroidz/config.kdl`. Copy it to your local directory to start customizing.
 
    ```bash
-   cp /etc/asteroidz/config.conf ~/.config/asteroidz/config.conf
+   cp /etc/asteroidz/config.kdl ~/.config/asteroidz/config.kdl
    ```
 
 3. **Launch asteroidz**
@@ -34,7 +34,7 @@ Now that you have asteroidz installed, let's get your environment set up.
    Optional: To specify a custom config file path:
 
    ```bash
-   asteroidz -c /path/to/your/config.conf
+   asteroidz -c /path/to/your/config.kdl
    ```
 
 ## Essential Keybindings
@@ -52,7 +52,7 @@ asteroidz uses the following keybinds by default:
 | `Ctrl` + `1-9` | Switch to Tag 1-9 |
 | `Alt` + `1-9` | Move window to Tag 1-9 |
 
-> **Warning:** Some default bindings rely on specific tools like `foot` (terminal) and `rofi` (launcher). Ensure you have them installed or update your `config.conf` to use your preferred alternatives.
+> **Warning:** Some default bindings rely on specific tools like `foot` (terminal) and `rofi` (launcher). Ensure you have them installed or update your `config.kdl` to use your preferred alternatives.
 
 ## Recommended Tools
 

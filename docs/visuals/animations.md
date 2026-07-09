@@ -7,9 +7,11 @@ description: Configure smooth transitions for windows and layers.
 
 asteroidz supports animations for both standard windows and layer shell surfaces (like bars and notifications).
 
-```ini
-animations=1
-layer_animations=1
+```kdl
+misc {
+    animations 1
+    layer_animations 1
+}
 ```
 
 ## Animation Types
@@ -18,22 +20,38 @@ You can define different animation styles for opening and closing windows and la
 
 Available types: `slide`, `zoom`, `fade`, `none`.
 
-```ini
-animation_type_open=zoom
-animation_type_close=slide
-layer_animation_type_open=slide
-layer_animation_type_close=slide
+```kdl
+animations {
+    window-open {
+        type zoom
+    }
+    window-close {
+        type slide
+    }
+}
+misc {
+    layer_animation_type_open slide
+    layer_animation_type_close slide
+}
 ```
 
 ## Fade Settings
 
 Control the fade-in and fade-out effects for animations.
 
-```ini
-animation_fade_in=1
-animation_fade_out=1
-fadein_begin_opacity=0.5
-fadeout_begin_opacity=0.5
+```kdl
+misc {
+    animation_fade_in 1
+    animation_fade_out 1
+}
+animations {
+    window-open {
+        fade-begin-opacity 0.5
+    }
+    window-close {
+        fade-begin-opacity 0.5
+    }
+}
 ```
 
 - `animation_fade_in` — Enable fade-in effect (0: disable, 1: enable)
@@ -45,9 +63,11 @@ fadeout_begin_opacity=0.5
 
 Adjust the zoom ratios for zoom animations.
 
-```ini
-zoom_initial_ratio=0.4
-zoom_end_ratio=0.8
+```kdl
+misc {
+    zoom_initial_ratio 0.4
+    zoom_end_ratio 0.8
+}
 ```
 
 - `zoom_initial_ratio` — Initial zoom ratio
@@ -65,12 +85,20 @@ Control the speed of animations (in milliseconds).
 | `animation_duration_close` | integer | `300` | Close animation duration (ms) |
 | `animation_duration_focus` | integer | `0` | Focus change (opacity transition) animation duration (ms) |
 
-```ini
-animation_duration_move=500
-animation_duration_open=400
-animation_duration_tag=300
-animation_duration_close=300
-animation_duration_focus=0
+```kdl
+misc {
+    animation_duration_move 500
+    animation_duration_tag 300
+    animation_duration_focus 0
+}
+animations {
+    window-open {
+        duration 400
+    }
+    window-close {
+        duration 300
+    }
+}
 ```
 
 ## Custom Bezier Curves
@@ -89,14 +117,16 @@ You can visualize and generate curve values using online tools like [cssportal.c
 | `animation_curve_opafadein` | string | `0.46,1.0,0.29,0.99` | Open opacity animation bezier curve |
 | `animation_curve_opafadeout` | string | `0.5,0.5,0.5,0.5` | Close opacity animation bezier curve |
 
-```ini
-animation_curve_open=0.46,1.0,0.29,0.99
-animation_curve_move=0.46,1.0,0.29,0.99
-animation_curve_tag=0.46,1.0,0.29,0.99
-animation_curve_close=0.46,1.0,0.29,0.99
-animation_curve_focus=0.46,1.0,0.29,0.99
-animation_curve_opafadein=0.46,1.0,0.29,0.99
-animation_curve_opafadeout=0.5,0.5,0.5,0.5
+```kdl
+misc {
+    animation_curve_open 0.46,1.0,0.29,0.99
+    animation_curve_move 0.46,1.0,0.29,0.99
+    animation_curve_tag 0.46,1.0,0.29,0.99
+    animation_curve_close 0.46,1.0,0.29,0.99
+    animation_curve_focus 0.46,1.0,0.29,0.99
+    animation_curve_opafadein 0.46,1.0,0.29,0.99
+    animation_curve_opafadeout 0.5,0.5,0.5,0.5
+}
 ```
 
 ## Tag Animation Direction

@@ -7,8 +7,10 @@ description: Frequently asked questions and troubleshooting.
 
 You can enable the `drag_tile_to_tile` option in your config. This allows you to drag a tiled window onto another to swap them.
 
-```ini
-drag_tile_to_tile=1
+```kdl
+misc {
+    drag-tile-to-tile 1
+}
 ```
 
 ---
@@ -19,8 +21,12 @@ Blur applies to the transparent areas of windows. To disable it entirely, set `b
 
 If you are experiencing **performance issues with blur**, make sure `blur_optimized=1` (the default). This caches the wallpaper as the blur background, which is much cheaper on the GPU:
 
-```ini
-blur_optimized=1
+```kdl
+effects {
+    blur {
+        optimized 1
+    }
+}
 ```
 
 ---
@@ -31,8 +37,12 @@ This is expected behavior when `blur_optimized=1` (the default). The optimizer c
 
 If you want blur to composite against the true background (i.e., show whatever is actually behind the window), set:
 
-```ini
-blur_optimized=0
+```kdl
+effects {
+    blur {
+        optimized 0
+    }
+}
 ```
 
 > **Warning:** Disabling `blur_optimized` significantly increases GPU consumption and may cause rendering lag, especially on lower-end hardware.
@@ -43,8 +53,10 @@ blur_optimized=0
 
 Try enabling **SyncObj** timeline support.
 
-```ini
-syncobj_enable=1
+```kdl
+misc {
+    syncobj 1
+}
 ```
 
 ---
@@ -55,14 +67,16 @@ You can enable **Tearing** (similar to VSync off).
 
 First, enable it globally:
 
-```ini
-allow_tearing=1
+```kdl
+misc {
+    allow-tearing 1
+}
 ```
 
 Then force it for your specific game:
 
-```ini
-windowrule=force_tearing:1,title:Counter-Strike 2
+```kdl
+window-rule { match title="Counter-Strike 2"; force_tearing 1 }
 ```
 
 > **Warning:** Some graphics cards require setting `WLR_DRM_NO_ATOMIC=1` before asteroidz starts for tearing to work. Add it to `/etc/environment` and reboot, or launch asteroidz with `WLR_DRM_NO_ATOMIC=1 asteroidz`. See [Monitors — Tearing](/docs/configuration/monitors#tearing-game-mode) for details.
@@ -73,8 +87,10 @@ windowrule=force_tearing:1,title:Counter-Strike 2
 
 The standard `spawn` command does not support shell pipes directly. You must use `spawn_shell` instead.
 
-```ini
-bind=SUPER,P,spawn_shell,echo "hello" | rofi -dmenu
+```kdl
+binds {
+    Super+P { spawn_shell "echo \"hello\" | rofi -dmenu"; }
+}
 ```
 
 ---
@@ -85,16 +101,17 @@ bind=SUPER,P,spawn_shell,echo "hello" | rofi -dmenu
 
 Run `wev` and press the key to find its keycode, then use it in your bind:
 
-```ini
-# Instead of:
-bind=ALT,q,killclient
-
-# Use the keycode (e.g., code:24 = q on most layouts):
-bind=ALT,code:24,killclient
+```kdl
+binds {
+    Alt+q { killclient; }
+    Alt+code:24 { killclient; }
+}
 ```
 
 You can also use `binds` (the `s` flag) to match by keysym instead of keycode:
 
-```ini
-binds=ALT,q,killclient
+```kdl
+binds {
+    Alt+q { killclient; }
+}
 ```

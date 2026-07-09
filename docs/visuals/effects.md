@@ -45,16 +45,21 @@ Drop shadows help distinguish floating windows from the background.
 | `shadows_unfocused_scale` | `0.45` | Shadow opacity multiplier for unfocused windows (macOS-style dimming) |
 | `shadowscolor` | `0x000000ff` | Color of the shadow. |
 
-```ini
-# Example shadows configuration
-shadows=1
-layer_shadows=1
-shadow_only_floating=1
-shadows_size=12
-shadows_blur=15
-shadows_position_x=0
-shadows_position_y=0
-shadowscolor=0x000000ff
+```kdl
+effects {
+    shadow {
+        enable 1
+        layer 1
+        only-floating 1
+        size 12
+        blur 15
+        color 0x000000ff
+        position {
+            x 0
+            y 0
+        }
+    }
+}
 ```
 
 ---
@@ -71,19 +76,12 @@ Control the transparency and roundness of your windows.
 | `focused_opacity` | `1.0` | Opacity for the active window (0.0 - 1.0). |
 | `unfocused_opacity` | `1.0` | Opacity for inactive windows (0.0 - 1.0). |
 
-```ini
-# Window corner radius in pixels
-border_radius=0
-
-# Corner radius location (0=all, 1=top-left, 2=top-right, 3=bottom-left, 4=bottom-right)
-border_radius_location_default=0
-
-# Disable radius if only one window is visible
-no_radius_when_single=0
-
-# Opacity for the active window (0.0 - 1.0)
-focused_opacity=1.0
-
-# Opacity for inactive windows
-unfocused_opacity=1.0
+```kdl
+misc {
+    border_radius 0
+    border_radius_location_default 0
+    no_radius_when_single 0
+    focused_opacity 1.0
+    unfocused_opacity 1.0
+}
 ```

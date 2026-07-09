@@ -44,21 +44,28 @@ The Scroller layout positions windows in a scrollable strip, similar to PaperWM.
 >
 > To ensure a lower-priority setting takes effect, you must set all higher-priority options to `0`.
 
-```ini
-# Example scroller configuration
-scroller_structs=20
-scroller_default_proportion=0.9
-scroller_focus_center=0
-scroller_prefer_center=0
-scroller_center_single=0
-scroller_prefer_overspread=1
-edge_scroller_pointer_focus=1
-edge_scroller_focus_allow_speed=0.0
-scroller_default_proportion_single=1.0
-scroller_proportion_preset=0.5,0.8,1.0
-scroller_edge_scroll=0
-scroller_edge_scroll_size=15
-scroller_edge_scroll_delay=500
+```kdl
+layout {
+    scroller {
+        structs 20
+        default-proportion 0.9
+        focus-center 0
+        prefer-center 0
+        default-proportion-single 1.0
+        preset 0.5,0.8,1.0
+        edge-scroll {
+            pointer-focus 1
+            allow-speed 0.0
+            enable 0
+            size 15
+            delay 500
+        }
+    }
+}
+misc {
+    scroller_center_single 0
+    scroller_prefer_overspread 1
+}
 ```
 
 ---
@@ -80,15 +87,16 @@ scroller_edge_scroll_delay=500
 | `dwindle_drop_simple_split` | `1` | Drag-to-tile drop preview. `1` = 2-zone preview matching `dwindle_split_ratio`, `0` = 4-quadrant preview. |
 | `dwindle_manual_split` | `0` | i3-like manual split mode: the focused container's split direction is set explicitly (see below) rather than auto-picked, and persists for future windows opened there. |
 
-```ini
-# Example tile (dwindle) configuration
-dwindle_split_ratio=0.5
-dwindle_smart_split=0
-dwindle_hsplit=0
-dwindle_vsplit=0
-dwindle_preserve_split=0
-dwindle_smart_resize=0
-dwindle_drop_simple_split=1
+```kdl
+misc {
+    dwindle_split_ratio 0.5
+    dwindle_smart_split 0
+    dwindle_hsplit 0
+    dwindle_vsplit 0
+    dwindle_preserve_split 0
+    dwindle_smart_resize 0
+    dwindle_drop_simple_split 1
+}
 ```
 
 ### Manual split direction (i3-like)
@@ -101,10 +109,15 @@ With `dwindle_manual_split=1`, bind these dispatches to control where the *next*
 | `dwindle_split_vertical` | Set the focused container to split top/bottom. |
 | `dwindle_toggle_split_direction` | Toggle the focused container's split direction. |
 
-```ini
-dwindle_manual_split=1
-bind=SUPER,b,dwindle_split_horizontal
-bind=SUPER+SHIFT,b,dwindle_split_vertical
+```kdl
+misc {
+    dwindle_manual_split 1
+}
+
+binds {
+    Super+b { dwindle_split_horizontal; }
+    Super+Shift+b { dwindle_split_vertical; }
+}
 ```
 
 ---
@@ -118,12 +131,14 @@ You can switch layouts dynamically or set a default for specific tags using [Tag
 
 **Keybinding Examples:**
 
-```ini
-# Cycle through layouts
-circle_layout=monocle,scroller,tile
-bind=SUPER,n,switch_layout
+```kdl
+misc {
+    circle_layout monocle,scroller,tile
+}
 
-# Set specific layout
-bind=SUPER,t,setlayout,tile
-bind=SUPER,s,setlayout,scroller
+binds {
+    Super+n { switch_layout; }
+    Super+t { setlayout tile; }
+    Super+s { setlayout scroller; }
+}
 ```

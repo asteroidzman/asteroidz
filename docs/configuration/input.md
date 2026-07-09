@@ -24,13 +24,21 @@ Control key repeat rates and layout rules.
 
 **Example:**
 
-```ini
-repeat_rate=40
-repeat_delay=300
-numlockon=1
-xkb_rules_layout=us,de
-xkb_rules_variant=dvorak
-xkb_rules_options=caps:escape,ctrl:nocaps
+```kdl
+input {
+    keyboard {
+        repeat {
+            rate 40
+            delay 300
+        }
+    }
+}
+misc {
+    numlockon 1
+    xkb_rules_layout us,de
+    xkb_rules_variant dvorak
+    xkb_rules_options caps:escape,ctrl:nocaps
+}
 ```
 
 ---
@@ -117,18 +125,20 @@ Specific settings for laptop touchpads. Some settings may require a relogin to t
 
 To bind multiple layouts and toggle between them, define the layouts in `xkb_rules_layout` and use `xkb_rules_options` to set a toggle key combination. Then bind `switch_keyboard_layout` to trigger a switch.
 
-```ini
-# Define two layouts: US QWERTY and US Dvorak
-xkb_rules_layout=us,us
-xkb_rules_variant=,dvorak
-xkb_rules_options=grp:lalt_lshift_toggle
+```kdl
+misc {
+    xkb_rules_layout us,us
+    xkb_rules_variant ,dvorak
+    xkb_rules_options grp:lalt_lshift_toggle
+}
 ```
 
 Or bind it manually to a key:
 
-```ini
-# Bind Alt+Shift_L to cycle keyboard layout
-bind=alt,shift_l,switch_keyboard_layout
+```kdl
+binds {
+    alt+shift_l { switch_keyboard_layout; }
+}
 ```
 
 Use `amsg get keyboardlayout` to query the current layout.
@@ -143,19 +153,23 @@ To use Fcitx5 or IBus, set these environment variables in your config file.
 
 **For Fcitx5:**
 
-```ini
-env=GTK_IM_MODULE,fcitx
-env=QT_IM_MODULE,fcitx
-env=QT_IM_MODULES,wayland;fcitx
-env=SDL_IM_MODULE,fcitx
-env=XMODIFIERS,@im=fcitx
-env=GLFW_IM_MODULE,ibus
+```kdl
+environment {
+    GTK_IM_MODULE fcitx
+    QT_IM_MODULE fcitx
+    QT_IM_MODULES "wayland;fcitx"
+    SDL_IM_MODULE fcitx
+    XMODIFIERS "@im=fcitx"
+    GLFW_IM_MODULE ibus
+}
 ```
 
 **For IBus:**
 
-```ini
-env=GTK_IM_MODULE,ibus
-env=QT_IM_MODULE,ibus
-env=XMODIFIERS,@im=ibus
+```kdl
+environment {
+    GTK_IM_MODULE ibus
+    QT_IM_MODULE ibus
+    XMODIFIERS "@im=ibus"
+}
 ```

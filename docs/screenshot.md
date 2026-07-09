@@ -34,47 +34,57 @@ Any directory works. `~/Pictures/Screenshots/` is just a convention.
 
 ## Quick Binds
 
-Short, single-step commands can be placed directly in `config.conf` with `spawn_shell`.
+Short, single-step commands can be placed directly in `config.kdl` with `spawn_shell`.
 No script file needed.
 
 ### Fullscreen
 
 Captures the entire display.
 
-```ini
-bind=NONE,Print,spawn_shell,grim $HOME/Pictures/Screenshots/$(date +%Y%m%d%H%M%S).png
+```kdl
+binds {
+    NONE+Print { spawn_shell "grim $HOME/Pictures/Screenshots/$(date +%Y%m%d%H%M%S).png"; }
+}
 ```
 
 ### Region
 
 Select an area with `slurp` before capturing.
 
-```ini
-bind=SHIFT,Print,spawn_shell,g=$(slurp -d) && [ -n "$g" ] && grim -g "$g" $HOME/Pictures/Screenshots/$(date +%Y%m%d%H%M%S).png
+```kdl
+binds {
+    Shift+Print { spawn_shell "g=$(slurp -d) && [ -n \"$g\" ] && grim -g \"$g\" $HOME/Pictures/Screenshots/$(date +%Y%m%d%H%M%S).png"; }
+}
 ```
 
 ### Pointer
 
 Captures the full screen including the cursor.
 
-```ini
-bind=ALT,Print,spawn_shell,grim -c $HOME/Pictures/Screenshots/$(date +%Y%m%d%H%M%S).png
+```kdl
+binds {
+    Alt+Print { spawn_shell "grim -c $HOME/Pictures/Screenshots/$(date +%Y%m%d%H%M%S).png"; }
+}
 ```
 
 ### Clipboard
 
 Captures to a temporary file and copies the image to the clipboard; no file is saved.
 
-```ini
-bind=CTRL,Print,spawn_shell,f=$(mktemp -t screenshot-XXXXXX.png) && grim "$f" && wl-copy < "$f" && rm -f "$f"
+```kdl
+binds {
+    Ctrl+Print { spawn_shell "f=$(mktemp -t screenshot-XXXXXX.png) && grim \"$f\" && wl-copy < \"$f\" && rm -f \"$f\""; }
+}
 ```
 
 ### Annotate
 
 Captures and opens `satty` for drawing before saving.
 
-```ini
-bind=SUPER,Print,spawn_shell,f=$HOME/Pictures/Screenshots/$(date +%Y%m%d%H%M%S).png && grim "$f" && satty --filename "$f" --output-filename "$f" --actions-on-enter save-to-file --early-exit
+```kdl
+binds {
+    Super+Print { spawn_shell "f=$HOME/Pictures/Screenshots/$(date +%Y%m%d%H%M%S).png && grim \"$f\" && satty --filename \"$f\" --output-filename \"$f\" --actions-on-enter save-to-file --early-exit"; }
+}
 ```
 
 ## Script Binds
@@ -101,8 +111,10 @@ geometry=$(amsg get focusing-client | jq -r '"\(.x),\(.y) \(.width)x\(.height)"'
 grim -g "$geometry" "$HOME/Pictures/Screenshots/$(date +%Y%m%d%H%M%S).png"
 ```
 
-```ini
-bind=CTRL+SHIFT,Print,spawn,$HOME/.config/asteroidz/scripts/screenshot/window.sh
+```kdl
+binds {
+    Ctrl+Shift+Print { spawn "$HOME/.config/asteroidz/scripts/screenshot/window.sh"; }
+}
 ```
 
 ### Freeze
@@ -123,8 +135,10 @@ kill "$wayfreeze_pid" 2>/dev/null
 rm -f "$pipe"
 ```
 
-```ini
-bind=CTRL+SUPER,Print,spawn,$HOME/.config/asteroidz/scripts/screenshot/freeze.sh
+```kdl
+binds {
+    Ctrl+Super+Print { spawn "$HOME/.config/asteroidz/scripts/screenshot/freeze.sh"; }
+}
 ```
 
 ### Freeze + Region
@@ -151,8 +165,10 @@ kill "$wayfreeze_pid" 2>/dev/null
 rm -f "$pipe"
 ```
 
-```ini
-bind=SHIFT+SUPER,Print,spawn,$HOME/.config/asteroidz/scripts/screenshot/freeze-region.sh
+```kdl
+binds {
+    Shift+Super+Print { spawn "$HOME/.config/asteroidz/scripts/screenshot/freeze-region.sh"; }
+}
 ```
 
 Make all three scripts executable:
@@ -207,13 +223,15 @@ Make the script executable:
 chmod +x ~/.config/asteroidz/scripts/screenshot/screenshot.sh
 ```
 
-Then add the binds to `config.conf`:
+Then add the binds to `config.kdl`:
 
-```ini
-bind=NONE,Print,spawn,$HOME/.config/asteroidz/scripts/screenshot/screenshot.sh fullscreen
-bind=SHIFT,Print,spawn,$HOME/.config/asteroidz/scripts/screenshot/screenshot.sh region
-bind=CTRL+SHIFT,Print,spawn,$HOME/.config/asteroidz/scripts/screenshot/screenshot.sh window
-bind=CTRL+SUPER,Print,spawn,$HOME/.config/asteroidz/scripts/screenshot/screenshot.sh freeze
-bind=SHIFT+SUPER,Print,spawn,$HOME/.config/asteroidz/scripts/screenshot/screenshot.sh freeze-region
-bind=SUPER,Print,spawn,$HOME/.config/asteroidz/scripts/screenshot/screenshot.sh annotate
+```kdl
+binds {
+    NONE+Print { spawn "$HOME/.config/asteroidz/scripts/screenshot/screenshot.sh fullscreen"; }
+    Shift+Print { spawn "$HOME/.config/asteroidz/scripts/screenshot/screenshot.sh region"; }
+    Ctrl+Shift+Print { spawn "$HOME/.config/asteroidz/scripts/screenshot/screenshot.sh window"; }
+    Ctrl+Super+Print { spawn "$HOME/.config/asteroidz/scripts/screenshot/screenshot.sh freeze"; }
+    Shift+Super+Print { spawn "$HOME/.config/asteroidz/scripts/screenshot/screenshot.sh freeze-region"; }
+    Super+Print { spawn "$HOME/.config/asteroidz/scripts/screenshot/screenshot.sh annotate"; }
+}
 ```

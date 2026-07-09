@@ -5,10 +5,13 @@ description: Define keyboard shortcuts and modes.
 
 ## Syntax
 
-Key bindings follow this format:
+Key bindings live in a `binds` block. Each bind is a keychord node whose child
+is the action:
 
-```ini
-bind[flags]=MODIFIERS,KEY,COMMAND,PARAMETERS
+```kdl
+binds {
+    Modifiers+Key { command parameters...; }
+}
 ```
 
 - **Modifiers**: `SUPER`, `CTRL`, `ALT`, `SHIFT`, `NONE` (combine with `+`, e.g. `SUPER+CTRL+ALT`).
@@ -25,22 +28,16 @@ bind[flags]=MODIFIERS,KEY,COMMAND,PARAMETERS
 
 **Examples:**
 
-```ini
-bind=SUPER,Q,killclient
-bindl=SUPER,L,spawn,swaylock
-
-# Using keycode instead of key name
-bind=ALT,code:24,killclient
-
-# Combining keycodes for modifiers and keys
-bind=code:64,code:24,killclient
-bind=code:64+code:133,code:24,killclient
-
-# Bind with no modifier
-bind=NONE,XF86MonBrightnessUp,spawn,brightnessctl set +5%
-
-# Bind a modifier key itself as the trigger key
-bind=alt,shift_l,switch_keyboard_layout
+```kdl
+binds {
+    Super+Q { killclient; }
+    Super+L { spawn swaylock; }
+    Alt+code:24 { killclient; }
+    code:64+code:24 { killclient; }
+    code:64+code:133+code:24 { killclient; }
+    NONE+XF86MonBrightnessUp { spawn "brightnessctl set +5%"; }
+    alt+shift_l { switch_keyboard_layout; }
+}
 ```
 
 ## Key Modes (Submaps)
@@ -53,33 +50,30 @@ You can divide key bindings into named modes. Rules:
 
 Use `setkeymode` to switch modes, and `amsg get keymode` to query the current mode.
 
-```ini
-# Binds in 'common' apply in every mode
-keymode=common
-bind=SUPER,r,reload_config
+```kdl
+misc {
+    keymode resize
+}
 
-# Default mode bindings
-keymode=default
-bind=ALT,Return,spawn,foot
-bind=SUPER,F,setkeymode,resize
-
-# 'resize' mode bindings
-keymode=resize
-bind=NONE,Left,resizewin,-10,0
-bind=NONE,Right,resizewin,+10,0
-bind=NONE,Escape,setkeymode,default
+binds {
+    Super+r { reload_config; }
+    Alt+Return { spawn foot; }
+    Super+F { setkeymode resize; }
+    NONE+Left { resizewin -10 0; }
+    NONE+Right { resizewin +10 0; }
+    NONE+Escape { setkeymode default; }
+}
 ```
 
 ### Single Modifier Key Binding
 
 When binding a modifier key itself, use `NONE` for press and the modifier name for release:
 
-```ini
-# Trigger on press of Super key
-bind=none,Super_L,spawn,rofi -show run
-
-# Trigger on release of Super key
-bindr=Super,Super_L,spawn,rofi -show run
+```kdl
+binds {
+    none+Super_L { spawn "rofi -show run"; }
+    Super+Super_L { spawn "rofi -show run"; }
+}
 ```
 
 ## Dispatchers List
@@ -206,10 +200,12 @@ Suggested scroller binds (not bound by default — uncomment to use):
 | `chvt` | `1-9` | Change virtual terminal (tty, equivalent to using ctrl+alt+Fkeys) |
 | `screenshot_ui` | `[screen/region/window]` | Compositor-native screenshot UI (defaults to `region`). Freezes the focused output and shows it full-screen while you pick what to capture; saves to `~/Pictures/Screenshots/screenshot_<timestamp>.png` and copies it to the clipboard (requires `wl-copy`). `region` lets you drag a selection rectangle (Escape cancels, release confirms); `window` captures whatever window you click; `screen` captures the whole focused output immediately, with no interaction. |
 
-```ini
-bind=SUPER,S,screenshot_ui,region
-bind=SUPER SHIFT,S,screenshot_ui,window
-bind=SUPER CTRL,S,screenshot_ui,screen
+```kdl
+binds {
+    Super+S { screenshot_ui region; }
+    SUPER SHIFT+S { screenshot_ui window; }
+    SUPER CTRL+S { screenshot_ui screen; }
+}
 ```
 
 ### Cursor Zoom
@@ -222,14 +218,16 @@ Output-level magnifier centered on the cursor, similar to Hyprland's `zoom_facto
 | `zoom_out` | `[step]` | Decrease cursor zoom. Defaults to `cursor_zoom_step`. |
 | `zoom_reset` | - | Reset cursor zoom to 1.0 (off). |
 
-```ini
-bind=SUPER,Equal,zoom_in
-bind=SUPER,Minus,zoom_out
-bind=SUPER,0,zoom_reset
+```kdl
+misc {
+    axisbind SUPER,DOWN,zoom_out
+}
 
-# also works as an axis binding (mouse wheel), see /docs/bindings/mouse-gestures
-axisbind=SUPER,UP,zoom_in
-axisbind=SUPER,DOWN,zoom_out
+binds {
+    Super+Equal { zoom_in; }
+    Super+Minus { zoom_out; }
+    Super+0 { zoom_reset; }
+}
 ```
 
 ### Media Controls
@@ -240,32 +238,38 @@ axisbind=SUPER,DOWN,zoom_out
 
 Requires: `brightnessctl`
 
-```ini
-bind=NONE,XF86MonBrightnessUp,spawn,brightnessctl s +2%
-bind=SHIFT,XF86MonBrightnessUp,spawn,brightnessctl s 100%
-bind=NONE,XF86MonBrightnessDown,spawn,brightnessctl s 2%-
-bind=SHIFT,XF86MonBrightnessDown,spawn,brightnessctl s 1%
+```kdl
+binds {
+    NONE+XF86MonBrightnessUp { spawn "brightnessctl s +2%"; }
+    Shift+XF86MonBrightnessUp { spawn "brightnessctl s 100%"; }
+    NONE+XF86MonBrightnessDown { spawn "brightnessctl s 2%-"; }
+    Shift+XF86MonBrightnessDown { spawn "brightnessctl s 1%"; }
+}
 ```
 
 #### Volume
 
 Requires: `wpctl` (WirePlumber)
 
-```ini
-bind=NONE,XF86AudioRaiseVolume,spawn,wpctl set-volume @DEFAULT_SINK@ 5%+
-bind=NONE,XF86AudioLowerVolume,spawn,wpctl set-volume @DEFAULT_SINK@ 5%-
-bind=NONE,XF86AudioMute,spawn,wpctl set-mute @DEFAULT_SINK@ toggle
-bind=SHIFT,XF86AudioMute,spawn,wpctl set-mute @DEFAULT_SOURCE@ toggle
+```kdl
+binds {
+    NONE+XF86AudioRaiseVolume { spawn "wpctl set-volume @DEFAULT_SINK@ 5%+"; }
+    NONE+XF86AudioLowerVolume { spawn "wpctl set-volume @DEFAULT_SINK@ 5%-"; }
+    NONE+XF86AudioMute { spawn "wpctl set-mute @DEFAULT_SINK@ toggle"; }
+    Shift+XF86AudioMute { spawn "wpctl set-mute @DEFAULT_SOURCE@ toggle"; }
+}
 ```
 
 #### Playback
 
 Requires: `playerctl`
 
-```ini
-bind=NONE,XF86AudioNext,spawn,playerctl next
-bind=NONE,XF86AudioPrev,spawn,playerctl previous
-bind=NONE,XF86AudioPlay,spawn,playerctl play-pause
+```kdl
+binds {
+    NONE+XF86AudioNext { spawn "playerctl next"; }
+    NONE+XF86AudioPrev { spawn "playerctl previous"; }
+    NONE+XF86AudioPlay { spawn "playerctl play-pause"; }
+}
 ```
 
 ### Floating Window Movement

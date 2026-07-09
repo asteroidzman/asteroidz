@@ -9,8 +9,10 @@ Assign actions to mouse button presses with optional modifier keys.
 
 ### Syntax
 
-```ini
-mousebind=MODIFIERS,BUTTON,COMMAND,PARAMETERS
+```kdl
+mouse-binds {
+    MODIFIERS+BUTTON { COMMAND PARAMETERS; }
+}
 ```
 
 - **Modifiers**: `SUPER`, `CTRL`, `ALT`, `SHIFT`, `NONE`. Combine with `+` (e.g., `SUPER+CTRL`).
@@ -23,13 +25,13 @@ mousebind=MODIFIERS,BUTTON,COMMAND,PARAMETERS
 
 ### Examples
 
-```ini
-# Window manipulation
-mousebind=SUPER,btn_left,moveresize,curmove
-mousebind=SUPER,btn_right,moveresize,curresize
-mousebind=SUPER+CTRL,btn_right,killclient
-
-mousebind=NONE,code:273,togglemaximizescreen,0
+```kdl
+mouse-binds {
+    Super+btn_left { moveresize curmove; }
+    Super+btn_right { moveresize curresize; }
+    Super+Ctrl+btn_right { killclient; }
+    NONE+code:273 { togglemaximizescreen 0; }
+}
 ```
 
 ---
@@ -40,17 +42,18 @@ Map scroll wheel movements to actions for workspace and window navigation.
 
 ### Syntax
 
-```ini
-axisbind=MODIFIERS,DIRECTION,COMMAND,PARAMETERS
+```kdl
+axisbind "MODIFIERS" "DIRECTION" "command" "parameters..."
 ```
 
 - **Direction**: `UP`, `DOWN`, `LEFT`, `RIGHT`
 
 ### Examples
 
-```ini
-axisbind=SUPER,UP,viewtoleft_have_client
-axisbind=SUPER,DOWN,viewtoright_have_client
+```kdl
+misc {
+    axisbind SUPER,DOWN,viewtoright_have_client
+}
 ```
 
 ---
@@ -61,8 +64,8 @@ Enable touchpad swipe gestures for navigation and window management.
 
 ### Syntax
 
-```ini
-gesturebind=MODIFIERS,DIRECTION,FINGERS,COMMAND,PARAMETERS
+```kdl
+gesturebind "MODIFIERS" "DIRECTION" "FINGERS" "command" "parameters..."
 ```
 
 - **Direction**: `up`, `down`, `left`, `right`
@@ -72,18 +75,10 @@ gesturebind=MODIFIERS,DIRECTION,FINGERS,COMMAND,PARAMETERS
 
 ### Examples
 
-```ini
-# 3-finger: Window focus
-gesturebind=none,left,3,focusdir,left
-gesturebind=none,right,3,focusdir,right
-gesturebind=none,up,3,focusdir,up
-gesturebind=none,down,3,focusdir,down
-
-# 4-finger: Workspace navigation
-gesturebind=none,left,4,viewtoleft_have_client
-gesturebind=none,right,4,viewtoright_have_client
-gesturebind=none,up,4,toggleoverview
-gesturebind=none,down,4,toggleoverview
+```kdl
+misc {
+    gesturebind none,down,4,toggleoverview
+}
 ```
 
 ---
@@ -94,22 +89,20 @@ Trigger actions on hardware events like laptop lid open/close.
 
 ### Syntax
 
-```ini
-switchbind=FOLD_STATE,COMMAND,PARAMETERS
+```kdl
+switchbind "FOLD_STATE" "command" "parameters..."
 ```
 
 - **Fold State**: `fold` (lid closed), `unfold` (lid opened)
 
 > **Warning:** Disable system lid handling in `/etc/systemd/logind.conf`:
 >
-> ```ini
-> HandleLidSwitch=ignore
-> HandleLidSwitchExternalPower=ignore
-> HandleLidSwitchDocked=ignore
-> ```
-
-### Examples
-
+> ```kdl
+misc {
+    > HandleLidSwitch ignore
+    > HandleLidSwitchExternalPower ignore
+    > HandleLidSwitchDocked ignore
+}
 ```ini
 switchbind=fold,spawn,swaylock -f -c 000000
 switchbind=unfold,spawn,wlr-dpms on

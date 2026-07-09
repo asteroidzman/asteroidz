@@ -16,8 +16,10 @@ workspace, so moving them back out returns them to where they were.
 
 ## Toggling a Special Workspace
 
-```ini
-bind=SUPER,s,togglespecialworkspace,term
+```kdl
+binds {
+    Super+s { togglespecialworkspace term; }
+}
 ```
 
 Calling `togglespecialworkspace` with the same name again slides it back out. The workspace does
@@ -28,8 +30,8 @@ that you can assign windows to afterwards.
 
 **At launch, via a window rule:**
 
-```ini
-windowrule=special_workspace:term,appid:kitty
+```kdl
+window-rule { match app-id=kitty; special_workspace term }
 ```
 
 Any window matching this rule is placed in the `term` special workspace as soon as it maps. It
@@ -37,11 +39,11 @@ stays hidden until a monitor's `term` special workspace is toggled open.
 
 **At runtime, for the focused window:**
 
-```ini
-bind=SUPER+SHIFT,s,movetospecialworkspace,term
-
-# Move the focused window back out to its normal tag
-bind=SUPER+CTRL,s,movetospecialworkspace
+```kdl
+binds {
+    Super+Shift+s { movetospecialworkspace term; }
+    Super+Ctrl+s { movetospecialworkspace; }
+}
 ```
 
 `movetospecialworkspace` called with no name (or an empty one) moves the focused window back out
