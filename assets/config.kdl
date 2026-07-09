@@ -1,14 +1,16 @@
-decoration {
+effects {
     blur {
         enable 0
         layer 0
         optimized 1
         passes 2
         radius 5
-        noise 0.02
-        brightness 0.9
-        contrast 0.9
-        saturation 1.2
+        params {
+            noise 0.02
+            brightness 0.9
+            contrast 0.9
+            saturation 1.2
+        }
     }
     shadow {
         enable 0
@@ -16,15 +18,11 @@ decoration {
         only-floating 1
         size 10
         blur 15
-        position-x 0
-        position-y 0
         color 0x000000ff
-    }
-    border {
-        width 4
-        color 0x444444ff
-        focus-color 0xc9b890ff
-        urgent-color 0xad401fff
+        position {
+            x 0
+            y 0
+        }
     }
 }
 misc {
@@ -100,12 +98,12 @@ misc {
     layerrule animation_type_close:zoom,layer_name:rofi
 }
 animations {
-    open {
+    window-open {
         type slide
         fade-begin-opacity 0.5
         duration 400
     }
-    close {
+    window-close {
         type slide
         fade-begin-opacity 0.8
         duration 800
@@ -117,27 +115,41 @@ layout {
         default-proportion 0.8
         focus-center 0
         prefer-center 0
-        edge-pointer-focus 1
-        edge-focus-allow-speed 0.0
         default-proportion-single 1.0
         preset 0.5,0.8,1.0
+        edge-scroll {
+            pointer-focus 1
+            allow-speed 0.0
+        }
+    }
+    border {
+        width 4
+        color 0x444444ff
+        focus-color 0xc9b890ff
+        urgent-color 0xad401fff
     }
 }
 overview {
-    hotarea-size 10
-    hotarea 0
     tab-mode 1
     no-resize 1
-    gaps-in 5
-    gaps-out 30
+    hotarea {
+        size 10
+        enable 0
+    }
+    gaps {
+        inner 5
+        outer 30
+    }
 }
 input {
     cursor {
         size 24
     }
     keyboard {
-        repeat-rate 25
-        repeat-delay 600
+        repeat {
+            rate 25
+            delay 600
+        }
     }
 }
 
