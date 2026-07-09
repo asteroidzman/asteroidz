@@ -10,4 +10,3 @@ util.o
 *-protocol.o
 build/
 resume-claude
-build-vk/

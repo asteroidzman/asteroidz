@@ -273,7 +273,8 @@ static bool scene_node_snapshot(struct wlr_scene_node *node, int32_t lx,
 
 		struct wlr_scene_shadow *snapshot_shadow = wlr_scene_shadow_create(
 			snapshot_tree, scene_shadow->width, scene_shadow->height,
-			0, 0.0f, nofx_clear());
+			scene_shadow->corner_radius, scene_shadow->blur_sigma,
+			scene_shadow->color);
 		if (snapshot_shadow == NULL) {
 			return false;
 		}

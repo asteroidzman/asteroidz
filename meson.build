@@ -35,6 +35,7 @@ xkbcommon_dep = dependency('xkbcommon')
 libinput_dep = dependency('libinput',version: '>=1.27.1')
 libwayland_client_dep = dependency('wayland-client')
 pcre2_dep = dependency('libpcre2-8')
+libscenefx_dep = dependency('scenefx-0.5',version: '>=0.5.0')
 pixman_dep = dependency('pixman-1')
 cjson_dep = dependency('libcjson')
 pangocairo_dep = dependency('pangocairo')
@@ -105,6 +106,7 @@ executable('asteroidz',
     libdrm,
     xcb,
     xlibs,
+    libscenefx_dep,
     wayland_server_dep,
     wlroots_dep,
     xkbcommon_dep,
