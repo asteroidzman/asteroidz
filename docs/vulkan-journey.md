@@ -13,7 +13,7 @@ sway 1.12's Vulkan/HDR10 path. Not for raw FPS.
 | Config | Renderer | scenefx? | wlroots | Colors/effects | Status |
 |--------|----------|----------|---------|----------------|--------|
 | **A. scenefx + GLES** (original) | scenefx GLES2 | yes | 0.20 | full (blur/shadow/rounded/SDR color) | rock solid — the daily driver |
-| **B. scenefx + fx_vk (Vulkan)** | scenefx `fx_vk` (vendored wlroots Vulkan) | yes | 0.21 | **rounded corners (2.1) + box shadow (2.2) + blur (2.3) ported; real-gradient + SDR color still NO-OP (WIP)** | boots, renders windows + rounded corners/borders + drop shadows + blur; SDR colors still wrong |
+| **B. scenefx + fx_vk (Vulkan)** | scenefx `fx_vk` (vendored wlroots Vulkan) | yes | 0.21 | **rounded corners (2.1) + box shadow (2.2) + blur (2.3) + SDR colour all working; only real-gradient still NO-OP** | boots, renders windows + rounded corners/borders + drop shadows + blur; SDR colours match config A |
 | **C. wlroots built-in Vulkan (no scenefx)** | wlroots vulkan | no (nofx.h) | 0.20 | none (nofx stubs) | boots, renders windows; kept only as a reference point |
 
 Switching:
@@ -53,14 +53,18 @@ Switching:
    it**, so content stays visible in both focus states (matches sway, which
    never restacks on focus).
 
-4. **Colors too bright / wrong on Vulkan** — the SDR pipeline
-   (`wlr_scene_set_sdr_reference_luminance`, `wlr_scene_set_sdr_saturation`, your
-   `reference-luminance 280` / `saturation 1.25`) lives in scenefx's **GLES**
-   renderer. `nofx.h` stubs those calls, and our `fx_vk` port no-ops the effect/
-   color path, so SDR saturation + reference luminance are **not applied** on any
-   Vulkan config yet. Restoring them = porting scenefx's color/effect shaders to
-   `fx_vk` (the big remaining work). wlroots 0.20 wlr_scene has no native
-   equivalent (scenefx-only feature).
+4. **Colors too bright / wrong on Vulkan — RESOLVED / was never an fx_vk gap.**
+   (Historic note; superseded.) The SDR settings (`reference-luminance 280`,
+   `saturation 1.25`) are NOT a GLES-only shader path. `scene_output_combine_color_transforms`
+   (`types/scene/wlr_scene.c` ~3289-3343) bakes the SDR reference-luminance
+   multiplier and the saturation matrix into the **output colour-transform
+   matrix** (`wlr_color_transform_init_matrix`) — renderer-agnostic. `fx_vk`
+   applies it in the two-pass **output resolve** (`output.frag` `mat3(matrix)*rgb`
+   + `pass->color_transform` in `render_pass_submit`, `pass.c` ~301), and applies
+   the per-texture `luminance_multiplier` in `render_texture` (`pass.c` ~951).
+   Verified visually: SDR colours on config B match config A. No fx_vk work
+   needed. (The earlier "GLES-only no-op" belief predated asteroidz moving SDR
+   into the colour-transform matrix.)
 
 ## Key renderer facts
 - wlroots' Vulkan renderer (both 0.20.1 and 0.21-dev, byte-identical in the parts
@@ -90,9 +94,10 @@ Switching:
 ## TODO to make Vulkan a real daily driver
 1. Port scenefx effect shaders to `fx_vk` (SPIR-V): rounded corners → box shadow →
    blur → gradients → color LUT. **Rounded corners DONE (2.1), box shadow DONE
-   (2.2).** Next: blur → real gradient shader → color LUT.
-2. Port the SDR color pipeline (reference luminance + saturation) to `fx_vk` so
-   HDR/SDR colors match config A.
+   (2.2), blur DONE (2.3).** Next: real gradient shader → color LUT.
+2. ~~Port the SDR color pipeline to `fx_vk`~~ — NOT needed; SDR (reference
+   luminance + saturation) already applies via the renderer-agnostic output
+   colour-transform matrix (see root cause #4). Verified matching config A.
 3. Revisit the full-damage workaround once partial damage is correct.
 4. Revisit the border lower-to-bottom workaround (root cause #3): now that the
    rounded-rect clip cutout renders on `fx_vk`, the hollow border no longer covers
