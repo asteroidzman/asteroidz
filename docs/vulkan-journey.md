@@ -140,6 +140,53 @@ Switching:
 - Enabled via `scenefx.kdl` `shadow { enable 1 }`; asteroidz shadow scene nodes
   now render on Vulkan (were a no-op before).
 
+### Step 2.3 — blur on `fx_vk` (IN PROGRESS, phased)
+Full-parity blur. The user chose the full multi-pass restructure over the
+lighter optimized-only path. Phased; commits on the scenefx `vulkan` branch.
+
+- **Phase A DONE (scenefx `6231ec6`)** — foundation, inert. Ported
+  blur1/blur2/blur_effects to SPIR-V; `WLR_VK_SHADER_SOURCE_BLUR1/2/EFFECTS`
+  pipelines (tex layout sampler, `BLEND_MODE_NONE`). `fx_vk_effect_image`:
+  device-local 16F `COLOR_ATTACHMENT|SAMPLED` image kept in `GENERAL` layout
+  (no manual transitions — the 16F effect render pass uses GENERAL init/final
+  and its subpass deps guard write→read). `fx_vk_effect_buffers`: per-output
+  set (ping/pong + optimized + optimized_no_blur + saved_pixels), cached on the
+  wlr_output via an addon, resize-aware.
+- **Phase B DONE (scenefx `5271449`)** — `fx_vk_render_pass_blur`, inert.
+  Dual-Kawase down/upsample ping-ponging the effect buffers, returning the
+  blurred image. Mirrors GLES `get_main_buffer_blur`: dst/src boxes stay
+  full-buffer; only the scissor scales (`>>(i+1)` down, `>>i` up); halfpixel is
+  constant. Includes the optional blur_effects post pass. Each iteration drives
+  its own effect render pass (must run with NO main pass active).
+- **THE OBSTACLE (why Phase C is a restructure):** the two-pass HDR render is a
+  **single `VkRenderPass` with two subpasses** — subpass 0 draws the scene into
+  the 16F blend image, subpass 1 (fired by `vkCmdNextSubpass` in
+  `render_pass_submit`) resolves it to output with the colour transform. You
+  **cannot end that pass mid-frame** to blur (Vulkan can't sample the attachment
+  being written; ending early skips the resolve). Blur fundamentally needs to
+  sample "content so far", so the main pass must be splittable.
+- **Phase C PLAN (restructure — the chosen path):** convert the two-pass from
+  an *input-attachment* resolve to a *sampled scene image*:
+  1. `output.frag`: `subpassInput`+`subpassLoad` → `sampler2D`+`texture(,uv)`.
+  2. Output DS: `INPUT_ATTACHMENT` → `COMBINED_IMAGE_SAMPLER`
+     (`fx_vulkan_alloc_blend_ds` + `output_ds_srgb_layout` binding); blend/scene
+     image gains `SAMPLED_BIT`.
+  3. Split the 2-subpass render pass into two single-subpass passes: a *scene*
+     pass (draws into the scene image, `finalLayout=SHADER_READ_ONLY`) and an
+     *output* pass (samples scene image → output). Two framebuffers.
+  4. `render_pass_submit`: replace `vkCmdNextSubpass` with end-scene-pass →
+     begin-output-pass → bind output pipe + scene-image sampler DS → fullscreen
+     draw.
+  5. Then blur hook: at `OPTIMIZED_BLUR` (dirty only) end the scene pass, blur
+     by sampling the scene image, restart it (`loadOp=LOAD`); `BLUR` nodes
+     sample the cached optimized image (no split). Also need fx_vk
+     `scene_pass_add_blur` / `_add_optimized_blur` / `scene_pass_has_blur`.
+  Steps 1–4 land as ONE coherent unit (rewrites the core output path for ALL
+  rendering; can't be partially landed) and need a **restart-test** before the
+  blur hook is added — isolates "restructure broke normal rendering?" from
+  "does blur work?". Fallback if the restructure misbehaves: scenefx `5271449`
+  (blur inert, renderer works as before).
+
 ### Border/pill colour sharing (DMS, not renderer)
 - Window borders now share the DMS pill palette: matugen template
   `asteroidz-colors.kdl` maps the resting border `color` to
