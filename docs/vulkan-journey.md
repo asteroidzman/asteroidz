@@ -13,7 +13,7 @@ sway 1.12's Vulkan/HDR10 path. Not for raw FPS.
 | Config | Renderer | scenefx? | wlroots | Colors/effects | Status |
 |--------|----------|----------|---------|----------------|--------|
 | **A. scenefx + GLES** (original) | scenefx GLES2 | yes | 0.20 | full (blur/shadow/rounded/SDR color) | rock solid — the daily driver |
-| **B. scenefx + fx_vk (Vulkan)** | scenefx `fx_vk` (vendored wlroots Vulkan) | yes | 0.21 | **effects + SDR color NO-OP (WIP)** | boots, renders windows; colors wrong, no effects |
+| **B. scenefx + fx_vk (Vulkan)** | scenefx `fx_vk` (vendored wlroots Vulkan) | yes | 0.21 | **rounded corners ported (step 2.1); blur/shadow/gradient + SDR color still NO-OP (WIP)** | boots, renders windows + rounded corners/borders; SDR colors still wrong, no blur/shadow |
 | **C. wlroots built-in Vulkan (no scenefx)** | wlroots vulkan | no (nofx.h) | 0.20 | none (nofx stubs) | boots, renders windows; kept only as a reference point |
 
 Switching:
@@ -76,7 +76,9 @@ Switching:
   when `WLR_RENDERER=vulkan`.
 - scenefx's scene is renderer-agnostic via `fx_render_pass_try_get()` +
   `scene_pass_add_*` helpers: base surfaces/rects route to the plain
-  `wlr_render_pass` on Vulkan; effects (shadow/blur/rounded/gradient) are no-ops.
+  `wlr_render_pass` on Vulkan. As of step 2.1 **rounded corners/textures render on
+  `fx_vk`** (`fx_vk_render_pass_add_rounded_rect`/`_grad`/`add_texture`); shadow,
+  blur, real gradients and the SDR color path are still no-ops.
   A full-damage workaround forces a full repaint on the Vulkan path.
 
 ## wlroots version notes
@@ -87,8 +89,44 @@ Switching:
 
 ## TODO to make Vulkan a real daily driver
 1. Port scenefx effect shaders to `fx_vk` (SPIR-V): rounded corners → box shadow →
-   blur → gradients → color LUT. Rounded corners first (fixes the border properly,
-   lets us drop the lower-to-bottom workaround and re-enable focus animations).
+   blur → gradients → color LUT. **Rounded corners DONE (step 2.1).** Next: box
+   shadow → blur → real gradient shader → color LUT.
 2. Port the SDR color pipeline (reference luminance + saturation) to `fx_vk` so
    HDR/SDR colors match config A.
 3. Revisit the full-damage workaround once partial damage is correct.
+4. Revisit the border lower-to-bottom workaround (root cause #3): now that the
+   rounded-rect clip cutout renders on `fx_vk`, the hollow border no longer covers
+   content, so the unfocus lower could likely be dropped / focus animations
+   re-enabled. Not yet done — verify before removing the workaround.
+
+## Progress log
+
+### Step 2.1 — rounded corners + rounded textures on `fx_vk` (scenefx `5300811`)
+- New SPIR-V shaders `quad_round.frag` / `texture_round.frag` mirror the GLES
+  `quad_round` + `corner_alpha` and `tex` + `corner_alpha` paths (same SDF, same
+  per-pixel fudge, same `is_cutout` interior-clip semantics). Added to the
+  vulkan `shaders/meson.build`.
+- `pass.c`: `fx_vk_render_pass_add_rounded_rect` / `_grad` / `add_texture` push a
+  dedicated corner+clip frag push-constant block; `wlr_scene.c` routes rounded
+  scene rects/buffers to them under `FX_HAS_VULKAN`.
+- **Corner-coordinate gotcha:** corner geometry must NOT use `gl_FragCoord`. Under
+  the `FLIPPED_180` projection `gl_FragCoord` is in flipped framebuffer space and
+  only matches box space for vertically-centred boxes — offset boxes (window
+  borders, titlebar'd content) rounded the wrong edges (monocle looked fine,
+  titlebar'd windows rounded the top instead of the bottom). Fix: a new `box_pos`
+  varying from `common.vert` carrying the unit-quad coordinate (layout-top-left
+  origin), used for both the quad and the interior-clip geometry.
+- **Border colour gotcha:** `scenefx.kdl` enables `border { gradient { enable 1 } }`,
+  so the focused window takes the gradient path. `fx_vk` has no gradient shader yet
+  and `wlr_scene_rect_set_gradient` never updates `rect->color`, so the fallback
+  rendered the rect's stale solid colour (the last inactive border colour) → the
+  active border read as the inactive colour. Fix: the `fx_vk` gradient fallback now
+  fills with the gradient's **first stop** (the focus colour), giving a solid
+  focused border that matches the flat pills.
+
+### Border/pill colour sharing (DMS, not renderer)
+- Window borders now share the DMS pill palette: matugen template
+  `asteroidz-colors.kdl` maps the resting border `color` to
+  `surface_container_high` (= pill `bg-color`) and `focus-color` to `primary`
+  (= pill `focus-bg-color`). Border `width` knob added to `config.kdl`
+  (`layout/border/width`); colours stay in the generated `dms/colors.kdl`.
