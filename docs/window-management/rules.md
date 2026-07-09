@@ -9,9 +9,10 @@ Window rules allow you to set specific properties (floating, opacity, size, anim
 
 **Format:**
 
-```ini
-windowrule=Parameter:Values,title:Values
-windowrule=Parameter:Values,Parameter:Values,appid:Values,title:Values
+```kdl
+window-rule { match title="<regex>"; <action> <value>... }
+
+window-rule { match app-id="<regex>" title="<regex>"; <action> <value>...; <action> }
 ```
 
 ### State & Behavior Parameters
@@ -113,51 +114,45 @@ windowrule=Parameter:Values,Parameter:Values,appid:Values,title:Values
 
 ### Examples
 
-```ini
-# Set specific window size and position
-windowrule=width:1000,height:900,appid:yesplaymusic,title:Demons
+```kdl
+binds {
+    alt+h { toggle_named_scratchpad st-yazi none "st -c st-yazi -e yazi"; }
+    Super+s { togglespecialworkspace term; }
+}
 
-# Global keybindings for OBS Studio
-windowrule=globalkeybinding:ctrl+alt-o,appid:com.obsproject.Studio
-windowrule=globalkeybinding:ctrl+alt-n,appid:com.obsproject.Studio
-windowrule=isopensilent:1,appid:com.obsproject.Studio
+window-rule { match app-id=yesplaymusic title=Demons; width 1000; height 900 }
 
-# Force tearing for games
-windowrule=force_tearing:1,title:vkcube
-windowrule=force_tearing:1,title:Counter-Strike 2
+window-rule { match app-id=com.obsproject.Studio; globalkeybinding ctrl+alt-o }
 
-# Named scratchpad for file manager
-windowrule=isnamedscratchpad:1,width:1280,height:800,appid:st-yazi
+window-rule { match app-id=com.obsproject.Studio; globalkeybinding ctrl+alt-n }
 
-# Custom opacity for specific apps
-windowrule=focused_opacity:0.8,appid:firefox
-windowrule=unfocused_opacity:0.6,appid:foot
+window-rule { match app-id=com.obsproject.Studio; isopensilent 1 }
 
-# Disable blur for selection tools
-windowrule=noblur:1,appid:slurp
+window-rule { match title=vkcube; force_tearing 1 }
 
-# Position windows relative to screen center
-windowrule=offsetx:20,offsety:-30,width:800,height:600,appid:alacritty
+window-rule { match title="Counter-Strike 2"; force_tearing 1 }
 
-# Send to specific tag and monitor
-windowrule=tags:9,monitor:HDMI-A-1,appid:discord
+window-rule { match app-id=st-yazi; isnamedscratchpad 1; width 1280; height 800 }
 
-# Terminal swallowing setup
-windowrule=isterm:1,appid:st
-windowrule=noswallow:1,appid:foot
+window-rule { match app-id=firefox; focused_opacity 0.8 }
 
-# Disable client-side decorations
-windowrule=allow_csd:1,appid:firefox
+window-rule { match app-id=foot; unfocused_opacity 0.6 }
 
-# Unmanaged global window (desktop pets, camera)
-windowrule=isunglobal:1,appid:cheese
+window-rule { match app-id=slurp; no-blur }
 
-# Named scratchpad toggle
-bind=alt,h,toggle_named_scratchpad,st-yazi,none,st -c st-yazi -e yazi
+window-rule { match app-id=alacritty; offsetx 20; offsety -30; width 800; height 600 }
 
-# Named special workspace for a terminal (see Special Workspaces docs)
-windowrule=special_workspace:term,appid:kitty
-bind=SUPER,s,togglespecialworkspace,term
+window-rule { match app-id=discord; tags 9; monitor HDMI-A-1 }
+
+window-rule { match app-id=st; isterm 1 }
+
+window-rule { match app-id=foot; noswallow 1 }
+
+window-rule { match app-id=firefox; allow_csd 1 }
+
+window-rule { match app-id=cheese; isunglobal 1 }
+
+window-rule { match app-id=kitty; special_workspace term }
 ```
 
 ---
@@ -170,10 +165,12 @@ You can set all parameters in one line. If only `id` is set, the rule is followe
 
 **Format:**
 
-```ini
-tagrule=id:Values,Parameter:Values,Parameter:Values
-tagrule=id:Values,monitor_name:eDP-1,Parameter:Values,Parameter:Values
-tagrule=id:Values,monitor_make:xxx,monitor_model:xxx,Parameter:Values
+```kdl
+tag "<number>" { <property> <value>; <property> <value> }
+
+tag "<number>" { monitor_name "eDP-1"; layout "<layout>" }
+
+tag "<number>" { monitor_make "<make>"; monitor_model "<model>"; layout "<layout>" }
 ```
 
 > **Tip:** See [Layouts](/docs/window-management/layouts#supported-layouts) for detailed descriptions of each layout type.
@@ -198,34 +195,34 @@ tagrule=id:Values,monitor_make:xxx,monitor_model:xxx,Parameter:Values
 
 ### Examples
 
-```ini
-# Set layout for specific tags
-tagrule=id:1,layout_name:scroller
-tagrule=id:2,layout_name:scroller
+```kdl
+tag 1 { layout scroller }
 
-# Limit to specific monitor
-tagrule=id:1,monitor_name:eDP-1,layout_name:scroller
-tagrule=id:2,monitor_name:eDP-1,layout_name:scroller
+tag 2 { layout scroller }
 
-# Persistent tags (1-4) with layout assignment
-tagrule=id:1,no_hide:1,layout_name:scroller
-tagrule=id:2,no_hide:1,layout_name:scroller
-tagrule=id:3,monitor_name:eDP-1,no_hide:1,layout_name:scroller
-tagrule=id:4,monitor_name:eDP-1,no_hide:1,layout_name:scroller
+tag 1 { monitor_name eDP-1; layout scroller }
 
-# Advanced tag configuration with master layout settings
-tagrule=id:5,layout_name:tile,nmaster:2,mfact:0.6
-tagrule=id:6,monitor_name:HDMI-A-1,layout_name:monocle,no_render_border:1
+tag 2 { monitor_name eDP-1; layout scroller }
 
-# Named tags (shown in the overview / exposed to the bar); rename at
-# runtime with:  bind=SUPER,n,set_tag_name,mail
-tagrule=id:1,name:web
-tagrule=id:2,name:code
-tagrule=id:3,name:chat
+tag 1 { no_hide 1; layout scroller }
 
-# set scroller proportion for specific tag
-tagrule=id:1,layout_name:scroller,scroller_default_proportion_single:0.5,scroller_ignore_proportion_single:0,scroller_default_proportion:0.9,monitor_name:HDMI-A-1
+tag 2 { no_hide 1; layout scroller }
 
+tag 3 { monitor_name eDP-1; no_hide 1; layout scroller }
+
+tag 4 { monitor_name eDP-1; no_hide 1; layout scroller }
+
+tag 5 { layout tile; nmaster 2; mfact 0.6 }
+
+tag 6 { monitor_name HDMI-A-1; layout monocle; no_render_border 1 }
+
+tag 1 { name web }
+
+tag 2 { name code }
+
+tag 3 { name chat }
+
+tag 1 { layout scroller; scroller_default_proportion_single 0.5; scroller_ignore_proportion_single 0; scroller_default_proportion 0.9; monitor_name HDMI-A-1 }
 ```
 
 > **Tip:** For Waybar configuration with persistent tags, see [Status Bar](/docs/visuals/status-bar) documentation.
@@ -238,8 +235,10 @@ You can set all parameters in one line. Target "layer shell" surfaces like statu
 
 **Format:**
 
-```ini
-layerrule=layer_name:Values,Parameter:Values,Parameter:Values
+```kdl
+misc {
+    layerrule layer_name:Values,Parameter:Values,Parameter:Values
+}
 ```
 
 > **Tip:** You can use `amsg get last_open_surface` to get the last open layer name for debugging.
@@ -257,16 +256,8 @@ layerrule=layer_name:Values,Parameter:Values,Parameter:Values
 
 ### Examples
 
-```ini
-# No blur or animation for slurp selection layer (avoids occlusion and ghosting in screenshots)
-layerrule=noanim:1,noblur:1,layer_name:selection
-
-# Zoom animation for Rofi with multiple parameters
-layerrule=animation_type_open:zoom,noanim:0,layer_name:rofi
-
-# Disable animations and shadows for notification daemon
-layerrule=noanim:1,noshadow:1,layer_name:swaync
-
-# Multiple effects for launcher
-layerrule=animation_type_open:slide,animation_type_close:fade,noblur:1,layer_name:wofi
+```kdl
+misc {
+    layerrule animation_type_open:slide,animation_type_close:fade,noblur:1,layer_name:wofi
+}
 ```

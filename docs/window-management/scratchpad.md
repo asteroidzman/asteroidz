@@ -11,15 +11,12 @@ Any window can be sent to the "scratchpad" pile, which hides it. You can then cy
 
 **Keybindings:**
 
-```ini
-# Send current window to scratchpad
-bind=SUPER,i,minimized
-
-# Toggle (show/hide) the scratchpad
-bind=ALT,z,toggle_scratchpad
-
-# Retrieve window from scratchpad (restore)
-bind=SUPER+SHIFT,i,restore_minimized
+```kdl
+binds {
+    Super+i { minimized; }
+    Alt+z { toggle_scratchpad; }
+    Super+Shift+i { restore_minimized; }
+}
 ```
 
 ---
@@ -38,26 +35,23 @@ You must identify the app using a unique `appid` or `title` and mark it as a nam
 
 Use `none` as a placeholder when you only want to match by one field.
 
-```ini
-# Match by appid
-windowrule=isnamedscratchpad:1,width:1280,height:800,appid:st-yazi
+```kdl
+window-rule { match app-id=st-yazi; isnamedscratchpad 1; width 1280; height 800 }
 
-# Match by title
-windowrule=isnamedscratchpad:1,width:1000,height:700,title:kitty-scratch
+window-rule { match title=kitty-scratch; isnamedscratchpad 1; width 1000; height 700 }
 ```
 
 **2. Bind the Toggle Key**
 
-Format: `bind=MOD,KEY,toggle_named_scratchpad,appid,title,command`
+Format (inside `binds`): `Mod+Key { toggle_named_scratchpad appid title command; }`
 
 Use `none` for whichever field you are not matching on.
 
-```ini
-# Match by appid: launch 'st' with class 'st-yazi' running 'yazi'
-bind=alt,h,toggle_named_scratchpad,st-yazi,none,st -c st-yazi -e yazi
-
-# Match by title: launch 'kitty' with window title 'kitty-scratch'
-bind=alt,k,toggle_named_scratchpad,none,kitty-scratch,kitty -T kitty-scratch
+```kdl
+binds {
+    alt+h { toggle_named_scratchpad st-yazi none "st -c st-yazi -e yazi"; }
+    alt+k { toggle_named_scratchpad none kitty-scratch "kitty -T kitty-scratch"; }
+}
 ```
 
 ---
@@ -66,8 +60,10 @@ bind=alt,k,toggle_named_scratchpad,none,kitty-scratch,kitty -T kitty-scratch
 
 You can customize the size of scratchpad windows relative to the screen.
 
-```ini
-scratchpad_width_ratio=0.8
-scratchpad_height_ratio=0.9
-scratchpadcolor=0x516c93ff
+```kdl
+misc {
+    scratchpad_width_ratio 0.8
+    scratchpad_height_ratio 0.9
+    scratchpadcolor 0x516c93ff
+}
 ```

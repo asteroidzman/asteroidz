@@ -19,24 +19,19 @@ Control the sizing of window borders and gaps.
 
 Colors are defined in `0xRRGGBBAA` hex format.
 
-```ini
-# Background color of the root window
-rootcolor=0x323232ff
-
-# Inactive window border
-bordercolor=0x444444ff
-
-# Drop shadow when dragging windows
-dropcolor=0x8FBA7C55
-
-# Split window border color in manual dwindle layout
-splitcolor=0xEB441EFF
-
-# Active window border
-focuscolor=0xc66b25ff
-
-# Urgent window border (alerts)
-urgentcolor=0xad401fff
+```kdl
+misc {
+    rootcolor 0x323232ff
+    dropcolor 0x8FBA7C55
+    splitcolor 0xEB441EFF
+}
+layout {
+    border {
+        color 0x444444ff
+        focus-color 0xc66b25ff
+        urgent-color 0xad401fff
+    }
+}
 ```
 
 ### State-Specific Colors
@@ -78,9 +73,13 @@ An optional server-side titlebar, reserving real space above each tiled window's
 | `enable_titlebar` | `0` | Show a titlebar on tiled windows (1 = enable). |
 | `titlebar_height` | `28` | Titlebar height in pixels. |
 
-```ini
-enable_titlebar=1
-titlebar_height=28
+```kdl
+layout {
+    titlebar {
+        enable 1
+        height 28
+    }
+}
 ```
 
 | Setting | Default | Description |
@@ -104,7 +103,11 @@ Control the appearance of window borders.
 
 Set the size and theme of your mouse cursor.
 
-```ini
-cursor_size=24
-cursor_theme=Adwaita
+```kdl
+input {
+    cursor {
+        size 24
+        theme Adwaita
+    }
+}
 ```

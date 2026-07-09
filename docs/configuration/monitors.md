@@ -9,8 +9,8 @@ You can configure each display output individually using the `monitorrule` keywo
 
 **Syntax:**
 
-```ini
-monitorrule=name:Values,Parameter:Values,Parameter:Values
+```kdl
+output "<name>" { <property> <value>; <property> <value> }
 ```
 
 > **Info:** If any of the matching fields (`name`, `make`, `model`, `serial`) are set, **all** of the set ones must match to be considered a match. Use `wlr-randr` to get your monitor's name, make, model, and serial.
@@ -60,18 +60,14 @@ monitorrule=name:Values,Parameter:Values,Parameter:Values
 
 ### Examples
 
-```ini
-# Laptop display: 1080p, 60Hz, positioned at origin
-monitorrule=name:^eDP-1$,width:1920,height:1080,refresh:60,x:0,y:10
+```kdl
+output eDP-1 { width 1920; height 1080; refresh 60; x 0; y 10 }
 
-# Match by make and model instead of name
-monitorrule=make:Chimei Innolux Corporation,model:0x15F5,width:1920,height:1080,refresh:60,x:0,y:0
+output "" { make "Chimei Innolux Corporation"; model 0x15F5; width 1920; height 1080; refresh 60; x 0; y 0 }
 
-# Virtual monitor with pattern matching
-monitorrule=name:HEADLESS-.*,width:1920,height:1080,refresh:60,x:1926,y:0,scale:1,rr:0,vrr:0
+output HEADLESS-.* { width 1920; height 1080; refresh 60; x 1926; y 0; scale; rr 0; vrr 0 }
 
-# HDR gaming monitor with a 10-bit framebuffer
-monitorrule=name:^DP-1$,width:3840,height:2160,refresh:144,x:0,y:0,vrr:1,hdr:1,bitdepth:10
+output DP-1 { width 3840; height 2160; refresh 144; x 0; y 0; vrr; hdr; bit-depth 10 }
 ```
 
 > **Note:** HDR requires wlroots 0.20+, an HDR-capable display, and a driver
@@ -86,9 +82,12 @@ SDR content on an HDR output maps to the spec-standard 203 cd/m² by default,
 which can look dim next to a bright SDR desktop. Adjust with the global
 option (not part of `monitorrule`):
 
-```ini
-# SDR white level on HDR outputs, in nits (0 = spec default of 203)
-sdr_reference_luminance=350
+```kdl
+misc {
+    sdr {
+        reference-luminance 350
+    }
+}
 ```
 
 Takes effect on config reload without a restart.
@@ -97,9 +96,10 @@ Takes effect on config reload without a restart.
 
 Screencopy protocols don't carry colorimetry metadata, so captures of an HDR output look washed out by default. asteroidz automatically drops an output out of HDR for as long as it's being captured via `ext-image-copy-capture`, restoring it afterward. Disable with the global option (not part of `monitorrule`) if you'd rather keep true HDR on screen during capture, at the cost of washed-out recordings:
 
-```ini
-# 1 = auto-disable HDR while an output is being captured (default)
-hdr_capture_fallback=0
+```kdl
+misc {
+    hdr_capture_fallback 0
+}
 ```
 
 See [XDG Portals → 10-bit / HDR Screencasting](./xdg-portals.md#10-bit--hdr-screencasting) for details.
@@ -149,16 +149,18 @@ Tearing allows games to bypass the compositor's VSync for lower latency.
 
 **Enable Globally:**
 
-```ini
-allow_tearing=1
+```kdl
+misc {
+    allow-tearing 1
+}
 ```
 
 **Enable per Window:**
 
 Use a window rule to force tearing for specific games.
 
-```ini
-windowrule=force_tearing:1,title:vkcube
+```kdl
+window-rule { match title=vkcube; force_tearing 1 }
 ```
 
 ### Tearing Behavior Matrix
@@ -175,14 +177,18 @@ windowrule=force_tearing:1,title:vkcube
 
 Add this to `/etc/environment` and reboot:
 
-```bash
-WLR_DRM_NO_ATOMIC=1
+```kdl
+misc {
+    WLR_DRM_NO_ATOMIC 1
+}
 ```
 
 Or run asteroidz with the environment variable:
 
-```bash
-WLR_DRM_NO_ATOMIC=1 asteroidz
+```kdl
+misc {
+    WLR_DRM_NO_ATOMIC "1 asteroidz"
+}
 ```
 
 ---
@@ -191,12 +197,10 @@ WLR_DRM_NO_ATOMIC=1 asteroidz
 
 If asteroidz cannot display correctly or shows a black screen, try selecting a specific GPU:
 
-```bash
-# Use a single GPU
-WLR_DRM_DEVICES=/dev/dri/card1 asteroidz
-
-# Use multiple GPUs
-WLR_DRM_DEVICES=/dev/dri/card0:/dev/dri/card1 asteroidz
+```kdl
+misc {
+    WLR_DRM_DEVICES "/dev/dri/card0:/dev/dri/card1 asteroidz"
+}
 ```
 
 Some GPUs have compatibility issues with `syncobj_enable=1` — it may crash apps like `kitty` that use syncobj. Set `WLR_DRM_NO_ATOMIC=1` in `/etc/environment` and reboot to resolve this.
@@ -253,9 +257,11 @@ yay -S xwayland-satellite
 
 **In config file:**
 
-```ini
-env=QT_AUTO_SCREEN_SCALE_FACTOR,1
-env=QT_WAYLAND_FORCE_DPI,140
+```kdl
+environment {
+    QT_AUTO_SCREEN_SCALE_FACTOR 1
+    QT_WAYLAND_FORCE_DPI 140
+}
 ```
 
 **In autostart:**
@@ -286,10 +292,14 @@ yay -S xwayland-satellite
 
 **In config file:**
 
-```ini
-env=DISPLAY,:2
-exec-once=xwayland-satellite :2
-monitorrule=name:eDP-1,width:1920,height:1080,refresh:60,x:0,y:0,scale:1.4,vrr:0,rr:0
+```kdl
+environment {
+    DISPLAY :2
+}
+
+spawn-at-startup xwayland-satellite :2
+
+output eDP-1 { width 1920; height 1080; refresh 60; x 0; y 0; scale 1.4; vrr 0; rr 0 }
 ```
 
 > **Warning:** Use a `DISPLAY` value other than `:1` to avoid conflicting with asteroidz.
