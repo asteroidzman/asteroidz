@@ -13,7 +13,7 @@ sway 1.12's Vulkan/HDR10 path. Not for raw FPS.
 | Config | Renderer | scenefx? | wlroots | Colors/effects | Status |
 |--------|----------|----------|---------|----------------|--------|
 | **A. scenefx + GLES** (original) | scenefx GLES2 | yes | 0.20 | full (blur/shadow/rounded/SDR color) | rock solid — the daily driver |
-| **B. scenefx + fx_vk (Vulkan)** | scenefx `fx_vk` (vendored wlroots Vulkan) | yes | 0.21 | **rounded corners (2.1) + box shadow (2.2) + blur (2.3) + SDR colour all working; only real-gradient still NO-OP** | boots, renders windows + rounded corners/borders + drop shadows + blur; SDR colours match config A |
+| **B. scenefx + fx_vk (Vulkan)** | scenefx `fx_vk` (vendored wlroots Vulkan) | yes | 0.21 | **rounded corners (2.1) + box shadow (2.2) + blur (2.3) + gradients + SDR colour all working; only colour-LUT + minor blur polish left** | near-parity with config A: windows, rounded corners/borders, drop shadows, blur, 2-stop gradient borders, SDR colours all correct |
 | **C. wlroots built-in Vulkan (no scenefx)** | wlroots vulkan | no (nofx.h) | 0.20 | none (nofx stubs) | boots, renders windows; kept only as a reference point |
 
 Switching:
@@ -94,7 +94,9 @@ Switching:
 ## TODO to make Vulkan a real daily driver
 1. Port scenefx effect shaders to `fx_vk` (SPIR-V): rounded corners → box shadow →
    blur → gradients → color LUT. **Rounded corners DONE (2.1), box shadow DONE
-   (2.2), blur DONE (2.3).** Next: real gradient shader → color LUT.
+   (2.2), blur DONE (2.3), 2-stop gradient DONE (scenefx `f57fe75`, verified).**
+   Only remaining: colour-LUT effect (not used by asteroidz) + blur polish
+   (blur_strength mixing, ignore_transparent, >2-stop gradients).
 2. ~~Port the SDR color pipeline to `fx_vk`~~ — NOT needed; SDR (reference
    luminance + saturation) already applies via the renderer-agnostic output
    colour-transform matrix (see root cause #4). Verified matching config A.
@@ -214,6 +216,17 @@ lighter optimized-only path. Phased; commits on the scenefx `vulkan` branch.
     and `ignore_transparent`/transparency-mask stenciling not implemented;
     per-window blur always samples the whole-background cache; blur only on the
     two-pass path. None block the daily-driver look.
+
+### 2-stop gradient border on `fx_vk` (scenefx `f57fe75`, verified)
+- New `quad_grad_round.frag`: ports GLES `gradient.frag` + `quad_grad_round.frag`
+  (linear/conic + blend) × rounded-corner/clip coverage. Uses the `box_pos`
+  varying, not `gl_FragCoord`, so FLIPPED_180 doesn't invert the gradient.
+- Fits the shared frag push range (80..224): params @80, corner block @128,
+  2 colour stops @192 (linear+premultiplied on the CPU) — no new pipeline layout.
+- `fx_vk_render_pass_add_rounded_rect_grad` uses it for `count == 2` (the
+  focused-border focus→tertiary gradient); other counts keep the first-stop
+  solid fallback. Verified: focused border shows the 2-tone gradient, correct
+  ring shape.
 
 ### Border/pill colour sharing (DMS, not renderer)
 - Window borders now share the DMS pill palette: matugen template
