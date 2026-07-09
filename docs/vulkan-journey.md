@@ -13,7 +13,7 @@ sway 1.12's Vulkan/HDR10 path. Not for raw FPS.
 | Config | Renderer | scenefx? | wlroots | Colors/effects | Status |
 |--------|----------|----------|---------|----------------|--------|
 | **A. scenefx + GLES** (original) | scenefx GLES2 | yes | 0.20 | full (blur/shadow/rounded/SDR color) | rock solid — the daily driver |
-| **B. scenefx + fx_vk (Vulkan)** | scenefx `fx_vk` (vendored wlroots Vulkan) | yes | 0.21 | **rounded corners ported (step 2.1); blur/shadow/gradient + SDR color still NO-OP (WIP)** | boots, renders windows + rounded corners/borders; SDR colors still wrong, no blur/shadow |
+| **B. scenefx + fx_vk (Vulkan)** | scenefx `fx_vk` (vendored wlroots Vulkan) | yes | 0.21 | **rounded corners (2.1) + box shadow (2.2) ported; blur/real-gradient + SDR color still NO-OP (WIP)** | boots, renders windows + rounded corners/borders + drop shadows; SDR colors still wrong, no blur |
 | **C. wlroots built-in Vulkan (no scenefx)** | wlroots vulkan | no (nofx.h) | 0.20 | none (nofx stubs) | boots, renders windows; kept only as a reference point |
 
 Switching:
@@ -89,8 +89,8 @@ Switching:
 
 ## TODO to make Vulkan a real daily driver
 1. Port scenefx effect shaders to `fx_vk` (SPIR-V): rounded corners → box shadow →
-   blur → gradients → color LUT. **Rounded corners DONE (step 2.1).** Next: box
-   shadow → blur → real gradient shader → color LUT.
+   blur → gradients → color LUT. **Rounded corners DONE (2.1), box shadow DONE
+   (2.2).** Next: blur → real gradient shader → color LUT.
 2. Port the SDR color pipeline (reference luminance + saturation) to `fx_vk` so
    HDR/SDR colors match config A.
 3. Revisit the full-damage workaround once partial damage is correct.
@@ -123,6 +123,22 @@ Switching:
   active border read as the inactive colour. Fix: the `fx_vk` gradient fallback now
   fills with the gradient's **first stop** (the focus colour), giving a solid
   focused border that matches the flat pills.
+
+### Step 2.2 — box shadow on `fx_vk` (scenefx `07f5dc2`)
+- New SPIR-V `box_shadow.frag` ports the GLES `box_shadow.frag` (Evan Wallace's
+  fast rounded-rectangle gaussian) + the `corner_alpha` interior-clip cutout.
+- Same `box_pos`-varying fix as 2.1 for the shadow sample point (not
+  `gl_FragCoord`). Output is **linear + premultiplied** for the fx_vk
+  premultiplied-blend pipeline; GLES worked in straight-alpha sRGB with a
+  `SRC_ALPHA` blend, so the colour is linearised and premultiplied by the
+  per-pixel shadow mask in the shader.
+- `WLR_VK_SHADER_SOURCE_BOX_SHADOW` pipeline + `render_box_shadow` /
+  `fx_vk_render_pass_add_box_shadow`; `scene_pass_add_box_shadow` gains the
+  `FX_HAS_VULKAN` branch. Reuses the shared fx pipeline layout — `color@80`,
+  corner block `@96`, scalar `blur_sigma@160`, all within the reserved 80..224
+  fragment push-constant range (no new layout).
+- Enabled via `scenefx.kdl` `shadow { enable 1 }`; asteroidz shadow scene nodes
+  now render on Vulkan (were a no-op before).
 
 ### Border/pill colour sharing (DMS, not renderer)
 - Window borders now share the DMS pill palette: matugen template
