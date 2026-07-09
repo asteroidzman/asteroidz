@@ -356,6 +356,15 @@ void layer_animation_next_tick(LayerSurface *l) {
 		wlr_scene_node_for_each_buffer(&l->scene->node,
 									   scene_buffer_apply_opacity, &opacity);
 
+	/* Fade the backdrop blur in with the popup's open fade (alpha only, node
+	 * stays enabled), so a fading-in layer surface (e.g. a DMS popup) doesn't
+	 * reveal a full blurred rectangle before its content populates. Matches the
+	 * content opacity; only while the content itself is fading in. */
+	if (l->blur_node && l->animation.action == OPEN && config.animation_fade_in) {
+		float blur_a = animation_passed >= 1.0 ? 1.0f : (float)opacity;
+		wlr_scene_blur_set_alpha(l->blur_node, blur_a);
+	}
+
 	wlr_scene_node_set_position(&l->scene->node, x, y);
 
 	BufferData buffer_data;

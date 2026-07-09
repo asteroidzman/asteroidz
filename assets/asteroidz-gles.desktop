@@ -1,0 +1,8 @@
+[Desktop Entry]
+Encoding=UTF-8
+Name=Asteroidz (GLES fallback)
+DesktopNames=asteroidz;wlroots
+Comment=asteroidz WM, GLES2 renderer (fallback for the default Vulkan session)
+Exec=env WLR_RENDERER=gles2 asteroidz
+Icon=asteroidz
+Type=Application
