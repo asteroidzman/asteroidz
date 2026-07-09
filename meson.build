@@ -1,5 +1,5 @@
 project('asteroidz', ['c'],
-  version : '0.14.4',
+  version : '0.15.0',
 )
 
 subdir('protocols')
@@ -158,6 +158,7 @@ mandir = get_option('mandir')
 desktop_install_dir = join_paths(prefix, 'share/wayland-sessions')
 portal_install_dir = join_paths(prefix, 'share/xdg-desktop-portal')
 install_data('assets/asteroidz.desktop', install_dir : desktop_install_dir)
+install_data('assets/asteroidz-gles.desktop', install_dir : desktop_install_dir)
 install_data('assets/asteroidz-uwsm.desktop', install_dir : desktop_install_dir)
 install_data('assets/asteroidz-portals.conf', install_dir : portal_install_dir)
 install_data('assets/asteroidz.portal', install_dir : join_paths(prefix, 'share/xdg-desktop-portal/portals'))
