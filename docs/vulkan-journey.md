@@ -102,7 +102,9 @@ Switching:
    blur → gradients → color LUT. **Rounded corners DONE (2.1), box shadow DONE
    (2.2), blur DONE (2.3), 2-stop gradient DONE (scenefx `f57fe75`, verified).**
    Only remaining: colour-LUT effect (not used by asteroidz) + blur polish
-   (blur_strength mixing, ignore_transparent, >2-stop gradients).
+   (blur_strength + ignore_transparent now DONE; >2-stop gradients still fall
+   back to first-stop). Electron/native-Wayland dmabuf import is a separate
+   known Vulkan limitation (see step 2.3 notes).
 2. ~~Port the SDR color pipeline to `fx_vk`~~ — NOT needed; SDR (reference
    luminance + saturation) already applies via the renderer-agnostic output
    colour-transform matrix (see root cause #4). Verified matching config A.
@@ -218,10 +220,26 @@ lighter optimized-only path. Phased; commits on the scenefx `vulkan` branch.
     box (`render_effect_image`); fx_vk `scene_pass_*` branches +
     `fx_vk_render_pass_init_blur` (per-output effect buffers, full-damage path so
     no `blur_padding_region` machinery).
-  - First-cut simplifications still open (revisit): `blur_strength` partial mixing
-    and `ignore_transparent`/transparency-mask stenciling not implemented;
-    per-window blur always samples the whole-background cache; blur only on the
-    two-pass path. None block the daily-driver look.
+  - Polish DONE: `blur_strength` partial mixing (scenefx `002779c` — unfocused
+    windows re-blur `optimized_no_blur` at reduced strength via a per-node scene
+    split) and `ignore_transparent` transparency mask (scenefx `5a1001b` — a
+    2-descriptor-set masked-texture pipeline zeroes blur where the mask surface
+    alpha < threshold; the ignore_transparent path is runtime-untested but
+    isolated). Still simplified: blur only on the two-pass path; >2-stop
+    gradients fall back to first-stop. None block the daily-driver look.
+  - **Window-open flicker fix (asteroidz `a5fc7ca9`):** the open animation's
+    `set_strength(blur_p<1)` triggered the per-frame re-blur split, adding
+    latency and a lingering blurred rectangle before content. Fixed by holding
+    `strength = 1` during the open (fade only alpha); the blur node stays
+    enabled so steady-state blur behind translucent windows is preserved. (An
+    earlier enable/disable approach regressed that steady-state blur and was
+    superseded.)
+  - **Known limitation — electron/native-Wayland windows blank on fx_vk.** Not
+    blur-related (persists with blur off; XWayland works). Their GPU dmabuf uses
+    a format/modifier the Vulkan renderer can't import
+    (`fx_vulkan_import_dmabuf` -> "can't be used with modifier"): the same
+    fewer-importable-formats limitation as the other Vulkan root causes. Known
+    Linux/Vulkan issue, deprioritized.
 
 ### 2-stop gradient border on `fx_vk` (scenefx `f57fe75`, verified)
 - New `quad_grad_round.frag`: ports GLES `gradient.frag` + `quad_grad_round.frag`
