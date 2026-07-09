@@ -6,7 +6,7 @@
 #include <pango/pangocairo.h>
 #include <stdbool.h>
 #include <stdint.h>
-#include <wlr/types/wlr_scene.h>
+#include <scenefx/types/wlr_scene.h>
 #include "../common/corner_location.h"
 
 // Pre-existing struct, assumed to already exist

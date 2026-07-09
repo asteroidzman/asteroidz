@@ -1,8 +1,7 @@
 #ifndef ASTEROIDZ_COMMON_CORNER_LOCATION_H
 #define ASTEROIDZ_COMMON_CORNER_LOCATION_H
 
-#include "../compat/nofx.h"
-
+#include <scenefx/types/fx/clipped_region.h>
 
 /* scenefx 0.5 removed enum corner_location in favor of struct
  * fx_corner_radii. Asteroidz still tracks which corners of a client should be

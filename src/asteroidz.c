@@ -12,8 +12,10 @@
 #include <limits.h>
 #include <linux/input-event-codes.h>
 #include <math.h>
-#include <wlr/types/wlr_scene.h>
-#include "compat/nofx.h"
+#include <scenefx/render/fx_renderer/fx_renderer.h>
+#include <scenefx/types/fx/blur_data.h>
+#include <scenefx/types/fx/clipped_region.h>
+#include <scenefx/types/wlr_scene.h>
 #include "common/corner_location.h"
 #include <signal.h>
 #include <stdbool.h>
@@ -1774,7 +1776,7 @@ void gpureset(struct wl_listener *listener, void *data) {
 
 	wlr_log(WLR_DEBUG, "gpu reset");
 
-	if (!(drw = wlr_renderer_autocreate(backend)))
+	if (!(drw = fx_renderer_create(backend)))
 		die("couldn't recreate renderer");
 
 	if (!(alloc = wlr_allocator_autocreate(backend, drw)))
@@ -3292,7 +3294,9 @@ void layer_update_blur(LayerSurface *l) {
 	 * something actually changed. Layer surfaces (panels, popups) float
 	 * above windows, so the cached bottom-layer blur would show wallpaper
 	 * instead of the windows beneath: always blur live. */
-	wlr_scene_blur_set_should_only_blur_bottom_layer(l->blur_node, false);
+	if (l->blur_node->should_only_blur_bottom_layer)
+		wlr_scene_blur_set_should_only_blur_bottom_layer(l->blur_node,
+														 false);
 	if (l->blur_node->width != (int)layer_surface->current.actual_width ||
 		l->blur_node->height != (int)layer_surface->current.actual_height)
 		wlr_scene_blur_set_size(l->blur_node,
@@ -7233,7 +7237,7 @@ void setup(void) {
 	wlr_scene_node_place_below(&drag_icon->node, &layers[LyrBlock]->node);
 
 	/* Create a renderer with the default implementation */
-	if (!(drw = wlr_renderer_autocreate(backend)))
+	if (!(drw = fx_renderer_create(backend)))
 		die("couldn't create renderer");
 
 	wl_signal_add(&drw->events.lost, &gpu_reset);
