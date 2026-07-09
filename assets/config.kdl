@@ -1,0 +1,240 @@
+decoration {
+    blur {
+        enable 0
+        layer 0
+        optimized 1
+        passes 2
+        radius 5
+        noise 0.02
+        brightness 0.9
+        contrast 0.9
+        saturation 1.2
+    }
+    shadow {
+        enable 0
+        layer 0
+        only-floating 1
+        size 10
+        blur 15
+        position-x 0
+        position-y 0
+        color 0x000000ff
+    }
+    border {
+        width 4
+        color 0x444444ff
+        focus-color 0xc9b890ff
+        urgent-color 0xad401fff
+    }
+}
+misc {
+    border_radius 6
+    no_radius_when_single 0
+    focused_opacity 1.0
+    unfocused_opacity 1.0
+    animations 1
+    layer_animations 1
+    animation_fade_in 1
+    animation_fade_out 1
+    tag_animation_direction 1
+    zoom_initial_ratio 0.4
+    zoom_end_ratio 0.8
+    animation_duration_move 500
+    animation_duration_tag 350
+    animation_duration_focus 0
+    animation_curve_open 0.46,1.0,0.29,1
+    animation_curve_move 0.46,1.0,0.29,1
+    animation_curve_tag 0.46,1.0,0.29,1
+    animation_curve_close 0.08,0.92,0,1
+    animation_curve_focus 0.46,1.0,0.29,1
+    animation_curve_opafadeout 0.5,0.5,0.5,0.5
+    animation_curve_opafadein 0.46,1.0,0.29,1
+    new_is_master 1
+    default_mfact 0.55
+    default_nmaster 1
+    smartgaps 0
+    dwindle_smart_split 0
+    dwindle_drop_simple_split 1
+    dwindle_manual_split 0
+    dwindle_hsplit 1
+    dwindle_vsplit 1
+    dwindle_preserve_split 0
+    no_border_when_single 0
+    axis_bind_apply_timeout 100
+    focus-on-activate 1
+    idleinhibit_ignore_visible 0
+    sloppyfocus 1
+    warpcursor 1
+    focus_cross_monitor 0
+    focus_cross_tag 0
+    enable_floating_snap 0
+    snap_distance 30
+    drag-tile-to-tile 1
+    drag_tile_small 1
+    numlockon 0
+    xkb_rules_layout us
+    disable_trackpad 0
+    tap_to_click 1
+    tap_and_drag 1
+    drag_lock 1
+    trackpad_natural_scrolling 0
+    disable_while_typing 1
+    left_handed 0
+    middle_button_emulation 0
+    swipe_min_threshold 1
+    mouse_natural_scrolling 0
+    gappih 5
+    gappiv 5
+    gappoh 10
+    gappov 10
+    scratchpad_width_ratio 0.8
+    scratchpad_height_ratio 0.9
+    rootcolor 0x201b14ff
+    dropcolor 0x8FBA7C55
+    splitcolor 0xEB441EFF
+    maximizescreencolor 0x89aa61ff
+    scratchpadcolor 0x516c93ff
+    globalcolor 0xb153a7ff
+    overlaycolor 0x14a57cff
+    axisbind SUPER,DOWN,viewtoright_have_client
+    layerrule animation_type_close:zoom,layer_name:rofi
+}
+animations {
+    open {
+        type slide
+        fade-begin-opacity 0.5
+        duration 400
+    }
+    close {
+        type slide
+        fade-begin-opacity 0.8
+        duration 800
+    }
+}
+layout {
+    scroller {
+        structs 20
+        default-proportion 0.8
+        focus-center 0
+        prefer-center 0
+        edge-pointer-focus 1
+        edge-focus-allow-speed 0.0
+        default-proportion-single 1.0
+        preset 0.5,0.8,1.0
+    }
+}
+overview {
+    hotarea-size 10
+    hotarea 0
+    tab-mode 1
+    no-resize 1
+    gaps-in 5
+    gaps-out 30
+}
+input {
+    cursor {
+        size 24
+    }
+    keyboard {
+        repeat-rate 25
+        repeat-delay 600
+    }
+}
+
+binds {
+    Super+r { reload_config; }
+    Alt+space { spawn "rofi -show drun"; }
+    Alt+Return { spawn foot; }
+    Super+m { quit; }
+    Alt+q { killclient ""; }
+    Super+Tab { focusstack next; }
+    Alt+Left { focusdir left; }
+    Alt+Right { focusdir right; }
+    Alt+Up { focusdir up; }
+    Alt+Down { focusdir down; }
+    Super+Shift+Up { exchange_client up; }
+    Super+Shift+Down { exchange_client down; }
+    Super+Shift+Left { exchange_client left; }
+    Super+Shift+Right { exchange_client right; }
+    Super+g { toggleglobal ""; }
+    Alt+Tab { toggleoverview ""; }
+    Alt+backslash { togglefloating ""; }
+    Alt+a { togglemaximizescreen ""; }
+    Alt+f { togglefullscreen ""; }
+    Alt+Shift+f { togglefakefullscreen ""; }
+    Super+i { minimized ""; }
+    Super+o { toggleoverlay ""; }
+    Super+Shift+I { restore_minimized; }
+    Alt+z { toggle_scratchpad; }
+    Alt+e { set_proportion 1.0; }
+    Alt+x { switch_proportion_preset ""; }
+    alt+super+ctrl+Left { scroller_stack left; }
+    alt+super+ctrl+Right { scroller_stack right; }
+    alt+super+ctrl+Up { scroller_stack up; }
+    alt+super+ctrl+Down { scroller_stack down; }
+    alt+shift+Return { dwindle_toggle_split_direction; }
+    Super+n { switch_layout; }
+    Super+Left { viewtoleft 0; }
+    Ctrl+Left { viewtoleft_have_client 0; }
+    Super+Right { viewtoright 0; }
+    Ctrl+Right { viewtoright_have_client 0; }
+    Ctrl+Super+Left { tagtoleft 0; }
+    Ctrl+Super+Right { tagtoright 0; }
+    Ctrl+1 { view 1 0; }
+    Ctrl+2 { view 2 0; }
+    Ctrl+3 { view 3 0; }
+    Ctrl+4 { view 4 0; }
+    Ctrl+5 { view 5 0; }
+    Ctrl+6 { view 6 0; }
+    Ctrl+7 { view 7 0; }
+    Ctrl+8 { view 8 0; }
+    Ctrl+9 { view 9 0; }
+    Alt+1 { tag 1 0; }
+    Alt+2 { tag 2 0; }
+    Alt+3 { tag 3 0; }
+    Alt+4 { tag 4 0; }
+    Alt+5 { tag 5 0; }
+    Alt+6 { tag 6 0; }
+    Alt+7 { tag 7 0; }
+    Alt+8 { tag 8 0; }
+    Alt+9 { tag 9 0; }
+    alt+shift+Left { focusmon left; }
+    alt+shift+Right { focusmon right; }
+    Super+Alt+Left { tagmon left; }
+    Super+Alt+Right { tagmon right; }
+    Alt+Shift+X { incgaps 1; }
+    Alt+Shift+Z { incgaps -1; }
+    Alt+Shift+R { togglegaps; }
+    Ctrl+Shift+Up { movewin +0 -50; }
+    Ctrl+Shift+Down { movewin +0 +50; }
+    Ctrl+Shift+Left { movewin -50 +0; }
+    Ctrl+Shift+Right { movewin +50 +0; }
+    Ctrl+Alt+Up { resizewin +0 -50; }
+    Ctrl+Alt+Down { resizewin +0 +50; }
+    Ctrl+Alt+Left { resizewin -50 +0; }
+    Ctrl+Alt+Right { resizewin +50 +0; }
+}
+
+mouse-binds {
+    Super+btn_left { moveresize curmove; }
+    NONE+btn_middle { togglemaximizescreen 0; }
+    Super+btn_right { moveresize curresize; }
+}
+
+tag 1 { layout tile }
+
+tag 2 { layout tile }
+
+tag 3 { layout tile }
+
+tag 4 { layout tile }
+
+tag 5 { layout tile }
+
+tag 6 { layout tile }
+
+tag 7 { layout tile }
+
+tag 8 { layout tile }
+
+tag 9 { layout tile }

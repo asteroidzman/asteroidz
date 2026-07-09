@@ -3,6 +3,9 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
+#include <strings.h>
+
+#include "kdl.h"
 
 #ifndef SYSCONFDIR
 #define SYSCONFDIR "/etc"
@@ -3226,7 +3229,388 @@ bool parse_config_line(Config *config, const char *line) {
 	trim_whitespace(key);
 	trim_whitespace(value);
 
-	return parse_option(config, key, value);
+	return parse_option(config, (char *)key, value);
+}
+
+/* A KDL boolean maps to the legacy "1"/"0" the option parsers expect (they
+ * use atoi); everything else passes through as its decoded string. */
+static const char *kdl_legacy_value(const KdlEntry *e) {
+	if (e->type == KDL_BOOL)
+		return strcmp(e->value, "true") == 0 ? "1" : "0";
+	return e->value;
+}
+
+/* ------------------------------------------------------------------ *
+ * Niri-style nested KDL schema.
+ *
+ * The config file is idiomatic nested KDL (sections and blocks, keychord
+ * bind nodes, match/action window-rule, output/tag blocks). This walker
+ * maps that structure onto the existing, well-tested per-option setters:
+ * a leaf node's dotted path (e.g. decoration/blur/passes) is looked up in
+ * kdl_key_map to its canonical option key, then handed to parse_option().
+ * Leaves with no mapping fall back to their own name as the key, so the long
+ * tail of options works without an explicit entry. Structural sections
+ * (binds, mouse-binds, window-rule, tag, output, environment, spawn-*) have
+ * dedicated handlers that rebuild the value the setters expect.
+ * ------------------------------------------------------------------ */
+
+/* nice nested path -> canonical option key */
+static const struct {
+	const char *path;
+	const char *key;
+} kdl_key_map[] = {
+	/* input */
+	{"input/keyboard/repeat-delay", "repeat_delay"},
+	{"input/keyboard/repeat-rate", "repeat_rate"},
+	{"input/keyboard/layout", "xkb_layout"},
+	{"input/cursor/theme", "cursor_theme"},
+	{"input/cursor/size", "cursor_size"},
+	/* decoration */
+	{"decoration/titlebar/enable", "enable_titlebar"},
+	{"decoration/titlebar/height", "titlebar_height"},
+	{"decoration/blur/enable", "blur"},
+	{"decoration/blur/layer", "blur_layer"},
+	{"decoration/blur/optimized", "blur_optimized"},
+	{"decoration/blur/unfocused-strength", "blur_unfocused_strength"},
+	{"decoration/blur/passes", "blur_params_num_passes"},
+	{"decoration/blur/radius", "blur_params_radius"},
+	{"decoration/blur/noise", "blur_params_noise"},
+	{"decoration/blur/brightness", "blur_params_brightness"},
+	{"decoration/blur/contrast", "blur_params_contrast"},
+	{"decoration/blur/saturation", "blur_params_saturation"},
+	{"decoration/blur/transparency-threshold", "blur_transparency_threshold"},
+	{"decoration/shadow/enable", "shadows"},
+	{"decoration/shadow/layer", "layer_shadows"},
+	{"decoration/shadow/only-floating", "shadow_only_floating"},
+	{"decoration/shadow/size", "shadows_size"},
+	{"decoration/shadow/blur", "shadows_blur"},
+	{"decoration/shadow/position-x", "shadows_position_x"},
+	{"decoration/shadow/position-y", "shadows_position_y"},
+	{"decoration/shadow/color", "shadowscolor"},
+	{"decoration/shadow/contact", "shadows_contact"},
+	{"decoration/shadow/contact-size", "shadows_contact_size"},
+	{"decoration/shadow/contact-blur", "shadows_contact_blur"},
+	{"decoration/shadow/contact-position-x", "shadows_contact_position_x"},
+	{"decoration/shadow/contact-position-y", "shadows_contact_position_y"},
+	{"decoration/shadow/contact-color", "shadowscolor_contact"},
+	{"decoration/shadow/unfocused-scale", "shadows_unfocused_scale"},
+	{"decoration/shadow/tiled-scale", "shadows_tiled_scale"},
+	{"decoration/border/width", "borderpx"},
+	{"decoration/border/color", "bordercolor"},
+	{"decoration/border/focus-color", "focuscolor"},
+	{"decoration/border/urgent-color", "urgentcolor"},
+	{"decoration/border/gradient", "border_gradient"},
+	{"decoration/border/gradient-angle", "border_gradient_angle"},
+	{"decoration/border/gradient-color2", "border_gradient_color2"},
+	/* layout */
+	{"layout/monocle/tab-max-width", "monocle_tab_max_width"},
+	{"layout/scroller/structs", "scroller_structs"},
+	{"layout/scroller/default-proportion", "scroller_default_proportion"},
+	{"layout/scroller/default-proportion-single",
+	 "scroller_default_proportion_single"},
+	{"layout/scroller/focus-center", "scroller_focus_center"},
+	{"layout/scroller/prefer-center", "scroller_prefer_center"},
+	{"layout/scroller/preset", "scroller_proportion_preset"},
+	{"layout/scroller/edge-scroll", "scroller_edge_scroll"},
+	{"layout/scroller/edge-scroll-size", "scroller_edge_scroll_size"},
+	{"layout/scroller/edge-scroll-delay", "scroller_edge_scroll_delay"},
+	{"layout/scroller/edge-pointer-focus", "edge_scroller_pointer_focus"},
+	{"layout/scroller/edge-focus-allow-speed", "edge_scroller_focus_allow_speed"},
+	/* overview */
+	{"overview/gaps-in", "overviewgappi"},
+	{"overview/gaps-out", "overviewgappo"},
+	{"overview/hotarea-size", "hotarea_size"},
+	{"overview/hotarea", "enable_hotarea"},
+	{"overview/tab-mode", "ov_tab_mode"},
+	{"overview/no-resize", "ov_no_resize"},
+	/* animations */
+	{"animations/curve", "animation_curve_type"},
+	{"animations/spring-damping", "spring_damping"},
+	{"animations/spring-frequency", "spring_frequency"},
+	{"animations/open/type", "animation_type_open"},
+	{"animations/open/duration", "animation_duration_open"},
+	{"animations/open/fade-begin-opacity", "fadein_begin_opacity"},
+	{"animations/close/type", "animation_type_close"},
+	{"animations/close/duration", "animation_duration_close"},
+	{"animations/close/fade-begin-opacity", "fadeout_begin_opacity"},
+	/* misc */
+	{"misc/xwayland-persistence", "xwayland_persistence"},
+	{"misc/syncobj", "syncobj_enable"},
+	{"misc/focus-on-activate", "focus_on_activate"},
+	{"misc/allow-tearing", "allow_tearing"},
+	{"misc/sdr-reference-luminance", "sdr_reference_luminance"},
+	{"misc/sdr-saturation", "sdr_saturation"},
+	{"misc/dpms-wake-retrain", "dpms_wake_retrain"},
+	{"misc/drag-tile-to-tile", "drag_tile_to_tile"},
+	{"misc/icon-theme", "icon_theme"},
+};
+
+static const char *kdl_lookup_key(const char *path) {
+	for (size_t i = 0; i < LENGTH(kdl_key_map); i++)
+		if (strcmp(kdl_key_map[i].path, path) == 0)
+			return kdl_key_map[i].key;
+	return NULL;
+}
+
+/* build a comma-joined value string from a node's args (bools -> 1/0); a bare
+ * leaf with no args is treated as an enable flag ("1") */
+static void kdl_build_value(KdlNode *node, char *value, size_t cap) {
+	value[0] = '\0';
+	if (node->n_args == 0) {
+		snprintf(value, cap, "1");
+		return;
+	}
+	size_t vn = 0;
+	for (size_t i = 0; i < node->n_args; i++) {
+		const char *s = kdl_legacy_value(&node->args[i]);
+		size_t l = strlen(s);
+		if (vn + l + 2 >= cap)
+			break;
+		if (i)
+			value[vn++] = ',';
+		memcpy(value + vn, s, l);
+		vn += l;
+		value[vn] = '\0';
+	}
+}
+
+/* map "Mod"/"Super"/"Ctrl"/... to the legacy modifier tokens */
+static const char *kdl_mod_name(const char *t) {
+	if (!strcasecmp(t, "mod") || !strcasecmp(t, "super") || !strcasecmp(t, "win"))
+		return "SUPER";
+	if (!strcasecmp(t, "ctrl") || !strcasecmp(t, "control"))
+		return "CTRL";
+	if (!strcasecmp(t, "alt"))
+		return "ALT";
+	if (!strcasecmp(t, "shift"))
+		return "SHIFT";
+	return t;
+}
+
+/* split a "Mod+Ctrl+R" keychord into legacy "MODS" (SUPER+CTRL) and key (R) */
+static void kdl_split_chord(const char *chord, char *mods, size_t mcap,
+							char *key, size_t kcap) {
+	char buf[128];
+	snprintf(buf, sizeof(buf), "%s", chord);
+	mods[0] = '\0';
+	key[0] = '\0';
+	char *save = NULL;
+	char *tok = strtok_r(buf, "+", &save);
+	const char *toks[16];
+	int32_t nt = 0;
+	while (tok && nt < 16) {
+		toks[nt++] = tok;
+		tok = strtok_r(NULL, "+", &save);
+	}
+	if (nt == 0)
+		return;
+	snprintf(key, kcap, "%s", toks[nt - 1]);
+	size_t mn = 0;
+	for (int32_t i = 0; i < nt - 1; i++) {
+		const char *m = kdl_mod_name(toks[i]);
+		int32_t w = snprintf(mods + mn, mcap - mn, "%s%s", mn ? "+" : "", m);
+		if (w > 0)
+			mn += (size_t)w;
+	}
+}
+
+/* binds { Super+Ctrl+R { restart }  Super+T { spawn "kitty" } } */
+static bool kdl_binds(Config *config, KdlNode *node, const char *bindkey) {
+	bool ok = true;
+	for (size_t i = 0; i < node->n_children; i++) {
+		KdlNode *kc = &node->children[i];
+		char mods[128], key[64];
+		kdl_split_chord(kc->name, mods, sizeof(mods), key, sizeof(key));
+		if (kc->n_children == 0)
+			continue;
+		KdlNode *act = &kc->children[0]; /* action node: name=func, args=args */
+		char value[1024];
+		int32_t vn = snprintf(value, sizeof(value), "%s,%s,%s", mods, key,
+							  act->name);
+		for (size_t a = 0; a < act->n_args && vn > 0 &&
+						   (size_t)vn < sizeof(value);
+			 a++)
+			vn += snprintf(value + vn, sizeof(value) - vn, ",%s",
+						   kdl_legacy_value(&act->args[a]));
+		ok = parse_option(config, (char *)bindkey, value) && ok;
+	}
+	return ok;
+}
+
+/* window-rule { match app-id="mpv"; tags 4; open-fullscreen } -> windowrule= */
+static const struct {
+	const char *nice;
+	const char *key;
+} kdl_rule_map[] = {
+	{"app-id", "appid"},		  {"title", "title"},
+	{"open-floating", "isfloating"}, {"open-fullscreen", "isfullscreen"},
+	{"no-blur", "noblur"},		  {"no-border", "isnoborder"},
+	{"no-shadow", "isnoshadow"},  {"no-rounding", "isnoradius"},
+	{"no-animation", "isnoanimation"},
+};
+static const char *kdl_rule_key(const char *nice) {
+	for (size_t i = 0; i < LENGTH(kdl_rule_map); i++)
+		if (strcmp(kdl_rule_map[i].nice, nice) == 0)
+			return kdl_rule_map[i].key;
+	return nice;
+}
+
+static bool kdl_window_rule(Config *config, KdlNode *node) {
+	char value[2048];
+	value[0] = '\0';
+	size_t vn = 0;
+	bool first = true;
+	for (size_t i = 0; i < node->n_children; i++) {
+		KdlNode *ch = &node->children[i];
+		if (strcmp(ch->name, "match") == 0) {
+			for (size_t p = 0; p < ch->n_props; p++) {
+				int32_t w = snprintf(value + vn, sizeof(value) - vn, "%s%s:%s",
+									 first ? "" : ",", kdl_rule_key(ch->props[p].name),
+									 kdl_legacy_value(&ch->props[p]));
+				if (w > 0) { vn += w; first = false; }
+			}
+			continue;
+		}
+		const char *k = kdl_rule_key(ch->name);
+		const char *v = ch->n_args ? kdl_legacy_value(&ch->args[0]) : "1";
+		int32_t w = snprintf(value + vn, sizeof(value) - vn, "%s%s:%s",
+							 first ? "" : ",", k, v);
+		if (w > 0) { vn += w; first = false; }
+	}
+	return parse_option(config, "windowrule", value);
+}
+
+/* tag "1" { name "web"; layout "monocle" } -> tagrule=id:1,... */
+static bool kdl_tag(Config *config, KdlNode *node) {
+	char value[512];
+	int32_t vn = snprintf(value, sizeof(value), "id:%s",
+						  node->n_args ? kdl_legacy_value(&node->args[0]) : "0");
+	for (size_t i = 0; i < node->n_children && (size_t)vn < sizeof(value);
+		 i++) {
+		KdlNode *ch = &node->children[i];
+		const char *k = strcmp(ch->name, "layout") == 0 ? "layout_name" : ch->name;
+		vn += snprintf(value + vn, sizeof(value) - vn, ",%s:%s", k,
+					   ch->n_args ? kdl_legacy_value(&ch->args[0]) : "1");
+	}
+	return parse_option(config, "tagrule", value);
+}
+
+/* output "DP-1" { hdr; bit-depth 10; icc-profile "..." } -> monitorrule= */
+static const struct {
+	const char *nice;
+	const char *key;
+} kdl_output_map[] = {
+	{"bit-depth", "bitdepth"}, {"icc-profile", "icc_profile"},
+	{"max-luminance", "hdr_max_luminance"},
+	{"min-luminance", "hdr_min_luminance"}, {"max-fall", "hdr_max_fall"},
+};
+static const char *kdl_output_key(const char *nice) {
+	for (size_t i = 0; i < LENGTH(kdl_output_map); i++)
+		if (strcmp(kdl_output_map[i].nice, nice) == 0)
+			return kdl_output_map[i].key;
+	return nice;
+}
+static bool kdl_output(Config *config, KdlNode *node) {
+	char value[1024];
+	/* the arg is the output name; anchor it as a regex like the legacy form */
+	int32_t vn = snprintf(value, sizeof(value), "name:^%s$",
+						  node->n_args ? kdl_legacy_value(&node->args[0]) : "");
+	for (size_t i = 0; i < node->n_children && (size_t)vn < sizeof(value);
+		 i++) {
+		KdlNode *ch = &node->children[i];
+		vn += snprintf(value + vn, sizeof(value) - vn, ",%s:%s",
+					   kdl_output_key(ch->name),
+					   ch->n_args ? kdl_legacy_value(&ch->args[0]) : "1");
+	}
+	return parse_option(config, "monitorrule", value);
+}
+
+/* environment { NAME "value"; ... } -> env=NAME,value */
+static bool kdl_environment(Config *config, KdlNode *node) {
+	bool ok = true;
+	for (size_t i = 0; i < node->n_children; i++) {
+		KdlNode *ch = &node->children[i];
+		char value[1024];
+		snprintf(value, sizeof(value), "%s,%s", ch->name,
+				 ch->n_args ? kdl_legacy_value(&ch->args[0]) : "");
+		ok = parse_option(config, "env", value) && ok;
+	}
+	return ok;
+}
+
+/* a leaf node inside a section: map its dotted path to a canonical key */
+static bool kdl_leaf(Config *config, KdlNode *node, const char *path) {
+	char full[256];
+	if (path && path[0])
+		snprintf(full, sizeof(full), "%s/%s", path, node->name);
+	else
+		snprintf(full, sizeof(full), "%s", node->name);
+	const char *key = kdl_lookup_key(full);
+	if (!key)
+		key = node->name; /* fall back to the option's own name */
+	char value[2048];
+	kdl_build_value(node, value, sizeof(value));
+	return parse_option(config, (char *)key, value);
+}
+
+/* recurse through a namespace section, applying leaves and nested blocks */
+static bool kdl_walk_section(Config *config, KdlNode *node, const char *path) {
+	bool ok = true;
+	for (size_t i = 0; i < node->n_children; i++) {
+		KdlNode *ch = &node->children[i];
+		if (ch->n_children > 0) {
+			char sub[256];
+			snprintf(sub, sizeof(sub), "%s/%s", path, ch->name);
+			ok = kdl_walk_section(config, ch, sub) && ok;
+		} else {
+			ok = kdl_leaf(config, ch, path) && ok;
+		}
+	}
+	return ok;
+}
+
+/* top-level dispatcher */
+bool parse_kdl_node(Config *config, KdlNode *node) {
+	if (!node || !node->name)
+		return true;
+	char *n = node->name;
+
+	if (!strcmp(n, "binds"))
+		return kdl_binds(config, node, "bind");
+	if (!strcmp(n, "mouse-binds"))
+		return kdl_binds(config, node, "mousebind");
+	if (!strcmp(n, "window-rule") || !strcmp(n, "windowrule"))
+		return kdl_window_rule(config, node);
+	if (!strcmp(n, "tag"))
+		return kdl_tag(config, node);
+	if (!strcmp(n, "output"))
+		return kdl_output(config, node);
+	if (!strcmp(n, "environment"))
+		return kdl_environment(config, node);
+	if (!strcmp(n, "spawn-at-startup") || !strcmp(n, "spawn")) {
+		char value[1024];
+		kdl_build_value(node, value, sizeof(value));
+		/* args are the argv tokens; join with spaces into one command */
+		value[0] = '\0';
+		size_t vn = 0;
+		for (size_t i = 0; i < node->n_args; i++)
+			vn += snprintf(value + vn, sizeof(value) - vn, "%s%s", i ? " " : "",
+						   kdl_legacy_value(&node->args[i]));
+		return parse_option(config,
+							!strcmp(n, "spawn") ? "exec" : "exec-once", value);
+	}
+	if (!strcmp(n, "source") || !strcmp(n, "source-optional")) {
+		char value[1024];
+		kdl_build_value(node, value, sizeof(value));
+		return parse_option(config, n, value);
+	}
+
+	/* a namespace section (input/layout/decoration/animations/misc/...) */
+	if (node->n_children > 0)
+		return kdl_walk_section(config, node, n);
+
+	/* a bare top-level leaf option */
+	return kdl_leaf(config, node, "");
 }
 
 bool parse_config_file(Config *config, const char *file_path, bool must_exist) {
@@ -3285,27 +3669,39 @@ bool parse_config_file(Config *config, const char *file_path, bool must_exist) {
 		}
 	}
 
-	char line[512];
-	bool parse_correct = true;
-	bool parse_line_correct = true;
-	uint32_t line_count = 0;
-	while (fgets(line, sizeof(line), file)) {
-		line_count++;
-		if (line[0] == '#' || line[0] == '\n') {
-			continue;
-		}
-		parse_line_correct = parse_config_line(config, line);
-		if (!parse_line_correct) {
-			parse_correct = false;
-			fprintf(stderr,
-					"\033[1;31m╰─\033[1;33m[Index]\033[0m "
-					"\033[1;36m%s\033[0m:\033[1;35m%d\033[0m\n"
-					"   \033[1;36m╰─\033[0;33m%s\033[0m\n\n",
-					file_path, line_count, line);
-		}
+	/* read the whole file, then parse it as KDL */
+	fseek(file, 0, SEEK_END);
+	long fsize = ftell(file);
+	fseek(file, 0, SEEK_SET);
+	if (fsize < 0)
+		fsize = 0;
+	char *text = malloc((size_t)fsize + 1);
+	if (!text) {
+		fclose(file);
+		return false;
 	}
-
+	size_t rd = fread(text, 1, (size_t)fsize, file);
+	text[rd] = '\0';
 	fclose(file);
+
+	KdlDocument doc = {0};
+	char kdlerr[256];
+	if (!kdl_parse(text, &doc, kdlerr, sizeof(kdlerr))) {
+		fprintf(stderr,
+				"\033[1;31m[ERROR]:\033[0m KDL parse error in %s: %s\n",
+				file_path, kdlerr);
+		free(text);
+		kdl_free(&doc);
+		return false;
+	}
+	free(text);
+
+	bool parse_correct = true;
+	for (size_t i = 0; i < doc.n_nodes; i++) {
+		if (!parse_kdl_node(config, &doc.nodes[i]))
+			parse_correct = false;
+	}
+	kdl_free(&doc);
 	return parse_correct;
 }
 
@@ -4174,12 +4570,12 @@ bool parse_config(void) {
 			// If this fails, we can't continue
 			return false;
 		}
-		// Build the log file path
+		// Config is KDL (config.kdl); prefer the user's, fall back to /etc
 		snprintf(filename, sizeof(filename),
-				 "%s/.config/asteroidz/config.conf", homedir);
+				 "%s/.config/asteroidz/config.kdl", homedir);
 
 		if (access(filename, F_OK) != 0) {
-			snprintf(filename, sizeof(filename), "%s/asteroidz/config.conf",
+			snprintf(filename, sizeof(filename), "%s/asteroidz/config.kdl",
 					 SYSCONFDIR);
 		}
 	}
