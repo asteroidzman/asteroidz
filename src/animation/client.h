@@ -911,9 +911,8 @@ void apply_border(Client *c) {
 
 	if (c->blur_node) {
 		bool blur_cached = config.blur_optimized && !c->isfloating;
-		if (c->blur_node->should_only_blur_bottom_layer != blur_cached)
-			wlr_scene_blur_set_should_only_blur_bottom_layer(c->blur_node,
-															 blur_cached);
+		wlr_scene_blur_set_should_only_blur_bottom_layer(c->blur_node,
+														 blur_cached);
 		int32_t blur_width = GEZERO(clip_box.width - 2 * bw);
 		int32_t blur_height = GEZERO(clip_box.height - 2 * bw);
 		struct fx_corner_radii blur_radii = corner_radii_from_location(
@@ -925,8 +924,7 @@ void apply_border(Client *c) {
 		if (c->blur_node->width != blur_width ||
 			c->blur_node->height != blur_height)
 			wlr_scene_blur_set_size(c->blur_node, blur_width, blur_height);
-		if (!fx_corner_radii_eq(c->blur_node->corners, blur_radii))
-			wlr_scene_blur_set_corner_radii(c->blur_node, blur_radii);
+		wlr_scene_blur_set_corner_radii(c->blur_node, blur_radii);
 	}
 }
 
@@ -1777,8 +1775,7 @@ void client_set_border_fill(Client *c, const float color[4]) {
 		wlr_scene_rect_set_gradient(c->border, config.border_gradient_angle,
 									1, 1, origin, 2, colors);
 	} else {
-		if (c->border->has_gradient)
-			wlr_scene_rect_set_gradient(c->border, 0, 0, 0, NULL, 0, NULL);
+		wlr_scene_rect_set_gradient(c->border, 0, 0, 0, NULL, 0, NULL);
 		client_set_border_color(c, color);
 	}
 }
