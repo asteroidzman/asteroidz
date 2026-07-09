@@ -1832,7 +1832,14 @@ void client_set_focused_opacity_animation(Client *c) {
 
 void client_set_unfocused_opacity_animation(Client *c) {
 	float *border_color = get_border_color(c);
-	wlr_scene_node_raise_to_top(&c->border->node);
+	/* The border is a single, full-window rect. In the scenefx build it is
+	 * carved hollow via wlr_scene_rect_set_clipped_region(), so raising it
+	 * above the surface only paints the frame. In the no-scenefx (Vulkan)
+	 * build that clip is a no-op, so the rect is fully solid: raising it to
+	 * the top would cover the whole client, blanking an unfocused window's
+	 * content. Keep it below the surface (as the focused path does) so the
+	 * content stays visible regardless of focus, matching sway. */
+	wlr_scene_node_lower_to_bottom(&c->border->node);
 	if (!config.animations) {
 		setborder_color(c);
 		return;
