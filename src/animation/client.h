@@ -1381,12 +1381,16 @@ void client_animation_next_tick(Client *c) {
 	int32_t type = c->animation.action == NONE ? MOVE : c->animation.action;
 	double factor = find_animation_curve_at(animation_passed, type);
 
-	/* fade the backdrop blur in with the open animation instead of
-	 * popping to full strength on the first frame */
+	/* Fade the backdrop blur in with the open animation instead of popping to
+	 * full on the first frame. Fade only the ALPHA and keep strength at 1: a
+	 * strength < 1 triggers the per-frame re-blur split (see
+	 * fx_vk_render_pass_add_blur), which added latency and made the blurred
+	 * backdrop linger before content. The blur node stays enabled, so
+	 * steady-state blur behind translucent windows is unaffected. */
 	if (c->blur_node && c->animation.action == OPEN) {
 		float blur_p = animation_passed >= 1.0 ? 1.0f
 			: (float)ASTEROIDZ_MAX(0.0, ASTEROIDZ_MIN(factor, 1.0));
-		wlr_scene_blur_set_strength(c->blur_node, blur_p);
+		wlr_scene_blur_set_strength(c->blur_node, 1.0f);
 		wlr_scene_blur_set_alpha(c->blur_node, blur_p);
 	}
 
