@@ -23,7 +23,7 @@ rm -rf /tmp/wlroots
 git clone --depth 1 --branch "$WLROOTS_TAG" \
   https://gitlab.freedesktop.org/wlroots/wlroots.git /tmp/wlroots
 meson setup /tmp/wlroots/build /tmp/wlroots --prefix=/usr \
-  --buildtype=release -Dexamples=false -Dwerror=false
+  --buildtype=release -Dexamples=false -Dwerror=false -Dxwayland=enabled
 ninja -C /tmp/wlroots/build
 DESTDIR=/tmp/wlroots/pkgroot meson install -C /tmp/wlroots/build
 fpm -s dir -t deb -f -n wlroots-0.20 -v "$WLROOTS_TAG" --iteration 1 -a "$ARCH" \
