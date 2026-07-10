@@ -3147,3 +3147,8 @@ int32_t screenshot_ui(const Arg *arg) {
 	wlr_output_schedule_frame(m->wlr_output);
 	return 0;
 }
+int32_t ufo_easter_egg(const Arg *arg) {
+	(void)arg;
+	ufo_egg_trigger(ufo_egg);
+	return 0;
+}
