@@ -23,7 +23,7 @@ The repository provides a Flake with a NixOS module.
      inputs = {
        nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
        asteroidz = {
-         url = "github:ralfwierzbicki/asteroidz";
+         url = "github:asteroidzman/asteroidz";
          inputs.nixpkgs.follows = "nixpkgs";
        };
        # other inputs ...
@@ -191,7 +191,7 @@ You will need to build `wlroots` and asteroidz's `scenefx` fork manually as well
    Vulkan (`fx_vk`) renderers.
 
    ```bash
-   git clone https://github.com/ralfwierzbicki/asteroidz-scenefx.git
+   git clone https://github.com/asteroidzman/asteroidz-scenefx.git
    cd asteroidz-scenefx
    meson build -Dprefix=/usr -Drenderers=gles2,vulkan
    sudo ninja -C build install
@@ -200,7 +200,7 @@ You will need to build `wlroots` and asteroidz's `scenefx` fork manually as well
 3. **Build asteroidz**
    Finally, compile the compositor itself.
    ```bash
-   git clone https://github.com/ralfwierzbicki/asteroidz.git
+   git clone https://github.com/asteroidzman/asteroidz.git
    cd asteroidz
    meson build -Dprefix=/usr
    sudo ninja -C build install

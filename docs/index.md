@@ -28,7 +28,7 @@ Beyond basic window management, asteroidz provides a rich set of features design
 
 ## Community
 
-- **[asteroidz on GitHub](https://github.com/ralfwierzbicki/asteroidz)** — Report issues or browse the source.
+- **[asteroidz on GitHub](https://github.com/asteroidzman/asteroidz)** — Report issues or browse the source.
 - **[Join the mangowm Discord](https://discord.gg/CPjbDxesh5)** — for the upstream mango project this is forked from; general Wayland-compositor/dwl-lineage discussion, not asteroidz-specific support.
 
 ## Acknowledgements
