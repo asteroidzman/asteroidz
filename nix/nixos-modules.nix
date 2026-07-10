@@ -32,7 +32,8 @@ in {
       enable = lib.mkDefault true;
 
       config = {
-        mango = {
+        # Must match XDG_CURRENT_DESKTOP (DesktopNames in asteroidz.desktop).
+        asteroidz = {
           default = [
             "gtk"
           ];

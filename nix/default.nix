@@ -9,6 +9,9 @@
   pango,
   cjson,
   pixman,
+  gdk-pixbuf,
+  systemd,
+  vulkan-loader,
   pkg-config,
   stdenv,
   wayland,
@@ -19,14 +22,14 @@
   meson,
   ninja,
   scenefx,
-  wlroots_0_19,
+  wlroots_0_20,
   libGL,
   enableXWayland ? true,
   debug ? false,
 }:
 stdenv.mkDerivation {
-  pname = "mango";
-  version = "nightly";
+  pname = "asteroidz";
+  version = "0.15.3";
 
   src = builtins.path {
     path = ../.;
@@ -54,9 +57,12 @@ stdenv.mkDerivation {
       pango
       cjson
       pixman
+      gdk-pixbuf
+      systemd
+      vulkan-loader
       wayland
       wayland-protocols
-      wlroots_0_19
+      wlroots_0_20
       scenefx
       libGL
       libdrm
@@ -68,13 +74,13 @@ stdenv.mkDerivation {
     ];
 
   passthru = {
-    providedSessions = ["mango"];
+    providedSessions = ["asteroidz" "asteroidz-gles"];
   };
 
   meta = {
-    mainProgram = "mango";
-    description = "Practical and Powerful wayland compositor (dwm but wayland)";
-    homepage = "https://github.com/mangowm/mango";
+    mainProgram = "asteroidz";
+    description = "wlroots compositor with a Vulkan renderer, HDR10, and dwm-style tags";
+    homepage = "https://github.com/asteroidzman/asteroidz";
     license = lib.licenses.gpl3Plus;
     maintainers = [];
     platforms = lib.platforms.unix;

@@ -22,8 +22,8 @@ let
 
   # Declaration entry linking each option back to its source file on GitHub
   moduleDeclaration = {
-    url = "https://github.com/mangowm/mango/blob/main/${moduleSubpath}";
-    name = "<mango/${moduleSubpath}>";
+    url = "https://github.com/asteroidzman/asteroidz/blob/main/${moduleSubpath}";
+    name = "<asteroidz/${moduleSubpath}>";
   };
 
   optionsDoc = pkgs.nixosOptionsDoc {
