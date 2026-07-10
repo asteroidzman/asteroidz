@@ -39,7 +39,7 @@ The repository provides a Flake with a NixOS module.
    # configuration.nix (or any other file that you import)
    {inputs, ...}: {
      imports = [
-       inputs.asteroidz.nixosModules.mango
+       inputs.asteroidz.nixosModules.asteroidz
        # .. other imports ...
      ];
 
@@ -60,7 +60,7 @@ The repository provides a Flake with a NixOS module.
      in {
        nixosConfigurations.YourHostName = lib.nixosSystem {
          modules = [
-           asteroidz.nixosModules.mango # or inputs.asteroidz.nixosModules.mango
+           asteroidz.nixosModules.asteroidz # or inputs.asteroidz.nixosModules.asteroidz
            # other imports ...
          ];
        };
@@ -68,17 +68,16 @@ The repository provides a Flake with a NixOS module.
    }
    ```
 
-   > **Note:** the module/option is still named `mango`/`programs.mango` internally
-   > (not yet renamed to match the compositor's `asteroidz` identity) — that's a
-   > separate, breaking change for a future pass. The flake input alias above
-   > (`asteroidz`) is just your own name for it and can be anything.
+   > **Note:** the flake input alias above (`asteroidz`) is just your own name
+   > for the input and can be anything; the module attribute
+   > (`nixosModules.asteroidz`) and option (`programs.asteroidz`) are fixed.
 
 3. **Enable the module**
 
    ```nix
    # configuration.nix (or any other file that you import)
    {
-     programs.mango.enable = true;
+     programs.asteroidz.enable = true;
    }
    ```
 

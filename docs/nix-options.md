@@ -1,13 +1,13 @@
 ---
 title: Nix Module Options
-description: NixOS and Home Manager configuration options for mangowm.
+description: NixOS and Home Manager configuration options for asteroidz.
 ---
 
 > **Note:** This document is automatically generated from the Nix module source code.
 
 ## NixOS
 
-**System-level options via `programs.mango`.**
+**System-level options via `programs.asteroidz`.**
 
 ### enable
 
@@ -89,7 +89,7 @@ true
 
 ## Home Manager
 
-**Configure mangowm declaratively via `wayland.windowManager.mango`.**
+**Configure asteroidz declaratively via `wayland.windowManager.asteroidz`.**
 
 ### enable
 

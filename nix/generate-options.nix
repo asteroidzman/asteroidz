@@ -33,7 +33,7 @@ let
       opt
       // {
         visible = opt.visible && !opt.internal;
-        # Strip the option prefix so docs show "enable" instead of "programs.mango.enable"
+        # Strip the option prefix so docs show "enable" instead of "programs.asteroidz.enable"
         name = lib.removePrefix optionPrefix opt.name;
         declarations = [ moduleDeclaration ];
       };
