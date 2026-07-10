@@ -299,6 +299,7 @@ typedef struct {
 
 	uint32_t axis_bind_apply_timeout;
 	uint32_t focus_on_activate;
+	uint32_t ufo_easter_egg;
 	int32_t idleinhibit_ignore_visible;
 	int32_t sloppyfocus;
 	int32_t warpcursor;
@@ -1288,6 +1289,8 @@ FuncType parse_func_name(char *func_name, Arg *arg, char *arg_value,
 		(*arg).i = atoi(arg_value);
 	} else if (strcmp(func_name, "reload_config") == 0) {
 		func = reload_config;
+	} else if (strcmp(func_name, "ufo") == 0) {
+		func = ufo_easter_egg;
 	} else if (strcmp(func_name, "tag") == 0) {
 		func = tag;
 		(*arg).ui = 1 << (atoi(arg_value) - 1);
@@ -1923,6 +1926,8 @@ bool parse_option(Config *config, char *key, char *value) {
 		config->axis_bind_apply_timeout = atoi(value);
 	} else if (strcmp(key, "focus_on_activate") == 0) {
 		config->focus_on_activate = atoi(value);
+	} else if (strcmp(key, "ufo_easter_egg") == 0) {
+		config->ufo_easter_egg = atoi(value);
 	} else if (strcmp(key, "numlockon") == 0) {
 		config->numlockon = atoi(value);
 	} else if (strcmp(key, "idleinhibit_ignore_visible") == 0) {
@@ -3348,6 +3353,7 @@ static const struct {
 	{"misc/xwayland-persistence", "xwayland_persistence"},
 	{"misc/syncobj", "syncobj_enable"},
 	{"misc/focus-on-activate", "focus_on_activate"},
+	{"misc/ufo-easter-egg", "ufo_easter_egg"},
 	{"misc/allow-tearing", "allow_tearing"},
 	{"misc/sdr/reference-luminance", "sdr_reference_luminance"},
 	{"misc/sdr/saturation", "sdr_saturation"},
@@ -4113,6 +4119,7 @@ void override_config(void) {
 	config.axis_bind_apply_timeout =
 		CLAMP_INT(config.axis_bind_apply_timeout, 0, 1000);
 	config.focus_on_activate = CLAMP_INT(config.focus_on_activate, 0, 1);
+	config.ufo_easter_egg = CLAMP_INT(config.ufo_easter_egg, 0, 1);
 	config.idleinhibit_ignore_visible =
 		CLAMP_INT(config.idleinhibit_ignore_visible, 0, 1);
 	config.sloppyfocus = CLAMP_INT(config.sloppyfocus, 0, 1);
@@ -4238,6 +4245,7 @@ void set_value_default() {
 
 	config.axis_bind_apply_timeout = 100;
 	config.focus_on_activate = 1;
+	config.ufo_easter_egg = 1;
 	config.new_is_master = 1;
 	config.default_mfact = 0.55f;
 	config.default_nmaster = 1;

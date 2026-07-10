@@ -1,5 +1,5 @@
 project('asteroidz', ['c'],
-  version : '0.15.3',
+  version : '0.15.4',
 )
 
 subdir('protocols')
@@ -99,6 +99,7 @@ executable('asteroidz',
   'src/asteroidz.c',
   'src/common/util.c',
   'src/draw/text-node.c',
+  'src/draw/ufo-node.c',
   'src/ext-protocol/wlr_ext_workspace_v1.c',
   wayland_sources,
   dependencies : [

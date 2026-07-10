@@ -6,6 +6,9 @@ misc {
     xwayland-persistence 1
     syncobj 1
     focus-on-activate 1
+    // easter egg: at random intervals an Asteroids-style ship flies across the
+    // bar and shoots down a UFO. Set to 0 to disable.
+    ufo-easter-egg 1
     allow-tearing 2
     sdr {
         reference-luminance 280

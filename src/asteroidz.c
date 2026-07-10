@@ -115,6 +115,7 @@
 #endif
 #include "common/util.h"
 #include "draw/text-node.h"
+#include "draw/ufo-node.h"
 
 /* macros */
 #define ASTEROIDZ_MAX(A, B) ((A) > (B) ? (A) : (B))
@@ -1168,6 +1169,23 @@ static struct wlr_output_layout *output_layout;
 static struct wlr_box sgeom;
 static struct wl_list mons;
 static Monitor *selmon;
+
+/* asteroidz easter egg: random UFO-vs-Asteroids-ship fly-by over the bar */
+static struct ufo_egg *ufo_egg;
+static bool ufo_bar_geometry(void *ud, int32_t *x, int32_t *y, int32_t *w,
+							 int32_t *h) {
+	(void)ud;
+	if (!selmon)
+		return false;
+	int32_t bar_h = selmon->w.y - selmon->m.y; /* top exclusive zone = bar */
+	if (bar_h < 8)
+		bar_h = 44; /* no top bar: fly across the top strip anyway */
+	*x = selmon->m.x;
+	*y = selmon->m.y;
+	*w = selmon->m.width;
+	*h = bar_h;
+	return true;
+}
 
 /* compositor-native screenshot UI (screenshot_ui dispatcher): freezes the
  * focused output's most recently rendered frame into a full-screen overlay,
@@ -3072,6 +3090,9 @@ void cleanuplisteners(void) {
 
 void cleanup(void) {
 	allow_frame_scheduling = false;
+
+	ufo_egg_destroy(ufo_egg);
+	ufo_egg = NULL;
 
 	ipc_cleanup();
 	cleanuplisteners();
@@ -7249,6 +7270,15 @@ void setup(void) {
 		layers[i] = wlr_scene_tree_create(&scene->tree);
 	drag_icon = wlr_scene_tree_create(&scene->tree);
 	wlr_scene_node_place_below(&drag_icon->node, &layers[LyrBlock]->node);
+
+	/* easter egg: topmost overlay so the fly-by renders over the bar */
+	ufo_egg = ufo_egg_create(event_loop, layers[LyrScreenshot],
+							 ufo_bar_geometry, NULL);
+	if (ufo_egg) {
+		ufo_egg_set_accent(ufo_egg, config.focuscolor[0], config.focuscolor[1],
+						   config.focuscolor[2]);
+		ufo_egg_set_enabled(ufo_egg, config.ufo_easter_egg);
+	}
 
 	/* Create a renderer with the default implementation */
 	if (!(drw = fx_renderer_create(backend)))
