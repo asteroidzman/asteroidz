@@ -547,6 +547,10 @@ struct Client {
 	bool group_locked;
 	int32_t deny_group;
 	int32_t ispinned;
+	/* When this client last lost focus (ms). Used for focus-stealing
+	 * prevention: an X11 app that re-fires request_activate right after the
+	 * user switched away from it must not yank the view back to its tag. */
+	uint32_t last_unfocus_ms;
 };
 
 typedef struct {
@@ -4705,6 +4709,7 @@ void focusclient(Client *c, int32_t lift) {
 		if (last_focus_client && !last_focus_client->iskilling &&
 			last_focus_client != c) {
 			last_focus_client->isfocusing = false;
+			last_focus_client->last_unfocus_ms = get_now_in_ms();
 			client_set_unfocused_opacity_animation(last_focus_client);
 		}
 
@@ -8487,7 +8492,16 @@ void activatex11(struct wl_listener *listener, void *data) {
 		}
 	}
 
-	if (config.focus_on_activate && !c->istagsilent && c != selmon->sel) {
+	/* Focus-stealing prevention: some X11 apps (Electron) re-fire
+	 * request_activate the instant they lose focus, so switching away from a
+	 * focused one would immediately yank the view back to its tag. Ignore an
+	 * activate that arrives within this window of the client being defocused;
+	 * mark it urgent instead. Genuine later activations still switch. */
+	const uint32_t FOCUS_ACTIVATE_STEAL_MS = 1000;
+	bool activate_is_steal = get_now_in_ms() - c->last_unfocus_ms < FOCUS_ACTIVATE_STEAL_MS;
+
+	if (config.focus_on_activate && !c->istagsilent && c != selmon->sel &&
+			!activate_is_steal) {
 		if (!(c->mon == selmon && c->tags & c->mon->tagset[c->mon->seltags]))
 			view_in_mon(&(Arg){.ui = c->tags}, true, c->mon, true);
 		wlr_xwayland_surface_activate(c->surface.xwayland, 1);
