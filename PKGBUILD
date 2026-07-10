@@ -4,7 +4,7 @@ pkgver=0.15.3
 pkgrel=1
 pkgdesc='wlroots compositor with a Vulkan renderer, HDR10, and dwm-style tags'
 arch=('x86_64')
-url='https://github.com/ralfwierzbicki/asteroidz'
+url='https://github.com/asteroidzman/asteroidz'
 license=('custom')
 depends=(
   'wlroots0.20' 'wayland' 'libinput' 'libxkbcommon' 'pcre2' 'pixman'

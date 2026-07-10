@@ -45,7 +45,7 @@ that stays out of your way.
 ## Building
 
 asteroidz renders on **Vulkan by default** — the companion
-[asteroidz-scenefx](https://github.com/ralfwierzbicki/asteroidz-scenefx)
+[asteroidz-scenefx](https://github.com/asteroidzman/asteroidz-scenefx)
 fork's `fx_vk` renderer (HDR10, rounded corners, blur, shadows, gradient
 borders, SDR colour) — with **GLES2 as a fallback**. It's one binary; the
 renderer is chosen per session via `WLR_RENDERER`.
@@ -60,7 +60,7 @@ loader/headers and `glslang` (to compile the effect shaders to SPIR-V).
 > `gles2,vulkan` renderers, so it won't clash with an upstream `scenefx`.
 
 A matching shell/bar is available as
-[asteroidz-dms](https://github.com/ralfwierzbicki/asteroidz-dms).
+[asteroidz-dms](https://github.com/asteroidzman/asteroidz-dms).
 
 ```bash
 meson setup build --prefix=/usr
@@ -94,14 +94,14 @@ Build and install the `asteroidz-scenefx` fork with both renderers, then
 asteroidz:
 
 ```bash
-git clone https://github.com/ralfwierzbicki/asteroidz-scenefx.git
+git clone https://github.com/asteroidzman/asteroidz-scenefx.git
 cd asteroidz-scenefx
 meson setup build --prefix=/usr -Drenderers=gles2,vulkan
 ninja -C build
 sudo ninja -C build install
 cd ..
 
-git clone https://github.com/ralfwierzbicki/asteroidz.git
+git clone https://github.com/asteroidzman/asteroidz.git
 cd asteroidz
 meson setup build --prefix=/usr
 ninja -C build

@@ -8,7 +8,7 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO"
 
 WLROOTS_TAG="${WLROOTS_TAG:-0.20.1}"
-SCENEFX_REPO="${SCENEFX_REPO:-https://github.com/ralfwierzbicki/asteroidz-scenefx.git}"
+SCENEFX_REPO="${SCENEFX_REPO:-https://github.com/asteroidzman/asteroidz-scenefx.git}"
 SCENEFX_REF="${SCENEFX_REF:-main}"
 ARCH="$(dpkg --print-architecture)"
 OUT="${OUT:-$REPO/dist}"; mkdir -p "$OUT"
@@ -49,7 +49,7 @@ SFX_VER="$(meson_version /tmp/scenefx/build)"
 DESTDIR=/tmp/scenefx/pkgroot meson install -C /tmp/scenefx/build
 fpm -s dir -t deb -f -n asteroidz-scenefx -v "$SFX_VER" --iteration 1 -a "$ARCH" \
   -m "$MAINTAINER" --license MIT \
-  --url https://github.com/ralfwierzbicki/asteroidz-scenefx \
+  --url https://github.com/asteroidzman/asteroidz-scenefx \
   --description "scenefx fork for asteroidz — wlroots effects library (GLES2 + Vulkan/fx_vk)" \
   -d "wlroots-0.20 (>= ${WLROOTS_TAG})" \
   -d libwayland-server0 -d libdrm2 -d libxkbcommon0 -d libpixman-1-0 \
@@ -69,7 +69,7 @@ VER="$(meson_version build)"
 DESTDIR="$REPO/pkgroot" meson install -C build
 fpm -s dir -t deb -f -n asteroidz -v "$VER" --iteration 1 -a "$ARCH" \
   -m "$MAINTAINER" --license custom \
-  --url https://github.com/ralfwierzbicki/asteroidz \
+  --url https://github.com/asteroidzman/asteroidz \
   --description "wlroots compositor with a Vulkan renderer, HDR10, and dwm-style tags" \
   -d "asteroidz-scenefx (>= ${SFX_VER})" -d "wlroots-0.20 (>= ${WLROOTS_TAG})" \
   -d libwayland-server0 -d libinput10 -d libxkbcommon0 -d libpcre2-8-0 \
