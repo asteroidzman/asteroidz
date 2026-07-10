@@ -4,20 +4,20 @@ self: {
   pkgs,
   ...
 }: let
-  cfg = config.programs.mango;
+  cfg = config.programs.asteroidz;
 in {
   options = {
-    programs.mango = {
-      enable = lib.mkEnableOption "mango, a wayland compositor based on dwl";
+    programs.asteroidz = {
+      enable = lib.mkEnableOption "asteroidz, a wlroots compositor with a Vulkan renderer and dwm-style tags";
       addLoginEntry = lib.mkOption {
         type = lib.types.bool;
         default = true;
-        description = "Whether to add a login entry to the display manager for mango. Only has effect if a display manager is configured (e.g. SDDM, GDM via `services.displayManager`).";
+        description = "Whether to add a login entry to the display manager for asteroidz. Only has effect if a display manager is configured (e.g. SDDM, GDM via `services.displayManager`).";
       };
       package = lib.mkOption {
         type = lib.types.package;
-        default = self.packages.${pkgs.stdenv.hostPlatform.system}.mango;
-        description = "The mango package to use";
+        default = self.packages.${pkgs.stdenv.hostPlatform.system}.asteroidz;
+        description = "The asteroidz package to use";
       };
     };
   };

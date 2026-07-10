@@ -19,8 +19,8 @@
       ];
 
       flake = {
-        hmModules.mango = import ./nix/hm-modules.nix self;
-        nixosModules.mango = import ./nix/nixos-modules.nix self;
+        hmModules.asteroidz = import ./nix/hm-modules.nix self;
+        nixosModules.asteroidz = import ./nix/nixos-modules.nix self;
       };
 
       perSystem = {
@@ -29,7 +29,7 @@
         ...
       }: let
         inherit (pkgs) callPackage ;
-        mango = callPackage ./nix {
+        asteroidz = callPackage ./nix {
           inherit (inputs.scenefx.packages.${pkgs.stdenv.hostPlatform.system}) scenefx;
         };
         shellOverride = old: {
@@ -37,22 +37,22 @@
           buildInputs = old.buildInputs ++ [];
         };
       in {
-        packages.default = mango;
-        overlayAttrs = {
-          inherit (config.packages) mango;
-        };
         packages = {
-          inherit mango;
+          default = asteroidz;
+          inherit asteroidz;
           hm-options-json = pkgs.callPackage (import ./nix/generate-options.nix self) {
             module = ./nix/hm-modules.nix;
-            optionPrefix = "wayland.windowManager.mango.";
+            optionPrefix = "wayland.windowManager.asteroidz.";
           };
           nixos-options-json = pkgs.callPackage (import ./nix/generate-options.nix self) {
             module = ./nix/nixos-modules.nix;
-            optionPrefix = "programs.mango.";
+            optionPrefix = "programs.asteroidz.";
           };
         };
-        devShells.default = mango.overrideAttrs shellOverride;
+        overlayAttrs = {
+          inherit (config.packages) asteroidz;
+        };
+        devShells.default = asteroidz.overrideAttrs shellOverride;
         formatter = pkgs.alejandra;
       };
       systems = [
