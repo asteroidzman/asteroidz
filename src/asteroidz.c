@@ -8542,8 +8542,15 @@ void activatex11(struct wl_listener *listener, void *data) {
 		now_ms - c->last_unfocus_ms < FOCUS_ACTIVATE_STEAL_MS ||
 		now_ms - last_x11_unfocus_ms < FOCUS_ACTIVATE_STEAL_MS;
 
+	/* While overview is open, honouring an activate (view_in_mon + focusclient +
+	 * arrange) would pull the window out of its scaled thumbnail and snap it
+	 * back to full size. Never let a window grab focus/view during overview --
+	 * just flag it urgent. */
+	bool in_overview = (c->mon && c->mon->isoverview) ||
+					   (selmon && selmon->isoverview);
+
 	if (config.focus_on_activate && !c->istagsilent && c != selmon->sel &&
-			!activate_is_steal) {
+			!activate_is_steal && !in_overview) {
 		if (!(c->mon == selmon && c->tags & c->mon->tagset[c->mon->seltags]))
 			view_in_mon(&(Arg){.ui = c->tags}, true, c->mon, true);
 		wlr_xwayland_surface_activate(c->surface.xwayland, 1);
@@ -8640,6 +8647,18 @@ void commitx11(struct wl_listener *listener, void *data) {
 		(int32_t)c->surface.xwayland->y ==
 			(int32_t)c->geom.y + (int32_t)c->bw) {
 		c->configure_serial = 0;
+	}
+
+	/* In overview, an XWayland app that repaints commits a fresh full-size
+	 * buffer; wlroots' scene commit handler (which runs after this one) then
+	 * resets the scene surface to that natural size, undoing the thumbnail
+	 * down-scale. The xdg path re-runs resize() on commit (which sets
+	 * need_output_flush) so rendermon re-clips it; commitx11 never did. Flag it
+	 * here and let rendermon's client_draw_frame re-apply client_apply_clip at
+	 * frame time -- after wlroots' commit handler -- so the dest-size sticks. */
+	if (c->mon && c->mon->isoverview) {
+		c->need_output_flush = true;
+		wlr_output_schedule_frame(c->mon->wlr_output);
 	}
 }
 
