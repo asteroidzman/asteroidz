@@ -1,0 +1,17 @@
+name: ci-check
+
+# Minimal, near-free sanity check: if this runs green, GitHub Actions is
+# unlocked for the account and the heavier build-deb workflow will schedule too.
+on:
+  workflow_dispatch:
+
+jobs:
+  check:
+    name: Actions is alive
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report runner
+        run: |
+          echo "Actions is unlocked ✅"
+          echo "runner: $RUNNER_OS $(uname -m)"
+          lsb_release -d 2>/dev/null || cat /etc/os-release | head -2
