@@ -4656,6 +4656,13 @@ void destroykeyboardgroup(struct wl_listener *listener, void *data) {
 	free(group);
 }
 
+/* Most recent time any X11 client lost focus. All XWayland windows share one
+ * X server, so when a focused X11 window is defocused the server hands X focus
+ * to a sibling, which then fires request_activate. That sibling was never
+ * itself unfocused, so a per-client check misses it — this global lets
+ * activatex11 recognise the sibling's activate as part of the same steal. */
+static uint32_t last_x11_unfocus_ms = 0;
+
 void focusclient(Client *c, int32_t lift) {
 
 	Client *last_focus_client = NULL;
@@ -4710,6 +4717,8 @@ void focusclient(Client *c, int32_t lift) {
 			last_focus_client != c) {
 			last_focus_client->isfocusing = false;
 			last_focus_client->last_unfocus_ms = get_now_in_ms();
+			if (last_focus_client->type == X11)
+				last_x11_unfocus_ms = last_focus_client->last_unfocus_ms;
 			client_set_unfocused_opacity_animation(last_focus_client);
 		}
 
@@ -8498,7 +8507,10 @@ void activatex11(struct wl_listener *listener, void *data) {
 	 * activate that arrives within this window of the client being defocused;
 	 * mark it urgent instead. Genuine later activations still switch. */
 	const uint32_t FOCUS_ACTIVATE_STEAL_MS = 1000;
-	bool activate_is_steal = get_now_in_ms() - c->last_unfocus_ms < FOCUS_ACTIVATE_STEAL_MS;
+	uint32_t now_ms = get_now_in_ms();
+	bool activate_is_steal =
+		now_ms - c->last_unfocus_ms < FOCUS_ACTIVATE_STEAL_MS ||
+		now_ms - last_x11_unfocus_ms < FOCUS_ACTIVATE_STEAL_MS;
 
 	if (config.focus_on_activate && !c->istagsilent && c != selmon->sel &&
 			!activate_is_steal) {
