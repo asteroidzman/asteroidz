@@ -7,6 +7,11 @@
 
 <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-blue?style=flat" alt="License"/></a>
 
+  <br/>
+  <br/>
+
+  <video src="https://github.com/user-attachments/assets/b37a4144-cad4-4296-ba8b-33031a9e8124" width="720" controls muted playsinline></video>
+
 </div>
 
 ---
