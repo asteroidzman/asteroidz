@@ -312,10 +312,13 @@ static inline uint32_t client_set_size(Client *c, uint32_t width,
 		int32_t width = c->geom.width - 2 * c->bw;
 		int32_t height = c->geom.height - 2 * c->bw;
 
-		if (size_hints &&
+		/* overview shrinks windows into thumbnails; honouring a large min-size
+		 * hint there snaps the window back to full size and overflows its cell */
+		bool ov = c->mon && c->mon->isoverview;
+		if (!ov && size_hints &&
 			c->geom.width - 2 * (int32_t)c->bw < size_hints->min_width)
 			width = size_hints->min_width;
-		if (size_hints &&
+		if (!ov && size_hints &&
 			c->geom.height - 2 * (int32_t)c->bw < size_hints->min_height)
 			height = size_hints->min_height;
 
@@ -495,6 +498,8 @@ static inline bool client_request_maximize(Client *c, void *data) {
 static inline void client_set_size_bound(Client *c) {
 	struct wlr_xdg_toplevel *toplevel;
 	struct wlr_xdg_toplevel_state state;
+	/* in overview, let windows shrink below their min-size into the thumbnail */
+	bool ov = c->mon && c->mon->isoverview;
 
 #ifdef XWAYLAND
 	if (client_is_x11(c)) {
@@ -504,10 +509,12 @@ static inline void client_set_size_bound(Client *c) {
 		if (!size_hints)
 			return;
 
-		if ((uint32_t)c->geom.width - 2 * c->bw < size_hints->min_width &&
+		if (!ov &&
+			(uint32_t)c->geom.width - 2 * c->bw < size_hints->min_width &&
 			size_hints->min_width > 0)
 			c->geom.width = size_hints->min_width + 2 * c->bw;
-		if ((uint32_t)c->geom.height - 2 * c->bw < size_hints->min_height &&
+		if (!ov &&
+			(uint32_t)c->geom.height - 2 * c->bw < size_hints->min_height &&
 			size_hints->min_height > 0)
 			c->geom.height = size_hints->min_height + 2 * c->bw;
 		if ((uint32_t)c->geom.width - 2 * c->bw > size_hints->max_width &&
@@ -522,11 +529,11 @@ static inline void client_set_size_bound(Client *c) {
 
 	toplevel = c->surface.xdg->toplevel;
 	state = toplevel->current;
-	if ((uint32_t)c->geom.width - 2 * c->bw < state.min_width &&
+	if (!ov && (uint32_t)c->geom.width - 2 * c->bw < state.min_width &&
 		state.min_width > 0) {
 		c->geom.width = state.min_width + 2 * c->bw;
 	}
-	if ((uint32_t)c->geom.height - 2 * c->bw < state.min_height &&
+	if (!ov && (uint32_t)c->geom.height - 2 * c->bw < state.min_height &&
 		state.min_height > 0) {
 		c->geom.height = state.min_height + 2 * c->bw;
 	}
