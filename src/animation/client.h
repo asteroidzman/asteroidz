@@ -817,11 +817,11 @@ void apply_border(Client *c) {
 			wlr_scene_node_set_enabled(&c->border->node, false);
 		}
 		return;
-	} else {
-		if (!c->border->node.enabled) {
-			wlr_scene_node_set_enabled(&c->border->node, true);
-		}
 	}
+	/* NB: the border is enabled at the end, only once a valid interior cut-out
+	 * has been computed -- enabling it here (before the clip) let it render as
+	 * a full window-filling rect for one frame when animation.current is still
+	 * degenerate (the open/close focus-colour "flash"). */
 
 	bool hit_no_border = check_hit_no_border(c);
 
@@ -919,6 +919,13 @@ void apply_border(Client *c) {
 		c->border, corner_radii_from_location(config.border_radius,
 											  current_corner_location));
 	wlr_scene_rect_set_clipped_region(c->border, clipped_region);
+
+	/* Only show the border once its interior is actually cut out. On a window's
+	 * first animation frame animation.current is still degenerate, so the
+	 * cut-out collapses to empty and the border would fill the whole window
+	 * with the focus/border colour for one frame -- the open/close flash. */
+	bool border_cut_valid = inner_surface_width > 0 && inner_surface_height > 0;
+	wlr_scene_node_set_enabled(&c->border->node, border_cut_valid);
 
 	/* keep the shadow shapes in sync with the corners actually rounded */
 	if (c->shadow)
