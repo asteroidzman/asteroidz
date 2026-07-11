@@ -450,10 +450,11 @@ typedef struct {
 	float drag_tile_refresh_interval;
 	float drag_floating_refresh_interval;
 	int32_t allow_tearing;
-	/* Render-late scheduling: when enabled, defer a monitor's render from the
-	 * frame (vblank) event until close to the next vblank, cutting input-to-
-	 * photon latency by ~one frame. render_late_margin_us is the safety head-
-	 * room left before the deadline (larger = safer, less latency win). */
+	/* Render-late scheduling: defer a monitor's render from the frame (vblank)
+	 * event toward the next vblank, cutting input-to-photon latency by up to
+	 * ~one frame. Adaptive -- backs off on a detected vblank miss and reclaims
+	 * when stable. 0 = off, 1 = on, 2 = on + per-frame log. render_late_margin_us
+	 * is extra safety headroom before the deadline (larger = safer). */
 	int32_t render_late;
 	int32_t render_late_margin_us;
 	int32_t allow_shortcuts_inhibit;

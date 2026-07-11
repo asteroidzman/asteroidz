@@ -656,10 +656,18 @@ struct Monitor {
 	struct wlr_session_lock_surface_v1 *lock_surface;
 	struct wl_event_source *skip_frame_timeout;
 	/* render-late scheduling (config.render_late): defer the render from the
-	 * frame event to just before the next vblank. render_dur_ms is an EMA of
-	 * recent render+commit cost, used to pick the deferral delay. */
+	 * frame event toward the next vblank to cut input latency. Adaptive: defer
+	 * render_late_frac of the interval, back off on a detected vblank miss
+	 * (frame events spaced ~2 intervals apart), reclaim slowly when on time.
+	 * render_dur_ms is a decaying max of recent render+commit cost (a floor on
+	 * how early we must start). */
 	struct wl_event_source *render_timer;
 	double render_dur_ms;
+	double render_late_frac;    /* fraction of the interval to defer (adaptive) */
+	uint64_t render_late_last_ns; /* timestamp of the previous frame event */
+	bool render_late_deferred;  /* did we defer the previous frame? */
+	bool render_late_pending;   /* a deferred render is armed (ignore new frames) */
+	int32_t render_late_good;   /* consecutive on-time deferred frames */
 	struct wlr_box m;		  /* monitor area, layout-relative */
 	struct wlr_box w;		  /* window area, layout-relative */
 	struct wl_list layers[4]; /* LayerSurface::link */
@@ -4308,6 +4316,11 @@ void createmon(struct wl_listener *listener, void *data) {
 		wl_event_loop_add_timer(loop, monitor_skip_frame_timeout_callback, m);
 	m->render_timer = wl_event_loop_add_timer(loop, render_timer_cb, m);
 	m->render_dur_ms = 0.0;
+	m->render_late_frac = 0.30; /* start conservative; adapts up when stable */
+	m->render_late_last_ns = 0;
+	m->render_late_deferred = false;
+	m->render_late_pending = false;
+	m->render_late_good = 0;
 	m->retrain_timer = wl_event_loop_add_timer(loop, monitor_retrain_step, m);
 	m->hdr_capture_debounce_timer =
 		wl_event_loop_add_timer(loop, hdr_capture_debounce_timeout, m);
@@ -6632,8 +6645,10 @@ skip:
 	clock_gettime(CLOCK_MONOTONIC, &render_t1);
 	double dur_ms = (render_t1.tv_sec - render_t0.tv_sec) * 1000.0 +
 					(render_t1.tv_nsec - render_t0.tv_nsec) / 1.0e6;
-	m->render_dur_ms =
-		m->render_dur_ms <= 0.0 ? dur_ms : m->render_dur_ms * 0.8 + dur_ms * 0.2;
+	/* decaying max: track the recent worst case (a deadline wants the peak, not
+	 * the average -- an EMA hides spikes that then miss the vblank) */
+	m->render_dur_ms = dur_ms > m->render_dur_ms ? dur_ms
+												 : m->render_dur_ms * 0.95;
 }
 
 // Frame (vblank) event. By default render immediately. With config.render_late
@@ -6644,26 +6659,79 @@ skip:
 void rendermon(struct wl_listener *listener, void *data) {
 	Monitor *m = wl_container_of(listener, m, frame);
 
-	if (config.render_late && m->render_timer && !m->skiping_frame &&
-		!m->is_vrr_opening && allow_frame_scheduling &&
-		(!session || session->active) && m->wlr_output->enabled &&
-		m->wlr_output->refresh > 0 && !check_tearing_frame_allow(m)) {
+	bool eligible = config.render_late && m->render_timer && !m->skiping_frame &&
+					!m->is_vrr_opening && allow_frame_scheduling &&
+					(!session || session->active) && m->wlr_output->enabled &&
+					m->wlr_output->refresh > 0 && !check_tearing_frame_allow(m);
+
+	if (eligible) {
+		/* A deferred render is already armed -- ignore this extra frame event.
+		 * Otherwise continuous input (e.g. dragging) fires frame events that
+		 * each re-arm (reset) the timer, so it never fires and the render is
+		 * starved -> the display freezes until input stops. */
+		if (m->render_late_pending)
+			return;
+
+		struct timespec ts;
+		clock_gettime(CLOCK_MONOTONIC, &ts);
+		uint64_t now_ns = (uint64_t)ts.tv_sec * 1000000000ull + ts.tv_nsec;
 		double interval_ms = 1.0e6 / (double)m->wlr_output->refresh;
+		uint64_t interval_ns = (uint64_t)(interval_ms * 1.0e6);
+
+		/* Adapt from how the previous deferred frame landed. Frame events are
+		 * ~vblank-aligned, so a ~2-interval gap means we missed a vblank (the
+		 * page flip slipped a frame) -- back off. A ~1-interval gap while
+		 * rendering continuously means we made it -- reclaim latency slowly.
+		 * A large gap = the output was idle; don't judge that. */
+		if (m->render_late_deferred && m->render_late_last_ns) {
+			uint64_t gap = now_ns - m->render_late_last_ns;
+			if (gap > interval_ns * 3) {
+				/* idle, ignore */
+			} else if (gap > interval_ns + interval_ns / 2) {
+				m->render_late_frac *= 0.6; /* missed: back off hard */
+				m->render_late_good = 0;
+			} else if (++m->render_late_good >= 20) {
+				m->render_late_frac += 0.03; /* stable: reclaim */
+				if (m->render_late_frac > 0.65)
+					m->render_late_frac = 0.65;
+				m->render_late_good = 0;
+			}
+		}
+		m->render_late_last_ns = now_ns;
+
 		double margin_ms = config.render_late_margin_us / 1000.0;
-		double delay_ms = interval_ms - m->render_dur_ms - margin_ms;
+		double delay_ms = interval_ms * m->render_late_frac;
+		/* never defer into the (worst-case) render itself */
+		double cap_ms = interval_ms - m->render_dur_ms - margin_ms;
+		if (delay_ms > cap_ms)
+			delay_ms = cap_ms;
+
+		/* render-late 2 = enabled + per-frame log. Logged at ERROR level so it
+		 * is visible under the default log level (this is an explicit opt-in
+		 * debug mode, not normal INFO chatter). */
+		if (config.render_late >= 2)
+			wlr_log(WLR_ERROR,
+					"render-late %s: frac=%.2f delay=%.1f dur=%.1f interval=%.1f",
+					m->wlr_output->name, m->render_late_frac, delay_ms,
+					m->render_dur_ms, interval_ms);
+
 		if (delay_ms >= 1.0) {
-			if (delay_ms > interval_ms)
-				delay_ms = interval_ms;
 			wl_event_source_timer_update(m->render_timer, (int)delay_ms);
+			m->render_late_deferred = true;
+			m->render_late_pending = true;
 			return; // render_timer_cb renders when the deadline arrives
 		}
 	}
 
+	m->render_late_deferred = false;
+	m->render_late_pending = false;
 	render_monitor(m);
 }
 
 static int render_timer_cb(void *data) {
-	render_monitor((Monitor *)data);
+	Monitor *m = data;
+	m->render_late_pending = false; /* deadline reached; render now */
+	render_monitor(m);
 	return 0;
 }
 
