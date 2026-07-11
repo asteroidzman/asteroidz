@@ -62,8 +62,16 @@ void client_tile_resize(Client *c, struct wlr_box geo, int32_t interact) {
 		geo.height -= config.group_bar_height;
 	}
 
-	if ((config.enable_titlebar || is_monocle_layout(c->mon)) &&
-		!c->isfullscreen && !c->mon->isoverview) {
+	if (config.enable_titlebar && !c->isfullscreen) {
+		/* reserve title-bar space; in overview scale it to the shrunk window */
+		int32_t th = config.titlebar_height;
+		if (c->mon->isoverview)
+			th = (int32_t)(th * ((float)geo.width /
+								 fmaxf(1.0f, (float)c->overview_backup_geom.width)));
+		geo.y = geo.y + th;
+		geo.height -= th;
+	} else if (is_monocle_layout(c->mon) && !c->isfullscreen &&
+			   !c->mon->isoverview) {
 		geo.y = geo.y + config.titlebar_height;
 		geo.height -= config.titlebar_height;
 	}

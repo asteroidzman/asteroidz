@@ -197,6 +197,97 @@ static const struct wlr_buffer_impl text_buffer_impl = {
 	.end_data_ptr_access = text_buffer_end_data_ptr_access,
 };
 
+struct asteroidz_icon_node *
+asteroidz_icon_node_create(struct wlr_scene_tree *parent) {
+	struct asteroidz_icon_node *node = calloc(1, sizeof(*node));
+	if (!node)
+		return NULL;
+	node->scene_buffer = wlr_scene_buffer_create(parent, NULL);
+	if (!node->scene_buffer) {
+		free(node);
+		return NULL;
+	}
+	node->size = -1;
+	return node;
+}
+
+bool asteroidz_icon_node_set(struct asteroidz_icon_node *node,
+							 const char *icon_name, int32_t size) {
+	if (!node || !icon_name || !*icon_name || size < 1)
+		return false;
+
+	/* already rendered at this name/size */
+	if (node->buffer && node->size == size && node->cached_name &&
+		strcmp(node->cached_name, icon_name) == 0)
+		return true;
+
+	cairo_surface_t *icon = get_cached_icon(icon_name);
+	if (!icon)
+		return false;
+	int iw = cairo_image_surface_get_width(icon);
+	int ih = cairo_image_surface_get_height(icon);
+	if (iw < 1 || ih < 1)
+		return false;
+
+	if (node->surface) {
+		cairo_surface_destroy(node->surface);
+		node->surface = NULL;
+	}
+	node->surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, size, size);
+	if (cairo_surface_status(node->surface) != CAIRO_STATUS_SUCCESS) {
+		cairo_surface_destroy(node->surface);
+		node->surface = NULL;
+		return false;
+	}
+
+	cairo_t *cr = cairo_create(node->surface);
+	cairo_set_operator(cr, CAIRO_OPERATOR_SOURCE);
+	cairo_set_source_rgba(cr, 0.0, 0.0, 0.0, 0.0);
+	cairo_paint(cr);
+	cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
+	cairo_scale(cr, (double)size / iw, (double)size / ih);
+	cairo_set_source_surface(cr, icon, 0, 0);
+	cairo_pattern_set_filter(cairo_get_source(cr), CAIRO_FILTER_GOOD);
+	cairo_paint(cr);
+	cairo_surface_flush(node->surface);
+	cairo_destroy(cr);
+
+	if (node->buffer) {
+		wlr_buffer_drop(&node->buffer->base);
+		node->buffer = NULL;
+	}
+	struct asteroidz_text_buffer *buf = calloc(1, sizeof(*buf));
+	if (!buf)
+		return false;
+	wlr_buffer_init(&buf->base, &text_buffer_impl, size, size);
+	buf->surface = node->surface;
+	node->buffer = buf;
+	wlr_scene_buffer_set_buffer(node->scene_buffer, &buf->base);
+	wlr_scene_buffer_set_dest_size(node->scene_buffer, size, size);
+
+	g_free(node->cached_name);
+	node->cached_name = g_strdup(icon_name);
+	node->size = size;
+	return true;
+}
+
+void asteroidz_icon_node_destroy(struct asteroidz_icon_node *node) {
+	if (!node)
+		return;
+	if (node->buffer) {
+		wlr_buffer_drop(&node->buffer->base);
+		node->buffer = NULL;
+	}
+	if (node->surface) {
+		cairo_surface_destroy(node->surface);
+		node->surface = NULL;
+	}
+	if (node->scene_buffer)
+		wlr_scene_node_destroy(&node->scene_buffer->node);
+	g_free(node->cached_name);
+	free(node);
+}
+
 struct asteroidz_jump_label_node *
 asteroidz_jump_label_node_create(struct wlr_scene_tree *parent,
 							 DecorateDrawData data) {

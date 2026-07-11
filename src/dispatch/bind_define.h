@@ -2140,6 +2140,8 @@ int32_t toggleoverview(const Arg *arg) {
 		if (visible_client_number > 0) {
 			selmon->ovbk_current_tagset = selmon->tagset[selmon->seltags];
 			selmon->ovbk_prev_tagset = selmon->tagset[selmon->seltags ^ 1];
+			selmon->ov_preview_tag = 0; /* start previewing the current tag */
+			selmon->ov_scroll_tag = 0;  /* recompute the big-area scroll offset */
 			target = ~0 & TAGMASK;
 		} else {
 			selmon->isoverview ^= 1;
@@ -2183,6 +2185,10 @@ int32_t toggleoverview(const Arg *arg) {
 			}
 		}
 	}
+
+	/* kick off the chrome zoom-fade (in on open, out on close). Set before
+	 * view()->arrange() so a close-fade keeps the chrome nodes alive. */
+	overview_anim_start(selmon, selmon->isoverview);
 
 	view(&(Arg){.ui = target}, false);
 	fix_mon_tagset_from_overview(selmon);
