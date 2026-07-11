@@ -564,13 +564,19 @@ arrange(Monitor *m, bool want_animation, bool from_view) {
 
 	pre_caculate_before_arrange(m, want_animation, from_view, false);
 
+	/* while a close-fade is in flight keep the chrome nodes alive; the fade in
+	 * rendermon tears them down (overview_hide_chrome) when it completes */
+	bool ov_closing = m->ov_anim_running && !m->ov_anim_open;
+
 	if (m->isoverview) {
 		overviewlayout.arrange(m);
 	} else if (m->active_special) {
-		overview_hide_chrome(m);
+		if (!ov_closing)
+			overview_hide_chrome(m);
 		arrange_special(m);
 	} else {
-		overview_hide_chrome(m);
+		if (!ov_closing)
+			overview_hide_chrome(m);
 		m->pertag->ltidxs[m->pertag->curtag]->arrange(m);
 	}
 

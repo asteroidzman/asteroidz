@@ -80,6 +80,10 @@ void get_layout_abbr(char *abbr, const char *full_name) {
 Client *xytoclient(double x, double y) {
 	Client *c = NULL, *tmp = NULL;
 	wl_list_for_each_safe(c, tmp, &clients, link) {
+		/* skip windows that aren't actually shown (hidden other-tag / scrolled-
+		 * off overview windows keep a stale box that would falsely match) */
+		if (c->is_overview_hidden || (c->scene && !c->scene->node.enabled))
+			continue;
 		if (VISIBLEON(c, c->mon) && c->animation.current.x <= x &&
 			c->animation.current.y <= y &&
 			c->animation.current.x + c->animation.current.width >= x &&

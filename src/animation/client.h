@@ -11,21 +11,31 @@ void set_rect_size(struct wlr_scene_rect *rect, int32_t width, int32_t height) {
 
 enum corner_location set_client_corner_location(Client *c) {
 	enum corner_location current_corner_location = CORNER_LOCATION_ALL;
+	bool ov = c->mon && c->mon->isoverview;
 	struct wlr_box target_geom =
 		config.animations ? c->animation.current : c->geom;
-	if (target_geom.x + config.border_radius <= c->mon->m.x) {
-		current_corner_location &= ~CORNER_LOCATION_LEFT;
-	}
-	if (target_geom.x + target_geom.width - config.border_radius >=
-		c->mon->m.x + c->mon->m.width) {
-		current_corner_location &= ~CORNER_LOCATION_RIGHT;
-	}
-	if (target_geom.y + config.border_radius <= c->mon->m.y) {
-		current_corner_location &= ~CORNER_LOCATION_TOP;
-	}
-	if (target_geom.y + target_geom.height - config.border_radius >=
-		c->mon->m.y + c->mon->m.height) {
-		current_corner_location &= ~CORNER_LOCATION_BOTTOM;
+	/* In overview every window is a discrete rounded tile in the OV desktop, so
+	 * round all four corners -- the edge-vs-screen logic below would wrongly
+	 * square the bottom/sides of the scaled, gapped windows. The titlebar block
+	 * still runs, so the top-left is squared to blend with the tab when one is
+	 * shown (that's the only corner a titlebar should square). */
+	if (!ov) {
+		/* a corner is squared off only where the window meets the screen edge */
+		int32_t bnd_x = c->mon->m.x, bnd_y = c->mon->m.y;
+		int32_t bnd_r = c->mon->m.x + c->mon->m.width;
+		int32_t bnd_b = c->mon->m.y + c->mon->m.height;
+		if (target_geom.x + config.border_radius <= bnd_x) {
+			current_corner_location &= ~CORNER_LOCATION_LEFT;
+		}
+		if (target_geom.x + target_geom.width - config.border_radius >= bnd_r) {
+			current_corner_location &= ~CORNER_LOCATION_RIGHT;
+		}
+		if (target_geom.y + config.border_radius <= bnd_y) {
+			current_corner_location &= ~CORNER_LOCATION_TOP;
+		}
+		if (target_geom.y + target_geom.height - config.border_radius >= bnd_b) {
+			current_corner_location &= ~CORNER_LOCATION_BOTTOM;
+		}
 	}
 	/* the titlebar's close button (leftmost) owns the rounded top-left
 	 * corner; square off the window's own top-left corner so the two
@@ -47,10 +57,12 @@ enum corner_location set_client_corner_location(Client *c) {
 			monocle_row_full_width = !(config.monocle_tab_max_width > 0 &&
 									  base_width > config.monocle_tab_max_width);
 		}
-		if (is_monocle_layout(c->mon) && c->mon->visible_fake_tiling_clients > 1 &&
-			monocle_row_full_width) {
+		if (!ov && is_monocle_layout(c->mon) &&
+			c->mon->visible_fake_tiling_clients > 1 && monocle_row_full_width) {
 			current_corner_location &= ~CORNER_LOCATION_TOP;
 		} else {
+			/* overview tiles (and non-full-width monocle) use a per-window tab
+			 * that owns only the rounded top-left */
 			current_corner_location &= ~CORNER_LOCATION_TOP_LEFT;
 		}
 	}
@@ -316,9 +328,10 @@ void buffer_set_effect(Client *c, BufferData data) {
 	if (c == grabc)
 		data.should_scale = false;
 
-	if (c->isnoradius || c->isfullscreen ||
-		(config.no_radius_when_single && c->mon &&
-		 c->mon->visible_tiling_clients == 1)) {
+	if (!(c->mon && c->mon->isoverview) &&
+		(c->isnoradius || c->isfullscreen ||
+		 (config.no_radius_when_single && c->mon &&
+		  c->mon->visible_tiling_clients == 1))) {
 		data.corner_location = CORNER_LOCATION_NONE;
 	}
 
@@ -550,12 +563,17 @@ void client_draw_titlebar(Client *c) {
 	/* with more than one window, monocle lays its titlebars out as a row of
 	 * segments itself (see client_draw_monocle_titlebar_segment, called from
 	 * monocle() in horizontal.h) rather than one compact per-window tab. */
-	if (is_monocle_layout(c->mon) && c->mon->visible_fake_tiling_clients > 1)
+	if (!c->mon->isoverview && is_monocle_layout(c->mon) &&
+		c->mon->visible_fake_tiling_clients > 1)
 		return;
 
 	bool titlebar_wanted = config.enable_titlebar || is_monocle_layout(c->mon);
+	/* overview: monocle's shared-row titlebars aren't drawn (each window is a
+	 * standalone thumbnail), but a plain per-window titlebar IS, scaled down. */
+	bool ov = c->mon->isoverview;
 	if (!titlebar_wanted || c->isfullscreen || c->is_monocle_hide ||
-		c->mon->isoverview || !ISFAKETILED(c) || !VISIBLEON(c, c->mon)) {
+		(ov && !config.enable_titlebar) || !ISFAKETILED(c) ||
+		!VISIBLEON(c, c->mon)) {
 		if (c->titlebar_node->scene_buffer->node.enabled)
 			wlr_scene_node_set_enabled(&c->titlebar_node->scene_buffer->node,
 									   false);
@@ -567,6 +585,9 @@ void client_draw_titlebar(Client *c) {
 	}
 
 	int32_t th = config.titlebar_height;
+	if (ov) /* scale the bar to the shrunk overview window */
+		th = (int32_t)(th * ((float)c->animation.current.width /
+							  fmaxf(1.0f, (float)c->overview_backup_geom.width)));
 	int32_t tb_x = c->animation.current.x;
 	int32_t tb_y = c->animation.current.y - th;
 	int32_t tb_w = c->animation.current.width;
@@ -807,8 +828,9 @@ void apply_border(Client *c) {
 	apply_split_border(c, hit_no_border);
 
 	enum corner_location current_corner_location;
-	if (c->isfullscreen || (config.no_radius_when_single && c->mon &&
-							c->mon->visible_tiling_clients == 1)) {
+	if (!(c->mon && c->mon->isoverview) &&
+		(c->isfullscreen || (config.no_radius_when_single && c->mon &&
+							 c->mon->visible_tiling_clients == 1))) {
 		current_corner_location = CORNER_LOCATION_NONE;
 	} else {
 		current_corner_location = set_client_corner_location(c);
@@ -933,6 +955,12 @@ void apply_border(Client *c) {
 struct ivec2 clip_to_hide(Client *c, struct wlr_box *clip_box) {
 	int32_t offsetx = 0, offsety = 0, offsetw = 0, offseth = 0;
 	struct ivec2 offset = {0, 0, 0, 0};
+
+	/* in overview a scaled window is placed at its mirrored position and may run
+	 * off the screen edge; DON'T crop it here (that would shrink its ov_live
+	 * scale). The void-frame masks hide the off-desktop overhang instead. */
+	if (c->mon && c->mon->isoverview)
+		return offset;
 
 	if (!ISSCROLLTILED(c) && !c->animation.tagining && !c->animation.tagouted &&
 		!c->animation.tagouting)

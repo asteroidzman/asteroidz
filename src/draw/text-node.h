@@ -228,6 +228,21 @@ typedef struct {
 } AsteroidzGroupBar;
 
 void asteroidz_text_global_finish(void);
+
+/* a standalone app-icon buffer (used for overview thumbnails) */
+struct asteroidz_icon_node {
+	struct wlr_scene_buffer *scene_buffer;
+	struct asteroidz_text_buffer *buffer;
+	cairo_surface_t *surface;
+	int32_t size;
+	char *cached_name;
+};
+struct asteroidz_icon_node *
+asteroidz_icon_node_create(struct wlr_scene_tree *parent);
+bool asteroidz_icon_node_set(struct asteroidz_icon_node *node,
+							 const char *icon_name, int32_t size);
+void asteroidz_icon_node_destroy(struct asteroidz_icon_node *node);
+
 struct asteroidz_jump_label_node *
 asteroidz_jump_label_node_create(struct wlr_scene_tree *parent,
 							 DecorateDrawData data);

@@ -170,6 +170,7 @@
  * until preset.h is included below the Monitor struct, so per-monitor
  * overview arrays use this fixed cap and clamp to LENGTH(tags) at runtime */
 #define OV_TAG_CELLS 32
+#define OV_STRIP_WINS 64 /* window snapshots shown across all strip tiles */
 #define LISTEN(E, L, H) wl_signal_add((E), ((L)->notify = (H), (L)))
 #define ISFULLSCREEN(A)                                                        \
 	((A)->isfullscreen || (A)->ismaximizescreen ||                             \
@@ -412,6 +413,11 @@ struct Client {
 	AsteroidzGroupBar *group_bar;
 	struct asteroidz_tab_bar_node *titlebar_node;
 	struct asteroidz_tab_bar_node *titlebar_close_node;
+	struct asteroidz_icon_node *ov_icon; /* app icon on overview thumbnail */
+	struct asteroidz_jump_label_node *ov_title; /* title under the overview icon */
+	struct wlr_buffer *ov_snap_buf; /* frozen surface buffer for strip snapshot */
+	struct wlr_box ov_clip;         /* overview big-area surface crop (viewport) */
+	bool ov_clip_active;            /* ov_clip should override the ov_live clip */
 	struct wl_list link;
 	struct wl_list flink;
 	struct wl_list fadeout_link;
@@ -675,7 +681,42 @@ struct Monitor {
 	 * its layout preserved (scaled down). */
 	struct wlr_scene_rect *ov_dim;
 	struct wlr_scene_rect *ov_cell_bg[OV_TAG_CELLS];
+	struct wlr_scene_buffer *ov_cell_wp[OV_TAG_CELLS]; /* per-tile wallpaper */
+	struct wlr_scene_shadow *ov_cell_shadow[OV_TAG_CELLS];
 	struct asteroidz_jump_label_node *ov_cell_label[OV_TAG_CELLS];
+	float ov_strip_scroll;                  /* Mission Control: strip h-scroll */
+	struct wlr_scene_blur *ov_strip_blur;     /* xray blur behind the top strip */
+	struct wlr_scene_rect *ov_strip_bg;       /* translucent tint over the blur */
+	struct wlr_scene_shadow *ov_strip_shadow; /* shadow under the top strip */
+	struct wlr_scene_buffer
+		*ov_snap[OV_STRIP_WINS]; /* active tag's window snapshots (strip tile) */
+	/* strip tile hit-test rects + hover-preview state (Mission Control) */
+	float ov_tile_x[OV_TAG_CELLS];
+	uint32_t ov_tile_tag[OV_TAG_CELLS];
+	int32_t ov_tile_count;
+	float ov_tile_y, ov_tile_w, ov_tile_h;
+	uint32_t ov_preview_tag; /* tag shown in the main area (0 = the current tag) */
+	struct wlr_scene_buffer *ov_main_wp;   /* wallpaper backdrop of the big area */
+	struct wlr_scene_shadow *ov_main_shadow; /* drop shadow under the OV desktop */
+	struct wlr_scene_rect *ov_vignette[4]; /* edge-darkening vignette gradients */
+	/* open/close zoom-fade of the overview chrome (driven from rendermon) */
+	bool ov_anim_running;      /* a fade is currently in progress */
+	bool ov_anim_open;         /* true = fading in, false = fading out */
+	uint32_t ov_anim_start_ms; /* start timestamp of the current fade */
+	float ov_anim_t;           /* current chrome visibility (0..1) */
+	struct wlr_scene_rect *ov_main_border;   /* subtle 1px edge on the OV desktop */
+	struct wlr_scene_rect *ov_hover_hl;    /* highlight around the hovered window */
+	float ov_main_scroll;                  /* big-area horizontal scroll (scroller) */
+	uint32_t ov_scroll_tag;                /* tag the scroll offset currently applies to */
+	uint32_t ov_main_tag;                  /* tag currently laid out in the big area */
+	float ov_main_x, ov_main_y, ov_main_w, ov_main_h; /* big-area rect (cached) */
+	float ov_vp_x, ov_vp_y, ov_vp_w, ov_vp_h; /* mirrored-viewport rect (border crop) */
+	struct wlr_scene_buffer *ov_main_crop[16]; /* cropped live buffers for edge windows */
+	struct wlr_scene_rect *ov_main_bord[16];   /* their borders, clipped to viewport */
+	struct wlr_scene_rect *ov_void[4];         /* dark frame masking window overhang */
+	float ov_avail_y;                          /* content-region top (below strip) */
+	bool ov_main_more_l, ov_main_more_r;   /* more windows off left/right in big area */
+	struct wlr_scene_rect *ov_main_chevron_l, *ov_main_chevron_r; /* scroll hints */
 	int32_t is_in_hotarea;
 	int32_t asleep;
 	bool vrr_global_enable; // monitorrule vrr:1 = VRR always on
@@ -1008,6 +1049,12 @@ static bool is_scroller_layout(Monitor *m);
 static bool is_monocle_layout(Monitor *m);
 static void tag_display_name(Monitor *m, uint32_t tag, char *buf, size_t len);
 void overview_hide_chrome(Monitor *m);
+void overview_anim_start(Monitor *m, bool open);
+bool overview_anim_frame(Monitor *m);
+void overview_pointer_preview(Monitor *m, double px, double py);
+void overview_hover_highlight(Monitor *m, Client *c);
+uint32_t overview_tile_at(Monitor *m, double px, double py);
+void overview_main_scroll(Monitor *m, double px, double py, int32_t dir);
 static void create_output(struct wlr_backend *backend, void *data);
 static void get_layout_abbr(char *abbr, const char *full_name);
 static void apply_named_scratchpad(Client *target_client);
@@ -1887,7 +1934,11 @@ void toggle_hotarea(int32_t x_root, int32_t y_root) {
 
 	if (config.enable_hotarea == 1 && selmon->is_in_hotarea == 0 &&
 		in_hotarea) {
-		toggleoverview(&arg);
+		/* Mission Control: the hot corner only OPENS overview; moving the
+		 * cursor (even back into the corner) never closes it -- dismissal is by
+		 * click / keybind. */
+		if (!selmon->isoverview)
+			toggleoverview(&arg);
 		selmon->is_in_hotarea = 1;
 	} else if (config.enable_hotarea == 1 && selmon->is_in_hotarea == 1 &&
 			   !in_hotarea) {
@@ -2543,6 +2594,16 @@ axisnotify(struct wl_listener *listener, void *data) {
 		}
 	}
 
+	/* overview: consume the scroll wheel entirely so it can't leak to the real
+	 * scroller layout (which would desync the overview); pan the big area if a
+	 * scroller preview enabled it */
+	if (selmon && selmon->isoverview) {
+		if (selmon->ov_scroll_tag != 0 && event->delta != 0)
+			overview_main_scroll(selmon, cursor->x, cursor->y,
+								 event->delta > 0 ? 1 : -1);
+		return;
+	}
+
 	if (event->orientation == WL_POINTER_AXIS_VERTICAL_SCROLL)
 		adir = event->delta > 0 ? AxisDown : AxisUp;
 	else
@@ -2873,6 +2934,16 @@ bool handle_buttonpress(struct wlr_pointer_button_event *event) {
 			}
 		}
 
+		// in overview mode: clicking a strip tile switches to (displays) that tag
+		if (selmon && selmon->isoverview && event->button == BTN_LEFT) {
+			uint32_t ttag = overview_tile_at(selmon, cursor->x, cursor->y);
+			if (ttag >= 1 && ttag <= LENGTH(tags)) {
+				toggleoverview(&(Arg){.i = 1});
+				view(&(Arg){.ui = (1u << (ttag - 1))}, false);
+				return true;
+			}
+		}
+
 		// in overview mode, left click jumps to the window, right click closes it
 		if (selmon && selmon->isoverview && event->button == BTN_LEFT && c) {
 			toggleoverview(&(Arg){.i = 1});
@@ -3189,10 +3260,82 @@ void cleanupmon(struct wl_listener *listener, void *data) {
 		wlr_scene_node_destroy(&m->ov_dim->node);
 		m->ov_dim = NULL;
 	}
+	if (m->ov_strip_blur) {
+		wlr_scene_node_destroy(&m->ov_strip_blur->node);
+		m->ov_strip_blur = NULL;
+	}
+	if (m->ov_strip_bg) {
+		wlr_scene_node_destroy(&m->ov_strip_bg->node);
+		m->ov_strip_bg = NULL;
+	}
+	if (m->ov_strip_shadow) {
+		wlr_scene_node_destroy(&m->ov_strip_shadow->node);
+		m->ov_strip_shadow = NULL;
+	}
+	for (int32_t oi = 0; oi < OV_STRIP_WINS; oi++) {
+		if (m->ov_snap[oi]) {
+			wlr_scene_node_destroy(&m->ov_snap[oi]->node);
+			m->ov_snap[oi] = NULL;
+		}
+	}
+	for (int32_t oi = 0; oi < 16; oi++) {
+		if (m->ov_main_crop[oi]) {
+			wlr_scene_node_destroy(&m->ov_main_crop[oi]->node);
+			m->ov_main_crop[oi] = NULL;
+		}
+		if (m->ov_main_bord[oi]) {
+			wlr_scene_node_destroy(&m->ov_main_bord[oi]->node);
+			m->ov_main_bord[oi] = NULL;
+		}
+	}
+	for (int32_t oi = 0; oi < 4; oi++) {
+		if (m->ov_void[oi]) {
+			wlr_scene_node_destroy(&m->ov_void[oi]->node);
+			m->ov_void[oi] = NULL;
+		}
+	}
+	if (m->ov_main_wp) {
+		wlr_scene_node_destroy(&m->ov_main_wp->node);
+		m->ov_main_wp = NULL;
+	}
+	if (m->ov_main_shadow) {
+		wlr_scene_node_destroy(&m->ov_main_shadow->node);
+		m->ov_main_shadow = NULL;
+	}
+	for (int32_t vi = 0; vi < 4; vi++) {
+		if (m->ov_vignette[vi]) {
+			wlr_scene_node_destroy(&m->ov_vignette[vi]->node);
+			m->ov_vignette[vi] = NULL;
+		}
+	}
+	if (m->ov_main_border) {
+		wlr_scene_node_destroy(&m->ov_main_border->node);
+		m->ov_main_border = NULL;
+	}
+	if (m->ov_hover_hl) {
+		wlr_scene_node_destroy(&m->ov_hover_hl->node);
+		m->ov_hover_hl = NULL;
+	}
+	if (m->ov_main_chevron_l) {
+		wlr_scene_node_destroy(&m->ov_main_chevron_l->node);
+		m->ov_main_chevron_l = NULL;
+	}
+	if (m->ov_main_chevron_r) {
+		wlr_scene_node_destroy(&m->ov_main_chevron_r->node);
+		m->ov_main_chevron_r = NULL;
+	}
 	for (int32_t oi = 0; oi < OV_TAG_CELLS; oi++) {
 		if (m->ov_cell_bg[oi]) {
 			wlr_scene_node_destroy(&m->ov_cell_bg[oi]->node);
 			m->ov_cell_bg[oi] = NULL;
+		}
+		if (m->ov_cell_wp[oi]) {
+			wlr_scene_node_destroy(&m->ov_cell_wp[oi]->node);
+			m->ov_cell_wp[oi] = NULL;
+		}
+		if (m->ov_cell_shadow[oi]) {
+			wlr_scene_node_destroy(&m->ov_cell_shadow[oi]->node);
+			m->ov_cell_shadow[oi] = NULL;
 		}
 		if (m->ov_cell_label[oi]) {
 			asteroidz_jump_label_node_destroy(m->ov_cell_label[oi]);
@@ -5370,6 +5513,10 @@ void init_client_properties(Client *c) {
 	c->group_bar = NULL;
 	c->titlebar_node = NULL;
 	c->titlebar_close_node = NULL;
+	c->ov_icon = NULL;
+	c->ov_title = NULL;
+	c->ov_snap_buf = NULL;
+	c->ov_clip_active = false;
 	c->blur_node = NULL;
 	c->overview_scene_surface = NULL;
 	c->drop_direction = UNDIR;
@@ -5870,6 +6017,10 @@ void motionnotify(uint32_t time, struct wlr_input_device *device, double dx,
 		/* Update selmon (even while dragging a window) */
 		if (config.sloppyfocus)
 			selmon = xytomon(cursor->x, cursor->y);
+
+		/* overview: hovering a strip tile previews that tag in the main area */
+		if (selmon && selmon->isoverview)
+			overview_pointer_preview(selmon, cursor->x, cursor->y);
 	}
 
 	cursor_zoom_update();
@@ -5882,6 +6033,10 @@ void motionnotify(uint32_t time, struct wlr_input_device *device, double dx,
 
 	/* Find the client under the pointer and send the event along. */
 	xytonode(cursor->x, cursor->y, &surface, &c, NULL, NULL, &sx, &sy);
+
+	/* overview: outline the big-area window under the pointer */
+	if (selmon && selmon->isoverview)
+		overview_hover_highlight(selmon, c);
 
 	if (cursor_mode == CurPressed && !seat->drag &&
 		surface != seat->pointer_state.focused_surface &&
@@ -5957,6 +6112,14 @@ void motionnotify(uint32_t time, struct wlr_input_device *device, double dx,
 
 	if (config.edge_scroller_pointer_focus) {
 		speed = sqrt(dx * dx + dy * dy);
+	}
+
+	/* overview: focus the window under the cursor so its border shows the theme
+	 * focus colour (the subtle hover highlight); bypass the scroller edge-focus
+	 * lock that otherwise suppresses focus in a scroller layout */
+	if (selmon && selmon->isoverview) {
+		pointerfocus(c, surface, sx, sy, time);
+		return;
 	}
 
 	if (!scroller_focus_lock || !(c && c->mon && !INSIDEMON(c))) {
@@ -6354,6 +6517,11 @@ void rendermon(struct wl_listener *listener, void *data) {
 	if (m->skiping_frame) {
 		monitor_stop_skip_frame_timer(m);
 	}
+
+	/* advance the overview open/close chrome fade (before the commit below, so
+	 * the frame we build already reflects this tick's opacity) */
+	if (m->ov_anim_running)
+		need_more_frames = overview_anim_frame(m) || need_more_frames;
 
 	// only build and commit state when a frame is actually needed
 	if (config.allow_tearing && frame_allow_tearing) {
@@ -7668,8 +7836,23 @@ void overview_backup(Client *c) {
 	c->animation.tagouting = false;
 	c->overview_backup_geom = c->geom;
 	c->overview_backup_bw = c->bw;
+	/* freeze the window's current pixels for the strip thumbnail: a static
+	 * screenshot of the tag as it was when the overview opened */
+	if (c->ov_snap_buf) {
+		wlr_buffer_unlock(c->ov_snap_buf);
+		c->ov_snap_buf = NULL;
+	}
+	{
+		struct wlr_surface *ov_surf = client_surface(c);
+		if (ov_surf && ov_surf->buffer)
+			c->ov_snap_buf = wlr_buffer_lock(&ov_surf->buffer->base);
+	}
 	if (c->isfloating) {
 		c->isfloating = 0;
+		/* floating windows live on LyrTop (or LyrOverlay), which overview
+		 * disables to hide the bar -- move them to LyrTile so they show */
+		if (c->scene)
+			wlr_scene_node_reparent(&c->scene->node, layers[LyrTile]);
 	}
 
 	if (config.ov_no_resize) {
@@ -7679,6 +7862,12 @@ void overview_backup(Client *c) {
 	if (c->isfullscreen || c->ismaximizescreen) {
 		client_pending_fullscreen_state(c, 0); // clear the window's fullscreen flag
 		client_pending_maximized_state(c, 0);
+		/* a fullscreen window lives on LyrTop (maximized on LyrMaximize);
+		 * overview disables LyrTop to hide the bar, so the window would vanish.
+		 * Clearing the flag doesn't reparent the node, so do it here (as we do
+		 * for floating) to move it onto LyrTile where the mirror is laid out. */
+		if (c->scene)
+			wlr_scene_node_reparent(&c->scene->node, layers[LyrTile]);
 	}
 	c->bw = c->isnoborder ? 0 : config.borderpx;
 
@@ -7694,7 +7883,20 @@ void overview_restore(Client *c, const Arg *arg) {
 		c->is_overview_hidden = false;
 		wlr_scene_node_set_enabled(&c->scene->node, true);
 	}
+	if (c->ov_icon)
+		wlr_scene_node_set_enabled(&c->ov_icon->scene_buffer->node, false);
+	if (c->ov_title)
+		wlr_scene_node_set_enabled(&c->ov_title->scene_buffer->node, false);
+	if (c->ov_snap_buf) {
+		wlr_buffer_unlock(c->ov_snap_buf);
+		c->ov_snap_buf = NULL;
+	}
+	c->ov_clip_active = false;
 	c->isfloating = c->overview_isfloatingbak;
+	/* undo the overview reparent: send floating windows back to their layer */
+	if (c->isfloating && c->scene)
+		wlr_scene_node_reparent(&c->scene->node,
+								layers[c->isoverlay ? LyrOverlay : LyrTop]);
 	c->isfullscreen = c->overview_isfullscreenbak;
 	c->ismaximizescreen = c->overview_ismaximizescreenbak;
 	c->overview_isfloatingbak = 0;
@@ -8134,6 +8336,18 @@ void unmapnotify(struct wl_listener *listener, void *data) {
 	if (c->titlebar_close_node) {
 		asteroidz_tab_bar_node_destroy(c->titlebar_close_node);
 		c->titlebar_close_node = NULL;
+	}
+	if (c->ov_icon) {
+		asteroidz_icon_node_destroy(c->ov_icon);
+		c->ov_icon = NULL;
+	}
+	if (c->ov_title) {
+		asteroidz_jump_label_node_destroy(c->ov_title);
+		c->ov_title = NULL;
+	}
+	if (c->ov_snap_buf) {
+		wlr_buffer_unlock(c->ov_snap_buf);
+		c->ov_snap_buf = NULL;
 	}
 
 	wlr_scene_node_destroy(&c->scene->node);

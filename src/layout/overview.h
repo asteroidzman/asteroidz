@@ -407,7 +407,7 @@ void finish_jump_mode(Monitor *m) {
  * decoration layer (above the wallpaper, below the window thumbnails on
  * LyrTile) so the spread windows pop against a dimmed desktop. */
 void overview_draw_backdrop(Monitor *m) {
-	static const float dim_color[4] = {0.0f, 0.0f, 0.0f, 0.55f};
+	static const float dim_color[4] = {0.0f, 0.0f, 0.0f, 0.9f};
 	if (!m->ov_dim) {
 		m->ov_dim = wlr_scene_rect_create(layers[LyrDecorate], m->m.width,
 										  m->m.height, dim_color);
@@ -421,11 +421,58 @@ void overview_draw_backdrop(Monitor *m) {
 }
 
 void overview_hide_chrome(Monitor *m) {
+	/* restore the top layer-shell (DMS bar) hidden while overview was open */
+	if (!layers[LyrTop]->node.enabled)
+		wlr_scene_node_set_enabled(&layers[LyrTop]->node, true);
 	if (m->ov_dim && m->ov_dim->node.enabled)
 		wlr_scene_node_set_enabled(&m->ov_dim->node, false);
+	if (m->ov_strip_blur && m->ov_strip_blur->node.enabled)
+		wlr_scene_node_set_enabled(&m->ov_strip_blur->node, false);
+	if (m->ov_strip_bg && m->ov_strip_bg->node.enabled)
+		wlr_scene_node_set_enabled(&m->ov_strip_bg->node, false);
+	if (m->ov_strip_shadow && m->ov_strip_shadow->node.enabled)
+		wlr_scene_node_set_enabled(&m->ov_strip_shadow->node, false);
+	for (int32_t i = 0; i < OV_STRIP_WINS; i++) {
+		if (m->ov_snap[i]) {
+			wlr_scene_node_destroy(&m->ov_snap[i]->node);
+			m->ov_snap[i] = NULL;
+		}
+	}
+	for (int32_t i = 0; i < 16; i++) {
+		if (m->ov_main_crop[i]) {
+			wlr_scene_node_destroy(&m->ov_main_crop[i]->node);
+			m->ov_main_crop[i] = NULL;
+		}
+		if (m->ov_main_bord[i]) {
+			wlr_scene_node_destroy(&m->ov_main_bord[i]->node);
+			m->ov_main_bord[i] = NULL;
+		}
+	}
+	for (int32_t i = 0; i < 4; i++)
+		if (m->ov_void[i] && m->ov_void[i]->node.enabled)
+			wlr_scene_node_set_enabled(&m->ov_void[i]->node, false);
+	if (m->ov_main_wp && m->ov_main_wp->node.enabled)
+		wlr_scene_node_set_enabled(&m->ov_main_wp->node, false);
+	if (m->ov_main_shadow && m->ov_main_shadow->node.enabled)
+		wlr_scene_node_set_enabled(&m->ov_main_shadow->node, false);
+	for (int32_t vi = 0; vi < 4; vi++)
+		if (m->ov_vignette[vi] && m->ov_vignette[vi]->node.enabled)
+			wlr_scene_node_set_enabled(&m->ov_vignette[vi]->node, false);
+	if (m->ov_main_border && m->ov_main_border->node.enabled)
+		wlr_scene_node_set_enabled(&m->ov_main_border->node, false);
+	if (m->ov_hover_hl && m->ov_hover_hl->node.enabled)
+		wlr_scene_node_set_enabled(&m->ov_hover_hl->node, false);
+	if (m->ov_main_chevron_l && m->ov_main_chevron_l->node.enabled)
+		wlr_scene_node_set_enabled(&m->ov_main_chevron_l->node, false);
+	if (m->ov_main_chevron_r && m->ov_main_chevron_r->node.enabled)
+		wlr_scene_node_set_enabled(&m->ov_main_chevron_r->node, false);
 	for (int32_t i = 0; i < OV_TAG_CELLS; i++) {
 		if (m->ov_cell_bg[i] && m->ov_cell_bg[i]->node.enabled)
 			wlr_scene_node_set_enabled(&m->ov_cell_bg[i]->node, false);
+		if (m->ov_cell_wp[i] && m->ov_cell_wp[i]->node.enabled)
+			wlr_scene_node_set_enabled(&m->ov_cell_wp[i]->node, false);
+		if (m->ov_cell_shadow[i] && m->ov_cell_shadow[i]->node.enabled)
+			wlr_scene_node_set_enabled(&m->ov_cell_shadow[i]->node, false);
 		if (m->ov_cell_label[i] &&
 			m->ov_cell_label[i]->scene_buffer->node.enabled)
 			wlr_scene_node_set_enabled(
@@ -433,38 +480,131 @@ void overview_hide_chrome(Monitor *m) {
 	}
 }
 
-/* Draw cell `slot`: an OPAQUE rounded dark tile (so each tag reads as its own
- * "workspace" rather than showing an inconsistent crop of the single shared
- * wallpaper) with the tag-name label at the top. The tile is drawn behind the
- * window thumbnails (LyrDecorate < LyrTile); the tag you came from gets a
- * slightly warmer tile and a focused (accent) label. */
+/* The monitor's wallpaper buffer (background/bottom layer surface), used as the
+ * tile background so each tag reads as a scaled-down real screen (KDE/niri
+ * style). NULL if no wallpaper is mapped yet. */
+static struct wlr_buffer *overview_wallpaper_buffer(Monitor *m) {
+	const enum zwlr_layer_shell_v1_layer order[] = {
+		ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND,
+		ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM,
+	};
+	for (size_t li = 0; li < 2; li++) {
+		LayerSurface *l;
+		wl_list_for_each(l, &m->layers[order[li]], link) {
+			if (l->layer_surface && l->layer_surface->surface &&
+				l->layer_surface->surface->buffer)
+				return &l->layer_surface->surface->buffer->base;
+		}
+	}
+	return NULL;
+}
+
+/* Draw cell `slot`: the monitor wallpaper scaled into a rounded tile (a
+ * scaled-down screen), with the tag-name label overlaid. The tile sits behind
+ * the window thumbnails (LyrDecorate < LyrTile); the tag you came from gets a
+ * focused (accent) label. Falls back to a dark tile if no wallpaper is up. */
 static void overview_draw_cell_label(Monitor *m, int32_t slot, float cx,
 									 float cy, float cw, float ch, uint32_t tag,
 									 bool current, int32_t hidden) {
 	if (slot < 0 || slot >= OV_TAG_CELLS)
 		return;
 
-	static const float tile_normal[4] = {0.10f, 0.10f, 0.13f, 1.0f};
-	static const float tile_current[4] = {0.17f, 0.14f, 0.10f, 1.0f};
-	const float *tile = current ? tile_current : tile_normal;
+	/* Border ring: scene rects have no border property, so draw the background
+	 * slightly larger than the wallpaper -- its edge shows as a border around
+	 * the tile. The current tag gets a brighter accent border; when no
+	 * wallpaper is up this doubles as the dark fallback fill. */
+	float bw = current ? 3.0f : 2.0f; /* active tile gets a heavier accent ring */
+	static const float border_normal[4] = {0.30f, 0.30f, 0.36f, 0.85f};
+	static const float border_current[4] = {0.98f, 0.74f, 0.42f, 1.0f};
+	const float *border = current ? border_current : border_normal;
+	int32_t ox = (int32_t)(cx - bw), oy = (int32_t)(cy - bw);
+	int32_t ow = (int32_t)(cw + 2 * bw), oh = (int32_t)(ch + 2 * bw);
+
+	/* drop shadow behind the tile for depth (above the dim, below the tile) */
+	{
+		/* the active tile is lifted with a stronger, softer shadow */
+		float shadow_color[4] = {0.0f, 0.0f, 0.0f, current ? 0.85f : 0.45f};
+		float sigma = current ? 28.0f : 15.0f;
+		int32_t pad = (int32_t)ceilf(sigma * 0.5f);
+		if (!m->ov_cell_shadow[slot])
+			m->ov_cell_shadow[slot] = wlr_scene_shadow_create(
+				layers[LyrDecorate], ow + 2 * pad, oh + 2 * pad,
+				(int32_t)(18 + pad), sigma, shadow_color);
+		if (m->ov_cell_shadow[slot]) {
+			wlr_scene_shadow_set_size(m->ov_cell_shadow[slot], ow + 2 * pad,
+									  oh + 2 * pad);
+			wlr_scene_shadow_set_corner_radius(m->ov_cell_shadow[slot],
+											   (int32_t)(18 + pad));
+			wlr_scene_shadow_set_blur_sigma(m->ov_cell_shadow[slot], sigma);
+			wlr_scene_node_set_position(&m->ov_cell_shadow[slot]->node,
+										ox - pad, oy - pad + 4);
+			wlr_scene_node_set_enabled(&m->ov_cell_shadow[slot]->node, true);
+		}
+	}
 
 	if (!m->ov_cell_bg[slot])
-		m->ov_cell_bg[slot] = wlr_scene_rect_create(layers[LyrDecorate],
-													(int)cw, (int)ch, tile);
+		m->ov_cell_bg[slot] =
+			wlr_scene_rect_create(layers[LyrDecorate], ow, oh, border);
 	if (m->ov_cell_bg[slot]) {
-		wlr_scene_rect_set_size(m->ov_cell_bg[slot], (int)cw, (int)ch);
-		wlr_scene_rect_set_color(m->ov_cell_bg[slot], tile);
+		wlr_scene_rect_set_size(m->ov_cell_bg[slot], ow, oh);
+		wlr_scene_rect_set_color(m->ov_cell_bg[slot], border);
 		wlr_scene_rect_set_corner_radii(
 			m->ov_cell_bg[slot],
-			corner_radii_from_location(16, CORNER_LOCATION_ALL));
-		wlr_scene_node_set_position(&m->ov_cell_bg[slot]->node, (int)cx,
-									(int)cy);
+			corner_radii_from_location(18, CORNER_LOCATION_ALL));
+		wlr_scene_node_set_position(&m->ov_cell_bg[slot]->node, ox, oy);
 		wlr_scene_node_set_enabled(&m->ov_cell_bg[slot]->node, true);
+		/* keep order: shadow < bg (< wallpaper, raised below) */
+		if (m->ov_cell_shadow[slot])
+			wlr_scene_node_place_below(&m->ov_cell_shadow[slot]->node,
+									   &m->ov_cell_bg[slot]->node);
+	}
+
+	/* Wallpaper tile: the monitor wallpaper scaled into the tile (rounded),
+	 * drawn on top of the dark fallback so each tag reads as a mini-screen.
+	 * Non-current tiles are dimmed a touch so the active tag stands out. */
+	struct wlr_buffer *wp = overview_wallpaper_buffer(m);
+	if (wp) {
+		if (!m->ov_cell_wp[slot])
+			m->ov_cell_wp[slot] =
+				wlr_scene_buffer_create(layers[LyrDecorate], wp);
+		else
+			wlr_scene_buffer_set_buffer(m->ov_cell_wp[slot], wp);
+		if (m->ov_cell_wp[slot]) {
+			wlr_scene_buffer_set_dest_size(m->ov_cell_wp[slot], (int)cw,
+										   (int)ch);
+			wlr_scene_buffer_set_corner_radii(
+				m->ov_cell_wp[slot],
+				corner_radii_from_location(16, CORNER_LOCATION_ALL));
+			wlr_scene_buffer_set_opacity(m->ov_cell_wp[slot],
+										 current ? 1.0f : 0.55f);
+			wlr_scene_node_set_position(&m->ov_cell_wp[slot]->node, (int)cx,
+										(int)cy);
+			wlr_scene_node_raise_to_top(&m->ov_cell_wp[slot]->node);
+			wlr_scene_node_set_enabled(&m->ov_cell_wp[slot]->node, true);
+		}
+	} else if (m->ov_cell_wp[slot]) {
+		wlr_scene_node_set_enabled(&m->ov_cell_wp[slot]->node, false);
 	}
 
 	if (!m->ov_cell_label[slot]) {
 		m->ov_cell_label[slot] =
 			asteroidz_jump_label_node_create(layers[LyrOverlay], config.pilldata);
+		/* overview tag labels: 1.25x larger and bold vs the normal pill font */
+		if (m->ov_cell_label[slot]) {
+			PangoFontDescription *fd = pango_font_description_from_string(
+				config.pilldata.font_desc ? config.pilldata.font_desc
+										  : "monospace Bold 16");
+			pango_font_description_set_weight(fd, PANGO_WEIGHT_BOLD);
+			int32_t sz = pango_font_description_get_size(fd);
+			if (sz <= 0)
+				sz = 16 * PANGO_SCALE;
+			pango_font_description_set_size(fd, (int)(sz * 1.25f));
+			char *s = pango_font_description_to_string(fd);
+			g_free(m->ov_cell_label[slot]->font_desc);
+			m->ov_cell_label[slot]->font_desc = g_strdup(s);
+			g_free(s);
+			pango_font_description_free(fd);
+		}
 	}
 	if (m->ov_cell_label[slot]) {
 		char name[64], text[96];
@@ -498,6 +638,356 @@ static void overview_draw_cell_label(Monitor *m, int32_t slot, float cx,
  * scroller's off-screen row shrinking everything to nothing. Windows that are
  * scrolled fully off the viewport (scroller layout) are dropped and counted
  * into a "+N" badge on the tag label rather than crammed into the thumbnail. */
+/* Lay out the previewed tag's windows in the big area. Split out of
+ * overview_tags so horizontal scrolling can re-run just this (cheap)
+ * instead of a full arrange (which would rebuild every snapshot). */
+void overview_arrange_main(Monitor *m, bool instant) {
+	float main_x = m->ov_main_x, main_y = m->ov_main_y;
+	float main_w = m->ov_main_w, main_h = m->ov_main_h;
+	uint32_t main_tag = m->ov_main_tag;
+	Client *c;
+
+	/* Monocle tag: windows are stacked (all at the same spot), so the faithful
+	 * mirror would show only the top one. Lay them out side by side (expose)
+	 * in a grid instead. */
+	bool is_mono = (main_tag >= 1 && main_tag <= LENGTH(tags) &&
+					m->pertag->ltidxs[main_tag] &&
+					m->pertag->ltidxs[main_tag]->id == MONOCLE);
+	if (is_mono) {
+		m->ov_main_more_l = false;
+		m->ov_main_more_r = false;
+		m->ov_scroll_tag = 0;
+		Client *arr[64];
+		int32_t n = 0;
+		wl_list_for_each(c, &clients, link) {
+			if (c->mon != m || c->isunglobal || c->isminimized ||
+				client_is_x11_popup(c))
+				continue;
+			if (get_tags_first_tag_num(c->tags) != main_tag)
+				continue;
+			if (n < 64)
+				arr[n++] = c;
+		}
+		int32_t cols = (int32_t)ceilf(sqrtf((float)fmaxf(1, n)));
+		int32_t rows = (n + cols - 1) / cols;
+		float gap = 18.0f;
+		float cw = (main_w - (cols + 1) * gap) / fmaxf(1, cols);
+		float ch = (main_h - (rows + 1) * gap) / fmaxf(1, rows);
+		for (int32_t i = 0; i < n; i++) {
+			c = arr[i];
+			if (c->is_overview_hidden) {
+				c->is_overview_hidden = false;
+				wlr_scene_node_set_enabled(&c->scene->node, true);
+			}
+			int32_t col = i % cols, row = i / cols;
+			float cx = main_x + gap + col * (cw + gap);
+			float cy = main_y + gap + row * (ch + gap);
+			float gw = fmaxf(1.0f, (float)c->overview_backup_geom.width);
+			float gh = fmaxf(1.0f, (float)c->overview_backup_geom.height);
+			float s = fminf(cw / gw, ch / gh);
+			int32_t bw = (int32_t)fmaxf(1.0f, gw * s);
+			int32_t bh = (int32_t)fmaxf(1.0f, gh * s);
+			int32_t bx = (int32_t)(cx + (cw - bw) / 2.0f);
+			int32_t by = (int32_t)(cy + (ch - bh) / 2.0f);
+			client_tile_resize(c, (struct wlr_box){bx, by, bw, bh}, 0);
+			if (c->blur_node)
+				wlr_scene_blur_set_should_only_blur_bottom_layer(c->blur_node,
+																 false);
+			if (instant) {
+				c->animation.should_animate = false;
+				c->animation.running = false;
+				c->animainit_geom = c->animation.current = c->current =
+					c->pending = c->geom;
+			}
+			if (c->ov_title)
+				wlr_scene_node_set_enabled(&c->ov_title->scene_buffer->node,
+										   false);
+			int32_t isz =
+				(int32_t)fminf(40.0f, fmaxf(20.0f, fminf(bw, bh) * 0.18f));
+			const char *icon =
+				c->icon_name ? c->icon_name : client_get_appid(c);
+			if (!c->ov_icon)
+				c->ov_icon = asteroidz_icon_node_create(layers[LyrOverlay]);
+			if (c->ov_icon && icon &&
+				asteroidz_icon_node_set(c->ov_icon, icon, isz)) {
+				wlr_scene_buffer_set_opacity(c->ov_icon->scene_buffer, 0.85f);
+				wlr_scene_node_set_position(&c->ov_icon->scene_buffer->node,
+											bx + (bw - isz) / 2, by + bh - isz - 6);
+				wlr_scene_node_set_enabled(&c->ov_icon->scene_buffer->node,
+										   true);
+				wlr_scene_node_raise_to_top(&c->ov_icon->scene_buffer->node);
+			}
+		}
+		goto ov_main_chrome;
+	}
+
+	/* Faithful mirror of the tag's desktop: scale the monitor viewport (m->w)
+	 * uniformly into the big area and place each window at its real on-screen
+	 * position (exactly what's on that tag, just smaller). Windows scrolled off
+	 * the desktop aren't shown; empty desktop shows the wallpaper backdrop. */
+	m->ov_main_more_l = false;
+	m->ov_main_more_r = false;
+	/* Translate desktop coords into the big area with a UNIFORM scale (no
+	 * aspect distortion) and anchor top-left (not centred). Windows keep their
+	 * real relative positions and proportions; a window clipped at the screen
+	 * edge touches the mirrored-screen edge just like on the real desktop. */
+	float sx = fminf(main_w / (float)m->w.width, main_h / (float)m->w.height);
+	float sy = sx;
+	float sb = sx; /* uniform scale for border thickness */
+	float off_x = main_x, off_y = main_y;
+	float vl = m->w.x, vt = m->w.y;
+	float vr = m->w.x + m->w.width, vb = m->w.y + m->w.height;
+	m->ov_vp_x = main_x;
+	m->ov_vp_y = main_y;
+	m->ov_vp_w = m->w.width * sx;  /* the actual mirrored-screen rect */
+	m->ov_vp_h = m->w.height * sx;
+
+	/* scroller: if the tag's windows span wider than the viewport, let the wheel
+	 * pan across them (with edge indicators). Shift the viewport by the scroll
+	 * offset so off-screen windows slide into the OV desktop. */
+	{
+		float cmin = 1e9f, cmax = -1e9f;
+		Client *sc;
+		wl_list_for_each(sc, &clients, link) {
+			if (sc->mon != m || sc->isunglobal || sc->isminimized ||
+				client_is_x11_popup(sc))
+				continue;
+			if (get_tags_first_tag_num(sc->tags) != main_tag)
+				continue;
+			float gx = sc->overview_backup_geom.x;
+			float gw = fmaxf(1.0f, (float)sc->overview_backup_geom.width);
+			if (gx < cmin) cmin = gx;
+			if (gx + gw > cmax) cmax = gx + gw;
+		}
+		if (cmax - cmin > (float)m->w.width + 2.0f) {
+			if (m->ov_scroll_tag != main_tag) { /* new tag -> reset offset */
+				m->ov_scroll_tag = main_tag;
+				m->ov_main_scroll = 0.0f;
+			}
+			float smin = cmin - vl, smax = cmax - vr;
+			m->ov_main_scroll = fmaxf(smin, fminf(m->ov_main_scroll, smax));
+			vl += m->ov_main_scroll;
+			vr += m->ov_main_scroll;
+			m->ov_main_more_l = (cmin < vl - 1.0f);
+			m->ov_main_more_r = (cmax > vr + 1.0f);
+		} else {
+			m->ov_scroll_tag = 0;
+		}
+	}
+	/* cropped-buffer pool for partially-visible (edge) windows, rebuilt each
+	 * layout; a live node can't be cropped cleanly, so those use a source-box
+	 * crop like the strip tiles instead */
+	for (int32_t s = 0; s < 16; s++) {
+		if (m->ov_main_crop[s]) {
+			wlr_scene_node_destroy(&m->ov_main_crop[s]->node);
+			m->ov_main_crop[s] = NULL;
+		}
+		if (m->ov_main_bord[s]) {
+			wlr_scene_node_destroy(&m->ov_main_bord[s]->node);
+			m->ov_main_bord[s] = NULL;
+		}
+	}
+	int32_t crop_idx = 0;
+	wl_list_for_each(c, &clients, link) {
+		if (c->mon != m || c->isunglobal || c->isminimized ||
+			client_is_x11_popup(c))
+			continue;
+		if (get_tags_first_tag_num(c->tags) != main_tag)
+			continue;
+		float gx = c->overview_backup_geom.x, gy = c->overview_backup_geom.y;
+		float gw = fmaxf(1.0f, (float)c->overview_backup_geom.width);
+		float gh = fmaxf(1.0f, (float)c->overview_backup_geom.height);
+		/* fraction of the window cropped off each edge by the viewport */
+		float fl = fmaxf(0.0f, vl - gx) / gw;
+		float fr = fmaxf(0.0f, (gx + gw) - vr) / gw;
+		float ft = fmaxf(0.0f, vt - gy) / gh;
+		float fb = fmaxf(0.0f, (gy + gh) - vb) / gh;
+		bool on_vp = (fl + fr < 0.98f && ft + fb < 0.98f);
+		bool fully = (fl + fr < 0.01f && ft + fb < 0.01f);
+		/* a floating window sits on top and is freely placed on the desktop --
+		 * show it whole, don't treat it as a clipped tiled/scroller edge */
+		if (c->overview_isfloatingbak) {
+			on_vp = true;
+			fully = true;
+		}
+		c->ov_clip_active = false;
+		(void)crop_idx;
+		(void)sb;
+
+		if (!on_vp) {
+			/* off the desktop -> not shown. Disable the title bar too: a hidden
+			 * window won't be redrawn, so its bar would linger (the scroll path
+			 * re-runs only this, not the full arrange that resets bars) */
+			if (c->scene && !c->is_overview_hidden) {
+				c->is_overview_hidden = true;
+				wlr_scene_node_set_enabled(&c->scene->node, false);
+			}
+			if (c->ov_icon)
+				wlr_scene_node_set_enabled(&c->ov_icon->scene_buffer->node,
+										   false);
+			if (c->ov_title)
+				wlr_scene_node_set_enabled(&c->ov_title->scene_buffer->node,
+										   false);
+			if (c->titlebar_node)
+				asteroidz_tab_bar_node_set_enabled(c->titlebar_node, false);
+			if (c->titlebar_close_node)
+				asteroidz_tab_bar_node_set_enabled(c->titlebar_close_node,
+												   false);
+			continue;
+		}
+
+		/* on the desktop -> the REAL live window, so it keeps its blur,
+		 * translucency and border. A partially-clipped window keeps its full
+		 * box and overruns the panel; the void masks drawn after the loop hide
+		 * the overhang, so it stops at the panel (mirrored-screen) edge. */
+		if (c->is_overview_hidden) {
+			c->is_overview_hidden = false;
+			wlr_scene_node_set_enabled(&c->scene->node, true);
+		}
+		int32_t bx = (int32_t)(off_x + (gx - vl) * sx + 0.5f);
+		int32_t by = (int32_t)(off_y + (gy - vt) * sy + 0.5f);
+		int32_t bw = (int32_t)fmaxf(1.0f, gw * sx);
+		int32_t bh = (int32_t)fmaxf(1.0f, gh * sy);
+		/* small inset so adjacent windows read as separate tiles, not one block */
+		int32_t wgap = 4;
+		bx += wgap;
+		by += wgap;
+		bw = (int32_t)fmaxf(1.0f, bw - 2 * wgap);
+		bh = (int32_t)fmaxf(1.0f, bh - 2 * wgap);
+		client_tile_resize(c, (struct wlr_box){bx, by, bw, bh}, 0);
+		/* blur the OV desktop wallpaper behind translucent windows: it's on
+		 * LyrDecorate (not the bottom layer), so a window's blur must sample all
+		 * layers below, not only the bottom one */
+		if (c->blur_node)
+			wlr_scene_blur_set_should_only_blur_bottom_layer(c->blur_node,
+															 false);
+		if (instant) {
+			c->animation.should_animate = false;
+			c->animation.running = false;
+			c->animainit_geom = c->animation.current = c->current =
+				c->pending = c->geom;
+		}
+
+		/* title pills removed for a cleaner look -- keep any old one hidden */
+		if (c->ov_title)
+			wlr_scene_node_set_enabled(&c->ov_title->scene_buffer->node, false);
+
+		/* a small, subtle app icon near the window's bottom edge; fully-visible
+		 * windows only (a clipped edge has no room) */
+		if (!fully) {
+			if (c->ov_icon)
+				wlr_scene_node_set_enabled(&c->ov_icon->scene_buffer->node,
+										   false);
+			continue;
+		}
+		int32_t isz =
+			(int32_t)fminf(40.0f, fmaxf(20.0f, fminf(bw, bh) * 0.18f));
+		const char *icon = c->icon_name ? c->icon_name : client_get_appid(c);
+		if (!c->ov_icon)
+			c->ov_icon = asteroidz_icon_node_create(layers[LyrOverlay]);
+		if (c->ov_icon && icon &&
+			asteroidz_icon_node_set(c->ov_icon, icon, isz)) {
+			wlr_scene_buffer_set_opacity(c->ov_icon->scene_buffer, 0.85f);
+			wlr_scene_node_set_position(&c->ov_icon->scene_buffer->node,
+										bx + (bw - isz) / 2, by + bh - isz - 6);
+			wlr_scene_node_set_enabled(&c->ov_icon->scene_buffer->node, true);
+			wlr_scene_node_raise_to_top(&c->ov_icon->scene_buffer->node);
+		}
+	}
+
+ov_main_chrome:
+	/* Fill the area BEYOND the OV desktop with a flat inactive-title-bar colour
+	 * (no image), drawn ABOVE the windows so no window can extend past the OV
+	 * desktop boundary. One rect covers the whole content region below the strip
+	 * with a ROUNDED cut-out for the OV desktop, so the flat surround wraps the
+	 * desktop's rounded corners cleanly (four plain rects left dark corner
+	 * notches). ov_void[1..3] are unused now; keep them disabled. */
+	{
+		const float *vc = config.pilldata.bg_color; /* inactive title bar */
+		float col[4] = {vc[0], vc[1], vc[2], 1.0f};
+		float mmb = m->m.y + m->m.height;
+		int32_t sx0 = (int32_t)m->m.x, sy0 = (int32_t)m->ov_avail_y;
+		int32_t sw = (int32_t)m->m.width, sh = (int32_t)(mmb - m->ov_avail_y);
+		for (int32_t i = 1; i < 4; i++)
+			if (m->ov_void[i] && m->ov_void[i]->node.enabled)
+				wlr_scene_node_set_enabled(&m->ov_void[i]->node, false);
+		if (sw > 0 && sh > 0) {
+			if (!m->ov_void[0])
+				m->ov_void[0] =
+					wlr_scene_rect_create(layers[LyrTile], sw, sh, col);
+			if (m->ov_void[0]) {
+				wlr_scene_rect_set_size(m->ov_void[0], sw, sh);
+				wlr_scene_rect_set_color(m->ov_void[0], col);
+				/* a plain (square) rect takes a fast render path that ignores
+				 * clipped_region, so give it a tiny outer radius to force the
+				 * rounded-rect path (which honours the hole). 2px is invisible
+				 * at the screen-edge corners. */
+				wlr_scene_rect_set_corner_radii(
+					m->ov_void[0],
+					corner_radii_from_location(2, CORNER_LOCATION_ALL));
+				/* rounded hole where the OV desktop shows through (node-local) */
+				struct clipped_region hole = {
+					.area = {(int32_t)main_x - sx0, (int32_t)main_y - sy0,
+							 (int32_t)main_w, (int32_t)main_h},
+					.corners =
+						corner_radii_from_location(18, CORNER_LOCATION_ALL),
+				};
+				wlr_scene_rect_set_clipped_region(m->ov_void[0], hole);
+				wlr_scene_node_set_position(&m->ov_void[0]->node, sx0, sy0);
+				wlr_scene_node_set_enabled(&m->ov_void[0]->node, true);
+				wlr_scene_node_raise_to_top(&m->ov_void[0]->node);
+			}
+		} else if (m->ov_void[0]) {
+			wlr_scene_node_set_enabled(&m->ov_void[0]->node, false);
+		}
+	}
+
+	/* floating windows sit on top and are shown whole, so lift them back above
+	 * the void frame -- otherwise the masks would clip a floating window that
+	 * runs past the OV desktop edge */
+	wl_list_for_each(c, &clients, link) {
+		if (c->mon != m || c->isunglobal || c->isminimized ||
+			client_is_x11_popup(c))
+			continue;
+		if (get_tags_first_tag_num(c->tags) != main_tag)
+			continue;
+		if (c->overview_isfloatingbak && c->scene && !c->is_overview_hidden)
+			wlr_scene_node_raise_to_top(&c->scene->node);
+	}
+
+	/* scroll-more indicators: accent pills on the big area's left/right edges
+	 * when the scroller has windows off that side */
+	{
+		static const float acc[4] = {0.98f, 0.74f, 0.42f, 0.9f};
+		int32_t ih = 60, iw = 6;
+		int32_t iy = (int32_t)(main_y + (main_h - ih) / 2.0f);
+		if (!m->ov_main_chevron_l)
+			m->ov_main_chevron_l =
+				wlr_scene_rect_create(layers[LyrOverlay], iw, ih, acc);
+		if (m->ov_main_chevron_l) {
+			wlr_scene_rect_set_size(m->ov_main_chevron_l, iw, ih);
+			wlr_scene_rect_set_corner_radius(m->ov_main_chevron_l, 3);
+			wlr_scene_node_set_position(&m->ov_main_chevron_l->node,
+										(int32_t)(main_x + 10), iy);
+			wlr_scene_node_set_enabled(&m->ov_main_chevron_l->node,
+									   m->ov_main_more_l);
+			wlr_scene_node_raise_to_top(&m->ov_main_chevron_l->node);
+		}
+		if (!m->ov_main_chevron_r)
+			m->ov_main_chevron_r =
+				wlr_scene_rect_create(layers[LyrOverlay], iw, ih, acc);
+		if (m->ov_main_chevron_r) {
+			wlr_scene_rect_set_size(m->ov_main_chevron_r, iw, ih);
+			wlr_scene_rect_set_corner_radius(m->ov_main_chevron_r, 3);
+			wlr_scene_node_set_position(&m->ov_main_chevron_r->node,
+										(int32_t)(main_x + main_w - 10 - iw), iy);
+			wlr_scene_node_set_enabled(&m->ov_main_chevron_r->node,
+									   m->ov_main_more_r);
+			wlr_scene_node_raise_to_top(&m->ov_main_chevron_r->node);
+		}
+	}
+}
+
 void overview_tags(Monitor *m) {
 	int32_t gappo = config.overviewgappo;
 	int32_t gappi = config.overviewgappi;
@@ -506,8 +996,8 @@ void overview_tags(Monitor *m) {
 	if (cur_tag == 0 || cur_tag > ntags)
 		cur_tag = m->pertag->prevtag;
 
-	/* which tags have at least one window (each window counted under the
-	 * lowest tag it belongs to, so it appears in exactly one cell) */
+	/* which tags have at least one window (each window under its lowest tag),
+	 * plus the tag we're currently on */
 	bool used[OV_TAG_CELLS] = {false};
 	uint32_t used_tags[OV_TAG_CELLS];
 	int32_t uc = 0;
@@ -516,150 +1006,420 @@ void overview_tags(Monitor *m) {
 		if (c->mon != m || c->isunglobal || c->isminimized ||
 			client_is_x11_popup(c))
 			continue;
+		/* icon+title (and title bars) are re-enabled only for windows shown in
+		 * the main area; disable them here so hidden/other-tag windows can't
+		 * leave ghost title bars or icons behind after tag/preview switches */
+		if (c->ov_icon)
+			wlr_scene_node_set_enabled(&c->ov_icon->scene_buffer->node, false);
+		if (c->ov_title)
+			wlr_scene_node_set_enabled(&c->ov_title->scene_buffer->node, false);
+		if (c->titlebar_node)
+			asteroidz_tab_bar_node_set_enabled(c->titlebar_node, false);
+		if (c->titlebar_close_node)
+			asteroidz_tab_bar_node_set_enabled(c->titlebar_close_node, false);
 		uint32_t t = get_tags_first_tag_num(c->tags);
 		if (t >= 1 && t <= ntags && t < OV_TAG_CELLS)
 			used[t] = true;
 	}
-	/* always include the tag we came from, even if it's empty, so the
-	 * overview still shows where you are */
 	if (cur_tag >= 1 && cur_tag <= ntags && cur_tag < OV_TAG_CELLS)
 		used[cur_tag] = true;
-
 	for (uint32_t t = 1; t <= ntags && t < OV_TAG_CELLS; t++)
 		if (used[t])
 			used_tags[uc++] = t;
 	if (uc == 0)
 		return;
 
-	int32_t cols = 1;
-	while (cols * cols < uc)
-		cols++;
-	int32_t rows = (uc + cols - 1) / cols;
+	/* the main area shows the hovered/previewed tag (falling back to the tag we
+	 * were really on); hovering a strip tile updates m->ov_preview_tag */
+	uint32_t main_tag = cur_tag;
+	if (m->ov_preview_tag) {
+		for (int32_t k = 0; k < uc; k++)
+			if (used_tags[k] == m->ov_preview_tag) {
+				main_tag = m->ov_preview_tag;
+				break;
+			}
+	}
 
-	float area_w = fmaxf(1.0f, m->w.width - 2.0f * gappo);
-	float area_h = fmaxf(1.0f, m->w.height - 2.0f * gappo);
-	float cell_w = (area_w - (cols - 1) * gappi) / cols;
-	float cell_h = (area_h - (rows - 1) * gappi) / rows;
-	float label_h = 30.0f; /* strip at cell top reserved for the tag label */
+	/* tiles mirror the FULL monitor (m->m), so the bar's area at the top is
+	 * included -- a faithful thumbnail of the whole screen, bar and all */
+	float mon_aspect = (float)m->m.width / fmaxf(1.0f, (float)m->m.height);
 	float pad = 6.0f;
 
-	for (int32_t i = 0; i < uc; i++) {
-		int32_t col = i % cols;
-		int32_t row = i / cols;
-		float cell_x = m->w.x + gappo + col * (cell_w + gappi);
-		float cell_y = m->w.y + gappo + row * (cell_h + gappi);
+	/* the overview covers the whole output (the DMS/top layer is hidden while
+	 * it's open), so lay out against the full monitor m->m, not the usable m->w */
+	float ox0 = m->m.x, oy0 = m->m.y, ow0 = m->m.width, oh0 = m->m.height;
 
-		/* content area (below the label strip) */
-		float content_x = cell_x + pad;
-		float content_y = cell_y + label_h;
-		float content_w = fmaxf(1.0f, cell_w - 2.0f * pad);
-		float content_h = fmaxf(1.0f, cell_h - label_h - pad);
+	/* ---- top strip: a horizontal row of monitor-aspect tag tiles ---- */
+	float strip_h = fmaxf(60.0f, oh0 * 0.10f);
+	float tile_h = fmaxf(1.0f, strip_h - 2.0f * pad);
+	float tile_w = tile_h * mon_aspect;
+	float strip_gap = 16.0f;
+	float total_w = uc * tile_w + (uc - 1) * strip_gap;
+	float avail = fmaxf(1.0f, ow0 - 2.0f * gappo);
+	float start_x;
+	if (total_w <= avail) {
+		start_x = ox0 + (ow0 - total_w) / 2.0f;
+		m->ov_strip_scroll = 0.0f;
+	} else {
+		float max_scroll = total_w - avail;
+		if (m->ov_strip_scroll < 0.0f)
+			m->ov_strip_scroll = 0.0f;
+		if (m->ov_strip_scroll > max_scroll)
+			m->ov_strip_scroll = max_scroll;
+		start_x = ox0 + gappo - m->ov_strip_scroll;
+	}
+	float strip_y = oy0 + (strip_h - tile_h) / 2.0f; /* tile centred in strip */
 
-		/* uniform monitor->cell scale: the same for every tag, so window
-		 * thumbnails are the same size regardless of tag or layout */
-		float scale = fminf(content_w / (float)m->w.width,
-							content_h / (float)m->w.height);
-		float scaled_w = m->w.width * scale;
-		float scaled_h = m->w.height * scale;
-		/* origin of the monitor's top-left, centering the scaled viewport */
-		float off_x = content_x + (content_w - scaled_w) / 2.0f;
-		float off_y = content_y + (content_h - scaled_h) / 2.0f;
+	/* ---- main area below the strip: a SCREEN-ASPECT panel so the desktop
+	 * mirror fills it exactly (uniform translate, no void, no distortion) ---- */
+	float avail_x = ox0 + gappo;
+	float avail_y = strip_y + tile_h + pad + 4.0f; /* right below the strip tiles */
+	float avail_w = fmaxf(1.0f, ow0 - 2.0f * gappo);
+	float avail_h = fmaxf(1.0f, (oy0 + oh0 - gappo) - avail_y);
+	m->ov_avail_y = avail_y; /* content-region top (below strip), for void masks */
+	float screen_asp = (float)m->w.width / fmaxf(1.0f, (float)m->w.height);
+	float main_w = fminf(avail_w, avail_h * screen_asp);
+	float main_h = main_w / screen_asp;
+	/* A faithful (undistorted) mirror can't touch all four edges when the area
+	 * below the strip isn't the screen's shape, so scale it down a touch and
+	 * FLOAT it centred in the available region -- the leftover margin is split
+	 * evenly (matching top & bottom gaps) instead of pooling at the bottom. */
+	float ov_shrink = 0.93f;
+	main_w *= ov_shrink;
+	main_h *= ov_shrink;
+	float main_x = avail_x + (avail_w - main_w) / 2.0f;
+	float main_y = avail_y + (avail_h - main_h) / 2.0f;
 
-		/* count how many of this tag's windows are fully off the viewport
-		 * (scrolled away in a scroller) so the label can show a "+N" badge */
-		int32_t hidden = 0;
-		wl_list_for_each(c, &clients, link) {
-			if (c->mon != m || c->isunglobal || c->isminimized ||
-				client_is_x11_popup(c))
-				continue;
-			if (get_tags_first_tag_num(c->tags) != used_tags[i])
-				continue;
-			float x = c->overview_backup_geom.x;
-			float y = c->overview_backup_geom.y;
-			float w = c->overview_backup_geom.width;
-			float h = c->overview_backup_geom.height;
-			/* a window "belongs" to the viewport if its centre is on screen;
-			 * this drops both fully-off and barely-peeking edge windows into
-			 * the "+N" badge instead of drawing them as thin slivers */
-			float wcx = x + w / 2.0f, wcy = y + h / 2.0f;
-			bool on_screen =
-				(wcx >= m->w.x) && (wcx < m->w.x + m->w.width) &&
-				(wcy >= m->w.y) && (wcy < m->w.y + m->w.height);
-			if (!on_screen)
-				hidden++;
+	/* the mirrored-screen rect: the desktop, uniformly scaled, anchored top-left
+	 * in the big area (matches overview_arrange_main). The wallpaper backdrop
+	 * fills exactly this rect so it reads as the screen; the rest is void. */
+	float mscale =
+		fminf(main_w / (float)m->w.width, main_h / (float)m->w.height);
+	float mvp_w = m->w.width * mscale, mvp_h = m->w.height * mscale;
+
+	/* depth: a soft drop shadow + a subtle 1px light edge so the OV desktop
+	 * floats above the flat void (macOS-space feel) */
+	{
+		static const float shcol[4] = {0.0f, 0.0f, 0.0f, 0.55f};
+		float ssig = 34.0f;
+		int32_t spad = (int32_t)ceilf(ssig * 0.5f);
+		if (!m->ov_main_shadow)
+			m->ov_main_shadow = wlr_scene_shadow_create(
+				layers[LyrDecorate], (int)mvp_w + 2 * spad,
+				(int)mvp_h + 2 * spad, 18 + spad, ssig, shcol);
+		if (m->ov_main_shadow) {
+			wlr_scene_shadow_set_size(m->ov_main_shadow, (int)mvp_w + 2 * spad,
+									  (int)mvp_h + 2 * spad);
+			wlr_scene_shadow_set_corner_radius(m->ov_main_shadow, 18 + spad);
+			wlr_scene_shadow_set_blur_sigma(m->ov_main_shadow, ssig);
+			wlr_scene_node_set_position(&m->ov_main_shadow->node,
+										(int)main_x - spad, (int)main_y - spad + 8);
+			wlr_scene_node_set_enabled(&m->ov_main_shadow->node, true);
+			if (m->ov_dim)
+				wlr_scene_node_place_above(&m->ov_main_shadow->node,
+										   &m->ov_dim->node);
 		}
+		/* no border rect: the drop shadow gives the depth, and a 1px edge only
+		 * ended up half-covered by the void masks anyway */
+		if (m->ov_main_border && m->ov_main_border->node.enabled)
+			wlr_scene_node_set_enabled(&m->ov_main_border->node, false);
+	}
 
-		bool current = (used_tags[i] == cur_tag);
-		overview_draw_cell_label(m, i, cell_x, cell_y, cell_w, cell_h,
-								 used_tags[i], current, hidden);
-
-		wl_list_for_each(c, &clients, link) {
-			if (c->mon != m || c->isunglobal || c->isminimized ||
-				client_is_x11_popup(c))
-				continue;
-			if (get_tags_first_tag_num(c->tags) != used_tags[i])
-				continue;
-
-			float cx0 = c->overview_backup_geom.x;
-			float cy0 = c->overview_backup_geom.y;
-			float cw0 = c->overview_backup_geom.width;
-			float ch0 = c->overview_backup_geom.height;
-			/* Windows whose centre is off the viewport (scrolled away in a
-			 * scroller) are counted in the "+N" badge and must NOT be drawn.
-			 * They can't be pushed off-screen (applybounds() clamps geometry
-			 * back on-screen -> strays), so hide their scene node directly and
-			 * flag them; client_draw_frame keeps them hidden until overview
-			 * exit clears the flag. */
-			float wcx = cx0 + cw0 / 2.0f, wcy = cy0 + ch0 / 2.0f;
-			if (!((wcx >= m->w.x) && (wcx < m->w.x + m->w.width) &&
-				  (wcy >= m->w.y) && (wcy < m->w.y + m->w.height))) {
-				c->is_overview_hidden = true;
-				wlr_scene_node_set_enabled(&c->scene->node, false);
-				continue;
+	/* wallpaper backdrop for the mirrored screen, so windows sit on the desktop
+	 * like a real screen instead of the near-black dim (drop the dark fallback) */
+	{
+		struct wlr_buffer *wp = overview_wallpaper_buffer(m);
+		if (wp) {
+			if (!m->ov_main_wp)
+				m->ov_main_wp = wlr_scene_buffer_create(layers[LyrDecorate], wp);
+			else
+				wlr_scene_buffer_set_buffer(m->ov_main_wp, wp);
+			if (m->ov_main_wp) {
+				wlr_scene_buffer_set_dest_size(m->ov_main_wp, (int)mvp_w,
+											   (int)mvp_h);
+				wlr_scene_buffer_set_corner_radii(
+					m->ov_main_wp,
+					corner_radii_from_location(18, CORNER_LOCATION_ALL));
+				wlr_scene_buffer_set_opacity(m->ov_main_wp, 1.0f);
+				wlr_scene_node_set_position(&m->ov_main_wp->node, (int)main_x,
+											(int)main_y);
+				wlr_scene_node_set_enabled(&m->ov_main_wp->node, true);
+				if (m->ov_main_shadow)
+					wlr_scene_node_place_above(&m->ov_main_wp->node,
+											   &m->ov_main_shadow->node);
+				else if (m->ov_dim)
+					wlr_scene_node_place_above(&m->ov_main_wp->node,
+											   &m->ov_dim->node);
 			}
-			/* on-viewport: make sure a previously-hidden window is shown */
-			if (c->is_overview_hidden) {
-				c->is_overview_hidden = false;
-				wlr_scene_node_set_enabled(&c->scene->node, true);
-			}
-
-			float rx = cx0 - m->w.x;
-			float ry = cy0 - m->w.y;
-			struct wlr_box box = {
-				.x = (int)(off_x + rx * scale + 0.5f),
-				.y = (int)(off_y + ry * scale + 0.5f),
-				.width = (int)(cw0 * scale + 0.5f),
-				.height = (int)(ch0 * scale + 0.5f),
-			};
-			/* clamp a partly-off-screen edge window to the cell content rect so
-			 * it can't spill past the tile into a neighbour */
-			int32_t cl = (int)content_x, ct = (int)content_y;
-			int32_t cr = (int)(content_x + content_w);
-			int32_t cb = (int)(content_y + content_h);
-			if (box.x < cl) {
-				box.width -= (cl - box.x);
-				box.x = cl;
-			}
-			if (box.y < ct) {
-				box.height -= (ct - box.y);
-				box.y = ct;
-			}
-			if (box.x + box.width > cr)
-				box.width = cr - box.x;
-			if (box.y + box.height > cb)
-				box.height = cb - box.y;
-			if (box.width < 1)
-				box.width = 1;
-			if (box.height < 1)
-				box.height = 1;
-			client_tile_resize(c, box, 0);
+		} else if (m->ov_main_wp) {
+			wlr_scene_node_set_enabled(&m->ov_main_wp->node, false);
 		}
 	}
 
-	/* hide any cells left over from a previous overview with more tags */
+	/* Subtle vignette over the wallpaper (below the windows on LyrTile): two
+	 * desktop-sized gradient rects, one vertical and one horizontal, each a
+	 * symmetric dark->clear->dark ramp so the edges darken and the centre stays
+	 * clear (corners get both, so they read darkest). A symmetric ramp is
+	 * invariant to the renderer's y-flip, and the dark stops sit in the outer
+	 * ~25% so the darkening hugs the edges instead of washing over the middle. */
+	if (m->ov_main_wp && m->ov_main_wp->node.enabled) {
+		/* black, premultiplied: {0,0,0,a}. 5 stops: dark, clear x3, dark. */
+		const float A = 0.22f;
+		const float vig_colors[20] = {
+			0.0f, 0.0f, 0.0f, A,   0.0f, 0.0f, 0.0f, 0.0f,
+			0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+			0.0f, 0.0f, 0.0f, A,
+		};
+		const float vig_origin[2] = {0.5f, 0.5f};
+		const float clear[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+		const float degs[2] = {90.0f, 0.0f}; /* [0]=vertical, [1]=horizontal */
+		for (int32_t vi = 0; vi < 2; vi++) {
+			if (!m->ov_vignette[vi])
+				m->ov_vignette[vi] = wlr_scene_rect_create(
+					layers[LyrDecorate], (int)mvp_w, (int)mvp_h, clear);
+			if (!m->ov_vignette[vi])
+				continue;
+			wlr_scene_rect_set_size(m->ov_vignette[vi], (int)mvp_w, (int)mvp_h);
+			wlr_scene_rect_set_corner_radii(
+				m->ov_vignette[vi],
+				corner_radii_from_location(18, CORNER_LOCATION_ALL));
+			wlr_scene_rect_set_gradient(m->ov_vignette[vi], degs[vi], 1, 1,
+										vig_origin, 5, vig_colors);
+			wlr_scene_node_set_position(&m->ov_vignette[vi]->node, (int)main_x,
+										(int)main_y);
+			wlr_scene_node_set_enabled(&m->ov_vignette[vi]->node, true);
+			wlr_scene_node_place_above(&m->ov_vignette[vi]->node,
+									   &m->ov_main_wp->node);
+		}
+	} else {
+		for (int32_t vi = 0; vi < 2; vi++)
+			if (m->ov_vignette[vi] && m->ov_vignette[vi]->node.enabled)
+				wlr_scene_node_set_enabled(&m->ov_vignette[vi]->node, false);
+	}
+
+	/* strip chrome, full width from the very top down to just below the tiles:
+	 * an xray-blurred backdrop, a translucent pill-colour tint (5% translucent),
+	 * and a pronounced drop shadow along the bottom edge */
+	{
+		int32_t bx = (int32_t)ox0, by = (int32_t)oy0;
+		int32_t bw = (int32_t)ow0;
+		int32_t bh = (int32_t)(strip_y + tile_h + pad - oy0);
+
+		if (!m->ov_strip_blur)
+			m->ov_strip_blur =
+				wlr_scene_blur_create(layers[LyrDecorate], bw, bh);
+		if (m->ov_strip_blur) {
+			wlr_scene_blur_set_size(m->ov_strip_blur, bw, bh);
+			wlr_scene_blur_set_should_only_blur_bottom_layer(m->ov_strip_blur,
+															 true);
+			wlr_scene_node_set_position(&m->ov_strip_blur->node, bx, by);
+			wlr_scene_node_set_enabled(&m->ov_strip_blur->node, true);
+		}
+
+		/* the strip reads 50% darker than the dimmed main area below it: the
+		 * main area transmits (1 - ov_dim_alpha) of the wallpaper through the
+		 * backdrop dim, so the strip transmits half that (a matching black
+		 * overlay over its xray-blurred wallpaper). Keep in sync with the
+		 * ov_dim alpha in overview_draw_backdrop. */
+		float dim_a = 0.9f;
+		/* strip transmits half the main area's light, then 15% less again */
+		float strip_a = 1.0f - (1.0f - dim_a) * 0.5f * 0.85f;
+		float tint[4] = {0.0f, 0.0f, 0.0f, strip_a};
+		if (!m->ov_strip_bg)
+			m->ov_strip_bg =
+				wlr_scene_rect_create(layers[LyrDecorate], bw, bh, tint);
+		if (m->ov_strip_bg) {
+			wlr_scene_rect_set_size(m->ov_strip_bg, bw, bh);
+			wlr_scene_rect_set_color(m->ov_strip_bg, tint);
+			wlr_scene_node_set_position(&m->ov_strip_bg->node, bx, by);
+			wlr_scene_node_set_enabled(&m->ov_strip_bg->node, true);
+			if (m->ov_strip_blur)
+				wlr_scene_node_place_above(&m->ov_strip_bg->node,
+										   &m->ov_strip_blur->node);
+		}
+
+		/* A pronounced drop shadow cast onto the (lighter) dimmed main area
+		 * below. It must sit fully below the strip edge -- the part behind the
+		 * strip is occluded by the near-black tint, and a black shadow over the
+		 * ~equally-black strip reads as nothing. Kept above ov_dim so it darkens
+		 * the dimmed wallpaper for real contrast. */
+		static const float sh[4] = {0.0f, 0.0f, 0.0f, 0.95f};
+		float sigma = 16.0f;
+		int32_t shh = 34;
+		if (!m->ov_strip_shadow)
+			m->ov_strip_shadow = wlr_scene_shadow_create(layers[LyrDecorate],
+														 bw, shh, 0, sigma, sh);
+		if (m->ov_strip_shadow) {
+			wlr_scene_shadow_set_size(m->ov_strip_shadow, bw, shh);
+			wlr_scene_shadow_set_blur_sigma(m->ov_strip_shadow, sigma);
+			wlr_scene_node_set_position(&m->ov_strip_shadow->node, bx,
+										(int32_t)(by + bh));
+			wlr_scene_node_set_enabled(&m->ov_strip_shadow->node, true);
+			if (m->ov_dim)
+				wlr_scene_node_place_above(&m->ov_strip_shadow->node,
+										   &m->ov_dim->node);
+		}
+	}
+
+	/* strip tiles: every tag is drawn as a mini-monitor from frozen surface-
+	 * buffer snapshots of its on-screen windows (a live node can only be in one
+	 * place, and the current tag's live nodes are used by the main area below).
+	 * The snapshot pool is rebuilt from scratch every draw. */
+	for (int32_t s = 0; s < OV_STRIP_WINS; s++) {
+		if (m->ov_snap[s]) {
+			wlr_scene_node_destroy(&m->ov_snap[s]->node);
+			m->ov_snap[s] = NULL;
+		}
+	}
+	int32_t snap_idx = 0; /* running index into the m->ov_snap snapshot pool */
+	m->ov_tile_count = 0;
+	m->ov_tile_y = strip_y;
+	m->ov_tile_w = tile_w;
+	m->ov_tile_h = tile_h;
+	for (int32_t i = 0; i < uc; i++) {
+		float tx = start_x + i * (tile_w + strip_gap);
+		/* the previewed (main-area) tile gets the accent highlight */
+		bool current = (used_tags[i] == main_tag);
+		overview_draw_cell_label(m, i, tx, strip_y, tile_w, tile_h,
+								 used_tags[i], current, 0);
+		/* record the tile rect for pointer hover hit-testing */
+		if (i < OV_TAG_CELLS) {
+			m->ov_tile_x[i] = tx;
+			m->ov_tile_tag[i] = used_tags[i];
+			m->ov_tile_count = i + 1;
+		}
+
+		/* mini-monitor: scale the tag's viewport (m->w) to fill the tile, which
+		 * is monitor-aspect so it fills exactly. On-screen windows land inside
+		 * the tile; scroller windows scrolled off-screen are dropped, and edge
+		 * windows are clipped, so every tile reads like a little screen. */
+		float scale = fminf(tile_w / (float)m->m.width,
+							tile_h / (float)m->m.height);
+		float off_x = tx + (tile_w - m->m.width * scale) / 2.0f;
+		float off_y = strip_y + (tile_h - m->m.height * scale) / 2.0f;
+		float vl = m->m.x, vt = m->m.y;
+		float vr = m->m.x + m->m.width, vb = m->m.y + m->m.height;
+		wl_list_for_each(c, &clients, link) {
+			if (c->mon != m || c->isunglobal || c->isminimized ||
+				client_is_x11_popup(c))
+				continue;
+			if (get_tags_first_tag_num(c->tags) != used_tags[i])
+				continue;
+			/* every strip tile is drawn from frozen surface-buffer snapshots, so
+			 * the real node isn't shown live here: hide windows that aren't the
+			 * previewed tag (whose live nodes fill the main area below) */
+			if (!current && c->scene && !c->is_overview_hidden) {
+				c->is_overview_hidden = true;
+				wlr_scene_node_set_enabled(&c->scene->node, false);
+			}
+			float gx = c->overview_backup_geom.x, gy = c->overview_backup_geom.y;
+			float gw = fmaxf(1.0f, (float)c->overview_backup_geom.width);
+			float gh = fmaxf(1.0f, (float)c->overview_backup_geom.height);
+			/* visible portion of the window within the viewport */
+			float vx0 = fmaxf(gx, vl), vy0 = fmaxf(gy, vt);
+			float vx1 = fminf(gx + gw, vr), vy1 = fminf(gy + gh, vb);
+			if (vx1 - vx0 < 2.0f || vy1 - vy0 < 2.0f)
+				continue; /* scrolled off-screen */
+			/* frozen at overview launch -> a static screenshot of the tag */
+			struct wlr_buffer *snapbuf = c->ov_snap_buf;
+			if (snap_idx >= OV_STRIP_WINS || !snapbuf)
+				continue;
+			int32_t bx = (int32_t)(off_x + (vx0 - vl) * scale + 0.5f);
+			int32_t by = (int32_t)(off_y + (vy0 - vt) * scale + 0.5f);
+			int32_t bw = (int32_t)fmaxf(1.0f, (vx1 - vx0) * scale);
+			int32_t bh = (int32_t)fmaxf(1.0f, (vy1 - vy0) * scale);
+			int32_t bufw = snapbuf->width;
+			int32_t bufh = snapbuf->height;
+			struct wlr_scene_buffer *sb =
+				wlr_scene_buffer_create(layers[LyrDecorate], NULL);
+			if (!sb)
+				continue;
+			struct wlr_fbox src = {
+				.x = (double)(vx0 - gx) / gw * bufw,
+				.y = (double)(vy0 - gy) / gh * bufh,
+				.width = (double)(vx1 - vx0) / gw * bufw,
+				.height = (double)(vy1 - vy0) / gh * bufh,
+			};
+			wlr_scene_buffer_set_buffer(sb, snapbuf);
+			wlr_scene_buffer_set_source_box(sb, &src);
+			wlr_scene_buffer_set_dest_size(sb, bw, bh);
+			/* round only the corners that touch the tile's outer corners, so the
+			 * tile edge is smooth while inter-window seams stay square (no
+			 * pixelated overhang where a square snapshot meets the rounded tile) */
+			int32_t tlx = (int32_t)tx, tty = (int32_t)strip_y;
+			int32_t trx = (int32_t)(tx + tile_w);
+			int32_t tby = (int32_t)(strip_y + tile_h);
+			enum corner_location loc = 0;
+			if (bx <= tlx + 2 && by <= tty + 2)
+				loc |= CORNER_LOCATION_TOP_LEFT;
+			if (bx + bw >= trx - 2 && by <= tty + 2)
+				loc |= CORNER_LOCATION_TOP_RIGHT;
+			if (bx + bw >= trx - 2 && by + bh >= tby - 2)
+				loc |= CORNER_LOCATION_BOTTOM_RIGHT;
+			if (bx <= tlx + 2 && by + bh >= tby - 2)
+				loc |= CORNER_LOCATION_BOTTOM_LEFT;
+			wlr_scene_buffer_set_corner_radii(
+				sb, corner_radii_from_location(16, loc));
+			wlr_scene_node_set_position(&sb->node, bx, by);
+			wlr_scene_node_raise_to_top(&sb->node);
+			m->ov_snap[snap_idx++] = sb;
+		}
+
+		/* composite the bar (top/overlay layer-shell panels) into the tile at
+		 * their real position, so the tile reads as a full-screen thumbnail */
+		for (int32_t li = 2; li <= 3; li++) {
+			LayerSurface *lsurf;
+			wl_list_for_each(lsurf, &m->layers[li], link) {
+				if (snap_idx >= OV_STRIP_WINS || !lsurf->mapped ||
+					!lsurf->layer_surface || !lsurf->layer_surface->surface ||
+					!lsurf->layer_surface->surface->buffer)
+					continue;
+				struct wlr_buffer *lbuf =
+					&lsurf->layer_surface->surface->buffer->base;
+				int32_t lbx =
+					(int32_t)(off_x + (lsurf->geom.x - vl) * scale + 0.5f);
+				int32_t lby =
+					(int32_t)(off_y + (lsurf->geom.y - vt) * scale + 0.5f);
+				int32_t lbw = (int32_t)fmaxf(1.0f, lsurf->geom.width * scale);
+				int32_t lbh = (int32_t)fmaxf(1.0f, lsurf->geom.height * scale);
+				struct wlr_scene_buffer *lsb =
+					wlr_scene_buffer_create(layers[LyrDecorate], NULL);
+				if (!lsb)
+					continue;
+				wlr_scene_buffer_set_buffer(lsb, lbuf);
+				wlr_scene_buffer_set_dest_size(lsb, lbw, lbh);
+				enum corner_location lloc = 0;
+				if (lbx <= (int32_t)tx + 2 && lby <= (int32_t)strip_y + 2)
+					lloc |= CORNER_LOCATION_TOP_LEFT;
+				if (lbx + lbw >= (int32_t)(tx + tile_w) - 2 &&
+					lby <= (int32_t)strip_y + 2)
+					lloc |= CORNER_LOCATION_TOP_RIGHT;
+				wlr_scene_buffer_set_corner_radii(
+					lsb, corner_radii_from_location(16, lloc));
+				wlr_scene_node_set_position(&lsb->node, lbx, lby);
+				wlr_scene_node_raise_to_top(&lsb->node);
+				m->ov_snap[snap_idx++] = lsb;
+			}
+		}
+	}
+
+	/* cache the big-area rect + tag, then lay out its windows via the
+	 * standalone helper (so scrolling can re-lay-out without a full arrange) */
+	m->ov_main_x = main_x;
+	m->ov_main_y = main_y;
+	m->ov_main_w = main_w;
+	m->ov_main_h = main_h;
+	m->ov_main_tag = main_tag;
+	overview_arrange_main(m, false);
+
+	/* hide leftover cell chrome from a previous layout with more tags */
 	for (int32_t i = uc; i < OV_TAG_CELLS; i++) {
 		if (m->ov_cell_bg[i] && m->ov_cell_bg[i]->node.enabled)
 			wlr_scene_node_set_enabled(&m->ov_cell_bg[i]->node, false);
+		if (m->ov_cell_wp[i] && m->ov_cell_wp[i]->node.enabled)
+			wlr_scene_node_set_enabled(&m->ov_cell_wp[i]->node, false);
+		if (m->ov_cell_shadow[i] && m->ov_cell_shadow[i]->node.enabled)
+			wlr_scene_node_set_enabled(&m->ov_cell_shadow[i]->node, false);
 		if (m->ov_cell_label[i] &&
 			m->ov_cell_label[i]->scene_buffer->node.enabled)
 			wlr_scene_node_set_enabled(
@@ -667,7 +1427,145 @@ void overview_tags(Monitor *m) {
 	}
 }
 
+/* Hover-to-preview: while overview is open, hovering a strip tile makes the
+ * main area show that tag. Called from motionnotify on real pointer motion. */
+void overview_pointer_preview(Monitor *m, double px, double py) {
+	if (!m || !m->isoverview || m->ov_tile_count == 0)
+		return;
+	if (py < m->ov_tile_y || py > m->ov_tile_y + m->ov_tile_h)
+		return; /* pointer isn't over the strip row */
+	for (int32_t i = 0; i < m->ov_tile_count; i++) {
+		if (px >= m->ov_tile_x[i] && px < m->ov_tile_x[i] + m->ov_tile_w) {
+			if (m->ov_preview_tag != m->ov_tile_tag[i]) {
+				m->ov_preview_tag = m->ov_tile_tag[i];
+				arrange(m, false, false);
+			}
+			return;
+		}
+	}
+}
+
+/* Tag of the strip tile under (px,py), or 0 if the pointer isn't over a tile. */
+uint32_t overview_tile_at(Monitor *m, double px, double py) {
+	if (!m || !m->isoverview || m->ov_tile_count == 0)
+		return 0;
+	if (py < m->ov_tile_y || py > m->ov_tile_y + m->ov_tile_h)
+		return 0;
+	for (int32_t i = 0; i < m->ov_tile_count; i++)
+		if (px >= m->ov_tile_x[i] && px < m->ov_tile_x[i] + m->ov_tile_w)
+			return m->ov_tile_tag[i];
+	return 0;
+}
+
+/* The hovered window is highlighted by focusing it (its border takes the theme
+ * focus colour) -- subtle and theme-driven. The old bright accent tint is gone;
+ * this just makes sure any leftover tint node stays hidden. */
+void overview_hover_highlight(Monitor *m, Client *c) {
+	(void)c;
+	if (m && m->ov_hover_hl && m->ov_hover_hl->node.enabled)
+		wlr_scene_node_set_enabled(&m->ov_hover_hl->node, false);
+}
+
+/* Scroll the big area horizontally through a scroller tag's windows. dir is +1
+ * (reveal windows to the right) or -1 (to the left). */
+void overview_main_scroll(Monitor *m, double px, double py, int32_t dir) {
+	if (!m || !m->isoverview || m->ov_scroll_tag == 0)
+		return;
+	(void)px;
+	(void)py;
+	/* pan by a fraction of the viewport; overview_arrange_main clamps to range */
+	m->ov_main_scroll += dir * (m->w.width * 0.18f);
+	/* re-lay-out only the big area (no full arrange -> no snapshot rebuild),
+	 * instant so scrolling stays smooth */
+	overview_arrange_main(m, true);
+	if (m->wlr_output)
+		wlr_output_schedule_frame(m->wlr_output);
+}
+
+/* open/close zoom-fade: the windows already animate their geometry (the
+ * "zoom"); this ramps the chrome opacity (the "fade") in lockstep so the
+ * backdrop, wallpaper, desktop shadow and strip tiles don't pop in/out. */
+#define OV_ANIM_DUR_OPEN 200.0f
+#define OV_ANIM_DUR_CLOSE 160.0f
+
+/* apply a chrome visibility t in [0,1] to the fadeable overview nodes */
+void overview_anim_apply(Monitor *m, float t) {
+	if (t < 0.0f)
+		t = 0.0f;
+	if (t > 1.0f)
+		t = 1.0f;
+	if (m->ov_dim) {
+		float c[4] = {0.0f, 0.0f, 0.0f, 0.9f * t};
+		wlr_scene_rect_set_color(m->ov_dim, c);
+	}
+	if (m->ov_main_wp)
+		wlr_scene_buffer_set_opacity(m->ov_main_wp, t);
+	if (m->ov_main_shadow) {
+		float c[4] = {0.0f, 0.0f, 0.0f, 0.55f * t};
+		wlr_scene_shadow_set_color(m->ov_main_shadow, c);
+	}
+	/* strip: fade the tint + shadow (base alphas kept in sync with
+	 * overview_tags); the xray blur behind them has no opacity, so it just
+	 * stays put — a blurred patch under a fading tint is unobtrusive */
+	if (m->ov_strip_bg) {
+		float c[4] = {0.0f, 0.0f, 0.0f, 0.9575f * t};
+		wlr_scene_rect_set_color(m->ov_strip_bg, c);
+	}
+	if (m->ov_strip_shadow) {
+		float c[4] = {0.0f, 0.0f, 0.0f, 0.95f * t};
+		wlr_scene_shadow_set_color(m->ov_strip_shadow, c);
+	}
+	for (int32_t i = 0; i < OV_STRIP_WINS; i++)
+		if (m->ov_snap[i] && m->ov_snap[i]->node.enabled)
+			wlr_scene_buffer_set_opacity(m->ov_snap[i], t);
+}
+
+/* begin a fade; open == true fades in, false fades out. Seeds the start time
+ * so a mid-flight direction flip continues from the current visibility. */
+void overview_anim_start(Monitor *m, bool open) {
+	uint32_t now = get_now_in_ms();
+	float t = m->ov_anim_running ? m->ov_anim_t : (open ? 0.0f : 1.0f);
+	float dur = open ? OV_ANIM_DUR_OPEN : OV_ANIM_DUR_CLOSE;
+	/* progress that reproduces the current visibility (linear approx of the
+	 * smoothstep ease — close enough to avoid a visible jump on reversal) */
+	float prog = open ? t : (1.0f - t);
+	m->ov_anim_start_ms = now - (uint32_t)(prog * dur);
+	m->ov_anim_open = open;
+	m->ov_anim_t = t;
+	m->ov_anim_running = true;
+}
+
+/* advance the fade one frame; returns true while more frames are needed */
+bool overview_anim_frame(Monitor *m) {
+	if (!m->ov_anim_running)
+		return false;
+	float dur = m->ov_anim_open ? OV_ANIM_DUR_OPEN : OV_ANIM_DUR_CLOSE;
+	float prog = (get_now_in_ms() - m->ov_anim_start_ms) / dur;
+	if (prog < 0.0f)
+		prog = 0.0f;
+	bool done = prog >= 1.0f;
+	if (done)
+		prog = 1.0f;
+	float e = prog * prog * (3.0f - 2.0f * prog); /* smoothstep */
+	m->ov_anim_t = m->ov_anim_open ? e : (1.0f - e);
+	overview_anim_apply(m, m->ov_anim_t);
+	if (done) {
+		m->ov_anim_running = false;
+		if (!m->ov_anim_open) {
+			/* fade-out finished: now actually tear the chrome down */
+			m->ov_anim_t = 0.0f;
+			overview_hide_chrome(m);
+		}
+		return false;
+	}
+	return true;
+}
+
 void overview(Monitor *m) {
+
+	/* the strip covers the top layer-shell (DMS bar): hide it while overview
+	 * is open, restored by overview_hide_chrome() on exit */
+	wlr_scene_node_set_enabled(&layers[LyrTop]->node, false);
 
 	overview_draw_backdrop(m);
 	overview_tags(m);
