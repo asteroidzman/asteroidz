@@ -5490,8 +5490,13 @@ void client_update_blur(Client *c) {
 	wlr_scene_blur_set_should_only_blur_bottom_layer(
 		c->blur_node, config.blur_optimized && !c->isfloating);
 	if (config.animations && c->is_pending_open_animation) {
-		wlr_scene_blur_set_strength(c->blur_node, 0.0f);
-		wlr_scene_blur_set_alpha(c->blur_node, 0.0f);
+		/* Show the backdrop blur at full immediately so an opening translucent
+		 * window materialises FROSTED rather than flashing the sharp, bright
+		 * wallpaper behind it (the window's own opacity still fades in over the
+		 * frost). Strength stays at 1 -- same cost as the old alpha ramp, which
+		 * already blurred at strength 1 every frame. */
+		wlr_scene_blur_set_strength(c->blur_node, 1.0f);
+		wlr_scene_blur_set_alpha(c->blur_node, 1.0f);
 	}
 	wlr_scene_node_set_position(&c->blur_node->node, c->bw, c->bw);
 	wlr_scene_blur_set_size(c->blur_node, GEZERO(c->geom.width - 2 * c->bw),
