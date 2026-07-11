@@ -731,16 +731,25 @@ void overview_arrange_main(Monitor *m, bool instant) {
 	 * aspect distortion) and anchor top-left (not centred). Windows keep their
 	 * real relative positions and proportions; a window clipped at the screen
 	 * edge touches the mirrored-screen edge just like on the real desktop. */
-	float sx = fminf(main_w / (float)m->w.width, main_h / (float)m->w.height);
+	/* Mirror the TILED area (usable minus the outer gaps), not the full usable
+	 * area: the tiling insets windows by the outer gap, so mapping full m->w
+	 * left that gap as a wallpaper margin (a band under the strip + edge
+	 * slivers). Insetting the viewport makes the outermost windows touch the OV
+	 * desktop edges; only the inner gaps between windows still show wallpaper. */
+	int32_t og_h = enablegaps ? m->gappoh : 0;
+	int32_t og_v = enablegaps ? m->gappov : 0;
+	float vw_in = fmaxf(1.0f, (float)m->w.width - 2.0f * og_h);
+	float vh_in = fmaxf(1.0f, (float)m->w.height - 2.0f * og_v);
+	float sx = fminf(main_w / vw_in, main_h / vh_in);
 	float sy = sx;
 	float sb = sx; /* uniform scale for border thickness */
 	float off_x = main_x, off_y = main_y;
-	float vl = m->w.x, vt = m->w.y;
-	float vr = m->w.x + m->w.width, vb = m->w.y + m->w.height;
+	float vl = m->w.x + og_h, vt = m->w.y + og_v;
+	float vr = m->w.x + m->w.width - og_h, vb = m->w.y + m->w.height - og_v;
 	m->ov_vp_x = main_x;
 	m->ov_vp_y = main_y;
-	m->ov_vp_w = m->w.width * sx;  /* the actual mirrored-screen rect */
-	m->ov_vp_h = m->w.height * sx;
+	m->ov_vp_w = vw_in * sx;  /* the actual mirrored-screen rect */
+	m->ov_vp_h = vh_in * sx;
 
 	/* scroller: if the tag's windows span wider than the viewport, let the wheel
 	 * pan across them (with edge indicators). Shift the viewport by the scroll
@@ -797,6 +806,16 @@ void overview_arrange_main(Monitor *m, bool instant) {
 		float gx = c->overview_backup_geom.x, gy = c->overview_backup_geom.y;
 		float gw = fmaxf(1.0f, (float)c->overview_backup_geom.width);
 		float gh = fmaxf(1.0f, (float)c->overview_backup_geom.height);
+		/* backup_geom is the CONTENT area (the tiling reserved the titlebar
+		 * above it). client_tile_resize re-reserves the titlebar inside the
+		 * mapped box, so mapping the content top double-counts the bar and
+		 * leaves a wallpaper band above the window. Map the FULL window (add the
+		 * titlebar back on top) so it aligns to the OV desktop edge. */
+		if (config.enable_titlebar && !c->isfullscreen &&
+			!c->overview_isfloatingbak) {
+			gy -= (float)config.titlebar_height;
+			gh += (float)config.titlebar_height;
+		}
 		/* fraction of the window cropped off each edge by the viewport */
 		float fl = fmaxf(0.0f, vl - gx) / gw;
 		float fr = fmaxf(0.0f, (gx + gw) - vr) / gw;
@@ -1077,7 +1096,14 @@ void overview_tags(Monitor *m) {
 	float avail_w = fmaxf(1.0f, ow0 - 2.0f * gappo);
 	float avail_h = fmaxf(1.0f, (oy0 + oh0 - gappo) - avail_y);
 	m->ov_avail_y = avail_y; /* content-region top (below strip), for void masks */
-	float screen_asp = (float)m->w.width / fmaxf(1.0f, (float)m->w.height);
+	/* Base the panel on the TILED area (usable minus outer gaps), matching
+	 * overview_arrange_main, so the wallpaper rect equals the window extent and
+	 * no outer-gap wallpaper margin shows around the windows. */
+	int32_t og_h = enablegaps ? m->gappoh : 0;
+	int32_t og_v = enablegaps ? m->gappov : 0;
+	float vw_in = fmaxf(1.0f, (float)m->w.width - 2.0f * og_h);
+	float vh_in = fmaxf(1.0f, (float)m->w.height - 2.0f * og_v);
+	float screen_asp = vw_in / vh_in;
 	float main_w = fminf(avail_w, avail_h * screen_asp);
 	float main_h = main_w / screen_asp;
 	/* A faithful (undistorted) mirror can't touch all four edges when the area
@@ -1093,9 +1119,8 @@ void overview_tags(Monitor *m) {
 	/* the mirrored-screen rect: the desktop, uniformly scaled, anchored top-left
 	 * in the big area (matches overview_arrange_main). The wallpaper backdrop
 	 * fills exactly this rect so it reads as the screen; the rest is void. */
-	float mscale =
-		fminf(main_w / (float)m->w.width, main_h / (float)m->w.height);
-	float mvp_w = m->w.width * mscale, mvp_h = m->w.height * mscale;
+	float mscale = fminf(main_w / vw_in, main_h / vh_in);
+	float mvp_w = vw_in * mscale, mvp_h = vh_in * mscale;
 
 	/* depth: a soft drop shadow + a subtle 1px light edge so the OV desktop
 	 * floats above the flat void (macOS-space feel) */
