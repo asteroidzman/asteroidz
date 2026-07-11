@@ -655,6 +655,11 @@ struct Monitor {
 	struct wl_listener destroy_lock_surface;
 	struct wlr_session_lock_surface_v1 *lock_surface;
 	struct wl_event_source *skip_frame_timeout;
+	/* render-late scheduling (config.render_late): defer the render from the
+	 * frame event to just before the next vblank. render_dur_ms is an EMA of
+	 * recent render+commit cost, used to pick the deferral delay. */
+	struct wl_event_source *render_timer;
+	double render_dur_ms;
 	struct wlr_box m;		  /* monitor area, layout-relative */
 	struct wlr_box w;		  /* window area, layout-relative */
 	struct wl_list layers[4]; /* LayerSurface::link */
@@ -1088,6 +1093,8 @@ static Client *get_focused_stack_client(Client *sc,
 static bool client_is_in_same_stack(Client *sc, Client *tc, Client *fc);
 static void monitor_stop_skip_frame_timer(Monitor *m);
 static int monitor_skip_frame_timeout_callback(void *data);
+static void render_monitor(Monitor *m);
+static int render_timer_cb(void *data);
 static Monitor *get_monitor_nearest_to(int32_t lx, int32_t ly);
 static bool match_monitor_spec(char *spec, Monitor *m);
 static void last_cursor_surface_destroy(struct wl_listener *listener,
@@ -3243,6 +3250,10 @@ void cleanupmon(struct wl_listener *listener, void *data) {
 		wl_event_source_remove(m->skip_frame_timeout);
 		m->skip_frame_timeout = NULL;
 	}
+	if (m->render_timer) {
+		wl_event_source_remove(m->render_timer);
+		m->render_timer = NULL;
+	}
 	if (m->retrain_timer) {
 		wl_event_source_remove(m->retrain_timer);
 		m->retrain_timer = NULL;
@@ -4295,6 +4306,8 @@ void createmon(struct wl_listener *listener, void *data) {
 	m->iscleanuping = false;
 	m->skip_frame_timeout =
 		wl_event_loop_add_timer(loop, monitor_skip_frame_timeout_callback, m);
+	m->render_timer = wl_event_loop_add_timer(loop, render_timer_cb, m);
+	m->render_dur_ms = 0.0;
 	m->retrain_timer = wl_event_loop_add_timer(loop, monitor_retrain_step, m);
 	m->hdr_capture_debounce_timer =
 		wl_event_loop_add_timer(loop, hdr_capture_debounce_timeout, m);
@@ -6466,8 +6479,7 @@ void monitor_check_skip_frame_timeout(Monitor *m) {
 	}
 }
 
-void rendermon(struct wl_listener *listener, void *data) {
-	Monitor *m = wl_container_of(listener, m, frame);
+static void render_monitor(Monitor *m) {
 	Client *c = NULL, *tmp = NULL;
 	LayerSurface *l = NULL, *tmpl = NULL;
 	int32_t i;
@@ -6475,6 +6487,8 @@ void rendermon(struct wl_listener *listener, void *data) {
 	bool frame_allow_tearing = false;
 	struct timespec now;
 	bool need_more_frames = false;
+	struct timespec render_t0;
+	clock_gettime(CLOCK_MONOTONIC, &render_t0);
 
 	if (session && !session->active) {
 		return;
@@ -6607,6 +6621,45 @@ skip:
 	if (need_more_frames && allow_frame_scheduling) {
 		request_fresh_all_monitors();
 	}
+
+	// EMA of render+commit cost, used to size the render-late deferral delay
+	struct timespec render_t1;
+	clock_gettime(CLOCK_MONOTONIC, &render_t1);
+	double dur_ms = (render_t1.tv_sec - render_t0.tv_sec) * 1000.0 +
+					(render_t1.tv_nsec - render_t0.tv_nsec) / 1.0e6;
+	m->render_dur_ms =
+		m->render_dur_ms <= 0.0 ? dur_ms : m->render_dur_ms * 0.8 + dur_ms * 0.2;
+}
+
+// Frame (vblank) event. By default render immediately. With config.render_late
+// on, defer the render toward the next vblank -- present lands on the same
+// vblank either way, but input sampled during the deferral is ~a frame fresher.
+// Still exactly one render per vblank (no GPU pinning); skipped for tearing/VRR
+// where fixed-interval deferral doesn't apply.
+void rendermon(struct wl_listener *listener, void *data) {
+	Monitor *m = wl_container_of(listener, m, frame);
+
+	if (config.render_late && m->render_timer && !m->skiping_frame &&
+		!m->is_vrr_opening && allow_frame_scheduling &&
+		(!session || session->active) && m->wlr_output->enabled &&
+		m->wlr_output->refresh > 0 && !check_tearing_frame_allow(m)) {
+		double interval_ms = 1.0e6 / (double)m->wlr_output->refresh;
+		double margin_ms = config.render_late_margin_us / 1000.0;
+		double delay_ms = interval_ms - m->render_dur_ms - margin_ms;
+		if (delay_ms >= 1.0) {
+			if (delay_ms > interval_ms)
+				delay_ms = interval_ms;
+			wl_event_source_timer_update(m->render_timer, (int)delay_ms);
+			return; // render_timer_cb renders when the deadline arrives
+		}
+	}
+
+	render_monitor(m);
+}
+
+static int render_timer_cb(void *data) {
+	render_monitor((Monitor *)data);
+	return 0;
 }
 
 void requestdecorationmode(struct wl_listener *listener, void *data) {

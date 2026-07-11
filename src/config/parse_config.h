@@ -450,6 +450,12 @@ typedef struct {
 	float drag_tile_refresh_interval;
 	float drag_floating_refresh_interval;
 	int32_t allow_tearing;
+	/* Render-late scheduling: when enabled, defer a monitor's render from the
+	 * frame (vblank) event until close to the next vblank, cutting input-to-
+	 * photon latency by ~one frame. render_late_margin_us is the safety head-
+	 * room left before the deadline (larger = safer, less latency win). */
+	int32_t render_late;
+	int32_t render_late_margin_us;
 	int32_t allow_shortcuts_inhibit;
 	int32_t allow_lock_transparent;
 
@@ -1701,6 +1707,10 @@ bool parse_option(Config *config, char *key, char *value) {
 		config->drag_floating_refresh_interval = atof(value);
 	} else if (strcmp(key, "allow_tearing") == 0) {
 		config->allow_tearing = atoi(value);
+	} else if (strcmp(key, "render_late") == 0) {
+		config->render_late = atoi(value);
+	} else if (strcmp(key, "render_late_margin_us") == 0) {
+		config->render_late_margin_us = atoi(value);
 	} else if (strcmp(key, "allow_shortcuts_inhibit") == 0) {
 		config->allow_shortcuts_inhibit = atoi(value);
 	} else if (strcmp(key, "allow_lock_transparent") == 0) {
@@ -3355,6 +3365,8 @@ static const struct {
 	{"misc/focus-on-activate", "focus_on_activate"},
 	{"misc/ufo-easter-egg", "ufo_easter_egg"},
 	{"misc/allow-tearing", "allow_tearing"},
+	{"misc/render-late", "render_late"},
+	{"misc/render-late-margin-us", "render_late_margin_us"},
 	{"misc/sdr/reference-luminance", "sdr_reference_luminance"},
 	{"misc/sdr/saturation", "sdr_saturation"},
 	{"misc/dpms-wake-retrain", "dpms_wake_retrain"},
@@ -4364,6 +4376,8 @@ void set_value_default() {
 	config.sdr_saturation = 0.0f;
 	config.dpms_wake_retrain = 0;
 	config.blur_optimized = 1;
+	config.render_late = 0;			   /* opt-in; default keeps render-on-vblank */
+	config.render_late_margin_us = 3000; /* 3ms safety headroom before deadline */
 	config.border_radius = 0;
 	config.border_radius_location_default = CORNER_LOCATION_ALL;
 	config.blur_params.num_passes = 1;
