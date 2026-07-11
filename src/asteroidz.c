@@ -5710,6 +5710,11 @@ mapnotify(struct wl_listener *listener, void *data) {
 		c->scene, 0, 0, c->isurgent ? config.urgentcolor : config.bordercolor);
 	wlr_scene_node_lower_to_bottom(&c->border->node);
 	wlr_scene_node_set_position(&c->border->node, 0, 0);
+	/* Start disabled: the border rect has no clipped_region until apply_border
+	 * runs, so if it rendered on the window's first frame it would fill the
+	 * whole window with the border/focus colour for one frame (the open/close
+	 * "flash"). apply_border enables it once the interior cut-out is set. */
+	wlr_scene_node_set_enabled(&c->border->node, false);
 	wlr_scene_rect_set_corner_radii(
 		c->border,
 		corner_radii_from_location(config.border_radius,
