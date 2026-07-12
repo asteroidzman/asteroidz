@@ -106,7 +106,7 @@ Uses `amsg` (ships with asteroidz) to capture the focused window.
 
 ```bash
 #!/usr/bin/env bash
-geometry=$(amsg get focusing-client | jq -r '"\(.x),\(.y) \(.width)x\(.height)"')
+geometry=$(amsg get focused-client | jq -r '"\(.x),\(.y) \(.width)x\(.height)"')
 [ -z "$geometry" ] && exit 1
 grim -g "$geometry" "$HOME/Pictures/Screenshots/$(date +%Y%m%d%H%M%S).png"
 ```
@@ -195,7 +195,7 @@ case "${1:-fullscreen}" in
     g=$(slurp -d); [ -z "$g" ] && exit 1
     grim -g "$g" "$filepath" ;;
   window)
-    g=$(amsg get focusing-client | jq -r '"\(.x),\(.y) \(.width)x\(.height)"')
+    g=$(amsg get focused-client | jq -r '"\(.x),\(.y) \(.width)x\(.height)"')
     [ -z "$g" ] && exit 1
     grim -g "$g" "$filepath" ;;
   freeze)

@@ -20,7 +20,7 @@ static void usage(void) {
 	printf("  get last_open_surface [monitor]          Show last open surface "
 		   "(default focused monitor)\n");
 	printf("  get monitor <name>                       Show monitor details\n");
-	printf("  get focusing-client                      Show focused client "
+	printf("  get focused-client                      Show focused client "
 		   "details\n");
 	printf("  get client <id>                          Show client details by "
 		   "ID\n");
@@ -44,7 +44,7 @@ static void usage(void) {
 	printf("Persistent streams (watch):\n");
 	printf(
 		"  watch monitor <name>                     Stream monitor changes\n");
-	printf("  watch focusing-client                    Stream focused client "
+	printf("  watch focused-client                    Stream focused client "
 		   "changes\n");
 	printf(
 		"  watch client <id>                        Stream client changes\n");
