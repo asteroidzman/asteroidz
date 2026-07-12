@@ -30,11 +30,11 @@ binds {
 
 ```kdl
 binds {
-    Super+Q { killclient; }
+    Super+Q { kill_client; }
     Super+L { spawn swaylock; }
-    Alt+code:24 { killclient; }
-    code:64+code:24 { killclient; }
-    code:64+code:133+code:24 { killclient; }
+    Alt+code:24 { kill_client; }
+    code:64+code:24 { kill_client; }
+    code:64+code:133+code:24 { kill_client; }
     NONE+XF86MonBrightnessUp { spawn "brightnessctl set +5%"; }
     alt+shift_l { switch_keyboard_layout; }
 }
@@ -48,7 +48,7 @@ You can divide key bindings into named modes. Rules:
 2. If no `keymode` is set before a bind, it belongs to the `default` mode.
 3. The special `common` keymode applies its binds **across all modes**.
 
-Use `setkeymode` to switch modes, and `amsg get keymode` to query the current mode.
+Use `set_key_mode` to switch modes, and `amsg get keymode` to query the current mode.
 
 ```kdl
 misc {
@@ -58,10 +58,10 @@ misc {
 binds {
     Super+r { reload_config; }
     Alt+Return { spawn foot; }
-    Super+F { setkeymode resize; }
-    NONE+Left { resizewin -10 0; }
-    NONE+Right { resizewin +10 0; }
-    NONE+Escape { setkeymode default; }
+    Super+F { set_key_mode resize; }
+    NONE+Left { resize_window -10 0; }
+    NONE+Right { resize_window +10 0; }
+    NONE+Escape { set_key_mode default; }
 }
 ```
 
@@ -82,31 +82,31 @@ binds {
 
 | Command | Param | Description |
 | :--- | :--- | :--- |
-| `killclient` | `force` | Close the focused window. If `force` is specified, sends `SIGKILL`. |
-| `togglefloating` | - | Toggle floating state. |
+| `kill_client` | `force` | Close the focused window. If `force` is specified, sends `SIGKILL`. |
+| `toggle_floating` | - | Toggle floating state. |
 | `toggle_all_floating` | - | Toggle all visible clients floating state. |
-| `togglefullscreen` | - | Toggle fullscreen. |
-| `togglefakefullscreen` | - | Toggle "fake" fullscreen (remains constrained). |
-| `togglemaximizescreen` | - | Maximize window (keep decoration/bar). |
-| `toggleglobal` | - | Pin window to all tags. |
+| `toggle_fullscreen` | - | Toggle fullscreen. |
+| `toggle_fake_fullscreen` | - | Toggle "fake" fullscreen (remains constrained). |
+| `toggle_maximize` | - | Maximize window (keep decoration/bar). |
+| `toggle_global` | - | Pin window to all tags. |
 | `pin` | - | Toggle pinned state: the window is forced floating, kept on top and stays visible on every tag of its monitor (it does not slide with tag-switch animations). |
 | `toggle_render_border` | - | Toggle border rendering. |
-| `centerwin` | - | Center the floating window. |
-| `minimized` | - | Minimize window to scratchpad. |
+| `center_window` | - | Center the floating window. |
+| `minimize` | - | Minimize window to scratchpad. |
 | `restore_minimized` | - | Restore window from scratchpad. |
 | `toggle_scratchpad` | - | Toggle scratchpad. |
 | `toggle_named_scratchpad` | `appid,title,cmd` | Toggle named scratchpad. Launches app if not running, otherwise shows/hides it. |
-| `togglespecialworkspace` | `name` | Toggle the named [special workspace](/docs/window-management/special-workspaces) `name` on the focused monitor: slides it in on top of the current tag, or slides it back out if it is already showing. Opening one implicitly closes any other special workspace already showing on that monitor. |
-| `movetospecialworkspace` | `name` (optional) | Move the focused window into named special workspace `name`. Called with no name (or an empty one), moves the window back out to the normal tag it came from. |
+| `toggle_special_workspace` | `name` | Toggle the named [special workspace](/docs/window-management/special-workspaces) `name` on the focused monitor: slides it in on top of the current tag, or slides it back out if it is already showing. Opening one implicitly closes any other special workspace already showing on that monitor. |
+| `move_to_special_workspace` | `name` (optional) | Move the focused window into named special workspace `name`. Called with no name (or an empty one), moves the window back out to the normal tag it came from. |
 
 ### Focus & Movement
 
 | Command | Param | Description |
 | :--- | :--- | :--- |
-| `focusid` | - | Focus window (can target any window via IPC: `amsg dispatch focusid client,<id>`) |
-| `focusdir` | `left/right/up/down` | Focus window in direction. |
-| `focusstack` | `next/prev` | Cycle focus within the stack. |
-| `focuslast` | - | Focus the previously active window. |
+| `focus_id` | - | Focus window (can target any window via IPC: `amsg dispatch focus_id client,<id>`) |
+| `focus_direction` | `left/right/up/down` | Focus window in direction. |
+| `focus_stack` | `next/prev` | Cycle focus within the stack. |
+| `focus_last` | - | Focus the previously active window. |
 | `exchange_client` | `left/right/up/down` | Swap window with neighbor in direction. |
 | `exchange_stack_client` | `next/prev` | Exchange window position in stack. |
 | `zoom` | - | Swap focused window with Master. |
@@ -115,11 +115,11 @@ binds {
 
 | Command | Param | Description |
 | :--- | :--- | :--- |
-| `groupjoin` | `left/right/up/down` | Join the group of (or form a group with) the window in the given direction. |
-| `groupleave` | - | Leave the current group. |
-| `groupfocus` | `next/prev` | Focus the next/previous member of the current group. |
-| `grouplock` | - | Toggle the group lock. A locked group refuses new members and keeps its current ones (`groupjoin` into or out of it is denied). |
-| `movegroupwindow` | `next/prev` | Swap the focused window with its next/previous neighbor inside the group bar (no wraparound). |
+| `group_join` | `left/right/up/down` | Join the group of (or form a group with) the window in the given direction. |
+| `group_leave` | - | Leave the current group. |
+| `group_focus` | `next/prev` | Focus the next/previous member of the current group. |
+| `group_lock` | - | Toggle the group lock. A locked group refuses new members and keeps its current ones (`group_join` into or out of it is denied). |
+| `move_group_window` | `next/prev` | Swap the focused window with its next/previous neighbor inside the group bar (no wraparound). |
 
 > **Tip:** Scrolling the mouse wheel over a group bar also cycles through the group members. Windows matched by the `deny_group` window rule can never be pulled into a group.
 
@@ -128,37 +128,37 @@ binds {
 | Command | Param | Description |
 | :--- | :--- | :--- |
 | `view` | `-1/0/1-9` or `mask [,synctag]` | View tag. `-1` = previous tagset, `0` = all tags, `1-9` = specific tag, mask e.g. `1\|3\|5`. Optional `synctag` (0/1) syncs the action to all monitors. |
-| `viewtoleft` | `[synctag]` | View previous tag. Optional `synctag` (0/1) syncs to all monitors. |
-| `viewtoright` | `[synctag]` | View next tag. Optional `synctag` (0/1) syncs to all monitors. |
-| `viewtoleft_have_client` | `[synctag]` | View left tag and focus client if present. Optional `synctag` (0/1). |
-| `viewtoright_have_client` | `[synctag]` | View right tag and focus client if present. Optional `synctag` (0/1). |
-| `viewcrossmon` | `tag,monitor_spec` | View specified tag on specified monitor. |
+| `view_to_left` | `[synctag]` | View previous tag. Optional `synctag` (0/1) syncs to all monitors. |
+| `view_to_right` | `[synctag]` | View next tag. Optional `synctag` (0/1) syncs to all monitors. |
+| `view_to_left_occupied` | `[synctag]` | View left tag and focus client if present. Optional `synctag` (0/1). |
+| `view_to_right_occupied` | `[synctag]` | View right tag and focus client if present. Optional `synctag` (0/1). |
+| `view_cross_monitor` | `tag,monitor_spec` | View specified tag on specified monitor. |
 | `tag` | `1-9 [,synctag]` | Move window to tag. Optional `synctag` (0/1) syncs to all monitors. |
-| `tagsilent` | `1-9` | Move window to tag without focusing it. |
-| `tagtoleft` | `[synctag]` | Move window to left tag. Optional `synctag` (0/1). |
-| `tagtoright` | `[synctag]` | Move window to right tag. Optional `synctag` (0/1). |
-| `tagcrossmon` | `tag,monitor_spec` | Move window to specified tag on specified monitor. |
-| `toggletag` | `0-9` | Toggle tag on window (0 means all tags). |
-| `toggleview` | `1-9` | Toggle tag view. |
-| `comboview` | `1-9` | View multi tags pressed simultaneously. |
-| `focusmon` | `left/right/up/down/monitor_spec` | Focus monitor by direction or [monitor spec](/docs/configuration/monitors#monitor-spec-format). |
-| `tagmon` | `left/right/up/down/monitor_spec,[keeptag]` | Move window to monitor by direction or [monitor spec](/docs/configuration/monitors#monitor-spec-format). `keeptag` is 0 or 1. |
+| `tag_silent` | `1-9` | Move window to tag without focusing it. |
+| `tag_to_left` | `[synctag]` | Move window to left tag. Optional `synctag` (0/1). |
+| `tag_to_right` | `[synctag]` | Move window to right tag. Optional `synctag` (0/1). |
+| `tag_cross_monitor` | `tag,monitor_spec` | Move window to specified tag on specified monitor. |
+| `toggle_tag` | `0-9` | Toggle tag on window (0 means all tags). |
+| `toggle_view` | `1-9` | Toggle tag view. |
+| `combo_view` | `1-9` | View multi tags pressed simultaneously. |
+| `focus_monitor` | `left/right/up/down/monitor_spec` | Focus monitor by direction or [monitor spec](/docs/configuration/monitors#monitor-spec-format). |
+| `tag_monitor` | `left/right/up/down/monitor_spec,[keeptag]` | Move window to monitor by direction or [monitor spec](/docs/configuration/monitors#monitor-spec-format). `keeptag` is 0 or 1. |
 
 ### Layouts
 
 | Command | Param | Description |
 | :--- | :--- | :--- |
-| `setlayout` | `name` | Switch to layout (e.g., `scroller`, `tile`). |
+| `set_layout` | `name` | Switch to layout (e.g., `scroller`, `tile`). |
 | `switch_layout` | - | Cycle through available layouts. |
-| `incnmaster` | `+1/-1` | Increase/Decrease number of master windows. |
-| `setmfact` | `+0.05` | Increase/Decrease master area size. |
+| `adjust_master_count` | `+1/-1` | Increase/Decrease number of master windows. |
+| `set_master_factor` | `+0.05` | Increase/Decrease master area size. |
 | `set_proportion` | `float` | Set scroller window proportion (0.0–1.0). |
 | `switch_proportion_preset` | `[next/prev]` | Cycle proportion presets of scroller window forwards or backwards (default `next`). |
 | `scroller_stack` | `left/right/up/down` | Move window inside/outside scroller stack by direction. |
 | `scroller_consume` | - | Pull the next column's window into the focused window's scroller stack. No-op for pinned or grouped windows. |
 | `scroller_expel` | - | Pop the focused window out of its scroller stack into its own column placed after the current one. No-op for pinned or grouped windows. |
-| `incgaps` | `+/-value` | Adjust gap size. |
-| `togglegaps` | - | Toggle gaps. |
+| `adjust_gaps` | `+/-value` | Adjust gap size. |
+| `toggle_gaps` | - | Toggle gaps. |
 |  `dwindle_toggle_split_direction` | - | Toggle split direction in dwindle layout. |
 | `dwindle_split_horizontal` | - | Set split window direction to horizontal in dwindle layout. |
 | `dwindle_split_vertical` | - | Set split window direction to vertical in dwindle layout. |
@@ -167,6 +167,11 @@ Suggested scroller binds (not bound by default — uncomment to use):
 
 ```ini
 # bind=SUPER,r,switch_proportion_preset,next
+
+> **Naming:** dispatchers use proper word-separated names (`toggle_overview`,
+> `focus_stack`, `view_to_left`, ...). The historical dwm-style smashed
+> spellings (`toggleoverview`, `focusstack`, `viewtoleft`, ...) remain
+> accepted as silent aliases, so existing configs keep working.
 # bind=SUPER+SHIFT,r,switch_proportion_preset,prev
 # bind=SUPER,i,scroller_consume
 # bind=SUPER,o,scroller_expel
@@ -182,15 +187,15 @@ Suggested scroller binds (not bound by default — uncomment to use):
 | `reload_config` | - | Hot-reload configuration. |
 | `quit` | - | Exit asteroidz. |
 | `restart` | - | Restart asteroidz in place (re-exec, keeps the login session; running clients are restarted). |
-| `toggleoverview` | - | Toggle overview mode. |
-| `togglejump` | - | Toggle overview with jump mode. |
+| `toggle_overview` | - | Toggle overview mode. |
+| `toggle_jump` | - | Toggle overview with jump mode. |
 | `create_virtual_output` | - | Create a headless monitor (for VNC/Sunshine). |
 | `destroy_all_virtual_output` | - | Destroy all virtual monitors. |
-| `toggleoverlay` | - | Toggle overlay state for the focused window. |
+| `toggle_overlay` | - | Toggle overlay state for the focused window. |
 | `toggle_trackpad_enable` | - | Toggle trackpad enable. |
-| `setkeymode` | `mode` | Set keymode. |
+| `set_key_mode` | `mode` | Set keymode. |
 | `switch_keyboard_layout` | `[index]` | Switch keyboard layout. Optional index (0, 1, 2...) to switch to specific layout. |
-| `setoption` | `key,value` | Set config option temporarily. |
+| `set_option` | `key,value` | Set config option temporarily. |
 | `dpms_off_monitor` | `monitor_spec` | Power off monitor without removing it from the layout. |
 | `dpms_on_monitor` | `monitor_spec` | Power monitor back on. |
 | `dpms_toggle_monitor` | `monitor_spec` | Toggle monitor power without removing it. |
@@ -276,7 +281,7 @@ binds {
 
 | Command | Param | Description |
 | :--- | :--- | :--- |
-| `smartmovewin` | `left/right/up/down` | Move floating window by snap distance. |
-| `smartresizewin` | `left/right/up/down` | Resize floating window by snap distance. |
-| `movewin` | `(x,y)` | Move floating window. |
-| `resizewin` | `(width,height)` | Resize window. |
+| `smart_move_window` | `left/right/up/down` | Move floating window by snap distance. |
+| `smart_resize_window` | `left/right/up/down` | Resize floating window by snap distance. |
+| `move_window` | `(x,y)` | Move floating window. |
+| `resize_window` | `(width,height)` | Resize window. |

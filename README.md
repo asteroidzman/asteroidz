@@ -36,7 +36,7 @@ that stays out of your way.
   borders, spring animation curves, plus HDR/SDR colour. GLES2 stays
   available as a fallback session
 - **Window groups** — i3-style grouping with a rendered group bar
-  (`groupjoin` / `groupleave` / `groupfocus`)
+  (`group_join` / `group_leave` / `group_focus`)
 - **Privacy shield** — `shield_when_capture` window and layer rules cover
   marked surfaces whenever a screen-capture session is active
 - **Tags, not workspaces** — per-tag layouts: scroller, master-stack,

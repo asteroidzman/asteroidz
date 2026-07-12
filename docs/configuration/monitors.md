@@ -110,7 +110,7 @@ The built-in `screenshot_ui` (see [Keybindings](../bindings/keys.md#screenshot_u
 
 ## Monitor Spec Format
 
-Several commands (`focusmon`, `tagmon`, `disable_monitor`, `enable_monitor`, `toggle_monitor`, `viewcrossmon`, `tagcrossmon`) accept a **monitor_spec** string to identify a monitor.
+Several commands (`focus_monitor`, `tag_monitor`, `disable_monitor`, `enable_monitor`, `toggle_monitor`, `view_cross_monitor`, `tag_cross_monitor`) accept a **monitor_spec** string to identify a monitor.
 
 **Format:**
 

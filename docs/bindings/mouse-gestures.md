@@ -27,10 +27,10 @@ mouse-binds {
 
 ```kdl
 mouse-binds {
-    Super+btn_left { moveresize curmove; }
-    Super+btn_right { moveresize curresize; }
-    Super+Ctrl+btn_right { killclient; }
-    NONE+code:273 { togglemaximizescreen 0; }
+    Super+btn_left { move_resize curmove; }
+    Super+btn_right { move_resize curresize; }
+    Super+Ctrl+btn_right { kill_client; }
+    NONE+code:273 { toggle_maximize 0; }
 }
 ```
 
@@ -52,7 +52,7 @@ axisbind "MODIFIERS" "DIRECTION" "command" "parameters..."
 
 ```kdl
 misc {
-    axisbind SUPER,DOWN,viewtoright_have_client
+    axisbind SUPER,DOWN,view_to_right_occupied
 }
 ```
 
@@ -77,7 +77,7 @@ gesturebind "MODIFIERS" "DIRECTION" "FINGERS" "command" "parameters..."
 
 ```kdl
 misc {
-    gesturebind none,down,4,toggleoverview
+    gesturebind none,down,4,toggle_overview
 }
 ```
 

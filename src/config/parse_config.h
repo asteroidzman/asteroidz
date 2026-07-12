@@ -1072,33 +1072,43 @@ FuncType parse_func_name(char *func_name, Arg *arg, char *arg_value,
 	(*arg).v2 = NULL;
 	(*arg).v3 = NULL;
 
-	if (strcmp(func_name, "focusstack") == 0) {
+	if (strcmp(func_name, "focus_stack") == 0 ||
+			strcmp(func_name, "focusstack") == 0 /* deprecated alias */) {
 		func = focusstack;
 		(*arg).i = parse_circle_direction(arg_value);
-	} else if (strcmp(func_name, "groupfocus") == 0) {
+	} else if (strcmp(func_name, "group_focus") == 0 ||
+			strcmp(func_name, "groupfocus") == 0 /* deprecated alias */) {
 		func = groupfocus;
 		(*arg).i = parse_circle_direction(arg_value);
-	} else if (strcmp(func_name, "focusdir") == 0) {
+	} else if (strcmp(func_name, "focus_direction") == 0 ||
+			strcmp(func_name, "focusdir") == 0 /* deprecated alias */) {
 		func = focusdir;
 		(*arg).i = parse_direction(arg_value);
-	} else if (strcmp(func_name, "groupjoin") == 0) {
+	} else if (strcmp(func_name, "group_join") == 0 ||
+			strcmp(func_name, "groupjoin") == 0 /* deprecated alias */) {
 		func = groupjoin;
 		(*arg).i = parse_direction(arg_value);
-	} else if (strcmp(func_name, "groupleave") == 0) {
+	} else if (strcmp(func_name, "group_leave") == 0 ||
+			strcmp(func_name, "groupleave") == 0 /* deprecated alias */) {
 		func = groupleave;
-	} else if (strcmp(func_name, "grouplock") == 0) {
+	} else if (strcmp(func_name, "group_lock") == 0 ||
+			strcmp(func_name, "grouplock") == 0 /* deprecated alias */) {
 		func = grouplock;
-	} else if (strcmp(func_name, "movegroupwindow") == 0) {
+	} else if (strcmp(func_name, "move_group_window") == 0 ||
+			strcmp(func_name, "movegroupwindow") == 0 /* deprecated alias */) {
 		func = movegroupwindow;
 		(*arg).i = parse_circle_direction(arg_value);
 	} else if (strcmp(func_name, "pin") == 0) {
 		func = pin;
-	} else if (strcmp(func_name, "focusid") == 0) {
+	} else if (strcmp(func_name, "focus_id") == 0 ||
+			strcmp(func_name, "focusid") == 0 /* deprecated alias */) {
 		func = focusid;
-	} else if (strcmp(func_name, "incnmaster") == 0) {
+	} else if (strcmp(func_name, "adjust_master_count") == 0 ||
+			strcmp(func_name, "incnmaster") == 0 /* deprecated alias */) {
 		func = incnmaster;
 		(*arg).i = atoi(arg_value);
-	} else if (strcmp(func_name, "setmfact") == 0) {
+	} else if (strcmp(func_name, "set_master_factor") == 0 ||
+			strcmp(func_name, "setmfact") == 0 /* deprecated alias */) {
 		func = setmfact;
 		(*arg).f = atof(arg_value);
 	} else if (strcmp(func_name, "zoom") == 0) {
@@ -1117,12 +1127,15 @@ FuncType parse_func_name(char *func_name, Arg *arg, char *arg_value,
 	} else if (strcmp(func_name, "exchange_stack_client") == 0) {
 		func = exchange_stack_client;
 		(*arg).i = parse_circle_direction(arg_value);
-	} else if (strcmp(func_name, "toggleglobal") == 0) {
+	} else if (strcmp(func_name, "toggle_global") == 0 ||
+			strcmp(func_name, "toggleglobal") == 0 /* deprecated alias */) {
 		func = toggleglobal;
-	} else if (strcmp(func_name, "toggleoverview") == 0) {
+	} else if (strcmp(func_name, "toggle_overview") == 0 ||
+			strcmp(func_name, "toggleoverview") == 0 /* deprecated alias */) {
 		func = toggleoverview;
 		(*arg).i = atoi(arg_value);
-	} else if (strcmp(func_name, "togglejump") == 0) {
+	} else if (strcmp(func_name, "toggle_jump") == 0 ||
+			strcmp(func_name, "togglejump") == 0 /* deprecated alias */) {
 		func = togglejump;
 		(*arg).i = atoi(arg_value);
 	} else if (strcmp(func_name, "set_proportion") == 0) {
@@ -1135,31 +1148,40 @@ FuncType parse_func_name(char *func_name, Arg *arg, char *arg_value,
 			(*arg).i = NEXT;
 		else
 			(*arg).i = parse_circle_direction(arg_value);
-	} else if (strcmp(func_name, "viewtoleft") == 0) {
+	} else if (strcmp(func_name, "view_to_left") == 0 ||
+			strcmp(func_name, "viewtoleft") == 0 /* deprecated alias */) {
 		func = viewtoleft;
 		(*arg).i = atoi(arg_value);
-	} else if (strcmp(func_name, "viewtoright") == 0) {
+	} else if (strcmp(func_name, "view_to_right") == 0 ||
+			strcmp(func_name, "viewtoright") == 0 /* deprecated alias */) {
 		func = viewtoright;
 		(*arg).i = atoi(arg_value);
-	} else if (strcmp(func_name, "tagsilent") == 0) {
+	} else if (strcmp(func_name, "tag_silent") == 0 ||
+			strcmp(func_name, "tagsilent") == 0 /* deprecated alias */) {
 		func = tagsilent;
 		(*arg).ui = 1 << (atoi(arg_value) - 1);
-	} else if (strcmp(func_name, "tagtoleft") == 0) {
+	} else if (strcmp(func_name, "tag_to_left") == 0 ||
+			strcmp(func_name, "tagtoleft") == 0 /* deprecated alias */) {
 		func = tagtoleft;
 		(*arg).i = atoi(arg_value);
-	} else if (strcmp(func_name, "tagtoright") == 0) {
+	} else if (strcmp(func_name, "tag_to_right") == 0 ||
+			strcmp(func_name, "tagtoright") == 0 /* deprecated alias */) {
 		func = tagtoright;
 		(*arg).i = atoi(arg_value);
-	} else if (strcmp(func_name, "killclient") == 0) {
+	} else if (strcmp(func_name, "kill_client") == 0 ||
+			strcmp(func_name, "killclient") == 0 /* deprecated alias */) {
 		func = killclient;
 		(*arg).i = parse_force(arg_value);
-	} else if (strcmp(func_name, "centerwin") == 0) {
+	} else if (strcmp(func_name, "center_window") == 0 ||
+			strcmp(func_name, "centerwin") == 0 /* deprecated alias */) {
 		func = centerwin;
-	} else if (strcmp(func_name, "focuslast") == 0) {
+	} else if (strcmp(func_name, "focus_last") == 0 ||
+			strcmp(func_name, "focuslast") == 0 /* deprecated alias */) {
 		func = focuslast;
 	} else if (strcmp(func_name, "toggle_trackpad_enable") == 0) {
 		func = toggle_trackpad_enable;
-	} else if (strcmp(func_name, "setoption") == 0) {
+	} else if (strcmp(func_name, "set_option") == 0 ||
+			strcmp(func_name, "setoption") == 0 /* deprecated alias */) {
 		func = setoption;
 
 		(*arg).v = strdup(arg_value);
@@ -1203,26 +1225,33 @@ FuncType parse_func_name(char *func_name, Arg *arg, char *arg_value,
 				(*arg).v2 = temp;
 			}
 		}
-	} else if (strcmp(func_name, "setkeymode") == 0) {
+	} else if (strcmp(func_name, "set_key_mode") == 0 ||
+			strcmp(func_name, "setkeymode") == 0 /* deprecated alias */) {
 		func = setkeymode;
 		(*arg).v = strdup(arg_value);
 	} else if (strcmp(func_name, "switch_keyboard_layout") == 0) {
 		func = switch_keyboard_layout;
 		(*arg).i = CLAMP_INT(atoi(arg_value), 0, 100);
-	} else if (strcmp(func_name, "setlayout") == 0) {
+	} else if (strcmp(func_name, "set_layout") == 0 ||
+			strcmp(func_name, "setlayout") == 0 /* deprecated alias */) {
 		func = setlayout;
 		(*arg).v = strdup(arg_value);
 	} else if (strcmp(func_name, "switch_layout") == 0) {
 		func = switch_layout;
-	} else if (strcmp(func_name, "togglefloating") == 0) {
+	} else if (strcmp(func_name, "toggle_floating") == 0 ||
+			strcmp(func_name, "togglefloating") == 0 /* deprecated alias */) {
 		func = togglefloating;
-	} else if (strcmp(func_name, "togglefullscreen") == 0) {
+	} else if (strcmp(func_name, "toggle_fullscreen") == 0 ||
+			strcmp(func_name, "togglefullscreen") == 0 /* deprecated alias */) {
 		func = togglefullscreen;
-	} else if (strcmp(func_name, "togglefakefullscreen") == 0) {
+	} else if (strcmp(func_name, "toggle_fake_fullscreen") == 0 ||
+			strcmp(func_name, "togglefakefullscreen") == 0 /* deprecated alias */) {
 		func = togglefakefullscreen;
-	} else if (strcmp(func_name, "toggleoverlay") == 0) {
+	} else if (strcmp(func_name, "toggle_overlay") == 0 ||
+			strcmp(func_name, "toggleoverlay") == 0 /* deprecated alias */) {
 		func = toggleoverlay;
-	} else if (strcmp(func_name, "minimized") == 0) {
+	} else if (strcmp(func_name, "minimize") == 0 ||
+			strcmp(func_name, "minimized") == 0 /* deprecated alias */) {
 		func = minimized;
 	} else if (strcmp(func_name, "restore_minimized") == 0) {
 		func = restore_minimized;
@@ -1230,23 +1259,27 @@ FuncType parse_func_name(char *func_name, Arg *arg, char *arg_value,
 		func = toggle_scratchpad;
 	} else if (strcmp(func_name, "toggle_render_border") == 0) {
 		func = toggle_render_border;
-	} else if (strcmp(func_name, "focusmon") == 0) {
+	} else if (strcmp(func_name, "focus_monitor") == 0 ||
+			strcmp(func_name, "focusmon") == 0 /* deprecated alias */) {
 		func = focusmon;
 		(*arg).i = parse_direction(arg_value);
 		if ((*arg).i == UNDIR) {
 			(*arg).v = strdup(arg_value);
 		}
-	} else if (strcmp(func_name, "tagmon") == 0) {
+	} else if (strcmp(func_name, "tag_monitor") == 0 ||
+			strcmp(func_name, "tagmon") == 0 /* deprecated alias */) {
 		func = tagmon;
 		(*arg).i = parse_direction(arg_value);
 		(*arg).i2 = atoi(arg_value2);
 		if ((*arg).i == UNDIR) {
 			(*arg).v = strdup(arg_value);
 		};
-	} else if (strcmp(func_name, "incgaps") == 0) {
+	} else if (strcmp(func_name, "adjust_gaps") == 0 ||
+			strcmp(func_name, "incgaps") == 0 /* deprecated alias */) {
 		func = incgaps;
 		(*arg).i = atoi(arg_value);
-	} else if (strcmp(func_name, "togglegaps") == 0) {
+	} else if (strcmp(func_name, "toggle_gaps") == 0 ||
+			strcmp(func_name, "togglegaps") == 0 /* deprecated alias */) {
 		func = togglegaps;
 	} else if (strcmp(func_name, "chvt") == 0) {
 		func = chvt;
@@ -1282,15 +1315,19 @@ FuncType parse_func_name(char *func_name, Arg *arg, char *arg_value,
 		func = create_virtual_output;
 	} else if (strcmp(func_name, "destroy_all_virtual_output") == 0) {
 		func = destroy_all_virtual_output;
-	} else if (strcmp(func_name, "moveresize") == 0) {
+	} else if (strcmp(func_name, "move_resize") == 0 ||
+			strcmp(func_name, "moveresize") == 0 /* deprecated alias */) {
 		func = moveresize;
 		(*arg).ui = parse_mouse_action(arg_value);
-	} else if (strcmp(func_name, "togglemaximizescreen") == 0) {
+	} else if (strcmp(func_name, "toggle_maximize") == 0 ||
+			strcmp(func_name, "togglemaximizescreen") == 0 /* deprecated alias */) {
 		func = togglemaximizescreen;
-	} else if (strcmp(func_name, "viewtoleft_have_client") == 0) {
+	} else if (strcmp(func_name, "view_to_left_occupied") == 0 ||
+			strcmp(func_name, "viewtoleft_have_client") == 0 /* deprecated alias */) {
 		func = viewtoleft_have_client;
 		(*arg).i = atoi(arg_value);
-	} else if (strcmp(func_name, "viewtoright_have_client") == 0) {
+	} else if (strcmp(func_name, "view_to_right_occupied") == 0 ||
+			strcmp(func_name, "viewtoright_have_client") == 0 /* deprecated alias */) {
 		func = viewtoright_have_client;
 		(*arg).i = atoi(arg_value);
 	} else if (strcmp(func_name, "reload_config") == 0) {
@@ -1329,30 +1366,38 @@ FuncType parse_func_name(char *func_name, Arg *arg, char *arg_value,
 			(*arg).ui = atoi(arg_value);
 		}
 		(*arg).i = atoi(arg_value2);
-	} else if (strcmp(func_name, "viewcrossmon") == 0) {
+	} else if (strcmp(func_name, "view_cross_monitor") == 0 ||
+			strcmp(func_name, "viewcrossmon") == 0 /* deprecated alias */) {
 		func = viewcrossmon;
 		(*arg).ui = 1 << (atoi(arg_value) - 1);
 		(*arg).v = strdup(arg_value2);
-	} else if (strcmp(func_name, "tagcrossmon") == 0) {
+	} else if (strcmp(func_name, "tag_cross_monitor") == 0 ||
+			strcmp(func_name, "tagcrossmon") == 0 /* deprecated alias */) {
 		func = tagcrossmon;
 		(*arg).ui = 1 << (atoi(arg_value) - 1);
 		(*arg).v = strdup(arg_value2);
-	} else if (strcmp(func_name, "toggletag") == 0) {
+	} else if (strcmp(func_name, "toggle_tag") == 0 ||
+			strcmp(func_name, "toggletag") == 0 /* deprecated alias */) {
 		func = toggletag;
 		(*arg).ui = 1 << (atoi(arg_value) - 1);
-	} else if (strcmp(func_name, "toggleview") == 0) {
+	} else if (strcmp(func_name, "toggle_view") == 0 ||
+			strcmp(func_name, "toggleview") == 0 /* deprecated alias */) {
 		func = toggleview;
 		(*arg).ui = 1 << (atoi(arg_value) - 1);
-	} else if (strcmp(func_name, "comboview") == 0) {
+	} else if (strcmp(func_name, "combo_view") == 0 ||
+			strcmp(func_name, "comboview") == 0 /* deprecated alias */) {
 		func = comboview;
 		(*arg).ui = 1 << (atoi(arg_value) - 1);
-	} else if (strcmp(func_name, "smartmovewin") == 0) {
+	} else if (strcmp(func_name, "smart_move_window") == 0 ||
+			strcmp(func_name, "smartmovewin") == 0 /* deprecated alias */) {
 		func = smartmovewin;
 		(*arg).i = parse_direction(arg_value);
-	} else if (strcmp(func_name, "smartresizewin") == 0) {
+	} else if (strcmp(func_name, "smart_resize_window") == 0 ||
+			strcmp(func_name, "smartresizewin") == 0 /* deprecated alias */) {
 		func = smartresizewin;
 		(*arg).i = parse_direction(arg_value);
-	} else if (strcmp(func_name, "resizewin") == 0) {
+	} else if (strcmp(func_name, "resize_window") == 0 ||
+			strcmp(func_name, "resizewin") == 0 /* deprecated alias */) {
 		func = resizewin;
 		(*arg).ui = parse_num_type(arg_value);
 		(*arg).ui2 = parse_num_type(arg_value2);
@@ -1360,7 +1405,8 @@ FuncType parse_func_name(char *func_name, Arg *arg, char *arg_value,
 												 : atoi(arg_value + 1);
 		(*arg).i2 = (*arg).ui2 == NUM_TYPE_DEFAULT ? atoi(arg_value2)
 												   : atoi(arg_value2 + 1);
-	} else if (strcmp(func_name, "movewin") == 0) {
+	} else if (strcmp(func_name, "move_window") == 0 ||
+			strcmp(func_name, "movewin") == 0 /* deprecated alias */) {
 		func = movewin;
 		(*arg).ui = parse_num_type(arg_value);
 		(*arg).ui2 = parse_num_type(arg_value2);
@@ -1373,10 +1419,12 @@ FuncType parse_func_name(char *func_name, Arg *arg, char *arg_value,
 		(*arg).v = strdup(arg_value);
 		(*arg).v2 = strdup(arg_value2);
 		(*arg).v3 = strdup(arg_value3);
-	} else if (strcmp(func_name, "togglespecialworkspace") == 0) {
+	} else if (strcmp(func_name, "toggle_special_workspace") == 0 ||
+			strcmp(func_name, "togglespecialworkspace") == 0 /* deprecated alias */) {
 		func = togglespecialworkspace;
 		(*arg).v = strdup(arg_value);
-	} else if (strcmp(func_name, "movetospecialworkspace") == 0) {
+	} else if (strcmp(func_name, "move_to_special_workspace") == 0 ||
+			strcmp(func_name, "movetospecialworkspace") == 0 /* deprecated alias */) {
 		func = movetospecialworkspace;
 		(*arg).v = strdup(arg_value);
 	} else if (strcmp(func_name, "set_tag_name") == 0) {
