@@ -3222,9 +3222,12 @@ bool parse_option(Config *config, char *key, char *value) {
 		}
 
 	} else if (strncmp(key, "source-optional", 15) == 0) {
-		parse_config_file(config, value, false);
+		/* propagate failures: a parse error inside the sourced file printed
+		 * its message but used to be swallowed here, so `asteroidz -p` still
+		 * exited 0 (only the file being MISSING is optional) */
+		return parse_config_file(config, value, false);
 	} else if (strncmp(key, "source", 6) == 0) {
-		parse_config_file(config, value, true);
+		return parse_config_file(config, value, true);
 	} else {
 		fprintf(stderr,
 				"\033[1m\033[31m[ERROR]:\033[33m Unknown keyword: "
