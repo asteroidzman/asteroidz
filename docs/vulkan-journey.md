@@ -5,8 +5,10 @@ re-litigate what we already learned. Keep this updated as decisions change.
 
 ## Why Vulkan
 Goal: run asteroidz on a Vulkan renderer for HDR10 output, native explicit
-(timeline) sync, compute-shader blur, and a cleaner color pipeline — parity with
-sway 1.12's Vulkan/HDR10 path. Not for raw FPS.
+(timeline) sync, compute-shader blur, a cleaner color pipeline — parity with
+sway 1.12's Vulkan/HDR10 path — **and raw performance**: FPS/GPU-efficiency
+improvements are an explicit target (2026-07-12 revision; the original "not
+for raw FPS" framing is obsolete).
 
 ## The two build configurations (how to switch)
 
@@ -329,3 +331,39 @@ lighter optimized-only path. Phased; commits on the scenefx `vulkan` branch.
   `surface_container_high` (= pill `bg-color`) and `focus-color` to `primary`
   (= pill `focus-bg-color`). Border `width` knob added to `config.kdl`
   (`layout/border/width`); colours stay in the generated `dms/colors.kdl`.
+
+### Shader enhancement pass (scenefx `744fade`, 2026-07-12, verified)
+Eight coordinated fx_vk improvements, merged to scenefx main, packaged as
+`asteroidz-scenefx 0.5.0-5`:
+- **Compute dual-Kawase blur** (`blur1/2.comp`): the blur ping-pong runs as
+  compute dispatches (no render-pass begin/end per Kawase level) when the
+  queue family has compute and 16F supports storage images. Effect images
+  gained STORAGE usage + compute-visible sampled/storage descriptor sets;
+  the graphics path stays as the fallback and is pixel-equivalent (verified
+  via SPIR-V offset dump + RMSE compare). Look for
+  `fx_vk: compute dual-Kawase blur enabled` in the log.
+- **Blur post effects folded into the final upsample** (graphics AND compute)
+  — the separate `blur_effects` fullscreen pass is gone; effects now run in
+  perceptual (gamma 2.2) space on unpremultiplied rgb for GLES look parity.
+- **fwidth() SDF anti-aliasing** in the 5 rounded/shadow frag shaders.
+- **IGN dithering** in the output pass at one quantum of the target encoding
+  (1/255, 1/1023; none for 16F/16-bit) — kills dark-gradient banding.
+- **Tetrahedral 3D-LUT interpolation** in the output pass. Gotcha caught in
+  review: the sampler coord (texel centers) maps to lattice space as
+  `pos * n - 0.5`, NOT `pos * (n-1)` — the latter shifts black/white by half
+  a LUT cell.
+- **Push-budget hardening**: `frag_push_end` (shared-layout end, capped 224)
+  + `max_push_size` (raw device limit) gate every effect draw with graceful
+  degradation; shared layout clamps with a 152-byte floor. Gotcha: the
+  244-byte masked-blur layout must check `max_push_size`, not the capped
+  `frag_push_end`, or it self-disables on every device (and anything
+  init'd after it never runs).
+- **Box shadow batching**: clip ∩ shadow box up front — one draw for a fully
+  visible shadow instead of one per damage rect on the whole output.
+- Compute-barrier note: WAW hazards need the write access in BOTH scopes
+  (dst needs `SHADER_WRITE`/`TRANSFER_WRITE` too, not just READ).
+- Verified: glslang + spirv-val on all 14 shaders; headless 4K fake-HDR
+  two-pass run under full validation layers (optimized + live + masked blur,
+  shadows, overview) — zero VUIDs. Pre-existing, unrelated:
+  `wlr_ext_image_copy_capture_v1.c:673` teardown assert fires on compositor
+  SIGTERM after a screencopy client ran (also on 0.5.0-4 / old lib).
