@@ -759,6 +759,8 @@ asteroidz_tab_bar_node_create(void *asteroidz_node_data, struct wlr_scene_tree *
 	node->measure_scale = 1.0f;
 
 	node->cached_scale = -1.0f;
+	node->content_scale = 1.0f;
+	node->cached_content_scale = -1.0f;
 	node->last_text = NULL;
 	node->last_scale = 0.0f;
 	node->scene_buffer->node.data = asteroidz_node_data;
@@ -889,6 +891,21 @@ void asteroidz_tab_bar_node_set_padding(struct asteroidz_tab_bar_node *node,
 		return;
 	node->padding_x = padding_x;
 	node->padding_y = padding_y;
+	if (node->last_text)
+		asteroidz_tab_bar_node_update(node, node->last_text,
+								  node->last_scale > 0 ? node->last_scale
+													   : 1.0f);
+}
+
+void asteroidz_tab_bar_node_set_content_scale(struct asteroidz_tab_bar_node *node,
+										  float content_scale) {
+	if (!node)
+		return;
+	if (content_scale <= 0.0f)
+		content_scale = 1.0f;
+	if (node->content_scale == content_scale)
+		return;
+	node->content_scale = content_scale;
 	if (node->last_text)
 		asteroidz_tab_bar_node_update(node, node->last_text,
 								  node->last_scale > 0 ? node->last_scale
@@ -1034,6 +1051,7 @@ void asteroidz_tab_bar_node_update(struct asteroidz_tab_bar_node *node,
 		node->cached_titlebar_border_right == node->titlebar_border_right &&
 		node->cached_titlebar_separator_right ==
 			node->titlebar_separator_right &&
+		node->cached_content_scale == node->content_scale &&
 		node->cached_focused == node->focused) {
 		return;
 	}
@@ -1065,6 +1083,7 @@ void asteroidz_tab_bar_node_update(struct asteroidz_tab_bar_node *node,
 	node->cached_titlebar_border_left = node->titlebar_border_left;
 	node->cached_titlebar_border_right = node->titlebar_border_right;
 	node->cached_titlebar_separator_right = node->titlebar_separator_right;
+	node->cached_content_scale = node->content_scale;
 	node->cached_focused = node->focused;
 
 	if (node->target_width <= 0 || node->target_height <= 0) {
@@ -1165,13 +1184,18 @@ void asteroidz_tab_bar_node_update(struct asteroidz_tab_bar_node *node,
 		}
 	}
 
-	int32_t text_area_logical_w = box_logical_w - 2 * node->padding_x;
-	int32_t text_area_logical_h = box_logical_h - 2 * node->padding_y;
+	/* content_scale: shrink font + padding + icon gap together so the whole
+	 * content fits a proportionally scaled-down bar (overview titlebars). */
+	float cs = node->content_scale > 0.0f ? node->content_scale : 1.0f;
+	double pad_x = node->padding_x * cs;
+	double pad_y = node->padding_y * cs;
+	int32_t text_area_logical_w = (int32_t)(box_logical_w - 2.0 * pad_x);
+	int32_t text_area_logical_h = (int32_t)(box_logical_h - 2.0 * pad_y);
 	if (text_area_logical_w > 0 && text_area_logical_h > 0) {
 		cairo_save(cr);
 
-		double text_x = (node->border_width + node->padding_x) * scale;
-		double text_y = (node->border_width + node->padding_y) * scale;
+		double text_x = (node->border_width + pad_x) * scale;
+		double text_y = (node->border_width + pad_y) * scale;
 		double text_area_w = text_area_logical_w * scale;
 		double text_area_h = text_area_logical_h * scale;
 
@@ -1179,6 +1203,15 @@ void asteroidz_tab_bar_node_update(struct asteroidz_tab_bar_node *node,
 		pango_cairo_context_set_resolution(ctx, 96.0 * scale);
 		PangoLayout *layout = pango_layout_new(ctx);
 		PangoFontDescription *desc = get_cached_font_desc(node->font_desc);
+		PangoFontDescription *scaled_desc = NULL;
+		if (cs != 1.0f) {
+			scaled_desc = pango_font_description_copy(desc);
+			int32_t fsz = pango_font_description_get_size(scaled_desc);
+			if (fsz > 0)
+				pango_font_description_set_size(
+					scaled_desc, (int32_t)(fsz * cs + 0.5f));
+			desc = scaled_desc;
+		}
 		pango_layout_set_font_description(layout, desc);
 		pango_layout_set_text(layout, safe_text, -1);
 
@@ -1189,7 +1222,7 @@ void asteroidz_tab_bar_node_update(struct asteroidz_tab_bar_node *node,
 		double icon_px = 0.0, icon_gap = 0.0;
 		if (node->icon_surface) {
 			icon_px = text_area_h;
-			icon_gap = 6.0 * scale;
+			icon_gap = 6.0 * cs * scale;
 		}
 		double avail_text_w = text_area_w - icon_px - icon_gap;
 		if (avail_text_w < 0)
@@ -1243,6 +1276,8 @@ void asteroidz_tab_bar_node_update(struct asteroidz_tab_bar_node *node,
 
 		g_object_unref(layout);
 		g_object_unref(ctx);
+		if (scaled_desc)
+			pango_font_description_free(scaled_desc);
 		cairo_restore(cr);
 	}
 

@@ -390,6 +390,16 @@ typedef struct {
 	enum corner_location corner_location;
 	bool should_scale;
 	bool ov_live; /* overview live thumbnail: allow down-scaling the surface */
+	/* overview viewport-edge crop: visible fraction of the root surface
+	 * (0..1 each); crop_active applies it as the buffer source box. NB: do NOT
+	 * use wlr_scene_subsurface_tree_set_clip for this -- asteroidz-scenefx does
+	 * not implement it, so the call binds to vanilla wlroots' walker, which
+	 * mangles scenefx's scene structs (UB; the surface just disappears). */
+	bool crop_active;
+	bool crop_clear; /* a previous crop must be removed (don't touch otherwise:
+					  * clearing unconditionally would stomp viewporter source
+					  * boxes of normal clients, e.g. video players) */
+	float crop_l, crop_t, crop_w, crop_h;
 } BufferData;
 
 struct Client {
@@ -418,6 +428,7 @@ struct Client {
 	struct wlr_buffer *ov_snap_buf; /* frozen surface buffer for strip snapshot */
 	struct wlr_box ov_clip;         /* overview big-area surface crop (viewport) */
 	bool ov_clip_active;            /* ov_clip should override the ov_live clip */
+	bool ov_crop_set; /* a source-box crop is applied and must be cleared later */
 	struct wl_list link;
 	struct wl_list flink;
 	struct wl_list fadeout_link;
@@ -655,6 +666,19 @@ struct Monitor {
 	struct wl_listener destroy_lock_surface;
 	struct wlr_session_lock_surface_v1 *lock_surface;
 	struct wl_event_source *skip_frame_timeout;
+	/* render-late scheduling (config.render_late): defer the render from the
+	 * frame event toward the next vblank to cut input latency. Adaptive: defer
+	 * render_late_frac of the interval, back off on a detected vblank miss
+	 * (frame events spaced ~2 intervals apart), reclaim slowly when on time.
+	 * render_dur_ms is a decaying max of recent render+commit cost (a floor on
+	 * how early we must start). */
+	struct wl_event_source *render_timer;
+	double render_dur_ms;
+	double render_late_frac;    /* fraction of the interval to defer (adaptive) */
+	uint64_t render_late_last_ns; /* timestamp of the previous frame event */
+	bool render_late_deferred;  /* did we defer the previous frame? */
+	bool render_late_pending;   /* a deferred render is armed (ignore new frames) */
+	int32_t render_late_good;   /* consecutive on-time deferred frames */
 	struct wlr_box m;		  /* monitor area, layout-relative */
 	struct wlr_box w;		  /* window area, layout-relative */
 	struct wl_list layers[4]; /* LayerSurface::link */
@@ -1088,6 +1112,8 @@ static Client *get_focused_stack_client(Client *sc,
 static bool client_is_in_same_stack(Client *sc, Client *tc, Client *fc);
 static void monitor_stop_skip_frame_timer(Monitor *m);
 static int monitor_skip_frame_timeout_callback(void *data);
+static void render_monitor(Monitor *m);
+static int render_timer_cb(void *data);
 static Monitor *get_monitor_nearest_to(int32_t lx, int32_t ly);
 static bool match_monitor_spec(char *spec, Monitor *m);
 static void last_cursor_surface_destroy(struct wl_listener *listener,
@@ -3243,6 +3269,10 @@ void cleanupmon(struct wl_listener *listener, void *data) {
 		wl_event_source_remove(m->skip_frame_timeout);
 		m->skip_frame_timeout = NULL;
 	}
+	if (m->render_timer) {
+		wl_event_source_remove(m->render_timer);
+		m->render_timer = NULL;
+	}
 	if (m->retrain_timer) {
 		wl_event_source_remove(m->retrain_timer);
 		m->retrain_timer = NULL;
@@ -4295,6 +4325,13 @@ void createmon(struct wl_listener *listener, void *data) {
 	m->iscleanuping = false;
 	m->skip_frame_timeout =
 		wl_event_loop_add_timer(loop, monitor_skip_frame_timeout_callback, m);
+	m->render_timer = wl_event_loop_add_timer(loop, render_timer_cb, m);
+	m->render_dur_ms = 0.0;
+	m->render_late_frac = 0.30; /* start conservative; adapts up when stable */
+	m->render_late_last_ns = 0;
+	m->render_late_deferred = false;
+	m->render_late_pending = false;
+	m->render_late_good = 0;
 	m->retrain_timer = wl_event_loop_add_timer(loop, monitor_retrain_step, m);
 	m->hdr_capture_debounce_timer =
 		wl_event_loop_add_timer(loop, hdr_capture_debounce_timeout, m);
@@ -5697,6 +5734,11 @@ mapnotify(struct wl_listener *listener, void *data) {
 		c->scene, 0, 0, c->isurgent ? config.urgentcolor : config.bordercolor);
 	wlr_scene_node_lower_to_bottom(&c->border->node);
 	wlr_scene_node_set_position(&c->border->node, 0, 0);
+	/* Start disabled: the border rect has no clipped_region until apply_border
+	 * runs, so if it rendered on the window's first frame it would fill the
+	 * whole window with the border/focus colour for one frame (the open/close
+	 * "flash"). apply_border enables it once the interior cut-out is set. */
+	wlr_scene_node_set_enabled(&c->border->node, false);
 	wlr_scene_rect_set_corner_radii(
 		c->border,
 		corner_radii_from_location(config.border_radius,
@@ -6466,8 +6508,7 @@ void monitor_check_skip_frame_timeout(Monitor *m) {
 	}
 }
 
-void rendermon(struct wl_listener *listener, void *data) {
-	Monitor *m = wl_container_of(listener, m, frame);
+static void render_monitor(Monitor *m) {
 	Client *c = NULL, *tmp = NULL;
 	LayerSurface *l = NULL, *tmpl = NULL;
 	int32_t i;
@@ -6475,6 +6516,8 @@ void rendermon(struct wl_listener *listener, void *data) {
 	bool frame_allow_tearing = false;
 	struct timespec now;
 	bool need_more_frames = false;
+	struct timespec render_t0;
+	clock_gettime(CLOCK_MONOTONIC, &render_t0);
 
 	if (session && !session->active) {
 		return;
@@ -6607,6 +6650,100 @@ skip:
 	if (need_more_frames && allow_frame_scheduling) {
 		request_fresh_all_monitors();
 	}
+
+	// EMA of render+commit cost, used to size the render-late deferral delay
+	struct timespec render_t1;
+	clock_gettime(CLOCK_MONOTONIC, &render_t1);
+	double dur_ms = (render_t1.tv_sec - render_t0.tv_sec) * 1000.0 +
+					(render_t1.tv_nsec - render_t0.tv_nsec) / 1.0e6;
+	/* decaying max: track the recent worst case (a deadline wants the peak, not
+	 * the average -- an EMA hides spikes that then miss the vblank) */
+	m->render_dur_ms = dur_ms > m->render_dur_ms ? dur_ms
+												 : m->render_dur_ms * 0.95;
+}
+
+// Frame (vblank) event. By default render immediately. With config.render_late
+// on, defer the render toward the next vblank -- present lands on the same
+// vblank either way, but input sampled during the deferral is ~a frame fresher.
+// Still exactly one render per vblank (no GPU pinning); skipped for tearing/VRR
+// where fixed-interval deferral doesn't apply.
+void rendermon(struct wl_listener *listener, void *data) {
+	Monitor *m = wl_container_of(listener, m, frame);
+
+	bool eligible = config.render_late && m->render_timer && !m->skiping_frame &&
+					!m->is_vrr_opening && allow_frame_scheduling &&
+					(!session || session->active) && m->wlr_output->enabled &&
+					m->wlr_output->refresh > 0 && !check_tearing_frame_allow(m);
+
+	if (eligible) {
+		/* A deferred render is already armed -- ignore this extra frame event.
+		 * Otherwise continuous input (e.g. dragging) fires frame events that
+		 * each re-arm (reset) the timer, so it never fires and the render is
+		 * starved -> the display freezes until input stops. */
+		if (m->render_late_pending)
+			return;
+
+		struct timespec ts;
+		clock_gettime(CLOCK_MONOTONIC, &ts);
+		uint64_t now_ns = (uint64_t)ts.tv_sec * 1000000000ull + ts.tv_nsec;
+		double interval_ms = 1.0e6 / (double)m->wlr_output->refresh;
+		uint64_t interval_ns = (uint64_t)(interval_ms * 1.0e6);
+
+		/* Adapt from how the previous deferred frame landed. Frame events are
+		 * ~vblank-aligned, so a ~2-interval gap means we missed a vblank (the
+		 * page flip slipped a frame) -- back off. A ~1-interval gap while
+		 * rendering continuously means we made it -- reclaim latency slowly.
+		 * A large gap = the output was idle; don't judge that. */
+		if (m->render_late_deferred && m->render_late_last_ns) {
+			uint64_t gap = now_ns - m->render_late_last_ns;
+			if (gap > interval_ns * 3) {
+				/* idle, ignore */
+			} else if (gap > interval_ns + interval_ns / 2) {
+				m->render_late_frac *= 0.6; /* missed: back off hard */
+				m->render_late_good = 0;
+			} else if (++m->render_late_good >= 20) {
+				m->render_late_frac += 0.03; /* stable: reclaim */
+				if (m->render_late_frac > 0.65)
+					m->render_late_frac = 0.65;
+				m->render_late_good = 0;
+			}
+		}
+		m->render_late_last_ns = now_ns;
+
+		double margin_ms = config.render_late_margin_us / 1000.0;
+		double delay_ms = interval_ms * m->render_late_frac;
+		/* never defer into the (worst-case) render itself */
+		double cap_ms = interval_ms - m->render_dur_ms - margin_ms;
+		if (delay_ms > cap_ms)
+			delay_ms = cap_ms;
+
+		/* render-late 2 = enabled + per-frame log. Logged at ERROR level so it
+		 * is visible under the default log level (this is an explicit opt-in
+		 * debug mode, not normal INFO chatter). */
+		if (config.render_late >= 2)
+			wlr_log(WLR_ERROR,
+					"render-late %s: frac=%.2f delay=%.1f dur=%.1f interval=%.1f",
+					m->wlr_output->name, m->render_late_frac, delay_ms,
+					m->render_dur_ms, interval_ms);
+
+		if (delay_ms >= 1.0) {
+			wl_event_source_timer_update(m->render_timer, (int)delay_ms);
+			m->render_late_deferred = true;
+			m->render_late_pending = true;
+			return; // render_timer_cb renders when the deadline arrives
+		}
+	}
+
+	m->render_late_deferred = false;
+	m->render_late_pending = false;
+	render_monitor(m);
+}
+
+static int render_timer_cb(void *data) {
+	Monitor *m = data;
+	m->render_late_pending = false; /* deadline reached; render now */
+	render_monitor(m);
+	return 0;
 }
 
 void requestdecorationmode(struct wl_listener *listener, void *data) {
@@ -8502,7 +8639,13 @@ void updatetitle(struct wl_listener *listener, void *data) {
 
 	const char *title;
 	title = client_get_title(c);
-	asteroidz_tab_bar_node_update(c->titlebar_node, title, 1.0);
+	/* keep the tab's CURRENT font scale (overview tabs are drawn scaled down):
+	 * a hardcoded 1.0 here would redraw the title full-size on every title
+	 * change, stomping the overview's scaled draw moments after it happens */
+	float title_scale = (c->titlebar_node && c->titlebar_node->last_scale > 0.0f)
+							? c->titlebar_node->last_scale
+							: 1.0f;
+	asteroidz_tab_bar_node_update(c->titlebar_node, title, title_scale);
 	asteroidz_group_bar_update(c->group_bar, title,
 						   c->mon	? c->mon->wlr_output->scale
 						   : selmon ? selmon->wlr_output->scale

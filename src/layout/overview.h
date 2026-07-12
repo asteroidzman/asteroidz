@@ -407,7 +407,14 @@ void finish_jump_mode(Monitor *m) {
  * decoration layer (above the wallpaper, below the window thumbnails on
  * LyrTile) so the spread windows pop against a dimmed desktop. */
 void overview_draw_backdrop(Monitor *m) {
-	static const float dim_color[4] = {0.0f, 0.0f, 0.0f, 0.9f};
+	/* Opaque: the strip↔panel gap and the margins around the panel are a SOLID
+	 * dark void, not a 0.9 dim that transmits 10% of the wallpaper (which reads
+	 * as a bright "bleed" band between the strip and desktop on a bright/HDR
+	 * wallpaper). The panel's own wallpaper (ov_main_wp) still shows inside it. */
+	/* dim the REAL desktop wallpaper so the overview windows pop against a darker
+	 * backdrop (macOS/GNOME style). ov_dim is below the windows, so it dims the
+	 * wallpaper but not the windows themselves. */
+	static const float dim_color[4] = {0.0f, 0.0f, 0.0f, 0.82f};
 	if (!m->ov_dim) {
 		m->ov_dim = wlr_scene_rect_create(layers[LyrDecorate], m->m.width,
 										  m->m.height, dim_color);
@@ -675,10 +682,17 @@ void overview_arrange_main(Monitor *m, bool instant) {
 		float ch = (main_h - (rows + 1) * gap) / fmaxf(1, rows);
 		for (int32_t i = 0; i < n; i++) {
 			c = arr[i];
-			if (c->is_overview_hidden) {
-				c->is_overview_hidden = false;
+			/* the exposé shows EVERY window of the monocle tag: clear all the
+			 * desktop-side hide state (monocle_set_focus disables non-focused
+			 * windows' scenes + sets is_monocle_hide) and enable explicitly --
+			 * set_arrange_visible no longer does this while the OV is open */
+			c->is_overview_hidden = false;
+			c->is_monocle_hide = false;
+			c->is_clip_to_hide = false;
+			if (c->scene && !c->scene->node.enabled)
 				wlr_scene_node_set_enabled(&c->scene->node, true);
-			}
+			if (c->scene_surface && !c->scene_surface->node.enabled)
+				wlr_scene_node_set_enabled(&c->scene_surface->node, true);
 			int32_t col = i % cols, row = i / cols;
 			float cx = main_x + gap + col * (cw + gap);
 			float cy = main_y + gap + row * (ch + gap);
@@ -742,6 +756,84 @@ void overview_arrange_main(Monitor *m, bool instant) {
 	m->ov_vp_w = m->w.width * sx;  /* the actual mirrored-screen rect */
 	m->ov_vp_h = m->w.height * sx;
 
+	/* Scroller tags: the DESKTOP scroller chains column positions from their
+	 * neighbours' geoms and can leave far-off-screen columns' c->geom STALE
+	 * (they pile up at their last on-screen x, e.g. several columns at x=0).
+	 * overview_backup captures c->geom, so the faithful mirror would place
+	 * those columns on top of each other (overlapping windows/titlebars).
+	 * Rebuild consistent column positions: keep the most-recently-FOCUSED
+	 * column (guaranteed fresh) as the anchor and re-chain every other stack
+	 * head left/right of it in client-list order (the scroller's own visual
+	 * order); stack members inherit their head's x/width. Idempotent. */
+	if (main_tag >= 1 && main_tag <= LENGTH(tags) &&
+		m->pertag->ltidxs[main_tag] &&
+		m->pertag->ltidxs[main_tag]->id == SCROLLER) {
+		struct TagScrollerState *sst = m->pertag->scroller_state[main_tag];
+		Client *hc, *heads[64];
+		int32_t nh = 0;
+		wl_list_for_each(hc, &clients, link) {
+			if (hc->mon != m || hc->isunglobal || hc->isminimized ||
+				client_is_x11_popup(hc) || hc->overview_isfloatingbak)
+				continue;
+			if (get_tags_first_tag_num(hc->tags) != main_tag)
+				continue;
+			struct ScrollerStackNode *node =
+				sst ? find_scroller_node(sst, hc) : NULL;
+			if (node && node->prev_in_stack)
+				continue; /* stack member, not a column head */
+			if (nh < 64)
+				heads[nh++] = hc;
+		}
+		if (nh > 1) {
+			/* anchor: most recently focused client of this tag (fresh geom) */
+			int32_t ai = 0;
+			Client *fc;
+			wl_list_for_each(fc, &fstack, flink) {
+				if (fc->mon != m || fc->isunglobal || fc->isminimized ||
+					client_is_x11_popup(fc) || fc->overview_isfloatingbak)
+					continue;
+				if (get_tags_first_tag_num(fc->tags) != main_tag)
+					continue;
+				struct ScrollerStackNode *fn =
+					sst ? find_scroller_node(sst, fc) : NULL;
+				while (fn && fn->prev_in_stack)
+					fn = fn->prev_in_stack;
+				Client *fh = fn ? fn->client : fc;
+				for (int32_t k = 0; k < nh; k++)
+					if (heads[k] == fh) {
+						ai = k;
+						break;
+					}
+				break;
+			}
+			int32_t hgap = enablegaps ? m->gappih : 0;
+			for (int32_t k = ai - 1; k >= 0; k--)
+				heads[k]->overview_backup_geom.x =
+					heads[k + 1]->overview_backup_geom.x - hgap -
+					heads[k]->overview_backup_geom.width;
+			for (int32_t k = ai + 1; k < nh; k++)
+				heads[k]->overview_backup_geom.x =
+					heads[k - 1]->overview_backup_geom.x +
+					heads[k - 1]->overview_backup_geom.width + hgap;
+			/* stack members share their head's column x/width */
+			if (sst) {
+				for (int32_t k = 0; k < nh; k++) {
+					struct ScrollerStackNode *node =
+						find_scroller_node(sst, heads[k]);
+					for (node = node ? node->next_in_stack : NULL; node;
+						 node = node->next_in_stack) {
+						if (!node->client)
+							continue;
+						node->client->overview_backup_geom.x =
+							heads[k]->overview_backup_geom.x;
+						node->client->overview_backup_geom.width =
+							heads[k]->overview_backup_geom.width;
+					}
+				}
+			}
+		}
+	}
+
 	/* scroller: if the tag's windows span wider than the viewport, let the wheel
 	 * pan across them (with edge indicators). Shift the viewport by the scroll
 	 * offset so off-screen windows slide into the OV desktop. */
@@ -792,8 +884,16 @@ void overview_arrange_main(Monitor *m, bool instant) {
 		if (c->mon != m || c->isunglobal || c->isminimized ||
 			client_is_x11_popup(c))
 			continue;
-		if (get_tags_first_tag_num(c->tags) != main_tag)
+		if (get_tags_first_tag_num(c->tags) != main_tag) {
+			/* other tags' windows aren't redrawn after a preview switch, so
+			 * their (separate LyrDecorate) titlebar nodes would linger over the
+			 * new tag's windows -- hide them HERE, deterministically. */
+			if (c->titlebar_node)
+				asteroidz_tab_bar_node_set_enabled(c->titlebar_node, false);
+			if (c->titlebar_close_node)
+				asteroidz_tab_bar_node_set_enabled(c->titlebar_close_node, false);
 			continue;
+		}
 		float gx = c->overview_backup_geom.x, gy = c->overview_backup_geom.y;
 		float gw = fmaxf(1.0f, (float)c->overview_backup_geom.width);
 		float gh = fmaxf(1.0f, (float)c->overview_backup_geom.height);
@@ -837,17 +937,39 @@ void overview_arrange_main(Monitor *m, bool instant) {
 		}
 
 		/* on the desktop -> the REAL live window, so it keeps its blur,
-		 * translucency and border. A partially-clipped window keeps its full
-		 * box and overruns the panel; the void masks drawn after the loop hide
-		 * the overhang, so it stops at the panel (mirrored-screen) edge. */
-		if (c->is_overview_hidden) {
-			c->is_overview_hidden = false;
+		 * translucency and border. A partially-clipped (viewport-edge) window is
+		 * sized to its VISIBLE portion only and its surface source-cropped to
+		 * match (ov_clip), so it stops exactly at the panel edge -- no overrun,
+		 * no opaque surround mask needed. Clear ALL desktop-side hide state and
+		 * enable explicitly (set_arrange_visible stands down while the OV is
+		 * open, so nobody else re-enables e.g. clip-hidden scroller columns). */
+		c->is_overview_hidden = false;
+		c->is_monocle_hide = false;
+		c->is_clip_to_hide = false;
+		if (c->scene && !c->scene->node.enabled)
 			wlr_scene_node_set_enabled(&c->scene->node, true);
+		if (c->scene_surface && !c->scene_surface->node.enabled)
+			wlr_scene_node_set_enabled(&c->scene_surface->node, true);
+		int32_t bx, by, bw, bh;
+		if (!fully) {
+			/* visible sub-box of the window in desktop coords, clamped to the
+			 * viewport; remember it (window-relative) for the surface crop */
+			float vx0 = fmaxf(gx, vl), vx1 = fminf(gx + gw, vr);
+			float vy0 = fmaxf(gy, vt), vy1 = fminf(gy + gh, vb);
+			c->ov_clip = (struct wlr_box){
+				(int32_t)(vx0 - gx), (int32_t)(vy0 - gy),
+				(int32_t)fmaxf(1.0f, vx1 - vx0), (int32_t)fmaxf(1.0f, vy1 - vy0)};
+			c->ov_clip_active = true;
+			bx = (int32_t)(off_x + (vx0 - vl) * sx + 0.5f);
+			by = (int32_t)(off_y + (vy0 - vt) * sy + 0.5f);
+			bw = (int32_t)fmaxf(1.0f, (vx1 - vx0) * sx);
+			bh = (int32_t)fmaxf(1.0f, (vy1 - vy0) * sy);
+		} else {
+			bx = (int32_t)(off_x + (gx - vl) * sx + 0.5f);
+			by = (int32_t)(off_y + (gy - vt) * sy + 0.5f);
+			bw = (int32_t)fmaxf(1.0f, gw * sx);
+			bh = (int32_t)fmaxf(1.0f, gh * sy);
 		}
-		int32_t bx = (int32_t)(off_x + (gx - vl) * sx + 0.5f);
-		int32_t by = (int32_t)(off_y + (gy - vt) * sy + 0.5f);
-		int32_t bw = (int32_t)fmaxf(1.0f, gw * sx);
-		int32_t bh = (int32_t)fmaxf(1.0f, gh * sy);
 		/* small inset so adjacent windows read as separate tiles, not one block */
 		int32_t wgap = 4;
 		bx += wgap;
@@ -903,8 +1025,11 @@ ov_main_chrome:
 	 * desktop's rounded corners cleanly (four plain rects left dark corner
 	 * notches). ov_void[1..3] are unused now; keep them disabled. */
 	{
-		const float *vc = config.pilldata.bg_color; /* inactive title bar */
-		float col[4] = {vc[0], vc[1], vc[2], 1.0f};
+		/* translucent dark scrim (NOT the flat title-bar colour): dims the area
+		 * around the centred mini-screen so the panel reads as a bright floating
+		 * desktop over the real wallpaper, and dims any scroller column that runs
+		 * past the panel edge instead of leaving it sticking out. */
+		float col[4] = {0.0f, 0.0f, 0.0f, 0.82f};
 		float mmb = m->m.y + m->m.height;
 		int32_t sx0 = (int32_t)m->m.x, sy0 = (int32_t)m->ov_avail_y;
 		int32_t sw = (int32_t)m->m.width, sh = (int32_t)(mmb - m->ov_avail_y);
@@ -934,7 +1059,10 @@ ov_main_chrome:
 				};
 				wlr_scene_rect_set_clipped_region(m->ov_void[0], hole);
 				wlr_scene_node_set_position(&m->ov_void[0]->node, sx0, sy0);
-				wlr_scene_node_set_enabled(&m->ov_void[0]->node, true);
+				/* No surround mask: ov_dim already dims the whole wallpaper
+				 * uniformly, so there is no bright panel rectangle that could read
+				 * as a pasted "extra wallpaper copy". */
+				wlr_scene_node_set_enabled(&m->ov_void[0]->node, false);
 				wlr_scene_node_raise_to_top(&m->ov_void[0]->node);
 			}
 		} else if (m->ov_void[0]) {
@@ -1077,24 +1205,17 @@ void overview_tags(Monitor *m) {
 	float avail_w = fmaxf(1.0f, ow0 - 2.0f * gappo);
 	float avail_h = fmaxf(1.0f, (oy0 + oh0 - gappo) - avail_y);
 	m->ov_avail_y = avail_y; /* content-region top (below strip), for void masks */
+	/* Centred screen-aspect "mini-screen" panel: the faithful mirror scales the
+	 * whole monitor viewport (m->w) uniformly into this floating panel. */
 	float screen_asp = (float)m->w.width / fmaxf(1.0f, (float)m->w.height);
 	float main_w = fminf(avail_w, avail_h * screen_asp);
 	float main_h = main_w / screen_asp;
-	/* A faithful (undistorted) mirror can't touch all four edges when the area
-	 * below the strip isn't the screen's shape, so scale it down a touch and
-	 * FLOAT it centred in the available region -- the leftover margin is split
-	 * evenly (matching top & bottom gaps) instead of pooling at the bottom. */
 	float ov_shrink = 0.93f;
 	main_w *= ov_shrink;
 	main_h *= ov_shrink;
 	float main_x = avail_x + (avail_w - main_w) / 2.0f;
 	float main_y = avail_y + (avail_h - main_h) / 2.0f;
-
-	/* the mirrored-screen rect: the desktop, uniformly scaled, anchored top-left
-	 * in the big area (matches overview_arrange_main). The wallpaper backdrop
-	 * fills exactly this rect so it reads as the screen; the rest is void. */
-	float mscale =
-		fminf(main_w / (float)m->w.width, main_h / (float)m->w.height);
+	float mscale = fminf(main_w / (float)m->w.width, main_h / (float)m->w.height);
 	float mvp_w = m->w.width * mscale, mvp_h = m->w.height * mscale;
 
 	/* depth: a soft drop shadow + a subtle 1px light edge so the OV desktop
@@ -1114,7 +1235,9 @@ void overview_tags(Monitor *m) {
 			wlr_scene_shadow_set_blur_sigma(m->ov_main_shadow, ssig);
 			wlr_scene_node_set_position(&m->ov_main_shadow->node,
 										(int)main_x - spad, (int)main_y - spad + 8);
-			wlr_scene_node_set_enabled(&m->ov_main_shadow->node, true);
+			/* no panel any more -- the OV desktop IS the full real wallpaper, so
+			 * there is nothing to cast a panel shadow around. */
+			wlr_scene_node_set_enabled(&m->ov_main_shadow->node, false);
 			if (m->ov_dim)
 				wlr_scene_node_place_above(&m->ov_main_shadow->node,
 										   &m->ov_dim->node);
@@ -1125,36 +1248,12 @@ void overview_tags(Monitor *m) {
 			wlr_scene_node_set_enabled(&m->ov_main_border->node, false);
 	}
 
-	/* wallpaper backdrop for the mirrored screen, so windows sit on the desktop
-	 * like a real screen instead of the near-black dim (drop the dark fallback) */
-	{
-		struct wlr_buffer *wp = overview_wallpaper_buffer(m);
-		if (wp) {
-			if (!m->ov_main_wp)
-				m->ov_main_wp = wlr_scene_buffer_create(layers[LyrDecorate], wp);
-			else
-				wlr_scene_buffer_set_buffer(m->ov_main_wp, wp);
-			if (m->ov_main_wp) {
-				wlr_scene_buffer_set_dest_size(m->ov_main_wp, (int)mvp_w,
-											   (int)mvp_h);
-				wlr_scene_buffer_set_corner_radii(
-					m->ov_main_wp,
-					corner_radii_from_location(18, CORNER_LOCATION_ALL));
-				wlr_scene_buffer_set_opacity(m->ov_main_wp, 1.0f);
-				wlr_scene_node_set_position(&m->ov_main_wp->node, (int)main_x,
-											(int)main_y);
-				wlr_scene_node_set_enabled(&m->ov_main_wp->node, true);
-				if (m->ov_main_shadow)
-					wlr_scene_node_place_above(&m->ov_main_wp->node,
-											   &m->ov_main_shadow->node);
-				else if (m->ov_dim)
-					wlr_scene_node_place_above(&m->ov_main_wp->node,
-											   &m->ov_dim->node);
-			}
-		} else if (m->ov_main_wp) {
-			wlr_scene_node_set_enabled(&m->ov_main_wp->node, false);
-		}
-	}
+	/* NO copy of the wallpaper in the OV desktop. The overview shows the REAL
+	 * desktop wallpaper (the background layer) behind the exposé grid. A second
+	 * painted copy (ov_main_wp) is exactly what mis-aligned and leaked every
+	 * "sliver" / "cut-off" edge we chased -- so it is never drawn. */
+	if (m->ov_main_wp && m->ov_main_wp->node.enabled)
+		wlr_scene_node_set_enabled(&m->ov_main_wp->node, false);
 
 	/* Subtle vignette over the wallpaper (below the windows on LyrTile): two
 	 * desktop-sized gradient rects, one vertical and one horizontal, each a
@@ -1495,7 +1594,7 @@ void overview_anim_apply(Monitor *m, float t) {
 	if (t > 1.0f)
 		t = 1.0f;
 	if (m->ov_dim) {
-		float c[4] = {0.0f, 0.0f, 0.0f, 0.9f * t};
+		float c[4] = {0.0f, 0.0f, 0.0f, 0.82f * t};
 		wlr_scene_rect_set_color(m->ov_dim, c);
 	}
 	if (m->ov_main_wp)
