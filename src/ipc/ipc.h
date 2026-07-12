@@ -317,7 +317,7 @@ static void handle_command(int client_fd, const char *cmd_raw) {
 			return;
 		}
 		resp = build_monitor_json(m);
-	} else if (strcmp(cmd, "get focusing-client") == 0) {
+	} else if (strcmp(cmd, "get focused-client") == 0) {
 		if (selmon && selmon->sel) {
 			resp = build_client_json(selmon->sel);
 		} else {
@@ -532,8 +532,8 @@ static bool handle_watch_command(int fd, const char *cmd,
 	if (strncmp(cmd, "watch monitor ", 14) == 0) {
 		type = IPC_WATCH_MONITOR;
 		arg = cmd + 14;
-	} else if (strcmp(cmd, "watch focusing-client") == 0) {
-		type = IPC_WATCH_FOCUSING_CLIENT;
+	} else if (strcmp(cmd, "watch focused-client") == 0) {
+		type = IPC_WATCH_FOCUSED_CLIENT;
 	} else if (strncmp(cmd, "watch client ", 13) == 0) {
 		type = IPC_WATCH_CLIENT;
 		client_id = (uint32_t)atoi(cmd + 13);
@@ -607,7 +607,7 @@ static bool handle_watch_command(int fd, const char *cmd,
 		}
 		break;
 	}
-	case IPC_WATCH_FOCUSING_CLIENT: {
+	case IPC_WATCH_FOCUSED_CLIENT: {
 		if (selmon && selmon->sel) {
 			json = build_client_json(selmon->sel);
 		} else {
@@ -819,12 +819,12 @@ void ipc_notify_last_surface_ws_name(Monitor *m) {
 	free(json_str);
 }
 
-void ipc_notify_focusing_client(void) {
+void ipc_notify_focused_client(void) {
 	char *json_str = NULL;
 	size_t len = 0;
 	struct ipc_watch_client *wc, *tmp;
 	wl_list_for_each_safe(wc, tmp, &watch_clients, link) {
-		if (wc->type == IPC_WATCH_FOCUSING_CLIENT) {
+		if (wc->type == IPC_WATCH_FOCUSED_CLIENT) {
 			if (!json_str) {
 				cJSON *json = NULL;
 				if (selmon && selmon->sel) {

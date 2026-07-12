@@ -199,7 +199,7 @@
 #define IPC_WATCH_ARRANGGE                                                     \
 	IPC_WATCH_MONITOR | IPC_WATCH_CLIENT | IPC_WATCH_TAGS |                    \
 		IPC_WATCH_ALL_MONITORS | IPC_WATCH_ALL_TAGS | IPC_WATCH_ALL_CLIENTS |  \
-		IPC_WATCH_LAST_OPEN_SURFACE | IPC_WATCH_FOCUSING_CLIENT
+		IPC_WATCH_LAST_OPEN_SURFACE | IPC_WATCH_FOCUSED_CLIENT
 
 /* enums */
 enum { TOP_LEFT, TOP_RIGHT, BOTTOM_LEFT, BOTTOM_RIGHT };
@@ -281,7 +281,7 @@ enum ipc_watch_type {
 	IPC_WATCH_KEYMODE = 1 << 6,
 	IPC_WATCH_KB_LAYOUT = 1 << 7,
 	IPC_WATCH_LAST_OPEN_SURFACE = 1 << 8,
-	IPC_WATCH_FOCUSING_CLIENT = 1 << 9,
+	IPC_WATCH_FOCUSED_CLIENT = 1 << 9,
 };
 
 typedef struct Pertag Pertag;
@@ -7450,8 +7450,8 @@ void handle_print_status(struct wl_listener *listener, void *data) {
 	if (type & IPC_WATCH_KB_LAYOUT) {
 		ipc_notify_kb_layout();
 	}
-	if (type & IPC_WATCH_FOCUSING_CLIENT) {
-		ipc_notify_focusing_client();
+	if (type & IPC_WATCH_FOCUSED_CLIENT) {
+		ipc_notify_focused_client();
 	}
 	if (type & IPC_WATCH_ALL_TAGS) {
 		ipc_notify_all_tags();
@@ -7461,7 +7461,7 @@ void handle_print_status(struct wl_listener *listener, void *data) {
 	}
 	if (type &
 		(IPC_WATCH_ALL_MONITORS | IPC_WATCH_KEYMODE | IPC_WATCH_KB_LAYOUT |
-		 IPC_WATCH_FOCUSING_CLIENT | IPC_WATCH_TAGS)) {
+		 IPC_WATCH_FOCUSED_CLIENT | IPC_WATCH_TAGS)) {
 		ipc_notify_all_monitors();
 	}
 

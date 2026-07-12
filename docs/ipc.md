@@ -28,7 +28,7 @@ description: Control asteroidz programmatically using amsg.
 | `get keymode` | Returns the current active keyboard mode (e.g., normal, insert). |
 | `get keyboardlayout` | Returns the active XKB layout (abbreviated). |
 | `get monitor <name>` | Returns full JSON details for a specific monitor. |
-| `get focusing-client` | Returns full JSON details for the client currently in focus. |
+| `get focused-client` | Returns full JSON details for the client currently in focus. |
 | `get client <id>` | Returns full JSON details for a client with the given ID. |
 | `get tag <mon> <idx>` | Queries status of a specific tag on a monitor. |
 | `get tags <mon>` | Returns a JSON object containing the status of all tags on a monitor. |
@@ -49,7 +49,7 @@ amsg get cursorpos
 Subscribes the client to real-time updates. When the state changes, the server pushes a new JSON object to the output stream.
 
 * `watch monitor <name>`
-* `watch focusing-client`
+* `watch focused-client`
 * `watch client <id>`
 * `watch tags <mon_name>`
 * `watch all-monitors`
