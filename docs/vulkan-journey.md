@@ -288,6 +288,16 @@ lighter optimized-only path. Phased; commits on the scenefx `vulkan` branch.
     alpha < threshold; the ignore_transparent path is runtime-untested but
     isolated). Still simplified: blur only on the two-pass path; >2-stop
     gradients fall back to first-stop. None block the daily-driver look.
+  - **LIVE blur fix (scenefx `b2319cb`, 2026-07-12):** `add_blur` composited the
+    optimized bottom-layer cache for ALL nodes, so live nodes
+    (`should_only_blur_bottom_layer == false` — layer-shell panels/popups,
+    overview windows) blurred the raw WALLPAPER instead of the content beneath
+    them: dim scrims/windows were missing from the blur, showing as the DMS
+    spotlight's region glowing undimmed at its 1px edges over dimmed screens
+    (desktop DMS-dim and the overview's ov_dim). Live nodes now split the
+    scene pass and blur the current scene image (same machinery as
+    add_optimized_blur). Verified headless (fake-HDR output to force two-pass):
+    seam gone, blur includes the dim.
   - **Window-open flicker fix (asteroidz `a5fc7ca9`):** the open animation's
     `set_strength(blur_p<1)` triggered the per-frame re-blur split, adding
     latency and a lingering blurred rectangle before content. Fixed by holding
