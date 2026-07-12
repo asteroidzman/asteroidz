@@ -125,7 +125,7 @@ executable('asteroidz',
   link_args : link_args,
 )
 
-# build mmsg
+# build amsg
 dwl_ipc_protocol = 'protocols/dwl-ipc-unstable-v2.xml'
 
 wayland_scanner_client_header = generator(
@@ -140,9 +140,9 @@ wayland_scanner_private_code = generator(
   arguments: ['private-code', '@INPUT@', '@OUTPUT@']
 )
 
-# use generator in mmsg target
+# use generator in amsg target
 executable('amsg',
-  'mmsg/mmsg.c',
+  'amsg/amsg.c',
   wayland_scanner_private_code.process(dwl_ipc_protocol),
   wayland_scanner_client_header.process(dwl_ipc_protocol),
   dependencies: [
@@ -163,7 +163,7 @@ install_data('assets/asteroidz-gles.desktop', install_dir : desktop_install_dir)
 install_data('assets/asteroidz-portals.conf', install_dir : portal_install_dir)
 install_data('assets/asteroidz.portal', install_dir : join_paths(prefix, 'share/xdg-desktop-portal/portals'))
 install_data('assets/config.kdl', install_dir : join_paths(sysconfdir, 'asteroidz'))
-install_data('mmsg/amsg.1', install_dir : join_paths(mandir, 'man1'))
+install_data('amsg/amsg.1', install_dir : join_paths(mandir, 'man1'))
 
 # compat: old tool name keeps working
 install_symlink('mmsg', pointing_to: 'amsg', install_dir: get_option('bindir'))
