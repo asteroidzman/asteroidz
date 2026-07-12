@@ -372,3 +372,23 @@ Eight coordinated fx_vk improvements, merged to scenefx main, packaged as
   shadows, overview) — zero VUIDs. Pre-existing, unrelated:
   `wlr_ext_image_copy_capture_v1.c:673` teardown assert fires on compositor
   SIGTERM after a screencopy client ran (also on 0.5.0-4 / old lib).
+
+### Perf series (scenefx `84a9c02`, 2026-07-12, pkgrel 6)
+Approved items 1-5, quality/perf-first (GLES parity non-goal):
+- **Region-limited live blur**: single-node blurs copy + blur only the node
+  box padded by `blur_data_calc_size` — >90% less blur work for
+  spotlight-sized nodes at 4K. Optimized cache still full-frame (NULL region).
+- **fp16 compute kernels** (`shaderFloat16`, -DUSE_FP16 variants) — log says
+  `compute dual-Kawase blur enabled (fp16 kernels)`.
+- **Mip-chain compute blur**: single mipped chain image walked in place;
+  per-level halfpixel = canonical dual-Kawase; fragment DS mip-0-restricted;
+  graphics ping-pong remains the fallback. Gotchas: transition ALL mips at
+  creation (change_layout helper covers one level); clamp level rects to
+  floor-scaled mip extents (ceil overshoot = UB imageStore).
+- **SPD-style single-dispatch chain: evaluated, REJECTED** — Kawase taps
+  need cross-tile halos (= the barriers we have); skipping them makes tile
+  seams, and post region+mips the barrier cost is negligible.
+- **Oklab saturation** in blur effects (linear-space chroma scale; no hue
+  shift at saturation > 1). Deliberate visual divergence from GLES.
+- Also this date: teardown assert fixed in asteroidz (`3db80ef`) — the
+  ext-image-copy-capture new_session listener was never removed.
