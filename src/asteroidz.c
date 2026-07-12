@@ -4260,7 +4260,16 @@ void mon_state_apply_color(Monitor *m, struct wlr_output_state *state) {
 		wlr_output_state_set_image_description(state, NULL);
 	}
 
-	if (m->bitdepth == 10 || m->hdr) {
+	/* Only (re)set the render format when it actually differs from the
+	 * live one. Re-testing an unchanged 10-bit format on every HDR toggle
+	 * (capture fallback flips several times a session) is timing-sensitive:
+	 * with a page-flip in flight the test can fail SPURIOUSLY, the code
+	 * then "falls back" to 8-bit -- a real format change -- and the commit
+	 * has to rebuild the swapchain, whose modifier-less fallback the Vulkan
+	 * renderer cannot provide. Net effect: a failed frame build and a full
+	 * retrain (visible flash) for what should be a colorimetry-only commit. */
+	if ((m->bitdepth == 10 || m->hdr) &&
+			wlr_output->render_format != DRM_FORMAT_XRGB2101010) {
 		wlr_output_state_set_render_format(state, DRM_FORMAT_XRGB2101010);
 		if (!wlr_output_test_state(wlr_output, state)) {
 			wlr_log(WLR_INFO,
