@@ -552,7 +552,7 @@ struct Client {
 	int32_t force_tearing;
 	int32_t allow_shortcuts_inhibit;
 	float scroller_proportion_single;
-	bool isfocusing;
+	bool isfocused;
 	char jump_char;
 	bool enable_drop_area_draw;
 	int32_t drop_direction;
@@ -4893,14 +4893,14 @@ void focusclient(Client *c, int32_t lift) {
 		selmon = c->mon;
 		selmon->prevsel = selmon->sel;
 		selmon->sel = c;
-		c->isfocusing = true;
+		c->isfocused = true;
 
 		check_keep_idle_inhibit(c);
 		check_vrr_enable(c);
 
 		if (last_focus_client && !last_focus_client->iskilling &&
 			last_focus_client != c) {
-			last_focus_client->isfocusing = false;
+			last_focus_client->isfocused = false;
 			last_focus_client->last_unfocus_ms = get_now_in_ms();
 			if (last_focus_client->type == X11)
 				last_x11_unfocus_ms = last_focus_client->last_unfocus_ms;
@@ -4929,9 +4929,9 @@ void focusclient(Client *c, int32_t lift) {
 	// update other monitor focus disappear
 	wl_list_for_each(um, &mons, link) {
 		if (um->wlr_output->enabled && um != selmon && um->sel &&
-			!um->sel->iskilling && um->sel->isfocusing) {
+			!um->sel->iskilling && um->sel->isfocused) {
 
-			um->sel->isfocusing = false;
+			um->sel->isfocused = false;
 			client_set_unfocused_opacity_animation(um->sel);
 
 			if (um->sel->foreign_toplevel) {
@@ -5552,7 +5552,7 @@ void init_client_properties(Client *c) {
 	c->overview_scene_surface = NULL;
 	c->drop_direction = UNDIR;
 	c->enable_drop_area_draw = false;
-	c->isfocusing = false;
+	c->isfocused = false;
 	c->isfloating = 0;
 	c->isfakefullscreen = 0;
 	c->isnoanimation = 0;
