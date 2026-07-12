@@ -1300,6 +1300,17 @@ typedef struct {
 	bool dragging;
 	double start_x, start_y; /* layout coords, region drag anchor */
 	struct wlr_box sel;		 /* layout coords, current selection/hover box */
+
+	/* ShotWindow hit-testing runs against boxes SNAPSHOTTED when the frame
+	 * was frozen, not the live scene: windows that keep animating (or get
+	 * re-arranged) under the overlay would otherwise drift away from the
+	 * frozen pixels, putting the selection rectangle -- and the final crop
+	 * -- in the wrong place. Focus order (topmost first). */
+	struct {
+		Client *c;
+		struct wlr_box box;
+	} *snap;
+	int32_t snap_len;
 } ScreenshotUI;
 
 /* named shotui, not screenshot_ui: that name is the dispatcher function */
@@ -1336,6 +1347,7 @@ static bool cursor_hidden = false;
 static bool tag_combo = false;
 static const char *cli_config_path = NULL;
 static bool cli_debug_log = false;
+static bool cli_check_config = false;
 static KeyMode keymode = {
 	.mode = {'d', 'e', 'f', 'a', 'u', 'l', 't', '\0'},
 	.isdefault = true,
@@ -6615,6 +6627,8 @@ static void render_monitor(Monitor *m) {
 	if (config.allow_tearing && frame_allow_tearing) {
 		apply_tear_state(m);
 	} else if (shotui.want_capture && shotui.capture_mon == m) {
+		wlr_log(WLR_DEBUG, "screenshot_ui: fulfilling capture on %s",
+			m->wlr_output->name);
 		/* screenshot_ui asked to freeze this monitor: build+commit this
 		 * frame ourselves (unconditionally, ignoring needs_frame) so we
 		 * can grab a locked reference to its rendered buffer before it's
@@ -9180,8 +9194,6 @@ int32_t main(int32_t argc, char *argv[]) {
 	char *startup_cmd = NULL;
 	int32_t c;
 
-	init_persistent_log();
-
 	restart_argv = argv;
 	if (getenv("ASTEROIDZ_RESTARTED")) {
 		cli_debug_log = true;
@@ -9202,13 +9214,28 @@ int32_t main(int32_t argc, char *argv[]) {
 		} else if (c == 'c') {
 			cli_config_path = optarg;
 		} else if (c == 'p') {
-			return parse_config() ? EXIT_SUCCESS : EXIT_FAILURE;
+			/* defer until ALL flags are parsed: `-p -c file` used to check
+			 * the DEFAULT config (getopt hadn't reached -c yet) and report
+			 * success while the named file had errors */
+			cli_check_config = true;
 		} else {
 			goto usage;
 		}
 	}
 	if (optind < argc)
 		goto usage;
+	if (cli_check_config) {
+		/* NO stderr redirect here: -p's whole job is showing parse errors on
+		 * the terminal, not burying them in the persistent log (which is
+		 * exactly what init_persistent_log's fd-2 redirect used to do) */
+		if (parse_config()) {
+			printf("config OK\n");
+			return EXIT_SUCCESS;
+		}
+		return EXIT_FAILURE;
+	}
+	/* after flag parsing, so -p (above) keeps stderr on the terminal */
+	init_persistent_log();
 
 	/* Wayland requires XDG_RUNTIME_DIR for creating its communications
 	 * socket
