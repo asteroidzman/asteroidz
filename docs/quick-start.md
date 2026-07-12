@@ -76,7 +76,7 @@ To get a fully functional desktop experience, we recommend installing the follow
 Check out the [example configuration](https://github.com/DreamMaoMao/mango-config) by the creator of upstream mango, including complete setups for mango, Waybar, Rofi, and more.
 
 > **Note:** This is an upstream mango config, not asteroidz-specific. Several
-> options referenced there (`tab_bar_decorate_*`, `group_bar_decorate_*`,
+> options referenced there (`tab_bar_decorate_*`,
 > `jump_label_decorate_*`, `~/.config/mango`) have since been renamed or
 > merged in this fork — see [Theming](/docs/visuals/theming) — so treat it as
 > a starting point to adapt, not a drop-in config.

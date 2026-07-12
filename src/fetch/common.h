@@ -104,12 +104,11 @@ static bool layer_ignores_focus(LayerSurface *l) {
 }
 
 void xytonode(double x, double y, struct wlr_surface **psurface, Client **pc,
-			  LayerSurface **pl, AsteroidzGroupBar **gb, double *nx, double *ny) {
+			  LayerSurface **pl, double *nx, double *ny) {
 	struct wlr_scene_node *node = NULL, *pnode = NULL;
 	struct wlr_surface *surface = NULL;
 	Client *c = NULL;
 	LayerSurface *l = NULL;
-	AsteroidzGroupBar *groupbar = NULL;
 	int32_t layer;
 	Client *ovc = NULL;
 
@@ -119,8 +118,6 @@ void xytonode(double x, double y, struct wlr_surface **psurface, Client **pc,
 		*pc = NULL;
 	if (pl)
 		*pl = NULL;
-	if (gb)
-		*gb = NULL;
 
 	for (layer = NUM_LAYERS - 1; layer >= 0; layer--) {
 		if (layer == LyrFadeOut || layer == LyrScreenshot)
@@ -155,8 +152,6 @@ void xytonode(double x, double y, struct wlr_surface **psurface, Client **pc,
 				Client *temp_c = (Client *)data;
 				if (temp_c->type == LayerShell) {
 					l = (LayerSurface *)temp_c;
-				} else if (temp_c->type == GroupBar) {
-					groupbar = (AsteroidzGroupBar *)temp_c;
 				} else if (temp_c->type == XDGShell || temp_c->type == X11) {
 					c = temp_c;
 				} else if (temp_c->type == ASTEROIDZ_TITLE_NODE ||
@@ -184,8 +179,6 @@ void xytonode(double x, double y, struct wlr_surface **psurface, Client **pc,
 		*pc = c;
 	if (pl)
 		*pl = l;
-	if (gb)
-		*gb = groupbar;
 
 	if (selmon && selmon->isoverview && config.ov_no_resize) {
 		ovc = xytoclient(x, y);
@@ -205,8 +198,6 @@ void xytonode(double x, double y, struct wlr_surface **psurface, Client **pc,
 				*psurface = ovc ? client_surface(ovc) : NULL;
 			if (pl)
 				*pl = NULL;
-			if (gb)
-				*gb = NULL;
 		}
 	}
 }

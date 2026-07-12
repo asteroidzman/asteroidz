@@ -390,10 +390,6 @@ void pre_caculate_before_arrange(Monitor *m, bool want_animation,
 			asteroidz_tab_bar_node_set_enabled(c->titlebar_close_node, false);
 		}
 
-		if (c->group_bar && c->group_bar->scene_buffer->node.enabled) {
-			client_check_tab_node_visible(c);
-		}
-
 		if (c->mon == m && (c->isglobal || c->isunglobal)) {
 			c->tags = m->tagset[m->seltags];
 		}

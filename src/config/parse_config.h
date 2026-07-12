@@ -74,7 +74,6 @@ typedef struct {
 	int32_t isnoshadow;
 	int32_t vrr_only_fullscreen;
 	int32_t shield_when_capture;
-	int32_t deny_group;
 	int32_t ispinned;
 	int32_t isnoradius;
 	int32_t isnoanimation;
@@ -382,7 +381,6 @@ typedef struct {
 	uint32_t gappoh;
 	uint32_t gappov;
 	uint32_t borderpx;
-	uint32_t group_bar_height;
 	int32_t enable_titlebar;
 	uint32_t titlebar_height;
 	int32_t monocle_tab_max_width; // 0 = tab segments split the full width
@@ -1076,28 +1074,10 @@ FuncType parse_func_name(char *func_name, Arg *arg, char *arg_value,
 			strcmp(func_name, "focusstack") == 0 /* deprecated alias */) {
 		func = focusstack;
 		(*arg).i = parse_circle_direction(arg_value);
-	} else if (strcmp(func_name, "group_focus") == 0 ||
-			strcmp(func_name, "groupfocus") == 0 /* deprecated alias */) {
-		func = groupfocus;
-		(*arg).i = parse_circle_direction(arg_value);
 	} else if (strcmp(func_name, "focus_direction") == 0 ||
 			strcmp(func_name, "focusdir") == 0 /* deprecated alias */) {
 		func = focusdir;
 		(*arg).i = parse_direction(arg_value);
-	} else if (strcmp(func_name, "group_join") == 0 ||
-			strcmp(func_name, "groupjoin") == 0 /* deprecated alias */) {
-		func = groupjoin;
-		(*arg).i = parse_direction(arg_value);
-	} else if (strcmp(func_name, "group_leave") == 0 ||
-			strcmp(func_name, "groupleave") == 0 /* deprecated alias */) {
-		func = groupleave;
-	} else if (strcmp(func_name, "group_lock") == 0 ||
-			strcmp(func_name, "grouplock") == 0 /* deprecated alias */) {
-		func = grouplock;
-	} else if (strcmp(func_name, "move_group_window") == 0 ||
-			strcmp(func_name, "movegroupwindow") == 0 /* deprecated alias */) {
-		func = movegroupwindow;
-		(*arg).i = parse_circle_direction(arg_value);
 	} else if (strcmp(func_name, "pin") == 0) {
 		func = pin;
 	} else if (strcmp(func_name, "focus_id") == 0 ||
@@ -2161,8 +2141,6 @@ bool parse_option(Config *config, char *key, char *value) {
 		config->scratchpad_height_ratio = atof(value);
 	} else if (strcmp(key, "borderpx") == 0) {
 		config->borderpx = atoi(value);
-	} else if (strcmp(key, "group_bar_height") == 0) {
-		config->group_bar_height = atoi(value);
 	} else if (strcmp(key, "enable_titlebar") == 0) {
 		config->enable_titlebar = atoi(value);
 	} else if (strcmp(key, "titlebar_height") == 0) {
@@ -2600,7 +2578,6 @@ bool parse_option(Config *config, char *key, char *value) {
 		rule->isnoshadow = -1;
 		rule->vrr_only_fullscreen = -1;
 		rule->shield_when_capture = -1;
-		rule->deny_group = -1;
 		rule->ispinned = -1;
 		rule->isnoradius = -1;
 		rule->isnoanimation = -1;
@@ -2704,8 +2681,6 @@ bool parse_option(Config *config, char *key, char *value) {
 					rule->vrr_only_fullscreen = atoi(val);
 				} else if (strcmp(key, "shield_when_capture") == 0) {
 					rule->shield_when_capture = atoi(val);
-				} else if (strcmp(key, "deny_group") == 0) {
-					rule->deny_group = atoi(val);
 				} else if (strcmp(key, "ispinned") == 0) {
 					rule->ispinned = atoi(val);
 				} else if (strcmp(key, "isnoshadow") == 0) {
@@ -3414,8 +3389,8 @@ static const struct {
 	{"effects/shadow/contact/position/x", "shadows_contact_position_x"},
 	{"effects/shadow/contact/position/y", "shadows_contact_position_y"},
 	{"effects/shadow/contact/color", "shadowscolor_contact"},
-	/* theme: the compositor-native UI theme (titlebars/tab strips, group
-	 * bars, jump labels, screenshot UI) */
+	/* theme: the compositor-native UI theme (titlebars/tab strips, jump
+	 * labels, screenshot UI) */
 	{"theme/border-width", "theme_border_width"},
 	{"theme/corner-radius", "theme_corner_radius"},
 	{"theme/padding/x", "theme_padding_x"},
@@ -4302,7 +4277,6 @@ void override_config(void) {
 	config.scratchpad_height_ratio =
 		CLAMP_FLOAT(config.scratchpad_height_ratio, 0.1f, 1.0f);
 	config.borderpx = CLAMP_INT(config.borderpx, 0, 200);
-	config.group_bar_height = CLAMP_INT(config.group_bar_height, 0, 500);
 	config.enable_titlebar = CLAMP_INT(config.enable_titlebar, 0, 1);
 	config.titlebar_height = CLAMP_INT(config.titlebar_height, 0, 200);
 	config.smartgaps = CLAMP_INT(config.smartgaps, 0, 1);
@@ -4433,7 +4407,6 @@ void set_value_default() {
 	config.idleinhibit_ignore_visible = 0;
 
 	config.borderpx = 4;
-	config.group_bar_height = 50;
 	config.enable_titlebar = 0;
 	config.titlebar_height = 28;
 	config.monocle_tab_max_width = 0;
@@ -4883,7 +4856,7 @@ void reapply_property(void) {
 				c->bw = config.borderpx;
 			}
 
-			client_set_group_config(c);
+			client_apply_decoration_config(c);
 		}
 	}
 }

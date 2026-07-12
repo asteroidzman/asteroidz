@@ -11,7 +11,7 @@
 
 /* The compositor-native UI theme (config.theme, KDL block `theme {}`):
  * the single look shared by every native overlay -- titlebars/monocle tab
- * strips, group bars, jump-mode labels, and the screenshot UI. Colours are
+ * strips, jump-mode labels, and the screenshot UI. Colours are
  * normally generated from the matugen palette (dms/colors.kdl). Formerly
  * "pilldata"/"pill/*" after the DMS pill widgets it started with; those
  * spellings remain accepted as deprecated aliases. */
@@ -175,72 +175,6 @@ struct asteroidz_tab_bar_node {
 	int32_t logical_height;
 };
 
-/* Group bar node: one segment of the window-group title bar.
- * `type` must stay the first member so generic scene node.data walks
- * (xytonode) can identify it via the shared client-type enum (GroupBar). */
-typedef struct {
-	uint32_t type; // must be first in struct
-	struct wlr_scene_buffer *scene_buffer;
-	struct asteroidz_text_buffer *buffer;
-	cairo_surface_t *surface;
-	int surface_pixel_w, surface_pixel_h;
-	void *node_data; // owning Client pointer
-
-	// initial config
-	float fg_color[4];
-	float bg_color[4];
-	float focus_fg_color[4];
-	float focus_bg_color[4];
-	float border_color[4];
-	int32_t border_width;
-	int32_t corner_radius;
-	int32_t padding_x;
-	int32_t padding_y;
-	char *font_desc;
-
-	// size
-	int32_t target_width;
-	int32_t target_height;
-
-	// cache
-	char *cached_text;
-	char *cached_font_desc;
-	float cached_scale;
-	float cached_fg_color[4];
-	float cached_bg_color[4];
-	float cached_focus_fg_color[4];
-	float cached_focus_bg_color[4];
-	float cached_border_color[4];
-	int32_t cached_border_width;
-	int32_t cached_corner_radius;
-	int32_t cached_padding_x;
-	int32_t cached_padding_y;
-	int32_t cached_target_width;
-	int32_t cached_target_height;
-	bool cached_focused;
-	enum corner_location cached_corner_mask;
-	int32_t cached_titlebar_border_width;
-	bool cached_titlebar_border_left;
-	bool cached_titlebar_border_right;
-	bool cached_titlebar_separator_right;
-
-	bool focused;
-
-	// last draw params (used to redraw on size change)
-	char *last_text;
-	float last_scale;
-
-	// measurement
-	cairo_surface_t *measure_surface;
-	cairo_t *measure_cr;
-	PangoContext *measure_context;
-	PangoLayout *measure_layout;
-	float measure_scale;
-
-	int32_t logical_width;
-	int32_t logical_height;
-} AsteroidzGroupBar;
-
 void asteroidz_text_global_finish(void);
 
 /* a standalone app-icon buffer (used for overview thumbnails) */
@@ -313,19 +247,6 @@ void asteroidz_tab_bar_node_set_focus(struct asteroidz_tab_bar_node *node,
 void asteroidz_tab_bar_node_set_colors(struct asteroidz_tab_bar_node *node,
 								   const float fg[4], const float bg[4]);
 
-AsteroidzGroupBar *asteroidz_group_bar_create(void *cdata, uint32_t type,
-									  struct wlr_scene_tree *parent,
-									  AsteroidzTheme data, int32_t width,
-									  int32_t height);
-void asteroidz_group_bar_destroy(AsteroidzGroupBar *node);
-void asteroidz_group_bar_set_size(AsteroidzGroupBar *node, int32_t width,
-							  int32_t height);
-void asteroidz_group_bar_update(AsteroidzGroupBar *node, const char *text, float scale);
-void asteroidz_group_bar_set_focus(AsteroidzGroupBar *node, bool focused);
-void asteroidz_group_bar_set_colors(AsteroidzGroupBar *node, const float fg[4],
-								const float bg[4]);
-void asteroidz_group_bar_apply_config(AsteroidzGroupBar *node,
-								  const AsteroidzTheme *data);
 void asteroidz_jump_label_node_apply_config(struct asteroidz_jump_label_node *node,
 										const AsteroidzTheme *data);
 void asteroidz_tab_bar_node_apply_config(struct asteroidz_tab_bar_node *node,
