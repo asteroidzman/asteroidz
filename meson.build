@@ -166,4 +166,3 @@ install_data('assets/config.kdl', install_dir : join_paths(sysconfdir, 'asteroid
 install_data('amsg/amsg.1', install_dir : join_paths(mandir, 'man1'))
 
 # compat: old tool name keeps working
-install_symlink('mmsg', pointing_to: 'amsg', install_dir: get_option('bindir'))
