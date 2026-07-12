@@ -44,8 +44,16 @@ enum corner_location set_client_corner_location(Client *c) {
 	 * monocle with more than one window, the titlebar row is left-aligned:
 	 * it only spans the full width (and so only squares both top corners)
 	 * when segments aren't capped by monocle_tab_max_width. */
+	/* segment-row membership is independent of decoration mode: the shared
+	 * monocle strip is layout furniture drawn flush above EVERY fake-tiled
+	 * window (incl. CSD ones), so those windows must square against it; the
+	 * per-window tab, in contrast, only exists for server-decorated windows */
+	bool seg_row = !ov && is_monocle_layout(c->mon) &&
+				   c->mon->visible_fake_tiling_clients > 1 && ISFAKETILED(c);
 	if ((config.enable_titlebar || is_monocle_layout(c->mon)) &&
-		c->titlebar_node && !c->isfullscreen && ISFAKETILED(c)) {
+		c->titlebar_node && !c->isfullscreen &&
+		(seg_row ||
+		 (client_wants_ssd(c) && (ISFAKETILED(c) || c->isfloating)))) {
 		bool monocle_row_full_width = false;
 		if (is_monocle_layout(c->mon) && c->mon->visible_fake_tiling_clients > 1) {
 			int32_t n = c->mon->visible_fake_tiling_clients;
@@ -57,8 +65,7 @@ enum corner_location set_client_corner_location(Client *c) {
 			monocle_row_full_width = !(config.monocle_tab_max_width > 0 &&
 									  base_width > config.monocle_tab_max_width);
 		}
-		if (!ov && is_monocle_layout(c->mon) &&
-			c->mon->visible_fake_tiling_clients > 1 && monocle_row_full_width) {
+		if (seg_row && monocle_row_full_width) {
 			current_corner_location &= ~CORNER_LOCATION_TOP;
 		} else {
 			/* overview tiles (and non-full-width monocle) use a per-window tab
@@ -528,7 +535,15 @@ void client_draw_monocle_titlebar_segment(Client *c, int32_t x, int32_t y,
 	if (tab_w < 0)
 		tab_w = 0;
 
+	/* the segment row is a SHARED strip: hidden monocle windows' scenes are
+	 * disabled, but their segments must stay clickable -- so segments live on
+	 * the global LyrDecorate (absolute coords), unlike per-window tabs which
+	 * are parented inside the client's scene. */
+	asteroidz_tab_bar_node_reparent(c->titlebar_node, layers[LyrDecorate]);
+
 	if (c->titlebar_close_node) {
+		asteroidz_tab_bar_node_reparent(c->titlebar_close_node,
+									layers[LyrDecorate]);
 		asteroidz_tab_bar_node_set_enabled(c->titlebar_close_node, true);
 		asteroidz_tab_bar_node_set_position(c->titlebar_close_node, x, y);
 		asteroidz_tab_bar_node_set_size(c->titlebar_close_node, close_w, th);
@@ -585,9 +600,11 @@ void client_draw_titlebar(Client *c) {
 
 	/* with more than one window, monocle lays its titlebars out as a row of
 	 * segments itself (see client_draw_monocle_titlebar_segment, called from
-	 * monocle() in horizontal.h) rather than one compact per-window tab. */
+	 * monocle() in horizontal.h) rather than one compact per-window tab.
+	 * Only fake-TILED windows join the segment row; a floating window on a
+	 * monocle tag keeps its own per-window tab below. */
 	if (!c->mon->isoverview && is_monocle_layout(c->mon) &&
-		c->mon->visible_fake_tiling_clients > 1)
+		c->mon->visible_fake_tiling_clients > 1 && ISFAKETILED(c))
 		return;
 
 	bool titlebar_wanted = config.enable_titlebar || is_monocle_layout(c->mon);
@@ -598,7 +615,7 @@ void client_draw_titlebar(Client *c) {
 	 * columns dropped for overrunning the viewport (is_overview_hidden) are hidden
 	 * in the main area, so their titlebars would otherwise linger as overlapping
 	 * ghosts (drawn at a stale position by the per-frame animation path). */
-	if (!titlebar_wanted || c->isfullscreen ||
+	if (!titlebar_wanted || c->isfullscreen || !client_wants_ssd(c) ||
 		(!ov && c->is_monocle_hide) /* the exposé shows ALL monocle windows */ ||
 		c->isminimized || c->iskilling || c->isunglobal || !VISIBLEON(c, c->mon) ||
 		(ov && (c->is_overview_hidden ||
@@ -607,13 +624,11 @@ void client_draw_titlebar(Client *c) {
 				 * column clipped on the left has that edge (and thus its tab)
 				 * off the desktop, so the mirror doesn't show one either */
 				(c->ov_clip_active && c->ov_clip.x > 0)))) {
-		if (c->titlebar_node->scene_buffer->node.enabled)
-			wlr_scene_node_set_enabled(&c->titlebar_node->scene_buffer->node,
-									   false);
-		if (c->titlebar_close_node &&
-			c->titlebar_close_node->scene_buffer->node.enabled)
-			wlr_scene_node_set_enabled(
-				&c->titlebar_close_node->scene_buffer->node, false);
+		/* use the helper (not a raw node disable): it also disables the
+		 * tab's shadow, which would otherwise linger as a floating strip */
+		asteroidz_tab_bar_node_set_enabled(c->titlebar_node, false);
+		if (c->titlebar_close_node)
+			asteroidz_tab_bar_node_set_enabled(c->titlebar_close_node, false);
 		return;
 	}
 
@@ -631,8 +646,19 @@ void client_draw_titlebar(Client *c) {
 		 * (monocle exposé shrinks to ~0.3x). Must match client_tile_resize. */
 		th = ASTEROIDZ_MAX(th, ASTEROIDZ_MIN(22, config.titlebar_height));
 	}
-	int32_t tb_x = c->animation.current.x;
-	int32_t tb_y = c->animation.current.y - th;
+	/* Per-window tabs live INSIDE the client's scene tree, so they stack,
+	 * move, animate, fade out and hide with their window automatically --
+	 * a floating window's titlebar has exactly the window's own z-order.
+	 * (The monocle segment row is the one exception: hidden monocle windows'
+	 * scenes are disabled but their segments must stay visible, so segments
+	 * reparent back to the global LyrDecorate.) Coordinates are relative to
+	 * the scene origin (== animation.current.x/y), so the tab is simply at
+	 * (0, -th) and needs no per-frame repositioning to track the window. */
+	asteroidz_tab_bar_node_reparent(c->titlebar_node, c->scene);
+	if (c->titlebar_close_node)
+		asteroidz_tab_bar_node_reparent(c->titlebar_close_node, c->scene);
+	int32_t tb_x = 0;
+	int32_t tb_y = -th;
 	int32_t tb_w = c->animation.current.width;
 	int32_t close_w = ASTEROIDZ_MIN(th, tb_w);
 
@@ -1556,10 +1582,15 @@ void client_animation_next_tick(Client *c) {
 			c->animation.current = c->geom;
 		}
 
-		xytonode(cursor->x, cursor->y, NULL, &pointer_c, NULL, NULL, &sx, &sy);
+		struct wlr_surface *pointer_surf = NULL;
+		xytonode(cursor->x, cursor->y, &pointer_surf, &pointer_c, NULL, NULL,
+				 &sx, &sy);
 
-		surface =
-			pointer_c && pointer_c == c ? client_surface(pointer_c) : NULL;
+		/* only re-enter when the cursor is over the client's actual SURFACE:
+		 * xytonode also resolves the client for hover over its titlebar TAB,
+		 * where sx/sy are tab-local and must not be sent as surface coords */
+		surface = pointer_c && pointer_c == c && pointer_surf ? pointer_surf
+															  : NULL;
 
 		// avoid game window force grab pointer in overview mode
 		if (surface && pointer_c == selmon->sel && !selmon->isoverview) {

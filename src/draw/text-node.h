@@ -288,6 +288,8 @@ void asteroidz_tab_bar_node_set_padding(struct asteroidz_tab_bar_node *node,
 									int32_t padding_x, int32_t padding_y);
 void asteroidz_tab_bar_node_set_content_scale(struct asteroidz_tab_bar_node *node,
 										  float content_scale);
+void asteroidz_tab_bar_node_reparent(struct asteroidz_tab_bar_node *node,
+								 struct wlr_scene_tree *parent);
 void asteroidz_tab_bar_node_set_titlebar_border(struct asteroidz_tab_bar_node *node,
 											int32_t width, bool border_left,
 											bool border_right);

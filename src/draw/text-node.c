@@ -774,11 +774,27 @@ static void tab_bar_shadow_sync(struct asteroidz_tab_bar_node *node) {
 	int32_t pad = (int32_t)ceilf(node->shadow_sigma * 0.5f);
 	int32_t radius = node->corner_radius < 0 ? node->target_height / 2
 											 : node->corner_radius;
-	wlr_scene_shadow_set_size(node->shadow, node->target_width + 2 * pad,
-							  node->target_height + 2 * pad);
+	int32_t sh_w = node->target_width + 2 * pad;
+	int32_t sh_h = node->target_height + 2 * pad;
+	int32_t sh_y = node->last_y - pad + node->shadow_offset_y;
+	wlr_scene_shadow_set_size(node->shadow, sh_w, sh_h);
 	wlr_scene_shadow_set_corner_radius(node->shadow, radius + pad);
-	wlr_scene_node_set_position(&node->shadow->node, node->last_x - pad,
-								node->last_y - pad + node->shadow_offset_y);
+	wlr_scene_node_set_position(&node->shadow->node, node->last_x - pad, sh_y);
+	/* the tab sits flush on the window's top edge; per-window tabs live
+	 * INSIDE the client scene (above the surface), so clip away the part of
+	 * the shadow that would extend below the tab's bottom edge and paint a
+	 * dark band across the window content. */
+	int32_t below = (sh_y + sh_h) - (node->last_y + node->target_height);
+	struct clipped_region clip = {0};
+	if (below > 0) {
+		clip.area = (struct wlr_box){
+			.x = 0,
+			.y = sh_h - below,
+			.width = sh_w,
+			.height = below,
+		};
+	}
+	wlr_scene_shadow_set_clipped_region(node->shadow, clip);
 	wlr_scene_node_set_enabled(&node->shadow->node,
 							   node->scene_buffer->node.enabled &&
 								   node->target_width > 0 &&
@@ -879,6 +895,19 @@ void asteroidz_tab_bar_node_set_text_align_left(struct asteroidz_tab_bar_node *n
 		asteroidz_tab_bar_node_update(node, node->last_text,
 								  node->last_scale > 0 ? node->last_scale
 													   : 1.0f);
+}
+
+void asteroidz_tab_bar_node_reparent(struct asteroidz_tab_bar_node *node,
+								 struct wlr_scene_tree *parent) {
+	if (!node || !parent || node->parent_tree == parent)
+		return;
+	node->parent_tree = parent;
+	wlr_scene_node_reparent(&node->scene_buffer->node, parent);
+	if (node->shadow) {
+		wlr_scene_node_reparent(&node->shadow->node, parent);
+		wlr_scene_node_place_below(&node->shadow->node,
+								   &node->scene_buffer->node);
+	}
 }
 
 void asteroidz_tab_bar_node_set_padding(struct asteroidz_tab_bar_node *node,

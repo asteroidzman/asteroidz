@@ -1,3 +1,25 @@
+/* Should the compositor draw server-side chrome (titlebar, border, corner
+ * squaring) for this client? X11 windows have no CSD negotiation -- always
+ * decorate. An xdg client that never bound xdg-decoration is drawing its own
+ * decorations per the protocol default (CSD popups like the DMS spotlight:
+ * a rounded pill inside a transparent-margined buffer) -- wrapping those in a
+ * border/titlebar paints stray lines around the buffer rect. Clients that DID
+ * bind get forced to server-side unless an allow_csd rule lets their request
+ * through (mirrors requestdecorationmode). */
+bool client_wants_ssd(Client *c) {
+	if (client_is_x11(c))
+		return true;
+	if (c->force_ssd) /* window rule: decorate even decoration-oblivious apps
+					   * (SDL/GLFW games etc. that bind neither protocol) */
+		return true;
+	if (!c->decoration)
+		return false;
+	if (!c->allow_csd)
+		return true;
+	return c->decoration->requested_mode ==
+		   WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE;
+}
+
 bool check_hit_no_border(Client *c) {
 	bool hit_no_border = false;
 
@@ -8,6 +30,12 @@ bool check_hit_no_border(Client *c) {
 		return false;
 
 	if (!render_border) {
+		hit_no_border = true;
+	}
+
+	/* client-side-decorated windows draw their own chrome; a server border
+	 * around their (often transparent-margined) buffer reads as a stray ring */
+	if (!client_wants_ssd(c)) {
 		hit_no_border = true;
 	}
 
@@ -368,7 +396,7 @@ float *get_border_color(Client *c) {
 	/* an inactive window sitting under a titlebar should read as one piece
 	 * with it, so match the titlebar's own inactive pill color instead of
 	 * the generic border color. */
-	bool has_titlebar = c->titlebar_node && c->mon &&
+	bool has_titlebar = c->titlebar_node && c->mon && client_wants_ssd(c) &&
 					   (config.enable_titlebar || is_monocle_layout(c->mon)) &&
 					   ISFAKETILED(c);
 	float *inactive_color =
