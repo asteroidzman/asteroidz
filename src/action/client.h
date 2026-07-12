@@ -63,11 +63,18 @@ void client_tile_resize(Client *c, struct wlr_box geo, int32_t interact) {
 	}
 
 	if (config.enable_titlebar && !c->isfullscreen) {
-		/* reserve title-bar space; in overview scale it to the shrunk window */
+		/* reserve title-bar space; in the overview scale it to the shrunk window
+		 * (a viewport-edge window is sized to its VISIBLE portion -- ov_clip --
+		 * so use that as the reference width to keep th uniform) */
 		int32_t th = config.titlebar_height;
-		if (c->mon->isoverview)
-			th = (int32_t)(th * ((float)geo.width /
-								 fmaxf(1.0f, (float)c->overview_backup_geom.width)));
+		if (c->mon->isoverview) {
+			float ref_w = (c->ov_clip_active && c->ov_clip.width > 0)
+							  ? (float)c->ov_clip.width
+							  : (float)c->overview_backup_geom.width;
+			th = (int32_t)(th * ((float)geo.width / fmaxf(1.0f, ref_w)));
+			/* legibility floor -- must match client_draw_titlebar */
+			th = ASTEROIDZ_MAX(th, ASTEROIDZ_MIN(22, config.titlebar_height));
+		}
 		geo.y = geo.y + th;
 		geo.height -= th;
 	} else if (is_monocle_layout(c->mon) && !c->isfullscreen &&

@@ -109,12 +109,73 @@ Switching:
    luminance + saturation) already applies via the renderer-agnostic output
    colour-transform matrix (see root cause #4). Verified matching config A.
 3. Revisit the full-damage workaround once partial damage is correct.
-4. Revisit the border lower-to-bottom workaround (root cause #3): now that the
-   rounded-rect clip cutout renders on `fx_vk`, the hollow border no longer covers
-   content, so the unfocus lower could likely be dropped / focus animations
-   re-enabled. Not yet done — verify before removing the workaround.
+4. **Verify HDR10 end-to-end on config B** — the headline goal ("Why Vulkan")
+   has no progress-log entry confirming it: 10-bit output, HDR metadata,
+   PQ/tone mapping on the real DP-1 HDR10 monitor. SDR parity is verified;
+   HDR itself is not. Arguably the next big item.
+   (The old item here — border lower-to-bottom workaround — was already
+   resolved and reverted; see root cause #3.)
+
+## Perf & scheduling backlog (from the 2026-07-11 threading/latency review)
+asteroidz is single-threaded by design (standard wlroots model); threaded
+command recording was explicitly ruled out (frames aren't CPU-record-bound and
+it fights wlroots). The worthwhile items are latency/GPU-efficiency/robustness:
+
+| # | Item | Status |
+|---|------|--------|
+| 1 | Render-late scheduling (adaptive input-to-photon latency cut) | **DONE** — asteroidz `4d9aeea` + `cc1ade4`; validate vblank behaviour on real HW |
+| 2 | Verify explicit sync is stall-free end-to-end (no main-thread fence waits between submit and KMS commit; out-fences/syncobj timelines used) | **DONE (code audit, 2026-07-11)** — stall-free on this stack; see progress log |
+| 3 | Persist `VkPipelineCache` to disk (first-use hitch) | **DONE** — scenefx `2c5a4ef` |
+| 4 | Staging discipline: no per-frame staging allocs; SHM uploads via persistent ring, damage-region-only | open |
+| 5 | Scope overview blur cost (`should_only_blur_bottom_layer(false)` forces multi-layer blur per OV window; grew in the 2026-07-11 OV work) | open |
+| 6 | Damage-scope the overview fade; spot-check `need_more_frames` drops at fade end | open |
+| 7 | `VK_ERROR_DEVICE_LOST` recovery (renderer analogue of KMS `monitor_start_retrain`) | open |
+| 8 | Command/descriptor pool reuse (reset pools, no per-frame `vkAllocate*`) | open |
 
 ## Progress log
+
+### Explicit-sync stall audit — backlog #2 (2026-07-11, code inspection)
+Question: does anything on the frame path CPU-block between `vkQueueSubmit` and
+the KMS commit, or is it out-fences/timelines end-to-end? **Answer: stall-free
+on this stack.** The full chain, with file/line receipts:
+
+- **Render → KMS (out-fence):** `wlr_scene_output_create` creates
+  `in_timeline`/`out_timeline` iff `backend->features.timeline &&
+  renderer->features.timeline` (scenefx `wlr_scene.c:2735`). fx_vk sets
+  `features.timeline = sync_file_import_export && DRM_CAP_SYNCOBJ_TIMELINE`
+  (`renderer.c:3289`) — true on RADV + amdgpu. Every frame the scene passes
+  `.signal_timeline = in_timeline` to `wlr_renderer_begin_buffer_pass`
+  (`wlr_scene.c:3675`). `render_pass_submit` signals an exportable binary
+  semaphore in the same `vkQueueSubmit2` (`pass.c:591-613`), and
+  `fx_vulkan_sync_render_pass_release` exports it as a sync_file and imports it
+  into that timeline (`renderer.c:1356`) — **no CPU wait**. The scene commit
+  hands the timeline to the output as wait/signal state (`wlr_scene.c:3132-3140`);
+  the DRM backend converts it to `IN_FENCE_FD`. GPU→KMS handoff is fence-based.
+- **Client → render (in-fence):** client explicit-sync `wait_timeline`s are
+  exported as sync_files and attached as **GPU-side wait semaphores** in the
+  render submit (`pass.c:442-470`); implicit-sync clients go through
+  `sync_foreign_texture_acquire` (dmabuf fence export) the same way. No CPU wait.
+- **The blocking fallback** (`renderer.c:1334`, "no choice but to block") fires
+  only when `!implicit_sync_interop && signal_timeline == NULL`. On this box
+  both escape hatches are open: `implicit_sync_interop` requires semaphore
+  sync_file import+export + dmabuf sync_file ioctls (`vulkan.c:537`) — all
+  supported by RADV/amdgpu — and `signal_timeline` is provided anyway
+  (timeline feature true). Double-covered.
+- **SHM texture uploads** are recorded into the stage command buffer and
+  submitted **together with the render** in one `vkQueueSubmit2`
+  (`pass.c:630`) — asynchronous. (Per-frame staging *allocation* discipline is
+  a separate item, backlog #4.)
+- **Genuine CPU waits found — all off the frame path:**
+  `fx_vulkan_read_pixels` → `submit_stage_wait` (screenshots/screencopy,
+  inherently synchronous); `get_command_buffer` blocks only when all **64**
+  command buffers are in flight (unreachable backpressure bound);
+  `destroy_render_buffer` → `vkQueueWaitIdle` (output unplug/mode change,
+  upstream has the same TODO); `vkDeviceWaitIdle` on renderer destroy.
+
+Caveat: this is a code audit. Runtime confirmation = run the Vulkan session
+with debug logging and check for `Implicit sync interop supported`
+(`vulkan.c:540`, WLR_DEBUG level); the compositor's default log level (ERROR)
+hides it. If that line ever says "falling back to blocking", re-open this item.
 
 ### Step 2.1 — rounded corners + rounded textures on `fx_vk` (scenefx `5300811`)
 - New SPIR-V shaders `quad_round.frag` / `texture_round.frag` mirror the GLES
