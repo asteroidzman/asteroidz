@@ -470,7 +470,7 @@ typedef struct {
 
 	struct xkb_context *ctx;
 	struct xkb_keymap *keymap;
-	DecorateDrawData pilldata;
+	AsteroidzTheme theme;
 } Config;
 
 typedef int32_t (*FuncType)(const Arg *);
@@ -1974,77 +1974,99 @@ bool parse_option(Config *config, char *key, char *value) {
 		config->cursor_size = atoi(value);
 	} else if (strcmp(key, "cursor_theme") == 0) {
 		config->cursor_theme = strdup(value);
-	} else if (strcmp(key, "pill_decorate_font_desc") == 0) {
-		config->pilldata.font_desc = strdup(value);
-	} else if (strcmp(key, "pill_decorate_fg_color") == 0) {
+	} else if (strcmp(key, "theme_font_desc") == 0 ||
+			strcmp(key, "pill_decorate_font_desc") == 0 /* deprecated alias */) {
+		config->theme.font_desc = strdup(value);
+	} else if (strcmp(key, "theme_fg_color") == 0 ||
+			strcmp(key, "pill_decorate_fg_color") == 0 /* deprecated alias */) {
 		int64_t color = parse_color(value);
 		if (color == -1) {
 			fprintf(stderr,
 					"\033[1m\033[31m[ERROR]:\033[33m Invalid "
-					"pill_decorate_fg_color "
+					"theme_fg_color "
 					"format: %s\n",
 					value);
 			return false;
 		} else {
-			convert_hex_to_rgba(config->pilldata.fg_color, color);
+			convert_hex_to_rgba(config->theme.fg_color, color);
 		}
-	} else if (strcmp(key, "pill_decorate_bg_color") == 0) {
+	} else if (strcmp(key, "theme_bg_color") == 0 ||
+			strcmp(key, "pill_decorate_bg_color") == 0 /* deprecated alias */) {
 		int64_t color = parse_color(value);
 		if (color == -1) {
 			fprintf(stderr,
 					"\033[1m\033[31m[ERROR]:\033[33m Invalid "
-					"pill_decorate_bg_color "
+					"theme_bg_color "
 					"format: %s\n",
 					value);
 			return false;
 		} else {
-			convert_hex_to_rgba(config->pilldata.bg_color, color);
+			convert_hex_to_rgba(config->theme.bg_color, color);
 		}
-	} else if (strcmp(key, "pill_decorate_focus_fg_color") == 0) {
+	} else if (strcmp(key, "theme_focus_fg_color") == 0 ||
+			strcmp(key, "pill_decorate_focus_fg_color") == 0 /* deprecated alias */) {
 		int64_t color = parse_color(value);
 		if (color == -1) {
 			fprintf(stderr,
 					"\033[1m\033[31m[ERROR]:\033[33m Invalid "
-					"pill_decorate_focus_fg_color "
+					"theme_focus_fg_color "
 					"format: %s\n",
 					value);
 			return false;
 		} else {
-			convert_hex_to_rgba(config->pilldata.focus_fg_color, color);
+			convert_hex_to_rgba(config->theme.focus_fg_color, color);
 		}
-	} else if (strcmp(key, "pill_decorate_focus_bg_color") == 0) {
+	} else if (strcmp(key, "theme_focus_bg_color") == 0 ||
+			strcmp(key, "pill_decorate_focus_bg_color") == 0 /* deprecated alias */) {
 		int64_t color = parse_color(value);
 		if (color == -1) {
 			fprintf(stderr,
 					"\033[1m\033[31m[ERROR]:\033[33m Invalid "
-					"pill_decorate_focus_bg_color "
+					"theme_focus_bg_color "
 					"format: %s\n",
 					value);
 			return false;
 		} else {
-			convert_hex_to_rgba(config->pilldata.focus_bg_color, color);
+			convert_hex_to_rgba(config->theme.focus_bg_color, color);
 		}
-	} else if (strcmp(key, "pill_decorate_border_color") == 0) {
+	} else if (strcmp(key, "theme_urgent_color") == 0) {
 		int64_t color = parse_color(value);
 		if (color == -1) {
 			fprintf(stderr,
 					"\033[1m\033[31m[ERROR]:\033[33m Invalid "
-					"pill_decorate_border_color "
+					"theme_urgent_color "
 					"format: %s\n",
 					value);
 			return false;
 		} else {
-			convert_hex_to_rgba(config->pilldata.border_color, color);
+			convert_hex_to_rgba(config->theme.urgent_color, color);
 		}
-	} else if (strcmp(key, "pill_decorate_border_width") == 0) {
-		config->pilldata.border_width = CLAMP_INT(atoi(value), 0, 100);
-	} else if (strcmp(key, "pill_decorate_corner_radius") == 0) {
+	} else if (strcmp(key, "theme_border_color") == 0 ||
+			strcmp(key, "pill_decorate_border_color") == 0 /* deprecated alias */) {
+		int64_t color = parse_color(value);
+		if (color == -1) {
+			fprintf(stderr,
+					"\033[1m\033[31m[ERROR]:\033[33m Invalid "
+					"theme_border_color "
+					"format: %s\n",
+					value);
+			return false;
+		} else {
+			convert_hex_to_rgba(config->theme.border_color, color);
+		}
+	} else if (strcmp(key, "theme_border_width") == 0 ||
+			strcmp(key, "pill_decorate_border_width") == 0 /* deprecated alias */) {
+		config->theme.border_width = CLAMP_INT(atoi(value), 0, 100);
+	} else if (strcmp(key, "theme_corner_radius") == 0 ||
+			strcmp(key, "pill_decorate_corner_radius") == 0 /* deprecated alias */) {
 		/* -1 = full pill (radius follows tab height) */
-		config->pilldata.corner_radius = CLAMP_INT(atoi(value), -1, 100);
-	} else if (strcmp(key, "pill_decorate_padding_x") == 0) {
-		config->pilldata.padding_x = CLAMP_INT(atoi(value), 0, 100);
-	} else if (strcmp(key, "pill_decorate_padding_y") == 0) {
-		config->pilldata.padding_y = CLAMP_INT(atoi(value), 0, 100);
+		config->theme.corner_radius = CLAMP_INT(atoi(value), -1, 100);
+	} else if (strcmp(key, "theme_padding_x") == 0 ||
+			strcmp(key, "pill_decorate_padding_x") == 0 /* deprecated alias */) {
+		config->theme.padding_x = CLAMP_INT(atoi(value), 0, 100);
+	} else if (strcmp(key, "theme_padding_y") == 0 ||
+			strcmp(key, "pill_decorate_padding_y") == 0 /* deprecated alias */) {
+		config->theme.padding_y = CLAMP_INT(atoi(value), 0, 100);
 	} else if (strcmp(key, "disable_while_typing") == 0) {
 		config->disable_while_typing = atoi(value);
 	} else if (strcmp(key, "left_handed") == 0) {
@@ -3344,16 +3366,29 @@ static const struct {
 	{"effects/shadow/contact/position/x", "shadows_contact_position_x"},
 	{"effects/shadow/contact/position/y", "shadows_contact_position_y"},
 	{"effects/shadow/contact/color", "shadowscolor_contact"},
-	/* pill (native-UI pill overlays) */
-	{"pill/border-width", "pill_decorate_border_width"},
-	{"pill/corner-radius", "pill_decorate_corner_radius"},
-	{"pill/padding/x", "pill_decorate_padding_x"},
-	{"pill/padding/y", "pill_decorate_padding_y"},
-	{"pill/font", "pill_decorate_font_desc"},
-	{"pill/bg-color", "pill_decorate_bg_color"},
-	{"pill/fg-color", "pill_decorate_fg_color"},
-	{"pill/focus-bg-color", "pill_decorate_focus_bg_color"},
-	{"pill/focus-fg-color", "pill_decorate_focus_fg_color"},
+	/* theme: the compositor-native UI theme (titlebars/tab strips, group
+	 * bars, jump labels, screenshot UI) */
+	{"theme/border-width", "theme_border_width"},
+	{"theme/corner-radius", "theme_corner_radius"},
+	{"theme/padding/x", "theme_padding_x"},
+	{"theme/padding/y", "theme_padding_y"},
+	{"theme/font", "theme_font_desc"},
+	{"theme/bg-color", "theme_bg_color"},
+	{"theme/fg-color", "theme_fg_color"},
+	{"theme/focus-bg-color", "theme_focus_bg_color"},
+	{"theme/focus-fg-color", "theme_focus_fg_color"},
+	{"theme/urgent-color", "theme_urgent_color"},
+	/* deprecated pill/* aliases of theme/* (the original DMS-pill spelling;
+	 * kdl_lookup_key logs a one-time deprecation notice) */
+	{"pill/border-width", "theme_border_width"},
+	{"pill/corner-radius", "theme_corner_radius"},
+	{"pill/padding/x", "theme_padding_x"},
+	{"pill/padding/y", "theme_padding_y"},
+	{"pill/font", "theme_font_desc"},
+	{"pill/bg-color", "theme_bg_color"},
+	{"pill/fg-color", "theme_fg_color"},
+	{"pill/focus-bg-color", "theme_focus_bg_color"},
+	{"pill/focus-fg-color", "theme_focus_fg_color"},
 	/* animations */
 	{"animations/curve", "animation_curve_type"},
 	{"animations/spring/damping", "spring_damping"},
@@ -3388,8 +3423,18 @@ static const struct {
 
 static const char *kdl_lookup_key(const char *path) {
 	for (size_t i = 0; i < LENGTH(kdl_key_map); i++)
-		if (strcmp(kdl_key_map[i].path, path) == 0)
+		if (strcmp(kdl_key_map[i].path, path) == 0) {
+			if (strncmp(path, "pill/", 5) == 0) {
+				static bool warned_pill;
+				if (!warned_pill) {
+					warned_pill = true;
+					fprintf(stderr,
+							"[NOTICE]: `pill { ... }` is deprecated; the "
+							"block is now `theme { ... }` (same keys)\n");
+				}
+			}
 			return kdl_key_map[i].key;
+		}
 	return NULL;
 }
 
@@ -4035,9 +4080,9 @@ void free_config(void) {
 		config.cursor_theme = NULL;
 	}
 
-	if (config.pilldata.font_desc) {
-		free((void *)config.pilldata.font_desc);
-		config.pilldata.font_desc = NULL;
+	if (config.theme.font_desc) {
+		free((void *)config.theme.font_desc);
+		config.theme.font_desc = NULL;
 	}
 
 	if (config.tablet_map_to_mon) {
@@ -4242,12 +4287,12 @@ void override_config(void) {
 	config.unfocused_opacity =
 		CLAMP_FLOAT(config.unfocused_opacity, 0.0f, 1.0f);
 
-	config.pilldata.border_width =
-		CLAMP_INT(config.pilldata.border_width, 0, 100);
-	config.pilldata.corner_radius =
-		CLAMP_INT(config.pilldata.corner_radius, -1, 100);
-	config.pilldata.padding_x = CLAMP_INT(config.pilldata.padding_x, 0, 100);
-	config.pilldata.padding_y = CLAMP_INT(config.pilldata.padding_y, 0, 100);
+	config.theme.border_width =
+		CLAMP_INT(config.theme.border_width, 0, 100);
+	config.theme.corner_radius =
+		CLAMP_INT(config.theme.corner_radius, -1, 100);
+	config.theme.padding_x = CLAMP_INT(config.theme.padding_x, 0, 100);
+	config.theme.padding_y = CLAMP_INT(config.theme.padding_y, 0, 100);
 }
 
 void set_value_default() {
@@ -4460,30 +4505,34 @@ void set_value_default() {
 	config.animation_curve_opafadeout[2] = 0.5;
 	config.animation_curve_opafadeout[3] = 0.5;
 
-	config.pilldata.fg_color[0] = 0xc4 / 255.0f;
-	config.pilldata.fg_color[1] = 0x93 / 255.0f;
-	config.pilldata.fg_color[2] = 0x9d / 255.0f;
-	config.pilldata.fg_color[3] = 1.0f;
-	config.pilldata.bg_color[0] = 0x32 / 255.0f;
-	config.pilldata.bg_color[1] = 0x32 / 255.0f;
-	config.pilldata.bg_color[2] = 0x32 / 255.0f;
-	config.pilldata.bg_color[3] = 1.0f;
-	config.pilldata.focus_fg_color[0] = 0xed / 255.0f;
-	config.pilldata.focus_fg_color[1] = 0xa6 / 255.0f;
-	config.pilldata.focus_fg_color[2] = 0xb4 / 255.0f;
-	config.pilldata.focus_fg_color[3] = 1.0f;
-	config.pilldata.focus_bg_color[0] = 0x4e / 255.0f;
-	config.pilldata.focus_bg_color[1] = 0x45 / 255.0f;
-	config.pilldata.focus_bg_color[2] = 0x3c / 255.0f;
-	config.pilldata.focus_bg_color[3] = 1.0f;
-	config.pilldata.border_color[0] = 0x8b / 255.0f;
-	config.pilldata.border_color[1] = 0xaa / 255.0f;
-	config.pilldata.border_color[2] = 0x9b / 255.0f;
-	config.pilldata.border_color[3] = 1.0f;
-	config.pilldata.border_width = 4;
-	config.pilldata.corner_radius = 5;
-	config.pilldata.padding_x = 0;
-	config.pilldata.padding_y = 0;
+	config.theme.fg_color[0] = 0xc4 / 255.0f;
+	config.theme.fg_color[1] = 0x93 / 255.0f;
+	config.theme.fg_color[2] = 0x9d / 255.0f;
+	config.theme.fg_color[3] = 1.0f;
+	config.theme.bg_color[0] = 0x32 / 255.0f;
+	config.theme.bg_color[1] = 0x32 / 255.0f;
+	config.theme.bg_color[2] = 0x32 / 255.0f;
+	config.theme.bg_color[3] = 1.0f;
+	config.theme.focus_fg_color[0] = 0xed / 255.0f;
+	config.theme.focus_fg_color[1] = 0xa6 / 255.0f;
+	config.theme.focus_fg_color[2] = 0xb4 / 255.0f;
+	config.theme.focus_fg_color[3] = 1.0f;
+	config.theme.focus_bg_color[0] = 0x4e / 255.0f;
+	config.theme.focus_bg_color[1] = 0x45 / 255.0f;
+	config.theme.focus_bg_color[2] = 0x3c / 255.0f;
+	config.theme.focus_bg_color[3] = 1.0f;
+	config.theme.urgent_color[0] = 0xff / 255.0f;
+	config.theme.urgent_color[1] = 0xb4 / 255.0f;
+	config.theme.urgent_color[2] = 0xab / 255.0f;
+	config.theme.urgent_color[3] = 1.0f;
+	config.theme.border_color[0] = 0x8b / 255.0f;
+	config.theme.border_color[1] = 0xaa / 255.0f;
+	config.theme.border_color[2] = 0x9b / 255.0f;
+	config.theme.border_color[3] = 1.0f;
+	config.theme.border_width = 4;
+	config.theme.corner_radius = 5;
+	config.theme.padding_x = 0;
+	config.theme.padding_y = 0;
 
 	config.rootcolor[0] = 0x32 / 255.0f;
 	config.rootcolor[1] = 0x32 / 255.0f;
@@ -4597,7 +4646,7 @@ bool parse_config(void) {
 	config.tag_rules = NULL;
 	config.tag_rules_count = 0;
 	config.cursor_theme = NULL;
-	config.pilldata.font_desc = NULL;
+	config.theme.font_desc = NULL;
 	config.tablet_map_to_mon = NULL;
 	strcpy(config.keymode, "default");
 

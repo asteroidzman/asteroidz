@@ -290,7 +290,7 @@ void asteroidz_icon_node_destroy(struct asteroidz_icon_node *node) {
 
 struct asteroidz_jump_label_node *
 asteroidz_jump_label_node_create(struct wlr_scene_tree *parent,
-							 DecorateDrawData data) {
+							 AsteroidzTheme data) {
 	struct asteroidz_jump_label_node *node = calloc(1, sizeof(*node));
 	if (!node)
 		return NULL;
@@ -717,7 +717,7 @@ void asteroidz_jump_label_node_set_focus(struct asteroidz_jump_label_node *node,
 
 struct asteroidz_tab_bar_node *
 asteroidz_tab_bar_node_create(void *asteroidz_node_data, struct wlr_scene_tree *parent,
-						  DecorateDrawData data, int32_t width,
+						  AsteroidzTheme data, int32_t width,
 						  int32_t height) {
 	struct asteroidz_tab_bar_node *node = calloc(1, sizeof(*node));
 	if (!node)
@@ -1426,7 +1426,7 @@ void asteroidz_tab_bar_node_set_colors(struct asteroidz_tab_bar_node *node,
 }
 
 void asteroidz_jump_label_node_apply_config(struct asteroidz_jump_label_node *node,
-										const DecorateDrawData *data) {
+										const AsteroidzTheme *data) {
 	if (!node || !data)
 		return;
 
@@ -1453,7 +1453,7 @@ void asteroidz_jump_label_node_apply_config(struct asteroidz_jump_label_node *no
 }
 
 void asteroidz_tab_bar_node_apply_config(struct asteroidz_tab_bar_node *node,
-									 const DecorateDrawData *data) {
+									 const AsteroidzTheme *data) {
 	if (!node || !data)
 		return;
 
@@ -1480,7 +1480,7 @@ void asteroidz_tab_bar_node_apply_config(struct asteroidz_tab_bar_node *node,
 }
 AsteroidzGroupBar *asteroidz_group_bar_create(void *cdata, uint32_t type,
 									  struct wlr_scene_tree *parent,
-									  DecorateDrawData data, int32_t width,
+									  AsteroidzTheme data, int32_t width,
 									  int32_t height) {
 	AsteroidzGroupBar *groupbar = calloc(1, sizeof(*groupbar));
 	if (!groupbar)
@@ -1888,7 +1888,7 @@ void asteroidz_group_bar_set_colors(AsteroidzGroupBar *node, const float fg[4],
 
 
 void asteroidz_group_bar_apply_config(AsteroidzGroupBar *node,
-								  const DecorateDrawData *data) {
+								  const AsteroidzTheme *data) {
 	if (!node || !data)
 		return;
 

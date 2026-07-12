@@ -2709,7 +2709,7 @@ static void screenshot_ui_layout_dim_and_border(void) {
 	wlr_scene_rect_set_size(shotui.dim[3], mw - (sx + sw), sh);
 
 	const int32_t bw =
-		config.pilldata.border_width > 0 ? config.pilldata.border_width : 2;
+		config.theme.border_width > 0 ? config.theme.border_width : 2;
 	bool have_sel = sw > 0 && sh > 0;
 
 	wlr_scene_node_set_position(&shotui.border[0]->node, sx, sy);
@@ -3094,20 +3094,20 @@ static void screenshot_ui_on_captured(Monitor *m, ScreenshotMode mode,
 	shotui.frame_node = wlr_scene_buffer_create(shotui.tree, frame);
 	wlr_scene_buffer_set_dest_size(shotui.frame_node, m->m.width, m->m.height);
 
-	/* border and label both pull from config.pilldata so the overlay matches
-	 * the pill theme. The selection border uses the FOCUS accent
+	/* border and label both pull from config.theme so the overlay matches
+	 * the native UI theme. The selection border uses the FOCUS accent
 	 * (focus_bg_color = the matugen primary, same accent as focused window
-	 * borders): pilldata.border_color is a legacy default the theme's
-	 * colors.kdl never sets (pills run border-width 0), so it doesn't follow
+	 * borders): theme.border_color is a legacy default the generated
+	 * colors.kdl never sets (theme border-width is 0), so it doesn't follow
 	 * the colour style. */
 	static const float dim_color[4] = {0.0f, 0.0f, 0.0f, 0.55f};
 	for (int32_t i = 0; i < 4; i++) {
 		shotui.dim[i] = wlr_scene_rect_create(shotui.tree, 0, 0, dim_color);
 		shotui.border[i] = wlr_scene_rect_create(shotui.tree, 0, 0,
-												 config.pilldata.focus_bg_color);
+												 config.theme.focus_bg_color);
 	}
 
-	shotui.label = asteroidz_jump_label_node_create(shotui.tree, config.pilldata);
+	shotui.label = asteroidz_jump_label_node_create(shotui.tree, config.theme);
 	if (shotui.label) {
 		asteroidz_jump_label_node_set_focus(shotui.label, true);
 		wlr_scene_node_set_enabled(&shotui.label->scene_buffer->node, false);

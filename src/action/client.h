@@ -131,7 +131,7 @@ void client_pending_force_kill(Client *c) {
 
 void client_add_jump_label_node(Client *c) {
 	c->jump_label_node =
-		asteroidz_jump_label_node_create(c->scene, config.pilldata);
+		asteroidz_jump_label_node_create(c->scene, config.theme);
 	wlr_scene_node_lower_to_bottom(&c->jump_label_node->scene_buffer->node);
 	wlr_scene_node_set_enabled(&c->jump_label_node->scene_buffer->node, false);
 }
@@ -148,7 +148,7 @@ void client_add_titlebar(Client *c) {
 	closedata->type = ASTEROIDZ_TITLEBAR_CLOSE_NODE;
 
 	c->titlebar_close_node = asteroidz_tab_bar_node_create(
-		closedata, layers[LyrDecorate], config.pilldata, 0, 0);
+		closedata, layers[LyrDecorate], config.theme, 0, 0);
 	asteroidz_tab_bar_node_set_enabled(c->titlebar_close_node, false);
 	/* same drop shadow as the window itself (tiled scale), so the titlebar
 	 * casts a matching shadow */
@@ -170,7 +170,7 @@ void client_add_titlebar(Client *c) {
 	nodedata->type = ASTEROIDZ_TITLEBAR_NODE;
 
 	c->titlebar_node = asteroidz_tab_bar_node_create(
-		nodedata, layers[LyrDecorate], config.pilldata, 0, 0);
+		nodedata, layers[LyrDecorate], config.theme, 0, 0);
 	asteroidz_tab_bar_node_set_enabled(c->titlebar_node, false);
 	asteroidz_tab_bar_node_set_shadow(
 		c->titlebar_node, config.shadows,
@@ -196,7 +196,7 @@ void client_add_group_bar(Client *c) {
 														: LyrTile;
 
 	c->group_bar = asteroidz_group_bar_create(c, GroupBar, layers[layer],
-										  config.pilldata, 0, 0);
+										  config.theme, 0, 0);
 	wlr_scene_node_lower_to_bottom(&c->group_bar->scene_buffer->node);
 	wlr_scene_node_set_enabled(&c->group_bar->scene_buffer->node, false);
 	asteroidz_group_bar_update(c->group_bar, client_get_title(c),
@@ -350,14 +350,14 @@ void client_set_group_config(Client *c) {
 	Client *cur = head;
 	while (cur) {
 		asteroidz_jump_label_node_apply_config(cur->jump_label_node,
-										   &config.pilldata);
-		asteroidz_tab_bar_node_apply_config(cur->titlebar_node, &config.pilldata);
+										   &config.theme);
+		asteroidz_tab_bar_node_apply_config(cur->titlebar_node, &config.theme);
 		asteroidz_tab_bar_node_set_shadow(
 			cur->titlebar_node, config.shadows,
 			config.shadows_blur * config.shadows_tiled_scale,
 			(int32_t)config.shadows_position_y, config.shadowscolor);
 		asteroidz_tab_bar_node_apply_config(cur->titlebar_close_node,
-										&config.pilldata);
+										&config.theme);
 		asteroidz_tab_bar_node_set_shadow(
 			cur->titlebar_close_node, config.shadows,
 			config.shadows_blur * config.shadows_tiled_scale,
@@ -366,7 +366,7 @@ void client_set_group_config(Client *c) {
 		wlr_scene_rect_set_color(cur->droparea, config.dropcolor);
 		wlr_scene_rect_set_color(cur->splitindicator[0], config.splitcolor);
 		wlr_scene_rect_set_color(cur->splitindicator[1], config.splitcolor);
-		asteroidz_group_bar_apply_config(cur->group_bar, &config.pilldata);
+		asteroidz_group_bar_apply_config(cur->group_bar, &config.theme);
 		cur = cur->group_next;
 	}
 }
