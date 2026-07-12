@@ -156,112 +156,6 @@ int32_t focusdir(const Arg *arg) {
 	return 0;
 }
 
-int32_t groupleave(const Arg *arg) {
-
-	if (!selmon)
-		return 0;
-	Client *tc = arg->tc ? arg->tc : selmon->sel;
-	if (!tc || !tc->mon || !tc->isgroupfocusing)
-		return 0;
-	if (!tc->group_next && !tc->group_prev) {
-		return 0;
-	}
-
-	if (tc->mon->isoverview)
-		return 0;
-
-	Client *rc = tc->group_next ? tc->group_next : tc->group_prev;
-
-	client_focus_group_member(rc);
-	client_group_detach(tc);
-
-	tc->isgroupfocusing = false;
-
-	/* fork adaptation: without the is_logic_hide mechanism the leaver was
-	 * removed from the client lists and hidden by client_replace, so put
-	 * it back and re-enable its scene */
-	if (tc->link.prev == &tc->link)
-		wl_list_insert(&rc->link, &tc->link);
-	if (tc->flink.prev == &tc->flink)
-		wl_list_insert(&rc->flink, &tc->flink);
-	wlr_scene_node_set_enabled(&tc->scene->node, true);
-	wlr_scene_node_set_enabled(&tc->scene_surface->node, true);
-
-	if (!rc->group_prev && !rc->group_next) {
-		rc->isgroupfocusing = false;
-	}
-
-	arrange(tc->mon, false, false);
-
-	return 0;
-}
-
-int32_t groupjoin(const Arg *arg) {
-
-	if (!selmon)
-		return 0;
-
-	Monitor *oldmon = NULL;
-
-	Client *need_join_client = arg->tc ? arg->tc : selmon->sel;
-	if (!need_join_client || !need_join_client->mon)
-		return 0;
-
-	if (need_join_client->mon->isoverview)
-		return 0;
-
-	Client *need_replace_client = NULL;
-	need_replace_client = direction_select(arg);
-
-	if (!need_replace_client || !need_replace_client->mon)
-		return 0;
-
-	if (need_join_client == need_replace_client)
-		return 0;
-
-	/* locked groups refuse membership changes: neither pull a window into
-	 * a locked target group nor rip one out of its locked group */
-	if (need_replace_client->group_locked || need_join_client->group_locked)
-		return 0;
-
-	/* deny_group windows can never be pulled into a group */
-	if (need_join_client->deny_group || need_replace_client->deny_group)
-		return 0;
-
-	if (need_join_client->group_next || need_join_client->group_prev) {
-		groupleave(&(Arg){.tc = need_join_client});
-	}
-
-	if (need_join_client->mon != need_replace_client->mon) {
-		oldmon = need_join_client->mon;
-		need_join_client->mon = need_replace_client->mon;
-	}
-
-	if (!need_replace_client->group_prev && !need_replace_client->group_next) {
-		need_replace_client->isgroupfocusing = true;
-	}
-
-	need_join_client->group_next = need_replace_client;
-
-	if (need_replace_client->group_prev) {
-		need_replace_client->group_prev->group_next = need_join_client;
-	}
-
-	need_join_client->group_prev = need_replace_client->group_prev;
-
-	need_replace_client->group_prev = need_join_client;
-
-	client_focus_group_member(need_join_client);
-	arrange(need_join_client->mon, false, false);
-
-	// oldmon may already be dead
-	if (oldmon) {
-		arrange(oldmon, false, false);
-	}
-
-	return 0;
-}
-
 int32_t focuslast(const Arg *arg) {
 	Client *c = NULL;
 	Client *tc = NULL;
@@ -367,106 +261,6 @@ int32_t focusstack(const Arg *arg) {
 	return 0;
 }
 
-int32_t groupfocus(const Arg *arg) {
-	Client *c = arg->tc ? arg->tc : selmon->sel;
-	if (!c || !c->mon)
-		return 0;
-
-	if (!c->group_prev && !c->group_next) {
-		return 0;
-	}
-
-	if (c->mon->isoverview)
-		return 0;
-
-	Client *tc = NULL;
-
-	if (arg->i == NEXT) {
-		tc = c->group_next;
-	} else {
-		tc = c->group_prev;
-	}
-
-	if (!tc)
-		return 0;
-
-	client_focus_group_member(tc);
-	arrange(tc->mon, false, false);
-	return 0;
-}
-
-int32_t grouplock(const Arg *arg) {
-	if (!selmon)
-		return 0;
-
-	Client *c = arg->tc ? arg->tc : selmon->sel;
-	if (!c || !c->mon)
-		return 0;
-
-	if (!c->group_prev && !c->group_next)
-		return 0;
-
-	bool lock_state = !c->group_locked;
-
-	Client *head = c;
-	while (head->group_prev)
-		head = head->group_prev;
-
-	/* keep the lock state in sync on every member of the group */
-	for (Client *cur = head; cur; cur = cur->group_next)
-		cur->group_locked = lock_state;
-
-	return 0;
-}
-
-int32_t movegroupwindow(const Arg *arg) {
-	if (!selmon)
-		return 0;
-
-	Client *c = arg->tc ? arg->tc : selmon->sel;
-	if (!c || !c->mon)
-		return 0;
-
-	if (!c->group_prev && !c->group_next)
-		return 0;
-
-	if (c->mon->isoverview)
-		return 0;
-
-	Client *n = arg->i == NEXT ? c->group_next : c->group_prev;
-	if (!n) /* no wraparound */
-		return 0;
-
-	if (arg->i == NEXT) {
-		/* ... p, c, n, q ... -> ... p, n, c, q ... */
-		Client *p = c->group_prev, *q = n->group_next;
-		n->group_prev = p;
-		if (p)
-			p->group_next = n;
-		n->group_next = c;
-		c->group_prev = n;
-		c->group_next = q;
-		if (q)
-			q->group_prev = c;
-	} else {
-		/* ... p, n, c, q ... -> ... p, c, n, q ... */
-		Client *p = n->group_prev, *q = c->group_next;
-		c->group_prev = p;
-		if (p)
-			p->group_next = c;
-		c->group_next = n;
-		n->group_prev = c;
-		n->group_next = q;
-		if (q)
-			q->group_prev = n;
-	}
-
-	client_draw_title(c);
-	client_draw_titlebar(c);
-	arrange(c->mon, false, false);
-	return 0;
-}
-
 int32_t pin(const Arg *arg) {
 	if (!selmon)
 		return 0;
@@ -481,7 +275,6 @@ int32_t pin(const Arg *arg) {
 		if (!c->isfloating)
 			setfloating(c, 1);
 		wlr_scene_node_raise_to_top(&c->scene->node);
-		client_raise_group(c);
 	}
 
 	arrange(c->mon, false, false);
@@ -598,7 +391,7 @@ int32_t begin_move_or_resize(Client *target, uint32_t mode);
 int32_t moveresize(const Arg *arg) {
 	if (cursor_mode != CurNormal && cursor_mode != CurPressed)
 		return 0;
-	xytonode(cursor->x, cursor->y, NULL, &grabc, NULL, NULL, NULL, NULL);
+	xytonode(cursor->x, cursor->y, NULL, &grabc, NULL, NULL, NULL);
 	if (!grabc || client_is_unmanaged(grabc) || grabc->isfullscreen ||
 		grabc->ismaximizescreen) {
 		grabc = NULL;
@@ -1812,7 +1605,6 @@ int32_t toggleoverlay(const Arg *arg) {
 								layers[c->isfloating ? LyrTop : LyrTile]);
 	}
 
-	client_reparent_group(c);
 	setborder_color(c);
 	return 0;
 }
@@ -2451,8 +2243,8 @@ int32_t scroller_consume(const Arg *arg) {
 		!VISIBLEON(c, selmon))
 		return 0;
 
-	/* pinned windows and window group members don't participate in stacking */
-	if (c->ispinned || c->group_next || c->group_prev)
+	/* pinned windows don't participate in stacking */
+	if (c->ispinned)
 		return 0;
 
 	Monitor *m = c->mon;
@@ -2477,8 +2269,7 @@ int32_t scroller_consume(const Arg *arg) {
 		break;
 	}
 
-	if (!next_head || next_head->ispinned || next_head->group_next ||
-		next_head->group_prev)
+	if (!next_head || next_head->ispinned)
 		return 0;
 
 	scroller_apply_stack(next_head, tail, UNDIR);
@@ -2496,8 +2287,8 @@ int32_t scroller_expel(const Arg *arg) {
 		!VISIBLEON(c, selmon))
 		return 0;
 
-	/* pinned windows and window group members don't participate in stacking */
-	if (c->ispinned || c->group_next || c->group_prev)
+	/* pinned windows don't participate in stacking */
+	if (c->ispinned)
 		return 0;
 
 	Monitor *m = c->mon;

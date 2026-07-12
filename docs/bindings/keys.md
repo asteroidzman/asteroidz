@@ -111,18 +111,6 @@ binds {
 | `exchange_stack_client` | `next/prev` | Exchange window position in stack. |
 | `zoom` | - | Swap focused window with Master. |
 
-### Window Groups
-
-| Command | Param | Description |
-| :--- | :--- | :--- |
-| `group_join` | `left/right/up/down` | Join the group of (or form a group with) the window in the given direction. |
-| `group_leave` | - | Leave the current group. |
-| `group_focus` | `next/prev` | Focus the next/previous member of the current group. |
-| `group_lock` | - | Toggle the group lock. A locked group refuses new members and keeps its current ones (`group_join` into or out of it is denied). |
-| `move_group_window` | `next/prev` | Swap the focused window with its next/previous neighbor inside the group bar (no wraparound). |
-
-> **Tip:** Scrolling the mouse wheel over a group bar also cycles through the group members. Windows matched by the `deny_group` window rule can never be pulled into a group.
-
 ### Tags & Monitors
 
 | Command | Param | Description |

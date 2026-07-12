@@ -105,14 +105,6 @@ binds {
     Super+Ctrl+l { retrain_monitor name:^DP-1$; }
     Super+Ctrl+Up { set_sdr_luminance +25; }
     Super+Ctrl+Down { set_sdr_luminance -25; }
-    Super+Ctrl+Left { groupjoin left; }
-    Super+Ctrl+Right { groupjoin right; }
-    Super+Ctrl+g { groupleave; }
-    Super+Ctrl+Tab { groupfocus next; }
-    Super+Ctrl+Shift+Tab { groupfocus prev; }
-    Super+Ctrl+k { grouplock; }
-    Super+Ctrl+comma { movegroupwindow prev; }
-    Super+Ctrl+period { movegroupwindow next; }
     Super+Shift+p { pin; }
     Super+grave { togglespecialworkspace term; }
     Super+Shift+grave { movetospecialworkspace term; }

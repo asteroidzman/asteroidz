@@ -213,8 +213,7 @@ enum {
 	X11,
 	Snapshot,
 	XdgPopup,
-	XdgImPopup,
-	GroupBar
+	XdgImPopup
 }; /* client types (the tag lives in the first struct member so generic
 	  scene node.data walks in xytonode can identify the owner) */
 enum { AxisUp, AxisDown, AxisLeft, AxisRight }; // scroll wheel direction
@@ -316,7 +315,7 @@ typedef struct {
 } AsteroidzNodeData;
 
 /* xytonode/handle_buttonpress read the FIRST uint32 of any scene node.data as
- * a type tag, punned across Client, LayerSurface, AsteroidzGroupBar and
+ * a type tag, punned across Client, LayerSurface and
  * AsteroidzNodeData -- pin the convention at compile time. */
 _Static_assert(offsetof(AsteroidzNodeData, type) == 0,
 			   "node.data type tag must be the first member");
@@ -426,7 +425,6 @@ struct Client {
 	struct wlr_scene_tree *scene_surface;
 	struct wlr_scene_tree *overview_scene_surface;
 	struct asteroidz_jump_label_node *jump_label_node;
-	AsteroidzGroupBar *group_bar;
 	struct asteroidz_tab_bar_node *titlebar_node;
 	struct asteroidz_tab_bar_node *titlebar_close_node;
 	struct asteroidz_icon_node *ov_icon; /* app icon on overview thumbnail */
@@ -566,11 +564,6 @@ struct Client {
 	int32_t grid_col_idx;
 	int32_t grid_row_idx;
 	uint32_t id;
-	Client *group_prev;
-	Client *group_next;
-	bool isgroupfocusing;
-	bool group_locked;
-	int32_t deny_group;
 	int32_t ispinned;
 	/* When this client last lost focus (ms). Used for focus-stealing
 	 * prevention: an X11 app that re-fires request_activate right after the
@@ -1002,14 +995,12 @@ static void virtualpointer(struct wl_listener *listener, void *data);
 static void warp_cursor(const Client *c);
 static Monitor *xytomon(double x, double y);
 static void xytonode(double x, double y, struct wlr_surface **psurface,
-					 Client **pc, LayerSurface **pl, AsteroidzGroupBar **gb,
-					 double *nx, double *ny);
+					 Client **pc, LayerSurface **pl, double *nx, double *ny);
 static void clear_fullscreen_flag(Client *c);
 static pid_t getparentprocess(pid_t p);
 static int32_t isdescprocess(pid_t p, pid_t c);
 static Client *termforwin(Client *w);
-static void client_replace(Client *c, Client *w, bool is_group_change_member,
-						   bool is_swallow);
+static void client_replace(Client *c, Client *w);
 
 static void warp_cursor_to_selmon(Monitor *m);
 uint32_t want_restore_fullscreen(Client *target_client);
@@ -1170,10 +1161,7 @@ static void overview_backup_surface(Client *c);
 static void create_jump_hints(Monitor *m);
 static void finish_jump_mode(Monitor *m);
 static void begin_jump_mode(Monitor *m);
-static void global_draw_group_bar(Client *c, int32_t x, int32_t y,
-								  int32_t width, int32_t height);
-static void client_reparent_group(Client *c);
-static void client_set_group_config(Client *c);
+static void client_apply_decoration_config(Client *c);
 void client_change_mon(Client *c, Monitor *m);
 
 #include "data/static_keymap.h"
@@ -1575,8 +1563,7 @@ void client_update_oldmonname_record(Client *c, Monitor *m) {
 	c->oldmonname[sizeof(c->oldmonname) - 1] = '\0';
 }
 
-void client_replace(Client *c, Client *w, bool is_group_change_member,
-					bool is_swallow) {
+void client_replace(Client *c, Client *w) {
 	c->bw = w->bw;
 	c->isfloating = w->isfloating;
 	c->isurgent = w->isurgent;
@@ -1594,12 +1581,6 @@ void client_replace(Client *c, Client *w, bool is_group_change_member,
 	c->overview_backup_geom = w->overview_backup_geom;
 	c->animation.current = w->animation.current;
 	c->stack_proportion = w->stack_proportion;
-
-	if (is_swallow || !is_group_change_member) {
-		client_group_replace(w, c);
-	}
-
-	asteroidz_group_bar_set_focus(c->group_bar, c->isgroupfocusing);
 
 	if (w->overview_scene_surface) {
 
@@ -1620,10 +1601,6 @@ void client_replace(Client *c, Client *w, bool is_group_change_member,
 	}
 	if (w->titlebar_close_node) {
 		asteroidz_tab_bar_node_set_enabled(w->titlebar_close_node, false);
-	}
-
-	if (w->group_bar && !is_group_change_member) {
-		wlr_scene_node_set_enabled(&w->group_bar->scene_buffer->node, false);
 	}
 
 	/* global list swap: the fork keeps replaced/hidden clients OUT of the
@@ -2062,7 +2039,6 @@ static void apply_rule_properties(Client *c, const ConfigWinRule *r) {
 	APPLY_INT_PROP(c, r, isnoshadow);
 	APPLY_INT_PROP(c, r, vrr_only_fullscreen);
 	APPLY_INT_PROP(c, r, shield_when_capture);
-	APPLY_INT_PROP(c, r, deny_group);
 	APPLY_INT_PROP(c, r, ispinned);
 	APPLY_INT_PROP(c, r, isnoradius);
 	APPLY_INT_PROP(c, r, isnoanimation);
@@ -2286,7 +2262,7 @@ void applyrules(Client *c) {
 			c->swallowedby = p;
 			p->swallowing = c;
 
-			client_replace(c, p, false, true);
+			client_replace(c, p);
 
 			mon = p->mon;
 			newtags = p->tags;
@@ -2620,27 +2596,6 @@ axisnotify(struct wl_listener *listener, void *data) {
 
 	mods = mods | hard_mods;
 
-	// scrolling over a group bar cycles the focused group member
-	if (!locked && CLEANMASK(mods) == 0) {
-		AsteroidzGroupBar *gb = NULL;
-		Client *gc = NULL, *tc = NULL;
-		xytonode(cursor->x, cursor->y, NULL, NULL, NULL, &gb, NULL, NULL);
-		if (gb && gb->node_data) {
-			gc = gb->node_data;
-			while (gc->group_prev)
-				gc = gc->group_prev;
-			for (; gc; gc = gc->group_next)
-				if (gc->isgroupfocusing)
-					break;
-			if (gc)
-				tc = event->delta > 0 ? gc->group_next : gc->group_prev;
-			if (tc) {
-				client_focus_group_member(tc);
-				return;
-			}
-		}
-	}
-
 	/* overview: consume the scroll wheel entirely so it can't leak to the real
 	 * scroller layout (which would desync the overview); pan the big area if a
 	 * scroller preview enabled it */
@@ -2938,7 +2893,6 @@ bool handle_buttonpress(struct wlr_pointer_button_event *event) {
 	uint32_t hard_mods, mods;
 	Client *c = NULL;
 	LayerSurface *l = NULL;
-	AsteroidzGroupBar *gb = NULL;
 	struct wlr_surface *surface;
 	Client *tmpc = NULL;
 	int32_t ji;
@@ -2962,7 +2916,7 @@ bool handle_buttonpress(struct wlr_pointer_button_event *event) {
 		if (locked)
 			break;
 
-		xytonode(cursor->x, cursor->y, &surface, NULL, NULL, &gb, NULL, NULL);
+		xytonode(cursor->x, cursor->y, &surface, NULL, NULL, NULL, NULL);
 		if (toplevel_from_wlr_surface(surface, &c, &l) >= 0) {
 			if (c && c->scene->node.enabled &&
 				(!client_is_unmanaged(c) || client_wants_focus(c)))
@@ -3042,9 +2996,6 @@ bool handle_buttonpress(struct wlr_pointer_button_event *event) {
 				}
 			}
 		}
-
-		// handle click on a group bar segment
-		client_handle_decorate_click(gb);
 
 		// while pointer focus is on a layer, don't check the virtual keyboard's mod state,
 		// to avoid the layer's virtual keyboard getting stuck with a mod key held
@@ -3440,17 +3391,9 @@ void closemon(Monitor *m) {
 					c->foreign_toplevel = NULL;
 				}
 
-				/* clear the whole group chain directly: hidden group
-				 * members are not in the clients list and setmon on a
-				 * dying monitor is unsafe here */
 				c->mon = NULL;
-				for (Client *gc = c->group_prev; gc; gc = gc->group_prev)
-					gc->mon = NULL;
-				for (Client *gc = c->group_next; gc; gc = gc->group_next)
-					gc->mon = NULL;
 			} else {
 				client_change_mon(c, selmon);
-				client_set_group_mon(c, selmon);
 			}
 			// record the oldmonname which is used to restore
 			if (c->oldmonname[0] == '\0') {
@@ -4931,7 +4874,6 @@ void focusclient(Client *c, int32_t lift) {
 
 	/* Raise client in stacking order if requested */
 	if (c && lift) {
-		client_raise_group(c);
 		wlr_scene_node_raise_to_top(&c->scene->node); // raise the view to the top
 	}
 
@@ -5596,14 +5538,10 @@ void client_update_blur(Client *c) {
 }
 
 void init_client_properties(Client *c) {
-	c->isgroupfocusing = false;
-	c->group_prev = NULL;
-	c->group_next = NULL;
 	c->grid_col_per = 1.0f;
 	c->grid_row_per = 1.0f;
 	c->is_monocle_hide = false;
 	c->jump_label_node = NULL;
-	c->group_bar = NULL;
 	c->titlebar_node = NULL;
 	c->titlebar_close_node = NULL;
 	c->ov_icon = NULL;
@@ -5773,7 +5711,6 @@ mapnotify(struct wl_listener *listener, void *data) {
 		wlr_scene_node_set_enabled(&c->splitindicator[i]->node, false);
 	}
 
-	client_add_group_bar(c);
 	client_add_titlebar(c);
 
 	c->droparea = wlr_scene_rect_create(c->scene, 0, 0, config.dropcolor);
@@ -6131,7 +6068,7 @@ void motionnotify(uint32_t time, struct wlr_input_device *device, double dx,
 	}
 
 	/* Find the client under the pointer and send the event along. */
-	xytonode(cursor->x, cursor->y, &surface, &c, NULL, NULL, &sx, &sy);
+	xytonode(cursor->x, cursor->y, &surface, &c, NULL, &sx, &sy);
 
 	/* overview: outline the big-area window under the pointer */
 	if (selmon && selmon->isoverview)
@@ -7145,8 +7082,6 @@ setfloating(Client *c, int32_t floating) {
 								layers[c->isfloating ? LyrTop : LyrTile]);
 	}
 
-	client_reparent_group(c);
-
 	if (c->isfloating) {
 		set_size_per(c->mon, c);
 	}
@@ -7178,11 +7113,6 @@ void reset_maximizescreen_size(Client *c) {
 	geom.y = c->mon->w.y + config.gappov;
 	geom.width = c->mon->w.width - 2 * config.gappoh;
 	geom.height = c->mon->w.height - 2 * config.gappov;
-
-	if (c->group_next || c->group_prev) {
-		geom.height -= config.group_bar_height;
-		geom.y += config.group_bar_height;
-	}
 
 	resize(c, geom, 0);
 }
@@ -7226,11 +7156,6 @@ void setmaximizescreen(Client *c, int32_t maximizescreen, bool rearrange) {
 		maximizescreen_box.width = c->mon->w.width - 2 * config.gappoh;
 		maximizescreen_box.height = c->mon->w.height - 2 * config.gappov;
 
-		if (c->group_next || c->group_prev) {
-			maximizescreen_box.height -= config.group_bar_height;
-			maximizescreen_box.y += config.group_bar_height;
-		}
-
 		wlr_scene_node_raise_to_top(&c->scene->node);
 		if (!is_scroller_layout(c->mon) || c->isfloating)
 			resize(c, maximizescreen_box, 0);
@@ -7244,7 +7169,6 @@ void setmaximizescreen(Client *c, int32_t maximizescreen, bool rearrange) {
 							layers[c->ismaximizescreen ? LyrMaximize
 								   : c->isfloating	   ? LyrTop
 													   : LyrTile]);
-	client_reparent_group(c);
 
 	if (!c->force_fakemaximize && !c->ismaximizescreen) {
 		client_set_maximized(c, false);
@@ -7314,7 +7238,6 @@ void setfullscreen(Client *c, int32_t fullscreen,
 			layers[fullscreen || c->isfloating ? LyrTop : LyrTile]);
 	}
 
-	client_reparent_group(c);
 	check_vrr_enable(c);
 
 	if (rearrange)
@@ -8018,7 +7941,7 @@ void overview_backup_surface(Client *c) {
 	 * the overview opened and cut the app's frame callbacks; keeping the real
 	 * surface means video, terminals, etc. keep updating in the overview.
 	 * Left as a no-op (rather than deleting call sites) so the overview
-	 * enter/map/group paths that call it stay simple. */
+	 * enter/map paths that call it stay simple. */
 	(void)c;
 }
 
@@ -8401,9 +8324,6 @@ void unmapnotify(struct wl_listener *listener, void *data) {
 		target_node ? target_node->next_in_stack : NULL;
 
 	if (config.animations && !c->is_clip_to_hide && !c->isminimized &&
-		/* hidden (non-focusing) group members have a disabled scene and
-		 * must not spawn a close animation */
-		(c->isgroupfocusing || (!c->group_prev && !c->group_next)) &&
 		(!c->mon || VISIBLEON(c, c->mon)))
 		init_fadeout_client(c);
 
@@ -8411,12 +8331,7 @@ void unmapnotify(struct wl_listener *listener, void *data) {
 
 	if (c->swallowedby) {
 		c->swallowedby->mon = c->mon;
-		client_replace(c->swallowedby, c, false, true);
-	} else if ((c->group_next || c->group_prev) && c->isgroupfocusing) {
-		Client *group_replacement =
-			c->group_next ? c->group_next : c->group_prev;
-		group_replacement->mon = c->mon;
-		client_replace(group_replacement, c, false, false);
+		client_replace(c->swallowedby, c);
 	} else {
 		scroller_remove_client(c);
 		dwindle_remove_client(c);
@@ -8478,19 +8393,14 @@ void unmapnotify(struct wl_listener *listener, void *data) {
 			focusclient(focustop(selmon), 1);
 	} else {
 
-		bool is_in_group = c->group_next || c->group_prev;
-		bool was_group_focusing = c->isgroupfocusing;
-
-		client_group_detach(c);
-
-		if (!c->swallowing && (!is_in_group || was_group_focusing)) {
+		if (!c->swallowing) {
 			if (c->link.prev && c->link.next && c->link.prev != &c->link) {
 				wl_list_remove(&c->link);
 				wl_list_init(&c->link);
 			}
 		}
 		setmon(c, NULL, 0, true);
-		if (!c->swallowing && (!is_in_group || was_group_focusing)) {
+		if (!c->swallowing) {
 			if (c->flink.prev && c->flink.next && c->flink.prev != &c->flink) {
 				wl_list_remove(&c->flink);
 				wl_list_init(&c->flink);
@@ -8521,10 +8431,6 @@ void unmapnotify(struct wl_listener *listener, void *data) {
 	if (c->jump_label_node) {
 		asteroidz_jump_label_node_destroy(c->jump_label_node);
 		c->jump_label_node = NULL;
-	}
-	if (c->group_bar) {
-		asteroidz_group_bar_destroy(c->group_bar);
-		c->group_bar = NULL;
 	}
 	if (c->titlebar_node) {
 		asteroidz_tab_bar_node_destroy(c->titlebar_node);
@@ -8706,10 +8612,6 @@ void updatetitle(struct wl_listener *listener, void *data) {
 							? c->titlebar_node->last_scale
 							: 1.0f;
 	asteroidz_tab_bar_node_update(c->titlebar_node, title, title_scale);
-	asteroidz_group_bar_update(c->group_bar, title,
-						   c->mon	? c->mon->wlr_output->scale
-						   : selmon ? selmon->wlr_output->scale
-									: 1.0f);
 	if (title && c->foreign_toplevel)
 		wlr_foreign_toplevel_handle_v1_set_title(c->foreign_toplevel, title);
 	client_update_ext_foreign_toplevel(c);

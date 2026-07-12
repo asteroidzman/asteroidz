@@ -607,22 +607,13 @@ void client_draw_monocle_titlebar_segment(Client *c, int32_t x, int32_t y,
 	asteroidz_tab_bar_node_set_focus(c->titlebar_node, focused);
 }
 
-void global_draw_group_bar(Client *c, int32_t x, int32_t y, int32_t width,
-						   int32_t height) {
-	if (!c->group_bar)
-		return;
-
-	wlr_scene_node_set_position(&c->group_bar->scene_buffer->node, x, y);
-	asteroidz_group_bar_set_size(c->group_bar, width, height);
-}
-
 /* position the titlebar strip just above the client's current (animated)
  * geometry. BeOS-style: a compact tab sized to a fraction of the window
  * width (not a full-width strip), left-aligned, with the close button
  * immediately to its right rather than pinned to the window's far edge.
- * Mirrors client_draw_title()'s geometry-linked update pattern, but is
- * unconditional (not gated on group membership) since a titlebar applies to
- * any tiled client while config.enable_titlebar is set. */
+ * Geometry-linked: re-run whenever the client's animated geometry changes,
+ * since a titlebar applies to any tiled client while config.enable_titlebar
+ * is set. */
 void client_draw_titlebar(Client *c) {
 	if (!c || !c->mon || !c->titlebar_node)
 		return;
@@ -740,94 +731,6 @@ void client_draw_titlebar(Client *c) {
 	asteroidz_tab_bar_node_set_content_scale(c->titlebar_node, tbs);
 	asteroidz_tab_bar_node_update(c->titlebar_node, client_get_title(c), 1.0);
 	asteroidz_tab_bar_node_set_focus(c->titlebar_node, focused);
-}
-
-void client_draw_title(Client *c) {
-
-	if (!c || !c->mon || !c->group_bar)
-		return;
-
-	if (!c->group_next && !c->group_prev &&
-		c->group_bar->scene_buffer->node.enabled) {
-		wlr_scene_node_set_enabled(&c->group_bar->scene_buffer->node, false);
-		return;
-	}
-
-	if (c->is_monocle_hide)
-		return;
-
-	if (!c->group_next && !c->group_prev)
-		return;
-
-	Client *head = c;
-	while (head->group_prev)
-		head = head->group_prev;
-
-	int count = 0;
-	Client *cur = head;
-	while (cur) {
-		count++;
-		cur = cur->group_next;
-	}
-
-	int32_t tab_x = c->animation.current.x;
-	int32_t tab_y = c->animation.current.y - config.group_bar_height;
-	int32_t tw = c->animation.current.width;
-	int32_t th = config.group_bar_height;
-
-	int32_t left_over = c->mon->m.x - tab_x;
-	int32_t right_over = tab_x + tw - c->mon->m.x - c->mon->m.width;
-	int32_t top_over = c->mon->m.y - tab_y;
-	int32_t bottom_over =
-		tab_y + config.group_bar_height - c->mon->m.y - c->mon->m.height;
-
-	if (c == grabc || (!ISSCROLLTILED(c) && !c->animation.tagining &&
-					   !c->animation.tagouting)) {
-		top_over = 0;
-		bottom_over = 0;
-		left_over = 0;
-		right_over = 0;
-	}
-
-	if (top_over > 0) {
-		tab_y = c->mon->m.y;
-		th = config.group_bar_height - top_over;
-	}
-	if (bottom_over > 0) {
-		th = th - bottom_over;
-	}
-	if (right_over > 0) {
-		tw = tw - right_over;
-	}
-	if (left_over > 0) {
-		tab_x = c->mon->m.x;
-		tw = tw - left_over;
-	}
-
-	if (tw <= 0 || th <= 0) {
-		cur = head;
-		while (cur) {
-			if (cur->group_bar)
-				wlr_scene_node_set_enabled(&cur->group_bar->scene_buffer->node,
-										   false);
-			cur = cur->group_next;
-		}
-		return;
-	} else {
-		client_check_tab_node_visible(c);
-	}
-
-	int32_t bar_w = tw / count;
-	int32_t rem = tw % count;
-	int32_t x = tab_x;
-	cur = head;
-
-	for (int i = 0; i < count && cur; i++) {
-		int32_t w = bar_w + (i < rem ? 1 : 0);
-		global_draw_group_bar(cur, x, tab_y, w, th);
-		x += w;
-		cur = cur->group_next;
-	}
 }
 
 void apply_split_border(Client *c, bool hit_no_border) {
@@ -1291,7 +1194,6 @@ void client_apply_clip(Client *c, float factor) {
 		apply_border(c);
 		client_draw_shadow(c);
 
-		client_draw_title(c);
 		client_draw_titlebar(c);
 
 		if (clip_box.width <= 0 || clip_box.height <= 0) {
@@ -1343,7 +1245,6 @@ void client_apply_clip(Client *c, float factor) {
 	apply_border(c);
 	client_draw_shadow(c);
 
-	client_draw_title(c);
 	client_draw_titlebar(c);
 
 	// Skip rendering the window surface if the clip area has shrunk to 0
@@ -1619,8 +1520,8 @@ void client_animation_next_tick(Client *c) {
 		}
 
 		struct wlr_surface *pointer_surf = NULL;
-		xytonode(cursor->x, cursor->y, &pointer_surf, &pointer_c, NULL, NULL,
-				 &sx, &sy);
+		xytonode(cursor->x, cursor->y, &pointer_surf, &pointer_c, NULL, &sx,
+				 &sy);
 
 		/* only re-enter when the cursor is over the client's actual SURFACE:
 		 * xytonode also resolves the client for hover over its titlebar TAB,
@@ -1899,7 +1800,6 @@ void resize(Client *c, struct wlr_box geo, int32_t interact) {
 
 		client_draw_shadow(c);
 		apply_border(c);
-		client_draw_title(c);
 		client_draw_titlebar(c);
 		client_get_clip(c, &clip);
 		wlr_scene_subsurface_tree_set_clip(&c->scene_surface->node, &clip);

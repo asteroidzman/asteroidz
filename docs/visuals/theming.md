@@ -50,7 +50,7 @@ You can also color-code windows based on their state:
 ### Theme
 
 Every native UI overlay — the monocle layout's tab bar, per-window titlebars,
-window-group bars (`groupjoin`), overview jump-mode letter labels, and the
+overview jump-mode letter labels, and the
 `screenshot_ui` size badge and selection border — shares this single style,
 set in the `theme { ... }` block. There's no separate theming for any of
 them; changing a `theme_*` key restyles all of them at once.
