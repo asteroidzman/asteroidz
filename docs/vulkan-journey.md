@@ -343,8 +343,13 @@ Eight coordinated fx_vk improvements, merged to scenefx main, packaged as
   via SPIR-V offset dump + RMSE compare). Look for
   `fx_vk: compute dual-Kawase blur enabled` in the log.
 - **Blur post effects folded into the final upsample** (graphics AND compute)
-  — the separate `blur_effects` fullscreen pass is gone; effects now run in
-  perceptual (gamma 2.2) space on unpremultiplied rgb for GLES look parity.
+  — the separate `blur_effects` fullscreen pass is gone; effects run in
+  perceptual (gamma 2.2) space on unpremultiplied rgb because the legacy
+  matrix controls assume gamma-encoded values (0.5 mid-grey pivot) — applied
+  in linear they crush shadows. NOT for GLES parity: per the 2026-07-12
+  directive, **GLES look parity is a non-goal** — fx_vk decisions optimize
+  Vulkan quality/performance on their own merits and the renderers may
+  legitimately diverge visually.
 - **fwidth() SDF anti-aliasing** in the 5 rounded/shadow frag shaders.
 - **IGN dithering** in the output pass at one quantum of the target encoding
   (1/255, 1/1023; none for 16F/16-bit) — kills dark-gradient banding.
