@@ -1532,10 +1532,13 @@ void client_animation_next_tick(Client *c) {
 	 * backdrop linger before content. The blur node stays enabled, so
 	 * steady-state blur behind translucent windows is unaffected. */
 	if (c->blur_node && c->animation.action == OPEN) {
-		float blur_p = animation_passed >= 1.0 ? 1.0f
-			: (float)ASTEROIDZ_MAX(0.0, ASTEROIDZ_MIN(factor, 1.0));
+		/* Keep the backdrop blur fully present during the open animation so a
+		 * translucent window is frosted from the first frame instead of
+		 * flashing the sharp wallpaper; the window's own opacity still fades in
+		 * over it. Strength stays at 1 (a lower strength forces the costly
+		 * per-frame re-blur split, see fx_vk_render_pass_add_blur). */
 		wlr_scene_blur_set_strength(c->blur_node, 1.0f);
-		wlr_scene_blur_set_alpha(c->blur_node, blur_p);
+		wlr_scene_blur_set_alpha(c->blur_node, 1.0f);
 	}
 
 	Client *pointer_c = NULL;
