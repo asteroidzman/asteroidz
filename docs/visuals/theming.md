@@ -55,10 +55,6 @@ overview jump-mode letter labels, and the
 set in the `theme { ... }` block. There's no separate theming for any of
 them; changing a `theme_*` key restyles all of them at once.
 
-> **Deprecated:** this block was previously spelled `pill { ... }` (keys
-> `pill_decorate_*`), after the DMS pill widgets it started with. The old
-> spelling still works as an alias and logs a one-time notice.
-
 Dimensions and behavior specific to the monocle layout's own tab strip (not
 shared with the other native overlays) are still their own keys:
 

@@ -12,9 +12,7 @@
 /* The compositor-native UI theme (config.theme, KDL block `theme {}`):
  * the single look shared by every native overlay -- titlebars/monocle tab
  * strips, jump-mode labels, and the screenshot UI. Colours are
- * normally generated from the matugen palette (dms/colors.kdl). Formerly
- * "pilldata"/"pill/*" after the DMS pill widgets it started with; those
- * spellings remain accepted as deprecated aliases. */
+ * normally generated from the matugen palette (dms/colors.kdl). */
 typedef struct {
 	float fg_color[4];
 	float bg_color[4];
