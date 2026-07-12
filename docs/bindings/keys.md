@@ -155,11 +155,6 @@ Suggested scroller binds (not bound by default — uncomment to use):
 
 ```ini
 # bind=SUPER,r,switch_proportion_preset,next
-
-> **Naming:** dispatchers use proper word-separated names (`toggle_overview`,
-> `focus_stack`, `view_to_left`, ...). The historical dwm-style smashed
-> spellings (`toggleoverview`, `focusstack`, `viewtoleft`, ...) remain
-> accepted as silent aliases, so existing configs keep working.
 # bind=SUPER+SHIFT,r,switch_proportion_preset,prev
 # bind=SUPER,i,scroller_consume
 # bind=SUPER,o,scroller_expel
@@ -176,7 +171,7 @@ Suggested scroller binds (not bound by default — uncomment to use):
 | `quit` | - | Exit asteroidz. |
 | `restart` | - | Restart asteroidz in place (re-exec, keeps the login session; running clients are restarted). |
 | `toggle_overview` | - | Toggle overview mode. |
-| `toggle_jump` | - | Toggle overview with jump mode. |
+| `toggle_overview` | `jump` | Open the overview in jump mode: every window gets a letter hint; pressing it focuses that window. |
 | `create_virtual_output` | - | Create a headless monitor (for VNC/Sunshine). |
 | `destroy_all_virtual_output` | - | Destroy all virtual monitors. |
 | `toggle_overlay` | - | Toggle overlay state for the focused window. |
