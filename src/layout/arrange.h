@@ -377,12 +377,12 @@ void pre_caculate_before_arrange(Monitor *m, bool want_animation,
 			client_add_jump_label_node(c);
 		}
 
-		/* titlebar_node/titlebar_close_node live on their own scene node
-		 * under LyrDecorate (not nested inside c->scene), so switching away
-		 * from this client's tag doesn't implicitly hide them the way it
-		 * hides the client's own surface tree. Reset to hidden here; only
-		 * clients still VISIBLEON this tag get re-enabled, in
-		 * client_draw_titlebar(). */
+		/* Per-window tabs are nested inside c->scene and hide with it, but
+		 * monocle SEGMENT tabs live on the global LyrDecorate (a hidden
+		 * monocle window's segment must stay visible), so switching away
+		 * from a tag doesn't implicitly hide those. Reset ALL to hidden here
+		 * (cheap, shadow-synced); the ones still shown get re-enabled in
+		 * client_draw_titlebar()/client_draw_monocle_titlebar_segment(). */
 		if (c->titlebar_node && c->mon == m) {
 			asteroidz_tab_bar_node_set_enabled(c->titlebar_node, false);
 		}

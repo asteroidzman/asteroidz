@@ -604,6 +604,15 @@ int32_t moveresize(const Arg *arg) {
 		grabc = NULL;
 		return 0;
 	}
+	/* a hidden monocle window resolved via its background segment tab: just
+	 * focus it (matches the is_monocle_bg_tab click behaviour) -- never yank
+	 * an invisible window into a floating drag */
+	if (grabc->mon && is_monocle_layout(grabc->mon) && grabc->is_monocle_hide) {
+		Client *fc = grabc;
+		grabc = NULL;
+		focusclient(fc, 1);
+		return 0;
+	}
 	return begin_move_or_resize(grabc, arg->ui);
 }
 

@@ -315,6 +315,12 @@ typedef struct {
 	void *node_data;
 } AsteroidzNodeData;
 
+/* xytonode/handle_buttonpress read the FIRST uint32 of any scene node.data as
+ * a type tag, punned across Client, LayerSurface, AsteroidzGroupBar and
+ * AsteroidzNodeData -- pin the convention at compile time. */
+_Static_assert(offsetof(AsteroidzNodeData, type) == 0,
+			   "node.data type tag must be the first member");
+
 typedef struct {
 	uint32_t mod;
 	uint32_t button;
@@ -514,6 +520,7 @@ struct Client {
 	struct dwl_opacity_animation opacity_animation;
 	int32_t isterm, noswallow;
 	int32_t allow_csd;
+	int32_t force_ssd;
 	int32_t force_fakemaximize;
 	int32_t force_tiled_state;
 	pid_t pid;
@@ -1049,6 +1056,7 @@ static int32_t hidecursor(void *data);
 static void check_scroller_edge_scroll(int32_t x_root, int32_t y_root);
 static int32_t scroller_edge_scroll_timeout(void *data);
 static bool check_hit_no_border(Client *c);
+static bool client_wants_ssd(Client *c);
 static void reset_keyboard_layout(void);
 static void client_update_oldmonname_record(Client *c, Monitor *m);
 static void pending_kill_client(Client *c);
@@ -2026,6 +2034,7 @@ int32_t scroller_edge_scroll_timeout(void *data) {
 static void apply_rule_properties(Client *c, const ConfigWinRule *r) {
 	APPLY_INT_PROP(c, r, isterm);
 	APPLY_INT_PROP(c, r, allow_csd);
+	APPLY_INT_PROP(c, r, force_ssd);
 	APPLY_INT_PROP(c, r, force_fakemaximize);
 	APPLY_INT_PROP(c, r, force_tiled_state);
 	APPLY_INT_PROP(c, r, force_tearing);
@@ -2981,9 +2990,20 @@ bool handle_buttonpress(struct wlr_pointer_button_event *event) {
 			return true;
 		}
 
-		// handle click on tile node
-		struct wlr_scene_node *node = wlr_scene_node_at(
-			&layers[LyrDecorate]->node, cursor->x, cursor->y, NULL, NULL);
+		// handle click on a titlebar/title node. Search per-layer top-down
+		// (like xytonode): per-window tabs live inside their client's scene
+		// tree (LyrTile/LyrTop), monocle segments on LyrDecorate -- this
+		// finds both AND respects stacking, so a covered tab can't be
+		// clicked through. LyrFadeOut/LyrScreenshot are SKIPPED: close-fade
+		// snapshots carry node.data pointers that are freed with the client,
+		// so a click on a fading ghost must never dispatch through them.
+		struct wlr_scene_node *node = NULL;
+		for (int32_t li = NUM_LAYERS - 1; li >= 0 && !node; li--) {
+			if (li == LyrFadeOut || li == LyrScreenshot)
+				continue;
+			node = wlr_scene_node_at(&layers[li]->node, cursor->x, cursor->y,
+									 NULL, NULL);
+		}
 		if (node && node->data) {
 			AsteroidzNodeData *nodedata = (AsteroidzNodeData *)node->data;
 			if (nodedata->type == ASTEROIDZ_TITLE_NODE) {
@@ -3756,6 +3776,12 @@ void destroydecoration(struct wl_listener *listener, void *data) {
 
 	wl_list_remove(&c->destroy_decoration.link);
 	wl_list_remove(&c->set_decoration_mode.link);
+	/* client_wants_ssd() reads c->decoration per frame -- clear the pointer
+	 * (wlroots frees the decoration right after this) and re-arrange so the
+	 * titlebar/border/reserved space follow the CSD flip immediately */
+	c->decoration = NULL;
+	if (c->mon && client_surface(c)->mapped)
+		arrange(c->mon, false, false);
 }
 
 static bool popup_unconstrain(Popup *popup) {
@@ -3878,6 +3904,9 @@ void createdecoration(struct wl_listener *listener, void *data) {
 		   requestdecorationmode);
 	LISTEN(&deco->events.destroy, &c->destroy_decoration, destroydecoration);
 
+	/* a client may bind xdg-decoration after mapping: client_wants_ssd just
+	 * flipped, and requestdecorationmode() below re-arranges when mapped so
+	 * the titlebar/border/reserved space follow immediately */
 	requestdecorationmode(&c->set_decoration_mode, deco);
 }
 
@@ -5182,6 +5211,15 @@ keybinding(uint32_t state, bool locked, uint32_t mods, xkb_keysym_t sym,
 			continue;
 
 		k = &config.key_bindings[ji];
+
+		/* the overview is modal: while it's open, only Escape (handled above)
+		 * and the binds that operate the overview itself (toggle to close it,
+		 * jump mode for its labels) are honoured -- tag switches, window ops,
+		 * spawns etc. are suppressed until it closes */
+		if (selmon && selmon->isoverview && k->func != toggleoverview &&
+			k->func != togglejump)
+			continue;
+
 		if ((k->iscommonmode || (k->isdefaultmode && keymode.isdefault) ||
 			 (strcmp(keymode.mode, k->mode) == 0)) &&
 			CLEANMASK(mods) == CLEANMASK(k->mod) &&
@@ -5625,6 +5663,7 @@ void init_client_properties(Client *c) {
 	c->old_master_mfact_per = 0.0f;
 	c->isterm = 0;
 	c->allow_csd = 0;
+	c->force_ssd = 0;
 	c->force_fakemaximize = 0;
 	c->force_tiled_state = 1;
 	c->force_tearing = 0;
@@ -6751,16 +6790,17 @@ void requestdecorationmode(struct wl_listener *listener, void *data) {
 	struct wlr_xdg_toplevel_decoration_v1 *deco = data;
 
 	if (c->surface.xdg->initialized) {
-		// get the mode requested by the client
-		enum wlr_xdg_toplevel_decoration_v1_mode requested_mode =
-			deco->requested_mode;
-
-		// if the client didn't specify one, use the default mode
-		if (!c->allow_csd) {
-			requested_mode = WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE;
-		}
-
-		wlr_xdg_toplevel_decoration_v1_set_mode(c->decoration, requested_mode);
+		/* single source of truth: tell the client exactly what the drawing
+		 * paths (titlebar/border/corner) will do. Also never forwards a NONE
+		 * request verbatim like the old code did. */
+		wlr_xdg_toplevel_decoration_v1_set_mode(
+			c->decoration,
+			client_wants_ssd(c)
+				? WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE
+				: WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE);
+		/* an allow_csd client can flip its request at runtime */
+		if (c->mon && client_surface(c)->mapped)
+			arrange(c->mon, false, false);
 	}
 }
 

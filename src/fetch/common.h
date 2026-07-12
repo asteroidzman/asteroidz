@@ -159,6 +159,12 @@ void xytonode(double x, double y, struct wlr_surface **psurface, Client **pc,
 					groupbar = (AsteroidzGroupBar *)temp_c;
 				} else if (temp_c->type == XDGShell || temp_c->type == X11) {
 					c = temp_c;
+				} else if (temp_c->type == ASTEROIDZ_TITLE_NODE ||
+						   temp_c->type == ASTEROIDZ_TITLEBAR_NODE ||
+						   temp_c->type == ASTEROIDZ_TITLEBAR_CLOSE_NODE) {
+					/* a titlebar tab resolves to the window it belongs to, so
+					 * hover/click over the tab behaves like the window itself */
+					c = ((AsteroidzNodeData *)data)->node_data;
 				}
 			}
 		}

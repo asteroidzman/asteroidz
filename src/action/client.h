@@ -62,7 +62,7 @@ void client_tile_resize(Client *c, struct wlr_box geo, int32_t interact) {
 		geo.height -= config.group_bar_height;
 	}
 
-	if (config.enable_titlebar && !c->isfullscreen) {
+	if (config.enable_titlebar && !c->isfullscreen && client_wants_ssd(c)) {
 		/* reserve title-bar space; in the overview scale it to the shrunk window
 		 * (a viewport-edge window is sized to its VISIBLE portion -- ov_clip --
 		 * so use that as the reference width to keep th uniform) */
@@ -78,7 +78,12 @@ void client_tile_resize(Client *c, struct wlr_box geo, int32_t interact) {
 		geo.y = geo.y + th;
 		geo.height -= th;
 	} else if (is_monocle_layout(c->mon) && !c->isfullscreen &&
-			   !c->mon->isoverview) {
+			   !c->mon->isoverview &&
+			   (c->mon->visible_fake_tiling_clients > 1 ||
+				client_wants_ssd(c))) {
+		/* >1 windows: the shared segment ROW is layout furniture and appears
+		 * for every window (incl. CSD ones); a lone CSD window has no row and
+		 * gets no per-window tab, so nothing to reserve for */
 		geo.y = geo.y + config.titlebar_height;
 		geo.height -= config.titlebar_height;
 	}

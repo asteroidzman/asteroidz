@@ -100,6 +100,7 @@ typedef struct {
 	int32_t no_force_center;
 	int32_t isterm;
 	int32_t allow_csd;
+	int32_t force_ssd;
 	int32_t force_fakemaximize;
 	int32_t force_tiled_state;
 	int32_t force_tearing;
@@ -2546,6 +2547,7 @@ bool parse_option(Config *config, char *key, char *value) {
 		rule->idleinhibit_when_focus = -1;
 		rule->isterm = -1;
 		rule->allow_csd = -1;
+		rule->force_ssd = -1;
 		rule->force_fakemaximize = -1;
 		rule->force_tiled_state = -1;
 		rule->force_tearing = -1;
@@ -2674,6 +2676,8 @@ bool parse_option(Config *config, char *key, char *value) {
 					rule->isterm = atoi(val);
 				} else if (strcmp(key, "allow_csd") == 0) {
 					rule->allow_csd = atoi(val);
+				} else if (strcmp(key, "force_ssd") == 0) {
+					rule->force_ssd = atoi(val);
 				} else if (strcmp(key, "force_fakemaximize") == 0) {
 					rule->force_fakemaximize = atoi(val);
 				} else if (strcmp(key, "force_tiled_state") == 0) {
