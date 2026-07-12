@@ -595,11 +595,11 @@ static void overview_draw_cell_label(Monitor *m, int32_t slot, float cx,
 
 	if (!m->ov_cell_label[slot]) {
 		m->ov_cell_label[slot] =
-			asteroidz_jump_label_node_create(layers[LyrOverlay], config.pilldata);
+			asteroidz_jump_label_node_create(layers[LyrOverlay], config.theme);
 		/* overview tag labels: 1.25x larger and bold vs the normal pill font */
 		if (m->ov_cell_label[slot]) {
 			PangoFontDescription *fd = pango_font_description_from_string(
-				config.pilldata.font_desc ? config.pilldata.font_desc
+				config.theme.font_desc ? config.theme.font_desc
 										  : "monospace Bold 16");
 			pango_font_description_set_weight(fd, PANGO_WEIGHT_BOLD);
 			int32_t sz = pango_font_description_get_size(fd);

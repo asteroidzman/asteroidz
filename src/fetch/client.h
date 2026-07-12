@@ -400,7 +400,7 @@ float *get_border_color(Client *c) {
 					   (config.enable_titlebar || is_monocle_layout(c->mon)) &&
 					   ISFAKETILED(c);
 	float *inactive_color =
-		has_titlebar ? config.pilldata.bg_color : config.bordercolor;
+		has_titlebar ? config.theme.bg_color : config.bordercolor;
 
 	if (c->mon != selmon) {
 		return inactive_color;

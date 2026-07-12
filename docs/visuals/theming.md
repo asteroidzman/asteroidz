@@ -47,16 +47,20 @@ You can also color-code windows based on their state:
 
 > **Tip:** For scratchpad window sizing, see [Scratchpad](/docs/window-management/scratchpad) configuration.
 
-### Pill Theme
+### Theme
 
-Every native "pill" overlay — the monocle layout's tab bar, window-group bars
-(`groupjoin`), overview jump-mode letter labels, and the `screenshot_ui` size
-badge and selection border — shares this single style. There's no separate
-theming for any of them; changing a `pill_decorate_*` key restyles all of
-them at once.
+Every native UI overlay — the monocle layout's tab bar, per-window titlebars,
+window-group bars (`groupjoin`), overview jump-mode letter labels, and the
+`screenshot_ui` size badge and selection border — shares this single style,
+set in the `theme { ... }` block. There's no separate theming for any of
+them; changing a `theme_*` key restyles all of them at once.
+
+> **Deprecated:** this block was previously spelled `pill { ... }` (keys
+> `pill_decorate_*`), after the DMS pill widgets it started with. The old
+> spelling still works as an alias and logs a one-time notice.
 
 Dimensions and behavior specific to the monocle layout's own tab strip (not
-shared with the other pill overlays) are still their own keys:
+shared with the other native overlays) are still their own keys:
 
 | Setting | Default | Description |
 | :--- | :--- | :--- |
@@ -64,7 +68,7 @@ shared with the other pill overlays) are still their own keys:
 
 ### Titlebar
 
-An optional server-side titlebar, reserving real space above each tiled window's content (the window doesn't grow to compensate — enabling this shrinks the usable content area by `titlebar_height`). Off by default. Uses the same shared pill theme as everything else in this section. Drag the title area to move/re-tile the window; click the "×" to close it.
+An optional server-side titlebar, reserving real space above each tiled window's content (the window doesn't grow to compensate — enabling this shrinks the usable content area by `titlebar_height`). Off by default. Uses the same shared `theme` block as everything else in this section. Drag the title area to move/re-tile the window; click the "×" to close it.
 
 | Setting | Default | Description |
 | :--- | :--- | :--- |
@@ -82,16 +86,31 @@ layout {
 
 | Setting | Default | Description |
 | :--- | :--- | :--- |
-| `pill_decorate_fg_color` | `0xc4939dff` | text color.
-| `pill_decorate_bg_color` | `0x201b14ff` | background color.|
-| `pill_decorate_focus_fg_color` | `0x201b14ff` | text color for focus. |
-| `pill_decorate_focus_bg_color` | `0xc4939dff` | background color for focus.|
-| `pill_decorate_border_color` | `0x8BAA9Bff` | border color.|
-| `pill_decorate_border_width` | `4` | border width.|
-| `pill_decorate_corner_radius` | `5` | corner radius.|
-| `pill_decorate_padding_x` | `0` | horizontal padding.|
-| `pill_decorate_padding_y` | `0` | vertical padding.|
-| `pill_decorate_font_desc` | `monospace Bold 16` | font set.|
+| `theme_fg_color` | `0xc4939dff` | text color. |
+| `theme_bg_color` | `0x201b14ff` | background color. |
+| `theme_focus_fg_color` | `0x201b14ff` | text color for focus. |
+| `theme_focus_bg_color` | `0xc4939dff` | background color for focus. |
+| `theme_urgent_color` | `0xffb4abff` | attention accent (matugen error). |
+| `theme_border_color` | `0x8BAA9Bff` | border color. |
+| `theme_border_width` | `4` | border width. |
+| `theme_corner_radius` | `5` | corner radius (`-1` = full pill shape). |
+| `theme_padding_x` | `0` | horizontal padding. |
+| `theme_padding_y` | `0` | vertical padding. |
+| `theme_font_desc` | `monospace Bold 16` | font set. |
+
+```kdl
+theme {
+    font "Ubuntu 18"
+    corner-radius 8
+    border-width 0
+    padding { x 16; y 4 }
+    bg-color 0x252a33ff
+    fg-color 0xdee2efff
+    focus-bg-color 0xa6c8ffff
+    focus-fg-color 0x00315fff
+    urgent-color 0xffb4abff
+}
+```
 
 ## Borders
 

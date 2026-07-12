@@ -9,19 +9,25 @@
 #include <scenefx/types/wlr_scene.h>
 #include "../common/corner_location.h"
 
-// Pre-existing struct, assumed to already exist
+/* The compositor-native UI theme (config.theme, KDL block `theme {}`):
+ * the single look shared by every native overlay -- titlebars/monocle tab
+ * strips, group bars, jump-mode labels, and the screenshot UI. Colours are
+ * normally generated from the matugen palette (dms/colors.kdl). Formerly
+ * "pilldata"/"pill/*" after the DMS pill widgets it started with; those
+ * spellings remain accepted as deprecated aliases. */
 typedef struct {
 	float fg_color[4];
 	float bg_color[4];
 	float focus_fg_color[4];
 	float focus_bg_color[4];
+	float urgent_color[4]; /* attention accent (matugen error) */
 	float border_color[4];
 	int32_t border_width;
 	int32_t corner_radius;
 	int32_t padding_x;
 	int32_t padding_y;
 	const char *font_desc;
-} DecorateDrawData;
+} AsteroidzTheme;
 
 struct asteroidz_text_buffer {
 	struct wlr_buffer base;
@@ -253,7 +259,7 @@ void asteroidz_icon_node_destroy(struct asteroidz_icon_node *node);
 
 struct asteroidz_jump_label_node *
 asteroidz_jump_label_node_create(struct wlr_scene_tree *parent,
-							 DecorateDrawData data);
+							 AsteroidzTheme data);
 void asteroidz_jump_label_node_destroy(struct asteroidz_jump_label_node *node);
 void asteroidz_jump_label_node_set_background(struct asteroidz_jump_label_node *node,
 										  float r, float g, float b, float a);
@@ -267,7 +273,7 @@ void asteroidz_jump_label_node_update(struct asteroidz_jump_label_node *node,
 
 struct asteroidz_tab_bar_node *
 asteroidz_tab_bar_node_create(void *asteroidz_node_data, struct wlr_scene_tree *parent,
-						  DecorateDrawData data, int32_t width, int32_t height);
+						  AsteroidzTheme data, int32_t width, int32_t height);
 void asteroidz_tab_bar_node_destroy(struct asteroidz_tab_bar_node *node);
 void asteroidz_tab_bar_node_set_size(struct asteroidz_tab_bar_node *node, int32_t width,
 								 int32_t height);
@@ -309,7 +315,7 @@ void asteroidz_tab_bar_node_set_colors(struct asteroidz_tab_bar_node *node,
 
 AsteroidzGroupBar *asteroidz_group_bar_create(void *cdata, uint32_t type,
 									  struct wlr_scene_tree *parent,
-									  DecorateDrawData data, int32_t width,
+									  AsteroidzTheme data, int32_t width,
 									  int32_t height);
 void asteroidz_group_bar_destroy(AsteroidzGroupBar *node);
 void asteroidz_group_bar_set_size(AsteroidzGroupBar *node, int32_t width,
@@ -319,9 +325,9 @@ void asteroidz_group_bar_set_focus(AsteroidzGroupBar *node, bool focused);
 void asteroidz_group_bar_set_colors(AsteroidzGroupBar *node, const float fg[4],
 								const float bg[4]);
 void asteroidz_group_bar_apply_config(AsteroidzGroupBar *node,
-								  const DecorateDrawData *data);
+								  const AsteroidzTheme *data);
 void asteroidz_jump_label_node_apply_config(struct asteroidz_jump_label_node *node,
-										const DecorateDrawData *data);
+										const AsteroidzTheme *data);
 void asteroidz_tab_bar_node_apply_config(struct asteroidz_tab_bar_node *node,
-									 const DecorateDrawData *data);
+									 const AsteroidzTheme *data);
 #endif // jump_label_node_H
