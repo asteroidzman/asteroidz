@@ -73,7 +73,7 @@ c_args = [
   '-DWLR_USE_UNSTABLE',
   '-D_POSIX_C_SOURCE=200809L',
   '-DVERSION="@0@"'.format(version_with_hash),
-  '-DSYSCONFDIR="@0@"'.format('/etc'),
+  '-DSYSCONFDIR="@0@"'.format(sysconfdir),
 ]
 
 # add debug args only when debug option is enabled
@@ -165,4 +165,3 @@ install_data('assets/asteroidz.portal', install_dir : join_paths(prefix, 'share/
 install_data('assets/config.kdl', install_dir : join_paths(sysconfdir, 'asteroidz'))
 install_data('amsg/amsg.1', install_dir : join_paths(mandir, 'man1'))
 
-# compat: old tool name keeps working

@@ -60,9 +60,7 @@ shared with the other pill overlays) are still their own keys:
 
 | Setting | Default | Description |
 | :--- | :--- | :--- |
-| `monocle_tab_height` | `50` | Height of the tab bar for monocle layout. |
 | `monocle_tab_max_width` | `0` | Cap each tab's width; `0` lets tabs split the full row width. |
-| `monocle_tab_icons` | `0` | Draw app icons in monocle tab pills. |
 
 ### Titlebar
 

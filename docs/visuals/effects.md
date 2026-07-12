@@ -71,7 +71,7 @@ Control the transparency and roundness of your windows.
 | Setting | Default | Description |
 | :--- | :--- | :--- |
 | `border_radius` | `0` | Window corner radius in pixels. |
-| `border_radius_location_default` | `0` | Corner radius location: `0` (all), `1` (top-left), `2` (top-right), `3` (bottom-left), `4` (bottom-right), `5` (closest corner). |
+| `border_radius_location_default` | `15` | Corner-location BITMASK for the radius: `1` top-left, `2` top-right, `4` bottom-right, `8` bottom-left; combine by adding (`15` = all, `0` = none). |
 | `no_radius_when_single` | `0` | Disable radius if only one window is visible. |
 | `focused_opacity` | `1.0` | Opacity for the active window (0.0 - 1.0). |
 | `unfocused_opacity` | `1.0` | Opacity for inactive windows (0.0 - 1.0). |
@@ -79,7 +79,7 @@ Control the transparency and roundness of your windows.
 ```kdl
 misc {
     border_radius 0
-    border_radius_location_default 0
+    border_radius_location_default 15
     no_radius_when_single 0
     focused_opacity 1.0
     unfocused_opacity 1.0

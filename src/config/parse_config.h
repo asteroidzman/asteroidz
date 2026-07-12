@@ -272,8 +272,6 @@ typedef struct {
 	uint32_t new_is_master;
 	float default_mfact;
 	uint32_t default_nmaster;
-	int32_t center_master_overspread;
-	int32_t center_when_single_stack;
 
 	/* dwindle layout */
 	int32_t dwindle_vsplit;
@@ -1624,6 +1622,10 @@ bool parse_option(Config *config, char *key, char *value) {
 		config->blur_optimized = atoi(value);
 	} else if (strcmp(key, "border_radius") == 0) {
 		config->border_radius = atoi(value);
+	} else if (strcmp(key, "border_radius_location_default") == 0) {
+		/* corner_location BITMASK: 1=top-left 2=top-right 4=bottom-right
+		 * 8=bottom-left, 15=all (default), 0=none; combos allowed */
+		config->border_radius_location_default = atoi(value);
 	} else if (strcmp(key, "blur_params_num_passes") == 0) {
 		config->blur_params.num_passes = atoi(value);
 	} else if (strcmp(key, "blur_params_radius") == 0) {
@@ -1892,10 +1894,6 @@ bool parse_option(Config *config, char *key, char *value) {
 		config->default_mfact = atof(value);
 	} else if (strcmp(key, "default_nmaster") == 0) {
 		config->default_nmaster = atoi(value);
-	} else if (strcmp(key, "center_master_overspread") == 0) {
-		config->center_master_overspread = atoi(value);
-	} else if (strcmp(key, "center_when_single_stack") == 0) {
-		config->center_when_single_stack = atoi(value);
 	} else if (strcmp(key, "dwindle_vsplit") == 0) {
 		config->dwindle_vsplit = atoi(value);
 	} else if (strcmp(key, "dwindle_hsplit") == 0) {
@@ -1942,6 +1940,8 @@ bool parse_option(Config *config, char *key, char *value) {
 		config->ufo_easter_egg = atoi(value);
 	} else if (strcmp(key, "numlockon") == 0) {
 		config->numlockon = atoi(value);
+	} else if (strcmp(key, "capslock") == 0) {
+		config->capslock = atoi(value);
 	} else if (strcmp(key, "idleinhibit_ignore_visible") == 0) {
 		config->idleinhibit_ignore_visible = atoi(value);
 	} else if (strcmp(key, "sloppyfocus") == 0) {
@@ -3280,7 +3280,11 @@ static const struct {
 	const char *key;
 } kdl_key_map[] = {
 	/* input */
-	{"input/keyboard/xkb/layout", "xkb_layout"},
+	{"input/keyboard/xkb/rules", "xkb_rules_rules"},
+	{"input/keyboard/xkb/model", "xkb_rules_model"},
+	{"input/keyboard/xkb/layout", "xkb_rules_layout"},
+	{"input/keyboard/xkb/variant", "xkb_rules_variant"},
+	{"input/keyboard/xkb/options", "xkb_rules_options"},
 	{"input/keyboard/repeat/delay", "repeat_delay"},
 	{"input/keyboard/repeat/rate", "repeat_rate"},
 	{"input/cursor/theme", "cursor_theme"},
@@ -4097,10 +4101,6 @@ void override_config(void) {
 	config.scroller_structs = CLAMP_INT(config.scroller_structs, 0, 1000);
 	config.default_mfact = CLAMP_FLOAT(config.default_mfact, 0.1f, 0.9f);
 	config.default_nmaster = CLAMP_INT(config.default_nmaster, 1, 1000);
-	config.center_master_overspread =
-		CLAMP_INT(config.center_master_overspread, 0, 1);
-	config.center_when_single_stack =
-		CLAMP_INT(config.center_when_single_stack, 0, 1);
 	config.new_is_master = CLAMP_INT(config.new_is_master, 0, 1);
 	config.dwindle_vsplit = CLAMP_INT(config.dwindle_vsplit, 0, 2);
 	config.dwindle_hsplit = CLAMP_INT(config.dwindle_hsplit, 0, 2);
@@ -4167,6 +4167,7 @@ void override_config(void) {
 	config.repeat_rate = CLAMP_INT(config.repeat_rate, 1, 1000);
 	config.repeat_delay = CLAMP_INT(config.repeat_delay, 1, 20000);
 	config.numlockon = CLAMP_INT(config.numlockon, 0, 1);
+	config.capslock = CLAMP_INT(config.capslock, 0, 1);
 	config.disable_trackpad = CLAMP_INT(config.disable_trackpad, 0, 1);
 	config.tap_to_click = CLAMP_INT(config.tap_to_click, 0, 1);
 	config.tap_and_drag = CLAMP_INT(config.tap_and_drag, 0, 1);
@@ -4213,6 +4214,8 @@ void override_config(void) {
 	config.blur_layer = CLAMP_INT(config.blur_layer, 0, 1);
 	config.blur_optimized = CLAMP_INT(config.blur_optimized, 0, 1);
 	config.border_radius = CLAMP_INT(config.border_radius, 0, 100);
+	config.border_radius_location_default =
+		CLAMP_INT(config.border_radius_location_default, 0, CORNER_LOCATION_ALL);
 	config.blur_params.num_passes =
 		CLAMP_INT(config.blur_params.num_passes, 0, 10);
 	config.blur_params.radius = CLAMP_INT(config.blur_params.radius, 0, 100);
@@ -4222,7 +4225,7 @@ void override_config(void) {
 	config.blur_params.contrast =
 		CLAMP_FLOAT(config.blur_params.contrast, 0, 1);
 	config.blur_params.saturation =
-		CLAMP_FLOAT(config.blur_params.saturation, 0, 1);
+		CLAMP_FLOAT(config.blur_params.saturation, 0.0f, 2.0f);
 	config.shadows = CLAMP_INT(config.shadows, 0, 1);
 	config.shadow_only_floating = CLAMP_INT(config.shadow_only_floating, 0, 1);
 	config.layer_shadows = CLAMP_INT(config.layer_shadows, 0, 1);
@@ -4266,8 +4269,6 @@ void set_value_default() {
 	config.new_is_master = 1;
 	config.default_mfact = 0.55f;
 	config.default_nmaster = 1;
-	config.center_master_overspread = 0;
-	config.center_when_single_stack = 1;
 
 	config.dwindle_vsplit = 1;
 	config.dwindle_hsplit = 1;
