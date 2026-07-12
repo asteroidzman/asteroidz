@@ -232,6 +232,27 @@ void scene_buffer_apply_effect(struct wlr_scene_buffer *buffer, int32_t sx,
 
 	struct wlr_surface *surface = scene_surface->surface;
 
+	/* overview viewport-edge crop: show only the visible fraction of the ROOT
+	 * surface via a buffer source-box crop (in buffer-local pixels).
+	 * NB: never use wlr_scene_subsurface_tree_set_clip for this --
+	 * asteroidz-scenefx doesn't implement it, so it binds to vanilla wlroots'
+	 * walker, which mangles scenefx's scene structs (the surface vanishes). */
+	if (wlr_subsurface_try_from_wlr_surface(surface) == NULL) {
+		int32_t bufw = surface->current.buffer_width;
+		int32_t bufh = surface->current.buffer_height;
+		if (buffer_data->crop_active && bufw > 0 && bufh > 0) {
+			struct wlr_fbox src = {
+				.x = buffer_data->crop_l * bufw,
+				.y = buffer_data->crop_t * bufh,
+				.width = buffer_data->crop_w * bufw,
+				.height = buffer_data->crop_h * bufh,
+			};
+			wlr_scene_buffer_set_source_box(buffer, &src);
+		} else if (buffer_data->crop_clear) {
+			wlr_scene_buffer_set_source_box(buffer, NULL);
+		}
+	}
+
 	if (buffer_data->should_scale) {
 
 		int32_t surface_width = surface->current.width;
@@ -511,6 +532,7 @@ void client_draw_monocle_titlebar_segment(Client *c, int32_t x, int32_t y,
 		asteroidz_tab_bar_node_set_enabled(c->titlebar_close_node, true);
 		asteroidz_tab_bar_node_set_position(c->titlebar_close_node, x, y);
 		asteroidz_tab_bar_node_set_size(c->titlebar_close_node, close_w, th);
+		asteroidz_tab_bar_node_set_content_scale(c->titlebar_close_node, 1.0f);
 		/* close is the segment's left part: it owns the strip's top-left
 		 * round + left border when the segment is leftmost; its right side
 		 * touches this segment's own tab, so no border/separator there */
@@ -536,6 +558,7 @@ void client_draw_monocle_titlebar_segment(Client *c, int32_t x, int32_t y,
 	asteroidz_tab_bar_node_set_titlebar_border(c->titlebar_node, config.borderpx,
 										   false, is_last);
 	asteroidz_tab_bar_node_set_titlebar_separator(c->titlebar_node, !is_last);
+	asteroidz_tab_bar_node_set_content_scale(c->titlebar_node, 1.0f);
 	asteroidz_tab_bar_node_update(c->titlebar_node, client_get_title(c), 1.0);
 	asteroidz_tab_bar_node_set_focus(c->titlebar_node, focused);
 }
@@ -568,12 +591,22 @@ void client_draw_titlebar(Client *c) {
 		return;
 
 	bool titlebar_wanted = config.enable_titlebar || is_monocle_layout(c->mon);
-	/* overview: monocle's shared-row titlebars aren't drawn (each window is a
-	 * standalone thumbnail), but a plain per-window titlebar IS, scaled down. */
 	bool ov = c->mon->isoverview;
-	if (!titlebar_wanted || c->isfullscreen || c->is_monocle_hide ||
-		(ov && !config.enable_titlebar) || !ISFAKETILED(c) ||
-		!VISIBLEON(c, c->mon)) {
+	/* Draw the titlebar for tiled AND floating windows, incl. in the overview
+	 * (scaled to the shrunk window). In the overview draw ONLY for windows on the
+	 * previewed tag (ov_main_tag) that are actually shown: other tags' windows and
+	 * columns dropped for overrunning the viewport (is_overview_hidden) are hidden
+	 * in the main area, so their titlebars would otherwise linger as overlapping
+	 * ghosts (drawn at a stale position by the per-frame animation path). */
+	if (!titlebar_wanted || c->isfullscreen ||
+		(!ov && c->is_monocle_hide) /* the exposé shows ALL monocle windows */ ||
+		c->isminimized || c->iskilling || c->isunglobal || !VISIBLEON(c, c->mon) ||
+		(ov && (c->is_overview_hidden ||
+				get_tags_first_tag_num(c->tags) != c->mon->ov_main_tag ||
+				/* faithful mirror: the tab sits at the window's LEFT edge; a
+				 * column clipped on the left has that edge (and thus its tab)
+				 * off the desktop, so the mirror doesn't show one either */
+				(c->ov_clip_active && c->ov_clip.x > 0)))) {
 		if (c->titlebar_node->scene_buffer->node.enabled)
 			wlr_scene_node_set_enabled(&c->titlebar_node->scene_buffer->node,
 									   false);
@@ -585,18 +618,35 @@ void client_draw_titlebar(Client *c) {
 	}
 
 	int32_t th = config.titlebar_height;
-	if (ov) /* scale the bar to the shrunk overview window */
+	if (ov) { /* scale the bar to the shrunk overview window */
+		/* a viewport-edge window is sized to its VISIBLE portion (ov_clip), so
+		 * that portion -- not the full window -- is the reference width; this
+		 * keeps th (and the font scale) identical to uncropped neighbours */
+		float ref_w = (c->ov_clip_active && c->ov_clip.width > 0)
+						  ? (float)c->ov_clip.width
+						  : (float)c->overview_backup_geom.width;
 		th = (int32_t)(th * ((float)c->animation.current.width /
-							  fmaxf(1.0f, (float)c->overview_backup_geom.width)));
+							 fmaxf(1.0f, ref_w)));
+		/* legibility floor: below ~22px the title is an unreadable sliver
+		 * (monocle exposé shrinks to ~0.3x). Must match client_tile_resize. */
+		th = ASTEROIDZ_MAX(th, ASTEROIDZ_MIN(22, config.titlebar_height));
+	}
 	int32_t tb_x = c->animation.current.x;
 	int32_t tb_y = c->animation.current.y - th;
 	int32_t tb_w = c->animation.current.width;
 	int32_t close_w = ASTEROIDZ_MIN(th, tb_w);
 
+	/* In the overview everything is a miniature of the desktop: one shrink
+	 * factor (th / titlebar_height) drives the tab height, its fixed-width
+	 * caps AND the font/padding, so every layout's titlebar scales alike. */
+	float tbs = fmaxf(0.05f, (float)th / fmaxf(1.0f, (float)config.titlebar_height));
+	int32_t tab_cap = (int32_t)(280 * tbs + 0.5f);
+	int32_t tab_min = (int32_t)(160 * tbs + 0.5f);
+
 	/* BeOS-style: a small, roughly fixed-width tab rather than a strip that
 	 * scales with the window; only widen it on genuinely narrow windows. */
-	int32_t tab_w = ASTEROIDZ_MIN(280, (int32_t)(tb_w * 0.6f));
-	tab_w = ASTEROIDZ_MAX(tab_w, ASTEROIDZ_MIN(160, tb_w - close_w));
+	int32_t tab_w = ASTEROIDZ_MIN(tab_cap, (int32_t)(tb_w * 0.6f));
+	tab_w = ASTEROIDZ_MAX(tab_w, ASTEROIDZ_MIN(tab_min, tb_w - close_w));
 	tab_w = ASTEROIDZ_MIN(tab_w, tb_w - close_w);
 	if (tab_w < 0)
 		tab_w = 0;
@@ -610,6 +660,11 @@ void client_draw_titlebar(Client *c) {
 		asteroidz_tab_bar_node_set_enabled(c->titlebar_close_node, true);
 		asteroidz_tab_bar_node_set_position(c->titlebar_close_node, tb_x, tb_y);
 		asteroidz_tab_bar_node_set_size(c->titlebar_close_node, close_w, th);
+		/* content_scale shrinks font+padding+icon to fit the scaled-down bar;
+		 * the _update scale param is a HiDPI density scale (dest-size cancels
+		 * it visually), so it must stay 1.0 here */
+		asteroidz_tab_bar_node_set_content_scale(c->titlebar_close_node, tbs);
+		asteroidz_tab_bar_node_update(c->titlebar_close_node, "×", 1.0);
 		asteroidz_tab_bar_node_set_titlebar_border(c->titlebar_close_node,
 											   config.borderpx, true, false);
 		asteroidz_tab_bar_node_set_focus(c->titlebar_close_node, focused);
@@ -623,6 +678,7 @@ void client_draw_titlebar(Client *c) {
 	/* no separators in tile: each window is its own standalone titlebar, not
 	 * a shared strip (reset in case this window came from a monocle tag) */
 	asteroidz_tab_bar_node_set_titlebar_separator(c->titlebar_node, false);
+	asteroidz_tab_bar_node_set_content_scale(c->titlebar_node, tbs);
 	asteroidz_tab_bar_node_update(c->titlebar_node, client_get_title(c), 1.0);
 	asteroidz_tab_bar_node_set_focus(c->titlebar_node, focused);
 }
@@ -939,7 +995,12 @@ void apply_border(Client *c) {
 									   current_corner_location));
 
 	if (c->blur_node) {
-		bool blur_cached = config.blur_optimized && !c->isfloating;
+		/* overview: the dim scrim sits on LyrDecorate (not the bottom layer),
+		 * so cached bottom-layer-only blur would sample the UNDIMMED wallpaper
+		 * -- keep sampling all layers below while the overview is up (this
+		 * runs per-frame and would otherwise stomp the arrange-time setting) */
+		bool blur_cached = config.blur_optimized && !c->isfloating &&
+						   !(c->mon && c->mon->isoverview);
 		if (c->blur_node->should_only_blur_bottom_layer != blur_cached)
 			wlr_scene_blur_set_should_only_blur_bottom_layer(c->blur_node,
 															 blur_cached);
@@ -1289,6 +1350,28 @@ void client_apply_clip(Client *c, float factor) {
 			(float)buffer_data.width / acutal_surface_width;
 		buffer_data.height_scale =
 			(float)buffer_data.height / acutal_surface_height;
+	}
+
+	/* overview viewport-edge window: crop the root surface to its visible
+	 * fraction (buffer source box, applied in scene_buffer_apply_effect) so
+	 * it ends exactly at the panel edge instead of overrunning it */
+	buffer_data.crop_active = false;
+	buffer_data.crop_clear = false;
+	if (ov_live && c->ov_clip_active && c->overview_backup_geom.width > 0 &&
+		c->overview_backup_geom.height > 0) {
+		buffer_data.crop_active = true;
+		buffer_data.crop_l =
+			(float)c->ov_clip.x / (float)c->overview_backup_geom.width;
+		buffer_data.crop_t =
+			(float)c->ov_clip.y / (float)c->overview_backup_geom.height;
+		buffer_data.crop_w =
+			(float)c->ov_clip.width / (float)c->overview_backup_geom.width;
+		buffer_data.crop_h =
+			(float)c->ov_clip.height / (float)c->overview_backup_geom.height;
+		c->ov_crop_set = true;
+	} else if (c->ov_crop_set) {
+		buffer_data.crop_clear = true;
+		c->ov_crop_set = false;
 	}
 
 	buffer_set_effect(c, buffer_data);
