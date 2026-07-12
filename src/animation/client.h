@@ -510,6 +510,39 @@ void client_draw_shadow(Client *c) {
  * their outward-facing side. The focused segment additionally gets a close
  * button (leftmost within its own segment); background segments are
  * title-only, click-to-focus (handled generically in handle_buttonpress). */
+/* Titlebar corner rule, canonical for EVERY titlebar row (monocle segment
+ * strips and standalone per-window bars alike): the row's first element
+ * rounds its top-left corner, the last rounds its top-right, anything in
+ * between stays square. A standalone titlebar is both first and last. The
+ * close button and title tab split one bar, so whichever of the two
+ * actually owns an outer edge gets that edge's rounding (a zero-width tab
+ * hands the right edge back to the close button, and vice versa). */
+static void titlebar_apply_corner_rule(Client *c, bool is_first, bool is_last,
+									   int32_t close_w, int32_t tab_w) {
+	bool has_close = c->titlebar_close_node != NULL && close_w > 0;
+	bool has_tab = c->titlebar_node != NULL && tab_w > 0;
+	enum corner_location close_mask = CORNER_LOCATION_NONE;
+	enum corner_location tab_mask = CORNER_LOCATION_NONE;
+
+	if (has_close) {
+		if (is_first)
+			close_mask |= CORNER_LOCATION_TOP_LEFT;
+		if (is_last && !has_tab)
+			close_mask |= CORNER_LOCATION_TOP_RIGHT;
+	}
+	if (has_tab) {
+		if (is_last)
+			tab_mask |= CORNER_LOCATION_TOP_RIGHT;
+		if (is_first && !has_close)
+			tab_mask |= CORNER_LOCATION_TOP_LEFT;
+	}
+
+	if (c->titlebar_close_node)
+		asteroidz_tab_bar_node_set_corner_mask(c->titlebar_close_node, close_mask);
+	if (c->titlebar_node)
+		asteroidz_tab_bar_node_set_corner_mask(c->titlebar_node, tab_mask);
+}
+
 void client_draw_monocle_titlebar_segment(Client *c, int32_t x, int32_t y,
 										  int32_t w, bool focused,
 										  bool is_first, bool is_last) {
@@ -548,12 +581,10 @@ void client_draw_monocle_titlebar_segment(Client *c, int32_t x, int32_t y,
 		asteroidz_tab_bar_node_set_position(c->titlebar_close_node, x, y);
 		asteroidz_tab_bar_node_set_size(c->titlebar_close_node, close_w, th);
 		asteroidz_tab_bar_node_set_content_scale(c->titlebar_close_node, 1.0f);
-		/* close is the segment's left part: it owns the strip's top-left
-		 * round + left border when the segment is leftmost; its right side
-		 * touches this segment's own tab, so no border/separator there */
-		asteroidz_tab_bar_node_set_corner_mask(
-			c->titlebar_close_node,
-			is_first ? CORNER_LOCATION_TOP_LEFT : CORNER_LOCATION_NONE);
+		/* close is the segment's left part: it owns the strip's left border
+		 * when the segment is leftmost; its right side touches this
+		 * segment's own tab, so no border/separator there (corners are set
+		 * once for the whole segment by titlebar_apply_corner_rule below) */
 		asteroidz_tab_bar_node_set_titlebar_border(
 			c->titlebar_close_node, config.borderpx, is_first, false);
 		asteroidz_tab_bar_node_set_titlebar_separator(c->titlebar_close_node,
@@ -564,9 +595,7 @@ void client_draw_monocle_titlebar_segment(Client *c, int32_t x, int32_t y,
 	asteroidz_tab_bar_node_set_enabled(c->titlebar_node, true);
 	asteroidz_tab_bar_node_set_position(c->titlebar_node, x + close_w, y);
 	asteroidz_tab_bar_node_set_size(c->titlebar_node, tab_w, th);
-	asteroidz_tab_bar_node_set_corner_mask(
-		c->titlebar_node,
-		is_last ? CORNER_LOCATION_TOP_RIGHT : CORNER_LOCATION_NONE);
+	titlebar_apply_corner_rule(c, is_first, is_last, close_w, tab_w);
 	/* tab is the segment's right part: right border only when this is the
 	 * rightmost segment; otherwise a separator divides it from the next
 	 * segment. Its left touches this segment's close button (no left border). */
@@ -699,6 +728,10 @@ void client_draw_titlebar(Client *c) {
 	asteroidz_tab_bar_node_set_enabled(c->titlebar_node, true);
 	asteroidz_tab_bar_node_set_position(c->titlebar_node, tb_x + close_w, tb_y);
 	asteroidz_tab_bar_node_set_size(c->titlebar_node, tab_w, th);
+	/* a standalone bar is both first and last in its "row"; this also resets
+	 * masks a monocle segment row set (a middle segment's square corners
+	 * used to leak into the per-window tab when leaving monocle) */
+	titlebar_apply_corner_rule(c, true, true, close_w, tab_w);
 	asteroidz_tab_bar_node_set_titlebar_border(c->titlebar_node, config.borderpx,
 										   false, true);
 	/* no separators in tile: each window is its own standalone titlebar, not

@@ -2661,6 +2661,9 @@ static void screenshot_ui_teardown(void) {
 		wlr_buffer_unlock(shotui.frame);
 		shotui.frame = NULL;
 	}
+	free(shotui.snap);
+	shotui.snap = NULL;
+	shotui.snap_len = 0;
 	shotui.mon = NULL;
 	shotui.active = false;
 	shotui.dragging = false;
@@ -2770,14 +2773,19 @@ static void screenshot_ui_update_selection(double cx, double cy) {
 	screenshot_ui_update_label();
 }
 
-static Client *screenshot_ui_client_at(double x, double y) {
-	Client *c = NULL;
-	/* xytonode skips LyrScreenshot, so this drills straight through our
-	 * own overlay to whatever real client is under the cursor */
-	xytonode(x, y, NULL, &c, NULL, NULL, NULL, NULL);
-	if (c && client_is_unmanaged(c))
-		c = NULL;
-	return c;
+/* hit-test against the freeze-time snapshot (topmost/focus order), never
+ * the live scene -- see the snap comment in ScreenshotUI */
+static bool screenshot_ui_snap_box_at(double x, double y,
+									  struct wlr_box *out) {
+	for (int32_t i = 0; i < shotui.snap_len; i++) {
+		const struct wlr_box *b = &shotui.snap[i].box;
+		if (x >= b->x && y >= b->y && x < b->x + b->width &&
+				y < b->y + b->height) {
+			*out = *b;
+			return true;
+		}
+	}
+	return false;
 }
 
 static void screenshot_ui_hover_window(double cx, double cy) {
@@ -2785,11 +2793,8 @@ static void screenshot_ui_hover_window(double cx, double cy) {
 	if (!m)
 		return;
 
-	Client *c = screenshot_ui_client_at(cx, cy);
 	struct wlr_box box;
-	if (c && c->mon == m) {
-		box = c->geom;
-	} else {
+	if (!screenshot_ui_snap_box_at(cx, cy, &box)) {
 		box = (struct wlr_box){.x = (int32_t)round(cx), .y = (int32_t)round(cy),
 								.width = 0, .height = 0};
 	}
@@ -3035,6 +3040,9 @@ static void screenshot_ui_on_captured(Monitor *m, ScreenshotMode mode,
 	if (!frame)
 		return;
 
+	wlr_log(WLR_DEBUG, "screenshot_ui: captured frame on %s (mode %d)",
+		m->wlr_output->name, (int)mode);
+
 	if (mode == ShotScreen) {
 		screenshot_ui_save_and_copy(frame, m, m->m);
 		wlr_buffer_unlock(frame);
@@ -3049,17 +3057,54 @@ static void screenshot_ui_on_captured(Monitor *m, ScreenshotMode mode,
 	shotui.tree = wlr_scene_tree_create(layers[LyrScreenshot]);
 	wlr_scene_node_set_position(&shotui.tree->node, m->m.x, m->m.y);
 
+	/* Freeze the window geometry alongside the pixels: hit-test boxes are
+	 * animation.current AS OF THIS FRAME (what the frozen buffer actually
+	 * shows), in focus order so overlapping windows resolve topmost-first.
+	 * The live scene keeps animating underneath and must not be consulted. */
+	shotui.snap = NULL;
+	shotui.snap_len = 0;
+	if (mode == ShotWindow) {
+		Client *sc;
+		int32_t count = 0;
+		wl_list_for_each(sc, &fstack, flink) {
+			if (VISIBLEON(sc, m) && !client_is_unmanaged(sc) &&
+					!sc->isminimized && !sc->iskilling)
+				count++;
+		}
+		if (count > 0)
+			shotui.snap = ecalloc(count, sizeof(*shotui.snap));
+		if (shotui.snap) {
+			wl_list_for_each(sc, &fstack, flink) {
+				if (!VISIBLEON(sc, m) || client_is_unmanaged(sc) ||
+						sc->isminimized || sc->iskilling)
+					continue;
+				shotui.snap[shotui.snap_len].c = sc;
+				shotui.snap[shotui.snap_len].box = (struct wlr_box){
+					.x = (int32_t)round(sc->animation.current.x),
+					.y = (int32_t)round(sc->animation.current.y),
+					.width = (int32_t)round(sc->animation.current.width),
+					.height = (int32_t)round(sc->animation.current.height),
+				};
+				if (++shotui.snap_len >= count)
+					break;
+			}
+		}
+	}
+
 	shotui.frame_node = wlr_scene_buffer_create(shotui.tree, frame);
 	wlr_scene_buffer_set_dest_size(shotui.frame_node, m->m.width, m->m.height);
 
 	/* border and label both pull from config.pilldata so the overlay matches
-	 * the monocle tab bar's pill theme (colors/radius/border/font) instead
-	 * of carrying their own one-off look */
+	 * the pill theme. The selection border uses the FOCUS accent
+	 * (focus_bg_color = the matugen primary, same accent as focused window
+	 * borders): pilldata.border_color is a legacy default the theme's
+	 * colors.kdl never sets (pills run border-width 0), so it doesn't follow
+	 * the colour style. */
 	static const float dim_color[4] = {0.0f, 0.0f, 0.0f, 0.55f};
 	for (int32_t i = 0; i < 4; i++) {
 		shotui.dim[i] = wlr_scene_rect_create(shotui.tree, 0, 0, dim_color);
 		shotui.border[i] = wlr_scene_rect_create(shotui.tree, 0, 0,
-												 config.pilldata.border_color);
+												 config.pilldata.focus_bg_color);
 	}
 
 	shotui.label = asteroidz_jump_label_node_create(shotui.tree, config.pilldata);
