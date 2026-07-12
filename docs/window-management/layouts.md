@@ -11,7 +11,7 @@ asteroidz keeps a deliberately small set of layouts, assignable per tag:
 - `scroller` — a scrollable strip of columns, similar to PaperWM
 - `monocle` — one window fullscreen-ish at a time, with a tab bar for the rest
 
-Fullscreen is a per-window state (`togglefullscreen`), independent of layout, and works in any of them.
+Fullscreen is a per-window state (`toggle_fullscreen`), independent of layout, and works in any of them.
 
 ---
 
@@ -138,7 +138,7 @@ misc {
 
 binds {
     Super+n { switch_layout; }
-    Super+t { setlayout tile; }
-    Super+s { setlayout scroller; }
+    Super+t { set_layout tile; }
+    Super+s { set_layout scroller; }
 }
 ```

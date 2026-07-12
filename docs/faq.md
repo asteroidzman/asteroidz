@@ -103,8 +103,8 @@ Run `wev` and press the key to find its keycode, then use it in your bind:
 
 ```kdl
 binds {
-    Alt+q { killclient; }
-    Alt+code:24 { killclient; }
+    Alt+q { kill_client; }
+    Alt+code:24 { kill_client; }
 }
 ```
 
@@ -112,6 +112,6 @@ You can also use `binds` (the `s` flag) to match by keysym instead of keycode:
 
 ```kdl
 binds {
-    Alt+q { killclient; }
+    Alt+q { kill_client; }
 }
 ```
