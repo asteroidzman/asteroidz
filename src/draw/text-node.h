@@ -118,6 +118,13 @@ struct asteroidz_tab_bar_node {
 	 * divide adjacent same-colored titlebar segments in a monocle strip */
 	bool titlebar_separator_right;
 
+	/* uniform shrink of the CONTENT (font size + padding + icon gap), used by
+	 * the overview's scaled-down titlebars. Distinct from the `scale` param of
+	 * _update(), which is a HiDPI pixel-density scale (the surface is rendered
+	 * at target*scale pixels and displayed at the logical target size, so it
+	 * does NOT change the visual size of anything). 1.0 = desktop look. */
+	float content_scale;
+
 	// size
 	int32_t target_width;
 	int32_t target_height;
@@ -126,6 +133,7 @@ struct asteroidz_tab_bar_node {
 	char *cached_text;
 	char *cached_font_desc;
 	float cached_scale;
+	float cached_content_scale;
 	float cached_fg_color[4];
 	float cached_bg_color[4];
 	float cached_focus_fg_color[4];
@@ -278,6 +286,8 @@ void asteroidz_tab_bar_node_set_text_align_left(struct asteroidz_tab_bar_node *n
 											bool align_left);
 void asteroidz_tab_bar_node_set_padding(struct asteroidz_tab_bar_node *node,
 									int32_t padding_x, int32_t padding_y);
+void asteroidz_tab_bar_node_set_content_scale(struct asteroidz_tab_bar_node *node,
+										  float content_scale);
 void asteroidz_tab_bar_node_set_titlebar_border(struct asteroidz_tab_bar_node *node,
 											int32_t width, bool border_left,
 											bool border_right);

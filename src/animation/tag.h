@@ -76,6 +76,20 @@ void set_special_in_animation(Monitor *m, Client *c) {
 
 void set_arrange_visible(Monitor *m, Client *c, bool want_animation) {
 
+	/* Overview: overview_tags/overview_arrange_main fully own window geometry
+	 * AND visibility (mirror cells, exposé grid, strip hiding). Resizing to
+	 * desktop geometry or starting tag in/out animations here would fight the
+	 * cell layout every arrange -- and a set tagouting/tagining flag makes
+	 * buffer_set_effect skip the OV thumbnail dest-size scaling, rendering the
+	 * window UNSCALED over its neighbours (the overlapping-titlebars bug when
+	 * previewing a non-selected tag). Just clear the flags and stand down. */
+	if (m->isoverview) {
+		c->animation.tagining = false;
+		c->animation.tagouting = false;
+		c->animation.tagouted = false;
+		return;
+	}
+
 	if (!ISTILED(c) || ((!c->is_clip_to_hide || !is_scroller_layout(c->mon)) &&
 						(!c->is_monocle_hide || !is_monocle_layout(c->mon)))) {
 		c->is_clip_to_hide = false;
@@ -172,6 +186,17 @@ void set_special_out_animation(Monitor *m, Client *c) {
 }
 
 void set_arrange_hidden(Monitor *m, Client *c, bool want_animation) {
+
+	/* Overview: see set_arrange_visible -- a "hidden" (non-selected-tag) window
+	 * may be SHOWN in the main area as the previewed tag, so neither disable
+	 * its scene nor start a desktop-geometry tag-out slide from here. The
+	 * overview code (arrange_main / the strip loop) owns show/hide. */
+	if (m->isoverview) {
+		c->animation.tagining = false;
+		c->animation.tagouting = false;
+		c->animation.tagouted = false;
+		return;
+	}
 
 	if (m->special_transitioning && c->scene->node.enabled && want_animation &&
 		config.animations) {

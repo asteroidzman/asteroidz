@@ -390,6 +390,16 @@ typedef struct {
 	enum corner_location corner_location;
 	bool should_scale;
 	bool ov_live; /* overview live thumbnail: allow down-scaling the surface */
+	/* overview viewport-edge crop: visible fraction of the root surface
+	 * (0..1 each); crop_active applies it as the buffer source box. NB: do NOT
+	 * use wlr_scene_subsurface_tree_set_clip for this -- asteroidz-scenefx does
+	 * not implement it, so the call binds to vanilla wlroots' walker, which
+	 * mangles scenefx's scene structs (UB; the surface just disappears). */
+	bool crop_active;
+	bool crop_clear; /* a previous crop must be removed (don't touch otherwise:
+					  * clearing unconditionally would stomp viewporter source
+					  * boxes of normal clients, e.g. video players) */
+	float crop_l, crop_t, crop_w, crop_h;
 } BufferData;
 
 struct Client {
@@ -418,6 +428,7 @@ struct Client {
 	struct wlr_buffer *ov_snap_buf; /* frozen surface buffer for strip snapshot */
 	struct wlr_box ov_clip;         /* overview big-area surface crop (viewport) */
 	bool ov_clip_active;            /* ov_clip should override the ov_live clip */
+	bool ov_crop_set; /* a source-box crop is applied and must be cleared later */
 	struct wl_list link;
 	struct wl_list flink;
 	struct wl_list fadeout_link;
@@ -8628,7 +8639,13 @@ void updatetitle(struct wl_listener *listener, void *data) {
 
 	const char *title;
 	title = client_get_title(c);
-	asteroidz_tab_bar_node_update(c->titlebar_node, title, 1.0);
+	/* keep the tab's CURRENT font scale (overview tabs are drawn scaled down):
+	 * a hardcoded 1.0 here would redraw the title full-size on every title
+	 * change, stomping the overview's scaled draw moments after it happens */
+	float title_scale = (c->titlebar_node && c->titlebar_node->last_scale > 0.0f)
+							? c->titlebar_node->last_scale
+							: 1.0f;
+	asteroidz_tab_bar_node_update(c->titlebar_node, title, title_scale);
 	asteroidz_group_bar_update(c->group_bar, title,
 						   c->mon	? c->mon->wlr_output->scale
 						   : selmon ? selmon->wlr_output->scale
