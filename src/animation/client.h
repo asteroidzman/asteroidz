@@ -923,27 +923,11 @@ void apply_border(Client *c) {
 			ASTEROIDZ_MIN(clip_box.height, inner_surface_height + bottom_offset);
 	}
 
-	/* A titlebar tab caps the window's top edge, so don't draw the top run
-	 * of the border ring there: extend the interior cutout up to the border
-	 * rect's top edge and square the top corners (the tab carries the top
-	 * rounding). Without this the top border shows as a floating line in
-	 * the transparent titlebar strip to the right of the compact tab. */
-	bool tab_capped = c->titlebar_node && !c->isfullscreen &&
-		config.titlebar_height > 0 && client_wants_ssd(c) &&
-		(config.enable_titlebar || is_monocle_layout(c->mon));
-	enum corner_location border_corner_location = current_corner_location;
-	if (tab_capped) {
-		inner_surface_height += inner_surface_y;
-		inner_surface_y = 0;
-		border_corner_location &=
-			~(CORNER_LOCATION_TOP_LEFT | CORNER_LOCATION_TOP_RIGHT);
-	}
-
 	struct clipped_region clipped_region = {
 		.area = {inner_surface_x, inner_surface_y, inner_surface_width,
 				 inner_surface_height},
 		.corners = corner_radii_from_location(config.border_radius,
-											  border_corner_location),
+											  current_corner_location),
 	};
 
 	wlr_scene_node_set_position(&c->scene_surface->node, c->bw, c->bw);
@@ -951,7 +935,7 @@ void apply_border(Client *c) {
 	wlr_scene_node_set_position(&c->border->node, rect_x, rect_y);
 	wlr_scene_rect_set_corner_radii(
 		c->border, corner_radii_from_location(config.border_radius,
-											  border_corner_location));
+											  current_corner_location));
 	wlr_scene_rect_set_clipped_region(c->border, clipped_region);
 
 	/* Only show the border once its interior is actually cut out. On a window's
