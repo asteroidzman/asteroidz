@@ -678,7 +678,11 @@ void client_draw_titlebar(Client *c) {
 	if (c->titlebar_close_node)
 		asteroidz_tab_bar_node_reparent(c->titlebar_close_node, c->scene);
 	int32_t tb_x = 0;
-	int32_t tb_y = -th;
+	/* Sit the tab flush ON the window's top border (overlap by bw): the
+	 * frame line passes behind the tab and emerges at its right edge, so
+	 * tab + frame read as one assembly instead of a tab floating above a
+	 * detached line. */
+	int32_t tb_y = -th + (int32_t)c->bw;
 	int32_t tb_w = c->animation.current.width;
 	int32_t close_w = ASTEROIDZ_MIN(th, tb_w);
 
