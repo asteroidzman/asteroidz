@@ -16,7 +16,6 @@ depends=(
 makedepends=('meson' 'ninja' 'wayland-protocols' 'vulkan-headers' 'glslang' 'git')
 optdepends=(
   'xorg-xwayland: run X11 applications under XWayland'
-  'asteroidz-dms: matching Material 3 shell/bar'
 )
 # Default session runs the Vulkan renderer; an "Asteroidz (GLES fallback)"
 # session (WLR_RENDERER=gles2) is also installed. One binary, both renderers.
