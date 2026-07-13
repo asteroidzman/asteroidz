@@ -303,8 +303,9 @@ void scene_buffer_apply_effect(struct wlr_scene_buffer *buffer, int32_t sx,
 		return;
 
 	wlr_scene_buffer_set_corner_radii(
-		buffer, corner_radii_from_location(config.border_radius,
-										   buffer_data->corner_location));
+		buffer, corner_radii_from_location(
+					GEZERO(config.border_radius - (int32_t)config.borderpx),
+					buffer_data->corner_location));
 }
 
 void scene_buffer_apply_overview_effect(struct wlr_scene_buffer *buffer,
@@ -338,9 +339,12 @@ void scene_buffer_apply_overview_effect(struct wlr_scene_buffer *buffer,
 	if (is_subsurface)
 		return;
 
+	/* content sits inset by the border width; its arcs use r - bw to stay
+	 * concentric with the ring (matches the border's interior cutout) */
 	wlr_scene_buffer_set_corner_radii(
-		buffer, corner_radii_from_location(config.border_radius,
-										   buffer_data->corner_location));
+		buffer, corner_radii_from_location(
+					GEZERO(config.border_radius - (int32_t)config.borderpx),
+					buffer_data->corner_location));
 }
 
 void buffer_set_effect(Client *c, BufferData data) {
@@ -927,11 +931,15 @@ void apply_border(Client *c) {
 			ASTEROIDZ_MIN(clip_box.height, inner_surface_height + bottom_offset);
 	}
 
+	/* the ring's interior cutout is inset by bw, so its arcs must use
+	 * radius r - bw to stay concentric with the outer rounding; reusing the
+	 * outer radius thins the ring at corners and leaves AA slivers where
+	 * the cutout and the content rounding disagree */
 	struct clipped_region clipped_region = {
 		.area = {inner_surface_x, inner_surface_y, inner_surface_width,
 				 inner_surface_height},
-		.corners = corner_radii_from_location(config.border_radius,
-											  current_corner_location),
+		.corners = corner_radii_from_location(
+			GEZERO(config.border_radius - bw), current_corner_location),
 	};
 
 	wlr_scene_node_set_position(&c->scene_surface->node, c->bw, c->bw);
