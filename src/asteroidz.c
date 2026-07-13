@@ -1246,6 +1246,16 @@ static bool ufo_bar_geometry(void *ud, int32_t *x, int32_t *y, int32_t *w,
 	(void)ud;
 	if (!selmon)
 		return false;
+	/* never fly over fullscreen content: the overlay would break the
+	 * surface's direct scanout for the whole animation, and for HDR (PQ
+	 * passthrough) video the composite path visibly brightens the picture.
+	 * Skipping also just avoids doodling over movies/games. */
+	Client *fc;
+	wl_list_for_each(fc, &clients, link) {
+		if (fc->isfullscreen && VISIBLEON(fc, selmon) && !fc->isminimized &&
+				!fc->iskilling)
+			return false;
+	}
 	int32_t bar_h = selmon->w.y - selmon->m.y; /* top exclusive zone = bar */
 	if (bar_h < 8)
 		bar_h = 44; /* no top bar: fly across the top strip anyway */
