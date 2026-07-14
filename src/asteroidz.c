@@ -1452,6 +1452,7 @@ static struct wl_event_source *sync_keymap;
 #include "animation/common.h"
 #include "animation/layer.h"
 #include "animation/tag.h"
+#include "ipc/session-bus.h"
 #include "dispatch/bind_define.h"
 #include "ext-protocol/all.h"
 #include "fetch/fetch.h"
@@ -3188,6 +3189,7 @@ void cleanup(void) {
 	ufo_egg = NULL;
 
 	ipc_cleanup();
+	session_bus_finish();
 	cleanuplisteners();
 	modern_protocols_finish();
 	global_shortcuts_portal_finish();
@@ -7571,6 +7573,7 @@ void setup(void) {
 	global_shortcuts_portal_init();
 
 	ipc_init(event_loop);
+	session_bus_init();
 
 	tablet_mgr = wlr_tablet_v2_create(dpy);
 	/* The backend is a wlroots feature which abstracts the underlying input

@@ -2646,6 +2646,34 @@ static void screenshot_ui_copy_to_clipboard(const char *path) {
 	free(cmd);
 }
 
+/* Desktop notification for a finished capture: kind, pixel size, file size
+ * and path, with the shot itself as the icon. Sent straight over the
+ * session bus (see ipc/session-bus.h); no daemon simply means an error
+ * reply -- the capture already succeeded, so nothing surfaces here. */
+static void screenshot_ui_notify(ScreenshotMode mode, int32_t px_w,
+								 int32_t px_h, const char *path) {
+	static const char *kinds[] = {
+		[ShotScreen] = "screen", [ShotRegion] = "region",
+		[ShotWindow] = "window"};
+
+	struct stat st;
+	char fsize[32] = "";
+	if (stat(path, &st) == 0) {
+		if (st.st_size >= 1024 * 1024)
+			snprintf(fsize, sizeof(fsize), " · %.1f MiB",
+					 st.st_size / (1024.0 * 1024.0));
+		else
+			snprintf(fsize, sizeof(fsize), " · %.0f KiB", st.st_size / 1024.0);
+	}
+
+	char *body = string_printf("%s · %dx%d%s\n%s", kinds[mode], px_w, px_h,
+							   fsize, path);
+	if (!body)
+		return;
+	notify_send("Screenshot saved", body, path);
+	free(body);
+}
+
 /* SMPTE ST 2084 (PQ) EOTF: normalized code value -> linear light, in units
  * where 1.0 == 10000 nits. */
 static float screenshot_pq_eotf(float v) {
@@ -2724,7 +2752,8 @@ static void screenshot_tonemap_pq_to_srgb(uint8_t *pixels, int32_t width,
 
 /* crop [sel] (layout coords) out of [frame] and save+copy it as a PNG */
 static bool screenshot_ui_save_and_copy(struct wlr_buffer *frame, Monitor *m,
-										struct wlr_box sel) {
+										struct wlr_box sel,
+										ScreenshotMode mode) {
 	if (!frame || !m || sel.width <= 0 || sel.height <= 0)
 		return false;
 
@@ -2805,6 +2834,7 @@ static bool screenshot_ui_save_and_copy(struct wlr_buffer *frame, Monitor *m,
 		if (ok) {
 			wlr_log(WLR_INFO, "screenshot_ui: saved %s", path);
 			screenshot_ui_copy_to_clipboard(path);
+			screenshot_ui_notify(mode, px_w, px_h, path);
 		} else {
 			wlr_log(WLR_ERROR, "screenshot_ui: failed to write %s", path);
 		}
@@ -2820,7 +2850,8 @@ static bool screenshot_ui_save_and_copy(struct wlr_buffer *frame, Monitor *m,
 }
 
 static void screenshot_ui_confirm(void) {
-	screenshot_ui_save_and_copy(shotui.frame, shotui.mon, shotui.sel);
+	screenshot_ui_save_and_copy(shotui.frame, shotui.mon, shotui.sel,
+								shotui.mode);
 	screenshot_ui_teardown();
 }
 
@@ -2835,7 +2866,7 @@ static void screenshot_ui_on_captured(Monitor *m, ScreenshotMode mode,
 		m->wlr_output->name, (int)mode);
 
 	if (mode == ShotScreen) {
-		screenshot_ui_save_and_copy(frame, m, m->m);
+		screenshot_ui_save_and_copy(frame, m, m->m, ShotScreen);
 		wlr_buffer_unlock(frame);
 		return;
 	}
