@@ -38,9 +38,9 @@ static void usage(void) {
 	printf("     Add 'client,<id>' at the beginning or end to target a "
 		   "specific client.\n");
 	printf("     Examples:\n");
-	printf("       dispatch togglefloating\n");
-	printf("       dispatch movewin,10,100\n");
-	printf("       dispatch movewin,10,100 client,4\n");
+	printf("       dispatch toggle_floating\n");
+	printf("       dispatch move_window,10,100\n");
+	printf("       dispatch move_window,10,100 client,4\n");
 	printf("Persistent streams (watch):\n");
 	printf(
 		"  watch monitor <name>                     Stream monitor changes\n");
