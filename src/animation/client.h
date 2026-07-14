@@ -53,7 +53,8 @@ enum corner_location set_client_corner_location(Client *c) {
 	if ((config.enable_titlebar || is_monocle_layout(c->mon)) &&
 		c->titlebar_node && !c->isfullscreen &&
 		(seg_row ||
-		 (client_wants_ssd(c) && (ISFAKETILED(c) || c->isfloating)))) {
+		 (client_wants_ssd(c) && !client_is_splash(c) &&
+		  (ISFAKETILED(c) || c->isfloating)))) {
 		bool monocle_row_full_width = false;
 		if (is_monocle_layout(c->mon) && c->mon->visible_fake_tiling_clients > 1) {
 			int32_t n = c->mon->visible_fake_tiling_clients;
@@ -651,6 +652,7 @@ void client_draw_titlebar(Client *c) {
 	 * in the main area, so their titlebars would otherwise linger as overlapping
 	 * ghosts (drawn at a stale position by the per-frame animation path). */
 	if (!titlebar_wanted || c->isfullscreen || !client_wants_ssd(c) ||
+		client_is_splash(c) /* splash screens get no tab */ ||
 		(!ov && c->is_monocle_hide) /* the exposé shows ALL monocle windows */ ||
 		c->isminimized || c->iskilling || c->isunglobal || !VISIBLEON(c, c->mon) ||
 		(ov && (c->is_overview_hidden ||

@@ -427,6 +427,19 @@ static inline int32_t client_is_x11_popup(Client *c) {
 	return 0;
 }
 
+/* Splash screens announce themselves only through the X11 window type --
+ * xdg-shell has no splash concept, so this is always false for Wayland
+ * clients. Used to keep compositor chrome (the titlebar tab) off windows
+ * that exist for a few seconds while an app loads. */
+static inline int32_t client_is_splash(Client *c) {
+#ifdef XWAYLAND
+	if (client_is_x11(c))
+		return wlr_xwayland_surface_has_window_type(
+			c->surface.xwayland, WLR_XWAYLAND_NET_WM_WINDOW_TYPE_SPLASH);
+#endif
+	return 0;
+}
+
 static inline int32_t client_should_global(Client *c) {
 
 #ifdef XWAYLAND

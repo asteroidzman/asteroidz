@@ -401,6 +401,7 @@ float *get_border_color(Client *c) {
 	 * with it, so match the titlebar's own inactive pill color instead of
 	 * the generic border color. */
 	bool has_titlebar = c->titlebar_node && c->mon && client_wants_ssd(c) &&
+					   !client_is_splash(c) &&
 					   (config.enable_titlebar || is_monocle_layout(c->mon)) &&
 					   ISFAKETILED(c);
 	float *inactive_color =
