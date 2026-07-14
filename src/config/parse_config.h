@@ -258,6 +258,7 @@ typedef struct {
 	int32_t snap_distance;
 	int32_t enable_floating_snap;
 	int32_t drag_tile_to_tile;
+	bool prefer_no_csd; /* misc/prefer-no-csd: decorate decoration-oblivious clients */
 	int32_t drag_tile_small;
 	uint32_t swipe_min_threshold;
 	float focused_opacity;
@@ -1716,6 +1717,8 @@ bool parse_option(Config *config, char *key, char *value) {
 		config->snap_distance = atoi(value);
 	} else if (strcmp(key, "enable_floating_snap") == 0) {
 		config->enable_floating_snap = atoi(value);
+	} else if (strcmp(key, "prefer_no_csd") == 0) {
+		config->prefer_no_csd = atoi(value) != 0;
 	} else if (strcmp(key, "drag_tile_to_tile") == 0) {
 		config->drag_tile_to_tile = atoi(value);
 	} else if (strcmp(key, "drag_tile_small") == 0) {
@@ -3381,6 +3384,7 @@ static const struct {
 	{"misc/sdr/saturation", "sdr_saturation"},
 	{"misc/dpms-wake-retrain", "dpms_wake_retrain"},
 	{"misc/drag-tile-to-tile", "drag_tile_to_tile"},
+	{"misc/prefer-no-csd", "prefer_no_csd"},
 	{"misc/icon-theme", "icon_theme"},
 };
 

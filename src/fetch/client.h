@@ -13,7 +13,11 @@ bool client_wants_ssd(Client *c) {
 					   * (SDL/GLFW games etc. that bind neither protocol) */
 		return true;
 	if (!c->decoration)
-		return false;
+		/* never bound xdg-decoration: CSD by default; misc/prefer-no-csd
+		 * decorates these too (allow_csd rule stays the escape hatch).
+		 * NB: apps that paint their own header regardless (GTK headerbars)
+		 * will show both -- the compositor can't stop client-side paint. */
+		return config.prefer_no_csd && !c->allow_csd;
 	if (!c->allow_csd)
 		return true;
 	return c->decoration->requested_mode ==
