@@ -4979,6 +4979,16 @@ void reset_option(void) {
 	reapply_tagrule();
 	reapply_monitor_rules();
 
+	/* re-paint existing clients' borders: colours live per-client and are
+	 * otherwise only refreshed on focus transitions, so a reload with a new
+	 * palette (matugen wallpaper change) left mapped windows on the old
+	 * accent until the next focus change */
+	{
+		Client *c;
+		wl_list_for_each(c, &clients, link)
+			setborder_color(c);
+	}
+
 	arrange(selmon, false, false);
 }
 
