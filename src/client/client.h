@@ -190,6 +190,19 @@ static inline const char *client_get_title(Client *c) {
 										   : "broken";
 }
 
+/* Modal dialog: declared via xdg-dialog-v1 (Wayland) or the modal hint
+ * (X11). Modals float, carry no tab, and take focus in place of their
+ * parent (see focusclient). */
+static inline int32_t client_is_modal(Client *c) {
+#ifdef XWAYLAND
+	if (client_is_x11(c))
+		return c->surface.xwayland->modal;
+#endif
+	struct wlr_xdg_dialog_v1 *dialog =
+		wlr_xdg_dialog_v1_try_from_wlr_xdg_toplevel(c->surface.xdg->toplevel);
+	return dialog != NULL && dialog->modal;
+}
+
 static inline int32_t client_is_float_type(Client *c) {
 	struct wlr_xdg_toplevel *toplevel;
 	struct wlr_xdg_toplevel_state state;
@@ -225,9 +238,10 @@ static inline int32_t client_is_float_type(Client *c) {
 
 	toplevel = c->surface.xdg->toplevel;
 	state = toplevel->current;
-	return toplevel->parent || (state.min_width != 0 && state.min_height != 0 &&
-								(state.min_width == state.max_width ||
-								 state.min_height == state.max_height));
+	return toplevel->parent || client_is_modal(c) ||
+		   (state.min_width != 0 && state.min_height != 0 &&
+			(state.min_width == state.max_width ||
+			 state.min_height == state.max_height));
 }
 
 static inline int32_t client_is_rendered_on_mon(Client *c, Monitor *m) {
