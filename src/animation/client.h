@@ -980,8 +980,10 @@ void apply_border(Client *c) {
 															 blur_cached);
 		int32_t blur_width = GEZERO(clip_box.width - 2 * bw);
 		int32_t blur_height = GEZERO(clip_box.height - 2 * bw);
+		/* the blur node sits inset by bw like the content; keep its arcs
+		 * concentric (r - bw) or blurred backdrop peeks out at the corners */
 		struct fx_corner_radii blur_radii = corner_radii_from_location(
-			config.border_radius, current_corner_location);
+			GEZERO(config.border_radius - bw), current_corner_location);
 
 		/* only touch the scene when something changed: this runs on
 		 * every animation tick */
