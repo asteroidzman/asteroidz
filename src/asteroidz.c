@@ -96,6 +96,7 @@
 #include <wlr/types/wlr_xcursor_manager.h>
 #include <wlr/types/wlr_xdg_activation_v1.h>
 #include <wlr/types/wlr_xdg_decoration_v1.h>
+#include <wlr/types/wlr_xdg_dialog_v1.h>
 #include <wlr/types/wlr_xdg_foreign_registry.h>
 #include <wlr/types/wlr_xdg_foreign_v1.h>
 #include <wlr/types/wlr_xdg_foreign_v2.h>
@@ -899,6 +900,7 @@ static void createpointerconstraint(struct wl_listener *listener, void *data);
 static void cursorconstrain(struct wlr_pointer_constraint_v1 *constraint);
 static void commitpopup(struct wl_listener *listener, void *data);
 static void createpopup(struct wl_listener *listener, void *data);
+static void createdialog(struct wl_listener *listener, void *data);
 static void cursorframe(struct wl_listener *listener, void *data);
 static void cursorwarptohint(void);
 static void destroydecoration(struct wl_listener *listener, void *data);
@@ -1411,6 +1413,7 @@ static struct wl_listener new_pointer_constraint = {
 static struct wl_listener new_output = {.notify = createmon};
 static struct wl_listener new_xdg_toplevel = {.notify = createnotify};
 static struct wl_listener new_xdg_popup = {.notify = createpopup};
+static struct wl_listener new_xdg_dialog = {.notify = createdialog};
 static struct wl_listener new_xdg_decoration = {.notify = createdecoration};
 static struct wl_listener new_layer_surface = {.notify = createlayersurface};
 static struct wl_listener output_mgr_apply = {.notify = outputmgrapply};
@@ -3160,6 +3163,7 @@ void cleanuplisteners(void) {
 	wl_list_remove(&new_xdg_toplevel.link);
 	wl_list_remove(&new_xdg_decoration.link);
 	wl_list_remove(&new_xdg_popup.link);
+	wl_list_remove(&new_xdg_dialog.link);
 	wl_list_remove(&new_layer_surface.link);
 	wl_list_remove(&output_mgr_apply.link);
 	wl_list_remove(&output_mgr_test.link);
@@ -3869,6 +3873,49 @@ static void createpopup(struct wl_listener *listener, void *data) {
 
 	popup->reposition.notify = repositionpopup;
 	wl_signal_add(&wlr_popup->events.reposition, &popup->reposition);
+}
+
+/* xdg-dialog-v1: clients declare a toplevel as a (modal) dialog. Modality
+ * is queried on demand via wlr_xdg_dialog_v1_try_from_wlr_xdg_toplevel()
+ * (client_is_modal); this wrapper only exists to react to set_modal
+ * commits, which can arrive after map and must re-run the float/titlebar
+ * classification. */
+typedef struct {
+	struct wlr_xdg_dialog_v1 *dialog;
+	struct wl_listener set_modal;
+	struct wl_listener destroy;
+} XdgDialog;
+
+static void xdgdialogsetmodal(struct wl_listener *listener, void *data) {
+	XdgDialog *d = wl_container_of(listener, d, set_modal);
+	Client *c = d->dialog->xdg_toplevel->base->data;
+	if (!c || !c->mon || !client_surface(c)->mapped)
+		return;
+	if (d->dialog->modal && !c->isfloating)
+		setfloating(c, 1);
+	else
+		arrange(c->mon, false, false);
+}
+
+static void xdgdialogdestroy(struct wl_listener *listener, void *data) {
+	XdgDialog *d = wl_container_of(listener, d, destroy);
+	wl_list_remove(&d->set_modal.link);
+	wl_list_remove(&d->destroy.link);
+	free(d);
+}
+
+void createdialog(struct wl_listener *listener, void *data) {
+	struct wlr_xdg_dialog_v1 *dialog = data;
+
+	XdgDialog *d = calloc(1, sizeof(*d));
+	if (!d)
+		return;
+
+	d->dialog = dialog;
+	d->set_modal.notify = xdgdialogsetmodal;
+	wl_signal_add(&dialog->events.set_modal, &d->set_modal);
+	d->destroy.notify = xdgdialogdestroy;
+	wl_signal_add(&dialog->events.destroy, &d->destroy);
 }
 
 void createdecoration(struct wl_listener *listener, void *data) {
@@ -4878,6 +4925,22 @@ void destroykeyboardgroup(struct wl_listener *listener, void *data) {
  * activatex11 recognise the sibling's activate as part of the same steal. */
 static uint32_t last_x11_unfocus_ms = 0;
 
+/* the mapped, visible modal xdg dialog of p, if any (X11 modals manage
+ * their own focus client-side, so this is Wayland-only) */
+static Client *client_modal_child(Client *p) {
+	Client *c;
+	if (!p || client_is_x11(p))
+		return NULL;
+	wl_list_for_each(c, &clients, link) {
+		if (c != p && !c->iskilling && !client_is_x11(c) &&
+			client_surface(c)->mapped && c->mon && VISIBLEON(c, c->mon) &&
+			c->surface.xdg->toplevel->parent == p->surface.xdg->toplevel &&
+			client_is_modal(c))
+			return c;
+	}
+	return NULL;
+}
+
 void focusclient(Client *c, int32_t lift) {
 
 	Client *last_focus_client = NULL;
@@ -4894,6 +4957,15 @@ void focusclient(Client *c, int32_t lift) {
 
 	if (c && !client_surface(c)->mapped)
 		return;
+
+	/* a window with an open modal dialog yields focus to the dialog (walk
+	 * chained modals, bounded against pathological parent cycles) */
+	for (int32_t depth = 0; c && depth < 4; depth++) {
+		Client *modal = client_modal_child(c);
+		if (!modal)
+			break;
+		c = modal;
+	}
 
 	if (c && client_should_ignore_focus(c) && client_is_x11_popup(c))
 		return;
@@ -7679,6 +7751,9 @@ void setup(void) {
 
 	/* Initializes the interface used to implement urgency hints */
 	activation = wlr_xdg_activation_v1_create(dpy);
+
+	struct wlr_xdg_wm_dialog_v1 *wm_dialog = wlr_xdg_wm_dialog_v1_create(dpy, 1);
+	wl_signal_add(&wm_dialog->events.new_dialog, &new_xdg_dialog);
 	wl_signal_add(&activation->events.request_activate, &request_activate);
 
 	wlr_scene_set_gamma_control_manager_v1(
