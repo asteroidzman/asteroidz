@@ -440,6 +440,15 @@ static inline int32_t client_is_splash(Client *c) {
 	return 0;
 }
 
+/* Every titlebar decision site (draw, space reservation, corner squaring,
+ * border-color pairing) must agree, so they all ask this one question:
+ * splash windows never get a tab, and the no-titlebar window rule opts
+ * anything else out (Wayland has no window types, so rules are the only
+ * handle for Wayland splash-alikes). */
+static inline int32_t client_no_titlebar(Client *c) {
+	return c->isnotitlebar || client_is_splash(c);
+}
+
 static inline int32_t client_should_global(Client *c) {
 
 #ifdef XWAYLAND
