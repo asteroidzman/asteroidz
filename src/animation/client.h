@@ -939,7 +939,11 @@ void apply_border(Client *c) {
 		.area = {inner_surface_x, inner_surface_y, inner_surface_width,
 				 inner_surface_height},
 		.corners = corner_radii_from_location(
-			GEZERO(config.border_radius - bw), current_corner_location),
+			/* 1px tighter than the content arc: the ring UNDERLAPS the
+			 * content corner so the AA seam between the two independently
+			 * rasterized arcs lands on border paint, not on the wallpaper
+			 * behind the window (showed as a bright dot mid-arc) */
+			GEZERO(config.border_radius - bw - 1), current_corner_location),
 	};
 
 	wlr_scene_node_set_position(&c->scene_surface->node, c->bw, c->bw);
