@@ -152,6 +152,7 @@ static cJSON *build_client_json(Client *c) {
 								: "");
 	cJSON_AddStringToObject(obj, "title", client_get_title(c));
 	cJSON_AddStringToObject(obj, "appid", client_get_appid(c));
+	cJSON_AddBoolToObject(obj, "is_xwayland", client_is_x11(c));
 	cJSON_AddStringToObject(obj, "icon", c->icon_name ? c->icon_name : "");
 	cJSON_AddStringToObject(obj, "monitor",
 							c->mon ? c->mon->wlr_output->name : "");
