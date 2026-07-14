@@ -72,6 +72,7 @@ typedef struct {
 	const char *layer_animation_type_close;
 	int32_t isnoborder;
 	int32_t isnoshadow;
+	int32_t isnotitlebar;
 	int32_t vrr_only_fullscreen;
 	int32_t shield_when_capture;
 	int32_t ispinned;
@@ -2530,6 +2531,7 @@ bool parse_option(Config *config, char *key, char *value) {
 		rule->isfakefullscreen = -1;
 		rule->isnoborder = -1;
 		rule->isnoshadow = -1;
+		rule->isnotitlebar = -1;
 		rule->vrr_only_fullscreen = -1;
 		rule->shield_when_capture = -1;
 		rule->ispinned = -1;
@@ -2639,6 +2641,8 @@ bool parse_option(Config *config, char *key, char *value) {
 					rule->ispinned = atoi(val);
 				} else if (strcmp(key, "isnoshadow") == 0) {
 					rule->isnoshadow = atoi(val);
+				} else if (strcmp(key, "isnotitlebar") == 0) {
+					rule->isnotitlebar = atoi(val);
 				} else if (strcmp(key, "isnoradius") == 0) {
 					rule->isnoradius = atoi(val);
 				} else if (strcmp(key, "isnoanimation") == 0) {
@@ -3489,7 +3493,7 @@ static const struct {
 	{"open-floating", "isfloating"}, {"open-fullscreen", "isfullscreen"},
 	{"no-blur", "noblur"},		  {"no-border", "isnoborder"},
 	{"no-shadow", "isnoshadow"},  {"no-rounding", "isnoradius"},
-	{"no-animation", "isnoanimation"},
+	{"no-animation", "isnoanimation"}, {"no-titlebar", "isnotitlebar"},
 };
 static const char *kdl_rule_key(const char *nice) {
 	for (size_t i = 0; i < LENGTH(kdl_rule_map); i++)

@@ -496,6 +496,7 @@ struct Client {
 	int32_t isglobal;
 	int32_t isnoborder;
 	int32_t isnoshadow;
+	int32_t isnotitlebar;
 	int32_t vrr_only_fullscreen;
 	int32_t shield_when_capture;
 	int32_t isnoradius;
@@ -2047,6 +2048,7 @@ static void apply_rule_properties(Client *c, const ConfigWinRule *r) {
 	APPLY_INT_PROP(c, r, isfakefullscreen);
 	APPLY_INT_PROP(c, r, isnoborder);
 	APPLY_INT_PROP(c, r, isnoshadow);
+	APPLY_INT_PROP(c, r, isnotitlebar);
 	APPLY_INT_PROP(c, r, vrr_only_fullscreen);
 	APPLY_INT_PROP(c, r, shield_when_capture);
 	APPLY_INT_PROP(c, r, ispinned);
