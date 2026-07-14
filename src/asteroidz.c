@@ -3492,10 +3492,17 @@ void layer_update_blur(LayerSurface *l) {
 		wlr_scene_blur_set_should_only_blur_bottom_layer(l->blur_node,
 														 false);
 	if (l->blur_node->width != (int)layer_surface->current.actual_width ||
-		l->blur_node->height != (int)layer_surface->current.actual_height)
+		l->blur_node->height != (int)layer_surface->current.actual_height) {
 		wlr_scene_blur_set_size(l->blur_node,
 								layer_surface->current.actual_width,
 								layer_surface->current.actual_height);
+		/* the surface resized while mapped: the once-only transparency mask
+		 * below is now stale (sized for the old extent), so re-snapshot it —
+		 * otherwise blur is clipped/overhangs until the surface is destroyed
+		 * (e.g. a popup or notification panel growing/shrinking its content) */
+		wlr_scene_node_for_each_buffer(&l->scene_layer->tree->node,
+									   iter_layer_scene_buffers, l);
+	}
 
 	/* pass the client's region verbatim: it carries the rounded corners,
 	 * so clipping by its bounding box would leave square blur "ears"
