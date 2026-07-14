@@ -3610,9 +3610,13 @@ void commitlayersurfacenotify(struct wl_listener *listener, void *data) {
 		l->layer_surface->current = l->layer_surface->pending;
 		arrangelayers(l->mon);
 		l->layer_surface->current = old_state;
-		// an on-demand-interactive layer only gets focus set before it's mapped
+		/* an on-demand-interactive layer gets focus once, on map. Read the
+		 * PENDING state: on this initial commit `current` was just restored
+		 * to its pre-commit default (NONE), so checking it here made
+		 * focus-on-map dead code and on-demand layers (swaync's control
+		 * center) never got the keyboard until clicked. */
 		if (!exclusive_focus &&
-			l->layer_surface->current.keyboard_interactive ==
+			l->layer_surface->pending.keyboard_interactive ==
 				ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_ON_DEMAND) {
 			focuslayer(l);
 		}
