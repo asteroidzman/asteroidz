@@ -225,6 +225,8 @@ enum {
 	LyrTile,
 	LyrMaximize,
 	LyrTop,
+	LyrFS, /* fullscreen clients: always above panels/bars on LyrTop,
+			* always below LyrOverlay (notifications, lockscreen) */
 	LyrFadeOut,
 	LyrOverlay,
 	LyrIMPopup, // text-input layer
@@ -7272,12 +7274,15 @@ void setfullscreen(Client *c, int32_t fullscreen,
 
 	if (c->isoverlay) {
 		wlr_scene_node_reparent(&c->scene->node, layers[LyrOverlay]);
+	} else if (fullscreen) {
+		/* dedicated layer above LyrTop: a bar (re)mapping on the top layer
+		 * can never end up stacked over a fullscreen window */
+		wlr_scene_node_reparent(&c->scene->node, layers[LyrFS]);
 	} else if (client_should_overtop(c) && c->isfloating) {
 		wlr_scene_node_reparent(&c->scene->node, layers[LyrTop]);
 	} else {
-		wlr_scene_node_reparent(
-			&c->scene->node,
-			layers[fullscreen || c->isfloating ? LyrTop : LyrTile]);
+		wlr_scene_node_reparent(&c->scene->node,
+								layers[c->isfloating ? LyrTop : LyrTile]);
 	}
 
 	check_vrr_enable(c);
@@ -8025,10 +8030,9 @@ void overview_backup(Client *c) {
 	if (c->isfullscreen || c->ismaximizescreen) {
 		client_pending_fullscreen_state(c, 0); // clear the window's fullscreen flag
 		client_pending_maximized_state(c, 0);
-		/* a fullscreen window lives on LyrTop (maximized on LyrMaximize);
-		 * overview disables LyrTop to hide the bar, so the window would vanish.
-		 * Clearing the flag doesn't reparent the node, so do it here (as we do
-		 * for floating) to move it onto LyrTile where the mirror is laid out. */
+		/* a fullscreen window lives on LyrFS (maximized on LyrMaximize);
+		 * the overview lays its mirror out on LyrTile, and clearing the flag
+		 * doesn't reparent the node, so do it here (as we do for floating). */
 		if (c->scene)
 			wlr_scene_node_reparent(&c->scene->node, layers[LyrTile]);
 	}
