@@ -440,28 +440,17 @@ static inline int32_t client_is_splash(Client *c) {
 	return 0;
 }
 
-/* Dialog-like transient: a toplevel opened on behalf of another window
- * (About boxes, file choosers, preferences). Wayland expresses this
- * structurally via xdg_toplevel.set_parent; X11 via WM_TRANSIENT_FOR,
- * modality, or the DIALOG window type. */
-static inline int32_t client_is_transient(Client *c) {
-#ifdef XWAYLAND
-	if (client_is_x11(c))
-		return c->surface.xwayland->parent != NULL ||
-			   c->surface.xwayland->modal ||
-			   wlr_xwayland_surface_has_window_type(
-				   c->surface.xwayland, WLR_XWAYLAND_NET_WM_WINDOW_TYPE_DIALOG);
-#endif
-	return c->surface.xdg->toplevel->parent != NULL;
-}
-
 /* Every titlebar decision site (draw, space reservation, corner squaring,
- * border-color pairing) must agree, so they all ask this one question:
- * splash windows and transient dialogs never get a tab (they carry their
- * own chrome or are too short-lived to manage by tab), and the
- * no-titlebar window rule opts anything else out. */
+ * border-color pairing) must agree, so they all ask this one question.
+ * Dialog-likes never get a tab: everything client_is_float_type()
+ * auto-floats for (parents/transients, modals, X11 dialog/splash/toolbar/
+ * utility types, fixed min==max size hints -- Steam's parentless CEF
+ * popups float via that last one). Whatever the compositor floats
+ * because it is dialog-ish, it also leaves tab-less; user-toggled
+ * floating is unaffected. The no-titlebar window rule opts anything
+ * else out. */
 static inline int32_t client_no_titlebar(Client *c) {
-	return c->isnotitlebar || client_is_splash(c) || client_is_transient(c);
+	return c->isnotitlebar || client_is_splash(c) || client_is_float_type(c);
 }
 
 static inline int32_t client_should_global(Client *c) {
