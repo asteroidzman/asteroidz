@@ -120,8 +120,12 @@ ffmpeg -y -i "$OUTDIR/rec.mp4" -vf "fps=$FPS" "$OUTDIR/fr/f_%03d.png" >/dev/null
 montage $(ls "$OUTDIR"/fr/f_*.png | sed -n '1~2p') -tile 10x -geometry 192x108+1+1 \
 	"$OUTDIR/$LABEL.png" 2>/dev/null
 
-# tear down the test instance + clients (identified by the unique config path)
-kill "${MPV:-0}" "${WF:-0}" "${K1:-0}" 2>/dev/null
+# tear down the test instance + clients (identified by the unique config path).
+# Skip empty/unset PIDs individually: a bare `kill 0` would signal the whole
+# process group, taking the harness (and its caller) down with it.
+for pid in "${MPV:-}" "${WF:-}" "${K1:-}"; do
+	[ -n "$pid" ] && kill "$pid" 2>/dev/null
+done
 pkill -f "asteroidz -c $CONFIG" 2>/dev/null
 
 echo "montage: $OUTDIR/$LABEL.png ($(ls "$OUTDIR"/fr | wc -l) frames)"
