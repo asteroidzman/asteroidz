@@ -5502,6 +5502,25 @@ void client_update_blur(Client *c) {
 	effect = background_effect_try_from_surface(client_surface(c));
 	want = config.blur && !c->noblur && !c->iskilling;
 
+	/* a fully OPAQUE surface can never show its backdrop: don't keep a blur
+	 * node behind it (a CSD window whose buffer doesn't cover the node --
+	 * e.g. Electron with allow_csd -- exposed it as a glowing blurred band).
+	 * A client effect region or a compositor opacity rule re-enables it. */
+	struct wlr_surface *wls = client_surface(c);
+	if (want && wls != NULL && (!effect || !effect->has_region) &&
+			c->focused_opacity >= 1.0f && c->unfocused_opacity >= 1.0f) {
+		pixman_region32_t whole;
+		pixman_region32_init_rect(&whole, 0, 0, wls->current.width,
+								  wls->current.height);
+		pixman_region32_t uncovered;
+		pixman_region32_init(&uncovered);
+		pixman_region32_subtract(&uncovered, &whole, &wls->opaque_region);
+		if (!pixman_region32_not_empty(&uncovered))
+			want = false; /* opaque everywhere -> blur invisible */
+		pixman_region32_fini(&uncovered);
+		pixman_region32_fini(&whole);
+	}
+
 	/* an explicitly empty client region disables blur for this surface */
 	if (effect && effect->has_region &&
 		!pixman_region32_not_empty(&effect->current_region))
