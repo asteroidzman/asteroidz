@@ -406,10 +406,21 @@ static void client_draw_one_shadow(Client *c, struct wlr_scene_shadow *shadow,
 	intersection_box.x -= pos_x + bwoffset;
 	intersection_box.y -= pos_y + bwoffset;
 
+	/* Underlap the shadow's interior cutout 1px beneath the window edge
+	 * (same treatment as the border ring's cutout): the cutout arc and the
+	 * window's outer arc are rasterized by different primitives, and
+	 * abutting them exactly leaves an AA seam that shows the wallpaper as a
+	 * bright wedge at the corner whenever the backdrop there is bright. */
+	if (intersection_box.width > 2 && intersection_box.height > 2) {
+		intersection_box.x += 1;
+		intersection_box.y += 1;
+		intersection_box.width -= 2;
+		intersection_box.height -= 2;
+	}
 	struct clipped_region clipped_region = {
 		.area = intersection_box,
-		.corners = corner_radii_from_location(config.border_radius,
-											  corner_location),
+		.corners = corner_radii_from_location(
+			GEZERO(config.border_radius - 1), corner_location),
 	};
 
 	struct wlr_box absolute_shadow_box = {
@@ -984,10 +995,16 @@ void apply_border(Client *c) {
 															 blur_cached);
 		int32_t blur_width = GEZERO(clip_box.width - 2 * bw);
 		int32_t blur_height = GEZERO(clip_box.height - 2 * bw);
-		/* the blur node sits inset by bw like the content; keep its arcs
-		 * concentric (r - bw) or blurred backdrop peeks out at the corners */
+		/* The blur node backs the TRANSLUCENT content and is fully covered
+		 * by content + border ring above it, so its corners must round LESS
+		 * than the content arc (r - bw): rounding at the same radius let the
+		 * blur's one-sided edge AA undercover the content corner, and the
+		 * translucent content then composited over RAW wallpaper -- sharp
+		 * unblurred detail (wallpaper sparkles) surfacing as bright dots
+		 * just inside some corners. 2px tighter keeps the blur strictly
+		 * inside the ring's interior paint (cutout is r - bw - 1). */
 		struct fx_corner_radii blur_radii = corner_radii_from_location(
-			GEZERO(config.border_radius - bw), current_corner_location);
+			GEZERO(config.border_radius - bw - 2), current_corner_location);
 
 		/* only touch the scene when something changed: this runs on
 		 * every animation tick */
