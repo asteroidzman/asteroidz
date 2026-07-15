@@ -2461,10 +2461,16 @@ bool parse_option(Config *config, char *key, char *value) {
 		rule->layer_name = NULL;
 		rule->animation_type_open = NULL;
 		rule->animation_type_close = NULL;
-		rule->noblur = 0;
-		rule->noanim = 0;
-		rule->noshadow = 0;
-		rule->forceshadow = 0;
+		/* -1 = unset: APPLY_INT_PROP only applies props >= 0, so several
+		 * layerrules can target one namespace without the later rule's
+		 * defaults clobbering the earlier rule's explicit values (a second
+		 * waybar-popup rule used to wipe forceblur from the first). */
+		rule->noblur = -1;
+		rule->noanim = -1;
+		rule->noshadow = -1;
+		rule->forceshadow = -1;
+		rule->forceblur = -1;
+		rule->shield_when_capture = -1;
 
 		bool parse_error = false;
 		char *token = strtok(value, ",");
