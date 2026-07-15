@@ -10,6 +10,7 @@ asteroidz keeps a deliberately small set of layouts, assignable per tag:
 - `tile` — a manual-control binary-tree tiler (i3-like: you choose where the next window splits)
 - `scroller` — a scrollable strip of columns, similar to PaperWM
 - `monocle` — one window fullscreen-ish at a time, with a tab bar for the rest
+- `float` — every window floats; new windows cascade and focus raises
 
 Fullscreen is a per-window state (`toggle_fullscreen`), independent of layout, and works in any of them.
 
@@ -117,6 +118,25 @@ misc {
 binds {
     Super+b { dwindle_split_horizontal; }
     Super+Shift+b { dwindle_split_vertical; }
+}
+```
+
+---
+
+## Float Layout
+
+`float` is a traditional stacking desktop on a tag: every window floats. It has no configuration options.
+
+- **Floated by default** — windows opening on a float tag float at whatever size the client asks for; there is no tiled size prediction.
+- **Cascading** — new windows step diagonally from the work area's top-left through a 10-slot ring (the step scales with your titlebar height). A window's slot is assigned once and remembered: re-entering the layout puts windows back on their spots, and windows you drag keep wherever you put them.
+- **Raise on focus** — any focus change (click, `focus_stack`, `focus_direction`) lifts the window to the top of the stack.
+- **Clean exit** — switching the tag to a tiled layout re-tiles exactly the windows the float layout floated automatically. Windows floated by hand (`toggle_floating`) or structurally (dialogs, fixed-size popups) stay floating, as in any other layout.
+
+```kdl
+tag 3 { layout float }
+
+binds {
+    Super+g { set_layout float; }
 }
 ```
 
