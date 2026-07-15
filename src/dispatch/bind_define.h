@@ -2721,9 +2721,20 @@ static void screenshot_tonemap_pq_to_srgb(uint8_t *pixels, int32_t width,
 		uint32_t *row = (uint32_t *)(pixels + (size_t)y * stride);
 		for (int32_t x = 0; x < width; x++) {
 			uint32_t px = row[x];
+			/* A "screen"/direct-scanout-eligible buffer's alpha bits are
+			 * often meaningless padding (the DRM format's "X" prefix, e.g.
+			 * XBGR2101010): the producer never writes them as opaque
+			 * because nothing is supposed to read them. Treat a==0 here as
+			 * fully opaque rather than skip -- skipping left the pixel's
+			 * ORIGINAL (still-PQ-encoded, un-tonemapped) alpha=0 in the
+			 * output, so the whole capture came back fully transparent,
+			 * rendering as a blank image in any viewer despite having real
+			 * (if un-tonemapped) colour underneath. Genuinely
+			 * semi-transparent content (window opacity rules) never stores
+			 * literal 0, so this doesn't touch it. */
 			uint8_t a = (px >> 24) & 0xFF;
 			if (a == 0)
-				continue;
+				a = 0xFF;
 			uint8_t r = (px >> 16) & 0xFF;
 			uint8_t g = (px >> 8) & 0xFF;
 			uint8_t b = px & 0xFF;
@@ -2823,6 +2834,23 @@ static bool screenshot_ui_save_and_copy(struct wlr_buffer *frame, Monitor *m,
 
 	if (m->hdr)
 		screenshot_tonemap_pq_to_srgb(pixels, px_w, px_h, stride);
+
+	/* A screenshot captures the already-composited, already-opaque display
+	 * appearance -- there is no such thing as a transparent pixel on an
+	 * actual monitor. But an opaque/scanout-eligible source buffer's alpha
+	 * bits are often meaningless padding (a DRM "X"-prefixed format like
+	 * XBGR2101010) that the producer never writes as opaque, since nothing
+	 * is supposed to read them. If that padding happens to be 0, the whole
+	 * PNG comes back fully transparent -- renders as blank in any viewer,
+	 * even though the RGB channels hold real data. Force full opacity
+	 * unconditionally rather than only on the HDR path above, since the
+	 * same all-zero-alpha buffer can reach this function via any mode
+	 * (screen/region/window) and with HDR off. */
+	for (int32_t y = 0; y < px_h; y++) {
+		uint32_t *row = (uint32_t *)(pixels + (size_t)y * stride);
+		for (int32_t x = 0; x < px_w; x++)
+			row[x] |= 0xFF000000;
+	}
 
 	cairo_surface_t *surf = cairo_image_surface_create_for_data(
 		pixels, CAIRO_FORMAT_ARGB32, px_w, px_h, stride);
