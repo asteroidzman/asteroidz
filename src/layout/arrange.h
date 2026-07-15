@@ -558,6 +558,11 @@ arrange(Monitor *m, bool want_animation, bool from_view) {
 		m->sel = focustop(m);
 	}
 
+	/* leaving the float layout: re-tile the windows it auto-floated BEFORE
+	 * the tiled layout below lays the tag out, so they join the tiling */
+	if (!m->isoverview && !m->active_special)
+		floating_layout_untangle(m);
+
 	pre_caculate_before_arrange(m, want_animation, from_view, false);
 
 	/* while a close-fade is in flight keep the chrome nodes alive; the fade in

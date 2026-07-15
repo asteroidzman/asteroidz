@@ -493,6 +493,11 @@ struct Client {
 	int32_t is_in_scratchpad;
 	int32_t iscustomsize;
 	int32_t iscustompos;
+	int32_t autofloated; /* floated by the float layout, not the user: cleared
+						  * (and re-tiled) when the tag leaves that layout */
+	int32_t cascaded;	 /* float layout: cascade slot assigned (float_geom
+						  * x/y); assigned once, reapplied as the client's
+						  * real size settles */
 	int32_t iscustom_scroller_proportion;
 	int32_t iscustom_scroller_proportion_single;
 	int32_t is_scratchpad_show;
@@ -686,6 +691,7 @@ struct Monitor {
 	int32_t render_late_good;   /* consecutive on-time deferred frames */
 	struct wlr_box m;		  /* monitor area, layout-relative */
 	struct wlr_box w;		  /* window area, layout-relative */
+	uint32_t cascade_idx;	  /* float layout: next cascade placement slot */
 	struct wl_list layers[4]; /* LayerSurface::link */
 	uint32_t seltags;
 	uint32_t tagset[2];
@@ -1076,6 +1082,7 @@ wlr_scene_tree_snapshot(struct wlr_scene_node *node,
 						struct wlr_scene_tree *parent);
 static bool is_scroller_layout(Monitor *m);
 static bool is_monocle_layout(Monitor *m);
+static bool is_float_layout(Monitor *m);
 static void tag_display_name(Monitor *m, uint32_t tag, char *buf, size_t len);
 void overview_hide_chrome(Monitor *m);
 void overview_anim_start(Monitor *m, bool open);
@@ -1464,6 +1471,7 @@ static struct wl_event_source *sync_keymap;
 #include "fetch/fetch.h"
 #include "ipc/ipc.h"
 #include "ipc/global-shortcuts-portal.h"
+#include "layout/floating.h"
 #include "layout/arrange.h"
 #include "layout/dwindle.h"
 #include "layout/horizontal.h"
@@ -2250,6 +2258,16 @@ void applyrules(Client *c) {
 		}
 	}
 
+	/* float layout: windows on such a tag open floating */
+	if (mon && !c->isfloating && !c->isfullscreen &&
+		mon->pertag
+				->ltidxs[c->tags ? get_tags_first_tag_num(c->tags)
+								 : mon->pertag->curtag]
+				->id == FLOATING) {
+		c->isfloating = 1;
+		c->autofloated = 1;
+	}
+
 	if (mon)
 		set_size_per(mon, c);
 
@@ -2259,8 +2277,25 @@ void applyrules(Client *c) {
 		(!client_is_x11(c) || (c->geom.x == 0 && c->geom.y == 0))) {
 		struct wlr_box pending_center_geom =
 			c->iscustomsize ? c->float_geom : c->geom;
-		c->float_geom = c->geom =
-			setclient_coordinate_center(c, mon, pending_center_geom, 0, 0);
+		/* auto-floated windows cascade instead of stacking dead-center. The
+		 * slot is burned once; applyrules runs again at map (after
+		 * mapnotify re-read the surface geometry, dropping our x/y), so the
+		 * stored slot is re-applied onto the now-real size. */
+		if (c->autofloated && mon) {
+			if (!c->cascaded) {
+				struct wlr_box slot =
+					floating_cascade_box(mon, pending_center_geom);
+				c->float_geom.x = slot.x;
+				c->float_geom.y = slot.y;
+				c->cascaded = 1;
+			}
+			pending_center_geom.x = c->float_geom.x;
+			pending_center_geom.y = c->float_geom.y;
+			c->float_geom = c->geom = pending_center_geom;
+		} else {
+			c->float_geom = c->geom = setclient_coordinate_center(
+				c, mon, pending_center_geom, 0, 0);
+		}
 	} else if (!c->iscustomsize) {
 		c->float_geom = c->geom;
 	}
@@ -4984,6 +5019,10 @@ void focusclient(Client *c, int32_t lift) {
 
 	if (c && c->nofocus)
 		return;
+
+	/* float layout raises on any focus, not only lift-requesting callers */
+	if (c && !lift && c->isfloating && c->mon && is_float_layout(c->mon))
+		lift = 1;
 
 	/* Raise client in stacking order if requested */
 	if (c && lift) {
