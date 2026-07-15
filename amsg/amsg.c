@@ -1,11 +1,67 @@
 #define _GNU_SOURCE
+#include <dirent.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/un.h>
 #include <unistd.h>
+
+// Resolve the compositor IPC socket. ASTEROIDZ_INSTANCE_SIGNATURE is set at
+// compositor launch, but its value goes stale on every restart (the number is
+// not the running pid), so a process that inherited an old environment --
+// e.g. matugen firing `amsg dispatch reload_config` from a shell/service
+// started before the last restart -- would connect to a dead socket and fail
+// silently (theme written, never reloaded). Prefer the env path only if it
+// still exists; otherwise fall back to the newest asteroidz-*.sock present in
+// XDG_RUNTIME_DIR. Returns a static buffer, or NULL if nothing is found.
+static const char *resolve_socket(void) {
+	static char buf[256];
+	const char *env = getenv("ASTEROIDZ_INSTANCE_SIGNATURE");
+	struct stat st;
+	if (env && *env && stat(env, &st) == 0 && S_ISSOCK(st.st_mode)) {
+		return env;
+	}
+
+	const char *rt = getenv("XDG_RUNTIME_DIR");
+	if (!rt || !*rt) {
+		return (env && *env) ? env : NULL;
+	}
+	DIR *d = opendir(rt);
+	if (!d) {
+		return (env && *env) ? env : NULL;
+	}
+	char best[256] = {0};
+	long best_mtime = -1;
+	struct dirent *de;
+	while ((de = readdir(d)) != NULL) {
+		size_t len = strlen(de->d_name);
+		if ((strncmp(de->d_name, "asteroidz-", 10) != 0 &&
+			 strncmp(de->d_name, "mango-", 6) != 0) ||
+			len < 6 || strcmp(de->d_name + len - 5, ".sock") != 0) {
+			continue;
+		}
+		char path[256];
+		if (snprintf(path, sizeof(path), "%s/%s", rt, de->d_name) >=
+			(int)sizeof(path)) {
+			continue;
+		}
+		if (stat(path, &st) == 0 && S_ISSOCK(st.st_mode) &&
+			st.st_mtime > best_mtime) {
+			best_mtime = st.st_mtime;
+			strncpy(best, path, sizeof(best) - 1);
+		}
+	}
+	closedir(d);
+	if (best[0]) {
+		strncpy(buf, best, sizeof(buf) - 1);
+		buf[sizeof(buf) - 1] = '\0';
+		return buf;
+	}
+	return (env && *env) ? env : NULL;
+}
 
 static void usage(void) {
 	printf("Usage: amsg <command> [args...]\n\n");
@@ -83,11 +139,12 @@ int main(int argc, char *argv[]) {
 		return EXIT_FAILURE;
 	}
 
-	const char *socket_path = getenv("ASTEROIDZ_INSTANCE_SIGNATURE");
+	const char *socket_path = resolve_socket();
 	if (!socket_path) {
 		fprintf(stderr,
-				"Error: ASTEROIDZ_INSTANCE_SIGNATURE is not set. Did you "
-				"run 'amsg' inside asteroidz?\n");
+				"Error: no asteroidz IPC socket found (ASTEROIDZ_INSTANCE_"
+				"SIGNATURE unset and none in XDG_RUNTIME_DIR). Is asteroidz "
+				"running?\n");
 		return EXIT_FAILURE;
 	}
 
