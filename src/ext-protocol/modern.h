@@ -141,12 +141,22 @@ static const char *const privileged_global_interfaces[] = {
 	"ext_background_effect_manager_v1",
 };
 
+/* defined in frog-color-management.h (same TU, included later): hides
+ * wp-color-management from gamescope so it falls back to frog */
+static bool frog_wp_color_manager_visible(const struct wl_client *client,
+										  const struct wl_global *global);
+
 static bool security_context_global_filter(const struct wl_client *client,
 										   const struct wl_global *global,
 										   void *data) {
 	const struct wlr_security_context_v1_state *security_context;
 	const char *name;
 	size_t i;
+
+	/* the display has a single global-filter slot, so every per-client
+	 * visibility policy funnels through this one function */
+	if (!frog_wp_color_manager_visible(client, global))
+		return false;
 
 	security_context = wlr_security_context_manager_v1_lookup_client(
 		security_context_manager, client);
