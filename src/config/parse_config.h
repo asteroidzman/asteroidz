@@ -203,6 +203,7 @@ typedef struct {
 	int32_t shield_when_capture; // cover this layer during captures
 	int32_t noanim;
 	int32_t noshadow;
+	int32_t forceshadow; // opt this layer into a shadow (exclusive_zone -1 popups)
 } ConfigLayerRule;
 
 typedef struct {
@@ -2463,6 +2464,7 @@ bool parse_option(Config *config, char *key, char *value) {
 		rule->noblur = 0;
 		rule->noanim = 0;
 		rule->noshadow = 0;
+		rule->forceshadow = 0;
 
 		bool parse_error = false;
 		char *token = strtok(value, ",");
@@ -2492,6 +2494,8 @@ bool parse_option(Config *config, char *key, char *value) {
 					rule->noanim = CLAMP_INT(atoi(val), 0, 1);
 				} else if (strcmp(key, "noshadow") == 0) {
 					rule->noshadow = CLAMP_INT(atoi(val), 0, 1);
+				} else if (strcmp(key, "forceshadow") == 0) {
+					rule->forceshadow = CLAMP_INT(atoi(val), 0, 1);
 				} else {
 					fprintf(stderr,
 							"\033[1m\033[31m[ERROR]:\033[33m Unknown "

@@ -638,6 +638,7 @@ typedef struct {
 	struct wlr_scene_rect *shield;
 	int32_t noanim;
 	int32_t noshadow;
+	int32_t forceshadow;
 	char *animation_type_open;
 	char *animation_type_close;
 	bool need_output_flush;
@@ -3554,6 +3555,7 @@ void maplayersurfacenotify(struct wl_listener *listener, void *data) {
 	l->noanim = 0;
 	l->dirty = false;
 	l->noblur = 0;
+	l->forceshadow = 0;
 	l->shadow = NULL;
 	l->shield_when_capture = 0;
 	l->need_output_flush = true;
@@ -3571,6 +3573,7 @@ void maplayersurfacenotify(struct wl_listener *listener, void *data) {
 			APPLY_INT_PROP(l, r, shield_when_capture);
 			APPLY_INT_PROP(l, r, noanim);
 			APPLY_INT_PROP(l, r, noshadow);
+			APPLY_INT_PROP(l, r, forceshadow);
 			APPLY_STRING_PROP(l, r, animation_type_open);
 			APPLY_STRING_PROP(l, r, animation_type_close);
 		}
@@ -3582,8 +3585,10 @@ void maplayersurfacenotify(struct wl_listener *listener, void *data) {
 	wlr_scene_node_lower_to_bottom(&l->shield->node);
 	wlr_scene_node_set_enabled(&l->shield->node, false);
 
-	// initialize the shadow
-	if (layer_surface->current.exclusive_zone == 0 &&
+	// initialize the shadow: non-reserving surfaces (launchers etc.), plus
+	// layers opted in by rule (forceshadow -- e.g. exclusive_zone -1 popups)
+	if ((layer_surface->current.exclusive_zone == 0 || l->forceshadow) &&
+		!l->noshadow &&
 		layer_surface->current.layer != ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM &&
 		layer_surface->current.layer != ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND) {
 		l->shadow =
