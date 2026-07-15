@@ -271,6 +271,12 @@ struct wlr_scene_buffer {
 	enum wlr_color_encoding color_encoding;
 	enum wlr_color_range color_range;
 
+	// When true, this buffer is never a direct-scanout candidate: it
+	// always goes through the compositing render pass, even when it's the
+	// sole, fullscreen, otherwise-scanout-eligible node on its output. See
+	// wlr_scene_buffer_set_prevent_scanout().
+	bool prevent_scanout;
+
 	struct {
 		uint64_t active_outputs;
 		struct wlr_texture *texture;
@@ -910,6 +916,13 @@ void wlr_scene_buffer_set_color_encoding(struct wlr_scene_buffer *scene_buffer,
 
 void wlr_scene_buffer_set_color_range(struct wlr_scene_buffer *scene_buffer,
 	enum wlr_color_range range);
+
+/**
+* Prevents this buffer from ever being a direct-scanout candidate, forcing
+* it through the compositing render pass instead.
+*/
+void wlr_scene_buffer_set_prevent_scanout(struct wlr_scene_buffer *scene_buffer,
+	bool prevent_scanout);
 
 struct wlr_image_description_v1_data;
 

@@ -1706,6 +1706,16 @@ void wlr_scene_buffer_set_color_encoding(struct wlr_scene_buffer *scene_buffer,
 	scene_node_update(&scene_buffer->node, NULL);
 }
 
+void wlr_scene_buffer_set_prevent_scanout(struct wlr_scene_buffer *scene_buffer,
+		bool prevent_scanout) {
+	if (scene_buffer->prevent_scanout == prevent_scanout) {
+		return;
+	}
+
+	scene_buffer->prevent_scanout = prevent_scanout;
+	scene_node_update(&scene_buffer->node, NULL);
+}
+
 void wlr_scene_buffer_set_color_range(struct wlr_scene_buffer *scene_buffer,
 		enum wlr_color_range color_range) {
 	if (scene_buffer->color_range == color_range) {
@@ -3075,6 +3085,10 @@ static enum scene_direct_scanout_result scene_entry_try_direct_scanout(
 
 	struct wlr_scene_buffer *buffer = wlr_scene_buffer_from_node(node);
 	if (buffer->buffer == NULL) {
+		return SCANOUT_INELIGIBLE;
+	}
+
+	if (buffer->prevent_scanout) {
 		return SCANOUT_INELIGIBLE;
 	}
 
