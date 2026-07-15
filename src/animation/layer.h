@@ -180,7 +180,8 @@ void layer_draw_shadow(LayerSurface *l) {
 	if (!l->mapped || !l->shadow)
 		return;
 
-	if (!config.shadows || !config.layer_shadows || l->noshadow) {
+	if (!config.shadows || !(config.layer_shadows || l->forceshadow) ||
+			l->noshadow) {
 		wlr_scene_shadow_set_size(l->shadow, 0, 0);
 		return;
 	}
