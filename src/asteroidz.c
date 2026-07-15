@@ -105,6 +105,7 @@
 #include <wlr/types/wlr_xdg_system_bell_v1.h>
 #include <wlr/types/wlr_xdg_toplevel_icon_v1.h>
 #include <wlr/types/wlr_xdg_toplevel_tag_v1.h>
+#include <wlr/util/addon.h>
 #include <wlr/util/log.h>
 #include <wlr/util/region.h>
 #include <wordexp.h>
@@ -1468,6 +1469,7 @@ static struct wl_event_source *sync_keymap;
 #include "ipc/session-bus.h"
 #include "dispatch/bind_define.h"
 #include "ext-protocol/all.h"
+#include "ext-protocol/frog-color-management.h"
 #include "fetch/fetch.h"
 #include "ipc/ipc.h"
 #include "ipc/global-shortcuts-portal.h"
@@ -7842,6 +7844,12 @@ void setup(void) {
 		wlr_scene_set_color_manager_v1(scene, color_manager);
 		free(cm_tfs);
 		free(cm_primaries);
+
+		/* gamescope HDR passthrough: it can't use our wp-color-management
+		 * (needs six features, wlroots implements two), but its frog path
+		 * enables HDR as soon as we answer PQ. Same renderer gate as
+		 * wp-cm: PQ sampling needs the Vulkan fx renderer. */
+		frog_color_management_init();
 	}
 
 	modern_protocols_init(dpy, drw);
