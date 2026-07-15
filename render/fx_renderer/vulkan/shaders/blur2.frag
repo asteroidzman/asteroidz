@@ -88,7 +88,15 @@ vec4 apply_blur_effects(vec4 color, vec2 p) {
 	}
 	rgb = pow(max(rgb, vec3(0.0)), vec3(1.0 / 2.2));
 	vec4 c4 = brightnessMatrix() * contrastMatrix() * vec4(rgb, 1.0);
-	rgb = max(c4.rgb, vec3(0.0)) + vec3(noiseAmount(p));
+	// Pin black: the affine brightness/contrast map has a constant offset
+	// f(0) = (brightness-1) + (1-contrast)/2 that lifts or crushes blacks.
+	// SDR 8-bit hides it; HDR PQ encoding amplifies it into a visible glow
+	// or dark band over dark blur content (popup over a dark bar). Fade the
+	// offset out quadratically toward black so the configured curve is kept
+	// through the mids and at white while f(0) stays exactly 0.
+	float fx_f0 = (data.brightness - 1.0) + (1.0 - data.contrast) * 0.5;
+	vec3 fx_fall = vec3(1.0) - clamp(rgb, vec3(0.0), vec3(1.0));
+	rgb = max(c4.rgb - fx_f0 * fx_fall * fx_fall, vec3(0.0)) + vec3(noiseAmount(p));
 	rgb = pow(max(rgb, vec3(0.0)), vec3(2.2));
 	return vec4(rgb * a, a);
 }
