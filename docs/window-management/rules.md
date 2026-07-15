@@ -64,6 +64,7 @@ window-rule { match app-id="<regex>" title="<regex>"; <action> <value>...; <acti
 | `unfocused_opacity` | integer | `0` / `1` | Window unfocused opacity |
 | `allow_csd` | integer | `0` / `1` | Allow client side decoration |
 | `force_ssd` | integer | `0` / `1` | Force server-side decorations (titlebar/border) for apps that support neither xdg-decoration nor client-side decorations (e.g. SDL/GLFW games) |
+| `no-scanout` | integer | `0` / `1` | Exclude this window from direct scan-out, forcing it through the compositor's render pass. Use for clients whose buffer commits aren't safe to hand straight to a KMS plane (e.g. gamescope without explicit sync) |
 
 > **Tip:** For detailed visual effects configuration, see the [Window Effects](/docs/visuals/effects) page for blur, shadows, and opacity settings.
 
@@ -138,6 +139,8 @@ window-rule { match app-id=firefox; focused_opacity 0.8 }
 window-rule { match app-id=foot; unfocused_opacity 0.6 }
 
 window-rule { match app-id=slurp; no-blur }
+
+window-rule { match app-id=^gamescope$; no-scanout 1 }
 
 window-rule { match app-id=alacritty; offsetx 20; offsety -30; width 800; height 600 }
 
