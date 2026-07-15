@@ -4665,7 +4665,8 @@ void reset_blur_params(void) {
 			wlr_scene_set_blur_data(
 				scene, config.blur_params.num_passes, config.blur_params.radius,
 				config.blur_params.noise, config.blur_params.brightness,
-				config.blur_params.contrast, config.blur_params.saturation);
+				config.blur_params.contrast, config.blur_params.saturation,
+				config.blur_params.transparency_threshold);
 		}
 	} else {
 		wl_list_for_each(m, &mons, link) {
