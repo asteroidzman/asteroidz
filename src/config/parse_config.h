@@ -106,6 +106,7 @@ typedef struct {
 	int32_t force_tearing;
 	int32_t noswallow;
 	int32_t noblur;
+	int32_t noscanout;
 	float focused_opacity;
 	float unfocused_opacity;
 	float scroller_proportion_single;
@@ -2566,6 +2567,7 @@ bool parse_option(Config *config, char *key, char *value) {
 		rule->force_tearing = -1;
 		rule->noswallow = -1;
 		rule->noblur = -1;
+		rule->noscanout = -1;
 		rule->nofocus = -1;
 		rule->nofadein = -1;
 		rule->nofadeout = -1;
@@ -2701,6 +2703,8 @@ bool parse_option(Config *config, char *key, char *value) {
 					rule->noswallow = atoi(val);
 				} else if (strcmp(key, "noblur") == 0) {
 					rule->noblur = atoi(val);
+				} else if (strcmp(key, "noscanout") == 0) {
+					rule->noscanout = atoi(val);
 				} else if (strcmp(key, "scroller_proportion") == 0) {
 					rule->scroller_proportion = atof(val);
 				} else if (strcmp(key, "isfullscreen") == 0) {
@@ -3504,6 +3508,7 @@ static const struct {
 	{"no-blur", "noblur"},		  {"no-border", "isnoborder"},
 	{"no-shadow", "isnoshadow"},  {"no-rounding", "isnoradius"},
 	{"no-animation", "isnoanimation"}, {"no-titlebar", "isnotitlebar"},
+	{"no-scanout", "noscanout"},
 };
 static const char *kdl_rule_key(const char *nice) {
 	for (size_t i = 0; i < LENGTH(kdl_rule_map); i++)

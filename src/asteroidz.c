@@ -506,6 +506,7 @@ struct Client {
 	int32_t isnoborder;
 	int32_t isnoshadow;
 	int32_t isnotitlebar;
+	int32_t noscanout;
 	int32_t vrr_only_fullscreen;
 	int32_t shield_when_capture;
 	int32_t isnoradius;
@@ -1039,9 +1040,13 @@ static void client_commit(Client *c);
 static void layer_commit(LayerSurface *l);
 static void apply_border(Client *c);
 static void client_set_opacity(Client *c, double opacity);
+static void client_set_prevent_scanout(Client *c, bool prevent);
 static void init_baked_points(void);
 static void scene_buffer_apply_opacity(struct wlr_scene_buffer *buffer,
 									   int32_t sx, int32_t sy, void *data);
+static void scene_buffer_apply_prevent_scanout(struct wlr_scene_buffer *buffer,
+												int32_t sx, int32_t sy,
+												void *data);
 
 static Client *direction_select(const Arg *arg);
 static void view_in_mon(const Arg *arg, bool want_animation, Monitor *m,
@@ -2066,6 +2071,7 @@ static void apply_rule_properties(Client *c, const ConfigWinRule *r) {
 	APPLY_INT_PROP(c, r, isnoborder);
 	APPLY_INT_PROP(c, r, isnoshadow);
 	APPLY_INT_PROP(c, r, isnotitlebar);
+	APPLY_INT_PROP(c, r, noscanout);
 	APPLY_INT_PROP(c, r, vrr_only_fullscreen);
 	APPLY_INT_PROP(c, r, shield_when_capture);
 	APPLY_INT_PROP(c, r, ispinned);
@@ -5778,6 +5784,7 @@ void init_client_properties(Client *c) {
 	c->isnosizehint = 0;
 	c->isnoradius = 0;
 	c->isnoshadow = 0;
+	c->noscanout = 0;
 	c->ignore_maximize = 1;
 	c->ignore_minimize = 1;
 	c->iscustomsize = 0;
@@ -5952,6 +5959,7 @@ mapnotify(struct wl_listener *listener, void *data) {
 	wl_list_insert(&fstack, &c->flink);
 
 	applyrules(c);
+	client_set_prevent_scanout(c, c->noscanout);
 
 	if (!c->isfloating || c->force_tiled_state) {
 		client_set_tiled(c, WLR_EDGE_TOP | WLR_EDGE_BOTTOM | WLR_EDGE_LEFT |
@@ -6640,6 +6648,16 @@ void client_set_opacity(Client *c, double opacity) {
 	opacity = CLAMP_FLOAT(opacity, 0.0f, 1.0f);
 	wlr_scene_node_for_each_buffer(&c->scene_surface->node,
 								   scene_buffer_apply_opacity, &opacity);
+}
+
+void scene_buffer_apply_prevent_scanout(struct wlr_scene_buffer *buffer,
+										 int32_t sx, int32_t sy, void *data) {
+	wlr_scene_buffer_set_prevent_scanout(buffer, *(bool *)data);
+}
+
+void client_set_prevent_scanout(Client *c, bool prevent) {
+	wlr_scene_node_for_each_buffer(&c->scene_surface->node,
+								   scene_buffer_apply_prevent_scanout, &prevent);
 }
 
 void monitor_stop_skip_frame_timer(Monitor *m) {
