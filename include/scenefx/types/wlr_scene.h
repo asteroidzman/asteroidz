@@ -456,7 +456,8 @@ struct wlr_scene *wlr_scene_create(void);
 
 // Sets the global blur parameters
 void wlr_scene_set_blur_data(struct wlr_scene *scene, int num_passes,
-	int radius, float noise, float brightness, float contrast, float saturation);
+	int radius, float noise, float brightness, float contrast, float saturation,
+		float transparency_threshold);
 
 // Sets the global blur num_passes parameter
 void wlr_scene_set_blur_num_passes(struct wlr_scene *scene, int num_passes);

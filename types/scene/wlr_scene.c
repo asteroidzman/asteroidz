@@ -1267,14 +1267,16 @@ void wlr_scene_blur_set_clipped_region(struct wlr_scene_blur *blur,
 }
 
 void wlr_scene_set_blur_data(struct wlr_scene *scene, int num_passes,
-		int radius, float noise, float brightness, float contrast, float saturation) {
+		int radius, float noise, float brightness, float contrast, float saturation,
+		float transparency_threshold) {
 	struct blur_data *buff_data = &scene->blur_data;
 	if (buff_data->num_passes == num_passes
 			&& buff_data->radius == radius
 			&& buff_data->noise == noise
 			&& buff_data->brightness == brightness
 			&& buff_data->contrast == contrast
-			&& buff_data->saturation == saturation) {
+			&& buff_data->saturation == saturation
+			&& buff_data->transparency_threshold == transparency_threshold) {
 		return;
 	}
 
@@ -1284,6 +1286,7 @@ void wlr_scene_set_blur_data(struct wlr_scene *scene, int num_passes,
 	buff_data->brightness = brightness;
 	buff_data->contrast = contrast;
 	buff_data->saturation = saturation;
+	buff_data->transparency_threshold = transparency_threshold;
 
 	mark_all_optimized_blur_nodes_dirty(&scene->tree.node);
 	scene_node_update(&scene->tree.node, NULL);
