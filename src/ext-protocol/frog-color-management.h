@@ -109,8 +109,23 @@ static void frog_surface_set_known_container_color_volume(
 	case FROG_COLOR_MANAGED_SURFACE_PRIMARIES_REC2020:
 		fs->data.primaries_named = WP_COLOR_MANAGER_V1_PRIMARIES_BT2020;
 		break;
+	case FROG_COLOR_MANAGED_SURFACE_PRIMARIES_UNDEFINED:
 	default:
 		fs->data.primaries_named = 0;
+		/* gamescope's own PASSTHRU case (WaylandBackend.cpp) means to
+		 * reset the whole image description to "no known colorimetry" by
+		 * calling set_known_container_color_volume(PRIMARIES_UNDEFINED)
+		 * followed by what should be set_known_transfer_function(
+		 * TRANSFER_FUNCTION_UNDEFINED) -- but that second call is a
+		 * copy-paste bug: it invokes this same setter again, so the
+		 * transfer function is never actually cleared. A raw/passthrough
+		 * buffer then keeps whatever non-zero tf_named a previous PQ/HDR
+		 * frame left behind, and we'd decode it through the PQ inverse
+		 * EOTF -- an aggressive nonlinear transform that turns arbitrary
+		 * (non-PQ-range) pixel data into wild, saturated RGB noise.
+		 * Primaries reset to undefined is never legitimately paired with
+		 * a still-known transfer function, so clear both together. */
+		fs->data.tf_named = 0;
 		break;
 	}
 	frog_surface_apply(fs);
