@@ -1894,8 +1894,14 @@ bool client_draw_fadeout_frame(Client *c) {
 /* Solid or gradient border fill; the gradient starts from the (possibly
  * animated) base color so focus transitions stay smooth. */
 void client_set_border_fill(Client *c, const float color[4]) {
-	if (config.border_gradient && c->mon && c == c->mon->sel &&
-		!c->iskilling) {
+	/* c->mon->sel is per-monitor and stays pointing at the last client
+	 * focused on that monitor even after global focus (selmon) moves
+	 * elsewhere, so it must not be used alone to decide "is this the
+	 * focused window" -- that goes stale across a monitor focus switch
+	 * and would draw the gradient (focused look) on a window that
+	 * get_border_color() already decided is unfocused. */
+	if (config.border_gradient && c->mon && selmon && c->mon == selmon &&
+		c == selmon->sel && !c->iskilling) {
 		float colors[8];
 		float origin[2] = {0.5f, 0.5f};
 		memcpy(colors, color, sizeof(float) * 4);
