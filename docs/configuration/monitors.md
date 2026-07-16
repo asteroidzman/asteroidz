@@ -119,7 +119,8 @@ name:xxx&&make:xxx&&model:xxx&&serial:xxx
 ```
 
 - Any field can be omitted and there is no order requirement.
-- If all fields are omitted, the string is treated as the monitor name directly (e.g., `eDP-1`).
+- If all fields are omitted, the string is matched against the monitor name as a regex (e.g., `eDP-1`, or `HDMI-A-.*` to match every HDMI output).
+- `disable_monitor`, `dpms_off_monitor`, `dpms_on_monitor`, `dpms_toggle_monitor`, `enable_monitor`, `toggle_monitor` and `retrain_monitor` all apply to **every** matching monitor, not just the first — a pattern like `.*` or `HDMI-A-.*` acts on all of them in one dispatch.
 - Use `wlr-randr` to find your monitor's name, make, model, and serial.
 
 **Examples:**
