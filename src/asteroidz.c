@@ -3470,6 +3470,17 @@ void closemon(Monitor *m) {
 				 * client is actually visible, rather than carrying over a
 				 * tag number that may not be shown on selmon at all. */
 				client_change_mon(c, selmon, 0);
+
+				/* a scroller/tile layout can easily leave a displaced
+				 * client scrolled off-screen behind existing windows with
+				 * no visible sign it's there; flag it the same way an
+				 * xdg-activation request does, rather than silently
+				 * stealing focus from whatever's already selected. */
+				if (c != focustop(selmon)) {
+					c->isurgent = 1;
+					if (client_surface(c)->mapped)
+						setborder_color(c);
+				}
 			}
 
 			/* m is already unlinked from mons by the time we get here, so
