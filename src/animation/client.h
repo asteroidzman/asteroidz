@@ -719,21 +719,29 @@ void client_draw_titlebar(Client *c) {
 		tab_w = 0;
 
 	/* the close+tab assembly sits at the window's own LEFT edge (tb_x=0),
-	 * which -- like a scroller column parked off-screen past its own
-	 * monitor's edge -- can be almost entirely outside c->mon's bounds
-	 * while a sliver of the window's FAR edge still technically overlaps
-	 * (e.g. a 1200px-wide window sitting at x=2643 when its monitor starts
-	 * at x=3840: only its rightmost 4px are actually "on" that monitor).
-	 * Checking the whole window's box would miss that and still show the
-	 * tab; check the assembly's own actual rendered box instead. */
+	 * which -- like a scroller column transiting past its own monitor's
+	 * edge -- can straddle the boundary with an adjacent monitor while
+	 * MOVE-animating into or out of view. wlr_scene renders a node on every
+	 * output its box overlaps (by design -- that's how a window dragged
+	 * across two monitors is meant to look), so a mere overlap check still
+	 * lets the tab render on the neighbour for however long the straddle
+	 * lasts. Require the tab to be FULLY inside c->mon's bounds instead of
+	 * merely intersecting it: this trades a few pixels of "pops in slightly
+	 * late" for zero chance of ever putting a pixel on the wrong monitor. */
 	struct wlr_box tab_screen_box = {
 		.x = (int32_t)c->animation.current.x + tb_x,
 		.y = (int32_t)c->animation.current.y + tb_y,
 		.width = close_w + tab_w,
 		.height = th,
 	};
-	struct wlr_box tab_mon_overlap;
-	if (!wlr_box_intersection(&tab_mon_overlap, &tab_screen_box, &c->mon->m)) {
+	bool tab_fully_on_own_mon =
+		tab_screen_box.x >= c->mon->m.x &&
+		tab_screen_box.x + tab_screen_box.width <=
+			c->mon->m.x + c->mon->m.width &&
+		tab_screen_box.y >= c->mon->m.y &&
+		tab_screen_box.y + tab_screen_box.height <=
+			c->mon->m.y + c->mon->m.height;
+	if (!tab_fully_on_own_mon) {
 		asteroidz_tab_bar_node_set_enabled(c->titlebar_node, false);
 		if (c->titlebar_close_node)
 			asteroidz_tab_bar_node_set_enabled(c->titlebar_close_node, false);
