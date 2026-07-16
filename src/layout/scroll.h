@@ -411,6 +411,22 @@ void scroller(Monitor *m) {
 		horizontal_scroll_adjust_fullandmax(cur->client, &left_geom);
 		left_geom.x = heads[focus_index - i + 1]->client->geom.x - cur_gappih -
 					  left_geom.width;
+		/* once a column is already fully invisible (past this monitor's own
+		 * left edge), stop letting it drift further away for every
+		 * additional hidden column beyond it -- with several hidden columns
+		 * this chain can land hundreds or thousands of pixels off-screen,
+		 * and the MOVE animation that slides a column back into view then
+		 * has to travel that whole distance. In a multi-monitor layout
+		 * where another output sits contiguously in global coordinates,
+		 * that transit can pass straight through a physically different
+		 * monitor along the way (border/blur/titlebar all track the
+		 * client's live position, so they'd transiently render there too).
+		 * Clamp fully-hidden columns to a small, fixed distance past the
+		 * edge instead; they're invisible either way, so piling up several
+		 * equally-hidden columns at the same spot is harmless. */
+		int32_t hidden_park_x = m->w.x - left_geom.width - config.scroller_structs;
+		if (left_geom.x < hidden_park_x)
+			left_geom.x = hidden_park_x;
 		arrange_stack_node(cur, left_geom, cur_gappiv);
 	}
 
@@ -423,6 +439,10 @@ void scroller(Monitor *m) {
 		horizontal_scroll_adjust_fullandmax(cur->client, &right_geom);
 		right_geom.x = heads[focus_index + i - 1]->client->geom.x + cur_gappih +
 					   heads[focus_index + i - 1]->client->geom.width;
+		/* mirror of the left-side clamp above */
+		int32_t hidden_park_x = m->w.x + m->w.width + config.scroller_structs;
+		if (right_geom.x > hidden_park_x)
+			right_geom.x = hidden_park_x;
 		arrange_stack_node(cur, right_geom, cur_gappiv);
 	}
 
