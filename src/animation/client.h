@@ -1576,6 +1576,16 @@ void client_animation_next_tick(Client *c) {
 
 	c->is_pending_open_animation = false;
 
+	/* Direct scanout is decided per-output by wlroots purely from scene-node
+	 * geometry overlap, completely bypassing the clip_box logic above -- so a
+	 * fullscreen client's buffer can get handed straight to a neighbouring
+	 * monitor's CRTC while its node is mid-slide (e.g. tag-switch animation)
+	 * and briefly spans both outputs, even though the composited path would
+	 * have clipped it correctly. Force scanout off for the duration of any
+	 * animation; restored to the user's own noscanout setting once the
+	 * client settles back into a steady, un-animated position below. */
+	client_set_prevent_scanout(c, true);
+
 	client_apply_clip(c, factor);
 
 	if (animation_passed >= 1.0) {
@@ -1595,6 +1605,8 @@ void client_animation_next_tick(Client *c) {
 			c->animation.tagouted = true;
 			c->animation.current = c->geom;
 		}
+
+		client_set_prevent_scanout(c, c->noscanout);
 
 		struct wlr_surface *pointer_surf = NULL;
 		xytonode(cursor->x, cursor->y, &pointer_surf, &pointer_c, NULL, &sx,
