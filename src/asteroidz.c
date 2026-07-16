@@ -551,6 +551,10 @@ struct Client {
 	float focused_opacity;
 	float unfocused_opacity;
 	char oldmonname[128];
+	uint32_t oldmontags; /* tagset oldmonname's monitor had active when this
+						  * client landed there; used to restore the client
+						  * onto a sane tag if oldmonname later reconnects as
+						  * a brand-new Monitor (fresh pertag, default tag) */
 	int32_t noblur;
 	double master_mfact_per, master_inner_per, stack_inner_per;
 	double old_master_mfact_per, old_master_inner_per, old_stack_inner_per;
@@ -1594,6 +1598,10 @@ void client_update_oldmonname_record(Client *c, Monitor *m) {
 	memset(c->oldmonname, 0, sizeof(c->oldmonname));
 	strncpy(c->oldmonname, m->wlr_output->name, sizeof(c->oldmonname) - 1);
 	c->oldmonname[sizeof(c->oldmonname) - 1] = '\0';
+	/* the tag c is landing on here, not c->tags -- callers invoke this
+	 * both before and after actually remapping c->tags to m's active tag,
+	 * but they all converge on m->tagset[m->seltags] either way. */
+	c->oldmontags = m->tagset[m->seltags];
 }
 
 void client_replace(Client *c, Client *w) {
@@ -8743,10 +8751,17 @@ void updatemons(struct wl_listener *listener, void *data) {
 					resize(c, c->geom, 1);
 			}
 
-			// restore window to old monitor, on its original tag
+			// restore window to old monitor, on its original tag. Use the
+			// recorded oldmontags, not c->tags: if this monitor was ever
+			// disconnected, c->tags was already remapped (closemon ->
+			// client_change_mon newtags=0) to whatever tag was active on
+			// the temporary monitor it landed on meanwhile, and m -- if
+			// reconnecting -- is a brand-new Monitor with a fresh pertag
+			// defaulting to tag 1, so c->tags would very likely no longer
+			// match any tag actually shown here.
 			if (c->mon && c->mon != m && client_surface(c)->mapped &&
 				strcmp(c->oldmonname, m->wlr_output->name) == 0) {
-				client_change_mon(c, m, c->tags);
+				client_change_mon(c, m, c->oldmontags);
 			}
 		}
 
