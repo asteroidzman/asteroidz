@@ -2039,53 +2039,59 @@ int32_t set_tag_name(const Arg *arg) {
 
 int32_t disable_monitor(const Arg *arg) {
 	Monitor *m = NULL;
-	struct wlr_output_state state = {0};
+	bool matched = false;
 	wl_list_for_each(m, &mons, link) {
 		if (match_monitor_spec(arg->v, m)) {
+			struct wlr_output_state state = {0};
 			wlr_output_state_set_enabled(&state, false);
 			wlr_output_commit_state(m->wlr_output, &state);
 			/* full disable: remove from layout (asleep keeps it) */
 			m->asleep = 0;
-			updatemons(NULL, NULL);
-			break;
+			matched = true;
 		}
 	}
+	if (matched)
+		updatemons(NULL, NULL);
 	return 0;
 }
 
 /* power off only (DPMS): output stays in the layout, windows stay put */
 int32_t dpms_off_monitor(const Arg *arg) {
 	Monitor *m = NULL;
-	struct wlr_output_state state = {0};
+	bool matched = false;
 	wl_list_for_each(m, &mons, link) {
 		if (match_monitor_spec(arg->v, m)) {
+			struct wlr_output_state state = {0};
 			wlr_output_state_set_enabled(&state, false);
 			wlr_output_commit_state(m->wlr_output, &state);
 			m->asleep = 1;
-			updatemons(NULL, NULL);
-			break;
+			matched = true;
 		}
 	}
+	if (matched)
+		updatemons(NULL, NULL);
 	return 0;
 }
 
 int32_t dpms_on_monitor(const Arg *arg) {
 	Monitor *m = NULL;
-	struct wlr_output_state state = {0};
+	bool matched = false;
 	wl_list_for_each(m, &mons, link) {
 		if (match_monitor_spec(arg->v, m)) {
+			struct wlr_output_state state = {0};
 			wlr_output_state_set_enabled(&state, true);
 			bool committed = wlr_output_commit_state(m->wlr_output, &state);
 			m->asleep = 0;
-			updatemons(NULL, NULL);
+			matched = true;
 			/* mirrors powermgrsetmode: some DSC panels come back with a
 			 * corrupted decoder after DPMS, so this needs the same
 			 * mode-cycle recovery as the wlr_output_power_manager_v1 path */
 			if (config.dpms_wake_retrain || !committed)
 				monitor_start_retrain(m, committed ? 700 : 50);
-			break;
 		}
 	}
+	if (matched)
+		updatemons(NULL, NULL);
 	return 0;
 }
 
@@ -2093,58 +2099,62 @@ int32_t dpms_on_monitor(const Arg *arg) {
 int32_t retrain_monitor(const Arg *arg) {
 	Monitor *m = NULL;
 	wl_list_for_each(m, &mons, link) {
-		if (match_monitor_spec(arg->v, m)) {
+		if (match_monitor_spec(arg->v, m))
 			monitor_start_retrain(m, 1);
-			break;
-		}
 	}
 	return 0;
 }
 
 int32_t dpms_toggle_monitor(const Arg *arg) {
 	Monitor *m = NULL;
-	struct wlr_output_state state = {0};
+	bool matched = false;
 	wl_list_for_each(m, &mons, link) {
 		if (match_monitor_spec(arg->v, m)) {
+			struct wlr_output_state state = {0};
 			wlr_output_state_set_enabled(&state, !m->wlr_output->enabled);
 			wlr_output_commit_state(m->wlr_output, &state);
 			m->asleep = m->wlr_output->enabled ? 0 : 1;
-			updatemons(NULL, NULL);
-			break;
+			matched = true;
 		}
 	}
+	if (matched)
+		updatemons(NULL, NULL);
 	return 0;
 }
 
 int32_t enable_monitor(const Arg *arg) {
 	Monitor *m = NULL;
-	struct wlr_output_state state = {0};
+	bool matched = false;
 	wl_list_for_each(m, &mons, link) {
 		if (match_monitor_spec(arg->v, m)) {
+			struct wlr_output_state state = {0};
 			wlr_output_state_set_enabled(&state, true);
 			bool committed = wlr_output_commit_state(m->wlr_output, &state);
 			m->asleep = 0;
-			updatemons(NULL, NULL);
+			matched = true;
 			if (config.dpms_wake_retrain || !committed)
 				monitor_start_retrain(m, committed ? 700 : 50);
-			break;
 		}
 	}
+	if (matched)
+		updatemons(NULL, NULL);
 	return 0;
 }
 
 int32_t toggle_monitor(const Arg *arg) {
 	Monitor *m = NULL;
-	struct wlr_output_state state = {0};
+	bool matched = false;
 	wl_list_for_each(m, &mons, link) {
 		if (match_monitor_spec(arg->v, m)) {
+			struct wlr_output_state state = {0};
 			wlr_output_state_set_enabled(&state, !m->wlr_output->enabled);
 			wlr_output_commit_state(m->wlr_output, &state);
 			m->asleep = !m->wlr_output->enabled;
-			updatemons(NULL, NULL);
-			break;
+			matched = true;
 		}
 	}
+	if (matched)
+		updatemons(NULL, NULL);
 	return 0;
 }
 
