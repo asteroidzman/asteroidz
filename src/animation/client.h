@@ -995,8 +995,17 @@ void apply_border(Client *c) {
 		if (c->blur_node->should_only_blur_bottom_layer != blur_cached)
 			wlr_scene_blur_set_should_only_blur_bottom_layer(c->blur_node,
 															 blur_cached);
-		int32_t blur_width = GEZERO(clip_box.width - 2 * bw);
-		int32_t blur_height = GEZERO(clip_box.height - 2 * bw);
+		/* clip to the client's own monitor bounds exactly like the border
+		 * ring above does (left/right/top/bottom_offset): a scroller column
+		 * scrolled off-screen can sit far past its own monitor's edge, and
+		 * without this the blur -- unlike the already-clipped border --
+		 * rendered at full size, bleeding into whatever's physically next
+		 * in the global output layout (a real neighboring monitor, if one
+		 * happens to sit there). */
+		int32_t blur_width =
+			GEZERO(clip_box.width - 2 * bw - left_offset - right_offset);
+		int32_t blur_height =
+			GEZERO(clip_box.height - 2 * bw - top_offset - bottom_offset);
 		/* The blur node backs the TRANSLUCENT content and is fully covered
 		 * by content + border ring above it, so its corners must round LESS
 		 * than the content arc (r - bw): rounding at the same radius let the
@@ -1010,7 +1019,8 @@ void apply_border(Client *c) {
 
 		/* only touch the scene when something changed: this runs on
 		 * every animation tick */
-		wlr_scene_node_set_position(&c->blur_node->node, bw, bw);
+		wlr_scene_node_set_position(&c->blur_node->node, bw + left_offset,
+									bw + top_offset);
 		if (c->blur_node->width != blur_width ||
 			c->blur_node->height != blur_height)
 			wlr_scene_blur_set_size(c->blur_node, blur_width, blur_height);
