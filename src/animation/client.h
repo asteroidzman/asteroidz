@@ -703,28 +703,6 @@ void client_draw_titlebar(Client *c) {
 	int32_t tb_w = c->animation.current.width;
 	int32_t close_w = ASTEROIDZ_MIN(th, tb_w);
 
-	/* the tab lives at the window's own scene origin, which -- like a
-	 * scroller column parked off-screen past its own monitor's edge -- can
-	 * sit outside c->mon's bounds entirely. apply_border() already hides
-	 * the border/blur in that case (clipped to empty); do the same here so
-	 * the tab doesn't bleed onto whatever's physically at that spot in the
-	 * global layout (a real neighbouring monitor, in a multi-monitor
-	 * setup), instead of just rendering wherever the window's raw geometry
-	 * happens to say. */
-	struct wlr_box tab_screen_box = {
-		.x = (int32_t)c->animation.current.x,
-		.y = (int32_t)c->animation.current.y + tb_y,
-		.width = tb_w,
-		.height = th,
-	};
-	struct wlr_box tab_mon_overlap;
-	if (!wlr_box_intersection(&tab_mon_overlap, &tab_screen_box, &c->mon->m)) {
-		asteroidz_tab_bar_node_set_enabled(c->titlebar_node, false);
-		if (c->titlebar_close_node)
-			asteroidz_tab_bar_node_set_enabled(c->titlebar_close_node, false);
-		return;
-	}
-
 	/* In the overview everything is a miniature of the desktop: one shrink
 	 * factor (th / titlebar_height) drives the tab height, its fixed-width
 	 * caps AND the font/padding, so every layout's titlebar scales alike. */
@@ -739,6 +717,28 @@ void client_draw_titlebar(Client *c) {
 	tab_w = ASTEROIDZ_MIN(tab_w, tb_w - close_w);
 	if (tab_w < 0)
 		tab_w = 0;
+
+	/* the close+tab assembly sits at the window's own LEFT edge (tb_x=0),
+	 * which -- like a scroller column parked off-screen past its own
+	 * monitor's edge -- can be almost entirely outside c->mon's bounds
+	 * while a sliver of the window's FAR edge still technically overlaps
+	 * (e.g. a 1200px-wide window sitting at x=2643 when its monitor starts
+	 * at x=3840: only its rightmost 4px are actually "on" that monitor).
+	 * Checking the whole window's box would miss that and still show the
+	 * tab; check the assembly's own actual rendered box instead. */
+	struct wlr_box tab_screen_box = {
+		.x = (int32_t)c->animation.current.x + tb_x,
+		.y = (int32_t)c->animation.current.y + tb_y,
+		.width = close_w + tab_w,
+		.height = th,
+	};
+	struct wlr_box tab_mon_overlap;
+	if (!wlr_box_intersection(&tab_mon_overlap, &tab_screen_box, &c->mon->m)) {
+		asteroidz_tab_bar_node_set_enabled(c->titlebar_node, false);
+		if (c->titlebar_close_node)
+			asteroidz_tab_bar_node_set_enabled(c->titlebar_close_node, false);
+		return;
+	}
 
 	bool focused = c == selmon->sel;
 
