@@ -1181,7 +1181,7 @@ static void create_jump_hints(Monitor *m);
 static void finish_jump_mode(Monitor *m);
 static void begin_jump_mode(Monitor *m);
 static void client_apply_decoration_config(Client *c);
-void client_change_mon(Client *c, Monitor *m);
+void client_change_mon(Client *c, Monitor *m, uint32_t newtags);
 
 #include "data/static_keymap.h"
 #include "dispatch/bind_declare.h"
@@ -1485,8 +1485,8 @@ static struct wl_event_source *sync_keymap;
 #include "layout/overview.h"
 #include "layout/scroll.h"
 
-void client_change_mon(Client *c, Monitor *m) {
-	setmon(c, m, c->tags, true);
+void client_change_mon(Client *c, Monitor *m, uint32_t newtags) {
+	setmon(c, m, newtags, true);
 	if (c->isfloating) {
 		c->float_geom = c->geom =
 			setclient_coordinate_center(c, c->mon, c->geom, 0, 0);
@@ -3457,7 +3457,10 @@ void closemon(Monitor *m) {
 
 				c->mon = NULL;
 			} else {
-				client_change_mon(c, selmon);
+				/* newtags 0: land on selmon's current active tag so the
+				 * client is actually visible, rather than carrying over a
+				 * tag number that may not be shown on selmon at all. */
+				client_change_mon(c, selmon, 0);
 			}
 			// record the oldmonname which is used to restore
 			if (c->oldmonname[0] == '\0') {
@@ -4264,8 +4267,16 @@ bool apply_rule_to_state(Monitor *m, const ConfigMonitorRule *rule,
 		struct wlr_output_mode *internal_mode = get_nearest_output_mode(
 			m->wlr_output, rule->width, rule->height, rule->refresh);
 		if (internal_mode) {
-			wlr_output_state_set_mode(state, internal_mode);
-			mode_set = true;
+			/* Only modeset on an actual change. reapply_monitor_rules runs on
+			 * every reload_config (a matugen wallpaper change re-applies the
+			 * unchanged config), and an unconditional modeset re-commit
+			 * transients the shared PCIe/power enough to drop the S/PDIF DAC's
+			 * lock — sound cutting out on every reload. A same-mode commit is
+			 * a no-op here, so skip it. */
+			if (internal_mode != m->wlr_output->current_mode) {
+				wlr_output_state_set_mode(state, internal_mode);
+				mode_set = true;
+			}
 		} else if (custom || wlr_output_is_headless(m->wlr_output)) {
 			wlr_output_state_set_custom_mode(
 				state, rule->width, rule->height,
@@ -8732,10 +8743,10 @@ void updatemons(struct wl_listener *listener, void *data) {
 					resize(c, c->geom, 1);
 			}
 
-			// restore window to old monitor
+			// restore window to old monitor, on its original tag
 			if (c->mon && c->mon != m && client_surface(c)->mapped &&
 				strcmp(c->oldmonname, m->wlr_output->name) == 0) {
-				client_change_mon(c, m);
+				client_change_mon(c, m, c->tags);
 			}
 		}
 
