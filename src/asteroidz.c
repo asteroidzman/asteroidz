@@ -3453,6 +3453,7 @@ void closemon(Monitor *m) {
 
 	wl_list_for_each(c, &clients, link) {
 		if (c->mon == m) {
+			bool was_focused = c->isfocused;
 
 			if (selmon == NULL) {
 				client_remove_ext_foreign_toplevel(c);
@@ -3470,6 +3471,21 @@ void closemon(Monitor *m) {
 				 * tag number that may not be shown on selmon at all. */
 				client_change_mon(c, selmon, 0);
 			}
+
+			/* m is already unlinked from mons by the time we get here, so
+			 * neither this loop nor the focusclient() call below (which
+			 * only clears isfocused on clients of monitors still in mons)
+			 * ever reaches a client that was focused on the removed
+			 * monitor -- without this its border/opacity/foreign-toplevel
+			 * activation state stays stuck "focused" forever. */
+			if (was_focused && c->isfocused) {
+				c->isfocused = false;
+				client_set_unfocused_opacity_animation(c);
+				if (c->foreign_toplevel)
+					wlr_foreign_toplevel_handle_v1_set_activated(
+						c->foreign_toplevel, false);
+			}
+
 			// record the oldmonname which is used to restore
 			if (c->oldmonname[0] == '\0') {
 				client_update_oldmonname_record(c, m);
