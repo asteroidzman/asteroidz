@@ -8956,18 +8956,13 @@ toggleseltags:
 }
 
 void view(const Arg *arg, bool want_animation) {
-	Monitor *m = NULL;
-	if (arg->i) {
-		view_in_mon(arg, want_animation, selmon, true);
-		wl_list_for_each(m, &mons, link) {
-			if (!m->wlr_output->enabled || m == selmon)
-				continue;
-			// only arrange, not change monitor focus
-			view_in_mon(arg, want_animation, m, false);
-		}
-	} else {
-		view_in_mon(arg, want_animation, selmon, true);
-	}
+	/* tags are strictly per-monitor: a tag switch only ever affects
+	 * selmon, never any other monitor's tagset/pertag state. arg->i used
+	 * to be an opt-in "sync this switch to every other monitor too" flag
+	 * (the documented `synctag` argument on view/view_to_left/
+	 * view_to_right); removed so there is no path, opt-in or otherwise,
+	 * by which switching tags on one monitor can touch another. */
+	view_in_mon(arg, want_animation, selmon, true);
 }
 
 static void
