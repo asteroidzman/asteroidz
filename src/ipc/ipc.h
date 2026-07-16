@@ -181,6 +181,23 @@ static cJSON *build_client_json(Client *c) {
 	return obj;
 }
 
+// Available output modes, for a config UI's resolution/refresh picker.
+// refresh is wlroots-native millihertz (divide by 1000 for Hz).
+static cJSON *build_modes_json(Monitor *m) {
+	cJSON *arr = cJSON_CreateArray();
+	struct wlr_output_mode *mode;
+	wl_list_for_each(mode, &m->wlr_output->modes, link) {
+		cJSON *o = cJSON_CreateObject();
+		cJSON_AddNumberToObject(o, "width", mode->width);
+		cJSON_AddNumberToObject(o, "height", mode->height);
+		cJSON_AddNumberToObject(o, "refresh", mode->refresh);
+		cJSON_AddBoolToObject(o, "current", mode == m->wlr_output->current_mode);
+		cJSON_AddBoolToObject(o, "preferred", mode->preferred);
+		cJSON_AddItemToArray(arr, o);
+	}
+	return arr;
+}
+
 static cJSON *build_monitor_json(Monitor *m) {
 	cJSON *resp = cJSON_CreateObject();
 	cJSON_AddStringToObject(resp, "name", m->wlr_output->name);
@@ -224,6 +241,15 @@ static cJSON *build_monitor_json(Monitor *m) {
 							  WLR_OUTPUT_ADAPTIVE_SYNC_ENABLED);
 	cJSON_AddBoolToObject(resp, "vrr_enabled", m->vrr_global_enable);
 	cJSON_AddBoolToObject(resp, "vrr_capable", m->wlr_output->adaptive_sync_supported);
+	cJSON_AddItemToObject(resp, "modes", build_modes_json(m));
+	if (m->wlr_output->current_mode) {
+		cJSON_AddNumberToObject(resp, "mode_width",
+								m->wlr_output->current_mode->width);
+		cJSON_AddNumberToObject(resp, "mode_height",
+								m->wlr_output->current_mode->height);
+		cJSON_AddNumberToObject(resp, "mode_refresh",
+								m->wlr_output->current_mode->refresh);
+	}
 	cJSON_AddItemToObject(resp, "tags", build_tags_json(m));
 	cJSON_AddItemToObject(resp, "active_tags", monitor_active_tags(m));
 	cJSON_AddItemToObject(resp, "active_client", monitor_active_client(m));
