@@ -1985,13 +1985,15 @@ void client_set_unfocused_opacity_animation(Client *c) {
 }
 
 bool client_apply_focus_opacity(Client *c) {
-	/* Keep the titlebar's focus color in sync with the actually-focused
-	 * client on every render. focusclient() doesn't recompute titlebar
-	 * geometry for tile layouts (it only re-arranges scroller/monocle, and
-	 * a plain focus change sets no need_output_flush), so without this a
-	 * window's titlebar keeps whatever focus state it had the last time its
-	 * geometry changed -- leaving several "active"-looking titlebars at
-	 * once. set_focus is dirty-checked, so this is a no-op when unchanged. */
+	/* Keep the titlebar's (and, in the steady-state branches below, the
+	 * border's) focus color in sync with the actually-focused client on
+	 * every render. focusclient() doesn't recompute titlebar geometry for
+	 * tile layouts (it only re-arranges scroller/monocle, and a plain focus
+	 * change sets no need_output_flush), so without this a window's
+	 * titlebar/border keeps whatever focus state it had the last time it
+	 * was explicitly pushed -- e.g. a cross-monitor focus switch can leave
+	 * the previously-focused window's border stuck focused. set_focus and
+	 * set_border_fill are dirty-checked, so this is a no-op when unchanged. */
 	if (c->titlebar_node) {
 		bool tb_focused = (selmon && c == selmon->sel);
 		asteroidz_tab_bar_node_set_focus(c->titlebar_node, tb_focused);
@@ -2084,12 +2086,14 @@ bool client_apply_focus_opacity(Client *c) {
 		memcpy(c->opacity_animation.current_border_color, border_color,
 			   sizeof(c->opacity_animation.current_border_color));
 		client_set_opacity(c, c->focused_opacity);
+		client_set_border_fill(c, border_color);
 	} else {
 		c->opacity_animation.running = false;
 		c->opacity_animation.current_opacity = c->unfocused_opacity;
 		memcpy(c->opacity_animation.current_border_color, border_color,
 			   sizeof(c->opacity_animation.current_border_color));
 		client_set_opacity(c, c->unfocused_opacity);
+		client_set_border_fill(c, border_color);
 	}
 
 	return false;
