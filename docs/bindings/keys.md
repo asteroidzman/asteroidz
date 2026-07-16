@@ -115,16 +115,16 @@ binds {
 
 | Command | Param | Description |
 | :--- | :--- | :--- |
-| `view` | `-1/0/1-9` or `mask [,synctag]` | View tag. `-1` = previous tagset, `0` = all tags, `1-9` = specific tag, mask e.g. `1\|3\|5`. Optional `synctag` (0/1) syncs the action to all monitors. |
-| `view_to_left` | `[synctag]` | View previous tag. Optional `synctag` (0/1) syncs to all monitors. |
-| `view_to_right` | `[synctag]` | View next tag. Optional `synctag` (0/1) syncs to all monitors. |
-| `view_to_left_occupied` | `[synctag]` | View left tag and focus client if present. Optional `synctag` (0/1). |
-| `view_to_right_occupied` | `[synctag]` | View right tag and focus client if present. Optional `synctag` (0/1). |
+| `view` | `-1/0/1-9` or `mask` | View tag on the focused monitor only. `-1` = previous tagset, `0` = all tags, `1-9` = specific tag, mask e.g. `1\|3\|5`. Tags are strictly per-monitor: this never affects any other monitor's tagset. |
+| `view_to_left` | - | View previous tag on the focused monitor only. |
+| `view_to_right` | - | View next tag on the focused monitor only. |
+| `view_to_left_occupied` | - | View left tag and focus client if present (focused monitor only). |
+| `view_to_right_occupied` | - | View right tag and focus client if present (focused monitor only). |
 | `view_cross_monitor` | `tag,monitor_spec` | View specified tag on specified monitor. |
-| `tag` | `1-9 [,synctag]` | Move window to tag. Optional `synctag` (0/1) syncs to all monitors. |
+| `tag` | `1-9` | Move window to tag (on its own monitor only). |
 | `tag_silent` | `1-9` | Move window to tag without focusing it. |
-| `tag_to_left` | `[synctag]` | Move window to left tag. Optional `synctag` (0/1). |
-| `tag_to_right` | `[synctag]` | Move window to right tag. Optional `synctag` (0/1). |
+| `tag_to_left` | - | Move window to left tag. |
+| `tag_to_right` | - | Move window to right tag. |
 | `tag_cross_monitor` | `tag,monitor_spec` | Move window to specified tag on specified monitor. |
 | `toggle_tag` | `0-9` | Toggle tag on window (0 means all tags). |
 | `toggle_view` | `1-9` | Toggle tag view. |
