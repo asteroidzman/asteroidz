@@ -1,5 +1,5 @@
 project('asteroidz', ['c'],
-  version : '0.16.6',
+  version : '0.16.7',
 )
 
 subdir('protocols')
