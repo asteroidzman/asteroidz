@@ -1606,7 +1606,17 @@ void client_animation_next_tick(Client *c) {
 			c->animation.current = c->geom;
 		}
 
-		client_set_prevent_scanout(c, c->noscanout);
+		/* A fullscreen client that just settled isn't necessarily stable
+		 * enough yet to safely hand its buffer straight to a KMS plane --
+		 * give it a short grace period (checked/expired in
+		 * client_draw_frame()) before scanout becomes eligible again,
+		 * instead of restoring it the instant this tick ends. Skip the
+		 * grace for anything that wasn't going to be scanout-eligible
+		 * anyway (non-fullscreen, or noscanout already set). */
+		if (c->isfullscreen && !c->noscanout)
+			c->scanout_grace_until_ms = get_now_in_ms() + 250;
+		else
+			client_set_prevent_scanout(c, c->noscanout);
 
 		struct wlr_surface *pointer_surf = NULL;
 		xytonode(cursor->x, cursor->y, &pointer_surf, &pointer_c, NULL, &sx,
@@ -2168,6 +2178,16 @@ bool client_draw_frame(Client *c) {
 		if (c->scene->node.enabled)
 			wlr_scene_node_set_enabled(&c->scene->node, false);
 		return false;
+	}
+
+	/* expire a fullscreen client's post-animation scanout grace period (see
+	 * client_animation_next_tick()) independently of need_output_flush,
+	 * since a settled client with nothing left to animate stops going
+	 * through that path entirely -- nothing else would ever clear this. */
+	if (c->scanout_grace_until_ms &&
+		get_now_in_ms() >= c->scanout_grace_until_ms) {
+		c->scanout_grace_until_ms = 0;
+		client_set_prevent_scanout(c, c->noscanout);
 	}
 
 	if (!c->need_output_flush) {
