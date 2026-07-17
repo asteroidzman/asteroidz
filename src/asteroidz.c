@@ -2605,7 +2605,19 @@ void arrangelayers(Monitor *m) {
 	int32_t i;
 	struct wlr_box usable_area = m->m;
 
-	if (!m->wlr_output->enabled)
+	/* A DPMS-asleep monitor is disabled but keeps its last-known-good m->m/
+	 * m->w (updatemons() skips zeroing them while m->asleep -- only a real
+	 * removal does that), so it's still safe -- and necessary -- to arrange
+	 * layers against it. Bailing out unconditionally on !enabled meant a
+	 * layer-shell client whose surface's initial commit happened to land
+	 * while its output was DPMS-off (e.g. waybar respawning during a long
+	 * sleep) never got a configure event at all; after its own internal
+	 * timeout it fell back to some client-side default width ("Timed out
+	 * waiting for initial .configure" in waybar's log) and stayed wrong
+	 * even after the output woke back up, until something else forced yet
+	 * another reconfigure. Only truly-removed/never-enabled outputs (whose
+	 * m->m may be zero/stale) still need to skip this. */
+	if (!m->wlr_output->enabled && !m->asleep)
 		return;
 
 	if (m->iscleanuping)
