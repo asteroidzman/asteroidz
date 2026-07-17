@@ -98,7 +98,15 @@ void set_arrange_visible(Monitor *m, Client *c, bool want_animation) {
 		wlr_scene_node_set_enabled(&c->scene_surface->node, true);
 	}
 
-	if (m->special_transitioning && want_animation && config.animations) {
+	/* A fullscreen client's geometry spans its whole monitor, so in a
+	 * side-by-side layout its off-screen tagin start coincides exactly with
+	 * the neighbouring monitor's own screen space (see set_tagin_animation);
+	 * skip the slide and appear instantly instead of risking a transient
+	 * cross-monitor bleed of the fullscreen content. */
+	if (c->isfullscreen) {
+		c->animainit_geom.x = c->animation.current.x;
+		c->animainit_geom.y = c->animation.current.y;
+	} else if (m->special_transitioning && want_animation && config.animations) {
 		c->animation.tagining = true;
 		set_special_in_animation(m, c);
 	} else if (!c->animation.tag_from_rule && want_animation &&
@@ -198,8 +206,18 @@ void set_arrange_hidden(Monitor *m, Client *c, bool want_animation) {
 		return;
 	}
 
-	if (m->special_transitioning && c->scene->node.enabled && want_animation &&
-		config.animations) {
+	/* Mirrors the fullscreen skip in set_arrange_visible(): a fullscreen
+	 * client's tagout target lands exactly on the neighbouring monitor's own
+	 * screen space in a side-by-side layout, so sliding it out is a
+	 * transient cross-monitor bleed risk -- go straight to the immediate
+	 * hide below instead. */
+	if (c->isfullscreen) {
+		c->animation.running = false;
+		wlr_scene_node_set_enabled(&c->scene->node, false);
+		c->animainit_geom = c->current = c->pending = c->animation.current =
+			c->geom;
+	} else if (m->special_transitioning && c->scene->node.enabled && want_animation &&
+			   config.animations) {
 		c->animation.tagouting = true;
 		c->animation.tagining = false;
 		set_special_out_animation(m, c);
