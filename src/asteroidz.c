@@ -6623,6 +6623,13 @@ static int monitor_retrain_step(void *data) {
 		m->retrain_phase = 0;
 		m->retrain_restore_mode = NULL;
 		wlr_output_schedule_frame(m->wlr_output);
+		/* the phase-0/1 modeset cycle is its own commit sequence, entirely
+		 * separate from the DPMS enable/disable paths (wake_monitor(),
+		 * powermgrsetmode()) that already call updatemons() -- without this,
+		 * layer-shell surfaces (e.g. a bar) never get rearranged/reconfigured
+		 * against the restored mode, so a wake with dpms-wake-retrain
+		 * enabled could leave one stuck at stale geometry indefinitely. */
+		updatemons(NULL, NULL);
 	}
 	wlr_output_state_finish(&state);
 	return 0;
