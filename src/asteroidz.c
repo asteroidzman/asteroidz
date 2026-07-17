@@ -584,6 +584,13 @@ struct Client {
 	 * prevention: an X11 app that re-fires request_activate right after the
 	 * user switched away from it must not yank the view back to its tag. */
 	uint32_t last_unfocus_ms;
+	/* 0 = no grace period active; otherwise a get_now_in_ms() deadline until
+	 * which direct scanout stays force-disabled after a fullscreen client's
+	 * enter/exit animation finishes. A just-settled fullscreen client isn't
+	 * necessarily stable enough yet to safely hand its buffer straight to a
+	 * KMS plane; the animation-tick-scoped prevention alone left a narrow
+	 * window right at the edges of the transition. */
+	uint32_t scanout_grace_until_ms;
 };
 
 typedef struct {
