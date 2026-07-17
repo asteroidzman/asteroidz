@@ -10,7 +10,7 @@
   <br/>
   <br/>
 
-  <video src="https://github.com/user-attachments/assets/b37a4144-cad4-4296-ba8b-33031a9e8124" width="720" controls muted playsinline></video>
+  <video src="https://github.com/asteroidzman/asteroidz/releases/download/0.16.6/asteroidz-demo.mp4" width="720" controls muted playsinline></video>
 
 </div>
 
