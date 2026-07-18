@@ -399,17 +399,23 @@ static void client_draw_one_shadow(Client *c, struct wlr_scene_shadow *shadow,
 		.height = height + 2 * (int32_t)c->bw - 2 * bwoffset,
 	};
 
+	/* centered on client_box and grown by delta on every side -- NOT just
+	 * pos_x/pos_y shifted, or the box would only ever grow right/down
+	 * (bug: shadow_box.x/y used to equal client_box.x/y verbatim, so the
+	 * +2*delta width/height only extended rightward/downward, leaving the
+	 * left/top edges flush with the window with no margin for the falloff
+	 * to occupy -- no shadow or blur there regardless of position_x/y). */
 	struct wlr_box shadow_box = {
-		.x = pos_x + bwoffset,
-		.y = pos_y + bwoffset,
+		.x = pos_x + bwoffset - delta,
+		.y = pos_y + bwoffset - delta,
 		.width = width + 2 * delta,
 		.height = height + 2 * delta,
 	};
 
 	struct wlr_box intersection_box;
 	wlr_box_intersection(&intersection_box, &client_box, &shadow_box);
-	intersection_box.x -= pos_x + bwoffset;
-	intersection_box.y -= pos_y + bwoffset;
+	intersection_box.x -= shadow_box.x;
+	intersection_box.y -= shadow_box.y;
 
 	/* Underlap the shadow's interior cutout 1px beneath the window edge
 	 * (same treatment as the border ring's cutout): the cutout arc and the
