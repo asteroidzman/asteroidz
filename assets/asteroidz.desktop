@@ -2,7 +2,7 @@
 Encoding=UTF-8
 Name=Asteroidz
 DesktopNames=asteroidz;wlroots
-Comment=asteroidz WM (Vulkan renderer)
-Exec=env WLR_RENDERER=vulkan asteroidz
+Comment=asteroidz WM (GLES2 renderer, the daily driver)
+Exec=env WLR_RENDERER=gles2 asteroidz
 Icon=asteroidz
 Type=Application

@@ -167,7 +167,7 @@ The repository provides a Flake with a NixOS module.
 > - `libxcb`
 > - `libsystemd`
 > - `gdk-pixbuf`
-> - `vulkan-icd-loader`, `vulkan-headers`, `glslang` (for the default Vulkan renderer)
+> - `vulkan-icd-loader`, `vulkan-headers`, `glslang` (for the experimental Vulkan renderer)
 
 You will need to build `wlroots` and asteroidz's `scenefx` fork manually as well.
 
@@ -206,10 +206,14 @@ You will need to build `wlroots` and asteroidz's `scenefx` fork manually as well
    ```
 
    This installs the `asteroidz` binary, the `amsg` IPC tool, two wayland
-   session entries (**Asteroidz** = Vulkan, the default; **Asteroidz (GLES
-   fallback)** = GLES2), and the GlobalShortcuts portal definition.
+   session entries (**Asteroidz** = GLES2, the daily driver and default;
+   **Asteroidz (Vulkan, experimental)** = the `fx_vk` renderer), and the
+   GlobalShortcuts portal definition.
 
-   asteroidz uses the Vulkan renderer by default; the renderer is selected
-   per session via `WLR_RENDERER` (`vulkan` or `gles2`). Some native-Wayland
-   GPU apps (e.g. Electron) don't yet import on the Vulkan renderer — run
-   them under XWayland or use the GLES fallback session.
+   asteroidz uses the GLES2 renderer by default; the renderer is selected
+   per session via `WLR_RENDERER` (`gles2` or `vulkan`). Vulkan is
+   experimental — near feature parity for everyday use, pending future
+   wlroots enhancements before it's the recommended default. Some
+   native-Wayland GPU apps (e.g. Electron) don't yet import on the Vulkan
+   renderer — run them under XWayland, or just use the default GLES2
+   session.

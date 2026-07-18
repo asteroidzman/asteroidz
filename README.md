@@ -30,11 +30,12 @@ that stays out of your way.
 - **Dynamic VRR & tearing** — VRR that follows fullscreen games
   (`vrr_only_fullscreen` window rule) and content-type-aware tearing;
   video never tears, games can
-- **Vulkan renderer** (default) — the full effect suite runs on the
-  `asteroidz-scenefx` `fx_vk` renderer: blur (with pixel-accurate
-  ext-background-effect-v1 regions), soft shadows, rounded corners, gradient
-  borders, spring animation curves, plus HDR/SDR colour. GLES2 stays
-  available as a fallback session
+- **Full effect suite on GLES2, the daily driver** — blur (with
+  pixel-accurate ext-background-effect-v1 regions), soft shadows, rounded
+  corners, gradient borders, spring animation curves, plus HDR/SDR colour,
+  all on the stable `asteroidz-scenefx` GLES2 renderer. An experimental
+  Vulkan (`fx_vk`) renderer is also available — near feature parity, pending
+  future wlroots enhancements before it becomes the recommended default
 - **Privacy shield** — `shield_when_capture` window and layer rules cover
   marked surfaces whenever a screen-capture session is active
 - **Tags, not workspaces** — per-tag layouts: scroller, master-stack,
@@ -47,16 +48,21 @@ that stays out of your way.
 
 ## Building
 
-asteroidz renders on **Vulkan by default** — the companion
+asteroidz renders on **GLES2 by default** — the companion
 [asteroidz-scenefx](https://github.com/asteroidzman/asteroidz-scenefx)
-fork's `fx_vk` renderer (HDR10, rounded corners, blur, shadows, gradient
-borders, SDR colour) — with **GLES2 as a fallback**. It's one binary; the
+fork's GLES2 renderer (HDR10, rounded corners, blur, shadows, gradient
+borders, SDR colour) is the stable, everyday driver. An **experimental
+Vulkan (`fx_vk`) renderer** is also available — near parity already, but
+still pending future wlroots enhancements (see
+[`docs/vulkan-journey.md`](docs/vulkan-journey.md) for the full state and
+known gaps) before it's the recommended default. It's one binary; the
 renderer is chosen per session via `WLR_RENDERER`.
 
 Dependencies: wlroots 0.20, `asteroidz-scenefx` (built with `--prefix=/usr`
 and both renderers), wayland, libinput, xkbcommon, pango/cairo, gdk-pixbuf,
-cJSON, pcre2, libsystemd. The Vulkan renderer additionally needs the Vulkan
-loader/headers and `glslang` (to compile the effect shaders to SPIR-V).
+cJSON, pcre2, libsystemd. The experimental Vulkan renderer additionally
+needs the Vulkan loader/headers and `glslang` (to compile the effect
+shaders to SPIR-V).
 
 > The scenefx fork is renamed to **asteroidz-scenefx** — it installs as
 > `libasteroidz-scenefx-0.5` / `asteroidz-scenefx-0.5.pc` and builds with the
@@ -72,8 +78,9 @@ sudo ninja -C build install
 ```
 
 This installs the `asteroidz` binary, the `amsg` IPC tool, two wayland
-session entries — **Asteroidz** (Vulkan) and **Asteroidz (GLES fallback)** —
-and the GlobalShortcuts portal definition.
+session entries — **Asteroidz** (GLES2, the daily driver and default) and
+**Asteroidz (Vulkan, experimental)** — and the GlobalShortcuts portal
+definition.
 
 ### Arch Linux
 
@@ -83,7 +90,8 @@ stock `scenefx` packages are 0.3/0.4, so the renamed 0.5 fork
 (`asteroidz-scenefx`) is a manual step.
 
 Install the toolchain and dependencies (Vulkan loader/headers + `glslang`
-are needed for the default Vulkan renderer):
+build the experimental Vulkan renderer alongside GLES2 — one binary, both
+renderers, GLES2 is what actually runs by default):
 
 ```bash
 sudo pacman -S --needed base-devel git meson ninja \
@@ -111,14 +119,16 @@ ninja -C build
 sudo ninja -C build install
 ```
 
-Log out and pick **Asteroidz** (Vulkan) from your display manager's session
-list, or **Asteroidz (GLES fallback)** for GLES2. From a TTY:
-`dbus-run-session env WLR_RENDERER=vulkan asteroidz`.
+Log out and pick **Asteroidz** (GLES2, the default) from your display
+manager's session list, or **Asteroidz (Vulkan, experimental)** to try the
+Vulkan renderer. From a TTY: `dbus-run-session env WLR_RENDERER=gles2
+asteroidz`, or swap in `vulkan` to try the experimental renderer.
 
 (`xorg-xwayland` is only needed for X11 app support; drop it and build with
 `-Dxwayland=disabled` for pure Wayland. Note: some native-Wayland GPU apps —
-notably Electron — don't yet import on the Vulkan renderer and render blank;
-run them under XWayland, or use the GLES fallback session.)
+notably Electron — don't yet import on the experimental Vulkan renderer and
+render blank; run them under XWayland, or just use the default GLES2
+session.)
 
 ## Configuration
 
