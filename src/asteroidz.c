@@ -1071,6 +1071,7 @@ static void scene_buffer_apply_prevent_scanout(struct wlr_scene_buffer *buffer,
 static Client *direction_select(const Arg *arg);
 static void view_in_mon(const Arg *arg, bool want_animation, Monitor *m,
 						bool changefocus);
+static void ensure_monitor_blur_node(Monitor *m);
 
 static void buffer_set_effect(Client *c, BufferData buffer_data);
 static void snap_scene_buffer_apply_effect(struct wlr_scene_buffer *buffer,
@@ -3630,14 +3631,31 @@ void layer_update_blur(LayerSurface *l) {
 									   iter_layer_scene_buffers, l);
 }
 
+/* Lazily creates the monitor's shared optimized-blur cache node (the
+ * producer wlr_scene_optimized_blur_create/WLR_SCENE_NODE_OPTIMIZED_BLUR
+ * node that should_only_blur_bottom_layer consumers -- regular window blur
+ * AND shadow_blur -- sample from). Idempotent: no-op if it already exists.
+ * Needed because a consumer can start existing later than monitor creation
+ * (blur/shadows_blur_background toggled on via a live config reload, not
+ * just at startup), and createmon only creates it once, at that time. */
+static void ensure_monitor_blur_node(Monitor *m) {
+	if (!m || m->blur)
+		return;
+	m->blur = wlr_scene_optimized_blur_create(&scene->tree, 0, 0);
+	wlr_scene_node_set_position(&m->blur->node, m->m.x, m->m.y);
+	wlr_scene_node_reparent(&m->blur->node, layers[LyrBlur]);
+	wlr_scene_optimized_blur_set_size(m->blur, m->m.width, m->m.height);
+}
+
 void layer_flush_blur_background(LayerSurface *l) {
-	if (!config.blur)
+	if (!config.blur && !config.shadows_blur_background)
 		return;
 
 	// if the background layer changed, mark the optimized blur background cache dirty
 	if (l->layer_surface->current.layer ==
 		ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND) {
 		if (l->mon) {
+			ensure_monitor_blur_node(l->mon);
 			wlr_scene_optimized_blur_mark_dirty(l->mon->blur);
 		}
 	}
@@ -4649,11 +4667,8 @@ void createmon(struct wl_listener *listener, void *data) {
 	else
 		wlr_output_layout_add(output_layout, wlr_output, m->m.x, m->m.y);
 
-	if (config.blur) {
-		m->blur = wlr_scene_optimized_blur_create(&scene->tree, 0, 0);
-		wlr_scene_node_set_position(&m->blur->node, m->m.x, m->m.y);
-		wlr_scene_node_reparent(&m->blur->node, layers[LyrBlur]);
-		wlr_scene_optimized_blur_set_size(m->blur, m->m.width, m->m.height);
+	if (config.blur || config.shadows_blur_background) {
+		ensure_monitor_blur_node(m);
 	}
 	m->ext_group = wlr_ext_workspace_group_handle_v1_create(
 		ext_manager, EXT_WORKSPACE_ENABLE_CAPS);
@@ -8834,7 +8849,7 @@ void updatemons(struct wl_listener *listener, void *data) {
 		 */
 		wlr_scene_output_set_position(m->scene_output, m->m.x, m->m.y);
 
-		if (config.blur && m->blur) {
+		if (m->blur) {
 			wlr_scene_node_set_position(&m->blur->node, m->m.x, m->m.y);
 			wlr_scene_optimized_blur_set_size(m->blur, m->m.width, m->m.height);
 		}

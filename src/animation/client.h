@@ -545,21 +545,28 @@ void client_draw_shadow(Client *c) {
 		if (c->shadow_blur) {
 			wlr_scene_node_place_below(&c->shadow_blur->node, &c->shadow->node);
 			wlr_scene_blur_set_alpha(c->shadow_blur, 1.0f);
-			/* NOT should_only_blur_bottom_layer(true): that path samples a
-			 * cached bottom-layer snapshot that (at least in headless
-			 * testing with no other blur node active anywhere) came back
-			 * fully black -- looked like an uninitialized/never-populated
-			 * cache rather than the wallpaper. Live sampling has a real
-			 * per-frame cost, but this whole feature is already opt-in and
-			 * off by default; correctness first. */
-			wlr_scene_blur_set_should_only_blur_bottom_layer(c->shadow_blur,
-															 false);
 		}
 	}
-	if (c->shadow_blur &&
-		c->shadow_blur->strength != config.shadows_blur_background_strength)
-		wlr_scene_blur_set_strength(c->shadow_blur,
-									config.shadows_blur_background_strength);
+	if (c->shadow_blur) {
+		if (c->shadow_blur->strength != config.shadows_blur_background_strength)
+			wlr_scene_blur_set_strength(c->shadow_blur,
+										config.shadows_blur_background_strength);
+		/* Cached bottom-layer path (cheap: reuses the monitor's shared
+		 * blurred-wallpaper snapshot instead of re-blurring every frame) is
+		 * correct only when the shadow's actual backdrop IS just the
+		 * wallpaper -- true for tiled windows, not guaranteed for floating
+		 * ones (which can sit over arbitrary other windows). Same rule
+		 * client_update_blur already applies to regular window blur. The
+		 * cache node is monitor-shared and lazily created on demand --
+		 * ensure it exists before relying on it (it may not if
+		 * shadows_blur_background was only just turned on). */
+		bool blur_cached = config.blur_optimized && !c->isfloating;
+		if (blur_cached)
+			ensure_monitor_blur_node(c->mon);
+		if (c->shadow_blur->should_only_blur_bottom_layer != blur_cached)
+			wlr_scene_blur_set_should_only_blur_bottom_layer(c->shadow_blur,
+															 blur_cached);
+	}
 
 	bool hit_no_border = check_hit_no_border(c);
 	enum corner_location current_corner_location =
