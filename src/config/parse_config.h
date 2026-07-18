@@ -4408,7 +4408,11 @@ void set_value_default() {
 	config.render_late_margin_us = 3000; /* 3ms safety headroom before deadline */
 	config.border_radius = 0;
 	config.border_radius_location_default = CORNER_LOCATION_ALL;
-	config.blur_params.num_passes = 1;
+	/* passes 1 leaves visible high-frequency bleed-through of background
+	 * content (measured: an 8px test stripe pattern still oscillates
+	 * clearly through a passes=1 blur; passes=2 at the same radius fully
+	 * smooths it) -- 2 is the minimum that actually reads as "blur" */
+	config.blur_params.num_passes = 2;
 	config.blur_params.radius = 5;
 	config.blur_params.noise = 0.02f;
 	config.blur_params.brightness = 0.9f;

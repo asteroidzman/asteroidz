@@ -13,7 +13,7 @@ Blur creates a frosted glass effect for transparent windows.
 | `blur_layer` | `0` | Enable blur for layer surfaces (like bars/docks). |
 | `blur_optimized` | `1` | Caches the wallpaper and blur background, significantly reducing GPU usage. Disabling it will significantly increase GPU consumption and may cause rendering lag. **Highly recommended.** |
 | `blur_params_radius` | `5` | The strength (radius) of the blur. |
-| `blur_params_num_passes` | `1` | Number of passes. Higher = smoother but more expensive. |
+| `blur_params_num_passes` | `2` | Number of passes. Higher = smoother but more expensive. `1` leaves visible bleed-through of background detail; `2` is the minimum that reads as a proper blur. |
 | `blur_params_noise` | `0.02` | Blur noise level. |
 | `blur_params_brightness` | `0.9` | Blur brightness adjustment. |
 | `blur_params_contrast` | `0.9` | Blur contrast adjustment. |
