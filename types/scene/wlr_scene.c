@@ -1234,6 +1234,15 @@ void wlr_scene_blur_set_strength(struct wlr_scene_blur *blur, float strength) {
 	scene_node_update(&blur->node, NULL);
 }
 
+void wlr_scene_blur_set_edge_softness(struct wlr_scene_blur *blur, float sigma) {
+	if (blur->edge_softness == sigma) {
+		return;
+	}
+
+	blur->edge_softness = sigma;
+	scene_node_update(&blur->node, NULL);
+}
+
 void wlr_scene_blur_set_region(struct wlr_scene_blur *blur,
 		const pixman_region32_t *region) {
 	if (region == NULL) {
@@ -2530,6 +2539,7 @@ static void scene_entry_render(struct render_list_entry *entry, const struct ren
 			.blur_data = &scene->blur_data,
 			.ignore_transparent = mask != NULL,
 			.blur_strength = blur->strength,
+			.edge_softness = blur->edge_softness * data->scale,
 		};
 		scene_pass_add_blur(data->render_pass, &blur_options);
 		break;

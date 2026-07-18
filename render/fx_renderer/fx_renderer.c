@@ -447,6 +447,10 @@ static bool link_shaders(struct fx_renderer *renderer) {
 		wlr_log(WLR_ERROR, "Could not link tex_effects_EXTERNAL shader");
 		goto error;
 	}
+	if (!link_tex_soft_edge_program(&renderer->shaders.tex_soft_edge)) {
+		wlr_log(WLR_ERROR, "Could not link tex_soft_edge shader");
+		goto error;
+	}
 
 	// box shadow shader
 	if (!link_box_shadow_program(&renderer->shaders.box_shadow)) {

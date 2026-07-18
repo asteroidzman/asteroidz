@@ -116,6 +116,11 @@ struct fx_render_blur_pass_options {
 	float blur_strength;
 	struct fx_corner_fradii corners;
 	struct clipped_fregion clipped_region;
+	// See wlr_scene_blur_set_edge_softness(): 0 = tex_options.corners is a
+	// hard rounded-rect SDF as usual; > 0 = the whole box fades via the
+	// same wide analytic falloff wlr_scene_shadow uses, and tex_options.corners
+	// is instead the box's own corner radii for that falloff.
+	float edge_softness;
 };
 
 struct fx_gles_render_pass *fx_get_render_pass(struct wlr_render_pass *render_pass);

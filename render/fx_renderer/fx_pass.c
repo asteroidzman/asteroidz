@@ -702,6 +702,82 @@ void fx_render_pass_add_texture(struct fx_gles_render_pass *pass,
 	TRACY_BOTH_ZONES_END;
 }
 
+// Like fx_render_pass_add_texture, but for wlr_scene_blur's own edge_softness
+// path (see wlr_scene_blur_set_edge_softness): always a plain 2D RGBA
+// texture (the blur's own offscreen buffer), and the box's own edge fades
+// via the same wide analytic gaussian falloff box_shadow_shader uses
+// (blur_sigma) instead of a hard corner_alpha() SDF.
+static void fx_render_pass_add_texture_soft_edge(struct fx_gles_render_pass *pass,
+		const struct fx_render_texture_options *fx_options, float blur_sigma) {
+	const struct wlr_render_texture_options *options = &fx_options->base;
+	struct fx_renderer *renderer = pass->buffer->renderer;
+	struct fx_texture *texture = fx_get_texture(options->texture);
+	struct tex_soft_edge_shader *shader = &renderer->shaders.tex_soft_edge;
+
+	struct wlr_box dst_box;
+	struct wlr_fbox src_fbox;
+	wlr_render_texture_options_get_src_box(options, &src_fbox);
+	wlr_render_texture_options_get_dst_box(options, &dst_box);
+	float alpha = wlr_render_texture_options_get_alpha(options);
+
+	const struct wlr_box *clip_box = &dst_box;
+	if (!wlr_box_empty(fx_options->clip_box)) {
+		clip_box = fx_options->clip_box;
+	}
+
+	src_fbox.x /= options->texture->width;
+	src_fbox.y /= options->texture->height;
+	src_fbox.width /= options->texture->width;
+	src_fbox.height /= options->texture->height;
+
+	TRACY_BOTH_ZONES_START(renderer);
+	push_fx_debug(renderer);
+
+	setup_blending(WLR_RENDER_BLEND_MODE_PREMULTIPLIED);
+
+	pixman_region32_t clip_region;
+	if (options->clip) {
+		pixman_region32_init(&clip_region);
+		pixman_region32_copy(&clip_region, options->clip);
+	} else {
+		pixman_region32_init_rect(&clip_region, dst_box.x, dst_box.y, dst_box.width, dst_box.height);
+	}
+	const struct wlr_box clipped_region_box = fx_options->clipped_region.area;
+	struct fx_corner_fradii clipped_region_corners = fx_options->clipped_region.corners;
+	apply_clip_region(&clip_region, &clipped_region_box, &clipped_region_corners);
+
+	glUseProgram(shader->program);
+
+	glActiveTexture(GL_TEXTURE0);
+	glBindTexture(texture->target, texture->tex);
+	glTexParameteri(texture->target, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glTexParameteri(texture->target, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+	glUniform1i(shader->tex, 0);
+	glUniform1f(shader->alpha, alpha);
+
+	struct fx_corner_fradii corners = fx_options->corners;
+	glUniform2f(shader->size, clip_box->width, clip_box->height);
+	glUniform2f(shader->position, clip_box->x, clip_box->y);
+	glUniform1f(shader->blur_sigma, blur_sigma);
+	uniform_corner_radii_set(&shader->radius, &corners);
+
+	glUniform2f(shader->clip_size, clipped_region_box.width, clipped_region_box.height);
+	glUniform2f(shader->clip_position, clipped_region_box.x, clipped_region_box.y);
+	uniform_corner_radii_set(&shader->clip_radius, &clipped_region_corners);
+
+	set_proj_matrix(shader->proj, pass->projection_matrix, &dst_box);
+	set_tex_matrix(shader->tex_proj, options->transform, &src_fbox);
+
+	render(&dst_box, &clip_region, shader->pos_attrib);
+	pixman_region32_fini(&clip_region);
+
+	glBindTexture(texture->target, 0);
+
+	pop_fx_debug(renderer);
+	TRACY_BOTH_ZONES_END;
+}
+
 void fx_render_pass_add_rect(struct fx_gles_render_pass *pass,
 		const struct fx_render_rect_options *fx_options) {
 	const struct wlr_render_rect_options *options = &fx_options->base;
@@ -1387,7 +1463,12 @@ void fx_render_pass_add_blur(struct fx_gles_render_pass *pass,
 	// since we're capturing from the fbo, transform will always be normal
 	tex_options->base.transform = WL_OUTPUT_TRANSFORM_NORMAL;
 	tex_options->clipped_region = fx_options->clipped_region;
-	fx_render_pass_add_texture(pass, tex_options);
+	if (fx_options->edge_softness > 0) {
+		fx_render_pass_add_texture_soft_edge(pass, tex_options,
+			fx_options->edge_softness);
+	} else {
+		fx_render_pass_add_texture(pass, tex_options);
+	}
 
 	wlr_texture_destroy(&blur_texture->wlr_texture);
 

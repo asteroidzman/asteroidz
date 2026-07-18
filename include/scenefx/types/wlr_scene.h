@@ -207,6 +207,17 @@ struct wlr_scene_blur {
 	// clipped_region's bounding box.
 	pixman_region32_t clip_region;
 	bool has_clip_region;
+
+	// 0 (default): the node's own edge is `corners` -- a hard rounded-rect
+	// cutout with a ~1px AA band, like any other rounded texture.
+	// > 0: the edge instead fades via the same wide analytic gaussian
+	// falloff wlr_scene_shadow uses (this value plays the same role as a
+	// shadow's blur_sigma), so a uniform-strength blur doesn't read as an
+	// obviously rectangular "patch" -- meant for a blur node deliberately
+	// sized to match a shadow's own footprint, so the two fade in lockstep.
+	// `corners` is still used, but as the box's own corner radii for that
+	// falloff instead of a hard SDF radius.
+	float edge_softness;
 };
 
 /** A scene-graph node telling SceneFX to render the optimized blur */
@@ -750,6 +761,20 @@ void wlr_scene_blur_set_alpha(struct wlr_scene_blur *blur, float alpha);
  * fade-out effect.
  */
 void wlr_scene_blur_set_strength(struct wlr_scene_blur *blur, float strength);
+
+/**
+ * 0 (default) keeps the node's existing hard rounded-rect edge (`corners`
+ * as a corner_alpha()-style SDF + ~1px AA band).
+ *
+ * > 0 switches the node's own edge to fade via the same wide analytic
+ * gaussian falloff wlr_scene_shadow's blur_sigma produces, using `corners`
+ * as the box's own corner radii for that falloff instead. Meant for a blur
+ * node deliberately sized to match a shadow's footprint, so a uniform
+ * blur doesn't read as an obviously rectangular patch of whatever's behind
+ * it -- the value should match the shadow's own blur_sigma so both fade
+ * over the same span.
+ */
+void wlr_scene_blur_set_edge_softness(struct wlr_scene_blur *blur, float sigma);
 
 /**
  * Sets the region where to clip the blur.

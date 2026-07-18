@@ -137,6 +137,31 @@ struct tex_shader {
 bool link_tex_program(struct tex_shader *shader, enum fx_tex_shader_source source,
 		bool effects);
 
+// Like tex_shader, but the box's own edge fades via the same wide analytic
+// gaussian falloff box_shadow_shader uses (blur_sigma), instead of a hard
+// corner_alpha() SDF -- used only for wlr_scene_blur's own edge when
+// blur->edge_softness > 0. Always plain 2D RGBA (the blur's own offscreen
+// buffer), so unlike tex_shader there's no RGBX/EXTERNAL/no-effects variant.
+struct tex_soft_edge_shader {
+	GLuint program;
+	GLint proj;
+	GLint tex_proj;
+	GLint tex;
+	GLint alpha;
+	GLint pos_attrib;
+
+	GLint position;
+	GLint size;
+	GLint blur_sigma;
+	struct shader_corner_radii radius;
+
+	GLint clip_position;
+	GLint clip_size;
+	struct shader_corner_radii clip_radius;
+};
+
+bool link_tex_soft_edge_program(struct tex_soft_edge_shader *shader);
+
 struct box_shadow_shader {
 	GLuint program;
 	GLint proj;

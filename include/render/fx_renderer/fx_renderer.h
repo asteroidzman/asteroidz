@@ -203,6 +203,7 @@ struct fx_renderer {
 		struct tex_shader tex_effects_rgba;
 		struct tex_shader tex_effects_rgbx;
 		struct tex_shader tex_effects_ext;
+		struct tex_soft_edge_shader tex_soft_edge;
 
 		struct box_shadow_shader box_shadow;
 		struct color_transform_shader color_transform;
