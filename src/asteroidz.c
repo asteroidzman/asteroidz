@@ -3576,6 +3576,17 @@ void layer_update_blur(LayerSurface *l) {
 			pixman_region32_not_empty(&effect->current_region);
 	}
 
+	wlr_log(WLR_INFO,
+		"blur_debug: ns=%s layer=%d blur=%d blur_layer=%d forceblur=%d "
+		"noblur=%d has_effect=%d has_region=%d region_nonempty=%d want=%d",
+		layer_surface->namespace, layer_surface->current.layer,
+		config.blur, config.blur_layer, l->forceblur, l->noblur,
+		effect != NULL, effect ? effect->has_region : -1,
+		(effect && effect->has_region)
+			? pixman_region32_not_empty(&effect->current_region)
+			: -1,
+		want);
+
 	if (!want) {
 		if (l->blur_node) {
 			wlr_scene_node_destroy(&l->blur_node->node);
