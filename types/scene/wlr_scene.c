@@ -1058,6 +1058,25 @@ void wlr_scene_shadow_set_size(struct wlr_scene_shadow *shadow, int width, int h
 		return;
 	}
 
+	/* Same issue as wlr_scene_blur_set_size/wlr_scene_buffer_set_dest_size:
+	 * on a shrink, the region this node used to (but no longer will) cover
+	 * never gets damaged -- scene_node_update() below derives damage from
+	 * scene_node_bounds(), which reads the node's CURRENT size, and
+	 * width/height have already been updated to the new, smaller values by
+	 * the time it runs. Explicitly damage the OLD bounds first, independent
+	 * of visibility -- reproduced live: a layer-shell popup (e.g. a
+	 * multi-tab settings panel) that grows then shrinks back down in place
+	 * (not a fresh open, an in-place resize while already mapped) leaves a
+	 * stale shadow-shaped rectangle sized for the largest content it ever
+	 * had, until the surface is destroyed. */
+	int x, y;
+	if (wlr_scene_node_coords(&shadow->node, &x, &y)) {
+		pixman_region32_t old_bounds;
+		pixman_region32_init_rect(&old_bounds, x, y, shadow->width, shadow->height);
+		scene_damage_outputs(scene_node_get_root(&shadow->node), &old_bounds);
+		pixman_region32_fini(&old_bounds);
+	}
+
 	shadow->width = width;
 	shadow->height = height;
 	scene_node_update(&shadow->node, NULL);
