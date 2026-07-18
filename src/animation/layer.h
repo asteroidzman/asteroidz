@@ -198,17 +198,21 @@ void layer_draw_shadow(LayerSurface *l) {
 		.height = height,
 	};
 
+	/* centered on layer_box and grown by delta on every side -- same bug
+	 * client_draw_one_shadow had (fixed in 6b99455): x/y used to equal
+	 * position_x/y verbatim while width/height grew by 2*delta, so the box
+	 * only ever grew right/down, never left/up, regardless of position. */
 	struct wlr_box shadow_box = {
-		.x = config.shadows_position_x,
-		.y = config.shadows_position_y,
+		.x = config.shadows_position_x - delta,
+		.y = config.shadows_position_y - delta,
 		.width = width + 2 * delta,
 		.height = height + 2 * delta,
 	};
 
 	struct wlr_box intersection_box;
 	wlr_box_intersection(&intersection_box, &layer_box, &shadow_box);
-	intersection_box.x -= config.shadows_position_x;
-	intersection_box.y -= config.shadows_position_y;
+	intersection_box.x -= shadow_box.x;
+	intersection_box.y -= shadow_box.y;
 
 	struct clipped_region clipped_region = {
 		.area = intersection_box,
@@ -216,9 +220,43 @@ void layer_draw_shadow(LayerSurface *l) {
 			config.border_radius, config.border_radius_location_default),
 	};
 
-	wlr_scene_node_set_position(&l->shadow->node, shadow_box.x, shadow_box.y);
+	/* Unlike client_draw_one_shadow, this had NO monitor-edge clipping at
+	 * all: shadow_box was drawn at full size regardless of whether it
+	 * extended past the layer's own monitor. Harmless while shadows_size
+	 * was small (or shadows off by default), but a popup near a monitor
+	 * edge now visibly bleeds the shadow onto a physically adjacent
+	 * monitor. Clip the same way client shadows do. */
+	struct wlr_box absolute_shadow_box = {
+		.x = shadow_box.x + l->geom.x,
+		.y = shadow_box.y + l->geom.y,
+		.width = shadow_box.width,
+		.height = shadow_box.height,
+	};
 
-	wlr_scene_shadow_set_size(l->shadow, shadow_box.width, shadow_box.height);
+	int32_t right_offset = GEZERO(absolute_shadow_box.x +
+								  absolute_shadow_box.width - l->mon->m.x -
+								  l->mon->m.width);
+	int32_t bottom_offset = GEZERO(absolute_shadow_box.y +
+									absolute_shadow_box.height - l->mon->m.y -
+									l->mon->m.height);
+	int32_t left_offset = GEZERO(l->mon->m.x - absolute_shadow_box.x);
+	int32_t top_offset = GEZERO(l->mon->m.y - absolute_shadow_box.y);
+
+	left_offset = ASTEROIDZ_MIN(left_offset, shadow_box.width);
+	right_offset = ASTEROIDZ_MIN(right_offset, shadow_box.width);
+	top_offset = ASTEROIDZ_MIN(top_offset, shadow_box.height);
+	bottom_offset = ASTEROIDZ_MIN(bottom_offset, shadow_box.height);
+
+	wlr_scene_node_set_position(&l->shadow->node, shadow_box.x + left_offset,
+								shadow_box.y + top_offset);
+
+	wlr_scene_shadow_set_size(
+		l->shadow, GEZERO(shadow_box.width - left_offset - right_offset),
+		GEZERO(shadow_box.height - top_offset - bottom_offset));
+
+	clipped_region.area.x = clipped_region.area.x - left_offset;
+	clipped_region.area.y = clipped_region.area.y - top_offset;
+
 	wlr_scene_shadow_set_clipped_region(l->shadow, clipped_region);
 }
 
