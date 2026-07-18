@@ -15,7 +15,7 @@ for raw FPS" framing is obsolete).
 | Config | Renderer | scenefx? | wlroots | Colors/effects | Status |
 |--------|----------|----------|---------|----------------|--------|
 | **A. scenefx + GLES** (original) | scenefx GLES2 | yes | 0.20 | full (blur/shadow/rounded/SDR color) | rock solid — the daily driver |
-| **B. scenefx + fx_vk (Vulkan)** | scenefx `fx_vk` (vendored wlroots Vulkan) | yes | 0.21 | **rounded corners (2.1) + box shadow (2.2) + blur (2.3) + gradients + SDR colour all working; only colour-LUT + minor blur polish left** | near-parity with config A: windows, rounded corners/borders, drop shadows, blur, 2-stop gradient borders, SDR colours all correct |
+| **B. scenefx + fx_vk (Vulkan)** | scenefx `fx_vk` (vendored wlroots Vulkan) | yes | 0.20 (0.21 no longer required — see below) | **rounded corners (2.1) + box shadow (2.2) + blur (2.3) + 2-stop gradients + SDR colour all working; partial damage tracking now correct (2026-07-14).** Remaining gaps: >2-stop gradients (first-stop fallback), colour-LUT (unused by asteroidz anyway), Electron/native-Wayland clients render blank (dmabuf modifier import limitation). HDR10 is under active hardening (several PQ-correctness fixes landed 2026-07-13/15) but not yet declared verified end-to-end. | near-parity with config A for everything asteroidz actually uses day-to-day; Electron apps are the one concrete dealbreaker if used |
 
 Config C (wlroots built-in Vulkan, no scenefx, `nofx.h`) was **dropped**. It was
 only ever a reference point; asteroidz always builds against scenefx
@@ -94,10 +94,19 @@ Switching:
   A full-damage workaround forces a full repaint on the Vulkan path.
 
 ## wlroots version notes
-- Config A/C: wlroots **0.20**. Config B (`fx_vk`) was re-vendored from wlroots
-  **0.21-dev**, so scenefx's `build-vulkan` and asteroidz both build against
-  `wlroots-0.21`. Only API delta in asteroidz: `wlr_xdg_decoration_manager_v1_create`
-  gained a 2nd (version) arg in 0.21. scenefx's GLES base builds clean against 0.21.
+- Config A/C: wlroots **0.20**. Config B (`fx_vk`) was originally re-vendored from
+  wlroots **0.21-dev** during initial development, requiring both scenefx's
+  `build-vulkan` and asteroidz to build against `wlroots-0.21` (the only API delta
+  being `wlr_xdg_decoration_manager_v1_create` gaining a 2nd (version) arg in 0.21).
+- **Update (2026-07-17):** this is no longer accurate. The live daily-driver session
+  now runs config B against the stock **wlroots0.20.2** package — asteroidz's
+  `wlr_xdg_decoration_manager_v1_create(dpy)` call site is still the 1-arg 0.20
+  signature — and `fx_vk` initializes and renders correctly (confirmed via the
+  running compositor's own log: `render/fx_renderer/vulkan/renderer.c` init
+  messages, `fx_vk: compute dual-Kawase blur enabled`, etc.). fx_vk is fully
+  vendored/renamed (no symbol clash with libwlroots' own unused Vulkan renderer),
+  so it never actually needed 0.21 as an ongoing build dependency — only
+  transiently, to source the initial code snapshot.
 
 ## TODO to make Vulkan a real daily driver
 1. Port scenefx effect shaders to `fx_vk` (SPIR-V): rounded corners → box shadow →
@@ -110,11 +119,24 @@ Switching:
 2. ~~Port the SDR color pipeline to `fx_vk`~~ — NOT needed; SDR (reference
    luminance + saturation) already applies via the renderer-agnostic output
    colour-transform matrix (see root cause #4). Verified matching config A.
-3. Revisit the full-damage workaround once partial damage is correct.
-4. **Verify HDR10 end-to-end on config B** — the headline goal ("Why Vulkan")
-   has no progress-log entry confirming it: 10-bit output, HDR metadata,
-   PQ/tone mapping on the real DP-1 HDR10 monitor. SDR parity is verified;
-   HDR itself is not. Arguably the next big item.
+3. ~~Revisit the full-damage workaround once partial damage is correct.~~ **DONE
+   (scenefx `4d3711e`, 2026-07-14).** The vk path was assumed to render
+   full-damage and skipped the GLES blur damage compensation; it does not — a
+   live blur node samples the two-pass blend image, which retains previous
+   frames' content where the current frame has no damage, so it could blur its
+   own stale content back into itself. Frame damage is now expanded by each
+   live blur node's padded sample region when the node will re-render.
+4. **HDR10 on config B — in progress, not yet declared verified end-to-end.**
+   Real work has landed since this was last "no progress-log entry": PQ decode
+   clamped to its valid codeword range to stop NaN propagation on extreme
+   un-premultiplied edges (scenefx `545681d`), luminance-neutral compositing
+   for PQ-tagged buffers so composited HDR10 no longer reads 38% brighter than
+   direct scanout (scenefx `dfcfe43`), and HDR-safe (multiplicative, black-pinned)
+   blur brightness/contrast (scenefx `964fb07`, `0dc168f`). This is real,
+   verified-in-isolation progress on specific correctness bugs, not a
+   confirmed "10-bit output + HDR metadata + PQ tone mapping all correct on
+   the real DP-1 HDR10 monitor" sign-off — that end-to-end verification still
+   hasn't happened. Still the next big item, just further along than it looks.
    (The old item here — border lower-to-bottom workaround — was already
    resolved and reverted; see root cause #3.)
 
@@ -392,3 +414,46 @@ Approved items 1-5, quality/perf-first (GLES parity non-goal):
   shift at saturation > 1). Deliberate visual divergence from GLES.
 - Also this date: teardown assert fixed in asteroidz (`3db80ef`) — the
   ext-image-copy-capture new_session listener was never removed.
+
+### Multi-threaded command recording — investigated and closed, again (2026-07-17)
+Question: should fx_vk record command buffers on worker threads (Vulkan is
+explicitly designed for this — per-thread command pools, single-thread
+submit)? Re-opened because "Vulkan can do it" is true and the earlier ruling
+undersold *why* that doesn't mean it's worth doing here.
+
+- **wlroots itself has zero threading anywhere** — no `pthread_create`,
+  `thrd_create`, or mutexes in the whole tree (core, backend, all three
+  renderers), confirmed by direct grep against current upstream git. Not a
+  version gap: no GitLab issue/MR/roadmap item about multi-threading the
+  render loop or command recording was found anywhere in the wlroots project
+  (checked via web research). Not a stated design principle either — it's an
+  emergent consequence of every core structure (`wlr_output`, `wlr_buffer`,
+  `wlr_scene`) assuming unsynchronized single-threaded access. Precedent:
+  KWin's own developers flag this as an *unsolved* problem they want but
+  haven't built, not something anyone has shipped.
+- **Measured it instead of assuming.** Added temporary profiling
+  (`ASTEROIDZ_VK_PROFILE=1`, since reverted) timing from
+  `fx_vulkan_begin_render_pass` to right before `vkQueueSubmit2KHR` — i.e.
+  actual CPU-side recording cost, excluding the async/fence-based submit.
+  Headless, full effects (blur+shadow+rounded corners), against
+  `LD_LIBRARY_PATH`-loaded local builds so the live session was never
+  touched:
+  - 4 windows, tiled, 4K: avg 87-181us, max 110-218us.
+  - 12 windows, scroller, 4K: avg 127-132us, max 147-286us (barely moved
+    despite 3x the windows — cost isn't scene-complexity-bound here).
+  - Against a 60Hz budget (16,667us) that's under 1.1%; against the real
+    monitor's 144Hz budget (6,944us), still only ~2-4% at the high end.
+- **Conclusion unchanged, now with receipts:** frames genuinely aren't
+  CPU-record-bound on this workload. Multi-threading would shave low-single-
+  digit microseconds off a multi-millisecond budget, in exchange for
+  building and maintaining an unsupported-by-upstream locking layer against
+  wlroots' entire object model. Not worth it. Closing this for real this
+  time — re-open only if a profile on a *meaningfully* heavier scene (many
+  more live effect nodes, higher resolution/refresh) ever shows recording
+  time actually competing for frame budget.
+- **Side effect of this audit:** discovered this doc had gone stale relative
+  to actual progress — see the wlroots-version-notes update above (config B
+  no longer needs wlroots 0.21, confirmed via the live session already
+  running it against 0.20.2) and TODO items 3-4 above (damage-tracking fix
+  landed `4d3711e`; HDR10 correctness work landed `545681d`/`dfcfe43`/
+  `964fb07`/`0dc168f`, though not yet declared end-to-end verified).
