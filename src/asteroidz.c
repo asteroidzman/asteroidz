@@ -409,6 +409,9 @@ typedef struct {
 					  * clearing unconditionally would stomp viewporter source
 					  * boxes of normal clients, e.g. video players) */
 	float crop_l, crop_t, crop_w, crop_h;
+	uint32_t bw; /* client's actual border width, for content-radius inset --
+				  * set by buffer_set_effect(), appended at the end so it
+				  * doesn't shift existing positional-initializer call sites */
 } BufferData;
 
 struct Client {
