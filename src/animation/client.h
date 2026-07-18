@@ -381,6 +381,7 @@ void buffer_set_effect(Client *c, BufferData data) {
 
 static void client_draw_one_shadow(Client *c, struct wlr_scene_shadow *shadow,
 								   struct wlr_scene_blur *blur_backdrop,
+								   float blur_edge_sigma,
 								   int32_t size, int32_t pos_x, int32_t pos_y,
 								   enum corner_location corner_location,
 								   bool hit_no_border) {
@@ -483,14 +484,18 @@ static void client_draw_one_shadow(Client *c, struct wlr_scene_shadow *shadow,
 		if (blur_backdrop->width != blur_width ||
 			blur_backdrop->height != blur_height)
 			wlr_scene_blur_set_size(blur_backdrop, blur_width, blur_height);
-		/* the shadow gradient above this fades to ~0 alpha well before this
-		 * node's own edge, so a plain (small, near-square-looking) corner
-		 * radius here is never actually visible as a hard corner -- match
-		 * the window's own radius for consistency, nothing more is needed */
+		/* edge_softness makes the blur's own visibility fade via the same
+		 * analytic falloff as the shadow tint (same box, same sigma), so
+		 * the two blend into one continuous halo instead of the blur
+		 * cutting off as an obviously rectangular patch. `corners` becomes
+		 * that falloff's own corner radii (not a hard SDF radius) once
+		 * edge_softness is set -- still just the window's own radius. */
 		struct fx_corner_radii blur_radii =
 			corner_radii_from_location(config.border_radius, corner_location);
 		if (!fx_corner_radii_eq(blur_backdrop->corners, blur_radii))
 			wlr_scene_blur_set_corner_radii(blur_backdrop, blur_radii);
+		if (blur_backdrop->edge_softness != blur_edge_sigma)
+			wlr_scene_blur_set_edge_softness(blur_backdrop, blur_edge_sigma);
 	}
 }
 
@@ -558,9 +563,9 @@ void client_draw_shadow(Client *c) {
 	 * compact version so it doesn't spill across gaps onto neighbours */
 	float state_scale = c->isfloating ? 1.0f : config.shadows_tiled_scale;
 
-	wlr_scene_shadow_set_blur_sigma(c->shadow,
-									config.shadows_blur * state_scale);
-	client_draw_one_shadow(c, c->shadow, c->shadow_blur,
+	float shadow_blur_sigma = config.shadows_blur * state_scale;
+	wlr_scene_shadow_set_blur_sigma(c->shadow, shadow_blur_sigma);
+	client_draw_one_shadow(c, c->shadow, c->shadow_blur, shadow_blur_sigma,
 						   (int32_t)(config.shadows_size * state_scale),
 						   (int32_t)(config.shadows_position_x * state_scale),
 						   (int32_t)(config.shadows_position_y * state_scale),
@@ -569,7 +574,7 @@ void client_draw_shadow(Client *c) {
 		wlr_scene_shadow_set_blur_sigma(
 			c->contact_shadow, config.shadows_contact_blur * state_scale);
 		client_draw_one_shadow(
-			c, c->contact_shadow, NULL,
+			c, c->contact_shadow, NULL, 0.0f,
 			(int32_t)ASTEROIDZ_MAX(config.shadows_contact_size * state_scale, 2),
 			(int32_t)(config.shadows_contact_position_x * state_scale),
 			(int32_t)(config.shadows_contact_position_y * state_scale),
