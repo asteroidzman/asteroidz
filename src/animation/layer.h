@@ -8,6 +8,24 @@ void layer_actual_size(LayerSurface *l, int32_t *width, int32_t *height) {
 		get_layer_target_geometry(l, &box);
 		*width = box.width;
 		*height = box.height;
+		/* get_layer_target_geometry sizes off desired_width/height -- the
+		 * layer-shell PROTOCOL's negotiated size, only updated by a fresh
+		 * client set_size + compositor configure round-trip (same class of
+		 * bug as layer_update_blur's actual_width/height, fixed
+		 * separately). A content-fit popup that changes its own content
+		 * size in place (e.g. switching tabs to a taller/shorter panel)
+		 * just commits a differently sized buffer without renegotiating,
+		 * so this stays stale -- the shadow (and shield_when_capture, the
+		 * other caller) then gets drawn around empty space instead of the
+		 * real visible content. Prefer the real committed buffer size when
+		 * there is one. */
+		struct wlr_surface *surface =
+			l->layer_surface ? l->layer_surface->surface : NULL;
+		if (surface && surface->current.width > 0 &&
+			surface->current.height > 0) {
+			*width = surface->current.width;
+			*height = surface->current.height;
+		}
 	}
 }
 
