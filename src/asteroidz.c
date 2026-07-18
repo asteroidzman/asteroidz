@@ -3602,11 +3602,22 @@ void layer_update_blur(LayerSurface *l) {
 	if (l->blur_node->should_only_blur_bottom_layer)
 		wlr_scene_blur_set_should_only_blur_bottom_layer(l->blur_node,
 														 false);
-	if (l->blur_node->width != (int)layer_surface->current.actual_width ||
-		l->blur_node->height != (int)layer_surface->current.actual_height) {
+	/* actual_width/height is the layer-shell PROTOCOL's server-assigned size
+	 * (only updated by an explicit compositor configure — see
+	 * wlr_layer_surface_v1_configure in wlroots) — NOT the client's real
+	 * buffer size. A content-sized/auto popup (e.g. gtk-layer-shell's
+	 * WbPop-style popups) picks its own size and just commits a differently
+	 * sized buffer without ever getting a fresh configure, so actual_width/
+	 * height never changes and this comparison silently never re-triggers on
+	 * that popup shrinking/growing (surviving until the surface is
+	 * destroyed). surface->current.width/height is the real committed
+	 * buffer size in surface-local coordinates and updates on every commit
+	 * regardless of configure — use that instead. */
+	if (l->blur_node->width != layer_surface->surface->current.width ||
+		l->blur_node->height != layer_surface->surface->current.height) {
 		wlr_scene_blur_set_size(l->blur_node,
-								layer_surface->current.actual_width,
-								layer_surface->current.actual_height);
+								layer_surface->surface->current.width,
+								layer_surface->surface->current.height);
 		/* the surface resized while mapped: the once-only transparency mask
 		 * below is now stale (sized for the old extent), so re-snapshot it —
 		 * otherwise blur is clipped/overhangs until the surface is destroyed
