@@ -3,6 +3,14 @@
 Living record of the Vulkan effort so we can switch renderers at will and never
 re-litigate what we already learned. Keep this updated as decisions change.
 
+**GLES (config A) is the primary, everyday driver. Vulkan (config B) is
+experimental.** Config B has reached near-parity for what asteroidz actually
+renders (see the table below) and is stable enough to run as a daily session,
+but it's still the WIP path — GLES is where correctness/stability bugs get
+triaged first, and Vulkan-only issues (Electron blank windows, HDR10 not yet
+declared verified end-to-end) are accepted trade-offs, not blockers for using
+GLES.
+
 ## Why Vulkan
 Goal: run asteroidz on a Vulkan renderer for HDR10 output, native explicit
 (timeline) sync, compute-shader blur, a cleaner color pipeline — parity with
@@ -92,6 +100,31 @@ Switching:
   `fx_vk`** (`fx_vk_render_pass_add_rounded_rect`/`_grad`/`add_texture`); shadow,
   blur, real gradients and the SDR color path are still no-ops.
   A full-damage workaround forces a full repaint on the Vulkan path.
+
+## Vulkan has gone as far as it can go on the current wlroots
+`fx_vk` is a **vendored, renamed fork** of wlroots' `render/vulkan/` (see "Key
+renderer facts" below), not a live dependency on upstream wlroots — it stopped
+tracking wlroots' own Vulkan renderer the moment it was copied in and
+scenefx-ified. That has two consequences worth being explicit about:
+
+- **No wlroots version upgrade fixes anything remaining here.** The two open
+  gaps (Electron/native-Wayland clients rendering blank via a dmabuf modifier
+  `fx_vulkan_import_dmabuf` can't import, and HDR10 not yet declared verified
+  end-to-end) are bugs/gaps in the vendored-and-since-modified fx_vk code
+  itself, not upstream wlroots bugs a newer release would carry a fix for.
+  Any further correctness work has to happen in scenefx directly.
+- **The multi-threading question is closed for the same reason** (see the
+  2026-07-17 investigation in the progress log): wlroots upstream has zero
+  threading anywhere in its codebase, no roadmap item for it, and nothing
+  about "updating wlroots" would change that — there's no version to update
+  *to*. Combined with the profiling data (CPU-side recording is nowhere near
+  frame-budget-bound even under load), this is a closed line of inquiry, not
+  a pending one.
+
+Net: Vulkan's remaining headroom is bounded by scenefx's own fx_vk
+maintenance from here on, not by anything a wlroots bump would unlock. This
+is consistent with config B being the experimental path (see the top of this
+doc) — GLES stays the daily driver.
 
 ## wlroots version notes
 - Config A/C: wlroots **0.20**. Config B (`fx_vk`) was originally re-vendored from
@@ -457,3 +490,71 @@ undersold *why* that doesn't mean it's worth doing here.
   running it against 0.20.2) and TODO items 3-4 above (damage-tracking fix
   landed `4d3711e`; HDR10 correctness work landed `545681d`/`dfcfe43`/
   `964fb07`/`0dc168f`, though not yet declared end-to-end verified).
+
+### GLES parity port (scenefx `06efd65`/`d2915fd`, 2026-07-17, pkgrel 22)
+Checked whether GLES needed the same fixes that had landed on `fx_vk` over
+the preceding days, since GLES is the daily driver and had quietly fallen
+behind.
+
+- **PQ-decode NaN clamp (`545681d`) — investigated, does NOT apply to
+  GLES.** Confirmed three ways: no `pq_color_to_linear`-equivalent anywhere
+  in GLES's texture shaders; no `color_encoding`/`transfer_function`/
+  `WLR_COLOR_TRANSFER` reference anywhere in GLES's renderer C code; the
+  shared `wlr_render_texture_options.transfer_function`/`.primaries` fields
+  are only ever read in `render/fx_renderer/vulkan/pass.c`. GLES applies its
+  whole HDR transform as one fullscreen 3D-LUT pass over the
+  already-composited image, never decoding a client's PQ tag per-texture —
+  architecturally immune to this specific failure mode. **But this also
+  means GLES cannot correctly composite a real HDR10-tagged client buffer**
+  (an actual HDR video/game) — only apply a boosted-brightness/BT.2020+PQ
+  signal to standard SDR-authored desktop content. A real, structural
+  GLES/Vulkan capability gap, not a bug — this is the concrete reason the
+  Vulkan effort exists at all, made precise instead of hand-wavy.
+- **Blur brightness/contrast/noise HDR-safety (`964fb07`/`0dc168f`) — DID
+  apply, ported.** `blur_effects.frag` still had the pre-fix affine
+  `brightnessMatrix()`/`contrastMatrix()` (constant offset that lifts/
+  crushes black — invisible in 8-bit SDR, visible as a glow/dark band under
+  PQ). GLES doesn't decode per-client PQ, but its *output* still goes
+  through PQ encoding via the LUT when HDR is active, so the same bug
+  applied to GLES's own blur math. Replaced with the same power-law
+  contrast / pure-gain brightness / ratio-scaled noise form.
+- **Oklab saturation (`4df3ff6`) — ported**, wrapped in a gamma<->linear
+  round-trip Vulkan's version doesn't need (GLES's blur buffer is a plain
+  8-bit gamma-encoded RGBA — `fx_framebuffer.c` — unlike Vulkan's linear 16F
+  working buffer).
+- **fwidth()-scaled corner AA (`744fade`) — ported** to GLES's shared
+  `corner_alpha.frag` (used by rounded rects/textures/gradients and the
+  box-shadow clip cutout) in one place, vs. five separate Vulkan shader
+  files, since GLES already shares this via runtime string concatenation.
+- **Tetrahedral 3D-LUT + IGN dither (`744fade`) — ported** to
+  `color_transform.frag`, the highest-risk change (the universal per-frame
+  output-compositing pass). GLSL ES 1.00 (what these shaders compile as —
+  no `#version` pragma anywhere) has no `texelFetch`/`textureSize`, so this
+  derives the LUT lattice size algebraically from the existing `lut_offset`
+  uniform (`n = 0.5/lut_offset`) and does unfiltered lattice reads via
+  NEAREST-filtered `texture3D()` at exact texel-center coordinates instead —
+  no new uniforms, no C-side struct changes beyond flipping the LUT
+  sampler's filter mode from LINEAR to NEAREST (`fx_pass.c`).
+- **Caused a real incident:** the first attempt put
+  `#extension GL_OES_standard_derivatives : enable` inside `corner_alpha.frag`
+  itself. Since that file gets concatenated *after* other shader text at
+  several call sites (quad_round, texture_round, gradient_round,
+  box_shadow), the directive landed mid-shader — GLSL rejects that
+  outright ("#extension directive is not allowed in the middle of a
+  shader"), every fragment shader failed to compile, the FX renderer failed
+  to initialize, and the live compositor **crashed on restart**, dropping
+  to the GDM greeter. Root cause: headless testing can't catch this class
+  of bug particularly well, and the change was installed live without a
+  live-restart safety net. Fixed (`d2915fd`) by having `compile_shader()`
+  unconditionally prepend the extension line as its own leading string via
+  `glShaderSource`'s multi-string support (GLSL treats it as plain
+  concatenation) for every fragment shader — harmless for shaders that
+  don't use it, and immune to concatenation-order issues by construction.
+  Verified via a fresh headless run (zero shader/link errors) before
+  reinstalling, then confirmed live: compositor starts cleanly, HDR still
+  negotiates on the real DP-1 monitor, blur/corner/shadow rendering visibly
+  correct (soft blended tones under a translucent window, not flat/crushed
+  black).
+- Verified overall: headless render-matrix harness (GLES2, effects on, SDR
+  + fake-HDR two-pass) clean both before and after the incident/fix; live
+  HDR10 negotiation and visual blur/AA output confirmed after reinstall.
