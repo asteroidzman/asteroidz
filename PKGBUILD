@@ -2,7 +2,7 @@
 pkgname=asteroidz
 pkgver=0.16.7
 pkgrel=1
-pkgdesc='wlroots compositor with a Vulkan renderer, HDR10, and dwm-style tags'
+pkgdesc='wlroots compositor with HDR10 and dwm-style tags (GLES2 daily driver, experimental Vulkan renderer)'
 arch=('x86_64')
 url='https://github.com/asteroidzman/asteroidz'
 license=('custom')
@@ -17,8 +17,9 @@ makedepends=('meson' 'ninja' 'wayland-protocols' 'vulkan-headers' 'glslang' 'git
 optdepends=(
   'xorg-xwayland: run X11 applications under XWayland'
 )
-# Default session runs the Vulkan renderer; an "Asteroidz (GLES fallback)"
-# session (WLR_RENDERER=gles2) is also installed. One binary, both renderers.
+# Default session runs the GLES2 renderer (the daily driver); an
+# "Asteroidz (Vulkan, experimental)" session (WLR_RENDERER=vulkan) is also
+# installed, pending future wlroots enhancements. One binary, both renderers.
 source=("git+$url.git#tag=$pkgver")
 sha256sums=('SKIP')
 

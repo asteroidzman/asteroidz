@@ -74,12 +74,12 @@ stdenv.mkDerivation {
     ];
 
   passthru = {
-    providedSessions = ["asteroidz" "asteroidz-gles"];
+    providedSessions = ["asteroidz" "asteroidz-vulkan"];
   };
 
   meta = {
     mainProgram = "asteroidz";
-    description = "wlroots compositor with a Vulkan renderer, HDR10, and dwm-style tags";
+    description = "wlroots compositor with HDR10 and dwm-style tags (GLES2 daily driver, experimental Vulkan renderer)";
     homepage = "https://github.com/asteroidzman/asteroidz";
     license = lib.licenses.gpl3Plus;
     maintainers = [];
