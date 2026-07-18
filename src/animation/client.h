@@ -305,7 +305,7 @@ void scene_buffer_apply_effect(struct wlr_scene_buffer *buffer, int32_t sx,
 
 	wlr_scene_buffer_set_corner_radii(
 		buffer, corner_radii_from_location(
-					GEZERO(config.border_radius - (int32_t)config.borderpx),
+					GEZERO(config.border_radius - (int32_t)buffer_data->bw),
 					buffer_data->corner_location));
 }
 
@@ -344,7 +344,7 @@ void scene_buffer_apply_overview_effect(struct wlr_scene_buffer *buffer,
 	 * concentric with the ring (matches the border's interior cutout) */
 	wlr_scene_buffer_set_corner_radii(
 		buffer, corner_radii_from_location(
-					GEZERO(config.border_radius - (int32_t)config.borderpx),
+					GEZERO(config.border_radius - (int32_t)buffer_data->bw),
 					buffer_data->corner_location));
 }
 
@@ -352,6 +352,8 @@ void buffer_set_effect(Client *c, BufferData data) {
 
 	if (!c || c->iskilling)
 		return;
+
+	data.bw = c->bw;
 
 	if (c->animation.tagouting || c->animation.tagouted ||
 		c->animation.tagining) {
