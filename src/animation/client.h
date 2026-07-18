@@ -544,13 +544,25 @@ void client_draw_shadow(Client *c) {
 		c->shadow_blur = wlr_scene_blur_create(c->scene, 0, 0);
 		if (c->shadow_blur) {
 			wlr_scene_node_place_below(&c->shadow_blur->node, &c->shadow->node);
-			wlr_scene_blur_set_alpha(c->shadow_blur, 1.0f);
 		}
 	}
 	if (c->shadow_blur) {
-		if (c->shadow_blur->strength != config.shadows_blur_background_strength)
-			wlr_scene_blur_set_strength(c->shadow_blur,
-										config.shadows_blur_background_strength);
+		/* shadows_blur_background_strength drives ALPHA, not scenefx's own
+		 * "strength" property, even though it's the subtlety knob either
+		 * way: fx_render_pass_add_blur only takes the cheap cached-buffer
+		 * path when blur_strength == 1.0 exactly (fx_pass.c's has_strength
+		 * check) -- anything less forces a full per-frame re-blur even
+		 * with should_only_blur_bottom_layer on. alpha is a separate,
+		 * free blend applied at the final draw, so it never defeats the
+		 * cache. Verified headlessly: strength=0.17/alpha=1.0 vs.
+		 * strength=1.0/alpha=0.17 are visually indistinguishable for this
+		 * soft-halo use case (no sharp edges to ghost, unlike the API's
+		 * general "alpha alone can look off" caveat). Leave scenefx's own
+		 * strength at its 1.0 default (set once at creation, untouched).
+		 */
+		if (c->shadow_blur->alpha != config.shadows_blur_background_strength)
+			wlr_scene_blur_set_alpha(c->shadow_blur,
+									 config.shadows_blur_background_strength);
 		/* Cached bottom-layer path (cheap: reuses the monitor's shared
 		 * blurred-wallpaper snapshot instead of re-blurring every frame) is
 		 * correct only when the shadow's actual backdrop IS just the
