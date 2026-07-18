@@ -428,6 +428,12 @@ struct Client {
 	struct wlr_scene_rect *splitindicator[4];
 	struct wlr_scene_shadow *shadow;
 	struct wlr_scene_shadow *contact_shadow;
+	/* blurs the backdrop within the ambient shadow's own footprint (opt-in,
+	 * shadows_blur_background), so the shadow reads as soft even over a
+	 * detailed wallpaper instead of just tinting its sharp detail darker.
+	 * Created/destroyed on demand like blur_node, not just enabled/disabled
+	 * like shadow/contact_shadow -- it has the same real GPU cost. */
+	struct wlr_scene_blur *shadow_blur;
 	struct wlr_scene_blur *blur_node;
 	struct wlr_scene_tree *scene_surface;
 	struct wlr_scene_tree *overview_scene_surface;
@@ -5796,6 +5802,7 @@ void init_client_properties(Client *c) {
 	c->ov_snap_buf = NULL;
 	c->ov_clip_active = false;
 	c->blur_node = NULL;
+	c->shadow_blur = NULL;
 	c->overview_scene_surface = NULL;
 	c->drop_direction = UNDIR;
 	c->enable_drop_area_draw = false;
