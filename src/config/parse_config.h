@@ -360,6 +360,13 @@ typedef struct {
 	int32_t shadows_position_x;
 	int32_t shadows_position_y;
 	float shadowscolor[4];
+	/* blur the wallpaper/background within the ambient shadow's own
+	 * footprint (an extra wlr_scene_blur node behind it), instead of just
+	 * alpha-tinting whatever's there. A plain tint leaves fine wallpaper
+	 * detail sharp underneath -- fine over a smooth desktop background, but
+	 * reads as a dirty smudge over a busy/detailed one. Off by default:
+	 * real extra GPU cost (one more blur pass per shadowed window). */
+	int32_t shadows_blur_background;
 	/* macOS-style second shadow layer: a tight dark "contact" shadow on
 	 * top of the large soft ambient one, and dimming when unfocused */
 	int32_t shadows_contact;
@@ -1644,6 +1651,8 @@ bool parse_option(Config *config, char *key, char *value) {
 		config->shadows_size = atoi(value);
 	} else if (strcmp(key, "shadows_blur") == 0) {
 		config->shadows_blur = atof(value);
+	} else if (strcmp(key, "shadows_blur_background") == 0) {
+		config->shadows_blur_background = atoi(value);
 	} else if (strcmp(key, "shadows_contact") == 0) {
 		config->shadows_contact = atoi(value);
 	} else if (strcmp(key, "shadows_contact_size") == 0) {
@@ -3350,6 +3359,7 @@ static const struct {
 	{"effects/shadow/only-floating", "shadow_only_floating"},
 	{"effects/shadow/size", "shadows_size"},
 	{"effects/shadow/blur", "shadows_blur"},
+	{"effects/shadow/blur-background", "shadows_blur_background"},
 	{"effects/shadow/position/x", "shadows_position_x"},
 	{"effects/shadow/position/y", "shadows_position_y"},
 	{"effects/shadow/color", "shadowscolor"},
@@ -4429,6 +4439,7 @@ void set_value_default() {
 	config.shadows_blur = 24.0f;
 	config.shadows_position_x = 0;
 	config.shadows_position_y = 10;
+	config.shadows_blur_background = 0;
 	config.shadows_contact = 1;
 	config.shadows_contact_size = 8;
 	config.shadows_contact_blur = 9.0f;

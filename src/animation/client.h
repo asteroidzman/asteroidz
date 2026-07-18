@@ -380,6 +380,7 @@ void buffer_set_effect(Client *c, BufferData data) {
 }
 
 static void client_draw_one_shadow(Client *c, struct wlr_scene_shadow *shadow,
+								   struct wlr_scene_blur *blur_backdrop,
 								   int32_t size, int32_t pos_x, int32_t pos_y,
 								   enum corner_location corner_location,
 								   bool hit_no_border) {
@@ -468,6 +469,29 @@ static void client_draw_one_shadow(Client *c, struct wlr_scene_shadow *shadow,
 	clipped_region.area.y = clipped_region.area.y - top_offset;
 
 	wlr_scene_shadow_set_clipped_region(shadow, clipped_region);
+
+	if (blur_backdrop) {
+		/* same box as the shadow itself: the blurred backdrop should reach
+		 * exactly as far as the tint drawn over it, no further */
+		wlr_scene_node_set_position(&blur_backdrop->node,
+									shadow_box.x + left_offset,
+									shadow_box.y + top_offset);
+		int32_t blur_width =
+			GEZERO(shadow_box.width - left_offset - right_offset);
+		int32_t blur_height =
+			GEZERO(shadow_box.height - top_offset - bottom_offset);
+		if (blur_backdrop->width != blur_width ||
+			blur_backdrop->height != blur_height)
+			wlr_scene_blur_set_size(blur_backdrop, blur_width, blur_height);
+		/* the shadow gradient above this fades to ~0 alpha well before this
+		 * node's own edge, so a plain (small, near-square-looking) corner
+		 * radius here is never actually visible as a hard corner -- match
+		 * the window's own radius for consistency, nothing more is needed */
+		struct fx_corner_radii blur_radii =
+			corner_radii_from_location(config.border_radius, corner_location);
+		if (!fx_corner_radii_eq(blur_backdrop->corners, blur_radii))
+			wlr_scene_blur_set_corner_radii(blur_backdrop, blur_radii);
+	}
 }
 
 void client_draw_shadow(Client *c) {
@@ -475,12 +499,18 @@ void client_draw_shadow(Client *c) {
 	if (c->iskilling || !client_surface(c)->mapped || c->isnoshadow)
 		return;
 
-	if (!config.shadows || c->isfullscreen ||
-		(!c->isfloating && config.shadow_only_floating)) {
+	bool active = config.shadows && !c->isfullscreen &&
+				  (c->isfloating || !config.shadow_only_floating);
+
+	if (!active) {
 		if (c->shadow->node.enabled)
 			wlr_scene_node_set_enabled(&c->shadow->node, false);
 		if (c->contact_shadow && c->contact_shadow->node.enabled)
 			wlr_scene_node_set_enabled(&c->contact_shadow->node, false);
+		if (c->shadow_blur) {
+			wlr_scene_node_destroy(&c->shadow_blur->node);
+			c->shadow_blur = NULL;
+		}
 		return;
 	} else {
 		if (c->scene_surface->node.enabled && !c->shadow->node.enabled)
@@ -489,6 +519,32 @@ void client_draw_shadow(Client *c) {
 			c->contact_shadow->node.enabled != (bool)config.shadows_contact)
 			wlr_scene_node_set_enabled(&c->contact_shadow->node,
 									   config.shadows_contact);
+	}
+
+	/* shadow_blur has a real GPU cost (an extra blur pass in the shadow's
+	 * footprint), so it's created/destroyed on demand like blur_node --
+	 * not just enabled/disabled like the shadow nodes above */
+	if (!config.shadows_blur_background) {
+		if (c->shadow_blur) {
+			wlr_scene_node_destroy(&c->shadow_blur->node);
+			c->shadow_blur = NULL;
+		}
+	} else if (!c->shadow_blur) {
+		c->shadow_blur = wlr_scene_blur_create(c->scene, 0, 0);
+		if (c->shadow_blur) {
+			wlr_scene_node_place_below(&c->shadow_blur->node, &c->shadow->node);
+			wlr_scene_blur_set_strength(c->shadow_blur, 1.0f);
+			wlr_scene_blur_set_alpha(c->shadow_blur, 1.0f);
+			/* NOT should_only_blur_bottom_layer(true): that path samples a
+			 * cached bottom-layer snapshot that (at least in headless
+			 * testing with no other blur node active anywhere) came back
+			 * fully black -- looked like an uninitialized/never-populated
+			 * cache rather than the wallpaper. Live sampling has a real
+			 * per-frame cost, but this whole feature is already opt-in and
+			 * off by default; correctness first. */
+			wlr_scene_blur_set_should_only_blur_bottom_layer(c->shadow_blur,
+															 false);
+		}
 	}
 
 	bool hit_no_border = check_hit_no_border(c);
@@ -504,7 +560,7 @@ void client_draw_shadow(Client *c) {
 
 	wlr_scene_shadow_set_blur_sigma(c->shadow,
 									config.shadows_blur * state_scale);
-	client_draw_one_shadow(c, c->shadow,
+	client_draw_one_shadow(c, c->shadow, c->shadow_blur,
 						   (int32_t)(config.shadows_size * state_scale),
 						   (int32_t)(config.shadows_position_x * state_scale),
 						   (int32_t)(config.shadows_position_y * state_scale),
@@ -513,7 +569,7 @@ void client_draw_shadow(Client *c) {
 		wlr_scene_shadow_set_blur_sigma(
 			c->contact_shadow, config.shadows_contact_blur * state_scale);
 		client_draw_one_shadow(
-			c, c->contact_shadow,
+			c, c->contact_shadow, NULL,
 			(int32_t)ASTEROIDZ_MAX(config.shadows_contact_size * state_scale, 2),
 			(int32_t)(config.shadows_contact_position_x * state_scale),
 			(int32_t)(config.shadows_contact_position_y * state_scale),
