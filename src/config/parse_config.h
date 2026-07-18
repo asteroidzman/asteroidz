@@ -4421,10 +4421,14 @@ void set_value_default() {
 	config.shadows = 0;
 	config.shadow_only_floating = 1;
 	config.layer_shadows = 0;
-	config.shadows_size = 10;
-	config.shadows_blur = 15.0f;
+	/* macOS-style "raised" shadow: wide, soft, and offset downward (a light
+	 * source from directly above) rather than a symmetric halo. size is
+	 * kept >= ~2x blur_sigma (blur * 0.5) so the gaussian tail fully decays
+	 * before the shadow quad's edge instead of getting hard-clipped there. */
+	config.shadows_size = 24;
+	config.shadows_blur = 24.0f;
 	config.shadows_position_x = 0;
-	config.shadows_position_y = 0;
+	config.shadows_position_y = 10;
 	config.shadows_contact = 1;
 	config.shadows_contact_size = 8;
 	config.shadows_contact_blur = 9.0f;
@@ -4449,7 +4453,9 @@ void set_value_default() {
 	config.shadowscolor[0] = 0.0f;
 	config.shadowscolor[1] = 0.0f;
 	config.shadowscolor[2] = 0.0f;
-	config.shadowscolor[3] = 1.0f;
+	/* soft ambient layer: a near-opaque peak alpha reads as a hard drop
+	 * shadow once spread this wide; macOS's is much lighter */
+	config.shadowscolor[3] = 0.4f;
 
 	config.animation_curve_spring = 0;
 	config.spring_damping = 0.75;

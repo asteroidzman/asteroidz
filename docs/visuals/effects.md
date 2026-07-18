@@ -32,10 +32,10 @@ Drop shadows help distinguish floating windows from the background.
 | `shadows` | `0` | Enable shadows. |
 | `layer_shadows` | `0` | Enable shadows for layer surfaces. |
 | `shadow_only_floating` | `1` | Only draw shadows for floating windows (saves performance). |
-| `shadows_size` | `10` | Size of the shadow. |
-| `shadows_blur` | `15` | Shadow blur amount. |
+| `shadows_size` | `24` | Size of the shadow. |
+| `shadows_blur` | `24` | Shadow blur amount. |
 | `shadows_position_x` | `0` | Shadow X offset. |
-| `shadows_position_y` | `0` | Shadow Y offset. |
+| `shadows_position_y` | `10` | Shadow Y offset. The default's downward offset (light source from directly above) gives floating windows a macOS-style "raised" look instead of a symmetric halo. |
 | `shadows_contact` | `1` | Enable the macOS-style tight "contact" shadow layered above the ambient one |
 | `shadows_contact_size` | `8` | Contact shadow spread in px |
 | `shadows_contact_blur` | `9` | Contact shadow blur sigma |
@@ -43,7 +43,7 @@ Drop shadows help distinguish floating windows from the background.
 | `shadows_contact_position_y` | `2` | Contact shadow Y offset |
 | `shadowscolor_contact` | `0x0000004d` | Contact shadow color (RGBA hex) |
 | `shadows_unfocused_scale` | `0.45` | Shadow opacity multiplier for unfocused windows (macOS-style dimming) |
-| `shadowscolor` | `0x000000ff` | Color of the shadow. |
+| `shadowscolor` | `0x00000066` | Color of the shadow. Kept well below opaque: a near-opaque peak alpha reads as a hard drop shadow once spread this wide. |
 
 ```kdl
 effects {
