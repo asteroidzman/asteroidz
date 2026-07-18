@@ -538,7 +538,6 @@ void client_draw_shadow(Client *c) {
 		c->shadow_blur = wlr_scene_blur_create(c->scene, 0, 0);
 		if (c->shadow_blur) {
 			wlr_scene_node_place_below(&c->shadow_blur->node, &c->shadow->node);
-			wlr_scene_blur_set_strength(c->shadow_blur, 1.0f);
 			wlr_scene_blur_set_alpha(c->shadow_blur, 1.0f);
 			/* NOT should_only_blur_bottom_layer(true): that path samples a
 			 * cached bottom-layer snapshot that (at least in headless
@@ -551,6 +550,10 @@ void client_draw_shadow(Client *c) {
 															 false);
 		}
 	}
+	if (c->shadow_blur &&
+		c->shadow_blur->strength != config.shadows_blur_background_strength)
+		wlr_scene_blur_set_strength(c->shadow_blur,
+									config.shadows_blur_background_strength);
 
 	bool hit_no_border = check_hit_no_border(c);
 	enum corner_location current_corner_location =

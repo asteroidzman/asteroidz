@@ -367,6 +367,10 @@ typedef struct {
 	 * reads as a dirty smudge over a busy/detailed one. Off by default:
 	 * real extra GPU cost (one more blur pass per shadowed window). */
 	int32_t shadows_blur_background;
+	/* 0..1: how strongly shadows_blur_background blurs, independent of the
+	 * shared window-blur radius/passes -- lower reads as a lighter, more
+	 * "blended" halo instead of an obviously blurred patch. */
+	float shadows_blur_background_strength;
 	/* macOS-style second shadow layer: a tight dark "contact" shadow on
 	 * top of the large soft ambient one, and dimming when unfocused */
 	int32_t shadows_contact;
@@ -1653,6 +1657,9 @@ bool parse_option(Config *config, char *key, char *value) {
 		config->shadows_blur = atof(value);
 	} else if (strcmp(key, "shadows_blur_background") == 0) {
 		config->shadows_blur_background = atoi(value);
+	} else if (strcmp(key, "shadows_blur_background_strength") == 0) {
+		config->shadows_blur_background_strength =
+			CLAMP_FLOAT(atof(value), 0.0f, 1.0f);
 	} else if (strcmp(key, "shadows_contact") == 0) {
 		config->shadows_contact = atoi(value);
 	} else if (strcmp(key, "shadows_contact_size") == 0) {
@@ -3360,6 +3367,7 @@ static const struct {
 	{"effects/shadow/size", "shadows_size"},
 	{"effects/shadow/blur", "shadows_blur"},
 	{"effects/shadow/blur-background", "shadows_blur_background"},
+	{"effects/shadow/blur-background-strength", "shadows_blur_background_strength"},
 	{"effects/shadow/position/x", "shadows_position_x"},
 	{"effects/shadow/position/y", "shadows_position_y"},
 	{"effects/shadow/color", "shadowscolor"},
@@ -4440,6 +4448,7 @@ void set_value_default() {
 	config.shadows_position_x = 0;
 	config.shadows_position_y = 10;
 	config.shadows_blur_background = 0;
+	config.shadows_blur_background_strength = 0.5f;
 	config.shadows_contact = 1;
 	config.shadows_contact_size = 8;
 	config.shadows_contact_blur = 9.0f;
