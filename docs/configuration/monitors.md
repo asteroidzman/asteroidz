@@ -106,6 +106,18 @@ See [XDG Portals → 10-bit / HDR Screencasting](./xdg-portals.md#10-bit--hdr-sc
 
 The built-in `screenshot_ui` (see [Keybindings](../bindings/keys.md#screenshot_ui)) doesn't go through this fallback at all — it reads the composited buffer back directly instead of via `ext-image-copy-capture`, so `hdr_capture_fallback` never applies to it either way. Since it owns the whole pixel pipeline, it tonemaps PQ down to sRGB itself (decode against `sdr_reference_luminance`, re-encode as sRGB) before writing the PNG, so screenshots come out correct without ever toggling the output's live HDR state — no flash, no retrain delay.
 
+### Gamescope HDR passthrough
+
+Gamescope (Steam's game-session compositor) can't use `wp_color_management_v1` for HDR — that protocol needs six manager features, and wlroots only implements two — so it falls back to its own `frog-color-management-v1` protocol instead, which asteroidz also implements. This is on by default and needs no configuration; disable it if you'd rather gamescope negotiate `wp_color_management_v1` directly (with reduced feature support, likely without real HDR) instead:
+
+```kdl
+misc {
+    frog-color-management 0
+}
+```
+
+Both protocols share the same rendering path: a game's declared HDR10 metadata (max content light level, max frame-average light level, mastering display luminance) is forwarded to the physical display's `HDR_OUTPUT_METADATA` when it's the sole fullscreen surface on a monitor, and used to tone-map highlights smoothly instead of clipping when composited (e.g. windowed HDR video, or a fullscreen HDR surface sharing an output with other content) rather than scanned out directly.
+
 ---
 
 ## Monitor Spec Format
