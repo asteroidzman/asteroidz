@@ -29,6 +29,7 @@ HL_ASTEROIDZ="${ASTEROIDZ:-$HL_REPO/build/asteroidz}"
 [ -x "$HL_ASTEROIDZ" ] || HL_ASTEROIDZ=/usr/bin/asteroidz
 HL_WLVPTR="$HL_REPO/contrib/wlvptr/wlvptr"
 HL_WLVKBD="$HL_REPO/contrib/wlvkbd/wlvkbd"
+HL_WLLAYER="$HL_REPO/contrib/wllayer/wllayer"
 HL_WIDTH="${HL_WIDTH:-1920}"
 HL_HEIGHT="${HL_HEIGHT:-1080}"
 
@@ -51,6 +52,7 @@ hl_start() { # hl_start [EXTRA_KDL]
 	[ -x "$HL_ASTEROIDZ" ] || { echo "hl_start: no asteroidz binary at $HL_ASTEROIDZ" >&2; exit 1; }
 	[ -x "$HL_WLVPTR" ] || { echo "hl_start: wlvptr not built -- run: cd contrib/wlvptr && make" >&2; exit 1; }
 	[ -x "$HL_WLVKBD" ] || { echo "hl_start: wlvkbd not built -- run: cd contrib/wlvkbd && make" >&2; exit 1; }
+	[ -x "$HL_WLLAYER" ] || { echo "hl_start: wllayer not built -- run: cd contrib/wllayer && make" >&2; exit 1; }
 
 	HL_CONFIG="$HL_OUTDIR/config.kdl"
 	cat > "$HL_CONFIG" <<EOF
@@ -180,6 +182,16 @@ hl_spawn_kitty() { # hl_spawn_kitty TITLE -> pid (also tracked for hl_reset/hl_s
 	# a real long-lived foreground process closes cleanly instead.
 	kitty --title "$title" -o background_opacity=1.0 -o background=#181818 \
 		sh -c "echo $title; exec sleep 300" > "$HL_OUTDIR/kitty-$title.log" 2>&1 &
+	local pid=$!
+	HL_SPAWNED_PIDS+=("$pid")
+	echo "$pid"
+}
+
+hl_spawn_wllayer() { # hl_spawn_wllayer LAYER ANCHOR EXCL_ZONE W H KB HOLD_S [RESIZE_SPEC] LOGNAME -> pid
+	local layer="$1" anchor="$2" zone="$3" w="$4" h="$5" kb="$6" hold="$7" resize="$8" logname="$9"
+	logname="${logname:-wllayer}"
+	"$HL_WLLAYER" "$layer" "$anchor" "$zone" "$w" "$h" "$kb" "$hold" $resize \
+		> "$HL_OUTDIR/$logname.log" 2>&1 &
 	local pid=$!
 	HL_SPAWNED_PIDS+=("$pid")
 	echo "$pid"
