@@ -266,8 +266,13 @@ bool link_quad_grad_round_program(struct quad_grad_round_shader *shader, int max
 
 bool link_tex_program(struct tex_shader *shader, enum fx_tex_shader_source source,
 		bool effects) {
-	GLchar frag_src_part[4096];
-	GLchar frag_src[8192];
+	// tex.frag grew past the old 4096/8192 fixed sizes once (silently
+	// truncated mid-function via snprintf, producing a "syntax error,
+	// unexpected end of file" from the GLES compiler that gave no hint
+	// it was a buffer size issue) -- sized with real headroom now, not
+	// just bumped to fit exactly.
+	GLchar frag_src_part[16384];
+	GLchar frag_src[24576];
 	snprintf(frag_src_part, sizeof(frag_src_part),
 		tex_frag_src, source, effects);
 	snprintf(frag_src, sizeof(frag_src),
