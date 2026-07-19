@@ -4528,11 +4528,27 @@ void mon_state_apply_color(Monitor *m, struct wlr_output_state *state) {
 			double max_cll = m->hdr_max_luminance;
 			double max_fall = m->hdr_max_fall;
 
+			/* real wp-color-management first, frog only as a fallback --
+			 * mirrors surface.c's own precedence (frog_surface_image_
+			 * description is a wlr_scene_set_surface_color_description_
+			 * fallback callback, only ever consulted when a surface has no
+			 * genuine wp-cm description of its own). Without this, a
+			 * fullscreen client using real wp-cm instead of frog (anything
+			 * that isn't gamescope) would never get its metadata forwarded
+			 * here despite scenefx's composited-path fix already handling
+			 * both uniformly. */
 			Client *candidate = mon_hdr_scanout_candidate(m);
+			struct wlr_surface *candidate_surface =
+				candidate ? client_surface(candidate) : NULL;
 			const struct wlr_image_description_v1_data *content_desc =
-				candidate ? frog_surface_image_description(
-								client_surface(candidate))
-						  : NULL;
+				candidate_surface
+					? wlr_surface_get_image_description_v1_data(
+						  candidate_surface)
+					: NULL;
+			if (!content_desc && candidate_surface) {
+				content_desc =
+					frog_surface_image_description(candidate_surface);
+			}
 			if (content_desc && content_desc->tf_named ==
 									 WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_ST2084_PQ) {
 				if (content_desc->has_mastering_luminance) {
