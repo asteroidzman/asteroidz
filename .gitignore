@@ -9,4 +9,6 @@ util.o
 *-protocol.c
 *-protocol.o
 build/
-resume-claude
+contrib/wlvptr/wlvptr
+contrib/wlvkbd/wlvkbd
+contrib/wllayer/wllayer
