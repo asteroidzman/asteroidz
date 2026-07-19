@@ -131,13 +131,18 @@ EOF
 # this deliberately does NOT scan for a socket the way waybar-asteroidz-
 # workspaces' resolve_socket() does, since blind newest-mtime scanning is
 # exactly the bug that hijacked that plugin the first time this was tried:
-# a second/test instance's newer socket outranked the real one). Creates a
-# fresh virtual (headless) output via create_virtual_output as the ONLY
-# target every test dispatches against ($HL_MON) -- every real, physically
-# connected output is never touched by anything in this mode. hl_reset's
-# unconditional `focus_monitor,$HL_MON` is what keeps every dispatch pinned
-# there instead of whatever the caller's own session happened to have
-# focused before the run started.
+# a second/test instance's newer socket outranked the real one).
+#
+# HL_LIVE_MON, if set, names a REAL, physically-connected output (e.g.
+# DP-1/HDMI-A-1) to run every test against directly -- this WILL move,
+# focus, spawn on top of, and otherwise disturb whatever is really on that
+# screen (tag/view changes, test windows mixed with real ones, HDR/SDR
+# luminance flips, the works). Unset (the default), this creates a fresh
+# virtual/headless output via create_virtual_output instead and confines
+# everything there, leaving every real output untouched -- the safer but
+# NOT what "test on my real setup" means; only use HL_LIVE_MON when the
+# user has explicitly asked for real-monitor disruption, not just live
+# process attachment.
 hl_start_live() {
 	if [ -z "${ASTEROIDZ_INSTANCE_SIGNATURE:-}" ] || [ ! -S "$ASTEROIDZ_INSTANCE_SIGNATURE" ]; then
 		echo "hl_start_live: ASTEROIDZ_INSTANCE_SIGNATURE is not set to a valid socket in this shell" >&2
@@ -147,6 +152,23 @@ hl_start_live() {
 	HL_LIVE_MODE=1
 	HL_OUTDIR="${HL_OUTDIR:-/tmp/asteroidz-hl-live-$$}"
 	mkdir -p "$HL_OUTDIR"
+
+	if [ -n "${HL_LIVE_MON:-}" ]; then
+		local real_names
+		real_names="$(hl_get "get all-monitors" | jq -r '[.monitors[].name] | join(",")')"
+		case ",$real_names," in
+			*",$HL_LIVE_MON,"*) ;;
+			*)
+				echo "hl_start_live: HL_LIVE_MON=$HL_LIVE_MON is not a currently attached monitor (have: $real_names)" >&2
+				exit 1
+				;;
+		esac
+		HL_MON="$HL_LIVE_MON"
+		HL_LIVE_REAL_MON=1
+		echo "hl_start_live: attached to live session, testing DIRECTLY against real monitor $HL_MON" >&2
+		hl_notify "asteroidz live regression: running on $HL_MON" "Testing your REAL monitor directly -- expect window/tag churn on that screen for the duration."
+		return
+	fi
 
 	hl_notify "asteroidz live regression: starting" "Attaching to your running compositor -- creating a virtual monitor now."
 
@@ -179,12 +201,16 @@ hl_notify() {
 hl_stop() {
 	for pid in "${HL_SPAWNED_PIDS[@]:-}"; do [ -n "$pid" ] && kill "$pid" 2>/dev/null; done
 	if [ "${HL_LIVE_MODE:-0}" = "1" ]; then
-		# never kill the caller's own live compositor -- just remove the
-		# virtual monitor(s) this run created. destroy_all_virtual_output
-		# only ever targets wlr_output_is_headless() outputs, so real,
-		# physically connected monitors are untouched regardless.
-		hl_notify "asteroidz live regression: finished" "Cleaning up the virtual monitor."
-		hl_dispatch "destroy_all_virtual_output" 0.5
+		# never kill the caller's own live compositor. In real-monitor mode
+		# there's no virtual output to remove (HL_MON IS the real output);
+		# destroy_all_virtual_output only ever targets wlr_output_is_headless()
+		# outputs regardless, so it's a harmless no-op there either way.
+		if [ "${HL_LIVE_REAL_MON:-0}" = "1" ]; then
+			hl_notify "asteroidz live regression: finished" "Done testing $HL_MON."
+		else
+			hl_notify "asteroidz live regression: finished" "Cleaning up the virtual monitor."
+			hl_dispatch "destroy_all_virtual_output" 0.5
+		fi
 		return
 	fi
 	[ -n "${HL_SWAYBG_PID:-}" ] && kill "$HL_SWAYBG_PID" 2>/dev/null
