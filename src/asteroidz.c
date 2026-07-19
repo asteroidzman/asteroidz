@@ -8131,9 +8131,12 @@ void setup(void) {
 
 		/* gamescope HDR passthrough: it can't use our wp-color-management
 		 * (needs six features, wlroots implements two), but its frog path
-		 * enables HDR as soon as we answer PQ. Same renderer gate as
-		 * wp-cm: PQ sampling needs the Vulkan fx renderer. */
-		frog_color_management_init();
+		 * enables HDR as soon as we answer PQ. misc.frog-color-management
+		 * (default on) lets this be turned off entirely -- e.g. to compare
+		 * against, or if a user doesn't want gamescope HDR passthrough. */
+		if (config.frog_color_management) {
+			frog_color_management_init();
+		}
 	}
 
 	modern_protocols_init(dpy, drw);

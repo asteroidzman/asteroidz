@@ -9,6 +9,10 @@ misc {
     // easter egg: at random intervals an Asteroids-style ship flies across the
     // bar and shoots down a UFO. Set to 0 to disable.
     ufo-easter-egg 1
+    // gamescope HDR passthrough (frog-color-management-v1). Set to 0 to
+    // disable entirely; gamescope falls back to wp-color-management (likely
+    // without real HDR, since wlroots only implements 2 of 6 features it needs).
+    frog-color-management 1
     allow-tearing 2
     sdr {
         reference-luminance 280
