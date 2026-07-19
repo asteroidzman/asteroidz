@@ -1,6 +1,6 @@
 # tags.sh — tag/view/toggle_tag/toggle_view/tag_to_left/tag_to_right.
 
-hl_active_tags_json() { hl_get "get all-monitors" | jq -c '.monitors[] | select(.name=="HEADLESS-1") | .active_tags'; }
+hl_active_tags_json() { hl_get "get all-monitors" | jq -c ".monitors[] | select(.name==\"$HL_MON\") | .active_tags"; }
 hl_first_client_tags_json() { hl_get "get all-clients" | jq -c '.clients[0].tags'; }
 
 test_view_switches_active_tag() {
@@ -54,7 +54,7 @@ test_tag_to_left_moves_client_down_one_tag() {
 	hl_assert_eq "tag_to_left,1 moves the client from tag 2 to tag 1" "$(hl_first_client_tags_json)" "[1]"
 }
 
-hl_tag_name() { hl_get "get all-monitors" | jq -r ".monitors[] | select(.name==\"HEADLESS-1\") | .tags[] | select(.index==$1) | .name"; }
+hl_tag_name() { hl_get "get all-monitors" | jq -r ".monitors[] | select(.name==\"$HL_MON\") | .tags[] | select(.index==$1) | .name"; }
 
 test_set_tag_name_renames_the_current_tag_only() {
 	hl_dispatch "view,2"

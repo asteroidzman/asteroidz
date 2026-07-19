@@ -19,7 +19,7 @@
 # than silently claiming success or crashing), and set_sdr_luminance
 # (a plain float value, no capability dependency at all).
 
-hl_mon_field() { hl_get "get all-monitors" | jq -r ".monitors[0].$1"; }
+hl_mon_field() { hl_get "get all-monitors" | jq -r ".monitors[] | select(.name==\"$HL_MON\") | .$1"; }
 
 test_toggle_hdr_is_refused_gracefully_on_a_headless_output() {
 	hl_assert_false "starts without HDR capability" "$(hl_mon_field hdr_capable)"
@@ -31,21 +31,27 @@ test_toggle_hdr_is_refused_gracefully_on_a_headless_output() {
 }
 
 test_set_sdr_luminance_absolute() {
+	local orig; orig="$(hl_mon_field sdr_luminance)"
 	hl_dispatch "set_sdr_luminance,300" 0.3
 	hl_assert_eq "set_sdr_luminance,300 sets it to exactly 300" "$(hl_mon_field sdr_luminance)" "300"
+	hl_dispatch "set_sdr_luminance,$orig" 0.3  # restore -- this is a GLOBAL setting, not per-monitor
 }
 
 test_set_sdr_luminance_relative() {
+	local orig; orig="$(hl_mon_field sdr_luminance)"
 	hl_dispatch "set_sdr_luminance,300" 0.3
 	hl_dispatch "set_sdr_luminance,+50" 0.3
 	hl_assert_eq "set_sdr_luminance,+50 adds to the current value" "$(hl_mon_field sdr_luminance)" "350"
 	hl_dispatch "set_sdr_luminance,-100" 0.3
 	hl_assert_eq "set_sdr_luminance,-100 subtracts from the current value" "$(hl_mon_field sdr_luminance)" "250"
+	hl_dispatch "set_sdr_luminance,$orig" 0.3  # restore -- this is a GLOBAL setting, not per-monitor
 }
 
 test_set_sdr_luminance_is_clamped() {
+	local orig; orig="$(hl_mon_field sdr_luminance)"
 	hl_dispatch "set_sdr_luminance,50" 0.3
 	hl_assert_eq "set_sdr_luminance clamps below 80 up to 80" "$(hl_mon_field sdr_luminance)" "80"
 	hl_dispatch "set_sdr_luminance,5000" 0.3
 	hl_assert_eq "set_sdr_luminance clamps above 1000 down to 1000" "$(hl_mon_field sdr_luminance)" "1000"
+	hl_dispatch "set_sdr_luminance,$orig" 0.3  # restore -- this is a GLOBAL setting, not per-monitor
 }

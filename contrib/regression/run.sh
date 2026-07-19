@@ -9,6 +9,10 @@
 #   module   one or more test file basenames without .sh (default: all of
 #            contrib/regression/tests/*.sh), e.g. `run.sh layouts tags`
 # Env: see contrib/lib/headless.sh (ASTEROIDZ, HL_OUTDIR, HL_WIDTH/HL_HEIGHT)
+#   HL_LIVE=1   attach to the CALLER's own already-running compositor
+#               instead of launching an isolated instance (see hl_start_live
+#               in headless.sh) -- every dispatch is still confined to a
+#               fresh virtual monitor this creates, never a real output.
 set -u
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -23,7 +27,11 @@ if [ "${#MODULES[@]}" -eq 0 ]; then
 	done
 fi
 
-hl_start
+if [ "${HL_LIVE:-0}" = "1" ]; then
+	hl_start_live
+else
+	hl_start
+fi
 trap hl_stop EXIT
 
 for mod in "${MODULES[@]}"; do
@@ -35,6 +43,7 @@ for mod in "${MODULES[@]}"; do
 		continue
 	fi
 	echo "=== $mod ==="
+	hl_notify "asteroidz live regression: module $mod" ""
 	# shellcheck disable=SC1090
 	. "$file"
 	# test_* functions in FILE ORDER (declare -F would sort alphabetically)

@@ -6,7 +6,7 @@
 #   {"M", monocle, "monocle", ...}  {"F", floatlayout, "float", ...}
 
 hl_tag1_layout_symbol() {
-	hl_get "get all-monitors" | jq -r '.monitors[] | select(.name=="HEADLESS-1") | .tags[] | select(.index==1) | .layout'
+	hl_get "get all-monitors" | jq -r ".monitors[] | select(.name==\"$HL_MON\") | .tags[] | select(.index==1) | .layout"
 }
 
 test_set_layout_tile() {
