@@ -202,6 +202,8 @@ static cJSON *build_monitor_json(Monitor *m) {
 	cJSON *resp = cJSON_CreateObject();
 	cJSON_AddStringToObject(resp, "name", m->wlr_output->name);
 	cJSON_AddBoolToObject(resp, "active", m == selmon);
+	cJSON_AddBoolToObject(resp, "enabled", m->wlr_output->enabled);
+	cJSON_AddBoolToObject(resp, "asleep", (bool)m->asleep);
 	cJSON_AddNumberToObject(resp, "x", m->m.x);
 	cJSON_AddNumberToObject(resp, "y", m->m.y);
 	cJSON_AddNumberToObject(resp, "width", m->m.width);
