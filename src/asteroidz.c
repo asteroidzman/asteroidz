@@ -3792,6 +3792,26 @@ void commitlayersurfacenotify(struct wl_listener *listener, void *data) {
 
 	get_layer_target_geometry(l, &box);
 
+	/* layer_draw_frame (the per-frame render path that draws the shadow,
+	 * shadow_blur and shield) only runs when need_output_flush is true, and
+	 * this was the ONLY place that ever set it back to true post-map -- but
+	 * it lived inside the layer_animations-gated branch below. With
+	 * layer_animations off (the default, and this compositor's own live
+	 * config), a content-fit popup that resizes itself in place (e.g. a
+	 * multi-tab settings panel switching to a shorter tab, which commits a
+	 * new buffer without ever going through this function's animation path)
+	 * never got another draw pass, leaving the shadow/shadow_blur frozen at
+	 * whatever size they were the first time -- reproduced headlessly via
+	 * contrib/waybar-popup-test.sh (waybar-display's Display -> Wallpaper
+	 * tab switch). Flush on every commit for a visible top/overlay layer
+	 * regardless of the animation config; only the MOVE-animation trigger
+	 * below still needs layer_animations and an actual geometry change. */
+	if (l->mapped &&
+		layer_surface->current.layer != ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM &&
+		layer_surface->current.layer != ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND) {
+		l->need_output_flush = true;
+	}
+
 	if (config.animations && config.layer_animations && !l->noanim &&
 		l->mapped &&
 		layer_surface->current.layer != ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM &&
@@ -3804,7 +3824,6 @@ void commitlayersurfacenotify(struct wl_listener *listener, void *data) {
 		l->geom.height = box.height;
 		l->animation.action = MOVE;
 		l->animation.duration = config.animation_duration_move;
-		l->need_output_flush = true;
 		layer_set_pending_state(l);
 	}
 
