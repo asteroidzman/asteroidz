@@ -7821,6 +7821,70 @@ void handle_print_status(struct wl_listener *listener, void *data) {
 	}
 }
 
+/* Same formatting as wlroots' own default stderr logger (util/log.c's
+ * log_stderr, which we can't call directly since it's static), except it
+ * drops a small denylist of upstream DEBUG lines that are pure noise with
+ * no diagnostic value here -- e.g. wlr_text_input_v3.c's "Text input commit
+ * received without focus", which fires continuously during normal
+ * input-method use and floods the log. cli_debug_log (and therefore
+ * WLR_DEBUG) is on by default after any in-place restart, not just -d, so
+ * this noise shows up far more often than a one-off manual debug run. */
+static void asteroidz_log_callback(enum wlr_log_importance verbosity,
+									const char *fmt, va_list args) {
+	static const char *denylist[] = {
+		"Text input commit received without focus",
+	};
+
+	char msg[1024];
+	vsnprintf(msg, sizeof(msg), fmt, args);
+
+	for (size_t i = 0; i < LENGTH(denylist); i++) {
+		if (strstr(msg, denylist[i])) {
+			return;
+		}
+	}
+
+	static struct timespec start_time = {-1, 0};
+	if (start_time.tv_sec < 0) {
+		clock_gettime(CLOCK_MONOTONIC, &start_time);
+	}
+
+	struct timespec ts = {0};
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	ts.tv_sec -= start_time.tv_sec;
+	ts.tv_nsec -= start_time.tv_nsec;
+	if (ts.tv_nsec < 0) {
+		ts.tv_sec--;
+		ts.tv_nsec += 1000000000L;
+	}
+
+	static const char *verbosity_colors[] = {
+		[WLR_SILENT] = "",
+		[WLR_ERROR] = "\x1B[1;31m",
+		[WLR_INFO] = "\x1B[1;34m",
+		[WLR_DEBUG] = "\x1B[1;90m",
+	};
+	static const char *verbosity_headers[] = {
+		[WLR_SILENT] = "",
+		[WLR_ERROR] = "[ERROR]",
+		[WLR_INFO] = "[INFO]",
+		[WLR_DEBUG] = "[DEBUG]",
+	};
+	unsigned c = (verbosity < WLR_LOG_IMPORTANCE_LAST) ? verbosity
+														: WLR_LOG_IMPORTANCE_LAST - 1;
+
+	fprintf(stderr, "%02d:%02d:%02d.%03ld ", (int)(ts.tv_sec / 60 / 60),
+			(int)(ts.tv_sec / 60 % 60), (int)(ts.tv_sec % 60),
+			ts.tv_nsec / 1000000);
+
+	bool colored = isatty(STDERR_FILENO);
+	if (colored) {
+		fprintf(stderr, "%s%s\x1B[0m\n", verbosity_colors[c], msg);
+	} else {
+		fprintf(stderr, "%s %s\n", verbosity_headers[c], msg);
+	}
+}
+
 void setup(void) {
 
 	setenv("XDG_CURRENT_DESKTOP", "asteroidz", 1);
@@ -7847,7 +7911,7 @@ void setup(void) {
 	sigemptyset(&sa_pipe.sa_mask);
 	sigaction(SIGPIPE, &sa_pipe, NULL);
 
-	wlr_log_init(config.log_level, NULL);
+	wlr_log_init(config.log_level, asteroidz_log_callback);
 
 	/* The Wayland display is managed by libwayland. It handles accepting
 	 * clients from the Unix socket, manging Wayland globals, and so on. */
