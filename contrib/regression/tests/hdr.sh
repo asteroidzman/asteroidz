@@ -22,6 +22,17 @@
 hl_mon_field() { hl_get "get all-monitors" | jq -r ".monitors[] | select(.name==\"$HL_MON\") | .$1"; }
 
 test_toggle_hdr_is_refused_gracefully_on_a_headless_output() {
+	if [ "$(hl_mon_field hdr_capable)" = "true" ]; then
+		# $HL_MON is actually HDR-capable (a real monitor in live mode) --
+		# this test's whole premise (graceful refusal on a NON-capable
+		# output) doesn't apply, and dispatching toggle_hdr here would
+		# really flip the user's real HDR state with no restore, since the
+		# test was never written to undo a toggle that's expected to be a
+		# no-op. Confirmed live 2026-07-19: left a real monitor in SDR after
+		# a live-mode run.
+		hl_skip "toggle_hdr graceful-refusal test needs a non-HDR-capable output ($HL_MON reports hdr_capable=true)"
+		return
+	fi
 	hl_assert_false "starts without HDR capability" "$(hl_mon_field hdr_capable)"
 	hl_assert_false "starts with hdr_enabled false" "$(hl_mon_field hdr_enabled)"
 	hl_dispatch "toggle_hdr" 1.5
