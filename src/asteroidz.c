@@ -645,6 +645,9 @@ typedef struct {
 	struct wlr_scene_tree *scene;
 	struct wlr_scene_tree *popups;
 	struct wlr_scene_shadow *shadow;
+	struct wlr_scene_blur *shadow_blur; /* see Client's shadow_blur: blurs the
+										 * backdrop within the shadow's own
+										 * footprint (shadows_blur_background) */
 	struct wlr_scene_blur *blur_node;
 	struct wlr_scene_layer_surface_v1 *scene_layer;
 	struct wl_list link;
@@ -3695,6 +3698,7 @@ void maplayersurfacenotify(struct wl_listener *listener, void *data) {
 	l->noblur = 0;
 	l->forceshadow = 0;
 	l->shadow = NULL;
+	l->shadow_blur = NULL;
 	l->shield_when_capture = 0;
 	l->need_output_flush = true;
 
@@ -8616,6 +8620,10 @@ void unmaplayersurfacenotify(struct wl_listener *listener, void *data) {
 	layer_flush_blur_background(l);
 	wlr_scene_node_destroy(&l->shadow->node);
 	l->shadow = NULL;
+	if (l->shadow_blur) {
+		wlr_scene_node_destroy(&l->shadow_blur->node);
+		l->shadow_blur = NULL;
+	}
 	l->being_unmapped = false;
 }
 
