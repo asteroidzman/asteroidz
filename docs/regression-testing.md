@@ -22,6 +22,34 @@ repo, falling back to `/usr/bin/asteroidz`), `HL_OUTDIR`, `HL_WIDTH`/
 headless output, including the original one — safe in isolation, but not
 worth risking in a shared run).
 
+## Live-session mode (extreme caution)
+
+`HL_LIVE=1` attaches to the *caller's own already-running* compositor instead
+of launching an isolated instance (`hl_start_live` in `contrib/lib/headless.sh`,
+requires a valid `ASTEROIDZ_INSTANCE_SIGNATURE` already in the environment).
+By default every dispatch is still confined to a fresh virtual/headless
+output this creates on the fly — real outputs are never touched. Set
+`HL_LIVE_MON=<name>` (e.g. `DP-1`) to instead run directly against that
+*real, physically-connected* monitor, disturbing whatever's actually
+displayed there for the duration.
+
+This is not a routine testing mode. Real-world experience running it:
+a full test run against a live session found and fixed a genuine
+use-after-free segfault (`asteroidz_icon_node_set`, `src/draw/text-node.c`)
+and, separately, a frame-scheduling bug (`monitor_check_skip_frame_timeout`,
+`src/asteroidz.c`) that could freeze the compositor's real output and leak
+memory unboundedly under continuously-updating real content (e.g. video)
+with `animations` disabled — the second one froze the whole display and
+required a hard reboot to recover, on real monitor hardware, in a matter of
+seconds. Neither bug reproduced headlessly under any combination tried.
+`hl_notify()` fires desktop notifications (via `notify-send`, live mode
+only) at start/per-module/finish so a live run is never silent — this
+does not make it safe, only visible. Treat any live-mode run, real-monitor
+or virtual, as needing fresh explicit sign-off every single time, never a
+standing permission, and prefer chasing anything it turns up via
+`coredumpctl`/static review afterward (as with both bugs above) rather than
+reproducing it live again.
+
 ## How it works
 
 `contrib/lib/headless.sh` is the shared library: `hl_start` launches one
@@ -89,6 +117,17 @@ inline in the relevant test files too):
   instantly" from "mid-animation" this way. Real animation verification
   needs pixel/frame capture (`anim-test.sh`), a fundamentally different
   kind of tool.
+- Two real bugs only surfaced via live-session mode, neither reproducible
+  headlessly: a use-after-free in `asteroidz_icon_node_set` (destroyed the
+  old cairo surface before the `wlr_buffer` wrapping it was dropped/detached
+  from the scene — every other node type in `text-node.c` does the reverse
+  order), and a frame-scheduling bug in `monitor_check_skip_frame_timeout`
+  (a 100ms "give up and force a commit" safety timer that reset on every new
+  resize/configure event instead of enforcing a hard deadline, letting a
+  busy real client starve the monitor's actual output commit indefinitely —
+  a frozen display and an unbounded memory leak as the same root cause).
+  Both were ultimately root-caused via `coredumpctl`/static review, not by
+  reproducing them live a second time. See "Live-session mode" above.
 
 ## A separate, complementary layer: waybar plugin unit tests
 
