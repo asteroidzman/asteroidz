@@ -69,13 +69,17 @@ effects {
 }
 theme { bg-color 0x2a6fd6ff; fg-color 0xffffffff; focus-bg-color 0x2a6fd6ff; focus-fg-color 0xffffffff }
 output HEADLESS-1 { width $HL_WIDTH; height $HL_HEIGHT; refresh 60 }
-layout { titlebar { enable 1; height 28 } }
+layout {
+	titlebar { enable 1; height 28 }
+	scroller { preset 0.3,0.5,0.8 }
+}
 dwindle_manual_split 1
 mousebind SUPER,BTN_LEFT,move_resize,curmove
 mousebind SUPER,BTN_RIGHT,move_resize,curresize
 tag 1 { layout tile; name t1 }
 tag 2 { layout tile; name t2 }
 tag 3 { layout tile; name t3 }
+tag 4 { layout scroller; name t4 }
 $extra
 EOF
 
