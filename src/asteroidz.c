@@ -1565,6 +1565,14 @@ void client_pending_fullscreen_state(Client *c, int32_t isfullscreen) {
 	if (c->foreign_toplevel && !c->iskilling)
 		wlr_foreign_toplevel_handle_v1_set_fullscreen(c->foreign_toplevel,
 													  isfullscreen);
+
+	/* becoming/ceasing to be fullscreen changes whether this client is a
+	 * candidate for mon_state_apply_color's per-content HDR metadata
+	 * forwarding (see mon_hdr_scanout_candidate) -- fold a refresh into the
+	 * monitor's next commit so it picks up (or drops) this client without
+	 * waiting for an unrelated HDR toggle/retrain. */
+	if (c->mon && c->mon->hdr)
+		c->mon->hdr_pending_change = true;
 }
 
 void client_pending_maximized_state(Client *c, int32_t ismaximized) {
@@ -4466,6 +4474,26 @@ void mon_load_icc_profile(Monitor *m, const char *path) {
 			m->wlr_output->name);
 }
 
+/* The sole fullscreen client visible on m, if there's exactly one -- used to
+ * forward that client's own declared HDR10 static metadata (frog-color-
+ * management-v1 / wp-color-management) to the real display instead of always
+ * describing the panel's own ceiling. NULL when there's more than one (or
+ * zero) fullscreen candidates, since mixing another window's content into a
+ * single-surface metadata guess would be worse than the panel-derived
+ * default. */
+static Client *mon_hdr_scanout_candidate(Monitor *m) {
+	Client *candidate = NULL, *fc;
+	wl_list_for_each(fc, &clients, link) {
+		if (!fc->isfullscreen || fc->isminimized || fc->iskilling ||
+			!VISIBLEON(fc, m))
+			continue;
+		if (candidate)
+			return NULL;
+		candidate = fc;
+	}
+	return candidate;
+}
+
 /* Apply the color pipeline of an output: an optional 10-bit framebuffer
  * (bitdepth:10 rule, implied by HDR to avoid PQ banding) and an optional
  * HDR mode (BT.2020 primaries with the PQ transfer function). Falls back
@@ -4487,18 +4515,45 @@ void mon_state_apply_color(Monitor *m, struct wlr_output_state *state) {
 					wlr_output->name);
 			m->hdr = 0;
 		} else {
-			/* pass the display's real luminance capabilities as HDR
-			 * metadata so the panel doesn't tone-map for 10000-nit
-			 * content it will never receive */
+			/* default: the display's real luminance capabilities, so the
+			 * panel doesn't tone-map for 10000-nit content it will never
+			 * receive. Overridden below with the actual title's own
+			 * mastering/max_cll/max_fall when the sole fullscreen client on
+			 * this monitor declares some -- that's what the content was
+			 * actually graded for, which the panel's tone-mapper can use
+			 * more accurately than a value derived purely from its own
+			 * ceiling. */
+			double mastering_min = m->hdr_min_luminance;
+			double mastering_max = m->hdr_max_luminance;
+			double max_cll = m->hdr_max_luminance;
+			double max_fall = m->hdr_max_fall;
+
+			Client *candidate = mon_hdr_scanout_candidate(m);
+			const struct wlr_image_description_v1_data *content_desc =
+				candidate ? frog_surface_image_description(
+								client_surface(candidate))
+						  : NULL;
+			if (content_desc && content_desc->tf_named ==
+									 WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_ST2084_PQ) {
+				if (content_desc->has_mastering_luminance) {
+					mastering_min = content_desc->mastering_luminance.min;
+					mastering_max = content_desc->mastering_luminance.max;
+				}
+				if (content_desc->max_cll > 0)
+					max_cll = content_desc->max_cll;
+				if (content_desc->max_fall > 0)
+					max_fall = content_desc->max_fall;
+			}
+
 			const struct wlr_output_image_description image_description = {
 				.primaries = WLR_COLOR_NAMED_PRIMARIES_BT2020,
 				.transfer_function = WLR_COLOR_TRANSFER_FUNCTION_ST2084_PQ,
 				.mastering_luminance = {
-					.min = m->hdr_min_luminance,
-					.max = m->hdr_max_luminance,
+					.min = mastering_min,
+					.max = mastering_max,
 				},
-				.max_cll = m->hdr_max_luminance,
-				.max_fall = m->hdr_max_fall,
+				.max_cll = max_cll,
+				.max_fall = max_fall,
 			};
 			if (!wlr_output_state_set_image_description(state,
 														&image_description))
