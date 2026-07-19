@@ -231,6 +231,24 @@ hl_reset() {
 	# always acts on selmon), so refocus it unconditionally. Harmless/no-op
 	# when there's only ever been one monitor.
 	hl_dispatch "focus_monitor,$HL_MON" 0.1
+	if [ "${HL_LIVE_REAL_MON:-0}" = "1" ]; then
+		# Real-monitor live mode: do NOT force view/set_layout here. Forcing
+		# tag 1 + tile on a real output re-arranges whatever real windows are
+		# actually there -- with animations off (as most modules set at some
+		# point) that re-arrange, any per-window shadow/titlebar re-render it
+		# triggers, and a freshly-mapped test window's own first render all
+		# have to happen INSTANTLY, in one shot, instead of spread over the
+		# ~200-300ms an animated transition would normally take. On a real
+		# HDR/high-refresh output that's a burst of synchronous GPU work far
+		# outside anything a human doing the same layout switch by hand ever
+		# produces (they always have animations on), and is suspected to be
+		# what froze the whole display in a 2026-07-19 incident. Tests that
+		# assume a controlled tag-1/tile baseline are unreliable in this mode
+		# as a result -- real-monitor mode is for IPC/responsiveness-style
+		# checks, not baseline-dependent assertions.
+		sleep 0.2
+		return
+	fi
 	hl_dispatch "view,1" 0.1
 	hl_dispatch "set_layout,tile" 0.1
 	sleep 0.2
@@ -239,6 +257,27 @@ hl_reset() {
 # ─── IPC ──────────────────────────────────────────────────────────────────
 
 hl_dispatch() { # hl_dispatch "func,arg1,arg2" [settle_seconds]
+	# Live mode never disables animations, regardless of what a test asks
+	# for. A real user always has animations on -- disabling them is purely
+	# a headless determinism trick (it makes geometry settle instantly so a
+	# dispatch-then-poll assertion doesn't need to wait out an animation).
+	# Applied to a real, busy monitor, that same "instant" settling forces
+	# a burst of synchronous shadow/titlebar/geometry work for every
+	# affected window into a single frame instead of spreading it over the
+	# ~200-300ms an animated transition normally takes -- suspected cause of
+	# a full display freeze on 2026-07-19. So: mimic real usage instead of
+	# the synthetic-instance shortcut once we're live, and just skip the
+	# dispatch (the test's own responsiveness assertions still run against
+	# whatever config.animations already was).
+	if [ "${HL_LIVE_MODE:-0}" = "1" ]; then
+		case "$1" in
+			set_option,animations,0|set_option,layer_animations,0)
+				echo "hl_dispatch: skipping '$1' in live mode (animations stay on)" >&2
+				sleep "${2:-0.3}"
+				return
+				;;
+		esac
+	fi
 	ASTEROIDZ_INSTANCE_SIGNATURE="$HL_SIG" amsg dispatch "$1" >/dev/null 2>&1
 	sleep "${2:-0.3}"
 }
