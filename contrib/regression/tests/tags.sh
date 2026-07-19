@@ -53,3 +53,22 @@ test_tag_to_left_moves_client_down_one_tag() {
 	hl_dispatch "tag_to_left,1"
 	hl_assert_eq "tag_to_left,1 moves the client from tag 2 to tag 1" "$(hl_first_client_tags_json)" "[1]"
 }
+
+hl_tag_name() { hl_get "get all-monitors" | jq -r ".monitors[] | select(.name==\"HEADLESS-1\") | .tags[] | select(.index==$1) | .name"; }
+
+test_set_tag_name_renames_the_current_tag_only() {
+	hl_dispatch "view,2"
+	hl_dispatch "set_tag_name,scratch"
+	hl_assert_eq "set_tag_name,scratch renames tag 2" "$(hl_tag_name 2)" "scratch"
+	hl_assert_eq "...and leaves tag 1 alone" "$(hl_tag_name 1)" "t1"
+	hl_dispatch "set_tag_name,t2"  # restore: don't leak the rename into later tests
+}
+
+test_set_tag_name_with_empty_value_clears_it() {
+	hl_dispatch "view,2"
+	hl_dispatch "set_tag_name,scratch"
+	hl_dispatch "set_tag_name,"
+	hl_assert_eq "set_tag_name with no value clears the custom name (falls back to the tag number)" \
+		"$(hl_tag_name 2)" "2"
+	hl_dispatch "set_tag_name,t2"  # restore
+}
