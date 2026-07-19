@@ -6883,8 +6883,20 @@ static int monitor_skip_frame_timeout_callback(void *data) {
 }
 
 void monitor_check_skip_frame_timeout(Monitor *m) {
-	if (m->skiping_frame &&
-		m->resizing_count_pending == m->resizing_count_current) {
+	if (m->skiping_frame) {
+		/* Already in a skip window -- let its 100ms deadline run its course
+		 * instead of resetting it here. This used to re-arm the timer to
+		 * 100ms from NOW whenever resizing_count_pending had moved on since
+		 * the last check, which turned the "give up and force a commit"
+		 * safety net into a debounce that never fires: a client generating
+		 * configure events faster than every 100ms (not just an actual
+		 * human drag-resize) kept pushing the deadline out indefinitely, so
+		 * the monitor never reached wlr_scene_output_commit below -- it
+		 * kept sending frame_done and letting the client submit ever more
+		 * buffers nothing ever consumed or released. Bookkeeping is still
+		 * updated so monitor_skip_frame_timeout_callback's reset stays
+		 * accurate once its already-running timer does fire. */
+		m->resizing_count_current = m->resizing_count_pending;
 		return;
 	}
 
