@@ -18,7 +18,7 @@
 # regardless of tab-mode. Bit us during harness development: two toggles in
 # a row with no arg looked like overview was stuck open.
 
-hl_active_tags() { hl_get "get all-monitors" | jq -c '.monitors[] | select(.name=="HEADLESS-1") | .active_tags'; }
+hl_active_tags() { hl_get "get all-monitors" | jq -c ".monitors[] | select(.name==\"$HL_MON\") | .active_tags"; }
 
 test_toggle_overview_enters_and_exits() {
 	hl_spawn_kitty W1 >/dev/null

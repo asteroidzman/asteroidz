@@ -57,8 +57,8 @@ test_focus_monitor_by_name() {
 		hl_skip "test_focus_monitor_by_name: could not get a second monitor"
 		return
 	fi
-	hl_dispatch "focus_monitor,HEADLESS-1" 0.3
-	hl_assert_eq "focus_monitor,HEADLESS-1 makes it active" "$(hl_active_monitor_name)" "HEADLESS-1"
+	hl_dispatch "focus_monitor,$HL_MON" 0.3
+	hl_assert_eq "focus_monitor,\$HL_MON makes it active" "$(hl_active_monitor_name)" "$HL_MON"
 	hl_dispatch "focus_monitor,HEADLESS-2" 0.3
 	hl_assert_eq "focus_monitor,HEADLESS-2 makes it active" "$(hl_active_monitor_name)" "HEADLESS-2"
 }
@@ -69,11 +69,11 @@ test_tag_cross_monitor_moves_a_client() {
 		hl_skip "test_tag_cross_monitor_moves_a_client: could not get a second monitor"
 		return
 	fi
-	hl_dispatch "focus_monitor,HEADLESS-1" 0.3
+	hl_dispatch "focus_monitor,$HL_MON" 0.3
 	hl_spawn_kitty W1 >/dev/null
 	hl_wait_client_count 1
-	hl_assert_eq "freshly spawned window starts on HEADLESS-1" \
-		"$(hl_get "get all-clients" | jq -r '.clients[0].monitor')" "HEADLESS-1"
+	hl_assert_eq "freshly spawned window starts on \$HL_MON" \
+		"$(hl_get "get all-clients" | jq -r '.clients[0].monitor')" "$HL_MON"
 	hl_dispatch "tag_cross_monitor,1,HEADLESS-2" 0.5
 	hl_assert_eq "tag_cross_monitor,1,HEADLESS-2 moves it there" \
 		"$(hl_get "get all-clients" | jq -r '.clients[0].monitor')" "HEADLESS-2"
@@ -85,7 +85,7 @@ test_view_cross_monitor_changes_the_other_monitors_tag() {
 		hl_skip "test_view_cross_monitor_changes_the_other_monitors_tag: could not get a second monitor"
 		return
 	fi
-	hl_dispatch "focus_monitor,HEADLESS-1" 0.3
+	hl_dispatch "focus_monitor,$HL_MON" 0.3
 	hl_dispatch "view_cross_monitor,2,HEADLESS-2" 0.5
 	local tags; tags="$(hl_get "get all-monitors" | jq -c '.monitors[] | select(.name=="HEADLESS-2") | .active_tags')"
 	hl_assert_eq "view_cross_monitor,2,HEADLESS-2 sets its active tag to 2" "$tags" "[2]"

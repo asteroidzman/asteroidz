@@ -32,6 +32,7 @@ HL_WLVKBD="$HL_REPO/contrib/wlvkbd/wlvkbd"
 HL_WLLAYER="$HL_REPO/contrib/wllayer/wllayer"
 HL_WIDTH="${HL_WIDTH:-1920}"
 HL_HEIGHT="${HL_HEIGHT:-1080}"
+HL_MON="${HL_MON:-HEADLESS-1}"   # the monitor every test targets; see hl_start_live
 
 ASSERT_COUNT=0
 ASSERT_PASS=0
@@ -71,7 +72,7 @@ effects {
 }
 theme { bg-color 0x2a6fd6ff; fg-color 0xffffffff; focus-bg-color 0x2a6fd6ff; focus-fg-color 0xffffffff }
 input { keyboard { xkb { layout "us,de" } } }
-output HEADLESS-1 { width $HL_WIDTH; height $HL_HEIGHT; refresh 60 }
+output $HL_MON { width $HL_WIDTH; height $HL_HEIGHT; refresh 60 }
 layout {
 	titlebar { enable 1; height 28 }
 	scroller { preset 0.3,0.5,0.8 }
@@ -124,8 +125,68 @@ EOF
 	sleep 0.5
 }
 
+# hl_start_live — attach to the CALLER'S OWN already-running compositor
+# instead of launching an isolated one. Uses the existing
+# ASTEROIDZ_INSTANCE_SIGNATURE from the environment (must already be valid --
+# this deliberately does NOT scan for a socket the way waybar-asteroidz-
+# workspaces' resolve_socket() does, since blind newest-mtime scanning is
+# exactly the bug that hijacked that plugin the first time this was tried:
+# a second/test instance's newer socket outranked the real one). Creates a
+# fresh virtual (headless) output via create_virtual_output as the ONLY
+# target every test dispatches against ($HL_MON) -- every real, physically
+# connected output is never touched by anything in this mode. hl_reset's
+# unconditional `focus_monitor,$HL_MON` is what keeps every dispatch pinned
+# there instead of whatever the caller's own session happened to have
+# focused before the run started.
+hl_start_live() {
+	if [ -z "${ASTEROIDZ_INSTANCE_SIGNATURE:-}" ] || [ ! -S "$ASTEROIDZ_INSTANCE_SIGNATURE" ]; then
+		echo "hl_start_live: ASTEROIDZ_INSTANCE_SIGNATURE is not set to a valid socket in this shell" >&2
+		exit 1
+	fi
+	HL_SIG="$ASTEROIDZ_INSTANCE_SIGNATURE"
+	HL_LIVE_MODE=1
+	HL_OUTDIR="${HL_OUTDIR:-/tmp/asteroidz-hl-live-$$}"
+	mkdir -p "$HL_OUTDIR"
+
+	hl_notify "asteroidz live regression: starting" "Attaching to your running compositor -- creating a virtual monitor now."
+
+	local before after new
+	before="$(hl_get "get all-monitors" | jq -r '[.monitors[].name] | sort | join(",")')"
+	hl_dispatch "create_virtual_output" 1
+	after="$(hl_get "get all-monitors" | jq -r '[.monitors[].name] | sort | join(",")')"
+	new="$(comm -13 <(tr ',' '\n' <<<"$before" | sort) <(tr ',' '\n' <<<"$after" | sort) | head -1)"
+	if [ -z "$new" ]; then
+		echo "hl_start_live: create_virtual_output didn't add a new monitor (before=$before after=$after)" >&2
+		hl_notify "asteroidz live regression: FAILED to start" "create_virtual_output didn't produce a new monitor -- aborting."
+		exit 1
+	fi
+	HL_MON="$new"
+	echo "hl_start_live: attached to live session, testing against virtual monitor $HL_MON" >&2
+	hl_notify "asteroidz live regression: running" "Confined to virtual monitor $HL_MON. This is still your real compositor process -- a crash there affects your whole desktop."
+}
+
+# hl_notify SUMMARY [BODY] -- desktop notification via notify-send, LIVE MODE
+# ONLY (a no-op in plain headless runs, and if notify-send isn't installed).
+# The point is to keep the user able to see, in real time, what a live-attach
+# run is doing to their own compositor process -- see feedback memory on the
+# 2026-07-19 live-mode segfault incident for why this exists.
+hl_notify() {
+	[ "${HL_LIVE_MODE:-0}" = "1" ] || return 0
+	command -v notify-send >/dev/null 2>&1 || return 0
+	notify-send -a "asteroidz regression" -- "$1" "${2:-}" 2>/dev/null
+}
+
 hl_stop() {
 	for pid in "${HL_SPAWNED_PIDS[@]:-}"; do [ -n "$pid" ] && kill "$pid" 2>/dev/null; done
+	if [ "${HL_LIVE_MODE:-0}" = "1" ]; then
+		# never kill the caller's own live compositor -- just remove the
+		# virtual monitor(s) this run created. destroy_all_virtual_output
+		# only ever targets wlr_output_is_headless() outputs, so real,
+		# physically connected monitors are untouched regardless.
+		hl_notify "asteroidz live regression: finished" "Cleaning up the virtual monitor."
+		hl_dispatch "destroy_all_virtual_output" 0.5
+		return
+	fi
 	[ -n "${HL_SWAYBG_PID:-}" ] && kill "$HL_SWAYBG_PID" 2>/dev/null
 	[ -n "${HL_COMP_PID:-}" ] && kill "$HL_COMP_PID" 2>/dev/null
 	wait "${HL_COMP_PID:-}" 2>/dev/null
@@ -140,10 +201,10 @@ hl_reset() {
 	sleep 0.3
 	# a multi-monitor test (contrib/regression/tests/multimonitor.sh) can
 	# leave a second output created AND focused -- every other module
-	# assumes HEADLESS-1 is selmon (dispatch with no explicit monitor target
+	# assumes $HL_MON is selmon (dispatch with no explicit monitor target
 	# always acts on selmon), so refocus it unconditionally. Harmless/no-op
 	# when there's only ever been one monitor.
-	hl_dispatch "focus_monitor,HEADLESS-1" 0.1
+	hl_dispatch "focus_monitor,$HL_MON" 0.1
 	hl_dispatch "view,1" 0.1
 	hl_dispatch "set_layout,tile" 0.1
 	sleep 0.2
@@ -252,7 +313,9 @@ hl_summary() { # prints totals, returns 1 if anything failed
 	if [ "${#ASSERT_FAILURES[@]}" -gt 0 ]; then
 		echo "failures:"
 		printf '  %s\n' "${ASSERT_FAILURES[@]}"
+		hl_notify "asteroidz live regression: $ASSERT_PASS/$ASSERT_COUNT passed" "${#ASSERT_FAILURES[@]} failure(s) -- see terminal output."
 		return 1
 	fi
+	hl_notify "asteroidz live regression: $ASSERT_PASS/$ASSERT_COUNT passed" "All assertions passed."
 	return 0
 }

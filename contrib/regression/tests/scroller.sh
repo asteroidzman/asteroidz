@@ -75,6 +75,7 @@ test_set_proportion_absolute() {
 	sleep 0.3
 	hl_assert_eq "set_proportion,0.6 sets scroller_proportion" \
 		"$(hl_client_field_rounded W1 scroller_proportion)" "0.6"
+	hl_dispatch "set_option,scroller_ignore_proportion_single,0"  # restore default
 }
 
 test_switch_proportion_preset_cycles_through_configured_presets() {
@@ -94,4 +95,5 @@ test_switch_proportion_preset_cycles_through_configured_presets() {
 	sleep 0.3
 	hl_assert_eq "switch_proportion_preset,prev goes back to 0.3" \
 		"$(hl_client_field_rounded W1 scroller_proportion)" "0.3"
+	hl_dispatch "set_option,scroller_ignore_proportion_single,0"  # restore default
 }

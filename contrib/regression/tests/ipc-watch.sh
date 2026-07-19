@@ -26,10 +26,10 @@ test_watch_all_monitors_notifies_on_hdr_toggle() {
 }
 
 test_watch_monitor_notifies_for_the_named_output() {
-	hl_watch_start "watch monitor HEADLESS-1" wm >/dev/null
+	hl_watch_start "watch monitor $HL_MON" wm >/dev/null
 	local before; before="$(hl_watch_line_count wm)"
 	hl_dispatch "toggle_hdr"
-	hl_assert_true "watch monitor HEADLESS-1 grows on toggle_hdr" \
+	hl_assert_true "watch monitor \$HL_MON grows on toggle_hdr" \
 		"$([ "$(hl_watch_line_count wm)" -gt "$before" ] && echo true || echo false)"
 }
 
@@ -42,10 +42,10 @@ test_watch_all_tags_notifies_on_view_switch() {
 }
 
 test_watch_tags_notifies_for_the_named_monitor() {
-	hl_watch_start "watch tags HEADLESS-1" wt >/dev/null
+	hl_watch_start "watch tags $HL_MON" wt >/dev/null
 	local before; before="$(hl_watch_line_count wt)"
 	hl_dispatch "view,2"
-	hl_assert_true "watch tags HEADLESS-1 grows on view,2" \
+	hl_assert_true "watch tags \$HL_MON grows on view,2" \
 		"$([ "$(hl_watch_line_count wt)" -gt "$before" ] && echo true || echo false)"
 }
 

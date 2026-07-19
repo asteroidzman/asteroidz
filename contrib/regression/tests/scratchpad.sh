@@ -17,7 +17,7 @@
 # appid) is the reliable way to target "any kitty window" here.
 
 hl_first_client_field() { hl_get "get all-clients" | jq -r ".clients[0].$1"; }
-hl_mon_active_special() { hl_get "get all-monitors" | jq -r '.monitors[] | select(.name=="HEADLESS-1") | .active_special'; }
+hl_mon_active_special() { hl_get "get all-monitors" | jq -r ".monitors[] | select(.name==\"$HL_MON\") | .active_special"; }
 
 test_toggle_named_scratchpad_adds_the_client() {
 	hl_spawn_kitty W1 >/dev/null

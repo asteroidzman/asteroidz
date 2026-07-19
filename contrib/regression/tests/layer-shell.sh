@@ -64,11 +64,11 @@ test_layer_surface_on_a_dpms_off_monitor_still_gets_configured() {
 	# all and hung forever (GTK fell back to a bogus width). A bounded
 	# timeout distinguishes "configure arrived" from "hung" -- an unbounded
 	# wait would just block forever if the bug were reintroduced.
-	hl_dispatch "dpms_off_monitor,HEADLESS-1"
+	hl_dispatch "dpms_off_monitor,$HL_MON"
 	sleep 0.3
 	timeout 4 "$HL_WLLAYER" top none 0 300 100 none 1 > "$HL_OUTDIR/dpms-layer.log" 2>&1
 	local rc=$?
-	hl_dispatch "dpms_on_monitor,HEADLESS-1"
+	hl_dispatch "dpms_on_monitor,$HL_MON"
 	sleep 0.3
 	hl_assert_true "layer surface on a DPMS'd-off monitor gets a configure event before timeout" \
 		"$([ "$rc" -ne 124 ] && grep -q "wllayer: configure" "$HL_OUTDIR/dpms-layer.log" && echo true || echo false)"
