@@ -28,6 +28,7 @@ HL_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 HL_ASTEROIDZ="${ASTEROIDZ:-$HL_REPO/build/asteroidz}"
 [ -x "$HL_ASTEROIDZ" ] || HL_ASTEROIDZ=/usr/bin/asteroidz
 HL_WLVPTR="$HL_REPO/contrib/wlvptr/wlvptr"
+HL_WLVKBD="$HL_REPO/contrib/wlvkbd/wlvkbd"
 HL_WIDTH="${HL_WIDTH:-1920}"
 HL_HEIGHT="${HL_HEIGHT:-1080}"
 
@@ -49,6 +50,7 @@ hl_start() { # hl_start [EXTRA_KDL]
 	done
 	[ -x "$HL_ASTEROIDZ" ] || { echo "hl_start: no asteroidz binary at $HL_ASTEROIDZ" >&2; exit 1; }
 	[ -x "$HL_WLVPTR" ] || { echo "hl_start: wlvptr not built -- run: cd contrib/wlvptr && make" >&2; exit 1; }
+	[ -x "$HL_WLVKBD" ] || { echo "hl_start: wlvkbd not built -- run: cd contrib/wlvkbd && make" >&2; exit 1; }
 
 	HL_CONFIG="$HL_OUTDIR/config.kdl"
 	cat > "$HL_CONFIG" <<EOF
@@ -69,6 +71,8 @@ theme { bg-color 0x2a6fd6ff; fg-color 0xffffffff; focus-bg-color 0x2a6fd6ff; foc
 output HEADLESS-1 { width $HL_WIDTH; height $HL_HEIGHT; refresh 60 }
 layout { titlebar { enable 1; height 28 } }
 dwindle_manual_split 1
+mousebind SUPER,BTN_LEFT,move_resize,curmove
+mousebind SUPER,BTN_RIGHT,move_resize,curresize
 tag 1 { layout tile; name t1 }
 tag 2 { layout tile; name t2 }
 tag 3 { layout tile; name t3 }
@@ -147,6 +151,19 @@ hl_get() { # hl_get "get all-clients" -> raw JSON on stdout
 
 hl_click() { # hl_click X Y [click|rclick|mclick]
 	"$HL_WLVPTR" "$1" "$2" "$HL_WIDTH" "$HL_HEIGHT" "${3:-click}"
+}
+
+# hl_super_drag X1 Y1 X2 Y2 -- press Super, left-drag from (X1,Y1) to
+# (X2,Y2), release Super. For testing a real Super+drag mouse binding (not
+# an IPC dispatch) -- needs hl_start's own test config to actually bind one
+# (mousebind SUPER,BTN_LEFT,move_resize,curmove), a compositor default
+# can't be assumed.
+hl_super_drag() {
+	"$HL_WLVKBD" hold LEFTMETA -- "$HL_WLVPTR" "$1" "$2" "$HL_WIDTH" "$HL_HEIGHT" "drag:$3,$4"
+}
+# hl_super_rdrag X1 Y1 X2 Y2 -- same, right button (resize binding).
+hl_super_rdrag() {
+	"$HL_WLVKBD" hold LEFTMETA -- "$HL_WLVPTR" "$1" "$2" "$HL_WIDTH" "$HL_HEIGHT" "rdrag:$3,$4"
 }
 
 # ─── test windows ─────────────────────────────────────────────────────────
