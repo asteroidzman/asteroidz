@@ -3,6 +3,8 @@
 `contrib/anim-test.sh` lets you **see** rendering changes (window open/close
 animations, blur, borders, effects) without a real display — essential for
 catching frame-accurate bugs like a one-frame flash on window open/close.
+For assertion-based window-management/IPC dispatch regressions instead of
+visual ones, see [the regression test harness](./regression-testing.md).
 
 It launches a **second asteroidz instance on a virtual (headless) output** in a
 dedicated, throwaway `XDG_RUNTIME_DIR`, so it never touches your real session.

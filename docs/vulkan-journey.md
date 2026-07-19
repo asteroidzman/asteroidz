@@ -558,3 +558,69 @@ behind.
 - Verified overall: headless render-matrix harness (GLES2, effects on, SDR
   + fake-HDR two-pass) clean both before and after the incident/fix; live
   HDR10 negotiation and visual blur/AA output confirmed after reinstall.
+
+### frog-color-management-v1 on GLES + HDR10 metadata gap-closing (asteroidz `af8d94d`/`da6214c`/`6ed1913`, scenefx `81bc0fd`/`764a861`/`f6dd7f6`, 2026-07-18/19)
+Vulkan already had gamescope HDR passthrough via `frog-color-management-v1`
+(gamescope can't use `wp_color_management_v1` — needs six manager features,
+wlroots implements two); GLES didn't. Closed that gap, then found and closed
+two further gaps in the result.
+
+- **Per-surface source color management, GLES (`81bc0fd`).** `tex.frag`
+  gained `apply_source_color_management()`: decode the surface's declared
+  transfer function (SRGB/PQ/GAMMA22/BT1886) to linear, apply the
+  luminance-scale + primaries matrix `wlr_scene` already computed (the same
+  values Vulkan's `texture.frag` uses), re-encode to gamma 2.2 so it blends
+  consistently with this single-pass pipeline's other content. Narrower
+  than Vulkan's linear-intermediate-buffer architecture by design — decode
+  + re-encode per surface, not a whole-scene linear compositing pass.
+  **Caused a real incident before ever shipping:** grew `tex.frag` past
+  `link_tex_program`'s fixed 4096/8192-byte stack buffers, `snprintf`
+  silently truncated it mid-shader, and the GLES compiler error ("syntax
+  error, unexpected end of file") gave zero indication it was a buffer-size
+  issue rather than a real shader bug. Fixed (`764a861`) with real headroom
+  (16384/24576), not just resized to fit exactly. Caught before shipping,
+  unlike the concatenation-order incident above.
+- **Verified against real gamescope traffic**, not just headless: temporary
+  debug logging in `frog-color-management.h` confirmed a live gamescope/
+  ASKA HDR session actually declares `tf_named=ST2084_PQ`,
+  `primaries_named=BT2020` every frame and the GLES path processes it
+  (`active=1`) — this genuinely exercises real content, not dead code.
+  Logging reverted after verification (exact inverse diff).
+- **HDR10 static metadata (MaxCLL/MaxFALL/mastering luminance) was parsed
+  but never consumed anywhere** — traced through `scenefx`'s `surface.c`,
+  which only ever read `tf_named`/`primaries_named` off the parsed
+  `wlr_image_description_v1_data`. Two fixes, both compositor-side (no
+  system wlroots changes — the KMS blob is built in `mon_state_apply_color`,
+  and `fx_render_texture_options` is scenefx's own wrapper, not wlroots'):
+  - `mon_hdr_scanout_candidate()` (asteroidz `af8d94d`) forwards the sole
+    fullscreen client's own declared metadata into the real KMS
+    `HDR_OUTPUT_METADATA` blob instead of always synthesizing from the
+    display's own configured ceiling. Checks real `wp_color_management_v1`
+    data before frog (`da6214c`) — the original version only checked frog,
+    silently missing any HDR client that isn't gamescope.
+  - scenefx's GLES `tex.frag` (`f6dd7f6`) replaced a hard clip to 1.0 above
+    SDR-reference with a per-channel Extended-Reinhard rolloff
+    (`content_peak` uniform = `max_cll / src_lum.reference`, or the transfer
+    function's own absolute peak when no MaxCLL was declared — a strict
+    improvement, never a behavior change, for surfaces that don't declare
+    one). Both are no-ops for direct-scanout content (gamescope/ASKA
+    declares `max_cll=0`, and is scanned out directly anyway); verified with
+    `haasn/hdr-tests` (a small curated HDR clip set from mpv/libplacebo's
+    own color-management maintainer) played windowed (forced out of
+    fullscreen so it hits the composited path) via
+    `mpv --target-colorspace-hint-mode=source toobright.hevc` (real
+    MaxCLL=1000/MaxFALL=400), user-confirmed reasonable-looking live.
+- **Vulkan checked, found NOT to need the same rolloff fix.** A `clamp(color`
+  grep hit in Vulkan's `texture.frag` initially looked like the same bug,
+  but it's `pq_color_to_linear`'s *input* codeword safety clamp (NaN
+  avoidance before EOTF decode), not a post-tonemap clip — Vulkan's
+  `texture.frag` has zero clamping after `luminance_multiplier`, consistent
+  with its whole-scene-linear-then-single-output-encode architecture. The
+  only output-side clamp (`output.frag`'s `linear_color_to_pq`) clips to
+  PQ's own 10000-nit ceiling, which is correct/unavoidable, not the
+  ~203-nit SDR-reference mistake GLES had.
+- Added `misc.frog-color-management` config flag (`6ed1913`, default on) to
+  disable gamescope HDR passthrough entirely if wanted.
+- Verified: full headless regression suite (118 assertions) clean
+  throughout; render-matrix harness (GLES2 + Vulkan, effects on/off, SDR +
+  HDR) clean.
