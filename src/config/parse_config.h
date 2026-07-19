@@ -302,6 +302,7 @@ typedef struct {
 	uint32_t axis_bind_apply_timeout;
 	uint32_t focus_on_activate;
 	uint32_t ufo_easter_egg;
+	uint32_t frog_color_management;
 	int32_t idleinhibit_ignore_visible;
 	int32_t sloppyfocus;
 	int32_t warpcursor;
@@ -1949,6 +1950,8 @@ bool parse_option(Config *config, char *key, char *value) {
 		config->focus_on_activate = atoi(value);
 	} else if (strcmp(key, "ufo_easter_egg") == 0) {
 		config->ufo_easter_egg = atoi(value);
+	} else if (strcmp(key, "frog_color_management") == 0) {
+		config->frog_color_management = atoi(value);
 	} else if (strcmp(key, "numlockon") == 0) {
 		config->numlockon = atoi(value);
 	} else if (strcmp(key, "capslock") == 0) {
@@ -3413,6 +3416,7 @@ static const struct {
 	{"misc/syncobj", "syncobj_enable"},
 	{"misc/focus-on-activate", "focus_on_activate"},
 	{"misc/ufo-easter-egg", "ufo_easter_egg"},
+	{"misc/frog-color-management", "frog_color_management"},
 	{"misc/allow-tearing", "allow_tearing"},
 	{"misc/render-late", "render_late"},
 	{"misc/render-late-margin-us", "render_late_margin_us"},
@@ -4179,6 +4183,7 @@ void override_config(void) {
 		CLAMP_INT(config.axis_bind_apply_timeout, 0, 1000);
 	config.focus_on_activate = CLAMP_INT(config.focus_on_activate, 0, 1);
 	config.ufo_easter_egg = CLAMP_INT(config.ufo_easter_egg, 0, 1);
+	config.frog_color_management = CLAMP_INT(config.frog_color_management, 0, 1);
 	config.idleinhibit_ignore_visible =
 		CLAMP_INT(config.idleinhibit_ignore_visible, 0, 1);
 	config.sloppyfocus = CLAMP_INT(config.sloppyfocus, 0, 1);
@@ -4307,6 +4312,7 @@ void set_value_default() {
 	config.axis_bind_apply_timeout = 100;
 	config.focus_on_activate = 1;
 	config.ufo_easter_egg = 1;
+	config.frog_color_management = 1;
 	config.new_is_master = 1;
 	config.default_mfact = 0.55f;
 	config.default_nmaster = 1;
