@@ -1,0 +1,97 @@
+# scroller.sh — scroller_stack, scroller_consume, scroller_expel,
+# set_proportion, switch_proportion_preset.
+#
+# All of these early-return no-ops unless is_scroller_layout(selmon) is true
+# for the CURRENT tag -- hl_start's config gives tag 4 a scroller layout
+# specifically for this module (view,4 first, every test below).
+# switch_proportion_preset additionally needs config.scroller_proportion_
+# preset_count > 0 (default 0/off, same class of surprise as dwindle_manual_
+# split) -- hl_start's config sets `scroller { preset 0.3,0.5,0.8 }`.
+
+hl_client_field() { hl_get "get all-clients" | jq -r ".clients[] | select(.title==\"$1\") | .$2"; }
+# scroller_proportion round-trips through a 32-bit float, so e.g. 0.6 comes
+# back as 0.600000023841858 -- round before comparing.
+hl_client_field_rounded() { hl_client_field "$1" "$2" | awk '{printf "%.1f", $1}'; }
+
+test_scroller_stack_merges_into_one_column() {
+	hl_dispatch "view,4"
+	hl_dispatch "set_layout,scroller"
+	hl_spawn_kitty W1 >/dev/null
+	hl_wait_client_count 1
+	hl_spawn_kitty W2 >/dev/null
+	hl_wait_client_count 2
+	sleep 0.3
+	# two tiled (unstacked) scroller columns: different x, same y
+	local xs0; xs0="$(hl_get "get all-clients" | jq -c '[.clients[].x] | unique | length')"
+	hl_assert_eq "before stacking: two separate columns (different x)" "$xs0" "2"
+
+	hl_dispatch "scroller_stack,left"
+	sleep 0.3
+	local xs1; xs1="$(hl_get "get all-clients" | jq -c '[.clients[].x] | unique | length')"
+	local ys1; ys1="$(hl_get "get all-clients" | jq -c '[.clients[].y] | unique | length')"
+	hl_assert_true "scroller_stack,left: now share one column (same x, different y)" \
+		"$([ "$xs1" = "1" ] && [ "$ys1" = "2" ] && echo true || echo false)"
+}
+
+test_scroller_expel_splits_the_stack_back_out() {
+	hl_dispatch "view,4"
+	hl_dispatch "set_layout,scroller"
+	hl_spawn_kitty W1 >/dev/null
+	hl_wait_client_count 1
+	hl_spawn_kitty W2 >/dev/null
+	hl_wait_client_count 2
+	sleep 0.3
+	hl_dispatch "scroller_stack,left"
+	sleep 0.3
+	hl_dispatch "scroller_expel"
+	sleep 0.3
+	local xs; xs="$(hl_get "get all-clients" | jq -c '[.clients[].x] | unique | length')"
+	hl_assert_eq "scroller_expel: back to two separate columns" "$xs" "2"
+}
+
+test_scroller_consume_is_a_no_op_with_nothing_to_pull_in() {
+	hl_dispatch "view,4"
+	hl_dispatch "set_layout,scroller"
+	hl_spawn_kitty W1 >/dev/null
+	hl_wait_client_count 1
+	sleep 0.3
+	# a single column, nothing after it to consume -- pins the no-op rather
+	# than asserting a fake effect (same pattern as the zero-client overview
+	# refusal in overview.sh)
+	hl_dispatch "scroller_consume"
+	sleep 0.3
+	hl_assert_eq "scroller_consume with only one column: still one client" \
+		"$(hl_get "get all-clients" | jq '.clients | length')" "1"
+}
+
+test_set_proportion_absolute() {
+	hl_dispatch "view,4"
+	hl_dispatch "set_layout,scroller"
+	hl_dispatch "set_option,scroller_ignore_proportion_single,1"
+	hl_spawn_kitty W1 >/dev/null
+	hl_wait_client_count 1
+	sleep 0.3
+	hl_dispatch "set_proportion,0.6"
+	sleep 0.3
+	hl_assert_eq "set_proportion,0.6 sets scroller_proportion" \
+		"$(hl_client_field_rounded W1 scroller_proportion)" "0.6"
+}
+
+test_switch_proportion_preset_cycles_through_configured_presets() {
+	hl_dispatch "view,4"
+	hl_dispatch "set_layout,scroller"
+	hl_dispatch "set_option,scroller_ignore_proportion_single,1"
+	hl_spawn_kitty W1 >/dev/null
+	hl_wait_client_count 1
+	sleep 0.3
+	hl_dispatch "set_proportion,0.3"
+	sleep 0.3
+	hl_dispatch "switch_proportion_preset"
+	sleep 0.3
+	hl_assert_eq "switch_proportion_preset from 0.3 advances to the next preset (0.5)" \
+		"$(hl_client_field W1 scroller_proportion)" "0.5"
+	hl_dispatch "switch_proportion_preset,prev"
+	sleep 0.3
+	hl_assert_eq "switch_proportion_preset,prev goes back to 0.3" \
+		"$(hl_client_field_rounded W1 scroller_proportion)" "0.3"
+}
