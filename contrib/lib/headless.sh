@@ -70,6 +70,7 @@ effects {
 		params { noise 0.02; brightness 0.9; contrast 0.9; saturation 1.2; } }
 }
 theme { bg-color 0x2a6fd6ff; fg-color 0xffffffff; focus-bg-color 0x2a6fd6ff; focus-fg-color 0xffffffff }
+input { keyboard { xkb { layout "us,de" } } }
 output HEADLESS-1 { width $HL_WIDTH; height $HL_HEIGHT; refresh 60 }
 layout {
 	titlebar { enable 1; height 28 }
@@ -78,6 +79,10 @@ layout {
 dwindle_manual_split 1
 mousebind SUPER,BTN_LEFT,move_resize,curmove
 mousebind SUPER,BTN_RIGHT,move_resize,curresize
+binds {
+	F11 { combo_view 2; }
+	F12 { combo_view 3; }
+}
 tag 1 { layout tile; name t1 }
 tag 2 { layout tile; name t2 }
 tag 3 { layout tile; name t3 }
@@ -154,6 +159,15 @@ hl_dispatch() { # hl_dispatch "func,arg1,arg2" [settle_seconds]
 hl_get() { # hl_get "get all-clients" -> raw JSON on stdout
 	ASTEROIDZ_INSTANCE_SIGNATURE="$HL_SIG" amsg $1 2>/dev/null
 }
+
+hl_watch_start() { # hl_watch_start "watch monitor HEADLESS-1" LOGNAME -> pid (tracked for hl_reset/hl_stop)
+	ASTEROIDZ_INSTANCE_SIGNATURE="$HL_SIG" amsg $1 > "$HL_OUTDIR/$2.log" 2>&1 &
+	local pid=$!
+	HL_SPAWNED_PIDS+=("$pid")
+	sleep 0.3   # let the subscribe land before the caller triggers a change
+	echo "$pid"
+}
+hl_watch_line_count() { wc -l < "$HL_OUTDIR/$1.log" 2>/dev/null || echo 0; }
 
 hl_click() { # hl_click X Y [click|rclick|mclick]
 	"$HL_WLVPTR" "$1" "$2" "$HL_WIDTH" "$HL_HEIGHT" "${3:-click}"
