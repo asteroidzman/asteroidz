@@ -68,6 +68,7 @@ effects {
 theme { bg-color 0x2a6fd6ff; fg-color 0xffffffff; focus-bg-color 0x2a6fd6ff; focus-fg-color 0xffffffff }
 output HEADLESS-1 { width $HL_WIDTH; height $HL_HEIGHT; refresh 60 }
 layout { titlebar { enable 1; height 28 } }
+dwindle_manual_split 1
 tag 1 { layout tile; name t1 }
 tag 2 { layout tile; name t2 }
 tag 3 { layout tile; name t3 }
@@ -122,6 +123,12 @@ hl_reset() {
 	for pid in "${HL_SPAWNED_PIDS[@]:-}"; do [ -n "$pid" ] && kill "$pid" 2>/dev/null; done
 	HL_SPAWNED_PIDS=()
 	sleep 0.3
+	# a multi-monitor test (contrib/regression/tests/multimonitor.sh) can
+	# leave a second output created AND focused -- every other module
+	# assumes HEADLESS-1 is selmon (dispatch with no explicit monitor target
+	# always acts on selmon), so refocus it unconditionally. Harmless/no-op
+	# when there's only ever been one monitor.
+	hl_dispatch "focus_monitor,HEADLESS-1" 0.1
 	hl_dispatch "view,1" 0.1
 	hl_dispatch "set_layout,tile" 0.1
 	sleep 0.2
@@ -185,6 +192,12 @@ hl_assert() { # hl_assert "description" "$actual" "$expected"
 hl_assert_eq() { hl_assert "$1" "$2" "$3"; }
 hl_assert_true() { hl_assert "$1" "$2" "true"; }
 hl_assert_false() { hl_assert "$1" "$2" "false"; }
+
+# For tests whose PRECONDITION isn't met by the current instance topology
+# (e.g. a multi-monitor test running against the default single-output
+# config) -- doesn't count as pass or fail, just notes why it didn't run.
+hl_skip() { echo "  skip - $1"; }
+hl_monitor_count() { hl_get "get all-monitors" | jq '.monitors | length'; }
 
 hl_summary() { # prints totals, returns 1 if anything failed
 	echo "----"
