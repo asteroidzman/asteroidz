@@ -11,8 +11,11 @@
 # Env: see contrib/lib/headless.sh (ASTEROIDZ, HL_OUTDIR, HL_WIDTH/HL_HEIGHT)
 #   HL_LIVE=1   attach to the CALLER's own already-running compositor
 #               instead of launching an isolated instance (see hl_start_live
-#               in headless.sh) -- every dispatch is still confined to a
-#               fresh virtual monitor this creates, never a real output.
+#               in headless.sh). By default every dispatch is confined to a
+#               fresh virtual monitor this creates, never a real output --
+#               set HL_LIVE_MON=<name> (e.g. DP-1) to instead run directly
+#               against that REAL, physically-connected monitor, disturbing
+#               whatever's actually on it for the duration.
 set -u
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
