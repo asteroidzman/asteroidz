@@ -19,17 +19,19 @@
 # create_output() again, so a headless backend adds another
 # wlr_headless_add_output); that's what these tests use to get HEADLESS-2.
 #
-# NOT tested here: disable_monitor/enable_monitor/dpms_{on,off,toggle}_
-# monitor -- there's no IPC-exposed field for output-enabled or DPMS/asleep
-# state (grepped build_monitor_json in ipc.h; m->asleep isn't surfaced),
-# so there's nothing reliable to assert against short of adding a new IPC
-# field. destroy_all_virtual_output is deliberately not tested at all: it
-# destroys every wlr_output_is_headless() output, which under a pure
-# headless backend is ALL of them including the original HEADLESS-1 --
-# calling it here would kill the whole test compositor, not just the
-# "virtual" one just created.
+# disable_monitor/enable_monitor/dpms_{on,off,toggle}_monitor are now
+# testable: build_monitor_json() in ipc.h gained "enabled"/"asleep" fields
+# (there wasn't one at all before -- m->wlr_output->enabled/m->asleep were
+# tracked internally but never surfaced over IPC).
+#
+# destroy_all_virtual_output is STILL deliberately not tested: it destroys
+# every wlr_output_is_headless() output, which under a pure headless
+# backend is ALL of them including the original HEADLESS-1 -- calling it
+# here would kill the whole test compositor, not just the "virtual" one
+# just created.
 
 hl_monitor_names() { hl_get "get all-monitors" | jq -c '[.monitors[].name] | sort'; }
+hl_monitor_field() { hl_get "get all-monitors" | jq -r ".monitors[] | select(.name==\"$1\") | .$2"; }
 hl_active_monitor_name() { hl_get "get all-monitors" | jq -r '.monitors[] | select(.active==true) | .name'; }
 
 hl_ensure_second_monitor() { # idempotent: create HEADLESS-2 if not already present
@@ -87,4 +89,46 @@ test_view_cross_monitor_changes_the_other_monitors_tag() {
 	hl_dispatch "view_cross_monitor,2,HEADLESS-2" 0.5
 	local tags; tags="$(hl_get "get all-monitors" | jq -c '.monitors[] | select(.name=="HEADLESS-2") | .active_tags')"
 	hl_assert_eq "view_cross_monitor,2,HEADLESS-2 sets its active tag to 2" "$tags" "[2]"
+}
+
+test_disable_enable_monitor() {
+	hl_ensure_second_monitor
+	if [ "$(hl_monitor_count)" -lt 2 ]; then
+		hl_skip "test_disable_enable_monitor: could not get a second monitor"
+		return
+	fi
+	hl_dispatch "disable_monitor,HEADLESS-2" 1
+	hl_assert_false "disable_monitor,HEADLESS-2 disables it" "$(hl_monitor_field HEADLESS-2 enabled)"
+	hl_assert_false "disable_monitor does NOT mark it asleep (a full disable, not DPMS)" \
+		"$(hl_monitor_field HEADLESS-2 asleep)"
+	hl_dispatch "enable_monitor,HEADLESS-2" 1
+	hl_assert_true "enable_monitor,HEADLESS-2 re-enables it" "$(hl_monitor_field HEADLESS-2 enabled)"
+}
+
+test_dpms_off_on_monitor() {
+	hl_ensure_second_monitor
+	if [ "$(hl_monitor_count)" -lt 2 ]; then
+		hl_skip "test_dpms_off_on_monitor: could not get a second monitor"
+		return
+	fi
+	hl_dispatch "dpms_off_monitor,HEADLESS-2" 1
+	hl_assert_false "dpms_off_monitor disables the output" "$(hl_monitor_field HEADLESS-2 enabled)"
+	hl_assert_true "dpms_off_monitor marks it asleep (unlike disable_monitor)" \
+		"$(hl_monitor_field HEADLESS-2 asleep)"
+	hl_dispatch "dpms_on_monitor,HEADLESS-2" 1
+	hl_assert_true "dpms_on_monitor re-enables it" "$(hl_monitor_field HEADLESS-2 enabled)"
+	hl_assert_false "dpms_on_monitor clears asleep" "$(hl_monitor_field HEADLESS-2 asleep)"
+}
+
+test_toggle_monitor() {
+	hl_ensure_second_monitor
+	if [ "$(hl_monitor_count)" -lt 2 ]; then
+		hl_skip "test_toggle_monitor: could not get a second monitor"
+		return
+	fi
+	hl_assert_true "starts enabled" "$(hl_monitor_field HEADLESS-2 enabled)"
+	hl_dispatch "toggle_monitor,HEADLESS-2" 1
+	hl_assert_false "toggle_monitor,HEADLESS-2 disables it" "$(hl_monitor_field HEADLESS-2 enabled)"
+	hl_dispatch "toggle_monitor,HEADLESS-2" 1
+	hl_assert_true "toggle_monitor,HEADLESS-2 again re-enables it" "$(hl_monitor_field HEADLESS-2 enabled)"
 }
