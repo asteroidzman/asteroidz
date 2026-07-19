@@ -7,15 +7,24 @@
 // headless test compositor and can leak into a live session), this only
 // ever reaches the one compositor instance named by the environment.
 //
-// Usage: wlvptr <x> <y> <extent_w> <extent_h> [click|rclick|mclick|scroll:<amount>]
-//   x,y            target position (pixels) within a 0..extent_w/h space --
+// Usage: wlvptr <x> <y> <extent_w> <extent_h> [click|rclick|mclick|scroll:<amount>|drag:<x2>,<y2>|rdrag:<x2>,<y2>]
+//   x,y            starting position (pixels) within a 0..extent_w/h space --
 //                  pass the real output width/height as the extent so x,y
 //                  are plain absolute pixel coordinates.
 //   click          left-button press + release
 //   rclick         right-button press + release
 //   mclick         middle-button press + release
 //   scroll:<amt>   vertical scroll (fixed-point amount, positive = down)
+//   drag:<x2>,<y2>   left-button press at x,y, move in steps to x2,y2, release
+//                    -- for testing a Super+drag-style mouse binding, run
+//                    this via `wlvkbd hold LEFTMETA -- wlvptr ... drag:...`
+//                    so the modifier is actually held during the button
+//                    press (a real drag needs intermediate motion events
+//                    between press and release, not just an instant jump,
+//                    for the compositor's move/resize grab to track it).
+//   rdrag:<x2>,<y2>  same, right button (for testing a resize binding)
 
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -107,6 +116,35 @@ int main(int argc, char **argv) {
 			double amt = atof(action + 7);
 			zwlr_virtual_pointer_v1_axis(ptr, ++t, WL_POINTER_AXIS_VERTICAL_SCROLL,
 										  wl_fixed_from_double(amt));
+			zwlr_virtual_pointer_v1_frame(ptr);
+			wl_display_roundtrip(display);
+		} else if (!strncmp(action, "drag:", 5) || !strncmp(action, "rdrag:", 6)) {
+			bool right = !strncmp(action, "rdrag:", 6);
+			const char *coords = action + (right ? 6 : 5);
+			int32_t x2 = 0, y2 = 0;
+			if (sscanf(coords, "%d,%d", &x2, &y2) != 2) {
+				fprintf(stderr, "wlvptr: bad drag coords: %s\n", coords);
+				return 1;
+			}
+			uint32_t button = right ? BTN_RIGHT : BTN_LEFT;
+
+			zwlr_virtual_pointer_v1_button(ptr, ++t, button,
+											WL_POINTER_BUTTON_STATE_PRESSED);
+			zwlr_virtual_pointer_v1_frame(ptr);
+			wl_display_roundtrip(display);
+
+			const int steps = 10;
+			for (int i = 1; i <= steps; i++) {
+				int32_t sx = (int32_t)x + ((x2 - (int32_t)x) * i) / steps;
+				int32_t sy = (int32_t)y + ((y2 - (int32_t)y) * i) / steps;
+				zwlr_virtual_pointer_v1_motion_absolute(
+					ptr, ++t, (uint32_t)sx, (uint32_t)sy, ew, eh);
+				zwlr_virtual_pointer_v1_frame(ptr);
+				wl_display_roundtrip(display);
+			}
+
+			zwlr_virtual_pointer_v1_button(ptr, ++t, button,
+											WL_POINTER_BUTTON_STATE_RELEASED);
 			zwlr_virtual_pointer_v1_frame(ptr);
 			wl_display_roundtrip(display);
 		}
