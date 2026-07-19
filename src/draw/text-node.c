@@ -229,18 +229,14 @@ bool asteroidz_icon_node_set(struct asteroidz_icon_node *node,
 	if (iw < 1 || ih < 1)
 		return false;
 
-	if (node->surface) {
-		cairo_surface_destroy(node->surface);
-		node->surface = NULL;
-	}
-	node->surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, size, size);
-	if (cairo_surface_status(node->surface) != CAIRO_STATUS_SUCCESS) {
-		cairo_surface_destroy(node->surface);
-		node->surface = NULL;
+	cairo_surface_t *new_surface =
+		cairo_image_surface_create(CAIRO_FORMAT_ARGB32, size, size);
+	if (cairo_surface_status(new_surface) != CAIRO_STATUS_SUCCESS) {
+		cairo_surface_destroy(new_surface);
 		return false;
 	}
 
-	cairo_t *cr = cairo_create(node->surface);
+	cairo_t *cr = cairo_create(new_surface);
 	cairo_set_operator(cr, CAIRO_OPERATOR_SOURCE);
 	cairo_set_source_rgba(cr, 0.0, 0.0, 0.0, 0.0);
 	cairo_paint(cr);
@@ -249,20 +245,30 @@ bool asteroidz_icon_node_set(struct asteroidz_icon_node *node,
 	cairo_set_source_surface(cr, icon, 0, 0);
 	cairo_pattern_set_filter(cairo_get_source(cr), CAIRO_FILTER_GOOD);
 	cairo_paint(cr);
-	cairo_surface_flush(node->surface);
+	cairo_surface_flush(new_surface);
 	cairo_destroy(cr);
 
-	if (node->buffer) {
-		wlr_buffer_drop(&node->buffer->base);
-		node->buffer = NULL;
-	}
 	struct asteroidz_text_buffer *buf = calloc(1, sizeof(*buf));
-	if (!buf)
+	if (!buf) {
+		cairo_surface_destroy(new_surface);
 		return false;
+	}
 	wlr_buffer_init(&buf->base, &text_buffer_impl, size, size);
-	buf->surface = node->surface;
-	node->buffer = buf;
+	buf->surface = new_surface;
+
+	/* attach the new buffer before dropping/destroying the old one -- unlike
+	 * every other node type in this file, this path used to destroy
+	 * node->surface (line freed here) while node->buffer (still the scene's
+	 * live buffer) held the very same pointer via its own ->surface field,
+	 * so a re-texture of the still-attached old buffer could read freed
+	 * cairo surface memory. */
 	wlr_scene_buffer_set_buffer(node->scene_buffer, &buf->base);
+	if (node->buffer)
+		wlr_buffer_drop(&node->buffer->base);
+	if (node->surface)
+		cairo_surface_destroy(node->surface);
+	node->buffer = buf;
+	node->surface = new_surface;
 	wlr_scene_buffer_set_dest_size(node->scene_buffer, size, size);
 
 	g_free(node->cached_name);
