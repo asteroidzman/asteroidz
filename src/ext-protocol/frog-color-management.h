@@ -65,6 +65,13 @@ static void frog_surface_resource_destroy(struct wl_resource *resource) {
  * clients set colorimetry around commits anyway) */
 static void frog_surface_apply(FrogColorSurface *fs) {
 	fs->active = fs->data.tf_named != 0 || fs->data.primaries_named != 0;
+	/* TEMP: verifying the GLES per-surface color management path actually
+	 * gets exercised by a real frog client (gamescope) -- to be reverted */
+	wlr_log(WLR_INFO,
+			"FROGDEBUG: surface=%p tf_named=%u primaries_named=%u active=%d "
+			"max_cll=%u max_fall=%u",
+			(void *)fs->surface, fs->data.tf_named, fs->data.primaries_named,
+			fs->active, fs->data.max_cll, fs->data.max_fall);
 }
 
 static void frog_surface_set_known_transfer_function(
@@ -250,6 +257,14 @@ static void frog_factory_get_color_managed_surface(
 				   &frog_surface_addon_impl);
 	wl_resource_set_implementation(fs->resource, &frog_surface_impl, fs,
 								   frog_surface_resource_destroy);
+
+	/* TEMP: verifying a real frog client (gamescope) actually binds this --
+	 * to be reverted */
+	pid_t frog_client_pid = 0;
+	wl_client_get_credentials(client, &frog_client_pid, NULL, NULL);
+	wlr_log(WLR_INFO,
+			"FROGDEBUG: client pid=%d created a color-managed surface=%p",
+			(int)frog_client_pid, (void *)surface);
 
 	frog_surface_send_preferred_metadata(fs->resource);
 }
