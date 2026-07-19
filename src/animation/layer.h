@@ -201,7 +201,38 @@ void layer_draw_shadow(LayerSurface *l) {
 	if (!config.shadows || !(config.layer_shadows || l->forceshadow) ||
 			l->noshadow) {
 		wlr_scene_shadow_set_size(l->shadow, 0, 0);
+		if (l->shadow_blur) {
+			wlr_scene_node_destroy(&l->shadow_blur->node);
+			l->shadow_blur = NULL;
+		}
 		return;
+	}
+
+	/* shadow_blur mirrors Client's: blurs the backdrop within the shadow's
+	 * own footprint instead of just tinting it (shadows_blur_background).
+	 * Created/destroyed on demand -- real GPU cost, not just enabled/
+	 * disabled like the shadow itself. */
+	if (!config.shadows_blur_background) {
+		if (l->shadow_blur) {
+			wlr_scene_node_destroy(&l->shadow_blur->node);
+			l->shadow_blur = NULL;
+		}
+	} else if (!l->shadow_blur) {
+		l->shadow_blur = wlr_scene_blur_create(l->scene, 0, 0);
+		if (l->shadow_blur) {
+			wlr_scene_node_place_below(&l->shadow_blur->node, &l->shadow->node);
+			/* Always live-sample (should_only_blur_bottom_layer stays
+			 * false): unlike a tiled Client window, a layer-shell popup's
+			 * shadow can fall over arbitrary windows below it (popups sit
+			 * near the top of the stack), not just the wallpaper -- the
+			 * cached bottom-layer-only path would be wrong there, same
+			 * reasoning as a floating Client. */
+		}
+	}
+	if (l->shadow_blur) {
+		if (l->shadow_blur->alpha != config.shadows_blur_background_strength)
+			wlr_scene_blur_set_alpha(l->shadow_blur,
+									 config.shadows_blur_background_strength);
 	}
 
 	int32_t width, height;
@@ -276,6 +307,28 @@ void layer_draw_shadow(LayerSurface *l) {
 	clipped_region.area.y = clipped_region.area.y - top_offset;
 
 	wlr_scene_shadow_set_clipped_region(l->shadow, clipped_region);
+
+	if (l->shadow_blur) {
+		/* same box as the shadow itself: the blurred backdrop should reach
+		 * exactly as far as the tint drawn over it, no further */
+		wlr_scene_node_set_position(&l->shadow_blur->node,
+									shadow_box.x + left_offset,
+									shadow_box.y + top_offset);
+		int32_t blur_width =
+			GEZERO(shadow_box.width - left_offset - right_offset);
+		int32_t blur_height =
+			GEZERO(shadow_box.height - top_offset - bottom_offset);
+		if (l->shadow_blur->width != blur_width ||
+			l->shadow_blur->height != blur_height)
+			wlr_scene_blur_set_size(l->shadow_blur, blur_width, blur_height);
+		struct fx_corner_radii blur_radii = corner_radii_from_location(
+			config.border_radius, config.border_radius_location_default);
+		if (!fx_corner_radii_eq(l->shadow_blur->corners, blur_radii))
+			wlr_scene_blur_set_corner_radii(l->shadow_blur, blur_radii);
+		if (l->shadow_blur->edge_softness != (float)config.shadows_blur)
+			wlr_scene_blur_set_edge_softness(l->shadow_blur,
+											(float)config.shadows_blur);
+	}
 }
 
 void layer_scene_buffer_apply_effect(struct wlr_scene_buffer *buffer,
