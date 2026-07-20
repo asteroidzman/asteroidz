@@ -1,7 +1,8 @@
 name: ci-check
 
 # Minimal, near-free sanity check: if this runs green, GitHub Actions is
-# unlocked for the account and the heavier build-deb workflow will schedule too.
+# unlocked for the account and other workflows (e.g. aur-publish) will
+# schedule too.
 on:
   workflow_dispatch:
 
