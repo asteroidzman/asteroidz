@@ -1316,6 +1316,8 @@ typedef enum {
 	ShotScreen,
 	ShotRegion,
 	ShotWindow,
+	ShotRawHDR, /* dumps the raw 10-bit composited buffer for external HDR10
+				 * video encoding -- see screenshot_ui_save_raw_hdr */
 } ScreenshotMode;
 
 typedef struct {
