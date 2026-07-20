@@ -582,6 +582,12 @@ void asteroidz_jump_label_node_update(struct asteroidz_jump_label_node *node,
 								(node->surface_pixel_h != required_pixel_h);
 
 	if (surface_size_changed) {
+		/* detach from the scene node first -- the old surface/buffer are
+		 * about to be freed, and drawing into the new one below takes
+		 * several more steps before a replacement buffer gets attached
+		 * (further down this function). Never leave the scene node
+		 * pointing at a buffer we've already freed, even momentarily. */
+		wlr_scene_buffer_set_buffer(node->scene_buffer, NULL);
 		if (node->buffer) {
 			wlr_buffer_drop(&node->buffer->base);
 			node->buffer = NULL;
@@ -687,11 +693,6 @@ void asteroidz_jump_label_node_update(struct asteroidz_jump_label_node *node,
 	cairo_surface_flush(node->surface);
 	cairo_destroy(cr);
 
-	if (node->buffer) {
-		wlr_buffer_drop(&node->buffer->base);
-		node->buffer = NULL;
-	}
-
 	struct asteroidz_text_buffer *buf = calloc(1, sizeof(*buf));
 	if (!buf) {
 		return;
@@ -699,9 +700,15 @@ void asteroidz_jump_label_node_update(struct asteroidz_jump_label_node *node,
 	wlr_buffer_init(&buf->base, &text_buffer_impl, node->surface_pixel_w,
 					node->surface_pixel_h);
 	buf->surface = node->surface;
-	node->buffer = buf;
 
+	/* attach the new buffer before dropping the old one -- the scene node
+	 * must never be left pointing at an already-freed wlr_buffer, even
+	 * momentarily (see the matching fix + comment in
+	 * asteroidz_icon_node_set for the exact same bug). */
 	wlr_scene_buffer_set_buffer(node->scene_buffer, &buf->base);
+	if (node->buffer)
+		wlr_buffer_drop(&node->buffer->base);
+	node->buffer = buf;
 
 	node->logical_width = box_logical_w + 2 * node->border_width;
 	node->logical_height = box_logical_h + 2 * node->border_width;
@@ -1156,6 +1163,12 @@ void asteroidz_tab_bar_node_update(struct asteroidz_tab_bar_node *node,
 								(node->surface_pixel_h != required_pixel_h);
 
 	if (surface_size_changed) {
+		/* detach from the scene node first -- the old surface/buffer are
+		 * about to be freed, and drawing into the new one below takes
+		 * several more steps before a replacement buffer gets attached
+		 * (further down this function). Never leave the scene node
+		 * pointing at a buffer we've already freed, even momentarily. */
+		wlr_scene_buffer_set_buffer(node->scene_buffer, NULL);
 		if (node->buffer) {
 			wlr_buffer_drop(&node->buffer->base);
 			node->buffer = NULL;
@@ -1384,11 +1397,6 @@ void asteroidz_tab_bar_node_update(struct asteroidz_tab_bar_node *node,
 	cairo_surface_flush(node->surface);
 	cairo_destroy(cr);
 
-	if (node->buffer) {
-		wlr_buffer_drop(&node->buffer->base);
-		node->buffer = NULL;
-	}
-
 	struct asteroidz_text_buffer *buf = calloc(1, sizeof(*buf));
 	if (!buf)
 		return;
@@ -1396,9 +1404,15 @@ void asteroidz_tab_bar_node_update(struct asteroidz_tab_bar_node *node,
 	wlr_buffer_init(&buf->base, &text_buffer_impl, node->surface_pixel_w,
 					node->surface_pixel_h);
 	buf->surface = node->surface;
-	node->buffer = buf;
 
+	/* attach the new buffer before dropping the old one -- the scene node
+	 * must never be left pointing at an already-freed wlr_buffer, even
+	 * momentarily (see the matching fix + comment in
+	 * asteroidz_icon_node_set for the exact same bug). */
 	wlr_scene_buffer_set_buffer(node->scene_buffer, &buf->base);
+	if (node->buffer)
+		wlr_buffer_drop(&node->buffer->base);
+	node->buffer = buf;
 
 	node->logical_width = node->target_width;
 	node->logical_height = node->target_height;
