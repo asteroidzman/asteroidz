@@ -115,11 +115,14 @@ EOF
 	HL_SIG="$(ls "$HL_XDG"/asteroidz-*.sock 2>/dev/null | head -1)"
 
 	# flat mid-grey wallpaper: plenty of contrast for shadow/blur checks
-	# without needing per-test image generation; swaybg not mpvpaper (a
-	# continuously-updating video wallpaper silently defeats shadow
-	# rendering -- verified headlessly, see the shadow_blur commit history).
+	# without needing per-test image generation, and easy to spot rendering
+	# artifacts against (a genuinely neutral grey, not a tinted color --
+	# #808080 was previously mislabeled "grey" while actually being a muted
+	# blue, #3a5a7a). swaybg not mpvpaper (a continuously-updating video
+	# wallpaper silently defeats shadow rendering -- verified headlessly,
+	# see the shadow_blur commit history).
 	HL_WALLPAPER="$HL_OUTDIR/wallpaper.png"
-	[ -f "$HL_WALLPAPER" ] || convert -size "${HL_WIDTH}x${HL_HEIGHT}" xc:'#3a5a7a' "$HL_WALLPAPER" 2>/dev/null
+	[ -f "$HL_WALLPAPER" ] || convert -size "${HL_WIDTH}x${HL_HEIGHT}" xc:'#808080' "$HL_WALLPAPER" 2>/dev/null
 	swaybg -o '*' -i "$HL_WALLPAPER" -m fill > "$HL_OUTDIR/swaybg.log" 2>&1 &
 	HL_SWAYBG_PID=$!
 	sleep 0.5
@@ -314,13 +317,31 @@ hl_super_rdrag() {
 
 # ─── test windows ─────────────────────────────────────────────────────────
 
+# same palette as contrib/live-visual-tour.sh, so spawned test windows are
+# visually distinct in a recording/screenshot -- cycles if more than 9 are
+# spawned in one run.
+HL_SPAWN_COLORS=(
+	'#aa2222' # red
+	'#22aa22' # green
+	'#2222aa' # blue
+	'#aaaa22' # yellow
+	'#aa22aa' # magenta
+	'#22aaaa' # cyan
+	'#dd7700' # orange
+	'#00bbbb' # teal
+	'#bb00bb' # pink
+)
+HL_SPAWN_COLOR_IDX=0
+
 hl_spawn_kitty() { # hl_spawn_kitty TITLE -> pid (also tracked for hl_reset/hl_stop)
 	local title="$1"
+	local color="${HL_SPAWN_COLORS[$((HL_SPAWN_COLOR_IDX % ${#HL_SPAWN_COLORS[@]}))]}"
+	HL_SPAWN_COLOR_IDX=$((HL_SPAWN_COLOR_IDX + 1))
 	# NOT --hold: a held (finished-process) window needs a keypress to
 	# actually close even on a compositor-issued close request, which stalls
 	# kill_client tests headlessly (no input device to dismiss it with) --
 	# a real long-lived foreground process closes cleanly instead.
-	kitty --title "$title" -o background_opacity=1.0 -o background=#181818 \
+	kitty --title "$title" -o background_opacity=1.0 -o "background=$color" \
 		sh -c "echo $title; exec sleep 300" > "$HL_OUTDIR/kitty-$title.log" 2>&1 &
 	local pid=$!
 	HL_SPAWNED_PIDS+=("$pid")
