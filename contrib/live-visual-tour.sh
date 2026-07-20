@@ -18,6 +18,11 @@
 set -u
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# hl_click/hl_super_drag normalize against HL_WIDTH/HL_HEIGHT (default
+# 1920x1080) -- must match the REAL target monitor's resolution or clicks
+# land at the wrong absolute position. Override before sourcing the lib.
+HL_WIDTH="${HL_WIDTH:-3840}"
+HL_HEIGHT="${HL_HEIGHT:-2160}"
 . "$REPO/contrib/lib/headless.sh"
 
 : "${HL_LIVE_MON:?set HL_LIVE_MON=<real output name>}"
@@ -63,8 +68,12 @@ kitty --title W4 -o background_opacity=1.0 -o background=#aaaa22 sh -c "echo YEL
 HL_SPAWNED_PIDS+=("$!")
 # NOT hl_wait_client_count here -- it checks the GLOBAL client count, which
 # already includes your other real windows on the real monitor, so it would
-# just spin to its own timeout uselessly. A fixed settle time instead.
-sleep 2
+# just spin to its own timeout uselessly. A fixed settle time instead --
+# kitty has real startup latency; 2s here previously wasn't quite enough for
+# all 4 to finish mapping before the first layout capture (2026-07-19: only
+# 1 of 4 windows was visible in that capture, resolved itself a few captures
+# later once startup caught up). 4s gives real margin.
+sleep 4
 hl_shot "4 windows spawned, before any layout forced"
 
 echo "=== tile ==="
@@ -77,11 +86,49 @@ hl_shot "monocle"
 
 echo "=== scroller ==="
 hl_dispatch "set_layout,scroller" 3
-hl_shot "scroller"
+# NOTE (2026-07-19): earlier captures here showed zero visible panning no
+# matter how many focus_direction dispatches ran. Root cause was NOT a
+# compositor bug or a scroller_focus_center config nuance -- this script
+# was dispatching the wrong IPC function name ("focusdir", the internal C
+# function, instead of the actual dispatch name "focus_direction"), which
+# amsg silently rejected with {"error":"unknown function"} every time (see
+# hl_dispatch's >/dev/null 2>&1). A safe, isolated headless test with the
+# correct name confirmed focus_direction works fine. Kept the narrower
+# columns + extra windows here anyway since genuine overflow is still the
+# clearest way to show panning on camera.
+ORIG_PROPORTION="$(hl_get "get all-clients" | jq -r '[.clients[].scroller_proportion] | map(select(. != null)) | .[0] // empty')"
+hl_dispatch "set_proportion,0.5" 1
+kitty --title W7 -o background_opacity=1.0 -o background=#dd7700 sh -c "echo ORANGE; exec sleep 300" >/dev/null 2>&1 &
+HL_SPAWNED_PIDS+=("$!")
+sleep 1
+kitty --title W8 -o background_opacity=1.0 -o background=#00bbbb sh -c "echo TEAL; exec sleep 300" >/dev/null 2>&1 &
+HL_SPAWNED_PIDS+=("$!")
+sleep 1
+kitty --title W9 -o background_opacity=1.0 -o background=#bb00bb sh -c "echo PINK; exec sleep 300" >/dev/null 2>&1 &
+HL_SPAWNED_PIDS+=("$!")
+sleep 3
+hl_shot "scroller, 7 columns at 0.5 proportion -- more than fit on screen"
+echo "--- panning right across columns (should now visibly shift) ---"
+hl_dispatch "focus_direction,right" 1
+hl_dispatch "focus_direction,right" 1
+hl_dispatch "focus_direction,right" 1
+hl_shot "scroller panned right"
+echo "--- panning further right, off the initial screen entirely ---"
+hl_dispatch "focus_direction,right" 1
+hl_dispatch "focus_direction,right" 1
+hl_shot "scroller panned further right"
+echo "--- panning back left to the start ---"
+hl_dispatch "focus_direction,left" 1
+hl_dispatch "focus_direction,left" 1
+hl_dispatch "focus_direction,left" 1
+hl_dispatch "focus_direction,left" 1
+hl_dispatch "focus_direction,left" 1
+hl_shot "scroller panned back to start"
 hl_dispatch "scroller_stack,left" 2
 hl_shot "scroller after stack"
 hl_dispatch "scroller_expel" 2
 hl_shot "scroller after expel"
+[ -n "$ORIG_PROPORTION" ] && hl_dispatch "set_proportion,$ORIG_PROPORTION" 1
 
 echo "=== float ==="
 hl_dispatch "set_layout,float" 3
@@ -95,16 +142,59 @@ HL_SPAWNED_PIDS+=("$!")
 sleep 3
 hl_shot "tile + dwindle_split_horizontal + new window"
 
-echo "=== open/close animation: one more window, then close it ==="
+echo "=== animations survey: open, close, minimize/restore, fullscreen, tag-switch ==="
+echo "--- open ---"
 kitty --title W6 -o background_opacity=1.0 -o background=#22aaaa sh -c "echo CYAN; exec sleep 300" >/dev/null 2>&1 &
 NEWPID="$!"
 HL_SPAWNED_PIDS+=("$NEWPID")
-sleep 2
-hl_shot "just after W6 opened (open animation should be settled by now)"
+sleep 0.7
+hl_shot "W6 mid-open (~0.7s after spawn, animation likely still in progress)"
+sleep 1.5
+hl_shot "W6 open, settled"
+
+echo "--- minimize / restore ---"
+hl_dispatch "minimize"
+sleep 0.15
+hl_shot "just dispatched minimize, mid-animation"
+sleep 0.6
+hl_shot "minimized, settled"
+hl_dispatch "restore_minimized"
+sleep 0.15
+hl_shot "just dispatched restore_minimized, mid-animation"
+sleep 0.6
+hl_shot "restored, settled"
+
+echo "--- fullscreen toggle ---"
+hl_dispatch "toggle_fullscreen"
+sleep 0.15
+hl_shot "just toggled fullscreen on, mid-animation"
+sleep 0.6
+hl_shot "fullscreen, settled"
+hl_dispatch "toggle_fullscreen"
+sleep 0.15
+hl_shot "just toggled fullscreen off, mid-animation"
+sleep 0.6
+hl_shot "fullscreen off, settled"
+
+echo "--- tag-switch (to tag 2, which has real pre-existing content, and back) ---"
+hl_dispatch "view,2"
+sleep 0.15
+hl_shot "just switched to tag 2, mid-transition"
+sleep 0.6
+hl_shot "tag 2, settled"
+hl_dispatch "view,1"
+sleep 0.15
+hl_shot "just switched back to tag 1, mid-transition"
+sleep 0.6
+hl_shot "tag 1, settled"
+
+echo "--- close ---"
 NEWID="$(hl_get "get all-clients" | jq -r '.clients[] | select(.title=="W6") | .id')"
-[ -n "$NEWID" ] && hl_dispatch "kill_client,force" 2
-sleep 1
-hl_shot "just after W6 closed (close animation should be settled by now)"
+[ -n "$NEWID" ] && hl_dispatch "kill_client,force"
+sleep 0.15
+hl_shot "W6 mid-close, animation likely still in progress"
+sleep 0.6
+hl_shot "W6 closed, settled"
 
 echo "=== layer-shell: exclusive-zone bar + overlay popup ==="
 hl_spawn_wllayer top "top,left,right" 100 3840 100 none 6 "" bar >/dev/null
@@ -119,6 +209,77 @@ hl_dispatch "toggle_overview" 3
 hl_shot "overview open"
 hl_dispatch "toggle_overview" 2
 hl_shot "overview closed"
+
+echo "=== waybar popup: display module (coords found via WBTEST_DUMP_GEOM against the real bar) ==="
+# zwlr_virtual_pointer_v1's motion_absolute (what hl_click ultimately calls)
+# is normalized against the compositor's REAL global pointer space --
+# spanning ALL outputs combined -- not any single monitor's own resolution.
+# Passing DP-1's own 3840x2160 here previously landed a click meant for
+# DP-1 onto HDMI-A-1 instead (sitting to its right at x=3840), which
+# silently shifted focus there for the rest of the tour, since dispatches
+# with no explicit monitor target always act on whatever's currently
+# selmon -- confirmed live 2026-07-19 (waybar popup + the whole window-
+# interaction section below captured HDMI-A-1's empty desktop instead).
+ALL_MON="$(hl_get "get all-monitors")"
+HL_WIDTH="$(jq -r '[.monitors[] | .x + .width] | max' <<<"$ALL_MON")"
+HL_HEIGHT="$(jq -r '[.monitors[] | .y + .height] | max' <<<"$ALL_MON")"
+echo "real pointer-space extent for clicks: ${HL_WIDTH}x${HL_HEIGHT}"
+
+# HL_WAYBAR_DISPLAY_X/Y default to the display module's pill center on DP-1
+# as found 2026-07-19 (x=3636,y=9,w=53,h=48 -> center 3662,33). Override via
+# env if your bar layout differs or this is a different monitor.
+WB_X="${HL_WAYBAR_DISPLAY_X:-3662}"
+WB_Y="${HL_WAYBAR_DISPLAY_Y:-33}"
+hl_click "$WB_X" "$WB_Y" click
+sleep 2
+hl_shot "waybar display popup open"
+# NOT a second click on the same anchor -- GTK popovers close on an
+# outside click or Escape, not a second click on the button that opened
+# them; clicking the anchor again just re-triggers it (confirmed live
+# 2026-07-19: the popup was still open several captures later). Escape is
+# the reliable way to dismiss it.
+"$HL_WLVKBD" press ESC
+sleep 1
+hl_shot "waybar display popup closed"
+
+# Defense in depth regardless of whether the click above landed correctly:
+# every dispatch below acts on whatever's currently selmon, so force it
+# back to the intended target monitor before touching any windows.
+hl_dispatch "focus_monitor,$HL_MON" 1
+
+echo "=== window interaction: float one window + move/resize/exchange via IPC dispatch ==="
+# NOT hl_super_drag: no Super+drag mousebind exists in this compositor's
+# shipped default config or this user's own config.kdl -- that binding is
+# hl_start's own synthetic test config, would be a silent no-op live.
+# move_window/resize_window are relative when given a signed +/- value.
+# toggle_floating alone (not set_layout,float) -- floats just the focused
+# window within whatever tiled layout is currently active, matching how
+# this is actually used day to day.
+hl_dispatch "toggle_floating" 1
+hl_shot "floating, before move"
+# A newly-floated window inherits its last TILED geometry, which can be
+# most of the screen -- a small +/- shift on that is easy to miss. Shrink
+# it down to something clearly bounded first, THEN move it a large,
+# unmistakable distance, so the motion actually reads on a 3840x2160
+# screen instead of being a subtle nudge on an already-huge window.
+# NOTE (2026-07-19): the original deltas here (-1400,-1200) over-shrunk a
+# tiled window whose height was only ~1032 -- the resulting negative
+# height got clamped to a ~5px sliver, which is why the "move" that
+# followed looked like nothing happened (a near-invisible line, not a
+# window). Confirmed headlessly by reading back get-all-clients geometry
+# after each dispatch. These deltas are sized relative to a typical tiled
+# half-screen window instead of guessed.
+hl_dispatch "resize_window,-900,-500" 2
+hl_shot "shrunk down to a clearly-bounded floating window"
+hl_dispatch "move_window,+700,+500" 2
+hl_shot "after a large move_window,+700,+500 (should be obviously in a new spot)"
+hl_dispatch "resize_window,+300,+200" 2
+hl_shot "after resize_window,+300,+200 (shadow/blur should track the new size, no stale rect)"
+hl_dispatch "move_window,-700,-500" 2
+hl_shot "after move back"
+hl_dispatch "exchange_client,left" 2
+hl_shot "after exchange_client,left"
+hl_dispatch "toggle_floating" 1
 
 echo "=== restoring original state ==="
 case "$ORIG_TAG1_LAYOUT" in
