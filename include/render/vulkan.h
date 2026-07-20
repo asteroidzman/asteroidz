@@ -186,6 +186,12 @@ enum fx_vk_shader_source {
 	// "ignore_transparent" path. Samples the blur cache at set 0 and a
 	// transparency-mask surface at set 1; uses the 2-set tex_mask_pipe_layout.
 	WLR_VK_SHADER_SOURCE_TEXTURE_MASK_ROUND,
+	// wlr_scene_blur's own soft-edge path (fx_vk fork): renders an already-
+	// blurred effect image with the same wide analytic gaussian falloff
+	// box_shadow uses instead of a hard rounded-rect SDF, so a blur node's
+	// own edge fades in lockstep with an adjoining shadow's tint. See
+	// wlr_scene_blur_set_edge_softness() and shaders/texture_soft_edge.frag.
+	WLR_VK_SHADER_SOURCE_TEXTURE_SOFT_EDGE,
 };
 
 // Constants used to pick the color transform for the blend-to-output
@@ -457,6 +463,7 @@ struct fx_vk_renderer {
 	VkShaderModule blur_effects_frag_module;
 	VkShaderModule quad_grad_round_frag_module;
 	VkShaderModule tex_mask_round_frag_module;
+	VkShaderModule tex_soft_edge_frag_module;
 
 	// Compute dual-Kawase blur (fx_vk fork): built in init_static_render_data
 	// when the queue family supports compute and the 16F effect format supports
@@ -581,6 +588,12 @@ struct fx_vk_frag_corner_pcr_data {
 	float clip_position[2];
 	float clip_radius[4];   // top_left, top_right, bottom_left, bottom_right
 };
+
+// Offset (bytes) at which wlr_scene_blur's soft-edge shader reads its
+// blur_sigma scalar -- right after the corner block (fx_vk_frag_corner_pcr_data,
+// pushed at 160) ends, at 224. See shaders/texture_soft_edge.frag and the
+// frag_corner_end budget bump in renderer.c's init_tex_layouts.
+#define FX_VK_TEX_SOFT_EDGE_SIGMA_OFFSET 224
 
 // Offset (bytes) at which the masked-blur transparency-mask block is pushed in
 // the fragment stage. The rounded corner block (fx_vk_frag_corner_pcr_data, 64

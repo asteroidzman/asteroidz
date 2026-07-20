@@ -40,6 +40,7 @@
 #include "blur_effects.frag.h"
 #include "quad_grad_round.frag.h"
 #include "texture_mask_round.frag.h"
+#include "texture_soft_edge.frag.h"
 #include "types/wlr_buffer.h"
 #include "util/array.h"
 #include "util/time.h"
@@ -1839,6 +1840,7 @@ static void fx_vulkan_destroy(struct wlr_renderer *wlr_renderer) {
 	vkDestroyShaderModule(dev->dev, renderer->blur_effects_frag_module, NULL);
 	vkDestroyShaderModule(dev->dev, renderer->quad_grad_round_frag_module, NULL);
 	vkDestroyShaderModule(dev->dev, renderer->tex_mask_round_frag_module, NULL);
+	vkDestroyShaderModule(dev->dev, renderer->tex_soft_edge_frag_module, NULL);
 
 	vkDestroyPipelineLayout(dev->dev, renderer->tex_mask_pipe_layout, NULL);
 
@@ -2207,10 +2209,14 @@ static bool init_tex_layouts(struct fx_vk_renderer *renderer,
 	// reads the base texture data (offset 80, 72 bytes) plus the corner block
 	// pushed at offset 160 (fx_vk_frag_corner_pcr_data, 64 bytes), i.e. it
 	// extends to offset 224. The rounded-quad shader stays within that (corner
-	// at 96, extends to 160). See fx_vk_frag_corner_pcr_data for why push
-	// constants are used and the maxPushConstantsSize budget (target: 256).
+	// at 96, extends to 160). The soft-edge blur shader (wlr_scene_blur's own
+	// edge_softness path) reads the same corner block plus one more scalar
+	// (blur_sigma) right after it at FX_VK_TEX_SOFT_EDGE_SIGMA_OFFSET (224),
+	// extending the new worst case to 228. See fx_vk_frag_corner_pcr_data for
+	// why push constants are used and the maxPushConstantsSize budget
+	// (target: 256).
 	const uint32_t vert_pcr_size = sizeof(struct fx_vk_vert_pcr_data); // 80
-	uint32_t frag_corner_end = 160 + sizeof(struct fx_vk_frag_corner_pcr_data); // 224
+	uint32_t frag_corner_end = FX_VK_TEX_SOFT_EDGE_SIGMA_OFFSET + sizeof(float); // 228
 	// Budget hardening: never request more than the device offers -- a too-
 	// large range fails vkCreatePipelineLayout for EVERY pipeline sharing this
 	// layout (plain textures included). Clamp and let the per-effect viability
@@ -2555,6 +2561,14 @@ struct fx_vk_pipeline *setup_get_or_create_pipeline(
 			.module = renderer->tex_mask_round_frag_module,
 			.pName = "main",
 			.pSpecializationInfo = &specialization,
+		};
+		break;
+	case WLR_VK_SHADER_SOURCE_TEXTURE_SOFT_EDGE:
+		stages[1] = (VkPipelineShaderStageCreateInfo) {
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+			.stage = VK_SHADER_STAGE_FRAGMENT_BIT,
+			.module = renderer->tex_soft_edge_frag_module,
+			.pName = "main",
 		};
 		break;
 	}
@@ -3316,6 +3330,17 @@ static bool init_static_render_data(struct fx_vk_renderer *renderer) {
 	res = vkCreateShaderModule(dev, &sinfo, NULL, &renderer->tex_mask_round_frag_module);
 	if (res != VK_SUCCESS) {
 		fx_vk_error("Failed to create masked rounded tex fragment shader module", res);
+		return false;
+	}
+
+	sinfo = (VkShaderModuleCreateInfo){
+		.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+		.codeSize = sizeof(texture_soft_edge_frag_data),
+		.pCode = texture_soft_edge_frag_data,
+	};
+	res = vkCreateShaderModule(dev, &sinfo, NULL, &renderer->tex_soft_edge_frag_module);
+	if (res != VK_SUCCESS) {
+		fx_vk_error("Failed to create soft-edge tex fragment shader module", res);
 		return false;
 	}
 

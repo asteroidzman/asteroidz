@@ -1910,6 +1910,109 @@ static void render_effect_image(struct fx_vk_render_pass *pass,
 	pixman_region32_fini(&clip_region);
 }
 
+// Soft-edge variant of render_effect_image for wlr_scene_blur's own
+// edge_softness path (see wlr_scene_blur_set_edge_softness): the blur's whole
+// box fades via the same wide analytic gaussian falloff box_shadow uses,
+// instead of render_effect_image's hard rounded-rect SDF -- so a blur node's
+// own edge blends in lockstep with an adjoining shadow's tint instead of
+// reading as an obviously rectangular "blurred patch". `corners` here is the
+// box's own corner radii for that falloff (not a hard SDF radius), matching
+// GLES fx_render_pass_add_texture_soft_edge / shaders/tex_soft_edge.frag.
+static void render_effect_image_soft_edge(struct fx_vk_render_pass *pass,
+		struct fx_vk_effect_image *src, const struct wlr_box *dst_box,
+		const pixman_region32_t *clip, const struct fx_corner_fradii *corners,
+		const struct clipped_fregion *clipped_region,
+		const struct wlr_box *clip_box, float alpha, float blur_sigma) {
+	VkCommandBuffer cb = pass->command_buffer->vk;
+
+	if (dst_box->width <= 0 || dst_box->height <= 0 ||
+			src->width <= 0 || src->height <= 0) {
+		return;
+	}
+
+	float proj[9], matrix[9];
+	wlr_matrix_identity(proj);
+	wlr_matrix_project_box(matrix, dst_box, WL_OUTPUT_TRANSFORM_NORMAL, proj);
+	wlr_matrix_multiply(matrix, pass->projection, matrix);
+
+	struct fx_vk_vert_pcr_data vert_pcr_data = {
+		.uv_off = {
+			(float)dst_box->x / src->width,
+			(float)dst_box->y / src->height,
+		},
+		.uv_size = {
+			(float)dst_box->width / src->width,
+			(float)dst_box->height / src->height,
+		},
+	};
+	encode_proj_matrix(matrix, vert_pcr_data.mat4);
+
+	struct fx_vk_pipeline *pipe = setup_get_or_create_pipeline(
+		pass->render_setup,
+		&(struct fx_vk_pipeline_key) {
+			.source = WLR_VK_SHADER_SOURCE_TEXTURE_SOFT_EDGE,
+			.layout = {
+				.filter_mode = WLR_SCALE_FILTER_BILINEAR,
+			},
+			.texture_transform = WLR_VK_TEXTURE_TRANSFORM_IDENTITY,
+			.blend_mode = WLR_RENDER_BLEND_MODE_PREMULTIPLIED,
+		});
+	if (!pipe) {
+		pass->failed = true;
+		return;
+	}
+
+	bind_pipeline(pass, pipe->vk);
+	vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
+		pipe->layout->vk, 0, 1, &src->ds, 0, NULL);
+	vkCmdPushConstants(cb, pipe->layout->vk,
+		VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(vert_pcr_data), &vert_pcr_data);
+	// alpha shares fx_vk_frag_texture_pcr_data's offset (see texture_soft_edge.frag).
+	struct fx_vk_frag_texture_pcr_data frag_pcr_data = {
+		.alpha = alpha,
+	};
+	vkCmdPushConstants(cb, pipe->layout->vk,
+		VK_SHADER_STAGE_FRAGMENT_BIT, sizeof(vert_pcr_data),
+		sizeof(frag_pcr_data), &frag_pcr_data);
+
+	struct wlr_box corner_box = *dst_box;
+	if (clip_box != NULL && !wlr_box_empty(clip_box)) {
+		corner_box = *clip_box;
+	}
+	struct fx_vk_frag_corner_pcr_data corner_pcr;
+	fill_corner_pcr(&corner_pcr, &corner_box, corners, clipped_region);
+	vkCmdPushConstants(cb, pipe->layout->vk, VK_SHADER_STAGE_FRAGMENT_BIT,
+		FX_VK_TEX_ROUND_CORNER_OFFSET, sizeof(corner_pcr), &corner_pcr);
+	vkCmdPushConstants(cb, pipe->layout->vk, VK_SHADER_STAGE_FRAGMENT_BIT,
+		FX_VK_TEX_SOFT_EDGE_SIGMA_OFFSET, sizeof(blur_sigma), &blur_sigma);
+
+	pixman_region32_t clip_region;
+	get_clip_region(pass, clip, &clip_region);
+
+	int clip_rects_len;
+	const pixman_box32_t *clip_rects =
+		pixman_region32_rectangles(&clip_region, &clip_rects_len);
+	for (int i = 0; i < clip_rects_len; i++) {
+		VkRect2D rect;
+		convert_pixman_box_to_vk_rect(&clip_rects[i], &rect);
+		vkCmdSetScissor(cb, 0, 1, &rect);
+		vkCmdDraw(cb, 4, 1, 0, 0);
+
+		struct wlr_box clip_rect_box = {
+			.x = clip_rects[i].x1,
+			.y = clip_rects[i].y1,
+			.width = clip_rects[i].x2 - clip_rects[i].x1,
+			.height = clip_rects[i].y2 - clip_rects[i].y1,
+		};
+		struct wlr_box intersection;
+		if (wlr_box_intersection(&intersection, dst_box, &clip_rect_box)) {
+			render_pass_mark_box_updated(pass, &intersection);
+		}
+	}
+
+	pixman_region32_fini(&clip_region);
+}
+
 // Masked variant of render_effect_image for the per-window/layer blur
 // "ignore_transparent" path. Draws the blur cache (src) at dst_box exactly like
 // render_effect_image, but additionally binds a transparency-mask texture at
@@ -2258,6 +2361,14 @@ void fx_vk_render_pass_add_blur(struct wlr_render_pass *wlr_pass,
 			tex_options->base.clip, &tex_options->corners,
 			&tex_options->clipped_region, tex_options->clip_box, alpha,
 			&tex_options->base, options->blur_data->transparency_threshold);
+		return;
+	}
+
+	if (options->edge_softness > 0) {
+		render_effect_image_soft_edge(pass, src, &dst_box,
+			tex_options->base.clip, &tex_options->corners,
+			&tex_options->clipped_region, tex_options->clip_box, alpha,
+			options->edge_softness);
 		return;
 	}
 
