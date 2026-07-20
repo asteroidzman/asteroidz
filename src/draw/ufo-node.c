@@ -36,7 +36,13 @@ static bool ufo_buffer_begin_data_ptr_access(struct wlr_buffer *wlr_buffer,
 											 uint32_t *format, size_t *stride) {
 	(void)flags;
 	struct ufo_buffer *buf = wl_container_of(wlr_buffer, buf, base);
+	/* see the matching fix in text-node.c's text_buffer_begin_data_ptr_access:
+	 * never claim success with a NULL data pointer. */
+	if (cairo_surface_status(buf->surface) != CAIRO_STATUS_SUCCESS)
+		return false;
 	*data = cairo_image_surface_get_data(buf->surface);
+	if (!*data)
+		return false;
 	*format = DRM_FORMAT_ARGB8888;
 	*stride = cairo_image_surface_get_stride(buf->surface);
 	return true;
@@ -239,10 +245,6 @@ static void ufo_render_frame(struct ufo_egg *egg) {
 	cairo_destroy(cr);
 	cairo_surface_flush(surface);
 
-	if (egg->buffer) {
-		wlr_buffer_drop(&egg->buffer->base);
-		egg->buffer = NULL;
-	}
 	struct ufo_buffer *buf = calloc(1, sizeof(*buf));
 	if (!buf) {
 		cairo_surface_destroy(surface);
@@ -250,8 +252,17 @@ static void ufo_render_frame(struct ufo_egg *egg) {
 	}
 	wlr_buffer_init(&buf->base, &ufo_buffer_impl, egg->w, egg->h);
 	buf->surface = surface;
-	egg->buffer = buf;
+
+	/* attach the new buffer before dropping the old one -- the scene node
+	 * must never be left pointing at an already-freed wlr_buffer, even
+	 * momentarily (see the matching fix + comment in text-node.c's
+	 * asteroidz_icon_node_set for the exact same bug -- this one repaints
+	 * every 16ms for ~4.8s during a fly-by, the fastest-repeating
+	 * instance of this pattern in the codebase). */
 	wlr_scene_buffer_set_buffer(egg->scene_buffer, &buf->base);
+	if (egg->buffer)
+		wlr_buffer_drop(&egg->buffer->base);
+	egg->buffer = buf;
 	wlr_scene_buffer_set_dest_size(egg->scene_buffer, egg->w, egg->h);
 }
 
