@@ -41,7 +41,14 @@ jobs:
           VERSION="${{ github.event.inputs.version || github.event.release.tag_name }}"
           VERSION="${VERSION#v}"
           echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
-          sed -i "s/version: '[^']*',/version: '${VERSION}',/" meson.build
+          # Restricted to the project() call (always within the first ~15
+          # lines) AND anchored so it only matches a line starting with
+          # "version:", not "meson_version:" -- an earlier unanchored,
+          # unrestricted version of this sed matched EVERY "version: '...',"
+          # line in the file, including meson_version and every
+          # dependency()'s own version requirement (libdrm/xkbcommon/
+          # pixman-1), corrupting the build entirely.
+          sed -i "1,15{/^[[:space:]]*version:/s/version: '[^']*',/version: '${VERSION}',/}" meson.build
           git config user.name "asteroidzman"
           git config user.email "asteroidzman@users.noreply.github.com"
           git add meson.build
