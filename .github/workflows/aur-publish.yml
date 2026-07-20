@@ -42,3 +42,11 @@ jobs:
           commit_message: Update to ${{ github.event.release.tag_name }}
           ssh_keyscan_types: rsa,ecdsa,ed25519
           test: true
+          # default test_flags is "--clean --cleanbuild --nodeps", which
+          # never installs the PKGBUILD's own makedepends (meson, ninja,
+          # wayland-protocols, vulkan-headers, glslang) before running
+          # build() -- makepkg's own dependency-sync step is what actually
+          # invokes pacman for that, and --nodeps skips it entirely. Broke
+          # the 0.17.0 and 0.17.1 AUR publishes (arch-meson: command not
+          # found). --syncdeps makes it install them first instead.
+          test_flags: --clean --cleanbuild --syncdeps --noconfirm
