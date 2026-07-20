@@ -68,8 +68,20 @@ shaders to SPIR-V).
 > `libasteroidz-scenefx-0.5` / `asteroidz-scenefx-0.5.pc` and builds with the
 > `gles2,vulkan` renderers, so it won't clash with an upstream `scenefx`.
 
-A matching shell/bar is available as
-[asteroidz-dms](https://github.com/asteroidzman/asteroidz-dms).
+A matching bar is [waybar](https://github.com/Alexays/Waybar) plus a set of
+CFFI plugins: two are asteroidz-specific —
+[waybar-asteroidz-workspaces](https://github.com/asteroidzman/waybar-asteroidz-workspaces)
+(tag pills with real app icons) and
+[waybar-display](https://github.com/asteroidzman/waybar-display)
+(per-monitor display/HDR + wallpaper settings, driven by `amsg`) — and the
+rest are general-purpose, usable on any wlroots compositor:
+[waybar-sysmon](https://github.com/asteroidzman/waybar-sysmon),
+[waybar-network](https://github.com/asteroidzman/waybar-network),
+[waybar-volume](https://github.com/asteroidzman/waybar-volume),
+[waybar-medication](https://github.com/asteroidzman/waybar-medication),
+[waybar-media-cava](https://github.com/asteroidzman/waybar-media-cava), and
+[waybar-weather-cffi](https://github.com/asteroidzman/waybar-weather)
+(AUR name `waybar-weather-cffi`). All are on the AUR.
 
 ```bash
 meson setup build --prefix=/usr
