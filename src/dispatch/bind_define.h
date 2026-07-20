@@ -2887,6 +2887,83 @@ static bool screenshot_ui_save_and_copy(struct wlr_buffer *frame, Monitor *m,
 	return ok;
 }
 
+/* raw-frame output dir + monotonic counter for ShotRawHDR captures -- a
+ * fixed, simple location an external tool (contrib/hdr-record.sh) owns: it
+ * clears the directory before starting a capture session and assembles the
+ * numbered frames into an HDR10-tagged video afterward via ffmpeg. */
+#define RAWHDR_DIR "/tmp/asteroidz-rawhdr"
+static uint32_t rawhdr_frame_seq = 0;
+
+/* Dumps [frame] (the full composited output buffer, no crop/selection) at
+ * its native 10-bit precision, unlike screenshot_ui_save_and_copy's usual
+ * tonemapped 8-bit PNG path -- for external HDR10 video encoding.
+ *
+ * GLES2 can't read back DRM_FORMAT_XRGB2101010, the format asteroidz
+ * actually renders HDR outputs in (wlr_output_state_set_render_format);
+ * only XBGR2101010 (R/B-swapped, same 10-bit precision) is in wlroots'
+ * GLES2 readback format table (render/gles2/pixel_format.c) -- Vulkan has
+ * no such gap. Read back XBGR2101010 here; the consuming tool must tag its
+ * ffmpeg pixel format as x2bgr10le (not x2rgb10le) to match, or the R/B
+ * channels come out swapped in the encoded video. Requires
+ * GL_EXT_texture_type_2_10_10_10_REV (near-universal on Mesa/RadeonSI). */
+static bool screenshot_ui_save_raw_hdr(struct wlr_buffer *frame) {
+	if (!frame)
+		return false;
+
+	struct wlr_texture *tex = wlr_texture_from_buffer(drw, frame);
+	if (!tex) {
+		wlr_log(WLR_ERROR, "screenshot_ui: rawhdr: failed to import frame as texture");
+		return false;
+	}
+
+	int32_t w = frame->width, h = frame->height;
+	int32_t stride = w * 4; /* XBGR2101010 is 4 bytes/px, no extra padding */
+	uint8_t *pixels = calloc((size_t)stride, (size_t)h);
+	if (!pixels) {
+		wlr_texture_destroy(tex);
+		return false;
+	}
+
+	struct wlr_texture_read_pixels_options opts = {
+		.data = pixels,
+		.format = DRM_FORMAT_XBGR2101010,
+		.stride = (uint32_t)stride,
+		.dst_x = 0,
+		.dst_y = 0,
+		.src_box = (struct wlr_box){.x = 0, .y = 0, .width = w, .height = h},
+	};
+	bool read_ok = wlr_texture_read_pixels(tex, &opts);
+	wlr_texture_destroy(tex);
+
+	if (!read_ok) {
+		wlr_log(WLR_ERROR, "screenshot_ui: rawhdr: failed to read back pixels "
+						   "(is GL_EXT_texture_type_2_10_10_10_REV missing?)");
+		free(pixels);
+		return false;
+	}
+
+	mkdir(RAWHDR_DIR, 0755);
+	char *path = string_printf("%s/frame_%06u.raw", RAWHDR_DIR, rawhdr_frame_seq);
+	bool ok = false;
+	if (path) {
+		FILE *f = fopen(path, "wb");
+		if (f) {
+			ok = fwrite(pixels, (size_t)stride * (size_t)h, 1, f) == 1;
+			fclose(f);
+			if (ok) {
+				wlr_log(WLR_DEBUG, "screenshot_ui: rawhdr: wrote %s (%dx%d)",
+					path, w, h);
+				rawhdr_frame_seq++;
+			}
+		}
+		if (!ok)
+			wlr_log(WLR_ERROR, "screenshot_ui: rawhdr: failed to write %s", path);
+		free(path);
+	}
+	free(pixels);
+	return ok;
+}
+
 static void screenshot_ui_confirm(void) {
 	screenshot_ui_save_and_copy(shotui.frame, shotui.mon, shotui.sel,
 								shotui.mode);
@@ -2905,6 +2982,12 @@ static void screenshot_ui_on_captured(Monitor *m, ScreenshotMode mode,
 
 	if (mode == ShotScreen) {
 		screenshot_ui_save_and_copy(frame, m, m->m, ShotScreen);
+		wlr_buffer_unlock(frame);
+		return;
+	}
+
+	if (mode == ShotRawHDR) {
+		screenshot_ui_save_raw_hdr(frame);
 		wlr_buffer_unlock(frame);
 		return;
 	}
@@ -3059,6 +3142,8 @@ int32_t screenshot_ui(const Arg *arg) {
 			mode = ShotScreen;
 		else if (!strcmp(arg->v, "window"))
 			mode = ShotWindow;
+		else if (!strcmp(arg->v, "rawhdr"))
+			mode = ShotRawHDR;
 	}
 
 	shotui.capture_mode = mode;
