@@ -57,9 +57,16 @@ system `wlroots0.20`.
 
 ### Arch Linux
 
-`wlroots0.20` is in the official `extra` repo; everything else is in the
-base repos. There's no separate `asteroidz-scenefx` package to conflict
-with — this fork installs its own `asteroidz-scenefx-0.5` pkg-config file.
+The easiest path is the AUR:
+
+```bash
+yay -S asteroidz-scenefx
+```
+
+To build from source instead: `wlroots0.20` is in the official `extra`
+repo; everything else is in the base repos. There's no separate
+`asteroidz-scenefx` package to conflict with — this fork installs its own
+`asteroidz-scenefx-0.5` pkg-config file.
 
 ```bash
 sudo pacman -S --needed base-devel git meson ninja \
