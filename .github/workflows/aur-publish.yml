@@ -41,12 +41,17 @@ jobs:
           ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
           commit_message: Update to ${{ github.event.release.tag_name }}
           ssh_keyscan_types: rsa,ecdsa,ed25519
-          test: true
-          # default test_flags is "--clean --cleanbuild --nodeps", which
-          # never installs the PKGBUILD's own makedepends (meson, ninja,
-          # wayland-protocols, vulkan-headers, glslang) before running
-          # build() -- makepkg's own dependency-sync step is what actually
-          # invokes pacman for that, and --nodeps skips it entirely. Broke
-          # the 0.17.0 and 0.17.1 AUR publishes (arch-meson: command not
-          # found). --syncdeps makes it install them first instead.
-          test_flags: --clean --cleanbuild --syncdeps --noconfirm
+          # test: true can't actually validate this package: asteroidz depends
+          # on asteroidz-scenefx, itself an AUR-only package, and this
+          # container's plain pacman has no way to resolve/install an AUR
+          # dependency (no yay/paru here) -- meson setup would fail to find
+          # it regardless of test_flags (--nodeps vs --syncdeps), since it's
+          # a hard dependency() in meson.build, not just a makepkg-level
+          # check. Tried --syncdeps first (fixes a real, separate gap --
+          # --nodeps, the action's own default, never installs the
+          # PKGBUILD's makedepends like meson either, which broke the
+          # 0.17.0 and first 0.17.1 publish attempts with "arch-meson:
+          # command not found") but hit this next. Real verification
+          # (build + full regression suite) already happens locally/in
+          # ci-check.yml before a release is ever cut.
+          test: false
