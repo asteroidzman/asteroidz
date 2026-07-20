@@ -40,8 +40,22 @@ test_toggle_overview_jump_also_enters_overview() {
 }
 
 test_toggle_overview_refuses_with_no_clients() {
-	hl_assert_eq "no clients present (hl_reset already cleared them)" \
-		"$(hl_get "get all-clients" | jq '.clients | length')" "0"
+	# hl_reset only kills THIS harness's own spawned windows -- in live mode
+	# (HL_LIVE_MON) the user's own real windows are still on the monitor,
+	# so the "zero clients" precondition this test needs doesn't hold.
+	# Dispatching toggle_overview anyway would genuinely ENTER overview
+	# (toggleoverview() only refuses when there are truly zero visible
+	# clients) with no forced-close call anywhere after it in this test --
+	# leaving the live session stuck in overview for the rest of the
+	# suite, un-recoverable except by the user manually pressing Escape.
+	# Confirmed live 2026-07-20. Skip instead of assuming zero clients.
+	local count
+	count="$(hl_get "get all-clients" | jq '.clients | length')"
+	if [ "$count" != "0" ]; then
+		hl_skip "test_toggle_overview_refuses_with_no_clients: $count client(s) still present (real windows in live mode?), dispatching toggle_overview here would actually enter overview with no way in this test to close it again"
+		return
+	fi
+	hl_assert_eq "no clients present (hl_reset already cleared them)" "$count" "0"
 	hl_dispatch "toggle_overview" 1
 	hl_assert_eq "toggle_overview is a no-op with zero visible clients on the monitor" \
 		"$(hl_active_tags)" "[1]"
