@@ -24,7 +24,11 @@
 # wlr-virtual-pointer's motion_absolute (extent-relative), which silently
 # produced a no-op resize instead of an error.
 
-hl_client_geom() { hl_get "get all-clients" | jq -c '.clients[0] | {x,y,width,height}'; }
+# our own spawned W1, not .clients[0] -- in live mode that's whatever real
+# window the compositor's list happens to put first (confirmed live
+# 2026-07-20: a real Vivaldi window), not the test's own drag target, which
+# made every assertion below compare the wrong window's before/after geometry.
+hl_client_geom() { hl_get "get all-clients" | jq -c '.clients[] | select(.title=="W1") | {x,y,width,height}'; }
 
 test_super_left_drag_moves_a_floating_window() {
 	hl_dispatch "set_layout,float"

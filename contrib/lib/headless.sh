@@ -32,6 +32,11 @@ HL_WLVKBD="$HL_REPO/contrib/wlvkbd/wlvkbd"
 HL_WLLAYER="$HL_REPO/contrib/wllayer/wllayer"
 HL_WIDTH="${HL_WIDTH:-1920}"
 HL_HEIGHT="${HL_HEIGHT:-1080}"
+# wlvptr's absolute-pointer extent -- equal to HL_WIDTH/HL_HEIGHT except in
+# hl_start_live's HL_LIVE_MON branch, which overrides these to the full
+# multi-monitor layout bounding box (see the comment there for why).
+HL_PTR_EXTENT_W="$HL_WIDTH"
+HL_PTR_EXTENT_H="$HL_HEIGHT"
 HL_MON="${HL_MON:-HEADLESS-1}"   # the monitor every test targets; see hl_start_live
 
 ASSERT_COUNT=0
@@ -195,7 +200,31 @@ hl_start_live() {
 			HL_WIDTH="$real_w"
 			HL_HEIGHT="$real_h"
 		fi
-		echo "hl_start_live: attached to live session, testing DIRECTLY against real monitor $HL_MON (${HL_WIDTH}x${HL_HEIGHT})" >&2
+		# wlr-virtual-pointer's motion_absolute is a fraction not of the
+		# TARGET monitor's own size but of the whole wlr_output_layout's
+		# bounding box across every connected output (confirmed live
+		# 2026-07-20: on a DP-1 + HDMI-A-1 setup, asking for x=200 out of a
+		# 3840-wide extent landed the real cursor at x=333 -- the compositor
+		# normalized against the 6400px-wide two-monitor layout instead).
+		# Using HL_WIDTH/HL_HEIGHT (the target monitor's OWN size) as the
+		# wlvptr extent silently overshoots any multi-monitor live session --
+		# harmless when the target point is near a window's middle (still
+		# lands inside it by luck), but a grab point near an edge (e.g. a
+		# resize test's bottom-right corner, 5px inset) misses the window
+		# entirely. HL_PTR_EXTENT_W/H is the true layout bounding box, used
+		# only by the wlvptr-driving helpers below; HL_WIDTH/HL_HEIGHT keep
+		# meaning "the target monitor's own size" for geometry math (e.g.
+		# center_window's expected output-center) elsewhere -- correct as
+		# long as HL_MON sits at layout offset (0,0), true for this setup,
+		# not asserted in general.
+		local layout_w layout_h
+		layout_w="$(hl_get "get all-monitors" | jq '[.monitors[] | .x + .width] | max')"
+		layout_h="$(hl_get "get all-monitors" | jq '[.monitors[] | .y + .height] | max')"
+		if [ -n "$layout_w" ] && [ -n "$layout_h" ] && [ "$layout_w" != "null" ] && [ "$layout_h" != "null" ]; then
+			HL_PTR_EXTENT_W="$layout_w"
+			HL_PTR_EXTENT_H="$layout_h"
+		fi
+		echo "hl_start_live: attached to live session, testing DIRECTLY against real monitor $HL_MON (${HL_WIDTH}x${HL_HEIGHT}, pointer layout extent ${HL_PTR_EXTENT_W}x${HL_PTR_EXTENT_H})" >&2
 		hl_notify "asteroidz live regression: running on $HL_MON" "Testing your REAL monitor directly -- expect window/tag churn on that screen for the duration."
 		return
 	fi
@@ -345,7 +374,7 @@ hl_wait_watch_grew() {
 }
 
 hl_click() { # hl_click X Y [click|rclick|mclick]
-	"$HL_WLVPTR" "$1" "$2" "$HL_WIDTH" "$HL_HEIGHT" "${3:-click}"
+	"$HL_WLVPTR" "$1" "$2" "$HL_PTR_EXTENT_W" "$HL_PTR_EXTENT_H" "${3:-click}"
 }
 
 # hl_super_drag X1 Y1 X2 Y2 -- press Super, left-drag from (X1,Y1) to
@@ -354,11 +383,11 @@ hl_click() { # hl_click X Y [click|rclick|mclick]
 # (mousebind SUPER,BTN_LEFT,move_resize,curmove), a compositor default
 # can't be assumed.
 hl_super_drag() {
-	"$HL_WLVKBD" hold LEFTMETA -- "$HL_WLVPTR" "$1" "$2" "$HL_WIDTH" "$HL_HEIGHT" "drag:$3,$4"
+	"$HL_WLVKBD" hold LEFTMETA -- "$HL_WLVPTR" "$1" "$2" "$HL_PTR_EXTENT_W" "$HL_PTR_EXTENT_H" "drag:$3,$4"
 }
 # hl_super_rdrag X1 Y1 X2 Y2 -- same, right button (resize binding).
 hl_super_rdrag() {
-	"$HL_WLVKBD" hold LEFTMETA -- "$HL_WLVPTR" "$1" "$2" "$HL_WIDTH" "$HL_HEIGHT" "rdrag:$3,$4"
+	"$HL_WLVKBD" hold LEFTMETA -- "$HL_WLVPTR" "$1" "$2" "$HL_PTR_EXTENT_W" "$HL_PTR_EXTENT_H" "rdrag:$3,$4"
 }
 
 # ─── test windows ─────────────────────────────────────────────────────────
