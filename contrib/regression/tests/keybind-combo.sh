@@ -13,21 +13,23 @@
 # combo_view,2 and F12 -> combo_view,3 specifically for this.
 
 test_combo_view_via_two_held_keys_ors_the_tags_together() {
+	hl_dispatch "focus_monitor,$HL_MON" 0.2
 	hl_dispatch "view,1"
 	"$HL_WLVKBD" hold F11 F12 -- sleep 0.2
 	sleep 0.3
 	hl_assert_eq "holding F11 then F12 (without releasing) combines tags 2+3" \
-		"$(hl_get "get all-monitors" | jq -c '.monitors[] | select(.name=="HEADLESS-1") | .active_tags')" \
+		"$(hl_get "get all-monitors" | jq -c ".monitors[] | select(.name==\"$HL_MON\") | .active_tags")" \
 		"[2,3]"
 }
 
 test_combo_view_after_a_key_release_replaces_instead_of_combining() {
+	hl_dispatch "focus_monitor,$HL_MON" 0.2
 	hl_dispatch "view,1"
 	"$HL_WLVKBD" hold F11 F12 -- sleep 0.2  # combine 2+3 first, same as above
 	sleep 0.3
 	"$HL_WLVKBD" hold F11 -- sleep 0.1      # a fresh, separate press+release
 	sleep 0.3
 	hl_assert_eq "a later fresh press+release replaces rather than combining (tag_combo reset on release)" \
-		"$(hl_get "get all-monitors" | jq -c '.monitors[] | select(.name=="HEADLESS-1") | .active_tags')" \
+		"$(hl_get "get all-monitors" | jq -c ".monitors[] | select(.name==\"$HL_MON\") | .active_tags")" \
 		"[2]"
 }
