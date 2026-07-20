@@ -16,7 +16,9 @@
 # (strtok_r skips consecutive delimiters), so passing just one arg (the
 # appid) is the reliable way to target "any kitty window" here.
 
-hl_first_client_field() { hl_get "get all-clients" | jq -r ".clients[0].$1"; }
+# our own spawned W1, not .clients[0] (which in live mode can just as
+# easily be a real pre-existing window as the test's own spawned one)
+hl_first_client_field() { hl_client_field W1 "$1"; }
 hl_mon_active_special() { hl_get "get all-monitors" | jq -r ".monitors[] | select(.name==\"$HL_MON\") | .active_special"; }
 
 test_toggle_named_scratchpad_adds_the_client() {

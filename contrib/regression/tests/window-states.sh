@@ -1,8 +1,10 @@
 # window-states.sh — per-client boolean state toggles (floating, fullscreen,
 # fake-fullscreen, maximize, minimize, pin).
 
-hl_first_client_field() { # hl_first_client_field FIELD
-	hl_get "get all-clients" | jq -r ".clients[0].$1"
+hl_first_client_field() { # hl_first_client_field FIELD -- our own spawned W1,
+	# not .clients[0] (which in live mode can just as easily be a real
+	# pre-existing window as the test's own spawned one)
+	hl_client_field W1 "$1"
 }
 
 test_toggle_floating() {
@@ -65,6 +67,9 @@ test_toggle_all_floating() {
 	hl_spawn_kitty W2 >/dev/null
 	hl_wait_client_count 2
 	hl_dispatch "toggle_all_floating"
-	local n; n="$(hl_get "get all-clients" | jq '[.clients[] | select(.is_floating==true)] | length')"
-	hl_assert_eq "toggle_all_floating floats every window on the tag" "$n" "2"
+	# checked via our own two spawned windows specifically -- counting ALL
+	# floating clients on the tag (the old approach) counts real
+	# pre-existing windows too, in live mode.
+	hl_assert_true "toggle_all_floating floats every window on the tag" \
+		"$([ "$(hl_client_field W1 is_floating)" = "true" ] && [ "$(hl_client_field W2 is_floating)" = "true" ] && echo true || echo false)"
 }

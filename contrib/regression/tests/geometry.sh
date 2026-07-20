@@ -6,7 +6,9 @@
 # the '+' explicitly to test delta behavior, or the assertions silently
 # check the wrong thing (a bare "30" SETS x to 30, it doesn't add 30).
 
-hl_first_client_json() { hl_get "get all-clients" | jq -c '.clients[0] | {x,y,width,height}'; }
+# our own spawned W1, not .clients[0] (which in live mode can just as
+# easily be a real pre-existing window as the test's own spawned one)
+hl_first_client_json() { hl_get "get all-clients" | jq -c '.clients[] | select(.title=="W1") | {x,y,width,height}'; }
 
 test_toggle_gaps_changes_tiled_geometry() {
 	hl_dispatch "set_layout,tile"
@@ -76,11 +78,15 @@ test_move_window_shifts_position() {
 	hl_spawn_kitty W1 >/dev/null
 	hl_wait_client_count 1
 	sleep 0.3
-	local before_x; before_x="$(hl_get "get all-clients" | jq -r '.clients[0].x')"
+	local before_x; before_x="$(hl_client_field W1 x)"
+	local want_x=$((before_x + 30))
 	hl_dispatch "move_window,+30,+30"
-	local after_x; after_x="$(hl_get "get all-clients" | jq -r '.clients[0].x')"
+	# poll for the target instead of a fixed sleep -- live mode animates the
+	# move over ~200-300ms, so reading too early sees the pre-move position
+	hl_wait_field_eq W1 x "$want_x" 20
+	local after_x; after_x="$(hl_client_field W1 x)"
 	hl_assert_eq "move_window,+30,+30 shifts x by +30 (relative -- bare '30' with no sign SETS it instead)" \
-		"$after_x" "$((before_x + 30))"
+		"$after_x" "$want_x"
 }
 
 test_resize_window_changes_size() {
@@ -88,10 +94,12 @@ test_resize_window_changes_size() {
 	hl_spawn_kitty W1 >/dev/null
 	hl_wait_client_count 1
 	sleep 0.3
-	local before_w; before_w="$(hl_get "get all-clients" | jq -r '.clients[0].width')"
+	local before_w; before_w="$(hl_client_field W1 width)"
+	local want_w=$((before_w + 50))
 	hl_dispatch "resize_window,+50,+0"
-	local after_w; after_w="$(hl_get "get all-clients" | jq -r '.clients[0].width')"
-	hl_assert_eq "resize_window,+50,+0 grows width by +50 (relative)" "$after_w" "$((before_w + 50))"
+	hl_wait_field_eq W1 width "$want_w" 20
+	local after_w; after_w="$(hl_client_field W1 width)"
+	hl_assert_eq "resize_window,+50,+0 grows width by +50 (relative)" "$after_w" "$want_w"
 }
 
 test_center_window_centers_a_floating_client() {
@@ -100,11 +108,12 @@ test_center_window_centers_a_floating_client() {
 	hl_wait_client_count 1
 	sleep 0.3
 	hl_dispatch "move_window,300,300"
+	hl_wait_field_eq W1 x 300 20
 	hl_dispatch "center_window"
-	local geo; geo="$(hl_get "get all-clients" | jq '.clients[0]')"
+	sleep 0.5  # center_window's target isn't known ahead of time to poll for
 	local cx cy w h
-	cx=$(jq -r .x <<<"$geo"); cy=$(jq -r .y <<<"$geo")
-	w=$(jq -r .width <<<"$geo"); h=$(jq -r .height <<<"$geo")
+	cx="$(hl_client_field W1 x)"; cy="$(hl_client_field W1 y)"
+	w="$(hl_client_field W1 width)"; h="$(hl_client_field W1 height)"
 	local mid_x=$((cx + w / 2)) mid_y=$((cy + h / 2))
 	local out_mid_x=$((HL_WIDTH / 2)) out_mid_y=$((HL_HEIGHT / 2))
 	local dx=$((mid_x - out_mid_x)); dx=${dx#-}
