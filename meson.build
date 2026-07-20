@@ -55,9 +55,22 @@ if git.found()
 endif
 
 if is_git_repo
-  # if current directory is a git repo, get commit hash and latest tag
+  # if current directory is a git repo, get commit hash and latest tag.
+  # latest_tag is derived from git itself (not the project()-declared
+  # version above, which is a plain string literal nobody remembers to
+  # bump at release time -- it silently fell a version behind for 0.17.0,
+  # so asteroidz -v / amsg get version kept reporting 0.16.7 even in
+  # 0.17.0 builds). --abbrev=0 always returns just the nearest tag name,
+  # never a "-N-gHASH" suffix, so this stays a clean "TAG(hash)" string
+  # exactly like before. Falls back to the literal only if no tag is
+  # reachable at all (e.g. a shallow clone with no tags fetched).
   commit_hash = run_command(git, 'rev-parse', '--short', 'HEAD', check : false).stdout().strip()
-  latest_tag = meson.project_version()
+  tag_result = run_command(git, 'describe', '--tags', '--abbrev=0', check : false)
+  if tag_result.returncode() == 0 and tag_result.stdout().strip() != ''
+    latest_tag = tag_result.stdout().strip()
+  else
+    latest_tag = meson.project_version()
+  endif
   version_with_hash = '@0@(@1@)'.format(latest_tag, commit_hash)
 else
   # if not a git repo, use project version and "release" string
