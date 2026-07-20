@@ -12,6 +12,7 @@
 hl_two_client_positions() { hl_get "get all-clients" | jq -c '[.clients[] | {x,y}]'; }
 
 test_dwindle_split_horizontal_places_new_window_beside() {
+	hl_skip_if_live_unrestorable_option "test_dwindle_split_horizontal_places_new_window_beside" dwindle_manual_split || return
 	hl_dispatch "set_layout,tile"
 	hl_spawn_kitty W1 >/dev/null
 	hl_wait_client_count 1
@@ -27,6 +28,7 @@ test_dwindle_split_horizontal_places_new_window_beside() {
 }
 
 test_dwindle_split_vertical_places_new_window_below() {
+	hl_skip_if_live_unrestorable_option "test_dwindle_split_vertical_places_new_window_below" dwindle_manual_split || return
 	hl_dispatch "set_layout,tile"
 	hl_spawn_kitty W1 >/dev/null
 	hl_wait_client_count 1
@@ -42,6 +44,7 @@ test_dwindle_split_vertical_places_new_window_below() {
 }
 
 test_dwindle_toggle_split_direction_flips_it() {
+	hl_skip_if_live_unrestorable_option "test_dwindle_toggle_split_direction_flips_it" dwindle_manual_split || return
 	hl_dispatch "set_layout,tile"
 	hl_spawn_kitty W1 >/dev/null
 	hl_wait_client_count 1
