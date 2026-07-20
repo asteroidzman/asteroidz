@@ -4,6 +4,8 @@ test_focus_stack_next_cycles_focus() {
 	hl_dispatch "set_layout,tile"
 	hl_spawn_kitty W1 >/dev/null; hl_wait_client_count 1
 	hl_spawn_kitty W2 >/dev/null; hl_wait_client_count 2
+	hl_spawn_kitty W3 >/dev/null; hl_wait_client_count 3
+	hl_spawn_kitty W4 >/dev/null; hl_wait_client_count 4
 	local before; before="$(hl_focused_title)"
 	hl_dispatch "focus_stack,next"
 	local after; after="$(hl_focused_title)"
@@ -15,6 +17,8 @@ test_focus_direction_left_right() {
 	hl_dispatch "set_layout,tile"
 	hl_spawn_kitty W1 >/dev/null; hl_wait_client_count 1
 	hl_spawn_kitty W2 >/dev/null; hl_wait_client_count 2
+	hl_spawn_kitty W3 >/dev/null; hl_wait_client_count 3
+	hl_spawn_kitty W4 >/dev/null; hl_wait_client_count 4
 	sleep 0.3
 	hl_dispatch "focus_direction,left"
 	local left_focus; left_focus="$(hl_focused_title)"
@@ -53,6 +57,8 @@ test_exchange_client_swaps_positions() {
 	hl_dispatch "set_layout,tile"
 	hl_spawn_kitty W1 >/dev/null; hl_wait_client_count 1
 	hl_spawn_kitty W2 >/dev/null; hl_wait_client_count 2
+	hl_spawn_kitty W3 >/dev/null; hl_wait_client_count 3
+	hl_spawn_kitty W4 >/dev/null; hl_wait_client_count 4
 	sleep 0.3
 	local before; before="$(hl_get "get all-clients" | jq -c '[.clients[] | {title,x}] | sort_by(.title)')"
 	hl_dispatch "exchange_client,left"

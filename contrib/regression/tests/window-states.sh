@@ -65,11 +65,15 @@ test_toggle_all_floating() {
 	hl_dispatch "set_layout,tile"
 	hl_spawn_kitty W1 >/dev/null
 	hl_spawn_kitty W2 >/dev/null
-	hl_wait_client_count 2
+	hl_spawn_kitty W3 >/dev/null
+	hl_spawn_kitty W4 >/dev/null
+	hl_wait_client_count 4
 	hl_dispatch "toggle_all_floating"
-	# checked via our own two spawned windows specifically -- counting ALL
+	# checked via our own four spawned windows specifically -- counting ALL
 	# floating clients on the tag (the old approach) counts real
 	# pre-existing windows too, in live mode.
 	hl_assert_true "toggle_all_floating floats every window on the tag" \
-		"$([ "$(hl_client_field W1 is_floating)" = "true" ] && [ "$(hl_client_field W2 is_floating)" = "true" ] && echo true || echo false)"
+		"$([ "$(hl_client_field W1 is_floating)" = "true" ] && [ "$(hl_client_field W2 is_floating)" = "true" ] && \
+		   [ "$(hl_client_field W3 is_floating)" = "true" ] && [ "$(hl_client_field W4 is_floating)" = "true" ] && \
+		   echo true || echo false)"
 }
