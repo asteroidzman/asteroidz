@@ -113,6 +113,7 @@ EOF
 	fi
 	export XDG_RUNTIME_DIR="$HL_XDG" WAYLAND_DISPLAY="$HL_SOCK"
 	HL_SIG="$(ls "$HL_XDG"/asteroidz-*.sock 2>/dev/null | head -1)"
+	HL_BASELINE_CLIENTS=0 # fresh isolated instance, always starts at zero
 
 	# flat mid-grey wallpaper: plenty of contrast for shadow/blur checks
 	# without needing per-test image generation, and easy to spot rendering
@@ -155,6 +156,16 @@ hl_start_live() {
 	HL_LIVE_MODE=1
 	HL_OUTDIR="${HL_OUTDIR:-/tmp/asteroidz-hl-live-$$}"
 	mkdir -p "$HL_OUTDIR"
+
+	# get all-clients is global, not scoped to any one monitor/tag -- a live
+	# session normally has real windows open already (confirmed live
+	# 2026-07-20: assertions written for a clean count like "1" or "0" saw
+	# the user's actual open windows instead and failed for the wrong
+	# reason). Captured once, right here, before any test window exists;
+	# hl_wait_client_count below adds this back so tests can keep asserting
+	# small, human-readable counts without needing to know it's a live
+	# session or query the user's real windows themselves.
+	HL_BASELINE_CLIENTS="$(hl_get "get all-clients" | jq '.clients | length')"
 
 	if [ -n "${HL_LIVE_MON:-}" ]; then
 		local real_names
@@ -358,10 +369,16 @@ hl_spawn_wllayer() { # hl_spawn_wllayer LAYER ANCHOR EXCL_ZONE W H KB HOLD_S [RE
 	echo "$pid"
 }
 
+# current client count with HL_BASELINE_CLIENTS (whatever was already open
+# when this instance attached -- see hl_start_live) subtracted back out, so
+# callers can keep asserting small, test-relative counts like "1" or "2"
+# regardless of a live session's own pre-existing windows.
+hl_client_count() { echo $(($(hl_get "get all-clients" | jq '.clients | length') - ${HL_BASELINE_CLIENTS:-0})); }
+
 hl_wait_client_count() { # hl_wait_client_count N [timeout_tenths=30]
 	local want="$1" timeout="${2:-30}" i n
 	for i in $(seq 1 "$timeout"); do
-		n="$(hl_get "get all-clients" | jq '.clients | length')"
+		n="$(hl_client_count)"
 		[ "$n" = "$want" ] && return 0
 		sleep 0.1
 	done
