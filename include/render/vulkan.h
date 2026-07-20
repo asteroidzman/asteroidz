@@ -403,8 +403,6 @@ struct fx_vk_command_buffer {
 	uint64_t timeline_point;
 	// Textures to destroy after the command buffer completes
 	struct wl_list destroy_textures; // fx_vk_texture.destroy_link
-	// Staging shared buffers to release after the command buffer completes
-	struct wl_list stage_buffers; // fx_vk_shared_buffer.link
 	// Color transform to unref after the command buffer completes
 	struct wlr_color_transform *color_transform;
 
@@ -528,7 +526,7 @@ struct fx_vk_renderer {
 	struct {
 		struct fx_vk_command_buffer *cb;
 		uint64_t last_timeline_point;
-		struct wl_list buffers; // fx_vk_shared_buffer.link
+		struct wl_list buffers; // fx_vk_stage_buffer.link
 	} stage;
 
 	struct {
@@ -693,13 +691,20 @@ struct fx_vk_render_pass {
 struct fx_vk_render_pass *fx_vulkan_begin_render_pass(struct fx_vk_renderer *renderer,
 	struct fx_vk_render_buffer *buffer, const struct wlr_buffer_pass_options *options);
 
-// Suballocates a buffer span with the given size that can be mapped
-// and used as staging buffer. The allocation is implicitly released when the
-// stage cb has finished execution. The start of the span will be a multiple
-// of the given alignment.
+// Suballocates a buffer span with the given size from the staging ring buffer
+// that is mapped for CPU access. fx_vulkan_stage_mark_submit must be called
+// after allocations are made to mark the timeline point after which the
+// allocations will be released. The start of the span will be a multiple of
+// alignment.
 struct fx_vk_buffer_span fx_vulkan_get_stage_span(
 	struct fx_vk_renderer *renderer, VkDeviceSize size,
 	VkDeviceSize alignment);
+
+// Records a watermark on all staging buffers with new allocations with the
+// specified timeline point. Once the timeline point is passed, the span will
+// be reclaimed by fx_vulkan_stage_buffer_reclaim.
+void fx_vulkan_stage_mark_submit(struct fx_vk_renderer *renderer,
+	uint64_t timeline_point);
 
 // Tries to allocate a texture descriptor set. Will additionally
 // return the pool it was allocated from when successful (for freeing it later).
@@ -781,28 +786,43 @@ struct fx_vk_descriptor_pool {
 	struct wl_list link; // fx_vk_renderer.descriptor_pools
 };
 
-struct fx_vk_allocation {
-	VkDeviceSize start;
-	VkDeviceSize size;
+struct fx_vk_stage_watermark {
+	VkDeviceSize head;
+	uint64_t timeline_point;
 };
 
-// List of suballocated staging buffers.
-// Used to upload to/read from device local images.
-struct fx_vk_shared_buffer {
-	struct wl_list link; // fx_vk_renderer.stage.buffers or fx_vk_command_buffer.stage_buffers
+// Ring buffer for staging transfers
+struct fx_vk_stage_buffer {
+	struct wl_list link; // fx_vk_renderer.stage.buffers
 	VkBuffer buffer;
 	VkDeviceMemory memory;
 	VkDeviceSize buf_size;
 	void *cpu_mapping;
-	struct wl_array allocs; // struct fx_vk_allocation
-	int64_t last_used_ms;
+
+	VkDeviceSize head;
+	VkDeviceSize tail;
+
+	struct wl_array watermarks; // struct fx_vk_stage_watermark
+	int empty_gc_cnt;
 };
 
-// Suballocated range on a buffer.
+// Suballocated range on a staging ring buffer.
 struct fx_vk_buffer_span {
-	struct fx_vk_shared_buffer *buffer;
-	struct fx_vk_allocation alloc;
+	struct fx_vk_stage_buffer *buffer;
+	VkDeviceSize offset;
+	VkDeviceSize size;
 };
+
+// Suballocate a span of size bytes from a staging ring buffer, with the
+// returned offset rounded up to the given alignment. Returns the byte offset
+// of the allocation, or (VkDeviceSize)-1 if the buffer is too full to fit it.
+VkDeviceSize fx_vulkan_stage_buffer_alloc(struct fx_vk_stage_buffer *buf,
+	VkDeviceSize size, VkDeviceSize alignment);
+
+// Free all allocations covered by watermarks whose timeline point has been
+// reached.
+void fx_vulkan_stage_buffer_reclaim(struct fx_vk_stage_buffer *buf,
+	uint64_t current_point);
 
 
 // Prepared form for a color transform
