@@ -27,7 +27,9 @@ test_adjust_gaps_changes_tiled_geometry() {
 	hl_dispatch "set_layout,tile"
 	hl_spawn_kitty W1 >/dev/null
 	hl_spawn_kitty W2 >/dev/null
-	hl_wait_client_count 2
+	hl_spawn_kitty W3 >/dev/null
+	hl_spawn_kitty W4 >/dev/null
+	hl_wait_client_count 4
 	sleep 0.3
 	local before; before="$(hl_get "get all-clients" | jq -c '[.clients[].x] | sort')"
 	hl_dispatch "adjust_gaps,40"
@@ -54,6 +56,8 @@ test_set_master_factor_currently_has_no_layout_effect() {
 	hl_dispatch "set_layout,tile"
 	hl_spawn_kitty W1 >/dev/null; hl_wait_client_count 1
 	hl_spawn_kitty W2 >/dev/null; hl_wait_client_count 2
+	hl_spawn_kitty W3 >/dev/null; hl_wait_client_count 3
+	hl_spawn_kitty W4 >/dev/null; hl_wait_client_count 4
 	sleep 0.3
 	local before; before="$(hl_get "get all-clients" | jq -c '[.clients[].width] | sort')"
 	hl_dispatch "set_master_factor,0.05"
@@ -66,6 +70,9 @@ test_adjust_master_count_currently_has_no_layout_effect() {
 	hl_spawn_kitty W1 >/dev/null; hl_wait_client_count 1
 	hl_spawn_kitty W2 >/dev/null; hl_wait_client_count 2
 	hl_spawn_kitty W3 >/dev/null; hl_wait_client_count 3
+	hl_spawn_kitty W4 >/dev/null; hl_wait_client_count 4
+	hl_spawn_kitty W5 >/dev/null; hl_wait_client_count 5
+	hl_spawn_kitty W6 >/dev/null; hl_wait_client_count 6
 	sleep 0.3
 	local before; before="$(hl_get "get all-clients" | jq -c '[.clients[].width] | sort')"
 	hl_dispatch "adjust_master_count,1"

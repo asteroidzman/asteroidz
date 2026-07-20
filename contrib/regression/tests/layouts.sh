@@ -57,26 +57,39 @@ test_tile_arranges_two_windows_side_by_side() {
 	hl_dispatch "set_layout,tile"
 	hl_spawn_kitty W1 >/dev/null
 	hl_spawn_kitty W2 >/dev/null
-	hl_wait_client_count 2
+	hl_spawn_kitty W3 >/dev/null
+	hl_spawn_kitty W4 >/dev/null
+	hl_wait_client_count 4
 	sleep 0.5
-	# filtered to our own two spawned windows specifically -- checking
+	# filtered to our own four spawned windows specifically -- checking
 	# ALL clients' x positions on the tag (the old approach) counts real
 	# pre-existing windows too, in live mode.
-	local x1 x2
+	#
+	# tile here is a plain equal-width horizontal split, not dwm-style
+	# master+stack: confirmed empirically (all 4 windows get distinct x,
+	# identical y). Generalizes directly from the original 2-window check.
+	local x1 x2 x3 x4
 	x1="$(hl_client_field W1 x)"; x2="$(hl_client_field W2 x)"
-	hl_assert_true "tile layout: two windows get distinct x positions" \
-		"$([ "$x1" != "$x2" ] && [ -n "$x2" ] && echo true || echo false)"
+	x3="$(hl_client_field W3 x)"; x4="$(hl_client_field W4 x)"
+	hl_assert_true "tile layout: all four windows get distinct x positions" \
+		"$([ "$x1" != "$x2" ] && [ "$x1" != "$x3" ] && [ "$x1" != "$x4" ] && \
+		   [ "$x2" != "$x3" ] && [ "$x2" != "$x4" ] && [ "$x3" != "$x4" ] && \
+		   echo true || echo false)"
 }
 
 test_monocle_stacks_windows_at_same_position() {
 	hl_dispatch "set_layout,monocle"
 	hl_spawn_kitty W1 >/dev/null
 	hl_spawn_kitty W2 >/dev/null
-	hl_wait_client_count 2
+	hl_spawn_kitty W3 >/dev/null
+	hl_spawn_kitty W4 >/dev/null
+	hl_wait_client_count 4
 	sleep 0.5
-	# filtered to our own two spawned windows -- real pre-existing windows
+	# filtered to our own four spawned windows -- real pre-existing windows
 	# on the tag would otherwise inflate "unique x" past 1 in live mode.
-	local x1 x2
+	local x1 x2 x3 x4
 	x1="$(hl_client_field W1 x)"; x2="$(hl_client_field W2 x)"
-	hl_assert_eq "monocle layout: all windows share the same x" "$([ "$x1" = "$x2" ] && echo 1 || echo 2)" "1"
+	x3="$(hl_client_field W3 x)"; x4="$(hl_client_field W4 x)"
+	hl_assert_true "monocle layout: all four windows share the same x" \
+		"$([ "$x1" = "$x2" ] && [ "$x2" = "$x3" ] && [ "$x3" = "$x4" ] && echo true || echo false)"
 }
