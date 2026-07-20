@@ -385,7 +385,80 @@ hl_wait_client_count() { # hl_wait_client_count N [timeout_tenths=30]
 	return 1
 }
 
+# hl_client_field TITLE FIELD -- looks up a field on the specific client with
+# that title, never positional (.clients[0] picks whatever's FIRST in the
+# array -- in live mode that's just as likely to be a real pre-existing
+# window as the test's own spawned one). Centralizes what several test files
+# used to define locally and identically.
+hl_client_field() { hl_get "get all-clients" | jq -r ".clients[] | select(.title==\"$1\") | .$2"; }
+
+# the currently active tag's index on $HL_MON -- for reading per-tag state
+# (like the layout symbol) without assuming tag 1 is active, which only
+# holds in a fresh isolated instance. In live mode the active tag can be
+# anything, including leftover state from a previous test module (real-
+# monitor mode deliberately doesn't force view/layout between modules --
+# see hl_reset -- to avoid a synchronous-redraw freeze risk).
+hl_current_tag_index() { hl_get "get all-monitors" | jq -r ".monitors[] | select(.name==\"$HL_MON\") | .active_tags[0]"; }
+
+# some config options (dwindle_manual_split, scroller_proportion_preset, ...)
+# have a runtime SETTER (set_option) but no IPC GETTER at all -- there's no
+# way to read the live session's actual current value before overriding it,
+# so a test that sets one and "restores" to a hardcoded literal at the end
+# risks silently and permanently changing the user's real config to the
+# wrong value if their real value ever differed from that literal (this
+# already happened once this session: scroller.sh's set_proportion_absolute
+# test flips scroller_ignore_proportion_single 1->0 assuming 0 is the
+# default, but the compile-time default is actually 1). Tests that need one
+# of these should skip in live mode via this guard instead of forcing it.
+hl_skip_if_live_unrestorable_option() { # hl_skip_if_live_unrestorable_option TEST_NAME OPTION_NAME
+	if [ "${HL_LIVE_MODE:-0}" = "1" ]; then
+		hl_skip "$1: needs $2 set to a specific value, which has no IPC getter to safely restore afterward in live mode -- skipping rather than risk permanently changing your real config"
+		return 1
+	fi
+	return 0
+}
+
+# hl_wait_field_eq TITLE FIELD EXPECTED [timeout_tenths=20] -- poll until a
+# client's field reaches an expected value instead of a fixed sleep. Live
+# mode never disables animations (see hl_dispatch), so a move/resize/center
+# dispatch settles over a real ~200-300ms animated transition rather than
+# instantly -- a fixed short sleep can read the position mid-animation and
+# see the pre-dispatch value, which looks identical to "the dispatch had no
+# effect" from the assertion's point of view. Polling for the actual target
+# tells those two cases apart and is a no-op cost in headless mode (returns
+# on the very first successful poll there, since geometry settles instantly
+# with animations off).
+hl_wait_field_eq() {
+	local title="$1" field="$2" want="$3" timeout="${4:-20}" i got
+	for i in $(seq 1 "$timeout"); do
+		got="$(hl_client_field "$title" "$field")"
+		[ "$got" = "$want" ] && return 0
+		sleep 0.1
+	done
+	return 1
+}
+
 hl_screenshot() { grim "$HL_OUTDIR/$1.png" 2>/dev/null; }
+
+hl_focused_title() { hl_get "get focused-client" | jq -r .title; }
+
+# kill_client has no by-ID targeting over IPC -- bind_define.h's dispatch
+# always operates on `selmon->sel` (arg->tc is never set by a bare dispatch
+# string), so it force-kills WHATEVER is currently focused, not necessarily
+# the test's own spawned window. Confirmed live 2026-07-20: a test that
+# assumed its just-spawned window had focus instead killed the user's real
+# tmux-hosting kitty terminal when that assumption didn't hold. Always route
+# kill_client,force through this instead of dispatching it directly.
+hl_kill_focused_or_skip() { # hl_kill_focused_or_skip EXPECTED_TITLE DESC
+	local expected="$1" desc="$2" got
+	got="$(hl_focused_title)"
+	if [ "$got" != "$expected" ]; then
+		hl_skip "$desc: focused client is '$got', not '$expected' -- refusing to force-kill an unexpected window"
+		return 1
+	fi
+	hl_dispatch "kill_client,force" 0.2
+	return 0
+}
 
 # ─── assertions (TAP-ish: "ok"/"FAIL" lines, tallied globally) ────────────
 
