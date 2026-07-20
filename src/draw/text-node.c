@@ -587,31 +587,38 @@ void asteroidz_jump_label_node_update(struct asteroidz_jump_label_node *node,
 	if (required_pixel_h < 1)
 		required_pixel_h = 1;
 
-	bool surface_size_changed = (!node->surface) ||
-								(node->surface_pixel_w != required_pixel_w) ||
-								(node->surface_pixel_h != required_pixel_h);
-
-	if (surface_size_changed) {
-		/* detach from the scene node first -- the old surface/buffer are
-		 * about to be freed, and drawing into the new one below takes
-		 * several more steps before a replacement buffer gets attached
-		 * (further down this function). Never leave the scene node
-		 * pointing at a buffer we've already freed, even momentarily. */
-		wlr_scene_buffer_set_buffer(node->scene_buffer, NULL);
-		if (node->buffer) {
-			wlr_buffer_drop(&node->buffer->base);
-			node->buffer = NULL;
-		}
-		if (node->surface) {
-			cairo_surface_destroy(node->surface);
-			node->surface = NULL;
-		}
-
-		node->surface = cairo_image_surface_create(
-			CAIRO_FORMAT_ARGB32, required_pixel_w, required_pixel_h);
-		node->surface_pixel_w = required_pixel_w;
-		node->surface_pixel_h = required_pixel_h;
+	/* always detach + drop the old wrapper + destroy the old surface + create
+	 * a fresh one, even when the pixel size didn't change -- this used to be
+	 * gated behind a surface_size_changed check, reusing node->surface as-is
+	 * (just redrawn in place) while still allocating a BRAND NEW wlr_buffer
+	 * wrapper around that SAME surface pointer every call. That left two
+	 * different wrapper "generations" sharing one surface object across a
+	 * buffer-swap boundary -- exactly the kind of shared-mutable-state-
+	 * across-generations pattern behind the buffer-swap-ordering bugs fixed
+	 * elsewhere in this file. A live crash traced to this exact function
+	 * (garbage data pointer in write_pixels, the crashed buffer's wlr_buffer
+	 * showing dropped=true while still the scene's CURRENT buffer -- a state
+	 * that's impossible under a single, non-overlapping call to this
+	 * function) is consistent with two update calls landing close enough
+	 * together to corrupt each other's node->buffer bookkeeping via that
+	 * shared surface. Pairing a fresh surface with every fresh wrapper,
+	 * always, removes the sharing entirely regardless of the exact trigger.
+	 * Costs one extra small cairo_image_surface_create per redraw (this
+	 * path already does one for icons; jump labels/tab bars are small). */
+	wlr_scene_buffer_set_buffer(node->scene_buffer, NULL);
+	if (node->buffer) {
+		wlr_buffer_drop(&node->buffer->base);
+		node->buffer = NULL;
 	}
+	if (node->surface) {
+		cairo_surface_destroy(node->surface);
+		node->surface = NULL;
+	}
+
+	node->surface = cairo_image_surface_create(
+		CAIRO_FORMAT_ARGB32, required_pixel_w, required_pixel_h);
+	node->surface_pixel_w = required_pixel_w;
+	node->surface_pixel_h = required_pixel_h;
 
 	cairo_t *cr = cairo_create(node->surface);
 
@@ -1168,30 +1175,27 @@ void asteroidz_tab_bar_node_update(struct asteroidz_tab_bar_node *node,
 	if (required_pixel_h < 1)
 		required_pixel_h = 1;
 
-	bool surface_size_changed = (!node->surface) ||
-								(node->surface_pixel_w != required_pixel_w) ||
-								(node->surface_pixel_h != required_pixel_h);
-
-	if (surface_size_changed) {
-		/* detach from the scene node first -- the old surface/buffer are
-		 * about to be freed, and drawing into the new one below takes
-		 * several more steps before a replacement buffer gets attached
-		 * (further down this function). Never leave the scene node
-		 * pointing at a buffer we've already freed, even momentarily. */
-		wlr_scene_buffer_set_buffer(node->scene_buffer, NULL);
-		if (node->buffer) {
-			wlr_buffer_drop(&node->buffer->base);
-			node->buffer = NULL;
-		}
-		if (node->surface) {
-			cairo_surface_destroy(node->surface);
-			node->surface = NULL;
-		}
-		node->surface = cairo_image_surface_create(
-			CAIRO_FORMAT_ARGB32, required_pixel_w, required_pixel_h);
-		node->surface_pixel_w = required_pixel_w;
-		node->surface_pixel_h = required_pixel_h;
+	/* always detach + drop the old wrapper + destroy the old surface + create
+	 * a fresh one, even when the pixel size didn't change -- see the matching
+	 * fix + full explanation in asteroidz_jump_label_node_update for why: the
+	 * old size-gated fast path let two different wlr_buffer wrapper
+	 * generations share the same underlying cairo surface across a
+	 * buffer-swap boundary, which a live crash traced back to this exact
+	 * function (tab-bar redraw -- the single most frequently hit path in
+	 * this file, since it runs on every title/focus/color change). */
+	wlr_scene_buffer_set_buffer(node->scene_buffer, NULL);
+	if (node->buffer) {
+		wlr_buffer_drop(&node->buffer->base);
+		node->buffer = NULL;
 	}
+	if (node->surface) {
+		cairo_surface_destroy(node->surface);
+		node->surface = NULL;
+	}
+	node->surface = cairo_image_surface_create(
+		CAIRO_FORMAT_ARGB32, required_pixel_w, required_pixel_h);
+	node->surface_pixel_w = required_pixel_w;
+	node->surface_pixel_h = required_pixel_h;
 
 	cairo_t *cr = cairo_create(node->surface);
 
