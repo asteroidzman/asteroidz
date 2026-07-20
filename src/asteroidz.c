@@ -1161,6 +1161,7 @@ static bool match_monitor_spec(char *spec, Monitor *m);
 static void last_cursor_surface_destroy(struct wl_listener *listener,
 										void *data);
 static int32_t keep_idle_inhibit(void *data);
+static void schedule_float_focus_raise(Client *c);
 static void check_keep_idle_inhibit(Client *c);
 static void check_vrr_enable(Client *c);
 static int monitor_retrain_step(void *data);
@@ -1384,6 +1385,16 @@ struct dvec2 *baked_points_opafadeout;
 
 static struct wl_event_source *hide_cursor_source;
 static struct wl_event_source *keep_idle_inhibit_source;
+
+/* float layout raises the newly-focused client automatically (see
+ * focusclient() below) -- debounced through this timer instead of
+ * instantly, so focus moving quickly across several overlapping floating
+ * windows doesn't flicker-restack on every transient stop. Only ONE raise
+ * can ever be pending at a time (a fresh focus change reschedules it), so
+ * a single static pair is enough; cleared on the client's destroy so the
+ * timer callback can never fire against a freed Client (see destroynotify). */
+static struct wl_event_source *float_focus_raise_timer;
+static Client *float_focus_raise_pending;
 static struct wl_event_source *scroller_edge_scroll_source;
 static int32_t scroller_edge_scroll_dir = UNDIR;
 static bool cursor_hidden = false;
@@ -5117,6 +5128,10 @@ void // 0.7 custom
 destroynotify(struct wl_listener *listener, void *data) {
 	/* Called when the xdg_toplevel is destroyed. */
 	Client *c = wl_container_of(listener, c, destroy);
+	/* Never leave the debounced float-raise timer pointing at this Client
+	 * past this point -- it's about to be freed below. */
+	if (float_focus_raise_pending == c)
+		float_focus_raise_pending = NULL;
 	wl_list_remove(&c->destroy.link);
 	wl_list_remove(&c->set_title.link);
 	wl_list_remove(&c->fullscreen.link);
@@ -5224,13 +5239,21 @@ void focusclient(Client *c, int32_t lift) {
 	if (c && c->nofocus)
 		return;
 
-	/* float layout raises on any focus, not only lift-requesting callers */
+	/* float layout raises on any focus, not only lift-requesting callers --
+	 * debounced (schedule_float_focus_raise), not instant: an immediate
+	 * raise on every transient focus change reads as flickery when focus
+	 * moves quickly across several overlapping floating windows. An
+	 * explicit lift request (e.g. clicking a window directly) stays
+	 * instant below. */
+	bool auto_float_raise = false;
 	if (c && !lift && c->isfloating && c->mon && is_float_layout(c->mon))
-		lift = 1;
+		auto_float_raise = true;
 
 	/* Raise client in stacking order if requested */
 	if (c && lift) {
 		wlr_scene_node_raise_to_top(&c->scene->node); // raise the view to the top
+	} else if (auto_float_raise) {
+		schedule_float_focus_raise(c);
 	}
 
 	if (c && client_surface(c) == old_keyboard_focus_surface && selmon &&
@@ -8732,6 +8755,28 @@ void check_vrr_enable(Client *c) {
 			   !(c->vrr_only_fullscreen && c->isfullscreen)) {
 		commit_vrr_state(c->mon, false);
 	}
+}
+
+static int32_t float_focus_raise_timeout(void *data) {
+	(void)data;
+	if (float_focus_raise_pending && !float_focus_raise_pending->iskilling &&
+		client_surface(float_focus_raise_pending)->mapped) {
+		wlr_scene_node_raise_to_top(&float_focus_raise_pending->scene->node);
+	}
+	float_focus_raise_pending = NULL;
+	return 0;
+}
+
+/* Schedules (or reschedules, if one was already pending for a different
+ * client) the debounced float-layout auto-raise-on-focus for [c] -- see the
+ * comment on float_focus_raise_timer's declaration. */
+static void schedule_float_focus_raise(Client *c) {
+	if (!float_focus_raise_timer) {
+		float_focus_raise_timer = wl_event_loop_add_timer(
+			wl_display_get_event_loop(dpy), float_focus_raise_timeout, NULL);
+	}
+	float_focus_raise_pending = c;
+	wl_event_source_timer_update(float_focus_raise_timer, 250);
 }
 
 void check_keep_idle_inhibit(Client *c) {
