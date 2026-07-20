@@ -21,22 +21,28 @@
 hl_active_tags() { hl_get "get all-monitors" | jq -c ".monitors[] | select(.name==\"$HL_MON\") | .active_tags"; }
 
 test_toggle_overview_enters_and_exits() {
+	# capture the REAL starting active tag(s) instead of assuming "[1]" --
+	# only true in a fresh isolated instance. In live mode the active tag
+	# can be leftover from whatever an earlier module left it on (real-
+	# monitor mode deliberately doesn't force view/layout between modules).
+	local start_tags; start_tags="$(hl_active_tags)"
 	hl_spawn_kitty W1 >/dev/null
 	hl_wait_client_count 1
-	hl_assert_eq "starts out of overview" "$(hl_active_tags)" "[1]"
+	hl_assert_eq "starts out of overview" "$(hl_active_tags)" "$start_tags"
 	hl_dispatch "toggle_overview" 1.5
 	hl_assert_eq "toggle_overview enters overview (active_tags sentinel [0])" "$(hl_active_tags)" "[0]"
 	hl_dispatch "toggle_overview,1" 1.5
-	hl_assert_eq "toggle_overview,1 forces it closed regardless of ov_tab_mode" "$(hl_active_tags)" "[1]"
+	hl_assert_eq "toggle_overview,1 forces it closed regardless of ov_tab_mode" "$(hl_active_tags)" "$start_tags"
 }
 
 test_toggle_overview_jump_also_enters_overview() {
+	local start_tags; start_tags="$(hl_active_tags)"
 	hl_spawn_kitty W1 >/dev/null
 	hl_wait_client_count 1
 	hl_dispatch "toggle_overview,jump" 1.5
 	hl_assert_eq "toggle_overview,jump also reports the overview sentinel" "$(hl_active_tags)" "[0]"
 	hl_dispatch "toggle_overview,1" 1.5
-	hl_assert_eq "toggle_overview,1 closes jump mode too" "$(hl_active_tags)" "[1]"
+	hl_assert_eq "toggle_overview,1 closes jump mode too" "$(hl_active_tags)" "$start_tags"
 }
 
 test_toggle_overview_refuses_with_no_clients() {
