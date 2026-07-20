@@ -72,7 +72,7 @@ test_watch_tags_notifies_for_the_named_monitor() {
 	local before; before="$(hl_watch_line_count wt)"
 	hl_dispatch "view,2"
 	hl_assert_true "watch tags \$HL_MON grows on view,2" \
-		"$([ "$(hl_watch_line_count wt)" -gt "$before" ] && echo true || echo false)"
+		"$(hl_wait_watch_grew wt "$before" && echo true || echo false)"
 }
 
 test_watch_focused_client_notifies_on_a_new_window() {
