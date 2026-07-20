@@ -12,9 +12,18 @@
 #
 # toggle_named_scratchpad's first arg matches against the client's APPID
 # (not its numeric IPC id, despite the name) via regex; the second arg
-# matches the title. dispatch's comma-tokenizer collapses empty fields
-# (strtok_r skips consecutive delimiters), so passing just one arg (the
-# appid) is the reliable way to target "any kitty window" here.
+# matches the title. get_client_by_id_or_title() (src/fetch/client.h)
+# walks the WHOLE client list and returns the first appid match -- in
+# live mode, "kitty" alone matches every real kitty window too, not just
+# our own spawned one, and returns whichever the compositor's internal
+# list happens to hit first. Confirmed live 2026-07-20: with several real
+# kitty windows open (including the one this harness's own commands run
+# in), this was toggling a REAL window into a named scratchpad + minimizing
+# it, not the test's own throwaway one -- the same class of hazard as
+# kill_client's no-by-ID-targeting issue elsewhere in this suite. Passing
+# BOTH appid and title (kitty,W1) forces the match-both branch, which
+# uniquely identifies our own spawned window regardless of what else is
+# open.
 
 # our own spawned W1, not .clients[0] (which in live mode can just as
 # easily be a real pre-existing window as the test's own spawned one)
@@ -25,7 +34,7 @@ test_toggle_named_scratchpad_adds_the_client() {
 	hl_spawn_kitty W1 >/dev/null
 	hl_wait_client_count 1
 	hl_assert_false "freshly spawned window isn't a named scratchpad client" "$(hl_first_client_field is_namedscratchpad)"
-	hl_dispatch "toggle_named_scratchpad,kitty" 1
+	hl_dispatch "toggle_named_scratchpad,kitty,W1" 1
 	hl_assert_true "toggle_named_scratchpad,kitty marks it as a named scratchpad client" \
 		"$(hl_first_client_field is_namedscratchpad)"
 }
@@ -33,7 +42,7 @@ test_toggle_named_scratchpad_adds_the_client() {
 test_toggle_scratchpad_hides_and_shows_an_existing_scratchpad_client() {
 	hl_spawn_kitty W1 >/dev/null
 	hl_wait_client_count 1
-	hl_dispatch "toggle_named_scratchpad,kitty" 1
+	hl_dispatch "toggle_named_scratchpad,kitty,W1" 1
 	local minimized_after_add; minimized_after_add="$(hl_first_client_field is_minimized)"
 	hl_dispatch "toggle_scratchpad" 0.5
 	local minimized_after_toggle; minimized_after_toggle="$(hl_first_client_field is_minimized)"
