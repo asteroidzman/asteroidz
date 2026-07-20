@@ -61,7 +61,7 @@ test_scroller_consume_is_a_no_op_with_nothing_to_pull_in() {
 	hl_dispatch "scroller_consume"
 	sleep 0.3
 	hl_assert_eq "scroller_consume with only one column: still one client" \
-		"$(hl_get "get all-clients" | jq '.clients | length')" "1"
+		"$(hl_client_count)" "1"
 }
 
 test_set_proportion_absolute() {

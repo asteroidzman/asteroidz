@@ -23,7 +23,7 @@ test_toggling_animations_off_and_on_leaves_the_compositor_responsive() {
 	hl_spawn_kitty W1 >/dev/null
 	hl_wait_client_count 1
 	hl_assert_eq "a window still opens fine with animations off" \
-		"$(hl_get "get all-clients" | jq '.clients | length')" "1"
+		"$(hl_client_count)" "1"
 	hl_dispatch "set_option,animations,1"  # restore default
 	hl_assert_true "compositor still responds to IPC after animations back on" \
 		"$([ -n "$(hl_get "get all-monitors")" ] && echo true || echo false)"
