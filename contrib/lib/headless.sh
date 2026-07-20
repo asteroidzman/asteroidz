@@ -179,7 +179,23 @@ hl_start_live() {
 		esac
 		HL_MON="$HL_LIVE_MON"
 		HL_LIVE_REAL_MON=1
-		echo "hl_start_live: attached to live session, testing DIRECTLY against real monitor $HL_MON" >&2
+		# HL_WIDTH/HL_HEIGHT default to the synthetic headless size (1920x1080)
+		# and are used verbatim as wlvptr's absolute-pointer extent (see
+		# contrib/wlvptr/wlvptr.c) and as the "output center" for geometry
+		# assertions -- both silently wrong on a real monitor of a different
+		# size. Confirmed live 2026-07-20: on a 3840x2160 real monitor,
+		# center_window's target was computed from the WRONG (1920x1080)
+		# center, and any wlvptr-based click/drag would land at roughly half
+		# the intended real pixel position (motion_absolute is a fraction of
+		# the given extent, so extent/2 off scales every coordinate by 2x).
+		local real_w real_h
+		real_w="$(hl_get "get all-monitors" | jq -r ".monitors[] | select(.name==\"$HL_MON\") | .width")"
+		real_h="$(hl_get "get all-monitors" | jq -r ".monitors[] | select(.name==\"$HL_MON\") | .height")"
+		if [ -n "$real_w" ] && [ -n "$real_h" ] && [ "$real_w" != "null" ] && [ "$real_h" != "null" ]; then
+			HL_WIDTH="$real_w"
+			HL_HEIGHT="$real_h"
+		fi
+		echo "hl_start_live: attached to live session, testing DIRECTLY against real monitor $HL_MON (${HL_WIDTH}x${HL_HEIGHT})" >&2
 		hl_notify "asteroidz live regression: running on $HL_MON" "Testing your REAL monitor directly -- expect window/tag churn on that screen for the duration."
 		return
 	fi
