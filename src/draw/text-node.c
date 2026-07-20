@@ -183,7 +183,17 @@ static bool text_buffer_begin_data_ptr_access(struct wlr_buffer *wlr_buffer,
 											  size_t *stride) {
 	(void)flags;
 	struct asteroidz_text_buffer *buf = wl_container_of(wlr_buffer, buf, base);
+	/* cairo_image_surface_get_data() returns NULL for a surface in an
+	 * error status (e.g. created with a degenerate/zero size) without
+	 * crashing itself -- but returning success (true) here with *data
+	 * still NULL let the renderer memcpy from it downstream instead.
+	 * Real crash: SIGSEGV in write_pixels with vdata=0x0, confirmed via
+	 * coredumpctl on a 280x36 buffer (a titlebar tab/tag-pill size). */
+	if (cairo_surface_status(buf->surface) != CAIRO_STATUS_SUCCESS)
+		return false;
 	*data = cairo_image_surface_get_data(buf->surface);
+	if (!*data)
+		return false;
 	*format = DRM_FORMAT_ARGB8888;
 	*stride = cairo_image_surface_get_stride(buf->surface);
 	return true;
