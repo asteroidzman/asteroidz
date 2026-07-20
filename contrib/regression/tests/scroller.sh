@@ -21,16 +21,21 @@ test_scroller_stack_merges_into_one_column() {
 	hl_spawn_kitty W2 >/dev/null
 	hl_wait_client_count 2
 	sleep 0.3
-	# two tiled (unstacked) scroller columns: different x, same y
-	local xs0; xs0="$(hl_get "get all-clients" | jq -c '[.clients[].x] | unique | length')"
-	hl_assert_eq "before stacking: two separate columns (different x)" "$xs0" "2"
+	# filtered to our own two spawned windows -- checking unique x/y across
+	# ALL clients on the tag (the old approach) counts real pre-existing
+	# windows too, in live mode.
+	local x1_0 x2_0
+	x1_0="$(hl_client_field W1 x)"; x2_0="$(hl_client_field W2 x)"
+	hl_assert_true "before stacking: two separate columns (different x)" \
+		"$([ "$x1_0" != "$x2_0" ] && echo true || echo false)"
 
 	hl_dispatch "scroller_stack,left"
 	sleep 0.3
-	local xs1; xs1="$(hl_get "get all-clients" | jq -c '[.clients[].x] | unique | length')"
-	local ys1; ys1="$(hl_get "get all-clients" | jq -c '[.clients[].y] | unique | length')"
+	local x1_1 x2_1 y1_1 y2_1
+	x1_1="$(hl_client_field W1 x)"; x2_1="$(hl_client_field W2 x)"
+	y1_1="$(hl_client_field W1 y)"; y2_1="$(hl_client_field W2 y)"
 	hl_assert_true "scroller_stack,left: now share one column (same x, different y)" \
-		"$([ "$xs1" = "1" ] && [ "$ys1" = "2" ] && echo true || echo false)"
+		"$([ "$x1_1" = "$x2_1" ] && [ "$y1_1" != "$y2_1" ] && echo true || echo false)"
 }
 
 test_scroller_expel_splits_the_stack_back_out() {
@@ -45,8 +50,10 @@ test_scroller_expel_splits_the_stack_back_out() {
 	sleep 0.3
 	hl_dispatch "scroller_expel"
 	sleep 0.3
-	local xs; xs="$(hl_get "get all-clients" | jq -c '[.clients[].x] | unique | length')"
-	hl_assert_eq "scroller_expel: back to two separate columns" "$xs" "2"
+	local x1 x2
+	x1="$(hl_client_field W1 x)"; x2="$(hl_client_field W2 x)"
+	hl_assert_true "scroller_expel: back to two separate columns" \
+		"$([ "$x1" != "$x2" ] && echo true || echo false)"
 }
 
 test_scroller_consume_is_a_no_op_with_nothing_to_pull_in() {
@@ -65,6 +72,13 @@ test_scroller_consume_is_a_no_op_with_nothing_to_pull_in() {
 }
 
 test_set_proportion_absolute() {
+	# scroller_ignore_proportion_single has no IPC getter, and its compile-
+	# time default is actually 1 (not 0 -- this test used to "restore" to 0
+	# at the end, which was always wrong, it just never mattered headlessly
+	# since the whole instance gets discarded). No safe way to capture the
+	# live session's real current value, so skip there rather than risk
+	# permanently flipping the user's real config to the wrong value.
+	hl_skip_if_live_unrestorable_option "test_set_proportion_absolute" scroller_ignore_proportion_single || return
 	hl_dispatch "view,4"
 	hl_dispatch "set_layout,scroller"
 	hl_dispatch "set_option,scroller_ignore_proportion_single,1"
@@ -75,10 +89,11 @@ test_set_proportion_absolute() {
 	sleep 0.3
 	hl_assert_eq "set_proportion,0.6 sets scroller_proportion" \
 		"$(hl_client_field_rounded W1 scroller_proportion)" "0.6"
-	hl_dispatch "set_option,scroller_ignore_proportion_single,0"  # restore default
+	hl_dispatch "set_option,scroller_ignore_proportion_single,1"  # restore actual compile-time default (not 0)
 }
 
 test_switch_proportion_preset_cycles_through_configured_presets() {
+	hl_skip_if_live_unrestorable_option "test_switch_proportion_preset_cycles_through_configured_presets" scroller_ignore_proportion_single || return
 	hl_dispatch "view,4"
 	hl_dispatch "set_layout,scroller"
 	hl_dispatch "set_option,scroller_ignore_proportion_single,1"
@@ -95,5 +110,5 @@ test_switch_proportion_preset_cycles_through_configured_presets() {
 	sleep 0.3
 	hl_assert_eq "switch_proportion_preset,prev goes back to 0.3" \
 		"$(hl_client_field_rounded W1 scroller_proportion)" "0.3"
-	hl_dispatch "set_option,scroller_ignore_proportion_single,0"  # restore default
+	hl_dispatch "set_option,scroller_ignore_proportion_single,1"  # restore actual compile-time default (not 0)
 }
