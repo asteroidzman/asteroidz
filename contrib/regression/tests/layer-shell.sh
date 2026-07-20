@@ -30,11 +30,19 @@ test_background_layer_with_no_exclusive_zone_does_not_affect_tiling() {
 	# lone tiled window well above 0, so "y==0" was never the right
 	# baseline to assert (geometry.sh follows the same before/after pattern
 	# for exactly this reason).
+	#
+	# force a known layout explicitly -- this test never used to, so it
+	# silently inherited whatever tag/layout an earlier module in the same
+	# run left active (real-monitor live mode deliberately doesn't reset
+	# view/layout between modules). Both measurements below happen under
+	# the same inherited layout either way, but pinning it removes that as
+	# a source of cross-run nondeterminism.
+	hl_dispatch "set_layout,tile"
 	hl_spawn_kitty Baseline >/dev/null
 	hl_wait_client_count 1
 	sleep 0.3
 	local baseline_y; baseline_y="$(hl_client_field Baseline y)"
-	hl_dispatch "kill_client,force"
+	hl_kill_focused_or_skip Baseline "clearing Baseline window" || return
 	hl_wait_client_count 0
 
 	hl_spawn_wllayer background none 0 1920 1080 none 4 "" bg >/dev/null
@@ -64,6 +72,17 @@ test_layer_surface_on_a_dpms_off_monitor_still_gets_configured() {
 	# all and hung forever (GTK fell back to a bogus width). A bounded
 	# timeout distinguishes "configure arrived" from "hung" -- an unbounded
 	# wait would just block forever if the bug were reintroduced.
+	#
+	# DPMS off/on on a REAL monitor is genuinely disruptive -- confirmed
+	# live 2026-07-20: cycling DPMS on DP-1 (a real, high-refresh display)
+	# left it renegotiated down to a bandwidth-constrained 24Hz mode instead
+	# of its native rate, with no restore step here that could catch or fix
+	# that (dpms_on_monitor just re-enables the output, it doesn't force
+	# any particular mode back). Skip in live mode rather than risk it.
+	if [ "${HL_LIVE_MODE:-0}" = "1" ]; then
+		hl_skip "test_layer_surface_on_a_dpms_off_monitor_still_gets_configured: DPMS-cycling a real monitor risks leaving it renegotiated to a different (lower) refresh rate, see comment above"
+		return
+	fi
 	hl_dispatch "dpms_off_monitor,$HL_MON"
 	sleep 0.3
 	timeout 4 "$HL_WLLAYER" top none 0 300 100 none 1 > "$HL_OUTDIR/dpms-layer.log" 2>&1

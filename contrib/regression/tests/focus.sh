@@ -1,7 +1,5 @@
 # focus.sh — focus_stack, focus_direction, kill_client, exchange_client.
 
-hl_focused_title() { hl_get "get focused-client" | jq -r .title; }
-
 test_focus_stack_next_cycles_focus() {
 	hl_dispatch "set_layout,tile"
 	hl_spawn_kitty W1 >/dev/null; hl_wait_client_count 1
@@ -29,6 +27,7 @@ test_focus_direction_left_right() {
 test_kill_client_removes_the_window() {
 	hl_spawn_kitty W1 >/dev/null
 	hl_wait_client_count 1
+	sleep 0.3
 	# kill_client (graceful) does send xdg_toplevel.close() correctly --
 	# confirmed via WAYLAND_DEBUG=1, kitty destroys the toplevel ~2.2s later
 	# -- but the kitty PROCESS this harness spawns never actually exits
@@ -39,9 +38,15 @@ test_kill_client_removes_the_window() {
 	# SIGKILL directly to the client's pid and is instant/reliable --
 	# this test is about the compositor's dispatch mechanism, not kitty's
 	# own graceful-shutdown latency.
-	hl_dispatch "kill_client,force" 0.2
-	hl_assert_true "kill_client,force removes the window" \
-		"$(hl_wait_client_count 0 30 && echo true || echo false)"
+	#
+	# kill_client has no by-ID targeting -- it always force-kills whatever's
+	# focused, so this is routed through hl_kill_focused_or_skip rather than
+	# dispatched blind (see its definition for why: it killed a real window
+	# once already).
+	if hl_kill_focused_or_skip W1 "kill_client,force removes the window"; then
+		hl_assert_true "kill_client,force removes the window" \
+			"$(hl_wait_client_count 0 30 && echo true || echo false)"
+	fi
 }
 
 test_exchange_client_swaps_positions() {
