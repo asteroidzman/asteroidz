@@ -17,7 +17,22 @@ test_watch_all_clients_notifies_on_a_new_window() {
 		"$([ "$(hl_watch_line_count wac)" -gt "$before" ] && echo true || echo false)"
 }
 
+# toggle_hdr on a REAL HDR-capable monitor is genuinely disruptive -- not
+# just a software flag flip, but a real modeset that can force the monitor
+# down to a bandwidth-constrained lower-refresh mode (confirmed live
+# 2026-07-20: DP-1 dropped to 24Hz and stayed HDR-on with no restore, since
+# these tests never toggle it back). hdr.sh's own toggle_hdr test already
+# skips for exactly this reason -- these two were missed and toggled it
+# completely unguarded, with no restore step at all, which is why HDR kept
+# reappearing even in runs that excluded the entire hdr.sh module.
+hl_hdr_capable() { [ "$(hl_mon_field hdr_capable)" = "true" ]; }
+hl_mon_field() { hl_get "get all-monitors" | jq -r ".monitors[] | select(.name==\"$HL_MON\") | .$1"; }
+
 test_watch_all_monitors_notifies_on_hdr_toggle() {
+	if hl_hdr_capable; then
+		hl_skip "test_watch_all_monitors_notifies_on_hdr_toggle: \$HL_MON is HDR-capable (a real monitor) -- toggle_hdr is genuinely disruptive there, see comment above"
+		return
+	fi
 	hl_watch_start "watch all-monitors" wam >/dev/null
 	local before; before="$(hl_watch_line_count wam)"
 	hl_dispatch "toggle_hdr"
@@ -26,6 +41,10 @@ test_watch_all_monitors_notifies_on_hdr_toggle() {
 }
 
 test_watch_monitor_notifies_for_the_named_output() {
+	if hl_hdr_capable; then
+		hl_skip "test_watch_monitor_notifies_for_the_named_output: \$HL_MON is HDR-capable (a real monitor) -- toggle_hdr is genuinely disruptive there, see comment above"
+		return
+	fi
 	hl_watch_start "watch monitor $HL_MON" wm >/dev/null
 	local before; before="$(hl_watch_line_count wm)"
 	hl_dispatch "toggle_hdr"
@@ -42,6 +61,13 @@ test_watch_all_tags_notifies_on_view_switch() {
 }
 
 test_watch_tags_notifies_for_the_named_monitor() {
+	# view,2 with no explicit monitor target acts on selmon, not necessarily
+	# $HL_MON -- a prior test/module (e.g. multimonitor's focus_monitor)
+	# can leave a DIFFERENT monitor focused, in which case this per-monitor
+	# watch never fires even though the dispatch worked fine (the sibling
+	# "watch all-tags" test passes regardless, since it's not scoped to one
+	# monitor). Force focus first so the dispatch actually lands here.
+	hl_dispatch "focus_monitor,$HL_MON" 0.2
 	hl_watch_start "watch tags $HL_MON" wt >/dev/null
 	local before; before="$(hl_watch_line_count wt)"
 	hl_dispatch "view,2"
@@ -81,6 +107,17 @@ test_watch_keymode_notifies_on_set_key_mode() {
 }
 
 test_watch_keyboardlayout_notifies_on_switch() {
+	# switch_keyboard_layout,1 switches to configured xkb layout INDEX 1 --
+	# hl_start's own synthetic config sets two ("us,de") specifically so
+	# this is observable. There's no IPC getter for how many layouts the
+	# live session's real config has, and switching to a nonexistent index
+	# would be a silent no-op at best -- or could actually change the
+	# user's real input layout at worst, with no safe way to detect or
+	# restore the original. Skip rather than risk it.
+	if [ "${HL_LIVE_MODE:-0}" = "1" ]; then
+		hl_skip "test_watch_keyboardlayout_notifies_on_switch: can't verify the live session has a 2nd configured xkb layout to switch to, and switching to a nonexistent one could alter your real input layout with no way to detect or restore it"
+		return
+	fi
 	hl_watch_start "watch keyboardlayout" wkl >/dev/null
 	local before; before="$(hl_watch_line_count wkl)"
 	hl_dispatch "switch_keyboard_layout,1"
