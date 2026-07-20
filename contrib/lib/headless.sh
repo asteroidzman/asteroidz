@@ -309,6 +309,25 @@ hl_watch_start() { # hl_watch_start "watch monitor HEADLESS-1" LOGNAME -> pid (t
 }
 hl_watch_line_count() { wc -l < "$HL_OUTDIR/$1.log" 2>/dev/null || echo 0; }
 
+# hl_wait_watch_grew LOGNAME BEFORE_COUNT [timeout_tenths=20] -- poll until a
+# watch stream's line count exceeds BEFORE_COUNT instead of a fixed sleep
+# then single check. hl_watch_start's own subscribe-settle sleep (0.3s) is
+# a reasonable default but not a hard guarantee under a busier live session
+# (more background IPC traffic, more real windows) -- confirmed live
+# 2026-07-20: a manual reproduction with a 0.5s gap between subscribe and
+# dispatch worked reliably every time, while the harness's 0.3s sometimes
+# missed it. Polling removes the exact margin as a variable; a genuinely
+# broken notification still times out and fails same as before.
+hl_wait_watch_grew() {
+	local logname="$1" before="$2" timeout="${3:-20}" i n
+	for i in $(seq 1 "$timeout"); do
+		n="$(hl_watch_line_count "$logname")"
+		[ "$n" -gt "$before" ] && return 0
+		sleep 0.1
+	done
+	return 1
+}
+
 hl_click() { # hl_click X Y [click|rclick|mclick]
 	"$HL_WLVPTR" "$1" "$2" "$HL_WIDTH" "$HL_HEIGHT" "${3:-click}"
 }
