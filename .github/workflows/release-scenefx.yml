@@ -15,6 +15,15 @@ name: release-scenefx
 on:
   release:
     types: [published]
+  # manual escape hatch (e.g. to retroactively align scenefx's version
+  # after enabling this workflow, or to re-run if a release-triggered run
+  # failed) -- takes the version to release as an input since there's no
+  # github.event.release in a manual run.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g. 0.17.1), no leading v'
+        required: true
 
 jobs:
   release-scenefx:
@@ -29,8 +38,9 @@ jobs:
 
       - name: Bump meson.build to the release version
         run: |
-          VERSION="${{ github.event.release.tag_name }}"
+          VERSION="${{ github.event.inputs.version || github.event.release.tag_name }}"
           VERSION="${VERSION#v}"
+          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
           sed -i "s/version: '[^']*',/version: '${VERSION}',/" meson.build
           git config user.name "asteroidzman"
           git config user.email "asteroidzman@users.noreply.github.com"
@@ -42,9 +52,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.SCENEFX_REPO_TOKEN }}
         run: |
-          TAG="${{ github.event.release.tag_name }}"
-          gh release create "$TAG" \
+          gh release create "$VERSION" \
             --repo asteroidzman/asteroidz-scenefx \
-            --title "$TAG" \
+            --title "$VERSION" \
             --target main \
-            --notes "Released alongside [asteroidz $TAG](https://github.com/asteroidzman/asteroidz/releases/tag/$TAG)."
+            --notes "Released alongside [asteroidz $VERSION](https://github.com/asteroidzman/asteroidz/releases/tag/$VERSION)."
