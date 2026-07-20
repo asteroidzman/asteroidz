@@ -84,9 +84,20 @@ definition.
 
 ### Arch Linux
 
-Everything asteroidz needs is in the official repos except the scenefx
-fork, which you build from source. `wlroots0.20` lives in `extra`; the
-stock `scenefx` packages are 0.3/0.4, so the renamed 0.5 fork
+The easiest path is the AUR — `asteroidz-scenefx` is a dependency of
+`asteroidz` and gets pulled in automatically:
+
+```bash
+yay -S asteroidz
+```
+
+(or any AUR helper, or `makepkg` by hand against each package's
+`PKGBUILD`.) Log out and pick a session as described below.
+
+To build from source instead (e.g. to track a specific commit, or
+contribute): everything asteroidz needs is in the official repos except
+the scenefx fork, which you build from source. `wlroots0.20` lives in
+`extra`; the stock `scenefx` packages are 0.3/0.4, so the renamed 0.5 fork
 (`asteroidz-scenefx`) is a manual step.
 
 Install the toolchain and dependencies (Vulkan loader/headers + `glslang`
