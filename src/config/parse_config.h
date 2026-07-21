@@ -74,6 +74,7 @@ typedef struct {
 	int32_t isnoshadow;
 	int32_t isnotitlebar;
 	int32_t vrr_only_fullscreen;
+	int32_t force_hdr;
 	int32_t shield_when_capture;
 	int32_t ispinned;
 	int32_t isnoradius;
@@ -251,6 +252,14 @@ typedef struct {
 	int32_t scroller_edge_scroll_size;
 	int32_t scroller_edge_scroll_delay;
 	int32_t hdr_capture_fallback;
+	/* Global HDR policy, gating every output's own `hdr` setting:
+	 *   0 = off   -- never HDR, whatever monitors.kdl or a window rule asks for
+	 *   1 = auto  -- per-output `hdr` applies; a force_hdr window rule may
+	 *                additionally switch an SDR output into HDR while a
+	 *                matching client is visible on it
+	 *   2 = on    -- every HDR-capable output stays in HDR
+	 * Defaults to auto so existing per-output `hdr` configs keep working. */
+	int32_t hdr_mode;
 	int32_t focus_cross_monitor;
 	int32_t exchange_cross_monitor;
 	int32_t scratchpad_cross_monitor;
@@ -1603,6 +1612,19 @@ bool parse_option(Config *config, char *key, char *value) {
 		config->scroller_edge_scroll_delay = atoi(value);
 	} else if (strcmp(key, "hdr_capture_fallback") == 0) {
 		config->hdr_capture_fallback = atoi(value);
+	} else if (strcmp(key, "hdr_mode") == 0) {
+		/* named values only -- a bare integer here would be indistinguishable
+		 * from the old per-output boolean and silently mean the wrong thing */
+		if (strcmp(value, "off") == 0)
+			config->hdr_mode = 0;
+		else if (strcmp(value, "auto") == 0)
+			config->hdr_mode = 1;
+		else if (strcmp(value, "on") == 0)
+			config->hdr_mode = 2;
+		else
+			fprintf(stderr,
+					"hdr-mode: expected off|auto|on, got '%s' -- keeping %d\n",
+					value, config->hdr_mode);
 	} else if (strcmp(key, "focus_cross_monitor") == 0) {
 		config->focus_cross_monitor = atoi(value);
 	} else if (strcmp(key, "exchange_cross_monitor") == 0) {
@@ -2563,6 +2585,7 @@ bool parse_option(Config *config, char *key, char *value) {
 		rule->isnoshadow = -1;
 		rule->isnotitlebar = -1;
 		rule->vrr_only_fullscreen = -1;
+		rule->force_hdr = -1;
 		rule->shield_when_capture = -1;
 		rule->ispinned = -1;
 		rule->isnoradius = -1;
@@ -2666,6 +2689,8 @@ bool parse_option(Config *config, char *key, char *value) {
 					rule->isnoborder = atoi(val);
 				} else if (strcmp(key, "vrr_only_fullscreen") == 0) {
 					rule->vrr_only_fullscreen = atoi(val);
+				} else if (strcmp(key, "force_hdr") == 0) {
+					rule->force_hdr = atoi(val);
 				} else if (strcmp(key, "shield_when_capture") == 0) {
 					rule->shield_when_capture = atoi(val);
 				} else if (strcmp(key, "ispinned") == 0) {
@@ -3416,6 +3441,7 @@ static const struct {
 	{"misc/syncobj", "syncobj_enable"},
 	{"misc/focus-on-activate", "focus_on_activate"},
 	{"misc/ufo-easter-egg", "ufo_easter_egg"},
+	{"misc/hdr-mode", "hdr_mode"},
 	{"misc/frog-color-management", "frog_color_management"},
 	{"misc/allow-tearing", "allow_tearing"},
 	{"misc/render-late", "render_late"},
@@ -4144,6 +4170,7 @@ void override_config(void) {
 	config.scroller_edge_scroll_delay =
 		CLAMP_INT(config.scroller_edge_scroll_delay, 50, 5000);
 	config.hdr_capture_fallback = CLAMP_INT(config.hdr_capture_fallback, 0, 1);
+	config.hdr_mode = CLAMP_INT(config.hdr_mode, 0, 2);
 	config.scroller_structs = CLAMP_INT(config.scroller_structs, 0, 1000);
 	config.default_mfact = CLAMP_FLOAT(config.default_mfact, 0.1f, 0.9f);
 	config.default_nmaster = CLAMP_INT(config.default_nmaster, 1, 1000);
@@ -4357,6 +4384,7 @@ void set_value_default() {
 	config.scroller_edge_scroll_size = 15;
 	config.scroller_edge_scroll_delay = 500;
 	config.hdr_capture_fallback = 1;
+	config.hdr_mode = 1; /* auto -- preserves pre-hdr-mode per-output behaviour */
 	config.focus_cross_monitor = 0;
 	config.exchange_cross_monitor = 0;
 	config.scratchpad_cross_monitor = 0;

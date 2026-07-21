@@ -517,6 +517,7 @@ struct Client {
 	int32_t isnotitlebar;
 	int32_t noscanout;
 	int32_t vrr_only_fullscreen;
+	int32_t force_hdr;
 	int32_t shield_when_capture;
 	int32_t isnoradius;
 	int32_t isnoanimation;
@@ -790,7 +791,18 @@ struct Monitor {
 	uint32_t visible_tiling_clients;
 	uint32_t visible_scroll_tiling_clients;
 	uint32_t visible_fake_tiling_clients;
+	/* hdr is the EFFECTIVE, currently-committed colour state. hdr_configured
+	 * is the base intent from monitors.kdl. They differ whenever an override
+	 * is active -- a force_hdr client pushing an SDR output into HDR, or the
+	 * capture fallback pulling an HDR output down to SDR. Everything that
+	 * renders or reports reads hdr; only hdr_resolve() may write it. */
 	int32_t hdr;
+	int32_t hdr_configured;
+	/* Sticky: mon_state_apply_color() refused HDR because the output or
+	 * renderer can't do BT.2020+PQ. Without this, hdr_resolve() would keep
+	 * re-asserting HDR every frame and we'd retrain in a loop. Cleared when
+	 * the output is reconfigured (hotplug can change what's supported). */
+	bool hdr_capability_failed;
 	int32_t bitdepth;
 	float hdr_max_luminance, hdr_min_luminance, hdr_max_fall;
 	struct wlr_color_transform *icc_transform;
@@ -1168,6 +1180,8 @@ static int monitor_retrain_step(void *data);
 void monitor_start_retrain(Monitor *m, uint32_t delay_ms);
 static int32_t hdr_capture_debounce_timeout(void *data);
 static void update_hdr_capture_override(Monitor *m);
+static void hdr_resolve(Monitor *m);
+static void hdr_resolve_all(void);
 static void handle_image_copy_capture_new_session(struct wl_listener *listener,
 												  void *data);
 static void refresh_shielded_surfaces(void);
@@ -2122,6 +2136,7 @@ static void apply_rule_properties(Client *c, const ConfigWinRule *r) {
 	APPLY_INT_PROP(c, r, isnotitlebar);
 	APPLY_INT_PROP(c, r, noscanout);
 	APPLY_INT_PROP(c, r, vrr_only_fullscreen);
+	APPLY_INT_PROP(c, r, force_hdr);
 	APPLY_INT_PROP(c, r, shield_when_capture);
 	APPLY_INT_PROP(c, r, ispinned);
 	APPLY_INT_PROP(c, r, isnoradius);
@@ -4526,6 +4541,7 @@ void mon_state_apply_color(Monitor *m, struct wlr_output_state *state) {
 					"renderer cannot apply output color transforms, "
 					"refusing HDR (sRGB content would be shown unconverted)");
 			m->hdr = 0;
+			m->hdr_capability_failed = true;
 		} else if (!(wlr_output->supported_primaries &
 					 WLR_COLOR_NAMED_PRIMARIES_BT2020) ||
 				   !(wlr_output->supported_transfer_functions &
@@ -4533,6 +4549,7 @@ void mon_state_apply_color(Monitor *m, struct wlr_output_state *state) {
 			wlr_log(WLR_ERROR, "output %s does not support HDR (BT.2020 + PQ)",
 					wlr_output->name);
 			m->hdr = 0;
+			m->hdr_capability_failed = true;
 		} else {
 			/* default: the display's real luminance capabilities, so the
 			 * panel doesn't tone-map for 10000-nit content it will never
@@ -4591,8 +4608,10 @@ void mon_state_apply_color(Monitor *m, struct wlr_output_state *state) {
 				.max_fall = max_fall,
 			};
 			if (!wlr_output_state_set_image_description(state,
-														&image_description))
+														&image_description)) {
 				m->hdr = 0;
+				m->hdr_capability_failed = true;
+			}
 		}
 	} else if (wlr_output->image_description) {
 		wlr_output_state_set_image_description(state, NULL);
@@ -4705,7 +4724,11 @@ void createmon(struct wl_listener *listener, void *data) {
 	if (monitor_merge_rules(m, &merged_rule)) {
 		m->m.x = merged_rule.x;
 		m->m.y = merged_rule.y;
-		m->hdr = merged_rule.hdr > 0 ? merged_rule.hdr : 0;
+		m->hdr_configured = merged_rule.hdr > 0 ? merged_rule.hdr : 0;
+		/* a reconfigure may be a hotplug onto a different panel, so re-test
+		 * capability rather than staying latched off from the old one */
+		m->hdr_capability_failed = false;
+		m->hdr = m->hdr_configured;
 		m->bitdepth = merged_rule.bitdepth > 0 ? merged_rule.bitdepth : 0;
 		m->hdr_max_luminance =
 			merged_rule.hdr_max_luminance > 0 ? merged_rule.hdr_max_luminance : 0;
@@ -4801,6 +4824,10 @@ void createmon(struct wl_listener *listener, void *data) {
 	for (i = 1; i <= LENGTH(tags); i++) {
 		add_workspace_by_tag(i, m);
 	}
+
+	/* Deliberately last: VISIBLEON needs the tagset initialised above. On a
+	 * hotplug a force_hdr client can already be visible on the new output. */
+	hdr_resolve(m);
 
 	printstatus(IPC_WATCH_ARRANGGE);
 }
@@ -5302,6 +5329,7 @@ void focusclient(Client *c, int32_t lift) {
 
 		check_keep_idle_inhibit(c);
 		check_vrr_enable(c);
+		hdr_resolve_all();
 
 		if (last_focus_client && !last_focus_client->iskilling &&
 			last_focus_client != c) {
@@ -5387,6 +5415,7 @@ void focusclient(Client *c, int32_t lift) {
 		dwl_im_relay_set_focus(dwl_input_method_relay, NULL);
 		wlr_seat_keyboard_notify_clear_focus(seat);
 		check_vrr_enable(NULL);
+		hdr_resolve_all();
 		if (active_constraint) {
 			cursorconstrain(NULL);
 		}
@@ -7698,6 +7727,7 @@ void setfullscreen(Client *c, int32_t fullscreen,
 	}
 
 	check_vrr_enable(c);
+	hdr_resolve_all();
 
 	if (rearrange)
 		arrange(c->mon, false, false);
@@ -8705,21 +8735,15 @@ void handle_image_copy_capture_new_session(struct wl_listener *listener,
  * with no colorimetry metadata, so capture clients decode them as plain
  * gamma and recordings look washed out. Temporarily drop the output out
  * of HDR for as long as it's being captured, as a workaround. */
-static void hdr_capture_apply(Monitor *m, bool force_off) {
-	m->hdr = force_off ? 0 : 1;
-	m->hdr_pending_change = true;
-	wlr_output_schedule_frame(m->wlr_output);
-	wlr_log(WLR_INFO, "HDR %s on %s (capture fallback)",
-			force_off ? "disabled" : "restored", m->wlr_output->name);
-	printstatus(IPC_WATCH_ARRANGGE);
-}
-
 static int32_t hdr_capture_debounce_timeout(void *data) {
 	Monitor *m = data;
 	if (config.hdr_capture_fallback && m->hdr_capture_count > 0 && m->hdr &&
 		!m->hdr_forced_off_for_capture) {
 		m->hdr_forced_off_for_capture = true;
-		hdr_capture_apply(m, true);
+		/* resolver honours the flag; it must not restore to a hardcoded 1
+		 * afterwards, which is why this no longer assigns m->hdr itself --
+		 * the output may legitimately be SDR once the capture ends */
+		hdr_resolve(m);
 	}
 	return 0;
 }
@@ -8738,9 +8762,68 @@ static void update_hdr_capture_override(Monitor *m) {
 		wl_event_source_timer_update(m->hdr_capture_debounce_timer, 0);
 		if (m->hdr_forced_off_for_capture) {
 			m->hdr_forced_off_for_capture = false;
-			hdr_capture_apply(m, false);
+			hdr_resolve(m);
 		}
 	}
+}
+
+/* True while any client carrying the force_hdr window rule is visible on m.
+ * "Visible" (not focused, not fullscreen) is deliberate: video keeps its HDR
+ * treatment when you click away from it, so alt-tabbing doesn't strobe the
+ * display through a modeset each way. */
+static bool mon_has_force_hdr_client(Monitor *m) {
+	Client *c;
+	wl_list_for_each(c, &clients, link) {
+		if (c->force_hdr > 0 && c->mon == m && !c->iskilling &&
+			VISIBLEON(c, m))
+			return true;
+	}
+	return false;
+}
+
+/* Single writer for m->hdr. Folds the three inputs -- global policy, the
+ * output's own configured intent, and the two overrides -- into one effective
+ * value, then schedules a commit only when it actually changed.
+ *
+ * Precedence, highest first:
+ *   1. capture fallback  -- forces OFF (a recording in progress must not get
+ *                           PQ samples it will decode as plain gamma)
+ *   2. hdr-mode off      -- forces OFF, the global kill switch
+ *   3. capability failure-- forces OFF, output/renderer can't do BT.2020+PQ
+ *   4. hdr-mode on       -- forces ON
+ *   5. force_hdr client  -- forces ON while visible on this output
+ *   6. per-output `hdr`  -- the configured baseline */
+static void hdr_resolve(Monitor *m) {
+	if (!m || !m->wlr_output || !m->wlr_output->enabled)
+		return;
+
+	bool want;
+	if (m->hdr_forced_off_for_capture || config.hdr_mode == 0 ||
+		m->hdr_capability_failed) {
+		want = false;
+	} else if (config.hdr_mode == 2) {
+		want = true;
+	} else { /* auto */
+		want = m->hdr_configured > 0 || mon_has_force_hdr_client(m);
+	}
+
+	if (want == (m->hdr > 0))
+		return;
+
+	m->hdr = want ? 1 : 0;
+	m->hdr_pending_change = true;
+	wlr_output_schedule_frame(m->wlr_output);
+	wlr_log(WLR_INFO, "HDR %s on %s", want ? "enabled" : "disabled",
+			m->wlr_output->name);
+	printstatus(IPC_WATCH_ARRANGGE);
+}
+
+/* Re-evaluate every output. Cheap (a handful of outputs, one client walk
+ * each) and only commits where the effective value actually moved. */
+static void hdr_resolve_all(void) {
+	Monitor *m;
+	wl_list_for_each(m, &mons, link)
+		hdr_resolve(m);
 }
 
 static void commit_vrr_state(Monitor *m, bool enable) {
