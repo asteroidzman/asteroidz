@@ -174,6 +174,11 @@ void asteroidz_text_global_finish(void) {
 
 static void text_buffer_destroy(struct wlr_buffer *wlr_buffer) {
 	struct asteroidz_text_buffer *buf = wl_container_of(wlr_buffer, buf, base);
+	/* the buffer holds its own reference on the surface (see the
+	 * cairo_surface_reference() at every buf->surface assignment) -- drop it
+	 * here so the surface outlives node->surface whenever the scene is still
+	 * holding this wrapper. */
+	cairo_surface_destroy(buf->surface);
 	free(buf);
 }
 
@@ -264,7 +269,12 @@ bool asteroidz_icon_node_set(struct asteroidz_icon_node *node,
 		return false;
 	}
 	wlr_buffer_init(&buf->base, &text_buffer_impl, size, size);
-	buf->surface = new_surface;
+	/* the buffer takes its OWN reference: new_surface is also stored in
+	 * node->surface below, and that one is destroyed on the next update. A
+	 * wrapper the scene is still holding (wlr_buffer_drop only releases our
+	 * reference -- the renderer can keep it alive) would otherwise be left
+	 * with a dangling buf->surface. */
+	buf->surface = cairo_surface_reference(new_surface);
 
 	/* attach the new buffer before dropping/destroying the old one -- unlike
 	 * every other node type in this file, this path used to destroy
@@ -716,7 +726,9 @@ void asteroidz_jump_label_node_update(struct asteroidz_jump_label_node *node,
 	}
 	wlr_buffer_init(&buf->base, &text_buffer_impl, node->surface_pixel_w,
 					node->surface_pixel_h);
-	buf->surface = node->surface;
+	/* own a reference rather than borrowing node->surface -- see the matching
+	 * comment in asteroidz_icon_node_set and in text_buffer_destroy. */
+	buf->surface = cairo_surface_reference(node->surface);
 
 	/* attach the new buffer before dropping the old one -- the scene node
 	 * must never be left pointing at an already-freed wlr_buffer, even
@@ -1417,7 +1429,9 @@ void asteroidz_tab_bar_node_update(struct asteroidz_tab_bar_node *node,
 
 	wlr_buffer_init(&buf->base, &text_buffer_impl, node->surface_pixel_w,
 					node->surface_pixel_h);
-	buf->surface = node->surface;
+	/* own a reference rather than borrowing node->surface -- see the matching
+	 * comment in asteroidz_icon_node_set and in text_buffer_destroy. */
+	buf->surface = cairo_surface_reference(node->surface);
 
 	/* attach the new buffer before dropping the old one -- the scene node
 	 * must never be left pointing at an already-freed wlr_buffer, even
