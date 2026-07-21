@@ -585,6 +585,12 @@ void dwl_im_relay_finish(struct dwl_input_method_relay *relay) {
 
 void dwl_im_relay_set_focus(struct dwl_input_method_relay *relay,
 							struct wlr_surface *surface) {
+	/* the relay is finished (and NULLed) during cleanup, while focus changes
+	 * can still be driven by late output teardown -- treat that as a no-op
+	 * rather than dereferencing a dangling/NULL relay. */
+	if (!relay) {
+		return;
+	}
 	if (relay->focused_surface == surface) {
 		return;
 	}
