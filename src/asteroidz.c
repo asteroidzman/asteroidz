@@ -3318,11 +3318,17 @@ void cleanup(void) {
 
 	destroykeyboardgroup(&kb_group->destroy, NULL);
 
-	dwl_im_relay_finish(dwl_input_method_relay);
-
 	/* If it's not destroyed manually it will cause a use-after-free of
 	 * wlr_seat. Destroy it until it's fixed in the wlroots side */
 	wlr_backend_destroy(backend);
+
+	/* MUST come after wlr_backend_destroy(): tearing down the outputs runs
+	 * cleanupmon() -> closemon() -> focusclient(), which calls
+	 * dwl_im_relay_set_focus() on this relay. Finishing it first left that
+	 * path reading a freed relay -- confirmed live under ASAN as a
+	 * heap-use-after-free at text-input.h:588, on every session exit. */
+	dwl_im_relay_finish(dwl_input_method_relay);
+	dwl_input_method_relay = NULL;
 
 	wl_display_destroy(dpy);
 	/* Destroy after the wayland display (when the monitors are already
