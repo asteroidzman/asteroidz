@@ -5151,6 +5151,26 @@ destroynotify(struct wl_listener *listener, void *data) {
 		wl_list_remove(&c->map.link);
 		wl_list_remove(&c->unmap.link);
 	}
+	/* The xdg-decoration outlives the toplevel: wlroots emits the toplevel's
+	 * destroy signal FIRST and destroys the decoration afterwards, so leaving
+	 * these two listeners registered lets destroydecoration() run against a
+	 * Client that's already been freed here. Confirmed live under ASAN as a
+	 * heap-use-after-free (the `c->decoration = NULL` write in
+	 * destroydecoration), reproducing 10/10 times. c->decoration is non-NULL
+	 * exactly when createdecoration registered these, so it gates both.
+	 *
+	 * Only the ABRUPT-disconnect path hits this, which is why it never shows
+	 * up in normal use: a client closing gracefully destroys its decoration
+	 * object before its toplevel, so the ordering is already safe. It's
+	 * wl_client_destroy() -- the client process being killed or crashing --
+	 * that tears every resource down in one sweep with the toplevel first.
+	 * The regression suite force-kills its windows, so it reproduces there
+	 * every run; a real browser/game crash reaches it the same way. */
+	if (c->decoration) {
+		wl_list_remove(&c->destroy_decoration.link);
+		wl_list_remove(&c->set_decoration_mode.link);
+		c->decoration = NULL;
+	}
 	free(c->icon_name);
 	free(c->toplevel_tag);
 	free(c);
