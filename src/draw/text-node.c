@@ -545,8 +545,15 @@ void asteroidz_jump_label_node_update(struct asteroidz_jump_label_node *node,
 	}
 
 	/* update cache */
+	/* asteroidz_jump_label_node_set_focus() re-enters here passing
+	 * node->cached_text ITSELF as `text`, so the old cache must not be freed
+	 * until the copy exists -- otherwise g_strdup() reads the pointer that was
+	 * just freed. Confirmed live under ASAN: heap-use-after-free in g_strdup
+	 * via asteroidz_jump_label_node_update <- ..._set_focus <-
+	 * overview_draw_cell_label. */
+	char *new_cached_text = g_strdup(text);
 	g_free(node->cached_text);
-	node->cached_text = g_strdup(text);
+	node->cached_text = new_cached_text;
 	g_free(node->cached_font_desc);
 	node->cached_font_desc = g_strdup(node->font_desc);
 	node->cached_scale = scale;
