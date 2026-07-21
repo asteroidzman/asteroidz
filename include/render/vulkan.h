@@ -556,6 +556,12 @@ struct fx_vk_frag_texture_pcr_data {
 	float matrix[4][4]; // only a 3x3 subset is used
 	float alpha;
 	float luminance_multiplier;
+	// Highlight rolloff ceiling, in the same reference-normalized units
+	// luminance_multiplier produces (1.0 == the output's reference white).
+	// <= 1.0 disables the rolloff. Lands at push-constant offset 152, inside
+	// the padding before the corner block's explicit offset 160, so adding it
+	// shifts no existing field.
+	float content_peak;
 };
 
 struct fx_vk_frag_output_pcr_data {

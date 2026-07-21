@@ -10,6 +10,7 @@ layout(push_constant, row_major) uniform UBO {
 	layout(offset = 80) mat4 matrix;
 	float alpha;
 	float luminance_multiplier;
+	float content_peak;
 } data;
 
 layout (constant_id = 0) const int TEXTURE_TRANSFORM = 0;
@@ -68,6 +69,32 @@ vec3 bt1886_color_to_linear(vec3 color) {
 	return (L - Lmin) / (Lmax - Lmin);
 }
 
+// Hue-preserving highlight rolloff.
+//
+// Without this the Vulkan path hard-clips anything above the output range, and
+// a per-channel clip walks bright saturated colour to white: red hits the
+// ceiling first, then green and blue catch up. Extended Reinhard is driven
+// here by the pixel's MAX CHANNEL and applied as a single common scale, so
+// channel ratios -- and therefore hue and saturation -- are untouched no
+// matter how hard the compression bites. This deliberately differs from the
+// GLES renderer's per-channel version, whose own comment concedes it shifts
+// hue/saturation at high brightness.
+//
+// peak <= 1.0 means the content fits inside the output's reference range and
+// the curve would be an identity, so it is skipped.
+vec3 highlight_rolloff(vec3 rgb, float peak) {
+	if (peak <= 1.0) {
+		return rgb;
+	}
+	float m = max(max(rgb.r, rgb.g), rgb.b);
+	if (m <= 0.0) {
+		return rgb;
+	}
+	float p2 = peak * peak;
+	float mapped = m * (1.0 + m / p2) / (1.0 + m);
+	return rgb * (mapped / m);
+}
+
 void main() {
 	vec4 in_color = textureLod(tex, uv, 0);
 
@@ -96,6 +123,8 @@ void main() {
 	rgb *= data.luminance_multiplier;
 
 	rgb = mat3(data.matrix) * rgb;
+
+	rgb = highlight_rolloff(rgb, data.content_peak);
 
 	// Back to pre-multiplied alpha
 	out_color = vec4(rgb * alpha, alpha);

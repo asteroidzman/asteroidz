@@ -967,9 +967,14 @@ static void render_texture(struct fx_vk_render_pass *pass,
 		luminance_multiplier = *options->luminance_multiplier;
 	}
 
+	// 0 (unset) and anything <= 1 mean the content fits inside the output's
+	// reference range, which the shader treats as an identity -- so a caller
+	// that never sets this keeps the previous hard-clip behaviour rather than
+	// silently acquiring a curve.
 	struct fx_vk_frag_texture_pcr_data frag_pcr_data = {
 		.alpha = alpha,
 		.luminance_multiplier = luminance_multiplier,
+		.content_peak = fx_options != NULL ? fx_options->content_peak : 0.0f,
 	};
 	encode_color_matrix(color_matrix, frag_pcr_data.matrix);
 
