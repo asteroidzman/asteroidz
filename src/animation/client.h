@@ -1886,6 +1886,32 @@ void client_set_pending_state(Client *c) {
 	c->dirty = true;
 }
 
+/* i3-style floating min/max size policy: a floor (float_min_*) and a ceiling
+ * (float_max_*, defaulting to the output size) on a floating window's box.
+ * Applied on top of the client's own size hints (client_set_size_bound). */
+static void clamp_floating_size(Client *c) {
+	if (!c || !c->isfloating || c->isfullscreen || c->ismaximizescreen)
+		return;
+
+	int32_t maxw = config.float_max_width;
+	int32_t maxh = config.float_max_height;
+	if (c->mon) {
+		if (maxw <= 0)
+			maxw = c->mon->w.width;
+		if (maxh <= 0)
+			maxh = c->mon->w.height;
+	}
+
+	if (config.float_min_width > 0 && c->geom.width < config.float_min_width)
+		c->geom.width = config.float_min_width;
+	if (config.float_min_height > 0 && c->geom.height < config.float_min_height)
+		c->geom.height = config.float_min_height;
+	if (maxw > 0 && c->geom.width > maxw)
+		c->geom.width = maxw;
+	if (maxh > 0 && c->geom.height > maxh)
+		c->geom.height = maxh;
+}
+
 void resize(Client *c, struct wlr_box geo, int32_t interact) {
 
 	// Entry point for animation setup; used to compute some of the animation's
@@ -1913,6 +1939,7 @@ void resize(Client *c, struct wlr_box geo, int32_t interact) {
 		c->geom.height = ASTEROIDZ_MAX(1 + 2 * (int32_t)c->bw, c->geom.height);
 	} else { // this clamps the window so it can't be moved off-screen
 		c->geom = geo;
+		clamp_floating_size(c); // i3-style floating min/max size policy
 		applybounds(
 			c,
 			bbox); // drop this suggested window size, since it's sometimes huge and breaks tiling

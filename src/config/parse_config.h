@@ -406,6 +406,15 @@ typedef struct {
 	uint32_t gappoh;
 	uint32_t gappov;
 	uint32_t borderpx;
+	/* i3-style floating policy. float_center_new: center a new window the
+	 * float layout floats (else the old top-left cascade). float_min/max_*:
+	 * clamp a floating window's size (max <= 0 means the output size).
+	 * float_keep_onscreen: px of a floating window kept within the layout on
+	 * every edge so it can't be dragged fully off-screen (0 = old behavior). */
+	int32_t float_center_new;
+	int32_t float_min_width, float_min_height;
+	int32_t float_max_width, float_max_height;
+	int32_t float_keep_onscreen;
 	int32_t enable_titlebar;
 	uint32_t titlebar_height;
 	int32_t monocle_tab_max_width; // 0 = tab segments split the full width
@@ -2139,6 +2148,18 @@ bool parse_option(Config *config, char *key, char *value) {
 		config->scratchpad_height_ratio = atof(value);
 	} else if (strcmp(key, "borderpx") == 0) {
 		config->borderpx = atoi(value);
+	} else if (strcmp(key, "float_center_new") == 0) {
+		config->float_center_new = CLAMP_INT(atoi(value), 0, 1);
+	} else if (strcmp(key, "float_min_width") == 0) {
+		config->float_min_width = CLAMP_INT(atoi(value), 0, 100000);
+	} else if (strcmp(key, "float_min_height") == 0) {
+		config->float_min_height = CLAMP_INT(atoi(value), 0, 100000);
+	} else if (strcmp(key, "float_max_width") == 0) {
+		config->float_max_width = CLAMP_INT(atoi(value), 0, 100000);
+	} else if (strcmp(key, "float_max_height") == 0) {
+		config->float_max_height = CLAMP_INT(atoi(value), 0, 100000);
+	} else if (strcmp(key, "float_keep_onscreen") == 0) {
+		config->float_keep_onscreen = CLAMP_INT(atoi(value), 0, 100000);
 	} else if (strcmp(key, "enable_titlebar") == 0) {
 		config->enable_titlebar = atoi(value);
 	} else if (strcmp(key, "titlebar_height") == 0) {
@@ -3357,6 +3378,12 @@ static const struct {
 	{"layout/titlebar/enable", "enable_titlebar"},
 	{"layout/titlebar/height", "titlebar_height"},
 	{"layout/border/width", "borderpx"},
+	{"layout/floating/center-new", "float_center_new"},
+	{"layout/floating/min-width", "float_min_width"},
+	{"layout/floating/min-height", "float_min_height"},
+	{"layout/floating/max-width", "float_max_width"},
+	{"layout/floating/max-height", "float_max_height"},
+	{"layout/floating/keep-onscreen", "float_keep_onscreen"},
 	{"layout/border/color", "bordercolor"},
 	{"layout/border/focus-color", "focuscolor"},
 	{"layout/border/urgent-color", "urgentcolor"},
@@ -4412,6 +4439,12 @@ void set_value_default() {
 	config.idleinhibit_ignore_visible = 0;
 
 	config.borderpx = 4;
+	config.float_center_new = 1;
+	config.float_min_width = 75;
+	config.float_min_height = 50;
+	config.float_max_width = 0; /* 0 = output size */
+	config.float_max_height = 0;
+	config.float_keep_onscreen = 30;
 	config.enable_titlebar = 0;
 	config.titlebar_height = 28;
 	config.monocle_tab_max_width = 0;

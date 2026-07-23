@@ -1549,6 +1549,25 @@ void applybounds(Client *c, struct wlr_box *bbox) {
 	c->geom.width = ASTEROIDZ_MAX(1 + 2 * (int32_t)c->bw, c->geom.width);
 	c->geom.height = ASTEROIDZ_MAX(1 + 2 * (int32_t)c->bw, c->geom.height);
 
+	/* i3-style: keep a grabbable strip of a floating window on-screen so it
+	 * can't be dragged fully off an edge and lost. keep px are clamped to the
+	 * window's own size (a window smaller than the strip stays fully visible).
+	 * float_keep_onscreen == 0 restores the old touch-the-edge behavior. */
+	int32_t keep = c->isfloating ? config.float_keep_onscreen : 0;
+	if (keep > 0) {
+		int32_t kx = ASTEROIDZ_MIN(keep, c->geom.width);
+		int32_t ky = ASTEROIDZ_MIN(keep, c->geom.height);
+		if (c->geom.x > bbox->x + bbox->width - kx)
+			c->geom.x = bbox->x + bbox->width - kx;
+		if (c->geom.y > bbox->y + bbox->height - ky)
+			c->geom.y = bbox->y + bbox->height - ky;
+		if (c->geom.x + c->geom.width < bbox->x + kx)
+			c->geom.x = bbox->x + kx - c->geom.width;
+		if (c->geom.y + c->geom.height < bbox->y + ky)
+			c->geom.y = bbox->y + ky - c->geom.height;
+		return;
+	}
+
 	if (c->geom.x >= bbox->x + bbox->width)
 		c->geom.x = bbox->x + bbox->width - c->geom.width;
 	if (c->geom.y >= bbox->y + bbox->height)
@@ -2349,11 +2368,12 @@ void applyrules(Client *c) {
 		(!client_is_x11(c) || (c->geom.x == 0 && c->geom.y == 0))) {
 		struct wlr_box pending_center_geom =
 			c->iscustomsize ? c->float_geom : c->geom;
-		/* auto-floated windows cascade instead of stacking dead-center. The
-		 * slot is burned once; applyrules runs again at map (after
-		 * mapnotify re-read the surface geometry, dropping our x/y), so the
-		 * stored slot is re-applied onto the now-real size. */
-		if (c->autofloated && mon) {
+		/* auto-floated windows cascade instead of stacking dead-center (unless
+		 * float_center_new, i3-style, which falls through to the centering
+		 * branch below). The slot is burned once; applyrules runs again at map
+		 * (after mapnotify re-read the surface geometry, dropping our x/y), so
+		 * the stored slot is re-applied onto the now-real size. */
+		if (c->autofloated && mon && !config.float_center_new) {
 			if (!c->cascaded) {
 				struct wlr_box slot =
 					floating_cascade_box(mon, pending_center_geom);

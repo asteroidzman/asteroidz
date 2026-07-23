@@ -37,11 +37,14 @@ void floatlayout(Monitor *m) {
 		struct wlr_box geom =
 			c->float_geom.width > 0 && c->float_geom.height > 0 ? c->float_geom
 																: c->geom;
-		/* windows without a chosen floating spot get the next cascade slot
-		 * (once); ones with one (moved by hand, rule offsets, an earlier
-		 * cascade) keep it */
+		/* windows without a chosen floating spot get placed once; ones with
+		 * one (moved by hand, rule offsets, an earlier placement) keep it.
+		 * i3-style: center the window on the work area (float_center_new);
+		 * the old top-left cascade is the opt-out. */
 		if (!c->iscustompos && !c->cascaded) {
-			geom = floating_cascade_box(m, geom);
+			geom = config.float_center_new
+					   ? setclient_coordinate_center(c, m, geom, 0, 0)
+					   : floating_cascade_box(m, geom);
 			c->cascaded = 1;
 		}
 		c->float_geom = geom;
