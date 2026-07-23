@@ -5244,6 +5244,20 @@ void destroykeyboardgroup(struct wl_listener *listener, void *data) {
  * activatex11 recognise the sibling's activate as part of the same steal. */
 static uint32_t last_x11_unfocus_ms = 0;
 
+/* Most recent time the user deliberately switched the viewed tag(s) (view()).
+ * The per-unfocus steal guards above key off when the *app* fires
+ * request_activate relative to losing focus — but an Electron app (e.g.
+ * TradingView under XWayland) can re-fire it on a delay or repeatedly, and the
+ * scroller layout's animated arrange pushes that activate past the per-unfocus
+ * cooldown, so the view gets yanked back to the app's tag. Keying the guard on
+ * the user's own tag switch instead is robust to that timing: for a short
+ * cooldown after a deliberate switch, no activate may change the viewed tag.
+ * focus_on_activate still works normally outside that window. */
+static uint32_t last_user_view_ms = 0;
+
+#define FOCUS_ACTIVATE_STEAL_MS 1000u
+#define FOCUS_VIEW_STEAL_MS 1500u
+
 /* the mapped, visible modal xdg dialog of p, if any (X11 modals manage
  * their own focus client-side, so this is Wayland-only) */
 static Client *client_modal_child(Client *p) {
@@ -9280,7 +9294,17 @@ urgent(struct wl_listener *listener, void *data) {
 	if (!c || !c->foreign_toplevel)
 		return;
 
-	if (config.focus_on_activate && !c->istagsilent && c != selmon->sel) {
+	/* Same focus-steal guard as activatex11: a deliberate tag switch (or a
+	 * just-defocused client) must not be undone by an activate that lands
+	 * right after it -- flag urgent instead. */
+	uint32_t now_ms = get_now_in_ms();
+	bool activate_is_steal =
+		now_ms - c->last_unfocus_ms < FOCUS_ACTIVATE_STEAL_MS ||
+		now_ms - last_x11_unfocus_ms < FOCUS_ACTIVATE_STEAL_MS ||
+		now_ms - last_user_view_ms < FOCUS_VIEW_STEAL_MS;
+
+	if (config.focus_on_activate && !c->istagsilent && c != selmon->sel &&
+			!activate_is_steal) {
 		if (!(c->mon == selmon && c->tags & c->mon->tagset[c->mon->seltags]))
 			view_in_mon(&(Arg){.ui = c->tags}, true, c->mon, true);
 		focusclient(c, 1);
@@ -9351,6 +9375,9 @@ toggleseltags:
 }
 
 void view(const Arg *arg, bool want_animation) {
+	/* Record this deliberate tag switch so a window's request_activate can't
+	 * immediately yank the view back (see last_user_view_ms). */
+	last_user_view_ms = get_now_in_ms();
 	/* tags are strictly per-monitor: a tag switch only ever affects
 	 * selmon, never any other monitor's tagset/pertag state. arg->i used
 	 * to be an opt-in "sync this switch to every other monitor too" flag
@@ -9502,11 +9529,11 @@ void activatex11(struct wl_listener *listener, void *data) {
 	 * focused one would immediately yank the view back to its tag. Ignore an
 	 * activate that arrives within this window of the client being defocused;
 	 * mark it urgent instead. Genuine later activations still switch. */
-	const uint32_t FOCUS_ACTIVATE_STEAL_MS = 1000;
 	uint32_t now_ms = get_now_in_ms();
 	bool activate_is_steal =
 		now_ms - c->last_unfocus_ms < FOCUS_ACTIVATE_STEAL_MS ||
-		now_ms - last_x11_unfocus_ms < FOCUS_ACTIVATE_STEAL_MS;
+		now_ms - last_x11_unfocus_ms < FOCUS_ACTIVATE_STEAL_MS ||
+		now_ms - last_user_view_ms < FOCUS_VIEW_STEAL_MS;
 
 	/* While overview is open, honouring an activate (view_in_mon + focusclient +
 	 * arrange) would pull the window out of its scaled thumbnail and snap it
