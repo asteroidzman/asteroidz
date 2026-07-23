@@ -4064,6 +4064,15 @@ bool wlr_scene_output_build_state(struct wlr_scene_output *scene_output,
 
 	for (int i = list_len - 1; i >= 0; i--) {
 		struct render_list_entry *entry = &list_data[i];
+#ifdef FX_HAS_VULKAN
+		// The fx_vk renderer defers plain live-blur composites so a run of
+		// non-overlapping live-blur nodes shares one scene-pass split. Any node
+		// that isn't a (potentially batchable) blur node must first flush that
+		// batch, so it draws in order into a re-opened scene pass.
+		if (entry->node->type != WLR_SCENE_NODE_BLUR) {
+			fx_vk_render_pass_flush_blur_batch(render_pass);
+		}
+#endif
 		scene_entry_render(entry, &render_data);
 
 		if (entry->node->type == WLR_SCENE_NODE_BUFFER) {
@@ -4083,6 +4092,12 @@ bool wlr_scene_output_build_state(struct wlr_scene_output *scene_output,
 			}
 		}
 	}
+
+#ifdef FX_HAS_VULKAN
+	// End-of-frame: composite any live-blur nodes that were the last things
+	// drawn and are still queued, before any post-scene rendering below.
+	fx_vk_render_pass_flush_blur_batch(render_pass);
+#endif
 
 	if (debug_damage == WLR_SCENE_DEBUG_DAMAGE_HIGHLIGHT) {
 		struct highlight_region *damage;

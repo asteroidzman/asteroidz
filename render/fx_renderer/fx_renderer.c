@@ -99,6 +99,8 @@ static inline void free_shaders(struct fx_renderer *renderer) {
 	glDeleteProgram(renderer->shaders.tex_effects_rgba.program);
 	glDeleteProgram(renderer->shaders.tex_effects_rgbx.program);
 	glDeleteProgram(renderer->shaders.tex_effects_ext.program);
+	glDeleteProgram(renderer->shaders.tex_mask.program);
+	glDeleteProgram(renderer->shaders.tex_mask_ext.program);
 	glDeleteProgram(renderer->shaders.box_shadow.program);
 	glDeleteProgram(renderer->shaders.blur1.program);
 	glDeleteProgram(renderer->shaders.blur2.program);
@@ -415,35 +417,48 @@ static bool link_shaders(struct fx_renderer *renderer) {
 
 	// Basic fragment shaders
 	if (!link_tex_program(&renderer->shaders.tex_rgba,
-				SHADER_SOURCE_TEXTURE_RGBA, false)) {
+				SHADER_SOURCE_TEXTURE_RGBA, false, FX_TEX_MASK_NONE)) {
 		wlr_log(WLR_ERROR, "Could not link tex_RGBA shader");
 		goto error;
 	}
 	if (!link_tex_program(&renderer->shaders.tex_rgbx,
-				SHADER_SOURCE_TEXTURE_RGBX, false)) {
+				SHADER_SOURCE_TEXTURE_RGBX, false, FX_TEX_MASK_NONE)) {
 		wlr_log(WLR_ERROR, "Could not link tex_RGBX shader");
 		goto error;
 	}
 	if (!link_tex_program(&renderer->shaders.tex_ext,
-				SHADER_SOURCE_TEXTURE_EXTERNAL, false)) {
+				SHADER_SOURCE_TEXTURE_EXTERNAL, false, FX_TEX_MASK_NONE)) {
 		wlr_log(WLR_ERROR, "Could not link tex_EXTERNAL shader");
 		goto error;
 	}
 
 	// Effects fragment shaders
 	if (!link_tex_program(&renderer->shaders.tex_effects_rgba,
-				SHADER_SOURCE_TEXTURE_RGBA, true)) {
+				SHADER_SOURCE_TEXTURE_RGBA, true, FX_TEX_MASK_NONE)) {
 		wlr_log(WLR_ERROR, "Could not link tex_effects_RGBA shader");
 		goto error;
 	}
 	if (!link_tex_program(&renderer->shaders.tex_effects_rgbx,
-				SHADER_SOURCE_TEXTURE_RGBX, true)) {
+				SHADER_SOURCE_TEXTURE_RGBX, true, FX_TEX_MASK_NONE)) {
 		wlr_log(WLR_ERROR, "Could not link tex_effects_RGBX shader");
 		goto error;
 	}
 	if (!link_tex_program(&renderer->shaders.tex_effects_ext,
-				SHADER_SOURCE_TEXTURE_EXTERNAL, true)) {
+				SHADER_SOURCE_TEXTURE_EXTERNAL, true, FX_TEX_MASK_NONE)) {
 		wlr_log(WLR_ERROR, "Could not link tex_effects_EXTERNAL shader");
+		goto error;
+	}
+
+	// Masked blur-composite fragment shaders (ignore_transparent): always the
+	// RGBA blur cache + effects, with the window/layer surface as the mask.
+	if (!link_tex_program(&renderer->shaders.tex_mask,
+				SHADER_SOURCE_TEXTURE_RGBA, true, FX_TEX_MASK_TEXTURE_2D)) {
+		wlr_log(WLR_ERROR, "Could not link tex_mask shader");
+		goto error;
+	}
+	if (!link_tex_program(&renderer->shaders.tex_mask_ext,
+				SHADER_SOURCE_TEXTURE_RGBA, true, FX_TEX_MASK_TEXTURE_EXTERNAL)) {
+		wlr_log(WLR_ERROR, "Could not link tex_mask_ext shader");
 		goto error;
 	}
 	if (!link_tex_soft_edge_program(&renderer->shaders.tex_soft_edge)) {

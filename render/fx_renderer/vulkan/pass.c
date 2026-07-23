@@ -231,6 +231,8 @@ static bool unwrap_color_transform(struct wlr_color_transform *transform,
 	return false;
 }
 
+static void flush_deferred_blur_batch(struct fx_vk_render_pass *pass);
+
 static bool render_pass_submit(struct wlr_render_pass *wlr_pass) {
 	struct fx_vk_render_pass *pass = get_render_pass(wlr_pass);
 	struct fx_vk_renderer *renderer = pass->renderer;
@@ -251,6 +253,11 @@ static bool render_pass_submit(struct wlr_render_pass *wlr_pass) {
 	stage_cb = renderer->stage.cb;
 	assert(stage_cb != NULL);
 	renderer->stage.cb = NULL;
+
+	// Safety net: the scene loop flushes the deferred live-blur batch after its
+	// render loop, but flush here too so a pending batch (scene pass left ended)
+	// can never reach the two-pass end below and double-end the render pass.
+	flush_deferred_blur_batch(pass);
 
 	if (pass->two_pass) {
 		int width = pass->render_buffer->wlr_buffer->width;
@@ -2328,6 +2335,77 @@ bool fx_vk_render_pass_add_optimized_blur(struct wlr_render_pass *wlr_pass,
 	return !pass->failed;
 }
 
+// Composite every pending deferred live-blur node and re-open the scene pass.
+// The batch's first node ended the scene pass; this re-begins it ONCE (loadOp
+// LOAD) and draws all the queued composites, so a run of non-overlapping live
+// nodes paid a single split instead of one per node. On a failed pass no GPU
+// work is recorded (the command buffer is discarded), but the owned clip
+// regions are still freed.
+static void flush_deferred_blur_batch(struct fx_vk_render_pass *pass) {
+	if (pass->deferred_blur_count == 0) {
+		return;
+	}
+	if (!pass->failed) {
+		begin_scene_pass_reload(pass);
+	}
+	for (int i = 0; i < pass->deferred_blur_count; i++) {
+		struct fx_vk_deferred_blur *d = &pass->deferred_blurs[i];
+		if (!pass->failed) {
+			render_effect_image(pass, d->src, &d->dst_box, &d->clip,
+				&d->corners, &d->clipped_region,
+				d->has_clip_box ? &d->clip_box : NULL, d->alpha);
+		}
+		pixman_region32_fini(&d->clip);
+	}
+	pass->deferred_blur_count = 0;
+}
+
+// True if `region` (a padded blur region) intersects any already-queued node's
+// padded region. Overlapping regions can't share a split: their region-limited
+// blur passes would read/write each other's pixels.
+static bool deferred_blur_region_overlaps(struct fx_vk_render_pass *pass,
+		const struct wlr_box *region) {
+	for (int i = 0; i < pass->deferred_blur_count; i++) {
+		struct wlr_box tmp;
+		if (wlr_box_intersection(&tmp, region, &pass->deferred_blurs[i].region)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+// Queue a plain live-blur composite (deep-copying the transient clip region);
+// its blur has already been recorded into `src`.
+static void defer_blur_composite(struct fx_vk_render_pass *pass,
+		struct fx_vk_effect_image *src, const struct wlr_box *dst_box,
+		const struct wlr_box *region, struct fx_render_texture_options *tex_options,
+		float alpha) {
+	struct fx_vk_deferred_blur *d =
+		&pass->deferred_blurs[pass->deferred_blur_count++];
+	d->src = src;
+	d->dst_box = *dst_box;
+	d->region = *region;
+	pixman_region32_init(&d->clip);
+	if (tex_options->base.clip != NULL) {
+		pixman_region32_copy(&d->clip, tex_options->base.clip);
+	}
+	d->corners = tex_options->corners;
+	d->clipped_region = tex_options->clipped_region;
+	d->has_clip_box = tex_options->clip_box != NULL;
+	if (d->has_clip_box) {
+		d->clip_box = *tex_options->clip_box;
+	}
+	d->alpha = alpha;
+}
+
+void fx_vk_render_pass_flush_blur_batch(struct wlr_render_pass *wlr_pass) {
+	struct fx_vk_render_pass *pass = fx_vk_render_pass_try_get(wlr_pass);
+	if (pass == NULL) {
+		return;
+	}
+	flush_deferred_blur_batch(pass);
+}
+
 // Per-window/layer blur: draws the cached blurred background into the scene
 // image at the node's box, within the currently-open scene pass.
 void fx_vk_render_pass_add_blur(struct wlr_render_pass *wlr_pass,
@@ -2343,11 +2421,88 @@ void fx_vk_render_pass_add_blur(struct wlr_render_pass *wlr_pass,
 		return;
 	}
 
-
 	struct fx_render_texture_options *tex_options = &options->tex_options;
 	struct wlr_box dst_box = tex_options->base.dst_box;
 	float alpha = tex_options->base.alpha != NULL ?
 		*tex_options->base.alpha : 1.0f;
+
+	const bool masked = options->ignore_transparent &&
+		tex_options->base.texture != NULL && options->blur_data != NULL;
+	const bool soft_edge = options->edge_softness > 0;
+
+	// LIVE-node blur parameters (see the source-selection note below). Computed
+	// once and reused by both the batched and the per-node paths.
+	struct blur_data bd = {0};
+	struct wlr_box blur_region = {0};
+	bool live_eligible = false;
+	if (options->blur_data != NULL && pass->two_pass) {
+		bd = blur_data_apply_strength(options->blur_data, options->blur_strength);
+		/* single-node blurs only ever composite dst_box, so copy and blur
+		 * just that box padded by the blur's reach instead of the whole
+		 * output (at 4K this is the bulk of a live node's cost) */
+		blur_region = fx_vk_blur_padded_region(bufs, &bd, &dst_box);
+		bool region_ok = blur_region.width > 0 && blur_region.height > 0;
+		live_eligible = !options->use_optimized_blur &&
+			is_scene_blur_enabled(&bd) && region_ok;
+	}
+
+	/* snapshot the live scene straight into the blur target: chain mip 0 on
+	 * the compute path (saves the intermediate hop), else the ping-pong spare
+	 * (optimized_no_blur must stay intact for strength re-blurs). Condition
+	 * must match use_compute in fx_vk_render_pass_blur: the ping-pong pair is
+	 * only allocated when the chain is NOT fully usable. This selection is
+	 * frame-constant, so every live node's blur lands in the SAME image -- the
+	 * property that lets a batch of non-overlapping regions coexist in it. */
+	struct fx_vk_effect_image *live_src =
+		(pass->renderer->blur_compute_ok && bufs->blur_chain != NULL &&
+			bufs->blur_chain->mip_levels > 1 &&
+			bufs->blur_chain->mip_dst_ds[0] != VK_NULL_HANDLE)
+		? bufs->blur_chain : bufs->effects;
+
+	// Batching: a plain (unmasked, no soft edge) LIVE node can defer its
+	// composite and share ONE scene-pass split with other non-overlapping live
+	// nodes, PROVIDED the blur runs on the compute (mip-chain) path.
+	//
+	// Why compute-only: fx_vk_render_pass_blur is region-limited, but the
+	// downsampled levels are written at near-origin SCALED coordinates
+	// (blur_level_rect: x >> shift), not at the node's screen box. On the
+	// compute path each level is a SEPARATE mip image and the full-res result
+	// lands only in mip 0 at the node's own box, so a later node's scaled
+	// scratch (mips 1..n) can't touch an earlier node's finished mip-0 region.
+	// On the graphics ping-pong path all levels share the two full-size
+	// effect images, so one node's scaled scratch can overwrite another node's
+	// finished full-res region even when their screen boxes don't overlap --
+	// unsafe to batch. live_src == blur_chain is exactly the compute path (same
+	// predicate fx_vk_render_pass_blur uses to pick it). Non-compute hardware
+	// simply keeps the original one-split-per-node behaviour.
+	if (live_eligible && !masked && !soft_edge && live_src == bufs->blur_chain) {
+		VkCommandBuffer cb = pass->command_buffer->vk;
+		// Can't join the open batch (would overlap a queued region, or it's
+		// full): composite what's queued first, which re-opens the scene pass.
+		if (pass->deferred_blur_count > 0 &&
+				(pass->deferred_blur_count >= FX_VK_MAX_DEFERRED_BLURS ||
+					deferred_blur_region_overlaps(pass, &blur_region))) {
+			flush_deferred_blur_batch(pass);
+		}
+		// First node of a (possibly fresh) batch ends the scene pass; the rest
+		// join while it is already ended.
+		if (pass->deferred_blur_count == 0) {
+			vkCmdEndRenderPass(cb);
+			pass->bound_pipeline = VK_NULL_HANDLE;
+		}
+		copy_effect_image_region(pass,
+			pass->render_buffer->two_pass.blend_image,
+			live_src->image, &blur_region);
+		struct fx_vk_effect_image *src =
+			fx_vk_render_pass_blur(pass, bufs, live_src, &bd, &blur_region);
+		defer_blur_composite(pass, src, &dst_box, &blur_region, tex_options,
+			alpha);
+		return;
+	}
+
+	// Not batchable: composite any pending batch first (re-opens the scene
+	// pass) so this node draws in the correct order into an open pass.
+	flush_deferred_blur_batch(pass);
 
 	// Source selection, mirroring GLES fx_render_pass_add_blur:
 	// - optimized nodes at full strength: the cached bottom-layer blur.
@@ -2362,30 +2517,10 @@ void fx_vk_render_pass_add_blur(struct wlr_render_pass *wlr_pass,
 	// render pass active).
 	struct fx_vk_effect_image *src = bufs->optimized_blur;
 	if (options->blur_data != NULL && pass->two_pass) {
-		struct blur_data bd =
-			blur_data_apply_strength(options->blur_data, options->blur_strength);
-		/* single-node blurs only ever composite dst_box, so copy and blur
-		 * just that box padded by the blur's reach instead of the whole
-		 * output (at 4K this is the bulk of a live node's cost) */
-		struct wlr_box blur_region =
-			fx_vk_blur_padded_region(bufs, &bd, &dst_box);
-		bool region_ok = blur_region.width > 0 && blur_region.height > 0;
-		if (!options->use_optimized_blur && is_scene_blur_enabled(&bd) &&
-				region_ok) {
+		if (live_eligible) {
 			VkCommandBuffer cb = pass->command_buffer->vk;
 			vkCmdEndRenderPass(cb);
 			pass->bound_pipeline = VK_NULL_HANDLE;
-			/* snapshot the live scene straight into the blur target: chain
-			 * mip 0 on the compute path (saves the intermediate hop), else
-			 * the ping-pong spare (optimized_no_blur must stay intact for
-			 * strength re-blurs). Condition must match use_compute in
-			 * fx_vk_render_pass_blur: the ping-pong pair is only allocated
-			 * when the chain is NOT fully usable. */
-			struct fx_vk_effect_image *live_src =
-				(pass->renderer->blur_compute_ok && bufs->blur_chain != NULL &&
-					bufs->blur_chain->mip_levels > 1 &&
-					bufs->blur_chain->mip_dst_ds[0] != VK_NULL_HANDLE)
-				? bufs->blur_chain : bufs->effects;
 			copy_effect_image_region(pass,
 				pass->render_buffer->two_pass.blend_image,
 				live_src->image, &blur_region);
@@ -2393,7 +2528,7 @@ void fx_vk_render_pass_add_blur(struct wlr_render_pass *wlr_pass,
 				&blur_region);
 			begin_scene_pass_reload(pass);
 		} else if (options->blur_strength < 1.0f && is_scene_blur_enabled(&bd) &&
-				region_ok) {
+				blur_region.width > 0 && blur_region.height > 0) {
 			vkCmdEndRenderPass(pass->command_buffer->vk);
 			pass->bound_pipeline = VK_NULL_HANDLE;
 			src = fx_vk_render_pass_blur(pass, bufs, bufs->optimized_no_blur,
@@ -2411,8 +2546,7 @@ void fx_vk_render_pass_add_blur(struct wlr_render_pass *wlr_pass,
 	// behind a semi-transparent layer-shell bar). Only show the blur where the
 	// mask's alpha >= transparency_threshold; elsewhere the unblurred background
 	// shows through. Mirrors GLES fx_render_pass_add_blur's stencil-mask path.
-	if (options->ignore_transparent && tex_options->base.texture != NULL &&
-			options->blur_data != NULL) {
+	if (masked) {
 		render_effect_image_masked(pass, src, &dst_box,
 			tex_options->base.clip, &tex_options->corners,
 			&tex_options->clipped_region, tex_options->clip_box, alpha,
@@ -2420,7 +2554,7 @@ void fx_vk_render_pass_add_blur(struct wlr_render_pass *wlr_pass,
 		return;
 	}
 
-	if (options->edge_softness > 0) {
+	if (soft_edge) {
 		render_effect_image_soft_edge(pass, src, &dst_box,
 			tex_options->base.clip, &tex_options->corners,
 			&tex_options->clipped_region, tex_options->clip_box, alpha,

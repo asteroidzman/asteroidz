@@ -279,40 +279,6 @@ static const struct wlr_render_pass_impl render_pass_impl = {
 /// FX pass functions
 ///
 
-// TODO: REMOVE STENCILING
-
-// Initialize the stenciling work
-static void stencil_mask_init(void) {
-	glClearStencil(0);
-	glClear(GL_STENCIL_BUFFER_BIT);
-	glEnable(GL_STENCIL_TEST);
-
-	glStencilFunc(GL_ALWAYS, 1, 0xFF);
-	glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
-	// Disable writing to color buffer
-	glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
-}
-
-// Close the mask
-static void stencil_mask_close(bool draw_inside_mask) {
-	// Reenable writing to color buffer
-	glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-	if (draw_inside_mask) {
-		glStencilFunc(GL_EQUAL, 1, 0xFF);
-		glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
-		return;
-	}
-	glStencilFunc(GL_NOTEQUAL, 1, 0xFF);
-	glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
-}
-
-// Finish stenciling and clear the buffer
-static void stencil_mask_fini(void) {
-	glClearStencil(0);
-	glClear(GL_STENCIL_BUFFER_BIT);
-	glDisable(GL_STENCIL_TEST);
-}
-
 static void render(const struct wlr_box *box, const pixman_region32_t *clip, GLint attrib) {
 	pixman_region32_t region;
 	pixman_region32_init_rect(&region, box->x, box->y, box->width, box->height);
@@ -813,6 +779,134 @@ static void fx_render_pass_add_texture_soft_edge(struct fx_gles_render_pass *pas
 	render(&dst_box, &clip_region, shader->pos_attrib);
 	pixman_region32_fini(&clip_region);
 
+	glBindTexture(texture->target, 0);
+
+	pop_fx_debug(renderer);
+	TRACY_BOTH_ZONES_END;
+}
+
+// Single-draw masked blur composite: the replacement for the old stencil-mask
+// ignore_transparent path (mirrors the Vulkan render_effect_image_masked).
+// Draws the blurred cache texture exactly like fx_render_pass_add_texture, but
+// with the tex_mask/tex_mask_ext shader, which additionally samples the
+// window/layer surface as a mask and zeroes the blur where the mask's alpha is
+// below `threshold` -- so the unblurred background shows through the surface's
+// transparent regions. This avoids the extra full-window discard-transparent
+// draw plus two full-buffer stencil clears the stencil path paid per blur node.
+static void fx_render_pass_add_texture_masked(struct fx_gles_render_pass *pass,
+		const struct fx_render_texture_options *fx_options,
+		struct fx_texture *mask, const struct wlr_fbox *mask_src_box,
+		enum wl_output_transform mask_transform, float threshold) {
+	const struct wlr_render_texture_options *options = &fx_options->base;
+	struct fx_renderer *renderer = pass->buffer->renderer;
+	// options->texture is the whole-output blur cache (dst/src were rewritten to
+	// the full buffer by the caller); we sample only the node's own region of it.
+	struct fx_texture *texture = fx_get_texture(options->texture);
+
+	// The blur cache is always a plain 2D RGBA texture; the shader variant is
+	// selected by the *mask* texture's target instead.
+	struct tex_shader *shader = mask->target == GL_TEXTURE_EXTERNAL_OES
+		? &renderer->shaders.tex_mask_ext
+		: &renderer->shaders.tex_mask;
+
+	float alpha = wlr_render_texture_options_get_alpha(options);
+
+	// Draw at the NODE's own box (not the full blur buffer) so the mask's
+	// interpolated texture coordinate (v_texcoord2) spans the mask surface 1:1,
+	// exactly like the old stencil path drew the surface. clip_box is the node
+	// box in buffer coordinates.
+	struct wlr_box node_box;
+	if (!wlr_box_empty(fx_options->clip_box)) {
+		node_box = *fx_options->clip_box;
+	} else {
+		wlr_render_texture_options_get_dst_box(options, &node_box);
+	}
+
+	// Blur cache is sampled at the node region (normalized to the whole-output
+	// cache), upright like the non-masked composite (transform NORMAL).
+	struct wlr_fbox blur_src = {
+		.x = (double)node_box.x / options->texture->width,
+		.y = (double)node_box.y / options->texture->height,
+		.width = (double)node_box.width / options->texture->width,
+		.height = (double)node_box.height / options->texture->height,
+	};
+	// Mask sampled through its own transform, normalized to the mask texture --
+	// same set_tex_matrix inputs the surface's own draw uses.
+	struct wlr_fbox mask_src = {
+		.x = mask_src_box->x / mask->wlr_texture.width,
+		.y = mask_src_box->y / mask->wlr_texture.height,
+		.width = mask_src_box->width / mask->wlr_texture.width,
+		.height = mask_src_box->height / mask->wlr_texture.height,
+	};
+
+	TRACY_BOTH_ZONES_START(renderer);
+	push_fx_debug(renderer);
+
+	setup_blending(WLR_RENDER_BLEND_MODE_PREMULTIPLIED);
+
+	pixman_region32_t clip_region;
+	if (options->clip) {
+		pixman_region32_init(&clip_region);
+		pixman_region32_copy(&clip_region, options->clip);
+	} else {
+		pixman_region32_init_rect(&clip_region, node_box.x, node_box.y,
+			node_box.width, node_box.height);
+	}
+	const struct wlr_box clipped_region_box = fx_options->clipped_region.area;
+	struct fx_corner_fradii clipped_region_corners = fx_options->clipped_region.corners;
+	apply_clip_region(&clip_region, &clipped_region_box, &clipped_region_corners);
+
+	glUseProgram(shader->program);
+
+	glActiveTexture(GL_TEXTURE0);
+	glBindTexture(texture->target, texture->tex);
+	glTexParameteri(texture->target, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glTexParameteri(texture->target, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+	glUniform1i(shader->tex, 0);
+	glUniform1f(shader->alpha, alpha);
+	glUniform1f(shader->discard_transparent, 0.0f);
+	glUniform1f(shader->discard_threshold, 0.0f);
+
+	// The blur cache carries no source colorimetry: neutral color-management
+	// uniforms (transfer_function 0 == the shader's early-out passthrough).
+	glUniform1i(shader->transfer_function, 0);
+	glUniform1f(shader->luminance_multiplier, 1.0f);
+	glUniform1f(shader->content_peak, 1.0f);
+	float color_matrix[9] = { 1, 0, 0, 0, 1, 0, 0, 0, 1 };
+	glUniformMatrix3fv(shader->color_matrix, 1, GL_FALSE, color_matrix);
+
+	struct fx_corner_fradii corners = fx_options->corners;
+	glUniform2f(shader->effects.size, node_box.width, node_box.height);
+	glUniform2f(shader->effects.position, node_box.x, node_box.y);
+	uniform_corner_radii_set(&shader->effects.radius, &corners);
+	glUniform2f(shader->effects.clip_size, clipped_region_box.width, clipped_region_box.height);
+	glUniform2f(shader->effects.clip_position, clipped_region_box.x, clipped_region_box.y);
+	uniform_corner_radii_set(&shader->effects.clip_radius, &clipped_region_corners);
+
+	// Mask: bind the window/layer surface at texture unit 1; it is sampled via
+	// tex_proj2 / v_texcoord2 set below.
+	glActiveTexture(GL_TEXTURE1);
+	glBindTexture(mask->target, mask->tex);
+	glTexParameteri(mask->target, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glTexParameteri(mask->target, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	glUniform1i(shader->mask.tex, 1);
+	glUniform1f(shader->mask.threshold, threshold);
+	// Opaque (no-alpha) mask surfaces store undefined X bits in their alpha
+	// channel; tell the shader to treat them as fully opaque instead of
+	// sampling that garbage (see mask_has_alpha in tex.frag). Matches the old
+	// stencil path, which drew a no-alpha mask through the RGBX shader.
+	glUniform1i(shader->mask.has_alpha, mask->has_alpha);
+
+	set_proj_matrix(shader->proj, pass->projection_matrix, &node_box);
+	set_tex_matrix(shader->tex_proj, WL_OUTPUT_TRANSFORM_NORMAL, &blur_src);
+	set_tex_matrix(shader->mask.tex_proj2, mask_transform, &mask_src);
+
+	render(&node_box, &clip_region, shader->pos_attrib);
+	pixman_region32_fini(&clip_region);
+
+	glBindTexture(mask->target, 0);
+	glActiveTexture(GL_TEXTURE0);
 	glBindTexture(texture->target, 0);
 
 	pop_fx_debug(renderer);
@@ -1417,18 +1511,22 @@ void fx_render_pass_add_blur(struct fx_gles_render_pass *pass,
 	struct wlr_texture *wlr_texture = fx_framebuffer_get_texture(buffer);
 	struct fx_texture *blur_texture = fx_get_texture(wlr_texture);
 
-	// Get a stencil of the window ignoring transparent regions
-	if (fx_options->ignore_transparent && fx_options->tex_options.base.texture) {
-		stencil_mask_init();
-
-		struct fx_render_texture_options tex_options = fx_options->tex_options;
-		tex_options.discard_transparent = true;
-		tex_options.discard_alpha_threshold =
-			fx_options->blur_data->transparency_threshold;
-		tex_options.clipped_region = fx_options->clipped_region;
-		fx_render_pass_add_texture(pass, &tex_options);
-
-		stencil_mask_close(true);
+	// Capture the transparency mask (the window/layer surface) BEFORE the blur
+	// composite overwrites tex_options with the blur cache's own geometry. Its
+	// alpha decides where the blur shows; below the threshold the unblurred
+	// background shows through (single-draw replacement for the stencil path).
+	struct fx_texture *mask_texture = NULL;
+	struct wlr_fbox mask_src_box = {0};
+	enum wl_output_transform mask_transform = WL_OUTPUT_TRANSFORM_NORMAL;
+	float mask_threshold = 0;
+	const bool masked = fx_options->ignore_transparent &&
+		fx_options->tex_options.base.texture != NULL;
+	if (masked) {
+		mask_texture = fx_get_texture(fx_options->tex_options.base.texture);
+		wlr_render_texture_options_get_src_box(&fx_options->tex_options.base,
+			&mask_src_box);
+		mask_transform = fx_options->tex_options.base.transform;
+		mask_threshold = fx_options->blur_data->transparency_threshold;
 	}
 
 	// Draw the blurred texture
@@ -1448,7 +1546,12 @@ void fx_render_pass_add_blur(struct fx_gles_render_pass *pass,
 	// since we're capturing from the fbo, transform will always be normal
 	tex_options->base.transform = WL_OUTPUT_TRANSFORM_NORMAL;
 	tex_options->clipped_region = fx_options->clipped_region;
-	if (fx_options->edge_softness > 0) {
+	if (masked) {
+		// Mask takes precedence over edge_softness (matches the Vulkan path,
+		// which checks ignore_transparent first).
+		fx_render_pass_add_texture_masked(pass, tex_options, mask_texture,
+			&mask_src_box, mask_transform, mask_threshold);
+	} else if (fx_options->edge_softness > 0) {
 		fx_render_pass_add_texture_soft_edge(pass, tex_options,
 			fx_options->edge_softness);
 	} else {
@@ -1456,11 +1559,6 @@ void fx_render_pass_add_blur(struct fx_gles_render_pass *pass,
 	}
 
 	fx_framebuffer_put_texture(buffer, &blur_texture->wlr_texture);
-
-	// Finish stenciling
-	if (fx_options->ignore_transparent && fx_options->tex_options.base.texture) {
-		stencil_mask_fini();
-	}
 
 finish:
 	pop_fx_debug(renderer);

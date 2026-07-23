@@ -72,6 +72,15 @@ bool fx_vk_render_pass_add_optimized_blur(struct wlr_render_pass *pass,
  */
 void fx_vk_render_pass_add_blur(struct wlr_render_pass *pass,
 	struct fx_render_blur_pass_options *options);
+
+/**
+ * Flushes any deferred live-blur batch: re-begins the scene render pass (if the
+ * batch ended it) and composites every pending node, non-overlapping nodes
+ * having shared a single pass split. Must be called before any non-blur drawing
+ * into the scene pass and once at end of frame. No-op if `pass` is not an fx_vk
+ * pass or the batch is empty.
+ */
+void fx_vk_render_pass_flush_blur_batch(struct wlr_render_pass *pass);
 #endif
 
 #endif

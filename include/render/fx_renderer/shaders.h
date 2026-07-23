@@ -139,10 +139,28 @@ struct tex_shader {
 		GLint clip_position;
 		struct shader_corner_radii clip_radius;
 	} effects;
+
+	// Only used for the masked (ignore_transparent) blur-composite variants;
+	// -1 on every other tex shader. mask_tex is bound to GL_TEXTURE1 and
+	// sampled through tex_proj2 / v_texcoord2 (see common.vert).
+	struct {
+		GLint tex;
+		GLint tex_proj2;
+		GLint threshold;
+		GLint has_alpha;
+	} mask;
+};
+
+// Mask source for the ignore_transparent blur composite; matches tex.frag's
+// MASK_* preamble values. FX_TEX_MASK_NONE leaves the mask uniforms unbound.
+enum fx_tex_shader_mask {
+	FX_TEX_MASK_NONE = 0,
+	FX_TEX_MASK_TEXTURE_2D = 1,
+	FX_TEX_MASK_TEXTURE_EXTERNAL = 2,
 };
 
 bool link_tex_program(struct tex_shader *shader, enum fx_tex_shader_source source,
-		bool effects);
+		bool effects, enum fx_tex_shader_mask mask);
 
 // Like tex_shader, but the box's own edge fades via the same wide analytic
 // gaussian falloff box_shadow_shader uses (blur_sigma), instead of a hard

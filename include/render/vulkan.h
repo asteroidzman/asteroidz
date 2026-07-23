@@ -11,6 +11,9 @@
 #include <wlr/render/drm_format_set.h>
 #include <wlr/render/interface.h>
 #include <wlr/util/addon.h>
+#include <wlr/util/box.h>
+#include <pixman.h>
+#include "types/fx/clipped_region.h"
 #include "util/rect_union.h"
 
 struct fx_vk_descriptor_pool;
@@ -681,6 +684,28 @@ struct fx_vk_render_pass_texture {
 	uint64_t wait_point;
 };
 
+// A single plain (unmasked, no soft-edge) LIVE-blur composite whose blur has
+// already been computed but whose composite draw is deferred so a run of
+// non-overlapping live-blur nodes can share ONE scene-pass end/begin split
+// instead of paying one split each. See fx_vk_render_pass_add_blur and
+// fx_vk_render_pass_flush_blur_batch.
+struct fx_vk_deferred_blur {
+	struct fx_vk_effect_image *src; // blurred result (same image for the run)
+	struct wlr_box dst_box;
+	struct wlr_box region;          // padded blur region, for overlap tests
+	pixman_region32_t clip;         // owned deep copy (caller's is transient)
+	struct fx_corner_fradii corners;
+	struct clipped_fregion clipped_region;
+	struct wlr_box clip_box;
+	bool has_clip_box;
+	float alpha;
+};
+
+// Cap on how many live-blur nodes coalesce into one split. A run longer than
+// this simply flushes and starts a fresh batch -- correctness is unaffected,
+// only the number of splits. 3+ simultaneous live blur nodes is already rare.
+#define FX_VK_MAX_DEFERRED_BLURS 16
+
 struct fx_vk_render_pass {
 	struct wlr_render_pass base;
 	struct fx_vk_renderer *renderer;
@@ -699,6 +724,13 @@ struct fx_vk_render_pass {
 	bool has_blur;
 	struct fx_vk_effect_buffers *effect_buffers;
 	struct wlr_color_transform *color_transform;
+
+	// Deferred live-blur batch (see fx_vk_deferred_blur). While count > 0 the
+	// scene render pass is ENDED: the batched nodes' blurs ran in that ended
+	// window and their composites are pending. Flushed (pass re-begun, all
+	// composited) before any non-blur drawing and at end of frame.
+	struct fx_vk_deferred_blur deferred_blurs[FX_VK_MAX_DEFERRED_BLURS];
+	int deferred_blur_count;
 
 	struct wlr_drm_syncobj_timeline *signal_timeline;
 	uint64_t signal_point;

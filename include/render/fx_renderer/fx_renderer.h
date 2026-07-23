@@ -233,6 +233,11 @@ struct fx_renderer {
 		struct tex_shader tex_effects_rgba;
 		struct tex_shader tex_effects_rgbx;
 		struct tex_shader tex_effects_ext;
+		// Masked blur-composite variants (ignore_transparent): RGBA blur cache
+		// as the main texture + effects, plus a transparency-mask sampler. Two
+		// variants for the two possible window/layer texture targets.
+		struct tex_shader tex_mask;     // 2D mask texture
+		struct tex_shader tex_mask_ext; // external OES mask texture
 		struct tex_soft_edge_shader tex_soft_edge;
 
 		struct box_shadow_shader box_shadow;

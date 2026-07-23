@@ -264,7 +264,7 @@ bool link_quad_grad_round_program(struct quad_grad_round_shader *shader, int max
 }
 
 bool link_tex_program(struct tex_shader *shader, enum fx_tex_shader_source source,
-		bool effects) {
+		bool effects, enum fx_tex_shader_mask mask) {
 	// tex.frag grew past the old 4096/8192 fixed sizes once (silently
 	// truncated mid-function via snprintf, producing a "syntax error,
 	// unexpected end of file" from the GLES compiler that gave no hint
@@ -273,7 +273,7 @@ bool link_tex_program(struct tex_shader *shader, enum fx_tex_shader_source sourc
 	GLchar frag_src_part[16384];
 	GLchar frag_src[24576];
 	snprintf(frag_src_part, sizeof(frag_src_part),
-		tex_frag_src, source, effects);
+		tex_frag_src, source, effects, mask);
 	snprintf(frag_src, sizeof(frag_src),
 		"%s\n%s\n", frag_src_part, effects ? corner_alpha_frag_src : "");
 
@@ -296,6 +296,12 @@ bool link_tex_program(struct tex_shader *shader, enum fx_tex_shader_source sourc
 	shader->luminance_multiplier = glGetUniformLocation(prog, "luminance_multiplier");
 	shader->color_matrix = glGetUniformLocation(prog, "color_matrix");
 	shader->content_peak = glGetUniformLocation(prog, "content_peak");
+
+	// -1 (silently ignored on upload) unless this is a masked variant.
+	shader->mask.tex = glGetUniformLocation(prog, "mask_tex");
+	shader->mask.tex_proj2 = glGetUniformLocation(prog, "tex_proj2");
+	shader->mask.threshold = glGetUniformLocation(prog, "mask_threshold");
+	shader->mask.has_alpha = glGetUniformLocation(prog, "mask_has_alpha");
 
 	if (!effects) {
 		return true;

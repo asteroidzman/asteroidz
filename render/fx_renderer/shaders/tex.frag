@@ -1,15 +1,25 @@
 #define SOURCE %d
 #define EFFECTS %d
+#define MASK %d
 
 #define SOURCE_TEXTURE_RGBA 1
 #define SOURCE_TEXTURE_RGBX 2
 #define SOURCE_TEXTURE_EXTERNAL 3
 
-#if !defined(SOURCE) || !defined(EFFECTS)
+// Transparency-mask variants (fx_render_pass_add_blur's ignore_transparent
+// path): 0 = no mask; 1 = mask is a plain 2D texture; 2 = mask is an external
+// OES texture. Only meaningful with SOURCE_TEXTURE_RGBA + EFFECTS (the blur
+// cache is always a plain 2D RGBA offscreen buffer, drawn with the rounded
+// corner/clip path). See the mask block in main().
+#define MASK_NONE 0
+#define MASK_TEXTURE_2D 1
+#define MASK_TEXTURE_EXTERNAL 2
+
+#if !defined(SOURCE) || !defined(EFFECTS) || !defined(MASK)
 #error "Missing shader preamble"
 #endif
 
-#if SOURCE == SOURCE_TEXTURE_EXTERNAL
+#if SOURCE == SOURCE_TEXTURE_EXTERNAL || MASK == MASK_TEXTURE_EXTERNAL
 #extension GL_OES_EGL_image_external : require
 #endif
 
@@ -47,6 +57,34 @@ uniform float clip_radius_bottom_right;
 
 uniform bool discard_transparent;
 uniform float discard_threshold;
+
+#if MASK
+// Single-draw replacement for the old GLES stencil-mask blur path (mirrors the
+// Vulkan texture_mask_round.frag): the window/layer surface is sampled here as
+// a second texture and its alpha decides where the blur is visible. Where the
+// mask's alpha is below mask_threshold the blur is zeroed, so the unblurred
+// background shows through the surface's transparent regions -- no extra
+// full-window stencil draw + two full-buffer stencil clears per blur node.
+//
+// The mask is sampled through v_texcoord2 -- its own wl_output-transform-aware
+// texture matrix, set up on the C side exactly like the old stencil path drew
+// the surface (set_tex_matrix with the mask's transform + source box). This is
+// why the composite is drawn at the node's own box rather than the full blur
+// buffer: only then does the interpolated v_texcoord2 span the mask 1:1.
+#if MASK == MASK_TEXTURE_EXTERNAL
+uniform samplerExternalOES mask_tex;
+#else
+uniform sampler2D mask_tex;
+#endif
+varying vec2 v_texcoord2;
+uniform float mask_threshold;
+// False when the mask surface has no alpha channel (opaque XRGB/RGBX buffer):
+// its stored alpha is the undefined X bits (0 in practice), so sampling it
+// raw would wrongly zero the blur everywhere. An opaque surface is fully
+// opaque, so force the mask coverage to 1.0 -- exactly what the old stencil
+// path did by drawing the mask through the RGBX shader (vec4(rgb, 1.0)).
+uniform bool mask_has_alpha;
+#endif
 
 // Per-surface source color management (wp-color-management / frog-color-
 // management-v1 -- e.g. gamescope's raw PQ-encoded HDR surface): NOT a
@@ -229,4 +267,16 @@ void main() {
 	if (discard_transparent && gl_FragColor.a <= discard_threshold) {
 		discard;
 	}
+
+#if MASK
+	// Mask sampled through its own texture matrix (v_texcoord2), so the surface
+	// lands 1:1 over the node box regardless of its wl_output transform / buffer
+	// flip -- the same sampling the old stencil path used to build the mask.
+	// Opaque (no-alpha) surfaces have no meaningful stored alpha; treat them as
+	// fully opaque so the blur shows across the whole surface.
+	float mask_alpha = mask_has_alpha ? texture2D(mask_tex, v_texcoord2).a : 1.0;
+	// Hard cutout (step), matching the old stencil test's binary include/exclude
+	// and the Vulkan masked shader's step(threshold, a).
+	gl_FragColor *= step(mask_threshold, mask_alpha);
+#endif
 }
