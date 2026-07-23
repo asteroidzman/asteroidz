@@ -14,6 +14,16 @@
 # Pixel-level HDR10 correctness needs a real HDR-capable display; nothing
 # headless can exercise that.
 #
+# The 0.17.2 global hdr-mode policy (misc/hdr-mode off|auto|on) and the
+# per-window force_hdr rule are, for the same reason, not headlessly
+# assertable: both only ever change the EFFECTIVE hdr state on an
+# HDR-capable output (force_hdr flips an SDR output into HDR while a
+# matching client is visible; hdr-mode gates whether that's allowed at
+# all), and there's no IPC getter for the policy inputs themselves --
+# only the resolved monitor hdr/hdr_enabled, which the headless backend
+# pins to false. Exercising them needs a real HDR display (see
+# reference_hdr10_rawhdr_capture / contrib/hdr-record.sh for the live path).
+#
 # What IS worth pinning here: the graceful-refusal behavior itself (a
 # headless output asked for HDR ends up NOT reporting hdr_enabled, rather
 # than silently claiming success or crashing), and set_sdr_luminance
