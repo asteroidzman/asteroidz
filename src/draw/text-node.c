@@ -1096,16 +1096,21 @@ void asteroidz_tab_bar_node_update(struct asteroidz_tab_bar_node *node,
 	if (scale <= 0.0f)
 		scale = 1.0f;
 
-	char *safe_text = g_strdup(text);
-
-	g_free(node->last_text);
-	node->last_text = safe_text; // ownership transferred
+	/* This runs every animation tick for every animating window (via
+	 * client_apply_clip -> client_draw_titlebar), and during a move the title
+	 * text is unchanged. Only re-dup last_text when it actually changed: the
+	 * old unconditional g_strdup + g_free was pure per-frame allocator churn
+	 * in a hot path (the dirty check below already short-circuits the render). */
+	if (!node->last_text || strcmp(node->last_text, text) != 0) {
+		g_free(node->last_text);
+		node->last_text = g_strdup(text);
+	}
 	node->last_scale = scale;
 
 	// dirty check, includes focused
 	if (node->cached_scale == scale && node->cached_font_desc &&
 		strcmp(node->cached_font_desc, node->font_desc) == 0 &&
-		node->cached_text && strcmp(node->cached_text, safe_text) == 0 &&
+		node->cached_text && strcmp(node->cached_text, text) == 0 &&
 		memcmp(node->cached_fg_color, node->fg_color, sizeof(node->fg_color)) ==
 			0 &&
 		memcmp(node->cached_bg_color, node->bg_color, sizeof(node->bg_color)) ==
@@ -1136,7 +1141,7 @@ void asteroidz_tab_bar_node_update(struct asteroidz_tab_bar_node *node,
 
 	// update cache
 	g_free(node->cached_text);
-	node->cached_text = g_strdup(safe_text);
+	node->cached_text = g_strdup(text);
 
 	g_free(node->cached_font_desc);
 	node->cached_font_desc = g_strdup(node->font_desc);
@@ -1294,7 +1299,7 @@ void asteroidz_tab_bar_node_update(struct asteroidz_tab_bar_node *node,
 			desc = scaled_desc;
 		}
 		pango_layout_set_font_description(layout, desc);
-		pango_layout_set_text(layout, safe_text, -1);
+		pango_layout_set_text(layout, text, -1);
 
 		pango_layout_set_wrap(layout, PANGO_WRAP_NONE);
 		pango_layout_set_ellipsize(layout, PANGO_ELLIPSIZE_END);
