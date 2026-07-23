@@ -159,6 +159,17 @@ static cJSON *build_client_json(Client *c) {
 	cJSON_AddItemToObject(obj, "tags", tags_mask_to_array(c->tags));
 	cJSON_AddBoolToObject(obj, "is_focused", c->isfocused);
 	cJSON_AddBoolToObject(obj, "is_fullscreen", c->isfullscreen);
+	/* "vrr" is the honest per-client answer to "is this app under variable
+	 * refresh right now": VRR is an output-wide hardware state, so it's the
+	 * committed adaptive-sync status of the client's monitor (same query the
+	 * monitor JSON uses, not our own intent bookkeeping). "vrr_only_fullscreen"
+	 * is the per-client window rule that makes this app *drive* VRR while
+	 * fullscreen -- the "why" behind the flag. */
+	cJSON_AddBoolToObject(obj, "vrr",
+						  c->mon && c->mon->wlr_output->adaptive_sync_status ==
+										WLR_OUTPUT_ADAPTIVE_SYNC_ENABLED);
+	cJSON_AddBoolToObject(obj, "vrr_only_fullscreen",
+						  c->vrr_only_fullscreen > 0);
 	cJSON_AddBoolToObject(obj, "is_floating", c->isfloating);
 	cJSON_AddBoolToObject(obj, "is_maximized", c->ismaximizescreen);
 	cJSON_AddBoolToObject(obj, "is_global", c->isglobal);
