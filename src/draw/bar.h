@@ -45,6 +45,7 @@ enum bar_module_kind {
 	BAR_MODULE_IDLE,
 	BAR_MODULE_WEATHER,
 	BAR_MODULE_MEDIA,
+	BAR_MODULE_TRAY,
 };
 
 enum bar_slot { BAR_SLOT_LEFT = 0, BAR_SLOT_CENTER, BAR_SLOT_RIGHT,
@@ -71,6 +72,9 @@ typedef struct BarPill {
 	 * width of their widest possible content, so the slot never reflows and
 	 * neighbouring pills never move under the pointer. */
 	int32_t fixed_width;
+	/* Pinned width is a preference, not a requirement: a pill carrying
+	 * ellipsisable text can give width back when the slots do not fit. */
+	bool flexible;
 	char text[BAR_TEXT_MAX];
 	bool used;
 } BarPill;
@@ -149,12 +153,52 @@ static enum bar_module_kind bar_module_kind_from_name(const char *name) {
 		return BAR_MODULE_WEATHER;
 	if (strcmp(name, "media") == 0)
 		return BAR_MODULE_MEDIA;
+	if (strcmp(name, "tray") == 0 || strcmp(name, "systray") == 0)
+		return BAR_MODULE_TRAY;
 	return BAR_MODULE_NONE;
 }
 
+/* Chip modules draw a permanent background of their own -- they are discrete
+ * rounded tiles, like the waybar workspace plugin's pills -- so they take the
+ * roomier `tag-padding` and a real gap to their neighbours. Everything else is
+ * text on the shared panel and gets neither.
+ *
+ * Keyed on the MODULE rather than on the current look on purpose: a metric
+ * crossing its threshold takes an urgent fill, and if that also changed its
+ * padding and gap the whole right-hand section would shift sideways every time
+ * the CPU spiked. Geometry has to be a property of what a module is, not of
+ * what it happens to be showing. */
 static bool bar_kind_is_metric(enum bar_module_kind k) {
 	return k == BAR_MODULE_CPU || k == BAR_MODULE_MEMORY ||
 		   k == BAR_MODULE_NETWORK;
+}
+
+static bool bar_kind_is_chips(enum bar_module_kind k) {
+	return k == BAR_MODULE_TAGS || k == BAR_MODULE_LAYOUT;
+}
+
+static bool bar_pill_is_chip(const BarPill *p) {
+	return p && p->module && bar_kind_is_chips(p->module->kind);
+}
+
+/* A bare glyph on the panel: artwork, no label, no fill (cpu, memory). These
+ * are laid out as one run with an exact gap between them rather than with
+ * padding on each -- padding is symmetric, so it can only ever produce an even
+ * gap, and it also pads the ends of the run against the panel edge. */
+static bool bar_pill_is_icon_only(const BarPill *p) {
+	if (!p || !p->module || bar_pill_is_chip(p) || p->text[0] != '\0')
+		return false;
+	/* the two module families that draw artwork and never a label */
+	return bar_kind_is_metric(p->module->kind) ||
+		   p->module->kind == BAR_MODULE_TRAY;
+}
+
+static int32_t bar_pill_padding_x(const BarPill *p) {
+	if (bar_pill_is_chip(p))
+		return config.bar_tag_padding;
+	if (bar_pill_is_icon_only(p))
+		return 0;
+	return config.bar_pill_padding;
 }
 
 /* ─── system metrics ──────────────────────────────────────────────────────── */
@@ -330,8 +374,16 @@ static BarPill *bar_pill_get(BarModule *mod, int32_t idx) {
 	if (idx < 0 || idx >= BAR_MAX_PILLS)
 		return NULL;
 	BarPill *p = &mod->pills[idx];
-	if (p->used)
+	if (p->used) {
+		/* Re-assert the padding before the caller measures anything: a refresh
+		 * probes its widest content through this very node, and bar_pill_style
+		 * (which runs after those probes) calls apply_config, which resets the
+		 * padding to the titlebar theme's. Without this the first frame after
+		 * every style pass measured at one padding and drew at another. */
+		asteroidz_tab_bar_node_set_padding(p->node, bar_pill_padding_x(p),
+										   config.theme.padding_y);
 		return p;
+	}
 
 	AsteroidzNodeData *hit = ecalloc(1, sizeof(AsteroidzNodeData));
 	hit->type = ASTEROIDZ_BAR_NODE;
@@ -351,6 +403,8 @@ static BarPill *bar_pill_get(BarModule *mod, int32_t idx) {
 	p->hit = hit;
 	p->module = mod;
 	p->used = true;
+	asteroidz_tab_bar_node_set_padding(p->node, bar_pill_padding_x(p),
+									   config.theme.padding_y);
 	asteroidz_tab_bar_node_set_shadow(p->node, config.shadows,
 									  config.shadows_blur,
 									  (int32_t)config.shadows_position_y,
@@ -358,23 +412,85 @@ static BarPill *bar_pill_get(BarModule *mod, int32_t idx) {
 	return p;
 }
 
-/* Style one pill. With a backing panel, a resting pill draws NO background of
- * its own -- the panel is the surface, and only the selected tag (or an urgent
- * one) gets a filled pill on top of it. Without a panel every pill carries the
- * theme's resting colours, which is the standalone-pills look. */
-static void bar_pill_style(BarPill *p, bool active, bool urgent) {
-	static const float transparent[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+/* Pill styling, mirroring the grouped-mode waybar workspace CSS this replaces:
+ *   .ws-pill.focused   accent fill              (theme focus pair)
+ *   .ws-pill.occupied  rgba(0,0,0,0.44)         sunken, darker than the panel
+ *   .ws-pill.empty     rgba(255,255,255,0.06)   faint fill, label at 35% alpha
+ *   .ws-layout         rgba(0,0,0,0.30)         same family, one step lighter
+ * Without a backing panel there is nothing to sink into, so every pill falls
+ * back to the theme's resting pair instead. */
+enum bar_pill_look {
+	BAR_LOOK_FLAT = 0, /* no fill of its own; the panel is the surface */
+	BAR_LOOK_ACTIVE,   /* selected / focused */
+	BAR_LOOK_OCCUPIED, /* holds windows */
+	BAR_LOOK_EMPTY,    /* padding tag */
+	BAR_LOOK_SUNKEN,   /* layout toggler */
+	BAR_LOOK_URGENT,
+};
+
+/* Height of a pill: the strip minus its inset top and bottom, so a filled chip
+ * sits inside the panel rather than spanning it edge to edge. Floored well
+ * short of zero so a hand-set inset cannot collapse the row. */
+static int32_t bar_pill_height(void) {
+	int32_t h = config.bar_height - 2 * config.bar_pill_inset;
+	return h < 8 ? (config.bar_height < 8 ? config.bar_height : 8) : h;
+}
+
+/* Gap to leave between two adjacent pills. Zero between two non-chips: their
+ * own horizontal padding already separates them, and stacking a gap on top of
+ * two paddings is what made the sections read as far too loose. */
+static int32_t bar_pill_gap(const BarPill *a, const BarPill *b) {
+	if (!a || !b)
+		return 0;
+	if (bar_pill_is_chip(a) || bar_pill_is_chip(b))
+		return config.bar_spacing;
+	/* icon-only neighbours carry no padding of their own, so this gap is the
+	 * whole separation between the two glyphs -- exact, not doubled */
+	if (bar_pill_is_icon_only(a) || bar_pill_is_icon_only(b))
+		return config.bar_icon_spacing;
+	return 0;
+}
+
+static void bar_pill_style(BarPill *p, enum bar_pill_look look) {
+	static const float clear[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+	static const float occupied_bg[4] = {0.0f, 0.0f, 0.0f, 0.44f};
+	static const float sunken_bg[4] = {0.0f, 0.0f, 0.0f, 0.30f};
+	static const float empty_bg[4] = {1.0f, 1.0f, 1.0f, 0.06f};
+
 	asteroidz_tab_bar_node_apply_config(p->node, &config.theme);
-	if (urgent && !active) {
+	/* apply_config resets the padding to the shared theme's, which is sized for
+	 * titlebars; put the bar's own back on top of it */
+	asteroidz_tab_bar_node_set_padding(p->node, bar_pill_padding_x(p),
+									   config.theme.padding_y);
+	asteroidz_tab_bar_node_set_focus(p->node, look == BAR_LOOK_ACTIVE);
+	if (look == BAR_LOOK_ACTIVE)
+		return;
+	if (look == BAR_LOOK_URGENT) {
 		asteroidz_tab_bar_node_set_colors(p->node, config.theme.fg_color,
 										  config.theme.urgent_color);
-		asteroidz_tab_bar_node_set_focus(p->node, false);
 		return;
 	}
-	if (!active && config.bar_panel_enable)
-		asteroidz_tab_bar_node_set_colors(p->node, config.theme.fg_color,
-										  transparent);
-	asteroidz_tab_bar_node_set_focus(p->node, active);
+	if (!config.bar_panel_enable)
+		return; /* standalone pills keep the theme's resting pair */
+
+	float fg[4];
+	memcpy(fg, config.theme.fg_color, sizeof(fg));
+	const float *bg = clear;
+	switch (look) {
+	case BAR_LOOK_OCCUPIED:
+		bg = occupied_bg;
+		break;
+	case BAR_LOOK_SUNKEN:
+		bg = sunken_bg;
+		break;
+	case BAR_LOOK_EMPTY:
+		bg = empty_bg;
+		fg[3] *= 0.35f;
+		break;
+	default:
+		break;
+	}
+	asteroidz_tab_bar_node_set_colors(p->node, fg, bg);
 }
 
 /* Width of the widest text this module can ever show, so its pill can be
@@ -423,9 +539,34 @@ static int32_t bar_clock_fixed_width(BarPill *p, int32_t height) {
 /* Path to one of the waybar plugin SVGs, so the native bar renders the exact
  * same artwork as the modules it replaces. resolve_icon_path() takes absolute
  * paths as-is, and a missing file resolves to no icon rather than an error, so
- * an incomplete asset install degrades to text. */
+ * an incomplete asset install degrades to text.
+ *
+ * `bar_icon_dir` is a colon-separated search path because the plugins do not
+ * share a prefix: waybar-sysinfo installs to ~/.local/share from its Makefile
+ * while the packaged ones land in /usr/share. First readable candidate wins;
+ * with no hit at all the LAST candidate is returned, which then resolves to no
+ * icon exactly as a single missing path used to. */
 static void bar_icon_path(char *out, size_t len, const char *rel) {
-	snprintf(out, len, "%s/%s", config.bar_icon_dir, rel);
+	const char *p = config.bar_icon_dir;
+	if (!p || !*p) {
+		snprintf(out, len, "%s", rel);
+		return;
+	}
+	for (;;) {
+		const char *sep = strchr(p, ':');
+		int32_t dirlen = sep ? (int32_t)(sep - p) : (int32_t)strlen(p);
+		snprintf(out, len, "%.*s/%s", dirlen, p, rel);
+		if (access(out, R_OK) == 0 || !sep)
+			return;
+		p = sep + 1;
+	}
+}
+
+/* Width an icon-only pill needs. The icon is drawn at the text area's height,
+ * so a pill pinned to the bar height is narrower than its own icon once the
+ * theme's padding_x comes off, and the artwork renders clipped. */
+static int32_t bar_icon_pill_width(BarPill *p, int32_t height) {
+	return bar_template_width(p, "", height);
 }
 
 /* ─── weather ─────────────────────────────────────────────────────────────── */
@@ -777,6 +918,8 @@ static int bar_media_tick(void *data) {
 	return 0;
 }
 
+#include "bar-tray.h"
+
 /* ─── per-module content ──────────────────────────────────────────────────── */
 
 /* Which tags on `m` currently hold at least one client. Mirrors the same walk
@@ -827,6 +970,22 @@ static int32_t bar_tag_app_icons(Monitor *m, uint32_t tag, const char **out,
 	return n;
 }
 
+/* The waybar workspace label: "N: name" for a tag that is in use and carries a
+ * custom name, bare "N" otherwise. The index is always shown -- a row reading
+ * "web · code · chat" gives no clue which Super+<n> reaches which, and the
+ * padding slots have no name to show in the first place. */
+static void bar_tag_label(Monitor *m, uint32_t t, bool relevant, char *buf,
+						  size_t len) {
+	char idx[16];
+	snprintf(idx, sizeof(idx), "%u", t);
+	char name[BAR_TEXT_MAX];
+	tag_display_name(m, t, name, sizeof(name));
+	if (relevant && strcmp(name, idx) != 0)
+		snprintf(buf, len, "%s: %s", idx, name);
+	else
+		snprintf(buf, len, "%s", idx);
+}
+
 static void bar_module_refresh_tags(BarModule *mod) {
 	Monitor *m = mod->mon;
 	uint32_t sel = m->tagset[m->seltags] & TAGMASK;
@@ -844,11 +1003,29 @@ static void bar_module_refresh_tags(BarModule *mod) {
 			asteroidz_tab_bar_node_set_icon(logo->node, path);
 			logo->text[0] = '\0';
 			logo->arg = 0; /* arg 0 => not a tag, so clicks are ignored */
-			logo->fixed_width = config.bar_height;
-			bar_pill_style(logo, false, false);
+			logo->fixed_width = bar_icon_pill_width(logo, bar_pill_height());
+			bar_pill_style(logo, BAR_LOOK_FLAT);
 			n++;
 		}
 	}
+
+	/* Which tags get a pill, mirroring the waybar workspace module exactly:
+	 * every tag that is selected or holds a window, then padded with the
+	 * lowest-numbered empty tags up to `min-tags` (its `min-pills`). */
+	bool show[LENGTH(tags) + 1];
+	int32_t relevant = 0;
+	for (uint32_t t = 1; t <= LENGTH(tags); t++) {
+		uint32_t mask = 1u << (t - 1);
+		show[t] = config.bar_show_all_tags || (sel & mask) || (occ & mask);
+		if (show[t])
+			relevant++;
+	}
+	for (uint32_t t = 1; t <= LENGTH(tags) && relevant < config.bar_min_tags;
+		 t++)
+		if (!show[t]) {
+			show[t] = true;
+			relevant++;
+		}
 
 	for (uint32_t t = 1; t <= LENGTH(tags) && n < BAR_MAX_PILLS; t++) {
 		uint32_t mask = 1u << (t - 1);
@@ -860,23 +1037,30 @@ static void bar_module_refresh_tags(BarModule *mod) {
 		 * does mean a fresh session can show a single pill, which reads as
 		 * broken rather than as tidy -- `bar { show-all-tags true }` gives
 		 * the dwm/dwl behaviour of always rendering every configured tag. */
-		if (!config.bar_show_all_tags && !selected && !occupied)
+		if (!show[t])
 			continue;
 
 		BarPill *p = bar_pill_get(mod, n);
 		if (!p)
 			break;
 		p->arg = t;
-		tag_display_name(m, t, p->text, sizeof(p->text));
+		bar_tag_label(m, t, selected || occupied, p->text, sizeof(p->text));
 		const char *icons[ASTEROIDZ_TAB_MAX_ICONS];
 		int32_t ni = config.bar_tag_icons > 0
 						 ? bar_tag_app_icons(m, t, icons, config.bar_tag_icons)
 						 : 0;
 		asteroidz_tab_bar_node_set_icons(p->node, icons, ni);
+		/* label first, then what is running on the tag -- the waybar workspace
+		 * plugin's order (the app icons read as belonging to the number they
+		 * follow, where leading icons pushed the number away from its pill) */
+		asteroidz_tab_bar_node_set_icons_after_text(p->node, true);
 		/* free-sized: the icon count varies per tag, and a tag gaining a
 		 * window is a real layout change rather than per-tick jitter */
 		p->fixed_width = 0;
-		bar_pill_style(p, selected, (urg & mask) != 0);
+		bar_pill_style(p, selected           ? BAR_LOOK_ACTIVE
+					  : (urg & mask) ? BAR_LOOK_URGENT
+					  : occupied     ? BAR_LOOK_OCCUPIED
+									 : BAR_LOOK_EMPTY);
 		n++;
 	}
 
@@ -897,8 +1081,8 @@ static void bar_module_refresh_clock(BarModule *mod) {
 	if (strftime(p->text, sizeof(p->text), config.bar_clock_format, &tm) == 0)
 		snprintf(p->text, sizeof(p->text), "??:??");
 	p->arg = 0;
-	p->fixed_width = bar_clock_fixed_width(p, config.bar_height);
-	bar_pill_style(p, false, false);
+	p->fixed_width = bar_clock_fixed_width(p, bar_pill_height());
+	bar_pill_style(p, BAR_LOOK_FLAT);
 	mod->npills = 1;
 	for (int32_t i = 1; i < BAR_MAX_PILLS; i++)
 		bar_pill_release(&mod->pills[i]);
@@ -925,13 +1109,24 @@ static void bar_module_refresh_title(BarModule *mod) {
 	asteroidz_tab_bar_node_set_icon(p->node, sel->icon_name
 												 ? sel->icon_name
 												 : client_get_appid(sel));
-	/* A title changes with every focus change and every tab a browser opens;
-	 * left free-sized it would resize the whole left slot constantly. Pin it
-	 * and let the pill ellipsise. */
-	p->fixed_width = config.bar_title_width;
+	/* title-width is a CAP, not a pin: a short title should occupy a short
+	 * pill, exactly like the waybar label's max-width-chars + ellipsize. Pinned
+	 * to the cap it left a wide empty gap after every short title and pushed
+	 * the centre section off-centre for no reason. */
+	int32_t natural = asteroidz_tab_bar_node_measure_width(p->node, p->text,
+														   bar_pill_height());
+	p->fixed_width = (config.bar_title_width > 0 &&
+					  natural > config.bar_title_width)
+						 ? config.bar_title_width
+						 : natural;
+	p->flexible = true;
+	/* left-aligned: centring the icon+title group inside the pill made the
+	 * title drift sideways as it changed length, and detached it from the
+	 * layout chip it follows */
+	asteroidz_tab_bar_node_set_text_align_left(p->node, true);
 	/* resting colours, not the focus pair: a highlighted title competed with
 	 * the selected-tag pill for "this is the active thing". */
-	bar_pill_style(p, false, false);
+	bar_pill_style(p, BAR_LOOK_FLAT);
 	p->arg = 0;
 	mod->npills = 1;
 	for (int32_t i = 1; i < BAR_MAX_PILLS; i++)
@@ -962,53 +1157,97 @@ static void bar_module_refresh_layout(BarModule *mod) {
 	p->text[0] = '\0';
 	/* the pill is clickable and cycles layouts, so it must not change width
 	 * as the symbol changes under the pointer */
-	/* square: icon only, so it never resizes as the layout cycles */
-	p->fixed_width = config.bar_height;
-	bar_pill_style(p, false, false);
+	/* sized from the icon, not the bar height: a square pill loses its
+	 * artwork to the theme's padding_x and renders clipped */
+	p->fixed_width = bar_icon_pill_width(p, bar_pill_height());
+	bar_pill_style(p, BAR_LOOK_SUNKEN);
 	p->arg = 0;
 	mod->npills = 1;
 	for (int32_t i = 1; i < BAR_MAX_PILLS; i++)
 		bar_pill_release(&mod->pills[i]);
 }
 
-/* One-pill metric modules. The glyphs are Nerd Font (the same family the
- * waybar modules these replace used); a font without them falls back through
- * fontconfig rather than drawing nothing. A reading past its threshold takes
- * the theme's urgent colour, which is how the sysinfo pill carried load. */
+/* The load ramp for the cpu/memory icons. No numbers: the whole point of the
+ * sysinfo pill these replace is that the COLOUR carries the reading, which is
+ * legible at a glance in a way a two-digit percentage is not (the exact figure
+ * belongs in a popover, which the native bar does not have yet).
+ *
+ * Four steps rather than sysinfo's three, so "busy" and "about to hurt" are
+ * distinguishable: resting, working, heavy, saturated. */
+static const float bar_load_amber[4] = {0.98f, 0.72f, 0.20f, 1.0f};
+
+static void bar_load_tint(int32_t pct, float out[4]) {
+	if (pct >= 85) { /* saturated */
+		memcpy(out, config.theme.urgent_color, sizeof(float) * 4);
+		return;
+	}
+	if (pct >= 60) { /* heavy */
+		memcpy(out, bar_load_amber, sizeof(float) * 4);
+		return;
+	}
+	if (pct >= 20) { /* working: the theme accent, like .si-ic.warn */
+		memcpy(out, config.theme.focus_bg_color, sizeof(float) * 4);
+		return;
+	}
+	/* resting: the foreground, dimmed to read as inactive (@outline) */
+	memcpy(out, config.theme.fg_color, sizeof(float) * 4);
+	out[3] *= 0.45f;
+}
+
+/* One-pill metric modules. The artwork is the waybar sysinfo plugin's
+ * monochrome SVG set, tinted here rather than drawn as-is -- those files are
+ * a solid #000 silhouette and paint as an invisible black blob on a dark
+ * panel otherwise. */
 static void bar_module_refresh_metric(BarModule *mod) {
 	BarPill *p = bar_pill_get(mod, 0);
 	if (!p) {
 		mod->npills = 0;
 		return;
 	}
-	bool hot = false;
 	char icon[512];
 	switch (mod->kind) {
+	/* The sysinfo plugin's artwork, not sysmon's: sysinfo is what the waybar
+	 * config actually loads (`cffi/sysinfo`, which replaced cffi/sysmon +
+	 * cffi/network), and its icons are the flat monochrome set the rest of the
+	 * bar is drawn in -- sysmon's are gradient-filled and read as from a
+	 * different bar entirely. */
 	case BAR_MODULE_CPU:
-		bar_icon_path(icon, sizeof(icon), "waybar-sysmon/cpu.svg");
+	case BAR_MODULE_MEMORY: {
+		int32_t pct = mod->kind == BAR_MODULE_CPU ? bar_metrics.cpu_pct
+												  : bar_metrics.mem_pct;
+		bar_icon_path(icon, sizeof(icon),
+					  mod->kind == BAR_MODULE_CPU ? "waybar-sysinfo/cpu.svg"
+												  : "waybar-sysinfo/mem.svg");
 		asteroidz_tab_bar_node_set_icon(p->node, icon);
-		snprintf(p->text, sizeof(p->text), "%d%%", bar_metrics.cpu_pct);
-		p->fixed_width = bar_template_width(p, "100%", config.bar_height);
-		hot = bar_metrics.cpu_pct >= 85;
+		float tint[4];
+		bar_load_tint(pct, tint);
+		asteroidz_tab_bar_node_set_icon_tint(p->node, tint);
+		/* icon only: the tint is the reading */
+		p->text[0] = '\0';
+		p->fixed_width = bar_icon_pill_width(p, bar_pill_height());
 		break;
-	case BAR_MODULE_MEMORY:
-		bar_icon_path(icon, sizeof(icon), "waybar-sysmon/ram.svg");
-		asteroidz_tab_bar_node_set_icon(p->node, icon);
-		snprintf(p->text, sizeof(p->text), "%d%%", bar_metrics.mem_pct);
-		p->fixed_width = bar_template_width(p, "100%", config.bar_height);
-		hot = bar_metrics.mem_pct >= 90;
-		break;
+	}
 	case BAR_MODULE_NETWORK: {
 		/* predictable interface names: a wireless one starts with 'w' */
-		const char *art = !bar_metrics.link_up ? "waybar-network/disconnected.svg"
-							: bar_metrics.iface[0] == 'w'
-								  ? "waybar-network/wifi3.svg"
-								  : "waybar-network/ethernet.svg";
+		const char *art = !bar_metrics.link_up
+							  ? "waybar-sysinfo/disconnected.svg"
+						  : bar_metrics.iface[0] == 'w'
+							  ? "waybar-sysinfo/wifi3.svg"
+							  : "waybar-sysinfo/ethernet.svg";
 		bar_icon_path(icon, sizeof(icon), art);
 		asteroidz_tab_bar_node_set_icon(p->node, icon);
+		/* same monochrome set as cpu/mem, so it needs the same tint; the
+		 * throughput text carries the reading here, so the icon just says
+		 * connected or not */
+		float ntint[4];
+		if (bar_metrics.link_up) {
+			memcpy(ntint, config.theme.fg_color, sizeof(ntint));
+		} else {
+			memcpy(ntint, config.theme.urgent_color, sizeof(ntint));
+		}
+		asteroidz_tab_bar_node_set_icon_tint(p->node, ntint);
 		if (!bar_metrics.link_up) {
 			p->text[0] = '\0';
-			hot = true;
 		} else {
 			char rx[16], tx[16];
 			bar_fmt_rate(bar_metrics.rx_rate, rx, sizeof(rx));
@@ -1018,14 +1257,20 @@ static void bar_module_refresh_metric(BarModule *mod) {
 		/* widest reachable rendering: the K->M transition and the digit count
 		 * both change the string length every few seconds otherwise */
 		p->fixed_width =
-			bar_template_width(p, "↓999.9M ↑999.9M", config.bar_height);
+			bar_template_width(p, "↓999.9M ↑999.9M", bar_pill_height());
+		/* left-aligned inside that reserve: centred, a quiet link put half the
+		 * slack between this pill and the memory icon before it, which read as
+		 * a gap in the group rather than as headroom for a busy link */
+		asteroidz_tab_bar_node_set_text_align_left(p->node, true);
 		break;
 	}
 	default:
 		break;
 	}
 	p->arg = 0;
-	bar_pill_style(p, false, hot);
+	/* always flat: the state lives in the icon tint now, and a filled urgent
+	 * pill would change this module's padding and shove its neighbours */
+	bar_pill_style(p, BAR_LOOK_FLAT);
 	mod->npills = 1;
 	for (int32_t i = 1; i < BAR_MAX_PILLS; i++)
 		bar_pill_release(&mod->pills[i]);
@@ -1049,10 +1294,10 @@ static void bar_module_refresh_idle(BarModule *mod) {
 	/* Widest of the two states, so toggling never resizes -- and measured
 	 * rather than pinned square: a square pill at the theme's padding.x
 	 * leaves almost no text area and ellipsised the glyph to "...". */
-	int32_t wa = bar_template_width(p, on, config.bar_height);
-	int32_t wb = bar_template_width(p, off, config.bar_height);
+	int32_t wa = bar_template_width(p, on, bar_pill_height());
+	int32_t wb = bar_template_width(p, off, bar_pill_height());
 	p->fixed_width = wa > wb ? wa : wb;
-	bar_pill_style(p, idle_inhibit_manual, false);
+	bar_pill_style(p, idle_inhibit_manual ? BAR_LOOK_ACTIVE : BAR_LOOK_FLAT);
 	mod->npills = 1;
 	for (int32_t i = 1; i < BAR_MAX_PILLS; i++)
 		bar_pill_release(&mod->pills[i]);
@@ -1077,8 +1322,8 @@ static void bar_module_refresh_weather(BarModule *mod) {
 	p->arg = 0;
 	/* -99 deg is wider than any real reading here, and the pill must not
 	 * resize when the temperature crosses 0 or 10 */
-	p->fixed_width = bar_template_width(p, "-99°", config.bar_height);
-	bar_pill_style(p, false, false);
+	p->fixed_width = bar_template_width(p, "-99°", bar_pill_height());
+	bar_pill_style(p, BAR_LOOK_FLAT);
 	mod->npills = 1;
 	for (int32_t i = 1; i < BAR_MAX_PILLS; i++)
 		bar_pill_release(&mod->pills[i]);
@@ -1112,10 +1357,47 @@ static void bar_module_refresh_media(BarModule *mod) {
 		snprintf(p->text, sizeof(p->text), "%s", bar_media.title);
 	p->arg = 0;
 	p->fixed_width = config.bar_media_width;
-	bar_pill_style(p, false, false);
+	p->flexible = true;
+	bar_pill_style(p, BAR_LOOK_FLAT);
 	mod->npills = 1;
 	for (int32_t i = 1; i < BAR_MAX_PILLS; i++)
 		bar_pill_release(&mod->pills[i]);
+}
+
+/* One pill per tray item, icon only. Items are pooled like every other pill,
+ * so an application coming and going does not churn scene nodes.
+ *
+ * A Passive item is hidden: that status means "nothing to say right now", and
+ * showing it anyway is how a tray ends up as a row of identical grey squares. */
+static void bar_module_refresh_tray(BarModule *mod) {
+	bar_tray_start();
+
+	int32_t n = 0;
+	for (int32_t i = 0; i < bar_tray_nitems && n < BAR_MAX_PILLS; i++) {
+		BarTrayItem *it = &bar_tray_items[i];
+		if (!it->used)
+			continue;
+		if (it->status[0] && strcmp(it->status, "Passive") == 0)
+			continue;
+		BarPill *p = bar_pill_get(mod, n);
+		if (!p)
+			break;
+		/* the index into bar_tray_items, so a click can find the item again
+		 * without the pill holding a pointer into a table that compacts */
+		p->arg = (uint32_t)i;
+		p->text[0] = '\0';
+		asteroidz_tab_bar_node_set_icon(p->node, it->icon_key);
+		/* real application artwork, not a stencil: never tint it */
+		asteroidz_tab_bar_node_set_icon_tint(p->node, NULL);
+		p->fixed_width = bar_icon_pill_width(p, bar_pill_height());
+		bar_pill_style(p, strcmp(it->status, "NeedsAttention") == 0
+							  ? BAR_LOOK_URGENT
+							  : BAR_LOOK_FLAT);
+		n++;
+	}
+	for (int32_t i = n; i < BAR_MAX_PILLS; i++)
+		bar_pill_release(&mod->pills[i]);
+	mod->npills = n;
 }
 
 static void bar_module_refresh(BarModule *mod) {
@@ -1146,6 +1428,9 @@ static void bar_module_refresh(BarModule *mod) {
 	case BAR_MODULE_MEDIA:
 		bar_module_refresh_media(mod);
 		break;
+	case BAR_MODULE_TRAY:
+		bar_module_refresh_tray(mod);
+		break;
 	default:
 		mod->npills = 0;
 		break;
@@ -1168,17 +1453,30 @@ static void bar_module_measure(BarModule *mod, int32_t height, float scale) {
 				? p->fixed_width
 				: asteroidz_tab_bar_node_measure_width(p->node, p->text,
 													   height);
+		/* The min-width floor exists so a single-glyph LABEL still reads as a
+		 * pill. An icon-only pill has no label to protect and is already
+		 * exactly as wide as its artwork, so floring it just pads slack around
+		 * the icon -- which is the gap this module is trying to control. */
 		if (config.bar_pill_min_width > 0 &&
-			p->width < config.bar_pill_min_width)
+			p->width < config.bar_pill_min_width &&
+			!bar_pill_is_icon_only(p))
 			p->width = config.bar_pill_min_width;
 		asteroidz_tab_bar_node_set_size(p->node, p->width, height);
 		asteroidz_tab_bar_node_update(p->node, p->text, scale);
 		total += p->width;
 		if (i + 1 < mod->npills)
-			total += config.bar_spacing;
+			total += bar_pill_gap(p, &mod->pills[i + 1]);
 	}
 	mod->width = total;
 	(void)scale;
+}
+
+/* The gap between two modules sharing a slot, decided by the pills that
+ * actually touch: the last of one and the first of the next. */
+static int32_t bar_module_gap(BarModule *a, BarModule *b) {
+	if (!a || !b || a->npills <= 0 || b->npills <= 0)
+		return 0;
+	return bar_pill_gap(&a->pills[a->npills - 1], &b->pills[0]);
 }
 
 /* Draw (or hide) the backdrop for one slot. `x`..`x+w` is the extent of the
@@ -1261,9 +1559,51 @@ static int32_t bar_place_module(BarModule *mod, int32_t x, int32_t y) {
 			continue;
 		asteroidz_tab_bar_node_set_position(p->node, x, y);
 		asteroidz_tab_bar_node_set_enabled(p->node, true);
-		x += p->width + config.bar_spacing;
+		x += p->width;
+		if (i + 1 < mod->npills)
+			x += bar_pill_gap(p, &mod->pills[i + 1]);
 	}
 	return x;
+}
+
+/* Claw back up to `want` pixels from the flexible pills of `slot`
+ * (BAR_SLOT_COUNT = any slot), narrowing them in place and updating the
+ * module and slot widths as it goes. Flexible means "carries ellipsisable
+ * text": the window title and the now-playing string, both of which would
+ * rather be cut short than shove a neighbour out of position. Returns how
+ * much it actually recovered, which is less than `want` once every flexible
+ * pill has reached the floor. */
+static int32_t bar_shrink_flexible(AsteroidzBar *bar, int32_t slot,
+								   int32_t want, int32_t *slot_w,
+								   int32_t pill_h, float scale) {
+	/* below this a pill shows an ellipsis and nothing else, so stop there and
+	 * let the caller decide what to drop instead */
+	int32_t floor_w = config.bar_height * 2;
+	int32_t got = 0;
+	for (int32_t i = 0; i < bar->nmodules && want > 0; i++) {
+		BarModule *mod = &bar->modules[i];
+		if (slot != BAR_SLOT_COUNT && mod->slot != slot)
+			continue;
+		for (int32_t j = 0; j < mod->npills && want > 0; j++) {
+			BarPill *fp = &mod->pills[j];
+			if (!fp->used || !fp->flexible)
+				continue;
+			int32_t shrink = fp->width - floor_w;
+			if (shrink > want)
+				shrink = want;
+			if (shrink <= 0)
+				continue;
+			fp->width -= shrink;
+			fp->fixed_width = fp->width;
+			asteroidz_tab_bar_node_set_size(fp->node, fp->width, pill_h);
+			asteroidz_tab_bar_node_update(fp->node, fp->text, scale);
+			mod->width -= shrink;
+			slot_w[mod->slot] -= shrink;
+			want -= shrink;
+			got += shrink;
+		}
+	}
+	return got;
 }
 
 /* Recompute the whole strip: refresh every module's content, measure, then
@@ -1275,20 +1615,25 @@ static void bar_layout(Monitor *m) {
 	if (!bar || !bar->tree)
 		return;
 
+	/* Two heights: the strip (what the panel fills and what space reservation
+	 * is measured against) and the pill row inset inside it. */
 	int32_t height = config.bar_height;
+	int32_t pill_h = bar_pill_height();
 	float scale = m->wlr_output ? m->wlr_output->scale : 1.0f;
 	if (scale <= 0.0f)
 		scale = 1.0f;
 
 	int32_t slot_w[BAR_SLOT_COUNT] = {0, 0, 0};
+	BarModule *slot_last[BAR_SLOT_COUNT] = {NULL, NULL, NULL};
 	for (int32_t i = 0; i < bar->nmodules; i++) {
 		BarModule *mod = &bar->modules[i];
 		bar_module_refresh(mod);
-		bar_module_measure(mod, height, scale);
+		bar_module_measure(mod, pill_h, scale);
 		if (mod->width > 0) {
-			if (slot_w[mod->slot] > 0)
-				slot_w[mod->slot] += config.bar_spacing;
+			if (slot_last[mod->slot])
+				slot_w[mod->slot] += bar_module_gap(slot_last[mod->slot], mod);
 			slot_w[mod->slot] += mod->width;
+			slot_last[mod->slot] = mod;
 		}
 	}
 
@@ -1340,27 +1685,41 @@ static void bar_layout(Monitor *m) {
 	needed += gaps > 1 ? (gaps - 1) * config.bar_spacing : 0;
 	int32_t overflow = needed - (m->m.width - 2 * inset);
 	if (overflow > 0) {
-		/* find the title pill and take the overflow out of it */
-		for (int32_t i = 0; i < bar->nmodules && overflow > 0; i++) {
-			BarModule *mod = &bar->modules[i];
-			if (mod->kind != BAR_MODULE_TITLE || mod->npills < 1)
-				continue;
-			BarPill *tp = &mod->pills[0];
-			int32_t floor_w = config.bar_height * 2;
-			int32_t shrink = tp->width - floor_w;
-			if (shrink > overflow)
-				shrink = overflow;
-			if (shrink > 0) {
-				tp->width -= shrink;
-				tp->fixed_width = tp->width;
-				asteroidz_tab_bar_node_set_size(tp->node, tp->width, height);
-				asteroidz_tab_bar_node_update(tp->node, tp->text, scale);
-				mod->width -= shrink;
-				slot_w[BAR_SLOT_LEFT] -= shrink;
-				overflow -= shrink;
-			}
-		}
+		/* Take it out of every flexible pill (title, now-playing) before
+		 * considering dropping a whole slot -- hiding the centre section
+		 * because a window title wanted 320px is the wrong trade, and it
+		 * took the clock and the idle toggle with it. */
+		bar_shrink_flexible(bar, BAR_SLOT_COUNT, overflow, slot_w, pill_h,
+							scale);
 		left_end = left + slot_w[BAR_SLOT_LEFT];
+		cursor[BAR_SLOT_RIGHT] = right - slot_w[BAR_SLOT_RIGHT];
+	}
+
+	/* Yield to the centred slot before it has to move.
+	 *
+	 * The whole point of the centre section is that it is centred: a clock
+	 * that drifts with the length of the focused window's title is worse than
+	 * a title that ellipsises a little sooner. So once the left slot reaches
+	 * where the centre wants to start, take the difference out of the left
+	 * slot's flexible pills (the title) rather than pushing the centre along.
+	 * Same on the other side for a long now-playing string in the centre. */
+	if (slot_w[BAR_SLOT_CENTER] > 0) {
+		int32_t centre_x =
+			m->m.x + (m->m.width - slot_w[BAR_SLOT_CENTER]) / 2;
+		int32_t encroach =
+			(left_end + config.bar_spacing) - centre_x;
+		if (encroach > 0 && slot_w[BAR_SLOT_LEFT] > 0) {
+			bar_shrink_flexible(bar, BAR_SLOT_LEFT, encroach, slot_w, pill_h,
+								scale);
+			left_end = left + slot_w[BAR_SLOT_LEFT];
+			centre_x = m->m.x + (m->m.width - slot_w[BAR_SLOT_CENTER]) / 2;
+		}
+		int32_t past_right = (centre_x + slot_w[BAR_SLOT_CENTER] +
+							  config.bar_spacing) -
+							 cursor[BAR_SLOT_RIGHT];
+		if (past_right > 0 && slot_w[BAR_SLOT_RIGHT] > 0)
+			bar_shrink_flexible(bar, BAR_SLOT_CENTER, past_right, slot_w,
+								pill_h, scale);
 	}
 
 	/* Fit the centre into the gap the anchored slots leave, or drop it.
@@ -1407,18 +1766,23 @@ static void bar_layout(Monitor *m) {
 	for (int32_t s = 0; s < BAR_SLOT_COUNT; s++)
 		slot_start[s] = cursor[s];
 
+	/* The pill row is centred in the strip, so a filled chip reads as inset in
+	 * the panel rather than spanning it from edge to edge. */
+	int32_t pill_y = y + (height - pill_h) / 2;
+	BarModule *placed_last[BAR_SLOT_COUNT] = {NULL, NULL, NULL};
 	for (int32_t i = 0; i < bar->nmodules; i++) {
 		BarModule *mod = &bar->modules[i];
 		if (mod->width <= 0)
 			continue;
-		cursor[mod->slot] =
-			bar_place_module(mod, cursor[mod->slot], y);
+		if (placed_last[mod->slot])
+			cursor[mod->slot] += bar_module_gap(placed_last[mod->slot], mod);
+		cursor[mod->slot] = bar_place_module(mod, cursor[mod->slot], pill_y);
+		placed_last[mod->slot] = mod;
 	}
 
 	/* One backdrop per non-empty slot. The bar itself paints nothing, so
-	 * these three panels are the whole visible surface. bar_place_module
-	 * leaves a trailing inter-pill gap on the cursor, so subtract it back off
-	 * rather than padding the panel by it. */
+	 * these three panels are the whole visible surface. They span the full
+	 * strip height; the pills inside them are the inset row. */
 	for (int32_t s = 0; s < BAR_SLOT_COUNT; s++) {
 		int32_t w = slot_w[s];
 		bar_panel_apply(bar, (enum bar_slot)s, slot_start[s], w, y, height);
@@ -1533,9 +1897,24 @@ static uint64_t bar_digest(Monitor *m) {
 			bar_hash_str(&h, buf);
 			break;
 		}
+		case BAR_MODULE_TRAY:
+			/* Everything a tray pill draws: which items exist, in what order,
+			 * with which artwork and status. Without this the digest gate
+			 * swallowed the bar_update_all() the bus callbacks fire, and an
+			 * item appearing or swapping its icon only showed up on the next
+			 * unrelated arrange. */
+			for (int32_t t = 0; t < bar_tray_nitems; t++) {
+				if (!bar_tray_items[t].used)
+					continue;
+				bar_hash_str(&h, bar_tray_items[t].service);
+				bar_hash_str(&h, bar_tray_items[t].icon_key);
+				bar_hash_str(&h, bar_tray_items[t].status);
+			}
+			break;
 		case BAR_MODULE_TAGS: {
 			bar_hash(&h, &config.bar_show_all_tags,
 					 sizeof(config.bar_show_all_tags));
+			bar_hash(&h, &config.bar_min_tags, sizeof(config.bar_min_tags));
 			/* custom tag names can change without any mask changing */
 			for (uint32_t t = 1; t <= LENGTH(tags); t++) {
 				char name[64];
@@ -1875,6 +2254,32 @@ static bool bar_handle_node_click(AsteroidzNodeData *hit, uint32_t button) {
 			return true;
 		}
 		break;
+	case BAR_MODULE_TRAY: {
+		if (p->arg >= (uint32_t)bar_tray_nitems)
+			break;
+		BarTrayItem *it = &bar_tray_items[p->arg];
+		if (!it->used)
+			break;
+		/* The spec passes the click's SCREEN position so the item can put its
+		 * own window next to the pill it was launched from. */
+		int32_t x = (int32_t)cursor->x, y = (int32_t)cursor->y;
+		if (button == BTN_LEFT) {
+			bar_tray_activate(it, "Activate", x, y);
+			return true;
+		}
+		if (button == BTN_RIGHT) {
+			/* No DBusMenu popup yet (it needs a surface layer the bar does not
+			 * have), so right-click goes to the item's own secondary action --
+			 * which most applications wire to "open my menu" regardless. */
+			bar_tray_activate(it, "SecondaryActivate", x, y);
+			return true;
+		}
+		if (button == BTN_MIDDLE) {
+			bar_tray_activate(it, "SecondaryActivate", x, y);
+			return true;
+		}
+		break;
+	}
 	case BAR_MODULE_LAYOUT:
 		if (button == BTN_LEFT) {
 			/* switch_layout cycles config.circle_layout on selmon, so point
@@ -1902,6 +2307,7 @@ static void bar_destroy(Monitor *m) { (void)m; }
 static void bar_update(Monitor *m) { (void)m; }
 static void bar_update_all(void) {}
 static void bar_reconfigure_all(void) {}
+static void bar_tray_finish(void) {}
 static void bar_reserve(Monitor *m, struct wlr_box *usable) {
 	(void)m;
 	(void)usable;

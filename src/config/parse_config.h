@@ -439,9 +439,27 @@ typedef struct {
 	int32_t bar_margin_x;		 /* inset from the output's left/right edge */
 	int32_t bar_margin_y;		 /* inset from the output's top/bottom edge */
 	int32_t bar_pill_min_width;  /* floor, so single-glyph pills stay legible */
+	/* Vertical inset of a pill inside the strip, so a filled pill reads as a
+	 * chip sitting IN the panel rather than as a block spanning it. The waybar
+	 * workspace plugin's grouped mode uses 6px top and bottom on a 48px group,
+	 * i.e. 36px pills; the same numbers land here. */
+	int32_t bar_pill_inset;
+	/* Horizontal padding inside a pill. Split in two because the waybar CSS
+	 * this mirrors does: status modules run `padding: 0 10px` while workspace
+	 * pills carry the plugin's `tag-padding` (16). Kept off the shared
+	 * theme.padding_x, which is tuned for titlebars and is far too airy for a
+	 * row of status readouts. */
+	int32_t bar_pill_padding;
+	int32_t bar_tag_padding;
+	/* Separation between two adjacent icon-only status glyphs (cpu, memory).
+	 * Those pills carry no padding of their own, so this is the exact gap
+	 * between the artwork -- unlike padding, which can only ever produce an
+	 * even number of pixels and also pads the run against the panel edge. */
+	int32_t bar_icon_spacing;
 	/* tags module: 0 = only tags that are selected or hold a window (the
 	 * waybar workspace-module behaviour), 1 = every configured tag always */
 	int32_t bar_show_all_tags;
+	int32_t bar_min_tags;   /* pad the visible tag set up to this many */
 	int32_t bar_show_logo;  /* leading asteroidz ship pill on the tags module */
 	int32_t bar_tag_icons;  /* max app icons drawn inside each tag pill */
 	int32_t bar_weather_interval; /* minutes between forecast fetches */
@@ -460,10 +478,14 @@ typedef struct {
 	int32_t bar_panel_shadow;
 	int32_t bar_interval; /* seconds between /proc + /sys metric samples */
 	int32_t bar_title_width; /* pinned title pill width, 0 = size to content */
-	/* Root of the waybar plugin asset trees, so the bar uses the very same
-	 * SVGs as the modules it replaces (<dir>/waybar-sysmon/cpu.svg, ...). A
-	 * missing file just means no icon, never a failure. */
-	char bar_icon_dir[256];
+	/* Colon-separated search path of waybar plugin asset roots, so the bar uses
+	 * the very same SVGs as the modules it replaces
+	 * (<dir>/waybar-sysinfo/cpu.svg, ...). A path list rather than one
+	 * directory because the plugins do not all install to the same prefix:
+	 * some are packaged into /usr/share, others land in ~/.local/share from a
+	 * plain `make install`. First readable hit wins; no hit at all just means
+	 * no icon, never a failure. */
+	char bar_icon_dir[512];
 	char bar_clock_format[64];
 	char bar_modules_left[256];
 	char bar_modules_center[256];
@@ -2252,8 +2274,18 @@ bool parse_option(Config *config, char *key, char *value) {
 		config->bar_margin_y = CLAMP_INT(atoi(value), 0, 500);
 	} else if (strcmp(key, "bar_pill_min_width") == 0) {
 		config->bar_pill_min_width = CLAMP_INT(atoi(value), 0, 1000);
+	} else if (strcmp(key, "bar_pill_inset") == 0) {
+		config->bar_pill_inset = CLAMP_INT(atoi(value), 0, 100);
+	} else if (strcmp(key, "bar_pill_padding") == 0) {
+		config->bar_pill_padding = CLAMP_INT(atoi(value), 0, 200);
+	} else if (strcmp(key, "bar_tag_padding") == 0) {
+		config->bar_tag_padding = CLAMP_INT(atoi(value), 0, 200);
+	} else if (strcmp(key, "bar_icon_spacing") == 0) {
+		config->bar_icon_spacing = CLAMP_INT(atoi(value), 0, 200);
 	} else if (strcmp(key, "bar_show_all_tags") == 0) {
 		config->bar_show_all_tags = atoi(value) != 0;
+	} else if (strcmp(key, "bar_min_tags") == 0) {
+		config->bar_min_tags = CLAMP_INT(atoi(value), 0, 32);
 	} else if (strcmp(key, "bar_show_logo") == 0) {
 		config->bar_show_logo = atoi(value) != 0;
 	} else if (strcmp(key, "bar_tag_icons") == 0) {
@@ -3583,7 +3615,12 @@ static const struct {
 	{"bar/margin/x", "bar_margin_x"},
 	{"bar/margin/y", "bar_margin_y"},
 	{"bar/pill-min-width", "bar_pill_min_width"},
+	{"bar/pill-inset", "bar_pill_inset"},
+	{"bar/pill-padding", "bar_pill_padding"},
+	{"bar/tag-padding", "bar_tag_padding"},
+	{"bar/icon-spacing", "bar_icon_spacing"},
 	{"bar/show-all-tags", "bar_show_all_tags"},
+	{"bar/min-tags", "bar_min_tags"},
 	{"bar/show-logo", "bar_show_logo"},
 	{"bar/tag-icons", "bar_tag_icons"},
 	{"bar/media-width", "bar_media_width"},
@@ -4633,15 +4670,32 @@ void set_value_default() {
 	 * user configured, and silently reserving screen space on first run after
 	 * an upgrade would be a surprise. Opt in with `bar { enable true }`. */
 	config.bar_enable = 0;
-	config.bar_height = 28;
+	/* 48px panel inside a 66px strip, matching the waybar groups (margin:
+	 * 9px, 48px tall) this replaces */
+	config.bar_height = 48;
 	config.bar_position_bottom = 0;
-	config.bar_spacing = 6;
+	/* Only ever applied where at least one side draws a fill of its own (the
+	 * workspace and layout chips), matching the 4px-per-side margins the waybar
+	 * plugin gives those. Flat status pills are separated by their own padding
+	 * alone -- adding a gap on top of two paddings made the right-hand section
+	 * read as scattered rather than as one strip. */
+	config.bar_spacing = 8;
 	/* the gap between the panels and the screen edge; matches the 9px vertical
 	 * margin the waybar groups this replaces used */
 	config.bar_margin_x = 8;
 	config.bar_margin_y = 9;
 	config.bar_pill_min_width = 28;
+	/* 36px pills in the 48px panel, the waybar grouped-mode geometry */
+	config.bar_pill_inset = 6;
+	/* Tighter than the waybar CSS's `padding: 0 10px` on purpose: the status
+	 * modules are icon-first here, and two 10px paddings put 20px of nothing
+	 * between the cpu and memory glyphs, which read as unrelated rather than
+	 * as one group. */
+	config.bar_pill_padding = 6;
+	config.bar_tag_padding = 16;
+	config.bar_icon_spacing = 5;
 	config.bar_show_all_tags = 0;
+	config.bar_min_tags = 3;
 	config.bar_show_logo = 1;
 	config.bar_tag_icons = 3;
 	config.bar_weather_interval = 15;
@@ -4655,7 +4709,18 @@ void set_value_default() {
 	config.bar_panel_shadow = 1;
 	config.bar_interval = 2;
 	config.bar_title_width = 320;
-	snprintf(config.bar_icon_dir, sizeof(config.bar_icon_dir), "/usr/share");
+	{
+		/* ~/.local/share first: a plugin built from source and `make install`ed
+		 * lands there, and that copy is the one the user is actually looking at
+		 * in waybar. The packaged /usr/share tree is the fallback. */
+		const char *home = getenv("HOME");
+		if (home && *home)
+			snprintf(config.bar_icon_dir, sizeof(config.bar_icon_dir),
+					 "%s/.local/share:/usr/share", home);
+		else
+			snprintf(config.bar_icon_dir, sizeof(config.bar_icon_dir),
+					 "/usr/share");
+	}
 	snprintf(config.bar_clock_format, sizeof(config.bar_clock_format),
 			 "%%H:%%M:%%S");
 	/* Three sections, matching the waybar layout this replaces: the workspace

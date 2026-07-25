@@ -122,7 +122,7 @@ test_bar_tag_pill_click_switches_view() {
 	# about click routing, not appearance. With them off the first pill starts
 	# exactly at margin-x, so the click coordinate below follows from config
 	# alone rather than from the panel geometry of the day.
-	bar_set 'bar { enable true; height 30; position "top"; margin { x 8; y 4 }; pill-min-width 28; panel { enable false }; show-logo false; tag-icons 0; modules-left "tags" }'
+	bar_set 'bar { enable true; height 30; position "top"; margin { x 8; y 4 }; pill-min-width 28; tag-padding 4; pill-padding 4; panel { enable false }; show-logo false; tag-icons 0; modules-left "tags" }'
 	sleep 0.5
 	hl_assert_eq "precondition: tag 2 is the active tag" "$(bar_active_tags)" "[2]"
 
@@ -132,6 +132,41 @@ test_bar_tag_pill_click_switches_view() {
 	hl_click 12 19
 	sleep 0.5
 	hl_assert_eq "clicking the leftmost tag pill views that tag" \
+		"$(bar_active_tags)" "[1]"
+
+	bar_off
+	hl_dispatch "view,1"
+}
+
+test_bar_pill_inset_keeps_pills_off_the_strip_edges() {
+	[ "$(bar_supported)" = "true" ] || { echo "  (skip: built without -Dnative-bar)"; return 0; }
+	# pill-inset is what stops a workspace chip from spanning the panel top to
+	# bottom (the waybar plugin insets its pills 6px inside a 48px group). The
+	# only externally visible consequence is the click target: the strip still
+	# reserves its full height, but the top and bottom bands of it are now
+	# panel, not pill, and must not route a click to a tag.
+	hl_dispatch "view,1"
+	hl_spawn_kitty W1 >/dev/null
+	hl_wait_client_count 1
+	hl_dispatch "view,2"
+	hl_spawn_kitty W2 >/dev/null
+	hl_wait_client_count 2
+
+	# strip y 4..44; pills inset 12 => 16 tall, centred at y 16..32.
+	bar_set 'bar { enable true; height 40; position "top"; margin { x 8; y 4 }; pill-inset 12; pill-min-width 28; tag-padding 4; pill-padding 4; panel { enable false }; show-logo false; tag-icons 0; modules-left "tags" }'
+	sleep 0.5
+	hl_assert_eq "precondition: tag 2 is the active tag" "$(bar_active_tags)" "[2]"
+
+	# y=8 is inside the strip but above the inset pill row
+	hl_click 12 8
+	sleep 0.4
+	hl_assert_eq "a click in the strip above the inset pills hits nothing" \
+		"$(bar_active_tags)" "[2]"
+
+	# y=24 is the vertical centre of the pill row
+	hl_click 12 24
+	sleep 0.5
+	hl_assert_eq "a click on the pill row itself still switches view" \
 		"$(bar_active_tags)" "[1]"
 
 	bar_off
@@ -148,20 +183,26 @@ test_bar_show_all_tags() {
 	hl_spawn_kitty W1 >/dev/null
 	hl_wait_client_count 1
 
-	bar_set 'bar { enable true; height 30; margin { x 8; y 4 }; pill-min-width 28; panel { enable false }; show-logo false; tag-icons 0; modules-left "tags" }'
+	# pill-min-width 60 with a 4px padding pins every single-digit pill to
+	# exactly 60 wide, so the pills tile at 8..68, 76..136, ... regardless of
+	# the font the shared config happens to use. Without that pin the click
+	# coordinate below depends on how wide pango renders "1", which is how this
+	# test broke when the tag label gained its "N: " index prefix.
+	local geom='height 30; margin { x 8; y 4 }; pill-min-width 60; tag-padding 4; pill-padding 4; panel { enable false }; show-logo false; tag-icons 0; min-tags 1; modules-left "tags"'
+	bar_set "bar { enable true; $geom }"
 	sleep 0.5
-	# with one occupied+selected tag there is exactly one pill: a click just
-	# left of where a SECOND pill would start must therefore hit nothing.
+	# with one occupied+selected tag there is exactly one pill (8..68): a click
+	# inside where a SECOND pill would sit must therefore hit nothing.
 	hl_dispatch "view,1"
 	local before; before="$(bar_active_tags)"
-	hl_click 50 19
+	hl_click 100 19
 	sleep 0.4
 	hl_assert_eq "with tags hidden, there is no second pill to click" \
 		"$(bar_active_tags)" "$before"
 
-	bar_set 'bar { enable true; height 30; margin { x 8; y 4 }; pill-min-width 28; show-all-tags true; panel { enable false }; show-logo false; tag-icons 0; modules-left "tags" }'
+	bar_set "bar { enable true; show-all-tags true; $geom }"
 	sleep 0.5
-	hl_click 50 19
+	hl_click 100 19
 	sleep 0.4
 	hl_assert_eq "with show-all-tags, the second pill exists and views tag 2" \
 		"$(bar_active_tags)" "[2]"
@@ -250,7 +291,7 @@ test_bar_tag_app_icons_and_logo() {
 	hl_spawn_kitty W1 >/dev/null
 	hl_wait_client_count 1
 
-	bar_set 'bar { enable true; height 30; margin { x 8; y 4 }; pill-min-width 28; panel { enable false }; show-logo false; tag-icons 0; modules-left "tags" }'
+	bar_set 'bar { enable true; height 30; margin { x 8; y 4 }; pill-min-width 28; tag-padding 4; pill-padding 4; panel { enable false }; show-logo false; tag-icons 0; min-tags 1; modules-left "tags" }'
 	sleep 0.5
 	hl_dispatch "view,2"
 	hl_click 12 19
@@ -258,7 +299,7 @@ test_bar_tag_app_icons_and_logo() {
 	hl_assert_eq "without the logo, the leftmost pill is the first tag" \
 		"$(bar_active_tags)" "[1]"
 
-	bar_set 'bar { enable true; height 30; margin { x 8; y 4 }; pill-min-width 28; panel { enable false }; show-logo true; tag-icons 3; modules-left "tags" }'
+	bar_set 'bar { enable true; height 30; margin { x 8; y 4 }; pill-min-width 28; tag-padding 4; pill-padding 4; panel { enable false }; show-logo true; tag-icons 3; modules-left "tags" }'
 	sleep 0.5
 	hl_dispatch "view,2"
 	local before; before="$(bar_active_tags)"
@@ -288,6 +329,48 @@ test_bar_weather_module_is_non_blocking() {
 		"$([ $((t1 - t0)) -lt 5 ] && echo true || echo false)"
 	hl_assert_true "the compositor is healthy with weather configured" \
 		"$(hl_get "get all-monitors" >/dev/null 2>&1 && echo true || echo false)"
+	bar_off
+}
+
+test_bar_tray_without_a_session_bus() {
+	[ "$(bar_supported)" = "true" ] || { echo "  (skip: built without -Dnative-bar)"; return 0; }
+	# Same isolated-XDG_RUNTIME_DIR case as the media test: no session bus, so
+	# the StatusNotifierItem host cannot come up at all. That is the branch
+	# worth pinning -- every sd_bus call in the tray is guarded on session_bus,
+	# and with no watcher, no host name and no items the module must simply
+	# contribute nothing.
+	#
+	# Deliberately NOT asserted here: owning org.kde.StatusNotifierWatcher and
+	# the item round-trip. Both need a real bus, and pointing the suite at the
+	# user's live one would have a headless test process registering as the
+	# session's tray watcher -- a side effect on the running desktop that a
+	# regression run must never have.
+	hl_spawn_kitty W1 >/dev/null
+	hl_wait_client_count 1
+	sleep 0.3
+	local base_y; base_y="$(bar_client_y W1)"
+
+	bar_set 'bar { enable true; height 30; margin { x 8; y 4 }; modules-left "tags"; modules-right "tray" }'
+	sleep 0.6
+	hl_assert_true "tray is a known module name" \
+		"$(hl_get "get all-monitors" >/dev/null 2>&1 && echo true || echo false)"
+	hl_assert_eq "an empty tray still reserves the bar's own footprint" \
+		"$(( $(bar_client_y W1) - base_y ))" "38"
+
+	# the tray owns bus names and signal matches; reloading tears them down and
+	# sets them up again, which is where a double-unref would show
+	local i
+	for i in 1 2 3; do
+		hl_dispatch "reload_config" 1
+	done
+	hl_assert_true "the compositor survives reloads with a tray configured" \
+		"$(hl_get "get all-monitors" >/dev/null 2>&1 && echo true || echo false)"
+
+	local t0 t1
+	t0=$(date +%s); hl_dispatch "view,2"; hl_dispatch "view,1"; t1=$(date +%s)
+	hl_assert_true "and the bus-less tray does not stall IPC" \
+		"$([ $((t1 - t0)) -lt 5 ] && echo true || echo false)"
+
 	bar_off
 }
 

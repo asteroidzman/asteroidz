@@ -95,6 +95,22 @@ struct asteroidz_tab_bar_node {
 	int32_t nicons;
 	cairo_surface_t *cached_icons[ASTEROIDZ_TAB_MAX_ICONS];
 	int32_t cached_nicons;
+	/* Draw the icon row AFTER the text instead of before it. Titlebars want the
+	 * app icon leading the title; the bar's workspace pills want "1: web" then
+	 * the icons of what is running there, which is the order the waybar
+	 * workspace module uses. */
+	bool icons_after_text;
+	bool cached_icons_after_text;
+	/* Recolour the icons to `icon_tint` instead of painting them as they are.
+	 * The waybar status plugins ship MONOCHROME svgs (a solid #000 silhouette)
+	 * and tint them to the widget's resolved CSS colour -- painted as-is they
+	 * come out flat black, which is what a bar over a dark panel shows as
+	 * nothing at all. App icons and the logo are real artwork and must never
+	 * be tinted, hence the per-node opt-in. */
+	bool icon_tinted;
+	float icon_tint[4];
+	bool cached_icon_tinted;
+	float cached_icon_tint[4];
 	struct asteroidz_text_buffer *buffer;
 	cairo_surface_t *surface;
 	int surface_pixel_w, surface_pixel_h;
@@ -181,6 +197,15 @@ struct asteroidz_tab_bar_node {
 
 void asteroidz_text_global_finish(void);
 
+/* Install a raw ARGB32 (network byte order, straight alpha) image into the
+ * shared icon cache under `key`, so it can then be drawn with
+ * _set_icon/_set_icons exactly like a themed icon name. This is how a
+ * StatusNotifierItem's IconPixmap gets on screen: the item hands over pixels
+ * rather than a name, and there is no file anywhere to resolve. Replacing an
+ * existing key frees the surface it displaces. */
+bool asteroidz_icon_cache_put_argb32(const char *key, const uint8_t *argb_be,
+									 int32_t w, int32_t h);
+
 /* a standalone app-icon buffer (used for overview thumbnails) */
 struct asteroidz_icon_node {
 	struct wlr_scene_buffer *scene_buffer;
@@ -230,6 +255,13 @@ void asteroidz_tab_bar_node_set_icon(struct asteroidz_tab_bar_node *node,
 void asteroidz_tab_bar_node_set_icons(struct asteroidz_tab_bar_node *node,
 								  const char *const *icon_names,
 								  int32_t count);
+/* false (default) draws the icons before the text, true after it. */
+void asteroidz_tab_bar_node_set_icons_after_text(
+	struct asteroidz_tab_bar_node *node, bool after);
+/* Paint the icons in `rgba` (through their own alpha) rather than in their own
+ * colours. NULL restores untinted painting. */
+void asteroidz_tab_bar_node_set_icon_tint(struct asteroidz_tab_bar_node *node,
+									  const float rgba[4]);
 void asteroidz_tab_bar_node_set_corner_mask(struct asteroidz_tab_bar_node *node,
 										enum corner_location mask);
 void asteroidz_tab_bar_node_set_text_align_left(struct asteroidz_tab_bar_node *node,

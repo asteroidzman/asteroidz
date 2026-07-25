@@ -4,11 +4,13 @@ description: Configure Waybar for asteroidz.
 ---
 
 > asteroidz also has a **built-in** bar that needs no external process — see
-> [Native Bar](./native-bar.md). It is off by default and currently covers
-> tags, clock, window title and layout only, so Waybar remains the way to get
-> a tray, popovers, and system modules. The two can run side by side: the
-> native bar reserves its space first, and Waybar's exclusive zone stacks
-> below it.
+> [Native Bar](./native-bar.md). It is off by default, and now covers tags,
+> layout, window title, clock, weather, media, the system tray and the
+> cpu/memory/network metrics. Waybar remains the way to get popovers and
+> volume. The two can run side by side: the native bar reserves its space
+> first, and Waybar's exclusive zone stacks below it — and if Waybar's tray is
+> already the session's StatusNotifier watcher, the native tray follows it as a
+> host rather than fighting for the name, so both show the same items.
 
 ## Module Configuration
 

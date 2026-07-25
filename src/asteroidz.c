@@ -3377,6 +3377,9 @@ void cleanup(void) {
 	ufo_egg = NULL;
 
 	ipc_cleanup();
+	/* before session_bus_finish: releasing the watcher/host names and the
+	 * signal matches needs the connection still open */
+	bar_tray_finish();
 	session_bus_finish();
 	cleanuplisteners();
 	modern_protocols_finish();

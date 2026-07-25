@@ -149,6 +149,44 @@ static cairo_surface_t *get_cached_icon(const char *name) {
 	return surf;
 }
 
+bool asteroidz_icon_cache_put_argb32(const char *key, const uint8_t *argb_be,
+									 int32_t w, int32_t h) {
+	if (!key || !*key || !argb_be || w <= 0 || h <= 0)
+		return false;
+	if (!icon_cache)
+		icon_cache = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+										   icon_surface_free);
+
+	cairo_surface_t *surf =
+		cairo_image_surface_create(CAIRO_FORMAT_ARGB32, w, h);
+	if (cairo_surface_status(surf) != CAIRO_STATUS_SUCCESS) {
+		cairo_surface_destroy(surf);
+		return false;
+	}
+	int dst_stride = cairo_image_surface_get_stride(surf);
+	unsigned char *dst = cairo_image_surface_get_data(surf);
+	for (int32_t y = 0; y < h; y++) {
+		uint32_t *drow = (uint32_t *)(dst + y * dst_stride);
+		const uint8_t *srow = argb_be + (size_t)y * w * 4;
+		for (int32_t x = 0; x < w; x++) {
+			/* the wire format is ARGB32 in NETWORK byte order, byte by byte;
+			 * cairo wants host-order words with the colour PREMULTIPLIED */
+			uint8_t a = srow[x * 4 + 0];
+			uint8_t r = srow[x * 4 + 1];
+			uint8_t g = srow[x * 4 + 2];
+			uint8_t b = srow[x * 4 + 3];
+			drow[x] = ((uint32_t)a << 24) | ((uint32_t)(r * a / 255) << 16) |
+					  ((uint32_t)(g * a / 255) << 8) | (uint32_t)(b * a / 255);
+		}
+	}
+	cairo_surface_mark_dirty(surf);
+	/* replaces any previous entry under this key, and the cache's destroy
+	 * notify frees the old surface -- a tray item that pushes a new pixmap
+	 * (an unread badge appearing) must not leak the old one */
+	g_hash_table_insert(icon_cache, g_strdup(key), surf);
+	return true;
+}
+
 static PangoFontDescription *get_cached_font_desc(const char *font_desc) {
 	if (!font_desc_cache) {
 		font_desc_cache =
@@ -946,6 +984,34 @@ void asteroidz_tab_bar_node_set_icon(struct asteroidz_tab_bar_node *node,
 	asteroidz_tab_bar_node_set_icons(node, one, icon_name && *icon_name ? 1 : 0);
 }
 
+void asteroidz_tab_bar_node_set_icons_after_text(
+	struct asteroidz_tab_bar_node *node, bool after) {
+	if (!node || node->icons_after_text == after)
+		return;
+	node->icons_after_text = after;
+	if (node->last_text)
+		asteroidz_tab_bar_node_update(node, node->last_text,
+								  node->last_scale > 0 ? node->last_scale
+													   : 1.0f);
+}
+
+void asteroidz_tab_bar_node_set_icon_tint(struct asteroidz_tab_bar_node *node,
+									  const float rgba[4]) {
+	if (!node)
+		return;
+	bool want = rgba != NULL;
+	if (node->icon_tinted == want &&
+		(!want || memcmp(node->icon_tint, rgba, sizeof(node->icon_tint)) == 0))
+		return;
+	node->icon_tinted = want;
+	if (want)
+		memcpy(node->icon_tint, rgba, sizeof(node->icon_tint));
+	if (node->last_text)
+		asteroidz_tab_bar_node_update(node, node->last_text,
+								  node->last_scale > 0 ? node->last_scale
+													   : 1.0f);
+}
+
 void asteroidz_tab_bar_node_set_corner_mask(struct asteroidz_tab_bar_node *node,
 										enum corner_location mask) {
 	if (!node || node->corner_mask == mask)
@@ -1114,7 +1180,12 @@ void asteroidz_tab_bar_node_set_size(struct asteroidz_tab_bar_node *node, int32_
 }
 
 static bool bar_icons_unchanged(const struct asteroidz_tab_bar_node *node) {
-	if (node->cached_nicons != node->nicons)
+	if (node->cached_nicons != node->nicons ||
+		node->cached_icons_after_text != node->icons_after_text ||
+		node->cached_icon_tinted != node->icon_tinted ||
+		(node->icon_tinted &&
+		 memcmp(node->cached_icon_tint, node->icon_tint,
+				sizeof(node->icon_tint)) != 0))
 		return false;
 	for (int32_t i = 0; i < node->nicons; i++)
 		if (node->cached_icons[i] != node->icons[i])
@@ -1163,8 +1234,17 @@ int32_t asteroidz_tab_bar_node_measure_width(struct asteroidz_tab_bar_node *node
 	if (scaled_desc)
 		pango_font_description_free(scaled_desc);
 
-	/* the icon is drawn square at the text area's height, then a 6px gap */
-	double icon_w = node->nicons * (text_area_h + 6.0 * cs);
+	/* Icons are drawn square at the text area's height, with a 6px gap BETWEEN
+	 * them and one more before the text -- but only when there is text. A
+	 * trailing gap on an icon-only pill is dead space that no padding setting
+	 * can remove, and on a row of icon-only status pills it read as the pills
+	 * being spaced apart when they were not. */
+	double icon_gap = 6.0 * cs;
+	double icon_w = node->nicons > 0
+						? node->nicons * text_area_h +
+							  (node->nicons - 1) * icon_gap +
+							  (*text ? icon_gap : 0.0)
+						: 0.0;
 
 	int32_t width = (int32_t)(2.0 * pad_x + icon_w + text_w + 0.5) +
 					2 * node->border_width;
@@ -1245,6 +1325,10 @@ void asteroidz_tab_bar_node_update(struct asteroidz_tab_bar_node *node,
 	for (int32_t i = 0; i < ASTEROIDZ_TAB_MAX_ICONS; i++)
 		node->cached_icons[i] = i < node->nicons ? node->icons[i] : NULL;
 	node->cached_nicons = node->nicons;
+	node->cached_icons_after_text = node->icons_after_text;
+	node->cached_icon_tinted = node->icon_tinted;
+	memcpy(node->cached_icon_tint, node->icon_tint,
+		   sizeof(node->cached_icon_tint));
 	node->cached_corner_mask = node->corner_mask;
 	node->cached_titlebar_border_width = node->titlebar_border_width;
 	node->cached_titlebar_border_left = node->titlebar_border_left;
@@ -1389,11 +1473,15 @@ void asteroidz_tab_bar_node_update(struct asteroidz_tab_bar_node *node,
 		pango_layout_set_ellipsize(layout, PANGO_ELLIPSIZE_END);
 
 		/* icons + title centered as one group; text alone stays centered */
+		/* icons_w is the whole icon block INCLUDING the gap before the text,
+		 * which only exists when there is text (see _measure_width) */
 		double icon_px = 0.0, icon_gap = 0.0, icons_w = 0.0;
 		if (node->nicons > 0) {
 			icon_px = text_area_h;
 			icon_gap = 6.0 * cs * scale;
-			icons_w = node->nicons * (icon_px + icon_gap);
+			icons_w = node->nicons * icon_px +
+					  (node->nicons - 1) * icon_gap +
+					  (*text ? icon_gap : 0.0);
 		}
 		double avail_text_w = text_area_w - icons_w;
 		if (avail_text_w < 0)
@@ -1410,14 +1498,24 @@ void asteroidz_tab_bar_node_update(struct asteroidz_tab_bar_node *node,
 			y_offset = 0;
 
 		if (node->nicons > 0) {
-			double group_w = icons_w +
-							 (text_pixel_w < avail_text_w ? text_pixel_w
-														  : avail_text_w);
+			double text_w_used =
+				text_pixel_w < avail_text_w ? text_pixel_w : avail_text_w;
+			double group_w = icons_w + text_w_used;
 			double group_x = node->text_align_left
 								 ? text_x
 								 : text_x + (text_area_w - group_w) / 2.0;
 			if (group_x < text_x)
 				group_x = text_x;
+
+			/* icons_w reserves one gap per icon. Leading, those gaps sit after
+			 * each icon and the text simply starts past the block; trailing,
+			 * one of them becomes the text-to-icons gap, so the group occupies
+			 * exactly the same width either way. */
+			double icons_x = node->icons_after_text
+								 ? group_x + text_w_used + icon_gap
+								 : group_x;
+			double text_start =
+				node->icons_after_text ? group_x : group_x + icons_w;
 
 			for (int32_t ii = 0; ii < node->nicons; ii++) {
 				cairo_surface_t *ic = node->icons[ii];
@@ -1430,17 +1528,28 @@ void asteroidz_tab_bar_node_update(struct asteroidz_tab_bar_node *node,
 				double icon_scale = icon_px / (icon_w > icon_h ? icon_w
 															   : icon_h);
 				cairo_save(cr);
-				cairo_translate(cr, group_x + ii * (icon_px + icon_gap),
+				cairo_translate(cr, icons_x + ii * (icon_px + icon_gap),
 								text_y + (text_area_h - icon_h * icon_scale) /
 											 2.0);
 				cairo_scale(cr, icon_scale, icon_scale);
-				cairo_set_source_surface(cr, ic, 0, 0);
-				cairo_pattern_set_filter(cairo_get_source(cr),
-										 CAIRO_FILTER_BILINEAR);
-				cairo_paint(cr);
+				if (node->icon_tinted) {
+					/* the icon is a stencil: paint the tint through its alpha,
+					 * which is how a monochrome plugin SVG is meant to be
+					 * coloured (waybar's wb_themed_pixbuf does the same) */
+					cairo_set_source_rgba(cr, node->icon_tint[0],
+										  node->icon_tint[1],
+										  node->icon_tint[2],
+										  node->icon_tint[3]);
+					cairo_mask_surface(cr, ic, 0, 0);
+				} else {
+					cairo_set_source_surface(cr, ic, 0, 0);
+					cairo_pattern_set_filter(cairo_get_source(cr),
+											 CAIRO_FILTER_BILINEAR);
+					cairo_paint(cr);
+				}
 				cairo_restore(cr);
 			}
-			cairo_translate(cr, group_x + icons_w, text_y + y_offset);
+			cairo_translate(cr, text_start, text_y + y_offset);
 		} else {
 			cairo_translate(cr, text_x, text_y + y_offset);
 		}

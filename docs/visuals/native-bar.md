@@ -17,29 +17,34 @@ does and does not do today. The two can run side by side.
 ```kdl
 bar {
     enable true
-    height 30
+    height 48
     position "top"          // or "bottom"
-    margin { x 8; y 4 }
-    spacing 6
-    pill-min-width 28
+    margin { x 8; y 9 }
+    spacing 8
+    pill-inset 6
 
     modules-left   "tags,layout,title"
-    modules-center "clock"
+    modules-center "media,clock,weather,idle"
     modules-right  "cpu,memory,network"
 
-    clock { format "%H:%M" }
+    clock { format "%H:%M:%S  ·  %a %d %b" }
 }
 ```
 
 | Key | Default | Meaning |
 |---|---|---|
 | `enable` | `false` | draw the bar at all |
-| `height` | `28` | pill height in logical pixels (8–200) |
+| `height` | `48` | strip height in logical pixels (8–200) |
 | `position` | `"top"` | `"top"` or `"bottom"` |
 | `margin.x` | `8` | gap between the panels and the output's left/right edge |
 | `margin.y` | `9` | gap between the panels and the output's top/bottom edge |
-| `spacing` | `6` | gap between adjacent pills |
+| `spacing` | `8` | gap between adjacent pills, applied only where a *chip* module (`tags`, `layout`) is on one side |
 | `pill-min-width` | `28` | floor width, so single-glyph pills stay legible |
+| `pill-inset` | `6` | vertical inset of the pill row inside the strip, so chips sit *in* the panel rather than spanning it |
+| `pill-padding` | `6` | horizontal padding inside a status pill |
+| `tag-padding` | `16` | horizontal padding inside a workspace/layout chip |
+| `icon-spacing` | `5` | exact gap between two adjacent icon-only status glyphs (`cpu`, `memory`), which carry no padding of their own |
+| `min-tags` | `3` | pad the visible tag set up to this many with empty tags |
 | `show-logo` | `true` | leading asteroidz ship pill on the workspace group |
 | `tag-icons` | `3` | app icons drawn inside each tag pill (0 disables, max 4) |
 | `show-all-tags` | `false` | `true` draws every configured tag; `false` draws only selected or occupied ones |
@@ -51,14 +56,14 @@ bar {
 | `panel.shadow` | `true` | drop shadow under the panel (needs `shadows`) |
 | `modules-left` | `"tags,layout,title"` | comma-separated module list |
 | `modules-center` | `"clock"` | " |
-| `modules-right` | *(empty)* | " (the tray will live here) |
+| `modules-right` | *(empty)* | " |
 | `clock.format` | `"%H:%M:%S"` | `strftime` format |
 | `media-width` | `280` | pinned width of the now-playing pill |
 | `weather.interval` | `15` | minutes between forecast fetches |
 | `weather.location` | *(empty)* | city name; empty means IP geolocation |
 | `interval` | `2` | seconds between `/proc` + `/sys` metric samples |
-| `title-width` | `320` | pinned width of the title pill (`0` = size to content) |
-| `icon-dir` | `/usr/share` | root of the Waybar plugin asset trees the pill icons come from |
+| `title-width` | `320` | **cap** on the title pill's width (`0` = uncapped); a shorter title gets a shorter pill |
+| `icon-dir` | `~/.local/share:/usr/share` | colon-separated search path of Waybar plugin asset roots; first readable hit wins |
 
 Changes take effect on `reload_config` — including changes to the module
 lists themselves, which rebuild the bars rather than just refreshing them.
@@ -70,22 +75,69 @@ for a newer build still starts.
 
 | Name | Shows | Click |
 |---|---|---|
-| `tags` | the ship logo, then one pill per selected or occupied tag — custom tag names (`tag N { name … }`, `set_tag_name`) plus up to `tag-icons` app icons for what is running there | views that tag |
+| `tags` | the ship logo, then one chip per selected or occupied tag, labelled `N` or `N: name` (`tag N { name … }`, `set_tag_name`), followed by up to `tag-icons` app icons for what is running there | views that tag |
 | `clock` | `strftime` of `clock.format` | — |
 | `title` | the focused window's title, with its app icon | focuses that window |
 | `layout` | the current layout, as its Waybar SVG | cycles `circle_layout` |
-| `cpu` | total CPU load, from `/proc/stat` deltas | — |
-| `memory` | used memory, from `/proc/meminfo` | — |
+| `cpu` | total CPU load, from `/proc/stat` deltas — **icon only**, tinted by load | — |
+| `memory` | used memory, from `/proc/meminfo` — **icon only**, tinted by load | — |
 | `network` | link state and ↓/↑ throughput, from `/sys/class/net` | — |
 | `idle` | manual idle-inhibit state ("keep awake") | toggles it |
 | `weather` | current temperature and condition, from open-meteo | — |
 | `media` | now playing (title • artist), from MPRIS | play/pause |
+| `tray` | one icon per StatusNotifierItem (also accepts `systray`) | left: `Activate`; right/middle: `SecondaryActivate` |
 
-By default the `tags` module hides tags that are both empty and unselected, so
-a nine-tag setup does not permanently spend nine pills on tags holding nothing.
-The side effect is that a fresh session shows a *single* pill, which reads as
-broken rather than tidy — set `show-all-tags true` for the dwm/dwl behaviour of
-always drawing every tag. An urgent tag is drawn in the theme's `urgent-color`.
+The `tags` module mirrors the Waybar workspace module it replaces: it shows
+every tag that is **selected or holds a window**, then pads with the
+lowest-numbered empty tags up to `min-tags` (its `min-pills`). So a fresh
+session shows three pills rather than one, and a nine-tag setup never spends
+nine pills of width on tags holding nothing. `show-all-tags true` overrides
+this with the dwm/dwl behaviour of always drawing every tag — but on a narrow
+output those extra pills cost enough width to squeeze the centre section out.
+An urgent tag is drawn in the theme's `urgent-color`.
+
+## System tray
+
+The `tray` module is a **StatusNotifierItem host**, on the same session bus the
+compositor already pumps from its event loop. No helper process, no
+`snixembed`, no XEmbed.
+
+Despite the name, `org.kde.StatusNotifierWatcher` needs **no part of KDE
+installed or running**. It is a plain D-Bus name, and the compositor owns and
+serves it itself; the `org.kde.` prefix is only historical, from KDE having
+authored the spec before it went to freedesktop. It is what Steam, Discord,
+Electron's AppIndicator, nm-applet, blueman, Syncthing and Nextcloud all
+publish to. asteroidz additionally owns
+`org.freedesktop.StatusNotifierWatcher`, the vendor-neutral spelling of the
+same interface, exported from the same object.
+
+The role is decided at startup:
+
+- **Watcher** — we own the watcher name and applications register with us
+  directly. This is the normal case.
+- **Client** — another shell (a running waybar, say) already owns it. Taking
+  the name away is not possible and queueing for it would leave the tray dead
+  until that process exits, so asteroidz instead registers as a plain *host*
+  with the incumbent watcher and mirrors its item list. Both bars then show
+  the same tray, which is what you want while migrating from one to the other.
+
+Icons come from `IconName` (resolved through the icon theme, and through the
+item's own `IconThemePath` when it ships one — Electron apps and Steam name
+icons that exist in no installed theme), falling back to the raw `IconPixmap`
+pixels, which are decoded from wire-order ARGB32 into the shared icon cache.
+`NeedsAttention` swaps in the attention artwork and fills the pill in the
+theme's urgent colour. A `Passive` item is hidden: that status means "nothing
+to say right now", and drawing it anyway is how a tray becomes a row of
+identical grey squares.
+
+Every call is async, so a wedged tray application cannot stall the compositor,
+and an application that exits without unregistering is dropped on
+`NameOwnerChanged` rather than leaving a dead pill behind.
+
+**Not implemented: the DBusMenu context menu.** It needs a popup surface with a
+keyboard grab and its own hit-testing, and the bar has no layer for that yet.
+Right-click sends the item's own `SecondaryActivate`, which most applications
+wire to "show my menu" regardless.
 
 ## Panels
 
@@ -118,28 +170,56 @@ deliberately *not* width-pinned: a tag gaining a window is a real layout
 change, not the per-tick jitter the pinning exists to suppress.
 
 Pill icons are the **same SVGs the Waybar plugins use**, loaded straight from
-their installed asset trees under `icon-dir` — `waybar-sysmon/cpu.svg`,
-`waybar-network/ethernet.svg`,
-`waybar-asteroidz-workspaces/layouts/<layout>.svg`, and so on. A missing file
-means no icon, never an error, so an incomplete asset install degrades to
-text.
+their installed asset trees under `icon-dir` — `waybar-sysinfo/cpu.svg`,
+`waybar-sysinfo/ethernet.svg`,
+`waybar-asteroidz-workspaces/layouts/<layout>.svg`, and so on. `icon-dir` is a
+**search path**, not a single directory, because the plugins do not share a
+prefix: some are packaged into `/usr/share`, others land in
+`~/.local/share` from a plain `make install`. A missing file means no icon,
+never an error, so an incomplete asset install degrades to text.
+
+The status-plugin SVGs are **monochrome stencils** (a solid `#000`
+silhouette), meant to be recoloured by the widget drawing them — painted as-is
+they are an invisible black blob on a dark panel. The bar therefore paints its
+tint *through* the icon's alpha, the same thing Waybar's `wb_themed_pixbuf`
+does. Application icons and the ship logo are real artwork and are never
+tinted.
+
+`cpu` and `memory` are **icon only**: the colour is the reading, in four steps
+— resting (foreground at 45% alpha), working (theme accent) from 20%, heavy
+(amber) from 60%, saturated (theme urgent) from 85%. The exact figure is not
+shown; that belongs in a popover, which the native bar does not have yet.
+
+Those two pills are laid out as one run: no padding of their own, `icon-spacing`
+between them, and no `pill-min-width` floor (that floor exists to keep a
+single-glyph *label* readable, and on an icon it only pads slack around the
+artwork). They therefore sit exactly `icon-spacing` apart, which padding —
+being symmetric — could never express as an odd number of pixels.
 
 Every pill whose content changes shape is **pinned to the width of its widest
 possible content**, so the bar never reflows and a pill never moves out from
-under the pointer: percentages to `100%`, throughput to `↓999.9M ↑999.9M`, the
-layout pill to a square, the title to `title-width`, and the clock to the
-widest rendering of its own `strftime` format (probed once per month name, so
-`%a`/`%b` length variation is covered).
+under the pointer: throughput to `↓999.9M ↑999.9M`, the icon-only pills to
+their artwork, and the clock to the widest rendering of its own `strftime`
+format (probed once per month name, so `%a`/`%b` length variation is covered).
+The title is the exception: `title-width` is a **cap**, not a pin, so a short
+title takes a short pill.
 
 ### When it does not all fit
 
 The left and right slots are anchored to their edges; only the centre has
-anywhere to go. On an output too narrow for the configured modules the title
-pill shrinks first (down to a floor), and if the centre still cannot fit
-between its neighbours it is **hidden** rather than drawn through them —
-priority is workspaces, then status, then the clock. A configuration that
-over-subscribes the width even after that (a dozen pills on a 1000px output)
-will still overlap left against right; there is nothing left to give.
+anywhere to go — and the whole point of the centre slot is that it is
+*centred*, so it never yields first. Pills carrying ellipsisable text (the
+title, the now-playing string) are marked flexible and give width back in two
+passes: once if the three slots over-subscribe the output outright, and again
+if the left slot reaches where the centred slot wants to start. A window title
+therefore ellipsises as it approaches the clock rather than pushing the clock
+off centre.
+
+If the centre still cannot fit between its neighbours after that, it is
+**hidden** rather than drawn through them — priority is workspaces, then
+status, then the clock. A configuration that over-subscribes the width even
+after that (a dozen pills on a 1000px output) will still overlap left against
+right; there is nothing left to give.
 
 ## How it reserves space
 
@@ -165,8 +245,8 @@ warns about and ignores.
 ## Scope
 
 Implemented: the bar frame, per-monitor layout in three panelled slots, click
-routing, space reservation, and the seven modules above — everything that needs
-no external process and no popover.
+routing, space reservation, and the eleven modules above — everything that
+needs no external process and no popover.
 
 `idle` reflects a **compositor-level** override, not the client-driven
 `idle_inhibit_v1` protocol state — a bar module has no surface to attach a
@@ -197,9 +277,13 @@ in flight at a time, so a slow network cannot queue up a `curl` per tick. Same
 open-meteo source and the same WMO-code→artwork mapping as the Waybar plugin,
 so the pill is indistinguishable from it.
 
-Not implemented yet: popovers (so no click-through panels), the system tray,
-and volume, which still needs a `wpctl`/`pactl` round trip per interaction.
-That stays in Waybar until it is ported.
+`tray` is a full StatusNotifierItem host — see [System tray](#system-tray) —
+minus the DBusMenu context menu, which needs a popup layer that does not exist
+yet.
+
+Not implemented yet: popovers (so no click-through panels, and so no tray
+context menus), and volume, which still needs a `wpctl`/`pactl` round trip per
+interaction. That stays in Waybar until it is ported.
 
 ## Developing against it
 
