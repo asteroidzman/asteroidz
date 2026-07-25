@@ -50,8 +50,10 @@ bar {
 | `modules-left` | `"tags,layout,title"` | comma-separated module list |
 | `modules-center` | `"clock"` | " |
 | `modules-right` | *(empty)* | " (the tray will live here) |
-| `clock.format` | `"%H:%M"` | `strftime` format |
+| `clock.format` | `"%H:%M:%S"` | `strftime` format |
 | `interval` | `2` | seconds between `/proc` + `/sys` metric samples |
+| `title-width` | `320` | pinned width of the title pill (`0` = size to content) |
+| `icon-dir` | `/usr/share` | root of the Waybar plugin asset trees the pill icons come from |
 
 Changes take effect on `reload_config` — including changes to the module
 lists themselves, which rebuild the bars rather than just refreshing them.
@@ -66,7 +68,7 @@ for a newer build still starts.
 | `tags` | one pill per selected or occupied tag, using custom tag names (`tag N { name … }`, `set_tag_name`) when set | views that tag |
 | `clock` | `strftime` of `clock.format` | — |
 | `title` | the focused window's title, with its app icon | focuses that window |
-| `layout` | the current layout's symbol | — |
+| `layout` | the current layout, as its Waybar SVG | cycles `circle_layout` |
 | `cpu` | total CPU load, from `/proc/stat` deltas | — |
 | `memory` | used memory, from `/proc/meminfo` | — |
 | `network` | link state and ↓/↑ throughput, from `/sys/class/net` | — |
@@ -97,6 +99,22 @@ below comes from `margin.y` alone. This mirrors the `margin: 9px 4px` /
 Blur and shadow reuse the same scenefx nodes as the overview's top strip, and
 each defers to the global `effects.blur.enable` / `shadows` settings — asking
 for panel blur in a build with blur off costs nothing and draws nothing.
+
+## Icons and fixed widths
+
+Pill icons are the **same SVGs the Waybar plugins use**, loaded straight from
+their installed asset trees under `icon-dir` — `waybar-sysmon/cpu.svg`,
+`waybar-network/ethernet.svg`,
+`waybar-asteroidz-workspaces/layouts/<layout>.svg`, and so on. A missing file
+means no icon, never an error, so an incomplete asset install degrades to
+text.
+
+Every pill whose content changes shape is **pinned to the width of its widest
+possible content**, so the bar never reflows and a pill never moves out from
+under the pointer: percentages to `100%`, throughput to `↓999.9M ↑999.9M`, the
+layout pill to a square, the title to `title-width`, and the clock to the
+widest rendering of its own `strftime` format (probed once per month name, so
+`%a`/`%b` length variation is covered).
 
 ## How it reserves space
 

@@ -454,6 +454,11 @@ typedef struct {
 	int32_t bar_panel_blur;
 	int32_t bar_panel_shadow;
 	int32_t bar_interval; /* seconds between /proc + /sys metric samples */
+	int32_t bar_title_width; /* pinned title pill width, 0 = size to content */
+	/* Root of the waybar plugin asset trees, so the bar uses the very same
+	 * SVGs as the modules it replaces (<dir>/waybar-sysmon/cpu.svg, ...). A
+	 * missing file just means no icon, never a failure. */
+	char bar_icon_dir[256];
 	char bar_clock_format[64];
 	char bar_modules_left[256];
 	char bar_modules_center[256];
@@ -2253,6 +2258,11 @@ bool parse_option(Config *config, char *key, char *value) {
 		config->bar_panel_shadow = atoi(value) != 0;
 	} else if (strcmp(key, "bar_interval") == 0) {
 		config->bar_interval = CLAMP_INT(atoi(value), 1, 3600);
+	} else if (strcmp(key, "bar_title_width") == 0) {
+		config->bar_title_width = CLAMP_INT(atoi(value), 0, 4000);
+	} else if (strcmp(key, "bar_icon_dir") == 0) {
+		snprintf(config->bar_icon_dir, sizeof(config->bar_icon_dir), "%s",
+				 value);
 	} else if (strcmp(key, "bar_panel_color") == 0) {
 		int64_t color = parse_color(value);
 		if (color == -1) {
@@ -3562,6 +3572,8 @@ static const struct {
 	{"bar/panel/blur", "bar_panel_blur"},
 	{"bar/panel/shadow", "bar_panel_shadow"},
 	{"bar/interval", "bar_interval"},
+	{"bar/title-width", "bar_title_width"},
+	{"bar/icon-dir", "bar_icon_dir"},
 	{"bar/clock/format", "bar_clock_format"},
 	{"bar/modules-left", "bar_modules_left"},
 	{"bar/modules-center", "bar_modules_center"},
@@ -4613,8 +4625,10 @@ void set_value_default() {
 	config.bar_panel_blur = 1;
 	config.bar_panel_shadow = 1;
 	config.bar_interval = 2;
+	config.bar_title_width = 320;
+	snprintf(config.bar_icon_dir, sizeof(config.bar_icon_dir), "/usr/share");
 	snprintf(config.bar_clock_format, sizeof(config.bar_clock_format),
-			 "%%H:%%M");
+			 "%%H:%%M:%%S");
 	/* Three sections, matching the waybar layout this replaces: the workspace
 	 * selector and focused window on the left, the clock centred, pills on
 	 * the right (the tray will join them once it exists). */

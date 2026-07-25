@@ -62,6 +62,12 @@ typedef struct BarPill {
 	 * anything with a shorter lifetime than the bar itself. */
 	uint32_t arg;
 	int32_t width;
+	/* When non-zero the pill is exactly this wide regardless of its text.
+	 * Modules whose content changes shape -- a clock, a percentage crossing
+	 * 9%->10%, a throughput crossing K->M, a window title -- pin this to the
+	 * width of their widest possible content, so the slot never reflows and
+	 * neighbouring pills never move under the pointer. */
+	int32_t fixed_width;
 	char text[BAR_TEXT_MAX];
 	bool used;
 } BarPill;
@@ -362,6 +368,57 @@ static void bar_pill_style(BarPill *p, bool active, bool urgent) {
 	asteroidz_tab_bar_node_set_focus(p->node, active);
 }
 
+/* Width of the widest text this module can ever show, so its pill can be
+ * pinned to it. Measured through the pill's own node, so it uses the same
+ * font, padding and icon state the real draw will. */
+static int32_t bar_template_width(BarPill *p, const char *template,
+								  int32_t height) {
+	return asteroidz_tab_bar_node_measure_width(p->node, template, height);
+}
+
+/* The clock's width depends on the user's strftime format, so probe it: one
+ * sample per month (weekday cycled with it) covers %a/%b name-length
+ * variation, and wide digits cover the numeric fields. Cached on the format
+ * string -- this is 12 pango measurements, not something to redo per tick. */
+static int32_t bar_clock_fixed_width(BarPill *p, int32_t height) {
+	static char cached_fmt[64];
+	static int32_t cached_h = -1;
+	static int32_t cached_w = 0;
+	if (cached_w > 0 && cached_h == height &&
+		strcmp(cached_fmt, config.bar_clock_format) == 0)
+		return cached_w;
+
+	int32_t widest = 0;
+	for (int mon = 0; mon < 12; mon++) {
+		struct tm tm = {0};
+		tm.tm_year = 126; /* 2026 */
+		tm.tm_mon = mon;
+		tm.tm_mday = 28;
+		tm.tm_wday = mon % 7;
+		tm.tm_hour = 22;
+		tm.tm_min = 28;
+		tm.tm_sec = 28;
+		char buf[BAR_TEXT_MAX];
+		if (strftime(buf, sizeof(buf), config.bar_clock_format, &tm) == 0)
+			continue;
+		int32_t w = bar_template_width(p, buf, height);
+		if (w > widest)
+			widest = w;
+	}
+	snprintf(cached_fmt, sizeof(cached_fmt), "%s", config.bar_clock_format);
+	cached_h = height;
+	cached_w = widest;
+	return widest;
+}
+
+/* Path to one of the waybar plugin SVGs, so the native bar renders the exact
+ * same artwork as the modules it replaces. resolve_icon_path() takes absolute
+ * paths as-is, and a missing file resolves to no icon rather than an error, so
+ * an incomplete asset install degrades to text. */
+static void bar_icon_path(char *out, size_t len, const char *rel) {
+	snprintf(out, len, "%s/%s", config.bar_icon_dir, rel);
+}
+
 /* ─── per-module content ──────────────────────────────────────────────────── */
 
 /* Which tags on `m` currently hold at least one client. Mirrors the same walk
@@ -433,6 +490,7 @@ static void bar_module_refresh_clock(BarModule *mod) {
 	if (strftime(p->text, sizeof(p->text), config.bar_clock_format, &tm) == 0)
 		snprintf(p->text, sizeof(p->text), "??:??");
 	p->arg = 0;
+	p->fixed_width = bar_clock_fixed_width(p, config.bar_height);
 	bar_pill_style(p, false, false);
 	mod->npills = 1;
 	for (int32_t i = 1; i < BAR_MAX_PILLS; i++)
@@ -460,6 +518,10 @@ static void bar_module_refresh_title(BarModule *mod) {
 	asteroidz_tab_bar_node_set_icon(p->node, sel->icon_name
 												 ? sel->icon_name
 												 : client_get_appid(sel));
+	/* A title changes with every focus change and every tab a browser opens;
+	 * left free-sized it would resize the whole left slot constantly. Pin it
+	 * and let the pill ellipsise. */
+	p->fixed_width = config.bar_title_width;
 	/* resting colours, not the focus pair: a highlighted title competed with
 	 * the selected-tag pill for "this is the active thing". */
 	bar_pill_style(p, false, false);
@@ -476,12 +538,25 @@ static void bar_module_refresh_layout(BarModule *mod) {
 		mod->npills = 0;
 		return;
 	}
-	/* the symbol, not the name: layouts carry a short glyph ("󰃇") meant for
-	 * exactly this, while `name` is the IPC identifier ("scroller"). */
-	const char *sym = m->pertag && m->pertag->ltidxs[m->pertag->curtag]
-						  ? m->pertag->ltidxs[m->pertag->curtag]->symbol
-						  : "";
-	snprintf(p->text, sizeof(p->text), "%s", sym ? sym : "");
+	const Layout *lt =
+		m->pertag ? m->pertag->ltidxs[m->pertag->curtag] : NULL;
+	/* The artwork is keyed on the layout NAME, which is exactly what the
+	 * asset filenames use (tile/scroller/monocle/float.svg) -- the same SVGs
+	 * the waybar workspace plugin draws. The symbol stays as the text
+	 * fallback for a layout with no artwork installed. */
+	char icon[512];
+	bar_icon_path(icon, sizeof(icon),
+				  "waybar-asteroidz-workspaces/layouts/");
+	if (lt && lt->name) {
+		size_t n = strlen(icon);
+		snprintf(icon + n, sizeof(icon) - n, "%s.svg", lt->name);
+		asteroidz_tab_bar_node_set_icon(p->node, icon);
+	}
+	p->text[0] = '\0';
+	/* the pill is clickable and cycles layouts, so it must not change width
+	 * as the symbol changes under the pointer */
+	/* square: icon only, so it never resizes as the layout cycles */
+	p->fixed_width = config.bar_height;
 	bar_pill_style(p, false, false);
 	p->arg = 0;
 	mod->npills = 1;
@@ -500,31 +575,43 @@ static void bar_module_refresh_metric(BarModule *mod) {
 		return;
 	}
 	bool hot = false;
+	char icon[512];
 	switch (mod->kind) {
 	case BAR_MODULE_CPU:
-		snprintf(p->text, sizeof(p->text), "\U000F0EE0 %d%%",
-				 bar_metrics.cpu_pct);
+		bar_icon_path(icon, sizeof(icon), "waybar-sysmon/cpu.svg");
+		asteroidz_tab_bar_node_set_icon(p->node, icon);
+		snprintf(p->text, sizeof(p->text), "%d%%", bar_metrics.cpu_pct);
+		p->fixed_width = bar_template_width(p, "100%", config.bar_height);
 		hot = bar_metrics.cpu_pct >= 85;
 		break;
 	case BAR_MODULE_MEMORY:
-		snprintf(p->text, sizeof(p->text), "\U000F035B %d%%",
-				 bar_metrics.mem_pct);
+		bar_icon_path(icon, sizeof(icon), "waybar-sysmon/ram.svg");
+		asteroidz_tab_bar_node_set_icon(p->node, icon);
+		snprintf(p->text, sizeof(p->text), "%d%%", bar_metrics.mem_pct);
+		p->fixed_width = bar_template_width(p, "100%", config.bar_height);
 		hot = bar_metrics.mem_pct >= 90;
 		break;
 	case BAR_MODULE_NETWORK: {
+		/* predictable interface names: a wireless one starts with 'w' */
+		const char *art = !bar_metrics.link_up ? "waybar-network/disconnected.svg"
+							: bar_metrics.iface[0] == 'w'
+								  ? "waybar-network/wifi3.svg"
+								  : "waybar-network/ethernet.svg";
+		bar_icon_path(icon, sizeof(icon), art);
+		asteroidz_tab_bar_node_set_icon(p->node, icon);
 		if (!bar_metrics.link_up) {
-			snprintf(p->text, sizeof(p->text), "\U000F05AA");
+			p->text[0] = '\0';
 			hot = true;
-			break;
+		} else {
+			char rx[16], tx[16];
+			bar_fmt_rate(bar_metrics.rx_rate, rx, sizeof(rx));
+			bar_fmt_rate(bar_metrics.tx_rate, tx, sizeof(tx));
+			snprintf(p->text, sizeof(p->text), "↓%s ↑%s", rx, tx);
 		}
-		char rx[16], tx[16];
-		bar_fmt_rate(bar_metrics.rx_rate, rx, sizeof(rx));
-		bar_fmt_rate(bar_metrics.tx_rate, tx, sizeof(tx));
-		/* predictable-names: a wireless interface starts with 'w' */
-		const char *icon = bar_metrics.iface[0] == 'w' ? "\U000F05A9"
-													   : "\U000F0200";
-		snprintf(p->text, sizeof(p->text), "%s ↓%s ↑%s", icon, rx,
-				 tx);
+		/* widest reachable rendering: the K->M transition and the digit count
+		 * both change the string length every few seconds otherwise */
+		p->fixed_width =
+			bar_template_width(p, "↓999.9M ↑999.9M", config.bar_height);
 		break;
 	}
 	default:
@@ -574,7 +661,10 @@ static void bar_module_measure(BarModule *mod, int32_t height, float scale) {
 		if (!p->used)
 			continue;
 		p->width =
-			asteroidz_tab_bar_node_measure_width(p->node, p->text, height);
+			p->fixed_width > 0
+				? p->fixed_width
+				: asteroidz_tab_bar_node_measure_width(p->node, p->text,
+													   height);
 		if (config.bar_pill_min_width > 0 &&
 			p->width < config.bar_pill_min_width)
 			p->width = config.bar_pill_min_width;
@@ -1117,6 +1207,17 @@ static bool bar_handle_node_click(AsteroidzNodeData *hit, uint32_t button) {
 	case BAR_MODULE_TITLE:
 		if (button == BTN_LEFT && m && m->sel) {
 			focusclient(m->sel, 1);
+			return true;
+		}
+		break;
+	case BAR_MODULE_LAYOUT:
+		if (button == BTN_LEFT) {
+			/* switch_layout cycles config.circle_layout on selmon, so point
+			 * selmon at the clicked pill's output first -- same reason the
+			 * tags click does. */
+			if (m && m != selmon && m->wlr_output && m->wlr_output->enabled)
+				selmon = m;
+			switch_layout(NULL);
 			return true;
 		}
 		break;
