@@ -85,6 +85,7 @@ for a newer build still starts.
 | `idle` | manual idle-inhibit state ("keep awake") | toggles it |
 | `weather` | current temperature and condition, from open-meteo | — |
 | `media` | now playing (title • artist), from MPRIS | play/pause |
+| `volume` | default sink level, with a speaker icon (also accepts `vol`) | toggles mute |
 | `tray` | one icon per StatusNotifierItem (also accepts `systray`) | left: `Activate`; right/middle: `SecondaryActivate` |
 
 The `tags` module mirrors the Waybar workspace module it replaces: it shows
@@ -245,8 +246,8 @@ warns about and ignores.
 ## Scope
 
 Implemented: the bar frame, per-monitor layout in three panelled slots, click
-routing, space reservation, and the eleven modules above — everything that
-needs no external process and no popover.
+routing, space reservation, and the twelve modules above — everything that
+needs no popover.
 
 `idle` reflects a **compositor-level** override, not the client-driven
 `idle_inhibit_v1` protocol state — a bar module has no surface to attach a
@@ -281,9 +282,27 @@ so the pill is indistinguishable from it.
 minus the DBusMenu context menu, which needs a popup layer that does not exist
 yet.
 
-Not implemented yet: popovers (so no click-through panels, and so no tray
-context menus), and volume, which still needs a `wpctl`/`pactl` round trip per
-interaction. That stays in Waybar until it is ported.
+`volume` is **event-driven**, which is the only way it belongs in a
+compositor. One long-lived `pactl subscribe` reports every mixer change on
+stdout, and each relevant event triggers a single asynchronous
+`wpctl get-volume`; there is no poll and no fork per tick for state that
+changes a few times an hour. `wpctl`/`pactl` rather than a libpulse or
+libpipewire dependency: the round trip is off the event loop either way, and
+linking a sound-server client into the compositor to render one glyph is not a
+trade worth making.
+
+With no sound server the subscriber exits immediately and the level never
+arrives. Since the module is started from the refresh path — which runs on
+every arrange — an unguarded restart would fork two processes per refresh, so
+attempts are backed off to one every ten seconds. That still reconnects on its
+own if pipewire is restarted underneath the session, and the regression suite
+pins it by counting the compositor's children after a burst of dispatches.
+
+Not implemented yet: popovers, so no click-through panels, no tray context
+menus, and no volume slider or output picker — those stay in Waybar. Scroll is
+not routed to the bar yet either, so the volume pill toggles mute on click but
+cannot yet be scrolled, and the tray's `Scroll` method is implemented but
+unreachable.
 
 ## Developing against it
 

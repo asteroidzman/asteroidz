@@ -332,6 +332,39 @@ test_bar_weather_module_is_non_blocking() {
 	bar_off
 }
 
+test_bar_volume_without_a_sound_server() {
+	[ "$(bar_supported)" = "true" ] || { echo "  (skip: built without -Dnative-bar)"; return 0; }
+	# The harness has an isolated XDG_RUNTIME_DIR, so there is no pipewire to
+	# talk to: `pactl subscribe` exits immediately and `wpctl get-volume`
+	# returns nothing. That is the branch worth pinning, because the module is
+	# started from the refresh path -- which runs on every arrange.
+	#
+	# Without the retry backoff each refresh would respawn both children, so a
+	# few dispatches turn into a fork storm. Asserted by counting the
+	# compositor's children after hammering it: a handful of arranges must not
+	# leave a pile of processes behind.
+	bar_set 'bar { enable true; height 30; margin { x 8; y 4 }; modules-left "tags"; modules-right "volume" }'
+	sleep 0.6
+	hl_assert_true "volume is a known module name" \
+		"$(hl_get "get all-monitors" >/dev/null 2>&1 && echo true || echo false)"
+
+	local i
+	for i in 1 2 3 4 5 6 7 8; do
+		hl_dispatch "view,$(( (i % 2) + 1 ))"
+	done
+	sleep 1
+	local kids
+	kids="$(pgrep -P "$HL_COMP_PID" 2>/dev/null | wc -l)"
+	hl_assert_true "a sound-server-less volume module does not fork per refresh (children=$kids)" \
+		"$([ "$kids" -lt 8 ] && echo true || echo false)"
+
+	hl_assert_true "and the compositor is still healthy" \
+		"$(hl_get "get all-monitors" >/dev/null 2>&1 && echo true || echo false)"
+
+	bar_off
+	hl_dispatch "view,1"
+}
+
 test_bar_tray_without_a_session_bus() {
 	[ "$(bar_supported)" = "true" ] || { echo "  (skip: built without -Dnative-bar)"; return 0; }
 	# Same isolated-XDG_RUNTIME_DIR case as the media test: no session bus, so

@@ -46,6 +46,7 @@ enum bar_module_kind {
 	BAR_MODULE_WEATHER,
 	BAR_MODULE_MEDIA,
 	BAR_MODULE_TRAY,
+	BAR_MODULE_VOLUME,
 };
 
 enum bar_slot { BAR_SLOT_LEFT = 0, BAR_SLOT_CENTER, BAR_SLOT_RIGHT,
@@ -155,6 +156,8 @@ static enum bar_module_kind bar_module_kind_from_name(const char *name) {
 		return BAR_MODULE_MEDIA;
 	if (strcmp(name, "tray") == 0 || strcmp(name, "systray") == 0)
 		return BAR_MODULE_TRAY;
+	if (strcmp(name, "volume") == 0 || strcmp(name, "vol") == 0)
+		return BAR_MODULE_VOLUME;
 	return BAR_MODULE_NONE;
 }
 
@@ -933,6 +936,117 @@ static int bar_media_tick(void *data) {
 	return 0;
 }
 
+/* ─── volume (PipeWire via wpctl) ─────────────────────────────────────────── */
+
+/* Event-driven, not polled. One long-lived `pactl subscribe` reports every
+ * mixer change on stdout, and each relevant event triggers a single async
+ * `wpctl get-volume`. The waybar plugin this replaces calls
+ * g_spawn_command_line_sync five times per interaction; polling from the
+ * compositor's own event loop would be a fork per tick for state that changes
+ * a few times an hour.
+ *
+ * wpctl/pactl rather than a libpulse or libpipewire dependency: the round trip
+ * is off the event loop either way, and linking a sound server client into the
+ * compositor to render one glyph is not a trade worth making. */
+static struct {
+	int32_t pct;
+	bool muted;
+	bool have;
+	bool in_flight;
+} bar_volume;
+
+static AsyncSpawn *bar_volume_sub = NULL;
+
+static void bar_volume_on_get(const char *out, size_t len, void *user) {
+	(void)len;
+	(void)user;
+	bar_volume.in_flight = false;
+	/* "Volume: 0.42", or "Volume: 0.42 [MUTED]" */
+	const char *v = strstr(out, "Volume:");
+	if (!v)
+		return;
+	double level = 0.0;
+	if (sscanf(v + strlen("Volume:"), "%lf", &level) != 1)
+		return;
+
+	int32_t pct = (int32_t)(level * 100.0 + 0.5);
+	bool muted = strstr(out, "[MUTED]") != NULL;
+	/* redraw only on a real change: pactl fires several events for one volume
+	 * key press, and each would otherwise relayout the bar */
+	if (bar_volume.have && pct == bar_volume.pct && muted == bar_volume.muted)
+		return;
+	bar_volume.pct = pct;
+	bar_volume.muted = muted;
+	bar_volume.have = true;
+	bar_update_all();
+}
+
+static void bar_volume_fetch(void) {
+	if (bar_volume.in_flight)
+		return;
+	char *const argv[] = {"wpctl", "get-volume", "@DEFAULT_AUDIO_SINK@", NULL};
+	bar_volume.in_flight =
+		async_spawn(event_loop, argv, bar_volume_on_get, NULL);
+}
+
+static void bar_volume_on_event(const char *line, void *user) {
+	(void)user;
+	/* pactl prints lines like "Event 'change' on sink #52". Server events
+	 * matter too: switching the default output is a server change, not a sink
+	 * one, and without it the pill kept showing the old device's level. */
+	if (strstr(line, "on sink") || strstr(line, "on server"))
+		bar_volume_fetch();
+}
+
+/* Called from the module refresh, i.e. potentially on every arrange, so it has
+ * to be cheap AND it has to stop trying when there is nothing to talk to.
+ *
+ * With no sound server, `pactl subscribe` exits immediately (clearing the
+ * handle) and `wpctl get-volume` returns nothing (leaving .have false), so an
+ * unguarded start would fork two processes per refresh -- a fork storm during
+ * a window drag. Back off to one attempt per BAR_VOLUME_RETRY_S instead, which
+ * still reconnects on its own if pipewire is restarted under us. */
+#define BAR_VOLUME_RETRY_S 10
+static time_t bar_volume_last_try = 0;
+
+static void bar_volume_start(void) {
+	if (bar_volume_sub && bar_volume.have)
+		return;
+	time_t now = time(NULL);
+	if (bar_volume_last_try && now - bar_volume_last_try < BAR_VOLUME_RETRY_S)
+		return;
+	bar_volume_last_try = now;
+	if (!bar_volume.have)
+		bar_volume_fetch();
+	if (!bar_volume_sub) {
+		char *const argv[] = {"pactl", "subscribe", NULL};
+		async_spawn_lines(event_loop, argv, bar_volume_on_event, NULL,
+						  &bar_volume_sub);
+	}
+}
+
+static void bar_volume_finish(void) {
+	async_spawn_stop(bar_volume_sub);
+	bar_volume_sub = NULL;
+	bar_volume_last_try = 0;
+}
+
+static void bar_volume_set(int32_t delta_pct) {
+	char arg[32];
+	if (delta_pct == 0) {
+		char *const argv[] = {"wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@",
+							  "toggle", NULL};
+		async_spawn(event_loop, argv, NULL, NULL);
+		return;
+	}
+	snprintf(arg, sizeof(arg), "%d%%%c", delta_pct < 0 ? -delta_pct : delta_pct,
+			 delta_pct < 0 ? '-' : '+');
+	/* -l caps at 1.0 so a scroll cannot push the sink into software boost */
+	char *const argv[] = {"wpctl", "set-volume", "-l", "1.0",
+						  "@DEFAULT_AUDIO_SINK@", arg, NULL};
+	async_spawn(event_loop, argv, NULL, NULL);
+}
+
 #include "bar-tray.h"
 
 /* ─── per-module content ──────────────────────────────────────────────────── */
@@ -1418,6 +1532,47 @@ static void bar_module_refresh_tray(BarModule *mod) {
 	mod->npills = n;
 }
 
+/* Speaker icon plus the level, matching the waybar volume module. The artwork
+ * is that plugin's own SVG set -- gradient-filled, but only its alpha is used
+ * when tinted, so it lands as a flat silhouette in the same visual family as
+ * the sysinfo glyphs it sits beside. */
+static void bar_module_refresh_volume(BarModule *mod) {
+	bar_volume_start();
+	BarPill *p = bar_pill_get(mod, 0);
+	if (!p) {
+		mod->npills = 0;
+		return;
+	}
+	const char *art = bar_volume.muted || bar_volume.pct == 0
+						  ? "waybar-volume/vol-mute.svg"
+					  : bar_volume.pct < 34 ? "waybar-volume/vol-low.svg"
+					  : bar_volume.pct < 67 ? "waybar-volume/vol-med.svg"
+											: "waybar-volume/vol-high.svg";
+	char icon[512];
+	bar_icon_path(icon, sizeof(icon), art);
+	asteroidz_tab_bar_node_set_icon(p->node, icon);
+
+	float tint[4];
+	memcpy(tint, config.theme.fg_color, sizeof(tint));
+	if (bar_volume.muted)
+		tint[3] *= 0.45f; /* reads as inactive, like a resting metric */
+	asteroidz_tab_bar_node_set_icon_tint(p->node, tint);
+
+	/* The level is shown even when muted -- unmuting restores it, so hiding it
+	 * behind a dash just means looking up what you are about to get. Mute is
+	 * carried by the crossed-out icon and its dimmed tint instead. */
+	if (!bar_volume.have)
+		p->text[0] = '\0';
+	else
+		snprintf(p->text, sizeof(p->text), "%d%%", bar_volume.pct);
+	p->arg = 0;
+	p->fixed_width = bar_template_width(p, "100%", bar_pill_height());
+	bar_pill_style(p, BAR_LOOK_FLAT);
+	mod->npills = 1;
+	for (int32_t i = 1; i < BAR_MAX_PILLS; i++)
+		bar_pill_release(&mod->pills[i]);
+}
+
 static void bar_module_refresh(BarModule *mod) {
 	switch (mod->kind) {
 	case BAR_MODULE_TAGS:
@@ -1448,6 +1603,9 @@ static void bar_module_refresh(BarModule *mod) {
 		break;
 	case BAR_MODULE_TRAY:
 		bar_module_refresh_tray(mod);
+		break;
+	case BAR_MODULE_VOLUME:
+		bar_module_refresh_volume(mod);
 		break;
 	default:
 		mod->npills = 0;
@@ -1915,6 +2073,11 @@ static uint64_t bar_digest(Monitor *m) {
 			bar_hash_str(&h, buf);
 			break;
 		}
+		case BAR_MODULE_VOLUME:
+			bar_hash(&h, &bar_volume.pct, sizeof(bar_volume.pct));
+			bar_hash(&h, &bar_volume.muted, sizeof(bar_volume.muted));
+			bar_hash(&h, &bar_volume.have, sizeof(bar_volume.have));
+			break;
 		case BAR_MODULE_TRAY:
 			/* Everything a tray pill draws: which items exist, in what order,
 			 * with which artwork and status. Without this the digest gate
@@ -2272,6 +2435,12 @@ static bool bar_handle_node_click(AsteroidzNodeData *hit, uint32_t button) {
 			return true;
 		}
 		break;
+	case BAR_MODULE_VOLUME:
+		if (button == BTN_LEFT) {
+			bar_volume_set(0); /* toggle mute */
+			return true;
+		}
+		break;
 	case BAR_MODULE_TRAY: {
 		if (p->arg >= (uint32_t)bar_tray_nitems)
 			break;
@@ -2326,6 +2495,7 @@ static void bar_update(Monitor *m) { (void)m; }
 static void bar_update_all(void) {}
 static void bar_reconfigure_all(void) {}
 static void bar_tray_finish(void) {}
+static void bar_volume_finish(void) {}
 static void bar_reserve(Monitor *m, struct wlr_box *usable) {
 	(void)m;
 	(void)usable;
