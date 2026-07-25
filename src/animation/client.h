@@ -1543,6 +1543,230 @@ void client_draw_shield(Client *c, struct wlr_box clip_box) {
 	}
 }
 
+/* ---- "fall" close animation -------------------------------------------
+ *
+ * The closing window is snapshotted, sliced into an axis-aligned grid of
+ * tiles, and each tile is thrown outward and pulled down by gravity while it
+ * fades. A tile is an ordinary scene tree holding cropped copies of whatever
+ * snapshot nodes overlap it (surface buffers via a source box, borders and
+ * other rects as smaller rects), so this is pure scene-graph work: it renders
+ * identically on the GLES and Vulkan backends and needs no renderer or shader
+ * support. That is also why the pieces stay axis-aligned -- a scene buffer
+ * cannot be rotated, so tiles fall rather than tumble.
+ */
+struct FalloutShard {
+	struct wlr_scene_tree *tree; /* this tile's cropped pieces */
+	int32_t x, y;				 /* tile origin, layout coordinates */
+	float vx, vy;				 /* initial velocity, px over the whole run */
+	float gravity;				 /* downward acceleration, same units */
+};
+
+/* Deterministic per-tile noise in [lo,hi) -- a hash of the tile index rather
+ * than rand(), so a shatter never depends on global RNG state and repeats
+ * identically for the same window/grid. */
+static float fallout_jitter(uint32_t seed, float lo, float hi) {
+	seed = seed * 1664525u + 1013904223u;
+	seed ^= seed >> 16;
+	seed *= 0x7feb352du;
+	seed ^= seed >> 15;
+	return lo + (hi - lo) * ((float)(seed & 0xffffffu) / (float)0xffffffu);
+}
+
+/* Copy the part of every leaf under `node` that overlaps `tile` into `dst`,
+ * at coordinates relative to the tile's origin. */
+static void fallout_slice_tree(struct wlr_scene_node *node,
+							   struct wlr_scene_tree *dst,
+							   const struct wlr_box *tile) {
+	if (!node->enabled)
+		return;
+
+	if (node->type == WLR_SCENE_NODE_TREE) {
+		struct wlr_scene_tree *tree = wlr_scene_tree_from_node(node);
+		struct wlr_scene_node *child;
+		wl_list_for_each(child, &tree->children, link)
+			fallout_slice_tree(child, dst, tile);
+		return;
+	}
+
+	int32_t lx = 0, ly = 0;
+	if (!wlr_scene_node_coords(node, &lx, &ly))
+		return;
+
+	struct wlr_box box = {.x = lx, .y = ly};
+	struct wlr_box hit;
+
+	if (node->type == WLR_SCENE_NODE_BUFFER) {
+		struct wlr_scene_buffer *src = wlr_scene_buffer_from_node(node);
+		if (!src->buffer)
+			return;
+		box.width = src->dst_width;
+		box.height = src->dst_height;
+		if (box.width <= 0 || box.height <= 0 ||
+			!wlr_box_intersection(&hit, &box, tile))
+			return;
+
+		struct wlr_scene_buffer *piece = wlr_scene_buffer_create(dst, NULL);
+		if (!piece)
+			return;
+
+		/* An unset source box means "the whole buffer"; buffer dimensions are
+		 * pre-transform, so a 90/270 rotation swaps them in surface space. */
+		struct wlr_fbox sbox = src->src_box;
+		if (sbox.width <= 0 || sbox.height <= 0) {
+			double bw = src->buffer->width, bh = src->buffer->height;
+			if (src->transform & WL_OUTPUT_TRANSFORM_90) {
+				double swap = bw;
+				bw = bh;
+				bh = swap;
+			}
+			sbox = (struct wlr_fbox){.x = 0, .y = 0, .width = bw, .height = bh};
+		}
+
+		/* Map the overlap back into buffer coordinates proportionally. */
+		double fx = (double)(hit.x - box.x) / (double)box.width;
+		double fy = (double)(hit.y - box.y) / (double)box.height;
+		double fw = (double)hit.width / (double)box.width;
+		double fh = (double)hit.height / (double)box.height;
+		struct wlr_fbox crop = {
+			.x = sbox.x + sbox.width * fx,
+			.y = sbox.y + sbox.height * fy,
+			.width = sbox.width * fw,
+			.height = sbox.height * fh,
+		};
+
+		wlr_scene_buffer_set_buffer(piece, src->buffer);
+		wlr_scene_buffer_set_source_box(piece, &crop);
+		wlr_scene_buffer_set_dest_size(piece, hit.width, hit.height);
+		wlr_scene_buffer_set_transform(piece, src->transform);
+		wlr_scene_buffer_set_filter_mode(piece, src->filter_mode);
+		wlr_scene_buffer_set_opacity(piece, src->opacity);
+		wlr_scene_node_set_position(&piece->node, hit.x - tile->x,
+									hit.y - tile->y);
+	} else if (node->type == WLR_SCENE_NODE_RECT) {
+		struct wlr_scene_rect *src = wlr_scene_rect_from_node(node);
+		box.width = src->width;
+		box.height = src->height;
+		if (box.width <= 0 || box.height <= 0 ||
+			!wlr_box_intersection(&hit, &box, tile))
+			return;
+
+		struct wlr_scene_rect *piece =
+			wlr_scene_rect_create(dst, hit.width, hit.height, src->color);
+		if (!piece)
+			return;
+		wlr_scene_node_set_position(&piece->node, hit.x - tile->x,
+									hit.y - tile->y);
+	}
+	/* Anything else (shadows, blur nodes) is dropped: it has no meaningful
+	 * per-tile crop and the pieces are gone within a few hundred ms. */
+}
+
+/* Build the tile grid for `fadeout_client` from `c`'s current appearance.
+ * Returns false if the window can't be sliced, in which case the caller falls
+ * back to one of the whole-window close animations. */
+static bool init_fallout_shards(Client *fadeout_client, Client *c) {
+	int32_t cols = CLAMP_INT(config.fall_cols, 1, 12);
+	int32_t rows = CLAMP_INT(config.fall_rows, 1, 12);
+	struct wlr_box win = c->animation.current;
+
+	if (win.width <= 0 || win.height <= 0)
+		return false;
+
+	struct wlr_scene_tree *snap =
+		wlr_scene_tree_snapshot(&c->scene->node, layers[LyrFadeOut]);
+	if (!snap)
+		return false;
+	wlr_scene_node_set_enabled(&snap->node, true);
+
+	struct wlr_scene_tree *root = wlr_scene_tree_create(layers[LyrFadeOut]);
+	struct FalloutShard *shards = root ? calloc((size_t)cols * (size_t)rows,
+												sizeof(*shards))
+									   : NULL;
+	if (!shards) {
+		if (root)
+			wlr_scene_node_destroy(&root->node);
+		wlr_scene_node_destroy(&snap->node);
+		return false;
+	}
+
+	int32_t n = 0;
+	for (int32_t row = 0; row < rows; row++) {
+		for (int32_t col = 0; col < cols; col++) {
+			/* Derive edges from the window bounds so rounding never leaves a
+			 * seam or overshoots the last row/column. */
+			int32_t x0 = win.x + win.width * col / cols;
+			int32_t x1 = win.x + win.width * (col + 1) / cols;
+			int32_t y0 = win.y + win.height * row / rows;
+			int32_t y1 = win.y + win.height * (row + 1) / rows;
+			struct wlr_box tile = {
+				.x = x0, .y = y0, .width = x1 - x0, .height = y1 - y0};
+			if (tile.width <= 0 || tile.height <= 0)
+				continue;
+
+			struct wlr_scene_tree *tree = wlr_scene_tree_create(root);
+			if (!tree)
+				continue;
+			wlr_scene_node_set_position(&tree->node, tile.x, tile.y);
+			fallout_slice_tree(&snap->node, tree, &tile);
+
+			/* Throw each tile away from the window's centre, with a small
+			 * upward kick, then let gravity take it down. Everything scales
+			 * with the window so the effect looks the same at any size. */
+			uint32_t seed = (uint32_t)(row * cols + col + 1);
+			float nx = win.width > 1 ? ((float)(tile.x + tile.width / 2 -
+												win.x) /
+											(float)win.width -
+										0.5f) *
+										   2.0f
+									 : 0.0f;
+
+			struct FalloutShard *s = &shards[n++];
+			s->tree = tree;
+			s->x = tile.x;
+			s->y = tile.y;
+			s->vx = nx * (float)win.width * 0.30f +
+					fallout_jitter(seed, -0.05f, 0.05f) * (float)win.width;
+			s->vy = (-0.10f + fallout_jitter(seed + 977u, -0.04f, 0.04f)) *
+					(float)win.height;
+			s->gravity = (1.9f + fallout_jitter(seed + 5231u, -0.25f, 0.45f)) *
+						 (float)win.height;
+		}
+	}
+
+	wlr_scene_node_destroy(&snap->node);
+
+	if (n == 0) {
+		wlr_scene_node_destroy(&root->node);
+		free(shards);
+		return false;
+	}
+
+	fadeout_client->scene = root;
+	fadeout_client->shards = shards;
+	fadeout_client->nshards = n;
+	return true;
+}
+
+/* Advance every tile. Position is linear in `t` with the gravity term doing
+ * the easing, so the motion reads as a real fall rather than a tween. */
+static void fallout_client_next_tick(Client *c, double t) {
+	double fade = find_animation_curve_at(t, OPAFADEOUT);
+	double opacity = ASTEROIDZ_MAX(
+		config.fadeout_begin_opacity - fade * config.fadeout_begin_opacity, 0);
+
+	for (int32_t i = 0; i < c->nshards; i++) {
+		struct FalloutShard *s = &c->shards[i];
+		double dx = s->vx * t;
+		double dy = s->vy * t + 0.5 * s->gravity * t * t;
+
+		wlr_scene_node_set_position(&s->tree->node, s->x + (int32_t)dx,
+									s->y + (int32_t)dy);
+		if (config.animation_fade_out && !c->nofadeout)
+			wlr_scene_node_for_each_buffer(
+				&s->tree->node, scene_buffer_apply_opacity, &opacity);
+	}
+}
+
 void fadeout_client_animation_next_tick(Client *c) {
 	if (!c)
 		return;
@@ -1557,6 +1781,19 @@ void fadeout_client_animation_next_tick(Client *c) {
 		c->animation.duration
 			? (double)passed_time / (double)c->animation.duration
 			: 1.0;
+
+	/* "fall": the window is a grid of independently moving tiles, not one
+	 * node, so it has its own tick and teardown. */
+	if (c->shards) {
+		fallout_client_next_tick(c, ASTEROIDZ_MIN(animation_passed, 1.0));
+		if (animation_passed >= 1.0) {
+			wl_list_remove(&c->fadeout_link);
+			wlr_scene_node_destroy(&c->scene->node);
+			free(c->shards);
+			free(c);
+		}
+		return;
+	}
 
 	int32_t type = c->animation.action = c->animation.action;
 	double factor = find_animation_curve_at(animation_passed, type);
@@ -1757,8 +1994,17 @@ void init_fadeout_client(Client *c) {
 		wlr_scene_node_destroy(&c->overview_scene_surface->node);
 		c->overview_scene_surface = NULL;
 	}
-	fadeout_client->scene =
-		wlr_scene_tree_snapshot(&c->scene->node, layers[LyrFadeOut]);
+
+	bool want_fall = (c->animation_type_close &&
+					  strcmp(c->animation_type_close, "fall") == 0) ||
+					 (!c->animation_type_close &&
+					  strcmp(config.animation_type_close, "fall") == 0);
+
+	/* init_fallout_shards() takes its own snapshot (it has to slice one), and
+	 * falls back to the plain whole-window snapshot below if it can't. */
+	if (!want_fall || !init_fallout_shards(fadeout_client, c))
+		fadeout_client->scene =
+			wlr_scene_tree_snapshot(&c->scene->node, layers[LyrFadeOut]);
 	wlr_scene_node_set_enabled(&c->scene->node, false);
 
 	if (!fadeout_client->scene) {

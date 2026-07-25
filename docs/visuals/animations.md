@@ -18,7 +18,7 @@ misc {
 
 You can define different animation styles for opening and closing windows and layer surfaces.
 
-Available types: `slide`, `zoom`, `fade`, `none`.
+Available types: `slide`, `zoom`, `fade`, `none`, plus `fall` for closing windows.
 
 ```kdl
 animations {
@@ -34,6 +34,28 @@ misc {
     layer_animation_type_close slide
 }
 ```
+
+### `fall` — the default close animation
+
+`fall` breaks the closing window into a grid of tiles that scatter away from
+its centre and drop under gravity while fading out. It is the default for
+`window-close`; set another type to opt out.
+
+```kdl
+animations {
+    window-close {
+        type fall
+        duration 250
+        fall-columns 4   // tiles across (1–12, default 4)
+        fall-rows 3      // tiles down  (1–12, default 3)
+    }
+}
+```
+
+The tiles are ordinary scene nodes, so `fall` costs no more than the other
+close animations and renders identically on both the GLES and Vulkan
+renderers. The pieces stay axis-aligned rather than tumbling: a scene buffer
+cannot be rotated without renderer-level support.
 
 ## Fade Settings
 

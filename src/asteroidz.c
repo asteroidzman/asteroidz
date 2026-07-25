@@ -414,6 +414,9 @@ typedef struct {
 				  * doesn't shift existing positional-initializer call sites */
 } BufferData;
 
+/* one tile of the "fall" close animation; defined in animation/client.h */
+struct FalloutShard;
+
 struct Client {
 	/* Must keep these three elements in this order */
 	uint32_t type; /* XDGShell or X11* */
@@ -449,6 +452,11 @@ struct Client {
 	struct wl_list link;
 	struct wl_list flink;
 	struct wl_list fadeout_link;
+	/* "fall" close animation only, and only on the throwaway fadeout client
+	 * init_fadeout_client() allocates: the window snapshot sliced into a grid
+	 * of tiles that scatter and fall. NULL for every real client. */
+	struct FalloutShard *shards;
+	int32_t nshards;
 	union {
 		struct wlr_xdg_surface *xdg;
 		struct wlr_xwayland_surface *xwayland;

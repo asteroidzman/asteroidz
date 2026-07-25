@@ -217,6 +217,9 @@ typedef struct {
 	char layer_animation_type_close[10];
 	int32_t animation_fade_in;
 	int32_t animation_fade_out;
+	/* grid the "fall" close animation breaks a window into */
+	int32_t fall_cols;
+	int32_t fall_rows;
 	int32_t tag_animation_direction;
 	float zoom_initial_ratio;
 	float zoom_end_ratio;
@@ -1503,6 +1506,10 @@ bool parse_option(Config *config, char *key, char *value) {
 		config->animation_fade_in = atoi(value);
 	} else if (strcmp(key, "animation_fade_out") == 0) {
 		config->animation_fade_out = atoi(value);
+	} else if (strcmp(key, "fall_cols") == 0) {
+		config->fall_cols = atoi(value);
+	} else if (strcmp(key, "fall_rows") == 0) {
+		config->fall_rows = atoi(value);
 	} else if (strcmp(key, "tag_animation_direction") == 0) {
 		config->tag_animation_direction = atoi(value);
 	} else if (strcmp(key, "zoom_initial_ratio") == 0) {
@@ -3464,6 +3471,8 @@ static const struct {
 	{"animations/window-close/type", "animation_type_close"},
 	{"animations/window-close/duration", "animation_duration_close"},
 	{"animations/window-close/fade-begin-opacity", "fadeout_begin_opacity"},
+	{"animations/window-close/fall-columns", "fall_cols"},
+	{"animations/window-close/fall-rows", "fall_rows"},
 	/* overview */
 	{"overview/gaps/inner", "overviewgappi"},
 	{"overview/gaps/outer", "overviewgappo"},
@@ -4166,6 +4175,8 @@ void override_config(void) {
 		CLAMP_INT(config.tag_animation_direction, 0, 1);
 	config.animation_fade_in = CLAMP_INT(config.animation_fade_in, 0, 1);
 	config.animation_fade_out = CLAMP_INT(config.animation_fade_out, 0, 1);
+	config.fall_cols = CLAMP_INT(config.fall_cols, 1, 12);
+	config.fall_rows = CLAMP_INT(config.fall_rows, 1, 12);
 	config.zoom_initial_ratio =
 		CLAMP_FLOAT(config.zoom_initial_ratio, 0.1f, 1.0f);
 	config.zoom_end_ratio = CLAMP_FLOAT(config.zoom_end_ratio, 0.1f, 1.0f);
@@ -4360,6 +4371,12 @@ void set_value_default() {
 	config.layer_animations = 0;
 	config.animation_fade_in = 1;
 	config.animation_fade_out = 1;
+	/* "fall" is the default close animation: the window breaks into a grid of
+	 * tiles that scatter and drop. Set animations/window-close/type to
+	 * fade/slide/zoom/none to opt out. */
+	strcpy(config.animation_type_close, "fall");
+	config.fall_cols = 4;
+	config.fall_rows = 3;
 	config.tag_animation_direction = HORIZONTAL;
 	config.zoom_initial_ratio = 0.4f;
 	config.zoom_end_ratio = 0.8f;
