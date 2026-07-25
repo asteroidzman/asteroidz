@@ -244,7 +244,8 @@ enum asteroidz_node_type {
 	ASTEROIDZ_TITLE_NODE = 100,
 	ASTEROIDZ_jump_label_node,
 	ASTEROIDZ_TITLEBAR_NODE,
-	ASTEROIDZ_TITLEBAR_CLOSE_NODE
+	ASTEROIDZ_TITLEBAR_CLOSE_NODE,
+	ASTEROIDZ_BAR_NODE /* a native status-bar pill (draw/bar.h) */
 };
 
 #ifdef XWAYLAND
@@ -725,6 +726,10 @@ struct Monitor {
 	int32_t render_late_good;   /* consecutive on-time deferred frames */
 	struct wlr_box m;		  /* monitor area, layout-relative */
 	struct wlr_box w;		  /* window area, layout-relative */
+	/* the compositor-native status bar on this output, or NULL when built
+	 * without -Dnative-bar. Defined in draw/bar.h, which is included after
+	 * this struct because it needs Monitor itself. */
+	struct AsteroidzBar *bar;
 	uint32_t cascade_idx;	  /* float layout: next cascade placement slot */
 	struct wl_list layers[4]; /* LayerSurface::link */
 	uint32_t seltags;
@@ -1009,6 +1014,11 @@ static void outputmgrtest(struct wl_listener *listener, void *data);
 static void pointerfocus(Client *c, struct wlr_surface *surface, double sx,
 						 double sy, uint32_t time);
 static void printstatus(enum ipc_watch_type type);
+/* draw/bar.h is included further down (it needs Monitor), but reload_config
+ * in config/parse_config.h is parsed before that and has to rebuild the bars
+ * -- a reload can change the module lists themselves, which a content-only
+ * bar_update does not pick up. */
+static void bar_reconfigure_all(void);
 static void quitsignal(int32_t signo);
 static void powermgrsetmode(struct wl_listener *listener, void *data);
 static void wake_monitor(Monitor *m);
@@ -1541,6 +1551,7 @@ static struct wl_event_source *sync_keymap;
 #include "layout/arrange.h"
 #include "layout/dwindle.h"
 #include "layout/horizontal.h"
+#include "draw/bar.h"
 #include "layout/overview.h"
 #include "layout/scroll.h"
 
@@ -2707,6 +2718,12 @@ void arrangelayers(Monitor *m) {
 	if (m->iscleanuping)
 		return;
 
+	/* The native bar claims its strip first, so a layer-shell client's
+	 * exclusive zone stacks BELOW it rather than overlapping. That ordering
+	 * is what lets an external bar keep running alongside this one during the
+	 * migration. */
+	bar_reserve(m, &usable_area);
+
 	/* Arrange exclusive surfaces from top->bottom */
 	for (i = 3; i >= 0; i--)
 		arrangelayer(m, &m->layers[i], &usable_area, 1);
@@ -3138,7 +3155,10 @@ bool handle_buttonpress(struct wlr_pointer_button_event *event) {
 		}
 		if (node && node->data) {
 			AsteroidzNodeData *nodedata = (AsteroidzNodeData *)node->data;
-			if (nodedata->type == ASTEROIDZ_TITLE_NODE) {
+			if (nodedata->type == ASTEROIDZ_BAR_NODE) {
+				if (bar_handle_node_click(nodedata, event->button))
+					return true;
+			} else if (nodedata->type == ASTEROIDZ_TITLE_NODE) {
 				Client *c = nodedata->node_data;
 				focusclient(c, 1);
 			} else if (nodedata->type == ASTEROIDZ_TITLEBAR_CLOSE_NODE) {
@@ -3395,6 +3415,10 @@ void cleanupmon(struct wl_listener *listener, void *data) {
 		screenshot_ui_cancel();
 
 	m->iscleanuping = true;
+
+	/* Before the scene nodes below are torn down: the bar owns scene buffers
+	 * and heap-allocated hit-test tags parented to this monitor's tree. */
+	bar_destroy(m);
 
 	/* m->layers[i] are intentionally not unlinked */
 	for (i = 0; i < LENGTH(m->layers); i++) {
@@ -4856,6 +4880,17 @@ void createmon(struct wl_listener *listener, void *data) {
 	/* Deliberately last: VISIBLEON needs the tagset initialised above. On a
 	 * hotplug a force_hdr client can already be visible on the new output. */
 	hdr_resolve(m);
+
+	/* After the tagset and pertag layouts exist (the tags/layout modules read
+	 * both) and after m joined `mons` (bar_clock_sync walks the list). */
+	bar_create(m);
+	bar_update(m);
+	/* Re-arrange now that the bar exists. Adding the output to the layout
+	 * above already ran updatemons -> arrangelayers for this monitor, but
+	 * that was before bar_create, so m->w was computed with no bar to
+	 * reserve for and nothing would recompute it until the next layout
+	 * change. Without this the bar renders but windows tile underneath it. */
+	arrangelayers(m);
 
 	printstatus(IPC_WATCH_ARRANGGE);
 }
@@ -6834,6 +6869,11 @@ void pointerfocus(Client *c, struct wlr_surface *surface, double sx, double sy,
 // modified printstatus function to accept a mask parameter
 void printstatus(enum ipc_watch_type type) {
 	wl_signal_emit(&asteroidz_print_status, &type);
+	/* The native bar is just another observer of the same state changes the
+	 * IPC broadcasts here -- tags, arrange, focus, title, map/unmap all pass
+	 * through this one point, so it needs no hooks of its own. bar_update
+	 * hashes what it displays and returns early when nothing changed. */
+	bar_update_all();
 }
 
 static int monitor_retrain_step(void *data) {

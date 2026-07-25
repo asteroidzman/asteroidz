@@ -1089,6 +1089,55 @@ void asteroidz_tab_bar_node_set_size(struct asteroidz_tab_bar_node *node, int32_
 	asteroidz_tab_bar_node_update(node, redraw_text, redraw_scale);
 }
 
+int32_t asteroidz_tab_bar_node_measure_width(struct asteroidz_tab_bar_node *node,
+										 const char *text, int32_t height) {
+	if (!node || !text || height <= 0)
+		return 0;
+
+	/* Mirror the geometry the draw path derives in _update(), but in logical
+	 * units at scale 1.0 -- the caller sizes in logical pixels and the
+	 * HiDPI scale is applied later, at render time. Keep the two in step:
+	 * if the padding/icon-gap arithmetic there changes, it changes here. */
+	float cs = node->content_scale > 0.0f ? node->content_scale : 1.0f;
+	double pad_x = node->padding_x * cs;
+	double pad_y = node->padding_y * cs;
+	int32_t box_logical_h = height - 2 * node->border_width;
+	int32_t text_area_h = (int32_t)(box_logical_h - 2.0 * pad_y);
+	if (text_area_h < 0)
+		text_area_h = 0;
+
+	if (node->measure_scale != 1.0f) {
+		pango_cairo_context_set_resolution(node->measure_context, 96.0);
+		node->measure_scale = 1.0f;
+	}
+	PangoFontDescription *desc = get_cached_font_desc(node->font_desc);
+	PangoFontDescription *scaled_desc = NULL;
+	if (cs != 1.0f) {
+		scaled_desc = pango_font_description_copy(desc);
+		int32_t fsz = pango_font_description_get_size(scaled_desc);
+		if (fsz > 0)
+			pango_font_description_set_size(scaled_desc,
+											(int32_t)(fsz * cs + 0.5f));
+		desc = scaled_desc;
+	}
+	pango_layout_set_font_description(node->measure_layout, desc);
+	/* measure the UNCONSTRAINED width: -1 undoes any ellipsizing width a
+	 * previous _update() left on this shared layout object. */
+	pango_layout_set_width(node->measure_layout, -1);
+	pango_layout_set_text(node->measure_layout, text, -1);
+	int text_w = 0, text_h = 0;
+	pango_layout_get_pixel_size(node->measure_layout, &text_w, &text_h);
+	if (scaled_desc)
+		pango_font_description_free(scaled_desc);
+
+	/* the icon is drawn square at the text area's height, then a 6px gap */
+	double icon_w = node->icon_surface ? text_area_h + 6.0 * cs : 0.0;
+
+	int32_t width = (int32_t)(2.0 * pad_x + icon_w + text_w + 0.5) +
+					2 * node->border_width;
+	return width > 0 ? width : 0;
+}
+
 void asteroidz_tab_bar_node_update(struct asteroidz_tab_bar_node *node,
 							   const char *text, float scale) {
 	if (!node || !text)

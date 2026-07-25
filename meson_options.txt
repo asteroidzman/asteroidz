@@ -1,2 +1,6 @@
 option('xwayland', type : 'feature', value : 'enabled')
 option('asan', type : 'boolean', value : false)
+# The compositor-native status bar. Disabling it compiles the bar out
+# entirely -- no scene nodes, no timer, no config keys, nothing in the binary
+# -- for setups that use an external bar (waybar, yambar, ...) exclusively.
+option('native-bar', type : 'boolean', value : true)

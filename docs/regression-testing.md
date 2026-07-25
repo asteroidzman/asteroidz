@@ -95,11 +95,20 @@ so the harness includes a few small purpose-built Wayland clients:
 
 ## Module coverage
 
-Twenty modules as of writing (118 assertions): `layouts`, `window-states`,
-`tags`, `focus`, `scratchpad`, `geometry`, `dwindle`, `overview`,
-`multimonitor`, `mousebind`, `hdr`, `scroller`, `animations`, `layer-shell`,
-`ipc-watch`, `keybind-combo`, plus `destroy-virtual-output` (gated behind
-`HL_ALLOW_DESTRUCTIVE=1`).
+Twenty-one modules as of writing (140 assertions): `layouts`,
+`window-states`, `tags`, `focus`, `scratchpad`, `geometry`, `dwindle`,
+`overview`, `multimonitor`, `mousebind`, `hdr`, `scroller`, `animations`,
+`layer-shell`, `ipc-watch`, `keybind-combo`, `bar`, plus
+`destroy-virtual-output` (gated behind `HL_ALLOW_DESTRUCTIVE=1`).
+
+`bar` is the pattern to copy for anything that needs a **different config**
+than the shared one: it never enables the native bar globally (that would
+shrink the usable area and silently break every geometry assertion in the
+other modules), but rewrites `$HL_CONFIG` from a pristine copy and calls
+`reload_config` per test, restoring it afterwards. It also skips itself when
+the binary under test was built with `-Dnative-bar=false`, probing the binary
+rather than assuming — an unknown config key is only warned about, so a
+feature-off build would otherwise silently "pass" by doing nothing.
 
 Real gaps found by building this out (not just harness bugs — documented
 inline in the relevant test files too):

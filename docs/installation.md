@@ -205,6 +205,11 @@ You will need to build `wlroots` and asteroidz's `scenefx` fork manually as well
    sudo ninja -C build install
    ```
 
+   Build options: `-Dxwayland=disabled` drops X11 support, and
+   `-Dnative-bar=false` compiles out the [built-in status
+   bar](./visuals/native-bar.md) entirely (it is disabled at runtime by
+   default either way).
+
    This installs the `asteroidz` binary, the `amsg` IPC tool, two wayland
    session entries (**Asteroidz** = GLES2, the daily driver and default;
    **Asteroidz (Vulkan, experimental)** = the `fx_vk` renderer), and the

@@ -427,6 +427,23 @@ typedef struct {
 	uint32_t titlebar_height;
 	int32_t monocle_tab_max_width; // 0 = tab segments split the full width
 	char icon_theme[64];		   // icon theme for tab pill icons
+#ifdef ASTEROIDZ_NATIVE_BAR
+	/* compositor-native status bar (KDL block `bar {}`). Present only when
+	 * built with -Dnative-bar=true; with the feature off the keys below are
+	 * unknown to the parser, which warns and ignores them like any other
+	 * unrecognised key. */
+	int32_t bar_enable;
+	int32_t bar_height;
+	int32_t bar_position_bottom; /* 0 = top, 1 = bottom */
+	int32_t bar_spacing;		 /* gap between adjacent pills */
+	int32_t bar_margin_x;		 /* inset from the output's left/right edge */
+	int32_t bar_margin_y;		 /* inset from the output's top/bottom edge */
+	int32_t bar_pill_min_width;  /* floor, so single-glyph pills stay legible */
+	char bar_clock_format[64];
+	char bar_modules_left[256];
+	char bar_modules_center[256];
+	char bar_modules_right[256];
+#endif
 	float scratchpad_width_ratio;
 	float scratchpad_height_ratio;
 	float rootcolor[4];
@@ -2182,6 +2199,44 @@ bool parse_option(Config *config, char *key, char *value) {
 		config->monocle_tab_max_width = CLAMP_INT(atoi(value), 0, 10000);
 	} else if (strcmp(key, "icon_theme") == 0) {
 		snprintf(config->icon_theme, sizeof(config->icon_theme), "%s", value);
+#ifdef ASTEROIDZ_NATIVE_BAR
+	} else if (strcmp(key, "bar_enable") == 0) {
+		config->bar_enable = atoi(value) != 0;
+	} else if (strcmp(key, "bar_height") == 0) {
+		config->bar_height = CLAMP_INT(atoi(value), 8, 200);
+	} else if (strcmp(key, "bar_position") == 0) {
+		if (strcmp(value, "bottom") == 0) {
+			config->bar_position_bottom = 1;
+		} else if (strcmp(value, "top") == 0) {
+			config->bar_position_bottom = 0;
+		} else {
+			fprintf(stderr,
+					"\033[1m\033[31m[ERROR]:\033[33m Invalid bar position "
+					"'%s' (expected \"top\" or \"bottom\")\n",
+					value);
+			return false;
+		}
+	} else if (strcmp(key, "bar_spacing") == 0) {
+		config->bar_spacing = CLAMP_INT(atoi(value), 0, 200);
+	} else if (strcmp(key, "bar_margin_x") == 0) {
+		config->bar_margin_x = CLAMP_INT(atoi(value), 0, 500);
+	} else if (strcmp(key, "bar_margin_y") == 0) {
+		config->bar_margin_y = CLAMP_INT(atoi(value), 0, 500);
+	} else if (strcmp(key, "bar_pill_min_width") == 0) {
+		config->bar_pill_min_width = CLAMP_INT(atoi(value), 0, 1000);
+	} else if (strcmp(key, "bar_clock_format") == 0) {
+		snprintf(config->bar_clock_format, sizeof(config->bar_clock_format),
+				 "%s", value);
+	} else if (strcmp(key, "bar_modules_left") == 0) {
+		snprintf(config->bar_modules_left, sizeof(config->bar_modules_left),
+				 "%s", value);
+	} else if (strcmp(key, "bar_modules_center") == 0) {
+		snprintf(config->bar_modules_center, sizeof(config->bar_modules_center),
+				 "%s", value);
+	} else if (strcmp(key, "bar_modules_right") == 0) {
+		snprintf(config->bar_modules_right, sizeof(config->bar_modules_right),
+				 "%s", value);
+#endif
 	} else if (strcmp(key, "rootcolor") == 0) {
 		int64_t color = parse_color(value);
 		if (color == -1) {
@@ -3451,6 +3506,21 @@ static const struct {
 	{"effects/shadow/contact/color", "shadowscolor_contact"},
 	/* theme: the compositor-native UI theme (titlebars/tab strips, jump
 	 * labels, screenshot UI) */
+#ifdef ASTEROIDZ_NATIVE_BAR
+	/* bar */
+	{"bar/enable", "bar_enable"},
+	{"bar/height", "bar_height"},
+	{"bar/position", "bar_position"},
+	{"bar/spacing", "bar_spacing"},
+	{"bar/margin/x", "bar_margin_x"},
+	{"bar/margin/y", "bar_margin_y"},
+	{"bar/pill-min-width", "bar_pill_min_width"},
+	{"bar/clock/format", "bar_clock_format"},
+	{"bar/modules-left", "bar_modules_left"},
+	{"bar/modules-center", "bar_modules_center"},
+	{"bar/modules-right", "bar_modules_right"},
+#endif
+	/* theme */
 	{"theme/border-width", "theme_border_width"},
 	{"theme/corner-radius", "theme_corner_radius"},
 	{"theme/padding/x", "theme_padding_x"},
@@ -4475,6 +4545,24 @@ void set_value_default() {
 	config.titlebar_height = 28;
 	config.monocle_tab_max_width = 0;
 	config.icon_theme[0] = '\0';
+#ifdef ASTEROIDZ_NATIVE_BAR
+	/* Off by default: a fresh install already has whatever external bar the
+	 * user configured, and silently reserving screen space on first run after
+	 * an upgrade would be a surprise. Opt in with `bar { enable true }`. */
+	config.bar_enable = 0;
+	config.bar_height = 28;
+	config.bar_position_bottom = 0;
+	config.bar_spacing = 6;
+	config.bar_margin_x = 8;
+	config.bar_margin_y = 4;
+	config.bar_pill_min_width = 28;
+	snprintf(config.bar_clock_format, sizeof(config.bar_clock_format),
+			 "%%H:%%M");
+	snprintf(config.bar_modules_left, sizeof(config.bar_modules_left), "tags");
+	snprintf(config.bar_modules_center, sizeof(config.bar_modules_center),
+			 "clock");
+	config.bar_modules_right[0] = '\0';
+#endif
 	config.overviewgappi = 5;
 	config.overviewgappo = 30;
 	config.cursor_hide_timeout = 0;
@@ -5141,6 +5229,9 @@ int32_t reload_config(const Arg *arg) {
 	 * previously */
 	set_env();
 	set_activation_env();
+	/* rebuild rather than refresh: `bar { modules-left ... }` may name a
+	 * different set of modules than the running bars were built with */
+	bar_reconfigure_all();
 	printstatus(IPC_WATCH_ARRANGGE);
 	return 1;
 }

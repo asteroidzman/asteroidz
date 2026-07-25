@@ -236,6 +236,14 @@ void asteroidz_tab_bar_node_set_titlebar_separator(
 void asteroidz_text_node_set_icon_theme(const char *theme);
 void asteroidz_tab_bar_node_update(struct asteroidz_tab_bar_node *node,
 							   const char *text, float scale);
+/* Natural ("fit the content") logical width this pill would need to render
+ * `text` at `height` without ellipsizing, including border, padding, and the
+ * icon plus its gap when one is set. Titlebars don't need this -- their width
+ * is dictated by the window -- but a bar lays pills out end to end, so it has
+ * to ask each one how wide it wants to be BEFORE assigning positions. Returns
+ * a logical (unscaled) width to pair with _set_size, which is also logical. */
+int32_t asteroidz_tab_bar_node_measure_width(struct asteroidz_tab_bar_node *node,
+										 const char *text, int32_t height);
 
 void asteroidz_jump_label_node_set_focus(struct asteroidz_jump_label_node *node,
 									 bool focused);

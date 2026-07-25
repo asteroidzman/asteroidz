@@ -3,6 +3,13 @@ title: Status Bar
 description: Configure Waybar for asteroidz.
 ---
 
+> asteroidz also has a **built-in** bar that needs no external process — see
+> [Native Bar](./native-bar.md). It is off by default and currently covers
+> tags, clock, window title and layout only, so Waybar remains the way to get
+> a tray, popovers, and system modules. The two can run side by side: the
+> native bar reserves its space first, and Waybar's exclusive zone stacks
+> below it.
+
 ## Module Configuration
 
 asteroidz is compatible with Waybar's `ext/workspaces` module (Wayland standard) or the `dwl/tags` module. We recommend `ext/workspaces` for the best experience.

@@ -1,0 +1,106 @@
+---
+title: Native Bar
+description: The compositor's own built-in status bar.
+---
+
+asteroidz can draw its own status bar, with no external process and no
+layer-shell client involved. It is built from the same pill widget as window
+titlebars and monocle tab strips, so it inherits the [theme](./theming.md)
+automatically and renders at each output's own scale.
+
+This is **off by default**, and it is not a replacement for
+[Waybar](./status-bar.md) yet — see [Scope](#scope) below for exactly what it
+does and does not do today. The two can run side by side.
+
+## Enabling it
+
+```kdl
+bar {
+    enable true
+    height 30
+    position "top"          // or "bottom"
+    margin { x 8; y 4 }
+    spacing 6
+    pill-min-width 28
+
+    modules-left   "tags,layout"
+    modules-center "clock"
+    modules-right  "title"
+
+    clock { format "%H:%M" }
+}
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `enable` | `false` | draw the bar at all |
+| `height` | `28` | pill height in logical pixels (8–200) |
+| `position` | `"top"` | `"top"` or `"bottom"` |
+| `margin.x` | `8` | inset from the output's left/right edge |
+| `margin.y` | `4` | inset from the output's top/bottom edge |
+| `spacing` | `6` | gap between adjacent pills |
+| `pill-min-width` | `28` | floor width, so single-glyph pills stay legible |
+| `modules-left` | `"tags"` | comma-separated module list |
+| `modules-center` | `"clock"` | " |
+| `modules-right` | *(empty)* | " |
+| `clock.format` | `"%H:%M"` | `strftime` format |
+
+Changes take effect on `reload_config` — including changes to the module
+lists themselves, which rebuild the bars rather than just refreshing them.
+
+An unknown module name is reported on stderr and skipped, so a config written
+for a newer build still starts.
+
+## Modules
+
+| Name | Shows | Click |
+|---|---|---|
+| `tags` | one pill per selected or occupied tag, using custom tag names (`tag N { name … }`, `set_tag_name`) when set | views that tag |
+| `clock` | `strftime` of `clock.format` | — |
+| `title` | the focused window's title, with its app icon | focuses that window |
+| `layout` | the current layout's symbol | — |
+
+The `tags` module hides tags that are both empty and unselected, so a nine-tag
+setup does not permanently spend nine pills on tags holding nothing. An urgent
+tag is drawn in the theme's `urgent-color`.
+
+## How it reserves space
+
+The bar claims its strip from the output's usable area *before* layer-shell
+surfaces are arranged. An external bar's exclusive zone therefore stacks
+below it rather than fighting it, which is what lets you move modules across
+one at a time while Waybar keeps the rest.
+
+The footprint taken is `height + 2 × margin.y`.
+
+## Building without it
+
+The bar is a compile-time feature. With it off, none of the code reaches the
+binary — no scene nodes, no timer, no config keys:
+
+```sh
+meson setup build -Dnative-bar=false
+```
+
+The `bar { }` config keys become unknown keys in that build, which the parser
+warns about and ignores.
+
+## Scope
+
+Implemented: the bar frame, per-monitor layout in three slots, click routing,
+space reservation, and the four modules above — everything that needs no
+external process and no popover.
+
+Not implemented yet: popovers (so no click-through panels), the system tray,
+and modules that wrap a CLI or D-Bus service (volume, network, weather,
+media, …). Those stay in Waybar for now.
+
+## Cost
+
+`bar_update` runs off the same internal broadcast that drives IPC event
+watchers, which fires on every arrange — including each step of a window
+drag. It hashes what the bar currently displays and returns early when
+nothing changed, so an arrange that does not alter the bar costs one walk of
+the client list and no redraw. The clock timer aligns to the next boundary
+its format can actually show: a format without `%S` wakes once a minute, not
+once a second.

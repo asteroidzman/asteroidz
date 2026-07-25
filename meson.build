@@ -102,6 +102,10 @@ if xcb.found() and xlibs.found()
   c_args += '-DXWAYLAND'
 endif
 
+if get_option('native-bar')
+  c_args += '-DASTEROIDZ_NATIVE_BAR'
+endif
+
 # define link args
 link_args = []
 if get_option('asan')
