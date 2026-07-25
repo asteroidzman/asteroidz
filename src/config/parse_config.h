@@ -442,6 +442,17 @@ typedef struct {
 	/* tags module: 0 = only tags that are selected or hold a window (the
 	 * waybar workspace-module behaviour), 1 = every configured tag always */
 	int32_t bar_show_all_tags;
+	/* Per-slot backing panel. The bar itself is fully transparent; each
+	 * non-empty slot draws one rounded translucent panel behind its pills,
+	 * which is the grouped look the waybar config it replaces used. With a
+	 * panel on, resting pills draw no background of their own -- only the
+	 * selected/urgent ones do -- so the panel reads as one surface. */
+	int32_t bar_panel_enable;
+	float bar_panel_color[4];
+	int32_t bar_panel_radius;
+	int32_t bar_panel_padding; /* panel inset around the pills it contains */
+	int32_t bar_panel_blur;
+	int32_t bar_panel_shadow;
 	char bar_clock_format[64];
 	char bar_modules_left[256];
 	char bar_modules_center[256];
@@ -2229,6 +2240,26 @@ bool parse_option(Config *config, char *key, char *value) {
 		config->bar_pill_min_width = CLAMP_INT(atoi(value), 0, 1000);
 	} else if (strcmp(key, "bar_show_all_tags") == 0) {
 		config->bar_show_all_tags = atoi(value) != 0;
+	} else if (strcmp(key, "bar_panel_enable") == 0) {
+		config->bar_panel_enable = atoi(value) != 0;
+	} else if (strcmp(key, "bar_panel_radius") == 0) {
+		config->bar_panel_radius = CLAMP_INT(atoi(value), 0, 200);
+	} else if (strcmp(key, "bar_panel_padding") == 0) {
+		config->bar_panel_padding = CLAMP_INT(atoi(value), 0, 200);
+	} else if (strcmp(key, "bar_panel_blur") == 0) {
+		config->bar_panel_blur = atoi(value) != 0;
+	} else if (strcmp(key, "bar_panel_shadow") == 0) {
+		config->bar_panel_shadow = atoi(value) != 0;
+	} else if (strcmp(key, "bar_panel_color") == 0) {
+		int64_t color = parse_color(value);
+		if (color == -1) {
+			fprintf(stderr,
+					"\033[1m\033[31m[ERROR]:\033[33m Invalid bar_panel_color "
+					"format: %s\n",
+					value);
+			return false;
+		}
+		convert_hex_to_rgba(config->bar_panel_color, color);
 	} else if (strcmp(key, "bar_clock_format") == 0) {
 		snprintf(config->bar_clock_format, sizeof(config->bar_clock_format),
 				 "%s", value);
@@ -3521,6 +3552,12 @@ static const struct {
 	{"bar/margin/y", "bar_margin_y"},
 	{"bar/pill-min-width", "bar_pill_min_width"},
 	{"bar/show-all-tags", "bar_show_all_tags"},
+	{"bar/panel/enable", "bar_panel_enable"},
+	{"bar/panel/color", "bar_panel_color"},
+	{"bar/panel/radius", "bar_panel_radius"},
+	{"bar/panel/padding", "bar_panel_padding"},
+	{"bar/panel/blur", "bar_panel_blur"},
+	{"bar/panel/shadow", "bar_panel_shadow"},
 	{"bar/clock/format", "bar_clock_format"},
 	{"bar/modules-left", "bar_modules_left"},
 	{"bar/modules-center", "bar_modules_center"},
@@ -4563,12 +4600,23 @@ void set_value_default() {
 	config.bar_margin_y = 4;
 	config.bar_pill_min_width = 28;
 	config.bar_show_all_tags = 0;
+	config.bar_panel_enable = 1;
+	convert_hex_to_rgba(config.bar_panel_color, 0x0a0a0cd9); /* ~85% opaque */
+	config.bar_panel_radius = 9;
+	config.bar_panel_padding = 6;
+	config.bar_panel_blur = 1;
+	config.bar_panel_shadow = 1;
 	snprintf(config.bar_clock_format, sizeof(config.bar_clock_format),
 			 "%%H:%%M");
-	snprintf(config.bar_modules_left, sizeof(config.bar_modules_left), "tags");
+	/* Three sections, matching the waybar layout this replaces: the workspace
+	 * selector and focused window on the left, the clock centred, pills on
+	 * the right (the tray will join them once it exists). */
+	snprintf(config.bar_modules_left, sizeof(config.bar_modules_left),
+			 "tags,title");
 	snprintf(config.bar_modules_center, sizeof(config.bar_modules_center),
 			 "clock");
-	config.bar_modules_right[0] = '\0';
+	snprintf(config.bar_modules_right, sizeof(config.bar_modules_right),
+			 "layout");
 #endif
 	config.overviewgappi = 5;
 	config.overviewgappo = 30;

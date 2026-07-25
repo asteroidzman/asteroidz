@@ -41,6 +41,12 @@ bar {
 | `spacing` | `6` | gap between adjacent pills |
 | `pill-min-width` | `28` | floor width, so single-glyph pills stay legible |
 | `show-all-tags` | `false` | `true` draws every configured tag; `false` draws only selected or occupied ones |
+| `panel.enable` | `true` | draw a backdrop panel behind each non-empty slot |
+| `panel.color` | `0x0a0a0cd9` | panel fill (RGBA; the default is ~85% opaque) |
+| `panel.radius` | `9` | panel corner radius |
+| `panel.padding` | `6` | inset between the panel edge and its pills |
+| `panel.blur` | `true` | blur behind the panel (needs `effects.blur.enable`) |
+| `panel.shadow` | `true` | drop shadow under the panel (needs `shadows`) |
 | `modules-left` | `"tags"` | comma-separated module list |
 | `modules-center` | `"clock"` | " |
 | `modules-right` | *(empty)* | " |
@@ -67,6 +73,22 @@ The side effect is that a fresh session shows a *single* pill, which reads as
 broken rather than tidy — set `show-all-tags true` for the dwm/dwl behaviour of
 always drawing every tag. An urgent tag is drawn in the theme's `urgent-color`.
 
+## Panels
+
+The bar has **no background of its own** — it is fully transparent. What you
+see is one rounded translucent panel per non-empty slot, so the bar reads as
+three floating groups rather than a full-width strip. That is the same shape as
+the grouped panels in a typical Waybar config.
+
+With panels on, a resting pill draws no background either; only the selected
+tag (and any urgent one) is filled, so each panel reads as a single surface.
+Turn panels off with `panel { enable false }` and every pill carries the
+theme's resting colours instead, giving a row of separate pills.
+
+Blur and shadow reuse the same scenefx nodes as the overview's top strip, and
+each defers to the global `effects.blur.enable` / `shadows` settings — asking
+for panel blur in a build with blur off costs nothing and draws nothing.
+
 ## How it reserves space
 
 The bar claims its strip from the output's usable area *before* layer-shell
@@ -90,7 +112,7 @@ warns about and ignores.
 
 ## Scope
 
-Implemented: the bar frame, per-monitor layout in three slots, click routing,
+Implemented: the bar frame, per-monitor layout in three panelled slots, click routing,
 space reservation, and the four modules above — everything that needs no
 external process and no popover.
 

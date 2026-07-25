@@ -67,9 +67,25 @@ typedef struct BarModule {
 	int32_t width;  /* laid-out width including inter-pill spacing */
 } BarModule;
 
+/* The translucent rounded backdrop behind one slot's pills. The bar has no
+ * background of its own -- it is fully transparent -- so these three panels
+ * are the only surfaces, exactly like the grouped panels in the waybar config
+ * this replaces. Blur and shadow are the same scenefx nodes the overview's
+ * top strip uses. */
+typedef struct BarPanel {
+	struct wlr_scene_blur *blur;
+	struct wlr_scene_rect *bg;
+	struct wlr_scene_shadow *shadow;
+} BarPanel;
+
 typedef struct AsteroidzBar {
 	Monitor *mon;
 	struct wlr_scene_tree *tree;
+	/* panels strictly below pills; two trees rather than per-node restacking
+	 * so adding a pill can never land underneath its own backdrop */
+	struct wlr_scene_tree *panel_tree;
+	struct wlr_scene_tree *pill_tree;
+	BarPanel panels[BAR_SLOT_COUNT];
 	BarModule modules[BAR_MAX_MODULES];
 	int32_t nmodules;
 	/* the strip's own rect in layout coordinates, recomputed on every
@@ -141,11 +157,12 @@ static BarPill *bar_pill_get(BarModule *mod, int32_t idx) {
 	hit->node_data = p;
 
 	AsteroidzBar *bar = mod->mon ? mod->mon->bar : NULL;
-	if (!bar || !bar->tree) {
+	if (!bar || !bar->pill_tree) {
 		free(hit);
 		return NULL;
 	}
-	p->node = asteroidz_tab_bar_node_create(hit, bar->tree, config.theme, 0, 0);
+	p->node =
+		asteroidz_tab_bar_node_create(hit, bar->pill_tree, config.theme, 0, 0);
 	if (!p->node) {
 		free(hit);
 		return NULL;
@@ -158,6 +175,25 @@ static BarPill *bar_pill_get(BarModule *mod, int32_t idx) {
 									  (int32_t)config.shadows_position_y,
 									  config.shadowscolor);
 	return p;
+}
+
+/* Style one pill. With a backing panel, a resting pill draws NO background of
+ * its own -- the panel is the surface, and only the selected tag (or an urgent
+ * one) gets a filled pill on top of it. Without a panel every pill carries the
+ * theme's resting colours, which is the standalone-pills look. */
+static void bar_pill_style(BarPill *p, bool active, bool urgent) {
+	static const float transparent[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+	asteroidz_tab_bar_node_apply_config(p->node, &config.theme);
+	if (urgent && !active) {
+		asteroidz_tab_bar_node_set_colors(p->node, config.theme.fg_color,
+										  config.theme.urgent_color);
+		asteroidz_tab_bar_node_set_focus(p->node, false);
+		return;
+	}
+	if (!active && config.bar_panel_enable)
+		asteroidz_tab_bar_node_set_colors(p->node, config.theme.fg_color,
+										  transparent);
+	asteroidz_tab_bar_node_set_focus(p->node, active);
 }
 
 /* ─── per-module content ──────────────────────────────────────────────────── */
@@ -210,15 +246,7 @@ static void bar_module_refresh_tags(BarModule *mod) {
 			break;
 		p->arg = t;
 		tag_display_name(m, t, p->text, sizeof(p->text));
-		asteroidz_tab_bar_node_set_focus(p->node, selected);
-		if ((urg & mask) && !selected) {
-			/* urgent wins over "merely occupied": draw it in the theme's
-			 * attention accent rather than the normal pair */
-			asteroidz_tab_bar_node_set_colors(p->node, config.theme.fg_color,
-											  config.theme.urgent_color);
-		} else {
-			asteroidz_tab_bar_node_apply_config(p->node, &config.theme);
-		}
+		bar_pill_style(p, selected, (urg & mask) != 0);
 		n++;
 	}
 
@@ -239,7 +267,7 @@ static void bar_module_refresh_clock(BarModule *mod) {
 	if (strftime(p->text, sizeof(p->text), config.bar_clock_format, &tm) == 0)
 		snprintf(p->text, sizeof(p->text), "??:??");
 	p->arg = 0;
-	asteroidz_tab_bar_node_set_focus(p->node, false);
+	bar_pill_style(p, false, false);
 	mod->npills = 1;
 	for (int32_t i = 1; i < BAR_MAX_PILLS; i++)
 		bar_pill_release(&mod->pills[i]);
@@ -266,7 +294,9 @@ static void bar_module_refresh_title(BarModule *mod) {
 	asteroidz_tab_bar_node_set_icon(p->node, sel->icon_name
 												 ? sel->icon_name
 												 : client_get_appid(sel));
-	asteroidz_tab_bar_node_set_focus(p->node, true);
+	/* resting colours, not the focus pair: a highlighted title competed with
+	 * the selected-tag pill for "this is the active thing". */
+	bar_pill_style(p, false, false);
 	p->arg = 0;
 	mod->npills = 1;
 	for (int32_t i = 1; i < BAR_MAX_PILLS; i++)
@@ -286,7 +316,7 @@ static void bar_module_refresh_layout(BarModule *mod) {
 						  ? m->pertag->ltidxs[m->pertag->curtag]->symbol
 						  : "";
 	snprintf(p->text, sizeof(p->text), "%s", sym ? sym : "");
-	asteroidz_tab_bar_node_set_focus(p->node, false);
+	bar_pill_style(p, false, false);
 	p->arg = 0;
 	mod->npills = 1;
 	for (int32_t i = 1; i < BAR_MAX_PILLS; i++)
@@ -337,6 +367,74 @@ static void bar_module_measure(BarModule *mod, int32_t height, float scale) {
 	}
 	mod->width = total;
 	(void)scale;
+}
+
+/* Draw (or hide) the backdrop for one slot. `x`..`x+w` is the extent of the
+ * pills it contains; the panel is that grown by panel-padding on each side. */
+static void bar_panel_apply(AsteroidzBar *bar, enum bar_slot slot, int32_t x,
+							int32_t w, int32_t y, int32_t h) {
+	BarPanel *panel = &bar->panels[slot];
+	bool want = config.bar_panel_enable && w > 0;
+
+	if (!want) {
+		if (panel->blur)
+			wlr_scene_node_set_enabled(&panel->blur->node, false);
+		if (panel->bg)
+			wlr_scene_node_set_enabled(&panel->bg->node, false);
+		if (panel->shadow)
+			wlr_scene_node_set_enabled(&panel->shadow->node, false);
+		return;
+	}
+
+	int32_t pad = config.bar_panel_padding;
+	int32_t px = x - pad, py = y - pad;
+	int32_t pw = w + 2 * pad, ph = h + 2 * pad;
+	int32_t radius = config.bar_panel_radius;
+
+	/* Blur goes in first so the tint composites over it, matching the
+	 * overview strip. Only meaningful when the compositor's blur is on at
+	 * all -- creating the node otherwise costs a pass for nothing. */
+	if (config.bar_panel_blur && config.blur) {
+		if (!panel->blur)
+			panel->blur = wlr_scene_blur_create(bar->panel_tree, pw, ph);
+		if (panel->blur) {
+			wlr_scene_blur_set_size(panel->blur, pw, ph);
+			wlr_scene_blur_set_corner_radius(panel->blur, radius);
+			wlr_scene_node_set_position(&panel->blur->node, px, py);
+			wlr_scene_node_set_enabled(&panel->blur->node, true);
+		}
+	} else if (panel->blur) {
+		wlr_scene_node_set_enabled(&panel->blur->node, false);
+	}
+
+	if (config.bar_panel_shadow && config.shadows) {
+		if (!panel->shadow)
+			panel->shadow = wlr_scene_shadow_create(
+				bar->panel_tree, pw, ph, radius, config.shadows_blur,
+				config.shadowscolor);
+		if (panel->shadow) {
+			wlr_scene_shadow_set_size(panel->shadow, pw, ph);
+			wlr_scene_shadow_set_corner_radius(panel->shadow, radius);
+			wlr_scene_node_set_position(&panel->shadow->node, px, py);
+			wlr_scene_node_set_enabled(&panel->shadow->node, true);
+			wlr_scene_node_lower_to_bottom(&panel->shadow->node);
+		}
+	} else if (panel->shadow) {
+		wlr_scene_node_set_enabled(&panel->shadow->node, false);
+	}
+
+	if (!panel->bg)
+		panel->bg = wlr_scene_rect_create(bar->panel_tree, pw, ph,
+										  config.bar_panel_color);
+	if (panel->bg) {
+		wlr_scene_rect_set_size(panel->bg, pw, ph);
+		wlr_scene_rect_set_color(panel->bg, config.bar_panel_color);
+		wlr_scene_rect_set_corner_radius(panel->bg, radius);
+		wlr_scene_node_set_position(&panel->bg->node, px, py);
+		wlr_scene_node_set_enabled(&panel->bg->node, true);
+		if (panel->blur)
+			wlr_scene_node_place_above(&panel->bg->node, &panel->blur->node);
+	}
 }
 
 static int32_t bar_place_module(BarModule *mod, int32_t x, int32_t y) {
@@ -408,12 +506,25 @@ static void bar_layout(Monitor *m) {
 		cursor[BAR_SLOT_CENTER] = cursor[BAR_SLOT_RIGHT] -
 								  config.bar_spacing - slot_w[BAR_SLOT_CENTER];
 
+	int32_t slot_start[BAR_SLOT_COUNT];
+	for (int32_t s = 0; s < BAR_SLOT_COUNT; s++)
+		slot_start[s] = cursor[s];
+
 	for (int32_t i = 0; i < bar->nmodules; i++) {
 		BarModule *mod = &bar->modules[i];
 		if (mod->width <= 0)
 			continue;
 		cursor[mod->slot] =
 			bar_place_module(mod, cursor[mod->slot], y);
+	}
+
+	/* One backdrop per non-empty slot. The bar itself paints nothing, so
+	 * these three panels are the whole visible surface. bar_place_module
+	 * leaves a trailing inter-pill gap on the cursor, so subtract it back off
+	 * rather than padding the panel by it. */
+	for (int32_t s = 0; s < BAR_SLOT_COUNT; s++) {
+		int32_t w = slot_w[s];
+		bar_panel_apply(bar, (enum bar_slot)s, slot_start[s], w, y, height);
 	}
 }
 
@@ -644,6 +755,10 @@ static void bar_destroy(Monitor *m) {
 	for (int32_t i = 0; i < bar->nmodules; i++)
 		for (int32_t j = 0; j < BAR_MAX_PILLS; j++)
 			bar_pill_release(&bar->modules[i].pills[j]);
+	/* the panel nodes are children of bar->tree, so destroying it takes them
+	 * with it -- but null the pointers so a stale bar can't be reused */
+	for (int32_t s = 0; s < BAR_SLOT_COUNT; s++)
+		bar->panels[s] = (BarPanel){0};
 	if (bar->tree)
 		wlr_scene_node_destroy(&bar->tree->node);
 	free(bar);
@@ -661,6 +776,14 @@ static void bar_create(Monitor *m) {
 	 * "top" layer does today. */
 	bar->tree = wlr_scene_tree_create(layers[LyrTop]);
 	if (!bar->tree) {
+		free(bar);
+		return;
+	}
+	/* order matters: panel_tree is created first so it sits below pill_tree */
+	bar->panel_tree = wlr_scene_tree_create(bar->tree);
+	bar->pill_tree = wlr_scene_tree_create(bar->tree);
+	if (!bar->panel_tree || !bar->pill_tree) {
+		wlr_scene_node_destroy(&bar->tree->node);
 		free(bar);
 		return;
 	}
