@@ -66,6 +66,9 @@ bar {
 | `modules-right` | *(empty)* | " |
 | `clock.format` | `"%H:%M:%S"` | `strftime` format |
 | `media-width` | `280` | pinned width of the now-playing pill |
+| `media.visualiser` | `true` | animate a spectrum in the media pill while playing |
+| `media.bars` | `6` | spectrum bars (max 8) |
+| `media.fps` | `20` | visualiser frame rate — **this is the cost dial**, see below |
 | `weather.interval` | `15` | minutes between forecast fetches |
 | `weather.location` | *(empty)* | city name; empty means IP geolocation |
 | `interval` | `2` | seconds between `/proc` + `/sys` metric samples |
@@ -91,7 +94,7 @@ for a newer build still starts.
 | `network` | two activity arrows — upload above, download below — each lit by its own throughput, from `/sys/class/net`. **Icon only** | — |
 | `idle` | manual idle-inhibit state ("keep awake") | toggles it |
 | `weather` | current temperature and condition, from open-meteo | — |
-| `media` | now playing (title • artist), from MPRIS | play/pause |
+| `media` | now playing (title • artist), from MPRIS, with a live spectrum while playing | play/pause |
 | `volume` | default sink level, with a speaker icon (also accepts `vol`) | click toggles mute; right-click opens the output picker; scroll steps by `volume-step` |
 | `tray` | one icon per StatusNotifierItem (also accepts `systray`) | left: `Activate`; right: the item's context menu; middle: `SecondaryActivate` |
 
@@ -146,6 +149,46 @@ and an application that exits without unregistering is dropped on
 keyboard grab and its own hit-testing, and the bar has no layer for that yet.
 Right-click sends the item's own `SecondaryActivate`, which most applications
 wire to "show my menu" regardless.
+
+## Media visualiser
+
+While something is playing, the media pill's glyph becomes a live spectrum,
+driven by one long-lived `cava` in raw ASCII mode — the same source the Waybar
+media plugin uses, read a line at a time rather than by forking per frame.
+
+**The FFT is not the cost.** cava's own analysis is a fraction of a percent of
+a core; the cost is that an animating bar element damages the output every
+frame, so the compositor recomposites at the animation rate for as long as
+music plays. Three things keep that honest:
+
+- cava only runs while something is *actually playing*, and is stopped the
+  moment playback does;
+- `media.fps` is deliberately low (20, not the display's rate);
+- a frame whose bars have not moved past a small epsilon is skipped entirely,
+  so a quiet passage costs nothing.
+
+Set `media { visualiser false }` to keep the static transport glyph.
+
+### Which device it listens to
+
+The monitor of the sink that is **`RUNNING`**, not the default sink. The
+default is only where audio goes when nothing says otherwise — a player pointed
+at a specific device plays somewhere else entirely. On a machine where the
+default sink sat `IDLE` while music ran through the S/PDIF output, watching the
+default's monitor showed a flat line through an entire track.
+
+### When it cannot work
+
+A player doing **bitstream passthrough** — AC3/DTS over S/PDIF, mpv's
+`audio-spdif`, especially with `audio-exclusive=yes` — puts no PCM into the
+graph at all and locks the device. There is nothing for cava, or any other
+visualiser, to read. This is not a bug that can be fixed on this side; the
+audio never exists in a form anything can analyse.
+
+Rather than show six bars pinned at zero through a whole track, the pill
+detects a few seconds of pure silence while the player reports playing and
+falls back to its normal transport glyph. cava stays up, cheaply, so the bars
+return by themselves if the signal does.
 
 ## Popovers
 

@@ -816,6 +816,32 @@ static void bar_media_read_metadata(sd_bus_message *m) {
 	sd_bus_message_exit_container(m);
 }
 
+static void bar_media_get_props(const char *name);
+
+/* Called for every MPRIS name when the followed player is NOT playing, so a
+ * player that IS gets to take over. Only that direction: a playing player is
+ * never displaced by another, which is what keeps the pill stable. */
+static int bar_media_on_probe(sd_bus_message *m, void *user, sd_bus_error *err) {
+	(void)err;
+	char *name = user;
+	if (!m || sd_bus_message_is_method_error(m, NULL)) {
+		free(name);
+		return 0;
+	}
+	const char *status = NULL;
+	if (sd_bus_message_enter_container(m, 'v', "s") > 0) {
+		if (sd_bus_message_read(m, "s", &status) > 0 && status &&
+			strcmp(status, "Playing") == 0 && !bar_media.playing &&
+			strcmp(name, bar_media.player) != 0) {
+			snprintf(bar_media.player, sizeof(bar_media.player), "%s", name);
+			bar_media_get_props(name);
+		}
+		sd_bus_message_exit_container(m);
+	}
+	free(name);
+	return 0;
+}
+
 static int bar_media_on_props(sd_bus_message *m, void *user, sd_bus_error *err) {
 	(void)user;
 	(void)err;
@@ -891,20 +917,29 @@ static int bar_media_on_names(sd_bus_message *m, void *user, sd_bus_error *err) 
 	if (sd_bus_message_enter_container(m, 'a', "s") < 0)
 		return 0;
 	char pick[128] = "";
+	char first[128] = "";
+	bool kept = false;
 	const char *n = NULL;
 	while (sd_bus_message_read(m, "s", &n) > 0) {
 		if (!n || strncmp(n, "org.mpris.MediaPlayer2.", 23) != 0)
 			continue;
-		/* first one wins, except that an already-followed player keeps
-		 * priority so the pill does not flap between two open players */
+		if (!first[0])
+			snprintf(first, sizeof(first), "%s", n);
+		/* An already-followed player keeps priority so the pill does not flap
+		 * between two open players -- but only while it is still the
+		 * interesting one. A browser tab that has been sitting Stopped since
+		 * the session started should not outrank the track someone just
+		 * pressed play on: opening a media player and seeing the bar keep
+		 * showing something else reads as broken. */
 		if (bar_media.player[0] && strcmp(n, bar_media.player) == 0) {
 			snprintf(pick, sizeof(pick), "%s", n);
-			break;
+			kept = true;
 		}
-		if (!pick[0])
-			snprintf(pick, sizeof(pick), "%s", n);
 	}
 	sd_bus_message_exit_container(m);
+	/* the followed player is gone: fall back to whatever is there */
+	if (!kept && first[0])
+		snprintf(pick, sizeof(pick), "%s", first);
 
 	if (!pick[0]) {
 		bar_media.have = false;
@@ -914,6 +949,38 @@ static int bar_media_on_names(sd_bus_message *m, void *user, sd_bus_error *err) 
 	}
 	snprintf(bar_media.player, sizeof(bar_media.player), "%s", pick);
 	bar_media_get_props(pick);
+	return 0;
+}
+
+/* Ask every MPRIS name for its PlaybackStatus, so a player that started
+ * playing can claim the pill from an idle one. Only issued while the followed
+ * player is not itself playing, so the common case costs nothing extra. */
+static int bar_media_on_names_probe(sd_bus_message *m, void *user,
+									sd_bus_error *err) {
+	(void)user;
+	(void)err;
+	if (!m || bar_media.playing || sd_bus_message_is_method_error(m, NULL))
+		return 0;
+	if (sd_bus_message_enter_container(m, 'a', "s") < 0)
+		return 0;
+	const char *n = NULL;
+	while (sd_bus_message_read(m, "s", &n) > 0) {
+		if (!n || strncmp(n, "org.mpris.MediaPlayer2.", 23) != 0)
+			continue;
+		if (bar_media.player[0] && strcmp(n, bar_media.player) == 0)
+			continue;
+		char *copy = strdup(n);
+		if (!copy)
+			continue;
+		if (sd_bus_call_method_async(session_bus, NULL, n,
+									 "/org/mpris/MediaPlayer2",
+									 "org.freedesktop.DBus.Properties", "Get",
+									 bar_media_on_probe, copy, "ss",
+									 "org.mpris.MediaPlayer2.Player",
+									 "PlaybackStatus") < 0)
+			free(copy);
+	}
+	sd_bus_message_exit_container(m);
 	return 0;
 }
 
@@ -931,6 +998,14 @@ static void bar_media_poll(void) {
 static int bar_media_tick(void *data) {
 	(void)data;
 	bar_media_poll();
+	/* While the followed player is idle, ask the others whether any of them
+	 * has started. Skipped entirely once something is playing, so the steady
+	 * state is the single ListNames above and nothing more. */
+	if (!bar_media.playing && session_bus)
+		sd_bus_call_method_async(session_bus, NULL, "org.freedesktop.DBus",
+								 "/org/freedesktop/DBus", "org.freedesktop.DBus",
+								 "ListNames", bar_media_on_names_probe, NULL,
+								 NULL);
 	if (bar_media_timer)
 		wl_event_source_timer_update(bar_media_timer, 2000);
 	return 0;
@@ -1045,6 +1120,306 @@ static void bar_volume_set(int32_t delta_pct) {
 	char *const argv[] = {"wpctl", "set-volume", "-l", "1.0",
 						  "@DEFAULT_AUDIO_SINK@", arg, NULL};
 	async_spawn(event_loop, argv, NULL, NULL);
+}
+
+/* ─── media visualiser ────────────────────────────────────────────────────── */
+
+/* A live spectrum in the now-playing pill, from one long-lived `cava` in raw
+ * ASCII mode -- the same source the waybar media plugin uses, read a line at a
+ * time through async_spawn_lines rather than a per-frame fork.
+ *
+ * The expensive part of this is NOT the FFT. cava's own analysis is a fraction
+ * of a percent of a core; the cost is that an animating bar element damages
+ * the output every frame, so the compositor recomposites at the animation rate
+ * for as long as music plays. Three things keep that honest:
+ *
+ *   - cava only runs while something is actually playing, and is stopped the
+ *     moment playback does;
+ *   - the frame rate is deliberately low (bar { media-fps }, default 20), not
+ *     the display's;
+ *   - a frame whose bars have not moved past BAR_VIZ_EPS is skipped entirely,
+ *     so a quiet passage or a paused-but-open player costs nothing.
+ */
+/* _POSIX_C_SOURCE alone does not expose M_PI, and the build sets it. */
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
+#define BAR_VIZ_MAX_BARS 8
+#define BAR_VIZ_EPS 0.02 /* per-bar movement worth a redraw */
+
+static struct {
+	double target[BAR_VIZ_MAX_BARS]; /* latest frame from cava */
+	double level[BAR_VIZ_MAX_BARS];  /* eased, what is on screen */
+	double drawn[BAR_VIZ_MAX_BARS];  /* levels at the last redraw */
+	int32_t silent_frames;
+	bool active;
+	/* No signal to analyse, so the pill shows its transport glyph instead of a
+	 * dead meter. This is not a fault to fix: a player doing bitstream
+	 * PASSTHROUGH (AC3/DTS over S/PDIF, mpv's audio-spdif) with
+	 * audio-exclusive puts no PCM in the graph at all and locks the device, so
+	 * there is nothing for cava -- or any other visualiser -- to read. Better
+	 * to show the glyph than six bars pinned at zero through a whole track. */
+	bool silent;
+} bar_viz;
+
+static AsyncSpawn *bar_viz_proc = NULL;
+static bool bar_viz_pending;
+static struct wl_event_source *bar_viz_timer = NULL;
+static char bar_viz_cfg_path[256];
+
+static void bar_viz_stop(void) {
+	bar_viz_pending = false;
+	if (bar_viz_proc) {
+		async_spawn_stop(bar_viz_proc);
+		bar_viz_proc = NULL;
+	}
+	if (bar_viz_timer) {
+		wl_event_source_timer_update(bar_viz_timer, 0);
+	}
+	bar_viz.active = false;
+	memset(&bar_viz, 0, sizeof(bar_viz));
+}
+
+/* "v0;v1;...;" with each value 0..1000 */
+static void bar_viz_on_line(const char *line, void *user) {
+	(void)user;
+	int32_t i = 0;
+	bool any = false;
+	const char *p = line;
+	while (*p && i < config.bar_media_bars) {
+		char *end = NULL;
+		long v = strtol(p, &end, 10);
+		if (end == p)
+			break;
+		if (v < 0)
+			v = 0;
+		if (v > 1000)
+			v = 1000;
+		/* sqrt curve: linear magnitudes leave the bars hugging the floor for
+		 * anything but a bass hit */
+		if (v > 0)
+			any = true;
+		bar_viz.target[i++] = sqrt((double)v / 1000.0);
+		p = end;
+		while (*p == ';' || *p == ' ')
+			p++;
+	}
+
+	/* A few seconds of pure silence while the player says it is playing means
+	 * there is no PCM to see -- passthrough, or a device we cannot monitor. */
+	if (any) {
+		bar_viz.silent_frames = 0;
+		if (bar_viz.silent) {
+			bar_viz.silent = false;
+			bar_update_all();
+		}
+	} else if (!bar_viz.silent &&
+			   ++bar_viz.silent_frames > config.bar_media_fps * 3) {
+		bar_viz.silent = true;
+		bar_update_all();
+	}
+}
+
+static const char *bar_viz_icon(void) {
+	/* Keyed on the quantised levels so an unchanged frame reuses the cached
+	 * surface instead of rasterising an identical one. */
+	static char key[128];
+	int32_t n = config.bar_media_bars;
+	size_t o = snprintf(key, sizeof(key), "asteroidz-viz");
+	for (int32_t i = 0; i < n && o < sizeof(key); i++)
+		o += snprintf(key + o, sizeof(key) - o, ":%d",
+					  (int32_t)(bar_viz.level[i] * 20.0));
+
+	const int32_t sz = 64;
+	cairo_surface_t *surf =
+		cairo_image_surface_create(CAIRO_FORMAT_ARGB32, sz, sz);
+	if (cairo_surface_status(surf) != CAIRO_STATUS_SUCCESS) {
+		cairo_surface_destroy(surf);
+		return NULL;
+	}
+	cairo_t *cr = cairo_create(surf);
+	cairo_set_antialias(cr, CAIRO_ANTIALIAS_BEST);
+
+	const float *c = config.theme.focus_bg_color;
+	cairo_set_source_rgba(cr, c[0], c[1], c[2], c[3]);
+
+	double gap = (double)sz / (n * 4.0);
+	double bw = ((double)sz - gap * (n - 1)) / n;
+	double floor_h = sz * 0.10; /* a resting bar is a dot, not nothing */
+	for (int32_t i = 0; i < n; i++) {
+		double h = floor_h + bar_viz.level[i] * (sz - floor_h);
+		double x = i * (bw + gap);
+		double y = sz - h;
+		/* rounded caps, like the waybar visualiser's */
+		double r = bw / 2.0;
+		if (r > h / 2.0)
+			r = h / 2.0;
+		cairo_new_path(cr);
+		cairo_arc(cr, x + r, y + r, r, M_PI, 1.5 * M_PI);
+		cairo_arc(cr, x + bw - r, y + r, r, 1.5 * M_PI, 2.0 * M_PI);
+		cairo_arc(cr, x + bw - r, sz - r, r, 0.0, 0.5 * M_PI);
+		cairo_arc(cr, x + r, sz - r, r, 0.5 * M_PI, M_PI);
+		cairo_close_path(cr);
+		cairo_fill(cr);
+	}
+	cairo_destroy(cr);
+	cairo_surface_flush(surf);
+	if (!asteroidz_icon_cache_put_surface(key, surf))
+		return NULL;
+	return key;
+}
+
+static int bar_viz_tick(void *data) {
+	(void)data;
+	if (!bar_viz.active) {
+		if (bar_viz_timer)
+			wl_event_source_timer_update(bar_viz_timer, 0);
+		return 0;
+	}
+
+	/* ease toward the latest cava frame; falling slower than rising reads as
+	 * a decay rather than a flicker */
+	bool moved = false;
+	for (int32_t i = 0; i < config.bar_media_bars; i++) {
+		double t = bar_viz.target[i];
+		double l = bar_viz.level[i];
+		bar_viz.level[i] = l + (t - l) * (t > l ? 0.5 : 0.2);
+		if (fabs(bar_viz.level[i] - bar_viz.drawn[i]) > BAR_VIZ_EPS)
+			moved = true;
+	}
+	if (moved) {
+		memcpy(bar_viz.drawn, bar_viz.level, sizeof(bar_viz.drawn));
+		bar_update_all();
+	}
+	if (bar_viz_timer)
+		wl_event_source_timer_update(bar_viz_timer,
+									 1000 / config.bar_media_fps);
+	return 0;
+}
+
+/* Write the config and launch cava against `sink`'s monitor. */
+static void bar_viz_launch(const char *sink) {
+	if (bar_viz_proc)
+		return;
+	if (!bar_viz_cfg_path[0]) {
+		const char *rt = getenv("XDG_RUNTIME_DIR");
+		snprintf(bar_viz_cfg_path, sizeof(bar_viz_cfg_path),
+				 "%s/asteroidz-cava.conf", rt && *rt ? rt : "/tmp");
+	}
+	FILE *f = fopen(bar_viz_cfg_path, "we");
+	if (!f)
+		return;
+	/* The DEFAULT SINK'S MONITOR, not "auto". auto picks whatever pipewire
+	 * offers first, which on a machine with more than one output is regularly
+	 * not the one being played to -- and a player doing passthrough or
+	 * upmixing to a second device then leaves the visualiser flat while music
+	 * is audibly playing. The waybar plugin names the monitor explicitly for
+	 * the same reason.
+	 *
+	 * autosens so a quiet podcast still fills the bars instead of sitting on
+	 * the floor; mono because the pill is far too small for stereo to read. */
+	char source[256];
+	if (sink && *sink)
+		snprintf(source, sizeof(source), "%s.monitor", sink);
+	else
+		snprintf(source, sizeof(source), "auto");
+	fprintf(f,
+			"[general]\nbars = %d\nframerate = %d\nautosens = 1\n"
+			"sensitivity = 100\nlower_cutoff_freq = 50\n"
+			"higher_cutoff_freq = 12000\n"
+			"[input]\nmethod = pipewire\nsource = %s\n"
+			"[output]\nmethod = raw\nraw_target = /dev/stdout\n"
+			"data_format = ascii\nascii_max_range = 1000\nchannels = mono\n"
+			"[smoothing]\nnoise_reduction = 35\n",
+			config.bar_media_bars, config.bar_media_fps, source);
+	fclose(f);
+
+	char *const argv[] = {"cava", "-p", bar_viz_cfg_path, NULL};
+	async_spawn_lines(event_loop, argv, bar_viz_on_line, NULL, &bar_viz_proc);
+	if (!bar_viz_proc)
+		return;
+	bar_viz.active = true;
+	if (!bar_viz_timer)
+		bar_viz_timer =
+			wl_event_loop_add_timer(event_loop, bar_viz_tick, NULL);
+	if (bar_viz_timer)
+		wl_event_source_timer_update(bar_viz_timer,
+									 1000 / config.bar_media_fps);
+}
+
+/* Pick the monitor to listen on from the sink list.
+ *
+ * NOT the default sink, which is the obvious choice and the wrong one: the
+ * default is only where audio goes when nothing says otherwise. A player
+ * pointed at a specific device, or doing passthrough to a receiver, plays
+ * somewhere else entirely -- and on this machine the default sink sat IDLE
+ * while the music was audibly running through the S/PDIF output, so a
+ * visualiser watching the default monitor showed a flat line through an
+ * entire track.
+ *
+ * The sink that is RUNNING is the one making noise, so that is the one to
+ * watch. */
+static void bar_viz_on_sinks(const char *out, size_t len, void *user) {
+	(void)len;
+	(void)user;
+	bar_viz_pending = false;
+
+	char chosen[192] = "";
+	cJSON *root = cJSON_Parse(out);
+	if (root) {
+		cJSON *sink = NULL;
+		cJSON_ArrayForEach(sink, root) {
+			cJSON *name = cJSON_GetObjectItem(sink, "name");
+			cJSON *state = cJSON_GetObjectItem(sink, "state");
+			if (!cJSON_IsString(name) || !name->valuestring)
+				continue;
+			if (cJSON_IsString(state) && state->valuestring &&
+				strcmp(state->valuestring, "RUNNING") == 0) {
+				snprintf(chosen, sizeof(chosen), "%s", name->valuestring);
+				break;
+			}
+		}
+		cJSON_Delete(root);
+	}
+	/* nothing running: hand cava "auto" rather than guessing, so it makes its
+	 * own choice instead of us pinning a silent device */
+	bar_viz_launch(chosen[0] ? chosen : NULL);
+}
+
+/* Called from the media refresh, i.e. potentially on every arrange while
+ * something is playing. With no cava installed, or no pipewire to read, the
+ * child exits immediately and clears the handle -- so an unguarded restart
+ * would fork twice per refresh. Exactly the failure the volume module hit;
+ * same fix, and the retry still recovers if cava or the sound server comes
+ * back mid-session. */
+#define BAR_VIZ_RETRY_S 10
+static time_t bar_viz_last_try = 0;
+
+static void bar_viz_start(void) {
+	if (bar_viz_proc || bar_viz_pending)
+		return;
+	time_t now = time(NULL);
+	if (bar_viz_last_try && now - bar_viz_last_try < BAR_VIZ_RETRY_S)
+		return;
+	bar_viz_last_try = now;
+	/* one round trip to find the sink actually in use, then cava stays up for
+	 * as long as playback does */
+	char *const argv[] = {"pactl", "-f", "json", "list", "sinks", NULL};
+	bar_viz_pending = async_spawn(event_loop, argv, bar_viz_on_sinks, NULL);
+	if (!bar_viz_pending)
+		bar_viz_launch(NULL);
+}
+
+static void bar_viz_finish(void) {
+	bar_viz_stop();
+	bar_viz_last_try = 0;
+	if (bar_viz_timer) {
+		wl_event_source_remove(bar_viz_timer);
+		bar_viz_timer = NULL;
+	}
+	if (bar_viz_cfg_path[0])
+		unlink(bar_viz_cfg_path);
 }
 
 #include "bar-popover.h"
@@ -1541,6 +1916,7 @@ static void bar_module_refresh_weather(BarModule *mod) {
 
 static void bar_module_refresh_media(BarModule *mod) {
 	if (!bar_media.have) {
+		bar_viz_stop();
 		/* nothing playing: drop the pill so the slot collapses rather than
 		 * showing a permanently empty widget */
 		for (int32_t i = 0; i < BAR_MAX_PILLS; i++)
@@ -1554,12 +1930,34 @@ static void bar_module_refresh_media(BarModule *mod) {
 		return;
 	}
 	char icon[512];
-	/* the ACTION, not the state: clicking this pill sends PlayPause, so a
-	 * playing track shows the pause glyph and vice versa */
-	bar_icon_path(icon, sizeof(icon),
-				  bar_media.playing ? "waybar-media-cava/pause.svg"
-									: "waybar-media-cava/play.svg");
-	asteroidz_tab_bar_node_set_icon(p->node, icon);
+	/* While something is playing the leading glyph is a live spectrum; paused,
+	 * it falls back to the transport glyph. The visualiser is started and
+	 * stopped here rather than on the MPRIS callback so it follows what is
+	 * actually ON SCREEN -- a player that vanishes takes the pill with it, and
+	 * an animation left running for a pill nobody can see is pure waste. */
+	const char *viz = NULL;
+	if (config.bar_media_viz && bar_media.playing) {
+		bar_viz_start();
+		/* cava stays up either way -- it costs nothing while silent, and it is
+		 * how we notice the signal coming back */
+		if (!bar_viz.silent)
+			viz = bar_viz_icon();
+	} else {
+		bar_viz_stop();
+	}
+	if (viz) {
+		asteroidz_tab_bar_node_set_icon(p->node, viz);
+		/* drawn in the accent already; a tint would flatten it */
+		asteroidz_tab_bar_node_set_icon_tint(p->node, NULL);
+	} else {
+		/* the ACTION, not the state: clicking this pill sends PlayPause, so a
+		 * playing track shows the pause glyph and vice versa */
+		bar_icon_path(icon, sizeof(icon),
+					  bar_media.playing ? "waybar-media-cava/pause.svg"
+										: "waybar-media-cava/play.svg");
+		asteroidz_tab_bar_node_set_icon(p->node, icon);
+		asteroidz_tab_bar_node_set_icon_tint(p->node, NULL);
+	}
 	if (bar_media.artist[0])
 		snprintf(p->text, sizeof(p->text), "%s \u2022 %s", bar_media.title,
 				 bar_media.artist);
@@ -2115,6 +2513,14 @@ static uint64_t bar_digest(Monitor *m) {
 			bar_hash_str(&h, bar_media.artist);
 			bar_hash(&h, &bar_media.playing, sizeof(bar_media.playing));
 			bar_hash(&h, &bar_media.have, sizeof(bar_media.have));
+			/* the visualiser's DRAWN levels, quantised the same way the icon
+			 * cache key is: a frame that moved gets a redraw, a still one
+			 * costs nothing */
+			bar_hash(&h, &bar_viz.silent, sizeof(bar_viz.silent));
+			for (int32_t b = 0; b < config.bar_media_bars; b++) {
+				int32_t q = (int32_t)(bar_viz.drawn[b] * 20.0);
+				bar_hash(&h, &q, sizeof(q));
+			}
 			break;
 		case BAR_MODULE_WEATHER:
 			bar_hash(&h, &bar_weather.temp_c, sizeof(bar_weather.temp_c));
@@ -2682,6 +3088,7 @@ static void bar_update_all(void) {}
 static void bar_reconfigure_all(void) {}
 static void bar_tray_finish(void) {}
 static void bar_volume_finish(void) {}
+static void bar_viz_finish(void) {}
 static void bar_reserve(Monitor *m, struct wlr_box *usable) {
 	(void)m;
 	(void)usable;

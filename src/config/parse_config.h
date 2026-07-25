@@ -457,6 +457,12 @@ typedef struct {
 	 * even number of pixels and also pads the run against the panel edge. */
 	int32_t bar_icon_spacing;
 	int32_t bar_volume_step; /* percentage points per scroll notch */
+	/* Media visualiser. Deliberately separate knobs from the rest: this is the
+	 * one thing in the bar that damages the output continuously, so the frame
+	 * rate is the dial that decides what it costs. */
+	int32_t bar_media_bars;
+	int32_t bar_media_fps;
+	int32_t bar_media_viz; /* 0 disables the visualiser entirely */
 	/* Click-through panels (draw/bar-popover.h). Width is configured rather
 	 * than measured: the rows carry device names that run to eighty
 	 * characters, so sizing to content would produce a panel wider than the
@@ -2295,6 +2301,12 @@ bool parse_option(Config *config, char *key, char *value) {
 		config->bar_icon_spacing = CLAMP_INT(atoi(value), 0, 200);
 	} else if (strcmp(key, "bar_volume_step") == 0) {
 		config->bar_volume_step = CLAMP_INT(atoi(value), 1, 50);
+	} else if (strcmp(key, "bar_media_bars") == 0) {
+		config->bar_media_bars = CLAMP_INT(atoi(value), 1, 8);
+	} else if (strcmp(key, "bar_media_fps") == 0) {
+		config->bar_media_fps = CLAMP_INT(atoi(value), 1, 60);
+	} else if (strcmp(key, "bar_media_viz") == 0) {
+		config->bar_media_viz = atoi(value) != 0;
 	} else if (strcmp(key, "bar_popover_width") == 0) {
 		config->bar_popover_width = CLAMP_INT(atoi(value), 80, 2000);
 	} else if (strcmp(key, "bar_popover_row_height") == 0) {
@@ -3653,6 +3665,9 @@ static const struct {
 	{"bar/tag-padding", "bar_tag_padding"},
 	{"bar/icon-spacing", "bar_icon_spacing"},
 	{"bar/volume-step", "bar_volume_step"},
+	{"bar/media/bars", "bar_media_bars"},
+	{"bar/media/fps", "bar_media_fps"},
+	{"bar/media/visualiser", "bar_media_viz"},
 	{"bar/popover/width", "bar_popover_width"},
 	{"bar/popover/row-height", "bar_popover_row_height"},
 	{"bar/popover/spacing", "bar_popover_spacing"},
@@ -4735,6 +4750,12 @@ void set_value_default() {
 	config.bar_tag_padding = 16;
 	config.bar_icon_spacing = 5;
 	config.bar_volume_step = 5;
+	config.bar_media_bars = 6;
+	/* Not the display's rate: this animates for as long as music plays, and
+	 * every frame is a recomposite of the bar's damage region on every
+	 * monitor. 20 reads as fluid and costs a fifth of 100Hz. */
+	config.bar_media_fps = 20;
+	config.bar_media_viz = 1;
 	config.bar_popover_width = 340;
 	config.bar_popover_row_height = 34;
 	config.bar_popover_spacing = 2;
