@@ -45,6 +45,12 @@ bar {
 | `tag-padding` | `16` | horizontal padding inside a workspace/layout chip |
 | `icon-spacing` | `5` | exact gap between two adjacent icon-only status glyphs (`cpu`, `memory`), which carry no padding of their own |
 | `volume-step` | `5` | percentage points the `volume` pill moves per scroll notch |
+| `popover.width` | `340` | popover panel width (rows ellipsise into it) |
+| `popover.row-height` | `34` | height of one popover row |
+| `popover.spacing` | `2` | gap between rows |
+| `popover.padding` | `12` | horizontal padding inside a row |
+| `popover.gap` | `6` | distance from the bar's outer edge |
+| `popover.color` | `0x0a0a0cf2` | popover fill (RGBA) |
 | `min-tags` | `3` | pad the visible tag set up to this many with empty tags |
 | `show-logo` | `true` | leading asteroidz ship pill on the workspace group |
 | `tag-icons` | `3` | app icons drawn inside each tag pill (0 disables, max 4) |
@@ -86,7 +92,7 @@ for a newer build still starts.
 | `idle` | manual idle-inhibit state ("keep awake") | toggles it |
 | `weather` | current temperature and condition, from open-meteo | — |
 | `media` | now playing (title • artist), from MPRIS | play/pause |
-| `volume` | default sink level, with a speaker icon (also accepts `vol`) | click toggles mute; scroll steps by `volume-step` |
+| `volume` | default sink level, with a speaker icon (also accepts `vol`) | click toggles mute; right-click opens the output picker; scroll steps by `volume-step` |
 | `tray` | one icon per StatusNotifierItem (also accepts `systray`) | left: `Activate`; right/middle: `SecondaryActivate` |
 
 The `tags` module mirrors the Waybar workspace module it replaces: it shows
@@ -140,6 +146,42 @@ and an application that exits without unregistering is dropped on
 keyboard grab and its own hit-testing, and the bar has no layer for that yet.
 Right-click sends the item's own `SecondaryActivate`, which most applications
 wire to "show my menu" regardless.
+
+## Popovers
+
+A module can drop a panel below its pill holding rows the pointer can act on.
+Right-clicking `volume` opens the **audio output picker**: one row per sink,
+the current default filled in the theme's accent, click to switch.
+
+Popovers are built from the pieces the bar already has — a scenefx
+blur/rect/shadow stack for the panel, one pill node per row — so they inherit
+the theme and the per-output scale for free and need no surface, no client and
+no layer-shell round trip. A popover is just more scene nodes.
+
+Exactly **one** is open at a time, session-wide. Two would need z-order
+arbitration and a per-popover grab for no benefit: a bar popover is a menu, and
+menus are modal by convention.
+
+The panel is anchored to the centre of the pill that opened it and clamped to
+the output, so a pill near the right edge — which is where the tray's would
+always land — does not hang its popover off the screen. It sits below a top bar
+and above a bottom one.
+
+Dismissal:
+
+- a click on a row runs that row's action and closes;
+- a click **anywhere else** closes, and that click is **swallowed** — a click
+  that dismisses a menu must not also press whatever was underneath it;
+- <kbd>Escape</kbd> closes.
+
+There is no keyboard grab and no arrow-key navigation yet. That needs the
+popover to take focus, which would steal it from the window underneath, and
+wants its own design pass. Everything except <kbd>Escape</kbd> therefore keeps
+working normally while a popover is up.
+
+A popover whose content query returns nothing closes itself rather than leaving
+an empty panel floating over the desktop — which is what happens on a machine
+with no sound server, and is pinned by the regression suite.
 
 ## Panels
 
@@ -310,8 +352,10 @@ notch. The tray forwards scrolls to the item as the spec's
 `Scroll(delta, orientation)`, letting a mixer applet take volume and a pager
 take workspaces.
 
-Not implemented yet: popovers, so no click-through panels, no tray context
-menus, and no volume slider or output picker — those stay in Waybar.
+[Popovers](#popovers) exist as of this version, with the audio output picker
+as the first one. Still missing: a draggable volume slider (that needs pointer
+capture across a drag, not just a click), the tray's DBusMenu context menus,
+and keyboard navigation within a popover.
 
 ## Developing against it
 

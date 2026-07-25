@@ -1047,6 +1047,7 @@ static void bar_volume_set(int32_t delta_pct) {
 	async_spawn(event_loop, argv, NULL, NULL);
 }
 
+#include "bar-popover.h"
 #include "bar-tray.h"
 
 /* ─── per-module content ──────────────────────────────────────────────────── */
@@ -2324,6 +2325,11 @@ static void bar_add_modules(AsteroidzBar *bar, const char *list,
 static void bar_destroy(Monitor *m) {
 	if (!m || !m->bar)
 		return;
+	/* the popover holds this monitor and hangs off this bar's geometry, so it
+	 * cannot outlive either -- an output being unplugged with a menu up left
+	 * it pointing at a freed Monitor */
+	if (bar_popover.mon == m)
+		bar_popover_close();
 	AsteroidzBar *bar = m->bar;
 	for (int32_t i = 0; i < bar->nmodules; i++)
 		for (int32_t j = 0; j < BAR_MAX_PILLS; j++)
@@ -2438,6 +2444,12 @@ static bool bar_handle_node_click(AsteroidzNodeData *hit, uint32_t button) {
 	case BAR_MODULE_VOLUME:
 		if (button == BTN_LEFT) {
 			bar_volume_set(0); /* toggle mute */
+			return true;
+		}
+		if (button == BTN_RIGHT) {
+			/* the output picker hangs from the middle of this pill;
+			 * last_x is where bar_place_module put it */
+			bar_popover_open_sinks(m, p->node->last_x + p->width / 2);
 			return true;
 		}
 		break;
@@ -2614,6 +2626,21 @@ static bool bar_scroll_at(double x, double y, double delta,
 	(void)horizontal;
 	return false;
 }
+static bool bar_popover_handle_node_click(AsteroidzNodeData *hit,
+										  uint32_t button) {
+	(void)hit;
+	(void)button;
+	return false;
+}
+static bool bar_popover_dismiss_click(struct wlr_scene_node *node) {
+	(void)node;
+	return false;
+}
+static bool bar_popover_handle_key(uint32_t keysym) {
+	(void)keysym;
+	return false;
+}
+static void bar_popover_close(void) {}
 
 #endif /* ASTEROIDZ_NATIVE_BAR */
 

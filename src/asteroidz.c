@@ -245,7 +245,8 @@ enum asteroidz_node_type {
 	ASTEROIDZ_jump_label_node,
 	ASTEROIDZ_TITLEBAR_NODE,
 	ASTEROIDZ_TITLEBAR_CLOSE_NODE,
-	ASTEROIDZ_BAR_NODE /* a native status-bar pill (draw/bar.h) */
+	ASTEROIDZ_BAR_NODE,    /* a native status-bar pill (draw/bar.h) */
+	ASTEROIDZ_BAR_POPOVER_NODE /* a row in a bar popover (draw/bar-popover.h) */
 };
 
 #ifdef XWAYLAND
@@ -3174,6 +3175,20 @@ bool handle_buttonpress(struct wlr_pointer_button_event *event) {
 			node = wlr_scene_node_at(&layers[li]->node, cursor->x, cursor->y,
 									 NULL, NULL);
 		}
+		/* A popover is modal: the click either lands on one of its rows or
+		 * dismisses it, and a dismissing click is SPENT -- letting it also
+		 * press what was underneath means closing a menu can trigger the
+		 * thing you were closing it to avoid. */
+		if (node && node->data &&
+			((AsteroidzNodeData *)node->data)->type ==
+				ASTEROIDZ_BAR_POPOVER_NODE) {
+			if (bar_popover_handle_node_click((AsteroidzNodeData *)node->data,
+											  event->button))
+				return true;
+		}
+		if (bar_popover_dismiss_click(node))
+			return true;
+
 		if (node && node->data) {
 			AsteroidzNodeData *nodedata = (AsteroidzNodeData *)node->data;
 			if (nodedata->type == ASTEROIDZ_BAR_NODE) {
@@ -3389,6 +3404,7 @@ void cleanup(void) {
 	ipc_cleanup();
 	/* before session_bus_finish: releasing the watcher/host names and the
 	 * signal matches needs the connection still open */
+	bar_popover_close();
 	bar_tray_finish();
 	bar_volume_finish();
 	session_bus_finish();
@@ -5908,6 +5924,21 @@ void keypress(struct wl_listener *listener, void *data) {
 		group->nsyms = 0;
 		wl_event_source_timer_update(group->key_repeat_source, 0);
 		return;
+	}
+
+	/* An open bar popover takes Escape, and only Escape -- it has no keyboard
+	 * grab, so every other key must keep working exactly as it did. Placed
+	 * after the screenshot overlay (which owns the keyboard outright) and
+	 * before the binding tables, so a user-bound Escape does not fire while a
+	 * menu is up. */
+	if (event->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
+		for (i = 0; i < nsyms; i++) {
+			if (bar_popover_handle_key(syms[i])) {
+				group->nsyms = 0;
+				wl_event_source_timer_update(group->key_repeat_source, 0);
+				return;
+			}
+		}
 	}
 
 	/* xdg-desktop-portal global shortcuts get first pick (push-to-talk

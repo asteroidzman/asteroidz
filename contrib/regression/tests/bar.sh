@@ -332,6 +332,46 @@ test_bar_weather_module_is_non_blocking() {
 	bar_off
 }
 
+test_bar_popover_dismiss_swallows_the_click() {
+	[ "$(bar_supported)" = "true" ] || { echo "  (skip: built without -Dnative-bar)"; return 0; }
+	# The harness has no sound server, so the audio popover never gets rows and
+	# never actually opens -- which is itself the assertion worth making: a
+	# popover whose content query comes back empty must close itself rather
+	# than leaving an empty panel floating over the desktop, and must not take
+	# the input path down with it.
+	#
+	# The dismiss contract is pinned through the tag pills instead. With no
+	# popover open, a click on a tag pill must still switch view; if the
+	# dismiss hook ever started swallowing clicks unconditionally (rather than
+	# only while one is up) that would silently break every bar click, which is
+	# the regression this guards.
+	hl_dispatch "view,1"
+	hl_spawn_kitty W1 >/dev/null
+	hl_wait_client_count 1
+	hl_dispatch "view,2"
+	hl_spawn_kitty W2 >/dev/null
+	hl_wait_client_count 2
+
+	bar_set 'bar { enable true; height 30; position "top"; margin { x 8; y 4 }; pill-min-width 60; tag-padding 4; pill-padding 4; panel { enable false }; show-logo false; tag-icons 0; modules-left "tags"; modules-right "volume" }'
+	sleep 0.6
+	hl_assert_eq "precondition: tag 2 is the active tag" "$(bar_active_tags)" "[2]"
+
+	# right-click the volume pill: with no pactl to answer, no popover opens
+	hl_click "$((HL_WIDTH - 40))" 19 rclick
+	sleep 0.6
+	hl_assert_true "a popover with no content leaves the compositor healthy" \
+		"$(hl_get "get all-monitors" >/dev/null 2>&1 && echo true || echo false)"
+
+	# and the ordinary bar click path is untouched
+	hl_click 30 19
+	sleep 0.5
+	hl_assert_eq "tag pill clicks still work with the dismiss hook installed" \
+		"$(bar_active_tags)" "[1]"
+
+	bar_off
+	hl_dispatch "view,1"
+}
+
 test_bar_scroll_routes_to_the_pill_under_the_pointer() {
 	[ "$(bar_supported)" = "true" ] || { echo "  (skip: built without -Dnative-bar)"; return 0; }
 	# Scroll routing is asserted through the TAGS pill rather than the volume

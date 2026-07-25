@@ -457,6 +457,16 @@ typedef struct {
 	 * even number of pixels and also pads the run against the panel edge. */
 	int32_t bar_icon_spacing;
 	int32_t bar_volume_step; /* percentage points per scroll notch */
+	/* Click-through panels (draw/bar-popover.h). Width is configured rather
+	 * than measured: the rows carry device names that run to eighty
+	 * characters, so sizing to content would produce a panel wider than the
+	 * output. Rows ellipsise into it instead. */
+	int32_t bar_popover_width;
+	int32_t bar_popover_row_height;
+	int32_t bar_popover_spacing;
+	int32_t bar_popover_padding; /* horizontal padding inside a row */
+	int32_t bar_popover_gap;     /* distance from the bar's outer edge */
+	float bar_popover_color[4];
 	/* tags module: 0 = only tags that are selected or hold a window (the
 	 * waybar workspace-module behaviour), 1 = every configured tag always */
 	int32_t bar_show_all_tags;
@@ -2285,6 +2295,26 @@ bool parse_option(Config *config, char *key, char *value) {
 		config->bar_icon_spacing = CLAMP_INT(atoi(value), 0, 200);
 	} else if (strcmp(key, "bar_volume_step") == 0) {
 		config->bar_volume_step = CLAMP_INT(atoi(value), 1, 50);
+	} else if (strcmp(key, "bar_popover_width") == 0) {
+		config->bar_popover_width = CLAMP_INT(atoi(value), 80, 2000);
+	} else if (strcmp(key, "bar_popover_row_height") == 0) {
+		config->bar_popover_row_height = CLAMP_INT(atoi(value), 8, 200);
+	} else if (strcmp(key, "bar_popover_spacing") == 0) {
+		config->bar_popover_spacing = CLAMP_INT(atoi(value), 0, 100);
+	} else if (strcmp(key, "bar_popover_padding") == 0) {
+		config->bar_popover_padding = CLAMP_INT(atoi(value), 0, 200);
+	} else if (strcmp(key, "bar_popover_gap") == 0) {
+		config->bar_popover_gap = CLAMP_INT(atoi(value), 0, 200);
+	} else if (strcmp(key, "bar_popover_color") == 0) {
+		int64_t color = parse_color(value);
+		if (color < 0) {
+			fprintf(stderr,
+					"\033[1m\033[31m[ERROR]:\033[33m Invalid bar_popover_color "
+					"'%s'\033[0m\n",
+					value);
+			return false;
+		}
+		convert_hex_to_rgba(config->bar_popover_color, color);
 	} else if (strcmp(key, "bar_show_all_tags") == 0) {
 		config->bar_show_all_tags = atoi(value) != 0;
 	} else if (strcmp(key, "bar_min_tags") == 0) {
@@ -3623,6 +3653,12 @@ static const struct {
 	{"bar/tag-padding", "bar_tag_padding"},
 	{"bar/icon-spacing", "bar_icon_spacing"},
 	{"bar/volume-step", "bar_volume_step"},
+	{"bar/popover/width", "bar_popover_width"},
+	{"bar/popover/row-height", "bar_popover_row_height"},
+	{"bar/popover/spacing", "bar_popover_spacing"},
+	{"bar/popover/padding", "bar_popover_padding"},
+	{"bar/popover/gap", "bar_popover_gap"},
+	{"bar/popover/color", "bar_popover_color"},
 	{"bar/show-all-tags", "bar_show_all_tags"},
 	{"bar/min-tags", "bar_min_tags"},
 	{"bar/show-logo", "bar_show_logo"},
@@ -4699,6 +4735,15 @@ void set_value_default() {
 	config.bar_tag_padding = 16;
 	config.bar_icon_spacing = 5;
 	config.bar_volume_step = 5;
+	config.bar_popover_width = 340;
+	config.bar_popover_row_height = 34;
+	config.bar_popover_spacing = 2;
+	config.bar_popover_padding = 12;
+	config.bar_popover_gap = 6;
+	/* a touch more opaque than the bar panels: a menu has to stay readable
+	 * over whatever it covers, where a bar panel only ever sits over the
+	 * wallpaper or a window edge */
+	convert_hex_to_rgba(config.bar_popover_color, 0x0a0a0cf2);
 	config.bar_show_all_tags = 0;
 	config.bar_min_tags = 3;
 	config.bar_show_logo = 1;
