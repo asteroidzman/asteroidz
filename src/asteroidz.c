@@ -704,6 +704,11 @@ struct Monitor {
 	struct wl_list link;
 	struct wlr_output *wlr_output;
 	struct wlr_scene_output *scene_output;
+	/* Per-frame output state owned by the tearing-control path
+	 * (ext-protocol/tearing.h), which inits it, commits it and re-inits it
+	 * each frame. Nothing else may stage state here expecting it to survive:
+	 * requestmonstate used to, and apply_tear_state's wlr_output_state_init
+	 * silently threw the staged resize away every frame. */
 	struct wlr_output_state pending;
 	struct wl_listener frame;
 	struct wl_listener destroy;
@@ -4486,7 +4491,16 @@ bool apply_rule_to_state(Monitor *m, const ConfigMonitorRule *rule,
 				wlr_output_state_set_mode(state, internal_mode);
 				mode_set = true;
 			}
-		} else if (custom || wlr_output_is_headless(m->wlr_output)) {
+		} else if (custom || wlr_output_is_headless(m->wlr_output) ||
+				   wl_list_empty(&m->wlr_output->modes)) {
+			/* An output with no mode list at all can ONLY take a custom mode
+			 * -- that is every virtual backend, not just headless: the nested
+			 * Wayland backend and X11 backend both present a window with no
+			 * enumerable modes. Restricting this to headless meant a nested
+			 * session fell through to the preferred-mode path below, which
+			 * hands set_mode() a NULL, fails the commit, and leaves the
+			 * output disabled. See the comment there for what that then
+			 * cost. */
 			wlr_output_state_set_custom_mode(
 				state, rule->width, rule->height,
 				(int32_t)roundf(rule->refresh * 1000));
@@ -4798,9 +4812,30 @@ void createmon(struct wl_listener *listener, void *data) {
 		}
 	}
 
-	if (!custom_monitor_mode)
-		wlr_output_state_set_mode(&state,
-								  wlr_output_preferred_mode(wlr_output));
+	if (!custom_monitor_mode) {
+		struct wlr_output_mode *preferred = wlr_output_preferred_mode(wlr_output);
+		if (preferred) {
+			wlr_output_state_set_mode(&state, preferred);
+		} else {
+			/* No mode list => wlr_output_preferred_mode() returns NULL, and
+			 * committing a NULL fixed mode FAILS. The failure used to be
+			 * silent and the consequences were not: the output stayed
+			 * !enabled, so the very next updatemons -- which runs as the
+			 * output_layout change listener, i.e. from inside
+			 * wlr_output_layout_add() below -- took the "remove disabled
+			 * output from the layout" branch and freed the
+			 * wlr_output_layout_output that wlroots was about to hand to the
+			 * layout `add` signal. wlr_xdg_output_manager_v1 then read that
+			 * freed struct, and the nested/X11 backends segfaulted on every
+			 * startup.
+			 *
+			 * A virtual output's size is whatever the backend gave the
+			 * window, so adopt that; refresh 0 means "unspecified". */
+			int32_t w = wlr_output->width > 0 ? wlr_output->width : 1280;
+			int32_t h = wlr_output->height > 0 ? wlr_output->height : 720;
+			wlr_output_state_set_custom_mode(&state, w, h, 0);
+		}
+	}
 
 	/* Set up event listeners */
 	LISTEN(&wlr_output->events.frame, &m->frame, rendermon);
@@ -4815,7 +4850,33 @@ void createmon(struct wl_listener *listener, void *data) {
 	 * state, it can crash or fail the commit */
 	if (!wlr_output_is_headless(wlr_output))
 		mon_state_apply_color(m, &state);
-	wlr_output_commit_state(wlr_output, &state);
+	if (!wlr_output_commit_state(wlr_output, &state)) {
+		/* A rejected initial commit is not survivable if ignored, and it was
+		 * ignored: the output stays !enabled, and the very next updatemons --
+		 * which runs as the output_layout `change` listener, i.e. from inside
+		 * the wlr_output_layout_add() a few lines below -- takes its "remove
+		 * a disabled output from the layout" branch and frees the
+		 * wlr_output_layout_output that wlroots is, at that moment, still
+		 * about to pass to the layout `add` signal. wlr_xdg_output_manager_v1
+		 * then dereferences the freed struct. That use-after-free segfaulted
+		 * every nested (WLR_BACKENDS=wayland) and X11 startup, because a
+		 * virtual output has no mode list and so ends up committing a mode
+		 * the backend rejects.
+		 *
+		 * Retry with nothing but `enabled`, letting the backend keep whatever
+		 * mode it came up with. A monitor at the wrong resolution is a far
+		 * better outcome than a crash, and reapply_monitor_rules will have
+		 * another go once the output is live. */
+		wlr_log(WLR_ERROR,
+				"output %s: initial commit rejected, retrying without a mode",
+				wlr_output->name);
+		wlr_output_state_finish(&state);
+		wlr_output_state_init(&state);
+		wlr_output_state_set_enabled(&state, !prefer_disable);
+		if (!wlr_output_commit_state(wlr_output, &state))
+			wlr_log(WLR_ERROR, "output %s: fallback commit also rejected",
+					wlr_output->name);
+	}
 	wlr_output_state_finish(&state);
 
 	wl_list_insert(&mons, &m->link);
@@ -5541,26 +5602,26 @@ void requestmonstate(struct wl_listener *listener, void *data) {
 	Monitor *m = wl_container_of(listener, m, request_state);
 	const struct wlr_output_event_request_state *event = data;
 
-	if (event->state->committed == WLR_OUTPUT_STATE_MODE) {
-		switch (event->state->mode_type) {
-		case WLR_OUTPUT_STATE_MODE_FIXED:
-			wlr_output_state_set_mode(&m->pending, event->state->mode);
-			break;
-		case WLR_OUTPUT_STATE_MODE_CUSTOM:
-			wlr_output_state_set_custom_mode(&m->pending,
-											 event->state->custom_mode.width,
-											 event->state->custom_mode.height,
-											 event->state->custom_mode.refresh);
-			break;
-		}
-		updatemons(NULL, NULL);
-		wlr_output_schedule_frame(m->wlr_output);
+	/* The mode branch here used to stage the requested size into `m->pending`
+	 * and never commit it -- and nothing else ever read that field, so it was
+	 * written twice and used nowhere. The visible result: resizing the host
+	 * window of a nested session moved the window but left the output at its
+	 * old size, so only the top-left of the frame was ever painted and the
+	 * host's own wallpaper showed through the rest. Commit the state the
+	 * backend actually asked for. */
+	if (!wlr_output_commit_state(m->wlr_output, event->state)) {
+		wlr_log(WLR_ERROR, "output %s: requested state could not be applied",
+				m->wlr_output->name);
 		return;
 	}
 
-	if (!wlr_output_commit_state(m->wlr_output, event->state)) {
-		wlr_log(WLR_ERROR,
-				"Backend requested a new state that could not be applied");
+	/* A size change has to re-run the layout: m->m/m->w, the bar strip and
+	 * every tiled window are all derived from the output geometry. Bitmask
+	 * test, not equality -- the backend may commit the mode alongside other
+	 * fields, which the old `==` silently skipped. */
+	if (event->state->committed & WLR_OUTPUT_STATE_MODE) {
+		updatemons(NULL, NULL);
+		wlr_output_schedule_frame(m->wlr_output);
 	}
 }
 
