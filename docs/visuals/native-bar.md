@@ -25,7 +25,7 @@ bar {
 
     modules-left   "tags,layout,title"
     modules-center "clock"
-    modules-right  ""
+    modules-right  "cpu,memory,network"
 
     clock { format "%H:%M" }
 }
@@ -49,8 +49,9 @@ bar {
 | `panel.shadow` | `true` | drop shadow under the panel (needs `shadows`) |
 | `modules-left` | `"tags,layout,title"` | comma-separated module list |
 | `modules-center` | `"clock"` | " |
-| `modules-right` | *(empty)* | " (the tray and CLI/D-Bus pills will live here) |
+| `modules-right` | *(empty)* | " (the tray will live here) |
 | `clock.format` | `"%H:%M"` | `strftime` format |
+| `interval` | `2` | seconds between `/proc` + `/sys` metric samples |
 
 Changes take effect on `reload_config` — including changes to the module
 lists themselves, which rebuild the bars rather than just refreshing them.
@@ -66,6 +67,9 @@ for a newer build still starts.
 | `clock` | `strftime` of `clock.format` | — |
 | `title` | the focused window's title, with its app icon | focuses that window |
 | `layout` | the current layout's symbol | — |
+| `cpu` | total CPU load, from `/proc/stat` deltas | — |
+| `memory` | used memory, from `/proc/meminfo` | — |
+| `network` | link state and ↓/↑ throughput, from `/sys/class/net` | — |
 
 By default the `tags` module hides tags that are both empty and unselected, so
 a nine-tag setup does not permanently spend nine pills on tags holding nothing.
@@ -117,13 +121,21 @@ warns about and ignores.
 
 ## Scope
 
-Implemented: the bar frame, per-monitor layout in three panelled slots, click routing,
-space reservation, and the four modules above — everything that needs no
-external process and no popover.
+Implemented: the bar frame, per-monitor layout in three panelled slots, click
+routing, space reservation, and the seven modules above — everything that needs
+no external process and no popover.
+
+The metric modules read `/proc` and `/sys` directly, on a shared timer, once
+per machine rather than once per monitor. That is deliberate and it is the
+line between what is cheap to run in-compositor and what is not: the Waybar
+plugins they replace fork `wpctl`/`nmcli`/`curl` on their main loop, which is
+an invisible stutter in a bar process but a dropped frame and an input hitch
+in a compositor.
 
 Not implemented yet: popovers (so no click-through panels), the system tray,
-and modules that wrap a CLI or D-Bus service (volume, network, weather,
-media, …). Those stay in Waybar for now.
+and the modules that genuinely need a subprocess or a D-Bus session — volume
+(wpctl/pactl), weather (HTTP), media (MPRIS). Those need async plumbing before
+they can move in-process, and stay in Waybar until then.
 
 ## Developing against it
 

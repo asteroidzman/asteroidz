@@ -34,6 +34,14 @@ enum bar_module_kind {
 	BAR_MODULE_CLOCK,
 	BAR_MODULE_TITLE,
 	BAR_MODULE_LAYOUT,
+	/* System metrics. Deliberately limited to what can be read straight out
+	 * of /proc and /sys: no subprocess, no D-Bus, no network. That is the
+	 * whole reason these are cheap to run in-compositor -- the waybar plugins
+	 * they replace fork wpctl/nmcli/curl on their main loop, which is a
+	 * stutter in a bar process and a dropped frame in a compositor. */
+	BAR_MODULE_CPU,
+	BAR_MODULE_MEMORY,
+	BAR_MODULE_NETWORK,
 };
 
 enum bar_slot { BAR_SLOT_LEFT = 0, BAR_SLOT_CENTER, BAR_SLOT_RIGHT,
@@ -102,6 +110,7 @@ typedef struct AsteroidzBar {
 } AsteroidzBar;
 
 static struct wl_event_source *bar_clock_timer = NULL;
+static struct wl_event_source *bar_metrics_timer = NULL;
 
 static void bar_update(Monitor *m);
 static void bar_update_all(void);
@@ -119,7 +128,164 @@ static enum bar_module_kind bar_module_kind_from_name(const char *name) {
 		return BAR_MODULE_TITLE;
 	if (strcmp(name, "layout") == 0)
 		return BAR_MODULE_LAYOUT;
+	if (strcmp(name, "cpu") == 0)
+		return BAR_MODULE_CPU;
+	if (strcmp(name, "memory") == 0 || strcmp(name, "mem") == 0)
+		return BAR_MODULE_MEMORY;
+	if (strcmp(name, "network") == 0 || strcmp(name, "net") == 0)
+		return BAR_MODULE_NETWORK;
 	return BAR_MODULE_NONE;
+}
+
+static bool bar_kind_is_metric(enum bar_module_kind k) {
+	return k == BAR_MODULE_CPU || k == BAR_MODULE_MEMORY ||
+		   k == BAR_MODULE_NETWORK;
+}
+
+/* ─── system metrics ──────────────────────────────────────────────────────── */
+
+/* Sampled once per tick for the whole system, not per monitor: these readings
+ * are machine-wide, so two outputs must not mean two reads of /proc. */
+static struct {
+	int32_t cpu_pct;
+	int32_t mem_pct;
+	uint64_t rx_bytes, tx_bytes; /* running totals, for the delta */
+	double rx_rate, tx_rate;     /* bytes/sec since the previous sample */
+	char iface[32];
+	bool link_up;
+	uint64_t prev_busy, prev_total;
+	struct timespec prev_ts;
+	bool primed;
+} bar_metrics;
+
+static void bar_sample_cpu(void) {
+	FILE *f = fopen("/proc/stat", "re");
+	if (!f)
+		return;
+	char label[16];
+	uint64_t v[10] = {0};
+	int n = fscanf(f, "%15s %lu %lu %lu %lu %lu %lu %lu %lu %lu %lu", label,
+				   &v[0], &v[1], &v[2], &v[3], &v[4], &v[5], &v[6], &v[7],
+				   &v[8], &v[9]);
+	fclose(f);
+	if (n < 5)
+		return;
+	uint64_t total = 0;
+	for (int i = 0; i < 10; i++)
+		total += v[i];
+	uint64_t idle = v[3] + v[4]; /* idle + iowait */
+	uint64_t busy = total - idle;
+	if (bar_metrics.prev_total && total > bar_metrics.prev_total) {
+		uint64_t dt = total - bar_metrics.prev_total;
+		uint64_t db = busy - bar_metrics.prev_busy;
+		bar_metrics.cpu_pct = (int32_t)((db * 100 + dt / 2) / dt);
+	}
+	bar_metrics.prev_total = total;
+	bar_metrics.prev_busy = busy;
+}
+
+static void bar_sample_memory(void) {
+	FILE *f = fopen("/proc/meminfo", "re");
+	if (!f)
+		return;
+	char line[256];
+	uint64_t total = 0, avail = 0;
+	while (fgets(line, sizeof(line), f)) {
+		if (!total)
+			sscanf(line, "MemTotal: %lu kB", &total);
+		if (!avail)
+			sscanf(line, "MemAvailable: %lu kB", &avail);
+		if (total && avail)
+			break;
+	}
+	fclose(f);
+	if (total)
+		bar_metrics.mem_pct = (int32_t)(((total - avail) * 100 + total / 2) /
+										total);
+}
+
+/* First non-loopback interface reporting operstate "up", with the summed
+ * byte counters of every interface (a laptop switching wifi<->ethernet should
+ * not show a throughput spike from the counters resetting). */
+static void bar_sample_network(void) {
+	DIR *d = opendir("/sys/class/net");
+	if (!d)
+		return;
+	struct dirent *e;
+	uint64_t rx = 0, tx = 0;
+	char up_iface[32] = "";
+	while ((e = readdir(d))) {
+		if (e->d_name[0] == '.' || strcmp(e->d_name, "lo") == 0)
+			continue;
+		char path[512];
+		char buf[64];
+		FILE *f;
+
+		snprintf(path, sizeof(path), "/sys/class/net/%s/operstate", e->d_name);
+		if ((f = fopen(path, "re"))) {
+			if (fgets(buf, sizeof(buf), f) && strncmp(buf, "up", 2) == 0 &&
+				!up_iface[0])
+				snprintf(up_iface, sizeof(up_iface), "%s", e->d_name);
+			fclose(f);
+		}
+		snprintf(path, sizeof(path), "/sys/class/net/%s/statistics/rx_bytes",
+				 e->d_name);
+		if ((f = fopen(path, "re"))) {
+			unsigned long v = 0;
+			if (fscanf(f, "%lu", &v) == 1)
+				rx += v;
+			fclose(f);
+		}
+		snprintf(path, sizeof(path), "/sys/class/net/%s/statistics/tx_bytes",
+				 e->d_name);
+		if ((f = fopen(path, "re"))) {
+			unsigned long v = 0;
+			if (fscanf(f, "%lu", &v) == 1)
+				tx += v;
+			fclose(f);
+		}
+	}
+	closedir(d);
+
+	struct timespec now;
+	clock_gettime(CLOCK_MONOTONIC, &now);
+	if (bar_metrics.primed) {
+		double dt = (now.tv_sec - bar_metrics.prev_ts.tv_sec) +
+					(now.tv_nsec - bar_metrics.prev_ts.tv_nsec) / 1e9;
+		if (dt > 0.05) {
+			/* counters only ever climb; a decrease means an interface went
+			 * away, so drop that sample rather than reporting a negative */
+			bar_metrics.rx_rate = rx >= bar_metrics.rx_bytes
+									  ? (rx - bar_metrics.rx_bytes) / dt
+									  : 0.0;
+			bar_metrics.tx_rate = tx >= bar_metrics.tx_bytes
+									  ? (tx - bar_metrics.tx_bytes) / dt
+									  : 0.0;
+		}
+	}
+	bar_metrics.rx_bytes = rx;
+	bar_metrics.tx_bytes = tx;
+	bar_metrics.prev_ts = now;
+	bar_metrics.primed = true;
+	bar_metrics.link_up = up_iface[0] != '\0';
+	snprintf(bar_metrics.iface, sizeof(bar_metrics.iface), "%s", up_iface);
+}
+
+static void bar_metrics_sample(void) {
+	bar_sample_cpu();
+	bar_sample_memory();
+	bar_sample_network();
+}
+
+/* "1.2M" / "340K" / "12" -- short enough that the pill does not resize on
+ * every sample, which would jitter the whole slot. */
+static void bar_fmt_rate(double bytes_per_sec, char *out, size_t len) {
+	if (bytes_per_sec >= 1024.0 * 1024.0)
+		snprintf(out, len, "%.1fM", bytes_per_sec / (1024.0 * 1024.0));
+	else if (bytes_per_sec >= 1024.0)
+		snprintf(out, len, "%.0fK", bytes_per_sec / 1024.0);
+	else
+		snprintf(out, len, "%.0f", bytes_per_sec);
 }
 
 /* ─── pill lifecycle ──────────────────────────────────────────────────────── */
@@ -323,6 +489,54 @@ static void bar_module_refresh_layout(BarModule *mod) {
 		bar_pill_release(&mod->pills[i]);
 }
 
+/* One-pill metric modules. The glyphs are Nerd Font (the same family the
+ * waybar modules these replace used); a font without them falls back through
+ * fontconfig rather than drawing nothing. A reading past its threshold takes
+ * the theme's urgent colour, which is how the sysinfo pill carried load. */
+static void bar_module_refresh_metric(BarModule *mod) {
+	BarPill *p = bar_pill_get(mod, 0);
+	if (!p) {
+		mod->npills = 0;
+		return;
+	}
+	bool hot = false;
+	switch (mod->kind) {
+	case BAR_MODULE_CPU:
+		snprintf(p->text, sizeof(p->text), "\U000F0EE0 %d%%",
+				 bar_metrics.cpu_pct);
+		hot = bar_metrics.cpu_pct >= 85;
+		break;
+	case BAR_MODULE_MEMORY:
+		snprintf(p->text, sizeof(p->text), "\U000F035B %d%%",
+				 bar_metrics.mem_pct);
+		hot = bar_metrics.mem_pct >= 90;
+		break;
+	case BAR_MODULE_NETWORK: {
+		if (!bar_metrics.link_up) {
+			snprintf(p->text, sizeof(p->text), "\U000F05AA");
+			hot = true;
+			break;
+		}
+		char rx[16], tx[16];
+		bar_fmt_rate(bar_metrics.rx_rate, rx, sizeof(rx));
+		bar_fmt_rate(bar_metrics.tx_rate, tx, sizeof(tx));
+		/* predictable-names: a wireless interface starts with 'w' */
+		const char *icon = bar_metrics.iface[0] == 'w' ? "\U000F05A9"
+													   : "\U000F0200";
+		snprintf(p->text, sizeof(p->text), "%s ↓%s ↑%s", icon, rx,
+				 tx);
+		break;
+	}
+	default:
+		break;
+	}
+	p->arg = 0;
+	bar_pill_style(p, false, hot);
+	mod->npills = 1;
+	for (int32_t i = 1; i < BAR_MAX_PILLS; i++)
+		bar_pill_release(&mod->pills[i]);
+}
+
 static void bar_module_refresh(BarModule *mod) {
 	switch (mod->kind) {
 	case BAR_MODULE_TAGS:
@@ -336,6 +550,11 @@ static void bar_module_refresh(BarModule *mod) {
 		break;
 	case BAR_MODULE_LAYOUT:
 		bar_module_refresh_layout(mod);
+		break;
+	case BAR_MODULE_CPU:
+	case BAR_MODULE_MEMORY:
+	case BAR_MODULE_NETWORK:
+		bar_module_refresh_metric(mod);
 		break;
 	default:
 		mod->npills = 0;
@@ -601,6 +820,25 @@ static uint64_t bar_digest(Monitor *m) {
 			if (m->pertag && m->pertag->ltidxs[m->pertag->curtag])
 				bar_hash_str(&h, m->pertag->ltidxs[m->pertag->curtag]->symbol);
 			break;
+		case BAR_MODULE_CPU:
+			bar_hash(&h, &bar_metrics.cpu_pct, sizeof(bar_metrics.cpu_pct));
+			break;
+		case BAR_MODULE_MEMORY:
+			bar_hash(&h, &bar_metrics.mem_pct, sizeof(bar_metrics.mem_pct));
+			break;
+		case BAR_MODULE_NETWORK: {
+			/* hash the FORMATTED rates, not the raw doubles: the pill only
+			 * redraws when the displayed string changes, and the rate jitters
+			 * continuously while the text does not. */
+			char rx[16], tx[16];
+			bar_fmt_rate(bar_metrics.rx_rate, rx, sizeof(rx));
+			bar_fmt_rate(bar_metrics.tx_rate, tx, sizeof(tx));
+			bar_hash_str(&h, rx);
+			bar_hash_str(&h, tx);
+			bar_hash_str(&h, bar_metrics.iface);
+			bar_hash(&h, &bar_metrics.link_up, sizeof(bar_metrics.link_up));
+			break;
+		}
 		case BAR_MODULE_CLOCK: {
 			char buf[BAR_TEXT_MAX];
 			time_t now = time(NULL);
@@ -687,11 +925,22 @@ static int bar_clock_tick(void *data) {
 	return 0;
 }
 
-/* Arm or disarm the shared clock timer. One timer for every monitor: the
- * per-pill dirty check in the tab-bar node means a tick that produces the
- * same string costs no redraw and no damage. */
+static int bar_metrics_tick(void *data) {
+	(void)data;
+	bar_metrics_sample();
+	bar_update_all();
+	if (bar_metrics_timer)
+		wl_event_source_timer_update(bar_metrics_timer,
+									 config.bar_interval * 1000);
+	return 0;
+}
+
+/* Arm or disarm the shared clock and metrics timers. One of each for every
+ * monitor: metrics are machine-wide, and the per-pill dirty check in the
+ * tab-bar node means a tick that produces the same string costs no redraw and
+ * no damage. */
 static void bar_clock_sync(void) {
-	bool want = false;
+	bool want = false, want_metrics = false;
 	Monitor *m = NULL;
 	if (config.bar_enable) {
 		wl_list_for_each(m, &mons, link) {
@@ -700,8 +949,25 @@ static void bar_clock_sync(void) {
 			for (int32_t i = 0; i < m->bar->nmodules; i++) {
 				if (m->bar->modules[i].kind == BAR_MODULE_CLOCK)
 					want = true;
+				if (bar_kind_is_metric(m->bar->modules[i].kind))
+					want_metrics = true;
 			}
 		}
+	}
+
+	if (want_metrics && !bar_metrics_timer) {
+		/* prime immediately: cpu% and throughput are both deltas, so the
+		 * first displayed value would otherwise be a meaningless zero until
+		 * the second tick */
+		bar_metrics_sample();
+		bar_metrics_timer =
+			wl_event_loop_add_timer(event_loop, bar_metrics_tick, NULL);
+		if (bar_metrics_timer)
+			wl_event_source_timer_update(bar_metrics_timer,
+										 config.bar_interval * 1000);
+	} else if (!want_metrics && bar_metrics_timer) {
+		wl_event_source_remove(bar_metrics_timer);
+		bar_metrics_timer = NULL;
 	}
 	if (want && !bar_clock_timer) {
 		bar_clock_timer =

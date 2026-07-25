@@ -189,3 +189,33 @@ test_bar_panel_respects_the_margin() {
 		"$(( $(bar_client_y W1) - base_y ))" "48"
 	bar_off
 }
+
+test_bar_metric_modules() {
+	[ "$(bar_supported)" = "true" ] || { echo "  (skip: built without -Dnative-bar)"; return 0; }
+	# cpu/memory/network read /proc and /sys directly -- no subprocess, which
+	# is what makes them safe to run on the compositor's own event loop. There
+	# is no IPC surface exposing pill text, so this asserts what is observable:
+	# the modules parse, the sampling timer arms, repeated reloads (which
+	# re-arm it) are survivable, and they do not disturb the reserved area.
+	hl_spawn_kitty W1 >/dev/null
+	hl_wait_client_count 1
+	sleep 0.3
+	local base_y; base_y="$(bar_client_y W1)"
+
+	bar_set 'bar { enable true; height 30; margin { x 8; y 4 }; interval 1; modules-left "tags"; modules-right "cpu,memory,network" }'
+	sleep 1.5
+	hl_assert_eq "metric modules do not change the reserved footprint" \
+		"$(( $(bar_client_y W1) - base_y ))" "38"
+
+	local i
+	for i in 1 2; do hl_dispatch "reload_config" 1; done
+	hl_assert_true "the compositor survives reloads with the sampling timer armed" \
+		"$(hl_get "get all-monitors" >/dev/null 2>&1 && echo true || echo false)"
+
+	# an unknown module name must warn and be skipped, not refuse to start
+	bar_set 'bar { enable true; height 30; margin { x 8; y 4 }; modules-left "tags,not_a_real_module" }'
+	sleep 0.5
+	hl_assert_true "an unknown module name is skipped rather than fatal" \
+		"$(hl_get "get all-monitors" >/dev/null 2>&1 && echo true || echo false)"
+	bar_off
+}

@@ -453,6 +453,7 @@ typedef struct {
 	int32_t bar_panel_padding; /* panel inset around the pills it contains */
 	int32_t bar_panel_blur;
 	int32_t bar_panel_shadow;
+	int32_t bar_interval; /* seconds between /proc + /sys metric samples */
 	char bar_clock_format[64];
 	char bar_modules_left[256];
 	char bar_modules_center[256];
@@ -2250,6 +2251,8 @@ bool parse_option(Config *config, char *key, char *value) {
 		config->bar_panel_blur = atoi(value) != 0;
 	} else if (strcmp(key, "bar_panel_shadow") == 0) {
 		config->bar_panel_shadow = atoi(value) != 0;
+	} else if (strcmp(key, "bar_interval") == 0) {
+		config->bar_interval = CLAMP_INT(atoi(value), 1, 3600);
 	} else if (strcmp(key, "bar_panel_color") == 0) {
 		int64_t color = parse_color(value);
 		if (color == -1) {
@@ -3558,6 +3561,7 @@ static const struct {
 	{"bar/panel/padding", "bar_panel_padding"},
 	{"bar/panel/blur", "bar_panel_blur"},
 	{"bar/panel/shadow", "bar_panel_shadow"},
+	{"bar/interval", "bar_interval"},
 	{"bar/clock/format", "bar_clock_format"},
 	{"bar/modules-left", "bar_modules_left"},
 	{"bar/modules-center", "bar_modules_center"},
@@ -4608,6 +4612,7 @@ void set_value_default() {
 	config.bar_panel_padding = 6;
 	config.bar_panel_blur = 1;
 	config.bar_panel_shadow = 1;
+	config.bar_interval = 2;
 	snprintf(config.bar_clock_format, sizeof(config.bar_clock_format),
 			 "%%H:%%M");
 	/* Three sections, matching the waybar layout this replaces: the workspace
