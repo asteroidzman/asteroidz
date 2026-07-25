@@ -1093,18 +1093,94 @@ static void bar_layout(Monitor *m) {
 	cursor[BAR_SLOT_CENTER] =
 		m->m.x + (m->m.width - slot_w[BAR_SLOT_CENTER]) / 2;
 
-	/* Keep the centre slot from overlapping its neighbours. Overlap is
-	 * possible on a narrow output or with a long window title, and two pills
-	 * drawn on top of each other is worse than an off-centre strip. */
+	/* Keep the centre slot from overlapping its neighbours.
+	 *
+	 * Order matters and used to be wrong: the left clamp ran first and the
+	 * right clamp second, so on an output too narrow for all three slots the
+	 * right clamp shoved the centre back LEFT, straight through the title
+	 * pill -- the clock and the window title drew on top of each other.
+	 *
+	 * The left slot is the flexible one (its title pill is pinned to
+	 * title-width, which is a preference, not a requirement), so resolve the
+	 * conflict by shrinking that pill until the centre fits, rather than by
+	 * moving the centre somewhere it cannot go. */
 	int32_t left_end = left + slot_w[BAR_SLOT_LEFT];
-	if (slot_w[BAR_SLOT_LEFT] > 0 &&
-		cursor[BAR_SLOT_CENTER] < left_end + config.bar_spacing)
-		cursor[BAR_SLOT_CENTER] = left_end + config.bar_spacing;
-	if (slot_w[BAR_SLOT_RIGHT] > 0 &&
-		cursor[BAR_SLOT_CENTER] + slot_w[BAR_SLOT_CENTER] >
-			cursor[BAR_SLOT_RIGHT] - config.bar_spacing)
-		cursor[BAR_SLOT_CENTER] = cursor[BAR_SLOT_RIGHT] -
-								  config.bar_spacing - slot_w[BAR_SLOT_CENTER];
+	/* How much wider than the output the three slots are, once their inter-
+	 * slot gaps are counted. Measured against the TOTAL rather than just the
+	 * centre's natural position: the right slot is anchored to the right
+	 * edge, so a left slot that is merely "past centre" is fine while one
+	 * that collides with the right slot is not. */
+	int32_t needed = slot_w[BAR_SLOT_LEFT] + slot_w[BAR_SLOT_CENTER] +
+					 slot_w[BAR_SLOT_RIGHT];
+	int32_t gaps = 0;
+	for (int32_t sidx = 0; sidx < BAR_SLOT_COUNT; sidx++)
+		if (slot_w[sidx] > 0)
+			gaps++;
+	needed += gaps > 1 ? (gaps - 1) * config.bar_spacing : 0;
+	int32_t overflow = needed - (m->m.width - 2 * inset);
+	if (overflow > 0) {
+		/* find the title pill and take the overflow out of it */
+		for (int32_t i = 0; i < bar->nmodules && overflow > 0; i++) {
+			BarModule *mod = &bar->modules[i];
+			if (mod->kind != BAR_MODULE_TITLE || mod->npills < 1)
+				continue;
+			BarPill *tp = &mod->pills[0];
+			int32_t floor_w = config.bar_height * 2;
+			int32_t shrink = tp->width - floor_w;
+			if (shrink > overflow)
+				shrink = overflow;
+			if (shrink > 0) {
+				tp->width -= shrink;
+				tp->fixed_width = tp->width;
+				asteroidz_tab_bar_node_set_size(tp->node, tp->width, height);
+				asteroidz_tab_bar_node_update(tp->node, tp->text, scale);
+				mod->width -= shrink;
+				slot_w[BAR_SLOT_LEFT] -= shrink;
+				overflow -= shrink;
+			}
+		}
+		left_end = left + slot_w[BAR_SLOT_LEFT];
+	}
+
+	/* Fit the centre into the gap the anchored slots leave, or drop it.
+	 *
+	 * The left slot is anchored left and the right slot right; only the
+	 * centre has anywhere to go. Clamping it against one neighbour and then
+	 * the other just moves the collision around -- on an output too narrow
+	 * for the configured modules the centre ended up 107px past the right
+	 * edge with the right slot overlapping the left. Priority is
+	 * workspaces > status > clock, so when the gap cannot hold the centre it
+	 * is hidden rather than drawn through its neighbours. */
+	int32_t gap_start = slot_w[BAR_SLOT_LEFT] > 0
+							? left_end + config.bar_spacing
+							: m->m.x + inset;
+	int32_t gap_end = slot_w[BAR_SLOT_RIGHT] > 0
+						  ? cursor[BAR_SLOT_RIGHT] - config.bar_spacing
+						  : m->m.x + m->m.width - inset;
+	bool centre_fits = slot_w[BAR_SLOT_CENTER] > 0 &&
+					   gap_end - gap_start >= slot_w[BAR_SLOT_CENTER];
+	if (centre_fits) {
+		cursor[BAR_SLOT_CENTER] =
+			m->m.x + (m->m.width - slot_w[BAR_SLOT_CENTER]) / 2;
+		if (cursor[BAR_SLOT_CENTER] < gap_start)
+			cursor[BAR_SLOT_CENTER] = gap_start;
+		if (cursor[BAR_SLOT_CENTER] + slot_w[BAR_SLOT_CENTER] > gap_end)
+			cursor[BAR_SLOT_CENTER] = gap_end - slot_w[BAR_SLOT_CENTER];
+	} else if (slot_w[BAR_SLOT_CENTER] > 0) {
+		/* no room: hide every centre pill and collapse the slot so its panel
+		 * is not drawn either */
+		for (int32_t i = 0; i < bar->nmodules; i++) {
+			BarModule *mod = &bar->modules[i];
+			if (mod->slot != BAR_SLOT_CENTER)
+				continue;
+			for (int32_t j = 0; j < mod->npills; j++)
+				if (mod->pills[j].used)
+					asteroidz_tab_bar_node_set_enabled(mod->pills[j].node,
+													   false);
+			mod->width = 0;
+		}
+		slot_w[BAR_SLOT_CENTER] = 0;
+	}
 
 	int32_t slot_start[BAR_SLOT_COUNT];
 	for (int32_t s = 0; s < BAR_SLOT_COUNT; s++)

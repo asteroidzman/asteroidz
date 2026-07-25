@@ -129,6 +129,16 @@ layout pill to a square, the title to `title-width`, and the clock to the
 widest rendering of its own `strftime` format (probed once per month name, so
 `%a`/`%b` length variation is covered).
 
+### When it does not all fit
+
+The left and right slots are anchored to their edges; only the centre has
+anywhere to go. On an output too narrow for the configured modules the title
+pill shrinks first (down to a floor), and if the centre still cannot fit
+between its neighbours it is **hidden** rather than drawn through them —
+priority is workspaces, then status, then the clock. A configuration that
+over-subscribes the width even after that (a dozen pills on a 1000px output)
+will still overlap left against right; there is nothing left to give.
+
 ## How it reserves space
 
 The bar claims its strip from the output's usable area *before* layer-shell
