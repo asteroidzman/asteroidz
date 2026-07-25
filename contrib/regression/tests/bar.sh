@@ -219,3 +219,21 @@ test_bar_metric_modules() {
 		"$(hl_get "get all-monitors" >/dev/null 2>&1 && echo true || echo false)"
 	bar_off
 }
+
+test_bar_idle_inhibitor() {
+	[ "$(bar_supported)" = "true" ] || { echo "  (skip: built without -Dnative-bar)"; return 0; }
+	# The pill mirrors a compositor-level flag rather than the protocol state,
+	# so the dispatch is the observable surface. Force both states explicitly
+	# rather than toggling, so the test cannot depend on what ran before it.
+	bar_set 'bar { enable true; height 30; margin { x 8; y 4 }; modules-center "idle" }'
+	sleep 0.3
+	hl_dispatch "toggle_idle_inhibit,1"
+	hl_assert_true "forcing idle inhibit on is accepted" \
+		"$(hl_get "get all-monitors" >/dev/null 2>&1 && echo true || echo false)"
+	hl_dispatch "toggle_idle_inhibit,0"
+	hl_dispatch "toggle_idle_inhibit"
+	hl_assert_true "toggling it back and forth leaves the compositor healthy" \
+		"$(hl_get "get all-monitors" >/dev/null 2>&1 && echo true || echo false)"
+	hl_dispatch "toggle_idle_inhibit,0"
+	bar_off
+}

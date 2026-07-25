@@ -73,6 +73,10 @@ Examples:
 \fBamsg dispatch move_window,10,100\fR
 .IP \(bu 2
 \fBamsg dispatch move_window,10,100 client,4\fR
+.IP \(bu 2
+\fBamsg dispatch toggle_idle_inhibit\fR \- flip the manual idle inhibit
+(keep the screen awake); append \fB,1\fR or \fB,0\fR to force a state
+instead of toggling
 .RE
 .SS "Persistent streams (watch)"
 \fBWatch\fR commands keep the connection open and continuously output JSON

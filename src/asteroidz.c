@@ -1276,6 +1276,11 @@ static struct wl_list fadeout_clients;
 static struct wl_list fadeout_layers;
 static struct wlr_idle_notifier_v1 *idle_notifier;
 static struct wlr_idle_inhibit_manager_v1 *idle_inhibit_mgr;
+/* Manual "keep the screen awake" override, independent of the client-driven
+ * idle_inhibit_v1 protocol. waybar's idle_inhibitor module achieves this by
+ * creating a protocol inhibitor of its own; a native bar module has no
+ * surface to attach one to, so the compositor holds the flag instead. */
+static bool idle_inhibit_manual = false;
 static struct wlr_layer_shell_v1 *layer_shell;
 static struct wlr_output_manager_v1 *output_mgr;
 static struct wlr_virtual_keyboard_manager_v1 *virtual_keyboard_mgr;
@@ -3283,6 +3288,9 @@ void checkidleinhibitor(struct wlr_surface *exclude) {
 			break;
 		}
 	}
+
+	if (idle_inhibit_manual)
+		inhibited = 1;
 
 	wlr_idle_notifier_v1_set_inhibited(idle_notifier, inhibited);
 }

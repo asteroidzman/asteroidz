@@ -42,6 +42,7 @@ enum bar_module_kind {
 	BAR_MODULE_CPU,
 	BAR_MODULE_MEMORY,
 	BAR_MODULE_NETWORK,
+	BAR_MODULE_IDLE,
 };
 
 enum bar_slot { BAR_SLOT_LEFT = 0, BAR_SLOT_CENTER, BAR_SLOT_RIGHT,
@@ -140,6 +141,8 @@ static enum bar_module_kind bar_module_kind_from_name(const char *name) {
 		return BAR_MODULE_MEMORY;
 	if (strcmp(name, "network") == 0 || strcmp(name, "net") == 0)
 		return BAR_MODULE_NETWORK;
+	if (strcmp(name, "idle") == 0 || strcmp(name, "idle-inhibitor") == 0)
+		return BAR_MODULE_IDLE;
 	return BAR_MODULE_NONE;
 }
 
@@ -624,6 +627,33 @@ static void bar_module_refresh_metric(BarModule *mod) {
 		bar_pill_release(&mod->pills[i]);
 }
 
+/* Idle inhibit toggle. Reflects the compositor's manual override -- not the
+ * client-driven idle_inhibit_v1 state, which no user action controls. */
+static void bar_module_refresh_idle(BarModule *mod) {
+	BarPill *p = bar_pill_get(mod, 0);
+	if (!p) {
+		mod->npills = 0;
+		return;
+	}
+	/* The same glyph pair the waybar idle_inhibitor module was configured
+	 * with; there is no SVG for this one in the plugin assets. */
+	static const char *on = "\U000F0176";  /* activated   */
+	static const char *off = "\U000F0FAA"; /* deactivated */
+	snprintf(p->text, sizeof(p->text), "%s",
+			 idle_inhibit_manual ? on : off);
+	p->arg = 0;
+	/* Widest of the two states, so toggling never resizes -- and measured
+	 * rather than pinned square: a square pill at the theme's padding.x
+	 * leaves almost no text area and ellipsised the glyph to "...". */
+	int32_t wa = bar_template_width(p, on, config.bar_height);
+	int32_t wb = bar_template_width(p, off, config.bar_height);
+	p->fixed_width = wa > wb ? wa : wb;
+	bar_pill_style(p, idle_inhibit_manual, false);
+	mod->npills = 1;
+	for (int32_t i = 1; i < BAR_MAX_PILLS; i++)
+		bar_pill_release(&mod->pills[i]);
+}
+
 static void bar_module_refresh(BarModule *mod) {
 	switch (mod->kind) {
 	case BAR_MODULE_TAGS:
@@ -642,6 +672,9 @@ static void bar_module_refresh(BarModule *mod) {
 	case BAR_MODULE_MEMORY:
 	case BAR_MODULE_NETWORK:
 		bar_module_refresh_metric(mod);
+		break;
+	case BAR_MODULE_IDLE:
+		bar_module_refresh_idle(mod);
 		break;
 	default:
 		mod->npills = 0;
@@ -909,6 +942,9 @@ static uint64_t bar_digest(Monitor *m) {
 		case BAR_MODULE_LAYOUT:
 			if (m->pertag && m->pertag->ltidxs[m->pertag->curtag])
 				bar_hash_str(&h, m->pertag->ltidxs[m->pertag->curtag]->symbol);
+			break;
+		case BAR_MODULE_IDLE:
+			bar_hash(&h, &idle_inhibit_manual, sizeof(idle_inhibit_manual));
 			break;
 		case BAR_MODULE_CPU:
 			bar_hash(&h, &bar_metrics.cpu_pct, sizeof(bar_metrics.cpu_pct));
@@ -1207,6 +1243,12 @@ static bool bar_handle_node_click(AsteroidzNodeData *hit, uint32_t button) {
 	case BAR_MODULE_TITLE:
 		if (button == BTN_LEFT && m && m->sel) {
 			focusclient(m->sel, 1);
+			return true;
+		}
+		break;
+	case BAR_MODULE_IDLE:
+		if (button == BTN_LEFT) {
+			toggle_idle_inhibit(&(Arg){.i = -1});
 			return true;
 		}
 		break;

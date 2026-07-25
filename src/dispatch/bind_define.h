@@ -1159,6 +1159,20 @@ int32_t switch_keyboard_layout(const Arg *arg) {
 	return 0;
 }
 
+/* Flip the compositor's manual idle inhibit. Unlike the idle_inhibit_v1
+ * protocol this needs no surface, so a bar module (or a keybind) can hold the
+ * screen awake without owning a window. `arg->i` forces a state when it is 0
+ * or 1; anything else toggles. */
+int32_t toggle_idle_inhibit(const Arg *arg) {
+	if (arg && (arg->i == 0 || arg->i == 1))
+		idle_inhibit_manual = arg->i == 1;
+	else
+		idle_inhibit_manual = !idle_inhibit_manual;
+	checkidleinhibitor(NULL);
+	printstatus(IPC_WATCH_ARRANGGE);
+	return 1;
+}
+
 int32_t switch_layout(const Arg *arg) {
 
 	int32_t jk, ji;

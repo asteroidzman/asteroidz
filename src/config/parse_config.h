@@ -1280,6 +1280,9 @@ FuncType parse_func_name(char *func_name, Arg *arg, char *arg_value,
 	} else if (strcmp(func_name, "set_layout") == 0) {
 		func = setlayout;
 		(*arg).v = strdup(arg_value);
+	} else if (strcmp(func_name, "toggle_idle_inhibit") == 0) {
+		func = toggle_idle_inhibit;
+		(*arg).i = arg_value && *arg_value ? atoi(arg_value) : -1;
 	} else if (strcmp(func_name, "switch_layout") == 0) {
 		func = switch_layout;
 	} else if (strcmp(func_name, "toggle_floating") == 0) {

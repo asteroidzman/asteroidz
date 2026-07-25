@@ -34,6 +34,7 @@ int32_t setkeymode(const Arg *arg);
 int32_t switch_keyboard_layout(const Arg *arg);
 int32_t setlayout(const Arg *arg);
 int32_t switch_layout(const Arg *arg);
+int32_t toggle_idle_inhibit(const Arg *arg);
 int32_t setmfact(const Arg *arg);
 int32_t quit(const Arg *arg);
 int32_t restart(const Arg *arg);

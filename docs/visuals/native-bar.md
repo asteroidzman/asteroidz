@@ -72,6 +72,7 @@ for a newer build still starts.
 | `cpu` | total CPU load, from `/proc/stat` deltas | — |
 | `memory` | used memory, from `/proc/meminfo` | — |
 | `network` | link state and ↓/↑ throughput, from `/sys/class/net` | — |
+| `idle` | manual idle-inhibit state ("keep awake") | toggles it |
 
 By default the `tags` module hides tags that are both empty and unselected, so
 a nine-tag setup does not permanently spend nine pills on tags holding nothing.
@@ -142,6 +143,12 @@ warns about and ignores.
 Implemented: the bar frame, per-monitor layout in three panelled slots, click
 routing, space reservation, and the seven modules above — everything that needs
 no external process and no popover.
+
+`idle` reflects a **compositor-level** override, not the client-driven
+`idle_inhibit_v1` protocol state — a bar module has no surface to attach a
+protocol inhibitor to, the way Waybar's module does. The same override is
+available as `amsg dispatch toggle_idle_inhibit` (append `,1`/`,0` to force a
+state), so it can be bound to a key as well.
 
 The metric modules read `/proc` and `/sys` directly, on a shared timer, once
 per machine rather than once per monitor. That is deliberate and it is the
