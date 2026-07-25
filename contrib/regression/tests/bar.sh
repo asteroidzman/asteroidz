@@ -133,3 +133,35 @@ test_bar_tag_pill_click_switches_view() {
 	bar_off
 	hl_dispatch "view,1"
 }
+
+test_bar_show_all_tags() {
+	[ "$(bar_supported)" = "true" ] || { echo "  (skip: built without -Dnative-bar)"; return 0; }
+	# Default: an empty, unselected tag gets no pill, so a session with a
+	# single occupied tag renders a single pill. show-all-tags overrides that.
+	# Asserted through the reserved width rather than pixels: more pills means
+	# a wider left slot, which is the only externally visible consequence.
+	hl_dispatch "view,1"
+	hl_spawn_kitty W1 >/dev/null
+	hl_wait_client_count 1
+
+	bar_set 'bar { enable true; height 30; margin { x 8; y 4 }; pill-min-width 28; modules-left "tags" }'
+	sleep 0.5
+	# with one occupied+selected tag there is exactly one pill: a click just
+	# left of where a SECOND pill would start must therefore hit nothing.
+	hl_dispatch "view,1"
+	local before; before="$(bar_active_tags)"
+	hl_click 50 19
+	sleep 0.4
+	hl_assert_eq "with tags hidden, there is no second pill to click" \
+		"$(bar_active_tags)" "$before"
+
+	bar_set 'bar { enable true; height 30; margin { x 8; y 4 }; pill-min-width 28; show-all-tags true; modules-left "tags" }'
+	sleep 0.5
+	hl_click 50 19
+	sleep 0.4
+	hl_assert_eq "with show-all-tags, the second pill exists and views tag 2" \
+		"$(bar_active_tags)" "[2]"
+
+	bar_off
+	hl_dispatch "view,1"
+}

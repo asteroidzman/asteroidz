@@ -40,6 +40,7 @@ bar {
 | `margin.y` | `4` | inset from the output's top/bottom edge |
 | `spacing` | `6` | gap between adjacent pills |
 | `pill-min-width` | `28` | floor width, so single-glyph pills stay legible |
+| `show-all-tags` | `false` | `true` draws every configured tag; `false` draws only selected or occupied ones |
 | `modules-left` | `"tags"` | comma-separated module list |
 | `modules-center` | `"clock"` | " |
 | `modules-right` | *(empty)* | " |
@@ -60,9 +61,11 @@ for a newer build still starts.
 | `title` | the focused window's title, with its app icon | focuses that window |
 | `layout` | the current layout's symbol | — |
 
-The `tags` module hides tags that are both empty and unselected, so a nine-tag
-setup does not permanently spend nine pills on tags holding nothing. An urgent
-tag is drawn in the theme's `urgent-color`.
+By default the `tags` module hides tags that are both empty and unselected, so
+a nine-tag setup does not permanently spend nine pills on tags holding nothing.
+The side effect is that a fresh session shows a *single* pill, which reads as
+broken rather than tidy — set `show-all-tags true` for the dwm/dwl behaviour of
+always drawing every tag. An urgent tag is drawn in the theme's `urgent-color`.
 
 ## How it reserves space
 
@@ -94,6 +97,24 @@ external process and no popover.
 Not implemented yet: popovers (so no click-through panels), the system tray,
 and modules that wrap a CLI or D-Bus service (volume, network, weather,
 media, …). Those stay in Waybar for now.
+
+## Developing against it
+
+A nested session is the safe way to iterate on the bar without restarting your
+real one:
+
+```sh
+WLR_BACKENDS=wayland ./build/asteroidz -c /path/to/test.kdl
+```
+
+Give the test config no `output` block (or one with no `width`/`height`): a
+nested output has no mode list, so it adopts the size of its host window and
+follows it on resize. Naming an explicit mode there is likely to be rejected by
+the backend, in which case the output falls back to the host window's size and
+logs the rejection.
+
+Do not point a nested instance at your real config — it would re-run every
+`spawn-at-startup` entry into the live session.
 
 ## Cost
 

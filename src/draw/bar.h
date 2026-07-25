@@ -196,11 +196,13 @@ static void bar_module_refresh_tags(BarModule *mod) {
 		uint32_t mask = 1u << (t - 1);
 		bool selected = (sel & mask) != 0;
 		bool occupied = (occ & mask) != 0;
-		/* An empty, unselected tag is not worth a pill -- this is the
-		 * behaviour of the waybar workspace module it replaces, and it keeps
-		 * a 9-tag setup from permanently spending 9 pills of width on tags
-		 * that hold nothing. */
-		if (!selected && !occupied)
+		/* By default an empty, unselected tag gets no pill: that matches the
+		 * waybar workspace module this replaces, and keeps a 9-tag setup from
+		 * permanently spending 9 pills of width on tags holding nothing. It
+		 * does mean a fresh session can show a single pill, which reads as
+		 * broken rather than as tidy -- `bar { show-all-tags true }` gives
+		 * the dwm/dwl behaviour of always rendering every configured tag. */
+		if (!config.bar_show_all_tags && !selected && !occupied)
 			continue;
 
 		BarPill *p = bar_pill_get(mod, n);
@@ -490,6 +492,8 @@ static uint64_t bar_digest(Monitor *m) {
 			break;
 		}
 		case BAR_MODULE_TAGS: {
+			bar_hash(&h, &config.bar_show_all_tags,
+					 sizeof(config.bar_show_all_tags));
 			/* custom tag names can change without any mask changing */
 			for (uint32_t t = 1; t <= LENGTH(tags); t++) {
 				char name[64];

@@ -439,6 +439,9 @@ typedef struct {
 	int32_t bar_margin_x;		 /* inset from the output's left/right edge */
 	int32_t bar_margin_y;		 /* inset from the output's top/bottom edge */
 	int32_t bar_pill_min_width;  /* floor, so single-glyph pills stay legible */
+	/* tags module: 0 = only tags that are selected or hold a window (the
+	 * waybar workspace-module behaviour), 1 = every configured tag always */
+	int32_t bar_show_all_tags;
 	char bar_clock_format[64];
 	char bar_modules_left[256];
 	char bar_modules_center[256];
@@ -2224,6 +2227,8 @@ bool parse_option(Config *config, char *key, char *value) {
 		config->bar_margin_y = CLAMP_INT(atoi(value), 0, 500);
 	} else if (strcmp(key, "bar_pill_min_width") == 0) {
 		config->bar_pill_min_width = CLAMP_INT(atoi(value), 0, 1000);
+	} else if (strcmp(key, "bar_show_all_tags") == 0) {
+		config->bar_show_all_tags = atoi(value) != 0;
 	} else if (strcmp(key, "bar_clock_format") == 0) {
 		snprintf(config->bar_clock_format, sizeof(config->bar_clock_format),
 				 "%s", value);
@@ -3515,6 +3520,7 @@ static const struct {
 	{"bar/margin/x", "bar_margin_x"},
 	{"bar/margin/y", "bar_margin_y"},
 	{"bar/pill-min-width", "bar_pill_min_width"},
+	{"bar/show-all-tags", "bar_show_all_tags"},
 	{"bar/clock/format", "bar_clock_format"},
 	{"bar/modules-left", "bar_modules_left"},
 	{"bar/modules-center", "bar_modules_center"},
@@ -4556,6 +4562,7 @@ void set_value_default() {
 	config.bar_margin_x = 8;
 	config.bar_margin_y = 4;
 	config.bar_pill_min_width = 28;
+	config.bar_show_all_tags = 0;
 	snprintf(config.bar_clock_format, sizeof(config.bar_clock_format),
 			 "%%H:%%M");
 	snprintf(config.bar_modules_left, sizeof(config.bar_modules_left), "tags");
