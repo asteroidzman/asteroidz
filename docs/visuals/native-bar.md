@@ -23,9 +23,9 @@ bar {
     spacing 6
     pill-min-width 28
 
-    modules-left   "tags,layout"
+    modules-left   "tags,title"
     modules-center "clock"
-    modules-right  "title"
+    modules-right  "layout"
 
     clock { format "%H:%M" }
 }
@@ -47,9 +47,9 @@ bar {
 | `panel.padding` | `6` | inset between the panel edge and its pills |
 | `panel.blur` | `true` | blur behind the panel (needs `effects.blur.enable`) |
 | `panel.shadow` | `true` | drop shadow under the panel (needs `shadows`) |
-| `modules-left` | `"tags"` | comma-separated module list |
+| `modules-left` | `"tags,title"` | comma-separated module list |
 | `modules-center` | `"clock"` | " |
-| `modules-right` | *(empty)* | " |
+| `modules-right` | `"layout"` | " |
 | `clock.format` | `"%H:%M"` | `strftime` format |
 
 Changes take effect on `reload_config` — including changes to the module
