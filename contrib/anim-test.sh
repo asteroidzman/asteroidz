@@ -20,7 +20,11 @@
 #   ASTEROIDZ   binary to test (default: /usr/bin/asteroidz)
 #   WALLPAPER   image for the backdrop (default: assets or Pictures wallpaper)
 #   OPEN_KDL    window-open KDL line (override to test settings)
+#   CLOSE_KDL   window-close KDL line, e.g.
+#               'window-close { type fall; duration 250; fall-columns 5; fall-rows 4; }'
 #   FPS         capture/extract fps (default: 60)
+#   WLR_RENDERER  forwarded to the test compositor (gles2|vulkan) -- the env is
+#               otherwise wiped, so set it here to compare renderers
 #
 # Outputs (under $OUTDIR):
 #   rec.mp4            the recording
@@ -37,7 +41,16 @@ LABEL="${2:-anim}"
 OUTDIR="${OUTDIR:-/tmp/asteroidz-anim}"
 ASTEROIDZ="${ASTEROIDZ:-/usr/bin/asteroidz}"
 FPS="${FPS:-60}"
-OPEN_KDL="${OPEN_KDL:-window-open { type fade; duration 180; fade-begin-opacity 0.6; }}"
+# NB: plain ifs, not ${VAR:-default}. A default value containing braces ends
+# the expansion at its FIRST '}', so the closing brace lands in the string
+# literally -- which silently appended a stray '}' (and broke the generated
+# config) whenever the variable was actually set from the environment.
+if [ -z "${OPEN_KDL:-}" ]; then
+	OPEN_KDL='window-open { type fade; duration 180; fade-begin-opacity 0.6; }'
+fi
+if [ -z "${CLOSE_KDL:-}" ]; then
+	CLOSE_KDL='window-close { type fade; duration 300; fade-begin-opacity 1.0; }'
+fi
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WALLPAPER="${WALLPAPER:-}"
 if [ -z "$WALLPAPER" ]; then
@@ -62,7 +75,7 @@ animations {
     curve spring
     spring { damping 0.8; frequency 22; }
     $OPEN_KDL
-    window-close { type fade; duration 300; fade-begin-opacity 1.0; }
+    $CLOSE_KDL
 }
 effects {
     blur { enable 1; optimized 1; passes 2; radius 6; transparency-threshold 0.5;
@@ -83,6 +96,7 @@ rm -rf "$TESTRT"; mkdir -p "$TESTRT"; chmod 700 "$TESTRT"
 # launch the test compositor headless (force headless backend, no input devices)
 env -i HOME="$HOME" PATH="$PATH" XDG_RUNTIME_DIR="$TESTRT" \
 	WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 \
+	${WLR_RENDERER:+WLR_RENDERER="$WLR_RENDERER"} \
 	"$ASTEROIDZ" -c "$CONFIG" > "$OUTDIR/log.txt" 2>&1 &
 
 # wait (up to 8s) for it to create its socket in the dedicated dir

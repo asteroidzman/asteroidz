@@ -24,7 +24,24 @@ contrib/anim-test.sh [CONFIG] [LABEL]
 
 Useful env: `ASTEROIDZ` (binary under test, default `/usr/bin/asteroidz`),
 `WALLPAPER` (backdrop image; a patterned one makes sharp-vs-blurred obvious),
-`OPEN_KDL` (override the `window-open` line), `FPS`, `OUTDIR`.
+`OPEN_KDL` / `CLOSE_KDL` (override the `window-open` / `window-close` line),
+`WLR_RENDERER` (`gles2` or `vulkan` — the test compositor's environment is
+otherwise wiped, so set it here to compare renderers), `FPS`, `OUTDIR`.
+
+`OUTDIR` must stay short. The compositor's sockets live in
+`$XDG_RUNTIME_DIR` *inside* it, and `sockaddr_un.sun_path` is capped at 108
+bytes — a deep path silently truncates the socket name, and the compositor
+then exits before it can log anything.
+
+Comparing the two renderers for a close animation, for example:
+
+```sh
+for r in gles2 vulkan; do
+  OUTDIR=/tmp/az-$r WLR_RENDERER=$r ASTEROIDZ=./build/asteroidz \
+  CLOSE_KDL='window-close { type fall; duration 400; fall-columns 5; fall-rows 4; }' \
+    contrib/anim-test.sh "" $r
+done
+```
 
 ## Output (under `$OUTDIR`, default `/tmp/asteroidz-anim`)
 
