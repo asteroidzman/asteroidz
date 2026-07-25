@@ -338,13 +338,28 @@ static void bar_metrics_sample(void) {
 
 /* "1.2M" / "340K" / "12" -- short enough that the pill does not resize on
  * every sample, which would jitter the whole slot. */
+/* Never more than five characters, whatever the rate.
+ *
+ * The pill is width-pinned so it cannot reflow as the numbers change, and the
+ * pin has to cover the widest string the formatter can produce. The old
+ * formatter could emit "999.9M" (six), which meant reserving for a rendering
+ * an ordinary link never reaches -- the reserve sat there as dead space, and
+ * once the tray moved to the far right that space landed between the
+ * throughput and the tray icons. Capping the format instead makes the reserve
+ * nearly exact.
+ *
+ * Precision drops as the magnitude rises, which is the right trade anyway:
+ * at 1.5M/s the tenth is informative, at 125M/s it is noise. */
 static void bar_fmt_rate(double bytes_per_sec, char *out, size_t len) {
-	if (bytes_per_sec >= 1024.0 * 1024.0)
-		snprintf(out, len, "%.1fM", bytes_per_sec / (1024.0 * 1024.0));
+	double mb = bytes_per_sec / (1024.0 * 1024.0);
+	if (mb >= 100.0)
+		snprintf(out, len, "%.0fM", mb); /* "125M" */
+	else if (mb >= 1.0)
+		snprintf(out, len, "%.1fM", mb); /* "99.9M" */
 	else if (bytes_per_sec >= 1024.0)
-		snprintf(out, len, "%.0fK", bytes_per_sec / 1024.0);
+		snprintf(out, len, "%.0fK", bytes_per_sec / 1024.0); /* "1023K" */
 	else
-		snprintf(out, len, "%.0f", bytes_per_sec);
+		snprintf(out, len, "%.0f", bytes_per_sec); /* "1023" */
 }
 
 /* ─── pill lifecycle ──────────────────────────────────────────────────────── */
@@ -1256,8 +1271,11 @@ static void bar_module_refresh_metric(BarModule *mod) {
 		}
 		/* widest reachable rendering: the K->M transition and the digit count
 		 * both change the string length every few seconds otherwise */
+		/* five digits per direction: digits are the widest glyphs the
+		 * formatter can emit, and it now never exceeds five characters, so
+		 * this reserve is tight rather than aspirational */
 		p->fixed_width =
-			bar_template_width(p, "↓999.9M ↑999.9M", bar_pill_height());
+			bar_template_width(p, "↓99999 ↑99999", bar_pill_height());
 		/* left-aligned inside that reserve: centred, a quiet link put half the
 		 * slack between this pill and the memory icon before it, which read as
 		 * a gap in the group rather than as headroom for a busy link */
