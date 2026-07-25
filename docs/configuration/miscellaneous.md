@@ -21,6 +21,7 @@ description: Advanced settings for XWayland, focus behavior, and system integrat
 | :--- | :--- | :--- |
 | `focus_on_activate` | `1` | Automatically focus windows when they request activation. |
 | `sloppyfocus` | `1` | Focus follows the mouse cursor. |
+| `float_click_to_focus` | `1` | In the floating layout, change focus only on click (not on pointer hover), so overlapping floating windows don't steal focus/auto-raise as the cursor crosses them. Set `0` to make `sloppyfocus` apply in float layout too. KDL: `layout { floating { click-to-focus 0 } }`. |
 | `warpcursor` | `1` | Warp the cursor to the center of the window when focus changes via keyboard. |
 | `cursor_hide_timeout` | `0` | Hide the cursor after `N` seconds of inactivity (`0` to disable). |
 | `cursor_hide_on_keypress` | `0` | Hide the cursor on keypress. |

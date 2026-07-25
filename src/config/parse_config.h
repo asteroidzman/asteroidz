@@ -412,6 +412,11 @@ typedef struct {
 	 * float_keep_onscreen: px of a floating window kept within the layout on
 	 * every edge so it can't be dragged fully off-screen (0 = old behavior). */
 	int32_t float_center_new;
+	/* float_click_to_focus: in the float layout, focus changes only on click
+	 * (not focus-follows-mouse), so crossing the pointer over overlapping
+	 * floating windows doesn't steal focus / auto-raise. Default on; set to 0
+	 * to let sloppyfocus behave the same as in tiled layouts. */
+	int32_t float_click_to_focus;
 	int32_t float_min_width, float_min_height;
 	int32_t float_max_width, float_max_height;
 	int32_t float_keep_onscreen;
@@ -2150,6 +2155,8 @@ bool parse_option(Config *config, char *key, char *value) {
 		config->borderpx = atoi(value);
 	} else if (strcmp(key, "float_center_new") == 0) {
 		config->float_center_new = CLAMP_INT(atoi(value), 0, 1);
+	} else if (strcmp(key, "float_click_to_focus") == 0) {
+		config->float_click_to_focus = CLAMP_INT(atoi(value), 0, 1);
 	} else if (strcmp(key, "float_min_width") == 0) {
 		config->float_min_width = CLAMP_INT(atoi(value), 0, 100000);
 	} else if (strcmp(key, "float_min_height") == 0) {
@@ -3379,6 +3386,7 @@ static const struct {
 	{"layout/titlebar/height", "titlebar_height"},
 	{"layout/border/width", "borderpx"},
 	{"layout/floating/center-new", "float_center_new"},
+	{"layout/floating/click-to-focus", "float_click_to_focus"},
 	{"layout/floating/min-width", "float_min_width"},
 	{"layout/floating/min-height", "float_min_height"},
 	{"layout/floating/max-width", "float_max_width"},
@@ -4440,6 +4448,7 @@ void set_value_default() {
 
 	config.borderpx = 4;
 	config.float_center_new = 1;
+	config.float_click_to_focus = 1;
 	config.float_min_width = 75;
 	config.float_min_height = 50;
 	config.float_max_width = 0; /* 0 = output size */

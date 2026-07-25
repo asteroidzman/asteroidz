@@ -10,7 +10,11 @@ asteroidz keeps a deliberately small set of layouts, assignable per tag:
 - `tile` — a manual-control binary-tree tiler (i3-like: you choose where the next window splits)
 - `scroller` — a scrollable strip of columns, similar to PaperWM
 - `monocle` — one window fullscreen-ish at a time, with a tab bar for the rest
-- `float` — every window floats; new windows cascade and focus raises
+- `float` — every window floats; new windows are centred and click focuses
+
+`tile` is what a freshly-created tag or monitor starts on; use a
+[tag rule](/docs/window-management/rules#tag-rules) to give a tag a different
+default.
 
 Fullscreen is a per-window state (`toggle_fullscreen`), independent of layout, and works in any of them.
 
@@ -125,10 +129,11 @@ binds {
 
 ## Float Layout
 
-`float` is a traditional stacking desktop on a tag: every window floats. It has no configuration options.
+`float` is a traditional stacking desktop on a tag: every window floats.
 
 - **Floated by default** — windows opening on a float tag float at whatever size the client asks for; there is no tiled size prediction.
-- **Cascading** — new windows step diagonally from the work area's top-left through a 10-slot ring (the step scales with your titlebar height). A window's slot is assigned once and remembered: re-entering the layout puts windows back on their spots, and windows you drag keep wherever you put them.
+- **Centred placement** — a new window is centred on the work area (i3-style). Set `center-new 0` for the older cascade, which steps windows diagonally from the top-left through a 10-slot ring (the step scales with your titlebar height). Either way a window's spot is assigned once and remembered: re-entering the layout puts windows back where they were, and windows you drag keep wherever you put them.
+- **Click to focus** — unlike the tiled layouts, focus does *not* follow the pointer here: overlapping windows make that maddening, since merely crossing a stack would keep stealing focus and raising windows. Clicking focuses and raises. Set `click-to-focus 0` to let `sloppyfocus` apply here too.
 - **Raise on focus** — any focus change (click, `focus_stack`, `focus_direction`) lifts the window to the top of the stack.
 - **Clean exit** — switching the tag to a tiled layout re-tiles exactly the windows the float layout floated automatically. Windows floated by hand (`toggle_floating`) or structurally (dialogs, fixed-size popups) stay floating, as in any other layout.
 
@@ -137,6 +142,28 @@ tag 3 { layout float }
 
 binds {
     Super+g { set_layout float; }
+}
+```
+
+### Options
+
+All live under `layout { floating { … } }`.
+
+| Setting | Default | Description |
+| :--- | :--- | :--- |
+| `center-new` | `1` | Centre a newly floated window on the work area. `0` restores the top-left cascade. |
+| `click-to-focus` | `1` | Change focus only on click, not on pointer hover. `0` makes `sloppyfocus` apply in this layout too. |
+| `min-width` / `min-height` | `75` / `50` | Smallest size a floating window may be given, in pixels. |
+| `max-width` / `max-height` | `0` / `0` | Largest size, in pixels. `0` means the size of the output. |
+| `keep-onscreen` | `30` | Pixels of a floating window kept inside the layout on every edge, so it can't be dragged fully off-screen. `0` disables the constraint. |
+
+```kdl
+layout {
+    floating {
+        center-new 1
+        click-to-focus 1
+        keep-onscreen 30
+    }
 }
 ```
 

@@ -16,7 +16,8 @@ enum {
 
 Layout layouts[] = {
 	// at least two entries; don't shrink this below two
-	// layouts[0] is the default for freshly-created tags/monitors
+	// the default for freshly-created tags/monitors is layouts[DWINDLE]
+	// (see createmon() in asteroidz.c) — order here only sets cycle order
 	/* symbol     arrange function   name */
 	{"T", dwindle, "tile", DWINDLE},		 // manual-control tiled layout (i3-like)
 	{"S", scroller, "scroller", SCROLLER},	 // scroller layout

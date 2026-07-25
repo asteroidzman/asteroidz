@@ -4806,7 +4806,7 @@ void createmon(struct wl_listener *listener, void *data) {
 	for (i = 0; i <= LENGTH(tags); i++) {
 		m->pertag->nmasters[i] = config.default_nmaster;
 		m->pertag->mfacts[i] = config.default_mfact;
-		m->pertag->ltidxs[i] = &layouts[0];
+		m->pertag->ltidxs[i] = &layouts[DWINDLE];
 	}
 
 	// apply tag rule
@@ -6784,8 +6784,16 @@ void pointerfocus(Client *c, struct wlr_surface *surface, double sx, double sy,
 				  uint32_t time) {
 	struct timespec now;
 
+	/* Float layout defaults to click-to-focus (float_click_to_focus, on by
+	 * default; set layout/floating/click-to-focus 0 to opt out): overlapping
+	 * floating windows make focus-follows-mouse maddening — crossing the
+	 * pointer over a stack keeps stealing focus and, per focusclient(),
+	 * auto-raising. Suppress the sloppy pointer-focus here; a click still
+	 * focuses+raises via handle_buttonpress. Pointer enter/motion events
+	 * below are unaffected. */
 	if (config.sloppyfocus && !start_drag_window && c && time && c->scene &&
 		c->scene->node.enabled && !c->animation.tagining &&
+		!(config.float_click_to_focus && c->mon && is_float_layout(c->mon)) &&
 		(surface != seat->pointer_state.focused_surface ||
 		 (selmon && selmon->isoverview && selmon->sel != c)) &&
 		!client_is_unmanaged(c) && VISIBLEON(c, c->mon))
