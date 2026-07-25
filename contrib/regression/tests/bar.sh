@@ -118,7 +118,11 @@ test_bar_tag_pill_click_switches_view() {
 	hl_spawn_kitty W2 >/dev/null
 	hl_wait_client_count 2
 
-	bar_set 'bar { enable true; height 30; position "top"; margin { x 8; y 4 }; pill-min-width 28; modules-left "tags" }'
+	# panels off: they inset the pill row by panel-padding, and this test is
+	# about click routing, not appearance. With them off the first pill starts
+	# exactly at margin-x, so the click coordinate below follows from config
+	# alone rather than from the panel geometry of the day.
+	bar_set 'bar { enable true; height 30; position "top"; margin { x 8; y 4 }; pill-min-width 28; panel { enable false }; modules-left "tags" }'
 	sleep 0.5
 	hl_assert_eq "precondition: tag 2 is the active tag" "$(bar_active_tags)" "[2]"
 
@@ -144,7 +148,7 @@ test_bar_show_all_tags() {
 	hl_spawn_kitty W1 >/dev/null
 	hl_wait_client_count 1
 
-	bar_set 'bar { enable true; height 30; margin { x 8; y 4 }; pill-min-width 28; modules-left "tags" }'
+	bar_set 'bar { enable true; height 30; margin { x 8; y 4 }; pill-min-width 28; panel { enable false }; modules-left "tags" }'
 	sleep 0.5
 	# with one occupied+selected tag there is exactly one pill: a click just
 	# left of where a SECOND pill would start must therefore hit nothing.
@@ -155,7 +159,7 @@ test_bar_show_all_tags() {
 	hl_assert_eq "with tags hidden, there is no second pill to click" \
 		"$(bar_active_tags)" "$before"
 
-	bar_set 'bar { enable true; height 30; margin { x 8; y 4 }; pill-min-width 28; show-all-tags true; modules-left "tags" }'
+	bar_set 'bar { enable true; height 30; margin { x 8; y 4 }; pill-min-width 28; show-all-tags true; panel { enable false }; modules-left "tags" }'
 	sleep 0.5
 	hl_click 50 19
 	sleep 0.4
@@ -164,4 +168,24 @@ test_bar_show_all_tags() {
 
 	bar_off
 	hl_dispatch "view,1"
+}
+
+test_bar_panel_respects_the_margin() {
+	[ "$(bar_supported)" = "true" ] || { echo "  (skip: built without -Dnative-bar)"; return 0; }
+	# Regression pin: the panel used to be padded on ALL four sides, so with
+	# margin.y == panel.padding its top landed at y=0 and it sat flush against
+	# the screen edge with no gap at all. Padding is horizontal only now; the
+	# gap above comes from margin.y alone. Asserted through the reserved area,
+	# which is the only part of this the IPC can see: the footprint is
+	# height + 2*margin.y regardless of panel padding.
+	hl_spawn_kitty W1 >/dev/null
+	hl_wait_client_count 1
+	sleep 0.3
+	local base_y; base_y="$(bar_client_y W1)"
+
+	bar_set 'bar { enable true; height 30; margin { x 8; y 9 }; panel { enable true; padding 6 }; modules-left "tags" }'
+	sleep 0.5
+	hl_assert_eq "panel padding does not change the reserved footprint" \
+		"$(( $(bar_client_y W1) - base_y ))" "48"
+	bar_off
 }

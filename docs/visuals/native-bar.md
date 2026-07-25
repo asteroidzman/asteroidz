@@ -23,9 +23,9 @@ bar {
     spacing 6
     pill-min-width 28
 
-    modules-left   "tags,title"
+    modules-left   "tags,layout,title"
     modules-center "clock"
-    modules-right  "layout"
+    modules-right  ""
 
     clock { format "%H:%M" }
 }
@@ -36,20 +36,20 @@ bar {
 | `enable` | `false` | draw the bar at all |
 | `height` | `28` | pill height in logical pixels (8–200) |
 | `position` | `"top"` | `"top"` or `"bottom"` |
-| `margin.x` | `8` | inset from the output's left/right edge |
-| `margin.y` | `4` | inset from the output's top/bottom edge |
+| `margin.x` | `8` | gap between the panels and the output's left/right edge |
+| `margin.y` | `9` | gap between the panels and the output's top/bottom edge |
 | `spacing` | `6` | gap between adjacent pills |
 | `pill-min-width` | `28` | floor width, so single-glyph pills stay legible |
 | `show-all-tags` | `false` | `true` draws every configured tag; `false` draws only selected or occupied ones |
 | `panel.enable` | `true` | draw a backdrop panel behind each non-empty slot |
 | `panel.color` | `0x0a0a0cd9` | panel fill (RGBA; the default is ~85% opaque) |
 | `panel.radius` | `9` | panel corner radius |
-| `panel.padding` | `6` | inset between the panel edge and its pills |
+| `panel.padding` | `6` | **horizontal** inset between the panel edge and its pills |
 | `panel.blur` | `true` | blur behind the panel (needs `effects.blur.enable`) |
 | `panel.shadow` | `true` | drop shadow under the panel (needs `shadows`) |
-| `modules-left` | `"tags,title"` | comma-separated module list |
+| `modules-left` | `"tags,layout,title"` | comma-separated module list |
 | `modules-center` | `"clock"` | " |
-| `modules-right` | `"layout"` | " |
+| `modules-right` | *(empty)* | " (the tray and CLI/D-Bus pills will live here) |
 | `clock.format` | `"%H:%M"` | `strftime` format |
 
 Changes take effect on `reload_config` — including changes to the module
@@ -84,6 +84,11 @@ With panels on, a resting pill draws no background either; only the selected
 tag (and any urgent one) is filled, so each panel reads as a single surface.
 Turn panels off with `panel { enable false }` and every pill carries the
 theme's resting colours instead, giving a row of separate pills.
+
+The margin is measured to the *panel* edge, and panel padding is horizontal
+only — the panel is exactly as tall as the bar strip, so the gap above and
+below comes from `margin.y` alone. This mirrors the `margin: 9px 4px` /
+`padding: 0 6px` of the Waybar groups it replaces.
 
 Blur and shadow reuse the same scenefx nodes as the overview's top strip, and
 each defers to the global `effects.blur.enable` / `shadows` settings — asking

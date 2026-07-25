@@ -4596,8 +4596,10 @@ void set_value_default() {
 	config.bar_height = 28;
 	config.bar_position_bottom = 0;
 	config.bar_spacing = 6;
+	/* the gap between the panels and the screen edge; matches the 9px vertical
+	 * margin the waybar groups this replaces used */
 	config.bar_margin_x = 8;
-	config.bar_margin_y = 4;
+	config.bar_margin_y = 9;
 	config.bar_pill_min_width = 28;
 	config.bar_show_all_tags = 0;
 	config.bar_panel_enable = 1;
@@ -4612,11 +4614,11 @@ void set_value_default() {
 	 * selector and focused window on the left, the clock centred, pills on
 	 * the right (the tray will join them once it exists). */
 	snprintf(config.bar_modules_left, sizeof(config.bar_modules_left),
-			 "tags,title");
+			 "tags,layout,title");
 	snprintf(config.bar_modules_center, sizeof(config.bar_modules_center),
 			 "clock");
-	snprintf(config.bar_modules_right, sizeof(config.bar_modules_right),
-			 "layout");
+	/* right is empty until the tray and the CLI/D-Bus-backed pills exist */
+	config.bar_modules_right[0] = '\0';
 #endif
 	config.overviewgappi = 5;
 	config.overviewgappo = 30;

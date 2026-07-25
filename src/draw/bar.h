@@ -386,9 +386,14 @@ static void bar_panel_apply(AsteroidzBar *bar, enum bar_slot slot, int32_t x,
 		return;
 	}
 
+	/* Horizontal padding only, like the `padding: 0 6px` on the waybar groups
+	 * this mirrors: the panel is exactly as tall as the bar strip, and the gap
+	 * to the screen edge comes from margin.y alone. Padding vertically too
+	 * grew the panel back up over that margin and left it flush against the
+	 * top of the screen. */
 	int32_t pad = config.bar_panel_padding;
-	int32_t px = x - pad, py = y - pad;
-	int32_t pw = w + 2 * pad, ph = h + 2 * pad;
+	int32_t px = x - pad, py = y;
+	int32_t pw = w + 2 * pad, ph = h;
 	int32_t radius = config.bar_panel_radius;
 
 	/* Blur goes in first so the tint composites over it, matching the
@@ -475,7 +480,11 @@ static void bar_layout(Monitor *m) {
 		}
 	}
 
-	int32_t inset = config.bar_margin_x;
+	/* The margin is measured to the PANEL edge, not to the first pill, so the
+	 * pill row starts one panel-padding further in. Without this the outer
+	 * panels overhung the margin by exactly that padding. */
+	int32_t pad = config.bar_panel_enable ? config.bar_panel_padding : 0;
+	int32_t inset = config.bar_margin_x + pad;
 	int32_t left = m->m.x + inset;
 	int32_t right = m->m.x + m->m.width - inset;
 	int32_t y = config.bar_position_bottom
