@@ -446,6 +446,7 @@ typedef struct {
 	int32_t bar_tag_icons;  /* max app icons drawn inside each tag pill */
 	int32_t bar_weather_interval; /* minutes between forecast fetches */
 	char bar_weather_location[128]; /* city name; empty = IP geolocation */
+	int32_t bar_media_width; /* pinned now-playing pill width */
 	/* Per-slot backing panel. The bar itself is fully transparent; each
 	 * non-empty slot draws one rounded translucent panel behind its pills,
 	 * which is the grouped look the waybar config it replaces used. With a
@@ -2257,6 +2258,8 @@ bool parse_option(Config *config, char *key, char *value) {
 		config->bar_show_logo = atoi(value) != 0;
 	} else if (strcmp(key, "bar_tag_icons") == 0) {
 		config->bar_tag_icons = CLAMP_INT(atoi(value), 0, 4);
+	} else if (strcmp(key, "bar_media_width") == 0) {
+		config->bar_media_width = CLAMP_INT(atoi(value), 0, 4000);
 	} else if (strcmp(key, "bar_weather_interval") == 0) {
 		config->bar_weather_interval = CLAMP_INT(atoi(value), 1, 1440);
 	} else if (strcmp(key, "bar_weather_location") == 0) {
@@ -3583,6 +3586,7 @@ static const struct {
 	{"bar/show-all-tags", "bar_show_all_tags"},
 	{"bar/show-logo", "bar_show_logo"},
 	{"bar/tag-icons", "bar_tag_icons"},
+	{"bar/media-width", "bar_media_width"},
 	{"bar/weather/interval", "bar_weather_interval"},
 	{"bar/weather/location", "bar_weather_location"},
 	{"bar/panel/enable", "bar_panel_enable"},
@@ -4641,6 +4645,7 @@ void set_value_default() {
 	config.bar_show_logo = 1;
 	config.bar_tag_icons = 3;
 	config.bar_weather_interval = 15;
+	config.bar_media_width = 280;
 	config.bar_weather_location[0] = '\0';
 	config.bar_panel_enable = 1;
 	convert_hex_to_rgba(config.bar_panel_color, 0x0a0a0cd9); /* ~85% opaque */

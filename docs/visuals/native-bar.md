@@ -53,6 +53,7 @@ bar {
 | `modules-center` | `"clock"` | " |
 | `modules-right` | *(empty)* | " (the tray will live here) |
 | `clock.format` | `"%H:%M:%S"` | `strftime` format |
+| `media-width` | `280` | pinned width of the now-playing pill |
 | `weather.interval` | `15` | minutes between forecast fetches |
 | `weather.location` | *(empty)* | city name; empty means IP geolocation |
 | `interval` | `2` | seconds between `/proc` + `/sys` metric samples |
@@ -78,6 +79,7 @@ for a newer build still starts.
 | `network` | link state and ↓/↑ throughput, from `/sys/class/net` | — |
 | `idle` | manual idle-inhibit state ("keep awake") | toggles it |
 | `weather` | current temperature and condition, from open-meteo | — |
+| `media` | now playing (title • artist), from MPRIS | play/pause |
 
 By default the `tags` module hides tags that are both empty and unselected, so
 a nine-tag setup does not permanently spend nine pills on tags holding nothing.
@@ -179,6 +181,13 @@ plugins they replace fork `wpctl`/`nmcli`/`curl` on their main loop, which is
 an invisible stutter in a bar process but a dropped frame and an input hitch
 in a compositor.
 
+`media` reads MPRIS over the session bus asteroidz already owns and pumps
+from its event loop, with **no `playerctl` subprocess** — the bus answers
+directly. Every call is asynchronous: `sd_bus_call()` blocks for up to its
+25-second default timeout, and one unresponsive media player must never be
+able to freeze the compositor. An already-followed player keeps priority over
+newly-appearing ones so the pill does not flap between two open players.
+
 `weather` is the first module that talks to the network. It shells out to
 `curl` through an **async** helper (`src/common/async-spawn.h`): fork, keep the
 read end of a pipe in the compositor's event loop, deliver the output in a
@@ -189,9 +198,8 @@ open-meteo source and the same WMO-code→artwork mapping as the Waybar plugin,
 so the pill is indistinguishable from it.
 
 Not implemented yet: popovers (so no click-through panels), the system tray,
-and the modules that still need a D-Bus session or a per-interaction
-subprocess — volume (wpctl/pactl) and media (MPRIS). Those stay in Waybar
-until they are ported.
+and volume, which still needs a `wpctl`/`pactl` round trip per interaction.
+That stays in Waybar until it is ported.
 
 ## Developing against it
 

@@ -290,3 +290,21 @@ test_bar_weather_module_is_non_blocking() {
 		"$(hl_get "get all-monitors" >/dev/null 2>&1 && echo true || echo false)"
 	bar_off
 }
+
+test_bar_media_module_without_a_session_bus() {
+	[ "$(bar_supported)" = "true" ] || { echo "  (skip: built without -Dnative-bar)"; return 0; }
+	# The harness runs with an isolated XDG_RUNTIME_DIR and therefore NO
+	# session bus, which is exactly the case worth pinning: every MPRIS call
+	# must be guarded on session_bus being non-NULL, and the module must
+	# simply render nothing rather than crash or stall. Asserting an actual
+	# track would require a live player and make the suite depend on one.
+	bar_set 'bar { enable true; height 30; margin { x 8; y 4 }; modules-center "media" }'
+	sleep 1
+	hl_assert_true "media on a bus-less session leaves the compositor healthy" \
+		"$(hl_get "get all-monitors" >/dev/null 2>&1 && echo true || echo false)"
+	local t0 t1
+	t0=$(date +%s); hl_dispatch "view,2"; hl_dispatch "view,1"; t1=$(date +%s)
+	hl_assert_true "and does not stall IPC" \
+		"$([ $((t1 - t0)) -lt 5 ] && echo true || echo false)"
+	bar_off
+}

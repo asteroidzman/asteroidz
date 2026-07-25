@@ -44,6 +44,7 @@ enum bar_module_kind {
 	BAR_MODULE_NETWORK,
 	BAR_MODULE_IDLE,
 	BAR_MODULE_WEATHER,
+	BAR_MODULE_MEDIA,
 };
 
 enum bar_slot { BAR_SLOT_LEFT = 0, BAR_SLOT_CENTER, BAR_SLOT_RIGHT,
@@ -146,6 +147,8 @@ static enum bar_module_kind bar_module_kind_from_name(const char *name) {
 		return BAR_MODULE_IDLE;
 	if (strcmp(name, "weather") == 0)
 		return BAR_MODULE_WEATHER;
+	if (strcmp(name, "media") == 0)
+		return BAR_MODULE_MEDIA;
 	return BAR_MODULE_NONE;
 }
 
@@ -593,6 +596,187 @@ static int bar_weather_tick(void *data) {
 	return 0;
 }
 
+/* ─── media (MPRIS) ───────────────────────────────────────────────────────── */
+
+/* Now-playing over MPRIS, on the session bus asteroidz already owns and
+ * already pumps from the event loop (ipc/session-bus.h). Every call is
+ * ASYNC: sd_bus_call() blocks up to its 25-second default timeout, and one
+ * unresponsive media player must not be able to freeze the compositor.
+ *
+ * No playerctl subprocess. The waybar module shells out to one; here that
+ * would mean a fork every poll for something the bus answers directly. */
+static struct {
+	char player[128]; /* bus name of the player we are following */
+	char title[192];
+	char artist[128];
+	bool playing;
+	bool have;
+	bool in_flight;
+} bar_media;
+
+static struct wl_event_source *bar_media_timer = NULL;
+
+/* Read one a{sv} metadata dict, picking out the two fields we render. */
+static void bar_media_read_metadata(sd_bus_message *m) {
+	if (sd_bus_message_enter_container(m, 'a', "{sv}") < 0)
+		return;
+	while (sd_bus_message_enter_container(m, 'e', "sv") > 0) {
+		const char *key = NULL;
+		if (sd_bus_message_read(m, "s", &key) < 0) {
+			sd_bus_message_exit_container(m);
+			break;
+		}
+		if (key && strcmp(key, "xesam:title") == 0) {
+			const char *v = NULL;
+			if (sd_bus_message_enter_container(m, 'v', "s") > 0) {
+				if (sd_bus_message_read(m, "s", &v) > 0 && v)
+					snprintf(bar_media.title, sizeof(bar_media.title), "%s", v);
+				sd_bus_message_exit_container(m);
+			} else {
+				sd_bus_message_skip(m, "v");
+			}
+		} else if (key && strcmp(key, "xesam:artist") == 0) {
+			/* xesam:artist is an ARRAY of strings; take the first */
+			if (sd_bus_message_enter_container(m, 'v', "as") > 0) {
+				if (sd_bus_message_enter_container(m, 'a', "s") > 0) {
+					const char *v = NULL;
+					if (sd_bus_message_read(m, "s", &v) > 0 && v)
+						snprintf(bar_media.artist, sizeof(bar_media.artist),
+								 "%s", v);
+					sd_bus_message_exit_container(m);
+				}
+				sd_bus_message_exit_container(m);
+			} else {
+				sd_bus_message_skip(m, "v");
+			}
+		} else {
+			sd_bus_message_skip(m, "v");
+		}
+		sd_bus_message_exit_container(m);
+	}
+	sd_bus_message_exit_container(m);
+}
+
+static int bar_media_on_props(sd_bus_message *m, void *user, sd_bus_error *err) {
+	(void)user;
+	(void)err;
+	bar_media.in_flight = false;
+	if (!m || sd_bus_message_is_method_error(m, NULL)) {
+		/* the player went away between ListNames and this call */
+		bar_media.have = false;
+		bar_media.player[0] = '\0';
+		bar_update_all();
+		return 0;
+	}
+
+	bool found = false;
+	if (sd_bus_message_enter_container(m, 'a', "{sv}") < 0)
+		return 0;
+	while (sd_bus_message_enter_container(m, 'e', "sv") > 0) {
+		const char *key = NULL;
+		if (sd_bus_message_read(m, "s", &key) < 0) {
+			sd_bus_message_exit_container(m);
+			break;
+		}
+		if (key && strcmp(key, "PlaybackStatus") == 0) {
+			const char *v = NULL;
+			if (sd_bus_message_enter_container(m, 'v', "s") > 0) {
+				if (sd_bus_message_read(m, "s", &v) > 0 && v) {
+					bar_media.playing = strcmp(v, "Playing") == 0;
+					found = true;
+				}
+				sd_bus_message_exit_container(m);
+			} else {
+				sd_bus_message_skip(m, "v");
+			}
+		} else if (key && strcmp(key, "Metadata") == 0) {
+			if (sd_bus_message_enter_container(m, 'v', "a{sv}") > 0) {
+				bar_media.title[0] = '\0';
+				bar_media.artist[0] = '\0';
+				bar_media_read_metadata(m);
+				sd_bus_message_exit_container(m);
+				found = true;
+			} else {
+				sd_bus_message_skip(m, "v");
+			}
+		} else {
+			sd_bus_message_skip(m, "v");
+		}
+		sd_bus_message_exit_container(m);
+	}
+	sd_bus_message_exit_container(m);
+
+	bar_media.have = found && bar_media.title[0] != '\0';
+	bar_update_all();
+	return 0;
+}
+
+static void bar_media_get_props(const char *name) {
+	if (!session_bus || !name || !*name)
+		return;
+	bar_media.in_flight = true;
+	if (sd_bus_call_method_async(session_bus, NULL, name,
+								 "/org/mpris/MediaPlayer2",
+								 "org.freedesktop.DBus.Properties", "GetAll",
+								 bar_media_on_props, NULL, "s",
+								 "org.mpris.MediaPlayer2.Player") < 0)
+		bar_media.in_flight = false;
+}
+
+static int bar_media_on_names(sd_bus_message *m, void *user, sd_bus_error *err) {
+	(void)user;
+	(void)err;
+	bar_media.in_flight = false;
+	if (!m || sd_bus_message_is_method_error(m, NULL))
+		return 0;
+	if (sd_bus_message_enter_container(m, 'a', "s") < 0)
+		return 0;
+	char pick[128] = "";
+	const char *n = NULL;
+	while (sd_bus_message_read(m, "s", &n) > 0) {
+		if (!n || strncmp(n, "org.mpris.MediaPlayer2.", 23) != 0)
+			continue;
+		/* first one wins, except that an already-followed player keeps
+		 * priority so the pill does not flap between two open players */
+		if (bar_media.player[0] && strcmp(n, bar_media.player) == 0) {
+			snprintf(pick, sizeof(pick), "%s", n);
+			break;
+		}
+		if (!pick[0])
+			snprintf(pick, sizeof(pick), "%s", n);
+	}
+	sd_bus_message_exit_container(m);
+
+	if (!pick[0]) {
+		bar_media.have = false;
+		bar_media.player[0] = '\0';
+		bar_update_all();
+		return 0;
+	}
+	snprintf(bar_media.player, sizeof(bar_media.player), "%s", pick);
+	bar_media_get_props(pick);
+	return 0;
+}
+
+static void bar_media_poll(void) {
+	if (!session_bus || bar_media.in_flight)
+		return;
+	bar_media.in_flight = true;
+	if (sd_bus_call_method_async(session_bus, NULL, "org.freedesktop.DBus",
+								 "/org/freedesktop/DBus",
+								 "org.freedesktop.DBus", "ListNames",
+								 bar_media_on_names, NULL, NULL) < 0)
+		bar_media.in_flight = false;
+}
+
+static int bar_media_tick(void *data) {
+	(void)data;
+	bar_media_poll();
+	if (bar_media_timer)
+		wl_event_source_timer_update(bar_media_timer, 2000);
+	return 0;
+}
+
 /* ─── per-module content ──────────────────────────────────────────────────── */
 
 /* Which tags on `m` currently hold at least one client. Mirrors the same walk
@@ -900,6 +1084,40 @@ static void bar_module_refresh_weather(BarModule *mod) {
 		bar_pill_release(&mod->pills[i]);
 }
 
+static void bar_module_refresh_media(BarModule *mod) {
+	if (!bar_media.have) {
+		/* nothing playing: drop the pill so the slot collapses rather than
+		 * showing a permanently empty widget */
+		for (int32_t i = 0; i < BAR_MAX_PILLS; i++)
+			bar_pill_release(&mod->pills[i]);
+		mod->npills = 0;
+		return;
+	}
+	BarPill *p = bar_pill_get(mod, 0);
+	if (!p) {
+		mod->npills = 0;
+		return;
+	}
+	char icon[512];
+	/* the ACTION, not the state: clicking this pill sends PlayPause, so a
+	 * playing track shows the pause glyph and vice versa */
+	bar_icon_path(icon, sizeof(icon),
+				  bar_media.playing ? "waybar-media-cava/pause.svg"
+									: "waybar-media-cava/play.svg");
+	asteroidz_tab_bar_node_set_icon(p->node, icon);
+	if (bar_media.artist[0])
+		snprintf(p->text, sizeof(p->text), "%s \u2022 %s", bar_media.title,
+				 bar_media.artist);
+	else
+		snprintf(p->text, sizeof(p->text), "%s", bar_media.title);
+	p->arg = 0;
+	p->fixed_width = config.bar_media_width;
+	bar_pill_style(p, false, false);
+	mod->npills = 1;
+	for (int32_t i = 1; i < BAR_MAX_PILLS; i++)
+		bar_pill_release(&mod->pills[i]);
+}
+
 static void bar_module_refresh(BarModule *mod) {
 	switch (mod->kind) {
 	case BAR_MODULE_TAGS:
@@ -924,6 +1142,9 @@ static void bar_module_refresh(BarModule *mod) {
 		break;
 	case BAR_MODULE_WEATHER:
 		bar_module_refresh_weather(mod);
+		break;
+	case BAR_MODULE_MEDIA:
+		bar_module_refresh_media(mod);
 		break;
 	default:
 		mod->npills = 0;
@@ -1271,6 +1492,12 @@ static uint64_t bar_digest(Monitor *m) {
 		case BAR_MODULE_IDLE:
 			bar_hash(&h, &idle_inhibit_manual, sizeof(idle_inhibit_manual));
 			break;
+		case BAR_MODULE_MEDIA:
+			bar_hash_str(&h, bar_media.title);
+			bar_hash_str(&h, bar_media.artist);
+			bar_hash(&h, &bar_media.playing, sizeof(bar_media.playing));
+			bar_hash(&h, &bar_media.have, sizeof(bar_media.have));
+			break;
 		case BAR_MODULE_WEATHER:
 			bar_hash(&h, &bar_weather.temp_c, sizeof(bar_weather.temp_c));
 			bar_hash(&h, &bar_weather.code, sizeof(bar_weather.code));
@@ -1429,6 +1656,28 @@ static void bar_clock_sync(void) {
 					want_weather = true;
 		}
 	}
+	bool want_media = false;
+	if (config.bar_enable) {
+		wl_list_for_each(m, &mons, link) {
+			if (!m->bar)
+				continue;
+			for (int32_t i = 0; i < m->bar->nmodules; i++)
+				if (m->bar->modules[i].kind == BAR_MODULE_MEDIA)
+					want_media = true;
+		}
+	}
+	if (want_media && !bar_media_timer) {
+		bar_media_timer =
+			wl_event_loop_add_timer(event_loop, bar_media_tick, NULL);
+		if (bar_media_timer) {
+			bar_media_poll();
+			wl_event_source_timer_update(bar_media_timer, 2000);
+		}
+	} else if (!want_media && bar_media_timer) {
+		wl_event_source_remove(bar_media_timer);
+		bar_media_timer = NULL;
+	}
+
 	if (want_weather && !bar_weather_timer) {
 		bar_weather_timer =
 			wl_event_loop_add_timer(event_loop, bar_weather_tick, NULL);
@@ -1606,6 +1855,17 @@ static bool bar_handle_node_click(AsteroidzNodeData *hit, uint32_t button) {
 	case BAR_MODULE_TITLE:
 		if (button == BTN_LEFT && m && m->sel) {
 			focusclient(m->sel, 1);
+			return true;
+		}
+		break;
+	case BAR_MODULE_MEDIA:
+		if (button == BTN_LEFT && session_bus && bar_media.player[0]) {
+			/* fire-and-forget: the reply carries nothing we need, and the
+			 * next poll picks up the new state anyway */
+			sd_bus_call_method_async(session_bus, NULL, bar_media.player,
+									 "/org/mpris/MediaPlayer2",
+									 "org.mpris.MediaPlayer2.Player",
+									 "PlayPause", NULL, NULL, NULL);
 			return true;
 		}
 		break;
