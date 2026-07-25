@@ -1561,6 +1561,7 @@ static struct wl_event_source *sync_keymap;
 #include "layout/arrange.h"
 #include "layout/dwindle.h"
 #include "layout/horizontal.h"
+#include "common/async-spawn.h"
 #include "draw/bar.h"
 #include "layout/overview.h"
 #include "layout/scroll.h"

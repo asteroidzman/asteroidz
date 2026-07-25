@@ -43,6 +43,7 @@ enum bar_module_kind {
 	BAR_MODULE_MEMORY,
 	BAR_MODULE_NETWORK,
 	BAR_MODULE_IDLE,
+	BAR_MODULE_WEATHER,
 };
 
 enum bar_slot { BAR_SLOT_LEFT = 0, BAR_SLOT_CENTER, BAR_SLOT_RIGHT,
@@ -143,6 +144,8 @@ static enum bar_module_kind bar_module_kind_from_name(const char *name) {
 		return BAR_MODULE_NETWORK;
 	if (strcmp(name, "idle") == 0 || strcmp(name, "idle-inhibitor") == 0)
 		return BAR_MODULE_IDLE;
+	if (strcmp(name, "weather") == 0)
+		return BAR_MODULE_WEATHER;
 	return BAR_MODULE_NONE;
 }
 
@@ -420,6 +423,174 @@ static int32_t bar_clock_fixed_width(BarPill *p, int32_t height) {
  * an incomplete asset install degrades to text. */
 static void bar_icon_path(char *out, size_t len, const char *rel) {
 	snprintf(out, len, "%s/%s", config.bar_icon_dir, rel);
+}
+
+/* ─── weather ─────────────────────────────────────────────────────────────── */
+
+/* open-meteo, the same source and the same WMO->artwork mapping the
+ * waybar-weather plugin uses, so the pill is indistinguishable from it.
+ * Fetched through async_spawn(curl) -- never synchronously: this runs on the
+ * compositor's event loop, where a 3-second DNS stall would be a 3-second
+ * freeze. */
+static struct {
+	double lat, lon;
+	bool located;
+	int32_t temp_c;
+	int32_t code;
+	bool is_day;
+	bool valid;
+	bool in_flight;
+} bar_weather;
+
+static struct wl_event_source *bar_weather_timer = NULL;
+
+static const char *bar_wmo_icon(int32_t code, bool day) {
+	switch (code) {
+	case 0:
+	case 1:
+		return day ? "sunny.svg" : "night.svg";
+	case 2:
+		return day ? "pcloudy.svg" : "npcloudy.svg";
+	case 3:
+		return "cloud.svg";
+	case 45:
+	case 48:
+		return "fog.svg";
+	case 65:
+	case 67:
+	case 82:
+		return "pour.svg";
+	case 51:
+	case 53:
+	case 55:
+	case 56:
+	case 57:
+	case 61:
+	case 63:
+	case 66:
+	case 80:
+	case 81:
+		return "rain.svg";
+	case 75:
+	case 86:
+		return "heavy-snow.svg";
+	case 71:
+	case 73:
+	case 77:
+	case 85:
+		return "snow.svg";
+	case 95:
+	case 96:
+	case 99:
+		return "tstorm.svg";
+	default:
+		return "cloud.svg";
+	}
+}
+
+static void bar_weather_fetch_forecast(void);
+
+static void bar_weather_on_forecast(const char *out, size_t len, void *user) {
+	(void)user;
+	bar_weather.in_flight = false;
+	if (!len)
+		return;
+	cJSON *root = cJSON_Parse(out);
+	if (!root)
+		return;
+	cJSON *cur = cJSON_GetObjectItem(root, "current");
+	if (cur) {
+		cJSON *t = cJSON_GetObjectItem(cur, "temperature_2m");
+		cJSON *c = cJSON_GetObjectItem(cur, "weather_code");
+		cJSON *d = cJSON_GetObjectItem(cur, "is_day");
+		if (cJSON_IsNumber(t)) {
+			bar_weather.temp_c = (int32_t)lround(t->valuedouble);
+			bar_weather.code = cJSON_IsNumber(c) ? (int32_t)c->valuedouble : 3;
+			bar_weather.is_day = !cJSON_IsNumber(d) || d->valuedouble != 0;
+			bar_weather.valid = true;
+			bar_update_all();
+		}
+	}
+	cJSON_Delete(root);
+}
+
+static void bar_weather_on_geo(const char *out, size_t len, void *user) {
+	(void)user;
+	bar_weather.in_flight = false;
+	if (!len)
+		return;
+	cJSON *root = cJSON_Parse(out);
+	if (!root)
+		return;
+	/* ip-api.com uses lat/lon; the open-meteo geocoder nests them under
+	 * results[0] as latitude/longitude. Accept either shape so a configured
+	 * city and IP geolocation share this one parser. */
+	cJSON *lat = cJSON_GetObjectItem(root, "lat");
+	cJSON *lon = cJSON_GetObjectItem(root, "lon");
+	if (!cJSON_IsNumber(lat) || !cJSON_IsNumber(lon)) {
+		cJSON *res = cJSON_GetObjectItem(root, "results");
+		cJSON *first = res ? cJSON_GetArrayItem(res, 0) : NULL;
+		if (first) {
+			lat = cJSON_GetObjectItem(first, "latitude");
+			lon = cJSON_GetObjectItem(first, "longitude");
+		}
+	}
+	if (cJSON_IsNumber(lat) && cJSON_IsNumber(lon)) {
+		bar_weather.lat = lat->valuedouble;
+		bar_weather.lon = lon->valuedouble;
+		bar_weather.located = true;
+		bar_weather_fetch_forecast();
+	}
+	cJSON_Delete(root);
+}
+
+static void bar_weather_curl(const char *url, AsyncSpawnCb cb) {
+	char *argv[] = {"curl",   "-sS",  "--fail", "--connect-timeout", "3",
+					"--max-time", "8", "--compressed", "-A", "asteroidz-bar",
+					(char *)url, NULL};
+	bar_weather.in_flight = true;
+	if (!async_spawn(event_loop, argv, cb, NULL))
+		bar_weather.in_flight = false;
+}
+
+static void bar_weather_fetch_forecast(void) {
+	char url[512];
+	snprintf(url, sizeof(url),
+			 "https://api.open-meteo.com/v1/forecast?latitude=%.4f"
+			 "&longitude=%.4f&current=temperature_2m,is_day,weather_code"
+			 "&timezone=auto&forecast_days=1",
+			 bar_weather.lat, bar_weather.lon);
+	bar_weather_curl(url, bar_weather_on_forecast);
+}
+
+static void bar_weather_fetch(void) {
+	/* one request in flight at a time: a slow network must not queue up a
+	 * curl per tick */
+	if (bar_weather.in_flight)
+		return;
+	if (bar_weather.located) {
+		bar_weather_fetch_forecast();
+		return;
+	}
+	if (config.bar_weather_location[0]) {
+		char url[512];
+		snprintf(url, sizeof(url),
+				 "https://geocoding-api.open-meteo.com/v1/search?name=%s"
+				 "&count=1&language=en&format=json",
+				 config.bar_weather_location);
+		bar_weather_curl(url, bar_weather_on_geo);
+	} else {
+		bar_weather_curl("http://ip-api.com/json/", bar_weather_on_geo);
+	}
+}
+
+static int bar_weather_tick(void *data) {
+	(void)data;
+	bar_weather_fetch();
+	if (bar_weather_timer)
+		wl_event_source_timer_update(
+			bar_weather_timer, config.bar_weather_interval * 60 * 1000);
+	return 0;
 }
 
 /* ─── per-module content ──────────────────────────────────────────────────── */
@@ -703,6 +874,32 @@ static void bar_module_refresh_idle(BarModule *mod) {
 		bar_pill_release(&mod->pills[i]);
 }
 
+static void bar_module_refresh_weather(BarModule *mod) {
+	BarPill *p = bar_pill_get(mod, 0);
+	if (!p) {
+		mod->npills = 0;
+		return;
+	}
+	char icon[512], rel[64];
+	snprintf(rel, sizeof(rel), "waybar-weather/%s",
+			 bar_wmo_icon(bar_weather.valid ? bar_weather.code : 3,
+						  bar_weather.is_day));
+	bar_icon_path(icon, sizeof(icon), rel);
+	asteroidz_tab_bar_node_set_icon(p->node, icon);
+	if (bar_weather.valid)
+		snprintf(p->text, sizeof(p->text), "%d°", bar_weather.temp_c);
+	else
+		snprintf(p->text, sizeof(p->text), "--°");
+	p->arg = 0;
+	/* -99 deg is wider than any real reading here, and the pill must not
+	 * resize when the temperature crosses 0 or 10 */
+	p->fixed_width = bar_template_width(p, "-99°", config.bar_height);
+	bar_pill_style(p, false, false);
+	mod->npills = 1;
+	for (int32_t i = 1; i < BAR_MAX_PILLS; i++)
+		bar_pill_release(&mod->pills[i]);
+}
+
 static void bar_module_refresh(BarModule *mod) {
 	switch (mod->kind) {
 	case BAR_MODULE_TAGS:
@@ -724,6 +921,9 @@ static void bar_module_refresh(BarModule *mod) {
 		break;
 	case BAR_MODULE_IDLE:
 		bar_module_refresh_idle(mod);
+		break;
+	case BAR_MODULE_WEATHER:
+		bar_module_refresh_weather(mod);
 		break;
 	default:
 		mod->npills = 0;
@@ -995,6 +1195,12 @@ static uint64_t bar_digest(Monitor *m) {
 		case BAR_MODULE_IDLE:
 			bar_hash(&h, &idle_inhibit_manual, sizeof(idle_inhibit_manual));
 			break;
+		case BAR_MODULE_WEATHER:
+			bar_hash(&h, &bar_weather.temp_c, sizeof(bar_weather.temp_c));
+			bar_hash(&h, &bar_weather.code, sizeof(bar_weather.code));
+			bar_hash(&h, &bar_weather.is_day, sizeof(bar_weather.is_day));
+			bar_hash(&h, &bar_weather.valid, sizeof(bar_weather.valid));
+			break;
 		case BAR_MODULE_CPU:
 			bar_hash(&h, &bar_metrics.cpu_pct, sizeof(bar_metrics.cpu_pct));
 			break;
@@ -1135,6 +1341,31 @@ static void bar_clock_sync(void) {
 					want_metrics = true;
 			}
 		}
+	}
+
+	bool want_weather = false;
+	if (config.bar_enable) {
+		wl_list_for_each(m, &mons, link) {
+			if (!m->bar)
+				continue;
+			for (int32_t i = 0; i < m->bar->nmodules; i++)
+				if (m->bar->modules[i].kind == BAR_MODULE_WEATHER)
+					want_weather = true;
+		}
+	}
+	if (want_weather && !bar_weather_timer) {
+		bar_weather_timer =
+			wl_event_loop_add_timer(event_loop, bar_weather_tick, NULL);
+		if (bar_weather_timer) {
+			/* fetch straight away rather than after a full interval, or the
+			 * pill sits on "--" for 15 minutes after every start */
+			bar_weather_fetch();
+			wl_event_source_timer_update(
+				bar_weather_timer, config.bar_weather_interval * 60 * 1000);
+		}
+	} else if (!want_weather && bar_weather_timer) {
+		wl_event_source_remove(bar_weather_timer);
+		bar_weather_timer = NULL;
 	}
 
 	if (want_metrics && !bar_metrics_timer) {

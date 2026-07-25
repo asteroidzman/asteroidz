@@ -270,3 +270,23 @@ test_bar_tag_app_icons_and_logo() {
 	bar_off
 	hl_dispatch "view,1"
 }
+
+test_bar_weather_module_is_non_blocking() {
+	[ "$(bar_supported)" = "true" ] || { echo "  (skip: built without -Dnative-bar)"; return 0; }
+	# Deliberately does NOT assert a temperature: that would make the suite
+	# depend on the network and on open-meteo being up. What matters here is
+	# the property the async helper exists to guarantee -- that configuring
+	# weather never blocks the compositor, whether the fetch succeeds, fails,
+	# or hangs. An unroutable location exercises the failing path.
+	bar_set 'bar { enable true; height 30; margin { x 8; y 4 }; weather { location "Nowhere-Xyzzy-12345"; interval 1 }; modules-right "weather" }'
+	local t0 t1
+	t0=$(date +%s)
+	hl_dispatch "view,2"
+	hl_dispatch "view,1"
+	t1=$(date +%s)
+	hl_assert_true "IPC stays responsive while a weather fetch is outstanding" \
+		"$([ $((t1 - t0)) -lt 5 ] && echo true || echo false)"
+	hl_assert_true "the compositor is healthy with weather configured" \
+		"$(hl_get "get all-monitors" >/dev/null 2>&1 && echo true || echo false)"
+	bar_off
+}

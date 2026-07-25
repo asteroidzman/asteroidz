@@ -53,6 +53,8 @@ bar {
 | `modules-center` | `"clock"` | " |
 | `modules-right` | *(empty)* | " (the tray will live here) |
 | `clock.format` | `"%H:%M:%S"` | `strftime` format |
+| `weather.interval` | `15` | minutes between forecast fetches |
+| `weather.location` | *(empty)* | city name; empty means IP geolocation |
 | `interval` | `2` | seconds between `/proc` + `/sys` metric samples |
 | `title-width` | `320` | pinned width of the title pill (`0` = size to content) |
 | `icon-dir` | `/usr/share` | root of the Waybar plugin asset trees the pill icons come from |
@@ -75,6 +77,7 @@ for a newer build still starts.
 | `memory` | used memory, from `/proc/meminfo` | — |
 | `network` | link state and ↓/↑ throughput, from `/sys/class/net` | — |
 | `idle` | manual idle-inhibit state ("keep awake") | toggles it |
+| `weather` | current temperature and condition, from open-meteo | — |
 
 By default the `tags` module hides tags that are both empty and unselected, so
 a nine-tag setup does not permanently spend nine pills on tags holding nothing.
@@ -166,10 +169,19 @@ plugins they replace fork `wpctl`/`nmcli`/`curl` on their main loop, which is
 an invisible stutter in a bar process but a dropped frame and an input hitch
 in a compositor.
 
+`weather` is the first module that talks to the network. It shells out to
+`curl` through an **async** helper (`src/common/async-spawn.h`): fork, keep the
+read end of a pipe in the compositor's event loop, deliver the output in a
+callback. It is never synchronous — a 3-second DNS stall on the compositor's
+own event loop is a 3-second freeze of the whole session. Only one request is
+in flight at a time, so a slow network cannot queue up a `curl` per tick. Same
+open-meteo source and the same WMO-code→artwork mapping as the Waybar plugin,
+so the pill is indistinguishable from it.
+
 Not implemented yet: popovers (so no click-through panels), the system tray,
-and the modules that genuinely need a subprocess or a D-Bus session — volume
-(wpctl/pactl), weather (HTTP), media (MPRIS). Those need async plumbing before
-they can move in-process, and stay in Waybar until then.
+and the modules that still need a D-Bus session or a per-interaction
+subprocess — volume (wpctl/pactl) and media (MPRIS). Those stay in Waybar
+until they are ported.
 
 ## Developing against it
 
