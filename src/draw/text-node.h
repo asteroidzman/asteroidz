@@ -206,6 +206,12 @@ void asteroidz_text_global_finish(void);
 bool asteroidz_icon_cache_put_argb32(const char *key, const uint8_t *argb_be,
 									 int32_t w, int32_t h);
 
+/* Same, for artwork the compositor DRAWS rather than loads: hands a finished
+ * cairo surface straight to the cache, which takes ownership. Used by the
+ * network indicator, whose two halves are lit independently and so cannot be
+ * a tinted stencil. */
+bool asteroidz_icon_cache_put_surface(const char *key, cairo_surface_t *surf);
+
 /* a standalone app-icon buffer (used for overview thumbnails) */
 struct asteroidz_icon_node {
 	struct wlr_scene_buffer *scene_buffer;

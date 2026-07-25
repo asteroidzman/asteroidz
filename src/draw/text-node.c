@@ -149,6 +149,23 @@ static cairo_surface_t *get_cached_icon(const char *name) {
 	return surf;
 }
 
+bool asteroidz_icon_cache_put_surface(const char *key,
+									  cairo_surface_t *surf) {
+	if (!key || !*key || !surf)
+		return false;
+	if (cairo_surface_status(surf) != CAIRO_STATUS_SUCCESS) {
+		cairo_surface_destroy(surf);
+		return false;
+	}
+	if (!icon_cache)
+		icon_cache = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+										   icon_surface_free);
+	/* takes ownership: the cache's destroy notify owns it from here, and
+	 * replacing a key frees whatever it displaces */
+	g_hash_table_insert(icon_cache, g_strdup(key), surf);
+	return true;
+}
+
 bool asteroidz_icon_cache_put_argb32(const char *key, const uint8_t *argb_be,
 									 int32_t w, int32_t h) {
 	if (!key || !*key || !argb_be || w <= 0 || h <= 0)

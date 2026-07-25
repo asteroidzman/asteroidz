@@ -88,7 +88,7 @@ for a newer build still starts.
 | `layout` | the current layout, as its Waybar SVG | cycles `circle_layout` |
 | `cpu` | total CPU load, from `/proc/stat` deltas — **icon only**, tinted by load | — |
 | `memory` | used memory, from `/proc/meminfo` — **icon only**, tinted by load | — |
-| `network` | link state and ↓/↑ throughput, from `/sys/class/net` | — |
+| `network` | two activity arrows — upload above, download below — each lit by its own throughput, from `/sys/class/net`. **Icon only** | — |
 | `idle` | manual idle-inhibit state ("keep awake") | toggles it |
 | `weather` | current temperature and condition, from open-meteo | — |
 | `media` | now playing (title • artist), from MPRIS | play/pause |
@@ -257,7 +257,16 @@ tinted.
 `cpu` and `memory` are **icon only**: the colour is the reading, in four steps
 — resting (foreground at 45% alpha), working (theme accent) from 20%, heavy
 (amber) from 60%, saturated (theme urgent) from 85%. The exact figure is not
-shown; that belongs in a popover, which the native bar does not have yet.
+shown; that belongs in a popover.
+
+`network` is icon only too, but its glyph is **drawn rather than loaded**: two
+stacked arrows, upload above and download below, each lit independently by its
+own direction's throughput on the same four-step ramp (bands at 8 KB/s,
+512 KB/s and 4 MB/s). A tint is per-node, so one stencil cannot carry two
+states — the artwork is rasterised into the shared icon cache instead, keyed on
+the pair of tiers, so only the sixteen possible combinations are ever drawn
+however long the session runs. A down link lights both arrows urgent; the pair
+going red *is* the reading, so there is no separate disconnected glyph.
 
 Those two pills are laid out as one run: no padding of their own, `icon-spacing`
 between them, and no `pill-min-width` floor (that floor exists to keep a

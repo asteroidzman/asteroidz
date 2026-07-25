@@ -1324,6 +1324,101 @@ static void bar_load_tint(int32_t pct, float out[4]) {
 	out[3] *= 0.45f;
 }
 
+/* ─── network activity indicator ──────────────────────────────────────────── */
+
+/* Two stacked arrows -- upload on top, download below -- each lit by its own
+ * direction's throughput, like the pair of activity LEDs on a switch port.
+ *
+ * DRAWN rather than tinted, because the two halves take different colours and
+ * a tint is per-node: one stencil cannot carry two states. The result goes
+ * into the shared icon cache under a key naming the two tiers, so only the
+ * sixteen possible combinations are ever rasterised however long the session
+ * runs -- not one surface per sample. */
+#define BAR_NET_TIERS 4
+
+/* Throughput bands, in bytes/sec. Chosen so the common case reads as calm: a
+ * desktop trickling background chatter should show resting, not "busy". */
+static int32_t bar_net_tier(double bytes_per_sec) {
+	if (bytes_per_sec >= 4.0 * 1024 * 1024)
+		return 3; /* saturated */
+	if (bytes_per_sec >= 512.0 * 1024)
+		return 2; /* heavy */
+	if (bytes_per_sec >= 8.0 * 1024)
+		return 1; /* active */
+	return 0;     /* resting */
+}
+
+static void bar_net_tier_color(int32_t tier, float out[4]) {
+	switch (tier) {
+	case 3:
+		memcpy(out, config.theme.urgent_color, sizeof(float) * 4);
+		return;
+	case 2:
+		memcpy(out, bar_load_amber, sizeof(float) * 4);
+		return;
+	case 1:
+		memcpy(out, config.theme.focus_bg_color, sizeof(float) * 4);
+		return;
+	default:
+		memcpy(out, config.theme.fg_color, sizeof(float) * 4);
+		out[3] *= 0.35f; /* unlit, like a dark LED */
+		return;
+	}
+}
+
+/* One arrow, pointing up or down, filling the given band of the surface. */
+static void bar_net_draw_arrow(cairo_t *cr, double x, double y, double w,
+							   double h, bool up, const float rgba[4]) {
+	double mid = x + w / 2.0;
+	cairo_new_path(cr);
+	if (up) {
+		cairo_move_to(cr, mid, y);
+		cairo_line_to(cr, x + w, y + h);
+		cairo_line_to(cr, x, y + h);
+	} else {
+		cairo_move_to(cr, mid, y + h);
+		cairo_line_to(cr, x + w, y);
+		cairo_line_to(cr, x, y);
+	}
+	cairo_close_path(cr);
+	cairo_set_source_rgba(cr, rgba[0], rgba[1], rgba[2], rgba[3]);
+	cairo_fill(cr);
+}
+
+static const char *bar_net_icon(int32_t up_tier, int32_t down_tier) {
+	static char key[64];
+	snprintf(key, sizeof(key), "asteroidz-net:%d:%d", up_tier, down_tier);
+
+	/* Drawn at a fixed 64px and scaled down by the pill, like every other
+	 * icon: the artwork is cached on the tiers alone, so it must not also
+	 * depend on whatever height the bar happens to be configured to today. */
+	const int32_t sz = 64;
+	cairo_surface_t *surf =
+		cairo_image_surface_create(CAIRO_FORMAT_ARGB32, sz, sz);
+	if (cairo_surface_status(surf) != CAIRO_STATUS_SUCCESS) {
+		cairo_surface_destroy(surf);
+		return NULL;
+	}
+	cairo_t *cr = cairo_create(surf);
+	cairo_set_antialias(cr, CAIRO_ANTIALIAS_BEST);
+
+	float up[4], down[4];
+	bar_net_tier_color(up_tier, up);
+	bar_net_tier_color(down_tier, down);
+
+	/* a gap between the two so they read as two lights, not one shape */
+	const double gap = sz * 0.10;
+	const double half = (sz - gap) / 2.0;
+	bar_net_draw_arrow(cr, sz * 0.12, 0.0, sz * 0.76, half, true, up);
+	bar_net_draw_arrow(cr, sz * 0.12, half + gap, sz * 0.76, half, false, down);
+
+	cairo_destroy(cr);
+	cairo_surface_flush(surf);
+	if (!asteroidz_icon_cache_put_surface(key, surf))
+		return NULL;
+	return key;
+}
+
 /* One-pill metric modules. The artwork is the waybar sysinfo plugin's
  * monochrome SVG set, tinted here rather than drawn as-is -- those files are
  * a solid #000 silhouette and paint as an invisible black blob on a dark
@@ -1358,43 +1453,25 @@ static void bar_module_refresh_metric(BarModule *mod) {
 		break;
 	}
 	case BAR_MODULE_NETWORK: {
-		/* predictable interface names: a wireless one starts with 'w' */
-		const char *art = !bar_metrics.link_up
-							  ? "waybar-sysinfo/disconnected.svg"
-						  : bar_metrics.iface[0] == 'w'
-							  ? "waybar-sysinfo/wifi3.svg"
-							  : "waybar-sysinfo/ethernet.svg";
-		bar_icon_path(icon, sizeof(icon), art);
-		asteroidz_tab_bar_node_set_icon(p->node, icon);
-		/* same monochrome set as cpu/mem, so it needs the same tint; the
-		 * throughput text carries the reading here, so the icon just says
-		 * connected or not */
-		float ntint[4];
-		if (bar_metrics.link_up) {
-			memcpy(ntint, config.theme.fg_color, sizeof(ntint));
-		} else {
-			memcpy(ntint, config.theme.urgent_color, sizeof(ntint));
-		}
-		asteroidz_tab_bar_node_set_icon_tint(p->node, ntint);
-		if (!bar_metrics.link_up) {
-			p->text[0] = '\0';
-		} else {
-			char rx[16], tx[16];
-			bar_fmt_rate(bar_metrics.rx_rate, rx, sizeof(rx));
-			bar_fmt_rate(bar_metrics.tx_rate, tx, sizeof(tx));
-			snprintf(p->text, sizeof(p->text), "↓%s ↑%s", rx, tx);
-		}
-		/* widest reachable rendering: the K->M transition and the digit count
-		 * both change the string length every few seconds otherwise */
-		/* five digits per direction: digits are the widest glyphs the
-		 * formatter can emit, and it now never exceeds five characters, so
-		 * this reserve is tight rather than aspirational */
-		p->fixed_width =
-			bar_template_width(p, "↓99999 ↑99999", bar_pill_height());
-		/* left-aligned inside that reserve: centred, a quiet link put half the
-		 * slack between this pill and the memory icon before it, which read as
-		 * a gap in the group rather than as headroom for a busy link */
-		asteroidz_tab_bar_node_set_text_align_left(p->node, true);
+		/* Icon only, like cpu and memory: the two arrows carry the reading,
+		 * so it joins the same tight run instead of trailing a wide reserve
+		 * for throughput text that was mostly empty space. A down link lights
+		 * both arrows in the urgent colour rather than showing a separate
+		 * "disconnected" glyph -- the pair going red IS the reading. */
+		int32_t up_tier = bar_metrics.link_up
+							  ? bar_net_tier(bar_metrics.tx_rate)
+							  : BAR_NET_TIERS - 1;
+		int32_t down_tier = bar_metrics.link_up
+								? bar_net_tier(bar_metrics.rx_rate)
+								: BAR_NET_TIERS - 1;
+		const char *key = bar_net_icon(up_tier, down_tier);
+		if (key)
+			asteroidz_tab_bar_node_set_icon(p->node, key);
+		/* the artwork carries its own colours; tinting would flatten both
+		 * halves to one */
+		asteroidz_tab_bar_node_set_icon_tint(p->node, NULL);
+		p->text[0] = '\0';
+		p->fixed_width = bar_icon_pill_width(p, bar_pill_height());
 		break;
 	}
 	default:
@@ -2052,15 +2129,16 @@ static uint64_t bar_digest(Monitor *m) {
 			bar_hash(&h, &bar_metrics.mem_pct, sizeof(bar_metrics.mem_pct));
 			break;
 		case BAR_MODULE_NETWORK: {
-			/* hash the FORMATTED rates, not the raw doubles: the pill only
-			 * redraws when the displayed string changes, and the rate jitters
-			 * continuously while the text does not. */
-			char rx[16], tx[16];
-			bar_fmt_rate(bar_metrics.rx_rate, rx, sizeof(rx));
-			bar_fmt_rate(bar_metrics.tx_rate, tx, sizeof(tx));
-			bar_hash_str(&h, rx);
-			bar_hash_str(&h, tx);
-			bar_hash_str(&h, bar_metrics.iface);
+			/* hash the TIERS, not the rates: the indicator only changes when a
+			 * rate crosses a band, and the rate itself jitters every sample.
+			 * Hashing the raw doubles would relayout the bar twice a second for
+			 * artwork that did not change. */
+			int32_t ut = bar_metrics.link_up ? bar_net_tier(bar_metrics.tx_rate)
+											 : BAR_NET_TIERS - 1;
+			int32_t dt = bar_metrics.link_up ? bar_net_tier(bar_metrics.rx_rate)
+											 : BAR_NET_TIERS - 1;
+			bar_hash(&h, &ut, sizeof(ut));
+			bar_hash(&h, &dt, sizeof(dt));
 			bar_hash(&h, &bar_metrics.link_up, sizeof(bar_metrics.link_up));
 			break;
 		}
