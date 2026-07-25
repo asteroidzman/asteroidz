@@ -93,7 +93,7 @@ for a newer build still starts.
 | `weather` | current temperature and condition, from open-meteo | — |
 | `media` | now playing (title • artist), from MPRIS | play/pause |
 | `volume` | default sink level, with a speaker icon (also accepts `vol`) | click toggles mute; right-click opens the output picker; scroll steps by `volume-step` |
-| `tray` | one icon per StatusNotifierItem (also accepts `systray`) | left: `Activate`; right/middle: `SecondaryActivate` |
+| `tray` | one icon per StatusNotifierItem (also accepts `systray`) | left: `Activate`; right: the item's context menu; middle: `SecondaryActivate` |
 
 The `tags` module mirrors the Waybar workspace module it replaces: it shows
 every tag that is **selected or holds a window**, then pads with the
@@ -152,6 +152,7 @@ wire to "show my menu" regardless.
 A module can drop a panel below its pill holding rows the pointer can act on.
 Right-clicking `volume` opens the **audio output picker**: one row per sink,
 the current default filled in the theme's accent, click to switch.
+Right-clicking a **tray** icon opens that item's own context menu.
 
 Popovers are built from the pieces the bar already has — a scenefx
 blur/rect/shadow stack for the panel, one pill node per row — so they inherit
@@ -182,6 +183,30 @@ working normally while a popover is up.
 A popover whose content query returns nothing closes itself rather than leaving
 an empty panel floating over the desktop — which is what happens on a machine
 with no sound server, and is pinned by the regression suite.
+
+### Tray context menus
+
+A StatusNotifierItem's `Menu` property names an object implementing
+`com.canonical.dbusmenu`, whose `GetLayout` returns a recursive tree. asteroidz
+asks for **one level at a time**: a submenu is a row that re-opens the popover
+against that row's id, which keeps the drawing flat and costs one round trip
+per level entered rather than one enormous reply up front.
+
+`AboutToShow` is called first, because applications populate their menus lazily
+on it — skipping it gets an empty or stale layout out of anything Qt-based.
+Labels have their GTK mnemonic markers stripped, so `_Quit` renders as `Quit`
+rather than with a stray underscore. Separators are drawn as a dim rule and are
+inert: clicking one neither acts nor dismisses, the way it behaves in every
+other menu. Disabled entries are greyed and consume their click without closing.
+
+A menu longer than the screen is truncated to what fits rather than drawn off
+the bottom — a popover has no viewport to scroll yet. The row cap is
+deliberately generous (32) because real menus are long: Steam lists every
+installed game before Store/Library/Community, and only then Quit.
+
+Items that publish no `Menu` still fall back to `SecondaryActivate` on
+right-click, since some applications wire that to "open my menu" and ship no
+DBusMenu at all.
 
 ## Panels
 
@@ -352,10 +377,10 @@ notch. The tray forwards scrolls to the item as the spec's
 `Scroll(delta, orientation)`, letting a mixer applet take volume and a pager
 take workspaces.
 
-[Popovers](#popovers) exist as of this version, with the audio output picker
-as the first one. Still missing: a draggable volume slider (that needs pointer
-capture across a drag, not just a click), the tray's DBusMenu context menus,
-and keyboard navigation within a popover.
+[Popovers](#popovers) exist as of this version, carrying the audio output
+picker and the tray's context menus. Still missing: a draggable volume slider
+(that needs pointer capture across a drag, not just a click) and keyboard
+navigation within a popover.
 
 ## Developing against it
 

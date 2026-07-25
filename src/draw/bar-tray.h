@@ -50,6 +50,10 @@ typedef struct {
 	char title[192];   /* Title property: what the tooltip would say */
 	char status[32];   /* Passive / Active / NeedsAttention */
 	char icon_key[192]; /* what to hand _set_icon: a name or a cache key */
+	/* Object path of the item's com.canonical.dbusmenu, from the SNI `Menu`
+	 * property. Empty when the item ships no menu, which is the case that
+	 * still falls back to SecondaryActivate. */
+	char menu_path[128];
 	bool used;
 } BarTrayItem;
 
@@ -242,6 +246,22 @@ static int bar_tray_on_props(sd_bus_message *m, void *user, sd_bus_error *err) {
 			} else if (!strcmp(key, "IconThemePath")) {
 				dst = icon_theme_path;
 				dstlen = sizeof(icon_theme_path);
+			}
+
+			/* Menu is an object path ('o'), not a string, so it needs its own
+			 * variant type -- read as "s" it silently came back empty and
+			 * every item looked like it had no menu. */
+			if (!dst && !strcmp(key, "Menu")) {
+				const char *mp = NULL;
+				if (sd_bus_message_enter_container(m, 'v', "o") > 0) {
+					if (sd_bus_message_read(m, "o", &mp) > 0 && mp)
+						snprintf(it->menu_path, sizeof(it->menu_path), "%s", mp);
+					sd_bus_message_exit_container(m);
+				} else {
+					sd_bus_message_skip(m, "v");
+				}
+				sd_bus_message_exit_container(m);
+				continue;
 			}
 
 			if (dst) {

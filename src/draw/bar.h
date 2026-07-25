@@ -2467,10 +2467,16 @@ static bool bar_handle_node_click(AsteroidzNodeData *hit, uint32_t button) {
 			return true;
 		}
 		if (button == BTN_RIGHT) {
-			/* No DBusMenu popup yet (it needs a surface layer the bar does not
-			 * have), so right-click goes to the item's own secondary action --
-			 * which most applications wire to "open my menu" regardless. */
-			bar_tray_activate(it, "SecondaryActivate", x, y);
+			/* The item's own context menu when it publishes one, which is what
+			 * a right-click on a tray icon means everywhere else. Items with
+			 * no Menu property still fall back to SecondaryActivate -- some
+			 * applications wire that to "open my menu" and ship no DBusMenu at
+			 * all. */
+			if (it->menu_path[0])
+				bar_popover_open_menu(m, p->node->last_x + p->width / 2,
+									  it->service, it->menu_path, 0);
+			else
+				bar_tray_activate(it, "SecondaryActivate", x, y);
 			return true;
 		}
 		if (button == BTN_MIDDLE) {
