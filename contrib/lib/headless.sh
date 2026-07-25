@@ -377,6 +377,20 @@ hl_click() { # hl_click X Y [click|rclick|mclick]
 	"$HL_WLVPTR" "$1" "$2" "$HL_PTR_EXTENT_W" "$HL_PTR_EXTENT_H" "${3:-click}"
 }
 
+# hl_wheel X Y N -- scroll N discrete notches at (X,Y), positive = down. This
+# is what a real mouse wheel sends: a continuous delta AND a notch count.
+hl_wheel() { # hl_wheel X Y N
+	"$HL_WLVPTR" "$1" "$2" "$HL_PTR_EXTENT_W" "$HL_PTR_EXTENT_H" "wheel:${3:-1}"
+}
+
+# hl_scroll X Y AMT -- continuous scroll only, no notch, which is what a
+# TRACKPAD sends. Kept distinct from hl_wheel because handlers that key off
+# the discrete count alone work under one and silently do nothing under the
+# other.
+hl_scroll() { # hl_scroll X Y AMT
+	"$HL_WLVPTR" "$1" "$2" "$HL_PTR_EXTENT_W" "$HL_PTR_EXTENT_H" "scroll:${3:-1}"
+}
+
 # hl_super_drag X1 Y1 X2 Y2 -- press Super, left-drag from (X1,Y1) to
 # (X2,Y2), release Super. For testing a real Super+drag mouse binding (not
 # an IPC dispatch) -- needs hl_start's own test config to actually bind one

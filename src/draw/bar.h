@@ -2484,6 +2484,96 @@ static bool bar_handle_node_click(AsteroidzNodeData *hit, uint32_t button) {
 	return false;
 }
 
+/* Dispatch a scroll over a bar pill. `delta` is the discrete notch count,
+ * negative for up/left. Returns true when the scroll was consumed, so it is
+ * not also forwarded to whatever client happens to be under the bar.
+ *
+ * Separate from bar_handle_node_click because a scroll is not a click: the
+ * volume pill mutes on click but steps on scroll, and the tray spec has its
+ * own Scroll method carrying an orientation. */
+static bool bar_handle_node_scroll(AsteroidzNodeData *hit, int32_t delta,
+								   bool horizontal) {
+	BarPill *p = hit ? (BarPill *)hit->node_data : NULL;
+	if (!p || !p->used || !p->module || delta == 0)
+		return false;
+	switch (p->module->kind) {
+	case BAR_MODULE_VOLUME:
+		/* scroll up raises. delta is negative for "up", so negate it. */
+		bar_volume_set(-delta * config.bar_volume_step);
+		return true;
+	case BAR_MODULE_TRAY: {
+		if (p->arg >= (uint32_t)bar_tray_nitems)
+			break;
+		BarTrayItem *it = &bar_tray_items[p->arg];
+		if (!it->used)
+			break;
+		/* The item decides what a scroll means -- volume for a mixer applet,
+		 * workspace for a pager -- so pass the notch count and the axis
+		 * through rather than interpreting them here. */
+		bar_tray_scroll(it, delta, horizontal ? "horizontal" : "vertical");
+		return true;
+	}
+	default:
+		break;
+	}
+	return false;
+}
+
+/* Resolve the pill under (x, y) and give it the scroll. Kept here rather than
+ * in axisnotify so the caller needs no #ifdef and no knowledge of the scene
+ * layout -- same arrangement as bar_reserve and bar_handle_node_click.
+ *
+ * Takes the raw axis event rather than a notch count because the two input
+ * families report scrolling completely differently: a wheel sends discrete
+ * clicks (delta_discrete, in 120ths of a notch), while a trackpad or a
+ * high-resolution wheel sends a stream of small continuous deltas and no
+ * discrete value at all. Keying off delta_discrete alone made the pills
+ * unscrollable on a trackpad, so continuous motion is accumulated here until
+ * it adds up to a notch.
+ *
+ * The lookup mirrors handle_buttonpress: per-layer, top down, skipping the
+ * fade-out and screenshot layers whose node data belongs to freed clients. */
+#define BAR_SCROLL_UNIT 10.0 /* continuous delta that counts as one notch */
+
+static bool bar_scroll_at(double x, double y, double delta,
+						  double delta_discrete, bool horizontal) {
+	if (!config.bar_enable)
+		return false;
+
+	int32_t notches = 0;
+	if (delta_discrete != 0.0) {
+		/* 120ths of a notch, the high-resolution wheel convention */
+		notches = (int32_t)(delta_discrete / 120.0);
+		if (notches == 0)
+			notches = delta_discrete > 0 ? 1 : -1;
+	} else if (delta != 0.0) {
+		/* Accumulated across events, and reset on a direction change so a
+		 * flick back the other way responds immediately instead of first
+		 * having to cancel out what came before. */
+		static double accum = 0.0;
+		if ((accum > 0.0) != (delta > 0.0))
+			accum = 0.0;
+		accum += delta;
+		notches = (int32_t)(accum / BAR_SCROLL_UNIT);
+		if (notches != 0)
+			accum -= notches * BAR_SCROLL_UNIT;
+	}
+	if (notches == 0)
+		return false;
+	struct wlr_scene_node *node = NULL;
+	for (int32_t li = NUM_LAYERS - 1; li >= 0 && !node; li--) {
+		if (li == LyrFadeOut || li == LyrScreenshot)
+			continue;
+		node = wlr_scene_node_at(&layers[li]->node, x, y, NULL, NULL);
+	}
+	if (!node || !node->data)
+		return false;
+	AsteroidzNodeData *data = (AsteroidzNodeData *)node->data;
+	if (data->type != ASTEROIDZ_BAR_NODE)
+		return false;
+	return bar_handle_node_scroll(data, notches, horizontal);
+}
+
 #else /* !ASTEROIDZ_NATIVE_BAR */
 
 /* Built without the native bar: the call sites in asteroidz.c stay
@@ -2506,6 +2596,22 @@ static bool bar_handle_node_click(AsteroidzNodeData *hit,
 										 uint32_t button) {
 	(void)hit;
 	(void)button;
+	return false;
+}
+static bool bar_handle_node_scroll(AsteroidzNodeData *hit, int32_t delta,
+								   bool horizontal) {
+	(void)hit;
+	(void)delta;
+	(void)horizontal;
+	return false;
+}
+static bool bar_scroll_at(double x, double y, double delta,
+						  double delta_discrete, bool horizontal) {
+	(void)x;
+	(void)y;
+	(void)delta;
+	(void)delta_discrete;
+	(void)horizontal;
 	return false;
 }
 

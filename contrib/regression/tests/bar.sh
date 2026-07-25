@@ -332,6 +332,46 @@ test_bar_weather_module_is_non_blocking() {
 	bar_off
 }
 
+test_bar_scroll_routes_to_the_pill_under_the_pointer() {
+	[ "$(bar_supported)" = "true" ] || { echo "  (skip: built without -Dnative-bar)"; return 0; }
+	# Scroll routing is asserted through the TAGS pill rather than the volume
+	# one: the harness has no sound server, so a volume scroll has no
+	# observable effect, whereas "did this scroll reach a bar pill at all" is
+	# the part that regresses. The tags module ignores scroll, so what is
+	# pinned here is the routing contract -- a scroll over the bar must be
+	# CONSUMED and never leak through to an axis binding or to the window
+	# underneath, which is what would silently break if the hit test moved.
+	#
+	# Both input families are covered on purpose. A mouse wheel sends a
+	# discrete notch count; a trackpad sends only continuous deltas. An earlier
+	# cut of this keyed off the notch count alone and was silently dead under a
+	# trackpad, which no wheel-only test would have caught.
+	hl_dispatch "view,1"
+	hl_spawn_kitty W1 >/dev/null
+	hl_wait_client_count 1
+
+	bar_set 'bar { enable true; height 30; position "top"; margin { x 8; y 4 }; pill-min-width 60; tag-padding 4; pill-padding 4; panel { enable false }; show-logo false; tag-icons 0; min-tags 1; modules-left "tags" }'
+	sleep 0.5
+	local before; before="$(bar_active_tags)"
+
+	# over the first tag pill (8..68, vertical centre 19)
+	hl_wheel 30 19 1
+	sleep 0.4
+	hl_assert_eq "a wheel notch over a bar pill does not change the view" \
+		"$(bar_active_tags)" "$before"
+
+	hl_scroll 30 19 20
+	sleep 0.4
+	hl_assert_eq "nor does a continuous (trackpad) scroll over it" \
+		"$(bar_active_tags)" "$before"
+
+	hl_assert_true "and the compositor is healthy after both" \
+		"$(hl_get "get all-monitors" >/dev/null 2>&1 && echo true || echo false)"
+
+	bar_off
+	hl_dispatch "view,1"
+}
+
 test_bar_volume_without_a_sound_server() {
 	[ "$(bar_supported)" = "true" ] || { echo "  (skip: built without -Dnative-bar)"; return 0; }
 	# The harness has an isolated XDG_RUNTIME_DIR, so there is no pipewire to

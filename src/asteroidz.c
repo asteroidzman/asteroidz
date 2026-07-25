@@ -2800,6 +2800,16 @@ axisnotify(struct wl_listener *listener, void *data) {
 		return;
 	}
 
+	/* A scroll over a native bar pill belongs to that pill, not to the window
+	 * behind it and not to an axis binding: scrolling the volume readout must
+	 * change the volume even when the same wheel is bound to switching tags.
+	 * Resolved through the scene graph exactly like a click, so stacking is
+	 * respected for free and a covered pill is not reachable. */
+	if (bar_scroll_at(cursor->x, cursor->y, event->delta,
+					  event->delta_discrete,
+					  event->orientation == WL_POINTER_AXIS_HORIZONTAL_SCROLL))
+		return;
+
 	if (event->orientation == WL_POINTER_AXIS_VERTICAL_SCROLL)
 		adir = event->delta > 0 ? AxisDown : AxisUp;
 	else

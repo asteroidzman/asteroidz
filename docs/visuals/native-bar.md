@@ -44,6 +44,7 @@ bar {
 | `pill-padding` | `6` | horizontal padding inside a status pill |
 | `tag-padding` | `16` | horizontal padding inside a workspace/layout chip |
 | `icon-spacing` | `5` | exact gap between two adjacent icon-only status glyphs (`cpu`, `memory`), which carry no padding of their own |
+| `volume-step` | `5` | percentage points the `volume` pill moves per scroll notch |
 | `min-tags` | `3` | pad the visible tag set up to this many with empty tags |
 | `show-logo` | `true` | leading asteroidz ship pill on the workspace group |
 | `tag-icons` | `3` | app icons drawn inside each tag pill (0 disables, max 4) |
@@ -85,7 +86,7 @@ for a newer build still starts.
 | `idle` | manual idle-inhibit state ("keep awake") | toggles it |
 | `weather` | current temperature and condition, from open-meteo | — |
 | `media` | now playing (title • artist), from MPRIS | play/pause |
-| `volume` | default sink level, with a speaker icon (also accepts `vol`) | toggles mute |
+| `volume` | default sink level, with a speaker icon (also accepts `vol`) | click toggles mute; scroll steps by `volume-step` |
 | `tray` | one icon per StatusNotifierItem (also accepts `systray`) | left: `Activate`; right/middle: `SecondaryActivate` |
 
 The `tags` module mirrors the Waybar workspace module it replaces: it shows
@@ -298,11 +299,19 @@ attempts are backed off to one every ten seconds. That still reconnects on its
 own if pipewire is restarted underneath the session, and the regression suite
 pins it by counting the compositor's children after a burst of dispatches.
 
+Scroll is routed to whatever pill is under the pointer, and consumed there —
+so scrolling the volume readout changes the volume even when the same wheel is
+bound to switching tags. Both input families are handled, which matters more
+than it sounds: a mouse wheel reports a discrete notch count, while a trackpad
+or a high-resolution wheel reports only a stream of small continuous deltas
+and no notch at all. Keying off the notch count alone leaves the pills dead
+under a trackpad, so continuous motion is accumulated until it adds up to a
+notch. The tray forwards scrolls to the item as the spec's
+`Scroll(delta, orientation)`, letting a mixer applet take volume and a pager
+take workspaces.
+
 Not implemented yet: popovers, so no click-through panels, no tray context
-menus, and no volume slider or output picker — those stay in Waybar. Scroll is
-not routed to the bar yet either, so the volume pill toggles mute on click but
-cannot yet be scrolled, and the tray's `Scroll` method is implemented but
-unreachable.
+menus, and no volume slider or output picker — those stay in Waybar.
 
 ## Developing against it
 

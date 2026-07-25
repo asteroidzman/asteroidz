@@ -14,7 +14,9 @@
 //   click          left-button press + release
 //   rclick         right-button press + release
 //   mclick         middle-button press + release
-//   scroll:<amt>   vertical scroll (fixed-point amount, positive = down)
+//   scroll:<amt>   vertical scroll, continuous only (what a trackpad sends)
+//   wheel:<n>      vertical scroll of n discrete notches, with the matching
+//                  continuous delta (what a real mouse wheel sends)
 //   drag:<x2>,<y2>   left-button press at x,y, move in steps to x2,y2, release
 //                    -- for testing a Super+drag-style mouse binding, run
 //                    this via `wlvkbd hold LEFTMETA -- wlvptr ... drag:...`
@@ -63,7 +65,7 @@ static const struct wl_registry_listener registry_listener = {
 int main(int argc, char **argv) {
 	if (argc < 5) {
 		fprintf(stderr,
-				"usage: %s <x> <y> <extent_w> <extent_h> [click|rclick|mclick|scroll:<amt>]\n",
+				"usage: %s <x> <y> <extent_w> <extent_h> [click|rclick|mclick|scroll:<amt>|wheel:<n>]\n",
 				argv[0]);
 		return 1;
 	}
@@ -112,10 +114,23 @@ int main(int argc, char **argv) {
 											WL_POINTER_BUTTON_STATE_RELEASED);
 			zwlr_virtual_pointer_v1_frame(ptr);
 			wl_display_roundtrip(display);
-		} else if (!strncmp(action, "scroll:", 7)) {
-			double amt = atof(action + 7);
-			zwlr_virtual_pointer_v1_axis(ptr, ++t, WL_POINTER_AXIS_VERTICAL_SCROLL,
-										  wl_fixed_from_double(amt));
+		} else if (!strncmp(action, "scroll:", 7) ||
+				   !strncmp(action, "wheel:", 6)) {
+			bool wheel = !strncmp(action, "wheel:", 6);
+			double amt = atof(action + (wheel ? 6 : 7));
+			if (wheel) {
+				// A real mouse wheel reports BOTH a continuous delta and a
+				// discrete notch count; a trackpad reports only the former.
+				// `scroll:` stays continuous-only so the trackpad path can be
+				// tested, and `wheel:` adds the notch so the wheel path can.
+				zwlr_virtual_pointer_v1_axis_discrete(
+					ptr, ++t, WL_POINTER_AXIS_VERTICAL_SCROLL,
+					wl_fixed_from_double(amt * 15.0), (int32_t)amt);
+			} else {
+				zwlr_virtual_pointer_v1_axis(ptr, ++t,
+											 WL_POINTER_AXIS_VERTICAL_SCROLL,
+											 wl_fixed_from_double(amt));
+			}
 			zwlr_virtual_pointer_v1_frame(ptr);
 			wl_display_roundtrip(display);
 		} else if (!strncmp(action, "drag:", 5) || !strncmp(action, "rdrag:", 6)) {

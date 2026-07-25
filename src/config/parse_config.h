@@ -456,6 +456,7 @@ typedef struct {
 	 * between the artwork -- unlike padding, which can only ever produce an
 	 * even number of pixels and also pads the run against the panel edge. */
 	int32_t bar_icon_spacing;
+	int32_t bar_volume_step; /* percentage points per scroll notch */
 	/* tags module: 0 = only tags that are selected or hold a window (the
 	 * waybar workspace-module behaviour), 1 = every configured tag always */
 	int32_t bar_show_all_tags;
@@ -2282,6 +2283,8 @@ bool parse_option(Config *config, char *key, char *value) {
 		config->bar_tag_padding = CLAMP_INT(atoi(value), 0, 200);
 	} else if (strcmp(key, "bar_icon_spacing") == 0) {
 		config->bar_icon_spacing = CLAMP_INT(atoi(value), 0, 200);
+	} else if (strcmp(key, "bar_volume_step") == 0) {
+		config->bar_volume_step = CLAMP_INT(atoi(value), 1, 50);
 	} else if (strcmp(key, "bar_show_all_tags") == 0) {
 		config->bar_show_all_tags = atoi(value) != 0;
 	} else if (strcmp(key, "bar_min_tags") == 0) {
@@ -3619,6 +3622,7 @@ static const struct {
 	{"bar/pill-padding", "bar_pill_padding"},
 	{"bar/tag-padding", "bar_tag_padding"},
 	{"bar/icon-spacing", "bar_icon_spacing"},
+	{"bar/volume-step", "bar_volume_step"},
 	{"bar/show-all-tags", "bar_show_all_tags"},
 	{"bar/min-tags", "bar_min_tags"},
 	{"bar/show-logo", "bar_show_logo"},
@@ -4694,6 +4698,7 @@ void set_value_default() {
 	config.bar_pill_padding = 6;
 	config.bar_tag_padding = 16;
 	config.bar_icon_spacing = 5;
+	config.bar_volume_step = 5;
 	config.bar_show_all_tags = 0;
 	config.bar_min_tags = 3;
 	config.bar_show_logo = 1;
