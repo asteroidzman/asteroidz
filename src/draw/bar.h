@@ -769,6 +769,16 @@ static struct {
 	char title[192];
 	char artist[128];
 	bool playing;
+	/* Which MPRIS states earn a pill: Playing or Paused, nothing else.
+	 *
+	 * A player that has FINISHED lingers in MPRIS as "Stopped" -- browsers
+	 * especially -- with its last track's metadata still populated. Keying
+	 * visibility off "we got some metadata" therefore left a stale
+	 * "title . artist" on the bar with nothing playing anywhere, sometimes for
+	 * days. Stopped, and any other non-play state, now hide exactly like no
+	 * player at all. The waybar media plugin this replaces learned the same
+	 * lesson (media_should_show). */
+	bool showable;
 	bool have;
 	bool in_flight;
 } bar_media;
@@ -849,6 +859,7 @@ static int bar_media_on_props(sd_bus_message *m, void *user, sd_bus_error *err) 
 	if (!m || sd_bus_message_is_method_error(m, NULL)) {
 		/* the player went away between ListNames and this call */
 		bar_media.have = false;
+		bar_media.showable = false;
 		bar_media.player[0] = '\0';
 		bar_update_all();
 		return 0;
@@ -868,6 +879,8 @@ static int bar_media_on_props(sd_bus_message *m, void *user, sd_bus_error *err) 
 			if (sd_bus_message_enter_container(m, 'v', "s") > 0) {
 				if (sd_bus_message_read(m, "s", &v) > 0 && v) {
 					bar_media.playing = strcmp(v, "Playing") == 0;
+					bar_media.showable =
+						bar_media.playing || strcmp(v, "Paused") == 0;
 					found = true;
 				}
 				sd_bus_message_exit_container(m);
@@ -891,7 +904,8 @@ static int bar_media_on_props(sd_bus_message *m, void *user, sd_bus_error *err) 
 	}
 	sd_bus_message_exit_container(m);
 
-	bar_media.have = found && bar_media.title[0] != '\0';
+	bar_media.have =
+		found && bar_media.showable && bar_media.title[0] != '\0';
 	bar_update_all();
 	return 0;
 }
@@ -943,6 +957,7 @@ static int bar_media_on_names(sd_bus_message *m, void *user, sd_bus_error *err) 
 
 	if (!pick[0]) {
 		bar_media.have = false;
+		bar_media.showable = false;
 		bar_media.player[0] = '\0';
 		bar_update_all();
 		return 0;
@@ -1244,13 +1259,21 @@ static const char *bar_viz_icon(void) {
 	const float *c = config.theme.focus_bg_color;
 	cairo_set_source_rgba(cr, c[0], c[1], c[2], c[3]);
 
-	double gap = (double)sz / (n * 4.0);
+	/* roughly a 5:1 bar-to-gap ratio: at six bars the old 3:1 read as a row of
+	 * thin lines rather than a level meter */
+	double gap = (double)sz / (n * 6.0);
 	double bw = ((double)sz - gap * (n - 1)) / n;
 	double floor_h = sz * 0.10; /* a resting bar is a dot, not nothing */
 	for (int32_t i = 0; i < n; i++) {
 		double h = floor_h + bar_viz.level[i] * (sz - floor_h);
 		double x = i * (bw + gap);
-		double y = sz - h;
+		/* Mirrored: each bar is centred on the middle and grows BOTH ways,
+		 * which is the waybar visualiser's `mirror` mode. Grown from the
+		 * bottom instead, a quiet passage collapses the whole thing onto the
+		 * floor of its box -- so the glyph stops sitting on the same optical
+		 * line as the text and icons beside it, and the pill reads as
+		 * misaligned even though nothing moved. */
+		double y = (sz - h) / 2.0;
 		/* rounded caps, like the waybar visualiser's */
 		double r = bw / 2.0;
 		if (r > h / 2.0)
@@ -1258,8 +1281,8 @@ static const char *bar_viz_icon(void) {
 		cairo_new_path(cr);
 		cairo_arc(cr, x + r, y + r, r, M_PI, 1.5 * M_PI);
 		cairo_arc(cr, x + bw - r, y + r, r, 1.5 * M_PI, 2.0 * M_PI);
-		cairo_arc(cr, x + bw - r, sz - r, r, 0.0, 0.5 * M_PI);
-		cairo_arc(cr, x + r, sz - r, r, 0.5 * M_PI, M_PI);
+		cairo_arc(cr, x + bw - r, y + h - r, r, 0.0, 0.5 * M_PI);
+		cairo_arc(cr, x + r, y + h - r, r, 0.5 * M_PI, M_PI);
 		cairo_close_path(cr);
 		cairo_fill(cr);
 	}

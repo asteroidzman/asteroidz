@@ -67,7 +67,7 @@ bar {
 | `clock.format` | `"%H:%M:%S"` | `strftime` format |
 | `media-width` | `280` | pinned width of the now-playing pill |
 | `media.visualiser` | `true` | animate a spectrum in the media pill while playing |
-| `media.bars` | `6` | spectrum bars (max 8) |
+| `media.bars` | `8` | spectrum bars (max 8) |
 | `media.fps` | `20` | visualiser frame rate — **this is the cost dial**, see below |
 | `weather.interval` | `15` | minutes between forecast fetches |
 | `weather.location` | *(empty)* | city name; empty means IP geolocation |
@@ -94,7 +94,7 @@ for a newer build still starts.
 | `network` | two activity arrows — upload above, download below — each lit by its own throughput, from `/sys/class/net`. **Icon only** | — |
 | `idle` | manual idle-inhibit state ("keep awake") | toggles it |
 | `weather` | current temperature and condition, from open-meteo | — |
-| `media` | now playing (title • artist), from MPRIS, with a live spectrum while playing | play/pause |
+| `media` | now playing (title • artist), from MPRIS, with a live spectrum while playing. Shown only while **Playing or Paused** | play/pause |
 | `volume` | default sink level, with a speaker icon (also accepts `vol`) | click toggles mute; right-click opens the output picker; scroll steps by `volume-step` |
 | `tray` | one icon per StatusNotifierItem (also accepts `systray`) | left: `Activate`; right: the item's context menu; middle: `SecondaryActivate` |
 
@@ -156,6 +156,12 @@ While something is playing, the media pill's glyph becomes a live spectrum,
 driven by one long-lived `cava` in raw ASCII mode — the same source the Waybar
 media plugin uses, read a line at a time rather than by forking per frame.
 
+The bars are **mirrored**: each is centred on the glyph's middle and grows both
+up and down, matching the Waybar visualiser's `mirror` mode. Grown from the
+bottom instead, a quiet passage collapses everything onto the floor of its box,
+so the glyph stops sitting on the same optical line as the text and icons
+beside it and the pill reads as misaligned even though nothing moved.
+
 **The FFT is not the cost.** cava's own analysis is a fraction of a percent of
 a core; the cost is that an animating bar element damages the output every
 frame, so the compositor recomposites at the animation rate for as long as
@@ -168,6 +174,20 @@ music plays. Three things keep that honest:
   so a quiet passage costs nothing.
 
 Set `media { visualiser false }` to keep the static transport glyph.
+
+### When the pill is shown
+
+Only while the followed player reports **Playing** or **Paused**. A player that
+has finished lingers in MPRIS as `Stopped` — browsers especially — with its
+last track's metadata still populated, so keying visibility off "we got some
+metadata" leaves a stale `title • artist` on the bar with nothing playing
+anywhere, sometimes for days. `Stopped`, and any other non-play state, hides
+exactly like no player at all.
+
+An already-followed player keeps the pill so it does not flap between two open
+players — but a player that *is* playing takes it from one that is not.
+Otherwise a browser tab sitting `Stopped` since login outranks the track you
+just pressed play on.
 
 ### Which device it listens to
 

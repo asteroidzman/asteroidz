@@ -4750,7 +4750,7 @@ void set_value_default() {
 	config.bar_tag_padding = 16;
 	config.bar_icon_spacing = 5;
 	config.bar_volume_step = 5;
-	config.bar_media_bars = 6;
+	config.bar_media_bars = 8;
 	/* Not the display's rate: this animates for as long as music plays, and
 	 * every frame is a recomposite of the bar's damage region on every
 	 * monitor. 20 reads as fluid and costs a fifth of 100Hz. */
