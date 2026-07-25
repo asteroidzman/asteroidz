@@ -40,6 +40,8 @@ bar {
 | `margin.y` | `9` | gap between the panels and the output's top/bottom edge |
 | `spacing` | `6` | gap between adjacent pills |
 | `pill-min-width` | `28` | floor width, so single-glyph pills stay legible |
+| `show-logo` | `true` | leading asteroidz ship pill on the workspace group |
+| `tag-icons` | `3` | app icons drawn inside each tag pill (0 disables, max 4) |
 | `show-all-tags` | `false` | `true` draws every configured tag; `false` draws only selected or occupied ones |
 | `panel.enable` | `true` | draw a backdrop panel behind each non-empty slot |
 | `panel.color` | `0x0a0a0cd9` | panel fill (RGBA; the default is ~85% opaque) |
@@ -65,7 +67,7 @@ for a newer build still starts.
 
 | Name | Shows | Click |
 |---|---|---|
-| `tags` | one pill per selected or occupied tag, using custom tag names (`tag N { name … }`, `set_tag_name`) when set | views that tag |
+| `tags` | the ship logo, then one pill per selected or occupied tag — custom tag names (`tag N { name … }`, `set_tag_name`) plus up to `tag-icons` app icons for what is running there | views that tag |
 | `clock` | `strftime` of `clock.format` | — |
 | `title` | the focused window's title, with its app icon | focuses that window |
 | `layout` | the current layout, as its Waybar SVG | cycles `circle_layout` |
@@ -102,6 +104,13 @@ each defers to the global `effects.blur.enable` / `shadows` settings — asking
 for panel blur in a build with blur off costs nothing and draws nothing.
 
 ## Icons and fixed widths
+
+Tag pills carry real **application icons** for the windows on that tag,
+resolved through the same icon-theme lookup the titlebars use. Duplicate
+app-ids collapse, so three terminals on one tag read as "terminals live here"
+rather than filling the pill with the same glyph three times. Tag pills are
+deliberately *not* width-pinned: a tag gaining a window is a real layout
+change, not the per-tick jitter the pinning exists to suppress.
 
 Pill icons are the **same SVGs the Waybar plugins use**, loaded straight from
 their installed asset trees under `icon-dir` — `waybar-sysmon/cpu.svg`,

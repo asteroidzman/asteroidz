@@ -442,6 +442,8 @@ typedef struct {
 	/* tags module: 0 = only tags that are selected or hold a window (the
 	 * waybar workspace-module behaviour), 1 = every configured tag always */
 	int32_t bar_show_all_tags;
+	int32_t bar_show_logo;  /* leading asteroidz ship pill on the tags module */
+	int32_t bar_tag_icons;  /* max app icons drawn inside each tag pill */
 	/* Per-slot backing panel. The bar itself is fully transparent; each
 	 * non-empty slot draws one rounded translucent panel behind its pills,
 	 * which is the grouped look the waybar config it replaces used. With a
@@ -2249,6 +2251,10 @@ bool parse_option(Config *config, char *key, char *value) {
 		config->bar_pill_min_width = CLAMP_INT(atoi(value), 0, 1000);
 	} else if (strcmp(key, "bar_show_all_tags") == 0) {
 		config->bar_show_all_tags = atoi(value) != 0;
+	} else if (strcmp(key, "bar_show_logo") == 0) {
+		config->bar_show_logo = atoi(value) != 0;
+	} else if (strcmp(key, "bar_tag_icons") == 0) {
+		config->bar_tag_icons = CLAMP_INT(atoi(value), 0, 4);
 	} else if (strcmp(key, "bar_panel_enable") == 0) {
 		config->bar_panel_enable = atoi(value) != 0;
 	} else if (strcmp(key, "bar_panel_radius") == 0) {
@@ -3568,6 +3574,8 @@ static const struct {
 	{"bar/margin/y", "bar_margin_y"},
 	{"bar/pill-min-width", "bar_pill_min_width"},
 	{"bar/show-all-tags", "bar_show_all_tags"},
+	{"bar/show-logo", "bar_show_logo"},
+	{"bar/tag-icons", "bar_tag_icons"},
 	{"bar/panel/enable", "bar_panel_enable"},
 	{"bar/panel/color", "bar_panel_color"},
 	{"bar/panel/radius", "bar_panel_radius"},
@@ -4621,6 +4629,8 @@ void set_value_default() {
 	config.bar_margin_y = 9;
 	config.bar_pill_min_width = 28;
 	config.bar_show_all_tags = 0;
+	config.bar_show_logo = 1;
+	config.bar_tag_icons = 3;
 	config.bar_panel_enable = 1;
 	convert_hex_to_rgba(config.bar_panel_color, 0x0a0a0cd9); /* ~85% opaque */
 	config.bar_panel_radius = 9;

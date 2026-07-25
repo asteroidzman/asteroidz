@@ -900,28 +900,50 @@ void asteroidz_tab_bar_node_set_shadow(struct asteroidz_tab_bar_node *node,
 	tab_bar_shadow_sync(node);
 }
 
-void asteroidz_tab_bar_node_set_icon(struct asteroidz_tab_bar_node *node,
-								 const char *icon_name) {
+void asteroidz_tab_bar_node_set_icons(struct asteroidz_tab_bar_node *node,
+								  const char *const *icon_names,
+								  int32_t count) {
 	if (!node)
 		return;
-	cairo_surface_t *surf = NULL;
-	if (icon_name && *icon_name)
-		surf = get_cached_icon(icon_name);
-	if (surf == node->icon_surface)
+	cairo_surface_t *next[ASTEROIDZ_TAB_MAX_ICONS] = {NULL};
+	int32_t n = 0;
+	for (int32_t i = 0; i < count && n < ASTEROIDZ_TAB_MAX_ICONS; i++) {
+		if (!icon_names[i] || !*icon_names[i])
+			continue;
+		cairo_surface_t *surf = get_cached_icon(icon_names[i]);
+		if (surf)
+			next[n++] = surf;
+	}
+
+	bool same = n == node->nicons;
+	for (int32_t i = 0; same && i < n; i++)
+		same = next[i] == node->icons[i];
+	if (same)
 		return;
+
 	/* the icon cache hands out a borrowed pointer shared across every node
 	 * using that icon name; take our own reference so clearing/replacing
 	 * the cache (icon theme change) can't leave this node with a dangling
 	 * pointer to a surface it doesn't actually own. */
-	if (surf)
-		cairo_surface_reference(surf);
-	if (node->icon_surface)
-		cairo_surface_destroy(node->icon_surface);
-	node->icon_surface = surf;
+	for (int32_t i = 0; i < node->nicons; i++) {
+		if (node->icons[i])
+			cairo_surface_destroy(node->icons[i]);
+		node->icons[i] = NULL;
+	}
+	for (int32_t i = 0; i < n; i++)
+		node->icons[i] = cairo_surface_reference(next[i]);
+	node->nicons = n;
+
 	if (node->last_text)
 		asteroidz_tab_bar_node_update(node, node->last_text,
 								  node->last_scale > 0 ? node->last_scale
 													   : 1.0f);
+}
+
+void asteroidz_tab_bar_node_set_icon(struct asteroidz_tab_bar_node *node,
+								 const char *icon_name) {
+	const char *one[1] = {icon_name};
+	asteroidz_tab_bar_node_set_icons(node, one, icon_name && *icon_name ? 1 : 0);
 }
 
 void asteroidz_tab_bar_node_set_corner_mask(struct asteroidz_tab_bar_node *node,
@@ -1025,10 +1047,12 @@ void asteroidz_tab_bar_node_destroy(struct asteroidz_tab_bar_node *node) {
 	if (!node)
 		return;
 
-	if (node->icon_surface) {
-		cairo_surface_destroy(node->icon_surface);
-		node->icon_surface = NULL;
+	for (int32_t i = 0; i < node->nicons; i++) {
+		if (node->icons[i])
+			cairo_surface_destroy(node->icons[i]);
+		node->icons[i] = NULL;
 	}
+	node->nicons = 0;
 
 	if (node->buffer) {
 		wlr_buffer_drop(&node->buffer->base);
@@ -1089,6 +1113,15 @@ void asteroidz_tab_bar_node_set_size(struct asteroidz_tab_bar_node *node, int32_
 	asteroidz_tab_bar_node_update(node, redraw_text, redraw_scale);
 }
 
+static bool bar_icons_unchanged(const struct asteroidz_tab_bar_node *node) {
+	if (node->cached_nicons != node->nicons)
+		return false;
+	for (int32_t i = 0; i < node->nicons; i++)
+		if (node->cached_icons[i] != node->icons[i])
+			return false;
+	return true;
+}
+
 int32_t asteroidz_tab_bar_node_measure_width(struct asteroidz_tab_bar_node *node,
 										 const char *text, int32_t height) {
 	if (!node || !text || height <= 0)
@@ -1131,7 +1164,7 @@ int32_t asteroidz_tab_bar_node_measure_width(struct asteroidz_tab_bar_node *node
 		pango_font_description_free(scaled_desc);
 
 	/* the icon is drawn square at the text area's height, then a 6px gap */
-	double icon_w = node->icon_surface ? text_area_h + 6.0 * cs : 0.0;
+	double icon_w = node->nicons * (text_area_h + 6.0 * cs);
 
 	int32_t width = (int32_t)(2.0 * pad_x + icon_w + text_w + 0.5) +
 					2 * node->border_width;
@@ -1176,7 +1209,7 @@ void asteroidz_tab_bar_node_update(struct asteroidz_tab_bar_node *node,
 		node->cached_padding_y == node->padding_y &&
 		node->cached_target_width == node->target_width &&
 		node->cached_target_height == node->target_height &&
-		node->cached_icon == node->icon_surface &&
+		bar_icons_unchanged(node) &&
 		node->cached_corner_mask == node->corner_mask &&
 		node->cached_titlebar_border_width == node->titlebar_border_width &&
 		node->cached_titlebar_border_left == node->titlebar_border_left &&
@@ -1209,7 +1242,9 @@ void asteroidz_tab_bar_node_update(struct asteroidz_tab_bar_node *node,
 	node->cached_padding_y = node->padding_y;
 	node->cached_target_width = node->target_width;
 	node->cached_target_height = node->target_height;
-	node->cached_icon = node->icon_surface;
+	for (int32_t i = 0; i < ASTEROIDZ_TAB_MAX_ICONS; i++)
+		node->cached_icons[i] = i < node->nicons ? node->icons[i] : NULL;
+	node->cached_nicons = node->nicons;
 	node->cached_corner_mask = node->corner_mask;
 	node->cached_titlebar_border_width = node->titlebar_border_width;
 	node->cached_titlebar_border_left = node->titlebar_border_left;
@@ -1353,16 +1388,17 @@ void asteroidz_tab_bar_node_update(struct asteroidz_tab_bar_node *node,
 		pango_layout_set_wrap(layout, PANGO_WRAP_NONE);
 		pango_layout_set_ellipsize(layout, PANGO_ELLIPSIZE_END);
 
-		/* icon + title centered as a group; text alone stays centered */
-		double icon_px = 0.0, icon_gap = 0.0;
-		if (node->icon_surface) {
+		/* icons + title centered as one group; text alone stays centered */
+		double icon_px = 0.0, icon_gap = 0.0, icons_w = 0.0;
+		if (node->nicons > 0) {
 			icon_px = text_area_h;
 			icon_gap = 6.0 * cs * scale;
+			icons_w = node->nicons * (icon_px + icon_gap);
 		}
-		double avail_text_w = text_area_w - icon_px - icon_gap;
+		double avail_text_w = text_area_w - icons_w;
 		if (avail_text_w < 0)
 			avail_text_w = 0;
-		bool align_left = node->text_align_left || node->icon_surface;
+		bool align_left = node->text_align_left || node->nicons > 0;
 		pango_layout_set_alignment(layout, align_left ? PANGO_ALIGN_LEFT
 													  : PANGO_ALIGN_CENTER);
 		pango_layout_set_width(layout, (int)(avail_text_w * PANGO_SCALE));
@@ -1373,8 +1409,8 @@ void asteroidz_tab_bar_node_update(struct asteroidz_tab_bar_node *node,
 		if (y_offset < 0)
 			y_offset = 0;
 
-		if (node->icon_surface) {
-			double group_w = icon_px + icon_gap +
+		if (node->nicons > 0) {
+			double group_w = icons_w +
 							 (text_pixel_w < avail_text_w ? text_pixel_w
 														  : avail_text_w);
 			double group_x = node->text_align_left
@@ -1383,24 +1419,28 @@ void asteroidz_tab_bar_node_update(struct asteroidz_tab_bar_node *node,
 			if (group_x < text_x)
 				group_x = text_x;
 
-			int icon_w = cairo_image_surface_get_width(node->icon_surface);
-			int icon_h = cairo_image_surface_get_height(node->icon_surface);
-			if (icon_w > 0 && icon_h > 0) {
+			for (int32_t ii = 0; ii < node->nicons; ii++) {
+				cairo_surface_t *ic = node->icons[ii];
+				if (!ic)
+					continue;
+				int icon_w = cairo_image_surface_get_width(ic);
+				int icon_h = cairo_image_surface_get_height(ic);
+				if (icon_w <= 0 || icon_h <= 0)
+					continue;
 				double icon_scale = icon_px / (icon_w > icon_h ? icon_w
 															   : icon_h);
 				cairo_save(cr);
-				cairo_translate(cr, group_x,
+				cairo_translate(cr, group_x + ii * (icon_px + icon_gap),
 								text_y + (text_area_h - icon_h * icon_scale) /
 											 2.0);
 				cairo_scale(cr, icon_scale, icon_scale);
-				cairo_set_source_surface(cr, node->icon_surface, 0, 0);
+				cairo_set_source_surface(cr, ic, 0, 0);
 				cairo_pattern_set_filter(cairo_get_source(cr),
 										 CAIRO_FILTER_BILINEAR);
 				cairo_paint(cr);
 				cairo_restore(cr);
 			}
-			cairo_translate(cr, group_x + icon_px + icon_gap,
-							text_y + y_offset);
+			cairo_translate(cr, group_x + icons_w, text_y + y_offset);
 		} else {
 			cairo_translate(cr, text_x, text_y + y_offset);
 		}

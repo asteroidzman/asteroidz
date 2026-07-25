@@ -77,6 +77,8 @@ struct asteroidz_jump_label_node {
 	int32_t logical_height;
 };
 
+#define ASTEROIDZ_TAB_MAX_ICONS 4
+
 struct asteroidz_tab_bar_node {
 	struct wlr_scene_buffer *scene_buffer;
 	struct wlr_scene_tree *parent_tree;
@@ -86,9 +88,13 @@ struct asteroidz_tab_bar_node {
 	int32_t shadow_offset_y;
 	float shadow_color[4];
 	int32_t last_x, last_y;
-	/* app icon drawn before the title; owned by the shared icon cache */
-	cairo_surface_t *icon_surface;
-	cairo_surface_t *cached_icon;
+	/* Icons drawn before the text, left to right. One for a titlebar's app
+	 * icon; several for a workspace pill showing what is running on that tag.
+	 * Surfaces are owned references taken from the shared icon cache. */
+	cairo_surface_t *icons[ASTEROIDZ_TAB_MAX_ICONS];
+	int32_t nicons;
+	cairo_surface_t *cached_icons[ASTEROIDZ_TAB_MAX_ICONS];
+	int32_t cached_nicons;
 	struct asteroidz_text_buffer *buffer;
 	cairo_surface_t *surface;
 	int surface_pixel_w, surface_pixel_h;
@@ -218,6 +224,12 @@ void asteroidz_tab_bar_node_set_shadow(struct asteroidz_tab_bar_node *node,
 								   const float color[4]);
 void asteroidz_tab_bar_node_set_icon(struct asteroidz_tab_bar_node *node,
 								 const char *icon_name);
+/* Replace the icon row wholesale. `count` is clamped to
+ * ASTEROIDZ_TAB_MAX_ICONS; a NULL or empty name is skipped rather than
+ * leaving a gap. */
+void asteroidz_tab_bar_node_set_icons(struct asteroidz_tab_bar_node *node,
+								  const char *const *icon_names,
+								  int32_t count);
 void asteroidz_tab_bar_node_set_corner_mask(struct asteroidz_tab_bar_node *node,
 										enum corner_location mask);
 void asteroidz_tab_bar_node_set_text_align_left(struct asteroidz_tab_bar_node *node,

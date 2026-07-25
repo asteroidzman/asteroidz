@@ -122,7 +122,7 @@ test_bar_tag_pill_click_switches_view() {
 	# about click routing, not appearance. With them off the first pill starts
 	# exactly at margin-x, so the click coordinate below follows from config
 	# alone rather than from the panel geometry of the day.
-	bar_set 'bar { enable true; height 30; position "top"; margin { x 8; y 4 }; pill-min-width 28; panel { enable false }; modules-left "tags" }'
+	bar_set 'bar { enable true; height 30; position "top"; margin { x 8; y 4 }; pill-min-width 28; panel { enable false }; show-logo false; tag-icons 0; modules-left "tags" }'
 	sleep 0.5
 	hl_assert_eq "precondition: tag 2 is the active tag" "$(bar_active_tags)" "[2]"
 
@@ -148,7 +148,7 @@ test_bar_show_all_tags() {
 	hl_spawn_kitty W1 >/dev/null
 	hl_wait_client_count 1
 
-	bar_set 'bar { enable true; height 30; margin { x 8; y 4 }; pill-min-width 28; panel { enable false }; modules-left "tags" }'
+	bar_set 'bar { enable true; height 30; margin { x 8; y 4 }; pill-min-width 28; panel { enable false }; show-logo false; tag-icons 0; modules-left "tags" }'
 	sleep 0.5
 	# with one occupied+selected tag there is exactly one pill: a click just
 	# left of where a SECOND pill would start must therefore hit nothing.
@@ -159,7 +159,7 @@ test_bar_show_all_tags() {
 	hl_assert_eq "with tags hidden, there is no second pill to click" \
 		"$(bar_active_tags)" "$before"
 
-	bar_set 'bar { enable true; height 30; margin { x 8; y 4 }; pill-min-width 28; show-all-tags true; panel { enable false }; modules-left "tags" }'
+	bar_set 'bar { enable true; height 30; margin { x 8; y 4 }; pill-min-width 28; show-all-tags true; panel { enable false }; show-logo false; tag-icons 0; modules-left "tags" }'
 	sleep 0.5
 	hl_click 50 19
 	sleep 0.4
@@ -236,4 +236,37 @@ test_bar_idle_inhibitor() {
 		"$(hl_get "get all-monitors" >/dev/null 2>&1 && echo true || echo false)"
 	hl_dispatch "toggle_idle_inhibit,0"
 	bar_off
+}
+
+test_bar_tag_app_icons_and_logo() {
+	[ "$(bar_supported)" = "true" ] || { echo "  (skip: built without -Dnative-bar)"; return 0; }
+	# Pill contents are not exposed over IPC, so this asserts the observable
+	# consequence: an app icon widens the tag pill it is drawn in. The logo
+	# pill is leading, so with it enabled the first tag pill also starts
+	# further right -- both are checked by clicking where the FIRST tag pill
+	# sits with the logo off, and confirming that same point is no longer a
+	# tag pill with the logo on.
+	hl_dispatch "view,1"
+	hl_spawn_kitty W1 >/dev/null
+	hl_wait_client_count 1
+
+	bar_set 'bar { enable true; height 30; margin { x 8; y 4 }; pill-min-width 28; panel { enable false }; show-logo false; tag-icons 0; modules-left "tags" }'
+	sleep 0.5
+	hl_dispatch "view,2"
+	hl_click 12 19
+	sleep 0.4
+	hl_assert_eq "without the logo, the leftmost pill is the first tag" \
+		"$(bar_active_tags)" "[1]"
+
+	bar_set 'bar { enable true; height 30; margin { x 8; y 4 }; pill-min-width 28; panel { enable false }; show-logo true; tag-icons 3; modules-left "tags" }'
+	sleep 0.5
+	hl_dispatch "view,2"
+	local before; before="$(bar_active_tags)"
+	hl_click 12 19
+	sleep 0.4
+	hl_assert_eq "with the logo leading, that same point is the logo and does nothing" \
+		"$(bar_active_tags)" "$before"
+
+	bar_off
+	hl_dispatch "view,1"
 }

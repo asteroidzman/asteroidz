@@ -447,12 +447,53 @@ static uint32_t bar_urgent_tags(Monitor *m) {
 	return urg & TAGMASK;
 }
 
+/* Up to `max` app icons for the windows on `tag`, newest-first in stack
+ * order. Duplicated app-ids are collapsed: three terminals on one tag should
+ * read as "terminals live here", not fill the pill with the same glyph. */
+static int32_t bar_tag_app_icons(Monitor *m, uint32_t tag, const char **out,
+								 int32_t max) {
+	int32_t n = 0;
+	Client *c = NULL;
+	uint32_t mask = 1u << (tag - 1);
+	wl_list_for_each(c, &clients, link) {
+		if (n >= max)
+			break;
+		if (c->mon != m || !(c->tags & mask))
+			continue;
+		const char *id = c->icon_name ? c->icon_name : client_get_appid(c);
+		if (!id || !*id)
+			continue;
+		bool dup = false;
+		for (int32_t i = 0; i < n && !dup; i++)
+			dup = strcmp(out[i], id) == 0;
+		if (!dup)
+			out[n++] = id;
+	}
+	return n;
+}
+
 static void bar_module_refresh_tags(BarModule *mod) {
 	Monitor *m = mod->mon;
 	uint32_t sel = m->tagset[m->seltags] & TAGMASK;
 	uint32_t occ = bar_occupied_tags(m);
 	uint32_t urg = bar_urgent_tags(m);
 	int32_t n = 0;
+
+	/* the asteroidz ship, leading the workspace group like the waybar pill */
+	if (config.bar_show_logo) {
+		BarPill *logo = bar_pill_get(mod, n);
+		if (logo) {
+			char path[512];
+			bar_icon_path(path, sizeof(path),
+						  "waybar-asteroidz-workspaces/logo.svg");
+			asteroidz_tab_bar_node_set_icon(logo->node, path);
+			logo->text[0] = '\0';
+			logo->arg = 0; /* arg 0 => not a tag, so clicks are ignored */
+			logo->fixed_width = config.bar_height;
+			bar_pill_style(logo, false, false);
+			n++;
+		}
+	}
 
 	for (uint32_t t = 1; t <= LENGTH(tags) && n < BAR_MAX_PILLS; t++) {
 		uint32_t mask = 1u << (t - 1);
@@ -472,6 +513,14 @@ static void bar_module_refresh_tags(BarModule *mod) {
 			break;
 		p->arg = t;
 		tag_display_name(m, t, p->text, sizeof(p->text));
+		const char *icons[ASTEROIDZ_TAB_MAX_ICONS];
+		int32_t ni = config.bar_tag_icons > 0
+						 ? bar_tag_app_icons(m, t, icons, config.bar_tag_icons)
+						 : 0;
+		asteroidz_tab_bar_node_set_icons(p->node, icons, ni);
+		/* free-sized: the icon count varies per tag, and a tag gaining a
+		 * window is a real layout change rather than per-tick jitter */
+		p->fixed_width = 0;
 		bar_pill_style(p, selected, (urg & mask) != 0);
 		n++;
 	}
@@ -983,6 +1032,13 @@ static uint64_t bar_digest(Monitor *m) {
 				char name[64];
 				tag_display_name(m, t, name, sizeof(name));
 				bar_hash_str(&h, name);
+				const char *ic[ASTEROIDZ_TAB_MAX_ICONS];
+				int32_t ni = config.bar_tag_icons > 0
+								 ? bar_tag_app_icons(m, t, ic,
+													 config.bar_tag_icons)
+								 : 0;
+				for (int32_t k = 0; k < ni; k++)
+					bar_hash_str(&h, ic[k]);
 			}
 			break;
 		}
