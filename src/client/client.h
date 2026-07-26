@@ -265,13 +265,54 @@ static inline int32_t client_is_unmanaged(Client *c) {
 	return 0;
 }
 
+/* Hand a newly focused surface the keys that are physically down MINUS the ones
+ * a compositor binding ate.
+ *
+ * wl_keyboard.enter's key array means "these are held right now", and a client
+ * that is told a key is held will REPEAT it until it sees the release. A
+ * tag-switch binding fires on press, moves focus, and this enter goes out while
+ * the bound key is still down -- so the incoming client starts repeating a key
+ * it never saw pressed. Its release is then swallowed (see KeyboardGroup's
+ * `consumed`, which must be: the client saw no press), and nothing ever stops
+ * the repeat. Under XWayland the X server holds that state itself, so a Proton
+ * game receives the key forever.
+ *
+ * Swallowing the release and reporting the key as held are only correct
+ * TOGETHER with this filter: the client must hear nothing at all about a key
+ * the compositor consumed. Filtering here rather than at the call sites because
+ * every path into a focus change goes through this function.
+ *
+ * Note the +8: `consumed` holds xkb keycodes (as keypress() translates them),
+ * while wlr_keyboard.keycodes and the enter array are raw evdev codes. */
 static inline void client_notify_enter(struct wlr_surface *s,
 									   struct wlr_keyboard *kb) {
-	if (kb)
+	if (!kb) {
+		wlr_seat_keyboard_notify_enter(seat, s, NULL, 0, NULL);
+		return;
+	}
+
+	struct wlr_keyboard_group *wlr_group =
+		wlr_keyboard_group_from_wlr_keyboard(kb);
+	KeyboardGroup *group = wlr_group ? wlr_group->data : NULL;
+	if (!group || (group->nconsumed == 0 && !group->dispatching)) {
 		wlr_seat_keyboard_notify_enter(seat, s, kb->keycodes, kb->num_keycodes,
 									   &kb->modifiers);
-	else
-		wlr_seat_keyboard_notify_enter(seat, s, NULL, 0, NULL);
+		return;
+	}
+
+	uint32_t keys[WLR_KEYBOARD_KEYS_CAP];
+	size_t n = 0;
+	for (size_t i = 0; i < kb->num_keycodes && n < LENGTH(keys); i++) {
+		uint32_t xkb_code = kb->keycodes[i] + 8;
+		/* `dispatching` covers the key whose own binding is running RIGHT NOW,
+		 * which is the common case here and is not yet in `consumed`. */
+		bool eaten = group->dispatching == xkb_code;
+		for (int32_t j = 0; j < group->nconsumed && !eaten; j++)
+			eaten = group->consumed[j] == xkb_code;
+		if (!eaten)
+			keys[n++] = kb->keycodes[i];
+	}
+	wlr_seat_keyboard_notify_enter(seat, s, keys, n, &kb->modifiers);
 }
 
 static inline void client_send_close(Client *c) {

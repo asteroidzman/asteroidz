@@ -30,6 +30,7 @@ HL_ASTEROIDZ="${ASTEROIDZ:-$HL_REPO/build/asteroidz}"
 HL_WLVPTR="$HL_REPO/contrib/wlvptr/wlvptr"
 HL_WLVKBD="$HL_REPO/contrib/wlvkbd/wlvkbd"
 HL_WLLAYER="$HL_REPO/contrib/wllayer/wllayer"
+HL_WLKEYS="$HL_REPO/contrib/wlkeys/wlkeys"
 HL_WIDTH="${HL_WIDTH:-1920}"
 HL_HEIGHT="${HL_HEIGHT:-1080}"
 # wlvptr's absolute-pointer extent -- equal to HL_WIDTH/HL_HEIGHT except in
@@ -59,6 +60,7 @@ hl_start() { # hl_start [EXTRA_KDL]
 	[ -x "$HL_WLVPTR" ] || { echo "hl_start: wlvptr not built -- run: cd contrib/wlvptr && make" >&2; exit 1; }
 	[ -x "$HL_WLVKBD" ] || { echo "hl_start: wlvkbd not built -- run: cd contrib/wlvkbd && make" >&2; exit 1; }
 	[ -x "$HL_WLLAYER" ] || { echo "hl_start: wllayer not built -- run: cd contrib/wllayer && make" >&2; exit 1; }
+	[ -x "$HL_WLKEYS" ] || { echo "hl_start: wlkeys not built -- run: cd contrib/wlkeys && make" >&2; exit 1; }
 
 	HL_CONFIG="$HL_OUTDIR/config.kdl"
 	cat > "$HL_CONFIG" <<EOF
@@ -435,6 +437,34 @@ hl_spawn_kitty() { # hl_spawn_kitty TITLE -> pid (also tracked for hl_reset/hl_s
 	local pid=$!
 	HL_SPAWNED_PIDS+=("$pid")
 	echo "$pid"
+}
+
+hl_spawn_wlkeys() { # hl_spawn_wlkeys APPID HOLD_S [LOGNAME] -> pid
+	# Logs one line per keyboard event to $HL_OUTDIR/$logname.log -- the only
+	# client here that reports what the compositor SENT it, which is the only
+	# way to assert on wl_keyboard.enter's held-key array.
+	local appid="$1" hold="$2" logname="${3:-wlkeys}"
+	"$HL_WLKEYS" "$appid" "$hold" > "$HL_OUTDIR/$logname.log" 2>&1 &
+	local pid=$!
+	HL_SPAWNED_PIDS+=("$pid")
+	echo "$pid"
+}
+
+# Matching lines in a log, as a bare number even when there are none.
+# `grep -c` prints 0 AND exits 1 on no match, so the obvious `|| echo 0`
+# emits "0\n0" and every comparison against it fails confusingly.
+hl_count_lines() { # hl_count_lines PATTERN FILE
+	local n
+	n="$(grep -c "$1" "$2" 2>/dev/null || true)"
+	echo "${n:-0}"
+}
+
+# The held-key array from the LAST wl_keyboard.enter this client was sent,
+# comma-separated evdev codes ("" when it was told nothing is held).
+hl_wlkeys_last_enter() { # hl_wlkeys_last_enter [LOGNAME]
+	local logname="${1:-wlkeys}"
+	grep '^enter keys=' "$HL_OUTDIR/$logname.log" 2>/dev/null | tail -1 |
+		sed 's/^enter keys=//'
 }
 
 hl_spawn_wllayer() { # hl_spawn_wllayer LAYER ANCHOR EXCL_ZONE W H KB HOLD_S [RESIZE_SPEC] LOGNAME -> pid

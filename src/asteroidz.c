@@ -654,6 +654,21 @@ typedef struct {
 	uint32_t consumed[16];
 	int32_t nconsumed;
 
+	/* The keycode currently being offered to the binding tables, or 0.
+	 *
+	 * Whether a press is consumed is only known once keybinding() returns --
+	 * but a binding that switches tags changes FOCUS while it runs, and the
+	 * wl_keyboard.enter it emits is built right then, before anything could
+	 * have been added to `consumed`. So the enter's held-key array must also
+	 * exclude the key still in flight.
+	 *
+	 * Filtering a key that turns out NOT to be bound is harmless: an enter can
+	 * only be emitted inside this window by a binding that acted on this very
+	 * key, and if none acted, no focus change happened at all. Press only --
+	 * on release wlroots has already dropped the key from keycodes[], so
+	 * there is nothing left to filter. */
+	uint32_t dispatching;
+
 	uint32_t layout_index;
 } KeyboardGroup;
 
@@ -5988,9 +6003,12 @@ void keypress(struct wl_listener *listener, void *data) {
 
 	/* On _press_ if there is no active screen locker,
 	 * attempt to process a compositor keybinding. */
+	if (event->state == WL_KEYBOARD_KEY_STATE_PRESSED)
+		group->dispatching = keycode;
 	for (i = 0; i < nsyms; i++)
 		handled =
 			keybinding(event->state, locked, mods, syms[i], keycode) || handled;
+	group->dispatching = 0;
 
 	if (event->state == WL_KEYBOARD_KEY_STATE_RELEASED) {
 		tag_combo = false;
@@ -6016,6 +6034,22 @@ void keypress(struct wl_listener *listener, void *data) {
 	 * global-shortcuts block, which returns earlier still -- push-to-talk
 	 * needs BOTH edges and must never land here. */
 	if (event->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
+		/* Drop entries for keys that are no longer physically down. A release
+		 * can be missed outright -- a VT switch or a grab eats one -- and a
+		 * stale entry does lasting damage now that client_notify_enter() also
+		 * filters on this list: it would hide a genuinely held key from every
+		 * future focus change. wlroots updates keycodes[] before emitting this
+		 * event, so the key being pressed right now is already in there. */
+		struct wlr_keyboard *wlr_kb = &group->wlr_group->keyboard;
+		for (i = 0; i < group->nconsumed;) {
+			bool held = false;
+			for (size_t j = 0; j < wlr_kb->num_keycodes && !held; j++)
+				held = wlr_kb->keycodes[j] + 8 == group->consumed[i];
+			if (held)
+				i++;
+			else
+				group->consumed[i] = group->consumed[--group->nconsumed];
+		}
 		if (handled) {
 			bool known = false;
 			for (i = 0; i < group->nconsumed && !known; i++)

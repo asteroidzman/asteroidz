@@ -58,12 +58,11 @@ test_consumed_key_release_is_swallowed() {
 	# raw key state and act on that; ordinary toolkits discard it, which is why
 	# it went unnoticed for so long.
 	#
-	# NOT asserted here: that the client fails to receive the release. The
-	# harness has no key-reporting client, and a test that cannot observe the
-	# thing it names is worse than no test. What IS pinned is the regression
-	# risk of the fix -- that tracking consumed keycodes does not break normal
-	# binding, and that hammering a bound key neither exhausts the fixed-size
-	# set nor wedges the compositor.
+	# The client side is asserted separately, in the two tests below, now that
+	# contrib/wlkeys can report what it was actually sent. This one pins the
+	# regression risk of the fix -- that tracking consumed keycodes does not
+	# break normal binding, and that hammering a bound key neither exhausts the
+	# fixed-size set nor wedges the compositor.
 	hl_dispatch "view,1"
 	local i
 	for i in 1 2 3 4 5 6 7 8 9 10; do
@@ -80,4 +79,51 @@ test_consumed_key_release_is_swallowed() {
 	hl_assert_eq "a bound key still switches view after the release fix" \
 		"$(hl_get "get all-monitors" | jq -c '.monitors[0].active_tags')" "[2]"
 	hl_dispatch "view,1"
+}
+
+# F11 is bound to combo_view,2 in hl_start's config, so pressing it while a
+# client sits on tag 2 both consumes the key AND moves focus to that client --
+# the exact sequence that made a Proton game receive a keypress forever.
+test_a_consumed_key_is_not_reported_as_held_on_focus_enter() {
+	hl_skip_if_live_no_test_keybinds "test_a_consumed_key_is_not_reported_as_held_on_focus_enter" || return
+	hl_dispatch "view,2"
+	hl_spawn_wlkeys "wlkeys-enter" 8 "wlkeys-enter" >/dev/null
+	hl_wait_client_count 1 || true
+	sleep 0.5
+	hl_dispatch "view,1" 0.3   # the probe loses focus
+
+	# hold it across the focus change, which is when enter's key array is built
+	"$HL_WLVKBD" hold F11 -- sleep 0.4
+	sleep 0.4
+
+	# wl_keyboard.enter says "these keys are held"; a client told F11 (evdev 87)
+	# is held repeats it until a release it will never get, because the release
+	# of a consumed press is swallowed. It must not appear.
+	local held
+	held="$(hl_wlkeys_last_enter wlkeys-enter)"
+	hl_assert_true "the bound key is absent from the focus-enter held-key array (got '$held')" \
+		"$(case ",$held," in *,87,*) echo false;; *) echo true;; esac)"
+
+	# and the client saw neither edge of it: no press (the binding ate it) and
+	# no release (swallowed to match)
+	hl_assert_eq "the client is sent no key event at all for the consumed key" \
+		"$(hl_count_lines '^key 87 ' "$HL_OUTDIR/wlkeys-enter.log")" "0"
+	hl_dispatch "view,1"
+}
+
+# The filter must not swallow ordinary typing: it keys off the consumed set,
+# so an unbound key has to survive it untouched.
+test_an_unbound_key_still_reaches_the_focused_client() {
+	hl_dispatch "view,1"
+	hl_spawn_wlkeys "wlkeys-pass" 8 "wlkeys-pass" >/dev/null
+	hl_wait_client_count 1 || true
+	sleep 0.5
+
+	"$HL_WLVKBD" press F9   # evdev 67, bound to nothing
+	sleep 0.4
+
+	hl_assert_eq "an unbound key's press reaches the client" \
+		"$(hl_count_lines '^key 67 pressed' "$HL_OUTDIR/wlkeys-pass.log")" "1"
+	hl_assert_eq "an unbound key's release reaches the client" \
+		"$(hl_count_lines '^key 67 released' "$HL_OUTDIR/wlkeys-pass.log")" "1"
 }

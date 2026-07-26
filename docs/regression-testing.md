@@ -58,7 +58,8 @@ socket, `ASTEROIDZ_INSTANCE_SIGNATURE`) plus a flat-color `swaybg` wallpaper,
 never touching your real session. `hl_dispatch`/`hl_get` wrap `amsg
 dispatch`/`amsg get` scoped to that instance; `hl_watch_start` backgrounds an
 `amsg watch ...` stream for asserting on IPC notifications. `hl_spawn_kitty`/
-`hl_spawn_wllayer` spawn tracked, throwaway test clients. `hl_reset` kills
+`hl_spawn_wllayer`/`hl_spawn_wlkeys` spawn tracked, throwaway test clients.
+`hl_reset` kills
 spawned windows and returns to a known state (tag 1, tile layout, `HEADLESS-1`
 focused) between test cases so they can't leak state into one another.
 `hl_assert`/`hl_assert_eq`/`hl_assert_true`/`hl_assert_false` are the
@@ -92,10 +93,19 @@ so the harness includes a few small purpose-built Wayland clients:
   regression-pinning past bugs (a DPMS/disabled-monitor layer-configure bug,
   and the original stale-shadow-after-resize bug) directly instead of only
   inferring them through the waybar popup harness.
+- **`contrib/wlkeys`** — an `xdg-shell` toplevel that REPORTS keyboard events
+  back out (one line per `enter`/`leave`/`key`/`modifiers`, raw evdev
+  keycodes). Every other client here drives input *in*; this is the only one
+  that observes what the compositor *sent*, which is the only way to assert on
+  `wl_keyboard.enter`'s held-key array. That array is how a tag-switch binding
+  used to leave a Proton game repeating a key forever: the client is told the
+  bound key is held at the moment focus arrives, and the release that would
+  stop it is deliberately swallowed. Use `hl_spawn_wlkeys` and
+  `hl_wlkeys_last_enter`.
 
 ## Module coverage
 
-Twenty-one modules as of writing (140 assertions): `layouts`,
+Twenty modules as of writing (180 assertions): `layouts`,
 `window-states`, `tags`, `focus`, `scratchpad`, `geometry`, `dwindle`,
 `overview`, `multimonitor`, `mousebind`, `hdr`, `scroller`, `animations`,
 `layer-shell`, `ipc-watch`, `keybind-combo`, `bar`, plus
