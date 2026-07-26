@@ -175,24 +175,6 @@ executable('amsg',
   ],
 )
 
-# XEmbed tray bridge. Built only with xwayland, since X11 tray icons cannot
-# exist without an X server to host them. Separate from the compositor on
-# purpose -- see the file header: it composites and synthesises input into
-# foreign X windows, and a fault there must not take the session with it.
-if xcb.found() and not get_option('xwayland').disabled()
-  executable('asteroidz-xembed',
-    'xembed/asteroidz-xembed.c',
-    dependencies: [
-      xcb,
-      dependency('xcb-composite'),
-      dependency('xcb-damage'),
-      libsystemd_dep,
-    ],
-    install: true,
-    c_args: ['-g', '-Wall', '-Wextra'],
-  )
-endif
-
 mandir = get_option('mandir')
 desktop_install_dir = join_paths(prefix, 'share/wayland-sessions')
 portal_install_dir = join_paths(prefix, 'share/xdg-desktop-portal')

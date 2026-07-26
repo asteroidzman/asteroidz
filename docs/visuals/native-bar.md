@@ -144,29 +144,6 @@ disabled, not destroyed).
 The `tray` module is a **StatusNotifierItem host**, on the same session bus the
 compositor already pumps from its event loop.
 
-X11 applications that predate SNI — older Qt/GTK apps, anything built on
-GtkStatusIcon — publish their icon over **XEmbed** instead, and the compositor
-speaks no X11, so those icons have nowhere to go. `asteroidz-xembed` bridges
-them: it owns the `_NET_SYSTEM_TRAY_S<screen>` selection, embeds each icon
-window offscreen, captures its pixels via XComposite/XDamage, and re-exports it
-as a StatusNotifierItem. The tray then shows it with no idea it was ever an X11
-window. Start it from your autostart; it exits immediately if another tray
-already owns the selection.
-
-**Electron apps do not need this.** Discord and friends implement SNI directly
-over D-Bus, without `libappindicator` — so a missing `libappindicator` in
-`/proc/<pid>/maps` is *not* evidence that an app needs XEmbed. What they do
-need is a watcher that already exists when they start: they register once and
-never retry, so if the tray module is not running at their launch their icon
-is missing until they are restarted.
-
-It is a **separate process on purpose**, unlike the SNI host. That half
-composites and synthesises input into foreign X windows driven by clients that
-can misbehave; in the compositor a fault there takes the whole session down.
-It is also not `xembedsniproxy`, which does the same job but is a Plasma
-component — the tray exists precisely so asteroidz needs no part of KDE or
-GNOME installed.
-
 Despite the name, `org.kde.StatusNotifierWatcher` needs **no part of KDE
 installed or running**. It is a plain D-Bus name, and the compositor owns and
 serves it itself; the `org.kde.` prefix is only historical, from KDE having

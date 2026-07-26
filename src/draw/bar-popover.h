@@ -56,6 +56,8 @@ enum bar_popover_kind {
 	 * underneath it -- an output can lose a mode while its menu is open. */
 	BAR_POPOVER_MODES,
 	BAR_POPOVER_SCALES,
+	BAR_POPOVER_MEDS,    /* today's doses; payload is the dose key */
+	BAR_POPOVER_MED_DOSE, /* one dose: take / skip / postpone */
 };
 
 typedef struct {
@@ -106,6 +108,9 @@ typedef struct {
 	/* which output BAR_POPOVER_OUTPUT is showing; held by NAME because a
 	 * Monitor can be unplugged while its menu is open */
 	char output_name[64];
+	/* which dose BAR_POPOVER_MED_DOSE is acting on, by key for the same
+	 * reason: the store can be reloaded while the menu is open */
+	char med_key[176];
 	/* horizontal centre of the pill this hangs from, in layout coordinates */
 	int32_t anchor_x;
 	struct wlr_box box;
@@ -118,6 +123,9 @@ static void bar_popover_close(void);
 static void bar_popover_layout(void);
 static void bar_popover_open_modes(Monitor *anchor_mon, int32_t anchor_x,
 								   const char *name);
+static void bar_popover_open_meds(Monitor *m, int32_t anchor_x);
+static void bar_popover_open_med_dose(Monitor *anchor_mon, int32_t anchor_x,
+									  const char *key);
 static void bar_popover_open_scales(Monitor *anchor_mon, int32_t anchor_x,
 									const char *name);
 
@@ -1043,6 +1051,115 @@ static bool bar_popover_handle_node_scroll(AsteroidzNodeData *hit,
 	return true;
 }
 
+/* ─── medication ──────────────────────────────────────────────────────────── */
+
+/* Today's doses, each drilling into its own actions.
+ *
+ * Every dose is listed, not just the due one: "did I take the morning one?" is
+ * the question this exists to answer, and a menu that shows only what is due
+ * cannot answer it. Status is spelled out per row for the same reason. */
+static void bar_popover_open_meds(Monitor *m, int32_t anchor_x) {
+	if (bar_popover_is_open(BAR_POPOVER_MEDS)) {
+		bar_popover_close();
+		return;
+	}
+	bar_med_reload();
+	if (!bar_popover_open(m, BAR_POPOVER_MEDS, anchor_x))
+		return;
+
+	int32_t n = 0;
+	for (int32_t i = 0; i < bar_med.ndoses && n < BAR_POPOVER_MAX_ROWS; i++) {
+		BarMedDose *d = &bar_med.doses[i];
+		BarPopoverRow *r = bar_popover_row_get(n);
+		if (!r)
+			break;
+		/* Kept SHORT on purpose. The popover is a fixed 340px and rows
+		 * ellipsise into it, and the first thing an over-long row loses is
+		 * its tail -- which is the status, the one thing this menu exists to
+		 * show. No chevron here for the same reason. */
+		/* The marker LEADS. The popover is a fixed width and rows ellipsise
+		 * into it, so a status written after a long medication name is the
+		 * first thing lost -- and it is the one thing this menu exists to
+		 * show. "escitalopram" alone is wide enough to prove the point. */
+		const char *mark = !strcmp(d->status, "taken")     ? "\u2713"
+						   : !strcmp(d->status, "skipped") ? "\u2715"
+						   : d->due                        ? "\u25cf"
+						   : d->pending                    ? "\u00b7"
+														   : "!";
+		snprintf(r->text, sizeof(r->text), "%s  %s  %s", mark, d->time,
+				 d->name);
+		snprintf(r->value, sizeof(r->value), "%s", d->key);
+		r->selected = d->due;
+		r->submenu = true;
+		n++;
+	}
+	if (n == 0) {
+		BarPopoverRow *r = bar_popover_row_get(n);
+		if (r) {
+			snprintf(r->text, sizeof(r->text), "%s", "nothing scheduled today");
+			r->enabled = false;
+			n++;
+		}
+	}
+	bar_popover.nrows = n;
+	bar_popover_layout();
+}
+
+static BarMedDose *bar_med_by_key(const char *key) {
+	if (!key || !*key)
+		return NULL;
+	for (int32_t i = 0; i < bar_med.ndoses; i++)
+		if (strcmp(bar_med.doses[i].key, key) == 0)
+			return &bar_med.doses[i];
+	return NULL;
+}
+
+/* What can be done to one dose. Take and Skip are offered even for a dose
+ * already marked, because the answer to "I pressed the wrong one" has to be
+ * pressing the right one -- the store keeps only the latest state per dose. */
+static void bar_popover_open_med_dose(Monitor *anchor_mon, int32_t anchor_x,
+									  const char *key) {
+	BarMedDose *d = bar_med_by_key(key);
+	if (!d)
+		return;
+	if (!bar_popover_open(anchor_mon, BAR_POPOVER_MED_DOSE, anchor_x))
+		return;
+	snprintf(bar_popover.med_key, sizeof(bar_popover.med_key), "%s", key);
+
+	int32_t n = 0;
+	BarPopoverRow *r = bar_popover_row_get(n);
+	if (r) {
+		snprintf(r->text, sizeof(r->text), "%s  %s", d->time, d->name);
+		r->enabled = false;
+		n++;
+	}
+	if ((r = bar_popover_row_get(n))) {
+		snprintf(r->text, sizeof(r->text), "%s", "Take");
+		snprintf(r->value, sizeof(r->value), "%s", BAR_POPOVER_VERB "take");
+		r->selected = !strcmp(d->status, "taken");
+		n++;
+	}
+	if ((r = bar_popover_row_get(n))) {
+		snprintf(r->text, sizeof(r->text), "%s", "Skip");
+		snprintf(r->value, sizeof(r->value), "%s", BAR_POPOVER_VERB "skip");
+		r->selected = !strcmp(d->status, "skipped");
+		n++;
+	}
+	if ((r = bar_popover_row_get(n))) {
+		snprintf(r->text, sizeof(r->text), "Postpone %d min",
+				 bar_med_snooze_minutes());
+		snprintf(r->value, sizeof(r->value), "%s", BAR_POPOVER_VERB "snooze");
+		n++;
+	}
+	if ((r = bar_popover_row_get(n))) {
+		snprintf(r->text, sizeof(r->text), "%s", "\u2039  All doses");
+		snprintf(r->value, sizeof(r->value), "%s", BAR_POPOVER_VERB "back");
+		n++;
+	}
+	bar_popover.nrows = n;
+	bar_popover_layout();
+}
+
 /* ─── input ───────────────────────────────────────────────────────────────── */
 
 static bool bar_popover_handle_node_click(AsteroidzNodeData *hit,
@@ -1148,6 +1265,44 @@ static bool bar_popover_handle_node_click(AsteroidzNodeData *hit,
 		if (scale > 0.0f)
 			bar_display_apply(bar_display_by_name(name), NULL, scale);
 		bar_popover_open_output(anchor_mon, ax, name);
+		return true;
+	}
+	case BAR_POPOVER_MEDS: {
+		if (!r->enabled)
+			return true;
+		Monitor *anchor_mon = bar_popover.mon;
+		int32_t ax = bar_popover.anchor_x;
+		char key[176];
+		snprintf(key, sizeof(key), "%s", r->value);
+		bar_popover_open_med_dose(anchor_mon, ax, key);
+		return true;
+	}
+	case BAR_POPOVER_MED_DOSE: {
+		if (!r->enabled || !BAR_POPOVER_IS_VERB(r->value))
+			return true;
+		Monitor *anchor_mon = bar_popover.mon;
+		int32_t ax = bar_popover.anchor_x;
+		char key[176];
+		snprintf(key, sizeof(key), "%s", bar_popover.med_key);
+		const char *verb = r->value + 1;
+		if (!strcmp(verb, "back")) {
+			bar_popover_open_meds(anchor_mon, ax);
+			return true;
+		}
+		BarMedDose *d = bar_med_by_key(key);
+		if (d) {
+			if (!strcmp(verb, "take"))
+				bar_med_mark(d, "taken");
+			else if (!strcmp(verb, "skip"))
+				bar_med_mark(d, "skipped");
+			else if (!strcmp(verb, "snooze"))
+				bar_med_postpone(d, bar_med_snooze_minutes());
+			bar_med_reload();
+			bar_update_all();
+		}
+		/* back to the list, which now shows the new state -- the point of
+		 * recording a dose is seeing that it was recorded */
+		bar_popover_open_meds(anchor_mon, ax);
 		return true;
 	}
 	case BAR_POPOVER_VPN: {

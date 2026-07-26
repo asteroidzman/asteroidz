@@ -4,13 +4,16 @@
 /* Medication reminders, reading the same store the waybar plugin writes:
  * $XDG_STATE_HOME/waybar-medication/medications.json.
  *
- * READ ONLY, deliberately. The waybar plugin owns this file -- it adds and
- * edits medications, records taken/skipped/postponed doses, prunes history and
- * rewrites the whole document. Two processes writing one JSON store with no
- * locking is how you lose a dose record, and "did I take it?" is exactly the
- * question this must never get wrong. The bar shows what is due; the popover
- * that takes and skips doses stays in waybar until this owns the store
- * outright.
+ * The bar now OWNS this store: waybar is gone, so the two-writer hazard that
+ * kept this read-only is gone with it. Taking, skipping and postponing a dose
+ * all write here.
+ *
+ * Written the way the plugin wrote it, field for field, because the file
+ * outlives the program that made it -- a store this rewrites into a shape the
+ * plugin could not read would strand the history if anyone ever went back.
+ * Saved through a temporary file and rename(), which is atomic on the same
+ * filesystem: "did I take it?" is exactly the question a half-written file
+ * must never be able to answer wrongly.
  *
  * The schedule is reproduced exactly rather than approximated, because a pill
  * that disagrees with the plugin about what is due is worse than no pill:
@@ -37,7 +40,13 @@
 typedef struct {
 	char name[64];
 	char time[8];  /* HH:MM */
+	/* the plugin's dose key, medId@YYYY-MM-DDTHH:MM -- carried so a popover
+	 * row can act on a specific dose rather than re-deriving it from a name
+	 * and a time that two medications could share */
+	char key[176];
+	char status[16]; /* "", "taken", "skipped" */
 	time_t scheduled;
+	time_t postponed_until; /* 0 when not postponed */
 	bool due;      /* past its time, inside the window, not taken/skipped */
 	bool pending;  /* still to come today */
 } BarMedDose;
@@ -246,6 +255,8 @@ static void bar_med_reload(void) {
 			BarMedDose *d = &bar_med.doses[bar_med.ndoses++];
 			snprintf(d->name, sizeof(d->name), "%s", name);
 			snprintf(d->time, sizeof(d->time), "%s", slots[k]);
+			snprintf(d->key, sizeof(d->key), "%s", key);
+			snprintf(d->status, sizeof(d->status), "%s", status);
 			d->scheduled = bar_med_at(day, slots[k]);
 			d->due = !done && now >= d->scheduled &&
 					 (now - d->scheduled) <= BAR_MED_DUE_WINDOW;
@@ -272,6 +283,210 @@ static void bar_med_reload(void) {
 	snprintf(bar_med.due_name, sizeof(bar_med.due_name), "%s",
 			 bar_med.ndue == 1 && due_name ? due_name : "");
 	bar_med.have = true;
+}
+
+
+/* ─── writing ─────────────────────────────────────────────────────────────── */
+
+/* UTC in the exact spelling the plugin used, so a store written by either is
+ * readable by both: 2026-07-26T04:12:33.000Z. */
+static void bar_med_iso_utc(time_t t, char *out, size_t len) {
+	struct tm tm;
+	gmtime_r(&t, &tm);
+	char base[32];
+	strftime(base, sizeof(base), "%Y-%m-%dT%H:%M:%S", &tm);
+	snprintf(out, len, "%s.000Z", base);
+}
+
+static cJSON *bar_med_load_doc(void) {
+	char path[512];
+	bar_med_path(path, sizeof(path));
+	FILE *f = fopen(path, "re");
+	if (!f)
+		return NULL;
+	struct stat st;
+	if (fstat(fileno(f), &st) != 0 || st.st_size <= 0 ||
+		st.st_size > 4 * 1024 * 1024) {
+		fclose(f);
+		return NULL;
+	}
+	char *buf = malloc((size_t)st.st_size + 1);
+	if (!buf) {
+		fclose(f);
+		return NULL;
+	}
+	size_t got = fread(buf, 1, (size_t)st.st_size, f);
+	fclose(f);
+	buf[got] = '\0';
+	cJSON *root = cJSON_Parse(buf);
+	free(buf);
+	return root;
+}
+
+/* Replace the store atomically: write a sibling temp file, fsync it, rename
+ * over the original. A rename within a directory is atomic, so a reader either
+ * sees the whole old document or the whole new one -- never a truncated file
+ * where a dose has no status. */
+static bool bar_med_save_doc(cJSON *root) {
+	char path[512], tmp[544];
+	bar_med_path(path, sizeof(path));
+	snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+
+	char *text = cJSON_Print(root);
+	if (!text)
+		return false;
+	int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+	if (fd < 0) {
+		free(text);
+		return false;
+	}
+	size_t len = strlen(text);
+	bool ok = write(fd, text, len) == (ssize_t)len;
+	if (ok)
+		ok = fsync(fd) == 0;
+	close(fd);
+	free(text);
+	if (!ok || rename(tmp, path) != 0) {
+		unlink(tmp);
+		wlr_log(WLR_ERROR, "medication: could not save %s", path);
+		return false;
+	}
+	/* force the next reload to re-read rather than trust the cached mtime */
+	bar_med.mtime = 0;
+	return true;
+}
+
+/* Prepend to `history`, capped at 200 entries exactly as the plugin capped it.
+ * The history is what "did I take it?" is answered from months later, so it is
+ * worth keeping in the same shape and the same order. */
+static void bar_med_history_add(cJSON *root, const BarMedDose *d,
+								const char *status, const char *taken_at) {
+	cJSON *history = cJSON_GetObjectItem(root, "history");
+	if (!history || !cJSON_IsArray(history)) {
+		history = cJSON_CreateArray();
+		if (!history)
+			return;
+		cJSON_ReplaceItemInObject(root, "history", history);
+		if (!cJSON_GetObjectItem(root, "history"))
+			cJSON_AddItemToObject(root, "history", history);
+	}
+
+	cJSON *entry = cJSON_CreateObject();
+	if (!entry)
+		return;
+	/* medId is the part of the key before '@' */
+	const char *at = strchr(d->key, '@');
+	char med_id[96];
+	size_t idlen = at ? (size_t)(at - d->key) : strlen(d->key);
+	if (idlen >= sizeof(med_id))
+		idlen = sizeof(med_id) - 1;
+	memcpy(med_id, d->key, idlen);
+	med_id[idlen] = '\0';
+
+	char sched[40];
+	bar_med_iso_utc(d->scheduled, sched, sizeof(sched));
+	cJSON_AddStringToObject(entry, "medId", med_id);
+	cJSON_AddStringToObject(entry, "name", d->name);
+	cJSON_AddStringToObject(entry, "dosage", "");
+	cJSON_AddStringToObject(entry, "scheduled", sched);
+	if (taken_at)
+		cJSON_AddStringToObject(entry, "takenAt", taken_at);
+	cJSON_AddStringToObject(entry, "status", status);
+	cJSON_InsertItemInArray(history, 0, entry);
+
+	while (cJSON_GetArraySize(history) > 200)
+		cJSON_DeleteItemFromArray(history, cJSON_GetArraySize(history) - 1);
+}
+
+static cJSON *bar_med_dose_state(cJSON *root) {
+	cJSON *ds = cJSON_GetObjectItem(root, "doseState");
+	if (!ds || !cJSON_IsObject(ds)) {
+		ds = cJSON_CreateObject();
+		if (ds)
+			cJSON_AddItemToObject(root, "doseState", ds);
+	}
+	return ds;
+}
+
+/* Take or skip. `status` is "taken" or "skipped", the two the plugin wrote. */
+static bool bar_med_mark(const BarMedDose *dose, const char *status) {
+	if (!dose || !dose->key[0])
+		return false;
+	cJSON *root = bar_med_load_doc();
+	if (!root)
+		return false;
+	cJSON *ds = bar_med_dose_state(root);
+	if (!ds) {
+		cJSON_Delete(root);
+		return false;
+	}
+
+	char at[40];
+	bar_med_iso_utc(time(NULL), at, sizeof(at));
+	cJSON *st = cJSON_CreateObject();
+	if (!st) {
+		cJSON_Delete(root);
+		return false;
+	}
+	cJSON_AddStringToObject(st, "status", status);
+	if (!strcmp(status, "taken"))
+		cJSON_AddStringToObject(st, "takenAt", at);
+	cJSON_DeleteItemFromObject(ds, dose->key); /* replaces, like the plugin */
+	cJSON_AddItemToObject(ds, dose->key, st);
+
+	bar_med_history_add(root, dose, status,
+						!strcmp(status, "taken") ? at : NULL);
+	bool ok = bar_med_save_doc(root);
+	cJSON_Delete(root);
+	return ok;
+}
+
+/* Push a dose out by `minutes`, PRESERVING whatever else its state carried.
+ * The plugin copied the existing members before adding postponedUntil, and it
+ * matters: postponing a dose that was already alerted must not erase the
+ * alert record and start it ringing again. */
+static bool bar_med_postpone(const BarMedDose *dose, int32_t minutes) {
+	if (!dose || !dose->key[0] || minutes <= 0)
+		return false;
+	cJSON *root = bar_med_load_doc();
+	if (!root)
+		return false;
+	cJSON *ds = bar_med_dose_state(root);
+	if (!ds) {
+		cJSON_Delete(root);
+		return false;
+	}
+
+	cJSON *prev = cJSON_GetObjectItem(ds, dose->key);
+	cJSON *st = prev ? cJSON_Duplicate(prev, 1) : cJSON_CreateObject();
+	if (!st) {
+		cJSON_Delete(root);
+		return false;
+	}
+	char until[40];
+	bar_med_iso_utc(time(NULL) + minutes * 60, until, sizeof(until));
+	cJSON_DeleteItemFromObject(st, "postponedUntil");
+	cJSON_AddStringToObject(st, "postponedUntil", until);
+	cJSON_DeleteItemFromObject(ds, dose->key);
+	cJSON_AddItemToObject(ds, dose->key, st);
+
+	bool ok = bar_med_save_doc(root);
+	cJSON_Delete(root);
+	return ok;
+}
+
+/* The store's own snooze length, so Postpone offers what the user configured
+ * rather than a number invented here. */
+static int32_t bar_med_snooze_minutes(void) {
+	cJSON *root = bar_med_load_doc();
+	int32_t mins = 15;
+	if (root) {
+		cJSON *v = cJSON_GetObjectItem(root, "snoozeMinutes");
+		if (cJSON_IsNumber(v) && v->valuedouble > 0)
+			mins = (int32_t)v->valuedouble;
+		cJSON_Delete(root);
+	}
+	return mins;
 }
 
 #endif /* ASTEROIDZ_BAR_MEDICATION_H */

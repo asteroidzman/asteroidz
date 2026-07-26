@@ -3583,6 +3583,12 @@ static bool bar_handle_node_click(AsteroidzNodeData *hit, uint32_t button) {
 			return true;
 		}
 		break;
+	case BAR_MODULE_MEDICATION:
+		if (button == BTN_LEFT) {
+			bar_popover_open_meds(m, p->node->last_x + p->width / 2);
+			return true;
+		}
+		break;
 	case BAR_MODULE_NOTIFY:
 		if (button == BTN_LEFT) {
 			bar_notify_call("ToggleVisibility");
