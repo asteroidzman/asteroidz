@@ -432,6 +432,7 @@ static int bar_tray_on_item_changed(sd_bus_message *m, void *user,
 /* An application quitting does NOT send an unregister -- it just drops off the
  * bus. Without this the tray kept a pill for every application ever run. */
 static void bar_tray_claim_watcher(void);
+static void bar_tray_adopt_existing(void);
 
 static int bar_tray_on_name_owner_changed(sd_bus_message *m, void *user,
 										  sd_bus_error *err) {
@@ -571,8 +572,64 @@ static void bar_tray_claim_watcher(void) {
 	bar_tray_is_watcher = true;
 	wlr_log(WLR_INFO, "tray: took over %s", BAR_TRAY_WATCHER_NAME);
 	/* Tell the world a host exists again, so anything that gave up while the
-	 * name was unowned re-registers with us. */
+	 * name was unowned re-registers with us -- and then go and find the ones
+	 * that will not. */
 	bar_tray_emit("StatusNotifierHostRegistered", NULL, NULL);
+	sd_bus_flush(session_bus);
+	bar_tray_adopt_existing();
+}
+
+/* Adopt the items that are already on the bus.
+ *
+ * A tray item is a bus name the application still owns and an object it still
+ * serves; registering with a watcher is how it ANNOUNCES that, not what makes
+ * it true. So when we become the watcher we can go and look, instead of
+ * waiting to be told by applications that have already done their telling.
+ *
+ * Which matters because a compositor restart re-execs: every fd is CLOEXEC, so
+ * the D-Bus connection goes with it and the watcher name is released and
+ * reclaimed. Whether an application notices and re-registers is entirely up to
+ * that application -- Qt and libappindicator watch the name and come back,
+ * plenty of others register exactly once at startup and never again. Those
+ * were simply gone until they were restarted, which is what "the tray keeps
+ * losing clients" is.
+ *
+ * Matching by the conventional well-known name rather than by asking every
+ * name on the bus whether it implements the interface: that would be hundreds
+ * of round trips to catch the handful of items that use a unique name instead,
+ * and those re-register on the HostRegistered signal anyway. */
+static int bar_tray_on_names(sd_bus_message *m, void *user, sd_bus_error *err) {
+	(void)user;
+	(void)err;
+	if (!m || sd_bus_message_is_method_error(m, NULL))
+		return 0;
+	int32_t adopted = 0;
+	if (sd_bus_message_enter_container(m, 'a', "s") > 0) {
+		const char *name = NULL;
+		while (sd_bus_message_read(m, "s", &name) > 0 && name) {
+			if ((strncmp(name, "org.kde.StatusNotifierItem-", 27) != 0 &&
+				 strncmp(name, "org.freedesktop.StatusNotifierItem-", 35) !=
+					 0) ||
+				bar_tray_find(name))
+				continue;
+			bar_tray_register(name, NULL);
+			adopted++;
+		}
+		sd_bus_message_exit_container(m);
+	}
+	if (adopted)
+		wlr_log(WLR_INFO, "tray: adopted %d item(s) already on the bus",
+				adopted);
+	return 0;
+}
+
+static void bar_tray_adopt_existing(void) {
+	if (!session_bus)
+		return;
+	if (sd_bus_call_method_async(session_bus, NULL, "org.freedesktop.DBus",
+								 "/org/freedesktop/DBus", "org.freedesktop.DBus",
+								 "ListNames", bar_tray_on_names, NULL, "") < 0)
+		return;
 	sd_bus_flush(session_bus);
 }
 
@@ -700,6 +757,14 @@ static void bar_tray_start(void) {
 
 	r = sd_bus_request_name(session_bus, BAR_TRAY_WATCHER_NAME, 0);
 	bar_tray_is_watcher = r >= 0;
+	if (bar_tray_is_watcher) {
+		/* Go and find the items that already exist. Applications that were
+		 * showing an icon before this process started -- which is every one of
+		 * them after a compositor restart -- have already announced
+		 * themselves, to a watcher that no longer exists. See
+		 * bar_tray_adopt_existing. */
+		bar_tray_adopt_existing();
+	}
 	if (!bar_tray_is_watcher) {
 		/* -EEXIST: waybar (or another shell) is the watcher. Mirror it rather
 		 * than fighting over the name -- see the header comment. */

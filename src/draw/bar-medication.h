@@ -34,7 +34,19 @@
  * bar_update_all() from a bus or timer callback, never from inside a refresh.
  */
 
-#define BAR_MED_DUE_WINDOW (6 * 3600)
+/* A dose stays DUE from its time until the day rolls over -- there is no
+ * expiry window.
+ *
+ * The waybar plugin this replaces drops a dose out of "due" six hours after it
+ * was scheduled, and a dose in the past is not "pending" either, so an untaken
+ * dose simply VANISHES from the bar six hours later. Found live: an 08:00 dose
+ * still untaken at 18:00, and the module had hidden itself at 14:00 -- the one
+ * situation the whole module exists for is the one it stopped showing.
+ *
+ * Six hours is the right window for RE-ALERTING, which is what the plugin
+ * needed it for: nobody wants a critical notification at midnight for a
+ * morning pill. It is the wrong window for a bar indicator, which is passive
+ * and costs nothing to keep showing. */
 #define BAR_MED_MAX 32
 
 typedef struct {
@@ -150,8 +162,6 @@ static void bar_med_reload(void) {
 		const char *due_name = NULL;
 		for (int32_t i = 0; i < bar_med.ndoses; i++) {
 			BarMedDose *d = &bar_med.doses[i];
-			d->due = d->due &&
-					 now - d->scheduled <= BAR_MED_DUE_WINDOW;
 			if (!d->due && d->pending && d->scheduled <= now) {
 				d->pending = false;
 				d->due = true;
@@ -258,8 +268,7 @@ static void bar_med_reload(void) {
 			snprintf(d->key, sizeof(d->key), "%s", key);
 			snprintf(d->status, sizeof(d->status), "%s", status);
 			d->scheduled = bar_med_at(day, slots[k]);
-			d->due = !done && now >= d->scheduled &&
-					 (now - d->scheduled) <= BAR_MED_DUE_WINDOW;
+			d->due = !done && now >= d->scheduled;
 			d->pending = !done && d->scheduled > now;
 			if (d->due) {
 				bar_med.ndue++;

@@ -15,8 +15,18 @@
 # DBus.Properties.GetAll, which walks every property, that faults. That is why
 # this test calls GetAll and not get-property.
 #
+# Also pins ADOPTION. A compositor restart re-execs, and every fd is CLOEXEC,
+# so the D-Bus connection goes with it: the watcher name is released and
+# reclaimed. Whether an application notices and re-registers is entirely up to
+# that application -- Qt and libappindicator watch the name and come back,
+# plenty register exactly once at startup and never again. Those were simply
+# gone until they were restarted, which is what "the tray keeps losing clients"
+# was. So an item already on the bus when the compositor starts must be picked
+# up without the application doing anything.
+#
 # Runs against its OWN dbus-daemon and XDG_RUNTIME_DIR, so it never touches
-# the live session's tray. Needs no tray application installed.
+# the live session's tray. Needs no tray application installed --
+# contrib/snitem stands in for one.
 #
 # Usage: contrib/tray-host-test.sh [path-to-asteroidz]
 set -u
@@ -27,7 +37,7 @@ command -v busctl >/dev/null || { echo "needs busctl" >&2; exit 1; }
 
 D=$(mktemp -d /tmp/asteroidz-trayhost-XXXXXX)
 mkdir -p "$D/xdg"; chmod 700 "$D/xdg"
-cleanup() { kill ${COMP:-} ${BUSPID:-} 2>/dev/null; rm -rf "$D"; }
+cleanup() { kill ${COMP:-} ${ITEMPID:-} ${BUSPID:-} 2>/dev/null; rm -rf "$D"; }
 trap cleanup EXIT
 
 cat > "$D/c.kdl" <<'KDL'
@@ -37,6 +47,15 @@ KDL
 
 BUSOUT=$(dbus-daemon --session --print-address --print-pid --fork)
 BUSADDR=$(echo "$BUSOUT" | sed -n 1p); BUSPID=$(echo "$BUSOUT" | sed -n 2p)
+
+# An "application" already showing a tray icon, BEFORE the compositor exists.
+SNITEM="$(dirname "$0")/snitem/snitem"
+ITEMNAME=""
+if [ -x "$SNITEM" ]; then
+  DBUS_SESSION_BUS_ADDRESS="$BUSADDR" "$SNITEM" > "$D/item.name" 2>/dev/null &
+  ITEMPID=$!
+  for i in $(seq 1 20); do sleep 0.2; ITEMNAME=$(cat "$D/item.name" 2>/dev/null); [ -n "$ITEMNAME" ] && break; done
+fi
 
 env -i HOME="$HOME" PATH="$PATH" XDG_RUNTIME_DIR="$D/xdg" \
   DBUS_SESSION_BUS_ADDRESS="$BUSADDR" \
@@ -81,6 +100,22 @@ if kill -0 $COMP 2>/dev/null; then
   else
     echo "FAIL: compositor died on the freedesktop-named watcher"; fail=1
   fi
+fi
+
+# Adoption: the item that was already on the bus must be in the tray, without
+# it ever having called RegisterStatusNotifierItem.
+if [ -z "${ITEMNAME:-}" ]; then
+  echo "skip - contrib/snitem not built (cd contrib/snitem && make)"
+elif kill -0 $COMP 2>/dev/null; then
+  ITEMS=$(busctl --user get-property org.kde.StatusNotifierWatcher \
+            /StatusNotifierWatcher org.kde.StatusNotifierWatcher \
+            RegisteredStatusNotifierItems 2>&1)
+  case "$ITEMS" in
+    *"$ITEMNAME"*)
+      echo "ok - an item already on the bus is adopted without re-registering" ;;
+    *)
+      echo "FAIL: $ITEMNAME was not adopted; watcher reports: $ITEMS"; fail=1 ;;
+  esac
 fi
 
 exit $fail

@@ -107,7 +107,7 @@ for a newer build still starts.
 | `media` | now playing (title • artist), from MPRIS, with a live spectrum while playing. Shown only while **Playing or Paused** | play/pause |
 | `volume` | default sink level, with a speaker icon (also accepts `vol`) | click toggles mute; right-click opens the output picker; scroll steps by `volume-step` |
 | `notifications` | swaync state as a bell — **empty** when nothing is waiting, **filled** when something is (also accepts `notify`). **Icon only** | click toggles the panel; right-click toggles DND |
-| `medication` | doses due now, or the next dose's time (also accepts `meds`) | click lists today's doses; drill into one to take, skip or postpone it |
+| `medication` | doses due now, or the next dose's time (also accepts `meds`). A dose stays due until taken, skipped or the day ends | click lists today's doses; drill into one to take, skip or postpone it |
 | `discord` | voice state from the `discord-voiced` daemon (also accepts `discord-voice`) | click opens voice channels by server, Mute, Disconnect, the PTT key and daemon start/stop; right-click toggles mute |
 | `vpn` | NordVPN state as a tinted shield (also accepts `nordvpn`). **Icon only** | click opens status + Quick Connect / Disconnect / countries |
 | `display` | a monitor icon (also accepts `monitors`) | click lists every output; drill into one for HDR, resolution and scale |
@@ -590,6 +590,15 @@ entry. A popover row is a clickable label — there is no text input on this
 layer, and a row that cannot take a token has no business claiming to. The
 token lives in `~/.config/discord-voiced/config.json`.
 
+A dose stays **due from its scheduled time until the day rolls over**, and the
+module keeps showing it until it is taken or skipped. The Waybar plugin drops a
+dose out of "due" six hours after it was scheduled — and a dose in the past is
+not "upcoming" either, so an untaken dose simply *vanishes* from the bar six
+hours later. Found live: an 08:00 dose still untaken at 18:00, with the module
+having hidden itself at 14:00. Six hours is the right window for re-alerting,
+which is what the plugin needed it for; it is the wrong window for a passive
+indicator that costs nothing to keep showing.
+
 ### System figures
 
 `cpu`, `memory` and `network` all open the **same** panel — they are three
@@ -671,6 +680,29 @@ generous (32) for the same reason.
 Items that publish no `Menu` still fall back to `SecondaryActivate` on
 right-click, since some applications wire that to "open my menu" and ship no
 DBusMenu at all.
+
+### Surviving a restart
+
+`restart` re-execs the compositor, and every fd is CLOEXEC — so the D-Bus
+connection goes with it and `org.kde.StatusNotifierWatcher` is released and
+reclaimed a moment later. Whether an application notices and re-registers is
+entirely up to that application: Qt and libappindicator watch the name and come
+back, plenty of others register exactly once at startup and never again. Those
+were simply **gone** until they were restarted — the tray losing icons every
+time the compositor restarted, with nothing in the log to say why.
+
+So on becoming the watcher we do not only announce ourselves and wait: we
+enumerate the bus and **adopt** every name of the conventional
+`org.kde.StatusNotifierItem-…` form that is not already tracked. A tray item is
+a bus name the application still owns and an object it still serves;
+registering is how it *announces* that, not what makes it true. Pinned by
+`contrib/tray-host-test.sh`, which puts a stand-in item
+(`contrib/snitem`) on the bus **before** the compositor and asserts it appears
+without ever calling `RegisterStatusNotifierItem`.
+
+Items that used a unique bus name instead are not discoverable this way —
+finding them would mean interrogating every name on the bus — but those re-
+register on the `StatusNotifierHostRegistered` signal, which is emitted.
 
 ## Panels
 

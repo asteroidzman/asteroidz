@@ -2429,9 +2429,17 @@ static void bar_module_refresh_medication(BarModule *mod) {
 	char icon[512];
 	bar_icon_path(icon, sizeof(icon), "waybar-medication/pill.svg");
 	asteroidz_tab_bar_node_set_icon(p->node, icon);
-	asteroidz_tab_bar_node_set_icon_tint(p->node, bar_med.ndue > 0
-													  ? config.theme.urgent_color
-													  : config.theme.fg_color);
+	/* Tinted to READ, not to the urgent colour. A due dose fills the pill
+	 * urgent, and tinting the artwork with that same colour paints it in the
+	 * exact shade it is sitting on -- the glyph disappears at the one moment
+	 * the module is shouting for attention. Identical to what the bell did. */
+	if (bar_med.ndue > 0) {
+		float tint[4];
+		bar_readable_fg(config.theme.urgent_color, tint);
+		asteroidz_tab_bar_node_set_icon_tint(p->node, tint);
+	} else {
+		asteroidz_tab_bar_node_set_icon_tint(p->node, config.theme.fg_color);
+	}
 	if (bar_med.ndue == 1 && bar_med.due_name[0])
 		snprintf(p->text, sizeof(p->text), "%s", bar_med.due_name);
 	else if (bar_med.ndue > 1)
