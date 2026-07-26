@@ -570,3 +570,56 @@ test_bar_accepts_every_module_at_once_without_dropping_any() {
 		"$([ $((t1 - t0)) -lt 5 ] && echo true || echo false)"
 	bar_off
 }
+
+test_bar_spaces_modules_evenly_regardless_of_what_they_contain() {
+	[ "$(bar_supported)" = "true" ] || { echo "  (skip: built without -Dnative-bar)"; return 0; }
+	command -v python3 >/dev/null && python3 -c "import PIL" 2>/dev/null || {
+		echo "  (skip: python3 PIL not available)"; return 0; }
+
+	# The separation between modules has to be constant to the EYE, which is
+	# not the same as constant between their boxes -- and asserting the latter
+	# is how this shipped wrong three times running. Every cause was a pill
+	# whose box was bigger than the thing inside it:
+	#
+	#   - icons inset inside their own SVG canvas (fixed by normalising the
+	#     art to fill it)
+	#   - a tall glyph fitted into a square box by its long axis, keeping a
+	#     transparent margin either side (fixed by cropping loaded icons to
+	#     their ink and advancing by that width)
+	#   - `notify` reserving room for a two-digit count it was not showing,
+	#     centred, so half the reserve sat on each side (fixed by reserving
+	#     only while there is a count)
+	#
+	# So this measures pixels: screenshot the bar, walk the pill row, and take
+	# the gaps between runs of anything that is not background. All six of
+	# these modules render icon-only on a headless instance with no session
+	# bus, except `volume`, which is a labelled pill kind and therefore
+	# carries pill-padding -- exactly the mix that used to come out uneven.
+	bar_set 'theme { border-width 0 }
+bar { enable true; height 48; position "top"; margin { x 8; y 9 }; pill-inset 6; module-spacing 12; modules-left "tags"; modules-right "cpu,memory,network,volume,notify,display"; panel { enable true; radius 9; padding 6; blur false; shadow false } }'
+	sleep 1.5
+	hl_screenshot bar-gaps
+
+	# the pill row: strip y 9..57, pills inset 6 => 15..51
+	local out spread gaps
+	out="$(python3 "$HL_REPO/contrib/regression/bar-ink-gaps.py" \
+		"$HL_OUTDIR/bar-gaps.png" 16 50 \
+		$((HL_WIDTH - 400)) "$HL_WIDTH" 2>&1)"
+	spread="$(printf '%s' "$out" | sed -n 's/.*spread=\([0-9]*\).*/\1/p')"
+	gaps="$(printf '%s' "$out" | sed -n 's/^gaps: \(.*\)  min=.*/\1/p')"
+	[ -n "$spread" ] || { echo "  (skip: could not measure -- $out)"; bar_off; return 0; }
+
+	# 1px of tolerance: an icon's advance is fractional (a 53x64 bell in a
+	# 29px row advances 24.02px) and lands on a whole pixel.
+	echo "  measured gaps: $gaps"
+	hl_assert_true "six modules of mixed kinds sit at one separation (spread ${spread}px)" \
+		"$([ "$spread" -le 1 ] && echo true || echo false)"
+
+	# and that separation is the configured one, not merely self-consistent
+	local first
+	first="$(printf '%s' "$gaps" | awk '{print $1}')"
+	hl_assert_true "and that separation is module-spacing (${first}px vs 12)" \
+		"$([ "$first" -ge 11 ] && [ "$first" -le 13 ] && echo true || echo false)"
+
+	bar_off
+}

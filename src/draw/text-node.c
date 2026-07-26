@@ -113,6 +113,92 @@ static const cairo_font_options_t *asteroidz_font_options(void) {
 	return opts;
 }
 
+/* Trim an ARGB32 surface to its alpha bounding box, taking ownership: returns
+ * either the original (already tight, or not croppable) or a new, smaller one
+ * with the original released.
+ *
+ * The bar gives every icon a box and lays those boxes out at a fixed
+ * separation, so transparent margins inside the artwork are indistinguishable
+ * from spacing -- a bell that is 20 units wide on a 24-unit canvas reads as
+ * 2 extra pixels of gap on BOTH sides of that module, and only that module.
+ * Measured on a rendered bar, that put 16px around the bell where the cpu and
+ * memory icons beside it sat at 12.
+ *
+ * Cropping makes the surface's extent equal what you can see, which is the
+ * assumption the layout and the vertical centring both already make. It is
+ * the same trim asteroidz_icon_cache_put_argb32 does to tray pixmaps and
+ * contrib/normalize-bar-icons.py does to our own art at build time -- doing it
+ * here as well covers the non-square case those two cannot: normalising can
+ * only fill the LONG axis of a square canvas, so a tall glyph keeps a margin
+ * either side no matter how the file is written. */
+static cairo_surface_t *surface_crop_to_ink(cairo_surface_t *src) {
+	if (!src || cairo_surface_status(src) != CAIRO_STATUS_SUCCESS ||
+		cairo_image_surface_get_format(src) != CAIRO_FORMAT_ARGB32)
+		return src;
+	cairo_surface_flush(src);
+	int w = cairo_image_surface_get_width(src);
+	int h = cairo_image_surface_get_height(src);
+	const unsigned char *data = cairo_image_surface_get_data(src);
+	int stride = cairo_image_surface_get_stride(src);
+	if (w <= 0 || h <= 0 || !data)
+		return src;
+
+	int x0 = w, y0 = h, x1 = -1, y1 = -1;
+	for (int y = 0; y < h; y++) {
+		const uint32_t *row = (const uint32_t *)(data + (size_t)y * stride);
+		for (int x = 0; x < w; x++) {
+			if ((row[x] >> 24) == 0) /* fully transparent */
+				continue;
+			if (x < x0) x0 = x;
+			if (x > x1) x1 = x;
+			if (y < y0) y0 = y;
+			if (y > y1) y1 = y;
+		}
+	}
+	if (x1 < x0 || y1 < y0)
+		return src; /* nothing drawn at all -- leave it alone */
+	int cw = x1 - x0 + 1, ch = y1 - y0 + 1;
+	if (cw == w && ch == h)
+		return src;
+
+	cairo_surface_t *dst =
+		cairo_image_surface_create(CAIRO_FORMAT_ARGB32, cw, ch);
+	if (cairo_surface_status(dst) != CAIRO_STATUS_SUCCESS) {
+		cairo_surface_destroy(dst);
+		return src;
+	}
+	int dstride = cairo_image_surface_get_stride(dst);
+	unsigned char *ddata = cairo_image_surface_get_data(dst);
+	for (int y = 0; y < ch; y++) {
+		memcpy(ddata + (size_t)y * dstride,
+			   data + (size_t)(y + y0) * stride + (size_t)x0 * 4,
+			   (size_t)cw * 4);
+	}
+	cairo_surface_mark_dirty(dst);
+	cairo_surface_destroy(src);
+	return dst;
+}
+
+/* How much horizontal room one icon takes in a row of them.
+ *
+ * Artwork is fitted into a square of the text area's height BY ITS LONG AXIS,
+ * so a glyph taller than it is wide does not fill that square -- and reserving
+ * the square anyway is transparent padding that the eye reads as spacing. A
+ * bell 53x64 in a 29px row therefore advances 24px, not 29, and the gap either
+ * side of it matches the gap between two square icons.
+ *
+ * A missing surface still advances the full square: the slot is reserved so a
+ * failed icon load shifts nothing around it. */
+static double asteroidz_icon_advance(cairo_surface_t *ic, double box) {
+	if (!ic)
+		return box;
+	int w = cairo_image_surface_get_width(ic);
+	int h = cairo_image_surface_get_height(ic);
+	if (w <= 0 || h <= 0 || w >= h)
+		return box;
+	return box * (double)w / (double)h;
+}
+
 static cairo_surface_t *pixbuf_to_cairo_surface(GdkPixbuf *pixbuf) {
 	int w = gdk_pixbuf_get_width(pixbuf);
 	int h = gdk_pixbuf_get_height(pixbuf);
@@ -168,7 +254,7 @@ static cairo_surface_t *get_cached_icon(const char *name) {
 		GdkPixbuf *pixbuf =
 			gdk_pixbuf_new_from_file_at_size(path, 64, 64, NULL);
 		if (pixbuf) {
-			surf = pixbuf_to_cairo_surface(pixbuf);
+			surf = surface_crop_to_ink(pixbuf_to_cairo_surface(pixbuf));
 			g_object_unref(pixbuf);
 		}
 		g_free(path);
@@ -1341,17 +1427,18 @@ int32_t asteroidz_tab_bar_node_measure_width(struct asteroidz_tab_bar_node *node
 	if (scaled_desc)
 		pango_font_description_free(scaled_desc);
 
-	/* Icons are drawn square at the text area's height, with a 6px gap BETWEEN
+	/* Icons are fitted into the text area's height, with a 6px gap BETWEEN
 	 * them and one more before the text -- but only when there is text. A
 	 * trailing gap on an icon-only pill is dead space that no padding setting
 	 * can remove, and on a row of icon-only status pills it read as the pills
 	 * being spaced apart when they were not. */
 	double icon_gap = 6.0 * cs;
-	double icon_w = node->nicons > 0
-						? node->nicons * text_area_h +
-							  (node->nicons - 1) * icon_gap +
-							  (*text ? icon_gap : 0.0)
-						: 0.0;
+	double icon_w = 0.0;
+	if (node->nicons > 0) {
+		for (int32_t i = 0; i < node->nicons; i++)
+			icon_w += asteroidz_icon_advance(node->icons[i], text_area_h);
+		icon_w += (node->nicons - 1) * icon_gap + (*text ? icon_gap : 0.0);
+	}
 
 	/* One pixel of slack.
 	 *
@@ -1597,9 +1684,10 @@ void asteroidz_tab_bar_node_update(struct asteroidz_tab_bar_node *node,
 		if (node->nicons > 0) {
 			icon_px = text_area_h;
 			icon_gap = 6.0 * cs * scale;
-			icons_w = node->nicons * icon_px +
-					  (node->nicons - 1) * icon_gap +
-					  (*text ? icon_gap : 0.0);
+			for (int32_t i = 0; i < node->nicons; i++)
+				icons_w += asteroidz_icon_advance(node->icons[i], icon_px);
+			icons_w += (node->nicons - 1) * icon_gap +
+					   (*text ? icon_gap : 0.0);
 		}
 		double avail_text_w = text_area_w - icons_w;
 		if (avail_text_w < 0)
@@ -1635,8 +1723,15 @@ void asteroidz_tab_bar_node_update(struct asteroidz_tab_bar_node *node,
 			double text_start =
 				node->icons_after_text ? group_x : group_x + icons_w;
 
+			/* Walk the row by each icon's own advance, the same sum
+			 * _measure_width totalled -- indexing by ii * icon_px would put a
+			 * narrow glyph's neighbours where a square one's would go. */
+			double ix = icons_x;
 			for (int32_t ii = 0; ii < node->nicons; ii++) {
 				cairo_surface_t *ic = node->icons[ii];
+				double advance = asteroidz_icon_advance(ic, icon_px);
+				double icon_x = ix;
+				ix += advance + icon_gap;
 				if (!ic)
 					continue;
 				int icon_w = cairo_image_surface_get_width(ic);
@@ -1646,7 +1741,7 @@ void asteroidz_tab_bar_node_update(struct asteroidz_tab_bar_node *node,
 				double icon_scale = icon_px / (icon_w > icon_h ? icon_w
 															   : icon_h);
 				cairo_save(cr);
-				cairo_translate(cr, icons_x + ii * (icon_px + icon_gap),
+				cairo_translate(cr, icon_x,
 								text_y + (text_area_h - icon_h * icon_scale) /
 											 2.0);
 				cairo_scale(cr, icon_scale, icon_scale);

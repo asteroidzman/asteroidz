@@ -455,7 +455,6 @@ typedef struct {
 	 * Those pills carry no padding of their own, so this is the exact gap
 	 * between the artwork -- unlike padding, which can only ever produce an
 	 * even number of pixels and also pads the run against the panel edge. */
-	int32_t bar_icon_spacing;
 	int32_t bar_volume_step; /* percentage points per scroll notch */
 	/* Visible separation between two modules, and between the tray and
 	 * whatever precedes it. Each pill's own padding is subtracted from these,
@@ -2306,8 +2305,6 @@ bool parse_option(Config *config, char *key, char *value) {
 		config->bar_pill_padding = CLAMP_INT(atoi(value), 0, 200);
 	} else if (strcmp(key, "bar_tag_padding") == 0) {
 		config->bar_tag_padding = CLAMP_INT(atoi(value), 0, 200);
-	} else if (strcmp(key, "bar_icon_spacing") == 0) {
-		config->bar_icon_spacing = CLAMP_INT(atoi(value), 0, 200);
 	} else if (strcmp(key, "bar_module_spacing") == 0) {
 		config->bar_module_spacing = CLAMP_INT(atoi(value), 0, 200);
 	} else if (strcmp(key, "bar_tray_spacing") == 0) {
@@ -3679,7 +3676,6 @@ static const struct {
 	{"bar/pill-inset", "bar_pill_inset"},
 	{"bar/pill-padding", "bar_pill_padding"},
 	{"bar/tag-padding", "bar_tag_padding"},
-	{"bar/icon-spacing", "bar_icon_spacing"},
 	{"bar/volume-step", "bar_volume_step"},
 	{"bar/module-spacing", "bar_module_spacing"},
 	{"bar/tray-spacing", "bar_tray_spacing"},
@@ -4767,7 +4763,6 @@ void set_value_default() {
 	 * as one group. */
 	config.bar_pill_padding = 6;
 	config.bar_tag_padding = 16;
-	config.bar_icon_spacing = 5;
 	/* Visible separation, not a raw gap: modest between modules, wider before
 	 * the tray so other applications' icons read as their own group. */
 	config.bar_module_spacing = 12;

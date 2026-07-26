@@ -43,7 +43,8 @@ bar {
 | `pill-inset` | `6` | vertical inset of the pill row inside the strip, so chips sit *in* the panel rather than spanning it |
 | `pill-padding` | `6` | horizontal padding inside a status pill |
 | `tag-padding` | `16` | horizontal padding inside a workspace/layout chip |
-| `icon-spacing` | `5` | exact gap between two adjacent icon-only status glyphs (`cpu`, `memory`), which carry no padding of their own |
+| `module-spacing` | `12` | separation between adjacent modules, measured **ink to ink** — each pill's own padding comes off it, so a label and a glyph sit the same distance apart as two glyphs |
+| `tray-spacing` | `24` | the same, either side of the `tray`, which is other applications' icons rather than the compositor's own readouts |
 | `volume-step` | `5` | percentage points the `volume` pill moves per scroll notch |
 | `popover.width` | `340` | popover panel width (rows ellipsise into it) |
 | `popover.row-height` | `34` | height of one popover row |
@@ -563,11 +564,35 @@ the pair of tiers, so only the sixteen possible combinations are ever drawn
 however long the session runs. A down link lights both arrows urgent; the pair
 going red *is* the reading, so there is no separate disconnected glyph.
 
-Those two pills are laid out as one run: no padding of their own, `icon-spacing`
-between them, and no `pill-min-width` floor (that floor exists to keep a
-single-glyph *label* readable, and on an icon it only pads slack around the
-artwork). They therefore sit exactly `icon-spacing` apart, which padding —
-being symmetric — could never express as an odd number of pixels.
+Icon-only pills carry no padding of their own and take no `pill-min-width`
+floor (that floor exists to keep a single-glyph *label* readable, and on an
+icon it only pads slack around the artwork).
+
+### Spacing is measured ink to ink
+
+`module-spacing` is a **separation, not a gap**: each pill's own horizontal
+padding is subtracted from it, floored at 2px so two pills can never actually
+touch. Chips are exempt — a chip draws a background, so its box edge is the
+edge you see, and two chips are spaced box to box at `spacing`.
+
+The reason is that a constant *box* gap renders as an inconsistent *visible*
+one. Padding differs by kind — 0 for artwork, `pill-padding` for a label,
+`tag-padding` for a chip — so 12px between boxes reads as 12px between two
+icons, 18 between an icon and a label, and 24 between two labels. Three
+further things pushed the same lie, all fixed by making a pill's extent equal
+what you can see in it:
+
+- **Icons cropped to their ink.** Artwork is fitted into a square by its long
+  axis, so a glyph taller than it is wide left transparent margin either side
+  that the eye read as spacing — a bell measured 16px from its neighbours
+  where the cpu and memory icons beside it sat at 12. Loaded icons are trimmed
+  to their alpha bounding box (as tray pixmaps already were) and advance by
+  their real width rather than by the square.
+- **Drawn icons fill their canvas.** The `network` arrows used to be inset 12%
+  a side, which is the same margin drawn in by hand.
+- **Reserves only for content that is present.** See below.
+
+### Pinned widths
 
 Every pill whose content changes shape is **pinned to the width of its widest
 possible content**, so the bar never reflows and a pill never moves out from
@@ -576,6 +601,22 @@ their artwork, and the clock to the widest rendering of its own `strftime`
 format (probed once per month name, so `%a`/`%b` length variation is covered).
 The title is the exception: `title-width` is a **cap**, not a pin, so a short
 title takes a short pill.
+
+A reserve is centred, so a pill reserving room for content it is not currently
+showing carries the unused half of it as transparency on each side — which is
+spacing, as far as the eye is concerned. Two modules are therefore pinned
+*conditionally*:
+
+- `notify` reserves for a two-digit count only while there **is** a count. An
+  idle bell is exactly as wide as the bell; a notification arriving at 7 and
+  dismissed at 70 still never reflows the section. Reserving unconditionally
+  put ~13px of transparency either side of the module, which is what made the
+  gaps around `volume`, `notify` and `display` read at twice everything else's.
+- `volume` pins to the widest reading with the **same number of digits**
+  (`8%`, `88%`, `100%`) rather than to `100%` outright. Digits are
+  proportional, so an unpinned pill twitches on every step, while pinning to
+  the maximum leaves a two-digit level floating in a hole a whole digit wide.
+  The width is stable through a volume ramp and steps only at 9→10 and 99→100.
 
 ### When it does not all fit
 
@@ -716,3 +757,13 @@ nothing changed, so an arrange that does not alter the bar costs one walk of
 the client list and no redraw. The clock timer aligns to the next boundary
 its format can actually show: a format without `%S` wakes once a minute, not
 once a second.
+
+A full `bar_update_all()` — every module on every monitor, re-measured and
+re-laid-out — measures **~1.3ms median, 4.4ms worst case** with the whole
+module set on one output (timed headless over 40 ticks). The clock re-arms to
+the next boundary from wherever it actually ran, so it cannot drift; what it
+cannot do is display a second the event loop was blocked through. A tick that
+arrives late enough to have skipped one logs
+`bar: clock tick Ns late (skipped N seconds)` at `WLR_INFO`, because from the
+outside a blocked loop and a broken timer look identical — and at 1.3ms a
+tick, a gap that size is always something else holding the loop.

@@ -506,19 +506,56 @@ static int32_t bar_pill_height(void) {
 	return h < 8 ? (config.bar_height < 8 ? config.bar_height : 8) : h;
 }
 
-/* Gap to leave between two adjacent pills. Zero between two non-chips: their
- * own horizontal padding already separates them, and stacking a gap on top of
- * two paddings is what made the sections read as far too loose. */
+/* How far a pill's own edge sits from the thing you actually SEE in it.
+ *
+ * A chip draws a background, so its box edge is visible and the answer is
+ * zero -- the gap between two chips is a gap between two tiles. Everything
+ * else is flat artwork or text on the shared panel, where the pill's
+ * horizontal padding is invisible slack that still pushes the neighbour away.
+ *
+ * Keyed on the pill's KIND, never on the look it currently wears: a metric
+ * crossing its urgent threshold takes a fill, and if that also changed the
+ * geometry the whole section would shift sideways every time the CPU spiked. */
+static int32_t bar_pill_ink_inset(const BarPill *p) {
+	if (bar_pill_is_chip(p))
+		return 0;
+	return bar_pill_padding_x(p);
+}
+
+/* Never let two pills actually touch, even where their own padding already
+ * exceeds the configured separation. Two pounded-together backgrounds read as
+ * one wider pill, and the compensation below can ask for exactly that. */
+#define BAR_GAP_MIN 2
+
+/* Separation between two adjacent pills or modules, measured the way you see
+ * it: ink to ink, not box to box.
+ *
+ * A pill's own padding is part of what sits between it and its neighbour, and
+ * that padding differs by kind -- 0 for icon-only artwork, `pill-padding` for
+ * anything with a label. A constant BOX gap therefore renders as an
+ * inconsistent VISIBLE one: 12px between two icons, 18 between an icon and a
+ * label, 24 between two labels. That is the "bigger gap between sound,
+ * notifications and display" -- the separation was constant all along, the
+ * content inside it was not.
+ *
+ * So `base` is the separation and each side's inset comes off it. Chips are
+ * exempt (inset 0): their backgrounds are the edges you see. */
+static int32_t bar_gap_between(const BarPill *a, const BarPill *b,
+							   int32_t base) {
+	if (!a || !b)
+		return 0;
+	int32_t gap = base - bar_pill_ink_inset(a) - bar_pill_ink_inset(b);
+	return gap < BAR_GAP_MIN ? BAR_GAP_MIN : gap;
+}
+
+/* Gap between two pills of the SAME module (tray items, tag chips). */
 static int32_t bar_pill_gap(const BarPill *a, const BarPill *b) {
 	if (!a || !b)
 		return 0;
+	/* two tiles: box to box, at the chip spacing they have always used */
 	if (bar_pill_is_chip(a) || bar_pill_is_chip(b))
 		return config.bar_spacing;
-	/* icon-only neighbours carry no padding of their own, so this gap is the
-	 * whole separation between the two glyphs -- exact, not doubled */
-	if (bar_pill_is_icon_only(a) || bar_pill_is_icon_only(b))
-		return config.bar_icon_spacing;
-	return 0;
+	return bar_gap_between(a, b, config.bar_module_spacing);
 }
 
 static void bar_pill_style(BarPill *p, enum bar_pill_look look) {
@@ -2002,8 +2039,14 @@ static const char *bar_net_icon(int32_t up_tier, int32_t down_tier) {
 	/* a gap between the two so they read as two lights, not one shape */
 	const double gap = sz * 0.10;
 	const double half = (sz - gap) / 2.0;
-	bar_net_draw_arrow(cr, sz * 0.12, 0.0, sz * 0.76, half, true, up);
-	bar_net_draw_arrow(cr, sz * 0.12, half + gap, sz * 0.76, half, false, down);
+	/* Edge to edge horizontally. This used to inset the arrows by 12% a side,
+	 * which is drawn-in transparent margin: the bar reserves the icon's
+	 * extent, so that margin rendered as 4px of extra gap either side of this
+	 * module and nowhere else. Every other icon fills its canvas
+	 * (contrib/normalize-bar-icons.py); this one is drawn, so it has to do the
+	 * same by construction. */
+	bar_net_draw_arrow(cr, 0.0, 0.0, sz, half, true, up);
+	bar_net_draw_arrow(cr, 0.0, half + gap, sz, half, false, down);
 
 	cairo_destroy(cr);
 	cairo_surface_flush(surf);
@@ -2275,7 +2318,19 @@ static void bar_module_refresh_volume(BarModule *mod) {
 	else
 		snprintf(p->text, sizeof(p->text), "%d%%", bar_volume.pct);
 	p->arg = 0;
-	p->fixed_width = bar_template_width(p, "100%", bar_pill_height());
+	/* Pinned to the widest reading with the SAME number of digits, not to the
+	 * widest reading there is. Digits are proportional -- "11%" is narrower
+	 * than "88%" -- so an unpinned pill twitches on every step, while pinning
+	 * to "100%" leaves a two-digit level floating in a hole a whole digit
+	 * wide. Per-digit-count, the width is stable through a volume ramp and
+	 * only steps at 9->10 and 99->100, which is a moment the pill is visibly
+	 * changing anyway. No level at all (no audio server) reserves nothing. */
+	p->fixed_width =
+		!bar_volume.have ? 0
+		: bar_volume.pct >= 100
+			? bar_template_width(p, "100%", bar_pill_height())
+		: bar_volume.pct >= 10 ? bar_template_width(p, "88%", bar_pill_height())
+							   : bar_template_width(p, "8%", bar_pill_height());
 	bar_pill_style(p, BAR_LOOK_FLAT);
 	mod->npills = 1;
 	for (int32_t i = 1; i < BAR_MAX_PILLS; i++)
@@ -2305,9 +2360,19 @@ static void bar_module_refresh_notify(BarModule *mod) {
 	else
 		p->text[0] = '\0';
 	p->arg = 0;
-	/* widest reachable rendering, so arriving notifications never reflow the
-	 * section: the icon plus a two-digit count */
-	p->fixed_width = bar_template_width(p, "99", bar_pill_height());
+	/* Reserve for a two-digit count only while there IS a count, so a
+	 * notification arriving at 7 and dismissed at 70 never reflows the section
+	 * -- but an idle bell is exactly as wide as the bell.
+	 *
+	 * Reserving unconditionally is what put a hole either side of this module:
+	 * the reserve is centred, so with nothing to show the pill carried ~13px
+	 * of transparency on each side and the gaps to volume and display read at
+	 * twice everything else's. A reserve for content that is usually ABSENT
+	 * buys stability at a moment nobody is looking and pays for it every
+	 * second they are. */
+	p->fixed_width =
+		bar_notify.count > 0 ? bar_template_width(p, "99", bar_pill_height())
+							 : 0;
 	/* unread is worth noticing; do-not-disturb is worth seeing but not
 	 * shouting about, so it reads dimmed rather than filled */
 	bar_pill_style(p, bar_notify.count > 0 && !bar_notify.dnd
@@ -2595,20 +2660,10 @@ static void bar_module_measure(BarModule *mod, int32_t height, float scale) {
 	(void)scale;
 }
 
-/* The gap between two modules sharing a slot, decided by the pills that
- * actually touch: the last of one and the first of the next. */
-/* Gap BETWEEN two modules, chosen so the VISIBLE separation is constant.
- *
- * A pill's own horizontal padding is part of what you see between it and its
- * neighbour, and that padding differs by kind: 0 for icon-only artwork, 6 for
- * a text pill, 16 for a chip. Adding a fixed gap on top of that produced 5px
- * between the cpu and memory icons and 12px between two text pills -- the
- * modules looked unevenly spaced because they were.
- *
- * So the configured value is the SEPARATION, not the gap: each pill's own
- * padding is subtracted from it. Where the padding already exceeds the target
- * (two chips carry 32px between them) the gap floors at zero rather than going
- * negative and pulling them together.
+/* Gap BETWEEN two modules, decided by the pills that actually touch: the last
+ * of one and the first of the next. Measured ink to ink (see
+ * bar_gap_between), so a label and a glyph end up the same distance apart as
+ * two glyphs.
  *
  * The tray gets its own, larger separation. It is a different KIND of thing --
  * other applications' icons, in a set that changes while you use the desktop --
@@ -2617,25 +2672,16 @@ static void bar_module_measure(BarModule *mod, int32_t height, float scale) {
 static int32_t bar_module_gap(BarModule *a, BarModule *b) {
 	if (!a || !b || a->npills <= 0 || b->npills <= 0)
 		return 0;
-	/* A constant separation between module BOXES.
-	 *
-	 * Not padding-compensated, and that was tried: subtracting each pill's own
-	 * padding looked principled but needs the pill's real INK inset, which is
-	 * not the padding. Measured on a rendered bar, a clock pill 125px wide
-	 * carries glyphs only 101px wide -- pango renders a string narrower than
-	 * measure_width reports it -- so compensating by padding alone pulled text
-	 * pills 6px closer than icons instead of levelling them. Chasing that with
-	 * font metrics would make the spacing depend on what the clock currently
-	 * says.
-	 *
-	 * The uneven look this was meant to fix had a different cause: the
-	 * vendored icons were inset inside their own canvas, so icon-only
-	 * neighbours showed the gap PLUS two transparent margins. With the art
-	 * filling its canvas (contrib/normalize-bar-icons.py), a constant box gap
-	 * is what you see. */
-	return (a->kind == BAR_MODULE_TRAY || b->kind == BAR_MODULE_TRAY)
-			   ? config.bar_tray_spacing
-			   : config.bar_module_spacing;
+	const BarPill *last = &a->pills[a->npills - 1];
+	const BarPill *first = &b->pills[0];
+	/* two runs of tiles: box to box, at the same spacing the tiles inside a
+	 * chip module already use */
+	if (bar_pill_is_chip(last) && bar_pill_is_chip(first))
+		return config.bar_spacing;
+	int32_t base = (a->kind == BAR_MODULE_TRAY || b->kind == BAR_MODULE_TRAY)
+					   ? config.bar_tray_spacing
+					   : config.bar_module_spacing;
+	return bar_gap_between(last, first, base);
 }
 
 /* Draw (or hide) the backdrop for one slot. `x`..`x+w` is the extent of the
@@ -3301,6 +3347,17 @@ static void bar_update_all(void) {
  * two monitors that is the same per-frame recomposite cost that made the
  * waybar media module expensive. Align to the boundary rather than sleeping a
  * fixed interval so the displayed minute flips on time. */
+/* Land just PAST the boundary, not on it.
+ *
+ * The delay is computed from CLOCK_REALTIME but slept on the event loop's
+ * CLOCK_MONOTONIC timerfd, and NTP slews the two apart by up to ~0.5ms per
+ * second. Aiming exactly at the boundary therefore sits on a knife edge:
+ * measured headless, every tick landed at ms=0 of its second, which is one
+ * slewed millisecond away from landing at ms=999 of the PREVIOUS one and
+ * formatting a second that has already been shown. A few milliseconds of
+ * margin is invisible and takes the edge away entirely. */
+#define BAR_CLOCK_MARGIN_MS 5
+
 static int32_t bar_clock_next_delay_ms(void) {
 	bool seconds = strstr(config.bar_clock_format, "%S") != NULL ||
 				   strstr(config.bar_clock_format, "%T") != NULL ||
@@ -3309,15 +3366,33 @@ static int32_t bar_clock_next_delay_ms(void) {
 	clock_gettime(CLOCK_REALTIME, &ts);
 	int32_t ms_into_second = (int32_t)(ts.tv_nsec / 1000000);
 	if (seconds)
-		return 1000 - ms_into_second;
+		return 1000 - ms_into_second + BAR_CLOCK_MARGIN_MS;
 	time_t now = ts.tv_sec;
 	struct tm tm;
 	localtime_r(&now, &tm);
-	return (60 - tm.tm_sec) * 1000 - ms_into_second;
+	return (60 - tm.tm_sec) * 1000 - ms_into_second + BAR_CLOCK_MARGIN_MS;
 }
 
 static int bar_clock_tick(void *data) {
 	(void)data;
+	/* Say so when a second was skipped.
+	 *
+	 * The tick re-arms to the next boundary from wherever it actually ran, so
+	 * it can never drift -- but it also cannot show a second it was not woken
+	 * inside of. If the event loop is blocked past one, the displayed time
+	 * jumps, and from the outside that is indistinguishable from a broken
+	 * timer. Recording the real gap makes it a fact in the log with a
+	 * timestamp to correlate against, instead of something to guess at later:
+	 * the tick itself measures ~1.3ms, so a gap this size is always something
+	 * ELSE holding the loop. */
+	static time_t last_sec = 0;
+	time_t now = time(NULL);
+	if (last_sec && now > last_sec + 1)
+		wlr_log(WLR_INFO, "bar: clock tick %lds late (skipped %ld second%s)",
+				(long)(now - last_sec - 1), (long)(now - last_sec - 1),
+				now - last_sec == 2 ? "" : "s");
+	last_sec = now;
+
 	bar_update_all();
 	if (bar_clock_timer)
 		wl_event_source_timer_update(bar_clock_timer,
