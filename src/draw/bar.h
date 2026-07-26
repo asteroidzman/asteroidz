@@ -48,6 +48,7 @@ enum bar_module_kind {
 	BAR_MODULE_TRAY,
 	BAR_MODULE_VOLUME,
 	BAR_MODULE_NOTIFY,
+	BAR_MODULE_MEDICATION,
 };
 
 enum bar_slot { BAR_SLOT_LEFT = 0, BAR_SLOT_CENTER, BAR_SLOT_RIGHT,
@@ -171,6 +172,8 @@ static enum bar_module_kind bar_module_kind_from_name(const char *name) {
 		return BAR_MODULE_VOLUME;
 	if (strcmp(name, "notifications") == 0 || strcmp(name, "notify") == 0)
 		return BAR_MODULE_NOTIFY;
+	if (strcmp(name, "medication") == 0 || strcmp(name, "meds") == 0)
+		return BAR_MODULE_MEDICATION;
 	return BAR_MODULE_NONE;
 }
 
@@ -1595,6 +1598,7 @@ static void bar_viz_finish(void) {
 		unlink(bar_viz_cfg_path);
 }
 
+#include "bar-medication.h"
 #include "bar-popover.h"
 #include "bar-tray.h"
 
@@ -2264,6 +2268,46 @@ static void bar_module_refresh_notify(BarModule *mod) {
 		bar_pill_release(&mod->pills[i]);
 }
 
+/* Rx glyph, plus what the waybar plugin puts beside it: the medication's name
+ * when exactly one dose is due, the count when several are, the next dose's
+ * time when none is, and nothing at all once the day is done. */
+static void bar_module_refresh_medication(BarModule *mod) {
+	bar_med_reload();
+	/* nothing scheduled at all -- no store, or every dose taken -- collapses
+	 * the pill rather than showing a permanently idle glyph */
+	if (!bar_med.have || (bar_med.ndue == 0 && !bar_med.next_time[0])) {
+		for (int32_t i = 0; i < BAR_MAX_PILLS; i++)
+			bar_pill_release(&mod->pills[i]);
+		mod->npills = 0;
+		return;
+	}
+	BarPill *p = bar_pill_get(mod, 0);
+	if (!p) {
+		mod->npills = 0;
+		return;
+	}
+	if (bar_med.ndue == 1 && bar_med.due_name[0])
+		snprintf(p->text, sizeof(p->text), "%s %s", BAR_MED_GLYPH,
+				 bar_med.due_name);
+	else if (bar_med.ndue > 1)
+		snprintf(p->text, sizeof(p->text), "%s %d", BAR_MED_GLYPH,
+				 bar_med.ndue);
+	else
+		snprintf(p->text, sizeof(p->text), "%s %s", BAR_MED_GLYPH,
+				 bar_med.next_time);
+	p->arg = 0;
+	/* Free-sized: a dose becoming due is a real change worth a relayout, and
+	 * pinning to the longest medication name would reserve most of the
+	 * section for a pill that is usually just a time. */
+	p->fixed_width = 0;
+	/* due is the whole point of the module, so it takes the urgent fill the
+	 * plugin's pulsing red class stood for */
+	bar_pill_style(p, bar_med.ndue > 0 ? BAR_LOOK_URGENT : BAR_LOOK_FLAT);
+	mod->npills = 1;
+	for (int32_t i = 1; i < BAR_MAX_PILLS; i++)
+		bar_pill_release(&mod->pills[i]);
+}
+
 static void bar_module_refresh(BarModule *mod) {
 	switch (mod->kind) {
 	case BAR_MODULE_TAGS:
@@ -2300,6 +2344,9 @@ static void bar_module_refresh(BarModule *mod) {
 		break;
 	case BAR_MODULE_NOTIFY:
 		bar_module_refresh_notify(mod);
+		break;
+	case BAR_MODULE_MEDICATION:
+		bar_module_refresh_medication(mod);
 		break;
 	default:
 		mod->npills = 0;
@@ -2819,6 +2866,12 @@ static uint64_t bar_digest(Monitor *m) {
 			bar_hash_str(&h, buf);
 			break;
 		}
+		case BAR_MODULE_MEDICATION:
+			bar_hash(&h, &bar_med.ndue, sizeof(bar_med.ndue));
+			bar_hash_str(&h, bar_med.next_time);
+			bar_hash_str(&h, bar_med.due_name);
+			bar_hash(&h, &bar_med.have, sizeof(bar_med.have));
+			break;
 		case BAR_MODULE_NOTIFY:
 			bar_hash(&h, &bar_notify.count, sizeof(bar_notify.count));
 			bar_hash(&h, &bar_notify.dnd, sizeof(bar_notify.dnd));

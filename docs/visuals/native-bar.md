@@ -97,6 +97,7 @@ for a newer build still starts.
 | `media` | now playing (title • artist), from MPRIS, with a live spectrum while playing. Shown only while **Playing or Paused** | play/pause |
 | `volume` | default sink level, with a speaker icon (also accepts `vol`) | click toggles mute; right-click opens the output picker; scroll steps by `volume-step` |
 | `notifications` | swaync's unread count and do-not-disturb state (also accepts `notify`) | click toggles the panel; right-click toggles DND |
+| `medication` | doses due now, or the next dose's time (also accepts `meds`) | — (taking a dose stays in Waybar, see below) |
 | `tray` | one icon per StatusNotifierItem (also accepts `systray`) | left: `Activate`; right: the item's context menu; middle: `SecondaryActivate` |
 
 The `tags` module mirrors the Waybar workspace module it replaces: it shows
@@ -234,6 +235,39 @@ Initial state comes from `NotificationCount` and `GetDnd` rather than
 `GetSubscribeData`: that returns a bare `(bbub)` whose field order is not
 self-describing, and reading it wrong would silently swap the count for the
 DND flag.
+
+## Medication
+
+Reads the same store the Waybar medication plugin writes,
+`$XDG_STATE_HOME/waybar-medication/medications.json`, and shows what that
+plugin shows: the medication's **name** when exactly one dose is due, the
+**count** when several are, the **next dose's time** when none is, and nothing
+at all once the day is done. A due dose takes the theme's urgent colour, which
+is what the plugin's pulsing red class conveyed.
+
+**Read only, deliberately.** The Waybar plugin owns that file — it adds and
+edits medications, records taken/skipped/postponed doses, prunes history and
+rewrites the whole document. Two processes writing one JSON store with no
+locking is how a dose record gets lost, and *"did I take it?"* is precisely the
+question this must never get wrong. Taking and skipping doses stays in Waybar
+until this module owns the store outright.
+
+The schedule is reproduced exactly rather than approximated, because a pill
+that disagrees with the plugin about what is due is worse than no pill at all:
+
+- `frequencyUnit "days"` — every `frequencyValue` days from `startDate`, at each
+  listed `HH:MM`
+- `frequencyUnit "hours"` — every `frequencyValue` hours from the first listed
+  time, daily
+
+A dose is **due** from its scheduled time until six hours later, unless its
+`doseState` says taken or skipped. Only *today's* times are considered, so a
+dose scheduled at `00:18` is missed rather than pending once that window has
+passed — same as the plugin.
+
+The store is re-read only when its mtime changes; between reads the due/pending
+split still advances with the clock, so a dose coming due does not wait for a
+file write.
 
 ## Popovers
 
