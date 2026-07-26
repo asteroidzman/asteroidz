@@ -47,6 +47,7 @@ enum bar_module_kind {
 	BAR_MODULE_MEDIA,
 	BAR_MODULE_TRAY,
 	BAR_MODULE_VOLUME,
+	BAR_MODULE_NOTIFY,
 };
 
 enum bar_slot { BAR_SLOT_LEFT = 0, BAR_SLOT_CENTER, BAR_SLOT_RIGHT,
@@ -168,6 +169,8 @@ static enum bar_module_kind bar_module_kind_from_name(const char *name) {
 		return BAR_MODULE_TRAY;
 	if (strcmp(name, "volume") == 0 || strcmp(name, "vol") == 0)
 		return BAR_MODULE_VOLUME;
+	if (strcmp(name, "notifications") == 0 || strcmp(name, "notify") == 0)
+		return BAR_MODULE_NOTIFY;
 	return BAR_MODULE_NONE;
 }
 
@@ -1147,6 +1150,143 @@ static void bar_volume_set(int32_t delta_pct) {
 	async_spawn(event_loop, argv, NULL, NULL);
 }
 
+/* ─── notifications (swaync) ──────────────────────────────────────────────── */
+
+/* Unread count and do-not-disturb state from swaync, over the session bus.
+ *
+ * The waybar module this replaces runs `swaync-client -swb` as a long-lived
+ * subprocess and shells out again on every click. swaync exposes the whole
+ * thing on D-Bus, so none of that is needed: SubscribeV2 pushes every change,
+ * and the toggles are plain method calls.
+ *
+ * The glyphs are the same Nerd Font set the waybar config maps, including its
+ * full six-state matrix -- do-not-disturb and "inhibited" are different
+ * conditions and an inhibited bar that looked like a DND bar would be
+ * misleading about whether notifications are being dropped or merely held. */
+#define BAR_NOTIFY_BUS "org.erikreider.swaync.cc"
+#define BAR_NOTIFY_PATH "/org/erikreider/swaync/cc"
+#define BAR_NOTIFY_IFACE "org.erikreider.swaync.cc"
+
+static struct {
+	uint32_t count;
+	bool dnd;
+	bool cc_open;
+	bool inhibited;
+	bool have;
+	bool subscribed;
+} bar_notify;
+
+static sd_bus_slot *bar_notify_slots[2] = {0};
+
+static const char *bar_notify_glyph(void) {
+	bool any = bar_notify.count > 0;
+	/* inhibited outranks dnd: it is the stronger statement about what is
+	 * happening to incoming notifications */
+	if (bar_notify.inhibited)
+		return any ? "\U000F009B" : "\U000F0A91";
+	if (bar_notify.dnd)
+		return any ? "\U000F00A0" : "\U000F0A93";
+	return any ? "\U000F009A" : "\U000F009C";
+}
+
+static void bar_notify_set(uint32_t count, bool dnd, bool cc_open,
+						   bool inhibited) {
+	if (bar_notify.have && count == bar_notify.count && dnd == bar_notify.dnd &&
+		cc_open == bar_notify.cc_open && inhibited == bar_notify.inhibited)
+		return; /* swaync re-emits freely; only redraw on a real change */
+	bar_notify.count = count;
+	bar_notify.dnd = dnd;
+	bar_notify.cc_open = cc_open;
+	bar_notify.inhibited = inhibited;
+	bar_notify.have = true;
+	bar_update_all();
+}
+
+static int bar_notify_on_subscribe(sd_bus_message *m, void *user,
+								   sd_bus_error *err) {
+	(void)user;
+	(void)err;
+	uint32_t count = 0;
+	int dnd = 0, cc_open = 0, inhibited = 0;
+	/* SubscribeV2 carries the inhibited flag, Subscribe does not. swaync
+	 * emits both, so read what is there and leave the rest alone. */
+	if (sd_bus_message_read(m, "ubb", &count, &dnd, &cc_open) <= 0)
+		return 0;
+	if (sd_bus_message_read(m, "b", &inhibited) <= 0)
+		inhibited = bar_notify.inhibited;
+	bar_notify_set(count, dnd != 0, cc_open != 0, inhibited != 0);
+	return 0;
+}
+
+static int bar_notify_on_count(sd_bus_message *m, void *user,
+							   sd_bus_error *err) {
+	(void)user;
+	(void)err;
+	uint32_t count = 0;
+	if (!m || sd_bus_message_is_method_error(m, NULL) ||
+		sd_bus_message_read(m, "u", &count) <= 0)
+		return 0;
+	bar_notify_set(count, bar_notify.dnd, bar_notify.cc_open,
+				   bar_notify.inhibited);
+	return 0;
+}
+
+static int bar_notify_on_dnd(sd_bus_message *m, void *user, sd_bus_error *err) {
+	(void)user;
+	(void)err;
+	int dnd = 0;
+	if (!m || sd_bus_message_is_method_error(m, NULL) ||
+		sd_bus_message_read(m, "b", &dnd) <= 0)
+		return 0;
+	bar_notify_set(bar_notify.count, dnd != 0, bar_notify.cc_open,
+				   bar_notify.inhibited);
+	return 0;
+}
+
+static void bar_notify_start(void) {
+	if (bar_notify.subscribed || !session_bus)
+		return;
+	bar_notify.subscribed = true;
+
+	/* Both spellings: SubscribeV2 on anything current, Subscribe as the
+	 * fallback. The handler reads whichever fields the message actually has. */
+	sd_bus_match_signal(session_bus, &bar_notify_slots[0], NULL,
+						BAR_NOTIFY_PATH, BAR_NOTIFY_IFACE, "SubscribeV2",
+						bar_notify_on_subscribe, NULL);
+	sd_bus_match_signal(session_bus, &bar_notify_slots[1], NULL,
+						BAR_NOTIFY_PATH, BAR_NOTIFY_IFACE, "Subscribe",
+						bar_notify_on_subscribe, NULL);
+
+	/* Initial state from the individual getters rather than GetSubscribeData:
+	 * that returns a bare (bbub) whose field order is not self-describing, and
+	 * guessing it wrong would silently swap dnd for the count. */
+	sd_bus_call_method_async(session_bus, NULL, BAR_NOTIFY_BUS,
+							 BAR_NOTIFY_PATH, BAR_NOTIFY_IFACE,
+							 "NotificationCount", bar_notify_on_count, NULL,
+							 NULL);
+	sd_bus_call_method_async(session_bus, NULL, BAR_NOTIFY_BUS,
+							 BAR_NOTIFY_PATH, BAR_NOTIFY_IFACE, "GetDnd",
+							 bar_notify_on_dnd, NULL, NULL);
+	sd_bus_flush(session_bus);
+}
+
+static void bar_notify_finish(void) {
+	for (size_t i = 0; i < LENGTH(bar_notify_slots); i++) {
+		if (bar_notify_slots[i])
+			sd_bus_slot_unref(bar_notify_slots[i]);
+		bar_notify_slots[i] = NULL;
+	}
+	bar_notify.subscribed = false;
+}
+
+static void bar_notify_call(const char *method) {
+	if (!session_bus)
+		return;
+	sd_bus_call_method_async(session_bus, NULL, BAR_NOTIFY_BUS, BAR_NOTIFY_PATH,
+							 BAR_NOTIFY_IFACE, method, NULL, NULL, NULL);
+	sd_bus_flush(session_bus);
+}
+
 /* ─── media visualiser ────────────────────────────────────────────────────── */
 
 /* A live spectrum in the now-playing pill, from one long-lived `cava` in raw
@@ -2094,6 +2234,36 @@ static void bar_module_refresh_volume(BarModule *mod) {
 		bar_pill_release(&mod->pills[i]);
 }
 
+/* Bell glyph, plus the unread count when there is one. waybar shows the icon
+ * alone and puts the number in a tooltip; a bar pill has no tooltip, and "how
+ * many" is most of what the glyph is being consulted for. */
+static void bar_module_refresh_notify(BarModule *mod) {
+	bar_notify_start();
+	BarPill *p = bar_pill_get(mod, 0);
+	if (!p) {
+		mod->npills = 0;
+		return;
+	}
+	if (bar_notify.count > 0)
+		snprintf(p->text, sizeof(p->text), "%s %u", bar_notify_glyph(),
+				 bar_notify.count > 99 ? 99 : bar_notify.count);
+	else
+		snprintf(p->text, sizeof(p->text), "%s", bar_notify_glyph());
+	p->arg = 0;
+	/* widest reachable rendering, so arriving notifications never reflow the
+	 * section: the widest glyph plus a two-digit count */
+	p->fixed_width =
+		bar_template_width(p, "\U000F00A0 99", bar_pill_height());
+	/* unread is worth noticing; do-not-disturb is worth seeing but not
+	 * shouting about, so it reads dimmed rather than filled */
+	bar_pill_style(p, bar_notify.count > 0 && !bar_notify.dnd
+						  ? BAR_LOOK_ACTIVE
+						  : BAR_LOOK_FLAT);
+	mod->npills = 1;
+	for (int32_t i = 1; i < BAR_MAX_PILLS; i++)
+		bar_pill_release(&mod->pills[i]);
+}
+
 static void bar_module_refresh(BarModule *mod) {
 	switch (mod->kind) {
 	case BAR_MODULE_TAGS:
@@ -2127,6 +2297,9 @@ static void bar_module_refresh(BarModule *mod) {
 		break;
 	case BAR_MODULE_VOLUME:
 		bar_module_refresh_volume(mod);
+		break;
+	case BAR_MODULE_NOTIFY:
+		bar_module_refresh_notify(mod);
 		break;
 	default:
 		mod->npills = 0;
@@ -2646,6 +2819,11 @@ static uint64_t bar_digest(Monitor *m) {
 			bar_hash_str(&h, buf);
 			break;
 		}
+		case BAR_MODULE_NOTIFY:
+			bar_hash(&h, &bar_notify.count, sizeof(bar_notify.count));
+			bar_hash(&h, &bar_notify.dnd, sizeof(bar_notify.dnd));
+			bar_hash(&h, &bar_notify.inhibited, sizeof(bar_notify.inhibited));
+			break;
 		case BAR_MODULE_VOLUME:
 			bar_hash(&h, &bar_volume.pct, sizeof(bar_volume.pct));
 			bar_hash(&h, &bar_volume.muted, sizeof(bar_volume.muted));
@@ -3014,6 +3192,16 @@ static bool bar_handle_node_click(AsteroidzNodeData *hit, uint32_t button) {
 			return true;
 		}
 		break;
+	case BAR_MODULE_NOTIFY:
+		if (button == BTN_LEFT) {
+			bar_notify_call("ToggleVisibility");
+			return true;
+		}
+		if (button == BTN_RIGHT) {
+			bar_notify_call("ToggleDnd");
+			return true;
+		}
+		break;
 	case BAR_MODULE_VOLUME:
 		if (button == BTN_LEFT) {
 			bar_volume_set(0); /* toggle mute */
@@ -3178,6 +3366,7 @@ static void bar_reconfigure_all(void) {}
 static void bar_tray_finish(void) {}
 static void bar_volume_finish(void) {}
 static void bar_viz_finish(void) {}
+static void bar_notify_finish(void) {}
 static void bar_reserve(Monitor *m, struct wlr_box *usable) {
 	(void)m;
 	(void)usable;

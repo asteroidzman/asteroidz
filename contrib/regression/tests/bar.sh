@@ -445,6 +445,44 @@ test_bar_volume_without_a_sound_server() {
 	hl_dispatch "view,1"
 }
 
+test_bar_notifications_without_a_session_bus() {
+	[ "$(bar_supported)" = "true" ] || { echo "  (skip: built without -Dnative-bar)"; return 0; }
+	# Isolated XDG_RUNTIME_DIR, so there is no session bus and therefore no
+	# swaync. Every call in the module is guarded on session_bus, and with no
+	# state ever arriving the pill must still render its "nothing unread" glyph
+	# rather than blank out or wedge the bar.
+	#
+	# Unlike the volume and visualiser modules this one spawns nothing, so
+	# there is no fork-storm to guard against -- it subscribes once and waits.
+	# What IS worth pinning is that a bus-less start does not mark itself
+	# subscribed and then sit dead if a bus appears, nor stall the event loop.
+	hl_spawn_kitty W1 >/dev/null
+	hl_wait_client_count 1
+	sleep 0.3
+	local base_y; base_y="$(bar_client_y W1)"
+
+	bar_set 'bar { enable true; height 30; margin { x 8; y 4 }; modules-left "tags"; modules-right "notifications" }'
+	sleep 0.6
+	hl_assert_true "notifications is a known module name" \
+		"$(hl_get "get all-monitors" >/dev/null 2>&1 && echo true || echo false)"
+	hl_assert_eq "it does not change the bar's reserved footprint" \
+		"$(( $(bar_client_y W1) - base_y ))" "38"
+
+	local i
+	for i in 1 2 3; do
+		hl_dispatch "reload_config" 1
+	done
+	hl_assert_true "the compositor survives reloads with it configured" \
+		"$(hl_get "get all-monitors" >/dev/null 2>&1 && echo true || echo false)"
+
+	local t0 t1
+	t0=$(date +%s); hl_dispatch "view,2"; hl_dispatch "view,1"; t1=$(date +%s)
+	hl_assert_true "and a bus-less notifications module does not stall IPC" \
+		"$([ $((t1 - t0)) -lt 5 ] && echo true || echo false)"
+
+	bar_off
+}
+
 test_bar_tray_without_a_session_bus() {
 	[ "$(bar_supported)" = "true" ] || { echo "  (skip: built without -Dnative-bar)"; return 0; }
 	# Same isolated-XDG_RUNTIME_DIR case as the media test: no session bus, so

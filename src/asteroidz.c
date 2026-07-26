@@ -3405,6 +3405,7 @@ void cleanup(void) {
 	/* before session_bus_finish: releasing the watcher/host names and the
 	 * signal matches needs the connection still open */
 	bar_popover_close();
+	bar_notify_finish();
 	bar_viz_finish();
 	bar_tray_finish();
 	bar_volume_finish();

@@ -96,6 +96,7 @@ for a newer build still starts.
 | `weather` | current temperature and condition, from open-meteo | — |
 | `media` | now playing (title • artist), from MPRIS, with a live spectrum while playing. Shown only while **Playing or Paused** | play/pause |
 | `volume` | default sink level, with a speaker icon (also accepts `vol`) | click toggles mute; right-click opens the output picker; scroll steps by `volume-step` |
+| `notifications` | swaync's unread count and do-not-disturb state (also accepts `notify`) | click toggles the panel; right-click toggles DND |
 | `tray` | one icon per StatusNotifierItem (also accepts `systray`) | left: `Activate`; right: the item's context menu; middle: `SecondaryActivate` |
 
 The `tags` module mirrors the Waybar workspace module it replaces: it shows
@@ -209,6 +210,30 @@ Rather than show six bars pinned at zero through a whole track, the pill
 detects a few seconds of pure silence while the player reports playing and
 falls back to its normal transport glyph. cava stays up, cheaply, so the bars
 return by themselves if the signal does.
+
+## Notifications
+
+Unread count and do-not-disturb state from **swaync**, over the session bus.
+The Waybar module this replaces runs `swaync-client -swb` as a long-lived
+subprocess and shells out again on every click; swaync exposes all of it on
+D-Bus, so `SubscribeV2` pushes every change and the toggles are plain method
+calls. No polling, no subprocess.
+
+The glyphs are the same Nerd Font set the Waybar config maps, including its
+full six-state matrix. **Do-not-disturb and "inhibited" are different
+conditions** — one means you asked for quiet, the other means something is
+holding notifications back — and a bar that rendered them identically would be
+misleading about whether messages are being dropped or merely held.
+
+The count is drawn next to the glyph, which Waybar puts in a tooltip instead;
+a bar pill has no tooltip, and "how many" is most of what the glyph is
+consulted for. It is pinned to the width of a two-digit count so arriving
+notifications never reflow the section.
+
+Initial state comes from `NotificationCount` and `GetDnd` rather than
+`GetSubscribeData`: that returns a bare `(bbub)` whose field order is not
+self-describing, and reading it wrong would silently swap the count for the
+DND flag.
 
 ## Popovers
 
@@ -417,6 +442,9 @@ own event loop is a 3-second freeze of the whole session. Only one request is
 in flight at a time, so a slow network cannot queue up a `curl` per tick. Same
 open-meteo source and the same WMO-code→artwork mapping as the Waybar plugin,
 so the pill is indistinguishable from it.
+
+`notifications` needs swaync running; with no notification daemon it simply
+shows its "nothing unread" glyph.
 
 `tray` is a full StatusNotifierItem host — see [System tray](#system-tray) —
 minus the DBusMenu context menu, which needs a popup layer that does not exist
