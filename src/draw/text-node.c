@@ -34,7 +34,65 @@ void asteroidz_text_node_set_icon_theme(const char *theme) {
 	}
 }
 
+static char *resolve_icon_path_named(const char *name);
+
+/* The `Icon=` of <name>.desktop, or NULL.
+ *
+ * An application's Wayland app-id is not required to be the name of an icon,
+ * and often is not: Vivaldi reports `vivaldi-stable` and ships `vivaldi`.
+ * The desktop entry is the mapping between the two, which is exactly what it
+ * is for -- so when the app-id names no icon, ask it. */
+static char *icon_name_from_desktop(const char *app_id) {
+	const char *const *dirs = (const char *const *)g_get_system_data_dirs();
+	char *result = NULL;
+	for (int pass = 0; pass < 2 && !result; pass++) {
+		for (int i = 0; !result; i++) {
+			char *dir;
+			if (pass == 0) {
+				dir = g_build_filename(g_get_user_data_dir(), "applications",
+									   NULL);
+				if (i > 0) {
+					g_free(dir);
+					break;
+				}
+			} else {
+				if (!dirs || !dirs[i])
+					break;
+				dir = g_build_filename(dirs[i], "applications", NULL);
+			}
+			char *file = g_strdup_printf("%s/%s.desktop", dir, app_id);
+			g_free(dir);
+			char *text = NULL;
+			if (g_file_get_contents(file, &text, NULL, NULL)) {
+				char **lines = g_strsplit(text, "\n", -1);
+				for (int l = 0; lines[l] && !result; l++) {
+					if (!strncmp(lines[l], "Icon=", 5) && lines[l][5])
+						result = g_strdup(g_strstrip(lines[l] + 5));
+				}
+				g_strfreev(lines);
+			}
+			g_free(text);
+			g_free(file);
+		}
+	}
+	return result;
+}
+
 static char *resolve_icon_path(const char *name) {
+	char *direct = resolve_icon_path_named(name);
+	if (direct)
+		return direct;
+	/* nothing is installed under the app-id itself: let its desktop entry say
+	 * what the icon is actually called */
+	char *mapped = icon_name_from_desktop(name);
+	if (!mapped)
+		return NULL;
+	char *path = strcmp(mapped, name) ? resolve_icon_path_named(mapped) : NULL;
+	g_free(mapped);
+	return path;
+}
+
+static char *resolve_icon_path_named(const char *name) {
 	if (name[0] == '/')
 		return g_file_test(name, G_FILE_TEST_EXISTS) ? g_strdup(name) : NULL;
 
@@ -42,8 +100,16 @@ static char *resolve_icon_path(const char *name) {
 	char *bases[2] = {g_build_filename(home, ".local/share/icons", NULL),
 					  g_strdup("/usr/share/icons")};
 	const char *themes[2] = {icon_theme_name, "hicolor"};
-	/* size dirs cover Papirus/hicolor (48x48/apps) and breeze (apps/48) */
-	const char *sizes[] = {"48x48", "64x64", "128x128", "scalable", "48", "64"};
+	/* Size dirs cover Papirus/hicolor (48x48/apps) and breeze (apps/48).
+	 *
+	 * Large first, because the bar scales down and downscaling looks better
+	 * than up -- but the SMALL sizes have to be here too. Papirus ships
+	 * vivaldi-stable at 16, 22 and 24 only, so a list that stopped at 48 found
+	 * nothing for it and the tag pill drew no icon at all, for an icon that
+	 * was installed the whole time. */
+	const char *sizes[] = {"48x48", "64x64", "128x128", "scalable", "48", "64",
+						   "32x32", "24x24", "22x22", "16x16",
+						   "32",	"24",	 "22",	  "16"};
 	const char *exts[] = {"svg", "png"};
 	char *found = NULL;
 

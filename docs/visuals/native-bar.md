@@ -111,7 +111,7 @@ for a newer build still starts.
 | `discord` | voice state from the `discord-voiced` daemon (also accepts `discord-voice`) | click opens voice channels by server, Mute, Disconnect, the PTT key and daemon start/stop; right-click toggles mute |
 | `vpn` | NordVPN state as a tinted shield (also accepts `nordvpn`). **Icon only** | click opens status + Quick Connect / Disconnect / countries |
 | `display` | a monitor icon (also accepts `monitors`) | click lists every output; drill into one for HDR, resolution and scale |
-| `tray` | one icon per StatusNotifierItem (also accepts `systray`) | left: `Activate`; right: the item's context menu; middle: `SecondaryActivate` |
+| `tray` | one icon per StatusNotifierItem, adopted from the bus at startup as well as registered (also accepts `systray`) | left: `Activate`; right: the item's context menu; middle: `SecondaryActivate` |
 
 The `tags` module mirrors the Waybar workspace module it replaces: it shows
 every tag that is **selected or holds a window**, then pads with the
@@ -589,6 +589,18 @@ from again.
 entry. A popover row is a clickable label — there is no text input on this
 layer, and a row that cannot take a token has no business claiming to. The
 token lives in `~/.config/discord-voiced/config.json`.
+
+The module is **never hidden** while there is a store to read. It used to drop
+off the bar whenever nothing was due and nothing was upcoming — which is the
+state you are in the moment you take the last dose of the day, so acting on it
+made it vanish. The popover is also the only way in to the list, so a bar with
+no medication pill is a bar with no way to reach medication. With nothing left
+today it shows the next scheduled dose, looking up to a week ahead.
+
+Adding or editing a medication is a form — a name, a dose, times, a frequency —
+and a popover row is a clickable label, so the popover offers **Edit
+medications…**, which opens the store in whatever handles JSON rather than
+pretending a row can be a form.
 
 A dose stays **due from its scheduled time until the day rolls over**, and the
 module keeps showing it until it is taken or skipped. The Waybar plugin drops a

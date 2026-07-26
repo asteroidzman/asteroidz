@@ -27,7 +27,10 @@ static void bar_popover_voice_channels_arrived(void);
 
 #include "../common/unix-line-client.h"
 
-#define BAR_DV_MAX_CHANNELS 24
+/* Enough for a real account. 24 was set when the join menu could not scroll
+ * and every row had to fit on screen; this desktop's is 118 across 13 servers,
+ * so a two-dozen cap silently hid most of them. */
+#define BAR_DV_MAX_CHANNELS 64
 
 typedef enum {
 	BAR_DV_OFFLINE = 0,

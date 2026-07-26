@@ -243,7 +243,9 @@ static bool bar_pill_tooltip(const BarPill *p, char *out, size_t len) {
 		}
 		if (!bar_med.next_time[0])
 			return false;
-		snprintf(out, len, "next dose at %s", bar_med.next_time);
+		snprintf(out, len, "next dose %s%s",
+				 bar_med.next_is_today ? "at " : "on a later day, ",
+				 bar_med.next_time);
 		return true;
 	}
 	case BAR_MODULE_TRAY: {

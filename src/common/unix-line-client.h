@@ -35,7 +35,16 @@ typedef void (*UnixLineCb)(const char *line, void *user);
  * "daemon not running" without having to poll. */
 typedef void (*UnixLineStateCb)(bool connected, void *user);
 
+/* Starting size. The buffer GROWS from here -- see the read handler -- because
+ * a line's length is a property of what the peer has to say, not a symptom.
+ * discord-voiced's channel snapshot is 19KB for an ordinary account (118 voice
+ * channels across 13 servers), and a fixed 16KB buffer silently discarded it
+ * every single time: the small status lines arrived, so the module looked
+ * connected and healthy, and the join menu was permanently empty. */
 #define UNIX_LINE_BUF 16384
+/* Refuse to grow past this. A peer emitting an unbounded line IS
+ * malfunctioning, and a compositor must not follow it into swap. */
+#define UNIX_LINE_MAX (4 * 1024 * 1024)
 #define UNIX_LINE_BACKOFF_MIN 500
 #define UNIX_LINE_BACKOFF_MAX 8000
 
@@ -45,7 +54,8 @@ typedef struct {
 	struct wl_event_source *retry;
 	int fd;
 	char path[256];
-	char buf[UNIX_LINE_BUF];
+	char *buf;   /* grown on demand; NULL until the first read */
+	size_t cap;
 	size_t len;
 	UnixLineCb line_cb;
 	UnixLineStateCb state_cb;
@@ -80,13 +90,29 @@ static int unix_line_readable(int fd, uint32_t mask, void *data) {
 	UnixLineClient *c = data;
 	if (mask & WL_EVENT_READABLE) {
 		for (;;) {
-			if (c->len + 1 >= sizeof(c->buf)) {
-				/* a peer emitting an unbounded line is malfunctioning; drop
-				 * what we have rather than stall forever waiting for a
-				 * newline that is never coming */
-				c->len = 0;
+			if (c->len + 1 >= c->cap) {
+				/* Grow, rather than throw the line away. Dropping at a fixed
+				 * size makes the failure depend on how much the peer has to
+				 * say, which is the worst kind of bug to find: everything
+				 * works until someone joins one more server. */
+				size_t want = c->cap ? c->cap * 2 : UNIX_LINE_BUF;
+				if (want > UNIX_LINE_MAX) {
+					wlr_log(WLR_ERROR,
+							"unix-line: %s sent more than %d bytes with no "
+							"newline; dropping",
+							c->path, UNIX_LINE_MAX);
+					c->len = 0;
+					want = UNIX_LINE_BUF;
+				}
+				char *grown = realloc(c->buf, want);
+				if (!grown) {
+					c->len = 0;
+					return 0;
+				}
+				c->buf = grown;
+				c->cap = want;
 			}
-			ssize_t n = read(fd, c->buf + c->len, sizeof(c->buf) - c->len - 1);
+			ssize_t n = read(fd, c->buf + c->len, c->cap - c->len - 1);
 			if (n > 0) {
 				c->len += (size_t)n;
 				c->buf[c->len] = '\0';
@@ -191,6 +217,9 @@ static void unix_line_stop(UnixLineClient *c) {
 		c->retry = NULL;
 	}
 	unix_line_drop(c);
+	free(c->buf);
+	c->buf = NULL;
+	c->cap = c->len = 0;
 }
 
 /* Best-effort: a command whose outcome arrives as an event anyway is not worth

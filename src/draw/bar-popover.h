@@ -23,10 +23,13 @@
  * wants its own thought.
  */
 
-/* Generous, because a real application menu is long: Steam's lists every
- * installed game before Store/Library/Community and only then Quit. Truncating
- * at a dozen silently loses the entry people actually reach for. */
-#define BAR_POPOVER_MAX_ROWS 32
+/* Generous, because a real menu is long: Steam's lists every installed game
+ * before Store/Library/Community and only then Quit, and a Discord account
+ * with a dozen servers has over a hundred voice channels. Truncating silently
+ * loses the entry people actually reach for. Raised from 32 once the panel
+ * gained a scrolling viewport -- before that, rows past the screen were drawn
+ * nowhere, so a bigger cap bought nothing. */
+#define BAR_POPOVER_MAX_ROWS 64
 
 /* Marks a row payload as a VERB ("leave", "hdr") rather than an identifier a
  * module looks up (a sink name, a Discord snowflake, an output). One byte no
@@ -2266,6 +2269,17 @@ static bool bar_popover_activate_row(BarPopoverRow *r) {
 								 : bar_popover.anchor_x;
 		char key[176];
 		snprintf(key, sizeof(key), "%s", r->value);
+		if (BAR_POPOVER_IS_VERB(key)) {
+			if (!strcmp(key + 1, "edit")) {
+				/* the schedule is a JSON file; open it in whatever handles
+				 * JSON rather than pretend a row can be a form */
+				char path[512];
+				bar_med_path(path, sizeof(path));
+				char *const argv[] = {"xdg-open", path, NULL};
+				async_spawn(event_loop, argv, NULL, NULL);
+			}
+			break;
+		}
 		bar_popover_open_med_dose(anchor_mon, ax, key);
 		return true;
 	}

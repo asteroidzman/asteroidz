@@ -68,6 +68,7 @@ static struct {
 	int32_t ndoses;
 	int32_t ndue;
 	char next_time[8]; /* HH:MM of the next pending dose, empty if none */
+	bool next_is_today; /* false when next_time is a later day's dose */
 	char due_name[64]; /* the single due dose's name, when there is exactly one */
 	time_t mtime;      /* store mtime we last parsed */
 	bool have;
@@ -276,7 +277,6 @@ static void bar_med_reload(void) {
 			}
 		}
 	}
-	cJSON_Delete(root);
 
 	/* earliest still-to-come dose */
 	time_t best = 0;
@@ -287,6 +287,46 @@ static void bar_med_reload(void) {
 			next = d->time;
 		}
 	}
+
+	/* Nothing left today: look at the days ahead rather than going blank.
+	 *
+	 * With everything taken, `due` and `pending` are both empty and the module
+	 * hides itself -- so taking the last dose of the day made the whole thing
+	 * disappear the instant you acted on it. That reads as the click having
+	 * broken something, and it removes the one affordance for reaching the log
+	 * of what you have already taken. A week is far enough to find the next
+	 * dose of any schedule that has one at all. */
+	bar_med.next_is_today = next != NULL;
+	static char ahead[8];
+	if (!next) {
+		for (int32_t ahead_days = 1; ahead_days <= 7 && !next; ahead_days++) {
+			time_t t = bar_med_midnight(day) + ahead_days * 86400 + 3600;
+			struct tm at;
+			localtime_r(&t, &at);
+			char nday[16];
+			strftime(nday, sizeof(nday), "%Y-%m-%d", &at);
+			cJSON *m2 = NULL;
+			cJSON_ArrayForEach(m2, meds) {
+				const char *u2 = bar_med_str(m2, "frequencyUnit", "days");
+				cJSON *fv2 = cJSON_GetObjectItem(m2, "frequencyValue");
+				int32_t f2 = cJSON_IsNumber(fv2) ? (int32_t)fv2->valuedouble : 1;
+				if (f2 < 1)
+					f2 = 1;
+				if (!bar_med_scheduled_on(m2, nday, u2, f2))
+					continue;
+				cJSON *t2 = cJSON_GetArrayItem(
+					cJSON_GetObjectItem(m2, "times"), 0);
+				if (!cJSON_IsString(t2) || !t2->valuestring)
+					continue;
+				if (!next || strcmp(t2->valuestring, ahead) < 0) {
+					snprintf(ahead, sizeof(ahead), "%s", t2->valuestring);
+					next = ahead;
+				}
+			}
+		}
+	}
+	cJSON_Delete(root); /* `meds` is borrowed from it, so only now */
+
 	snprintf(bar_med.next_time, sizeof(bar_med.next_time), "%s",
 			 next ? next : "");
 	snprintf(bar_med.due_name, sizeof(bar_med.due_name), "%s",

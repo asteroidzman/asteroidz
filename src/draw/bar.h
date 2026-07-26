@@ -2413,7 +2413,15 @@ static void bar_module_refresh_medication(BarModule *mod) {
 	bar_med_reload();
 	/* nothing scheduled at all -- no store, or every dose taken -- collapses
 	 * the pill rather than showing a permanently idle glyph */
-	if (!bar_med.have || (bar_med.ndue == 0 && !bar_med.next_time[0])) {
+	/* Never hidden while there is a store to read.
+	 *
+	 * It used to drop off the bar whenever nothing was due and nothing was
+	 * upcoming -- which is the state you are in the moment you take the last
+	 * dose of the day, so acting on the module made it vanish. Worse, the
+	 * popover is the only way in to the list at all, so a bar with no
+	 * medication pill is a bar with no way to reach medication. An indicator
+	 * you cannot get to is not an indicator. */
+	if (!bar_med.have) {
 		for (int32_t i = 0; i < BAR_MAX_PILLS; i++)
 			bar_pill_release(&mod->pills[i]);
 		mod->npills = 0;
