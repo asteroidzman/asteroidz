@@ -99,6 +99,16 @@ typedef struct {
 	BarPanel panel;
 	BarPopoverRow rows[BAR_POPOVER_MAX_ROWS];
 	int32_t nrows;
+	/* Viewport: index of the first row DRAWN, and how many of the rows there
+	 * are ended up on screen. A menu taller than the output shows a window of
+	 * itself and scrolls; one that fits keeps scroll pinned at 0. */
+	int32_t scroll;
+	int32_t visible_rows, total_rows;
+	/* Where the keyboard is, as an index into `rows`, or -1 for "nowhere yet".
+	 * Starts nowhere on purpose: a popover opened by the pointer should not
+	 * pre-arm Enter on some row the user never looked at. The first arrow key
+	 * places it. */
+	int32_t cursor;
 	enum bar_popover_kind kind;
 	/* Whose com.canonical.dbusmenu the rows came from, for BAR_POPOVER_MENU.
 	 * Held on the popover rather than per row: every row of one menu belongs
@@ -208,9 +218,37 @@ static void bar_popover_layout(void) {
 	int32_t row_h = config.bar_popover_row_height;
 	int32_t width = config.bar_popover_width;
 
-	/* Width is configured rather than measured: these rows carry device names
-	 * that run to eighty characters, so sizing to content would produce a
-	 * panel wider than the output. Rows ellipsise into the fixed width. */
+	/* `popover.width` is a FLOOR, not the width: the panel grows to whatever
+	 * its longest row needs, up to half the output.
+	 *
+	 * Fixed at 340 it ellipsised our own readouts -- a throughput line reading
+	 * "enp11s0 ↓160.2 K/s ↑20.4 …" is a bug, not a long device name, and no
+	 * amount of shortening the text fixes it for the next interface with a
+	 * longer name. The cap is what the fixed width was really protecting
+	 * against: a tray menu entry can carry an eighty-character title, and a
+	 * panel wider than the screen is worse than a truncated row.
+	 *
+	 * Measured, not guessed, using each row's own node -- the same call the
+	 * bar sizes its pills with, so it accounts for the font, the padding and
+	 * the per-output scale. */
+	int32_t widest = 0;
+	for (int32_t i = 0; i < bar_popover.nrows; i++) {
+		BarPopoverRow *r = &bar_popover.rows[i];
+		if (!r->used || !r->node)
+			continue;
+		int32_t w = asteroidz_tab_bar_node_measure_width(r->node, r->text,
+														 row_h);
+		if (w > widest)
+			widest = w;
+	}
+	int32_t max_w = m->m.width / 2;
+	if (widest + 2 * pad > width)
+		width = widest + 2 * pad;
+	if (width > max_w)
+		width = max_w;
+	if (width < config.bar_popover_width)
+		width = config.bar_popover_width; /* the floor wins on a tiny output */
+
 	int32_t inner_w = width - 2 * pad;
 	if (inner_w < row_h)
 		inner_w = row_h;
@@ -227,30 +265,43 @@ static void bar_popover_layout(void) {
 	int32_t height = nrows * row_h + (nrows - 1) * config.bar_popover_spacing +
 					 2 * pad;
 
-	/* Clamp to the output. A long menu on a short screen would otherwise run
-	 * off the bottom, taking its last entries -- which is where Quit lives --
-	 * with it. Rows past what fits are hidden rather than drawn off-screen;
-	 * scrolling a popover needs a viewport this cut does not have. */
+	/* Clamp to the output, and SCROLL what does not fit.
+	 *
+	 * A long menu on a short screen would otherwise run off the bottom, taking
+	 * its last entries -- which is where Quit lives -- with it. This used to
+	 * drop those rows outright, which is worse than it sounds: Steam's tray
+	 * menu lists every installed game before Store/Library/Community and only
+	 * then Quit, so the entry people actually reach for was the one reliably
+	 * missing.
+	 *
+	 * The rows are all kept; only a window of them is placed and shown. That
+	 * is the whole viewport: there is no clipping to do, because a row outside
+	 * the window is simply never enabled. */
 	int32_t avail = m->m.height - config.bar_margin_y * 2 - config.bar_height -
 					config.bar_popover_gap;
+	int32_t total_rows = nrows;
+	int32_t first = 0;
 	if (height > avail && row_h + config.bar_popover_spacing > 0) {
 		int32_t fits = (avail - 2 * pad + config.bar_popover_spacing) /
 					   (row_h + config.bar_popover_spacing);
 		if (fits < 1)
 			fits = 1;
 		if (fits < nrows) {
-			int32_t seen = 0;
-			for (int32_t i = 0; i < bar_popover.nrows; i++) {
-				if (!bar_popover.rows[i].used)
-					continue;
-				if (seen++ >= fits)
-					bar_popover_row_release(&bar_popover.rows[i]);
-			}
+			first = bar_popover.scroll;
+			if (first > total_rows - fits)
+				first = total_rows - fits;
+			if (first < 0)
+				first = 0;
+			bar_popover.scroll = first;
 			nrows = fits;
 			height = nrows * row_h +
 					 (nrows - 1) * config.bar_popover_spacing + 2 * pad;
 		}
 	}
+	if (nrows == total_rows)
+		bar_popover.scroll = 0;
+	bar_popover.visible_rows = nrows;
+	bar_popover.total_rows = total_rows;
 
 	/* Hangs off the bar's outer edge: below a top bar, above a bottom one. */
 	int32_t bar_bottom = m->m.y + config.bar_margin_y + config.bar_height;
@@ -312,10 +363,17 @@ static void bar_popover_layout(void) {
 	}
 
 	int32_t ry = y + pad;
+	int32_t seen = 0;
 	for (int32_t i = 0; i < bar_popover.nrows; i++) {
 		BarPopoverRow *r = &bar_popover.rows[i];
 		if (!r->used)
 			continue;
+		/* outside the scrolled window: kept, but not drawn */
+		int32_t slot = seen++;
+		if (slot < first || slot >= first + nrows) {
+			asteroidz_tab_bar_node_set_enabled(r->node, false);
+			continue;
+		}
 		asteroidz_tab_bar_node_set_size(r->node, inner_w, row_h);
 		asteroidz_tab_bar_node_apply_config(r->node, &config.theme);
 		asteroidz_tab_bar_node_set_padding(r->node, config.bar_popover_padding,
@@ -323,7 +381,16 @@ static void bar_popover_layout(void) {
 		asteroidz_tab_bar_node_set_text_align_left(r->node, true);
 		/* the active entry is the one filled, like the selected tag chip */
 		asteroidz_tab_bar_node_set_focus(r->node, r->selected);
-		if (!r->selected && (!r->enabled || r->separator)) {
+		if (!r->selected && bar_popover.cursor == i) {
+			/* Where the keyboard is. Distinct from `selected`, which means
+			 * "this is the current value" -- the two are different questions
+			 * and can point at different rows, so the cursor is the accent in
+			 * the TEXT rather than a second filled tile. A row that is both
+			 * stays filled: accent on accent would be invisible. */
+			asteroidz_tab_bar_node_set_colors(r->node,
+											  config.theme.focus_bg_color,
+											  config.theme.bg_color);
+		} else if (!r->selected && (!r->enabled || r->separator)) {
 			/* Greyed AND untiled: a disabled entry has to read as
 			 * unavailable, or clicking it and getting nothing looks like a
 			 * broken menu -- and a filled tile is what every other row uses to
@@ -361,6 +428,9 @@ static void bar_popover_close(void) {
 	bar_popover.row_tree = NULL;
 	bar_popover.panel = (BarPanel){0};
 	bar_popover.nrows = 0;
+	bar_popover.scroll = 0;
+	bar_popover.visible_rows = bar_popover.total_rows = 0;
+	bar_popover.cursor = -1;
 	bar_popover.kind = BAR_POPOVER_NONE;
 	bar_popover.open = false;
 	bar_popover.mon = NULL;
@@ -392,6 +462,11 @@ static bool bar_popover_open(Monitor *m, enum bar_popover_kind kind,
 	bar_popover.anchor_x = anchor_x;
 	bar_popover.open = true;
 	bar_popover.nrows = 0;
+	/* Each level of a drill-down is its own list: keeping the previous one's
+	 * scroll offset or cursor would land you halfway down a menu you have not
+	 * seen. */
+	bar_popover.scroll = 0;
+	bar_popover.cursor = -1;
 	return true;
 }
 
@@ -1100,12 +1175,37 @@ static void bar_popover_apply_step(BarPopoverRow *r) {
 	bar_popover_layout();
 }
 
+/* Move the viewport by `notches` rows. Returns true if it moved. */
+static bool bar_popover_scroll_by(int32_t notches) {
+	if (bar_popover.total_rows <= bar_popover.visible_rows)
+		return false;
+	int32_t max = bar_popover.total_rows - bar_popover.visible_rows;
+	int32_t want = bar_popover.scroll + notches;
+	if (want < 0)
+		want = 0;
+	if (want > max)
+		want = max;
+	if (want == bar_popover.scroll)
+		return false;
+	bar_popover.scroll = want;
+	bar_popover_layout();
+	return true;
+}
+
 /* Scroll over a popover row. Returns true when it was consumed. */
 static bool bar_popover_handle_node_scroll(AsteroidzNodeData *hit,
 										   int32_t notches) {
 	BarPopoverRow *r = hit ? (BarPopoverRow *)hit->node_data : NULL;
-	if (!r || !r->used || !r->stepper || notches == 0)
+	if (!r || !r->used || notches == 0)
 		return false;
+	if (!r->stepper) {
+		/* Not a value to adjust, so the wheel means what it means everywhere
+		 * else: move the list. Consumed either way -- a scroll that lands on
+		 * an open menu must never fall through to the window underneath, and
+		 * a menu short enough to fit simply has nowhere to go. */
+		bar_popover_scroll_by(notches);
+		return true;
+	}
 	/* scroll up raises, matching the bar pills */
 	int32_t v = r->step_value - notches * r->vstep;
 	if (v < r->vmin)
@@ -1453,10 +1553,12 @@ static void bar_popover_open_sysinfo(Monitor *m, int32_t anchor_x) {
 
 /* ─── input ───────────────────────────────────────────────────────────────── */
 
-static bool bar_popover_handle_node_click(AsteroidzNodeData *hit,
-										  uint32_t button) {
-	BarPopoverRow *r = hit ? (BarPopoverRow *)hit->node_data : NULL;
-	if (!r || !r->used || button != BTN_LEFT)
+/* Run a row. Split out of the click handler so the keyboard can reach the
+ * same code -- Enter on a row and a click on it have to mean one thing, and
+ * two copies of this switch would drift apart. Returns true when the row
+ * consumed the interaction. */
+static bool bar_popover_activate_row(BarPopoverRow *r) {
+	if (!r || !r->used)
 		return false;
 	/* a separator is scenery, not a target: clicking one must neither act nor
 	 * dismiss, the way it behaves in every other menu */
@@ -1687,12 +1789,118 @@ static bool bar_popover_dismiss_click(struct wlr_scene_node *node) {
 	return true;
 }
 
-/* Escape closes. Returns true when it was consumed. */
-static bool bar_popover_handle_key(uint32_t keysym) {
-	if (!bar_popover.open || keysym != XKB_KEY_Escape)
+static bool bar_popover_handle_node_click(AsteroidzNodeData *hit,
+										  uint32_t button) {
+	BarPopoverRow *r = hit ? (BarPopoverRow *)hit->node_data : NULL;
+	if (!r || !r->used || button != BTN_LEFT)
 		return false;
-	bar_popover_close();
-	return true;
+	/* the pointer moves the keyboard's place too, so tabbing on after
+	 * clicking carries on from where you clicked rather than from the top */
+	bar_popover.cursor = (int32_t)(r - bar_popover.rows);
+	return bar_popover_activate_row(r);
+}
+
+/* ─── keyboard ────────────────────────────────────────────────────────────── */
+
+/* Can the keyboard land on this row? Separators and readings cannot be acted
+ * on, so stopping the cursor there would just make Down feel broken. A stepper
+ * CAN be landed on -- left/right adjust it. */
+static bool bar_popover_row_focusable(const BarPopoverRow *r) {
+	return r && r->used && r->enabled && !r->separator;
+}
+
+/* Move the cursor `dir` focusable rows, and bring it into the viewport.
+ * Wraps, because a menu is a ring: Down off the bottom of a short list should
+ * reach the top rather than stopping dead. */
+static void bar_popover_cursor_move(int32_t dir) {
+	int32_t n = bar_popover.nrows;
+	if (n <= 0)
+		return;
+	int32_t start = bar_popover.cursor;
+	/* first press enters the list from whichever end you pressed toward */
+	int32_t i = start < 0 ? (dir > 0 ? -1 : n) : start;
+	for (int32_t tried = 0; tried < n; tried++) {
+		i += dir;
+		if (i < 0)
+			i = n - 1;
+		if (i >= n)
+			i = 0;
+		if (bar_popover_row_focusable(&bar_popover.rows[i])) {
+			bar_popover.cursor = i;
+			/* scroll only as far as it takes to show it: a cursor stepping off
+			 * the edge should move the list by one row, not recentre it */
+			if (bar_popover.visible_rows > 0 &&
+				bar_popover.total_rows > bar_popover.visible_rows) {
+				if (i < bar_popover.scroll)
+					bar_popover.scroll = i;
+				else if (i >= bar_popover.scroll + bar_popover.visible_rows)
+					bar_popover.scroll = i - bar_popover.visible_rows + 1;
+			}
+			bar_popover_layout();
+			return;
+		}
+	}
+}
+
+/* Escape closes; arrows walk the rows; Enter runs one. Returns true when the
+ * key was consumed.
+ *
+ * There is still no keyboard GRAB and the popover never takes focus -- this
+ * runs from the compositor's own key handler, ahead of the binding tables and
+ * the focused client, exactly where Escape was already being caught. Only the
+ * keys listed here are taken; everything else keeps working normally while a
+ * menu is up, which is the property that made a grab unattractive in the first
+ * place. */
+static bool bar_popover_handle_key(uint32_t keysym) {
+	if (!bar_popover.open)
+		return false;
+	switch (keysym) {
+	case XKB_KEY_Escape:
+		bar_popover_close();
+		return true;
+	case XKB_KEY_Down:
+		bar_popover_cursor_move(1);
+		return true;
+	case XKB_KEY_Up:
+		bar_popover_cursor_move(-1);
+		return true;
+	case XKB_KEY_Page_Down:
+		bar_popover_scroll_by(bar_popover.visible_rows);
+		return true;
+	case XKB_KEY_Page_Up:
+		bar_popover_scroll_by(-bar_popover.visible_rows);
+		return true;
+	case XKB_KEY_Left:
+	case XKB_KEY_Right: {
+		/* a stepper under the cursor is what these adjust; on anything else
+		 * they are not ours, so let them through to whatever is focused */
+		if (bar_popover.cursor < 0)
+			return false;
+		BarPopoverRow *r = &bar_popover.rows[bar_popover.cursor];
+		if (!r->used || !r->stepper)
+			return false;
+		int32_t v = r->step_value +
+					(keysym == XKB_KEY_Right ? r->vstep : -r->vstep);
+		if (v < r->vmin)
+			v = r->vmin;
+		if (v > r->vmax)
+			v = r->vmax;
+		if (v != r->step_value) {
+			r->step_value = v;
+			bar_popover_apply_step(r);
+		}
+		return true;
+	}
+	case XKB_KEY_Return:
+	case XKB_KEY_KP_Enter:
+	case XKB_KEY_space:
+		if (bar_popover.cursor < 0)
+			return false; /* nothing aimed at: not ours to swallow */
+		bar_popover_activate_row(&bar_popover.rows[bar_popover.cursor]);
+		return true;
+	default:
+		return false;
+	}
 }
 
 #endif /* ASTEROIDZ_BAR_POPOVER_H */

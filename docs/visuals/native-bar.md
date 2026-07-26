@@ -8,9 +8,9 @@ layer-shell client involved. It is built from the same pill widget as window
 titlebars and monocle tab strips, so it inherits the [theme](./theming.md)
 automatically and renders at each output's own scale.
 
-This is **off by default**, and it is not a replacement for
-[Waybar](./status-bar.md) yet — see [Scope](#scope) below for exactly what it
-does and does not do today. The two can run side by side.
+This is **off by default**. It now covers what the Waybar setup it replaces
+did — see [Scope](#scope) for what is still missing, which is the display
+layout canvas and little else. The two can still run side by side.
 
 ## Enabling it
 
@@ -46,7 +46,7 @@ bar {
 | `module-spacing` | `12` | separation between adjacent modules, measured **ink to ink** — each pill's own padding comes off it, so a label and a glyph sit the same distance apart as two glyphs |
 | `tray-spacing` | `24` | the same, either side of the `tray`, which is other applications' icons rather than the compositor's own readouts |
 | `volume-step` | `5` | percentage points the `volume` pill moves per scroll notch |
-| `popover.width` | `340` | popover panel width (rows ellipsise into it) |
+| `popover.width` | `340` | popover panel **minimum** width; it grows to its longest row, capped at half the output |
 | `popover.row-height` | `34` | height of one popover row |
 | `popover.spacing` | `2` | gap between rows |
 | `popover.padding` | `12` | horizontal padding inside a row |
@@ -498,10 +498,28 @@ Dismissal:
   that dismisses a menu must not also press whatever was underneath it;
 - <kbd>Escape</kbd> closes.
 
-There is no keyboard grab and no arrow-key navigation yet. That needs the
-popover to take focus, which would steal it from the window underneath, and
-wants its own design pass. Everything except <kbd>Escape</kbd> therefore keeps
-working normally while a popover is up.
+### Keyboard
+
+<kbd>↑</kbd>/<kbd>↓</kbd> walk the rows, <kbd>Enter</kbd> runs the one under the
+cursor, <kbd>←</kbd>/<kbd>→</kbd> adjust a stepper, <kbd>PgUp</kbd>/<kbd>PgDn</kbd>
+scroll, and <kbd>Escape</kbd> closes.
+
+There is still **no keyboard grab** and the popover never takes focus. These
+are handled in the compositor's own key path, ahead of the binding tables and
+the focused client — exactly where <kbd>Escape</kbd> already was, which is what
+showed a grab was never needed. Only those keys are taken; everything else
+keeps working normally while a menu is up.
+
+The cursor starts *nowhere*: a popover opened with the pointer should not
+pre-arm <kbd>Enter</kbd> on a row nobody looked at, so the first arrow key
+places it, and a click moves it to what was clicked. It skips separators and
+readings — stopping on a row that cannot be acted on just makes <kbd>↓</kbd>
+feel broken — and it wraps, because a menu is a ring.
+
+The cursor is drawn as accent-coloured *text*, distinct from `selected`, which
+fills a row to mean "this is the current value". The two answer different
+questions and can point at different rows. A row that is both stays filled:
+accent on accent would be invisible.
 
 A popover whose content query returns nothing closes itself rather than leaving
 an empty panel floating over the desktop — which is what happens on a machine
@@ -522,10 +540,14 @@ rather than with a stray underscore. Separators are drawn as a dim rule and are
 inert: clicking one neither acts nor dismisses, the way it behaves in every
 other menu. Disabled entries are greyed and consume their click without closing.
 
-A menu longer than the screen is truncated to what fits rather than drawn off
-the bottom — a popover has no viewport to scroll yet. The row cap is
-deliberately generous (32) because real menus are long: Steam lists every
-installed game before Store/Library/Community, and only then Quit.
+A menu longer than the screen **scrolls**: the rows are all kept and a window
+of them is drawn, so the wheel over the panel moves the list and
+<kbd>PgUp</kbd>/<kbd>PgDn</kbd> jump a screenful. There is no clipping to do —
+a row outside the window is simply never enabled. This used to truncate
+instead, which quietly dropped whatever was at the bottom, and the bottom is
+where the entry people reach for lives: Steam lists every installed game before
+Store/Library/Community, and only then Quit. The row cap is deliberately
+generous (32) for the same reason.
 
 Items that publish no `Menu` still fall back to `SecondaryActivate` on
 right-click, since some applications wire that to "open my menu" and ship no
@@ -703,8 +725,8 @@ warns about and ignores.
 ## Scope
 
 Implemented: the bar frame, per-monitor layout in three panelled slots, click
-routing, space reservation, and the twelve modules above — everything that
-needs no popover.
+routing, space reservation, shed-by-priority when the width runs out, every
+module in the table above, and the popover layer they drop panels from.
 
 `idle` reflects a **compositor-level** override, not the client-driven
 `idle_inhibit_v1` protocol state — a bar module has no surface to attach a

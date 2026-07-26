@@ -724,3 +724,136 @@ test_bar_sysinfo_popover_opens_and_readings_do_not_dismiss_it() {
 
 	bar_off
 }
+
+# Pixels differing between two screenshots inside a region. Used to assert a
+# popover's CONTENT changed (scrolled, drilled in, gained a cursor) without
+# needing to know what it says.
+bar_region_diff() { # bar_region_diff PNG_A PNG_B X0 Y0 X1 Y1
+	python3 - "$@" <<'PY'
+import sys
+from PIL import Image
+a, b = Image.open(sys.argv[1]).convert("RGB"), Image.open(sys.argv[2]).convert("RGB")
+x0, y0, x1, y1 = map(int, sys.argv[3:7])
+pa, pb = a.load(), b.load()
+W, H = a.size
+x1, y1 = min(x1, W), min(y1, H)
+n = 0
+for x in range(x0, x1):
+    for y in range(y0, y1):
+        if pa[x, y] != pb[x, y]:
+            n += 1
+print(n)
+PY
+}
+
+test_bar_popover_scrolls_a_menu_taller_than_the_screen() {
+	[ "$(bar_supported)" = "true" ] || { echo "  (skip: built without -Dnative-bar)"; return 0; }
+	command -v python3 >/dev/null && python3 -c "import PIL" 2>/dev/null || {
+		echo "  (skip: python3 PIL not available)"; return 0; }
+
+	# A menu longer than the output used to be TRUNCATED to what fits, which
+	# quietly dropped whatever was at the bottom -- and the bottom is where the
+	# entry people reach for lives (Steam's tray menu lists every installed
+	# game before Store/Library/Community and only then Quit).
+	#
+	# Forced here by making the rows absurdly tall rather than by booting a
+	# second compositor on a short output: the shared instance is 1920x1080,
+	# where nothing this bar can render is long enough to overflow.
+	hl_dispatch "view,1"
+	bar_set 'bar { enable true; height 30; position "top"; margin { x 8; y 4 }; panel { enable false }; show-logo false; tag-icons 0; modules-left "tags"; modules-right "cpu"; popover { row-height 200 } }'
+	sleep 0.8
+
+	local x0=$((HL_WIDTH - 330)) x1=$((HL_WIDTH - 30))
+	hl_screenshot scroll-closed
+	local cpux; cpux="$(bar_rightmost_ink_x "$HL_OUTDIR/scroll-closed.png" 6 32)"
+	[ -n "$cpux" ] || { echo "  (skip: could not locate the cpu pill)"; bar_off; return 0; }
+	hl_click "$cpux" 19
+	sleep 0.8
+	hl_screenshot scroll-top
+	local ink; ink="$(bar_region_ink "$HL_OUTDIR/scroll-top.png" $x0 60 $x1 600)"
+	hl_assert_true "an over-long menu still opens ($ink px)" \
+		"$([ "$ink" -gt 2000 ] && echo true || echo false)"
+
+	# scroll it: the viewport moves, so what is drawn changes
+	hl_wheel "$((HL_WIDTH - 180))" 200 3
+	sleep 0.6
+	hl_screenshot scroll-moved
+	local moved; moved="$(bar_region_diff "$HL_OUTDIR/scroll-top.png" "$HL_OUTDIR/scroll-moved.png" $x0 60 $x1 600)"
+	hl_assert_true "scrolling over it moves the viewport ($moved px changed)" \
+		"$([ "$moved" -gt 500 ] && echo true || echo false)"
+
+	# and it is still up -- a scroll is not a dismissal
+	local still; still="$(bar_region_ink "$HL_OUTDIR/scroll-moved.png" $x0 60 $x1 600)"
+	hl_assert_true "and does not dismiss it ($still px)" \
+		"$([ "$still" -gt 2000 ] && echo true || echo false)"
+
+	hl_click 400 800
+	bar_off
+}
+
+test_bar_popover_keyboard_walks_rows_and_enter_runs_one() {
+	[ "$(bar_supported)" = "true" ] || { echo "  (skip: built without -Dnative-bar)"; return 0; }
+	command -v python3 >/dev/null && python3 -c "import PIL" 2>/dev/null || {
+		echo "  (skip: python3 PIL not available)"; return 0; }
+
+	# Arrow keys and Enter are handled in the compositor's own key path, ahead
+	# of the binding tables -- exactly where Escape already was -- so the
+	# popover still takes no keyboard grab and never steals focus. What is
+	# pinned here is that the three of them reach it at all, and that Enter
+	# does the same thing a click does (it runs the same function, so the risk
+	# is the key never arriving, not the action differing).
+	#
+	# The display popover rather than the system one: its rows are actionable,
+	# whereas every sysinfo row is a reading the cursor deliberately skips.
+	hl_dispatch "view,1"
+	bar_set 'bar { enable true; height 30; position "top"; margin { x 8; y 4 }; panel { enable false }; show-logo false; tag-icons 0; modules-left "tags"; modules-right "display" }'
+	sleep 0.8
+
+	local x0=$((HL_WIDTH - 330)) x1=$((HL_WIDTH - 30))
+	hl_screenshot kb-closed
+	local dx; dx="$(bar_rightmost_ink_x "$HL_OUTDIR/kb-closed.png" 6 32)"
+	[ -n "$dx" ] || { echo "  (skip: could not locate the display pill)"; bar_off; return 0; }
+	hl_click "$dx" 19
+	sleep 0.8
+	hl_screenshot kb-open
+	local ink; ink="$(bar_region_ink "$HL_OUTDIR/kb-open.png" $x0 40 $x1 300)"
+	hl_assert_true "the display popover opens ($ink px)" \
+		"$([ "$ink" -gt 1000 ] && echo true || echo false)"
+
+	# Down places the cursor on the sole output row. No visual change is
+	# asserted HERE on purpose: with one monitor that row is already the
+	# selected one, and a cursor on a filled row is deliberately not recoloured
+	# (accent text on an accent fill would be invisible). That Down landed at
+	# all is proven by the Enter below, which does nothing without a cursor.
+	"$HL_WLVKBD" press DOWN
+	sleep 0.5
+	hl_screenshot kb-cursor
+
+	# Enter drills into that output's own settings: a different set of rows
+	"$HL_WLVKBD" press ENTER
+	sleep 0.6
+	hl_screenshot kb-entered
+	local entered; entered="$(bar_region_diff "$HL_OUTDIR/kb-cursor.png" "$HL_OUTDIR/kb-entered.png" $x0 40 $x1 300)"
+	hl_assert_true "Enter runs the row under the cursor ($entered px changed)" \
+		"$([ "$entered" -gt 500 ] && echo true || echo false)"
+
+	# Now Down where the highlight CAN show: this panel leads with an inert
+	# summary line the cursor must skip, landing on the HDR toggle, which is
+	# neither selected nor filled.
+	"$HL_WLVKBD" press DOWN
+	sleep 0.5
+	hl_screenshot kb-marked
+	local marked; marked="$(bar_region_diff "$HL_OUTDIR/kb-entered.png" "$HL_OUTDIR/kb-marked.png" $x0 40 $x1 300)"
+	hl_assert_true "Down marks the row it lands on ($marked px changed)" \
+		"$([ "$marked" -gt 100 ] && echo true || echo false)"
+
+	# Escape still closes
+	"$HL_WLVKBD" press ESC
+	sleep 0.6
+	hl_screenshot kb-closed2
+	local gone; gone="$(bar_region_ink "$HL_OUTDIR/kb-closed2.png" $x0 40 $x1 300)"
+	hl_assert_true "Escape closes it ($gone px)" \
+		"$([ "$gone" -lt 1000 ] && echo true || echo false)"
+
+	bar_off
+}
