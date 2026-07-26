@@ -2597,10 +2597,34 @@ static void bar_module_measure(BarModule *mod, int32_t height, float scale) {
 
 /* The gap between two modules sharing a slot, decided by the pills that
  * actually touch: the last of one and the first of the next. */
+/* Gap BETWEEN two modules, chosen so the VISIBLE separation is constant.
+ *
+ * A pill's own horizontal padding is part of what you see between it and its
+ * neighbour, and that padding differs by kind: 0 for icon-only artwork, 6 for
+ * a text pill, 16 for a chip. Adding a fixed gap on top of that produced 5px
+ * between the cpu and memory icons and 12px between two text pills -- the
+ * modules looked unevenly spaced because they were.
+ *
+ * So the configured value is the SEPARATION, not the gap: each pill's own
+ * padding is subtracted from it. Where the padding already exceeds the target
+ * (two chips carry 32px between them) the gap floors at zero rather than going
+ * negative and pulling them together.
+ *
+ * The tray gets its own, larger separation. It is a different KIND of thing --
+ * other applications' icons, in a set that changes while you use the desktop --
+ * and running it up against the compositor's own readouts made it look like one
+ * more of them. */
 static int32_t bar_module_gap(BarModule *a, BarModule *b) {
 	if (!a || !b || a->npills <= 0 || b->npills <= 0)
 		return 0;
-	return bar_pill_gap(&a->pills[a->npills - 1], &b->pills[0]);
+	const BarPill *pa = &a->pills[a->npills - 1];
+	const BarPill *pb = &b->pills[0];
+
+	int32_t target = (a->kind == BAR_MODULE_TRAY || b->kind == BAR_MODULE_TRAY)
+						 ? config.bar_tray_spacing
+						 : config.bar_module_spacing;
+	int32_t gap = target - bar_pill_padding_x(pa) - bar_pill_padding_x(pb);
+	return gap > 0 ? gap : 0;
 }
 
 /* Draw (or hide) the backdrop for one slot. `x`..`x+w` is the extent of the

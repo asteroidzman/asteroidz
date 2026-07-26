@@ -202,6 +202,63 @@ bool asteroidz_icon_cache_put_argb32(const char *key, const uint8_t *argb_be,
 		icon_cache = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
 										   icon_surface_free);
 
+	/* Trim to the ink before caching.
+	 *
+	 * Applications ship tray icons with wildly different transparent margins:
+	 * one centres a 22px drawing in a 24px canvas, another leaves four blank
+	 * rows along the top. The draw path centres the SURFACE, so that margin
+	 * became a vertical offset -- measured on a real bar, two tray icons sat
+	 * 0.5px and 2px below the compositor's own icons beside them, which reads
+	 * exactly as "the tray is not aligned".
+	 *
+	 * Cropping to the alpha bounding box makes centring the surface the same
+	 * thing as centring what you see. It is the load-time equivalent of what
+	 * contrib/normalize-bar-icons.py does to our own vendored art, which we
+	 * cannot do ahead of time for pixels an application hands us at runtime. */
+	int32_t x0 = w, y0 = h, x1 = -1, y1 = -1;
+	for (int32_t y = 0; y < h; y++) {
+		const uint8_t *srow = argb_be + (size_t)y * w * 4;
+		for (int32_t x = 0; x < w; x++) {
+			if (srow[x * 4 + 0] == 0) /* fully transparent */
+				continue;
+			if (x < x0) x0 = x;
+			if (x > x1) x1 = x;
+			if (y < y0) y0 = y;
+			if (y > y1) y1 = y;
+		}
+	}
+	if (x1 >= x0 && y1 >= y0) {
+		argb_be += ((size_t)y0 * w + x0) * 4;
+		/* the row stride stays the ORIGINAL width; only the extent changes */
+		int32_t cw = x1 - x0 + 1, ch = y1 - y0 + 1;
+		if (cw != w || ch != h) {
+			cairo_surface_t *cs =
+				cairo_image_surface_create(CAIRO_FORMAT_ARGB32, cw, ch);
+			if (cairo_surface_status(cs) == CAIRO_STATUS_SUCCESS) {
+				int cstride = cairo_image_surface_get_stride(cs);
+				unsigned char *cdst = cairo_image_surface_get_data(cs);
+				for (int32_t y = 0; y < ch; y++) {
+					uint32_t *drow = (uint32_t *)(cdst + y * cstride);
+					const uint8_t *srow = argb_be + (size_t)y * w * 4;
+					for (int32_t x = 0; x < cw; x++) {
+						uint8_t a = srow[x * 4 + 0];
+						uint8_t r = srow[x * 4 + 1];
+						uint8_t g = srow[x * 4 + 2];
+						uint8_t b = srow[x * 4 + 3];
+						drow[x] = ((uint32_t)a << 24) |
+								  ((uint32_t)(r * a / 255) << 16) |
+								  ((uint32_t)(g * a / 255) << 8) |
+								  (uint32_t)(b * a / 255);
+					}
+				}
+				cairo_surface_mark_dirty(cs);
+				g_hash_table_insert(icon_cache, g_strdup(key), cs);
+				return true;
+			}
+			cairo_surface_destroy(cs);
+		}
+	}
+
 	cairo_surface_t *surf =
 		cairo_image_surface_create(CAIRO_FORMAT_ARGB32, w, h);
 	if (cairo_surface_status(surf) != CAIRO_STATUS_SUCCESS) {
