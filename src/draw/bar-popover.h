@@ -50,6 +50,12 @@ enum bar_popover_kind {
 	BAR_POPOVER_VPN,   /* nordvpn; row payload is a country, or a marked verb */
 	BAR_POPOVER_OUTPUTS, /* every monitor; row payload is the output name */
 	BAR_POPOVER_OUTPUT,  /* one monitor's settings; payload is a marked verb */
+	/* Choice lists: a value picked from a set, then back to the output. Their
+	 * payload is the value itself (a mode spelled "WxH@mHz", or a scale), so
+	 * the click handler needs no index into a list that may have changed
+	 * underneath it -- an output can lose a mode while its menu is open. */
+	BAR_POPOVER_MODES,
+	BAR_POPOVER_SCALES,
 };
 
 typedef struct {
@@ -110,6 +116,10 @@ static BarPopover bar_popover;
 
 static void bar_popover_close(void);
 static void bar_popover_layout(void);
+static void bar_popover_open_modes(Monitor *anchor_mon, int32_t anchor_x,
+								   const char *name);
+static void bar_popover_open_scales(Monitor *anchor_mon, int32_t anchor_x,
+									const char *name);
 
 /* ─── rows ────────────────────────────────────────────────────────────────── */
 
@@ -140,6 +150,21 @@ static BarPopoverRow *bar_popover_row_get(int32_t idx) {
 	BarPopoverRow *r = &bar_popover.rows[idx];
 	if (r->used)
 		return r;
+
+	/* A fresh slot needs the same defaults a released one gets. The rows live
+	 * in a zero-initialised static array, so `enabled` starts FALSE -- and the
+	 * per-output and VPN handlers both begin with "if (!r->enabled) return",
+	 * meaning every row of those menus was dead on its first use. It survived
+	 * because reaching it needs a real click on a real menu: the HDR toggle,
+	 * every VPN country, and both new choice rows did nothing at all. */
+	r->enabled = true;
+	r->stepper = false;
+	r->submenu = false;
+	r->separator = false;
+	r->selected = false;
+	r->id = 0;
+	r->text[0] = '\0';
+	r->value[0] = '\0';
 
 	AsteroidzNodeData *hit = ecalloc(1, sizeof(AsteroidzNodeData));
 	hit->type = ASTEROIDZ_BAR_POPOVER_NODE;
@@ -863,8 +888,109 @@ static void bar_popover_open_output(Monitor *anchor_mon, int32_t anchor_x,
 		r->enabled = false;
 		n++;
 	}
+	/* Choice rows: the value is shown inline and the row drills into a list,
+	 * the same shape the tray's submenus use. A resolution cannot be a stepper
+	 * -- the valid values are an arbitrary set the panel dictates, not a
+	 * range -- so scrolling one would either invent modes or lie about them. */
+	if (!wl_list_empty(&target->wlr_output->modes) &&
+		(r = bar_popover_row_get(n))) {
+		int32_t hz = bar_display_hz(target);
+		snprintf(r->text, sizeof(r->text), "Resolution  %dx%d@%d  \u203a",
+				 target->wlr_output->width, target->wlr_output->height, hz);
+		snprintf(r->value, sizeof(r->value), "%s", BAR_POPOVER_VERB "modes");
+		r->submenu = true;
+		n++;
+	}
+	if ((r = bar_popover_row_get(n))) {
+		snprintf(r->text, sizeof(r->text), "Scale  %.2f  \u203a",
+				 (double)target->wlr_output->scale);
+		snprintf(r->value, sizeof(r->value), "%s", BAR_POPOVER_VERB "scales");
+		r->submenu = true;
+		n++;
+	}
 	if ((r = bar_popover_row_get(n))) {
 		snprintf(r->text, sizeof(r->text), "%s", "\u2039  All outputs");
+		snprintf(r->value, sizeof(r->value), "%s", BAR_POPOVER_VERB "back");
+		n++;
+	}
+	bar_popover.nrows = n;
+	bar_popover_layout();
+}
+
+/* ─── choice lists ────────────────────────────────────────────────────────── */
+
+/* Every mode the output reports, current one marked.
+ *
+ * The list is what the panel says it can do, in the order it says it -- not
+ * sorted or de-duplicated. Two entries that read identically (3840x2160@60
+ * appears twice on this desktop's DP-1) are genuinely different modes to the
+ * driver, and collapsing them would pick one on the user's behalf. */
+static void bar_popover_open_modes(Monitor *anchor_mon, int32_t anchor_x,
+								   const char *name) {
+	Monitor *target = bar_display_by_name(name);
+	if (!target || !target->wlr_output)
+		return;
+	if (!bar_popover_open(anchor_mon, BAR_POPOVER_MODES, anchor_x))
+		return;
+	snprintf(bar_popover.output_name, sizeof(bar_popover.output_name), "%s",
+			 name);
+
+	int32_t n = 0;
+	struct wlr_output_mode *mode;
+	wl_list_for_each(mode, &target->wlr_output->modes, link) {
+		if (n >= BAR_POPOVER_MAX_ROWS - 1)
+			break;
+		BarPopoverRow *r = bar_popover_row_get(n);
+		if (!r)
+			break;
+		snprintf(r->text, sizeof(r->text), "%dx%d@%d%s", mode->width,
+				 mode->height, (int32_t)((mode->refresh + 500) / 1000),
+				 mode->preferred ? "  (preferred)" : "");
+		/* the mode's own numbers, so the click resolves it by value rather
+		 * than by an index into a list that can change while this is open */
+		snprintf(r->value, sizeof(r->value), "%d,%d,%d", mode->width,
+				 mode->height, mode->refresh);
+		r->selected = (mode == target->wlr_output->current_mode);
+		n++;
+	}
+	BarPopoverRow *r = bar_popover_row_get(n);
+	if (r) {
+		snprintf(r->text, sizeof(r->text), "%s", "\u2039  Back");
+		snprintf(r->value, sizeof(r->value), "%s", BAR_POPOVER_VERB "back");
+		n++;
+	}
+	bar_popover.nrows = n;
+	bar_popover_layout();
+}
+
+static void bar_popover_open_scales(Monitor *anchor_mon, int32_t anchor_x,
+									const char *name) {
+	Monitor *target = bar_display_by_name(name);
+	if (!target || !target->wlr_output)
+		return;
+	if (!bar_popover_open(anchor_mon, BAR_POPOVER_SCALES, anchor_x))
+		return;
+	snprintf(bar_popover.output_name, sizeof(bar_popover.output_name), "%s",
+			 name);
+
+	int32_t n = 0;
+	for (size_t i = 0; i < LENGTH(bar_display_scales); i++) {
+		BarPopoverRow *r = bar_popover_row_get(n);
+		if (!r)
+			break;
+		float s = bar_display_scales[i];
+		/* the logical size this scale produces, because "1.25" means nothing
+		 * on its own and the resulting desktop size is the actual choice */
+		snprintf(r->text, sizeof(r->text), "%.2f    %dx%d", (double)s,
+				 (int32_t)(target->wlr_output->width / s),
+				 (int32_t)(target->wlr_output->height / s));
+		snprintf(r->value, sizeof(r->value), "%.4f", (double)s);
+		r->selected = fabsf(target->wlr_output->scale - s) < 0.01f;
+		n++;
+	}
+	BarPopoverRow *r = bar_popover_row_get(n);
+	if (r) {
+		snprintf(r->text, sizeof(r->text), "%s", "\u2039  Back");
 		snprintf(r->value, sizeof(r->value), "%s", BAR_POPOVER_VERB "back");
 		n++;
 	}
@@ -962,11 +1088,65 @@ static bool bar_popover_handle_node_click(AsteroidzNodeData *hit,
 			bar_popover_open_outputs(anchor_mon, ax);
 			return true;
 		}
+		if (!strcmp(r->value + 1, "modes")) {
+			bar_popover_open_modes(anchor_mon, ax, name);
+			return true;
+		}
+		if (!strcmp(r->value + 1, "scales")) {
+			bar_popover_open_scales(anchor_mon, ax, name);
+			return true;
+		}
 		if (strcmp(r->value + 1, "hdr") != 0)
 			return true;
 		bar_display_toggle_hdr(bar_display_by_name(name));
 		/* stay open and re-render, so the toggle's new state is visible
 		 * without having to reopen the menu to check it took */
+		bar_popover_open_output(anchor_mon, ax, name);
+		return true;
+	}
+	case BAR_POPOVER_MODES: {
+		Monitor *anchor_mon = bar_popover.mon;
+		int32_t ax = bar_popover.anchor_x;
+		char name[64];
+		snprintf(name, sizeof(name), "%s", bar_popover.output_name);
+		if (BAR_POPOVER_IS_VERB(r->value)) {
+			bar_popover_open_output(anchor_mon, ax, name);
+			return true;
+		}
+		int32_t w = 0, h = 0, refresh = 0;
+		if (sscanf(r->value, "%d,%d,%d", &w, &h, &refresh) != 3)
+			return true;
+		Monitor *target = bar_display_by_name(name);
+		struct wlr_output_mode *mode = NULL, *it = NULL;
+		if (target && target->wlr_output) {
+			wl_list_for_each(it, &target->wlr_output->modes, link) {
+				if (it->width == w && it->height == h &&
+					it->refresh == refresh) {
+					mode = it;
+					break;
+				}
+			}
+		}
+		/* the mode may be gone -- the output can be reconfigured while its
+		 * menu is open -- in which case do nothing rather than guess a
+		 * neighbour */
+		if (mode)
+			bar_display_apply(target, mode, 0.0f);
+		bar_popover_open_output(anchor_mon, ax, name);
+		return true;
+	}
+	case BAR_POPOVER_SCALES: {
+		Monitor *anchor_mon = bar_popover.mon;
+		int32_t ax = bar_popover.anchor_x;
+		char name[64];
+		snprintf(name, sizeof(name), "%s", bar_popover.output_name);
+		if (BAR_POPOVER_IS_VERB(r->value)) {
+			bar_popover_open_output(anchor_mon, ax, name);
+			return true;
+		}
+		float scale = strtof(r->value, NULL);
+		if (scale > 0.0f)
+			bar_display_apply(bar_display_by_name(name), NULL, scale);
 		bar_popover_open_output(anchor_mon, ax, name);
 		return true;
 	}
