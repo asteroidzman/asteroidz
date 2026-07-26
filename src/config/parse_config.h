@@ -481,6 +481,9 @@ typedef struct {
 	int32_t bar_tag_icons;  /* max app icons drawn inside each tag pill */
 	int32_t bar_weather_interval; /* minutes between forecast fetches */
 	char bar_weather_location[128]; /* city name; empty = IP geolocation */
+	/* Daemon the discord module launches when nothing is serving its socket,
+	 * mirroring the waybar plugin's own daemon-cmd. Empty disables spawning. */
+	char bar_discord_daemon[256];
 	int32_t bar_media_width; /* pinned now-playing pill width */
 	/* Per-slot backing panel. The bar itself is fully transparent; each
 	 * non-empty slot draws one rounded translucent panel behind its pills,
@@ -2339,6 +2342,9 @@ bool parse_option(Config *config, char *key, char *value) {
 		config->bar_media_width = CLAMP_INT(atoi(value), 0, 4000);
 	} else if (strcmp(key, "bar_weather_interval") == 0) {
 		config->bar_weather_interval = CLAMP_INT(atoi(value), 1, 1440);
+	} else if (strcmp(key, "bar_discord_daemon") == 0) {
+		snprintf(config->bar_discord_daemon,
+				 sizeof(config->bar_discord_daemon), "%s", value);
 	} else if (strcmp(key, "bar_weather_location") == 0) {
 		snprintf(config->bar_weather_location,
 				 sizeof(config->bar_weather_location), "%s", value);
@@ -3681,6 +3687,7 @@ static const struct {
 	{"bar/media-width", "bar_media_width"},
 	{"bar/weather/interval", "bar_weather_interval"},
 	{"bar/weather/location", "bar_weather_location"},
+	{"bar/discord/daemon-cmd", "bar_discord_daemon"},
 	{"bar/panel/enable", "bar_panel_enable"},
 	{"bar/panel/color", "bar_panel_color"},
 	{"bar/panel/radius", "bar_panel_radius"},
@@ -4800,6 +4807,10 @@ void set_value_default() {
 					 "%s/share/asteroidz/bar-icons:/usr/share",
 					 ASTEROIDZ_PREFIX);
 	}
+	/* Same path the waybar plugin defaults to, so a desktop that had voice
+	 * working under waybar keeps it working here with no config change. */
+	snprintf(config.bar_discord_daemon, sizeof(config.bar_discord_daemon),
+			 "%s", "/usr/bin/discord-voiced");
 	snprintf(config.bar_clock_format, sizeof(config.bar_clock_format),
 			 "%%H:%%M:%%S");
 	/* Three sections, matching the waybar layout this replaces: the workspace

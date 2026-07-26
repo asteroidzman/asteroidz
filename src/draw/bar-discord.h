@@ -172,6 +172,31 @@ static void bar_dv_on_state(bool connected, void *user) {
 	bar_update_all();
 }
 
+/* Launch the daemon if nothing is serving the socket.
+ *
+ * The waybar plugin does exactly this, via its own `daemon-cmd` setting --
+ * which is how the daemon came to be running at all on this desktop. Turning
+ * waybar off therefore turned Discord voice off with it, and the module sat
+ * correctly but uselessly showing "offline" forever. A bar that replaces
+ * waybar has to inherit the responsibility, not just the display.
+ *
+ * Once per session, deliberately: the reconnect backoff already retries the
+ * socket, and spawning on every failed attempt would fork a process every few
+ * seconds for anyone who does not have the daemon installed. If it dies later,
+ * the pill goes offline and stays there -- predictable, and visible. */
+static void bar_dv_spawn_daemon(void) {
+	const char *cmd = config.bar_discord_daemon;
+	if (!cmd || !*cmd)
+		return; /* explicitly disabled */
+	if (access(cmd, X_OK) != 0) {
+		wlr_log(WLR_DEBUG, "discord: no daemon at %s, not spawning", cmd);
+		return;
+	}
+	char *const argv[] = {(char *)cmd, NULL};
+	async_spawn(event_loop, argv, NULL, NULL);
+	wlr_log(WLR_INFO, "discord: started %s", cmd);
+}
+
 static void bar_dv_start(void) {
 	if (bar_dv.started)
 		return;
@@ -182,6 +207,10 @@ static void bar_dv_start(void) {
 			 rt && *rt ? rt : "/tmp");
 	unix_line_start(&bar_dv_client, event_loop, path, bar_dv_on_line,
 					bar_dv_on_state, NULL);
+	/* unix_line_start connects synchronously enough to know: a live daemon is
+	 * already attached, a dead one left only a stale socket file behind. */
+	if (!bar_dv_client.connected)
+		bar_dv_spawn_daemon();
 }
 
 static void bar_dv_finish(void) {
