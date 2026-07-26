@@ -1,6 +1,6 @@
 <?xml version='1.0' encoding='UTF-8'?>
 <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
-  <g transform="translate(-2.3662 -2.4225) scale(1.201878)"><g transform="translate(-0.1569 -0.5490) scale(0.250980)"><defs>
+  <g transform="translate(0.0000 0.0000) scale(1.000000)"><g transform="translate(-2.3662 -2.4225) scale(1.201878)"><g transform="translate(-0.1569 -0.5490) scale(0.250980)"><defs>
     <linearGradient id="cool" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffffff" /><stop offset="1" stop-color="#dfe4ee" /></linearGradient>
   </defs>
   <path d="M10,60 V40 H26 L48,20 V80 L26,60 Z" fill="url(#cool)" stroke="#0f1220" stroke-opacity="0.18" stroke-width="2.5" stroke-linejoin="round" />
@@ -8,4 +8,4 @@
     <line x1="60" y1="36" x2="84" y2="64" />
     <line x1="84" y1="36" x2="60" y2="64" />
   </g>
-</g></g></svg>
+</g></g></g></svg>

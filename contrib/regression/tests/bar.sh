@@ -798,3 +798,36 @@ test_bar_popover_keyboard_walks_rows_and_enter_runs_one() {
 }
 
 
+
+test_bar_panels_cast_a_shadow() {
+	[ "$(bar_supported)" = "true" ] || { echo "  (skip: built without -Dnative-bar)"; return 0; }
+	command -v python3 >/dev/null && python3 -c "import PIL" 2>/dev/null || {
+		echo "  (skip: python3 PIL not available)"; return 0; }
+
+	# A shadow node the same size and in the same place as the panel is
+	# entirely BEHIND it: the falloff has nowhere outside the panel to occupy,
+	# so an opaque panel hides all of it. That is what the bar shipped with --
+	# `panel.shadow true` created and enabled a node that could never be seen,
+	# and the wallpaper below the panel measured a flat 0x808080.
+	#
+	# Asserted against the WALLPAPER, below the strip, where only a shadow can
+	# darken anything.
+	hl_dispatch "view,1"
+	bar_set 'bar { enable true; height 30; position "top"; margin { x 8; y 4 }; modules-left "tags"; modules-center "clock"; panel { enable true; radius 9; padding 6; blur false; shadow true } }'
+	sleep 1
+	hl_screenshot shadow-on
+	local cx=$((HL_WIDTH / 2))
+	local lit; lit="$(hl_region_ink "$HL_OUTDIR/shadow-on.png" $((cx - 60)) 38 $((cx + 60)) 60)"
+	hl_assert_true "a panel darkens the wallpaper below it ($lit px)" \
+		"$([ "$lit" -gt 200 ] && echo true || echo false)"
+
+	# and the toggle still means something
+	bar_set 'bar { enable true; height 30; position "top"; margin { x 8; y 4 }; modules-left "tags"; modules-center "clock"; panel { enable true; radius 9; padding 6; blur false; shadow false } }'
+	sleep 1
+	hl_screenshot shadow-off
+	local dark; dark="$(hl_region_ink "$HL_OUTDIR/shadow-off.png" $((cx - 60)) 38 $((cx + 60)) 60)"
+	hl_assert_true "and shadow false leaves it clean ($dark px)" \
+		"$([ "$dark" -eq 0 ] && echo true || echo false)"
+
+	bar_off
+}

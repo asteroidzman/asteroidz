@@ -58,9 +58,9 @@ bar {
 | `panel.enable` | `true` | draw a backdrop panel behind each non-empty slot |
 | `panel.color` | `0x0a0a0cd9` | panel fill (RGBA; the default is ~85% opaque) |
 | `panel.radius` | `9` | panel corner radius |
-| `panel.padding` | `6` | **horizontal** inset between the panel edge and its pills |
+| `panel.padding` | `12` | **horizontal** inset between the panel edge and the first/last thing you can *see* in it — a pill's own padding and any unused pinned reserve come off it, so both ends of a section read the same |
 | `panel.blur` | `true` | blur behind the panel (needs `effects.blur.enable`) |
-| `panel.shadow` | `true` | drop shadow under the panel (needs `shadows`) |
+| `panel.shadow` | `true` | drop shadow under each panel (needs `shadows`) |
 | `modules-left` | `"tags,layout,title"` | comma-separated module list |
 | `modules-center` | `"clock"` | " |
 | `modules-right` | *(empty)* | " |
@@ -101,7 +101,7 @@ for a newer build still starts.
 | `weather` | current temperature and condition, from open-meteo | — |
 | `media` | now playing (title • artist), from MPRIS, with a live spectrum while playing. Shown only while **Playing or Paused** | play/pause |
 | `volume` | default sink level, with a speaker icon (also accepts `vol`) | click toggles mute; right-click opens the output picker; scroll steps by `volume-step` |
-| `notifications` | swaync's unread count and do-not-disturb state (also accepts `notify`) | click toggles the panel; right-click toggles DND |
+| `notifications` | swaync state as a bell — **empty** when nothing is waiting, **filled** when something is (also accepts `notify`). **Icon only** | click toggles the panel; right-click toggles DND |
 | `medication` | doses due now, or the next dose's time (also accepts `meds`) | click lists today's doses; drill into one to take, skip or postpone it |
 | `discord` | voice state from the `discord-voiced` daemon (also accepts `discord-voice`) | click opens the channel picker; right-click toggles mute |
 | `vpn` | NordVPN state as a tinted shield (also accepts `nordvpn`). **Icon only** | click opens status + Quick Connect / Disconnect / countries |
@@ -255,10 +255,14 @@ conditions** — one means you asked for quiet, the other means something is
 holding notifications back — and a bar that rendered them identically would be
 misleading about whether messages are being dropped or merely held.
 
-The count is drawn next to the glyph, which Waybar puts in a tooltip instead;
-a bar pill has no tooltip, and "how many" is most of what the glyph is
-consulted for. It is pinned to the width of a two-digit count so arriving
-notifications never reflow the section.
+**No count is drawn.** The bell itself is the whole reading: empty when
+nothing is waiting, filled when something is. That is the question the module
+gets consulted for; *how many* is not, and a number beside the glyph cost a
+pill that changed width, a reserve to stop it reflowing, and half that reserve
+as dead space either side of the module whenever the count was absent — which
+is nearly always. It also made the state unreadable at exactly the wrong
+moment: the glyph is tinted with the theme accent and the filled pill used the
+same accent, so having a notification is precisely when the bell disappeared.
 
 Initial state comes from `NotificationCount` and `GetDnd` rather than
 `GetSubscribeData`: that returns a bare `(bbub)` whose field order is not
@@ -608,6 +612,19 @@ see is one rounded translucent panel per non-empty slot, so the bar reads as
 three floating groups rather than a full-width strip. That is the same shape as
 the grouped panels in a typical Waybar config.
 
+Each panel casts its own shadow, sized from `shadow.size` and offset by
+`shadow.position`. A shadow node drawn at the panel's own box would be entirely
+*behind* it — the falloff has nowhere outside the panel to occupy — so the box
+is grown on every side, the same thing a window's shadow does. Drawn flush, the
+shadow existed, was enabled, and could never be seen.
+
+`panel.padding` is measured to the **ink**, not to the pill's box: the end
+pill's own horizontal padding and any unused pinned reserve are subtracted, so
+both ends of a section sit the same distance from the panel edge. Measured
+before that, a centre panel led by the clock and ended by an icon read 14px on
+the left and 6px on the right, because a labelled pill carries `pill-padding`
+inside its box and artwork carries none.
+
 With panels on, a resting pill draws no background either; only the selected
 tag (and any urgent one) is filled, so each panel reads as a single surface.
 Turn panels off with `panel { enable false }` and every pill carries the
@@ -718,14 +735,10 @@ title takes a short pill.
 
 A reserve is centred, so a pill reserving room for content it is not currently
 showing carries the unused half of it as transparency on each side — which is
-spacing, as far as the eye is concerned. Two modules are therefore pinned
-*conditionally*:
+spacing, as far as the eye is concerned. That is what put a hole either side of
+`notify` while it reserved room for a count, and why it no longer draws one at
+all. `volume` is therefore pinned *conditionally*:
 
-- `notify` reserves for a two-digit count only while there **is** a count. An
-  idle bell is exactly as wide as the bell; a notification arriving at 7 and
-  dismissed at 70 still never reflows the section. Reserving unconditionally
-  put ~13px of transparency either side of the module, which is what made the
-  gaps around `volume`, `notify` and `display` read at twice everything else's.
 - `volume` pins to the widest reading with the **same number of digits**
   (`8%`, `88%`, `100%`) rather than to `100%` outright. Digits are
   proportional, so an unpinned pill twitches on every step, while pinning to

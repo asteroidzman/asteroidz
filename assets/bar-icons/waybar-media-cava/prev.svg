@@ -1,8 +1,8 @@
 <?xml version='1.0' encoding='UTF-8'?>
 <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
-  <g transform="translate(-2.3662 -2.4225) scale(1.201878)"><g transform="translate(-5.3381 -6.4173) scale(0.368345)"><g fill="#eef1f7" stroke="#eef1f7" stroke-width="4" stroke-linejoin="round">
+  <g transform="translate(0.0000 0.0000) scale(1.000000)"><g transform="translate(-2.3662 -2.4225) scale(1.201878)"><g transform="translate(-5.3381 -6.4173) scale(0.368345)"><g fill="#eef1f7" stroke="#eef1f7" stroke-width="4" stroke-linejoin="round">
     <rect x="20" y="26" width="8" height="48" rx="3" stroke="none" />
     <path d="M50,26 L34,50 L50,74 Z" />
     <path d="M72,26 L56,50 L72,74 Z" />
   </g>
-</g></g></svg>
+</g></g></g></svg>

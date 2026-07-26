@@ -401,14 +401,25 @@ static void bar_popover_layout(void) {
 		}
 	}
 	if (config.bar_panel_shadow && config.shadows) {
+		/* Grown on every side and offset, exactly as the bar's own panels are
+		 * -- a shadow drawn at the panel's own box has no room outside it to
+		 * fall off into, so an opaque panel hides the whole thing. See
+		 * bar_panel_apply. */
+		int32_t delta = (int32_t)config.shadows_size;
+		int32_t sx = x - delta + config.shadows_position_x;
+		int32_t sy = y - delta + config.shadows_position_y;
+		int32_t sw = width + 2 * delta, sh = height + 2 * delta;
+		int32_t sradius = radius + delta;
 		if (!panel->shadow)
 			panel->shadow = wlr_scene_shadow_create(
-				bar_popover.panel_tree, width, height, radius,
-				config.shadows_blur, config.shadowscolor);
+				bar_popover.panel_tree, sw, sh, sradius, config.shadows_blur,
+				config.shadowscolor);
 		if (panel->shadow) {
-			wlr_scene_shadow_set_size(panel->shadow, width, height);
-			wlr_scene_shadow_set_corner_radius(panel->shadow, radius);
-			wlr_scene_node_set_position(&panel->shadow->node, x, y);
+			wlr_scene_shadow_set_size(panel->shadow, sw, sh);
+			wlr_scene_shadow_set_corner_radius(panel->shadow, sradius);
+			wlr_scene_shadow_set_blur_sigma(panel->shadow,
+											config.shadows_blur);
+			wlr_scene_node_set_position(&panel->shadow->node, sx, sy);
 			wlr_scene_node_set_enabled(&panel->shadow->node, true);
 			wlr_scene_node_lower_to_bottom(&panel->shadow->node);
 		}
@@ -856,7 +867,32 @@ static void bar_popover_open_voice(Monitor *m, int32_t anchor_x) {
 	if (!bar_popover_open(m, BAR_POPOVER_VOICE, anchor_x))
 		return;
 
+	/* Ask for a fresh list. The daemon pushes `channels` on its own schedule,
+	 * so a session that has not been in a voice channel yet has never been
+	 * sent one -- see bar_popover_voice_channels_arrived for what happens when
+	 * the answer turns up. */
+	bar_dv_send("{\"cmd\":\"channels\"}");
+
 	int32_t n = 0;
+	/* What is going on, always. Without this the menu was EMPTY whenever the
+	 * daemon was connected but idle and no channel snapshot had arrived, and
+	 * an empty popover closes itself -- so clicking the module did nothing at
+	 * all, which reads as a broken button rather than as "nothing to show". */
+	BarPopoverRow *st = bar_popover_row_get(n);
+	if (st) {
+		if (bar_dv.error[0])
+			snprintf(st->text, sizeof(st->text), "%s", bar_dv.error);
+		else if (bar_dv.state == BAR_DV_CONNECTED)
+			snprintf(st->text, sizeof(st->text), "%s", bar_dv_label());
+		else if (bar_dv.username[0])
+			snprintf(st->text, sizeof(st->text), "%s  ·  %s", bar_dv.username,
+					 bar_dv_label());
+		else
+			snprintf(st->text, sizeof(st->text), "%s", bar_dv_label());
+		st->enabled = false;
+		n++;
+	}
+
 	if (bar_dv.state == BAR_DV_CONNECTED) {
 		BarPopoverRow *r = bar_popover_row_get(n);
 		if (r) {
@@ -891,6 +927,14 @@ static void bar_popover_open_voice(Monitor *m, int32_t anchor_x) {
 		snprintf(r->value, sizeof(r->value), "%s\x1f%s", c->guild, c->id);
 		r->selected = strcmp(c->id, bar_dv.channel_id) == 0;
 		n++;
+	}
+	if (bar_dv.nchannels == 0 && n < BAR_POPOVER_MAX_ROWS) {
+		BarPopoverRow *r = bar_popover_row_get(n);
+		if (r) {
+			snprintf(r->text, sizeof(r->text), "%s", "no voice channels");
+			r->enabled = false;
+			n++;
+		}
 	}
 
 	bar_popover.nrows = n;
@@ -1920,6 +1964,45 @@ static void bar_popover_open_arrange(Monitor *m, int32_t anchor_x) {
 	}
 	bar_popover.nrows = n;
 	bar_popover_layout();
+}
+
+/* ─── late content ────────────────────────────────────────────────────────── */
+
+/* Both of these menus are built from data that is fetched when they OPEN and
+ * arrives a round trip later -- a subprocess for nordvpn, a daemon push for
+ * discord. Drawn once, the first open always showed the pre-answer version and
+ * only a second one showed the real menu. Rebuilding in place is the whole
+ * fix: nothing was broken except that nobody told the popover its content had
+ * turned up.
+ *
+ * Rebuild rather than patch rows, because the row COUNT changes and the panel
+ * has to resize with it. */
+static void bar_popover_rebuild(enum bar_popover_kind kind) {
+	if (!bar_popover_is_open(kind))
+		return;
+	Monitor *m = bar_popover.mon;
+	if (!m)
+		return;
+	int32_t ax = m->m.x + bar_popover.anchor_x;
+	bar_popover_close();
+	switch (kind) {
+	case BAR_POPOVER_VPN:
+		bar_popover_open_vpn(m, ax);
+		break;
+	case BAR_POPOVER_VOICE:
+		bar_popover_open_voice(m, ax);
+		break;
+	default:
+		break;
+	}
+}
+
+static void bar_popover_vpn_countries_arrived(void) {
+	bar_popover_rebuild(BAR_POPOVER_VPN);
+}
+
+static void bar_popover_voice_channels_arrived(void) {
+	bar_popover_rebuild(BAR_POPOVER_VOICE);
 }
 
 /* ─── input ───────────────────────────────────────────────────────────────── */

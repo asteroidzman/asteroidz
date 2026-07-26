@@ -4821,7 +4821,7 @@ void set_value_default() {
 	config.bar_panel_enable = 1;
 	convert_hex_to_rgba(config.bar_panel_color, 0x0a0a0cd9); /* ~85% opaque */
 	config.bar_panel_radius = 9;
-	config.bar_panel_padding = 6;
+	config.bar_panel_padding = 12;
 	config.bar_panel_blur = 1;
 	config.bar_panel_shadow = 1;
 	config.bar_interval = 2;

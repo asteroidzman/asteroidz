@@ -1254,16 +1254,25 @@ static struct {
 
 static sd_bus_slot *bar_notify_slots[2] = {0};
 
-/* Which bell the pill draws. The unread COUNT is carried by the label beside
- * it, so the artwork only has to distinguish the three states of "will this
- * interrupt me": inhibited outranks dnd, being the stronger statement about
- * what is happening to incoming notifications. */
+/* Which bell the pill draws -- which is the WHOLE reading, count included.
+ *
+ * An empty bell means nothing is waiting, a filled one means something is.
+ * That is the question this module gets consulted for; how many there are is
+ * not, and a number beside the glyph cost a pill that changed width, a reserve
+ * to stop it reflowing, and half that reserve as dead space either side of the
+ * module whenever the count was absent -- which is nearly always.
+ *
+ * Inhibited outranks dnd, being the stronger statement about what is happening
+ * to incoming notifications; both outrank "there are some", because whether
+ * you will be interrupted matters more than whether there is anything to be
+ * interrupted by. */
 static const char *bar_notify_icon_name(void) {
 	if (bar_notify.inhibited)
 		return "asteroidz-bar/bell-sleep.svg";
 	if (bar_notify.dnd)
 		return "asteroidz-bar/bell-off.svg";
-	return "asteroidz-bar/bell.svg";
+	return bar_notify.count > 0 ? "asteroidz-bar/bell.svg"
+								: "asteroidz-bar/bell-outline.svg";
 }
 
 static void bar_notify_set(uint32_t count, bool dnd, bool cc_open,
@@ -2337,9 +2346,8 @@ static void bar_module_refresh_volume(BarModule *mod) {
 		bar_pill_release(&mod->pills[i]);
 }
 
-/* Bell glyph, plus the unread count when there is one. waybar shows the icon
- * alone and puts the number in a tooltip; a bar pill has no tooltip, and "how
- * many" is most of what the glyph is being consulted for. */
+/* Bell glyph, and nothing else: empty when nothing is waiting, filled when
+ * something is. See bar_notify_icon_name. */
 static void bar_module_refresh_notify(BarModule *mod) {
 	bar_notify_start();
 	BarPill *p = bar_pill_get(mod, 0);
@@ -2354,30 +2362,16 @@ static void bar_module_refresh_notify(BarModule *mod) {
 										 bar_notify.count > 0 && !bar_notify.dnd
 											 ? config.theme.focus_bg_color
 											 : config.theme.fg_color);
-	if (bar_notify.count > 0)
-		snprintf(p->text, sizeof(p->text), "%u",
-				 bar_notify.count > 99 ? 99 : bar_notify.count);
-	else
-		p->text[0] = '\0';
+	p->text[0] = '\0';
 	p->arg = 0;
-	/* Reserve for a two-digit count only while there IS a count, so a
-	 * notification arriving at 7 and dismissed at 70 never reflows the section
-	 * -- but an idle bell is exactly as wide as the bell.
-	 *
-	 * Reserving unconditionally is what put a hole either side of this module:
-	 * the reserve is centred, so with nothing to show the pill carried ~13px
-	 * of transparency on each side and the gaps to volume and display read at
-	 * twice everything else's. A reserve for content that is usually ABSENT
-	 * buys stability at a moment nobody is looking and pays for it every
-	 * second they are. */
-	p->fixed_width =
-		bar_notify.count > 0 ? bar_template_width(p, "99", bar_pill_height())
-							 : 0;
-	/* unread is worth noticing; do-not-disturb is worth seeing but not
-	 * shouting about, so it reads dimmed rather than filled */
-	bar_pill_style(p, bar_notify.count > 0 && !bar_notify.dnd
-						  ? BAR_LOOK_ACTIVE
-						  : BAR_LOOK_FLAT);
+	/* Icon-only, always: with no label there is nothing to reserve for and
+	 * nothing that can reflow. */
+	p->fixed_width = 0;
+	/* Never filled. The state is the artwork now, and a filled pill made it
+	 * WORSE: the icon is tinted with the accent, and the active look fills the
+	 * pill with that same accent, so having a notification is precisely when
+	 * the bell became invisible. */
+	bar_pill_style(p, BAR_LOOK_FLAT);
 	mod->npills = 1;
 	for (int32_t i = 1; i < BAR_MAX_PILLS; i++)
 		bar_pill_release(&mod->pills[i]);
@@ -2737,14 +2731,38 @@ static void bar_panel_apply(AsteroidzBar *bar, enum bar_slot slot, int32_t x,
 	}
 
 	if (config.bar_panel_shadow && config.shadows) {
+		/* Grown on every side, not drawn at the panel's own box.
+		 *
+		 * A shadow node the same size and in the same place as the panel is
+		 * entirely BEHIND it: the falloff has nowhere outside the panel to
+		 * occupy, so an opaque panel hides all of it and the shadow reads as
+		 * not being drawn at all. Every other shadow here already knows this
+		 * -- a window's box is grown by `delta` a side (see the comment in
+		 * animation/client.h, which documents this exact bug), and an
+		 * overview cell's by the blur sigma -- the bar's was the one that
+		 * did not.
+		 *
+		 * The corner radius grows with the box for the same reason a window's
+		 * does: the shadow's rounding has to follow the panel's outline at
+		 * its new, larger extent, or the corners square off.
+		 *
+		 * `shadow.position` shifts it after that, so the configured downward
+		 * offset lands under the panel the way it does under a window. */
+		int32_t delta = (int32_t)config.shadows_size;
+		int32_t sx = px - delta + config.shadows_position_x;
+		int32_t sy = py - delta + config.shadows_position_y;
+		int32_t sw = pw + 2 * delta, sh = ph + 2 * delta;
+		int32_t sradius = radius + delta;
 		if (!panel->shadow)
 			panel->shadow = wlr_scene_shadow_create(
-				bar->panel_tree, pw, ph, radius, config.shadows_blur,
+				bar->panel_tree, sw, sh, sradius, config.shadows_blur,
 				config.shadowscolor);
 		if (panel->shadow) {
-			wlr_scene_shadow_set_size(panel->shadow, pw, ph);
-			wlr_scene_shadow_set_corner_radius(panel->shadow, radius);
-			wlr_scene_node_set_position(&panel->shadow->node, px, py);
+			wlr_scene_shadow_set_size(panel->shadow, sw, sh);
+			wlr_scene_shadow_set_corner_radius(panel->shadow, sradius);
+			wlr_scene_shadow_set_blur_sigma(panel->shadow,
+											config.shadows_blur);
+			wlr_scene_node_set_position(&panel->shadow->node, sx, sy);
 			wlr_scene_node_set_enabled(&panel->shadow->node, true);
 			wlr_scene_node_lower_to_bottom(&panel->shadow->node);
 		}
@@ -3116,9 +3134,21 @@ static void bar_layout(Monitor *m) {
 				trail = pp;
 			}
 		}
+		/* Trim the end pills' INK inset as well as their unused reserve, so
+		 * `panel.padding` is the distance to what you can see rather than to a
+		 * pill's box.
+		 *
+		 * The two differ by kind, which made a section's own two ends
+		 * disagree: measured, a centre panel led by the clock and ended by an
+		 * icon read 14px on the left and 6px on the right, because a labelled
+		 * pill carries `pill-padding` inside its box and artwork carries
+		 * nothing. Chips are exempt for the same reason they are exempt from
+		 * the module gap -- a chip's background is an edge you can see, so its
+		 * padding is not slack. */
 		bar_panel_apply(bar, (enum bar_slot)s, slot_start[s], w, y, height,
-						lead ? lead->slack_lead : 0,
-						trail ? trail->slack_trail : 0);
+						lead ? lead->slack_lead + bar_pill_ink_inset(lead) : 0,
+						trail ? trail->slack_trail + bar_pill_ink_inset(trail)
+							  : 0);
 	}
 }
 

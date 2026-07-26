@@ -1,6 +1,6 @@
 <?xml version='1.0' encoding='UTF-8'?>
 <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
-  <g transform="translate(-2.4906 -2.4906) scale(1.207547)"><g transform="translate(-3.2381 -2.7619) scale(0.304762)"><rect x="44" y="16" width="12" height="20" rx="3" fill="#ffffff" />
+  <g transform="translate(0.0000 0.0000) scale(1.000000)"><g transform="translate(-2.4906 -2.4906) scale(1.207547)"><g transform="translate(-3.2381 -2.7619) scale(0.304762)"><rect x="44" y="16" width="12" height="20" rx="3" fill="#ffffff" />
   <path d="M28,34 H72 V66 H60 V78 H40 V66 H28 Z" fill="none" stroke="#ffffff" stroke-width="6" stroke-linejoin="round" />
   <g stroke="#ffffff" stroke-width="5" stroke-linecap="round"><line x1="37" y1="42" x2="37" y2="56" /><line x1="50" y1="42" x2="50" y2="56" /><line x1="63" y1="42" x2="63" y2="56" /></g>
-</g></g></svg>
+</g></g></g></svg>

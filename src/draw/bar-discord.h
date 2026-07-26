@@ -1,6 +1,10 @@
 #ifndef ASTEROIDZ_BAR_DISCORD_H
 #define ASTEROIDZ_BAR_DISCORD_H
 
+/* Defined in bar-popover.h, included after this file -- one translation unit,
+ * so a forward declaration is all this needs. */
+static void bar_popover_voice_channels_arrived(void);
+
 /* Discord voice status, from the standalone `discord-voiced` daemon.
  *
  * ALL Discord, audio and tokio work stays in that daemon; this is a thin IPC
@@ -142,6 +146,9 @@ static void bar_dv_on_line(const char *line, void *user) {
 				bar_dv.nchannels++;
 		}
 		bar_dv_resolve_channel_name();
+		/* the join menu asks for this list when it opens; redraw it if it is
+		 * sitting there waiting for the answer */
+		bar_popover_voice_channels_arrived();
 	} else if (!strcmp(ev, "ready")) {
 		snprintf(bar_dv.username, sizeof(bar_dv.username), "%s",
 				 bar_dv_json_str(root, "username", ""));

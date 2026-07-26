@@ -1,6 +1,10 @@
 #ifndef ASTEROIDZ_BAR_VPN_H
 #define ASTEROIDZ_BAR_VPN_H
 
+/* Defined in bar-popover.h, which is included after this file -- the two are
+ * one translation unit, so a forward declaration is all this needs. */
+static void bar_popover_vpn_countries_arrived(void);
+
 /* NordVPN connection state, from the `nordvpn` CLI.
  *
  * Icon only, with the COLOUR carrying the state -- the same redesign the
@@ -142,6 +146,16 @@ static void bar_vpn_on_countries(const char *out, size_t len, void *user) {
 		bar_vpn.countries[bar_vpn.ncountries][n] = '\0';
 		bar_vpn.ncountries++;
 	}
+
+	/* Redraw the menu that asked for this.
+	 *
+	 * The list is fetched when the popover opens and arrives a subprocess
+	 * later, so the FIRST open always rendered before it -- one "Quick
+	 * Connect" row and no countries -- and only a second open showed the
+	 * real menu. Nothing was broken except that nobody told the popover its
+	 * content had turned up. */
+	if (bar_vpn.ncountries > 0)
+		bar_popover_vpn_countries_arrived();
 }
 
 static void bar_vpn_poll(void) {
