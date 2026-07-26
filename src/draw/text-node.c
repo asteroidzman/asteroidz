@@ -85,6 +85,34 @@ static char *resolve_icon_path(const char *name) {
 	return found;
 }
 
+/* Font rendering options for every layout this file creates.
+ *
+ * Pango-on-cairo used directly inherits NOTHING from the desktop's font
+ * settings -- that plumbing lives in GTK, which is why a GTK bar and this one
+ * rendered the same font differently and the compositor's text looked coarser
+ * beside it. Set them explicitly instead of taking cairo's defaults.
+ *
+ * Grayscale rather than subpixel: fontconfig on this desktop advertises RGB,
+ * but the desktop setting (org.gnome.desktop.interface font-antialiasing) says
+ * grayscale, and that is what every GTK client actually renders with. Subpixel
+ * also assumes a fixed physical pixel order, which is wrong the moment a
+ * surface is scaled or rotated -- and bar pills are rendered at the output's
+ * scale factor.
+ *
+ * Slight hinting keeps stems crisp without distorting advance widths, which
+ * matters here because widths are MEASURED and then pinned: full hinting moves
+ * glyph advances enough that a pinned pill can end up a pixel short. */
+static const cairo_font_options_t *asteroidz_font_options(void) {
+	static cairo_font_options_t *opts = NULL;
+	if (!opts) {
+		opts = cairo_font_options_create();
+		cairo_font_options_set_antialias(opts, CAIRO_ANTIALIAS_GRAY);
+		cairo_font_options_set_hint_style(opts, CAIRO_HINT_STYLE_SLIGHT);
+		cairo_font_options_set_hint_metrics(opts, CAIRO_HINT_METRICS_ON);
+	}
+	return opts;
+}
+
 static cairo_surface_t *pixbuf_to_cairo_surface(GdkPixbuf *pixbuf) {
 	int w = gdk_pixbuf_get_width(pixbuf);
 	int h = gdk_pixbuf_get_height(pixbuf);
@@ -406,6 +434,8 @@ asteroidz_jump_label_node_create(struct wlr_scene_tree *parent,
 		cairo_image_surface_create(CAIRO_FORMAT_ARGB32, 1, 1);
 	node->measure_cr = cairo_create(node->measure_surface);
 	node->measure_context = pango_cairo_create_context(node->measure_cr);
+	pango_cairo_context_set_font_options(node->measure_context,
+										 asteroidz_font_options());
 	node->measure_layout = pango_layout_new(node->measure_context);
 	node->measure_scale = 1.0f;
 
@@ -743,6 +773,7 @@ void asteroidz_jump_label_node_update(struct asteroidz_jump_label_node *node,
 	cairo_translate(cr, text_x, text_y);
 
 	PangoContext *ctx = pango_cairo_create_context(cr);
+	pango_cairo_context_set_font_options(ctx, asteroidz_font_options());
 	pango_cairo_context_set_resolution(ctx, 96.0 * scale);
 	PangoLayout *layout = pango_layout_new(ctx);
 	PangoFontDescription *desc = get_cached_font_desc(node->font_desc);
@@ -859,6 +890,8 @@ asteroidz_tab_bar_node_create(void *asteroidz_node_data, struct wlr_scene_tree *
 		cairo_image_surface_create(CAIRO_FORMAT_ARGB32, 1, 1);
 	node->measure_cr = cairo_create(node->measure_surface);
 	node->measure_context = pango_cairo_create_context(node->measure_cr);
+	pango_cairo_context_set_font_options(node->measure_context,
+										 asteroidz_font_options());
 	node->measure_layout = pango_layout_new(node->measure_context);
 	node->measure_scale = 1.0f;
 
@@ -1480,6 +1513,8 @@ void asteroidz_tab_bar_node_update(struct asteroidz_tab_bar_node *node,
 		double text_area_h = text_area_logical_h * scale;
 
 		PangoContext *ctx = pango_cairo_create_context(cr);
+		pango_cairo_context_set_font_options(ctx, asteroidz_font_options());
+	pango_cairo_context_set_font_options(ctx, asteroidz_font_options());
 		pango_cairo_context_set_resolution(ctx, 96.0 * scale);
 		PangoLayout *layout = pango_layout_new(ctx);
 		PangoFontDescription *desc = get_cached_font_desc(node->font_desc);

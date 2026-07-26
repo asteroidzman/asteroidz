@@ -2016,11 +2016,22 @@ static void bar_module_refresh_tray(BarModule *mod) {
 		/* the index into bar_tray_items, so a click can find the item again
 		 * without the pill holding a pointer into a table that compacts */
 		p->arg = (uint32_t)i;
-		p->text[0] = '\0';
+		/* An icon-only pill with no icon measures to a single pixel and simply
+		 * is not there -- the item vanishes from the tray with no hint that it
+		 * exists. Fall back to the start of its Id so the slot is visible and
+		 * identifiable while the artwork is still being chased. */
+		if (it->icon_key[0]) {
+			p->text[0] = '\0';
+		} else {
+			const char *label = it->id[0] ? it->id : it->title;
+			snprintf(p->text, sizeof(p->text), "%.3s", label[0] ? label : "?");
+		}
 		asteroidz_tab_bar_node_set_icon(p->node, it->icon_key);
 		/* real application artwork, not a stencil: never tint it */
 		asteroidz_tab_bar_node_set_icon_tint(p->node, NULL);
-		p->fixed_width = bar_icon_pill_width(p, bar_pill_height());
+		p->fixed_width = p->text[0]
+							 ? bar_template_width(p, p->text, bar_pill_height())
+							 : bar_icon_pill_width(p, bar_pill_height());
 		bar_pill_style(p, strcmp(it->status, "NeedsAttention") == 0
 							  ? BAR_LOOK_URGENT
 							  : BAR_LOOK_FLAT);
@@ -2685,6 +2696,7 @@ static int bar_clock_tick(void *data) {
 }
 
 static int bar_metrics_tick(void *data) {
+	bar_tray_retry_icons();
 	(void)data;
 	bar_metrics_sample();
 	bar_update_all();

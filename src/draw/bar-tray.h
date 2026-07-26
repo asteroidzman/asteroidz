@@ -54,6 +54,11 @@ typedef struct {
 	 * property. Empty when the item ships no menu, which is the case that
 	 * still falls back to SecondaryActivate. */
 	char menu_path[128];
+	/* Properties are fetched once when the item registers, but an application
+	 * can register before it is ready to answer -- quickshell's does -- and a
+	 * reply that arrives empty leaves the item with no artwork and no reason
+	 * to ever ask again. Bounded retries, cleared as soon as anything renders. */
+	int32_t icon_retries;
 	bool used;
 } BarTrayItem;
 
@@ -325,10 +330,19 @@ static int bar_tray_on_props(sd_bus_message *m, void *user, sd_bus_error *err) {
 		it->icon_key[0] = '\0';
 	}
 
+	/* Nothing to draw yet: ask again shortly rather than leaving a permanently
+	 * blank slot. An item that genuinely has no artwork stops after a few
+	 * tries and falls back to its Id in the pill. */
+	if (!it->icon_key[0] && it->icon_retries < 5)
+		it->icon_retries++;
+	else if (it->icon_key[0])
+		it->icon_retries = 0;
+
 	free(service);
 	bar_update_all();
 	return 0;
 }
+
 
 static void bar_tray_fetch_props(BarTrayItem *it) {
 	if (!session_bus || !it)
@@ -348,6 +362,18 @@ static void bar_tray_fetch_props(BarTrayItem *it) {
 		return;
 	}
 	sd_bus_flush(session_bus);
+}
+
+/* Re-ask any item that still has no artwork. Driven from the bar's existing
+ * metrics tick, so it costs one bus call per unresolved item per interval and
+ * nothing at all once everything has an icon. */
+static void bar_tray_retry_icons(void) {
+	for (int32_t i = 0; i < bar_tray_nitems; i++) {
+		BarTrayItem *it = &bar_tray_items[i];
+		if (it->used && !it->icon_key[0] && it->icon_retries > 0 &&
+			it->icon_retries < 5)
+			bar_tray_fetch_props(it);
+	}
 }
 
 /* ─── item lifecycle ──────────────────────────────────────────────────────── */
