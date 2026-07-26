@@ -831,3 +831,41 @@ test_bar_panels_cast_a_shadow() {
 
 	bar_off
 }
+
+test_bar_tooltip_appears_on_hover_and_leaves_on_exit() {
+	[ "$(bar_supported)" = "true" ] || { echo "  (skip: built without -Dnative-bar)"; return 0; }
+	command -v python3 >/dev/null && python3 -c "import PIL" 2>/dev/null || {
+		echo "  (skip: python3 PIL not available)"; return 0; }
+
+	# The bar is deliberately terse -- no number on a metric, no count on the
+	# bell, a capped title -- and the tooltip is where the answers live. What
+	# is pinned here is the hover contract itself: it appears only after the
+	# pointer SETTLES, and it goes when the pointer does. A tooltip that
+	# outlives the hover would sit over the desktop forever.
+	hl_dispatch "view,1"
+	bar_set 'bar { enable true; height 30; position "top"; margin { x 8; y 4 }; panel { enable true; radius 9; padding 12; blur false; shadow false }; show-logo false; tag-icons 0; modules-left "tags"; modules-center "clock"; tooltip { enable true; delay 200 } }'
+	sleep 1
+
+	local cx=$((HL_WIDTH / 2))
+	# below the strip (4+30) and its popover gap: only a tooltip lives here
+	local y0=42 y1=80
+	hl_screenshot tip-none
+	local base; base="$(hl_region_ink "$HL_OUTDIR/tip-none.png" $((cx - 200)) $y0 $((cx + 200)) $y1)"
+
+	hl_move "$cx" 19
+	sleep 1
+	hl_screenshot tip-shown
+	local shown; shown="$(hl_region_ink "$HL_OUTDIR/tip-shown.png" $((cx - 200)) $y0 $((cx + 200)) $y1)"
+	hl_assert_true "hovering a pill shows a tooltip below the bar ($base -> $shown px)" \
+		"$([ "$shown" -gt $((base + 500)) ] && echo true || echo false)"
+
+	# leave the bar entirely
+	hl_move "$cx" 600
+	sleep 0.6
+	hl_screenshot tip-gone
+	local gone; gone="$(hl_region_ink "$HL_OUTDIR/tip-gone.png" $((cx - 200)) $y0 $((cx + 200)) $y1)"
+	hl_assert_true "and moving off it takes the tooltip away ($gone px)" \
+		"$([ "$gone" -le $((base + 500)) ] && echo true || echo false)"
+
+	bar_off
+}

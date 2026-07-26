@@ -460,6 +460,8 @@ typedef struct {
 	 * whatever precedes it. Each pill's own padding is subtracted from these,
 	 * so what is configured is what you SEE regardless of the kinds either
 	 * side (see bar_module_gap). */
+	bool bar_tooltip_enable;
+	int32_t bar_tooltip_delay;
 	int32_t bar_module_spacing;
 	int32_t bar_tray_spacing;
 	/* Media visualiser. Deliberately separate knobs from the rest: this is the
@@ -2318,6 +2320,10 @@ bool parse_option(Config *config, char *key, char *value) {
 		config->bar_pill_padding = CLAMP_INT(atoi(value), 0, 200);
 	} else if (strcmp(key, "bar_tag_padding") == 0) {
 		config->bar_tag_padding = CLAMP_INT(atoi(value), 0, 200);
+	} else if (strcmp(key, "bar_tooltip_enable") == 0) {
+		config->bar_tooltip_enable = atoi(value) != 0;
+	} else if (strcmp(key, "bar_tooltip_delay") == 0) {
+		config->bar_tooltip_delay = CLAMP_INT(atoi(value), 0, 5000);
 	} else if (strcmp(key, "bar_module_spacing") == 0) {
 		config->bar_module_spacing = CLAMP_INT(atoi(value), 0, 200);
 	} else if (strcmp(key, "bar_tray_spacing") == 0) {
@@ -3704,6 +3710,8 @@ static const struct {
 	{"bar/pill-padding", "bar_pill_padding"},
 	{"bar/tag-padding", "bar_tag_padding"},
 	{"bar/volume-step", "bar_volume_step"},
+	{"bar/tooltip/enable", "bar_tooltip_enable"},
+	{"bar/tooltip/delay", "bar_tooltip_delay"},
 	{"bar/module-spacing", "bar_module_spacing"},
 	{"bar/tray-spacing", "bar_tray_spacing"},
 	{"bar/media/bars", "bar_media_bars"},
@@ -4818,6 +4826,8 @@ void set_value_default() {
 	config.bar_tag_padding = 16;
 	/* Visible separation, not a raw gap: modest between modules, wider before
 	 * the tray so other applications' icons read as their own group. */
+	config.bar_tooltip_enable = true;
+	config.bar_tooltip_delay = 500;
 	config.bar_module_spacing = 12;
 	config.bar_tray_spacing = 24;
 	config.bar_volume_step = 5;

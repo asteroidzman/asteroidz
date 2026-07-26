@@ -51,6 +51,8 @@ bar {
 | `popover.padding` | `12` | horizontal padding inside a row |
 | `popover.gap` | `6` | distance from the bar's outer edge |
 | `popover.color` | `0x0a0a0cf2` | popover fill (RGBA) |
+| `tooltip.enable` | `true` | hover text under the bar |
+| `tooltip.delay` | `500` | ms the pointer must settle on a pill first |
 | `min-tags` | `3` | pad the visible tag set up to this many with empty tags |
 | `show-logo` | `true` | leading asteroidz ship pill on the workspace group |
 | `tag-icons` | `3` | app icons drawn inside each tag pill (0 disables, max 4) |
@@ -396,6 +398,45 @@ the display so its tone-mapper knows what it is being handed — so a control on
 them would be inventing hardware facts, and an unset one has no honest value to
 step away from. They stay output rules in the config, where a claim about your
 hardware belongs.
+
+## Tooltips
+
+Hovering a pill puts a line of text under the bar after `tooltip.delay`.
+
+The bar is deliberately terse — a metric pill carries no number, the bell no
+count, the title is capped, the now-playing string ellipsises. Each of those is
+the right call for something you look at all day and read at a glance, and each
+leaves a question the pill cannot answer. That is what the hover is for, and it
+costs nothing until you ask.
+
+A module that already shows its whole state gets **no** tooltip: the layout
+chip, a title that fits. Repeating the pill would cover something in order to
+tell you what you are already looking at. What the rest say:
+
+| module | hover |
+|---|---|
+| `clock` | the long date |
+| `cpu`, `memory` | the exact percentage the pill deliberately omits |
+| `network` | interface and current throughput |
+| `weather` | the WMO code in words — which of the four rain icons is that |
+| `notifications` | **the unread count**, which is why the bell no longer draws one |
+| `volume` | level, and whether it is muted |
+| `idle` | whether the screen is being kept awake |
+| `title` | the full title, *only* when the pill had to cut it |
+| `media` | title — artist, unellipsised |
+| `display` | the focused output's mode, and HDR |
+| `vpn` | country and server |
+| `discord` | voice state, mute and push-to-talk |
+| `medication` | which doses are due, by name and time |
+| `tray` | the item's SNI `Title` — literally what the spec says a tray tooltip is for, fetched all along and never shown until now |
+
+It is **not** a popover: nothing to click, no grab, no keyboard. It goes away
+the moment the pointer leaves the pill, a button goes down, or a popover opens.
+Anything you can act on belongs in a popover instead.
+
+Moving along a row of pills while one is already up re-shows almost
+immediately rather than restarting the full delay — the behaviour every toolkit
+has, and the reason hovering a toolbar feels responsive rather than sticky.
 
 ## Popovers
 

@@ -1713,6 +1713,9 @@ static void bar_viz_finish(void) {
 #include "bar-medication.h"
 #include "bar-popover.h"
 #include "bar-tray.h"
+/* last: its content function reaches into every module's state, including the
+ * tray's */
+#include "bar-tooltip.h"
 
 /* ─── per-module content ──────────────────────────────────────────────────── */
 

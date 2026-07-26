@@ -375,6 +375,12 @@ hl_wait_watch_grew() {
 	return 1
 }
 
+# hl_move X Y -- move the pointer without pressing anything, which is what
+# hover behaviour (tooltips) needs and what hl_click cannot express.
+hl_move() { # hl_move X Y
+	"$HL_WLVPTR" "$1" "$2" "$HL_PTR_EXTENT_W" "$HL_PTR_EXTENT_H"
+}
+
 hl_click() { # hl_click X Y [click|rclick|mclick]
 	"$HL_WLVPTR" "$1" "$2" "$HL_PTR_EXTENT_W" "$HL_PTR_EXTENT_H" "${3:-click}"
 }

@@ -3145,6 +3145,11 @@ bool handle_buttonpress(struct wlr_pointer_button_event *event) {
 		return true;
 	}
 
+	/* Any press dismisses hover text: you have stopped asking what a thing is
+	 * and started using it, and a tooltip left over a popover it just opened
+	 * is the worst of both. */
+	bar_tooltip_hide();
+
 	switch (event->state) {
 	case WL_POINTER_BUTTON_STATE_PRESSED:
 		cursor_mode = CurPressed;
@@ -6811,6 +6816,10 @@ void motionnotify(uint32_t time, struct wlr_input_device *device, double dx,
 			screenshot_ui_handle_motion();
 		return;
 	}
+
+	/* Hover text for the bar, which needs every move: the delay timer is armed
+	 * on the pill you settle on and cancelled the moment you leave it. */
+	bar_tooltip_motion(cursor->x, cursor->y);
 
 	/* Dragging a monitor on the arrange canvas owns the pointer outright: the
 	 * tile follows it and nothing underneath should see the motion, the same

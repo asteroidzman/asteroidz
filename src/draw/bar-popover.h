@@ -877,11 +877,15 @@ static void bar_popover_open_voice(Monitor *m, int32_t anchor_x) {
 	if (!bar_popover_open(m, BAR_POPOVER_VOICE, anchor_x))
 		return;
 
-	/* Ask for a fresh list. The daemon pushes `channels` on its own schedule,
-	 * so a session that has not been in a voice channel yet has never been
-	 * sent one -- see bar_popover_voice_channels_arrived for what happens when
-	 * the answer turns up. */
-	bar_dv_send("{\"cmd\":\"channels\"}");
+	/* No request is sent. The daemon's command set is join/leave/mute/
+	 * rebind_ptt and nothing else -- it pushes `channels` itself, as part of
+	 * the snapshot it sends on connect and again whenever the list changes.
+	 * Asking for one got back "unknown command: channels", which the daemon
+	 * reports as an error, which latched the pill into its urgent state: an
+	 * invented command is worse than a missing feature, because it breaks the
+	 * thing it was meant to help. bar_popover_voice_channels_arrived redraws
+	 * this menu if a push lands while it is open.
+	 */
 
 	int32_t n = 0;
 	BarPopoverRow *r = NULL;
