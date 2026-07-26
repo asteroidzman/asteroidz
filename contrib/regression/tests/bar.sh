@@ -542,3 +542,31 @@ test_bar_media_module_without_a_session_bus() {
 		"$([ $((t1 - t0)) -lt 5 ] && echo true || echo false)"
 	bar_off
 }
+
+test_bar_accepts_every_module_at_once_without_dropping_any() {
+	[ "$(bar_supported)" = "true" ] || { echo "  (skip: built without -Dnative-bar)"; return 0; }
+	# BAR_MAX_MODULES is a total across all three sections, not per section,
+	# and it used to sit BELOW the number of module kinds that exist: a real
+	# config asking for seventeen silently lost its last five, tray included.
+	#
+	# NOT asserted here: that nothing was dropped. The overflow path warns via
+	# fprintf(stderr) and the harness does not capture the compositor's stderr
+	# (comp-stdout.log comes back empty), so a grep for it passes whether or
+	# not modules were lost -- this test was written that way first and
+	# "passed" with the broken cap still in place. The cap itself is pinned by
+	# a _Static_assert in bar.h tying it to BAR_MODULE_KIND_COUNT, which the
+	# compiler checks and which does fail when the cap is too small.
+	#
+	# What this DOES pin is that loading every module at once is survivable:
+	# seventeen modules across three sections, several of them spawning
+	# subprocesses or reaching for a session bus that is not there.
+	bar_set 'bar { enable true; height 30; margin { x 8; y 4 }; modules-left "tags,layout,title"; modules-center "media,clock,weather,idle"; modules-right "cpu,memory,network,vpn,discord,medication,volume,notify,display,tray" }'
+	sleep 1
+	hl_assert_true "a bar with every module loaded leaves the compositor healthy" \
+		"$(hl_get "get all-monitors" >/dev/null 2>&1 && echo true || echo false)"
+	local t0 t1
+	t0=$(date +%s); hl_dispatch "view,2"; hl_dispatch "view,1"; t1=$(date +%s)
+	hl_assert_true "and does not stall IPC" \
+		"$([ $((t1 - t0)) -lt 5 ] && echo true || echo false)"
+	bar_off
+}

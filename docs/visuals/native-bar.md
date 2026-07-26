@@ -64,6 +64,12 @@ bar {
 | `modules-left` | `"tags,layout,title"` | comma-separated module list |
 | `modules-center` | `"clock"` | " |
 | `modules-right` | *(empty)* | " |
+
+The three module lists share one budget of **24 modules total**, not 24 each.
+Past it the parse stops and everything after that point is dropped, warning on
+stderr — `asteroidz -p` will *not* catch it, because modules are parsed when a
+bar is built per monitor rather than when the config is read.
+
 | `clock.format` | `"%H:%M:%S"` | `strftime` format |
 | `media-width` | `280` | pinned width of the now-playing pill |
 | `media.visualiser` | `true` | animate a spectrum in the media pill while playing |

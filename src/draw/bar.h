@@ -25,7 +25,18 @@
  */
 
 #define BAR_MAX_PILLS 16
-#define BAR_MAX_MODULES 12
+/* Total across ALL THREE sections, not per section.
+ *
+ * Was 12, which is fewer than the number of module kinds that exist -- a bar
+ * listing each module once could not be expressed, and the overflow is a
+ * stderr warning nobody reads: a real config asking for 17 silently lost its
+ * last five, tray included. Sized above the kind count with room for the
+ * handful that legitimately repeat, so hitting this again means a config
+ * doing something genuinely unusual.
+ *
+ * Not free: a BarModule embeds BAR_MAX_PILLS pills, each carrying a
+ * BAR_TEXT_MAX text buffer, and one of these arrays exists per monitor. */
+#define BAR_MAX_MODULES 24
 #define BAR_TEXT_MAX 256
 
 enum bar_module_kind {
@@ -52,7 +63,16 @@ enum bar_module_kind {
 	BAR_MODULE_DISCORD,
 	BAR_MODULE_VPN,
 	BAR_MODULE_DISPLAY,
+	/* not a module: the count, so the cap below can be checked against it */
+	BAR_MODULE_KIND_COUNT,
 };
+
+/* A config listing every module once must fit, or the parse loop silently
+ * drops the tail -- which is exactly what happened when this cap sat at 12
+ * while seventeen kinds existed. Checked by the compiler rather than left to
+ * whoever adds the eighteenth module to remember. */
+_Static_assert(BAR_MAX_MODULES >= BAR_MODULE_KIND_COUNT - 1,
+			   "BAR_MAX_MODULES must fit one of every bar module kind");
 
 enum bar_slot { BAR_SLOT_LEFT = 0, BAR_SLOT_CENTER, BAR_SLOT_RIGHT,
 				BAR_SLOT_COUNT };
@@ -3271,9 +3291,14 @@ static void bar_add_modules(AsteroidzBar *bar, const char *list,
 			continue;
 		}
 		if (bar->nmodules >= BAR_MAX_MODULES) {
+			/* Name every module being dropped, not just the first. This
+			 * returns -- abandoning the rest of THIS section and every section
+			 * after it -- so a bare "ignoring 'medication'" understates the
+			 * damage by however many modules follow. */
 			fprintf(stderr,
-					"\033[1m\033[33m[WARN]:\033[0m too many bar modules "
-					"(max %d), ignoring '%s'\n",
+					"\033[1m\033[33m[WARN]:\033[0m bar: more than %d modules "
+					"across all sections; DROPPING '%s' and everything after "
+					"it in the list\n",
 					BAR_MAX_MODULES, tok);
 			return;
 		}
