@@ -502,6 +502,41 @@ static int bar_tray_prop_items(sd_bus *bus, const char *path,
 	return sd_bus_message_close_container(reply);
 }
 
+/* Both of these MUST have real getters.
+ *
+ * sd_bus_vtable's NULL getter does not mean "no value" -- it means "read the
+ * value straight out of `userdata + offset`". The vtable is exported with a
+ * NULL userdata and offset 0, so a NULL getter made sd-bus dereference address
+ * zero and take the whole compositor down with it, inside its own dispatch
+ * loop where no frame of ours appears in the backtrace.
+ *
+ * It stayed hidden because reading these is optional: quickshell and Steam
+ * only ever call RegisterStatusNotifierItem. Every libappindicator client
+ * checks for a host FIRST -- nm-applet, blueman-applet and friends -- so the
+ * crash was one common tray application away, on any session, at any time. */
+static int bar_tray_prop_host_registered(sd_bus *bus, const char *path,
+										 const char *interface,
+										 const char *property,
+										 sd_bus_message *reply, void *user,
+										 sd_bus_error *err) {
+	(void)bus; (void)path; (void)interface; (void)property; (void)user;
+	(void)err;
+	/* We are the host whenever we own the watcher: the two live in the same
+	 * process, so there is no window where one exists without the other. A
+	 * client asking this is deciding whether its icon would go anywhere. */
+	return sd_bus_message_append(reply, "b", bar_tray_is_watcher ? 1 : 0);
+}
+
+static int bar_tray_prop_protocol_version(sd_bus *bus, const char *path,
+										  const char *interface,
+										  const char *property,
+										  sd_bus_message *reply, void *user,
+										  sd_bus_error *err) {
+	(void)bus; (void)path; (void)interface; (void)property; (void)user;
+	(void)err;
+	return sd_bus_message_append(reply, "i", 0); /* the spec's only version */
+}
+
 static const sd_bus_vtable bar_tray_watcher_vtable[] = {
 	SD_BUS_VTABLE_START(0),
 	SD_BUS_METHOD("RegisterStatusNotifierItem", "s", "",
@@ -510,9 +545,10 @@ static const sd_bus_vtable bar_tray_watcher_vtable[] = {
 				  bar_tray_method_register_host, SD_BUS_VTABLE_UNPRIVILEGED),
 	SD_BUS_PROPERTY("RegisteredStatusNotifierItems", "as", bar_tray_prop_items,
 					0, SD_BUS_VTABLE_PROPERTY_EMITS_CHANGE),
-	SD_BUS_PROPERTY("IsStatusNotifierHostRegistered", "b", NULL, 0,
-					SD_BUS_VTABLE_PROPERTY_CONST),
-	SD_BUS_PROPERTY("ProtocolVersion", "i", NULL, 0,
+	SD_BUS_PROPERTY("IsStatusNotifierHostRegistered", "b",
+					bar_tray_prop_host_registered, 0,
+					SD_BUS_VTABLE_PROPERTY_EMITS_CHANGE),
+	SD_BUS_PROPERTY("ProtocolVersion", "i", bar_tray_prop_protocol_version, 0,
 					SD_BUS_VTABLE_PROPERTY_CONST),
 	SD_BUS_SIGNAL("StatusNotifierItemRegistered", "s", 0),
 	SD_BUS_SIGNAL("StatusNotifierItemUnregistered", "s", 0),
