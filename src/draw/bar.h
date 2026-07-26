@@ -236,10 +236,16 @@ static bool bar_pill_is_chip(const BarPill *p) {
 static bool bar_pill_is_icon_only(const BarPill *p) {
 	if (!p || !p->module || bar_pill_is_chip(p) || p->text[0] != '\0')
 		return false;
-	/* the two module families that draw artwork and never a label */
+	/* Every module that draws artwork with no label. The text check above
+	 * already excludes the ones that merely HAPPEN to be label-less right now
+	 * (notify with no unread count, medication with no dose), so this list is
+	 * about which pills are artwork-first, not which are momentarily empty. */
 	return bar_kind_is_metric(p->module->kind) ||
 		   p->module->kind == BAR_MODULE_TRAY ||
-		   p->module->kind == BAR_MODULE_VPN;
+		   p->module->kind == BAR_MODULE_VPN ||
+		   p->module->kind == BAR_MODULE_IDLE ||
+		   p->module->kind == BAR_MODULE_NOTIFY ||
+		   p->module->kind == BAR_MODULE_DISPLAY;
 }
 
 static int32_t bar_pill_padding_x(const BarPill *p) {
@@ -1211,15 +1217,16 @@ static struct {
 
 static sd_bus_slot *bar_notify_slots[2] = {0};
 
-static const char *bar_notify_glyph(void) {
-	bool any = bar_notify.count > 0;
-	/* inhibited outranks dnd: it is the stronger statement about what is
-	 * happening to incoming notifications */
+/* Which bell the pill draws. The unread COUNT is carried by the label beside
+ * it, so the artwork only has to distinguish the three states of "will this
+ * interrupt me": inhibited outranks dnd, being the stronger statement about
+ * what is happening to incoming notifications. */
+static const char *bar_notify_icon_name(void) {
 	if (bar_notify.inhibited)
-		return any ? "\U000F009B" : "\U000F0A91";
+		return "asteroidz-bar/bell-sleep.svg";
 	if (bar_notify.dnd)
-		return any ? "\U000F00A0" : "\U000F0A93";
-	return any ? "\U000F009A" : "\U000F009C";
+		return "asteroidz-bar/bell-off.svg";
+	return "asteroidz-bar/bell.svg";
 }
 
 static void bar_notify_set(uint32_t count, bool dnd, bool cc_open,
@@ -2080,19 +2087,23 @@ static void bar_module_refresh_idle(BarModule *mod) {
 		mod->npills = 0;
 		return;
 	}
-	/* The same glyph pair the waybar idle_inhibitor module was configured
-	 * with; there is no SVG for this one in the plugin assets. */
-	static const char *on = "\U000F0176";  /* activated   */
-	static const char *off = "\U000F0FAA"; /* deactivated */
-	snprintf(p->text, sizeof(p->text), "%s",
-			 idle_inhibit_manual ? on : off);
+	/* SVG art, not a glyph pair: the mug matches the nf-md-coffee glyph this
+	 * replaces, but every pill in the bar now draws real artwork at one
+	 * uniform square size, which a font glyph cannot be held to. */
+	char icon[512];
+	bar_icon_path(icon, sizeof(icon),
+				  idle_inhibit_manual ? "asteroidz-bar/idle-on.svg"
+									  : "asteroidz-bar/idle-off.svg");
+	asteroidz_tab_bar_node_set_icon(p->node, icon);
+	asteroidz_tab_bar_node_set_icon_tint(p->node,
+										 idle_inhibit_manual
+											 ? config.theme.focus_bg_color
+											 : config.theme.fg_color);
+	p->text[0] = '\0';
 	p->arg = 0;
-	/* Widest of the two states, so toggling never resizes -- and measured
-	 * rather than pinned square: a square pill at the theme's padding.x
-	 * leaves almost no text area and ellipsised the glyph to "...". */
-	int32_t wa = bar_template_width(p, on, bar_pill_height());
-	int32_t wb = bar_template_width(p, off, bar_pill_height());
-	p->fixed_width = wa > wb ? wa : wb;
+	/* Icon-only, so the width is the artwork's square box: both states draw
+	 * the same size and toggling cannot reflow the section. */
+	p->fixed_width = bar_icon_pill_width(p, bar_pill_height());
 	bar_pill_style(p, idle_inhibit_manual ? BAR_LOOK_ACTIVE : BAR_LOOK_FLAT);
 	mod->npills = 1;
 	for (int32_t i = 1; i < BAR_MAX_PILLS; i++)
@@ -2281,16 +2292,22 @@ static void bar_module_refresh_notify(BarModule *mod) {
 		mod->npills = 0;
 		return;
 	}
+	char icon[512];
+	bar_icon_path(icon, sizeof(icon), bar_notify_icon_name());
+	asteroidz_tab_bar_node_set_icon(p->node, icon);
+	asteroidz_tab_bar_node_set_icon_tint(p->node,
+										 bar_notify.count > 0 && !bar_notify.dnd
+											 ? config.theme.focus_bg_color
+											 : config.theme.fg_color);
 	if (bar_notify.count > 0)
-		snprintf(p->text, sizeof(p->text), "%s %u", bar_notify_glyph(),
+		snprintf(p->text, sizeof(p->text), "%u",
 				 bar_notify.count > 99 ? 99 : bar_notify.count);
 	else
-		snprintf(p->text, sizeof(p->text), "%s", bar_notify_glyph());
+		p->text[0] = '\0';
 	p->arg = 0;
 	/* widest reachable rendering, so arriving notifications never reflow the
-	 * section: the widest glyph plus a two-digit count */
-	p->fixed_width =
-		bar_template_width(p, "\U000F00A0 99", bar_pill_height());
+	 * section: the icon plus a two-digit count */
+	p->fixed_width = bar_template_width(p, "99", bar_pill_height());
 	/* unread is worth noticing; do-not-disturb is worth seeing but not
 	 * shouting about, so it reads dimmed rather than filled */
 	bar_pill_style(p, bar_notify.count > 0 && !bar_notify.dnd
@@ -2319,15 +2336,20 @@ static void bar_module_refresh_medication(BarModule *mod) {
 		mod->npills = 0;
 		return;
 	}
+	/* the plugin's own pill artwork, tinted urgent while a dose is actually
+	 * due and plain while it is only upcoming */
+	char icon[512];
+	bar_icon_path(icon, sizeof(icon), "waybar-medication/pill.svg");
+	asteroidz_tab_bar_node_set_icon(p->node, icon);
+	asteroidz_tab_bar_node_set_icon_tint(p->node, bar_med.ndue > 0
+													  ? config.theme.urgent_color
+													  : config.theme.fg_color);
 	if (bar_med.ndue == 1 && bar_med.due_name[0])
-		snprintf(p->text, sizeof(p->text), "%s %s", BAR_MED_GLYPH,
-				 bar_med.due_name);
+		snprintf(p->text, sizeof(p->text), "%s", bar_med.due_name);
 	else if (bar_med.ndue > 1)
-		snprintf(p->text, sizeof(p->text), "%s %d", BAR_MED_GLYPH,
-				 bar_med.ndue);
+		snprintf(p->text, sizeof(p->text), "%d", bar_med.ndue);
 	else
-		snprintf(p->text, sizeof(p->text), "%s %s", BAR_MED_GLYPH,
-				 bar_med.next_time);
+		snprintf(p->text, sizeof(p->text), "%s", bar_med.next_time);
 	p->arg = 0;
 	/* Free-sized: a dose becoming due is a real change worth a relayout, and
 	 * pinning to the longest medication name would reserve most of the
@@ -2357,9 +2379,19 @@ static void bar_module_refresh_discord(BarModule *mod) {
 		mod->npills = 0;
 		return;
 	}
-	char icon[512];
+	/* Logo, plus the volume plugin's mic-mute artwork as a second icon while
+	 * muted. Mute used to be a font glyph prefixed to the label; drawn as art
+	 * it matches the size and weight of every other icon in the row, which a
+	 * glyph never did. */
+	char icon[512], mic[512];
 	bar_icon_path(icon, sizeof(icon), "waybar-discord-voice/discord.svg");
-	asteroidz_tab_bar_node_set_icon(p->node, icon);
+	if (bar_dv.muted) {
+		bar_icon_path(mic, sizeof(mic), "waybar-volume/mic-mute.svg");
+		const char *icons[2] = {icon, mic};
+		asteroidz_tab_bar_node_set_icons(p->node, icons, 2);
+	} else {
+		asteroidz_tab_bar_node_set_icon(p->node, icon);
+	}
 	/* The logo ships as a solid #000 stencil -- the waybar plugin tints it to
 	 * the widget colour and painted as-is it is an invisible black blob on a
 	 * dark panel, exactly like the sysinfo glyphs. Tinted by state: the theme
@@ -2375,8 +2407,7 @@ static void bar_module_refresh_discord(BarModule *mod) {
 			tint[3] *= 0.45f;
 	}
 	asteroidz_tab_bar_node_set_icon_tint(p->node, tint);
-	snprintf(p->text, sizeof(p->text), "%s%s", bar_dv.muted ? "\U000F036D " : "",
-			 bar_dv_label());
+	snprintf(p->text, sizeof(p->text), "%s", bar_dv_label());
 	p->arg = 0;
 	p->fixed_width = 0; /* the channel name changes only when you move rooms */
 	/* push-to-talk held reads as the active state -- it is the one thing worth
@@ -2439,19 +2470,20 @@ static void bar_module_refresh_display(BarModule *mod) {
 		mod->npills = 0;
 		return;
 	}
-	Monitor *m = mod->mon;
-	int32_t hz = bar_display_hz(m);
-	if (m && m->wlr_output && hz > 0)
-		snprintf(p->text, sizeof(p->text), "%s %dx%d@%d", BAR_DISPLAY_GLYPH,
-				 m->m.width, m->m.height, hz);
-	else if (m)
-		snprintf(p->text, sizeof(p->text), "%s %dx%d", BAR_DISPLAY_GLYPH,
-				 m->m.width, m->m.height);
-	else
-		snprintf(p->text, sizeof(p->text), "%s", BAR_DISPLAY_GLYPH);
+	/* Icon only, the waybar-display plugin's own artwork. The dimensions used
+	 * to ride along here, which was both noise on a bar and misleading: it was
+	 * m->m, the monitor's LOGICAL box, so a 1920x1080 panel at scale 0.75
+	 * announced itself as 2560x1440 while sitting next to a label that reads
+	 * like a mode. The resolution belongs in the popover, where
+	 * bar_display_summary already puts it and where a mode picker will
+	 * eventually need it. */
+	char icon[512];
+	bar_icon_path(icon, sizeof(icon), "waybar-display/display.svg");
+	asteroidz_tab_bar_node_set_icon(p->node, icon);
+	asteroidz_tab_bar_node_set_icon_tint(p->node, config.theme.fg_color);
+	p->text[0] = '\0';
 	p->arg = 0;
-	/* free-sized: a mode change is a real event, not per-tick jitter */
-	p->fixed_width = 0;
+	p->fixed_width = bar_icon_pill_width(p, bar_pill_height());
 	bar_pill_style(p, BAR_LOOK_FLAT);
 	mod->npills = 1;
 	for (int32_t i = 1; i < BAR_MAX_PILLS; i++)

@@ -33,8 +33,6 @@
 
 #define BAR_MED_DUE_WINDOW (6 * 3600)
 #define BAR_MED_MAX 32
-/* U+F0706, nf-md-prescription -- the same glyph the waybar plugin uses */
-#define BAR_MED_GLYPH "\U000F0706"
 
 typedef struct {
 	char name[64];

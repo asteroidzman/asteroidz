@@ -1,0 +1,9 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><g transform="translate(-3.6395 -3.9302) scale(0.297674)"><defs>
+<linearGradient id="sun" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffd27f" /><stop offset="1" stop-color="#ff9a3c" /></linearGradient>
+<linearGradient id="cool" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffffff" /><stop offset="1" stop-color="#dbe0ec" /></linearGradient>
+<linearGradient id="moon" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#f4f6fb" /><stop offset="1" stop-color="#cfd6e6" /></linearGradient>
+<linearGradient id="blue" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#9fdcff" /><stop offset="1" stop-color="#4fb0ff" /></linearGradient>
+</defs>
+<g fill="url(#cool)"><circle cx="34" cy="44" r="13" /><circle cx="55" cy="38" r="18" /><circle cx="72" cy="46" r="12" /><rect x="28" y="44" width="50" height="16" rx="8" /></g><g stroke="#aeb8d0" stroke-width="6" stroke-linecap="round"><line x1="26" y1="72" x2="74" y2="72" /><line x1="32" y1="84" x2="80" y2="84" /></g>
+</g></svg>

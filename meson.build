@@ -87,6 +87,9 @@ c_args = [
   '-D_POSIX_C_SOURCE=200809L',
   '-DVERSION="@0@"'.format(version_with_hash),
   '-DSYSCONFDIR="@0@"'.format(sysconfdir),
+  # where install_subdir puts the bar artwork, so the default icon search
+  # path finds our own copy first regardless of prefix
+  '-DASTEROIDZ_PREFIX="@0@"'.format(prefix),
 ]
 
 # add debug args only when debug option is enabled
@@ -181,4 +184,11 @@ install_data('assets/asteroidz-portals.conf', install_dir : portal_install_dir)
 install_data('assets/asteroidz.portal', install_dir : join_paths(prefix, 'share/xdg-desktop-portal/portals'))
 install_data('assets/config.kdl', install_dir : join_paths(sysconfdir, 'asteroidz'))
 install_data('amsg/amsg.1', install_dir : join_paths(mandir, 'man1'))
+
+# Bar artwork. Vendored from the waybar plugin repos and normalised to one
+# square canvas (contrib/normalize-bar-icons.py), so the bar no longer depends
+# on which plugins happen to be installed -- and so the icons are tracked and
+# reviewable here rather than living only in ~/.local/share.
+install_subdir('assets/bar-icons', install_dir : join_paths(prefix, 'share/asteroidz'),
+               strip_directory : false)
 

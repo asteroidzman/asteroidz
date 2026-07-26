@@ -1,0 +1,31 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+  <g transform="translate(-1.0612 -1.3163) scale(0.261224)"><defs>
+    <linearGradient id="cool" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" />
+      <stop offset="1" stop-color="#dfe4ee" />
+    </linearGradient>
+    <linearGradient id="warm" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ff9a6b" />
+      <stop offset="1" stop-color="#f2603f" />
+    </linearGradient>
+  </defs>
+  
+  <rect x="12" y="28" width="76" height="34" rx="6" fill="url(#cool)" />
+  
+  <g fill="url(#warm)">
+    <rect x="20" y="35" width="16" height="20" rx="3" />
+    <rect x="42" y="35" width="16" height="20" rx="3" />
+    <rect x="64" y="35" width="16" height="20" rx="3" />
+  </g>
+  
+  <g fill="#aeb8d0">
+    <rect x="16" y="64" width="5" height="10" rx="1.5" />
+    <rect x="26" y="64" width="5" height="10" rx="1.5" />
+    <rect x="36" y="64" width="5" height="10" rx="1.5" />
+    <rect x="46" y="64" width="5" height="10" rx="1.5" />
+    <rect x="56" y="64" width="5" height="10" rx="1.5" />
+    <rect x="66" y="64" width="5" height="10" rx="1.5" />
+    <rect x="76" y="64" width="5" height="10" rx="1.5" />
+  </g>
+</g></svg>

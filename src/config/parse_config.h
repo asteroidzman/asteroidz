@@ -4781,16 +4781,24 @@ void set_value_default() {
 	config.bar_interval = 2;
 	config.bar_title_width = 320;
 	{
-		/* ~/.local/share first: a plugin built from source and `make install`ed
-		 * lands there, and that copy is the one the user is actually looking at
-		 * in waybar. The packaged /usr/share tree is the fallback. */
+		/* Our OWN vendored artwork first (share/asteroidz/bar-icons), so the
+		 * bar draws a consistent, normalised icon set whether or not any
+		 * waybar plugin is installed -- the bar replaces waybar, so depending
+		 * on waybar's asset trees for its own appearance was backwards.
+		 *
+		 * The plugin trees stay on the path behind it: ~/.local/share for a
+		 * plugin built from source and `make install`ed, then the packaged
+		 * /usr/share. A plugin the user has customised locally still wins for
+		 * any file we do not ship ourselves. */
 		const char *home = getenv("HOME");
 		if (home && *home)
 			snprintf(config.bar_icon_dir, sizeof(config.bar_icon_dir),
-					 "%s/.local/share:/usr/share", home);
+					 "%s/share/asteroidz/bar-icons:%s/.local/share:/usr/share",
+					 ASTEROIDZ_PREFIX, home);
 		else
 			snprintf(config.bar_icon_dir, sizeof(config.bar_icon_dir),
-					 "/usr/share");
+					 "%s/share/asteroidz/bar-icons:/usr/share",
+					 ASTEROIDZ_PREFIX);
 	}
 	snprintf(config.bar_clock_format, sizeof(config.bar_clock_format),
 			 "%%H:%%M:%%S");

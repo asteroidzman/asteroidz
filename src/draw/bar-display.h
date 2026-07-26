@@ -19,9 +19,6 @@
  * than faked with rows that only look like controls.
  */
 
-/* U+F0379, nf-md-monitor */
-#define BAR_DISPLAY_GLYPH "\U000F0379"
-
 /* Refresh in Hz from wlroots' millihertz, rounded the way a spec sheet would
  * print it (59.951 -> 60). */
 static int32_t bar_display_hz(const Monitor *m) {

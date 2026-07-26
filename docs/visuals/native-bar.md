@@ -64,12 +64,6 @@ bar {
 | `modules-left` | `"tags,layout,title"` | comma-separated module list |
 | `modules-center` | `"clock"` | " |
 | `modules-right` | *(empty)* | " |
-
-The three module lists share one budget of **24 modules total**, not 24 each.
-Past it the parse stops and everything after that point is dropped, warning on
-stderr — `asteroidz -p` will *not* catch it, because modules are parsed when a
-bar is built per monitor rather than when the config is read.
-
 | `clock.format` | `"%H:%M:%S"` | `strftime` format |
 | `media-width` | `280` | pinned width of the now-playing pill |
 | `media.visualiser` | `true` | animate a spectrum in the media pill while playing |
@@ -79,7 +73,12 @@ bar is built per monitor rather than when the config is read.
 | `weather.location` | *(empty)* | city name; empty means IP geolocation |
 | `interval` | `2` | seconds between `/proc` + `/sys` metric samples |
 | `title-width` | `320` | **cap** on the title pill's width (`0` = uncapped); a shorter title gets a shorter pill |
-| `icon-dir` | `~/.local/share:/usr/share` | colon-separated search path of Waybar plugin asset roots; first readable hit wins |
+| `icon-dir` | `<prefix>/share/asteroidz/bar-icons:~/.local/share:/usr/share` | colon-separated icon search path; our vendored art first, then Waybar plugin asset roots |
+
+The three module lists share one budget of **24 modules total**, not 24 each.
+Past it the parse stops and everything after that point is dropped, warning on
+stderr — `asteroidz -p` will *not* catch it, because modules are parsed when a
+bar is built per monitor rather than when the config is read.
 
 Changes take effect on `reload_config` — including changes to the module
 lists themselves, which rebuild the bars rather than just refreshing them.
@@ -469,14 +468,31 @@ rather than filling the pill with the same glyph three times. Tag pills are
 deliberately *not* width-pinned: a tag gaining a window is a real layout
 change, not the per-tick jitter the pinning exists to suppress.
 
-Pill icons are the **same SVGs the Waybar plugins use**, loaded straight from
-their installed asset trees under `icon-dir` — `waybar-sysinfo/cpu.svg`,
-`waybar-sysinfo/ethernet.svg`,
-`waybar-asteroidz-workspaces/layouts/<layout>.svg`, and so on. `icon-dir` is a
-**search path**, not a single directory, because the plugins do not share a
-prefix: some are packaged into `/usr/share`, others land in
-`~/.local/share` from a plain `make install`. A missing file means no icon,
-never an error, so an incomplete asset install degrades to text.
+Pill icons are the **same SVGs the Waybar plugins use**, but **vendored** into
+`assets/bar-icons/` and installed to `share/asteroidz/bar-icons`, which is the
+first entry on the `icon-dir` search path. The bar replaces Waybar, so having
+its appearance depend on which Waybar plugins happen to be installed was
+backwards — and vendoring makes the art reviewable in-tree rather than living
+only in `~/.local/share`.
+
+The plugin trees stay on the path behind it (`~/.local/share`, then
+`/usr/share`), so a locally customised plugin still wins for any file we do not
+ship. `icon-dir` is a **search path**, not a single directory, because the
+plugins do not share a prefix. A missing file means no icon, never an error.
+
+**Every module draws artwork; none draws a font glyph.** Icons that had no
+plugin equivalent — the notification bell in its three states, the idle
+inhibitor's two — were authored for this bar and live under
+`asteroidz-bar/`. Font glyphs cannot be held to a uniform size, which is
+exactly what a row of pills needs.
+
+The vendored art is normalised to **one 24×24 canvas with equal ink extent**
+by `contrib/normalize-bar-icons.py`, because the upstream plugins never had to
+agree with each other: viewBoxes of 24×24 and 100×100, ink filling the canvas
+in one file and floating inside it in another. The bar draws every icon into
+an identical square box, so those differences showed up directly as icons that
+looked bigger or smaller than their neighbours. Run it with `--check` to
+verify, and re-run it after adding art.
 
 The status-plugin SVGs are **monochrome stencils** (a solid `#000`
 silhouette), meant to be recoloured by the widget drawing them — painted as-is
