@@ -105,7 +105,7 @@ for a newer build still starts.
 | `medication` | doses due now, or the next dose's time (also accepts `meds`) | — (taking a dose stays in Waybar, see below) |
 | `discord` | voice state from the `discord-voiced` daemon (also accepts `discord-voice`) | click opens the channel picker; right-click toggles mute |
 | `vpn` | NordVPN state as a tinted shield (also accepts `nordvpn`). **Icon only** | click opens status + Quick Connect / Disconnect / countries |
-| `display` | this bar's own output and its mode (also accepts `monitors`) | click lists every output; drill in for HDR |
+| `display` | a monitor icon (also accepts `monitors`) | click lists every output; drill into one for HDR, resolution and scale |
 | `tray` | one icon per StatusNotifierItem (also accepts `systray`) | left: `Activate`; right: the item's context menu; middle: `SecondaryActivate` |
 
 The `tags` module mirrors the Waybar workspace module it replaces: it shows
@@ -430,12 +430,27 @@ honestly be:
 | inert | a reading; consumed without dismissing |
 | submenu | click re-opens the popover one level down |
 | **stepper** | **scroll** over it to change its value in place |
+| **choice** | click drills into a list of values, picking one applies it and returns |
 
 A stepper is adjusted by scrolling because painting `−`/`+` zones would be
 decoration that lies about where you may click. Scroll is already routed to
 whatever node is under the pointer, so this costs no new input model. Clicking
 a stepper is a miss rather than a selection, so it does not dismiss — reaching
 for it should not punish you.
+
+A **choice** row is the other half: a value whose valid set is arbitrary rather
+than a range. A resolution cannot be a stepper — the modes are whatever the
+panel says they are, so scrolling one would either invent modes or lie about
+them. It reuses the submenu mechanism the tray menus already use, and the list
+marks the current value and ends in a Back row.
+
+The display popover's **Resolution** and **Scale** rows are the first two. The
+scale list shows the logical size each scale produces, because "1.25" means
+nothing on its own. Both are applied with `wlr_output_test_state` FIRST and
+committed only if the test passes, so a picker can never black out a display;
+a rejected commit is the retrain-and-blank path. The resolution row is hidden
+on outputs with no mode list at all (every virtual backend: headless, nested
+Wayland, X11).
 
 The audio popover's `Volume` row is the first one: the number moves under the
 pointer and the sink is set to that **absolute** percentage, not a relative
