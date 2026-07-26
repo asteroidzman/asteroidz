@@ -1,6 +1,6 @@
 <?xml version='1.0' encoding='UTF-8'?>
 <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
-  <g transform="translate(-0.4272 -0.4272) scale(0.248544)"><defs>
+  <g transform="translate(-2.3551 -2.3551) scale(1.196262)"><g transform="translate(-0.4272 -0.4272) scale(0.248544)"><defs>
     <linearGradient id="cool" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#ffffff" />
       <stop offset="1" stop-color="#dfe4ee" />
@@ -28,4 +28,4 @@
   
   <rect x="24" y="24" width="52" height="52" rx="12" fill="url(#cool)" />
   <rect x="37" y="37" width="26" height="26" rx="7" fill="url(#warm)" />
-</g></svg>
+</g></g></svg>

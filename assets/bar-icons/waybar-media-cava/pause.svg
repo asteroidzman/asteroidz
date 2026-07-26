@@ -1,7 +1,7 @@
 <?xml version='1.0' encoding='UTF-8'?>
 <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
-  <g transform="translate(-7.1045 -7.1045) scale(0.382090)"><g fill="#eef1f7">
+  <g transform="translate(-2.4906 -2.4906) scale(1.207547)"><g transform="translate(-7.1045 -7.1045) scale(0.382090)"><g fill="#eef1f7">
     <rect x="30" y="24" width="14" height="52" rx="4" />
     <rect x="56" y="24" width="14" height="52" rx="4" />
   </g>
-</g></svg>
+</g></g></svg>

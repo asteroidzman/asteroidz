@@ -29,10 +29,17 @@ import xml.etree.ElementTree as ET
 
 SVG_NS = "http://www.w3.org/2000/svg"
 CANVAS = 24.0
-# Ink occupies this square, leaving a consistent margin. Slightly inset so a
-# round icon and a square one carry similar weight rather than the square one
-# looking heavier by touching the edges.
-CONTENT = 20.0
+# Ink FILLS the canvas. It was inset to 20-of-24 to keep a round icon from
+# looking heavier than a square one, and that inset turned out to be a layout
+# bug in disguise: the bar spaces icon BOXES evenly, so 2px of transparency
+# per side became 4px of extra apparent gap between every pair of icon-only
+# pills, while text pills sat at the configured distance. The same inset made
+# vendored icons render smaller than tray icons (which are cropped to their
+# ink), so the two never lined up vertically either.
+#
+# Filling the canvas makes the drawn ink the icon's real extent, which is what
+# both the spacing and the vertical centring already assume.
+CONTENT = 24.0
 RASTER = 256
 
 

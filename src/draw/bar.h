@@ -2617,14 +2617,25 @@ static void bar_module_measure(BarModule *mod, int32_t height, float scale) {
 static int32_t bar_module_gap(BarModule *a, BarModule *b) {
 	if (!a || !b || a->npills <= 0 || b->npills <= 0)
 		return 0;
-	const BarPill *pa = &a->pills[a->npills - 1];
-	const BarPill *pb = &b->pills[0];
-
-	int32_t target = (a->kind == BAR_MODULE_TRAY || b->kind == BAR_MODULE_TRAY)
-						 ? config.bar_tray_spacing
-						 : config.bar_module_spacing;
-	int32_t gap = target - bar_pill_padding_x(pa) - bar_pill_padding_x(pb);
-	return gap > 0 ? gap : 0;
+	/* A constant separation between module BOXES.
+	 *
+	 * Not padding-compensated, and that was tried: subtracting each pill's own
+	 * padding looked principled but needs the pill's real INK inset, which is
+	 * not the padding. Measured on a rendered bar, a clock pill 125px wide
+	 * carries glyphs only 101px wide -- pango renders a string narrower than
+	 * measure_width reports it -- so compensating by padding alone pulled text
+	 * pills 6px closer than icons instead of levelling them. Chasing that with
+	 * font metrics would make the spacing depend on what the clock currently
+	 * says.
+	 *
+	 * The uneven look this was meant to fix had a different cause: the
+	 * vendored icons were inset inside their own canvas, so icon-only
+	 * neighbours showed the gap PLUS two transparent margins. With the art
+	 * filling its canvas (contrib/normalize-bar-icons.py), a constant box gap
+	 * is what you see. */
+	return (a->kind == BAR_MODULE_TRAY || b->kind == BAR_MODULE_TRAY)
+			   ? config.bar_tray_spacing
+			   : config.bar_module_spacing;
 }
 
 /* Draw (or hide) the backdrop for one slot. `x`..`x+w` is the extent of the

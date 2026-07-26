@@ -1,6 +1,6 @@
 <?xml version='1.0' encoding='UTF-8'?>
 <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
-  <g transform="translate(-0.0561 -0.3364) scale(0.996885)"><mask id="cut">
+  <g transform="translate(-2.4112 -2.3551) scale(1.196262)"><g transform="translate(-0.0561 -0.3364) scale(0.996885)"><mask id="cut">
     <rect width="24" height="24" fill="#ffffff" />
     <path d="M3.6 1.9 22.1 20.4l-2.2 2.2L1.4 4.1z" fill="#000000" />
   </mask>
@@ -10,4 +10,4 @@
     <path d="M3 20.6h14.4v1.8H3z" fill="#ffffff" />
   </g>
   <path d="M4.1 2.4 21.6 19.9l-1.5 1.5L2.6 3.9z" fill="#ffffff" />
-</g></svg>
+</g></g></svg>
