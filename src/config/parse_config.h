@@ -497,6 +497,14 @@ typedef struct {
 	 * selected/urgent ones do -- so the panel reads as one surface. */
 	int32_t bar_panel_enable;
 	float bar_panel_color[4];
+	/* The panels' own shadow, not the window one. `effects/shadow` is tuned
+	 * for large floating windows over a wallpaper -- on this desktop a 72px
+	 * spread at 31% black -- and under a 48px strip that is a whisper you
+	 * cannot see on a dark desktop. A bar is a different object and gets its
+	 * own numbers, the same way it already has its own colour and radius. */
+	int32_t bar_panel_shadow_size;
+	float bar_panel_shadow_blur;
+	float bar_panel_shadow_color[4];
 	int32_t bar_panel_radius;
 	int32_t bar_panel_padding; /* panel inset around the pills it contains */
 	int32_t bar_panel_blur;
@@ -2387,6 +2395,20 @@ bool parse_option(Config *config, char *key, char *value) {
 			return false;
 		}
 		convert_hex_to_rgba(config->bar_panel_color, color);
+	} else if (strcmp(key, "bar_panel_shadow_color") == 0) {
+		int64_t color = parse_color(value);
+		if (color == -1) {
+			fprintf(stderr,
+					"\033[1m\033[31m[ERROR]:\033[33m Invalid "
+					"bar_panel_shadow_color format: %s\n",
+					value);
+			return false;
+		}
+		convert_hex_to_rgba(config->bar_panel_shadow_color, color);
+	} else if (strcmp(key, "bar_panel_shadow_size") == 0) {
+		config->bar_panel_shadow_size = CLAMP_INT(atoi(value), 0, 200);
+	} else if (strcmp(key, "bar_panel_shadow_blur") == 0) {
+		config->bar_panel_shadow_blur = CLAMP_FLOAT(atof(value), 0.0f, 200.0f);
 	} else if (strcmp(key, "bar_clock_format") == 0) {
 		snprintf(config->bar_clock_format, sizeof(config->bar_clock_format),
 				 "%s", value);
@@ -3703,6 +3725,9 @@ static const struct {
 	{"bar/discord/daemon-cmd", "bar_discord_daemon"},
 	{"bar/panel/enable", "bar_panel_enable"},
 	{"bar/panel/color", "bar_panel_color"},
+	{"bar/panel/shadow-size", "bar_panel_shadow_size"},
+	{"bar/panel/shadow-blur", "bar_panel_shadow_blur"},
+	{"bar/panel/shadow-color", "bar_panel_shadow_color"},
 	{"bar/panel/radius", "bar_panel_radius"},
 	{"bar/panel/padding", "bar_panel_padding"},
 	{"bar/panel/blur", "bar_panel_blur"},
@@ -4822,6 +4847,14 @@ void set_value_default() {
 	convert_hex_to_rgba(config.bar_panel_color, 0x0a0a0cd9); /* ~85% opaque */
 	config.bar_panel_radius = 9;
 	config.bar_panel_padding = 12;
+	/* Tight and dark enough to read against a dark desktop, which is what the
+	 * window shadow's 72px/31% is not. */
+	config.bar_panel_shadow_size = 14;
+	config.bar_panel_shadow_blur = 14.0f;
+	config.bar_panel_shadow_color[0] = 0.0f;
+	config.bar_panel_shadow_color[1] = 0.0f;
+	config.bar_panel_shadow_color[2] = 0.0f;
+	config.bar_panel_shadow_color[3] = 0.70f;
 	config.bar_panel_blur = 1;
 	config.bar_panel_shadow = 1;
 	config.bar_interval = 2;

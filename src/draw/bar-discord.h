@@ -191,6 +191,13 @@ static void bar_dv_on_state(bool connected, void *user) {
  * socket, and spawning on every failed attempt would fork a process every few
  * seconds for anyone who does not have the daemon installed. If it dies later,
  * the pill goes offline and stays there -- predictable, and visible. */
+/* Is there a daemon binary to run at all? Distinguishes "not installed"
+ * (nothing to show) from "installed but stopped" (something to start). */
+static bool bar_dv_daemon_installed(void) {
+	const char *cmd = config.bar_discord_daemon;
+	return cmd && *cmd && access(cmd, X_OK) == 0;
+}
+
 static void bar_dv_spawn_daemon(void) {
 	const char *cmd = config.bar_discord_daemon;
 	if (!cmd || !*cmd)
@@ -202,6 +209,17 @@ static void bar_dv_spawn_daemon(void) {
 	char *const argv[] = {(char *)cmd, NULL};
 	async_spawn(event_loop, argv, NULL, NULL);
 	wlr_log(WLR_INFO, "discord: started %s", cmd);
+}
+
+/* Start the daemon on request, ignoring the once-per-session rule.
+ *
+ * bar_dv_spawn_daemon is deliberately fired once at startup and never again --
+ * a retry loop would fork every few seconds for anyone without the daemon
+ * installed. An explicit "Start daemon" click is the opposite situation:
+ * someone is asking, now, and being told "no, you already had your one
+ * attempt" would be absurd. */
+static void bar_dv_restart_daemon(void) {
+	bar_dv_spawn_daemon();
 }
 
 static void bar_dv_start(void) {

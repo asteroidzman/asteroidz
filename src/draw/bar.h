@@ -558,6 +558,30 @@ static int32_t bar_pill_gap(const BarPill *a, const BarPill *b) {
 	return bar_gap_between(a, b, config.bar_module_spacing);
 }
 
+/* A foreground that can actually be read on `bg`.
+ *
+ * The urgent look pairs the theme's foreground with the theme's urgent colour,
+ * and those two are set independently: a pale salmon urgent with a white
+ * foreground is white-on-pink, which is exactly the state you are meant to be
+ * able to read at a glance. The urgent colour is chosen for how it reads
+ * against the BAR, so it cannot also be constrained to contrast with the
+ * label -- the label has to give.
+ *
+ * Rec. 709 relative luminance against the midpoint, which is the same rule a
+ * theme editor applies by eye. Near-black rather than black, and the theme's
+ * own foreground when that is the readable choice, so an urgent pill still
+ * looks like it belongs to the theme. */
+static void bar_readable_fg(const float bg[4], float out[4]) {
+	float lum = 0.2126f * bg[0] + 0.7152f * bg[1] + 0.0722f * bg[2];
+	if (lum < 0.5f) {
+		/* dark fill: the theme's own foreground is almost certainly light */
+		memcpy(out, config.theme.fg_color, sizeof(float) * 4);
+		return;
+	}
+	out[0] = out[1] = out[2] = 0.08f;
+	out[3] = config.theme.fg_color[3];
+}
+
 static void bar_pill_style(BarPill *p, enum bar_pill_look look) {
 	static const float clear[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 	static const float occupied_bg[4] = {0.0f, 0.0f, 0.0f, 0.44f};
@@ -573,7 +597,9 @@ static void bar_pill_style(BarPill *p, enum bar_pill_look look) {
 	if (look == BAR_LOOK_ACTIVE)
 		return;
 	if (look == BAR_LOOK_URGENT) {
-		asteroidz_tab_bar_node_set_colors(p->node, config.theme.fg_color,
+		float fg[4];
+		bar_readable_fg(config.theme.urgent_color, fg);
+		asteroidz_tab_bar_node_set_colors(p->node, fg,
 										  config.theme.urgent_color);
 		return;
 	}
@@ -2427,7 +2453,15 @@ static void bar_module_refresh_medication(BarModule *mod) {
  * discord-voiced simply is not installed, and the module is opt-in anyway. */
 static void bar_module_refresh_discord(BarModule *mod) {
 	bar_dv_start();
-	if (bar_dv.state == BAR_DV_OFFLINE && !bar_dv.error[0]) {
+	/* Hidden only when there is no daemon to run at all.
+	 *
+	 * An always-present "Offline" pill is noise on a machine where
+	 * discord-voiced simply is not installed. But hiding it whenever the
+	 * daemon is merely STOPPED made shutting it down a one-way door: no pill,
+	 * so no popover, so nothing to start it from again. Installed-but-down is
+	 * the one state you can actually act on. */
+	if (bar_dv.state == BAR_DV_OFFLINE && !bar_dv.error[0] &&
+		!bar_dv_daemon_installed()) {
 		for (int32_t i = 0; i < BAR_MAX_PILLS; i++)
 			bar_pill_release(&mod->pills[i]);
 		mod->npills = 0;
@@ -2748,9 +2782,9 @@ static void bar_panel_apply(AsteroidzBar *bar, enum bar_slot slot, int32_t x,
 		 *
 		 * `shadow.position` shifts it after that, so the configured downward
 		 * offset lands under the panel the way it does under a window. */
-		int32_t delta = (int32_t)config.shadows_size;
-		int32_t sx = px - delta + config.shadows_position_x;
-		int32_t sy = py - delta + config.shadows_position_y;
+		int32_t delta = config.bar_panel_shadow_size;
+		int32_t sx = px - delta;
+		int32_t sy = py - delta + delta / 3;
 		int32_t sw = pw + 2 * delta, sh = ph + 2 * delta;
 		int32_t sradius = radius + delta;
 		if (!panel->shadow)
@@ -2761,7 +2795,9 @@ static void bar_panel_apply(AsteroidzBar *bar, enum bar_slot slot, int32_t x,
 			wlr_scene_shadow_set_size(panel->shadow, sw, sh);
 			wlr_scene_shadow_set_corner_radius(panel->shadow, sradius);
 			wlr_scene_shadow_set_blur_sigma(panel->shadow,
-											config.shadows_blur);
+											config.bar_panel_shadow_blur);
+			wlr_scene_shadow_set_color(panel->shadow,
+									   config.bar_panel_shadow_color);
 			wlr_scene_node_set_position(&panel->shadow->node, sx, sy);
 			wlr_scene_node_set_enabled(&panel->shadow->node, true);
 			wlr_scene_node_lower_to_bottom(&panel->shadow->node);

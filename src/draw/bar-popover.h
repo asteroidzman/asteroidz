@@ -405,9 +405,9 @@ static void bar_popover_layout(void) {
 		 * -- a shadow drawn at the panel's own box has no room outside it to
 		 * fall off into, so an opaque panel hides the whole thing. See
 		 * bar_panel_apply. */
-		int32_t delta = (int32_t)config.shadows_size;
-		int32_t sx = x - delta + config.shadows_position_x;
-		int32_t sy = y - delta + config.shadows_position_y;
+		int32_t delta = config.bar_panel_shadow_size;
+		int32_t sx = x - delta;
+		int32_t sy = y - delta + delta / 3;
 		int32_t sw = width + 2 * delta, sh = height + 2 * delta;
 		int32_t sradius = radius + delta;
 		if (!panel->shadow)
@@ -418,7 +418,9 @@ static void bar_popover_layout(void) {
 			wlr_scene_shadow_set_size(panel->shadow, sw, sh);
 			wlr_scene_shadow_set_corner_radius(panel->shadow, sradius);
 			wlr_scene_shadow_set_blur_sigma(panel->shadow,
-											config.shadows_blur);
+											config.bar_panel_shadow_blur);
+			wlr_scene_shadow_set_color(panel->shadow,
+									   config.bar_panel_shadow_color);
 			wlr_scene_node_set_position(&panel->shadow->node, sx, sy);
 			wlr_scene_node_set_enabled(&panel->shadow->node, true);
 			wlr_scene_node_lower_to_bottom(&panel->shadow->node);
@@ -859,6 +861,14 @@ static void bar_popover_open_menu(Monitor *m, int32_t anchor_x,
  *
  * Built from cached state rather than a request, so opening it is instant and
  * works even if the daemon is momentarily busy. */
+/* Push-to-talk is a GlobalShortcuts binding the DAEMON registers with us --
+ * we are the portal backend, so the current key is ours to read, no file
+ * parsing and no guessing. The waybar plugin had to read
+ * ~/.config/asteroidz/global-shortcuts by hand precisely because it was not
+ * the compositor. */
+#define BAR_DV_PTT_APPID "org.matrixtui.MatrixTui"
+#define BAR_DV_PTT_ID "push-to-talk"
+
 static void bar_popover_open_voice(Monitor *m, int32_t anchor_x) {
 	if (bar_popover_is_open(BAR_POPOVER_VOICE)) {
 		bar_popover_close();
@@ -874,67 +884,125 @@ static void bar_popover_open_voice(Monitor *m, int32_t anchor_x) {
 	bar_dv_send("{\"cmd\":\"channels\"}");
 
 	int32_t n = 0;
+	BarPopoverRow *r = NULL;
+
 	/* What is going on, always. Without this the menu was EMPTY whenever the
 	 * daemon was connected but idle and no channel snapshot had arrived, and
 	 * an empty popover closes itself -- so clicking the module did nothing at
 	 * all, which reads as a broken button rather than as "nothing to show". */
-	BarPopoverRow *st = bar_popover_row_get(n);
-	if (st) {
+	if ((r = bar_popover_row_get(n))) {
 		if (bar_dv.error[0])
-			snprintf(st->text, sizeof(st->text), "%s", bar_dv.error);
-		else if (bar_dv.state == BAR_DV_CONNECTED)
-			snprintf(st->text, sizeof(st->text), "%s", bar_dv_label());
-		else if (bar_dv.username[0])
-			snprintf(st->text, sizeof(st->text), "%s  ·  %s", bar_dv.username,
+			snprintf(r->text, sizeof(r->text), "%s", bar_dv.error);
+		else if (bar_dv.username[0] && bar_dv.state != BAR_DV_CONNECTED)
+			snprintf(r->text, sizeof(r->text), "%s  ·  %s", bar_dv.username,
 					 bar_dv_label());
 		else
-			snprintf(st->text, sizeof(st->text), "%s", bar_dv_label());
-		st->enabled = false;
+			snprintf(r->text, sizeof(r->text), "%s", bar_dv_label());
+		r->enabled = false;
 		n++;
 	}
 
-	if (bar_dv.state == BAR_DV_CONNECTED) {
-		BarPopoverRow *r = bar_popover_row_get(n);
-		if (r) {
-			snprintf(r->text, sizeof(r->text), "%s",
-					 bar_dv.muted ? "Unmute" : "Mute");
-			snprintf(r->value, sizeof(r->value), "%s", BAR_POPOVER_VERB "mute");
-			n++;
-		}
-		r = bar_popover_row_get(n);
-		if (r) {
-			snprintf(r->text, sizeof(r->text), "%s", "Leave");
-			snprintf(r->value, sizeof(r->value), "%s", BAR_POPOVER_VERB "leave");
-			n++;
-		}
-	}
-
-	for (int32_t i = 0; i < bar_dv.nchannels && n < BAR_POPOVER_MAX_ROWS; i++) {
+	/* ── channels, grouped by guild ──
+	 *
+	 * The list arrives flat with a guild id on each entry; the plugin draws a
+	 * header per server and the channels under it, which is the only way a
+	 * dozen channels called "General" tell you anything. */
+	char shown[BAR_DV_MAX_CHANNELS][48];
+	int32_t nshown = 0;
+	for (int32_t i = 0; i < bar_dv.nchannels && n < BAR_POPOVER_MAX_ROWS - 4;
+		 i++) {
 		BarDvChannel *c = &bar_dv.channels[i];
-		BarPopoverRow *r = bar_popover_row_get(n);
-		if (!r)
-			break;
-		/* "guild / channel" with a headcount, so a busy room is obvious
-		 * without opening Discord itself */
-		if (c->people > 0)
-			snprintf(r->text, sizeof(r->text), "%s / %s  (%d)",
-					 c->guild_name[0] ? c->guild_name : "server", c->name,
-					 c->people);
-		else
-			snprintf(r->text, sizeof(r->text), "%s / %s",
-					 c->guild_name[0] ? c->guild_name : "server", c->name);
-		/* the join command needs both ids, so carry them together */
-		snprintf(r->value, sizeof(r->value), "%s\x1f%s", c->guild, c->id);
-		r->selected = strcmp(c->id, bar_dv.channel_id) == 0;
-		n++;
-	}
-	if (bar_dv.nchannels == 0 && n < BAR_POPOVER_MAX_ROWS) {
-		BarPopoverRow *r = bar_popover_row_get(n);
-		if (r) {
-			snprintf(r->text, sizeof(r->text), "%s", "no voice channels");
-			r->enabled = false;
+		bool seen = false;
+		for (int32_t g = 0; g < nshown; g++)
+			if (!strcmp(shown[g], c->guild))
+				seen = true;
+		if (!seen && nshown < BAR_DV_MAX_CHANNELS) {
+			snprintf(shown[nshown], sizeof(shown[0]), "%s", c->guild);
+			nshown++;
+			if ((r = bar_popover_row_get(n))) {
+				snprintf(r->text, sizeof(r->text), "%s",
+						 c->guild_name[0] ? c->guild_name : "server");
+				r->enabled = false;
+				n++;
+			}
+		}
+		/* every channel of this guild, in order, under that header */
+		for (int32_t j = i; j < bar_dv.nchannels && n < BAR_POPOVER_MAX_ROWS - 4;
+			 j++) {
+			BarDvChannel *cc = &bar_dv.channels[j];
+			if (strcmp(cc->guild, c->guild))
+				continue;
+			if (!(r = bar_popover_row_get(n)))
+				break;
+			if (cc->people > 0)
+				snprintf(r->text, sizeof(r->text), "    %s  (%d)", cc->name,
+						 cc->people);
+			else
+				snprintf(r->text, sizeof(r->text), "    %s", cc->name);
+			/* the join command needs both ids, so carry them together */
+			snprintf(r->value, sizeof(r->value), "%s\x1f%s", cc->guild,
+					 cc->id);
+			r->selected = strcmp(cc->id, bar_dv.channel_id) == 0;
 			n++;
 		}
+	}
+	if (bar_dv.nchannels == 0 && n < BAR_POPOVER_MAX_ROWS - 4 &&
+		(r = bar_popover_row_get(n))) {
+		snprintf(r->text, sizeof(r->text), "%s",
+				 bar_dv.state == BAR_DV_OFFLINE ? "daemon not running"
+												: "no voice channels");
+		r->enabled = false;
+		n++;
+	}
+
+	/* ── controls ── */
+	if (bar_dv.state == BAR_DV_CONNECTED &&
+		n < BAR_POPOVER_MAX_ROWS && (r = bar_popover_row_get(n))) {
+		snprintf(r->text, sizeof(r->text), "%s",
+				 bar_dv.muted ? "Unmute" : "Mute");
+		snprintf(r->value, sizeof(r->value), "%s", BAR_POPOVER_VERB "mute");
+		r->selected = bar_dv.muted;
+		n++;
+	}
+	if ((bar_dv.state == BAR_DV_CONNECTED ||
+		 bar_dv.state == BAR_DV_CONNECTING) &&
+		n < BAR_POPOVER_MAX_ROWS && (r = bar_popover_row_get(n))) {
+		snprintf(r->text, sizeof(r->text), "%s", "Disconnect");
+		snprintf(r->value, sizeof(r->value), "%s", BAR_POPOVER_VERB "leave");
+		n++;
+	}
+
+	/* Push-to-talk. Shows what is bound now, straight from our own portal
+	 * store, and a click hands the daemon a rebind request -- which comes back
+	 * to us as a GlobalShortcuts BindShortcuts and opens the on-screen picker.
+	 * Pointless with no daemon to ask, so it is offered only when there is
+	 * one. */
+	if (bar_dv.state != BAR_DV_OFFLINE && n < BAR_POPOVER_MAX_ROWS &&
+		(r = bar_popover_row_get(n))) {
+		char *key = gs_load_saved(BAR_DV_PTT_APPID, BAR_DV_PTT_ID);
+		if (key && *key)
+			snprintf(r->text, sizeof(r->text), "PTT key: %s  —  change…", key);
+		else
+			snprintf(r->text, sizeof(r->text), "%s", "Set PTT key…");
+		free(key);
+		snprintf(r->value, sizeof(r->value), "%s", BAR_POPOVER_VERB "ptt");
+		n++;
+	}
+
+	/* Daemon lifecycle. The module used to hide itself outright while the
+	 * daemon was down, which made stopping it a one-way door: no pill, no
+	 * popover, nothing to start it from again. */
+	if (n < BAR_POPOVER_MAX_ROWS && (r = bar_popover_row_get(n))) {
+		if (bar_dv.state == BAR_DV_OFFLINE) {
+			snprintf(r->text, sizeof(r->text), "%s", "Start daemon");
+			snprintf(r->value, sizeof(r->value), "%s",
+					 BAR_POPOVER_VERB "dstart");
+		} else {
+			snprintf(r->text, sizeof(r->text), "%s", "Shut down daemon");
+			snprintf(r->value, sizeof(r->value), "%s",
+					 BAR_POPOVER_VERB "dstop");
+		}
+		n++;
 	}
 
 	bar_popover.nrows = n;
@@ -2241,12 +2309,22 @@ static bool bar_popover_activate_row(BarPopoverRow *r) {
 	}
 	case BAR_POPOVER_VOICE: {
 		if (BAR_POPOVER_IS_VERB(r->value)) {
-			/* the two verbs, distinguished from a channel id by a marker byte
-			 * no Discord snowflake can contain */
-			if (!strcmp(r->value + 1, "mute"))
+			/* verbs, distinguished from a channel id by a marker byte no
+			 * Discord snowflake can contain */
+			const char *verb = r->value + 1;
+			if (!strcmp(verb, "mute")) {
 				bar_dv_send("{\"cmd\":\"mute\"}");
-			else
+			} else if (!strcmp(verb, "leave")) {
 				bar_dv_send("{\"cmd\":\"leave\"}");
+			} else if (!strcmp(verb, "ptt")) {
+				/* empty key = "ask me": the daemon re-registers the shortcut,
+				 * which lands back here as a portal bind and opens the picker */
+				bar_dv_send("{\"cmd\":\"rebind_ptt\",\"key\":\"\"}");
+			} else if (!strcmp(verb, "dstart")) {
+				bar_dv_restart_daemon();
+			} else if (!strcmp(verb, "dstop")) {
+				bar_dv_send("{\"cmd\":\"shutdown\"}");
+			}
 			break;
 		}
 		char guild[48] = "", chan[48] = "";

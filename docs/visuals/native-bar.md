@@ -60,7 +60,10 @@ bar {
 | `panel.radius` | `9` | panel corner radius |
 | `panel.padding` | `12` | **horizontal** inset between the panel edge and the first/last thing you can *see* in it — a pill's own padding and any unused pinned reserve come off it, so both ends of a section read the same |
 | `panel.blur` | `true` | blur behind the panel (needs `effects.blur.enable`) |
-| `panel.shadow` | `true` | drop shadow under each panel (needs `shadows`) |
+| `panel.shadow` | `true` | drop shadow under each panel (needs `effects.shadow.enable`) |
+| `panel.shadow-size` | `14` | how far that shadow spreads |
+| `panel.shadow-blur` | `14` | its blur sigma |
+| `panel.shadow-color` | `0x000000b3` | its colour (RGBA) |
 | `modules-left` | `"tags,layout,title"` | comma-separated module list |
 | `modules-center` | `"clock"` | " |
 | `modules-right` | *(empty)* | " |
@@ -103,7 +106,7 @@ for a newer build still starts.
 | `volume` | default sink level, with a speaker icon (also accepts `vol`) | click toggles mute; right-click opens the output picker; scroll steps by `volume-step` |
 | `notifications` | swaync state as a bell — **empty** when nothing is waiting, **filled** when something is (also accepts `notify`). **Icon only** | click toggles the panel; right-click toggles DND |
 | `medication` | doses due now, or the next dose's time (also accepts `meds`) | click lists today's doses; drill into one to take, skip or postpone it |
-| `discord` | voice state from the `discord-voiced` daemon (also accepts `discord-voice`) | click opens the channel picker; right-click toggles mute |
+| `discord` | voice state from the `discord-voiced` daemon (also accepts `discord-voice`) | click opens voice channels by server, Mute, Disconnect, the PTT key and daemon start/stop; right-click toggles mute |
 | `vpn` | NordVPN state as a tinted shield (also accepts `nordvpn`). **Icon only** | click opens status + Quick Connect / Disconnect / countries |
 | `display` | a monitor icon (also accepts `monitors`) | click lists every output; drill into one for HDR, resolution and scale |
 | `tray` | one icon per StatusNotifierItem (also accepts `systray`) | left: `Activate`; right: the item's context menu; middle: `SecondaryActivate` |
@@ -523,6 +526,29 @@ crash mid-write is a session that will not start. It is covered by unit tests
 (`meson test -C build`) rather than only by driving a compositor, because its
 failure mode is a settings file that no longer parses.
 
+### Discord voice
+
+The popover mirrors the Waybar plugin it replaces: voice channels grouped under
+their server (click to join, the one you are in is marked), **Mute**,
+**Disconnect**, the push-to-talk key, and **Start / Shut down daemon**.
+
+Push-to-talk reads the currently-bound key **directly from our own
+GlobalShortcuts store** — the daemon registers it with the portal, and we *are*
+the portal backend. The plugin had to parse
+`~/.config/asteroidz/global-shortcuts` by hand precisely because it was not the
+compositor. Clicking sends `rebind_ptt` with an empty key, which comes back as
+a portal bind and opens the on-screen picker.
+
+The module hides itself only when there is **no daemon binary to run**
+(`bar/discord-daemon`). Hiding it whenever the daemon was merely stopped made
+shutting it down a one-way door: no pill, so no popover, so nothing to start it
+from again.
+
+**Not offered:** setting the Discord token, which the plugin does with a text
+entry. A popover row is a clickable label — there is no text input on this
+layer, and a row that cannot take a token has no business claiming to. The
+token lives in `~/.config/discord-voiced/config.json`.
+
 ### System figures
 
 `cpu`, `memory` and `network` all open the **same** panel — they are three
@@ -612,11 +638,18 @@ see is one rounded translucent panel per non-empty slot, so the bar reads as
 three floating groups rather than a full-width strip. That is the same shape as
 the grouped panels in a typical Waybar config.
 
-Each panel casts its own shadow, sized from `shadow.size` and offset by
-`shadow.position`. A shadow node drawn at the panel's own box would be entirely
-*behind* it — the falloff has nowhere outside the panel to occupy — so the box
-is grown on every side, the same thing a window's shadow does. Drawn flush, the
-shadow existed, was enabled, and could never be seen.
+Each panel casts its own shadow. A shadow node drawn at the panel's own box
+would be entirely *behind* it — the falloff has nowhere outside the panel to
+occupy — so the box is grown on every side, the same thing a window's shadow
+does. Drawn flush, the shadow existed, was enabled, and could never be seen.
+
+It has its **own** size, blur and colour rather than borrowing
+`effects.shadow`'s. Those are tuned for large floating windows over a
+wallpaper — on this desktop a 72px spread at 31% black — and under a 48px strip
+that is a whisper: measured on a dark desktop it moved the wallpaper from
+`(27,27,46)` to `(20,20,34)`, which is a shadow you can prove and cannot see.
+The panel's defaults are tighter and darker, and reach `(15,15,25)` at the same
+spot.
 
 `panel.padding` is measured to the **ink**, not to the pill's box: the end
 pill's own horizontal padding and any unused pinned reserve are subtracted, so
@@ -794,6 +827,11 @@ module in the table above, and the popover layer they drop panels from.
 protocol inhibitor to, the way Waybar's module does. The same override is
 available as `amsg dispatch toggle_idle_inhibit` (append `,1`/`,0` to force a
 state), so it can be bound to a key as well.
+
+Urgent pills pick their label colour by the **contrast** of the urgent fill
+rather than taking the theme's foreground: the two are configured
+independently, and a pale urgent with a light foreground is white-on-pink at
+exactly the moment you are meant to be able to read it at a glance.
 
 The metric modules read `/proc` and `/sys` directly, on a shared timer, once
 per machine rather than once per monitor. That is deliberate and it is the
