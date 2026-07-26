@@ -3699,6 +3699,17 @@ static bool bar_handle_node_click(AsteroidzNodeData *hit, uint32_t button) {
 			return true;
 		}
 		break;
+	case BAR_MODULE_CPU:
+	case BAR_MODULE_MEMORY:
+	case BAR_MODULE_NETWORK:
+		if (button == BTN_LEFT) {
+			/* One panel for all three: they are three views of one machine,
+			 * and the pills are numberless by design -- this is where the
+			 * figures they stand for actually live. */
+			bar_popover_open_sysinfo(m, p->node->last_x + p->width / 2);
+			return true;
+		}
+		break;
 	case BAR_MODULE_NOTIFY:
 		if (button == BTN_LEFT) {
 			bar_notify_call("ToggleVisibility");

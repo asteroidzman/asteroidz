@@ -381,18 +381,30 @@ races an in-flight page-flip and gets rejected by the DRM backend — that is th
 retrain-and-blank path. An output whose `hdr_capability_failed` is set says so
 instead of offering a toggle that silently never takes.
 
-**Not covered:** the layout canvas, resolution picker, scale, and the HDR
-luminance fields. Those need a drag surface, dropdowns and sliders, and the
-popover layer has exactly one widget — a clickable text row. A row that cannot
-change a value has no business looking like a control, so those appear as inert
-readings until the widgets exist. That is popover-layer work, not module work.
+The resolution and scale pickers, and SDR white, are covered — see
+[Popovers](#popovers). **Not covered:** the layout canvas, which needs a
+genuine drag surface rather than a row.
+
+The per-output mastering, max-CLL and max-FALL values are deliberately not
+offered either. Those describe what the *panel* can do — they are forwarded to
+the display so its tone-mapper knows what it is being handed — so a control on
+them would be inventing hardware facts, and an unset one has no honest value to
+step away from. They stay output rules in the config, where a claim about your
+hardware belongs.
 
 ## Popovers
 
 A module can drop a panel below its pill holding rows the pointer can act on.
-Right-clicking `volume` opens the **audio output picker**: one row per sink,
-the current default filled in the theme's accent, click to switch.
-Right-clicking a **tray** icon opens that item's own context menu.
+
+| module | opens |
+|---|---|
+| `volume` (right-click) | audio output picker, plus a volume stepper |
+| `tray` (right-click) | that item's own context menu |
+| `display` | every output → one output's settings → resolution / scale lists |
+| `cpu`, `memory`, `network` | the system figures |
+| `medication` | today's doses → take / skip / postpone |
+| `vpn` | connection status and the country list |
+| `discord` | voice channels, mute, leave |
 
 Popovers are built from the pieces the bar already has — a scenefx
 blur/rect/shadow stack for the panel, one pill node per row — so they inherit
@@ -417,7 +429,7 @@ honestly be:
 | kind | behaviour |
 |---|---|
 | action | click runs it and closes |
-| inert | a reading; consumed without dismissing |
+| inert | a reading; consumed without dismissing, and drawn with no tile behind it — a filled row is what says "this is a target" |
 | submenu | click re-opens the popover one level down |
 | **stepper** | **scroll** over it to change its value in place |
 | **choice** | click drills into a list of values, picking one applies it and returns |
@@ -446,6 +458,38 @@ The audio popover's `Volume` row is the first one: the number moves under the
 pointer and the sink is set to that **absolute** percentage, not a relative
 step, so it cannot drift away from the reading if something else changes the
 volume meanwhile.
+
+The display popover's `SDR white` row is the other stepper — the luminance an
+SDR surface is mapped to inside an HDR output's pipeline, which is what decides
+how bright the ordinary desktop looks once HDR is on. It sits on the *outputs*
+panel rather than inside one output's own, because it is scene-wide, and it is
+**hidden while no output is in HDR**: with none, it changes nothing you can
+see, and a control that visibly does nothing is worse than an absent one. Its
+rails are the ones `set_sdr_luminance` itself clamps to (80–1000 cd/m²), so the
+row cannot show a value the dispatcher would refuse.
+
+Steppers carrying a marked verb dispatch on the **verb**, not on the popover
+kind, so one panel may hold more than one.
+
+### System figures
+
+`cpu`, `memory` and `network` all open the **same** panel — they are three
+views of one machine, and three separate popovers of four rows each would be
+filing rather than answering. The pills are numberless by design (the colour is
+the reading); this is where the numbers they stand for live: CPU percentage and
+load averages, memory and swap used against total, the three processes holding
+the most resident memory, the interface with its rates and totals, and uptime.
+
+Every row is inert — there is no honest action for "CPU 37%" — so the panel is
+dismissed by <kbd>Escape</kbd> or a click outside it. It is sampled when it
+**opens**, not on a timer: a panel that rewrites itself under the pointer is
+hard to read, and these figures are being consulted rather than watched. The
+pill beside it is the live one.
+
+Processes are ranked by **RSS and not CPU**. A process's CPU share is a rate,
+and one sample of `/proc/<pid>/stat` can only give its average since it started
+— which for a browser open since breakfast is a number that looks like a
+reading and is not one. RSS is a level, so a single sample is the truth.
 
 Dismissal:
 
@@ -725,10 +769,12 @@ notch. The tray forwards scrolls to the item as the spec's
 `Scroll(delta, orientation)`, letting a mixer applet take volume and a pager
 take workspaces.
 
-[Popovers](#popovers) exist as of this version, carrying the audio output
-picker and the tray's context menus. Still missing: a draggable volume slider
-(that needs pointer capture across a drag, not just a click) and keyboard
-navigation within a popover.
+[Popovers](#popovers) carry the audio output picker, the tray's context menus,
+the display controls, the system figures, the medication log, VPN and Discord
+voice. Still missing: a draggable volume slider (that needs pointer capture
+across a drag, not just a click), keyboard navigation within a popover, a
+scrollable viewport for menus longer than the screen, and the display layout
+canvas.
 
 ## Developing against it
 

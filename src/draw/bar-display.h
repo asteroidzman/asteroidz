@@ -11,12 +11,11 @@
  * round trip through our own IPC.
  *
  * What this covers today: the pill (focused output, its mode) and a popover
- * listing every output, drilling into per-output HDR. What it does NOT cover
- * is the plugin's layout canvas, resolution picker, scale and luminance
- * fields -- those need a drag surface, dropdowns and sliders, and the popover
- * layer has exactly one widget: a clickable text row. Those are widget work
- * on the popover layer, not module work, and are tracked separately rather
- * than faked with rows that only look like controls.
+ * listing every output, drilling into per-output HDR, resolution and scale,
+ * with SDR white on the top level. What it does NOT cover is the plugin's
+ * layout canvas -- dragging monitors around needs a genuine drag surface, not
+ * a row, so it is tracked separately rather than faked with rows that only
+ * look like controls.
  */
 
 /* Refresh in Hz from wlroots' millihertz, rounded the way a spec sheet would

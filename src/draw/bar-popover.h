@@ -58,6 +58,7 @@ enum bar_popover_kind {
 	BAR_POPOVER_SCALES,
 	BAR_POPOVER_MEDS,    /* today's doses; payload is the dose key */
 	BAR_POPOVER_MED_DOSE, /* one dose: take / skip / postpone */
+	BAR_POPOVER_SYSINFO,  /* cpu/memory/network figures; every row inert */
 };
 
 typedef struct {
@@ -323,13 +324,19 @@ static void bar_popover_layout(void) {
 		/* the active entry is the one filled, like the selected tag chip */
 		asteroidz_tab_bar_node_set_focus(r->node, r->selected);
 		if (!r->selected && (!r->enabled || r->separator)) {
-			/* greyed: a disabled menu entry has to READ as unavailable, or
-			 * clicking it and getting nothing looks like a broken menu */
+			/* Greyed AND untiled: a disabled entry has to read as
+			 * unavailable, or clicking it and getting nothing looks like a
+			 * broken menu -- and a filled tile is what every other row uses to
+			 * say "this is a target". Dropping the background is the same
+			 * distinction the bar itself draws between a flat pill and a
+			 * filled one, and it matters most on a panel that is ENTIRELY
+			 * readings (sysinfo), where a stack of tiles reads as a menu whose
+			 * every entry is dead. */
+			static const float clear[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 			float fg[4];
 			memcpy(fg, config.theme.fg_color, sizeof(fg));
-			fg[3] *= r->separator ? 0.25f : 0.4f;
-			asteroidz_tab_bar_node_set_colors(r->node, fg,
-											  config.theme.bg_color);
+			fg[3] *= r->separator ? 0.25f : 0.55f;
+			asteroidz_tab_bar_node_set_colors(r->node, fg, clear);
 		}
 		asteroidz_tab_bar_node_set_position(r->node, x + pad, ry);
 		asteroidz_tab_bar_node_set_enabled(r->node, true);
@@ -834,6 +841,54 @@ static void bar_popover_open_outputs(Monitor *m, int32_t anchor_x) {
 		return;
 
 	int32_t n = 0;
+
+	/* SDR white, when it can do anything.
+	 *
+	 * This is the luminance an SDR surface is mapped to inside an HDR output's
+	 * pipeline -- the single value that decides how bright the ordinary
+	 * desktop looks once HDR is on, and the one people actually reach for.
+	 * It is scene-wide rather than per-output, so it belongs on THIS panel
+	 * ("displays in general") and not inside one output's own.
+	 *
+	 * Hidden while no output is in HDR, because with none it changes nothing
+	 * you can see: a control that visibly does nothing is worse than an
+	 * absent one. Same reason the Resolution row is hidden on an output with
+	 * no mode list.
+	 *
+	 * The per-output mastering/max-CLL/max-FALL values are deliberately NOT
+	 * offered beside it. Those describe what the PANEL can do -- they are
+	 * forwarded to the display so its tone-mapper knows what it is being
+	 * handed -- so a stepper on them would be inventing hardware facts, and
+	 * an unset one has no honest starting value to step away from. They stay
+	 * output rules in the config, where a claim about your hardware belongs. */
+	bool any_hdr = false;
+	Monitor *hm = NULL;
+	wl_list_for_each(hm, &mons, link) {
+		if (hm->wlr_output && hm->wlr_output->enabled && hm->hdr)
+			any_hdr = true;
+	}
+	if (any_hdr) {
+		BarPopoverRow *sdr = bar_popover_row_get(n);
+		if (sdr) {
+			sdr->stepper = true;
+			/* 0 means "unset" in the config and 203 is the spec's default,
+			 * which is what the scene is actually running at */
+			sdr->step_value = (int32_t)(config.sdr_reference_luminance > 0
+											? config.sdr_reference_luminance
+											: 203.0f);
+			/* the rails set_sdr_luminance itself clamps to, so the row cannot
+			 * display a value the dispatcher would refuse */
+			sdr->vmin = 80;
+			sdr->vmax = 1000;
+			sdr->vstep = 10;
+			snprintf(sdr->value, sizeof(sdr->value), "%s",
+					 BAR_POPOVER_VERB "sdr");
+			snprintf(sdr->text, sizeof(sdr->text), "SDR white  %d cd/m²",
+					 sdr->step_value);
+			n++;
+		}
+	}
+
 	Monitor *it = NULL;
 	wl_list_for_each(it, &mons, link) {
 		if (n >= BAR_POPOVER_MAX_ROWS || !it->wlr_output)
@@ -858,11 +913,9 @@ static void bar_popover_open_outputs(Monitor *m, int32_t anchor_x) {
 	bar_popover_layout();
 }
 
-/* One output's controls. Only what a clickable row can honestly express:
- * a toggle. Resolution, scale and the luminance fields need widgets the
- * popover layer does not have yet, and a row that cannot change a value has
- * no business pretending to be a control -- they are shown as inert readings
- * instead. */
+/* One output's controls: the HDR toggle, and the resolution and scale lists it
+ * drills into. SDR white lives one level up, on the outputs panel, because it
+ * is scene-wide rather than a property of this output. */
 static void bar_popover_open_output(Monitor *anchor_mon, int32_t anchor_x,
 									const char *name) {
 	Monitor *target = bar_display_by_name(name);
@@ -1011,6 +1064,21 @@ static void bar_popover_open_scales(Monitor *anchor_mon, int32_t anchor_x,
 /* Apply a stepper row's new value. Kept beside the popover rather than in each
  * module so a row's behaviour is visible where the row is built. */
 static void bar_popover_apply_step(BarPopoverRow *r) {
+	/* Steppers carrying a marked verb are dispatched on the VERB, not on the
+	 * popover kind: a panel is allowed more than one of them, and keying the
+	 * whole thing on the kind would silently apply the first one's action to
+	 * the second. */
+	if (BAR_POPOVER_IS_VERB(r->value)) {
+		if (!strcmp(r->value, BAR_POPOVER_VERB "sdr")) {
+			/* absolute, like the volume stepper: the row shows the value it
+			 * is setting, so a relative step would drift from the reading */
+			set_sdr_luminance(&(Arg){.i = 0, .f = (float)r->step_value});
+			snprintf(r->text, sizeof(r->text), "SDR white  %d cd/m²",
+					 r->step_value);
+		}
+		bar_popover_layout();
+		return;
+	}
 	switch (bar_popover.kind) {
 	case BAR_POPOVER_SINKS: {
 		/* Absolute, not a delta. The row displays the value it is setting, so
@@ -1160,6 +1228,229 @@ static void bar_popover_open_med_dose(Monitor *anchor_mon, int32_t anchor_x,
 	bar_popover_layout();
 }
 
+/* ─── system figures ──────────────────────────────────────────────────────── */
+
+/* The bar's metric pills are deliberately numberless -- the colour is the
+ * reading, because a percentage that changes every second is something you
+ * cannot help reading and almost never need. This is where the numbers live:
+ * clicking any of cpu, memory or network opens the SAME panel, because they
+ * are three views of one machine and three separate popovers of four rows
+ * each would be filing rather than answering.
+ *
+ * Every row is inert. Nothing here is a control -- there is no honest action
+ * for "CPU 37%" -- so the panel is dismissed by Escape or a click outside it,
+ * exactly like the disabled entries in a tray menu.
+ *
+ * Sampled when it OPENS, not on a timer. A popover that rewrites itself under
+ * the pointer is hard to read, and these figures are being consulted, not
+ * watched; the pill beside it is the live one. */
+
+static void bar_sysinfo_bytes(char *out, size_t len, double bytes) {
+	static const char *unit[] = {"B", "K", "M", "G", "T"};
+	int u = 0;
+	while (bytes >= 1024.0 && u < 4) {
+		bytes /= 1024.0;
+		u++;
+	}
+	snprintf(out, len, u == 0 ? "%.0f %s" : "%.1f %s", bytes, unit[u]);
+}
+
+/* The N processes holding the most resident memory, by a single pass over
+ * /proc.
+ *
+ * RSS and not CPU on purpose: a process's CPU share is a RATE, and one sample
+ * of /proc/<pid>/stat can only give its average since it started -- which for
+ * a browser open since breakfast is a number that looks like a reading and is
+ * not one. Reporting the wrong quantity confidently is worse than reporting
+ * less. RSS is a level, so a single sample is the truth.
+ *
+ * Returns how many were filled. */
+struct bar_sysinfo_proc {
+	char name[32];
+	uint64_t rss_kb;
+};
+
+static int32_t bar_sysinfo_top_rss(struct bar_sysinfo_proc *out, int32_t max) {
+	DIR *d = opendir("/proc");
+	if (!d)
+		return 0;
+	int32_t n = 0;
+	struct dirent *e;
+	while ((e = readdir(d))) {
+		if (e->d_name[0] < '0' || e->d_name[0] > '9')
+			continue;
+		char path[300];
+		snprintf(path, sizeof(path), "/proc/%s/statm", e->d_name);
+		FILE *f = fopen(path, "re");
+		if (!f)
+			continue;
+		unsigned long size = 0, resident = 0;
+		int got = fscanf(f, "%lu %lu", &size, &resident);
+		fclose(f);
+		if (got < 2 || resident == 0)
+			continue;
+		/* statm counts PAGES; the bar reports bytes like everything else.
+		 * sysconf, not getpagesize(): the latter is not declared under
+		 * _POSIX_C_SOURCE=200809L, which this is built with. */
+		uint64_t rss_kb =
+			(uint64_t)resident * (uint64_t)(sysconf(_SC_PAGESIZE) / 1024);
+
+		/* keep only if it beats the weakest entry we are holding */
+		if (n == max && rss_kb <= out[n - 1].rss_kb)
+			continue;
+
+		char name[32] = "";
+		snprintf(path, sizeof(path), "/proc/%s/comm", e->d_name);
+		if ((f = fopen(path, "re"))) {
+			if (fgets(name, sizeof(name), f)) {
+				char *nl = strchr(name, '\n');
+				if (nl)
+					*nl = '\0';
+			}
+			fclose(f);
+		}
+		if (!name[0])
+			continue;
+
+		/* insertion sort into a list this short beats sorting the ~500 entries
+		 * of a real /proc */
+		int32_t pos = n < max ? n : max - 1;
+		while (pos > 0 && out[pos - 1].rss_kb < rss_kb) {
+			out[pos] = out[pos - 1];
+			pos--;
+		}
+		snprintf(out[pos].name, sizeof(out[pos].name), "%s", name);
+		out[pos].rss_kb = rss_kb;
+		if (n < max)
+			n++;
+	}
+	closedir(d);
+	return n;
+}
+
+static void bar_popover_open_sysinfo(Monitor *m, int32_t anchor_x) {
+	if (bar_popover_is_open(BAR_POPOVER_SYSINFO)) {
+		bar_popover_close();
+		return;
+	}
+	if (!bar_popover_open(m, BAR_POPOVER_SYSINFO, anchor_x))
+		return;
+
+	int32_t n = 0;
+	BarPopoverRow *r;
+
+	/* ── cpu ── */
+	if ((r = bar_popover_row_get(n))) {
+		double l1 = 0, l5 = 0, l15 = 0;
+		FILE *f = fopen("/proc/loadavg", "re");
+		if (f) {
+			if (fscanf(f, "%lf %lf %lf", &l1, &l5, &l15) != 3)
+				l1 = l5 = l15 = 0;
+			fclose(f);
+		}
+		snprintf(r->text, sizeof(r->text), "CPU  %d%%    load %.2f %.2f %.2f",
+				 bar_metrics.cpu_pct, l1, l5, l15);
+		r->enabled = false;
+		n++;
+	}
+
+	/* ── memory and swap ── */
+	uint64_t mem_total = 0, mem_avail = 0, swap_total = 0, swap_free = 0;
+	FILE *mi = fopen("/proc/meminfo", "re");
+	if (mi) {
+		char line[256];
+		while (fgets(line, sizeof(line), mi)) {
+			sscanf(line, "MemTotal: %lu kB", &mem_total);
+			sscanf(line, "MemAvailable: %lu kB", &mem_avail);
+			sscanf(line, "SwapTotal: %lu kB", &swap_total);
+			sscanf(line, "SwapFree: %lu kB", &swap_free);
+		}
+		fclose(mi);
+	}
+	if (mem_total && (r = bar_popover_row_get(n))) {
+		char used[24], total[24];
+		bar_sysinfo_bytes(used, sizeof(used),
+						  (double)(mem_total - mem_avail) * 1024.0);
+		bar_sysinfo_bytes(total, sizeof(total), (double)mem_total * 1024.0);
+		snprintf(r->text, sizeof(r->text), "Memory  %s / %s    %d%%", used,
+				 total, bar_metrics.mem_pct);
+		r->enabled = false;
+		n++;
+	}
+	/* only when there IS swap: "Swap 0 / 0" is a row that answers nothing */
+	if (swap_total && (r = bar_popover_row_get(n))) {
+		char used[24], total[24];
+		bar_sysinfo_bytes(used, sizeof(used),
+						  (double)(swap_total - swap_free) * 1024.0);
+		bar_sysinfo_bytes(total, sizeof(total), (double)swap_total * 1024.0);
+		snprintf(r->text, sizeof(r->text), "Swap  %s / %s", used, total);
+		r->enabled = false;
+		n++;
+	}
+
+	/* ── what is holding the memory ── */
+	struct bar_sysinfo_proc top[3];
+	int32_t ntop = bar_sysinfo_top_rss(top, 3);
+	for (int32_t i = 0; i < ntop && (r = bar_popover_row_get(n)); i++) {
+		char rss[24];
+		bar_sysinfo_bytes(rss, sizeof(rss), (double)top[i].rss_kb * 1024.0);
+		snprintf(r->text, sizeof(r->text), "    %s  %s", rss, top[i].name);
+		r->enabled = false;
+		n++;
+	}
+
+	/* ── network ── */
+	if ((r = bar_popover_row_get(n))) {
+		char down[24], up[24];
+		bar_sysinfo_bytes(down, sizeof(down), bar_metrics.rx_rate);
+		bar_sysinfo_bytes(up, sizeof(up), bar_metrics.tx_rate);
+		if (bar_metrics.link_up)
+			snprintf(r->text, sizeof(r->text), "%s  ↓%s/s  ↑%s/s",
+					 bar_metrics.iface[0] ? bar_metrics.iface : "network",
+					 down, up);
+		else
+			snprintf(r->text, sizeof(r->text), "%s", "network  down");
+		r->enabled = false;
+		n++;
+	}
+	if (bar_metrics.link_up && (r = bar_popover_row_get(n))) {
+		char down[24], up[24];
+		bar_sysinfo_bytes(down, sizeof(down), (double)bar_metrics.rx_bytes);
+		bar_sysinfo_bytes(up, sizeof(up), (double)bar_metrics.tx_bytes);
+		snprintf(r->text, sizeof(r->text), "    total  ↓%s  ↑%s", down, up);
+		r->enabled = false;
+		n++;
+	}
+
+	/* ── uptime ── */
+	double up_s = 0;
+	FILE *ut = fopen("/proc/uptime", "re");
+	if (ut) {
+		if (fscanf(ut, "%lf", &up_s) != 1)
+			up_s = 0;
+		fclose(ut);
+	}
+	if (up_s > 0 && (r = bar_popover_row_get(n))) {
+		int32_t days = (int32_t)(up_s / 86400);
+		int32_t hours = (int32_t)(up_s / 3600) % 24;
+		int32_t mins = (int32_t)(up_s / 60) % 60;
+		if (days)
+			snprintf(r->text, sizeof(r->text), "Uptime  %dd %dh %dm", days,
+					 hours, mins);
+		else
+			snprintf(r->text, sizeof(r->text), "Uptime  %dh %dm", hours, mins);
+		r->enabled = false;
+		n++;
+	}
+
+	bar_popover.nrows = n;
+	if (n == 0) {
+		bar_popover_close();
+		return;
+	}
+	bar_popover_layout();
+}
+
 /* ─── input ───────────────────────────────────────────────────────────────── */
 
 static bool bar_popover_handle_node_click(AsteroidzNodeData *hit,
@@ -1174,6 +1465,14 @@ static bool bar_popover_handle_node_click(AsteroidzNodeData *hit,
 	/* a stepper is adjusted by scrolling, so a click on it is a miss, not a
 	 * selection -- dismissing would punish reaching for it */
 	if (r->stepper)
+		return true;
+	/* An inert row is a reading, not a target: the click is consumed but the
+	 * panel stays up, the way a greyed entry behaves in every other menu.
+	 * Enforced here rather than per kind so a panel made ENTIRELY of readings
+	 * (sysinfo) does not close on any click that lands inside it -- the
+	 * individual cases below still carry their own checks, which this makes
+	 * redundant rather than wrong. */
+	if (!r->enabled)
 		return true;
 	switch (bar_popover.kind) {
 	case BAR_POPOVER_SINKS: {

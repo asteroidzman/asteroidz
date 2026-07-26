@@ -623,3 +623,104 @@ bar { enable true; height 48; position "top"; margin { x 8; y 9 }; pill-inset 6;
 
 	bar_off
 }
+
+# Count pixels in a region that are not the harness's flat grey wallpaper.
+# A popover panel covers it; nothing else in these tests does.
+bar_region_ink() { # bar_region_ink PNG X0 Y0 X1 Y1
+	python3 - "$@" <<'PY'
+import sys
+from PIL import Image
+png, x0, y0, x1, y1 = sys.argv[1], *map(int, sys.argv[2:6])
+im = Image.open(png).convert("RGB"); px = im.load(); W, H = im.size
+x1, y1 = min(x1, W), min(y1, H)
+n = 0
+for x in range(x0, x1):
+    for y in range(y0, y1):
+        r, g, b = px[x, y]
+        if abs(r - 0x80) + abs(g - 0x80) + abs(b - 0x80) > 30:
+            n += 1
+print(n)
+PY
+}
+
+# Centre x of the rightmost run of non-wallpaper pixels in a horizontal band.
+bar_rightmost_ink_x() { # bar_rightmost_ink_x PNG Y0 Y1
+	python3 - "$@" <<'PY'
+import sys
+from PIL import Image
+png, y0, y1 = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+im = Image.open(png).convert("RGB"); px = im.load(); W, H = im.size
+y1 = min(y1, H)
+runs, s = [], None
+for x in range(W):
+    hit = any(abs(px[x, y][0] - 0x80) + abs(px[x, y][1] - 0x80) +
+              abs(px[x, y][2] - 0x80) > 30 for y in range(y0, y1))
+    if hit and s is None:
+        s = x
+    elif not hit and s is not None:
+        runs.append((s, x - 1)); s = None
+if s is not None:
+    runs.append((s, W - 1))
+runs = [r for r in runs if r[1] - r[0] + 1 >= 3]
+if runs:
+    print((runs[-1][0] + runs[-1][1]) // 2)
+PY
+}
+
+test_bar_sysinfo_popover_opens_and_readings_do_not_dismiss_it() {
+	[ "$(bar_supported)" = "true" ] || { echo "  (skip: built without -Dnative-bar)"; return 0; }
+	command -v python3 >/dev/null && python3 -c "import PIL" 2>/dev/null || {
+		echo "  (skip: python3 PIL not available)"; return 0; }
+
+	# The metric pills are numberless by design, so the figures they stand for
+	# live in a popover -- and unlike every other popover here, this one needs
+	# nothing but /proc, so it actually opens on a headless instance with no
+	# session bus. That makes it the one place the popover contract can be
+	# pinned end to end.
+	#
+	# Three things are asserted, in the order a person would do them:
+	#   1. clicking a metric pill opens a panel;
+	#   2. clicking a READING inside it does not dismiss it -- every row here
+	#      is inert, and a panel that closes when you click what you came to
+	#      read is useless;
+	#   3. clicking outside still dismisses.
+	hl_dispatch "view,1"
+	bar_set 'bar { enable true; height 30; position "top"; margin { x 8; y 4 }; panel { enable false }; show-logo false; tag-icons 0; modules-left "tags"; modules-right "cpu" }'
+	sleep 0.8
+
+	local x0=$((HL_WIDTH - 330)) x1=$((HL_WIDTH - 30))
+	hl_screenshot sys-closed
+	local base; base="$(bar_region_ink "$HL_OUTDIR/sys-closed.png" $x0 60 $x1 200)"
+
+	# Find the pill by its artwork rather than deriving its coordinates: an
+	# icon-only pill is as wide as its icon, which depends on the theme's
+	# padding and the bar height, and a click computed from those silently
+	# lands beside it the moment either changes.
+	local cpux
+	cpux="$(bar_rightmost_ink_x "$HL_OUTDIR/sys-closed.png" 6 32)"
+	[ -n "$cpux" ] || { echo "  (skip: could not locate the cpu pill)"; bar_off; return 0; }
+	hl_click "$cpux" 19
+	sleep 0.8
+	hl_screenshot sys-open
+	local opened; opened="$(bar_region_ink "$HL_OUTDIR/sys-open.png" $x0 60 $x1 200)"
+	hl_assert_true "clicking a metric pill opens the system popover ($base -> $opened px)" \
+		"$([ "$opened" -gt $((base + 2000)) ] && echo true || echo false)"
+
+	# a reading inside it: first row centre is popover top (40) + pad (12) + ~17
+	hl_click "$((HL_WIDTH - 180))" 69
+	sleep 0.6
+	hl_screenshot sys-still
+	local still; still="$(bar_region_ink "$HL_OUTDIR/sys-still.png" $x0 60 $x1 200)"
+	hl_assert_true "clicking a reading inside it does not dismiss it ($still px)" \
+		"$([ "$still" -gt $((base + 2000)) ] && echo true || echo false)"
+
+	# but a click outside does
+	hl_click 400 500
+	sleep 0.6
+	hl_screenshot sys-dismissed
+	local gone; gone="$(bar_region_ink "$HL_OUTDIR/sys-dismissed.png" $x0 60 $x1 200)"
+	hl_assert_true "a click outside dismisses it ($gone px)" \
+		"$([ "$gone" -le $((base + 2000)) ] && echo true || echo false)"
+
+	bar_off
+}
