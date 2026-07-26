@@ -34,6 +34,7 @@ enum bar_popover_kind {
 	BAR_POPOVER_SINKS, /* audio outputs; row payload is the pactl sink name */
 	BAR_POPOVER_MENU,  /* a tray item's DBusMenu; row payload is the item id */
 	BAR_POPOVER_VOICE, /* discord voice channels; row payload is guild:channel */
+	BAR_POPOVER_VPN,   /* nordvpn; row payload is a country, or a marked verb */
 };
 
 typedef struct {
@@ -669,6 +670,80 @@ static void bar_popover_open_voice(Monitor *m, int32_t anchor_x) {
 	bar_popover_layout();
 }
 
+/* ─── nordvpn ─────────────────────────────────────────────────────────────── */
+
+/* Where you are connected, then the two verbs, then countries to connect to.
+ * The status lines are inert rows rather than a separate widget -- a popover
+ * has one row type, and a disabled row already reads as information. */
+static void bar_popover_open_vpn(Monitor *m, int32_t anchor_x) {
+	if (bar_popover_is_open(BAR_POPOVER_VPN)) {
+		bar_popover_close();
+		return;
+	}
+	if (!bar_popover_open(m, BAR_POPOVER_VPN, anchor_x))
+		return;
+	bar_vpn_fetch_countries();
+
+	int32_t n = 0;
+	BarPopoverRow *r = NULL;
+
+	if (bar_vpn.state == BAR_VPN_UNAVAILABLE) {
+		r = bar_popover_row_get(n);
+		if (r) {
+			snprintf(r->text, sizeof(r->text), "%s",
+					 "nordvpn CLI not available");
+			r->enabled = false;
+			n++;
+		}
+	} else if (bar_vpn.state == BAR_VPN_CONNECTED) {
+		if ((r = bar_popover_row_get(n))) {
+			snprintf(r->text, sizeof(r->text), "%s%s%s",
+					 bar_vpn.country[0] ? bar_vpn.country : "Connected",
+					 bar_vpn.server[0] ? " · " : "", bar_vpn.server);
+			r->enabled = false;
+			r->selected = true;
+			n++;
+		}
+		if (bar_vpn.ip[0] && (r = bar_popover_row_get(n))) {
+			snprintf(r->text, sizeof(r->text), "IP %s", bar_vpn.ip);
+			r->enabled = false;
+			n++;
+		}
+		if (bar_vpn.uptime[0] && (r = bar_popover_row_get(n))) {
+			snprintf(r->text, sizeof(r->text), "Up %s", bar_vpn.uptime);
+			r->enabled = false;
+			n++;
+		}
+		if ((r = bar_popover_row_get(n))) {
+			snprintf(r->text, sizeof(r->text), "%s", "Disconnect");
+			snprintf(r->value, sizeof(r->value), "%s", "\x01off");
+			n++;
+		}
+	} else {
+		if ((r = bar_popover_row_get(n))) {
+			snprintf(r->text, sizeof(r->text), "%s", "Quick Connect");
+			snprintf(r->value, sizeof(r->value), "%s", "\x01quick");
+			n++;
+		}
+	}
+
+	for (int32_t i = 0; i < bar_vpn.ncountries && n < BAR_POPOVER_MAX_ROWS;
+		 i++) {
+		if (!(r = bar_popover_row_get(n)))
+			break;
+		snprintf(r->text, sizeof(r->text), "%s", bar_vpn.countries[i]);
+		snprintf(r->value, sizeof(r->value), "%s", bar_vpn.countries[i]);
+		n++;
+	}
+
+	bar_popover.nrows = n;
+	if (n == 0) {
+		bar_popover_close();
+		return;
+	}
+	bar_popover_layout();
+}
+
 /* ─── input ───────────────────────────────────────────────────────────────── */
 
 static bool bar_popover_handle_node_click(AsteroidzNodeData *hit,
@@ -684,6 +759,16 @@ static bool bar_popover_handle_node_click(AsteroidzNodeData *hit,
 	case BAR_POPOVER_SINKS: {
 		char *const argv[] = {"pactl", "set-default-sink", r->value, NULL};
 		async_spawn(event_loop, argv, NULL, NULL);
+		break;
+	}
+	case BAR_POPOVER_VPN: {
+		if (!r->enabled)
+			return true; /* a status line: consumed, but keeps the menu up */
+		if (r->value[0] == '\x01')
+			!strcmp(r->value + 1, "off") ? bar_vpn_disconnect()
+										 : bar_vpn_connect(NULL);
+		else
+			bar_vpn_connect(r->value);
 		break;
 	}
 	case BAR_POPOVER_VOICE: {

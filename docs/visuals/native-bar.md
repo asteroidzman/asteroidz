@@ -99,6 +99,7 @@ for a newer build still starts.
 | `notifications` | swaync's unread count and do-not-disturb state (also accepts `notify`) | click toggles the panel; right-click toggles DND |
 | `medication` | doses due now, or the next dose's time (also accepts `meds`) | — (taking a dose stays in Waybar, see below) |
 | `discord` | voice state from the `discord-voiced` daemon (also accepts `discord-voice`) | click opens the channel picker; right-click toggles mute |
+| `vpn` | NordVPN state as a tinted shield (also accepts `nordvpn`). **Icon only** | click opens status + Quick Connect / Disconnect / countries |
 | `tray` | one icon per StatusNotifierItem (also accepts `systray`) | left: `Activate`; right: the item's context menu; middle: `SecondaryActivate` |
 
 The `tags` module mirrors the Waybar workspace module it replaces: it shows
@@ -297,6 +298,28 @@ dark panel.
 unix-socket line client on the compositor's event loop with backoff reconnect.
 Distinct from `async-spawn.h`'s streaming mode, which owns a *child process* —
 here the peer has its own lifetime and we are merely a client of it.
+
+## VPN
+
+NordVPN state from the `nordvpn` CLI, as a shield whose **colour is the
+reading** — accent connected, amber connecting, dimmed disconnected, urgent
+when the CLI or daemon cannot answer. Icon only, so it joins the tight
+cpu/memory run; a server hostname is popover material, not bar material.
+
+Polled rather than event-driven, because the CLI is all there is: nordvpn
+exposes no bus interface and no socket to subscribe to. The poll is an async
+spawn riding the shared metrics timer, so it costs one short-lived child every
+`interval` seconds and never blocks — the Waybar plugin does the same for the
+same reason.
+
+The popover shows where you are connected (country, server, IP, uptime) as
+inert rows, then Quick Connect or Disconnect, then a country list from
+`nordvpn countries` that connects on click. Clicking a status row is consumed
+without dismissing — it is information, not a target.
+
+A missing binary shows the urgent shield rather than staying silent: the module
+is opt-in, so someone who configured it without nordvpn installed should see
+that plainly.
 
 ## Popovers
 

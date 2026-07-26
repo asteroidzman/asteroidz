@@ -50,6 +50,7 @@ enum bar_module_kind {
 	BAR_MODULE_NOTIFY,
 	BAR_MODULE_MEDICATION,
 	BAR_MODULE_DISCORD,
+	BAR_MODULE_VPN,
 };
 
 enum bar_slot { BAR_SLOT_LEFT = 0, BAR_SLOT_CENTER, BAR_SLOT_RIGHT,
@@ -177,6 +178,8 @@ static enum bar_module_kind bar_module_kind_from_name(const char *name) {
 		return BAR_MODULE_MEDICATION;
 	if (strcmp(name, "discord") == 0 || strcmp(name, "discord-voice") == 0)
 		return BAR_MODULE_DISCORD;
+	if (strcmp(name, "vpn") == 0 || strcmp(name, "nordvpn") == 0)
+		return BAR_MODULE_VPN;
 	return BAR_MODULE_NONE;
 }
 
@@ -212,7 +215,8 @@ static bool bar_pill_is_icon_only(const BarPill *p) {
 		return false;
 	/* the two module families that draw artwork and never a label */
 	return bar_kind_is_metric(p->module->kind) ||
-		   p->module->kind == BAR_MODULE_TRAY;
+		   p->module->kind == BAR_MODULE_TRAY ||
+		   p->module->kind == BAR_MODULE_VPN;
 }
 
 static int32_t bar_pill_padding_x(const BarPill *p) {
@@ -1601,6 +1605,7 @@ static void bar_viz_finish(void) {
 		unlink(bar_viz_cfg_path);
 }
 
+#include "bar-vpn.h"
 #include "bar-discord.h"
 #include "bar-medication.h"
 #include "bar-popover.h"
@@ -2360,6 +2365,47 @@ static void bar_module_refresh_discord(BarModule *mod) {
 		bar_pill_release(&mod->pills[i]);
 }
 
+/* Shield, tinted by connection state. Icon only: the colour IS the reading,
+ * and a server hostname is popover material rather than bar material. */
+static void bar_module_refresh_vpn(BarModule *mod) {
+	BarPill *p = bar_pill_get(mod, 0);
+	if (!p) {
+		mod->npills = 0;
+		return;
+	}
+	char icon[512];
+	bar_icon_path(icon, sizeof(icon),
+				  bar_vpn.state == BAR_VPN_CONNECTED
+					  ? "waybar-nordvpn/shield.svg"
+					  : "waybar-nordvpn/shield-off.svg");
+	asteroidz_tab_bar_node_set_icon(p->node, icon);
+
+	float tint[4];
+	switch (bar_vpn.state) {
+	case BAR_VPN_CONNECTED:
+		memcpy(tint, config.theme.focus_bg_color, sizeof(tint));
+		break;
+	case BAR_VPN_CONNECTING:
+		memcpy(tint, bar_load_amber, sizeof(tint));
+		break;
+	case BAR_VPN_UNAVAILABLE:
+		memcpy(tint, config.theme.urgent_color, sizeof(tint));
+		break;
+	default:
+		memcpy(tint, config.theme.fg_color, sizeof(tint));
+		tint[3] *= 0.45f; /* an unlit indicator */
+		break;
+	}
+	asteroidz_tab_bar_node_set_icon_tint(p->node, tint);
+	p->text[0] = '\0';
+	p->arg = 0;
+	p->fixed_width = bar_icon_pill_width(p, bar_pill_height());
+	bar_pill_style(p, BAR_LOOK_FLAT);
+	mod->npills = 1;
+	for (int32_t i = 1; i < BAR_MAX_PILLS; i++)
+		bar_pill_release(&mod->pills[i]);
+}
+
 static void bar_module_refresh(BarModule *mod) {
 	switch (mod->kind) {
 	case BAR_MODULE_TAGS:
@@ -2402,6 +2448,9 @@ static void bar_module_refresh(BarModule *mod) {
 		break;
 	case BAR_MODULE_DISCORD:
 		bar_module_refresh_discord(mod);
+		break;
+	case BAR_MODULE_VPN:
+		bar_module_refresh_vpn(mod);
 		break;
 	default:
 		mod->npills = 0;
@@ -2921,6 +2970,9 @@ static uint64_t bar_digest(Monitor *m) {
 			bar_hash_str(&h, buf);
 			break;
 		}
+		case BAR_MODULE_VPN:
+			bar_hash(&h, &bar_vpn.state, sizeof(bar_vpn.state));
+			break;
 		case BAR_MODULE_DISCORD:
 			bar_hash(&h, &bar_dv.state, sizeof(bar_dv.state));
 			bar_hash(&h, &bar_dv.muted, sizeof(bar_dv.muted));
@@ -3044,6 +3096,7 @@ static int bar_clock_tick(void *data) {
 
 static int bar_metrics_tick(void *data) {
 	bar_tray_retry_icons();
+	bar_vpn_poll();
 	(void)data;
 	bar_metrics_sample();
 	bar_update_all();
@@ -3304,6 +3357,12 @@ static bool bar_handle_node_click(AsteroidzNodeData *hit, uint32_t button) {
 	case BAR_MODULE_IDLE:
 		if (button == BTN_LEFT) {
 			toggle_idle_inhibit(&(Arg){.i = -1});
+			return true;
+		}
+		break;
+	case BAR_MODULE_VPN:
+		if (button == BTN_LEFT) {
+			bar_popover_open_vpn(m, p->node->last_x + p->width / 2);
 			return true;
 		}
 		break;
