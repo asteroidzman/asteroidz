@@ -1,11 +1,22 @@
 /* asteroidz-xembed — XEmbed system tray bridge.
  *
- * X11 applications that predate StatusNotifierItem (Discord and other Electron
- * builds, older Qt/GTK apps, some games) publish their tray icon over the
+ * X11 applications that predate StatusNotifierItem (older Qt/GTK apps, some
+ * games, anything built on GtkStatusIcon) publish their tray icon over the
  * freedesktop XEmbed protocol: they look for an owner of the
  * _NET_SYSTEM_TRAY_S<screen> selection and ask it to dock a window. asteroidz'
- * own tray is an SNI host and speaks no X11 at all, so those icons had nowhere
- * to go and simply never appeared.
+ * own tray is an SNI host and speaks no X11 at all, so those icons have nowhere
+ * to go and simply never appear.
+ *
+ * NOT Discord, despite what this file originally said. Discord was the symptom
+ * that prompted this, and the diagnosis was wrong: it has no libappindicator
+ * mapped, which was taken to mean XEmbed, but Electron implements SNI itself
+ * over D-Bus. Discord's icon was missing because the tray MODULE had been
+ * silently dropped by a module-cap bug, so no watcher existed when Discord
+ * started -- and it never retries. With a watcher present at startup it
+ * registers an SNI item like anything else.
+ *
+ * The bridge remains correct and is verified working end to end, but it is for
+ * real XEmbed-only clients, which are rarer than the original claim implied.
  *
  * This owns that selection, embeds the icon windows, and re-exports each one as
  * a StatusNotifierItem. The compositor's tray then displays them with no idea
