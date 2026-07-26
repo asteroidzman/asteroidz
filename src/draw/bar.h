@@ -76,6 +76,16 @@ typedef struct BarPill {
 	/* Pinned width is a preference, not a requirement: a pill carrying
 	 * ellipsisable text can give width back when the slots do not fit. */
 	bool flexible;
+	/* Mirrors the node's text alignment, so the layout knows which side a
+	 * pinned pill's unused width ends up on. */
+	bool align_left;
+	/* How much of this pill's width is reserve the current content does not
+	 * use, split by where that reserve actually falls. A pinned pill is as
+	 * wide as its WIDEST possible content -- the clock is probed across all
+	 * twelve months -- so most of the time it carries slack that is invisible
+	 * but still occupies the slot. The panel needs to know, or it hugs the
+	 * reserve rather than the content and the section looks lopsided. */
+	int32_t slack_lead, slack_trail;
 	char text[BAR_TEXT_MAX];
 	bool used;
 } BarPill;
@@ -1652,6 +1662,7 @@ static void bar_module_refresh_title(BarModule *mod) {
 	 * title drift sideways as it changed length, and detached it from the
 	 * layout chip it follows */
 	asteroidz_tab_bar_node_set_text_align_left(p->node, true);
+	p->align_left = true;
 	/* resting colours, not the focus pair: a highlighted title competed with
 	 * the selected-tag pill for "this is the active thing". */
 	bar_pill_style(p, BAR_LOOK_FLAT);
@@ -2147,6 +2158,22 @@ static void bar_module_measure(BarModule *mod, int32_t height, float scale) {
 			p->width < config.bar_pill_min_width &&
 			!bar_pill_is_icon_only(p))
 			p->width = config.bar_pill_min_width;
+		/* Where the unused part of a pinned width sits. Centred content splits
+		 * it; left-aligned content pushes all of it to the trailing edge. */
+		p->slack_lead = p->slack_trail = 0;
+		if (p->fixed_width > 0) {
+			int32_t natural = asteroidz_tab_bar_node_measure_width(
+				p->node, p->text, height);
+			int32_t slack = p->width - natural;
+			if (slack > 0) {
+				if (p->align_left) {
+					p->slack_trail = slack;
+				} else {
+					p->slack_lead = slack / 2;
+					p->slack_trail = slack - p->slack_lead;
+				}
+			}
+		}
 		asteroidz_tab_bar_node_set_size(p->node, p->width, height);
 		asteroidz_tab_bar_node_update(p->node, p->text, scale);
 		total += p->width;
@@ -2168,7 +2195,8 @@ static int32_t bar_module_gap(BarModule *a, BarModule *b) {
 /* Draw (or hide) the backdrop for one slot. `x`..`x+w` is the extent of the
  * pills it contains; the panel is that grown by panel-padding on each side. */
 static void bar_panel_apply(AsteroidzBar *bar, enum bar_slot slot, int32_t x,
-							int32_t w, int32_t y, int32_t h) {
+							int32_t w, int32_t y, int32_t h, int32_t trim_lead,
+							int32_t trim_trail) {
 	BarPanel *panel = &bar->panels[slot];
 	bool want = config.bar_panel_enable && w > 0;
 
@@ -2187,9 +2215,17 @@ static void bar_panel_apply(AsteroidzBar *bar, enum bar_slot slot, int32_t x,
 	 * to the screen edge comes from margin.y alone. Padding vertically too
 	 * grew the panel back up over that margin and left it flush against the
 	 * top of the screen. */
+	/* Trim the leading/trailing pill's unused reserve before padding, so the
+	 * gap from the panel edge to the first thing you can SEE matches the gap
+	 * after the last one. Without this a section led by a pinned pill (the
+	 * clock, which reserves its widest month) looked padded on one side and
+	 * flush on the other -- the padding was symmetric all along, the content
+	 * inside it was not. */
 	int32_t pad = config.bar_panel_padding;
-	int32_t px = x - pad, py = y;
-	int32_t pw = w + 2 * pad, ph = h;
+	int32_t px = x + trim_lead - pad, py = y;
+	int32_t pw = w - trim_lead - trim_trail + 2 * pad, ph = h;
+	if (pw < 2 * pad)
+		pw = 2 * pad;
 	int32_t radius = config.bar_panel_radius;
 
 	/* Blur goes in first so the tint composites over it, matching the
@@ -2471,7 +2507,25 @@ static void bar_layout(Monitor *m) {
 	 * strip height; the pills inside them are the inset row. */
 	for (int32_t s = 0; s < BAR_SLOT_COUNT; s++) {
 		int32_t w = slot_w[s];
-		bar_panel_apply(bar, (enum bar_slot)s, slot_start[s], w, y, height);
+		/* the outermost pills actually drawn in this slot, whose unused
+		 * reserve is what makes the section look off-centre */
+		BarPill *lead = NULL, *trail = NULL;
+		for (int32_t i = 0; i < bar->nmodules; i++) {
+			BarModule *mod = &bar->modules[i];
+			if (mod->slot != s || mod->width <= 0)
+				continue;
+			for (int32_t j = 0; j < mod->npills; j++) {
+				BarPill *pp = &mod->pills[j];
+				if (!pp->used)
+					continue;
+				if (!lead)
+					lead = pp;
+				trail = pp;
+			}
+		}
+		bar_panel_apply(bar, (enum bar_slot)s, slot_start[s], w, y, height,
+						lead ? lead->slack_lead : 0,
+						trail ? trail->slack_trail : 0);
 	}
 }
 
