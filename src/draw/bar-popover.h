@@ -28,6 +28,19 @@
  * at a dozen silently loses the entry people actually reach for. */
 #define BAR_POPOVER_MAX_ROWS 32
 
+/* Marks a row payload as a VERB ("leave", "hdr") rather than an identifier a
+ * module looks up (a sink name, a Discord snowflake, an output). One byte no
+ * identifier can contain, so the two need no second field to tell apart.
+ *
+ * Spelled as a macro and CONCATENATED -- BAR_POPOVER_VERB "back" -- never
+ * inline as "\x01back": a hex escape has no length limit, so it swallows the
+ * b, a and c as digits and yields one out-of-range character followed by "k".
+ * That silently mis-routed the per-output back row into the HDR toggle. Octal
+ * would also be safe (three digits max), but the name says what the byte is
+ * for, which the byte itself never could. */
+#define BAR_POPOVER_VERB "\001"
+#define BAR_POPOVER_IS_VERB(v) ((v)[0] == BAR_POPOVER_VERB[0])
+
 /* What the rows mean, so a click knows how to act on the payload. */
 enum bar_popover_kind {
 	BAR_POPOVER_NONE = 0,
@@ -659,13 +672,13 @@ static void bar_popover_open_voice(Monitor *m, int32_t anchor_x) {
 		if (r) {
 			snprintf(r->text, sizeof(r->text), "%s",
 					 bar_dv.muted ? "Unmute" : "Mute");
-			snprintf(r->value, sizeof(r->value), "%s", "\x01mute");
+			snprintf(r->value, sizeof(r->value), "%s", BAR_POPOVER_VERB "mute");
 			n++;
 		}
 		r = bar_popover_row_get(n);
 		if (r) {
 			snprintf(r->text, sizeof(r->text), "%s", "Leave");
-			snprintf(r->value, sizeof(r->value), "%s", "\x01leave");
+			snprintf(r->value, sizeof(r->value), "%s", BAR_POPOVER_VERB "leave");
 			n++;
 		}
 	}
@@ -744,13 +757,13 @@ static void bar_popover_open_vpn(Monitor *m, int32_t anchor_x) {
 		}
 		if ((r = bar_popover_row_get(n))) {
 			snprintf(r->text, sizeof(r->text), "%s", "Disconnect");
-			snprintf(r->value, sizeof(r->value), "%s", "\x01off");
+			snprintf(r->value, sizeof(r->value), "%s", BAR_POPOVER_VERB "off");
 			n++;
 		}
 	} else {
 		if ((r = bar_popover_row_get(n))) {
 			snprintf(r->text, sizeof(r->text), "%s", "Quick Connect");
-			snprintf(r->value, sizeof(r->value), "%s", "\x01quick");
+			snprintf(r->value, sizeof(r->value), "%s", BAR_POPOVER_VERB "quick");
 			n++;
 		}
 	}
@@ -839,7 +852,7 @@ static void bar_popover_open_output(Monitor *anchor_mon, int32_t anchor_x,
 	if ((r = bar_popover_row_get(n))) {
 		snprintf(r->text, sizeof(r->text), "HDR  %s",
 				 target->hdr ? "on" : "off");
-		snprintf(r->value, sizeof(r->value), "%s", "\x01hdr");
+		snprintf(r->value, sizeof(r->value), "%s", BAR_POPOVER_VERB "hdr");
 		r->selected = target->hdr != 0;
 		n++;
 	}
@@ -852,7 +865,7 @@ static void bar_popover_open_output(Monitor *anchor_mon, int32_t anchor_x,
 	}
 	if ((r = bar_popover_row_get(n))) {
 		snprintf(r->text, sizeof(r->text), "%s", "\u2039  All outputs");
-		snprintf(r->value, sizeof(r->value), "%s", "\x01back");
+		snprintf(r->value, sizeof(r->value), "%s", BAR_POPOVER_VERB "back");
 		n++;
 	}
 	bar_popover.nrows = n;
@@ -940,10 +953,17 @@ static bool bar_popover_handle_node_click(AsteroidzNodeData *hit,
 		int32_t ax = bar_popover.anchor_x;
 		char name[64];
 		snprintf(name, sizeof(name), "%s", bar_popover.output_name);
+		/* Match on the verb explicitly and do nothing for anything else. The
+		 * previous "not back, so it must be HDR" reading is what let a payload
+		 * that failed to compare equal silently flip the output. */
+		if (!BAR_POPOVER_IS_VERB(r->value))
+			return true;
 		if (!strcmp(r->value + 1, "back")) {
 			bar_popover_open_outputs(anchor_mon, ax);
 			return true;
 		}
+		if (strcmp(r->value + 1, "hdr") != 0)
+			return true;
 		bar_display_toggle_hdr(bar_display_by_name(name));
 		/* stay open and re-render, so the toggle's new state is visible
 		 * without having to reopen the menu to check it took */
@@ -953,7 +973,7 @@ static bool bar_popover_handle_node_click(AsteroidzNodeData *hit,
 	case BAR_POPOVER_VPN: {
 		if (!r->enabled)
 			return true; /* a status line: consumed, but keeps the menu up */
-		if (r->value[0] == '\x01')
+		if (BAR_POPOVER_IS_VERB(r->value))
 			!strcmp(r->value + 1, "off") ? bar_vpn_disconnect()
 										 : bar_vpn_connect(NULL);
 		else
@@ -961,7 +981,7 @@ static bool bar_popover_handle_node_click(AsteroidzNodeData *hit,
 		break;
 	}
 	case BAR_POPOVER_VOICE: {
-		if (r->value[0] == '\x01') {
+		if (BAR_POPOVER_IS_VERB(r->value)) {
 			/* the two verbs, distinguished from a channel id by a marker byte
 			 * no Discord snowflake can contain */
 			if (!strcmp(r->value + 1, "mute"))
