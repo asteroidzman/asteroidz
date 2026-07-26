@@ -100,6 +100,7 @@ for a newer build still starts.
 | `medication` | doses due now, or the next dose's time (also accepts `meds`) | — (taking a dose stays in Waybar, see below) |
 | `discord` | voice state from the `discord-voiced` daemon (also accepts `discord-voice`) | click opens the channel picker; right-click toggles mute |
 | `vpn` | NordVPN state as a tinted shield (also accepts `nordvpn`). **Icon only** | click opens status + Quick Connect / Disconnect / countries |
+| `display` | this bar's own output and its mode (also accepts `monitors`) | click lists every output; drill in for HDR |
 | `tray` | one icon per StatusNotifierItem (also accepts `systray`) | left: `Activate`; right: the item's context menu; middle: `SecondaryActivate` |
 
 The `tags` module mirrors the Waybar workspace module it replaces: it shows
@@ -320,6 +321,32 @@ without dismissing — it is information, not a target.
 A missing binary shows the urgent shield rather than staying silent: the module
 is opt-in, so someone who configured it without nordvpn installed should see
 that plainly.
+
+## Displays
+
+Each bar reports **its own** output and mode, so a multi-head setup shows every
+screen what it is running at rather than repeating the focused one. Clicking
+lists every connected output; a row drills into that output's settings.
+
+Being the compositor is the whole advantage here. The Waybar plugin shells out
+to `amsg get all-monitors` for the topology and rewrites `monitors.kdl` plus a
+`reload_config` to change anything. None of that applies: the monitor list is
+`mons`, the fields are on `Monitor`, and a toggle is a field write and a
+scheduled frame — no JSON, no subprocess, no round trip through our own IPC.
+
+HDR is toggled per output, on the output the row names — deliberately not the
+`toggle_hdr` dispatcher, which acts on the focused monitor by design; clicking
+`HDMI-A-1` while `DP-1` is focused must not flip `DP-1`. The commit is deferred
+to the next frame rather than issued inline, because an out-of-band commit
+races an in-flight page-flip and gets rejected by the DRM backend — that is the
+retrain-and-blank path. An output whose `hdr_capability_failed` is set says so
+instead of offering a toggle that silently never takes.
+
+**Not covered:** the layout canvas, resolution picker, scale, and the HDR
+luminance fields. Those need a drag surface, dropdowns and sliders, and the
+popover layer has exactly one widget — a clickable text row. A row that cannot
+change a value has no business looking like a control, so those appear as inert
+readings until the widgets exist. That is popover-layer work, not module work.
 
 ## Popovers
 

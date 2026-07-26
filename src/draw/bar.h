@@ -51,6 +51,7 @@ enum bar_module_kind {
 	BAR_MODULE_MEDICATION,
 	BAR_MODULE_DISCORD,
 	BAR_MODULE_VPN,
+	BAR_MODULE_DISPLAY,
 };
 
 enum bar_slot { BAR_SLOT_LEFT = 0, BAR_SLOT_CENTER, BAR_SLOT_RIGHT,
@@ -180,6 +181,8 @@ static enum bar_module_kind bar_module_kind_from_name(const char *name) {
 		return BAR_MODULE_DISCORD;
 	if (strcmp(name, "vpn") == 0 || strcmp(name, "nordvpn") == 0)
 		return BAR_MODULE_VPN;
+	if (strcmp(name, "display") == 0 || strcmp(name, "monitors") == 0)
+		return BAR_MODULE_DISPLAY;
 	return BAR_MODULE_NONE;
 }
 
@@ -1605,6 +1608,7 @@ static void bar_viz_finish(void) {
 		unlink(bar_viz_cfg_path);
 }
 
+#include "bar-display.h"
 #include "bar-vpn.h"
 #include "bar-discord.h"
 #include "bar-medication.h"
@@ -2406,6 +2410,34 @@ static void bar_module_refresh_vpn(BarModule *mod) {
 		bar_pill_release(&mod->pills[i]);
 }
 
+/* The output this pill's own bar is on, and its mode. Per-monitor by nature:
+ * each bar reports ITS OWN output rather than the focused one, so a two-head
+ * setup shows each screen what it is running at. */
+static void bar_module_refresh_display(BarModule *mod) {
+	BarPill *p = bar_pill_get(mod, 0);
+	if (!p) {
+		mod->npills = 0;
+		return;
+	}
+	Monitor *m = mod->mon;
+	int32_t hz = bar_display_hz(m);
+	if (m && m->wlr_output && hz > 0)
+		snprintf(p->text, sizeof(p->text), "%s %dx%d@%d", BAR_DISPLAY_GLYPH,
+				 m->m.width, m->m.height, hz);
+	else if (m)
+		snprintf(p->text, sizeof(p->text), "%s %dx%d", BAR_DISPLAY_GLYPH,
+				 m->m.width, m->m.height);
+	else
+		snprintf(p->text, sizeof(p->text), "%s", BAR_DISPLAY_GLYPH);
+	p->arg = 0;
+	/* free-sized: a mode change is a real event, not per-tick jitter */
+	p->fixed_width = 0;
+	bar_pill_style(p, BAR_LOOK_FLAT);
+	mod->npills = 1;
+	for (int32_t i = 1; i < BAR_MAX_PILLS; i++)
+		bar_pill_release(&mod->pills[i]);
+}
+
 static void bar_module_refresh(BarModule *mod) {
 	switch (mod->kind) {
 	case BAR_MODULE_TAGS:
@@ -2451,6 +2483,9 @@ static void bar_module_refresh(BarModule *mod) {
 		break;
 	case BAR_MODULE_VPN:
 		bar_module_refresh_vpn(mod);
+		break;
+	case BAR_MODULE_DISPLAY:
+		bar_module_refresh_display(mod);
 		break;
 	default:
 		mod->npills = 0;
@@ -2973,6 +3008,14 @@ static uint64_t bar_digest(Monitor *m) {
 		case BAR_MODULE_VPN:
 			bar_hash(&h, &bar_vpn.state, sizeof(bar_vpn.state));
 			break;
+		case BAR_MODULE_DISPLAY: {
+			int32_t hz = bar_display_hz(m);
+			bar_hash(&h, &m->m.width, sizeof(m->m.width));
+			bar_hash(&h, &m->m.height, sizeof(m->m.height));
+			bar_hash(&h, &hz, sizeof(hz));
+			bar_hash(&h, &m->hdr, sizeof(m->hdr));
+			break;
+		}
 		case BAR_MODULE_DISCORD:
 			bar_hash(&h, &bar_dv.state, sizeof(bar_dv.state));
 			bar_hash(&h, &bar_dv.muted, sizeof(bar_dv.muted));
@@ -3357,6 +3400,12 @@ static bool bar_handle_node_click(AsteroidzNodeData *hit, uint32_t button) {
 	case BAR_MODULE_IDLE:
 		if (button == BTN_LEFT) {
 			toggle_idle_inhibit(&(Arg){.i = -1});
+			return true;
+		}
+		break;
+	case BAR_MODULE_DISPLAY:
+		if (button == BTN_LEFT) {
+			bar_popover_open_outputs(m, p->node->last_x + p->width / 2);
 			return true;
 		}
 		break;

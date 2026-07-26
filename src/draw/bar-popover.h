@@ -35,6 +35,8 @@ enum bar_popover_kind {
 	BAR_POPOVER_MENU,  /* a tray item's DBusMenu; row payload is the item id */
 	BAR_POPOVER_VOICE, /* discord voice channels; row payload is guild:channel */
 	BAR_POPOVER_VPN,   /* nordvpn; row payload is a country, or a marked verb */
+	BAR_POPOVER_OUTPUTS, /* every monitor; row payload is the output name */
+	BAR_POPOVER_OUTPUT,  /* one monitor's settings; payload is a marked verb */
 };
 
 typedef struct {
@@ -75,6 +77,9 @@ typedef struct {
 	char menu_service[128];
 	char menu_path[128];
 	int32_t menu_parent; /* the id whose children are shown; 0 = top level */
+	/* which output BAR_POPOVER_OUTPUT is showing; held by NAME because a
+	 * Monitor can be unplugged while its menu is open */
+	char output_name[64];
 	/* horizontal centre of the pill this hangs from, in layout coordinates */
 	int32_t anchor_x;
 	struct wlr_box box;
@@ -744,6 +749,93 @@ static void bar_popover_open_vpn(Monitor *m, int32_t anchor_x) {
 	bar_popover_layout();
 }
 
+/* ─── outputs ─────────────────────────────────────────────────────────────── */
+
+static void bar_popover_open_output(Monitor *anchor_mon, int32_t anchor_x,
+									const char *name);
+
+/* Every connected output, current one marked. A row drills into that output's
+ * own settings -- the same one-level-at-a-time shape the tray menus use. */
+static void bar_popover_open_outputs(Monitor *m, int32_t anchor_x) {
+	if (bar_popover_is_open(BAR_POPOVER_OUTPUTS)) {
+		bar_popover_close();
+		return;
+	}
+	if (!bar_popover_open(m, BAR_POPOVER_OUTPUTS, anchor_x))
+		return;
+
+	int32_t n = 0;
+	Monitor *it = NULL;
+	wl_list_for_each(it, &mons, link) {
+		if (n >= BAR_POPOVER_MAX_ROWS || !it->wlr_output)
+			continue;
+		BarPopoverRow *r = bar_popover_row_get(n);
+		if (!r)
+			break;
+		char sum[BAR_TEXT_MAX];
+		bar_display_summary(it, sum, sizeof(sum));
+		snprintf(r->text, sizeof(r->text), "%s%s  \u203a", sum,
+				 it->hdr ? "  HDR" : "");
+		snprintf(r->value, sizeof(r->value), "%s", it->wlr_output->name);
+		r->selected = (it == m);
+		r->submenu = true;
+		n++;
+	}
+	bar_popover.nrows = n;
+	if (n == 0) {
+		bar_popover_close();
+		return;
+	}
+	bar_popover_layout();
+}
+
+/* One output's controls. Only what a clickable row can honestly express:
+ * a toggle. Resolution, scale and the luminance fields need widgets the
+ * popover layer does not have yet, and a row that cannot change a value has
+ * no business pretending to be a control -- they are shown as inert readings
+ * instead. */
+static void bar_popover_open_output(Monitor *anchor_mon, int32_t anchor_x,
+									const char *name) {
+	Monitor *target = bar_display_by_name(name);
+	if (!target)
+		return;
+	if (!bar_popover_open(anchor_mon, BAR_POPOVER_OUTPUT, anchor_x))
+		return;
+	snprintf(bar_popover.output_name, sizeof(bar_popover.output_name), "%s",
+			 name);
+
+	int32_t n = 0;
+	BarPopoverRow *r = bar_popover_row_get(n);
+	if (r) {
+		char sum[BAR_TEXT_MAX];
+		bar_display_summary(target, sum, sizeof(sum));
+		snprintf(r->text, sizeof(r->text), "%s", sum);
+		r->enabled = false;
+		n++;
+	}
+	if ((r = bar_popover_row_get(n))) {
+		snprintf(r->text, sizeof(r->text), "HDR  %s",
+				 target->hdr ? "on" : "off");
+		snprintf(r->value, sizeof(r->value), "%s", "\x01hdr");
+		r->selected = target->hdr != 0;
+		n++;
+	}
+	if (target->hdr_capability_failed && (r = bar_popover_row_get(n))) {
+		/* the output said no to BT.2020+PQ; say so rather than leave a toggle
+		 * that silently never takes */
+		snprintf(r->text, sizeof(r->text), "%s", "output cannot do HDR");
+		r->enabled = false;
+		n++;
+	}
+	if ((r = bar_popover_row_get(n))) {
+		snprintf(r->text, sizeof(r->text), "%s", "\u2039  All outputs");
+		snprintf(r->value, sizeof(r->value), "%s", "\x01back");
+		n++;
+	}
+	bar_popover.nrows = n;
+	bar_popover_layout();
+}
+
 /* ─── input ───────────────────────────────────────────────────────────────── */
 
 static bool bar_popover_handle_node_click(AsteroidzNodeData *hit,
@@ -760,6 +852,31 @@ static bool bar_popover_handle_node_click(AsteroidzNodeData *hit,
 		char *const argv[] = {"pactl", "set-default-sink", r->value, NULL};
 		async_spawn(event_loop, argv, NULL, NULL);
 		break;
+	}
+	case BAR_POPOVER_OUTPUTS: {
+		Monitor *anchor_mon = bar_popover.mon;
+		int32_t ax = bar_popover.anchor_x;
+		char name[64];
+		snprintf(name, sizeof(name), "%s", r->value);
+		bar_popover_open_output(anchor_mon, ax, name);
+		return true; /* already reopened against the output */
+	}
+	case BAR_POPOVER_OUTPUT: {
+		if (!r->enabled)
+			return true; /* a reading, not a control */
+		Monitor *anchor_mon = bar_popover.mon;
+		int32_t ax = bar_popover.anchor_x;
+		char name[64];
+		snprintf(name, sizeof(name), "%s", bar_popover.output_name);
+		if (!strcmp(r->value + 1, "back")) {
+			bar_popover_open_outputs(anchor_mon, ax);
+			return true;
+		}
+		bar_display_toggle_hdr(bar_display_by_name(name));
+		/* stay open and re-render, so the toggle's new state is visible
+		 * without having to reopen the menu to check it took */
+		bar_popover_open_output(anchor_mon, ax, name);
+		return true;
 	}
 	case BAR_POPOVER_VPN: {
 		if (!r->enabled)
