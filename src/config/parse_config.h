@@ -606,6 +606,11 @@ typedef int32_t (*FuncType)(const Arg *);
 Config config;
 
 bool parse_config_file(Config *config, const char *file_path, bool must_exist);
+
+/* Every file the running config was actually read from, main plus everything
+ * it `source`d, in the order they were opened. See parse_config_file. */
+static char config_files[8][1024];
+static int32_t nconfig_files;
 bool apply_rule_to_state(Monitor *m, const ConfigMonitorRule *rule,
 						 struct wlr_output_state *state, int vrr, int custom);
 bool monitor_matches_rule(Monitor *m, const ConfigMonitorRule *rule);
@@ -4083,6 +4088,29 @@ bool parse_config_file(Config *config, const char *file_path, bool must_exist) {
 		}
 	}
 
+	/* Remember where this came from.
+	 *
+	 * A config is not one file: `source "./monitors.kdl"` is how output rules
+	 * are conventionally split out, and anything that wants to WRITE a setting
+	 * back has to know which file already declares it -- rewriting the rule
+	 * into the main config while a sourced file still sets it would produce a
+	 * setting that silently loses to the one you cannot see. Recorded here,
+	 * where the path has just been resolved, rather than re-derived later from
+	 * a `source` string nobody kept. */
+	if (nconfig_files < (int32_t)LENGTH(config_files)) {
+		const char *resolved = (file_path[0] == '.' && file_path[1] == '/') ||
+									   (file_path[0] == '~')
+								   ? full_path
+								   : file_path;
+		bool seen = false;
+		for (int32_t i = 0; i < nconfig_files; i++)
+			if (!strcmp(config_files[i], resolved))
+				seen = true;
+		if (!seen)
+			snprintf(config_files[nconfig_files++],
+					 sizeof(config_files[0]), "%s", resolved);
+	}
+
 	/* read the whole file, then parse it as KDL */
 	fseek(file, 0, SEEK_END);
 	long fsize = ftell(file);
@@ -5107,6 +5135,10 @@ bool parse_config(void) {
 	strcpy(config.keymode, "default");
 
 	create_config_keymap();
+
+	/* a reload re-walks the whole tree, so start the file list over rather
+	 * than accumulating paths a removed `source` no longer pulls in */
+	nconfig_files = 0;
 
 	if (cli_config_path) {
 		snprintf(filename, sizeof(filename), "%s", cli_config_path);

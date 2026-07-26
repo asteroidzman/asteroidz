@@ -3931,6 +3931,18 @@ static bool bar_popover_handle_key(uint32_t keysym) {
 	(void)keysym;
 	return false;
 }
+static bool bar_canvas_press(int32_t idx, double cx, double cy) {
+	(void)idx;
+	(void)cx;
+	(void)cy;
+	return false;
+}
+static bool bar_canvas_motion(double cx, double cy) {
+	(void)cx;
+	(void)cy;
+	return false;
+}
+static bool bar_canvas_release(void) { return false; }
 static void bar_popover_close(void) {}
 
 #endif /* ASTEROIDZ_NATIVE_BAR */

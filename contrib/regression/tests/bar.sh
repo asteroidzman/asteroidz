@@ -624,48 +624,7 @@ bar { enable true; height 48; position "top"; margin { x 8; y 9 }; pill-inset 6;
 	bar_off
 }
 
-# Count pixels in a region that are not the harness's flat grey wallpaper.
-# A popover panel covers it; nothing else in these tests does.
-bar_region_ink() { # bar_region_ink PNG X0 Y0 X1 Y1
-	python3 - "$@" <<'PY'
-import sys
-from PIL import Image
-png, x0, y0, x1, y1 = sys.argv[1], *map(int, sys.argv[2:6])
-im = Image.open(png).convert("RGB"); px = im.load(); W, H = im.size
-x1, y1 = min(x1, W), min(y1, H)
-n = 0
-for x in range(x0, x1):
-    for y in range(y0, y1):
-        r, g, b = px[x, y]
-        if abs(r - 0x80) + abs(g - 0x80) + abs(b - 0x80) > 30:
-            n += 1
-print(n)
-PY
-}
 
-# Centre x of the rightmost run of non-wallpaper pixels in a horizontal band.
-bar_rightmost_ink_x() { # bar_rightmost_ink_x PNG Y0 Y1
-	python3 - "$@" <<'PY'
-import sys
-from PIL import Image
-png, y0, y1 = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
-im = Image.open(png).convert("RGB"); px = im.load(); W, H = im.size
-y1 = min(y1, H)
-runs, s = [], None
-for x in range(W):
-    hit = any(abs(px[x, y][0] - 0x80) + abs(px[x, y][1] - 0x80) +
-              abs(px[x, y][2] - 0x80) > 30 for y in range(y0, y1))
-    if hit and s is None:
-        s = x
-    elif not hit and s is not None:
-        runs.append((s, x - 1)); s = None
-if s is not None:
-    runs.append((s, W - 1))
-runs = [r for r in runs if r[1] - r[0] + 1 >= 3]
-if runs:
-    print((runs[-1][0] + runs[-1][1]) // 2)
-PY
-}
 
 test_bar_sysinfo_popover_opens_and_readings_do_not_dismiss_it() {
 	[ "$(bar_supported)" = "true" ] || { echo "  (skip: built without -Dnative-bar)"; return 0; }
@@ -690,19 +649,19 @@ test_bar_sysinfo_popover_opens_and_readings_do_not_dismiss_it() {
 
 	local x0=$((HL_WIDTH - 330)) x1=$((HL_WIDTH - 30))
 	hl_screenshot sys-closed
-	local base; base="$(bar_region_ink "$HL_OUTDIR/sys-closed.png" $x0 60 $x1 200)"
+	local base; base="$(hl_region_ink "$HL_OUTDIR/sys-closed.png" $x0 60 $x1 200)"
 
 	# Find the pill by its artwork rather than deriving its coordinates: an
 	# icon-only pill is as wide as its icon, which depends on the theme's
 	# padding and the bar height, and a click computed from those silently
 	# lands beside it the moment either changes.
 	local cpux
-	cpux="$(bar_rightmost_ink_x "$HL_OUTDIR/sys-closed.png" 6 32)"
+	cpux="$(hl_rightmost_ink_x "$HL_OUTDIR/sys-closed.png" 6 32)"
 	[ -n "$cpux" ] || { echo "  (skip: could not locate the cpu pill)"; bar_off; return 0; }
 	hl_click "$cpux" 19
 	sleep 0.8
 	hl_screenshot sys-open
-	local opened; opened="$(bar_region_ink "$HL_OUTDIR/sys-open.png" $x0 60 $x1 200)"
+	local opened; opened="$(hl_region_ink "$HL_OUTDIR/sys-open.png" $x0 60 $x1 200)"
 	hl_assert_true "clicking a metric pill opens the system popover ($base -> $opened px)" \
 		"$([ "$opened" -gt $((base + 2000)) ] && echo true || echo false)"
 
@@ -710,7 +669,7 @@ test_bar_sysinfo_popover_opens_and_readings_do_not_dismiss_it() {
 	hl_click "$((HL_WIDTH - 180))" 69
 	sleep 0.6
 	hl_screenshot sys-still
-	local still; still="$(bar_region_ink "$HL_OUTDIR/sys-still.png" $x0 60 $x1 200)"
+	local still; still="$(hl_region_ink "$HL_OUTDIR/sys-still.png" $x0 60 $x1 200)"
 	hl_assert_true "clicking a reading inside it does not dismiss it ($still px)" \
 		"$([ "$still" -gt $((base + 2000)) ] && echo true || echo false)"
 
@@ -718,33 +677,13 @@ test_bar_sysinfo_popover_opens_and_readings_do_not_dismiss_it() {
 	hl_click 400 500
 	sleep 0.6
 	hl_screenshot sys-dismissed
-	local gone; gone="$(bar_region_ink "$HL_OUTDIR/sys-dismissed.png" $x0 60 $x1 200)"
+	local gone; gone="$(hl_region_ink "$HL_OUTDIR/sys-dismissed.png" $x0 60 $x1 200)"
 	hl_assert_true "a click outside dismisses it ($gone px)" \
 		"$([ "$gone" -le $((base + 2000)) ] && echo true || echo false)"
 
 	bar_off
 }
 
-# Pixels differing between two screenshots inside a region. Used to assert a
-# popover's CONTENT changed (scrolled, drilled in, gained a cursor) without
-# needing to know what it says.
-bar_region_diff() { # bar_region_diff PNG_A PNG_B X0 Y0 X1 Y1
-	python3 - "$@" <<'PY'
-import sys
-from PIL import Image
-a, b = Image.open(sys.argv[1]).convert("RGB"), Image.open(sys.argv[2]).convert("RGB")
-x0, y0, x1, y1 = map(int, sys.argv[3:7])
-pa, pb = a.load(), b.load()
-W, H = a.size
-x1, y1 = min(x1, W), min(y1, H)
-n = 0
-for x in range(x0, x1):
-    for y in range(y0, y1):
-        if pa[x, y] != pb[x, y]:
-            n += 1
-print(n)
-PY
-}
 
 test_bar_popover_scrolls_a_menu_taller_than_the_screen() {
 	[ "$(bar_supported)" = "true" ] || { echo "  (skip: built without -Dnative-bar)"; return 0; }
@@ -765,12 +704,12 @@ test_bar_popover_scrolls_a_menu_taller_than_the_screen() {
 
 	local x0=$((HL_WIDTH - 330)) x1=$((HL_WIDTH - 30))
 	hl_screenshot scroll-closed
-	local cpux; cpux="$(bar_rightmost_ink_x "$HL_OUTDIR/scroll-closed.png" 6 32)"
+	local cpux; cpux="$(hl_rightmost_ink_x "$HL_OUTDIR/scroll-closed.png" 6 32)"
 	[ -n "$cpux" ] || { echo "  (skip: could not locate the cpu pill)"; bar_off; return 0; }
 	hl_click "$cpux" 19
 	sleep 0.8
 	hl_screenshot scroll-top
-	local ink; ink="$(bar_region_ink "$HL_OUTDIR/scroll-top.png" $x0 60 $x1 600)"
+	local ink; ink="$(hl_region_ink "$HL_OUTDIR/scroll-top.png" $x0 60 $x1 600)"
 	hl_assert_true "an over-long menu still opens ($ink px)" \
 		"$([ "$ink" -gt 2000 ] && echo true || echo false)"
 
@@ -778,12 +717,12 @@ test_bar_popover_scrolls_a_menu_taller_than_the_screen() {
 	hl_wheel "$((HL_WIDTH - 180))" 200 3
 	sleep 0.6
 	hl_screenshot scroll-moved
-	local moved; moved="$(bar_region_diff "$HL_OUTDIR/scroll-top.png" "$HL_OUTDIR/scroll-moved.png" $x0 60 $x1 600)"
+	local moved; moved="$(hl_region_diff "$HL_OUTDIR/scroll-top.png" "$HL_OUTDIR/scroll-moved.png" $x0 60 $x1 600)"
 	hl_assert_true "scrolling over it moves the viewport ($moved px changed)" \
 		"$([ "$moved" -gt 500 ] && echo true || echo false)"
 
 	# and it is still up -- a scroll is not a dismissal
-	local still; still="$(bar_region_ink "$HL_OUTDIR/scroll-moved.png" $x0 60 $x1 600)"
+	local still; still="$(hl_region_ink "$HL_OUTDIR/scroll-moved.png" $x0 60 $x1 600)"
 	hl_assert_true "and does not dismiss it ($still px)" \
 		"$([ "$still" -gt 2000 ] && echo true || echo false)"
 
@@ -811,12 +750,12 @@ test_bar_popover_keyboard_walks_rows_and_enter_runs_one() {
 
 	local x0=$((HL_WIDTH - 330)) x1=$((HL_WIDTH - 30))
 	hl_screenshot kb-closed
-	local dx; dx="$(bar_rightmost_ink_x "$HL_OUTDIR/kb-closed.png" 6 32)"
+	local dx; dx="$(hl_rightmost_ink_x "$HL_OUTDIR/kb-closed.png" 6 32)"
 	[ -n "$dx" ] || { echo "  (skip: could not locate the display pill)"; bar_off; return 0; }
 	hl_click "$dx" 19
 	sleep 0.8
 	hl_screenshot kb-open
-	local ink; ink="$(bar_region_ink "$HL_OUTDIR/kb-open.png" $x0 40 $x1 300)"
+	local ink; ink="$(hl_region_ink "$HL_OUTDIR/kb-open.png" $x0 40 $x1 300)"
 	hl_assert_true "the display popover opens ($ink px)" \
 		"$([ "$ink" -gt 1000 ] && echo true || echo false)"
 
@@ -833,7 +772,7 @@ test_bar_popover_keyboard_walks_rows_and_enter_runs_one() {
 	"$HL_WLVKBD" press ENTER
 	sleep 0.6
 	hl_screenshot kb-entered
-	local entered; entered="$(bar_region_diff "$HL_OUTDIR/kb-cursor.png" "$HL_OUTDIR/kb-entered.png" $x0 40 $x1 300)"
+	local entered; entered="$(hl_region_diff "$HL_OUTDIR/kb-cursor.png" "$HL_OUTDIR/kb-entered.png" $x0 40 $x1 300)"
 	hl_assert_true "Enter runs the row under the cursor ($entered px changed)" \
 		"$([ "$entered" -gt 500 ] && echo true || echo false)"
 
@@ -843,7 +782,7 @@ test_bar_popover_keyboard_walks_rows_and_enter_runs_one() {
 	"$HL_WLVKBD" press DOWN
 	sleep 0.5
 	hl_screenshot kb-marked
-	local marked; marked="$(bar_region_diff "$HL_OUTDIR/kb-entered.png" "$HL_OUTDIR/kb-marked.png" $x0 40 $x1 300)"
+	local marked; marked="$(hl_region_diff "$HL_OUTDIR/kb-entered.png" "$HL_OUTDIR/kb-marked.png" $x0 40 $x1 300)"
 	hl_assert_true "Down marks the row it lands on ($marked px changed)" \
 		"$([ "$marked" -gt 100 ] && echo true || echo false)"
 
@@ -851,9 +790,11 @@ test_bar_popover_keyboard_walks_rows_and_enter_runs_one() {
 	"$HL_WLVKBD" press ESC
 	sleep 0.6
 	hl_screenshot kb-closed2
-	local gone; gone="$(bar_region_ink "$HL_OUTDIR/kb-closed2.png" $x0 40 $x1 300)"
+	local gone; gone="$(hl_region_ink "$HL_OUTDIR/kb-closed2.png" $x0 40 $x1 300)"
 	hl_assert_true "Escape closes it ($gone px)" \
 		"$([ "$gone" -lt 1000 ] && echo true || echo false)"
 
 	bar_off
 }
+
+

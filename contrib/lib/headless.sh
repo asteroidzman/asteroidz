@@ -603,3 +603,116 @@ hl_summary() { # prints totals, returns 1 if anything failed
 	hl_notify "asteroidz live regression: $ASSERT_PASS/$ASSERT_COUNT passed" "All assertions passed."
 	return 0
 }
+
+# ─── screenshot analysis ──────────────────────────────────────────────────
+#
+# Assertions about what is actually ON SCREEN. Layout arithmetic can agree
+# with itself and still be wrong -- the bar's spacing shipped wrong three
+# times over on assertions that never looked at a pixel -- so these read the
+# rendered frame back and measure it.
+#
+# All of them need python3 with PIL; a test using one should skip when it is
+# missing rather than fail.
+
+# Count pixels in a region that are not the harness's flat grey wallpaper.
+# A popover panel covers it; nothing else in these tests does.
+hl_region_ink() { # hl_region_ink PNG X0 Y0 X1 Y1
+	python3 - "$@" <<'PY'
+import sys
+from PIL import Image
+png, x0, y0, x1, y1 = sys.argv[1], *map(int, sys.argv[2:6])
+im = Image.open(png).convert("RGB"); px = im.load(); W, H = im.size
+x1, y1 = min(x1, W), min(y1, H)
+n = 0
+for x in range(x0, x1):
+    for y in range(y0, y1):
+        r, g, b = px[x, y]
+        if abs(r - 0x80) + abs(g - 0x80) + abs(b - 0x80) > 30:
+            n += 1
+print(n)
+PY
+}
+
+# Centre x of the rightmost run of non-wallpaper pixels in a horizontal band.
+hl_rightmost_ink_x() { # hl_rightmost_ink_x PNG Y0 Y1
+	python3 - "$@" <<'PY'
+import sys
+from PIL import Image
+png, y0, y1 = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+im = Image.open(png).convert("RGB"); px = im.load(); W, H = im.size
+y1 = min(y1, H)
+runs, s = [], None
+for x in range(W):
+    hit = any(abs(px[x, y][0] - 0x80) + abs(px[x, y][1] - 0x80) +
+              abs(px[x, y][2] - 0x80) > 30 for y in range(y0, y1))
+    if hit and s is None:
+        s = x
+    elif not hit and s is not None:
+        runs.append((s, x - 1)); s = None
+if s is not None:
+    runs.append((s, W - 1))
+runs = [r for r in runs if r[1] - r[0] + 1 >= 3]
+if runs:
+    print((runs[-1][0] + runs[-1][1]) // 2)
+PY
+}
+
+# Pixels differing between two screenshots inside a region. Used to assert a
+# popover's CONTENT changed (scrolled, drilled in, gained a cursor) without
+# needing to know what it says.
+hl_region_diff() { # hl_region_diff PNG_A PNG_B X0 Y0 X1 Y1
+	python3 - "$@" <<'PY'
+import sys
+from PIL import Image
+a, b = Image.open(sys.argv[1]).convert("RGB"), Image.open(sys.argv[2]).convert("RGB")
+x0, y0, x1, y1 = map(int, sys.argv[3:7])
+pa, pb = a.load(), b.load()
+W, H = a.size
+x1, y1 = min(x1, W), min(y1, H)
+n = 0
+for x in range(x0, x1):
+    for y in range(y0, y1):
+        if pa[x, y] != pb[x, y]:
+            n += 1
+print(n)
+PY
+}
+
+# Centres of the monitor tiles on the arrange canvas, within a horizontal band.
+# The tiles are drawn in the theme colour; the popover behind them is near
+# black and the desktop is grey, so a tile is whatever is neither. Sampled
+# rather than counted: the tiles cover enough of the band to BE one of its most
+# common colours.
+hl_canvas_tiles() { # hl_canvas_tiles PNG Y0 Y1 -> "x1 x2 y"
+	python3 - "$@" <<'PY'
+import sys
+from PIL import Image
+png, y0, y1 = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+im = Image.open(png).convert("RGB"); px = im.load(); W, H = im.size
+y1 = min(y1, H)
+bg = [px[5, 5], px[W - 20, y1 - 4]]
+def tile(p):
+    return all(abs(p[0]-b[0]) + abs(p[1]-b[1]) + abs(p[2]-b[2]) > 60 for b in bg)
+best = None
+for y in range(y0, y1):
+    runs, s = [], None
+    for x in range(W):
+        if tile(px[x, y]) and s is None:
+            s = x
+        elif not tile(px[x, y]) and s is not None:
+            runs.append((s, x - 1)); s = None
+    if s is not None:
+        runs.append((s, W - 1))
+    runs = [r for r in runs if r[1] - r[0] + 1 >= 20]
+    span = sum(r[1] - r[0] for r in runs)
+    if runs and (best is None or span > best[2]):
+        best = (runs, y, span)
+if best:
+    runs, y, _ = best
+    if len(runs) == 1:      # two tiles butted together read as one run
+        a, b = runs[0]
+        print(a + (b - a) // 4, b - (b - a) // 4, y)
+    else:
+        print((runs[0][0]+runs[0][1])//2, (runs[-1][0]+runs[-1][1])//2, y)
+PY
+}

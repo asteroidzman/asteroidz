@@ -168,3 +168,128 @@ test_toggle_monitor() {
 	hl_dispatch "toggle_monitor,$HL_SECOND_MON" 1
 	hl_assert_true "toggle_monitor,\$HL_SECOND_MON again re-enables it" "$(hl_monitor_field "$HL_SECOND_MON" enabled)"
 }
+
+# ─── the bar's monitor arrange canvas ─────────────────────────────────────
+#
+# This is a BAR test living in the multi-monitor module, on purpose. It needs
+# a second output, and creating one is not something a test can undo here:
+# destroy_all_virtual_output destroys every headless output, which under a
+# pure headless backend is all of them including HEADLESS-1 (see the note at
+# the top of this file). So the output it creates outlives it, and a leftover
+# second monitor changes what a pointer coordinate means -- wlvptr maps its
+# absolute axis onto the whole layout -- and displaces .monitors[0] for every
+# module that reads it. Run early, that broke four unrelated assertions in
+# mousebind and keybind-combo. Run here, everything that assumes one monitor
+# has already been and gone.
+
+test_bar_arrange_canvas_drags_a_monitor() {
+	declare -F bar_set >/dev/null || {
+		echo "  (skip: needs the bar module's config helpers -- run with 'bar' too)"
+		return 0; }
+	[ "$(bar_supported)" = "true" ] || { echo "  (skip: built without -Dnative-bar)"; return 0; }
+	command -v python3 >/dev/null && python3 -c "import PIL" 2>/dev/null || {
+		echo "  (skip: python3 PIL not available)"; return 0; }
+	if [ "$(hl_get "get all-monitors" | jq '.monitors | length')" -lt 2 ]; then
+		hl_dispatch "create_virtual_output" 1
+		sleep 1
+	fi
+	[ "$(hl_get "get all-monitors" | jq '.monitors | length')" -ge 2 ] || {
+		echo "  (skip: could not get a second monitor)"; return 0; }
+	local second
+	second="$(hl_get "get all-monitors" | jq -r --arg m "$HL_MON" \
+		'[.monitors[] | select(.name != $m) | .name][0]')"
+
+	# The canvas is the only part of the bar that is not a list of rows, and
+	# the only one driven by a press-move-release rather than a click. Both
+	# halves of that are worth pinning: the drag has to end up applying a real
+	# layout change, and dismissing the panel afterwards has to not crash --
+	# the first version double-freed every tile, because the popover's teardown
+	# released them AFTER destroying the tree that owned them.
+	#
+	# wlvptr maps its absolute axis onto the whole LAYOUT, so a second monitor
+	# changes what a coordinate means. Set for the test, restored before it
+	# returns, or every later test clicks in the wrong place.
+	local saved_w="$HL_PTR_EXTENT_W" saved_h="$HL_PTR_EXTENT_H"
+	HL_PTR_EXTENT_W="$(hl_get "get all-monitors" | jq '[.monitors[] | .x + .width] | max')"
+	HL_PTR_EXTENT_H="$(hl_get "get all-monitors" | jq '[.monitors[] | .y + .height] | max')"
+	local mx oy
+	mx="$(hl_get "get all-monitors" | jq --arg m "$HL_MON" '[.monitors[] | select(.name==$m) | .x][0]')"
+	oy="$(hl_get "get all-monitors" | jq --arg m "$HL_MON" '[.monitors[] | select(.name==$m) | .y][0]')"
+
+	bar_set 'bar { enable true; height 30; position "top"; margin { x 8; y 4 }; panel { enable false }; show-logo false; tag-icons 0; modules-left "tags"; modules-right "display" }'
+	sleep 1
+
+	grim -o "$HL_MON" "$HL_OUTDIR/arr0.png" 2>/dev/null
+	local dx; dx="$(hl_rightmost_ink_x "$HL_OUTDIR/arr0.png" 6 32)"
+	[ -n "$dx" ] || { echo "  (skip: could not locate the display pill)"
+		HL_PTR_EXTENT_W="$saved_w"; HL_PTR_EXTENT_H="$saved_h"; bar_off; return 0; }
+	hl_click "$((mx + dx))" 19
+	sleep 0.8
+
+	# outputs popover: one row per monitor, then "Arrange displays". Rows start
+	# at margin(4) + height(30) + popover gap(6) + panel padding(6) = 46.
+	local nmon; nmon="$(hl_get "get all-monitors" | jq '.monitors | length')"
+	local arrange_y=$((46 + nmon * 36 + 17))
+	hl_click "$((mx + HL_WIDTH - 180))" "$arrange_y"
+	sleep 0.8
+
+	grim -o "$HL_MON" "$HL_OUTDIR/arr1.png" 2>/dev/null
+	local t1 t2 ty
+	read -r t1 t2 ty <<<"$(hl_canvas_tiles "$HL_OUTDIR/arr1.png" 46 182)"
+	[ -n "${t1:-}" ] || { echo "  (skip: no canvas tiles found -- popover may not have opened)"
+		hl_click "$((mx + 400))" 600
+		HL_PTR_EXTENT_W="$saved_w"; HL_PTR_EXTENT_H="$saved_h"; bar_off; return 0; }
+	hl_assert_true "the arrange canvas draws a tile per monitor ($t1, $t2)" \
+		"$([ "$t1" -ne "$t2" ] && echo true || echo false)"
+
+	local before; before="$(hl_get "get all-monitors" | jq -c '[.monitors[] | {name, x}] | sort_by(.name)')"
+	"$HL_WLVPTR" "$((mx + t1))" "$ty" "$HL_PTR_EXTENT_W" "$HL_PTR_EXTENT_H" \
+		"drag:$((mx + t2 + 120)),$ty"
+	sleep 1.2
+	local after; after="$(hl_get "get all-monitors" | jq -c '[.monitors[] | {name, x}] | sort_by(.name)')"
+	hl_assert_true "dragging a tile moves the output it stands for" \
+		"$([ "$before" != "$after" ] && echo true || echo false)"
+
+	# Save it. This writes to a real config file, so the assertion is on the
+	# file: the harness config carries an `output HEADLESS-1 { ... }` block,
+	# and saving must put the live position into THAT block rather than
+	# inventing one somewhere else. Rows begin below the canvas -- 46 + four
+	# 34px rows + spacing -- and "Save arrangement" is the second of them,
+	# after the hint line.
+	local newx
+	newx="$(hl_get "get all-monitors" | jq --arg m "$HL_MON" '[.monitors[] | select(.name==$m) | .x][0]')"
+	hl_click "$((mx + HL_WIDTH - 180))" $((46 + 138 + 36 + 17))
+	sleep 0.8
+	hl_assert_true "Save arrangement writes the position into the config ($HL_MON x=$newx)" \
+		"$(grep -qE "output[[:space:]]+$HL_MON[^\n]*x[[:space:]]+$newx" "$HL_CONFIG" && echo true || echo false)"
+
+	# the double-free regression: dismiss the panel the drag happened in
+	hl_click "$((mx + 400))" 600
+	sleep 0.6
+	hl_assert_true "dismissing the arrange popover leaves the compositor alive" \
+		"$(hl_get "get all-monitors" >/dev/null 2>&1 && echo true || echo false)"
+
+	# PUT IT BACK. hl_reset does NOT remove the virtual output between tests but has
+	# no idea the shared monitor was moved, and every later test computes its
+	# click coordinates from an origin this would have silently shifted --
+	# which is exactly how this first ran: four unrelated mousebind and
+	# keybind assertions failed because their clicks were landing off-screen.
+	sed -i "s|^output $HL_MON {.*|output $HL_MON { width $HL_WIDTH; height $HL_HEIGHT; refresh 60; x $mx; y $oy }|" "$HL_CONFIG"
+	hl_dispatch "reload_config" 1
+	sleep 0.5
+	local restored
+	restored="$(hl_get "get all-monitors" | jq --arg m "$HL_MON" '[.monitors[] | select(.name==$m) | .x][0]')"
+	hl_assert_eq "the monitor is put back where the suite expects it" \
+		"$restored" "$mx"
+
+	# And take the second monitor back out of the layout. hl_reset does not
+	# (destroy_all_virtual_output would take HEADLESS-1 with it under a pure
+	# headless backend), and a leftover second output changes what a pointer
+	# coordinate MEANS for every module that runs after this one -- wlvptr
+	# maps its absolute axis onto the whole layout.
+	hl_dispatch "disable_monitor,$second" 0.5
+
+	HL_PTR_EXTENT_W="$saved_w"
+	HL_PTR_EXTENT_H="$saved_h"
+	bar_off
+}

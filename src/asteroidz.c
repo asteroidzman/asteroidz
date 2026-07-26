@@ -246,7 +246,8 @@ enum asteroidz_node_type {
 	ASTEROIDZ_TITLEBAR_NODE,
 	ASTEROIDZ_TITLEBAR_CLOSE_NODE,
 	ASTEROIDZ_BAR_NODE,    /* a native status-bar pill (draw/bar.h) */
-	ASTEROIDZ_BAR_POPOVER_NODE /* a row in a bar popover (draw/bar-popover.h) */
+	ASTEROIDZ_BAR_POPOVER_NODE, /* a row in a bar popover (draw/bar-popover.h) */
+	ASTEROIDZ_BAR_CANVAS_NODE   /* one monitor tile on the arrange canvas */
 };
 
 #ifdef XWAYLAND
@@ -3209,6 +3210,19 @@ bool handle_buttonpress(struct wlr_pointer_button_event *event) {
 		 * dismisses it, and a dismissing click is SPENT -- letting it also
 		 * press what was underneath means closing a menu can trigger the
 		 * thing you were closing it to avoid. */
+		/* A press on the arrange canvas starts a monitor drag. It is a grab
+		 * rather than a click: the tile follows the pointer until the button
+		 * comes up, so the press is claimed here and motionnotify takes over
+		 * from it. */
+		if (node && node->data &&
+			((AsteroidzNodeData *)node->data)->type ==
+				ASTEROIDZ_BAR_CANVAS_NODE &&
+			event->button == BTN_LEFT) {
+			AsteroidzNodeData *nd = (AsteroidzNodeData *)node->data;
+			if (bar_canvas_press((int32_t)(intptr_t)nd->node_data, cursor->x,
+								 cursor->y))
+				return true;
+		}
 		if (node && node->data &&
 			((AsteroidzNodeData *)node->data)->type ==
 				ASTEROIDZ_BAR_POPOVER_NODE) {
@@ -3275,6 +3289,13 @@ bool handle_buttonpress(struct wlr_pointer_button_event *event) {
 		}
 		break;
 	case WL_POINTER_BUTTON_STATE_RELEASED:
+		/* End a monitor drag before anything else looks at this release: it is
+		 * the other half of the press the canvas claimed, and letting it fall
+		 * through would dismiss the popover the drag was performed in. */
+		if (bar_canvas_release()) {
+			cursor_mode = CurNormal;
+			return true;
+		}
 		/* If you released any buttons, we exit interactive move/resize mode. */
 		if (!locked && cursor_mode != CurNormal && cursor_mode != CurPressed) {
 			cursor_mode = CurNormal;
@@ -6790,6 +6811,12 @@ void motionnotify(uint32_t time, struct wlr_input_device *device, double dx,
 			screenshot_ui_handle_motion();
 		return;
 	}
+
+	/* Dragging a monitor on the arrange canvas owns the pointer outright: the
+	 * tile follows it and nothing underneath should see the motion, the same
+	 * way an interactive window move does. */
+	if (bar_canvas_motion(cursor->x, cursor->y))
+		return;
 
 	/* Find the client under the pointer and send the event along. */
 	xytonode(cursor->x, cursor->y, &surface, &c, NULL, &sx, &sy);

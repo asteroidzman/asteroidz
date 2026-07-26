@@ -9,8 +9,7 @@ titlebars and monocle tab strips, so it inherits the [theme](./theming.md)
 automatically and renders at each output's own scale.
 
 This is **off by default**. It now covers what the Waybar setup it replaces
-did — see [Scope](#scope) for what is still missing, which is the display
-layout canvas and little else. The two can still run side by side.
+did — see [Scope](#scope). The two can still run side by side.
 
 ## Enabling it
 
@@ -381,9 +380,8 @@ races an in-flight page-flip and gets rejected by the DRM backend — that is th
 retrain-and-blank path. An output whose `hdr_capability_failed` is set says so
 instead of offering a toggle that silently never takes.
 
-The resolution and scale pickers, and SDR white, are covered — see
-[Popovers](#popovers). **Not covered:** the layout canvas, which needs a
-genuine drag surface rather than a row.
+The resolution and scale pickers, SDR white and the layout canvas are all
+covered — see [Popovers](#popovers).
 
 The per-output mastering, max-CLL and max-FALL values are deliberately not
 offered either. Those describe what the *panel* can do — they are forwarded to
@@ -400,7 +398,7 @@ A module can drop a panel below its pill holding rows the pointer can act on.
 |---|---|
 | `volume` (right-click) | audio output picker, plus a volume stepper |
 | `tray` (right-click) | that item's own context menu |
-| `display` | every output → one output's settings → resolution / scale lists |
+| `display` | every output → one output's settings → resolution / scale lists, and the arrange canvas |
 | `cpu`, `memory`, `network` | the system figures |
 | `medication` | today's doses → take / skip / postpone |
 | `vpn` | connection status and the country list |
@@ -470,6 +468,56 @@ row cannot show a value the dispatcher would refuse.
 
 Steppers carrying a marked verb dispatch on the **verb**, not on the popover
 kind, so one panel may hold more than one.
+
+### Arranging displays
+
+`Arrange displays` on the display popover opens the one thing in the bar that
+is **not a list of rows**: a scaled picture of your monitors that you drag to
+rearrange. A list could describe an arrangement ("DP-1 is left of HDMI-A-1")
+but not let you fix one, and a monitor layout is a relationship between
+rectangles.
+
+The scale is uniform and taken from the arrangement's own bounding box, so
+relative sizes stay true — a 1080p beside a 4K reads as a quarter of it,
+because that is what it is. Fitting each monitor to a cell would look tidier
+and tell you less. The row is only offered with **two or more** outputs: with
+one there is no relationship to change.
+
+While a drag is live the view is **frozen**. Refitting per motion event sounds
+right and is unusable — pulling a monitor away from its neighbours grows the
+bounding box, so the scale shrinks and everything slides out from under the
+pointer, including the tile being dragged; worse, the layout↔screen mapping the
+drag inverts then changes between the frame it was measured in and the frame it
+is applied to. Dragged 300px, a monitor landed 8000 layout pixels away.
+
+Only the tile moves during the drag. The output itself is committed on
+**release**, because applying every position you pass through means an
+`updatemons()` and a full re-arrange of every client per motion event. On
+release the box snaps to any neighbour edge within 120 layout pixels — both
+butting two monitors together and lining their sides up — since the canvas is
+drawn at a fraction of real size, so flush is otherwise a value you can only
+hit by luck.
+
+`Save arrangement` writes the positions to disk. It is **explicit and never
+automatic**: a drag applies live, and only this saves, because moving a monitor
+and rewriting your config in the same gesture means a misdrag edits a file the
+compositor cannot un-edit.
+
+What it writes into is whichever config file **already declares** that output —
+`config.kdl`, or a `source`d file like the conventional `monitors.kdl`. An
+output with no block anywhere is skipped rather than invented: where a rule
+should live is a question about how you have organised your config, and
+guessing wrong writes a rule into a file that a sourced one then overrides, so
+the setting does nothing for reasons invisible in the file you are looking at.
+The panel says how many were written and how many had nowhere to go.
+
+The edit is **surgical** — `src/common/kdl-edit.h` replaces the bytes holding
+`x` and `y` and copies every other byte through, so comments, formatting and
+fields the compositor does not model all survive. Written through a temp file
+with `fsync` and `rename`, like the medication store: a config truncated by a
+crash mid-write is a session that will not start. It is covered by unit tests
+(`meson test -C build`) rather than only by driving a compositor, because its
+failure mode is a settings file that no longer parses.
 
 ### System figures
 
@@ -793,10 +841,10 @@ take workspaces.
 
 [Popovers](#popovers) carry the audio output picker, the tray's context menus,
 the display controls, the system figures, the medication log, VPN and Discord
-voice. Still missing: a draggable volume slider (that needs pointer capture
-across a drag, not just a click), keyboard navigation within a popover, a
-scrollable viewport for menus longer than the screen, and the display layout
-canvas.
+voice. Still missing: a draggable volume slider — the arrange canvas now does hold the
+pointer across a press-move-release, so the mechanism exists; what a slider
+additionally wants is a sub-row hit target, and a popover row is one scene
+node.
 
 ## Developing against it
 

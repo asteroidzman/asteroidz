@@ -59,7 +59,34 @@ enum bar_popover_kind {
 	BAR_POPOVER_MEDS,    /* today's doses; payload is the dose key */
 	BAR_POPOVER_MED_DOSE, /* one dose: take / skip / postpone */
 	BAR_POPOVER_SYSINFO,  /* cpu/memory/network figures; every row inert */
+	BAR_POPOVER_ARRANGE,  /* the monitor layout canvas */
 };
+
+/* One draggable monitor tile on the arrange canvas.
+ *
+ * The canvas is the one thing here that is not a list. Everything else the bar
+ * shows is a stack of rows because a row is honest about what it can do; a
+ * monitor arrangement is a 2D relationship between rectangles, and a list of
+ * "DP-1 is left of HDMI-A-1" rows would be a worse description of it than a
+ * picture that is wrong until you drag it right.
+ *
+ * Each tile is a tab-bar node -- the same widget as a pill or a row -- so it
+ * gets the theme, the corner radius, the label and the hit-test tag for free.
+ * What it adds is that dragging one means something. */
+#define BAR_CANVAS_MAX_TILES 8
+
+/* Height the canvas block takes inside the panel. Four rows' worth: enough
+ * that a 4K beside a 1080p is legible at a glance, without turning a menu into
+ * a window. */
+#define BAR_CANVAS_HEIGHT (config.bar_popover_row_height * 4)
+
+typedef struct {
+	struct asteroidz_tab_bar_node *node;
+	AsteroidzNodeData *hit;
+	char output[64]; /* held by NAME: a Monitor can be unplugged mid-drag */
+	struct wlr_box layout_box; /* where this output is, in layout coords */
+	bool used;
+} BarCanvasTile;
 
 typedef struct {
 	struct asteroidz_tab_bar_node *node;
@@ -104,6 +131,24 @@ typedef struct {
 	 * itself and scrolls; one that fits keeps scroll pinned at 0. */
 	int32_t scroll;
 	int32_t visible_rows, total_rows;
+	/* The arrange canvas: tiles, the area they are drawn in, and the scale
+	 * from layout pixels to that area. Empty for every other kind. */
+	BarCanvasTile tiles[BAR_CANVAS_MAX_TILES];
+	int32_t ntiles;
+	struct wlr_box canvas;   /* on-screen, inside the panel */
+	/* The transform, as a pair of origins and a scale: layout point P draws at
+	 * (P - canvas_o) * scale + canvas_s. Both origins are needed -- the
+	 * arrangement is CENTRED in the canvas area, so the screen origin is not
+	 * the area's corner, and inverting the mapping without it puts a dragged
+	 * monitor hundreds of layout pixels from the pointer. */
+	double canvas_scale;          /* layout px -> canvas px */
+	int32_t canvas_ox, canvas_oy; /* layout-space origin */
+	int32_t canvas_sx, canvas_sy; /* screen-space origin of the drawn box */
+	/* which tile is being dragged (index, or -1), and where in it the press
+	 * landed, so the tile does not jump to centre on the pointer */
+	int32_t drag_tile;
+	double drag_dx, drag_dy;
+	bool dragged; /* did it actually move? a click that did not is not a drag */
 	/* Where the keyboard is, as an index into `rows`, or -1 for "nowhere yet".
 	 * Starts nowhere on purpose: a popover opened by the pointer should not
 	 * pre-arm Enter on some row the user never looked at. The first arrow key
@@ -123,6 +168,13 @@ typedef struct {
 	 * reason: the store can be reloaded while the menu is open */
 	char med_key[176];
 	/* horizontal centre of the pill this hangs from, in layout coordinates */
+	/* Centre of the pill this hangs from, RELATIVE to its monitor.
+	 *
+	 * Absolute would be simpler and is wrong: the arrange canvas can move the
+	 * very output the popover is drawn on, and an absolute anchor then points
+	 * at where that monitor used to be -- the panel jumps to the far edge of
+	 * the screen mid-drag. Relative, it stays under its pill because the pill
+	 * moved with the monitor too. */
 	int32_t anchor_x;
 	struct wlr_box box;
 	bool open;
@@ -139,6 +191,9 @@ static void bar_popover_open_med_dose(Monitor *anchor_mon, int32_t anchor_x,
 									  const char *key);
 static void bar_popover_open_scales(Monitor *anchor_mon, int32_t anchor_x,
 									const char *name);
+static void bar_popover_open_arrange(Monitor *m, int32_t anchor_x);
+static void bar_canvas_release_tiles(void);
+static void bar_canvas_layout(struct wlr_box area);
 
 /* ─── rows ────────────────────────────────────────────────────────────────── */
 
@@ -262,8 +317,15 @@ static void bar_popover_layout(void) {
 		return;
 	}
 
+	/* The arrange canvas sits above the rows and is not one of them: it is a
+	 * 2D picture, and the row stack has no way to express that. It takes a
+	 * fixed block at the top of the panel and the rows carry on beneath it. */
+	int32_t canvas_h = bar_popover.kind == BAR_POPOVER_ARRANGE
+						   ? BAR_CANVAS_HEIGHT + config.bar_popover_spacing
+						   : 0;
+
 	int32_t height = nrows * row_h + (nrows - 1) * config.bar_popover_spacing +
-					 2 * pad;
+					 2 * pad + canvas_h;
 
 	/* Clamp to the output, and SCROLL what does not fit.
 	 *
@@ -282,7 +344,8 @@ static void bar_popover_layout(void) {
 	int32_t total_rows = nrows;
 	int32_t first = 0;
 	if (height > avail && row_h + config.bar_popover_spacing > 0) {
-		int32_t fits = (avail - 2 * pad + config.bar_popover_spacing) /
+		int32_t fits = (avail - 2 * pad - canvas_h +
+						config.bar_popover_spacing) /
 					   (row_h + config.bar_popover_spacing);
 		if (fits < 1)
 			fits = 1;
@@ -295,7 +358,8 @@ static void bar_popover_layout(void) {
 			bar_popover.scroll = first;
 			nrows = fits;
 			height = nrows * row_h +
-					 (nrows - 1) * config.bar_popover_spacing + 2 * pad;
+					 (nrows - 1) * config.bar_popover_spacing + 2 * pad +
+					 canvas_h;
 		}
 	}
 	if (nrows == total_rows)
@@ -310,7 +374,7 @@ static void bar_popover_layout(void) {
 						  config.bar_height - config.bar_popover_gap - height
 					: bar_bottom + config.bar_popover_gap;
 
-	int32_t x = bar_popover.anchor_x - width / 2;
+	int32_t x = m->m.x + bar_popover.anchor_x - width / 2;
 	/* Clamp to the output. A pill near the right edge would otherwise hang its
 	 * popover off the screen, which is where the tray's would always land. */
 	int32_t min_x = m->m.x + config.bar_margin_x;
@@ -362,7 +426,11 @@ static void bar_popover_layout(void) {
 			wlr_scene_node_place_above(&panel->bg->node, &panel->blur->node);
 	}
 
-	int32_t ry = y + pad;
+	if (canvas_h > 0)
+		bar_canvas_layout((struct wlr_box){x + pad, y + pad, width - 2 * pad,
+										   BAR_CANVAS_HEIGHT});
+
+	int32_t ry = y + pad + canvas_h;
 	int32_t seen = 0;
 	for (int32_t i = 0; i < bar_popover.nrows; i++) {
 		BarPopoverRow *r = &bar_popover.rows[i];
@@ -417,8 +485,15 @@ static void bar_popover_layout(void) {
 static void bar_popover_close(void) {
 	if (!bar_popover.open && !bar_popover.tree)
 		return;
+	/* Both of these destroy scene nodes that are CHILDREN of the tree below,
+	 * so they have to run while it is still standing: destroying the tree
+	 * takes its children with it, and freeing them again afterwards is a
+	 * double free through a dangling pointer -- which is exactly what a
+	 * canvas tile released after the tree did, on the first dismiss of the
+	 * first arrange popover ever opened. */
 	for (int32_t i = 0; i < BAR_POPOVER_MAX_ROWS; i++)
 		bar_popover_row_release(&bar_popover.rows[i]);
+	bar_canvas_release_tiles();
 	if (bar_popover.tree) {
 		/* the panel nodes are children, so this takes them too */
 		wlr_scene_node_destroy(&bar_popover.tree->node);
@@ -459,7 +534,7 @@ static bool bar_popover_open(Monitor *m, enum bar_popover_kind kind,
 	wlr_scene_node_raise_to_top(&bar_popover.tree->node);
 	bar_popover.mon = m;
 	bar_popover.kind = kind;
-	bar_popover.anchor_x = anchor_x;
+	bar_popover.anchor_x = anchor_x - m->m.x;
 	bar_popover.open = true;
 	bar_popover.nrows = 0;
 	/* Each level of a drill-down is its own list: keeping the previous one's
@@ -964,10 +1039,12 @@ static void bar_popover_open_outputs(Monitor *m, int32_t anchor_x) {
 		}
 	}
 
+	int32_t noutputs = 0;
 	Monitor *it = NULL;
 	wl_list_for_each(it, &mons, link) {
 		if (n >= BAR_POPOVER_MAX_ROWS || !it->wlr_output)
 			continue;
+		noutputs++;
 		BarPopoverRow *r = bar_popover_row_get(n);
 		if (!r)
 			break;
@@ -980,6 +1057,21 @@ static void bar_popover_open_outputs(Monitor *m, int32_t anchor_x) {
 		r->submenu = true;
 		n++;
 	}
+
+	/* Only worth offering with something to arrange: with one output there is
+	 * no relationship to change, and a canvas showing a single rectangle you
+	 * can drag nowhere meaningful is a control that lies. */
+	if (noutputs >= 2 && n < BAR_POPOVER_MAX_ROWS) {
+		BarPopoverRow *r = bar_popover_row_get(n);
+		if (r) {
+			snprintf(r->text, sizeof(r->text), "%s", "Arrange displays  ›");
+			snprintf(r->value, sizeof(r->value), "%s",
+					 BAR_POPOVER_VERB "arrange");
+			r->submenu = true;
+			n++;
+		}
+	}
+
 	bar_popover.nrows = n;
 	if (n == 0) {
 		bar_popover_close();
@@ -1551,6 +1643,285 @@ static void bar_popover_open_sysinfo(Monitor *m, int32_t anchor_x) {
 	bar_popover_layout();
 }
 
+/* ─── arrange canvas ──────────────────────────────────────────────────────── */
+
+static void bar_canvas_release_tiles(void) {
+	for (int32_t i = 0; i < BAR_CANVAS_MAX_TILES; i++) {
+		BarCanvasTile *t = &bar_popover.tiles[i];
+		if (!t->used)
+			continue;
+		if (t->node) {
+			asteroidz_tab_bar_node_destroy(t->node); /* takes the hit tag */
+			t->node = NULL;
+		}
+		t->hit = NULL;
+		t->used = false;
+		t->output[0] = '\0';
+	}
+	bar_popover.ntiles = 0;
+	bar_popover.drag_tile = -1;
+	bar_popover.dragged = false;
+}
+
+/* Read the current arrangement into tiles. Called on open and after every
+ * applied move, so the canvas always shows what the compositor actually has
+ * rather than a model of it that can drift. */
+static void bar_canvas_sync_tiles(void) {
+	int32_t n = 0;
+	Monitor *m = NULL;
+	wl_list_for_each(m, &mons, link) {
+		if (n >= BAR_CANVAS_MAX_TILES || !m->wlr_output ||
+			!m->wlr_output->enabled || !m->wlr_output->name)
+			continue;
+		BarCanvasTile *t = &bar_popover.tiles[n];
+		if (!t->used) {
+			AsteroidzNodeData *hit = ecalloc(1, sizeof(AsteroidzNodeData));
+			hit->type = ASTEROIDZ_BAR_CANVAS_NODE;
+			hit->node_data = (void *)(intptr_t)n; /* index, not a pointer:
+												   * the tile array is stable
+												   * but its Monitor is not */
+			t->node = asteroidz_tab_bar_node_create(hit, bar_popover.row_tree,
+												   config.theme, 0, 0);
+			if (!t->node) {
+				free(hit);
+				break;
+			}
+			t->hit = hit;
+			t->used = true;
+		}
+		snprintf(t->output, sizeof(t->output), "%s", m->wlr_output->name);
+		t->layout_box = m->m;
+		n++;
+	}
+	for (int32_t i = n; i < BAR_CANVAS_MAX_TILES; i++) {
+		BarCanvasTile *t = &bar_popover.tiles[i];
+		if (t->used && t->node) {
+			asteroidz_tab_bar_node_destroy(t->node);
+			t->node = NULL;
+			t->hit = NULL;
+			t->used = false;
+		}
+	}
+	bar_popover.ntiles = n;
+}
+
+/* Place the tiles inside `area`, scaled to fit the whole arrangement.
+ *
+ * The scale is uniform and derived from the arrangement's own bounding box, so
+ * relative sizes stay true: a 1080p next to a 4K reads as a quarter of it,
+ * because that is what it is. Fitting each tile to a cell would make the
+ * picture prettier and useless. */
+static void bar_canvas_layout(struct wlr_box area) {
+	if (bar_popover.ntiles <= 0)
+		return;
+
+	/* Fit the view only when nothing is being dragged.
+	 *
+	 * Refitting per motion event looks reasonable and is unusable: the
+	 * arrangement's bounding box grows as you pull a monitor away from its
+	 * neighbours, so the scale shrinks, so everything -- including the tile
+	 * under the pointer -- slides out from under it, and the layout->screen
+	 * mapping the drag is inverting changes between the frame it was measured
+	 * in and the frame it is applied to. Dragged 300px, the monitor landed
+	 * 8000 layout pixels away. While a drag is live the transform is frozen
+	 * and only the tiles' positions change. */
+	if (bar_popover.drag_tile >= 0 && bar_popover.canvas_scale > 0.0) {
+		float sc = bar_popover.mon && bar_popover.mon->wlr_output
+					   ? bar_popover.mon->wlr_output->scale
+					   : 1.0f;
+		for (int32_t i = 0; i < bar_popover.ntiles; i++) {
+			BarCanvasTile *t = &bar_popover.tiles[i];
+			struct wlr_box *b = &t->layout_box;
+			double s = bar_popover.canvas_scale;
+			int32_t tw = (int32_t)(b->width * s), th = (int32_t)(b->height * s);
+			if (tw < 24) tw = 24;
+			if (th < 18) th = 18;
+			asteroidz_tab_bar_node_set_size(t->node, tw, th);
+			asteroidz_tab_bar_node_set_focus(t->node,
+											 bar_popover.drag_tile == i);
+			asteroidz_tab_bar_node_set_position(
+				t->node,
+				bar_popover.canvas_sx +
+					(int32_t)((b->x - bar_popover.canvas_ox) * s),
+				bar_popover.canvas_sy +
+					(int32_t)((b->y - bar_popover.canvas_oy) * s));
+			asteroidz_tab_bar_node_set_enabled(t->node, true);
+			asteroidz_tab_bar_node_update(t->node, t->output, sc);
+		}
+		return;
+	}
+
+	int32_t x0 = INT32_MAX, y0 = INT32_MAX, x1 = INT32_MIN, y1 = INT32_MIN;
+	for (int32_t i = 0; i < bar_popover.ntiles; i++) {
+		struct wlr_box *b = &bar_popover.tiles[i].layout_box;
+		if (b->x < x0) x0 = b->x;
+		if (b->y < y0) y0 = b->y;
+		if (b->x + b->width > x1) x1 = b->x + b->width;
+		if (b->y + b->height > y1) y1 = b->y + b->height;
+	}
+	int32_t lw = x1 - x0, lh = y1 - y0;
+	if (lw <= 0 || lh <= 0)
+		return;
+
+	/* leave a margin so a monitor dragged past the edge is still visible as
+	 * having been dragged past the edge */
+	const int32_t margin = 8;
+	double sx = (double)(area.width - 2 * margin) / lw;
+	double sy = (double)(area.height - 2 * margin) / lh;
+	double s = sx < sy ? sx : sy;
+	if (s <= 0.0)
+		return;
+
+	/* centre the drawn arrangement in the area */
+	int32_t drawn_w = (int32_t)(lw * s), drawn_h = (int32_t)(lh * s);
+	int32_t ox = area.x + (area.width - drawn_w) / 2;
+	int32_t oy = area.y + (area.height - drawn_h) / 2;
+
+	bar_popover.canvas = area;
+	bar_popover.canvas_scale = s;
+	bar_popover.canvas_ox = x0;
+	bar_popover.canvas_oy = y0;
+	bar_popover.canvas_sx = ox;
+	bar_popover.canvas_sy = oy;
+
+	float scale = bar_popover.mon && bar_popover.mon->wlr_output
+					  ? bar_popover.mon->wlr_output->scale
+					  : 1.0f;
+	for (int32_t i = 0; i < bar_popover.ntiles; i++) {
+		BarCanvasTile *t = &bar_popover.tiles[i];
+		struct wlr_box *b = &t->layout_box;
+		int32_t tx = ox + (int32_t)((b->x - x0) * s);
+		int32_t ty = oy + (int32_t)((b->y - y0) * s);
+		int32_t tw = (int32_t)(b->width * s);
+		int32_t th = (int32_t)(b->height * s);
+		/* a tile has to stay clickable however small the monitor is */
+		if (tw < 24) tw = 24;
+		if (th < 18) th = 18;
+
+		char label[BAR_TEXT_MAX];
+		snprintf(label, sizeof(label), "%s", t->output);
+
+		asteroidz_tab_bar_node_apply_config(t->node, &config.theme);
+		asteroidz_tab_bar_node_set_padding(t->node, 4, 2);
+		asteroidz_tab_bar_node_set_size(t->node, tw, th);
+		/* the tile being dragged is filled, so it is obvious which one is
+		 * moving when two of them overlap */
+		asteroidz_tab_bar_node_set_focus(t->node,
+										 bar_popover.drag_tile == i);
+		asteroidz_tab_bar_node_set_position(t->node, tx, ty);
+		asteroidz_tab_bar_node_set_enabled(t->node, true);
+		asteroidz_tab_bar_node_update(t->node, label, scale);
+	}
+}
+
+/* Pointer press on a tile: start dragging it. */
+static bool bar_canvas_press(int32_t idx, double cx, double cy) {
+	if (!bar_popover_is_open(BAR_POPOVER_ARRANGE) || idx < 0 ||
+		idx >= bar_popover.ntiles)
+		return false;
+	BarCanvasTile *t = &bar_popover.tiles[idx];
+	if (!t->used)
+		return false;
+	bar_popover.drag_tile = idx;
+	bar_popover.dragged = false;
+	/* where in the tile the press landed, in LAYOUT units, so the monitor
+	 * moves with the pointer instead of snapping its corner to it */
+	double s = bar_popover.canvas_scale > 0 ? bar_popover.canvas_scale : 1.0;
+	int32_t node_x = t->node->last_x;
+	int32_t node_y = t->node->last_y;
+	bar_popover.drag_dx = (cx - node_x) / s;
+	bar_popover.drag_dy = (cy - node_y) / s;
+	bar_canvas_layout(bar_popover.canvas); /* redraw: it is filled now */
+	return true;
+}
+
+/* Pointer motion while dragging. Moves the TILE only -- the output itself is
+ * left alone until the button comes up.
+ *
+ * Applying every intermediate position would re-run updatemons() and rearrange
+ * every client on every motion event, which is a storm of relayouts for
+ * positions the user is passing through rather than choosing. */
+static bool bar_canvas_motion(double cx, double cy) {
+	if (!bar_popover_is_open(BAR_POPOVER_ARRANGE) ||
+		bar_popover.drag_tile < 0)
+		return false;
+	BarCanvasTile *t = &bar_popover.tiles[bar_popover.drag_tile];
+	if (!t->used)
+		return false;
+	double s = bar_popover.canvas_scale > 0 ? bar_popover.canvas_scale : 1.0;
+	/* canvas point -> layout point, minus where in the tile we grabbed */
+	double lx = (cx - bar_popover.canvas_sx) / s + bar_popover.canvas_ox -
+				bar_popover.drag_dx;
+	double ly = (cy - bar_popover.canvas_sy) / s + bar_popover.canvas_oy -
+				bar_popover.drag_dy;
+	int32_t nx = (int32_t)lx, ny = (int32_t)ly;
+	if (nx == t->layout_box.x && ny == t->layout_box.y)
+		return true;
+	t->layout_box.x = nx;
+	t->layout_box.y = ny;
+	bar_popover.dragged = true;
+	bar_canvas_layout(bar_popover.canvas);
+	return true;
+}
+
+/* Button release: snap, apply, and re-read the result. */
+static bool bar_canvas_release(void) {
+	if (!bar_popover_is_open(BAR_POPOVER_ARRANGE) ||
+		bar_popover.drag_tile < 0)
+		return false;
+	int32_t idx = bar_popover.drag_tile;
+	bool moved = bar_popover.dragged;
+	bar_popover.drag_tile = -1;
+	bar_popover.dragged = false;
+
+	BarCanvasTile *t = &bar_popover.tiles[idx];
+	Monitor *m = t->used ? bar_display_by_name(t->output) : NULL;
+	if (moved && m) {
+		struct wlr_box want = t->layout_box;
+		bar_display_snap(m, &want);
+		bar_display_move(m, want.x, want.y);
+	}
+	/* Re-read rather than trust the request: wlroots may not have placed the
+	 * output exactly where it was asked, and the canvas must show what IS. */
+	bar_canvas_sync_tiles();
+	bar_popover_layout();
+	return true;
+}
+
+static void bar_popover_open_arrange(Monitor *m, int32_t anchor_x) {
+	if (bar_popover_is_open(BAR_POPOVER_ARRANGE)) {
+		bar_popover_close();
+		return;
+	}
+	if (!bar_popover_open(m, BAR_POPOVER_ARRANGE, anchor_x))
+		return;
+	bar_canvas_sync_tiles();
+	if (bar_popover.ntiles == 0) {
+		bar_popover_close();
+		return;
+	}
+
+	int32_t n = 0;
+	BarPopoverRow *r = bar_popover_row_get(n);
+	if (r) {
+		snprintf(r->text, sizeof(r->text), "%s", "Drag a display to move it");
+		r->enabled = false;
+		n++;
+	}
+	if ((r = bar_popover_row_get(n))) {
+		snprintf(r->text, sizeof(r->text), "%s", "Save arrangement");
+		snprintf(r->value, sizeof(r->value), "%s", BAR_POPOVER_VERB "save");
+		n++;
+	}
+	if ((r = bar_popover_row_get(n))) {
+		snprintf(r->text, sizeof(r->text), "%s", "‹  All outputs");
+		snprintf(r->value, sizeof(r->value), "%s", BAR_POPOVER_VERB "back");
+		n++;
+	}
+	bar_popover.nrows = n;
+	bar_popover_layout();
+}
+
 /* ─── input ───────────────────────────────────────────────────────────────── */
 
 /* Run a row. Split out of the click handler so the keyboard can reach the
@@ -1584,17 +1955,70 @@ static bool bar_popover_activate_row(BarPopoverRow *r) {
 	}
 	case BAR_POPOVER_OUTPUTS: {
 		Monitor *anchor_mon = bar_popover.mon;
-		int32_t ax = bar_popover.anchor_x;
+		/* back to absolute: the stored anchor is monitor-relative, and
+		 * bar_popover_open() re-relativises whatever it is given */
+		int32_t ax = bar_popover.mon ? bar_popover.mon->m.x +
+										   bar_popover.anchor_x
+								 : bar_popover.anchor_x;
 		char name[64];
 		snprintf(name, sizeof(name), "%s", r->value);
+		if (BAR_POPOVER_IS_VERB(name)) {
+			if (!strcmp(name + 1, "arrange"))
+				bar_popover_open_arrange(anchor_mon, ax);
+			return true;
+		}
 		bar_popover_open_output(anchor_mon, ax, name);
 		return true; /* already reopened against the output */
+	}
+	case BAR_POPOVER_ARRANGE: {
+		if (!BAR_POPOVER_IS_VERB(r->value))
+			return true;
+		Monitor *anchor_mon = bar_popover.mon;
+		/* back to absolute: the stored anchor is monitor-relative, and
+		 * bar_popover_open() re-relativises whatever it is given */
+		int32_t ax = bar_popover.mon ? bar_popover.mon->m.x +
+										   bar_popover.anchor_x
+								 : bar_popover.anchor_x;
+		const char *verb = r->value + 1;
+		if (!strcmp(verb, "back")) {
+			bar_popover_open_outputs(anchor_mon, ax);
+			return true;
+		}
+		if (!strcmp(verb, "save")) {
+			int32_t missing = 0;
+			int32_t saved = bar_display_save_positions(&missing);
+			/* Report in place rather than closing. Writing to someone's config
+			 * is exactly the kind of action where "did that do anything?" must
+			 * not be a question, and an output with no block to write to is
+			 * the one outcome nobody would predict. */
+			BarPopoverRow *note = &bar_popover.rows[0];
+			if (note->used) {
+				if (missing > 0)
+					snprintf(note->text, sizeof(note->text),
+							 "Saved %d; %d had no output block", saved,
+							 missing);
+				else if (saved > 0)
+					snprintf(note->text, sizeof(note->text),
+							 "Saved %d display position%s", saved,
+							 saved == 1 ? "" : "s");
+				else
+					snprintf(note->text, sizeof(note->text), "%s",
+							 "Nothing saved: no output blocks found");
+				bar_popover_layout();
+			}
+			return true;
+		}
+		return true;
 	}
 	case BAR_POPOVER_OUTPUT: {
 		if (!r->enabled)
 			return true; /* a reading, not a control */
 		Monitor *anchor_mon = bar_popover.mon;
-		int32_t ax = bar_popover.anchor_x;
+		/* back to absolute: the stored anchor is monitor-relative, and
+		 * bar_popover_open() re-relativises whatever it is given */
+		int32_t ax = bar_popover.mon ? bar_popover.mon->m.x +
+										   bar_popover.anchor_x
+								 : bar_popover.anchor_x;
 		char name[64];
 		snprintf(name, sizeof(name), "%s", bar_popover.output_name);
 		/* Match on the verb explicitly and do nothing for anything else. The
@@ -1624,7 +2048,11 @@ static bool bar_popover_activate_row(BarPopoverRow *r) {
 	}
 	case BAR_POPOVER_MODES: {
 		Monitor *anchor_mon = bar_popover.mon;
-		int32_t ax = bar_popover.anchor_x;
+		/* back to absolute: the stored anchor is monitor-relative, and
+		 * bar_popover_open() re-relativises whatever it is given */
+		int32_t ax = bar_popover.mon ? bar_popover.mon->m.x +
+										   bar_popover.anchor_x
+								 : bar_popover.anchor_x;
 		char name[64];
 		snprintf(name, sizeof(name), "%s", bar_popover.output_name);
 		if (BAR_POPOVER_IS_VERB(r->value)) {
@@ -1655,7 +2083,11 @@ static bool bar_popover_activate_row(BarPopoverRow *r) {
 	}
 	case BAR_POPOVER_SCALES: {
 		Monitor *anchor_mon = bar_popover.mon;
-		int32_t ax = bar_popover.anchor_x;
+		/* back to absolute: the stored anchor is monitor-relative, and
+		 * bar_popover_open() re-relativises whatever it is given */
+		int32_t ax = bar_popover.mon ? bar_popover.mon->m.x +
+										   bar_popover.anchor_x
+								 : bar_popover.anchor_x;
 		char name[64];
 		snprintf(name, sizeof(name), "%s", bar_popover.output_name);
 		if (BAR_POPOVER_IS_VERB(r->value)) {
@@ -1672,7 +2104,11 @@ static bool bar_popover_activate_row(BarPopoverRow *r) {
 		if (!r->enabled)
 			return true;
 		Monitor *anchor_mon = bar_popover.mon;
-		int32_t ax = bar_popover.anchor_x;
+		/* back to absolute: the stored anchor is monitor-relative, and
+		 * bar_popover_open() re-relativises whatever it is given */
+		int32_t ax = bar_popover.mon ? bar_popover.mon->m.x +
+										   bar_popover.anchor_x
+								 : bar_popover.anchor_x;
 		char key[176];
 		snprintf(key, sizeof(key), "%s", r->value);
 		bar_popover_open_med_dose(anchor_mon, ax, key);
@@ -1682,7 +2118,11 @@ static bool bar_popover_activate_row(BarPopoverRow *r) {
 		if (!r->enabled || !BAR_POPOVER_IS_VERB(r->value))
 			return true;
 		Monitor *anchor_mon = bar_popover.mon;
-		int32_t ax = bar_popover.anchor_x;
+		/* back to absolute: the stored anchor is monitor-relative, and
+		 * bar_popover_open() re-relativises whatever it is given */
+		int32_t ax = bar_popover.mon ? bar_popover.mon->m.x +
+										   bar_popover.anchor_x
+								 : bar_popover.anchor_x;
 		char key[176];
 		snprintf(key, sizeof(key), "%s", bar_popover.med_key);
 		const char *verb = r->value + 1;
@@ -1754,7 +2194,11 @@ static bool bar_popover_activate_row(BarPopoverRow *r) {
 			snprintf(svc, sizeof(svc), "%s", bar_popover.menu_service);
 			snprintf(path, sizeof(path), "%s", bar_popover.menu_path);
 			Monitor *m = bar_popover.mon;
-			int32_t ax = bar_popover.anchor_x;
+			/* back to absolute: the stored anchor is monitor-relative, and
+		 * bar_popover_open() re-relativises whatever it is given */
+		int32_t ax = bar_popover.mon ? bar_popover.mon->m.x +
+										   bar_popover.anchor_x
+								 : bar_popover.anchor_x;
 			bar_popover_open_menu(m, ax, svc, path, r->id);
 			return true; /* bar_popover_open_menu already reset the popover */
 		}
@@ -1784,7 +2228,17 @@ static bool bar_popover_dismiss_click(struct wlr_scene_node *node) {
 		AsteroidzNodeData *d = (AsteroidzNodeData *)node->data;
 		if (d->type == ASTEROIDZ_BAR_POPOVER_NODE)
 			return false; /* the row handler deals with it */
+		/* a canvas tile is INSIDE the popover, so a press on one is not a
+		 * click outside it -- dismissing here would close the panel the
+		 * instant a drag began */
+		if (d->type == ASTEROIDZ_BAR_CANVAS_NODE)
+			return false;
 	}
+	/* mid-drag the pointer routinely leaves the tile it grabbed; the button
+	 * that comes up at the end of that is the drag ending, not a click
+	 * elsewhere */
+	if (bar_popover.drag_tile >= 0)
+		return false;
 	bar_popover_close();
 	return true;
 }
