@@ -2739,6 +2739,85 @@ static int32_t bar_shrink_flexible(AsteroidzBar *bar, int32_t slot,
 	return got;
 }
 
+/* Shed order once the strip cannot fit everything, lowest first.
+ *
+ * A bar with a fixed module list and no width budget is choosing what to show
+ * by accident -- whatever happens to be last simply falls off the edge. The
+ * TRAY makes that unworkable rather than merely untidy: its width is however
+ * many applications happen to be running, so on a narrow output an unrelated
+ * program starting could push a module out. Deciding on purpose means saying
+ * what the bar is FOR, which is what this order is: things you interact with
+ * outlast things you glance at, and ambient readouts go first.
+ *
+ * Tags and tray are never shed. Both are the bar's reason to exist -- one is
+ * how you navigate, the other is how applications reach you -- and a tray that
+ * disappears to make room for a weather pill would be absurd. */
+#define BAR_SHED_NEVER 1000
+
+static int32_t bar_module_shed_rank(enum bar_module_kind k) {
+	switch (k) {
+	case BAR_MODULE_WEATHER:    return 10;
+	case BAR_MODULE_MEDIA:      return 20;
+	case BAR_MODULE_MEDICATION: return 30;
+	case BAR_MODULE_DISCORD:    return 40;
+	case BAR_MODULE_TITLE:      return 50;
+	case BAR_MODULE_IDLE:       return 60;
+	case BAR_MODULE_DISPLAY:    return 70;
+	case BAR_MODULE_VPN:        return 80;
+	case BAR_MODULE_NETWORK:    return 90;
+	case BAR_MODULE_MEMORY:     return 100;
+	case BAR_MODULE_CPU:        return 110;
+	case BAR_MODULE_NOTIFY:     return 120;
+	case BAR_MODULE_VOLUME:     return 130;
+	case BAR_MODULE_LAYOUT:     return 140;
+	case BAR_MODULE_CLOCK:      return 150;
+	case BAR_MODULE_TAGS:
+	case BAR_MODULE_TRAY:       return BAR_SHED_NEVER;
+	default:                    return 200;
+	}
+}
+
+/* Take a module off the strip for this pass. Its nodes are disabled rather
+ * than destroyed: bar_place_module re-enables whatever it places, so a module
+ * comes back by itself the moment the width is there again. Destroying would
+ * churn scene nodes every metrics tick on an output that is merely narrow. */
+static void bar_module_hide(BarModule *mod) {
+	for (int32_t i = 0; i < mod->npills; i++)
+		if (mod->pills[i].used)
+			asteroidz_tab_bar_node_set_enabled(mod->pills[i].node, false);
+	mod->width = 0;
+}
+
+/* Slot widths from whatever is currently visible, gaps included. Recomputed
+ * from scratch after each drop rather than patched, because removing a module
+ * also removes one inter-module gap, and which gap depends on where in the
+ * slot it sat. */
+static void bar_measure_slots(AsteroidzBar *bar, int32_t *slot_w) {
+	BarModule *last[BAR_SLOT_COUNT] = {NULL, NULL, NULL};
+	for (int32_t s = 0; s < BAR_SLOT_COUNT; s++)
+		slot_w[s] = 0;
+	for (int32_t i = 0; i < bar->nmodules; i++) {
+		BarModule *mod = &bar->modules[i];
+		if (mod->width <= 0)
+			continue;
+		if (last[mod->slot])
+			slot_w[mod->slot] += bar_module_gap(last[mod->slot], mod);
+		slot_w[mod->slot] += mod->width;
+		last[mod->slot] = mod;
+	}
+}
+
+/* What the three slots need, including the gaps between them. */
+static int32_t bar_needed_width(const int32_t *slot_w) {
+	int32_t needed = 0, slots = 0;
+	for (int32_t s = 0; s < BAR_SLOT_COUNT; s++)
+		if (slot_w[s] > 0) {
+			needed += slot_w[s];
+			slots++;
+		}
+	return needed + (slots > 1 ? (slots - 1) * config.bar_spacing : 0);
+}
+
 /* Recompute the whole strip: refresh every module's content, measure, then
  * place the three slots. Left packs from the left inset, right packs to the
  * right inset, centre is centred on the monitor and only moved aside if it
@@ -2809,14 +2888,9 @@ static void bar_layout(Monitor *m) {
 	 * centre's natural position: the right slot is anchored to the right
 	 * edge, so a left slot that is merely "past centre" is fine while one
 	 * that collides with the right slot is not. */
-	int32_t needed = slot_w[BAR_SLOT_LEFT] + slot_w[BAR_SLOT_CENTER] +
-					 slot_w[BAR_SLOT_RIGHT];
-	int32_t gaps = 0;
-	for (int32_t sidx = 0; sidx < BAR_SLOT_COUNT; sidx++)
-		if (slot_w[sidx] > 0)
-			gaps++;
-	needed += gaps > 1 ? (gaps - 1) * config.bar_spacing : 0;
-	int32_t overflow = needed - (m->m.width - 2 * inset);
+	int32_t avail = m->m.width - 2 * inset;
+	int32_t needed = bar_needed_width(slot_w);
+	int32_t overflow = needed - avail;
 	if (overflow > 0) {
 		/* Take it out of every flexible pill (title, now-playing) before
 		 * considering dropping a whole slot -- hiding the centre section
@@ -2824,8 +2898,35 @@ static void bar_layout(Monitor *m) {
 		 * took the clock and the idle toggle with it. */
 		bar_shrink_flexible(bar, BAR_SLOT_COUNT, overflow, slot_w, pill_h,
 							scale);
+		bar_measure_slots(bar, slot_w);
+		overflow = bar_needed_width(slot_w) - avail;
+
+		/* Every flexible pill is at its floor and it still does not fit, so
+		 * something has to go. Drop whole modules, least important first,
+		 * until it does -- deciding by priority rather than letting the last
+		 * one laid out run off the edge of the output. */
+		for (int32_t guard = 0; overflow > 0 && guard < BAR_MAX_MODULES;
+			 guard++) {
+			BarModule *victim = NULL;
+			for (int32_t i = 0; i < bar->nmodules; i++) {
+				BarModule *mod = &bar->modules[i];
+				if (mod->width <= 0 ||
+					bar_module_shed_rank(mod->kind) >= BAR_SHED_NEVER)
+					continue;
+				if (!victim || bar_module_shed_rank(mod->kind) <
+								   bar_module_shed_rank(victim->kind))
+					victim = mod;
+			}
+			if (!victim)
+				break; /* only unsheddable modules left: they overflow */
+			bar_module_hide(victim);
+			bar_measure_slots(bar, slot_w);
+			overflow = bar_needed_width(slot_w) - avail;
+		}
 		left_end = left + slot_w[BAR_SLOT_LEFT];
 		cursor[BAR_SLOT_RIGHT] = right - slot_w[BAR_SLOT_RIGHT];
+		cursor[BAR_SLOT_CENTER] =
+			m->m.x + (m->m.width - slot_w[BAR_SLOT_CENTER]) / 2;
 	}
 
 	/* Yield to the centred slot before it has to move.

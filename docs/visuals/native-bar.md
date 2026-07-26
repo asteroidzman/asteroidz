@@ -117,6 +117,28 @@ this with the dwm/dwl behaviour of always drawing every tag — but on a narrow
 output those extra pills cost enough width to squeeze the centre section out.
 An urgent tag is drawn in the theme's `urgent-color`.
 
+## Fitting a narrow output
+
+The module lists say what you *want*; the width available says what fits. When
+the three sections cannot all fit, the bar sheds content in a fixed order
+rather than letting whatever was laid out last run off the edge of the output:
+
+1. **flexible pills shrink first** — the window title and the now-playing
+   string ellipsise down to a floor before anything is dropped, since hiding
+   the whole centre section because a title wanted 320px is the wrong trade.
+2. **then whole modules are dropped, least important first**:
+   `weather`, `media`, `medication`, `discord`, `title`, `idle`, `display`,
+   `vpn`, `network`, `memory`, `cpu`, `notifications`, `volume`, `layout`,
+   `clock`.
+3. **`tags` and `tray` are never dropped.** Both are the bar's reason to
+   exist — one is how you navigate, the other is how applications reach you.
+
+The tray is what makes this necessary rather than merely tidy: its width is
+however many applications happen to be running, so with a fixed layout an
+unrelated program starting could push a module off the bar. A module that was
+shed comes back on its own as soon as the width is there again (its nodes are
+disabled, not destroyed).
+
 ## System tray
 
 The `tray` module is a **StatusNotifierItem host**, on the same session bus the
