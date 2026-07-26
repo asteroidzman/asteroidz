@@ -369,6 +369,30 @@ the output, so a pill near the right edge — which is where the tray's would
 always land — does not hang its popover off the screen. It sits below a top bar
 and above a bottom one.
 
+### Row kinds
+
+A popover row is **one scene node**, so there is no sub-row hit testing — and
+nothing is drawn that cannot be clicked. That constraint decides what a row can
+honestly be:
+
+| kind | behaviour |
+|---|---|
+| action | click runs it and closes |
+| inert | a reading; consumed without dismissing |
+| submenu | click re-opens the popover one level down |
+| **stepper** | **scroll** over it to change its value in place |
+
+A stepper is adjusted by scrolling because painting `−`/`+` zones would be
+decoration that lies about where you may click. Scroll is already routed to
+whatever node is under the pointer, so this costs no new input model. Clicking
+a stepper is a miss rather than a selection, so it does not dismiss — reaching
+for it should not punish you.
+
+The audio popover's `Volume` row is the first one: the number moves under the
+pointer and the sink is set to that **absolute** percentage, not a relative
+step, so it cannot drift away from the reading if something else changes the
+volume meanwhile.
+
 Dismissal:
 
 - a click on a row runs that row's action and closes;

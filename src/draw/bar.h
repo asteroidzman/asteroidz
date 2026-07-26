@@ -3581,6 +3581,9 @@ static bool bar_scroll_at(double x, double y, double delta,
 	if (!node || !node->data)
 		return false;
 	AsteroidzNodeData *data = (AsteroidzNodeData *)node->data;
+	/* popover rows scroll too: that is how a stepper row is adjusted */
+	if (data->type == ASTEROIDZ_BAR_POPOVER_NODE)
+		return bar_popover_handle_node_scroll(data, notches);
 	if (data->type != ASTEROIDZ_BAR_NODE)
 		return false;
 	return bar_handle_node_scroll(data, notches, horizontal);

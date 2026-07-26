@@ -51,6 +51,13 @@ typedef struct {
 	/* DBusMenu item id, meaningless for other kinds */
 	int32_t id;
 	bool enabled;
+	/* A row whose VALUE changes under the pointer rather than one that acts
+	 * once. Adjusted by scrolling over it: the popover has no sub-row hit
+	 * testing -- a row is one scene node -- so painting -/+ zones would be
+	 * decoration that lies about where you may click. Scroll is already routed
+	 * to whatever node is under the pointer, so it costs no new input model. */
+	bool stepper;
+	int32_t step_value, vmin, vmax, vstep;
 	bool submenu;
 	bool separator;
 	bool selected;
@@ -107,6 +114,8 @@ static void bar_popover_row_release(BarPopoverRow *r) {
 	r->value[0] = '\0';
 	r->id = 0;
 	r->enabled = true;
+	r->stepper = false;
+	r->step_value = r->vmin = r->vmax = r->vstep = 0;
 	r->submenu = false;
 	r->separator = false;
 	r->selected = false;
@@ -356,6 +365,20 @@ static void bar_popover_on_sinks(const char *out, size_t len, void *user) {
 		return;
 	}
 	int32_t n = 0;
+	/* Scroll-to-adjust volume, above the output list. This is the closest
+	 * thing to the slider the waybar popover had that an honest row can be:
+	 * the number moves under the pointer, and nothing is drawn that cannot be
+	 * clicked. */
+	BarPopoverRow *vol = bar_popover_row_get(n);
+	if (vol) {
+		vol->stepper = true;
+		vol->step_value = bar_volume.have ? bar_volume.pct : 0;
+		vol->vmin = 0;
+		vol->vmax = 100;
+		vol->vstep = config.bar_volume_step;
+		snprintf(vol->text, sizeof(vol->text), "Volume  %d%%", vol->step_value);
+		n++;
+	}
 	cJSON *sink = NULL;
 	cJSON_ArrayForEach(sink, root) {
 		if (n >= BAR_POPOVER_MAX_ROWS)
@@ -836,6 +859,51 @@ static void bar_popover_open_output(Monitor *anchor_mon, int32_t anchor_x,
 	bar_popover_layout();
 }
 
+/* ─── stepper rows ────────────────────────────────────────────────────────── */
+
+/* Apply a stepper row's new value. Kept beside the popover rather than in each
+ * module so a row's behaviour is visible where the row is built. */
+static void bar_popover_apply_step(BarPopoverRow *r) {
+	switch (bar_popover.kind) {
+	case BAR_POPOVER_SINKS: {
+		/* Absolute, not a delta. The row displays the value it is setting, so
+		 * sending a relative step would drift away from the reading the moment
+		 * anything else moved the volume. */
+		char arg[32];
+		snprintf(arg, sizeof(arg), "%d%%", r->step_value);
+		char *const argv[] = {"wpctl",   "set-volume", "-l", "1.0",
+							  "@DEFAULT_AUDIO_SINK@", arg, NULL};
+		async_spawn(event_loop, argv, NULL, NULL);
+		snprintf(r->text, sizeof(r->text), "Volume  %d%%", r->step_value);
+		break;
+	}
+	default:
+		break;
+	}
+	/* redraw in place: the whole point of a stepper is watching the number
+	 * move as you scroll */
+	bar_popover_layout();
+}
+
+/* Scroll over a popover row. Returns true when it was consumed. */
+static bool bar_popover_handle_node_scroll(AsteroidzNodeData *hit,
+										   int32_t notches) {
+	BarPopoverRow *r = hit ? (BarPopoverRow *)hit->node_data : NULL;
+	if (!r || !r->used || !r->stepper || notches == 0)
+		return false;
+	/* scroll up raises, matching the bar pills */
+	int32_t v = r->step_value - notches * r->vstep;
+	if (v < r->vmin)
+		v = r->vmin;
+	if (v > r->vmax)
+		v = r->vmax;
+	if (v == r->step_value)
+		return true; /* already at the rail: consumed, nothing to do */
+	r->step_value = v;
+	bar_popover_apply_step(r);
+	return true;
+}
+
 /* ─── input ───────────────────────────────────────────────────────────────── */
 
 static bool bar_popover_handle_node_click(AsteroidzNodeData *hit,
@@ -846,6 +914,10 @@ static bool bar_popover_handle_node_click(AsteroidzNodeData *hit,
 	/* a separator is scenery, not a target: clicking one must neither act nor
 	 * dismiss, the way it behaves in every other menu */
 	if (bar_popover.kind == BAR_POPOVER_MENU && r->separator)
+		return true;
+	/* a stepper is adjusted by scrolling, so a click on it is a miss, not a
+	 * selection -- dismissing would punish reaching for it */
+	if (r->stepper)
 		return true;
 	switch (bar_popover.kind) {
 	case BAR_POPOVER_SINKS: {
