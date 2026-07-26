@@ -3406,6 +3406,7 @@ void cleanup(void) {
 	 * signal matches needs the connection still open */
 	bar_popover_close();
 	bar_notify_finish();
+	bar_dv_finish();
 	bar_viz_finish();
 	bar_tray_finish();
 	bar_volume_finish();

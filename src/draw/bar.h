@@ -49,6 +49,7 @@ enum bar_module_kind {
 	BAR_MODULE_VOLUME,
 	BAR_MODULE_NOTIFY,
 	BAR_MODULE_MEDICATION,
+	BAR_MODULE_DISCORD,
 };
 
 enum bar_slot { BAR_SLOT_LEFT = 0, BAR_SLOT_CENTER, BAR_SLOT_RIGHT,
@@ -174,6 +175,8 @@ static enum bar_module_kind bar_module_kind_from_name(const char *name) {
 		return BAR_MODULE_NOTIFY;
 	if (strcmp(name, "medication") == 0 || strcmp(name, "meds") == 0)
 		return BAR_MODULE_MEDICATION;
+	if (strcmp(name, "discord") == 0 || strcmp(name, "discord-voice") == 0)
+		return BAR_MODULE_DISCORD;
 	return BAR_MODULE_NONE;
 }
 
@@ -1598,6 +1601,7 @@ static void bar_viz_finish(void) {
 		unlink(bar_viz_cfg_path);
 }
 
+#include "bar-discord.h"
 #include "bar-medication.h"
 #include "bar-popover.h"
 #include "bar-tray.h"
@@ -2308,6 +2312,54 @@ static void bar_module_refresh_medication(BarModule *mod) {
 		bar_pill_release(&mod->pills[i]);
 }
 
+/* Discord logo plus the voice state. Hidden entirely while the daemon is not
+ * running: an always-present "Offline" pill is noise on a machine where
+ * discord-voiced simply is not installed, and the module is opt-in anyway. */
+static void bar_module_refresh_discord(BarModule *mod) {
+	bar_dv_start();
+	if (bar_dv.state == BAR_DV_OFFLINE && !bar_dv.error[0]) {
+		for (int32_t i = 0; i < BAR_MAX_PILLS; i++)
+			bar_pill_release(&mod->pills[i]);
+		mod->npills = 0;
+		return;
+	}
+	BarPill *p = bar_pill_get(mod, 0);
+	if (!p) {
+		mod->npills = 0;
+		return;
+	}
+	char icon[512];
+	bar_icon_path(icon, sizeof(icon), "waybar-discord-voice/discord.svg");
+	asteroidz_tab_bar_node_set_icon(p->node, icon);
+	/* The logo ships as a solid #000 stencil -- the waybar plugin tints it to
+	 * the widget colour and painted as-is it is an invisible black blob on a
+	 * dark panel, exactly like the sysinfo glyphs. Tinted by state: the theme
+	 * accent while push-to-talk is held, dimmed while muted. */
+	float tint[4];
+	if (bar_dv.ptt_active)
+		memcpy(tint, config.theme.focus_bg_color, sizeof(tint));
+	else if (bar_dv.error[0])
+		memcpy(tint, config.theme.urgent_color, sizeof(tint));
+	else {
+		memcpy(tint, config.theme.fg_color, sizeof(tint));
+		if (bar_dv.muted)
+			tint[3] *= 0.45f;
+	}
+	asteroidz_tab_bar_node_set_icon_tint(p->node, tint);
+	snprintf(p->text, sizeof(p->text), "%s%s", bar_dv.muted ? "\U000F036D " : "",
+			 bar_dv_label());
+	p->arg = 0;
+	p->fixed_width = 0; /* the channel name changes only when you move rooms */
+	/* push-to-talk held reads as the active state -- it is the one thing worth
+	 * seeing at a glance mid-conversation; an error outranks it */
+	bar_pill_style(p, bar_dv.error[0]     ? BAR_LOOK_URGENT
+					  : bar_dv.ptt_active ? BAR_LOOK_ACTIVE
+										  : BAR_LOOK_FLAT);
+	mod->npills = 1;
+	for (int32_t i = 1; i < BAR_MAX_PILLS; i++)
+		bar_pill_release(&mod->pills[i]);
+}
+
 static void bar_module_refresh(BarModule *mod) {
 	switch (mod->kind) {
 	case BAR_MODULE_TAGS:
@@ -2347,6 +2399,9 @@ static void bar_module_refresh(BarModule *mod) {
 		break;
 	case BAR_MODULE_MEDICATION:
 		bar_module_refresh_medication(mod);
+		break;
+	case BAR_MODULE_DISCORD:
+		bar_module_refresh_discord(mod);
 		break;
 	default:
 		mod->npills = 0;
@@ -2866,6 +2921,13 @@ static uint64_t bar_digest(Monitor *m) {
 			bar_hash_str(&h, buf);
 			break;
 		}
+		case BAR_MODULE_DISCORD:
+			bar_hash(&h, &bar_dv.state, sizeof(bar_dv.state));
+			bar_hash(&h, &bar_dv.muted, sizeof(bar_dv.muted));
+			bar_hash(&h, &bar_dv.ptt_active, sizeof(bar_dv.ptt_active));
+			bar_hash_str(&h, bar_dv.channel_name);
+			bar_hash_str(&h, bar_dv.error);
+			break;
 		case BAR_MODULE_MEDICATION:
 			bar_hash(&h, &bar_med.ndue, sizeof(bar_med.ndue));
 			bar_hash_str(&h, bar_med.next_time);
@@ -3245,6 +3307,16 @@ static bool bar_handle_node_click(AsteroidzNodeData *hit, uint32_t button) {
 			return true;
 		}
 		break;
+	case BAR_MODULE_DISCORD:
+		if (button == BTN_LEFT) {
+			bar_popover_open_voice(m, p->node->last_x + p->width / 2);
+			return true;
+		}
+		if (button == BTN_RIGHT && bar_dv.state == BAR_DV_CONNECTED) {
+			bar_dv_send("{\"cmd\":\"mute\"}");
+			return true;
+		}
+		break;
 	case BAR_MODULE_NOTIFY:
 		if (button == BTN_LEFT) {
 			bar_notify_call("ToggleVisibility");
@@ -3420,6 +3492,7 @@ static void bar_tray_finish(void) {}
 static void bar_volume_finish(void) {}
 static void bar_viz_finish(void) {}
 static void bar_notify_finish(void) {}
+static void bar_dv_finish(void) {}
 static void bar_reserve(Monitor *m, struct wlr_box *usable) {
 	(void)m;
 	(void)usable;

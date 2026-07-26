@@ -98,6 +98,7 @@ for a newer build still starts.
 | `volume` | default sink level, with a speaker icon (also accepts `vol`) | click toggles mute; right-click opens the output picker; scroll steps by `volume-step` |
 | `notifications` | swaync's unread count and do-not-disturb state (also accepts `notify`) | click toggles the panel; right-click toggles DND |
 | `medication` | doses due now, or the next dose's time (also accepts `meds`) | — (taking a dose stays in Waybar, see below) |
+| `discord` | voice state from the `discord-voiced` daemon (also accepts `discord-voice`) | click opens the channel picker; right-click toggles mute |
 | `tray` | one icon per StatusNotifierItem (also accepts `systray`) | left: `Activate`; right: the item's context menu; middle: `SecondaryActivate` |
 
 The `tags` module mirrors the Waybar workspace module it replaces: it shows
@@ -268,6 +269,34 @@ passed — same as the plugin.
 The store is re-read only when its mtime changes; between reads the due/pending
 split still advances with the clock, so a dose coming due does not wait for a
 file write.
+
+## Discord voice
+
+Voice state from the standalone **`discord-voiced`** daemon, over
+`$XDG_RUNTIME_DIR/discord-voiced.sock`. The pill shows the Discord logo and
+where you are — the joined channel's name, or `Idle`/`Connecting` — with a
+mute glyph while self-muted and the theme accent while push-to-talk is held.
+Clicking opens a picker of guild/channel rows with headcounts; a row joins,
+and `Mute`/`Leave` sit at the top while connected.
+
+**All Discord, audio and tokio work stays in the daemon.** This is a thin IPC
+client exactly as the Waybar plugin is: newline-JSON events in, newline-JSON
+commands out. Running songbird or an audio thread inside a *bar* has crashed a
+session before; running it inside the **compositor** would take the whole
+desktop with it.
+
+With no daemon the module renders nothing at all — an always-present "Offline"
+pill is noise on a machine that never runs it — and the socket client retries
+with backoff up to 8s, so a daemon started later is picked up on its own.
+
+The logo ships as a solid `#000` stencil and is tinted like the other
+monochrome plugin artwork; painted as-is it is an invisible black blob on a
+dark panel.
+
+`src/common/unix-line-client.h` is the reusable half: a non-blocking
+unix-socket line client on the compositor's event loop with backoff reconnect.
+Distinct from `async-spawn.h`'s streaming mode, which owns a *child process* —
+here the peer has its own lifetime and we are merely a client of it.
 
 ## Popovers
 

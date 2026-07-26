@@ -33,6 +33,7 @@ enum bar_popover_kind {
 	BAR_POPOVER_NONE = 0,
 	BAR_POPOVER_SINKS, /* audio outputs; row payload is the pactl sink name */
 	BAR_POPOVER_MENU,  /* a tray item's DBusMenu; row payload is the item id */
+	BAR_POPOVER_VOICE, /* discord voice channels; row payload is guild:channel */
 };
 
 typedef struct {
@@ -608,6 +609,66 @@ static void bar_popover_open_menu(Monitor *m, int32_t anchor_x,
 	sd_bus_flush(session_bus);
 }
 
+/* ─── discord voice channels ──────────────────────────────────────────────── */
+
+/* Guild/channel list from the daemon's last `channels` snapshot, plus the two
+ * actions worth having on a bar: leave, and mute. Joining is a row click.
+ *
+ * Built from cached state rather than a request, so opening it is instant and
+ * works even if the daemon is momentarily busy. */
+static void bar_popover_open_voice(Monitor *m, int32_t anchor_x) {
+	if (bar_popover_is_open(BAR_POPOVER_VOICE)) {
+		bar_popover_close();
+		return;
+	}
+	if (!bar_popover_open(m, BAR_POPOVER_VOICE, anchor_x))
+		return;
+
+	int32_t n = 0;
+	if (bar_dv.state == BAR_DV_CONNECTED) {
+		BarPopoverRow *r = bar_popover_row_get(n);
+		if (r) {
+			snprintf(r->text, sizeof(r->text), "%s",
+					 bar_dv.muted ? "Unmute" : "Mute");
+			snprintf(r->value, sizeof(r->value), "%s", "\x01mute");
+			n++;
+		}
+		r = bar_popover_row_get(n);
+		if (r) {
+			snprintf(r->text, sizeof(r->text), "%s", "Leave");
+			snprintf(r->value, sizeof(r->value), "%s", "\x01leave");
+			n++;
+		}
+	}
+
+	for (int32_t i = 0; i < bar_dv.nchannels && n < BAR_POPOVER_MAX_ROWS; i++) {
+		BarDvChannel *c = &bar_dv.channels[i];
+		BarPopoverRow *r = bar_popover_row_get(n);
+		if (!r)
+			break;
+		/* "guild / channel" with a headcount, so a busy room is obvious
+		 * without opening Discord itself */
+		if (c->people > 0)
+			snprintf(r->text, sizeof(r->text), "%s / %s  (%d)",
+					 c->guild_name[0] ? c->guild_name : "server", c->name,
+					 c->people);
+		else
+			snprintf(r->text, sizeof(r->text), "%s / %s",
+					 c->guild_name[0] ? c->guild_name : "server", c->name);
+		/* the join command needs both ids, so carry them together */
+		snprintf(r->value, sizeof(r->value), "%s\x1f%s", c->guild, c->id);
+		r->selected = strcmp(c->id, bar_dv.channel_id) == 0;
+		n++;
+	}
+
+	bar_popover.nrows = n;
+	if (n == 0) {
+		bar_popover_close();
+		return;
+	}
+	bar_popover_layout();
+}
+
 /* ─── input ───────────────────────────────────────────────────────────────── */
 
 static bool bar_popover_handle_node_click(AsteroidzNodeData *hit,
@@ -623,6 +684,35 @@ static bool bar_popover_handle_node_click(AsteroidzNodeData *hit,
 	case BAR_POPOVER_SINKS: {
 		char *const argv[] = {"pactl", "set-default-sink", r->value, NULL};
 		async_spawn(event_loop, argv, NULL, NULL);
+		break;
+	}
+	case BAR_POPOVER_VOICE: {
+		if (r->value[0] == '\x01') {
+			/* the two verbs, distinguished from a channel id by a marker byte
+			 * no Discord snowflake can contain */
+			if (!strcmp(r->value + 1, "mute"))
+				bar_dv_send("{\"cmd\":\"mute\"}");
+			else
+				bar_dv_send("{\"cmd\":\"leave\"}");
+			break;
+		}
+		char guild[48] = "", chan[48] = "";
+		const char *sep = strchr(r->value, '\x1f');
+		if (sep) {
+			size_t gl = (size_t)(sep - r->value);
+			if (gl >= sizeof(guild))
+				gl = sizeof(guild) - 1;
+			memcpy(guild, r->value, gl);
+			guild[gl] = '\0';
+			snprintf(chan, sizeof(chan), "%s", sep + 1);
+		}
+		if (guild[0] && chan[0]) {
+			char cmd[192];
+			snprintf(cmd, sizeof(cmd),
+					 "{\"cmd\":\"join\",\"guild\":\"%s\",\"channel\":\"%s\"}",
+					 guild, chan);
+			bar_dv_send(cmd);
+		}
 		break;
 	}
 	case BAR_POPOVER_MENU: {
