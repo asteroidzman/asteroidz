@@ -1263,8 +1263,17 @@ int32_t asteroidz_tab_bar_node_measure_width(struct asteroidz_tab_bar_node *node
 							  (*text ? icon_gap : 0.0)
 						: 0.0;
 
+	/* One pixel of slack.
+	 *
+	 * This measures a LOGICAL width, but the pill is rendered into a surface
+	 * of width*scale physical pixels and pango lays the text out there. On a
+	 * fractional scale those two roundings do not agree: at scale 0.75 a pill
+	 * pinned to its own measured width came up a pixel short and pango
+	 * ellipsised, so "100%" rendered as "10...". A pill is free-floating on
+	 * the bar and one extra pixel costs nothing; a truncated readout is a
+	 * visible fault. */
 	int32_t width = (int32_t)(2.0 * pad_x + icon_w + text_w + 0.5) +
-					2 * node->border_width;
+					2 * node->border_width + 1;
 	return width > 0 ? width : 0;
 }
 

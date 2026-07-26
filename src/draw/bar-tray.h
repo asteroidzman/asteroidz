@@ -405,6 +405,8 @@ static int bar_tray_on_item_changed(sd_bus_message *m, void *user,
 
 /* An application quitting does NOT send an unregister -- it just drops off the
  * bus. Without this the tray kept a pill for every application ever run. */
+static void bar_tray_claim_watcher(void);
+
 static int bar_tray_on_name_owner_changed(sd_bus_message *m, void *user,
 										  sd_bus_error *err) {
 	(void)user;
@@ -414,6 +416,18 @@ static int bar_tray_on_name_owner_changed(sd_bus_message *m, void *user,
 		return 0;
 	if (!name || !new_owner || *new_owner)
 		return 0; /* still owned by someone: not a disappearance */
+
+	/* The incumbent watcher just exited. Take the name over: while it is
+	 * unowned NOTHING serves the tray, so every application that starts from
+	 * then on has nobody to register its item with and simply never appears.
+	 * Seen live the moment waybar was killed -- asteroidz was in client mode
+	 * behind it, so org.kde.StatusNotifierWatcher went unowned and stayed
+	 * that way. Items already known keep working; it is new ones that are
+	 * silently lost, which is the worst kind of failure to debug. */
+	if (strcmp(name, BAR_TRAY_WATCHER_NAME) == 0 && !bar_tray_is_watcher) {
+		bar_tray_claim_watcher();
+		return 0;
+	}
 	bar_tray_remove(name);
 	return 0;
 }
@@ -479,6 +493,26 @@ static const sd_bus_vtable bar_tray_watcher_vtable[] = {
 	SD_BUS_SIGNAL("StatusNotifierHostRegistered", "", 0),
 	SD_BUS_VTABLE_END,
 };
+
+/* Acquire org.kde.StatusNotifierWatcher and start serving it ourselves. Called
+ * at startup, and again if whoever held it exits. */
+static void bar_tray_claim_watcher(void) {
+	if (!session_bus || bar_tray_is_watcher)
+		return;
+	if (!bar_tray_watcher_slot &&
+		sd_bus_add_object_vtable(session_bus, &bar_tray_watcher_slot,
+								 BAR_TRAY_WATCHER_PATH, BAR_TRAY_WATCHER_IFACE,
+								 bar_tray_watcher_vtable, NULL) < 0)
+		return;
+	if (sd_bus_request_name(session_bus, BAR_TRAY_WATCHER_NAME, 0) < 0)
+		return;
+	bar_tray_is_watcher = true;
+	wlr_log(WLR_INFO, "tray: took over %s", BAR_TRAY_WATCHER_NAME);
+	/* Tell the world a host exists again, so anything that gave up while the
+	 * name was unowned re-registers with us. */
+	bar_tray_emit("StatusNotifierHostRegistered", NULL, NULL);
+	sd_bus_flush(session_bus);
+}
 
 /* ─── client role (another watcher already owns the name) ─────────────────── */
 
