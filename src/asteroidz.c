@@ -639,6 +639,21 @@ typedef struct {
 	struct wl_listener key;
 	struct wl_listener destroy;
 
+	/* Keycodes whose PRESS a compositor binding consumed, so their RELEASE
+	 * can be swallowed too.
+	 *
+	 * A press-only bind (the normal kind) matches on press, sets `handled`
+	 * and returns before forwarding -- but the release matches nothing, falls
+	 * through, and reaches the focused client as a release with no
+	 * corresponding press. Most toolkits discard that; Proton/Windows games
+	 * under gamescope track raw key state and act on it, which is how Super+1
+	 * ended up reaching a running game while also switching tags.
+	 *
+	 * Small and fixed: a chord is a handful of keys, and the worst case for a
+	 * lost entry is one release that is forwarded when it need not be. */
+	uint32_t consumed[16];
+	int32_t nconsumed;
+
 	uint32_t layout_index;
 } KeyboardGroup;
 
@@ -5992,6 +6007,30 @@ void keypress(struct wl_listener *listener, void *data) {
 	} else {
 		group->nsyms = 0;
 		wl_event_source_timer_update(group->key_repeat_source, 0);
+	}
+
+	/* Remember a consumed press, and swallow its matching release.
+	 *
+	 * Placed AFTER the binding loop so release-binds still get their chance
+	 * (a matching one sets `handled` and returns above), and after the
+	 * global-shortcuts block, which returns earlier still -- push-to-talk
+	 * needs BOTH edges and must never land here. */
+	if (event->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
+		if (handled) {
+			bool known = false;
+			for (i = 0; i < group->nconsumed && !known; i++)
+				known = group->consumed[i] == keycode;
+			if (!known && group->nconsumed < (int32_t)LENGTH(group->consumed))
+				group->consumed[group->nconsumed++] = keycode;
+		}
+	} else if (event->state == WL_KEYBOARD_KEY_STATE_RELEASED) {
+		for (i = 0; i < group->nconsumed; i++) {
+			if (group->consumed[i] != keycode)
+				continue;
+			group->consumed[i] = group->consumed[--group->nconsumed];
+			/* the client never saw the press; it must not see the release */
+			return;
+		}
 	}
 
 	if (handled)

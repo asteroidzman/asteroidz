@@ -50,3 +50,34 @@ test_combo_view_after_a_key_release_replaces_instead_of_combining() {
 		"$(hl_get "get all-monitors" | jq -c ".monitors[] | select(.name==\"$HL_MON\") | .active_tags")" \
 		"[2]"
 }
+
+test_consumed_key_release_is_swallowed() {
+	# A press-only bind consumes its PRESS (handled -> early return) but the
+	# RELEASE used to match nothing, fall through, and reach the focused client
+	# as a release with no press. Proton/Windows games under gamescope track
+	# raw key state and act on that; ordinary toolkits discard it, which is why
+	# it went unnoticed for so long.
+	#
+	# NOT asserted here: that the client fails to receive the release. The
+	# harness has no key-reporting client, and a test that cannot observe the
+	# thing it names is worse than no test. What IS pinned is the regression
+	# risk of the fix -- that tracking consumed keycodes does not break normal
+	# binding, and that hammering a bound key neither exhausts the fixed-size
+	# set nor wedges the compositor.
+	hl_dispatch "view,1"
+	local i
+	for i in 1 2 3 4 5 6 7 8 9 10; do
+		"$HL_WLVKBD" press F11    # bound to combo_view 2 in hl_start's config
+	done
+	sleep 0.5
+	hl_assert_true "the compositor survives repeated bound press/release" \
+		"$(hl_get "get all-monitors" >/dev/null 2>&1 && echo true || echo false)"
+
+	# and the binding still fires after all that bookkeeping
+	hl_dispatch "view,1"
+	"$HL_WLVKBD" press F11
+	sleep 0.5
+	hl_assert_eq "a bound key still switches view after the release fix" \
+		"$(hl_get "get all-monitors" | jq -c '.monitors[0].active_tags')" "[2]"
+	hl_dispatch "view,1"
+}
