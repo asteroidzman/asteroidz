@@ -42,6 +42,17 @@
 	} while (0)
 #define AZ_ZONE_VALUE(var, v) TracyCZoneValue(var, (uint64_t)(v))
 
+/* Rename a zone at runtime. Zone names are otherwise compile-time literals,
+ * which cannot express "whichever module this happens to be" -- and one zone
+ * per module kind, written out by hand, is exactly the switch this instrument
+ * exists to avoid maintaining. */
+#define AZ_ZONE_NAME(var, str) \
+	do { \
+		const char *az__n = (str); \
+		if (az__n) \
+			TracyCZoneName(var, az__n, strlen(az__n)); \
+	} while (0)
+
 /* Plots. These are the point of instrumenting the render-late scheduler: it is
  * a feedback loop, and a loop is read as a curve over frames, not as a set of
  * durations. */
@@ -69,6 +80,7 @@
 #define AZ_ZONE_END(var) ((void)0)
 #define AZ_ZONE_TEXT(var, str) ((void)0)
 #define AZ_ZONE_VALUE(var, v) ((void)0)
+#define AZ_ZONE_NAME(var, str) ((void)0)
 #define AZ_PLOT(name, v) ((void)0)
 #define AZ_PLOT_INT(name, v) ((void)0)
 #define AZ_PLOT_CONFIG(name, fmt, step, fill, color) ((void)0)

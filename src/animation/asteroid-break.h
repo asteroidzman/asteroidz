@@ -57,7 +57,17 @@ typedef struct {
 	double radius;	 /* max vertex distance, sizes the buffer */
 	bool spark;		 /* a two-point streak rather than a closed loop */
 	struct wlr_scene_buffer *node;
-	struct ast_buffer *buffer;
+	/* Two buffers, alternated per tick, allocated once. The side is constant
+	 * for the whole run (see ast_frag_render), so there is nothing to resize
+	 * and nothing to reallocate -- this used to build a fresh cairo surface
+	 * and a fresh ast_buffer every fragment every frame, which measured at
+	 * ~0.5ms per tick and 78% of all animation time.
+	 *
+	 * Two rather than one: the attached buffer may still be being read for the
+	 * frame in flight, so drawing over it in place is a race. Alternating
+	 * hands the scene a buffer nothing is reading. */
+	struct ast_buffer *buffers[2];
+	int32_t cur; /* which of buffers[] the node currently shows */
 } AsteroidFrag;
 
 typedef struct AsteroidBreak {
@@ -196,27 +206,63 @@ static void ast_make_spark(AsteroidFrag *f, uint32_t seed, double ox, double oy,
 /* Redraw one fragment at `angle`, into a square buffer big enough to hold it
  * at any rotation, and move its node so the fragment's centre lands on
  * (cx,cy). Returns false if the piece has nothing to show. */
-static bool ast_frag_render(AsteroidFrag *f, const float color[4], double alpha,
-							double angle, double cx, double cy) {
-	/* Square, side = diameter + room for the stroke. Constant across the run,
-	 * so rotation never resizes the node. */
-	int32_t side = (int32_t)ceil(f->radius * 2.0) + 6;
-	if (side < 4)
-		return false;
+/* Side of a fragment's square buffer: diameter plus room for the stroke.
+ * Constant across the run, so rotation never resizes the node -- which is what
+ * makes the buffers reusable. */
+static int32_t ast_frag_side(const AsteroidFrag *f) {
+	return (int32_t)ceil(f->radius * 2.0) + 6;
+}
 
+static struct ast_buffer *ast_buffer_new(int32_t side) {
 	cairo_surface_t *surface =
 		cairo_image_surface_create(CAIRO_FORMAT_ARGB32, side, side);
 	if (cairo_surface_status(surface) != CAIRO_STATUS_SUCCESS) {
 		cairo_surface_destroy(surface);
-		return false;
+		return NULL;
 	}
+	struct ast_buffer *buf = calloc(1, sizeof(*buf));
+	if (!buf) {
+		cairo_surface_destroy(surface);
+		return NULL;
+	}
+	wlr_buffer_init(&buf->base, &ast_buffer_impl, side, side);
+	buf->surface = surface;
+	return buf;
+}
+
+static bool ast_frag_render(AsteroidFrag *f, const float color[4], double alpha,
+							double angle, double cx, double cy) {
+	int32_t side = ast_frag_side(f);
+	if (side < 4)
+		return false;
+
+	/* Allocated on first use rather than at init: a break that is culled
+	 * immediately (debris landing on another monitor) never pays for them. */
+	if (!f->buffers[0] && !(f->buffers[0] = ast_buffer_new(side)))
+		return false;
+	if (!f->buffers[1] && !(f->buffers[1] = ast_buffer_new(side)))
+		return false;
+
+	int32_t next = f->cur ^ 1;
+	struct ast_buffer *buf = f->buffers[next];
+	cairo_surface_t *surface = buf->surface;
+
 	cairo_t *cr = cairo_create(surface);
+	/* Reused buffer, so wipe last tick's rock before drawing this one --
+	 * a fresh surface came zeroed, this one does not. */
+	cairo_set_operator(cr, CAIRO_OPERATOR_CLEAR);
+	cairo_paint(cr);
+	cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
+
 	cairo_translate(cr, side / 2.0, side / 2.0);
 	cairo_rotate(cr, angle);
 	cairo_set_line_width(cr, 2.0);
 	cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
 	cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
-	cairo_set_source_rgba(cr, color[0], color[1], color[2], color[3] * alpha);
+	/* Alpha is NOT baked in any more -- the scene applies it per node below.
+	 * Baking it meant the pixels depended on the fade as well as the angle,
+	 * so nothing could ever be reused. */
+	cairo_set_source_rgba(cr, color[0], color[1], color[2], color[3]);
 
 	cairo_move_to(cr, f->vx[0], f->vy[0]);
 	for (int32_t i = 1; i < f->nverts; i++)
@@ -227,20 +273,11 @@ static bool ast_frag_render(AsteroidFrag *f, const float color[4], double alpha,
 	cairo_destroy(cr);
 	cairo_surface_flush(surface);
 
-	struct ast_buffer *buf = calloc(1, sizeof(*buf));
-	if (!buf) {
-		cairo_surface_destroy(surface);
-		return false;
-	}
-	wlr_buffer_init(&buf->base, &ast_buffer_impl, side, side);
-	buf->surface = surface;
-
-	/* Attach before dropping: the node must never point at a freed buffer,
-	 * even for an instant. */
-	wlr_scene_buffer_set_buffer(f->node, &buf->base);
-	if (f->buffer)
-		wlr_buffer_drop(&f->buffer->base);
-	f->buffer = buf;
+	/* with_damage: the scene has seen this buffer before and would otherwise
+	 * be entitled to assume its contents are unchanged. */
+	wlr_scene_buffer_set_buffer_with_damage(f->node, &buf->base, NULL);
+	f->cur = next;
+	wlr_scene_buffer_set_opacity(f->node, (float)alpha);
 	wlr_scene_buffer_set_dest_size(f->node, side, side);
 	wlr_scene_node_set_position(&f->node->node, (int32_t)(cx - side / 2.0),
 								(int32_t)(cy - side / 2.0));

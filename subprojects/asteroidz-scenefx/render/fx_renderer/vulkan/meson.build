@@ -5,6 +5,7 @@ scenefx_files += files(
 	'rect_union.c',
 	'renderer.c',
 	'texture.c',
+	'tracy_vk.c',
 	'util.c',
 	'vulkan.c',
 )

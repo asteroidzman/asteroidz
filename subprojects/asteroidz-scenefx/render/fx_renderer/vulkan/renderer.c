@@ -23,6 +23,7 @@
 
 #include "render/dmabuf.h"
 #include "render/pixel_format.h"
+#include "render/tracy.h"
 #include "render/vulkan.h"
 #include "common.vert.h"
 #include "texture.frag.h"
@@ -1790,6 +1791,11 @@ static void fx_vulkan_destroy(struct wlr_renderer *wlr_renderer) {
 	if (res != VK_SUCCESS) {
 		fx_vk_error("vkDeviceWaitIdle", res);
 	}
+
+	// After the wait-idle: the query pool cannot be destroyed while a command
+	// buffer that writes to it is still in flight.
+	TRACY_VK_CONTEXT_DESTROY(renderer->tracy_vk);
+	renderer->tracy_vk = NULL;
 
 	// flush the warmed pipeline cache to disk, then tear it down (device is
 	// idle here, so all lazy pipeline builds for this session are captured)
@@ -3835,6 +3841,14 @@ struct wlr_renderer *fx_vulkan_renderer_create_for_device(struct fx_vk_device *d
 		fx_vk_error("vkCreateSemaphore", res);
 		goto error;
 	}
+
+	// Last, because calibration submits a command buffer and waits on it --
+	// everything it needs (device, queue, stage cb, timeline semaphore) has to
+	// already exist. A NULL result is not fatal: the renderer runs, there are
+	// just no GPU zones.
+	TRACY_FN(
+		renderer->tracy_vk = TRACY_VK_CONTEXT_NEW(renderer);
+	)
 
 	return &renderer->wlr_renderer;
 

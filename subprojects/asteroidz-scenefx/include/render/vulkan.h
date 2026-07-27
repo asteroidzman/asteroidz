@@ -16,6 +16,8 @@
 #include "types/fx/clipped_region.h"
 #include "util/rect_union.h"
 
+#include "render/tracy.h"
+
 struct fx_vk_descriptor_pool;
 struct fx_vk_texture;
 
@@ -446,6 +448,12 @@ struct fx_vk_renderer {
 	// and must not be broken by an appearance preference.
 	bool srgb_blending;
 
+	// Tracy GPU timestamp context, NULL unless built with -Dtracy_enable and
+	// the device supports timestamps on the graphics queue. Opaque here: its
+	// definition lives in vulkan/tracy_vk.c and only exists under TRACY_ENABLE,
+	// so this stays a pointer the rest of the renderer never dereferences.
+	struct tracy_vk_data *tracy_vk;
+
 	// maxPushConstantsSize-derived viability: end of the fragment push range
 	// the shared layout was built with (min(224, device budget)). Effects
 	// whose push block ends beyond this degrade gracefully (rounded ->
@@ -731,6 +739,10 @@ struct fx_vk_render_pass {
 	struct fx_vk_render_buffer_out *render_buffer_out;
 	struct fx_vk_render_format_setup *render_setup;
 	struct fx_vk_command_buffer *command_buffer;
+	// Spans the whole pass: opened when the command buffer is attached, closed
+	// in render_pass_submit. Carried on the pass because those are two
+	// different functions and the zone context is a local in neither.
+	TRACY_FN(struct tracy_vk_zone_context tracy_gpu_zone;)
 	struct rect_union updated_region;
 	VkPipeline bound_pipeline;
 	float projection[9];

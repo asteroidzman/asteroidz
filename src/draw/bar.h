@@ -166,44 +166,59 @@ static void bar_update_all(void);
 
 /* ─── module registry ─────────────────────────────────────────────────────── */
 
+/* One table, read in both directions. This was a strcmp chain with no reverse
+ * lookup at all; the profiler needs a name per kind to label its zones, and
+ * adding a second switch for that would have made a third place to forget a
+ * module when one is added. The first entry for a kind is its canonical name
+ * -- what the profiler shows -- and the rest are accepted aliases. */
+static const struct {
+	const char *name;
+	enum bar_module_kind kind;
+} bar_module_names[] = {
+	{"tags", BAR_MODULE_TAGS},
+	{"clock", BAR_MODULE_CLOCK},
+	{"title", BAR_MODULE_TITLE},
+	{"layout", BAR_MODULE_LAYOUT},
+	{"cpu", BAR_MODULE_CPU},
+	{"memory", BAR_MODULE_MEMORY},
+	{"mem", BAR_MODULE_MEMORY},
+	{"network", BAR_MODULE_NETWORK},
+	{"net", BAR_MODULE_NETWORK},
+	{"idle", BAR_MODULE_IDLE},
+	{"idle-inhibitor", BAR_MODULE_IDLE},
+	{"weather", BAR_MODULE_WEATHER},
+	{"media", BAR_MODULE_MEDIA},
+	{"tray", BAR_MODULE_TRAY},
+	{"systray", BAR_MODULE_TRAY},
+	{"volume", BAR_MODULE_VOLUME},
+	{"vol", BAR_MODULE_VOLUME},
+	{"notifications", BAR_MODULE_NOTIFY},
+	{"notify", BAR_MODULE_NOTIFY},
+	{"medication", BAR_MODULE_MEDICATION},
+	{"meds", BAR_MODULE_MEDICATION},
+	{"discord", BAR_MODULE_DISCORD},
+	{"discord-voice", BAR_MODULE_DISCORD},
+	{"vpn", BAR_MODULE_VPN},
+	{"nordvpn", BAR_MODULE_VPN},
+	{"display", BAR_MODULE_DISPLAY},
+	{"monitors", BAR_MODULE_DISPLAY},
+};
+
 static enum bar_module_kind bar_module_kind_from_name(const char *name) {
 	if (!name || !*name)
 		return BAR_MODULE_NONE;
-	if (strcmp(name, "tags") == 0)
-		return BAR_MODULE_TAGS;
-	if (strcmp(name, "clock") == 0)
-		return BAR_MODULE_CLOCK;
-	if (strcmp(name, "title") == 0)
-		return BAR_MODULE_TITLE;
-	if (strcmp(name, "layout") == 0)
-		return BAR_MODULE_LAYOUT;
-	if (strcmp(name, "cpu") == 0)
-		return BAR_MODULE_CPU;
-	if (strcmp(name, "memory") == 0 || strcmp(name, "mem") == 0)
-		return BAR_MODULE_MEMORY;
-	if (strcmp(name, "network") == 0 || strcmp(name, "net") == 0)
-		return BAR_MODULE_NETWORK;
-	if (strcmp(name, "idle") == 0 || strcmp(name, "idle-inhibitor") == 0)
-		return BAR_MODULE_IDLE;
-	if (strcmp(name, "weather") == 0)
-		return BAR_MODULE_WEATHER;
-	if (strcmp(name, "media") == 0)
-		return BAR_MODULE_MEDIA;
-	if (strcmp(name, "tray") == 0 || strcmp(name, "systray") == 0)
-		return BAR_MODULE_TRAY;
-	if (strcmp(name, "volume") == 0 || strcmp(name, "vol") == 0)
-		return BAR_MODULE_VOLUME;
-	if (strcmp(name, "notifications") == 0 || strcmp(name, "notify") == 0)
-		return BAR_MODULE_NOTIFY;
-	if (strcmp(name, "medication") == 0 || strcmp(name, "meds") == 0)
-		return BAR_MODULE_MEDICATION;
-	if (strcmp(name, "discord") == 0 || strcmp(name, "discord-voice") == 0)
-		return BAR_MODULE_DISCORD;
-	if (strcmp(name, "vpn") == 0 || strcmp(name, "nordvpn") == 0)
-		return BAR_MODULE_VPN;
-	if (strcmp(name, "display") == 0 || strcmp(name, "monitors") == 0)
-		return BAR_MODULE_DISPLAY;
+	for (size_t i = 0; i < LENGTH(bar_module_names); i++)
+		if (strcmp(name, bar_module_names[i].name) == 0)
+			return bar_module_names[i].kind;
 	return BAR_MODULE_NONE;
+}
+
+/* Canonical name for a kind, for profiler zone labels. */
+static const char *bar_module_kind_name(enum bar_module_kind k) {
+	for (size_t i = 0; i < LENGTH(bar_module_names); i++)
+		if (bar_module_names[i].kind == k)
+			return bar_module_names[i].name;
+	return "none";
 }
 
 /* Which part of the media module a pill is, carried in BarPill.arg. The
@@ -2860,12 +2875,16 @@ static void bar_module_refresh_display(BarModule *mod) {
 static bool bar_right_belongs_here(Monitor *m);
 
 static void bar_module_refresh(BarModule *mod) {
+	AZ_ZONE(az_mod, "module refresh");
+	AZ_ZONE_NAME(az_mod, bar_module_kind_name(mod->kind));
+
 	/* A section that is not on this screen renders nothing at all -- no pills,
 	 * so the slot is empty and its panel is not drawn either. */
 	if (mod->slot == BAR_SLOT_RIGHT && !bar_right_belongs_here(mod->mon)) {
 		for (int32_t i = 0; i < BAR_MAX_PILLS; i++)
 			bar_pill_release(&mod->pills[i]);
 		mod->npills = 0;
+		AZ_ZONE_END(az_mod);
 		return;
 	}
 	switch (mod->kind) {
@@ -2920,6 +2939,7 @@ static void bar_module_refresh(BarModule *mod) {
 		mod->npills = 0;
 		break;
 	}
+	AZ_ZONE_END(az_mod);
 }
 
 /* ─── layout ──────────────────────────────────────────────────────────────── */
@@ -2928,6 +2948,14 @@ static void bar_module_refresh(BarModule *mod) {
  * between them). Sizing happens before positioning because the centre slot
  * cannot be placed until its own width is known. */
 static void bar_module_measure(BarModule *mod, int32_t height, float scale) {
+	/* Separate from the refresh zone on purpose: measuring is where text is
+	 * shaped and icons are loaded and cropped to their ink, which is the work
+	 * a cold first layout does and a warm one does not. Splitting the two is
+	 * what says whether bar_layout's tail is content or typesetting. */
+	AZ_ZONE(az_meas, "module measure");
+	AZ_ZONE_NAME(az_meas, bar_module_kind_name(mod->kind));
+	AZ_ZONE_VALUE(az_meas, mod->npills);
+
 	int32_t total = 0;
 	for (int32_t i = 0; i < mod->npills; i++) {
 		BarPill *p = &mod->pills[i];
@@ -2970,6 +2998,7 @@ static void bar_module_measure(BarModule *mod, int32_t height, float scale) {
 	}
 	mod->width = total;
 	(void)scale;
+	AZ_ZONE_END(az_meas);
 }
 
 /* Gap BETWEEN two modules, decided by the pills that actually touch: the last
