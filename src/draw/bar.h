@@ -704,6 +704,33 @@ static int32_t bar_clock_fixed_width(BarPill *p, int32_t height) {
  * while the packaged ones land in /usr/share. First readable candidate wins;
  * with no hit at all the LAST candidate is returned, which then resolves to no
  * icon exactly as a single missing path used to. */
+/* Complain the first time a given asset cannot be found anywhere on the search
+ * path -- once per file, because this runs on every refresh.
+ *
+ * "Degrades to text" is fine for a labelled pill and invisible for an
+ * icon-only one: the module renders nothing, takes no width, and the bar
+ * closes over the hole as if it had never been configured. That cost an hour
+ * of bisecting a regression-test failure whose real cause was a build
+ * configured with meson's default -Dprefix=/usr/local while the artwork was
+ * installed under /usr -- the search path is built from ASTEROIDZ_PREFIX, so
+ * every vendored icon silently vanished and one module with it. A missing
+ * asset must say so. */
+static void bar_icon_missing_warn(const char *rel) {
+	static const char *seen[24];
+	static int32_t nseen = 0;
+	for (int32_t i = 0; i < nseen; i++) {
+		if (strcmp(seen[i], rel) == 0)
+			return;
+	}
+	if (nseen < (int32_t)LENGTH(seen))
+		seen[nseen++] = rel; /* string literals, so no copy needed */
+	wlr_log(WLR_ERROR,
+			"bar: icon '%s' not found on any of '%s' -- the module that uses "
+			"it will render nothing. Is the artwork installed under the "
+			"prefix this binary was built with?",
+			rel, config.bar_icon_dir);
+}
+
 static void bar_icon_path(char *out, size_t len, const char *rel) {
 	const char *p = config.bar_icon_dir;
 	if (!p || !*p) {
@@ -714,8 +741,12 @@ static void bar_icon_path(char *out, size_t len, const char *rel) {
 		const char *sep = strchr(p, ':');
 		int32_t dirlen = sep ? (int32_t)(sep - p) : (int32_t)strlen(p);
 		snprintf(out, len, "%.*s/%s", dirlen, p, rel);
-		if (access(out, R_OK) == 0 || !sep)
+		if (access(out, R_OK) == 0)
 			return;
+		if (!sep) {
+			bar_icon_missing_warn(rel);
+			return;
+		}
 		p = sep + 1;
 	}
 }
