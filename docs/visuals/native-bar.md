@@ -72,7 +72,7 @@ bar {
 | `clock.format` | `"%H:%M:%S"` | `strftime` format |
 | `media-width` | `280` | pinned width of the now-playing pill |
 | `media.visualiser` | `true` | animate a spectrum in the media pill while playing |
-| `media.bars` | `8` | spectrum bars (max 8) |
+| `media.bars` | `8` | spectrum bars (max 8) — fewer means wider ones |
 | `media.fps` | `20` | visualiser frame rate — **this is the cost dial**, see below |
 | `weather.interval` | `15` | minutes between forecast fetches |
 | `weather.location` | *(empty)* | city name; empty means IP geolocation |
@@ -104,7 +104,7 @@ for a newer build still starts.
 | `network` | two activity arrows — upload above, download below — each lit by its own throughput, from `/sys/class/net`. **Icon only** | — |
 | `idle` | manual idle-inhibit state ("keep awake") | toggles it |
 | `weather` | current temperature and condition, from open-meteo | — |
-| `media` | now playing (title • artist), from MPRIS, with a live spectrum while playing. Shown only while **Playing or Paused** | play/pause |
+| `media` | previous / play-pause / next, then now playing (title • artist) from MPRIS, with a live spectrum while playing. Shown only while **Playing or Paused** | each button sends its MPRIS method; the track itself still toggles play/pause |
 | `volume` | default sink level, with a speaker icon (also accepts `vol`) | click toggles mute; right-click opens the output picker; scroll steps by `volume-step` |
 | `notifications` | swaync state as a bell — **empty** when nothing is waiting, **filled** when something is (also accepts `notify`). **Icon only** | click toggles the panel; right-click toggles DND |
 | `medication` | doses due now, or the next dose's time (also accepts `meds`). A dose stays due until taken, skipped or the day ends | click lists today's doses; drill into one to take, skip or postpone it |

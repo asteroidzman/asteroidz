@@ -206,6 +206,16 @@ static enum bar_module_kind bar_module_kind_from_name(const char *name) {
 	return BAR_MODULE_NONE;
 }
 
+/* Which part of the media module a pill is, carried in BarPill.arg. The
+ * transport buttons and the track are separate pills because hit testing is
+ * per node. */
+enum {
+	BAR_MEDIA_TITLE = 0,
+	BAR_MEDIA_PREV,
+	BAR_MEDIA_PLAYPAUSE,
+	BAR_MEDIA_NEXT,
+};
+
 /* Chip modules draw a permanent background of their own -- they are discrete
  * rounded tiles, like the waybar workspace plugin's pills -- so they take the
  * roomier `tag-padding` and a real gap to their neighbours. Everything else is
@@ -1521,9 +1531,11 @@ static const char *bar_viz_icon(void) {
 	const float *c = config.theme.focus_bg_color;
 	cairo_set_source_rgba(cr, c[0], c[1], c[2], c[3]);
 
-	/* roughly a 5:1 bar-to-gap ratio: at six bars the old 3:1 read as a row of
-	 * thin lines rather than a level meter */
-	double gap = (double)sz / (n * 6.0);
+	/* Roughly an 11:1 bar-to-gap ratio. It has been widened twice: 3:1 read as
+	 * a row of thin lines rather than a level meter, and 5:1 was still more
+	 * gap than a spectrum this small can afford -- at eight bars in a 64px
+	 * square, every pixel spent on a gap is a pixel the bar does not have. */
+	double gap = (double)sz / (n * 12.0);
 	double bw = ((double)sz - gap * (n - 1)) / n;
 	double floor_h = sz * 0.10; /* a resting bar is a dot, not nothing */
 	for (int32_t i = 0; i < n; i++) {
@@ -2227,12 +2239,50 @@ static void bar_module_refresh_media(BarModule *mod) {
 		mod->npills = 0;
 		return;
 	}
-	BarPill *p = bar_pill_get(mod, 0);
+	/* ── transport ──
+	 *
+	 * Three buttons ahead of the track, each its own pill because a pill is
+	 * the unit of hit testing: one node cannot have three targets in it. They
+	 * are icon-only, so the row costs about as much width as one word.
+	 *
+	 * `arg` is what the click handler dispatches on -- an index, not a
+	 * pointer, so a pill pool that reorders underneath it cannot mislead. */
+	int32_t n = 0;
+	char icon[512];
+	static const struct {
+		const char *svg;
+		uint32_t arg;
+	} transport[] = {
+		{"waybar-media-cava/prev.svg", BAR_MEDIA_PREV},
+		{NULL, BAR_MEDIA_PLAYPAUSE}, /* play or pause, decided below */
+		{"waybar-media-cava/next.svg", BAR_MEDIA_NEXT},
+	};
+	for (size_t i = 0; i < LENGTH(transport); i++) {
+		BarPill *b = bar_pill_get(mod, n);
+		if (!b)
+			break;
+		/* the ACTION, not the state: a playing track offers pause */
+		const char *svg = transport[i].svg
+							  ? transport[i].svg
+							  : (bar_media.playing
+									 ? "waybar-media-cava/pause.svg"
+									 : "waybar-media-cava/play.svg");
+		bar_icon_path(icon, sizeof(icon), svg);
+		asteroidz_tab_bar_node_set_icon(b->node, icon);
+		asteroidz_tab_bar_node_set_icon_tint(b->node, config.theme.fg_color);
+		b->text[0] = '\0';
+		b->arg = transport[i].arg;
+		b->flexible = false;
+		b->fixed_width = bar_icon_pill_width(b, bar_pill_height());
+		bar_pill_style(b, BAR_LOOK_FLAT);
+		n++;
+	}
+
+	BarPill *p = bar_pill_get(mod, n);
 	if (!p) {
-		mod->npills = 0;
+		mod->npills = n;
 		return;
 	}
-	char icon[512];
 	/* While something is playing the leading glyph is a live spectrum; paused,
 	 * it falls back to the transport glyph. The visualiser is started and
 	 * stopped here rather than on the MPRIS callback so it follows what is
@@ -2266,12 +2316,13 @@ static void bar_module_refresh_media(BarModule *mod) {
 				 bar_media.artist);
 	else
 		snprintf(p->text, sizeof(p->text), "%s", bar_media.title);
-	p->arg = 0;
+	p->arg = BAR_MEDIA_TITLE;
 	p->fixed_width = config.bar_media_width;
 	p->flexible = true;
 	bar_pill_style(p, BAR_LOOK_FLAT);
-	mod->npills = 1;
-	for (int32_t i = 1; i < BAR_MAX_PILLS; i++)
+	n++;
+	mod->npills = n;
+	for (int32_t i = n; i < BAR_MAX_PILLS; i++)
 		bar_pill_release(&mod->pills[i]);
 }
 
@@ -3741,12 +3792,17 @@ static bool bar_handle_node_click(AsteroidzNodeData *hit, uint32_t button) {
 		break;
 	case BAR_MODULE_MEDIA:
 		if (button == BTN_LEFT && session_bus && bar_media.player[0]) {
+			/* which pill was hit -- the track itself still toggles, so the
+			 * long-standing click-anywhere-to-pause habit keeps working */
+			const char *method = p->arg == BAR_MEDIA_PREV	  ? "Previous"
+								 : p->arg == BAR_MEDIA_NEXT	  ? "Next"
+															  : "PlayPause";
 			/* fire-and-forget: the reply carries nothing we need, and the
 			 * next poll picks up the new state anyway */
 			sd_bus_call_method_async(session_bus, NULL, bar_media.player,
 									 "/org/mpris/MediaPlayer2",
-									 "org.mpris.MediaPlayer2.Player",
-									 "PlayPause", NULL, NULL, NULL);
+									 "org.mpris.MediaPlayer2.Player", method,
+									 NULL, NULL, NULL);
 			return true;
 		}
 		break;
