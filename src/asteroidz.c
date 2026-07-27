@@ -13,6 +13,7 @@
 #include <linux/input-event-codes.h>
 #include <math.h>
 #include <scenefx/render/fx_renderer/fx_renderer.h>
+#include <scenefx/render/fx_renderer/fx_vk_renderer.h>
 #include <scenefx/types/fx/blur_data.h>
 #include <scenefx/types/fx/clipped_region.h>
 #include <scenefx/types/wlr_scene.h>
@@ -8730,6 +8731,7 @@ void setup(void) {
 		config.blur_params.noise, config.blur_params.brightness,
 		config.blur_params.contrast, config.blur_params.saturation,
 		config.blur_params.transparency_threshold);
+	fx_renderer_set_srgb_blending(drw, config.srgb_blending != 0);
 
 	/* create text_input-, and input_method-protocol relevant globals */
 	input_method_manager = wlr_input_method_manager_v2_create(dpy);

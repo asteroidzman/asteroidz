@@ -365,6 +365,13 @@ typedef struct {
 	int32_t border_radius;
 	int32_t border_radius_location_default;
 	struct blur_data blur_params;
+	/* Blend client alpha in the encoded (sRGB) space rather than in linear
+	 * light. See fx_renderer_set_srgb_blending: linear is physically right and
+	 * what HDR needs, but it makes every translucent application look more
+	 * see-through than its author intended, because authors pick alpha by eye
+	 * on compositors that blend encoded values. Vulkan only; the GLES renderer
+	 * already blends this way. */
+	int32_t srgb_blending;
 	int32_t shadows;
 	int32_t shadow_only_floating;
 	int32_t layer_shadows;
@@ -1792,6 +1799,11 @@ bool parse_option(Config *config, char *key, char *value) {
 		/* corner_location BITMASK: 1=top-left 2=top-right 4=bottom-right
 		 * 8=bottom-left, 15=all (default), 0=none; combos allowed */
 		config->border_radius_location_default = atoi(value);
+	} else if (strcmp(key, "srgb_blending") == 0) {
+		/* Spelled as a space, not a boolean: "linear" and "srgb" say what the
+		 * setting does, where blend-space 1 says nothing at all. */
+		config->srgb_blending = strcmp(value, "srgb") == 0 ||
+								strcmp(value, "encoded") == 0;
 	} else if (strcmp(key, "blur_params_num_passes") == 0) {
 		config->blur_params.num_passes = atoi(value);
 	} else if (strcmp(key, "blur_params_radius") == 0) {
@@ -3684,6 +3696,7 @@ static const struct {
 	{"layout/scroller/edge-scroll/allow-speed",
 	 "edge_scroller_focus_allow_speed"},
 	/* effects */
+	{"effects/blend-space", "srgb_blending"},
 	{"effects/blur/enable", "blur"},
 	{"effects/blur/layer", "blur_layer"},
 	{"effects/blur/optimized", "blur_optimized"},
@@ -4974,6 +4987,10 @@ void set_value_default() {
 	config.button_map = LIBINPUT_CONFIG_TAP_MAP_LRM;
 
 	config.blur = 0;
+	/* Linear: physically correct, and what the colour-managed and HDR paths
+	 * need. "srgb" trades that for matching what application authors picked
+	 * their alpha against. */
+	config.srgb_blending = 0;
 	config.blur_layer = 0;
 	config.sdr_reference_luminance = 0.0f;
 	config.sdr_saturation = 0.0f;
@@ -5249,6 +5266,11 @@ void reset_blur_params(void) {
 	LayerSurface *l = NULL;
 	Monitor *m = NULL;
 	int32_t i;
+
+	/* Re-pushed on every reload alongside the blur parameters, so the blend
+	 * space can be flipped and judged live rather than across restarts --
+	 * which is the only sane way to compare two renderings of the same desk. */
+	fx_renderer_set_srgb_blending(drw, config.srgb_blending != 0);
 
 	if (config.blur) {
 		wl_list_for_each(m, &mons, link) {

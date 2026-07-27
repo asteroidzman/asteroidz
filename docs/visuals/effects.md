@@ -23,6 +23,47 @@ Blur creates a frosted glass effect for transparent windows.
 
 ---
 
+## Blend space
+
+```kdl
+effects { blend-space "srgb" }   // or "linear" (default)
+```
+
+Which space client alpha is composited in, on the Vulkan renderer.
+
+`linear` is the default and is physically correct: the renderer composites into
+a 16-bit float buffer in linear light, which is what colour management and HDR
+need. It also means alpha behaves differently here than on compositors that
+blend encoded values — 5% of a bright backdrop through a dark window is 5% of
+its **light**, and sRGB spends most of its code range on darks, so it lands far
+up the visible scale. Measured, over a `#e0e0e0` backdrop behind a `#16130b`
+window:
+
+| `background_opacity` | linear | srgb |
+| :--- | :--- | :--- |
+| 0.90 | (70, 69, 68) | (36, 33, 26) |
+| 0.95 | (53, 52, 50) | (29, 26, 18) |
+| 0.98 | (38, 37, 34) | (25, 22, 14) |
+
+At 0.95 the linear result puts a legible photograph of the wallpaper through a
+terminal, which is not what anyone means by "95% opaque". Application authors
+pick alpha by eye on compositors that blend encoded values, so `srgb` makes
+translucent surfaces look the way their authors intended.
+
+Chasing the number instead does not work: to match encoded 0.95 you would need
+about 0.99 for a dark window over a bright backdrop and about 0.90 for a bright
+window over a dark one. The required correction depends on the destination
+pixel, which the shader never sees — only the blend space fixes it.
+
+`srgb` is **ignored** wherever real colour management is in play: a PQ (HDR)
+source, or an output carrying a colour transform. Those need linear light, and
+an appearance preference must not be able to break them — so a `force_hdr`
+window keeps the correct path while everything else blends the expected way.
+
+The GLES renderer already blends encoded values; the setting is a no-op there.
+
+---
+
 ## Shadows
 
 Drop shadows help distinguish floating windows from the background.
