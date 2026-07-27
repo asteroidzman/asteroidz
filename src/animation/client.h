@@ -1816,12 +1816,8 @@ static void asteroid_break_destroy(AsteroidBreak *br) {
 	for (int32_t i = 0; i < br->nfrags; i++) {
 		if (br->frags[i].node)
 			wlr_scene_buffer_set_buffer(br->frags[i].node, NULL);
-		/* Both, and only after the node has let go of whichever it was
-		 * showing. */
-		for (int32_t b = 0; b < 2; b++) {
-			if (br->frags[i].buffers[b])
-				wlr_buffer_drop(&br->frags[i].buffers[b]->base);
-		}
+		if (br->frags[i].buffer)
+			wlr_buffer_drop(&br->frags[i].buffer->base);
 	}
 	free(br);
 }

@@ -9,7 +9,6 @@
 
 #include "render/color.h"
 #include "render/pass.h"
-#include "render/tracy.h"
 #include "render/vulkan.h"
 #include "util/matrix.h"
 #include "scenefx/types/fx/blur_data.h"
@@ -618,11 +617,7 @@ static bool render_pass_submit(struct wlr_render_pass *wlr_pass) {
 
 	renderer->stage.last_timeline_point = stage_timeline_point;
 
-	// Drain whatever the GPU has finished since the last frame. Non-blocking:
-	// queries that are not ready yet are simply left for the next pass.
-	TRACY_VK_COLLECT(renderer);
 
-	TRACY_FN(tracy_vk_zone_end(&pass->tracy_gpu_zone, render_cb->vk));
 
 	uint64_t render_timeline_point = fx_vulkan_end_command_buffer(render_cb, renderer);
 	if (render_timeline_point == 0) {
@@ -2988,10 +2983,6 @@ struct fx_vk_render_pass *fx_vulkan_begin_render_pass(struct fx_vk_renderer *ren
 	// render_pass_submit just before the buffer is ended -- so the zone spans
 	// every draw the pass records, which is the whole point. Opening it in
 	// submit instead would time only the tail.
-	TRACY_FN(
-		TRACY_VK_ZONE_START_NAME(renderer, cb->vk, "vk render pass");
-		pass->tracy_gpu_zone = vk_gpu_ctx;
-	)
 
 	return pass;
 }
