@@ -3860,8 +3860,11 @@ error:
 struct wlr_renderer *fx_vk_renderer_create_with_drm_fd(int drm_fd) {
 	wlr_log(WLR_INFO, "The vulkan renderer is only experimental and "
 		"not expected to be ready for daily use");
-	wlr_log(WLR_INFO, "Run with VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation "
-		"to enable the validation layer");
+	// Was VK_INSTANCE_LAYERS, which the current loader ignores -- and which
+	// could not have worked anyway while the instance declared
+	// enabledLayerCount = 0. The layer is now named at instance creation.
+	wlr_log(WLR_INFO, "Run with FX_VK_VALIDATION=1 to enable the validation "
+		"layer");
 
 	struct fx_vk_instance *ini = fx_vulkan_instance_create(default_debug);
 	if (!ini) {

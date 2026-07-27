@@ -22,6 +22,16 @@
 #   HL_EXTRA_KDL           extra config appended verbatim (e.g. a second
 #                          `output HEADLESS-2 { ... }` block for
 #                          multi-monitor tests)
+#   HL_RENDERER            gles2 (default) or vulkan. gles2 is the default
+#                          because it is the one renderer present on every
+#                          machine that runs this suite, so results are
+#                          comparable; set vulkan to exercise the fx_vk path
+#                          (which is what a real session here actually uses,
+#                          and the only way to reach its GPU instrumentation).
+#                          Editing the launch line by hand instead does NOT
+#                          work once this file is sourced -- the function body
+#                          is already parsed, which silently produced a second
+#                          gles2 run labelled as vulkan.
 set -u
 
 HL_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -113,7 +123,8 @@ EOF
 	rm -rf "$HL_XDG"; mkdir -p "$HL_XDG"; chmod 700 "$HL_XDG"
 
 	env -i HOME="$HOME" PATH="$PATH" XDG_RUNTIME_DIR="$HL_XDG" \
-		WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WLR_RENDERER=gles2 \
+		WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 \
+		WLR_RENDERER="${HL_RENDERER:-gles2}" \
 		"$HL_ASTEROIDZ" -c "$HL_CONFIG" > "$HL_OUTDIR/comp-stdout.log" 2>&1 &
 	HL_COMP_PID=$!
 

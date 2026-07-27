@@ -136,6 +136,49 @@ struct fx_vk_instance *fx_vulkan_instance_create(bool debug) {
 
 	assert(extensions_len <= sizeof(extensions) / sizeof(extensions[0]));
 
+	// The validation layer itself. Without this there is a debug_utils
+	// messenger wired up to receive reports and nothing generating them: the
+	// driver volunteers almost nothing on its own, because not checking is the
+	// point of Vulkan. An illegal call is then simply ignored -- it returns
+	// success and does nothing -- which is indistinguishable from a bug in
+	// your own logic and costs hours to find by reading the spec instead.
+	//
+	// Enabled here rather than through the loader's environment: the hint
+	// printed elsewhere in this renderer names VK_INSTANCE_LAYERS, which the
+	// current loader no longer honours (it wants VK_LOADER_LAYERS_ENABLE), and
+	// neither reaches an instance that declares enabledLayerCount = 0.
+	//
+	// Opt-in by environment, NOT by `debug`: that flag is hardcoded true, so
+	// keying off it would turn validation on for every session including a
+	// daily driver, where the serialisation is a real and permanent cost.
+	const char *layers[1] = {0};
+	uint32_t layers_len = 0;
+	const char *want_validation = getenv("FX_VK_VALIDATION");
+	if (debug && want_validation && *want_validation && want_validation[0] != '0') {
+		uint32_t avail_layerc = 0;
+		if (vkEnumerateInstanceLayerProperties(&avail_layerc, NULL) ==
+				VK_SUCCESS && avail_layerc > 0) {
+			VkLayerProperties avail_layers[avail_layerc + 1];
+			if (vkEnumerateInstanceLayerProperties(&avail_layerc,
+					avail_layers) == VK_SUCCESS) {
+				for (uint32_t j = 0; j < avail_layerc; ++j) {
+					if (strcmp(avail_layers[j].layerName,
+							"VK_LAYER_KHRONOS_validation") == 0) {
+						layers[layers_len++] = "VK_LAYER_KHRONOS_validation";
+						wlr_log(WLR_INFO, "Vulkan validation layer enabled "
+							"(this SERIALISES work -- correctness only, never "
+							"trust timings taken with it on)");
+						break;
+					}
+				}
+			}
+		}
+		if (layers_len == 0) {
+			wlr_log(WLR_ERROR, "FX_VK_VALIDATION set but "
+				"VK_LAYER_KHRONOS_validation is not installed");
+		}
+	}
+
 	VkApplicationInfo application_info = {
 		.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
 		.pEngineName = "wlroots",
@@ -148,8 +191,8 @@ struct fx_vk_instance *fx_vulkan_instance_create(bool debug) {
 		.pApplicationInfo = &application_info,
 		.enabledExtensionCount = extensions_len,
 		.ppEnabledExtensionNames = extensions,
-		.enabledLayerCount = 0,
-		.ppEnabledLayerNames = NULL,
+		.enabledLayerCount = layers_len,
+		.ppEnabledLayerNames = layers_len > 0 ? layers : NULL,
 	};
 
 	VkDebugUtilsMessageSeverityFlagsEXT severity =
