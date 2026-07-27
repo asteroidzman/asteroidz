@@ -12,3 +12,9 @@ build/
 contrib/wlvptr/wlvptr
 contrib/wlvkbd/wlvkbd
 contrib/wllayer/wllayer
+
+# meson downloads the tracy client into subprojects/tracy (see
+# subprojects/tracy.wrap). The wrap and its packagefiles patch are tracked;
+# the checkout -- which is its own git clone -- is not.
+/subprojects/tracy/
+/subprojects/.wraplock

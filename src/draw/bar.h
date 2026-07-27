@@ -3246,6 +3246,15 @@ static void bar_layout(Monitor *m) {
 	if (!bar || !bar->tree)
 		return;
 
+	/* One bar pass for one monitor. The known cost here has never been any
+	 * single module -- it is that this runs per monitor, and a module that
+	 * redraws on a timer drags every monitor's strip through a re-measure and
+	 * a recomposite with it. Counting the passes is what makes that visible;
+	 * the media/cava case had to be reasoned out from CPU% instead. */
+	AZ_ZONE(az_bar, "bar_layout");
+	AZ_ZONE_TEXT(az_bar, m->wlr_output ? m->wlr_output->name : NULL);
+	AZ_ZONE_VALUE(az_bar, bar->nmodules);
+
 	/* Two heights: the strip (what the panel fills and what space reservation
 	 * is measured against) and the pill row inset inside it. */
 	int32_t height = config.bar_height;
@@ -3470,6 +3479,7 @@ static void bar_layout(Monitor *m) {
 						trail ? trail->slack_trail + bar_pill_ink_inset(trail)
 							  : 0);
 	}
+	AZ_ZONE_END(az_bar);
 }
 
 /* ─── space reservation ───────────────────────────────────────────────────── */

@@ -4,3 +4,13 @@ option('asan', type : 'boolean', value : false)
 # entirely -- no scene nodes, no timer, no config keys, nothing in the binary
 # -- for setups that use an external bar (waybar, yambar, ...) exclusively.
 option('native-bar', type : 'boolean', value : true)
+# Tracy profiler support, compiled out entirely when off (the macros in
+# scenefx's include/render/tracy.h expand to nothing without TRACY_ENABLE).
+# Turning this on also builds the in-tree asteroidz-scenefx with tracy_enable,
+# so both halves of the frame report into the SAME client -- asteroidz's own
+# zones land inside the frames scenefx already marks.
+#
+# Build profiling runs as --buildtype=debugoptimized; scenefx warns if you
+# don't, and an -O0 trace measures the wrong program.
+option('tracy', type : 'boolean', value : false,
+       description : 'Enable Tracy profiler instrumentation')

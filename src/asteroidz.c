@@ -116,6 +116,7 @@
 #include <wlr/xwayland.h>
 #include <xcb/xcb_icccm.h>
 #endif
+#include "common/tracy.h"
 #include "common/util.h"
 #include "draw/text-node.h"
 #include "draw/ufo-node.h"
@@ -7330,7 +7331,19 @@ static void render_monitor(Monitor *m) {
 	if (!m->wlr_output->enabled || !allow_frame_scheduling)
 		return;
 
+	/* Opened after the early returns so a bailed-out frame doesn't show up as
+	 * a zero-cost render -- those are not frames, and counting them would drag
+	 * the visible distribution toward zero. */
+	AZ_ZONE(az_render, "render_monitor");
+	AZ_ZONE_TEXT(az_render, m->wlr_output->name);
+
 	frame_allow_tearing = check_tearing_frame_allow(m);
+
+	/* Everything from here to the commit is asteroidz's own per-frame work --
+	 * layer/client animation ticks, fadeouts, cursor zoom, overview chrome.
+	 * render_dur_ms lumps it in with the commit, so a frame that misses its
+	 * deadline gives no clue which half was responsible. */
+	AZ_ZONE(az_animate, "animate");
 
 	// draw layers and fade-out effects
 	for (i = 0; i < LENGTH(m->layers); i++) {
@@ -7357,6 +7370,9 @@ static void render_monitor(Monitor *m) {
 		if (!config.animations && !grabc && c->configure_serial &&
 			client_is_rendered_on_mon(c, m)) {
 			monitor_check_skip_frame_timeout(m);
+			/* jumps past the commit, so close the zone here or it never
+			 * closes -- Tracy requires them balanced on every path */
+			AZ_ZONE_END(az_animate);
 			goto skip;
 		}
 	}
@@ -7369,6 +7385,14 @@ static void render_monitor(Monitor *m) {
 	 * the frame we build already reflects this tick's opacity) */
 	if (m->ov_anim_running)
 		need_more_frames = overview_anim_frame(m) || need_more_frames;
+
+	AZ_ZONE_END(az_animate);
+
+	/* The commit: build the output state and hand it to the backend. On the
+	 * ordinary path this is wlr_scene_output_commit, which is where scenefx's
+	 * own zones (fx_pass, and the frame mark itself) live -- so this zone is
+	 * the seam between asteroidz's frame and the renderer's. */
+	AZ_ZONE(az_commit, "commit");
 
 	// only build and commit state when a frame is actually needed
 	if (config.allow_tearing && frame_allow_tearing) {
@@ -7447,6 +7471,8 @@ static void render_monitor(Monitor *m) {
 			});
 	}
 
+	AZ_ZONE_END(az_commit);
+
 skip:
 	// send the frame-done notification
 	clock_gettime(CLOCK_MONOTONIC, &now);
@@ -7466,6 +7492,13 @@ skip:
 	 * the average -- an EMA hides spikes that then miss the vblank) */
 	m->render_dur_ms = dur_ms > m->render_dur_ms ? dur_ms
 												 : m->render_dur_ms * 0.95;
+
+	/* The raw per-frame cost, not the decaying max the scheduler runs on. The
+	 * estimator deliberately throws the distribution away to keep the peak;
+	 * plotting the real value is how you find out whether that peak is one
+	 * pathological frame or the shape of the whole run. */
+	AZ_PLOT(AZ_PLOT_RENDER_MS, dur_ms);
+	AZ_ZONE_END(az_render);
 }
 
 // Frame (vblank) event. By default render immediately. With config.render_late
@@ -7505,6 +7538,12 @@ void rendermon(struct wl_listener *listener, void *data) {
 			if (gap > interval_ns * 3) {
 				/* idle, ignore */
 			} else if (gap > interval_ns + interval_ns / 2) {
+				/* A missed vblank is the event the whole loop exists to avoid,
+				 * and it is invisible in a duration timeline -- the frame that
+				 * slipped looks normal, the cost was the deadline it blew. As
+				 * a plot the misses line up against the frac they happened at,
+				 * which is what says whether the loop is tuned too tight. */
+				AZ_PLOT_INT(AZ_PLOT_LATE_SLIP, 1);
 				m->render_late_frac *= 0.6; /* missed: back off hard */
 				m->render_late_good = 0;
 			} else if (++m->render_late_good >= 20) {
@@ -7531,6 +7570,15 @@ void rendermon(struct wl_listener *listener, void *data) {
 					"render-late %s: frac=%.2f delay=%.1f dur=%.1f interval=%.1f",
 					m->wlr_output->name, m->render_late_frac, delay_ms,
 					m->render_dur_ms, interval_ms);
+
+		/* The same four numbers render-late 2 logs per frame, as curves. The
+		 * loop is a controller: frac climbs by 0.03 every 20 clean frames and
+		 * is cut to 0.6x on a slip, and delay is clamped by the render cost.
+		 * Whether it is settling or oscillating is a question about the shape
+		 * over time, which a log line per frame cannot answer. */
+		AZ_PLOT(AZ_PLOT_LATE_FRAC, m->render_late_frac);
+		AZ_PLOT(AZ_PLOT_LATE_DELAY, delay_ms);
+		AZ_PLOT_INT(AZ_PLOT_LATE_SLIP, 0);
 
 		if (delay_ms >= 1.0) {
 			wl_event_source_timer_update(m->render_timer, (int)delay_ms);
@@ -8732,6 +8780,16 @@ void setup(void) {
 		config.blur_params.contrast, config.blur_params.saturation,
 		config.blur_params.transparency_threshold);
 	fx_renderer_set_srgb_blending(drw, config.srgb_blending != 0);
+
+	/* Plot appearance, declared once. Without this the viewer picks defaults
+	 * per plot and the render-late curves come out as unconnected points at
+	 * wildly different scales, which is unreadable for a control loop. Step
+	 * (not smoothed) is the honest shape: these values change at discrete
+	 * frames, they do not interpolate between them. */
+	AZ_PLOT_CONFIG(AZ_PLOT_RENDER_MS, TracyPlotFormatNumber, 0, 1, 0x00E5C8);
+	AZ_PLOT_CONFIG(AZ_PLOT_LATE_FRAC, TracyPlotFormatNumber, 1, 0, 0xFFC24B);
+	AZ_PLOT_CONFIG(AZ_PLOT_LATE_DELAY, TracyPlotFormatNumber, 1, 0, 0x7FB2FF);
+	AZ_PLOT_CONFIG(AZ_PLOT_LATE_SLIP, TracyPlotFormatNumber, 1, 1, 0xFF4B4B);
 
 	/* create text_input-, and input_method-protocol relevant globals */
 	input_method_manager = wlr_input_method_manager_v2_create(dpy);
