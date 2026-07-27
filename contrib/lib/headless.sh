@@ -22,6 +22,13 @@
 #   HL_EXTRA_KDL           extra config appended verbatim (e.g. a second
 #                          `output HEADLESS-2 { ... }` block for
 #                          multi-monitor tests)
+#   HL_ENV                 space-separated NAME=VALUE pairs passed through to
+#                          the compositor. The launch below uses `env -i` so a
+#                          test instance cannot inherit the caller's session,
+#                          which also means an exported variable does NOT reach
+#                          it -- MESA_VK_TRACE and FX_VK_VALIDATION both looked
+#                          like they were being ignored by the driver when in
+#                          fact they never arrived.
 #   HL_RENDERER            gles2 (default) or vulkan. gles2 is the default
 #                          because it is the one renderer present on every
 #                          machine that runs this suite, so results are
@@ -122,9 +129,11 @@ EOF
 	HL_XDG="$HL_OUTDIR/xdg"
 	rm -rf "$HL_XDG"; mkdir -p "$HL_XDG"; chmod 700 "$HL_XDG"
 
+	# shellcheck disable=SC2086 -- HL_ENV is intentionally word-split
 	env -i HOME="$HOME" PATH="$PATH" XDG_RUNTIME_DIR="$HL_XDG" \
 		WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 \
 		WLR_RENDERER="${HL_RENDERER:-gles2}" \
+		${HL_ENV:-} \
 		"$HL_ASTEROIDZ" -c "$HL_CONFIG" > "$HL_OUTDIR/comp-stdout.log" 2>&1 &
 	HL_COMP_PID=$!
 
