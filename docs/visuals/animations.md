@@ -18,8 +18,8 @@ misc {
 
 You can define different animation styles for opening and closing windows and layer surfaces.
 
-Available types: `slide`, `zoom`, `fade`, `none`, plus `asteroid` for closing
-windows.
+Available types: `slide`, `zoom`, `fade`, `none`, plus `asteroid` and `fall`
+for closing windows.
 
 ```kdl
 animations {
@@ -38,15 +38,38 @@ misc {
 
 ### `asteroid` — the default close animation
 
-`asteroid` breaks the closing window into a grid of tiles that fly straight
-out from its centre and fade — debris leaving a rock in the arcade game this
-compositor is named after. It is the default for `window-close`; set another
-type to opt out.
+The window comes apart the way a rock does in the arcade game: it is replaced
+by a jagged **vector outline** of the same size which splits into four smaller
+rocks, each tumbling and drifting straight out from the centre, with a handful
+of line streaks thrown off alongside. They fade as they go and are gone inside
+the close duration.
 
 ```kdl
 animations {
     window-close {
         type asteroid
+        duration 250
+    }
+}
+```
+
+Not the window's own pixels. The 1979 machine drew everything as white line
+loops, and a rock breaking up is that loop becoming smaller loops — so the
+pixels go and the outline takes over. Slicing the snapshot into moving tiles is
+a different effect, and it is still here under its old name:
+
+### `fall` — the window's own pixels, in pieces
+
+`fall` breaks the closing window into a grid of tiles that fly out from the
+centre and fade. It reads as breaking glass rather than as an explosion,
+because the pieces carry photographic content and — this is the constraint that
+shapes both animations — **cannot rotate**. A scene node has a position, a size
+and a crop, and no transform.
+
+```kdl
+animations {
+    window-close {
+        type fall
         duration 250
         fall-columns 4   // tiles across (1–12, default 4)
         fall-rows 3      // tiles down  (1–12, default 3)
@@ -54,25 +77,33 @@ animations {
 }
 ```
 
-`fall` still selects it: that was the name when the pieces dropped under
-gravity instead of flying outward, and an existing config should not break
-over a rename. The grid keys keep their old spelling for the same reason.
+`fall-columns` and `fall-rows` apply to this one only; `asteroid` always makes
+four rocks, because that is what a rock does in the game and a dozen pieces of
+a window read as confetti.
 
-What makes the arcade version read the way it does is what it lacks — no
-gravity, no arc, no settling. Each tile's direction is the line from the
-window's centre through the tile's own centre, normalised so that speed comes
-from jitter rather than from how far out a tile happened to start (otherwise
-corner pieces leave twice as fast as edge ones and the cloud comes out
-diamond-shaped). Distance eases out, putting most of the travel in the first
-third, which is what sells a burst at a duration short enough to stay out of
-the way.
+Neither uses gravity, an arc, or any settling: debris in that game leaves the
+wreck in a straight line and fades before it gets anywhere. Distance eases out
+in both, putting most of the travel in the first third, which is what sells a
+burst at a duration short enough to stay out of the way.
 
-The tiles are ordinary scene nodes, so this costs no more than the other close
-animations and renders identically on both the GLES and Vulkan renderers. The
-pieces stay axis-aligned rather than tumbling: a scene buffer cannot be
-rotated without renderer-level support. A small perpendicular kick per tile
-stands in for it, so the cloud shears as it expands instead of moving like a
-rigid diagram.
+**No shader is involved, and none is needed.** Rotation is why `asteroid` is
+drawn rather than sliced: a tumbling fragment has to be re-drawn at its current
+angle every frame, so each one is a handful of stroked cairo paths into its own
+small `wlr_buffer` — the same thing the UFO easter egg, every text node and
+every icon in this compositor already do. A dozen polygons a frame is work a
+CPU does not notice, and the scene graph only ever sees an ARGB buffer, so it
+renders identically on the GLES and Vulkan backends. A GPU pass would mean
+renderer-specific code twice over for no visible difference. Per-fragment
+buffers rather than one screen-sized surface, too: a fullscreen window would
+otherwise mean an 11 MB allocation every frame.
+
+Debris also never lands on a screen it did not come from. These are nodes in a
+global layer, so a piece thrown past the edge of its monitor would otherwise
+turn up on the neighbouring one. A fragment is dropped on **entering** another
+monitor rather than on leaving its own — a maximised window's outer pieces
+start flush against their own edge, so the stricter test would blink the whole
+outer ring out on the first frame. Flying off the outside edge of the desk is
+fine; there is nothing out there to pollute.
 
 ## Fade Settings
 

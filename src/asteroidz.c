@@ -419,6 +419,8 @@ typedef struct {
 
 /* one tile of the "fall" close animation; defined in animation/client.h */
 struct FalloutShard;
+/* the vector break-up of the "asteroid" close animation */
+typedef struct AsteroidBreak AsteroidBreak;
 
 struct Client {
 	/* Must keep these three elements in this order */
@@ -460,6 +462,11 @@ struct Client {
 	 * of tiles that scatter and fall. NULL for every real client. */
 	struct FalloutShard *shards;
 	int32_t nshards;
+	/* "asteroid" close animation only, on the throwaway fadeout client: the
+	 * window replaced by a vector rock that splits and tumbles. NULL for every
+	 * real client, and never set at the same time as `shards` -- the two are
+	 * different animations, not two halves of one. */
+	AsteroidBreak *rocks;
 	union {
 		struct wlr_xdg_surface *xdg;
 		struct wlr_xwayland_surface *xwayland;

@@ -82,7 +82,7 @@ window-rule { match app-id="<regex>" title="<regex>"; <action> <value>...; <acti
 | Parameter | Type | Values | Description |
 | :--- | :--- | :--- | :--- |
 | `animation_type_open` | string | zoom, slide, fade, none | Set open animation |
-| `animation_type_close` | string | asteroid (alias: fall), zoom, slide, fade, none | Set close animation |
+| `animation_type_close` | string | asteroid, fall, zoom, slide, fade, none | Set close animation |
 | `nofadein` | integer | `0` / `1` | Window ignores fade-in animation |
 | `nofadeout` | integer | `0` / `1` | Window ignores fade-out animation |
 
