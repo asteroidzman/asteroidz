@@ -4702,10 +4702,13 @@ void set_value_default() {
 	config.layer_animations = 0;
 	config.animation_fade_in = 1;
 	config.animation_fade_out = 1;
-	/* "fall" is the default close animation: the window breaks into a grid of
-	 * tiles that scatter and drop. Set animations/window-close/type to
-	 * fade/slide/zoom/none to opt out. */
-	strcpy(config.animation_type_close, "fall");
+	/* "asteroid" is the default close animation: the window breaks into a grid
+	 * of tiles that fly straight out from the centre and fade, the way debris
+	 * leaves a rock in the arcade game this compositor is named after. Set
+	 * animations/window-close/type to fade/slide/zoom/none to opt out. "fall"
+	 * still selects it too -- that was its name when the pieces dropped
+	 * instead. */
+	strcpy(config.animation_type_close, "asteroid");
 	config.fall_cols = 4;
 	config.fall_rows = 3;
 	config.tag_animation_direction = HORIZONTAL;

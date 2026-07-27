@@ -18,7 +18,8 @@ misc {
 
 You can define different animation styles for opening and closing windows and layer surfaces.
 
-Available types: `slide`, `zoom`, `fade`, `none`, plus `fall` for closing windows.
+Available types: `slide`, `zoom`, `fade`, `none`, plus `asteroid` for closing
+windows.
 
 ```kdl
 animations {
@@ -35,16 +36,17 @@ misc {
 }
 ```
 
-### `fall` — the default close animation
+### `asteroid` — the default close animation
 
-`fall` breaks the closing window into a grid of tiles that scatter away from
-its centre and drop under gravity while fading out. It is the default for
-`window-close`; set another type to opt out.
+`asteroid` breaks the closing window into a grid of tiles that fly straight
+out from its centre and fade — debris leaving a rock in the arcade game this
+compositor is named after. It is the default for `window-close`; set another
+type to opt out.
 
 ```kdl
 animations {
     window-close {
-        type fall
+        type asteroid
         duration 250
         fall-columns 4   // tiles across (1–12, default 4)
         fall-rows 3      // tiles down  (1–12, default 3)
@@ -52,10 +54,25 @@ animations {
 }
 ```
 
-The tiles are ordinary scene nodes, so `fall` costs no more than the other
-close animations and renders identically on both the GLES and Vulkan
-renderers. The pieces stay axis-aligned rather than tumbling: a scene buffer
-cannot be rotated without renderer-level support.
+`fall` still selects it: that was the name when the pieces dropped under
+gravity instead of flying outward, and an existing config should not break
+over a rename. The grid keys keep their old spelling for the same reason.
+
+What makes the arcade version read the way it does is what it lacks — no
+gravity, no arc, no settling. Each tile's direction is the line from the
+window's centre through the tile's own centre, normalised so that speed comes
+from jitter rather than from how far out a tile happened to start (otherwise
+corner pieces leave twice as fast as edge ones and the cloud comes out
+diamond-shaped). Distance eases out, putting most of the travel in the first
+third, which is what sells a burst at a duration short enough to stay out of
+the way.
+
+The tiles are ordinary scene nodes, so this costs no more than the other close
+animations and renders identically on both the GLES and Vulkan renderers. The
+pieces stay axis-aligned rather than tumbling: a scene buffer cannot be
+rotated without renderer-level support. A small perpendicular kick per tile
+stands in for it, so the cloud shears as it expands instead of moving like a
+rigid diagram.
 
 ## Fade Settings
 

@@ -4,6 +4,7 @@
 #include <drm_fourcc.h>
 #include <math.h>
 #include <stdlib.h>
+#include <string.h>
 #include <time.h>
 #include <wlr/interfaces/wlr_buffer.h>
 
@@ -13,11 +14,24 @@
 
 #define UFO_FRAME_MS 16
 #define UFO_FLIGHT_MS 4800
-#define UFO_MIN_INTERVAL_MS (4 * 60 * 1000)
-#define UFO_MAX_INTERVAL_MS (15 * 60 * 1000)
-/* first fly-by after enable comes quickly so it's easy to confirm it works */
-#define UFO_FIRST_MIN_MS (20 * 1000)
-#define UFO_FIRST_MAX_MS (60 * 1000)
+/* Rare on purpose, and much rarer than it was.
+ *
+ * An easter egg stops being one the moment you can predict it: at one fly-by
+ * every four to fifteen minutes it was a feature of the desktop, something you
+ * waited for and eventually tuned out. Hours apart it goes back to being a
+ * surprise -- most sessions will never show one, and the ones that do earn a
+ * double take.
+ *
+ * Long enough that ASTEROIDZ_UFO_TEST exists for anyone who actually needs to
+ * see it fly during a test run. */
+#define UFO_MIN_INTERVAL_MS (2 * 60 * 60 * 1000)
+#define UFO_MAX_INTERVAL_MS (8 * 60 * 60 * 1000)
+#define UFO_FIRST_MIN_MS (45 * 60 * 1000)
+#define UFO_FIRST_MAX_MS (3 * 60 * 60 * 1000)
+/* Seconds, not hours, when the env var is set: confirming the thing works
+ * cannot mean sitting through a 45-minute wait. */
+#define UFO_TEST_MIN_MS (5 * 1000)
+#define UFO_TEST_MAX_MS (20 * 1000)
 
 /* --- cairo-backed wlr_buffer (one per animation frame) --------------------- */
 struct ufo_buffer {
@@ -85,12 +99,21 @@ static uint32_t now_ms(void) {
 	return (uint32_t)(ts.tv_sec * 1000 + ts.tv_nsec / 1000000);
 }
 
+static bool ufo_test_mode(void) {
+	const char *v = getenv("ASTEROIDZ_UFO_TEST");
+	return v && *v && strcmp(v, "0") != 0;
+}
+
 static int rand_interval_ms(void) {
+	if (ufo_test_mode())
+		return UFO_TEST_MIN_MS + (rand() % (UFO_TEST_MAX_MS - UFO_TEST_MIN_MS));
 	return UFO_MIN_INTERVAL_MS +
 		   (rand() % (UFO_MAX_INTERVAL_MS - UFO_MIN_INTERVAL_MS));
 }
 
 static int rand_first_ms(void) {
+	if (ufo_test_mode())
+		return UFO_TEST_MIN_MS + (rand() % (UFO_TEST_MAX_MS - UFO_TEST_MIN_MS));
 	return UFO_FIRST_MIN_MS + (rand() % (UFO_FIRST_MAX_MS - UFO_FIRST_MIN_MS));
 }
 

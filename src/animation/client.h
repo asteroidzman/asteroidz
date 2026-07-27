@@ -1543,22 +1543,36 @@ void client_draw_shield(Client *c, struct wlr_box clip_box) {
 	}
 }
 
-/* ---- "fall" close animation -------------------------------------------
+/* ---- "asteroid" close animation ("fall" is the old name) -------------------------------------------
  *
- * The closing window is snapshotted, sliced into an axis-aligned grid of
- * tiles, and each tile is thrown outward and pulled down by gravity while it
- * fades. A tile is an ordinary scene tree holding cropped copies of whatever
+ * An Asteroids explosion. The closing window is snapshotted, sliced into a
+ * grid of tiles, and every tile is flung straight out from the centre and
+ * gone inside a few hundred milliseconds.
+ *
+ * What makes the arcade version read the way it does is what it LACKS: no
+ * gravity, no arc, no settling. Debris in that game leaves the wreck in a
+ * straight line at constant speed and fades before it reaches anywhere. This
+ * used to throw the tiles sideways and pull them down, which reads as a
+ * dropped plate rather than something detonating in space, so the downward
+ * acceleration is gone and the velocity is radial: each tile's direction is
+ * the line from the window's centre through the tile's own centre, which is
+ * exactly where a piece of a shattering rock would go.
+ *
+ * A tile is an ordinary scene tree holding cropped copies of whatever
  * snapshot nodes overlap it (surface buffers via a source box, borders and
  * other rects as smaller rects), so this is pure scene-graph work: it renders
  * identically on the GLES and Vulkan backends and needs no renderer or shader
  * support. That is also why the pieces stay axis-aligned -- a scene buffer
- * cannot be rotated, so tiles fall rather than tumble.
+ * cannot be rotated, so fragments cannot tumble the way the vector originals
+ * do. The tangential kick below is what stands in for it: neighbouring tiles
+ * drift apart as they travel, so the cloud shears instead of expanding like a
+ * rigid diagram.
  */
 struct FalloutShard {
 	struct wlr_scene_tree *tree; /* this tile's cropped pieces */
 	int32_t x, y;				 /* tile origin, layout coordinates */
-	float vx, vy;				 /* initial velocity, px over the whole run */
-	float gravity;				 /* downward acceleration, same units */
+	int32_t w, h;				 /* tile size, for the monitor bounds check */
+	float vx, vy;				 /* velocity, px over the whole run */
 };
 
 /* Deterministic per-tile noise in [lo,hi) -- a hash of the tile index rather
@@ -1709,27 +1723,49 @@ static bool init_fallout_shards(Client *fadeout_client, Client *c) {
 			wlr_scene_node_set_position(&tree->node, tile.x, tile.y);
 			fallout_slice_tree(&snap->node, tree, &tile);
 
-			/* Throw each tile away from the window's centre, with a small
-			 * upward kick, then let gravity take it down. Everything scales
-			 * with the window so the effect looks the same at any size. */
+			/* Straight out from the centre, through this tile's centre.
+			 *
+			 * Normalised first, so speed is set by the jitter alone rather
+			 * than by how far from the middle a tile happens to sit: without
+			 * that, corner pieces leave at twice the speed of edge ones and
+			 * the cloud comes out diamond-shaped. Distance scales with the
+			 * window's own size, so a thumbnail and a fullscreen window blow
+			 * up the same way.
+			 *
+			 * A tile dead on the centre has no direction to go: it gets a
+			 * deterministic one instead of a division by zero. */
 			uint32_t seed = (uint32_t)(row * cols + col + 1);
-			float nx = win.width > 1 ? ((float)(tile.x + tile.width / 2 -
-												win.x) /
-											(float)win.width -
-										0.5f) *
-										   2.0f
-									 : 0.0f;
+			float cx = (float)(tile.x + tile.width / 2) -
+					   ((float)win.x + (float)win.width * 0.5f);
+			float cy = (float)(tile.y + tile.height / 2) -
+					   ((float)win.y + (float)win.height * 0.5f);
+			float len = sqrtf(cx * cx + cy * cy);
+			if (len < 1.0f) {
+				float a = fallout_jitter(seed + 31u, 0.0f, 6.2831853f);
+				cx = cosf(a);
+				cy = sinf(a);
+			} else {
+				cx /= len;
+				cy /= len;
+			}
+
+			/* Reach, as a fraction of the window's smaller dimension: far
+			 * enough to clear the wreck, not so far that a fragment is still
+			 * visibly travelling when it has already faded out. */
+			float span = (float)ASTEROIDZ_MIN(win.width, win.height);
+			float speed = span * (0.85f + fallout_jitter(seed + 977u, -0.25f,
+														 0.35f));
+			/* Perpendicular kick: the shear that stands in for tumbling. */
+			float swirl = span * fallout_jitter(seed + 5231u, -0.12f, 0.12f);
 
 			struct FalloutShard *s = &shards[n++];
 			s->tree = tree;
 			s->x = tile.x;
 			s->y = tile.y;
-			s->vx = nx * (float)win.width * 0.30f +
-					fallout_jitter(seed, -0.05f, 0.05f) * (float)win.width;
-			s->vy = (-0.10f + fallout_jitter(seed + 977u, -0.04f, 0.04f)) *
-					(float)win.height;
-			s->gravity = (1.9f + fallout_jitter(seed + 5231u, -0.25f, 0.45f)) *
-						 (float)win.height;
+			s->w = tile.width;
+			s->h = tile.height;
+			s->vx = cx * speed - cy * swirl;
+			s->vy = cy * speed + cx * swirl;
 		}
 	}
 
@@ -1747,20 +1783,58 @@ static bool init_fallout_shards(Client *fadeout_client, Client *c) {
 	return true;
 }
 
-/* Advance every tile. Position is linear in `t` with the gravity term doing
- * the easing, so the motion reads as a real fall rather than a tween. */
+/* Advance every tile.
+ *
+ * Distance eases OUT -- fast at the instant of the break, slowing as the
+ * pieces get further away. Constant velocity is what the arcade original
+ * does, but it needs the whole run to sell the burst; easing puts most of the
+ * travel in the first third, which is what makes this read as an explosion at
+ * a duration short enough not to be in the way. */
 static void fallout_client_next_tick(Client *c, double t) {
 	double fade = find_animation_curve_at(t, OPAFADEOUT);
 	double opacity = ASTEROIDZ_MAX(
 		config.fadeout_begin_opacity - fade * config.fadeout_begin_opacity, 0);
+	double travel = 1.0 - (1.0 - t) * (1.0 - t);
 
+	/* Debris never lands on a screen it did not come from.
+	 *
+	 * These are scene nodes in a global layer, so a piece thrown past the edge
+	 * of its own monitor keeps going and turns up on the NEIGHBOURING one -- a
+	 * window closing over here, throwing shrapnel across a second screen that
+	 * had nothing to do with it. The scene graph has no per-node clip to lean
+	 * on, so the shard is dropped instead.
+	 *
+	 * Dropped on ENTERING another monitor, not on leaving its own: those are
+	 * different tests and only the second one is wrong. A maximised window's
+	 * outermost tiles start flush against the edge of their monitor, so
+	 * "wholly inside" fails on the first frame and the entire outer ring of
+	 * debris blinks out the instant the window closes. Flying off the outside
+	 * edge of the desk is fine -- there is nothing out there to pollute. */
 	for (int32_t i = 0; i < c->nshards; i++) {
 		struct FalloutShard *s = &c->shards[i];
-		double dx = s->vx * t;
-		double dy = s->vy * t + 0.5 * s->gravity * t * t;
+		double dx = s->vx * travel;
+		double dy = s->vy * travel;
+		int32_t px = s->x + (int32_t)dx, py = s->y + (int32_t)dy;
 
-		wlr_scene_node_set_position(&s->tree->node, s->x + (int32_t)dx,
-									s->y + (int32_t)dy);
+		struct wlr_box box = {.x = px, .y = py, .width = s->w, .height = s->h};
+		bool trespassing = false;
+		Monitor *other = NULL;
+		wl_list_for_each(other, &mons, link) {
+			struct wlr_box hit;
+			if (other == c->mon || !other->wlr_output ||
+				!other->wlr_output->enabled)
+				continue;
+			if (wlr_box_intersection(&hit, &box, &other->m)) {
+				trespassing = true;
+				break;
+			}
+		}
+		if (trespassing) {
+			wlr_scene_node_set_enabled(&s->tree->node, false);
+			continue;
+		}
+
+		wlr_scene_node_set_position(&s->tree->node, px, py);
 		if (config.animation_fade_out && !c->nofadeout)
 			wlr_scene_node_for_each_buffer(
 				&s->tree->node, scene_buffer_apply_opacity, &opacity);
@@ -1782,7 +1856,7 @@ void fadeout_client_animation_next_tick(Client *c) {
 			? (double)passed_time / (double)c->animation.duration
 			: 1.0;
 
-	/* "fall": the window is a grid of independently moving tiles, not one
+	/* "asteroid": the window is a grid of independently moving tiles, not one
 	 * node, so it has its own tick and teardown. */
 	if (c->shards) {
 		fallout_client_next_tick(c, ASTEROIDZ_MIN(animation_passed, 1.0));
@@ -1995,10 +2069,13 @@ void init_fadeout_client(Client *c) {
 		c->overview_scene_surface = NULL;
 	}
 
-	bool want_fall = (c->animation_type_close &&
-					  strcmp(c->animation_type_close, "fall") == 0) ||
-					 (!c->animation_type_close &&
-					  strcmp(config.animation_type_close, "fall") == 0);
+	/* "asteroid" is the name; "fall" is what it was called when it threw the
+	 * pieces downward, and still works so that nobody's config breaks over a
+	 * rename. */
+	const char *close_type = c->animation_type_close ? c->animation_type_close
+													 : config.animation_type_close;
+	bool want_fall = close_type && (strcmp(close_type, "asteroid") == 0 ||
+									strcmp(close_type, "fall") == 0);
 
 	/* init_fallout_shards() takes its own snapshot (it has to slice one), and
 	 * falls back to the plain whole-window snapshot below if it can't. */
