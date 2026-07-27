@@ -279,6 +279,38 @@ test_bar_idle_inhibitor() {
 	bar_off
 }
 
+test_bar_config_keys_are_all_reachable() {
+	[ "$(bar_supported)" = "true" ] || { echo "  (skip: built without -Dnative-bar)"; return 0; }
+
+	# Every bar setting needs THREE things that can drift apart: a field, a
+	# parse_option branch, and a row in the KDL name table. Miss the last and
+	# the key is accepted by the file but never reaches the config -- the
+	# option silently does nothing, which is the failure that looks like a bug
+	# in the feature rather than in its wiring.
+	#
+	# `-p` is the compositor's own config check and reports an unknown keyword
+	# on stderr, so this asks the binary rather than reading the table.
+	local cfg="$HL_OUTDIR/keycheck.kdl"
+	cat > "$cfg" <<'KDL'
+bar {
+    enable true
+    modules-left "tags"
+    modules-right "network,weather,media"
+    modules-right-monitor "focused"
+    network { max-down 266.4; max-up 222.8 }
+    weather { interval 15 }
+    media { bars 6; visualiser true }
+    popover { width 340; row-height 34 }
+    tooltip { enable true; delay 500 }
+    discord { daemon-cmd "" }
+}
+KDL
+	local out
+	out="$("$HL_ASTEROIDZ" -p -c "$cfg" 2>&1)"
+	hl_assert_true "every bar config key in the docs is reachable ($(echo "$out" | tr '\n' ' ' | cut -c1-80))" \
+		"$(echo "$out" | grep -qi "unknown keyword" && echo false || echo true)"
+}
+
 test_bar_idle_inhibitor_stays_visible_when_it_is_on() {
 	[ "$(bar_supported)" = "true" ] || { echo "  (skip: built without -Dnative-bar)"; return 0; }
 	command -v python3 >/dev/null && python3 -c "import PIL" 2>/dev/null || {

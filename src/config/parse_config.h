@@ -487,6 +487,11 @@ typedef struct {
 	int32_t bar_show_logo;  /* leading asteroidz ship pill on the tags module */
 	int32_t bar_tag_icons;  /* max app icons drawn inside each tag pill */
 	int32_t bar_weather_interval; /* minutes between forecast fetches */
+	/* Link speed in MEGABITS per second, as an ISP quotes it, so the network
+	 * arrows can light in proportion to what the line can actually do. 0 keeps
+	 * the fixed byte-rate bands, which are right for an unknown link. */
+	float bar_net_max_down;
+	float bar_net_max_up;
 	char bar_weather_location[128]; /* city name; empty = IP geolocation */
 	/* Daemon the discord module launches when nothing is serving its socket,
 	 * mirroring the waybar plugin's own daemon-cmd. Empty disables spawning. */
@@ -2338,6 +2343,10 @@ bool parse_option(Config *config, char *key, char *value) {
 		config->bar_volume_step = CLAMP_INT(atoi(value), 1, 50);
 	} else if (strcmp(key, "bar_media_bars") == 0) {
 		config->bar_media_bars = CLAMP_INT(atoi(value), 1, 8);
+	} else if (strcmp(key, "bar_net_max_down") == 0) {
+		config->bar_net_max_down = atof(value);
+	} else if (strcmp(key, "bar_net_max_up") == 0) {
+		config->bar_net_max_up = atof(value);
 	} else if (strcmp(key, "bar_media_fps") == 0) {
 		config->bar_media_fps = CLAMP_INT(atoi(value), 1, 60);
 	} else if (strcmp(key, "bar_media_viz") == 0) {
@@ -3738,6 +3747,8 @@ static const struct {
 	{"bar/tag-icons", "bar_tag_icons"},
 	{"bar/media-width", "bar_media_width"},
 	{"bar/weather/interval", "bar_weather_interval"},
+	{"bar/network/max-down", "bar_net_max_down"},
+	{"bar/network/max-up", "bar_net_max_up"},
 	{"bar/weather/location", "bar_weather_location"},
 	{"bar/discord/daemon-cmd", "bar_discord_daemon"},
 	{"bar/panel/enable", "bar_panel_enable"},
@@ -4867,6 +4878,12 @@ void set_value_default() {
 	config.bar_show_logo = 1;
 	config.bar_tag_icons = 3;
 	config.bar_weather_interval = 15;
+	/* 0: no link speed configured, so the arrows use fixed byte-rate bands.
+	 * Guessing a speed would be worse than not scaling at all -- too low and
+	 * the pair sits saturated all day, too high and a real download never
+	 * lights it. */
+	config.bar_net_max_down = 0.0f;
+	config.bar_net_max_up = 0.0f;
 	config.bar_media_width = 280;
 	config.bar_weather_location[0] = '\0';
 	config.bar_panel_enable = 1;

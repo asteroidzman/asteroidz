@@ -75,6 +75,8 @@ bar {
 | `media.visualiser` | `true` | animate a spectrum in the media pill while playing |
 | `media.bars` | `6` | spectrum bars (max 8) — fewer means wider ones |
 | `media.fps` | `20` | visualiser frame rate — **this is the cost dial**, see below |
+| `network.max-down` | `0` | downlink speed in **Mbps**; scales the activity arrows to the line. `0` uses fixed byte-rate bands |
+| `network.max-up` | `0` | uplink speed in Mbps, same |
 | `weather.interval` | `15` | minutes between forecast fetches |
 | `weather.location` | *(empty)* | city name; empty means IP geolocation |
 | `interval` | `2` | seconds between `/proc` + `/sys` metric samples |
@@ -102,7 +104,7 @@ for a newer build still starts.
 | `layout` | the current layout, as its Waybar SVG | cycles `circle_layout` |
 | `cpu` | total CPU load, from `/proc/stat` deltas — **icon only**, tinted by load | — |
 | `memory` | used memory, from `/proc/meminfo` — **icon only**, tinted by load | — |
-| `network` | two activity arrows — upload above, download below — each lit by its own throughput, from `/sys/class/net`. **Icon only** | — |
+| `network` | two activity arrows — upload above, download below — each lit by its own throughput, from `/sys/class/net`, in proportion to `network.max-down`/`max-up` when those are set. **Icon only** | — |
 | `idle` | manual idle-inhibit state ("keep awake") | toggles it |
 | `weather` | current temperature and condition, from open-meteo | click opens conditions, metrics and a 7-day forecast |
 | `media` | previous / play-pause / next, then now playing (title • artist) from MPRIS, with a live spectrum while playing. Shown only while **Playing or Paused** | each button sends its MPRIS method; the track itself still toggles play/pause |
@@ -295,6 +297,30 @@ Rather than show six bars pinned at zero through a whole track, the pill
 detects a few seconds of pure silence while the player reports playing and
 falls back to its normal transport glyph. cava stays up, cheaply, so the bars
 return by themselves if the signal does.
+
+### Network activity
+
+Two arrows, upload above and download below, each lit by its own direction's
+throughput in four bands — the pair of activity LEDs on a switch port.
+
+Without a configured link speed the bands are absolute: active at 8 KB/s,
+heavy at 512 KB/s, saturated at 4 MB/s. That last one is about a *tenth* of a
+266 Mbps line, so on a fast connection anything more than a brisk download
+pinned both arrows and the indicator stopped saying anything.
+
+Give it the line speed — in Mbps, as an ISP quotes it — and the upper bands
+become fractions of it instead: heavy at 20%, saturated at 65%.
+
+```kdl
+bar { network { max-down 266.4; max-up 222.8 } }
+```
+
+The *active* band keeps its absolute 8 KB/s floor either way. A percentage
+first step would be tens of KB/s on a fast line, and the whole job of the
+dimmest state is to show that something is happening at all.
+
+Not guessed at when unset: too low a guess sits saturated all day, too high
+and a real download never lights it. Unknown links keep the fixed bands.
 
 ## Weather
 

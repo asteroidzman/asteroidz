@@ -2180,9 +2180,30 @@ static void bar_load_tint(int32_t pct, float out[4]) {
  * runs -- not one surface per sample. */
 #define BAR_NET_TIERS 4
 
-/* Throughput bands, in bytes/sec. Chosen so the common case reads as calm: a
- * desktop trickling background chatter should show resting, not "busy". */
-static int32_t bar_net_tier(double bytes_per_sec) {
+/* Throughput bands. Chosen so the common case reads as calm: a desktop
+ * trickling background chatter should show resting, not "busy".
+ *
+ * With a link speed configured (megabits, as an ISP quotes it) the bands are
+ * FRACTIONS of it, because "busy" only means anything relative to what the
+ * line can do. The fixed bands top out at 4 MiB/s, which is about a tenth of
+ * a 266 Mbit connection -- so anything more than a brisk download pinned both
+ * arrows at saturated and the indicator stopped saying anything at all.
+ *
+ * The "active" band keeps its absolute floor either way. On a fast line a
+ * percentage-based first step would be tens of KB/s, and the whole point of
+ * the dimmest state is to show that something is happening at all. */
+static int32_t bar_net_tier(double bytes_per_sec, float max_mbit) {
+	if (max_mbit > 0.0f) {
+		/* megabits/s -> bytes/s */
+		double cap = (double)max_mbit * 1000000.0 / 8.0;
+		if (bytes_per_sec >= cap * 0.65)
+			return 3; /* saturated: the line is doing what it can */
+		if (bytes_per_sec >= cap * 0.20)
+			return 2; /* heavy */
+		if (bytes_per_sec >= 8.0 * 1024)
+			return 1; /* active */
+		return 0;     /* resting */
+	}
 	if (bytes_per_sec >= 4.0 * 1024 * 1024)
 		return 3; /* saturated */
 	if (bytes_per_sec >= 512.0 * 1024)
@@ -2308,12 +2329,14 @@ static void bar_module_refresh_metric(BarModule *mod) {
 		 * for throughput text that was mostly empty space. A down link lights
 		 * both arrows in the urgent colour rather than showing a separate
 		 * "disconnected" glyph -- the pair going red IS the reading. */
-		int32_t up_tier = bar_metrics.link_up
-							  ? bar_net_tier(bar_metrics.tx_rate)
-							  : BAR_NET_TIERS - 1;
-		int32_t down_tier = bar_metrics.link_up
-								? bar_net_tier(bar_metrics.rx_rate)
-								: BAR_NET_TIERS - 1;
+		int32_t up_tier =
+			bar_metrics.link_up
+				? bar_net_tier(bar_metrics.tx_rate, config.bar_net_max_up)
+				: BAR_NET_TIERS - 1;
+		int32_t down_tier =
+			bar_metrics.link_up
+				? bar_net_tier(bar_metrics.rx_rate, config.bar_net_max_down)
+				: BAR_NET_TIERS - 1;
 		const char *key = bar_net_icon(up_tier, down_tier);
 		if (key)
 			asteroidz_tab_bar_node_set_icon(p->node, key);
@@ -3553,10 +3576,14 @@ static uint64_t bar_digest(Monitor *m) {
 			 * rate crosses a band, and the rate itself jitters every sample.
 			 * Hashing the raw doubles would relayout the bar twice a second for
 			 * artwork that did not change. */
-			int32_t ut = bar_metrics.link_up ? bar_net_tier(bar_metrics.tx_rate)
-											 : BAR_NET_TIERS - 1;
-			int32_t dt = bar_metrics.link_up ? bar_net_tier(bar_metrics.rx_rate)
-											 : BAR_NET_TIERS - 1;
+			int32_t ut = bar_metrics.link_up
+							 ? bar_net_tier(bar_metrics.tx_rate,
+											config.bar_net_max_up)
+							 : BAR_NET_TIERS - 1;
+			int32_t dt = bar_metrics.link_up
+							 ? bar_net_tier(bar_metrics.rx_rate,
+											config.bar_net_max_down)
+							 : BAR_NET_TIERS - 1;
 			bar_hash(&h, &ut, sizeof(ut));
 			bar_hash(&h, &dt, sizeof(dt));
 			bar_hash(&h, &bar_metrics.link_up, sizeof(bar_metrics.link_up));
