@@ -34,4 +34,18 @@ void fx_vk_texture_get_image_attribs(struct wlr_texture *texture,
 	struct fx_vk_image_attribs *attribs);
 bool fx_vk_texture_has_alpha(struct wlr_texture *texture);
 
+
+/* Blend client alpha in the encoded (sRGB) space instead of in linear light.
+ *
+ * Off by default: linear is the physically correct answer and the one colour
+ * management and HDR require. On, translucent surfaces composite the way they
+ * do on compositors that blend encoded values, which is what application
+ * authors picked their alpha against.
+ *
+ * Ignored for HDR sources and whenever the output carries a colour transform,
+ * so turning it on cannot break a colour-managed path. A no-op on renderers
+ * that already blend encoded values, which includes the GLES one.
+ */
+void fx_renderer_set_srgb_blending(struct wlr_renderer *renderer, bool enabled);
+
 #endif

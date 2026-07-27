@@ -72,6 +72,22 @@ struct fx_vk_renderer *fx_vulkan_get_renderer(struct wlr_renderer *wlr_renderer)
 	return renderer;
 }
 
+void fx_renderer_set_srgb_blending(struct wlr_renderer *wlr_renderer, bool enabled) {
+	// Deliberately not an assert: a compositor sets this from config without
+	// caring which renderer it ended up with, and the GLES one already blends
+	// encoded values, so there is nothing to do there.
+	if (!wlr_renderer || !fx_vk_renderer_is_vk(wlr_renderer)) {
+		return;
+	}
+	struct fx_vk_renderer *renderer = fx_vulkan_get_renderer(wlr_renderer);
+	if (renderer->srgb_blending == enabled) {
+		return;
+	}
+	renderer->srgb_blending = enabled;
+	wlr_log(WLR_INFO, "vulkan: blending client alpha in %s space",
+		enabled ? "encoded (sRGB)" : "linear");
+}
+
 static struct fx_vk_render_format_setup *find_or_create_render_setup(
 		struct fx_vk_renderer *renderer, const struct fx_vk_format *format,
 		bool has_blending_buffer, bool srgb);

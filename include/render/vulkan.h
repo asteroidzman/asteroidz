@@ -428,6 +428,24 @@ struct fx_vk_renderer {
 	struct wlr_backend *backend;
 	struct fx_vk_device *dev;
 
+	// Blend client alpha in the ENCODED space rather than in linear light.
+	//
+	// This renderer composites into a 16F buffer in linear light, which is
+	// what colour-managed output wants and what HDR needs. It also means a
+	// client's alpha behaves differently here than on every compositor that
+	// blends encoded values: 5% of a bright backdrop through a dark window is
+	// 5% of its LIGHT, and sRGB spends most of its code range on darks, so it
+	// lands far up the visible scale. Every translucent application therefore
+	// looks more see-through here than its author intended, because authors
+	// pick alpha by eye elsewhere.
+	//
+	// With this set, SDR sources are sampled without linearising and the
+	// output pass skips the encode, so blending happens on encoded values.
+	// It is IGNORED whenever real colour management is in play -- a PQ source,
+	// or a colour transform on the output -- because those need linear light
+	// and must not be broken by an appearance preference.
+	bool srgb_blending;
+
 	// maxPushConstantsSize-derived viability: end of the fragment push range
 	// the shared layout was built with (min(224, device budget)). Effects
 	// whose push block ends beyond this degrade gracefully (rounded ->

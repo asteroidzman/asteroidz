@@ -339,8 +339,22 @@ static bool render_pass_submit(struct wlr_render_pass *wlr_pass) {
 
 		encode_color_matrix(matrix, frag_pcr_data.matrix);
 
+		/* Encoded-space blending: the scene buffer already holds encoded
+		 * values, because every source was sampled without linearising, so
+		 * the output must pass them through rather than encode them a second
+		 * time. Same two conditions as the texture side -- no LUT, no colour
+		 * transform, an SDR transfer function -- so the two can never
+		 * disagree about which space the buffer is in. */
+		bool blend_encoded = renderer->srgb_blending && !need_lut &&
+			pass->color_transform == NULL &&
+			(tf == WLR_COLOR_TRANSFER_FUNCTION_SRGB ||
+			 tf == WLR_COLOR_TRANSFER_FUNCTION_GAMMA22 ||
+			 tf == WLR_COLOR_TRANSFER_FUNCTION_BT1886);
+
 		VkPipeline pipeline = VK_NULL_HANDLE;
-		if (need_lut) {
+		if (blend_encoded) {
+			pipeline = render_buffer->two_pass.render_setup->output_pipe_identity;
+		} else if (need_lut) {
 			pipeline = render_buffer->two_pass.render_setup->output_pipe_lut3d;
 		} else {
 			switch (tf) {
@@ -922,6 +936,25 @@ static void render_texture(struct fx_vk_render_pass *pass,
 
 	bool srgb_image_view = false;
 	enum fx_vk_texture_transform tex_transform = 0;
+
+	/* Encoded-space blending: sample SDR sources as they are, so the blend
+	 * that follows happens on encoded values rather than on light.
+	 *
+	 * Only for the SDR transfer functions, and only when the pass carries no
+	 * colour transform. A PQ source is HDR and has to be linearised whatever
+	 * the preference says -- and mixing a linear source into an otherwise
+	 * encoded scene buffer would be worse than either choice made
+	 * consistently, so the output side below tests the same two conditions. */
+	bool blend_encoded = pass->renderer->srgb_blending &&
+		pass->color_transform == NULL &&
+		(tf == WLR_COLOR_TRANSFER_FUNCTION_SRGB ||
+		 tf == WLR_COLOR_TRANSFER_FUNCTION_GAMMA22 ||
+		 tf == WLR_COLOR_TRANSFER_FUNCTION_BT1886);
+	if (blend_encoded) {
+		tex_transform = WLR_VK_TEXTURE_TRANSFORM_IDENTITY;
+		goto transform_chosen;
+	}
+
 	switch (tf) {
 	case WLR_COLOR_TRANSFER_FUNCTION_SRGB:
 		if (texture->using_mutable_srgb) {
@@ -944,6 +977,7 @@ static void render_texture(struct fx_vk_render_pass *pass,
 		tex_transform = WLR_VK_TEXTURE_TRANSFORM_BT1886;
 		break;
 	}
+transform_chosen:
 
 	enum wlr_color_encoding color_encoding = options->color_encoding;
 	bool is_ycbcr = fx_vulkan_format_is_ycbcr(texture->format);
