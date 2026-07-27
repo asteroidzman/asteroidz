@@ -202,7 +202,7 @@ lib_scenefx = library(
 	versioned_name, scenefx_files,
 	dependencies: scenefx_deps,
 	include_directories:  [ scenefx_inc ],
-	install: true,
+	install: not meson.is_subproject(),
 )
 
 
@@ -221,11 +221,13 @@ if get_option('examples')
 	subdir('tinywl')
 endif
 
-pkgconfig = import('pkgconfig')
-pkgconfig.generate(
-	lib_scenefx,
-	name: versioned_name,
-	version: meson.project_version(),
-	description: 'Wlroots effects library',
-	subdirs: versioned_name,
-)
+if not meson.is_subproject()
+	pkgconfig = import('pkgconfig')
+	pkgconfig.generate(
+		lib_scenefx,
+		name: versioned_name,
+		version: meson.project_version(),
+		description: 'Wlroots effects library',
+		subdirs: versioned_name,
+	)
+endif
