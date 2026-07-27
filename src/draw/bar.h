@@ -2828,7 +2828,17 @@ static void bar_module_refresh_display(BarModule *mod) {
 		bar_pill_release(&mod->pills[i]);
 }
 
+static bool bar_right_belongs_here(Monitor *m);
+
 static void bar_module_refresh(BarModule *mod) {
+	/* A section that is not on this screen renders nothing at all -- no pills,
+	 * so the slot is empty and its panel is not drawn either. */
+	if (mod->slot == BAR_SLOT_RIGHT && !bar_right_belongs_here(mod->mon)) {
+		for (int32_t i = 0; i < BAR_MAX_PILLS; i++)
+			bar_pill_release(&mod->pills[i]);
+		mod->npills = 0;
+		return;
+	}
 	switch (mod->kind) {
 	case BAR_MODULE_TAGS:
 		bar_module_refresh_tags(mod);
@@ -3475,6 +3485,12 @@ static uint64_t bar_digest(Monitor *m) {
 	bar_hash(&h, &sel, sizeof(sel));
 	bar_hash(&h, &occ, sizeof(occ));
 	bar_hash(&h, &urg, sizeof(urg));
+	/* Whether this is the focused monitor. Only the right-section rule reads
+	 * it today, and only in "focused" mode -- but leaving it out means the
+	 * monitor LOSING focus keeps a stale section: its own content did not
+	 * change, so its digest did not either, so it never redrew. */
+	bool focused = (m == selmon);
+	bar_hash(&h, &focused, sizeof(focused));
 	/* geometry: a mode/scale/position change must force a relayout */
 	bar_hash(&h, &m->m, sizeof(m->m));
 	float scale = m->wlr_output ? m->wlr_output->scale : 1.0f;
@@ -3884,6 +3900,57 @@ static void bar_destroy(Monitor *m) {
 	free(bar);
 	m->bar = NULL;
 	bar_clock_sync();
+}
+
+/* Does this monitor draw the right-hand section?
+ *
+ * The left and centre sections are per-monitor by nature: tags and the focused
+ * window's title describe the screen you are looking at. The right one is
+ * machine state -- one tray, one clock, one battery -- and on a multi-head
+ * desk that is the same row of pills repeated on every screen, competing for
+ * the same glance.
+ *
+ *   ""/"all"    every monitor (the default, and what this always did)
+ *   "focused"   whichever monitor has focus, following it as it moves
+ *   "<output>"  that output alone
+ *
+ * Asked on every refresh rather than when the bar is built, because "focused"
+ * changes under a bar that already exists. The modules are always constructed;
+ * the ones that do not belong here simply render nothing, which also means
+ * their state stays warm when focus moves rather than being torn down and
+ * rebuilt on every hop between screens.
+ *
+ * A name that no CONNECTED output matches falls back to the focused monitor
+ * rather than disappearing: unplugging a screen must not take the tray and the
+ * clock off the desk entirely, with no way to get them back short of editing
+ * the config. */
+static bool bar_right_belongs_here(Monitor *m) {
+	const char *want = config.bar_modules_right_monitor;
+	if (!want[0] || !strcmp(want, "all"))
+		return true;
+	if (!m || !m->wlr_output || !m->wlr_output->name)
+		return false;
+	if (!strcmp(want, "focused") || !strcmp(want, "focus"))
+		return m == selmon;
+	if (!strcmp(want, m->wlr_output->name))
+		return true;
+
+	Monitor *fallback = NULL, *other = NULL;
+	wl_list_for_each(other, &mons, link) {
+		if (!other->wlr_output || !other->wlr_output->enabled)
+			continue;
+		if (other->wlr_output->name && !strcmp(want, other->wlr_output->name))
+			return false; /* the output it asked for is here; not us */
+		if (!fallback)
+			fallback = other;
+	}
+	/* The focused monitor, not the first in the list: `mons` is in the order
+	 * outputs were added, which is not something anyone can predict from
+	 * looking at their desk. Falling back to the screen being used puts the
+	 * tray where the eyes already are. */
+	if (selmon && selmon->wlr_output && selmon->wlr_output->enabled)
+		fallback = selmon;
+	return fallback == m;
 }
 
 static void bar_create(Monitor *m) {

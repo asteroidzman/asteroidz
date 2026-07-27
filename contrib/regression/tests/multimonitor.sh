@@ -182,6 +182,71 @@ test_toggle_monitor() {
 # mousebind and keybind-combo. Run here, everything that assumes one monitor
 # has already been and gone.
 
+test_bar_right_section_can_be_pinned_or_follow_focus() {
+	declare -F bar_set >/dev/null || {
+		echo "  (skip: needs the bar module's config helpers -- run with 'bar' too)"
+		return 0; }
+	[ "$(bar_supported)" = "true" ] || { echo "  (skip: built without -Dnative-bar)"; return 0; }
+	command -v python3 >/dev/null && python3 -c "import PIL" 2>/dev/null || {
+		echo "  (skip: python3 PIL not available)"; return 0; }
+	hl_ensure_second_monitor || { hl_skip "test_bar_right_section_can_be_pinned_or_follow_focus: could not get a second monitor"; return 0; }
+
+	# The left and centre sections belong to the screen you are looking at.
+	# The right one is machine state -- one tray, one clock -- and repeating it
+	# on every screen is the same row of pills competing for the same glance.
+	# Three modes, and all three are worth pinning because the difference
+	# between them is invisible on a single-monitor desk.
+	local cfg='bar { enable true; height 48; position "top"; margin { x 8; y 9 }; pill-inset 6; modules-left "tags"; modules-right "cpu,memory,network,volume"; panel { enable true; radius 9; padding 6; blur false; shadow false }'
+
+	# Ink at the right-hand end of each screen, in one full-layout screenshot.
+	right_ink() { # right_ink NAME SCREEN(0|1)
+		hl_screenshot "$1"
+		local off=$(( $2 * HL_WIDTH ))
+		hl_region_ink "$HL_OUTDIR/$1.png" $((off + HL_WIDTH - 400)) 8 \
+			$((off + HL_WIDTH - 8)) 56
+	}
+
+	bar_set "$cfg }"
+	sleep 1
+	local a b
+	a=$(right_ink rs-all 0); b=$(right_ink rs-all 1)
+	hl_assert_true "by default the right section is on every monitor ($a / $b)" \
+		"$([ "${a:-0}" -gt 500 ] && [ "${b:-0}" -gt 500 ] && echo true || echo false)"
+
+	bar_set "$cfg; modules-right-monitor \"$HL_SECOND_MON\" }"
+	sleep 1
+	a=$(right_ink rs-pinned 0); b=$(right_ink rs-pinned 1)
+	hl_assert_true "naming an output puts it on that one alone ($a / $b)" \
+		"$([ "${a:-0}" -lt 200 ] && [ "${b:-0}" -gt 500 ] && echo true || echo false)"
+
+	# An output that is not here must not take the tray off the desk entirely.
+	bar_set "$cfg; modules-right-monitor \"NO-SUCH-OUTPUT\" }"
+	sleep 1
+	a=$(right_ink rs-gone 0); b=$(right_ink rs-gone 1)
+	hl_assert_true "an unplugged output falls back rather than vanishing ($a / $b)" \
+		"$([ $(( ${a:-0} + ${b:-0} )) -gt 500 ] && echo true || echo false)"
+
+	# ...and it follows focus when asked to.
+	bar_set "$cfg; modules-right-monitor \"focused\" }"
+	sleep 1
+	hl_dispatch "focus_monitor,$HL_MON" 1
+	a=$(right_ink rs-focus1 0); b=$(right_ink rs-focus1 1)
+	hl_assert_true "focused mode draws it on the focused monitor ($a / $b)" \
+		"$([ "${a:-0}" -gt 500 ] && [ "${b:-0}" -lt 200 ] && echo true || echo false)"
+
+	hl_dispatch "focus_monitor,$HL_SECOND_MON" 1
+	a=$(right_ink rs-focus2 0); b=$(right_ink rs-focus2 1)
+	# The monitor LOSING focus is the half that regresses: its own content did
+	# not change, so without focus in the redraw digest it keeps a stale
+	# section and both screens show one.
+	hl_assert_true "and moves with focus, leaving the old monitor ($a / $b)" \
+		"$([ "${a:-0}" -lt 200 ] && [ "${b:-0}" -gt 500 ] && echo true || echo false)"
+
+	hl_dispatch "focus_monitor,$HL_MON" 1
+	bar_off
+	unset -f right_ink
+}
+
 test_bar_arrange_canvas_drags_a_monitor() {
 	declare -F bar_set >/dev/null || {
 		echo "  (skip: needs the bar module's config helpers -- run with 'bar' too)"

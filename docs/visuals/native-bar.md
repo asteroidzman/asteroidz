@@ -69,6 +69,7 @@ bar {
 | `modules-left` | `"tags,layout,title"` | comma-separated module list |
 | `modules-center` | `"clock"` | " |
 | `modules-right` | *(empty)* | " |
+| `modules-right-monitor` | *(empty)* | which output draws the right section: empty/`all` for every one, `focused` to follow focus, or an output name |
 | `clock.format` | `"%H:%M:%S"` | `strftime` format |
 | `media-width` | `280` | pinned width of the now-playing pill |
 | `media.visualiser` | `true` | animate a spectrum in the media pill while playing |
@@ -143,6 +144,30 @@ however many applications happen to be running, so with a fixed layout an
 unrelated program starting could push a module off the bar. A module that was
 shed comes back on its own as soon as the width is there again (its nodes are
 disabled, not destroyed).
+
+### Where the right section goes
+
+The left and centre sections belong to the screen you are looking at — tags and
+the focused window's title describe *that* monitor. The right one is machine
+state: one tray, one clock, one battery, repeated on every screen and competing
+for the same glance.
+
+```kdl
+bar { modules-right-monitor "all" }      // default: every monitor
+bar { modules-right-monitor "focused" }  // follows focus as it moves
+bar { modules-right-monitor "DP-1" }     // that output alone
+```
+
+The question is asked on every refresh rather than when the bar is built,
+because `focused` changes under a bar that already exists. The modules are
+always constructed; the ones that do not belong on a screen render nothing,
+which also keeps their state warm as focus moves rather than tearing it down
+and rebuilding on every hop.
+
+Naming an output that is not connected falls back to the **focused** monitor
+rather than disappearing: unplugging a screen must not take the tray and the
+clock off the desk entirely, with no way to get them back short of editing the
+config.
 
 ## System tray
 
