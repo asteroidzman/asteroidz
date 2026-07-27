@@ -719,6 +719,16 @@ static int32_t bar_icon_pill_width(BarPill *p, int32_t height) {
  * Fetched through async_spawn(curl) -- never synchronously: this runs on the
  * compositor's event loop, where a 3-second DNS stall would be a 3-second
  * freeze. */
+/* One day of the forecast, as the popover shows it. */
+typedef struct {
+	char day[12]; /* "Mon", or "Today" for the first */
+	int32_t code;
+	int32_t tmin, tmax;
+	int32_t precip; /* max probability, % */
+} BarWeatherDay;
+
+#define BAR_WEATHER_DAYS 7
+
 static struct {
 	double lat, lon;
 	bool located;
@@ -727,6 +737,18 @@ static struct {
 	bool is_day;
 	bool valid;
 	bool in_flight;
+	/* Everything below is for the popover only: the pill shows a glyph and a
+	 * temperature and nothing else. Fetched in the same request, because one
+	 * curl that returns a little more costs nothing next to a second one. */
+	char city[96];
+	int32_t feels_c;
+	int32_t humidity_pct;
+	int32_t wind_kmh;
+	int32_t pressure_hpa;
+	int32_t precip_pct;
+	char sunrise[8], sunset[8];
+	BarWeatherDay days[BAR_WEATHER_DAYS];
+	int32_t ndays;
 } bar_weather;
 
 static struct wl_event_source *bar_weather_timer = NULL;
@@ -775,7 +797,124 @@ static const char *bar_wmo_icon(int32_t code, bool day) {
 	}
 }
 
+/* Plain-language WMO code, for the weather pill's hover and the forecast
+ * popover. The pill shows the temperature and an icon; "which of the four rain
+ * icons is that" is exactly the question a glyph cannot answer. Kept beside
+ * the icon map so the two cannot drift apart, and defined here rather than in
+ * bar-tooltip.h because the popover is included first and needs it too. */
+static const char *bar_wmo_text(int32_t code) {
+	switch (code) {
+	case 0: return "clear";
+	case 1: return "mainly clear";
+	case 2: return "partly cloudy";
+	case 3: return "overcast";
+	case 45: case 48: return "fog";
+	case 51: case 53: case 55: return "drizzle";
+	case 56: case 57: return "freezing drizzle";
+	case 61: case 63: return "rain";
+	case 65: return "heavy rain";
+	case 66: case 67: return "freezing rain";
+	case 71: case 73: return "snow";
+	case 75: return "heavy snow";
+	case 77: return "snow grains";
+	case 80: case 81: return "showers";
+	case 82: return "violent showers";
+	case 85: case 86: return "snow showers";
+	case 95: return "thunderstorm";
+	case 96: case 99: return "thunderstorm with hail";
+	default: return "";
+	}
+}
+
 static void bar_weather_fetch_forecast(void);
+
+/* A rounded integer out of a JSON number, or `fallback` if it is not one.
+ * open-meteo omits a field entirely when the model has no value for it. */
+static int32_t bar_num(cJSON *o, const char *key, int32_t fallback) {
+	cJSON *v = cJSON_GetObjectItem(o, key);
+	return cJSON_IsNumber(v) ? (int32_t)lround(v->valuedouble) : fallback;
+}
+
+/* "2026-07-26T05:14" -> "05:14". The API returns local time already, so this
+ * is a substring, not a conversion. */
+static void bar_weather_clock(const char *iso, char *out, size_t outlen) {
+	out[0] = '\0';
+	const char *t = iso ? strchr(iso, 'T') : NULL;
+	if (t && strlen(t) >= 6)
+		snprintf(out, outlen, "%.5s", t + 1);
+}
+
+/* "2026-07-26" -> "Mon". Uses timegm on a midday UTC timestamp so a date near
+ * a DST boundary cannot land on the previous day. */
+static void bar_weather_dayname(const char *iso, int32_t index, char *out,
+								size_t outlen) {
+	if (index == 0) {
+		snprintf(out, outlen, "Today");
+		return;
+	}
+	int y = 0, mo = 0, d = 0;
+	/* sscanf rather than strptime: strptime needs _XOPEN_SOURCE, and this
+	 * parses exactly one fixed shape that the API documents. */
+	if (!iso || sscanf(iso, "%4d-%2d-%2d", &y, &mo, &d) != 3) {
+		snprintf(out, outlen, "--");
+		return;
+	}
+	struct tm tm = {0};
+	tm.tm_year = y - 1900;
+	tm.tm_mon = mo - 1;
+	tm.tm_mday = d;
+	tm.tm_hour = 12;
+	time_t at = timegm(&tm);
+	struct tm g;
+	if (!gmtime_r(&at, &g) || strftime(out, outlen, "%a", &g) == 0)
+		snprintf(out, outlen, "--");
+}
+
+/* The `daily` block is column-oriented: parallel arrays, one entry per day. */
+static void bar_weather_parse_daily(cJSON *daily) {
+	bar_weather.ndays = 0;
+	if (!daily)
+		return;
+	cJSON *time = cJSON_GetObjectItem(daily, "time");
+	cJSON *tmax = cJSON_GetObjectItem(daily, "temperature_2m_max");
+	cJSON *tmin = cJSON_GetObjectItem(daily, "temperature_2m_min");
+	cJSON *code = cJSON_GetObjectItem(daily, "weather_code");
+	cJSON *prec = cJSON_GetObjectItem(daily, "precipitation_probability_max");
+	if (!cJSON_IsArray(time))
+		return;
+
+	/* sunrise/sunset are daily arrays too, but only today's is worth showing */
+	cJSON *sr = cJSON_GetObjectItem(daily, "sunrise");
+	cJSON *ss = cJSON_GetObjectItem(daily, "sunset");
+	cJSON *sr0 = sr ? cJSON_GetArrayItem(sr, 0) : NULL;
+	cJSON *ss0 = ss ? cJSON_GetArrayItem(ss, 0) : NULL;
+	if (cJSON_IsString(sr0))
+		bar_weather_clock(sr0->valuestring, bar_weather.sunrise,
+						  sizeof(bar_weather.sunrise));
+	if (cJSON_IsString(ss0))
+		bar_weather_clock(ss0->valuestring, bar_weather.sunset,
+						  sizeof(bar_weather.sunset));
+
+	int32_t n = cJSON_GetArraySize(time);
+	if (n > BAR_WEATHER_DAYS)
+		n = BAR_WEATHER_DAYS;
+	for (int32_t i = 0; i < n; i++) {
+		BarWeatherDay *d = &bar_weather.days[i];
+		cJSON *ti = cJSON_GetArrayItem(time, i);
+		bar_weather_dayname(cJSON_IsString(ti) ? ti->valuestring : NULL, i,
+							d->day, sizeof(d->day));
+		cJSON *v;
+		v = tmax ? cJSON_GetArrayItem(tmax, i) : NULL;
+		d->tmax = cJSON_IsNumber(v) ? (int32_t)lround(v->valuedouble) : 0;
+		v = tmin ? cJSON_GetArrayItem(tmin, i) : NULL;
+		d->tmin = cJSON_IsNumber(v) ? (int32_t)lround(v->valuedouble) : 0;
+		v = code ? cJSON_GetArrayItem(code, i) : NULL;
+		d->code = cJSON_IsNumber(v) ? (int32_t)v->valuedouble : 3;
+		v = prec ? cJSON_GetArrayItem(prec, i) : NULL;
+		d->precip = cJSON_IsNumber(v) ? (int32_t)lround(v->valuedouble) : -1;
+		bar_weather.ndays = i + 1;
+	}
+}
 
 static void bar_weather_on_forecast(const char *out, size_t len, void *user) {
 	(void)user;
@@ -795,9 +934,17 @@ static void bar_weather_on_forecast(const char *out, size_t len, void *user) {
 			bar_weather.code = cJSON_IsNumber(c) ? (int32_t)c->valuedouble : 3;
 			bar_weather.is_day = !cJSON_IsNumber(d) || d->valuedouble != 0;
 			bar_weather.valid = true;
+			bar_weather.feels_c = bar_num(cur, "apparent_temperature",
+										  bar_weather.temp_c);
+			bar_weather.humidity_pct = bar_num(cur, "relative_humidity_2m", -1);
+			bar_weather.wind_kmh = bar_num(cur, "wind_speed_10m", -1);
+			bar_weather.pressure_hpa = bar_num(cur, "surface_pressure", -1);
+			bar_weather.precip_pct =
+				bar_num(cur, "precipitation_probability", -1);
 			bar_update_all();
 		}
 	}
+	bar_weather_parse_daily(cJSON_GetObjectItem(root, "daily"));
 	cJSON_Delete(root);
 }
 
@@ -826,6 +973,17 @@ static void bar_weather_on_geo(const char *out, size_t len, void *user) {
 		bar_weather.lat = lat->valuedouble;
 		bar_weather.lon = lon->valuedouble;
 		bar_weather.located = true;
+		/* the place name, for the popover: ip-api calls it "city", the
+		 * open-meteo geocoder calls it "name" on the result it matched */
+		cJSON *city = cJSON_GetObjectItem(root, "city");
+		if (!cJSON_IsString(city)) {
+			cJSON *res = cJSON_GetObjectItem(root, "results");
+			cJSON *first = res ? cJSON_GetArrayItem(res, 0) : NULL;
+			city = first ? cJSON_GetObjectItem(first, "name") : NULL;
+		}
+		if (cJSON_IsString(city) && city->valuestring)
+			snprintf(bar_weather.city, sizeof(bar_weather.city), "%s",
+					 city->valuestring);
 		bar_weather_fetch_forecast();
 	}
 	cJSON_Delete(root);
@@ -842,11 +1000,17 @@ static void bar_weather_curl(const char *url, AsyncSpawnCb cb) {
 
 static void bar_weather_fetch_forecast(void) {
 	char url[512];
+	/* The same request the waybar plugin makes: current conditions for the
+	 * pill, plus the metrics and seven days the popover draws. */
 	snprintf(url, sizeof(url),
 			 "https://api.open-meteo.com/v1/forecast?latitude=%.4f"
-			 "&longitude=%.4f&current=temperature_2m,is_day,weather_code"
-			 "&timezone=auto&forecast_days=1",
-			 bar_weather.lat, bar_weather.lon);
+			 "&longitude=%.4f&current=temperature_2m,apparent_temperature,"
+			 "relative_humidity_2m,is_day,weather_code,surface_pressure,"
+			 "wind_speed_10m,precipitation_probability"
+			 "&daily=sunrise,sunset,temperature_2m_max,temperature_2m_min,"
+			 "weather_code,precipitation_probability_max"
+			 "&timezone=auto&forecast_days=%d",
+			 bar_weather.lat, bar_weather.lon, BAR_WEATHER_DAYS);
 	bar_weather_curl(url, bar_weather_on_forecast);
 }
 
@@ -3848,6 +4012,15 @@ static bool bar_handle_node_click(AsteroidzNodeData *hit, uint32_t button) {
 	case BAR_MODULE_MEDICATION:
 		if (button == BTN_LEFT) {
 			bar_popover_open_meds(m, p->node->last_x + p->width / 2);
+			return true;
+		}
+		break;
+	case BAR_MODULE_WEATHER:
+		if (button == BTN_LEFT) {
+			/* The pill is one glyph and a temperature; the forecast the
+			 * request already returns lives here, as the waybar plugin's
+			 * popover did. */
+			bar_popover_open_weather(m, p->node->last_x + p->width / 2);
 			return true;
 		}
 		break;

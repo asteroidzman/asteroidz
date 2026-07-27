@@ -61,33 +61,6 @@ static void bar_tooltip_hide(void) {
 
 /* ─── what a pill has to say ──────────────────────────────────────────────── */
 
-/* Plain-language WMO code, for the weather pill's hover. The pill shows the
- * temperature and an icon; "which of the four rain icons is that" is exactly
- * the question a glyph cannot answer. */
-static const char *bar_wmo_text(int32_t code) {
-	switch (code) {
-	case 0: return "clear";
-	case 1: return "mainly clear";
-	case 2: return "partly cloudy";
-	case 3: return "overcast";
-	case 45: case 48: return "fog";
-	case 51: case 53: case 55: return "drizzle";
-	case 56: case 57: return "freezing drizzle";
-	case 61: case 63: return "rain";
-	case 65: return "heavy rain";
-	case 66: case 67: return "freezing rain";
-	case 71: case 73: return "snow";
-	case 75: return "heavy snow";
-	case 77: return "snow grains";
-	case 80: case 81: return "showers";
-	case 82: return "violent showers";
-	case 85: case 86: return "snow showers";
-	case 95: return "thunderstorm";
-	case 96: case 99: return "thunderstorm with hail";
-	default: return "";
-	}
-}
-
 static void bar_tooltip_bytes(char *out, size_t len, double bytes) {
 	static const char *unit[] = {"B", "K", "M", "G", "T"};
 	int u = 0;

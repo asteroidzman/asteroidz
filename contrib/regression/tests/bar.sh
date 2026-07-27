@@ -786,6 +786,263 @@ test_bar_popover_scrolls_a_menu_taller_than_the_screen() {
 	bar_off
 }
 
+# Write a synthetic `channels` snapshot: 13 servers x 10 voice channels, with
+# $2 participants in each. Shaped exactly like the daemon's own output, down to
+# the global sort by channel position, so the bar cannot tell it apart.
+voice_snapshot() { # voice_snapshot FILE NPARTICIPANTS
+	python3 - "$1" "$2" <<'PY'
+import json, sys
+n = int(sys.argv[2])
+guilds = [{"id": str(100 + g), "name": f"Server {g:02d}", "position": 0}
+          for g in range(13)]
+def people(g, c):
+    return [{"id": str(900000 + g * 100 + c * 10 + i), "name": f"Someone {i}"}
+            for i in range(n)]
+channels = [{"id": str(10000 + g * 100 + c), "guild": str(100 + g),
+             "name": f"Channel {c:02d}", "position": c,
+             "parent": "0", "participants": people(g, c)}
+            for g in range(13) for c in range(10)]
+# the daemon's own ordering: position across every server, not grouped
+channels.sort(key=lambda c: (c["position"], c["name"].lower()))
+with open(sys.argv[1], "w") as f:
+    f.write(json.dumps({"event": "ready", "username": "tester"}) + "\n")
+    f.write(json.dumps({"event": "status", "state": "idle"}) + "\n")
+    f.write(json.dumps({"event": "channels", "guilds": guilds,
+                        "channels": channels}) + "\n")
+PY
+}
+
+# Stand in for the voice daemon: hand every client the snapshot and hold the
+# connection open. Sets VOICE_SOCAT_PID; stop it with voice_stop.
+voice_serve() { # voice_serve SNAPSHOT_FILE
+	rm -f "$HL_XDG/discord-voiced.sock"
+	socat UNIX-LISTEN:"$HL_XDG/discord-voiced.sock",fork \
+		SYSTEM:"cat $1; sleep 120" >/dev/null 2>&1 &
+	VOICE_SOCAT_PID=$!
+}
+
+# Children FIRST, and by parent pid, never by name. socat with `fork` hands
+# each connection to a child process, and killing only the listener leaves the
+# bar's own connection alive and served -- which is how the headcount test
+# first "passed" its swap without the bar ever seeing the second snapshot.
+# Count near-white pixels in a region: the LABELS, not the chips they sit on.
+# hl_region_ink cannot see a headcount -- a menu row is a filled rect either
+# way, so "(4)" appears inside pixels that already counted as ink and the two
+# menus measure identical to the pixel. Text is the only thing that changes.
+voice_label_ink() { # voice_label_ink PNG X0 Y0 X1 Y1
+	python3 - "$@" <<'PY'
+import sys
+from PIL import Image
+im = Image.open(sys.argv[1]).convert("RGB")
+px = im.load()
+x0, y0, x1, y1 = (int(v) for v in sys.argv[2:6])
+x1, y1 = min(x1, im.size[0]), min(y1, im.size[1])
+print(sum(1 for x in range(x0, x1) for y in range(y0, y1)
+          if min(px[x, y]) > 200))
+PY
+}
+
+voice_stop() {
+	[ -n "${VOICE_SOCAT_PID:-}" ] || return 0
+	local kid
+	for kid in $(pgrep -P "$VOICE_SOCAT_PID" 2>/dev/null); do
+		pkill -P "$kid" 2>/dev/null   # the SYSTEM: shell under the child
+		kill "$kid" 2>/dev/null
+	done
+	kill "$VOICE_SOCAT_PID" 2>/dev/null
+	VOICE_SOCAT_PID=""
+}
+
+test_bar_weather_popover_shows_the_week() {
+	[ "$(bar_supported)" = "true" ] || { echo "  (skip: built without -Dnative-bar)"; return 0; }
+	command -v python3 >/dev/null && python3 -c "import PIL" 2>/dev/null || {
+		echo "  (skip: python3 PIL not available)"; return 0; }
+	# open-meteo is the module's only data source and there is no way to point
+	# it somewhere else, so this test needs the network. Skipped, not failed,
+	# when there is none: a suite that goes red on a train is a suite people
+	# stop running.
+	curl -sS --max-time 6 -o /dev/null \
+		"https://api.open-meteo.com/v1/forecast?latitude=0&longitude=0&current=temperature_2m" \
+		2>/dev/null || { echo "  (skip: no network / open-meteo unreachable)"; return 0; }
+
+	# The pill is a glyph and a temperature; everything the request already
+	# returns -- conditions, metrics, seven days -- lives in the popover, as it
+	# did in the waybar plugin. A popover with only the two current-condition
+	# rows means the daily block was dropped on the way in.
+	bar_set 'theme { border-width 0 }
+bar { enable true; height 48; position "top"; margin { x 8; y 9 }; pill-inset 6; modules-left "tags"; modules-right "weather"; panel { enable true; radius 9; padding 6; blur false; shadow false } }'
+	local i temp=""
+	for i in $(seq 1 30); do
+		sleep 1
+		hl_screenshot wx-wait
+		# the pill renders "--°" until the first fetch lands; once it has a
+		# reading the ink to the left of the panel edge grows
+		temp=$(hl_region_ink "$HL_OUTDIR/wx-wait.png" $((HL_WIDTH - 200)) 16 $((HL_WIDTH - 8)) 50)
+		[ "${temp:-0}" -gt 200 ] && break
+	done
+	[ "${temp:-0}" -gt 200 ] || { echo "  (skip: no forecast arrived in 30s)"; bar_off; return 0; }
+
+	hl_screenshot wx-closed
+	local px; px="$(hl_rightmost_ink_x "$HL_OUTDIR/wx-closed.png" 16 50)"
+	hl_click $((px - 20)) 32
+	sleep 1.5
+	hl_screenshot wx-open
+	local x0=$((px - 460)) x1=$((px + 10))
+	[ $x0 -lt 0 ] && x0=0
+	local ink; ink="$(hl_region_ink "$HL_OUTDIR/wx-open.png" $x0 60 $x1 700)"
+	hl_assert_true "the weather pill opens a forecast panel ($ink px)" \
+		"$([ "$ink" -gt 3000 ] && echo true || echo false)"
+
+	# Seven days plus the current block is a TALL panel. Measuring its height
+	# is what separates "the forecast is in there" from "two rows opened".
+	local rows
+	rows=$(python3 - "$HL_OUTDIR/wx-open.png" "$x0" "$x1" <<'PYEOF'
+import sys
+from PIL import Image
+im = Image.open(sys.argv[1]).convert("RGB")
+px = im.load()
+x0, x1 = int(sys.argv[2]), int(sys.argv[3])
+w, h = im.size
+bg = px[10, h - 10]                       # wallpaper, well away from the bar
+last = 0
+for y in range(60, h):
+    if any(px[x, y] != bg for x in range(x0, min(x1, w))):
+        last = y
+print(last)
+PYEOF
+)
+	hl_assert_true "and it is tall enough to hold the week (panel reaches y=$rows)" \
+		"$([ "${rows:-0}" -gt 400 ] && echo true || echo false)"
+
+	hl_click 400 800
+	bar_off
+}
+
+test_bar_voice_menu_holds_a_real_accounts_worth_of_channels() {
+	[ "$(bar_supported)" = "true" ] || { echo "  (skip: built without -Dnative-bar)"; return 0; }
+	command -v socat >/dev/null || { echo "  (skip: socat not available)"; return 0; }
+	command -v python3 >/dev/null && python3 -c "import PIL" 2>/dev/null || {
+		echo "  (skip: python3 PIL not available)"; return 0; }
+
+	# Two caps used to cut this list: 64 parsed channels and 64 popover rows.
+	# A dozen servers is 119 channels plus a header each, and the daemon emits
+	# them sorted by channel position across ALL servers rather than grouped,
+	# so truncating took a bite out of every server at once and left the last
+	# few with no header at all -- they looked like servers the account was not
+	# in. The symptom was reported as "why is <server> not in the list".
+	#
+	# Served by socat from a synthetic snapshot: no daemon, no token, no
+	# network. The bar cannot tell the difference -- it reads newline JSON off
+	# a unix socket, which is exactly what this is.
+	local snap="$HL_OUTDIR/dv-snapshot.jsonl"
+	voice_snapshot "$snap" 0
+	voice_serve "$snap"
+	local socatpid=$VOICE_SOCAT_PID
+
+	bar_set 'theme { border-width 0 }
+bar { enable true; height 48; position "top"; margin { x 8; y 9 }; pill-inset 6; modules-left "tags"; modules-right "discord"; discord { daemon-cmd "" }; panel { enable true; radius 9; padding 6; blur false; shadow false } }'
+	sleep 4
+
+	hl_screenshot voice-closed
+	local px; px="$(hl_rightmost_ink_x "$HL_OUTDIR/voice-closed.png" 16 50)"
+	[ -n "$px" ] || { echo "  (skip: could not locate the discord pill)"
+		voice_stop; bar_off; return 0; }
+	hl_click $((px - 10)) 32
+	sleep 1.2
+	hl_screenshot voice-open
+
+	local x0=$((px - 320)) x1=$((px + 10))
+	[ $x0 -lt 0 ] && x0=0
+	local ink; ink="$(hl_region_ink "$HL_OUTDIR/voice-open.png" $x0 60 $x1 1000)"
+	hl_assert_true "the join menu opens with channels in it ($ink px)" \
+		"$([ "$ink" -gt 2000 ] && echo true || echo false)"
+
+	# Scroll well past where the old 64-row menu ended, twice. The first hop
+	# moves under either cap; the second only moves if the list really is
+	# longer than the cut used to allow.
+	hl_wheel $((px - 100)) 200 40
+	sleep 0.8
+	hl_screenshot voice-s40
+	hl_wheel $((px - 100)) 200 40
+	sleep 0.8
+	hl_screenshot voice-s80
+	local deep
+	deep="$(hl_region_diff "$HL_OUTDIR/voice-s40.png" "$HL_OUTDIR/voice-s80.png" $x0 60 $x1 1000)"
+	hl_assert_true "and keeps scrolling past the old 64-row cut ($deep px changed)" \
+		"$([ "$deep" -gt 1000 ] && echo true || echo false)"
+
+	hl_click 400 800
+	voice_stop
+	rm -f "$HL_XDG/discord-voiced.sock"
+	bar_off
+}
+
+test_bar_voice_menu_shows_who_is_in_a_channel() {
+	[ "$(bar_supported)" = "true" ] || { echo "  (skip: built without -Dnative-bar)"; return 0; }
+	command -v socat >/dev/null || { echo "  (skip: socat not available)"; return 0; }
+	command -v python3 >/dev/null && python3 -c "import PIL" 2>/dev/null || {
+		echo "  (skip: python3 PIL not available)"; return 0; }
+
+	# The headcount beside a channel is the whole reason to look at this menu
+	# before joining, and it read 0 for every channel on a busy account: the
+	# daemon calls the field `participants` and the bar was counting `people`,
+	# a key nothing sends. Reading a missing key is silent in cJSON -- NULL,
+	# count zero, an occupied channel drawn as an empty one.
+	#
+	# Asserted by INK, not by reading the digits: the same menu is served
+	# twice, once with empty channels and once with four people in each, and
+	# " (4)" on every row is a large, one-directional change in how much of
+	# the panel is painted. A regression puts the two back at parity.
+	local empty="$HL_OUTDIR/dv-empty.jsonl" busy="$HL_OUTDIR/dv-busy.jsonl"
+	voice_snapshot "$empty" 0
+	voice_snapshot "$busy" 4
+
+	local cfg='theme { border-width 0 }
+bar { enable true; height 48; position "top"; margin { x 8; y 9 }; pill-inset 6; modules-left "tags"; modules-right "discord"; discord { daemon-cmd "" }; panel { enable true; radius 9; padding 6; blur false; shadow false } }'
+
+	voice_serve "$empty"
+	bar_set "$cfg"
+	sleep 4
+	hl_screenshot heads-closed
+	local px; px="$(hl_rightmost_ink_x "$HL_OUTDIR/heads-closed.png" 16 50)"
+	[ -n "$px" ] || { echo "  (skip: could not locate the discord pill)"
+		voice_stop; bar_off; return 0; }
+	local x0=$((px - 400)) x1=$((px + 10))
+	[ $x0 -lt 0 ] && x0=0
+
+	hl_click $((px - 10)) 32
+	sleep 1.2
+	hl_screenshot heads-empty
+	local ink_empty
+	ink_empty="$(voice_label_ink "$HL_OUTDIR/heads-empty.png" $x0 60 $x1 1000)"
+	hl_click 400 800
+	sleep 0.5
+
+	# Swap the snapshot under it. The reload is what forces the module to
+	# reconnect NOW: left to itself the client backs off up to 8s and the
+	# window between "socket is back" and "channels have arrived" is not
+	# something a sleep should be asked to straddle.
+	voice_stop
+	voice_serve "$busy"
+	bar_set "$cfg"
+	sleep 5
+	hl_click $((px - 10)) 32
+	sleep 1.2
+	hl_screenshot heads-busy
+	local ink_busy
+	ink_busy="$(voice_label_ink "$HL_OUTDIR/heads-busy.png" $x0 60 $x1 1000)"
+
+	# " (4)" on every row is ~25% more label ink; a tenth is well clear of
+	# antialiasing noise and nowhere near reachable by an unchanged menu.
+	hl_assert_true "channels with people in them say so ($ink_empty -> $ink_busy px of label)" \
+		"$([ "$ink_busy" -gt $((ink_empty + ink_empty / 10)) ] && echo true || echo false)"
+
+	hl_click 400 800
+	voice_stop
+	rm -f "$HL_XDG/discord-voiced.sock"
+	bar_off
+}
+
 test_bar_popover_keyboard_walks_rows_and_enter_runs_one() {
 	[ "$(bar_supported)" = "true" ] || { echo "  (skip: built without -Dnative-bar)"; return 0; }
 	command -v python3 >/dev/null && python3 -c "import PIL" 2>/dev/null || {

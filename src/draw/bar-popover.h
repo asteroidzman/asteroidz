@@ -69,6 +69,7 @@ enum bar_popover_kind {
 	BAR_POPOVER_MEDS,    /* today's doses; payload is the dose key */
 	BAR_POPOVER_MED_DOSE, /* one dose: take / skip / postpone */
 	BAR_POPOVER_SYSINFO,  /* cpu/memory/network figures; every row inert */
+	BAR_POPOVER_WEATHER,  /* conditions, metrics and the week; every row inert */
 	BAR_POPOVER_ARRANGE,  /* the monitor layout canvas */
 };
 
@@ -107,6 +108,12 @@ typedef struct {
 	 * takes; kept as a string rather than the numeric index because indices
 	 * are recycled when a device is unplugged and replugged. */
 	char value[192];
+	/* Artwork for this row, as _set_icon takes it: an icon name, an absolute
+	 * path, or a cache key. Empty for the rows that are pure text, which is
+	 * most of them -- a menu of identical glyphs is noise. The weather
+	 * forecast is the case that needs it: a day without its condition is a
+	 * pair of numbers. */
+	char icon[192];
 	/* DBusMenu item id, meaningless for other kinds */
 	int32_t id;
 	bool enabled;
@@ -232,6 +239,10 @@ static BarPopoverRow *bar_popover_row_get(int32_t idx) {
 	if (idx < 0 || idx >= BAR_POPOVER_MAX_ROWS || !bar_popover.row_tree)
 		return NULL;
 	BarPopoverRow *r = &bar_popover.rows[idx];
+	/* Cleared for reused rows as well as fresh ones: a row is pooled, and
+	 * every menu but the forecast leaves this field alone, so a stale icon
+	 * would follow the node from one menu into the next. */
+	r->icon[0] = '\0';
 	if (r->used)
 		return r;
 
@@ -496,6 +507,12 @@ static void bar_popover_layout(void) {
 			fg[3] *= r->separator ? 0.25f : 0.55f;
 			asteroidz_tab_bar_node_set_colors(r->node, fg, clear);
 		}
+		/* Set every frame, not only when it changes: rows are pooled, so the
+		 * node drawing a forecast day now may have drawn a plain text row a
+		 * moment ago and would otherwise keep that row's artwork. */
+		asteroidz_tab_bar_node_set_icon(r->node, r->icon[0] ? r->icon : NULL);
+		if (r->icon[0])
+			asteroidz_tab_bar_node_set_icon_scale(r->node, 0.8);
 		asteroidz_tab_bar_node_set_position(r->node, x + pad, ry);
 		asteroidz_tab_bar_node_set_enabled(r->node, true);
 		asteroidz_tab_bar_node_update(r->node, r->text, scale);
@@ -1651,6 +1668,136 @@ static int32_t bar_sysinfo_top_rss(struct bar_sysinfo_proc *out, int32_t max) {
 	}
 	closedir(d);
 	return n;
+}
+
+/* ── weather ──
+ *
+ * The same three blocks the waybar plugin's popover has, in the shape a list
+ * of rows can carry them: current conditions, the metrics grid, and the week.
+ *
+ * A row per day rather than the plugin's row OF days: this popover is a
+ * vertical list, and seven columns squeezed into a menu width would put three
+ * characters under each icon. Down the page each day gets its own line, which
+ * is also the direction the panel already scrolls.
+ *
+ * Every row is inert. Nothing here is a command -- there is no "set the
+ * weather" -- so a row that highlighted and did nothing on click would be a
+ * lie about what it is. */
+static void bar_popover_open_weather(Monitor *m, int32_t anchor_x) {
+	if (bar_popover_is_open(BAR_POPOVER_WEATHER)) {
+		bar_popover_close();
+		return;
+	}
+	if (!bar_popover_open(m, BAR_POPOVER_WEATHER, anchor_x))
+		return;
+
+	int32_t n = 0;
+	BarPopoverRow *r;
+	char icon[512], rel[64];
+
+	if (!bar_weather.valid) {
+		if ((r = bar_popover_row_get(n))) {
+			snprintf(r->text, sizeof(r->text), "%s",
+					 bar_weather.located ? "Weather unavailable"
+										 : "Locating…");
+			r->enabled = false;
+			n++;
+		}
+		bar_popover.nrows = n;
+		bar_popover_layout();
+		return;
+	}
+
+	/* ── now ── */
+	if ((r = bar_popover_row_get(n))) {
+		snprintf(rel, sizeof(rel), "waybar-weather/%s",
+				 bar_wmo_icon(bar_weather.code, bar_weather.is_day));
+		bar_icon_path(icon, sizeof(icon), rel);
+		snprintf(r->icon, sizeof(r->icon), "%s", icon);
+		snprintf(r->text, sizeof(r->text), "%d°  ·  %s", bar_weather.temp_c,
+				 bar_wmo_text(bar_weather.code));
+		r->enabled = false;
+		n++;
+	}
+	if ((r = bar_popover_row_get(n))) {
+		if (bar_weather.city[0])
+			snprintf(r->text, sizeof(r->text), "Feels like %d°  ·  %s",
+					 bar_weather.feels_c, bar_weather.city);
+		else
+			snprintf(r->text, sizeof(r->text), "Feels like %d°",
+					 bar_weather.feels_c);
+		r->enabled = false;
+		n++;
+	}
+
+	/* ── metrics ──
+	 *
+	 * Skipped individually when the model has no value: a row reading
+	 * "Humidity -1%" is worse than no row. */
+	struct {
+		const char *label;
+		int32_t value;
+		const char *unit;
+	} metrics[] = {
+		{"Humidity", bar_weather.humidity_pct, "%"},
+		{"Wind", bar_weather.wind_kmh, " km/h"},
+		{"Pressure", bar_weather.pressure_hpa, " hPa"},
+		{"Precipitation", bar_weather.precip_pct, "%"},
+	};
+	bool any_metric = false;
+	for (size_t i = 0; i < LENGTH(metrics); i++) {
+		if (metrics[i].value < 0)
+			continue;
+		if (!any_metric && (r = bar_popover_row_get(n))) {
+			r->separator = true;
+			r->enabled = false;
+			r->text[0] = '\0';
+			n++;
+			any_metric = true;
+		}
+		if ((r = bar_popover_row_get(n))) {
+			snprintf(r->text, sizeof(r->text), "%s  %d%s", metrics[i].label,
+					 metrics[i].value, metrics[i].unit);
+			r->enabled = false;
+			n++;
+		}
+	}
+	if (bar_weather.sunrise[0] && (r = bar_popover_row_get(n))) {
+		snprintf(r->text, sizeof(r->text), "Sunrise  %s  ·  Sunset  %s",
+				 bar_weather.sunrise, bar_weather.sunset);
+		r->enabled = false;
+		n++;
+	}
+
+	/* ── the week ── */
+	if (bar_weather.ndays > 0 && (r = bar_popover_row_get(n))) {
+		r->separator = true;
+		r->enabled = false;
+		r->text[0] = '\0';
+		n++;
+	}
+	for (int32_t i = 0; i < bar_weather.ndays && n < BAR_POPOVER_MAX_ROWS; i++) {
+		BarWeatherDay *d = &bar_weather.days[i];
+		if (!(r = bar_popover_row_get(n)))
+			break;
+		/* Daytime artwork for every day: a forecast is about the day, and the
+		 * night variant of a clear sky reads as "clear tonight". */
+		snprintf(rel, sizeof(rel), "waybar-weather/%s",
+				 bar_wmo_icon(d->code, true));
+		bar_icon_path(icon, sizeof(icon), rel);
+		snprintf(r->icon, sizeof(r->icon), "%s", icon);
+		if (d->precip > 0)
+			snprintf(r->text, sizeof(r->text), "%-6s %3d° / %3d°   %d%%",
+					 d->day, d->tmax, d->tmin, d->precip);
+		else
+			snprintf(r->text, sizeof(r->text), "%-6s %3d° / %3d°", d->day,
+					 d->tmax, d->tmin);
+		r->enabled = false;
+		n++;
+	}
+
+	bar_popover.nrows = n;
+	bar_popover_layout();
 }
 
 static void bar_popover_open_sysinfo(Monitor *m, int32_t anchor_x) {

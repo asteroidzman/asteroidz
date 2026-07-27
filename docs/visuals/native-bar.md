@@ -103,12 +103,12 @@ for a newer build still starts.
 | `memory` | used memory, from `/proc/meminfo` — **icon only**, tinted by load | — |
 | `network` | two activity arrows — upload above, download below — each lit by its own throughput, from `/sys/class/net`. **Icon only** | — |
 | `idle` | manual idle-inhibit state ("keep awake") | toggles it |
-| `weather` | current temperature and condition, from open-meteo | — |
+| `weather` | current temperature and condition, from open-meteo | click opens conditions, metrics and a 7-day forecast |
 | `media` | previous / play-pause / next, then now playing (title • artist) from MPRIS, with a live spectrum while playing. Shown only while **Playing or Paused** | each button sends its MPRIS method; the track itself still toggles play/pause |
 | `volume` | default sink level, with a speaker icon (also accepts `vol`) | click toggles mute; right-click opens the output picker; scroll steps by `volume-step` |
 | `notifications` | swaync state as a bell — **empty** when nothing is waiting, **filled** when something is (also accepts `notify`). **Icon only** | click toggles the panel; right-click toggles DND |
 | `medication` | doses due now, or the next dose's time (also accepts `meds`). A dose stays due until taken, skipped or the day ends | click lists today's doses; drill into one to take, skip or postpone it |
-| `discord` | voice state from the `discord-voiced` daemon (also accepts `discord-voice`) | click opens voice channels by server, Mute, Disconnect, the PTT key and daemon start/stop; right-click toggles mute |
+| `discord` | voice state from the `discord-voiced` daemon (also accepts `discord-voice`) | click opens Mute, Disconnect, the PTT key and daemon start/stop, then voice channels by server; right-click toggles mute |
 | `vpn` | NordVPN state as a tinted shield (also accepts `nordvpn`). **Icon only** | click opens status + Quick Connect / Disconnect / countries |
 | `display` | a monitor icon (also accepts `monitors`) | click lists every output; drill into one for HDR, resolution and scale |
 | `tray` | one icon per StatusNotifierItem, adopted from the bus at startup as well as registered (also accepts `systray`) | left: `Activate`; right: the item's context menu; middle: `SecondaryActivate` |
@@ -270,6 +270,27 @@ Rather than show six bars pinned at zero through a whole track, the pill
 detects a few seconds of pure silence while the player reports playing and
 falls back to its normal transport glyph. cava stays up, cheaply, so the bars
 return by themselves if the signal does.
+
+## Weather
+
+The pill is a condition glyph and a temperature. Clicking it opens what the
+single open-meteo request already returned and the pill has no room for: the
+current conditions in words, feels-like and the place name, a block of metrics
+(humidity, wind, pressure, precipitation, sunrise/sunset) and **seven days**,
+each with its own condition icon, high/low and chance of rain.
+
+One request, not two. `current=` and `daily=` are the same call, so the
+forecast costs nothing beyond a slightly longer reply every
+`weather.interval` minutes.
+
+A day per row, where the Waybar plugin this replaces used a row *of* days. A
+popover is a vertical list of full-width rows; seven columns squeezed into a
+menu width would leave about three characters under each icon. Down the page
+each day gets a whole line, which is also the direction the panel scrolls when
+it does not fit.
+
+Every row is inert. There is no "set the weather", so a row that highlighted
+under the pointer and then did nothing would be lying about what it is.
 
 ## Notifications
 
