@@ -68,8 +68,9 @@ loader/headers and `glslang` (to compile the effect shaders to SPIR-V).
 > interchangeable — and it lives in this repository at
 > `subprojects/asteroidz-scenefx`, built and linked statically. One
 > self-contained binary, nothing to install alongside. The
-> [standalone repo](https://github.com/asteroidzman/asteroidz-scenefx)
-> remains the upstream that subtree tracks.
+> [standalone repo](https://github.com/asteroidzman/asteroidz-scenefx) is
+> archival — it receives no further releases, and this tree is where the
+> library is developed.
 
 A matching bar is [waybar](https://github.com/Alexays/Waybar) plus a set of
 CFFI plugins: two are asteroidz-specific —
