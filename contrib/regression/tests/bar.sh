@@ -977,6 +977,45 @@ bar { enable true; height 48; position "top"; margin { x 8; y 9 }; pill-inset 6;
 	bar_off
 }
 
+test_bar_voice_menu_offers_to_connect_when_the_daemon_is_logged_out() {
+	[ "$(bar_supported)" = "true" ] || { echo "  (skip: built without -Dnative-bar)"; return 0; }
+	command -v socat >/dev/null || { echo "  (skip: socat not available)"; return 0; }
+	command -v python3 >/dev/null && python3 -c "import PIL" 2>/dev/null || {
+		echo "  (skip: python3 PIL not available)"; return 0; }
+
+	# The daemon starts logged OUT now, so a running daemon reporting "offline"
+	# is the NORMAL state at session start rather than a fault. The menu has to
+	# tell that apart from no daemon at all: one offers Connect, the other
+	# offers to start a daemon. Both are one row, so this measures that the
+	# menu opens with something in it at all -- an empty popover closes itself,
+	# which is what "clicking the pill does nothing" looked like before.
+	local snap="$HL_OUTDIR/dv-offline.jsonl"
+	printf '%s\n' '{"event":"status","state":"offline"}' > "$snap"
+	voice_serve "$snap"
+
+	bar_set 'theme { border-width 0 }
+bar { enable true; height 48; position "top"; margin { x 8; y 9 }; pill-inset 6; modules-left "tags"; modules-right "discord"; discord { daemon-cmd "" }; panel { enable true; radius 9; padding 6; blur false; shadow false } }'
+	sleep 4
+
+	hl_screenshot dv-off-closed
+	local px; px="$(hl_rightmost_ink_x "$HL_OUTDIR/dv-off-closed.png" 16 50)"
+	[ -n "$px" ] || { echo "  (skip: could not locate the discord pill)"
+		voice_stop; bar_off; return 0; }
+	hl_click $((px - 10)) 32
+	sleep 1.2
+	hl_screenshot dv-off-open
+	local x0=$((px - 400)) x1=$((px + 10))
+	[ $x0 -lt 0 ] && x0=0
+	local ink; ink="$(hl_region_ink "$HL_OUTDIR/dv-off-open.png" $x0 60 $x1 400)"
+	hl_assert_true "a logged-out daemon still opens a menu with actions in it ($ink px)" \
+		"$([ "$ink" -gt 1500 ] && echo true || echo false)"
+
+	hl_click 400 800
+	voice_stop
+	rm -f "$HL_XDG/discord-voiced.sock"
+	bar_off
+}
+
 test_bar_voice_menu_shows_who_is_in_a_channel() {
 	[ "$(bar_supported)" = "true" ] || { echo "  (skip: built without -Dnative-bar)"; return 0; }
 	command -v socat >/dev/null || { echo "  (skip: socat not available)"; return 0; }

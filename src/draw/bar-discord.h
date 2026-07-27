@@ -58,6 +58,14 @@ static struct {
 	char error[128];
 	bool muted;
 	bool ptt_active;
+	/* Is the SOCKET up -- i.e. is a daemon running at all?
+	 *
+	 * Distinct from `state`, which is what the daemon says about Discord. The
+	 * daemon now starts logged out, so "offline" has two very different
+	 * meanings that used to be one: nothing is running (offer to start it) or
+	 * something is running and not logged in (offer to connect). Without this
+	 * the menu can only guess, and it guessed wrong in the case that matters. */
+	bool linked;
 	BarDvChannel channels[BAR_DV_MAX_CHANNELS];
 	int32_t nchannels;
 	bool started;
@@ -118,6 +126,13 @@ static void bar_dv_on_line(const char *line, void *user) {
 		/* mute is only meaningful while actually in a channel */
 		if (bar_dv.state != BAR_DV_CONNECTED)
 			bar_dv.muted = false;
+		if (bar_dv.state == BAR_DV_OFFLINE) {
+			/* Logged out, but still running. The channel list belonged to that
+			 * session and offering it now would be a menu of rows that cannot
+			 * be joined. */
+			bar_dv.nchannels = 0;
+			bar_dv.username[0] = '\0';
+		}
 		bar_dv.error[0] = '\0'; /* a real status means the daemon is healthy */
 		bar_dv_resolve_channel_name();
 	} else if (!strcmp(ev, "channels")) {
@@ -177,8 +192,11 @@ static void bar_dv_on_line(const char *line, void *user) {
 
 static void bar_dv_on_state(bool connected, void *user) {
 	(void)user;
-	if (connected)
+	bar_dv.linked = connected;
+	if (connected) {
+		bar_update_all();
 		return;
+	}
 	/* The daemon is gone: everything we knew is stale. Showing the last
 	 * channel would claim a voice connection that no longer exists. */
 	bar_dv.state = BAR_DV_OFFLINE;

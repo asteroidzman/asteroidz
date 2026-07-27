@@ -2704,8 +2704,14 @@ static void bar_module_refresh_discord(BarModule *mod) {
 	 * discord-voiced simply is not installed. But hiding it whenever the
 	 * daemon is merely STOPPED made shutting it down a one-way door: no pill,
 	 * so no popover, so nothing to start it from again. Installed-but-down is
-	 * the one state you can actually act on. */
-	if (bar_dv.state == BAR_DV_OFFLINE && !bar_dv.error[0] &&
+	 * the one state you can actually act on.
+	 *
+	 * `linked` counts too, and has to: the daemon now starts LOGGED OUT, so a
+	 * perfectly healthy one sits at state OFFLINE from session start. A
+	 * running daemon is stronger evidence than an installed binary -- it is
+	 * answering us right now -- and hiding the pill there would leave the
+	 * Connect action with nothing to open it from. */
+	if (bar_dv.state == BAR_DV_OFFLINE && !bar_dv.error[0] && !bar_dv.linked &&
 		!bar_dv_daemon_installed()) {
 		for (int32_t i = 0; i < BAR_MAX_PILLS; i++)
 			bar_pill_release(&mod->pills[i]);

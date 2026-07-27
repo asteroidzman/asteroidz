@@ -399,8 +399,8 @@ mute glyph while self-muted and the theme accent while push-to-talk is held.
 Clicking opens a picker of guild/channel rows with headcounts; a row joins,
 and `Mute`/`Leave` sit at the top while connected.
 
-The controls — Mute, Disconnect, the PTT key, daemon start/stop — sit **above**
-the channel list. Under it they were behind a hundred and thirty rows on a real
+The controls — Connect/Disconnect, Mute, Leave, the PTT key, daemon
+start/stop — sit **above** the channel list. Under it they were behind a hundred and thirty rows on a real
 account: the two things you reach for while you are in a call were the two
 furthest away. The viewport also survives a rebuild now, because the daemon
 pushes a fresh channel list whenever anyone anywhere joins or leaves, and a
@@ -422,6 +422,12 @@ client exactly as the Waybar plugin is: newline-JSON events in, newline-JSON
 commands out. Running songbird or an audio thread inside a *bar* has crashed a
 session before; running it inside the **compositor** would take the whole
 desktop with it.
+
+The daemon starts **logged out**: a session coming up must not put an account
+online. So "offline" has two meanings the menu keeps apart — nothing is running
+(*Start daemon*) or something is running and not logged in (*Connect to
+Discord*) — which is why the module tracks whether the socket is up separately
+from whatever the daemon says about Discord.
 
 With no daemon the module renders nothing at all — an always-present "Offline"
 pill is noise on a machine that never runs it — and the socket client retries

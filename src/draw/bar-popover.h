@@ -974,11 +974,30 @@ static void bar_popover_open_voice(Monitor *m, int32_t anchor_x) {
 		n++;
 	}
 
+	/* Discord session. The daemon starts logged OUT -- a session coming up
+	 * must not put an account online -- so being connected is a thing you ask
+	 * for, and the row that asks is the first one that matters when the menu
+	 * is otherwise empty. Only offered while a daemon is actually there to
+	 * ask; with no daemon the row below offers to start one instead. */
+	if (bar_dv.linked && n < BAR_POPOVER_MAX_ROWS &&
+		(r = bar_popover_row_get(n))) {
+		if (bar_dv.state == BAR_DV_OFFLINE) {
+			snprintf(r->text, sizeof(r->text), "%s", "Connect to Discord");
+			snprintf(r->value, sizeof(r->value), "%s",
+					 BAR_POPOVER_VERB "connect");
+		} else {
+			snprintf(r->text, sizeof(r->text), "%s", "Disconnect from Discord");
+			snprintf(r->value, sizeof(r->value), "%s",
+					 BAR_POPOVER_VERB "disconnect");
+		}
+		n++;
+	}
+
 	/* Daemon lifecycle. The module used to hide itself outright while the
 	 * daemon was down, which made stopping it a one-way door: no pill, no
 	 * popover, nothing to start it from again. */
 	if (n < BAR_POPOVER_MAX_ROWS && (r = bar_popover_row_get(n))) {
-		if (bar_dv.state == BAR_DV_OFFLINE) {
+		if (!bar_dv.linked) {
 			snprintf(r->text, sizeof(r->text), "%s", "Start daemon");
 			snprintf(r->value, sizeof(r->value), "%s",
 					 BAR_POPOVER_VERB "dstart");
@@ -1037,8 +1056,9 @@ static void bar_popover_open_voice(Monitor *m, int32_t anchor_x) {
 	if (bar_dv.nchannels == 0 && n < BAR_POPOVER_MAX_ROWS - 4 &&
 		(r = bar_popover_row_get(n))) {
 		snprintf(r->text, sizeof(r->text), "%s",
-				 bar_dv.state == BAR_DV_OFFLINE ? "daemon not running"
-												: "no voice channels");
+				 !bar_dv.linked			? "daemon not running"
+				 : bar_dv.state == BAR_DV_OFFLINE ? "not connected to Discord"
+												  : "no voice channels");
 		r->enabled = false;
 		n++;
 	}
@@ -2519,6 +2539,10 @@ static bool bar_popover_activate_row(BarPopoverRow *r) {
 				/* empty key = "ask me": the daemon re-registers the shortcut,
 				 * which lands back here as a portal bind and opens the picker */
 				bar_dv_send("{\"cmd\":\"rebind_ptt\",\"key\":\"\"}");
+			} else if (!strcmp(verb, "connect")) {
+				bar_dv_send("{\"cmd\":\"connect\"}");
+			} else if (!strcmp(verb, "disconnect")) {
+				bar_dv_send("{\"cmd\":\"disconnect\"}");
 			} else if (!strcmp(verb, "dstart")) {
 				bar_dv_restart_daemon();
 			} else if (!strcmp(verb, "dstop")) {
