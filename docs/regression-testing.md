@@ -65,6 +65,13 @@ focused) between test cases so they can't leak state into one another.
 `hl_assert`/`hl_assert_eq`/`hl_assert_true`/`hl_assert_false` are the
 pass/fail primitives, tallied globally; `hl_summary` prints totals.
 
+A test that needs a daemon the bar talks to should **stand one in** rather
+than let the real one start: the voice-menu test serves a synthetic snapshot
+over the instance's own socket with `socat` and sets `discord { daemon-cmd
+"" }`, because the module otherwise spawns `discord-voiced` — with your real
+token — into every isolated instance that has no socket. Skip cleanly
+(`command -v socat` etc.) when an optional tool is missing.
+
 `contrib/regression/run.sh` boots one shared instance and runs every
 `test_*` function from `contrib/regression/tests/*.sh` against it, in file
 order, with `hl_reset` between each. Extend coverage by adding a new

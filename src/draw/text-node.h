@@ -111,6 +111,15 @@ struct asteroidz_tab_bar_node {
 	float icon_tint[4];
 	bool cached_icon_tinted;
 	float cached_icon_tint[4];
+	/* Fraction of the text area's height an icon is fitted into. 1.0 -- the
+	 * whole of it -- is right for a glyph drawn with its own margins, which is
+	 * what an icon theme ships. A silhouette that runs edge to edge in its
+	 * viewBox comes out visually much larger than a themed icon of the same
+	 * nominal size, so the pills using those (the media transport buttons) ask
+	 * for less. Scaling here rather than in the SVG keeps the advance and the
+	 * drawn size in step: both read this. */
+	double icon_scale;
+	double cached_icon_scale;
 	struct asteroidz_text_buffer *buffer;
 	cairo_surface_t *surface;
 	int surface_pixel_w, surface_pixel_h;
@@ -264,6 +273,10 @@ void asteroidz_tab_bar_node_set_icons(struct asteroidz_tab_bar_node *node,
 /* false (default) draws the icons before the text, true after it. */
 void asteroidz_tab_bar_node_set_icons_after_text(
 	struct asteroidz_tab_bar_node *node, bool after);
+/* Fraction of the text-area height the icons are fitted into; 1.0 is the
+ * default and the full height. Clamped to a sane range. */
+void asteroidz_tab_bar_node_set_icon_scale(struct asteroidz_tab_bar_node *node,
+									   double scale);
 /* Paint the icons in `rgba` (through their own alpha) rather than in their own
  * colours. NULL restores untinted painting. */
 void asteroidz_tab_bar_node_set_icon_tint(struct asteroidz_tab_bar_node *node,

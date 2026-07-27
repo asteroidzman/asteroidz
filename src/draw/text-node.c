@@ -1085,6 +1085,8 @@ asteroidz_tab_bar_node_create(void *asteroidz_node_data, struct wlr_scene_tree *
 	node->corner_radius = data.corner_radius;
 	node->padding_x = data.padding_x;
 	node->padding_y = data.padding_y;
+	node->icon_scale = 1.0;
+	node->cached_icon_scale = 1.0;
 	node->font_desc =
 		g_strdup(data.font_desc ? data.font_desc : "monospace Bold 16");
 
@@ -1248,6 +1250,25 @@ void asteroidz_tab_bar_node_set_icons_after_text(
 	if (!node || node->icons_after_text == after)
 		return;
 	node->icons_after_text = after;
+	if (node->last_text)
+		asteroidz_tab_bar_node_update(node, node->last_text,
+								  node->last_scale > 0 ? node->last_scale
+													   : 1.0f);
+}
+
+void asteroidz_tab_bar_node_set_icon_scale(struct asteroidz_tab_bar_node *node,
+									   double scale) {
+	if (!node)
+		return;
+	/* Below a quarter the icon is a smudge, above 1 it spills out of the pill
+	 * it is measured against. */
+	if (scale < 0.25)
+		scale = 0.25;
+	if (scale > 1.0)
+		scale = 1.0;
+	if (node->icon_scale == scale)
+		return;
+	node->icon_scale = scale;
 	if (node->last_text)
 		asteroidz_tab_bar_node_update(node, node->last_text,
 								  node->last_scale > 0 ? node->last_scale
@@ -1441,6 +1462,7 @@ void asteroidz_tab_bar_node_set_size(struct asteroidz_tab_bar_node *node, int32_
 static bool bar_icons_unchanged(const struct asteroidz_tab_bar_node *node) {
 	if (node->cached_nicons != node->nicons ||
 		node->cached_icons_after_text != node->icons_after_text ||
+		node->cached_icon_scale != node->icon_scale ||
 		node->cached_icon_tinted != node->icon_tinted ||
 		(node->icon_tinted &&
 		 memcmp(node->cached_icon_tint, node->icon_tint,
@@ -1501,8 +1523,9 @@ int32_t asteroidz_tab_bar_node_measure_width(struct asteroidz_tab_bar_node *node
 	double icon_gap = 6.0 * cs;
 	double icon_w = 0.0;
 	if (node->nicons > 0) {
+		double icon_px = text_area_h * node->icon_scale;
 		for (int32_t i = 0; i < node->nicons; i++)
-			icon_w += asteroidz_icon_advance(node->icons[i], text_area_h);
+			icon_w += asteroidz_icon_advance(node->icons[i], icon_px);
 		icon_w += (node->nicons - 1) * icon_gap + (*text ? icon_gap : 0.0);
 	}
 
@@ -1595,6 +1618,7 @@ void asteroidz_tab_bar_node_update(struct asteroidz_tab_bar_node *node,
 		node->cached_icons[i] = i < node->nicons ? node->icons[i] : NULL;
 	node->cached_nicons = node->nicons;
 	node->cached_icons_after_text = node->icons_after_text;
+	node->cached_icon_scale = node->icon_scale;
 	node->cached_icon_tinted = node->icon_tinted;
 	memcpy(node->cached_icon_tint, node->icon_tint,
 		   sizeof(node->cached_icon_tint));
@@ -1748,7 +1772,7 @@ void asteroidz_tab_bar_node_update(struct asteroidz_tab_bar_node *node,
 		 * which only exists when there is text (see _measure_width) */
 		double icon_px = 0.0, icon_gap = 0.0, icons_w = 0.0;
 		if (node->nicons > 0) {
-			icon_px = text_area_h;
+			icon_px = text_area_h * node->icon_scale;
 			icon_gap = 6.0 * cs * scale;
 			for (int32_t i = 0; i < node->nicons; i++)
 				icons_w += asteroidz_icon_advance(node->icons[i], icon_px);

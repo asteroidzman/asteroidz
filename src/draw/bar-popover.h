@@ -28,8 +28,15 @@
  * with a dozen servers has over a hundred voice channels. Truncating silently
  * loses the entry people actually reach for. Raised from 32 once the panel
  * gained a scrolling viewport -- before that, rows past the screen were drawn
- * nowhere, so a bigger cap bought nothing. */
-#define BAR_POPOVER_MAX_ROWS 64
+ * nowhere, so a bigger cap bought nothing.
+ *
+ * 64 was still too small for the case the paragraph above describes: this
+ * account's voice menu wants 119 channels plus a header per server plus the
+ * controls, and the cut landed mid-list, so three whole servers had no header
+ * at all and looked as though the account were not in them. A row is ~0.5K and
+ * they are only allocated as the menu uses them, so the ceiling costs nothing
+ * to raise and everything to hit. */
+#define BAR_POPOVER_MAX_ROWS 256
 
 /* Marks a row payload as a VERB ("leave", "hdr") rather than an identifier a
  * module looks up (a sink name, a Discord snowflake, an output). One byte no
@@ -909,6 +916,63 @@ static void bar_popover_open_voice(Monitor *m, int32_t anchor_x) {
 		n++;
 	}
 
+	/* ── controls, ABOVE the channels ──
+	 *
+	 * They used to sit under the list, which put Mute and Disconnect behind a
+	 * hundred and thirty channels on a real account: the two things you reach
+	 * for while you are IN a call were the two furthest away, and any push
+	 * from the daemon rebuilds the menu, so a scroll that got you there could
+	 * be undone before you clicked. Both are fixed here -- these rows are
+	 * first, and the viewport survives a rebuild. */
+	if (bar_dv.state == BAR_DV_CONNECTED &&
+		n < BAR_POPOVER_MAX_ROWS && (r = bar_popover_row_get(n))) {
+		snprintf(r->text, sizeof(r->text), "%s",
+				 bar_dv.muted ? "Unmute" : "Mute");
+		snprintf(r->value, sizeof(r->value), "%s", BAR_POPOVER_VERB "mute");
+		r->selected = bar_dv.muted;
+		n++;
+	}
+	if ((bar_dv.state == BAR_DV_CONNECTED ||
+		 bar_dv.state == BAR_DV_CONNECTING) &&
+		n < BAR_POPOVER_MAX_ROWS && (r = bar_popover_row_get(n))) {
+		snprintf(r->text, sizeof(r->text), "%s", "Disconnect");
+		snprintf(r->value, sizeof(r->value), "%s", BAR_POPOVER_VERB "leave");
+		n++;
+	}
+
+	/* Push-to-talk. Shows what is bound now, straight from our own portal
+	 * store, and a click hands the daemon a rebind request -- which comes back
+	 * to us as a GlobalShortcuts BindShortcuts and opens the on-screen picker.
+	 * Pointless with no daemon to ask, so it is offered only when there is
+	 * one. */
+	if (bar_dv.state != BAR_DV_OFFLINE && n < BAR_POPOVER_MAX_ROWS &&
+		(r = bar_popover_row_get(n))) {
+		char *key = gs_load_saved(BAR_DV_PTT_APPID, BAR_DV_PTT_ID);
+		if (key && *key)
+			snprintf(r->text, sizeof(r->text), "PTT key: %s  —  change…", key);
+		else
+			snprintf(r->text, sizeof(r->text), "%s", "Set PTT key…");
+		free(key);
+		snprintf(r->value, sizeof(r->value), "%s", BAR_POPOVER_VERB "ptt");
+		n++;
+	}
+
+	/* Daemon lifecycle. The module used to hide itself outright while the
+	 * daemon was down, which made stopping it a one-way door: no pill, no
+	 * popover, nothing to start it from again. */
+	if (n < BAR_POPOVER_MAX_ROWS && (r = bar_popover_row_get(n))) {
+		if (bar_dv.state == BAR_DV_OFFLINE) {
+			snprintf(r->text, sizeof(r->text), "%s", "Start daemon");
+			snprintf(r->value, sizeof(r->value), "%s",
+					 BAR_POPOVER_VERB "dstart");
+		} else {
+			snprintf(r->text, sizeof(r->text), "%s", "Shut down daemon");
+			snprintf(r->value, sizeof(r->value), "%s",
+					 BAR_POPOVER_VERB "dstop");
+		}
+		n++;
+	}
+
 	/* ── channels, grouped by guild ──
 	 *
 	 * The list arrives flat with a guild id on each entry; the plugin draws a
@@ -959,56 +1023,6 @@ static void bar_popover_open_voice(Monitor *m, int32_t anchor_x) {
 				 bar_dv.state == BAR_DV_OFFLINE ? "daemon not running"
 												: "no voice channels");
 		r->enabled = false;
-		n++;
-	}
-
-	/* ── controls ── */
-	if (bar_dv.state == BAR_DV_CONNECTED &&
-		n < BAR_POPOVER_MAX_ROWS && (r = bar_popover_row_get(n))) {
-		snprintf(r->text, sizeof(r->text), "%s",
-				 bar_dv.muted ? "Unmute" : "Mute");
-		snprintf(r->value, sizeof(r->value), "%s", BAR_POPOVER_VERB "mute");
-		r->selected = bar_dv.muted;
-		n++;
-	}
-	if ((bar_dv.state == BAR_DV_CONNECTED ||
-		 bar_dv.state == BAR_DV_CONNECTING) &&
-		n < BAR_POPOVER_MAX_ROWS && (r = bar_popover_row_get(n))) {
-		snprintf(r->text, sizeof(r->text), "%s", "Disconnect");
-		snprintf(r->value, sizeof(r->value), "%s", BAR_POPOVER_VERB "leave");
-		n++;
-	}
-
-	/* Push-to-talk. Shows what is bound now, straight from our own portal
-	 * store, and a click hands the daemon a rebind request -- which comes back
-	 * to us as a GlobalShortcuts BindShortcuts and opens the on-screen picker.
-	 * Pointless with no daemon to ask, so it is offered only when there is
-	 * one. */
-	if (bar_dv.state != BAR_DV_OFFLINE && n < BAR_POPOVER_MAX_ROWS &&
-		(r = bar_popover_row_get(n))) {
-		char *key = gs_load_saved(BAR_DV_PTT_APPID, BAR_DV_PTT_ID);
-		if (key && *key)
-			snprintf(r->text, sizeof(r->text), "PTT key: %s  —  change…", key);
-		else
-			snprintf(r->text, sizeof(r->text), "%s", "Set PTT key…");
-		free(key);
-		snprintf(r->value, sizeof(r->value), "%s", BAR_POPOVER_VERB "ptt");
-		n++;
-	}
-
-	/* Daemon lifecycle. The module used to hide itself outright while the
-	 * daemon was down, which made stopping it a one-way door: no pill, no
-	 * popover, nothing to start it from again. */
-	if (n < BAR_POPOVER_MAX_ROWS && (r = bar_popover_row_get(n))) {
-		if (bar_dv.state == BAR_DV_OFFLINE) {
-			snprintf(r->text, sizeof(r->text), "%s", "Start daemon");
-			snprintf(r->value, sizeof(r->value), "%s",
-					 BAR_POPOVER_VERB "dstart");
-		} else {
-			snprintf(r->text, sizeof(r->text), "%s", "Shut down daemon");
-			snprintf(r->value, sizeof(r->value), "%s",
-					 BAR_POPOVER_VERB "dstop");
-		}
 		n++;
 	}
 
@@ -2059,6 +2073,16 @@ static void bar_popover_rebuild(enum bar_popover_kind kind) {
 	if (!m)
 		return;
 	int32_t ax = m->m.x + bar_popover.anchor_x;
+	/* Where the reader was.
+	 *
+	 * A rebuild is close-then-open, which starts the new menu at the top --
+	 * and the daemon pushes a fresh channel list whenever anyone anywhere
+	 * joins or leaves a voice channel, which on a busy account is often. So
+	 * scrolling down a long menu was a race against strangers: the list would
+	 * snap back to the top under the pointer, sometimes twice on the way to
+	 * one row. The content is rebuilt; the viewport is not. */
+	int32_t scroll = bar_popover.scroll;
+	int32_t cursor = bar_popover.cursor;
 	bar_popover_close();
 	switch (kind) {
 	case BAR_POPOVER_VPN:
@@ -2070,6 +2094,16 @@ static void bar_popover_rebuild(enum bar_popover_kind kind) {
 	default:
 		break;
 	}
+	if (!bar_popover_is_open(kind) || scroll <= 0)
+		return;
+	/* Clamped: the new menu can be shorter than the old one. */
+	int32_t max = bar_popover.total_rows - bar_popover.visible_rows;
+	if (max < 0)
+		max = 0;
+	bar_popover.scroll = scroll > max ? max : scroll;
+	if (cursor >= 0 && cursor < bar_popover.nrows)
+		bar_popover.cursor = cursor;
+	bar_popover_layout();
 }
 
 static void bar_popover_vpn_countries_arrived(void) {

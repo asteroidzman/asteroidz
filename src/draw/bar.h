@@ -2197,7 +2197,12 @@ static void bar_module_refresh_idle(BarModule *mod) {
 	/* Icon-only, so the width is the artwork's square box: both states draw
 	 * the same size and toggling cannot reflow the section. */
 	p->fixed_width = bar_icon_pill_width(p, bar_pill_height());
-	bar_pill_style(p, idle_inhibit_manual ? BAR_LOOK_ACTIVE : BAR_LOOK_FLAT);
+	/* Never filled -- the same trap the bell fell into. The icon is tinted
+	 * with the accent, and the active look fills the pill with that same
+	 * accent, so turning the inhibitor ON is exactly when its mug vanished
+	 * into a blank chip. The state is the artwork: crossed mug off, plain mug
+	 * in accent on. */
+	bar_pill_style(p, BAR_LOOK_FLAT);
 	mod->npills = 1;
 	for (int32_t i = 1; i < BAR_MAX_PILLS; i++)
 		bar_pill_release(&mod->pills[i]);
@@ -2270,6 +2275,11 @@ static void bar_module_refresh_media(BarModule *mod) {
 		bar_icon_path(icon, sizeof(icon), svg);
 		asteroidz_tab_bar_node_set_icon(b->node, icon);
 		asteroidz_tab_bar_node_set_icon_tint(b->node, config.theme.fg_color);
+		/* These svgs fill their viewBox edge to edge, with none of the margin
+		 * a themed icon carries, so at the pill's full height they tower over
+		 * every other glyph on the bar. Two thirds puts their ink on the same
+		 * optical size as the status icons beside them. */
+		asteroidz_tab_bar_node_set_icon_scale(b->node, 0.66);
 		b->text[0] = '\0';
 		b->arg = transport[i].arg;
 		b->flexible = false;

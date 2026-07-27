@@ -28,9 +28,12 @@ static void bar_popover_voice_channels_arrived(void);
 #include "../common/unix-line-client.h"
 
 /* Enough for a real account. 24 was set when the join menu could not scroll
- * and every row had to fit on screen; this desktop's is 118 across 13 servers,
- * so a two-dozen cap silently hid most of them. */
-#define BAR_DV_MAX_CHANNELS 64
+ * and every row had to fit on screen; this desktop's is 119 across 13 servers,
+ * so a two-dozen cap silently hid most of them -- and 64 still cut it, because
+ * the daemon emits the list sorted by channel position across ALL servers, not
+ * grouped by server. Truncating a globally-sorted list does not drop the tail
+ * of the menu, it takes a bite out of every server at once. */
+#define BAR_DV_MAX_CHANNELS 256
 
 typedef enum {
 	BAR_DV_OFFLINE = 0,
@@ -132,9 +135,15 @@ static void bar_dv_on_line(const char *line, void *user) {
 					 bar_dv_json_str(c, "guild", ""));
 			snprintf(out->name, sizeof(out->name), "%s",
 					 bar_dv_json_str(c, "name", ""));
-			cJSON *people = cJSON_GetObjectItem(c, "people");
-			out->people = cJSON_IsArray(people) ? cJSON_GetArraySize(people)
-												: 0;
+			/* "participants", which is what the daemon calls it -- an array of
+			 * {id,name} objects, counted here because the menu only has room
+			 * for a headcount. Reading a key the daemon never sends ("people")
+			 * is not an error anywhere: cJSON returns NULL, the count comes
+			 * out 0, and a channel with ten people in it looks empty. */
+			cJSON *participants = cJSON_GetObjectItem(c, "participants");
+			out->people = cJSON_IsArray(participants)
+							  ? cJSON_GetArraySize(participants)
+							  : 0;
 			/* the guild's display name, for the popover's row prefix */
 			out->guild_name[0] = '\0';
 			cJSON *g = NULL;

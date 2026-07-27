@@ -279,6 +279,58 @@ test_bar_idle_inhibitor() {
 	bar_off
 }
 
+test_bar_idle_inhibitor_stays_visible_when_it_is_on() {
+	[ "$(bar_supported)" = "true" ] || { echo "  (skip: built without -Dnative-bar)"; return 0; }
+	command -v python3 >/dev/null && python3 -c "import PIL" 2>/dev/null || {
+		echo "  (skip: python3 PIL not available)"; return 0; }
+
+	# Turning the inhibitor ON used to ERASE it. The pill took the "active"
+	# look, which fills it with the accent colour, while the module tinted the
+	# mug with that same accent -- so the state you can act on was the one
+	# state you could not see, a blank chip. The bell had the identical bug
+	# for the identical reason; both are flat now, with the artwork carrying
+	# the state.
+	#
+	# Asserted relatively rather than against a colour constant: the mug is
+	# the mug in both states, so its ink area must stay in the same ballpark.
+	# A filled chip is a ~7x jump in non-background pixels and fails loudly.
+	bar_set 'theme { border-width 0 }
+bar { enable true; height 48; position "top"; margin { x 8; y 9 }; pill-inset 6; modules-left "tags"; modules-right "idle"; panel { enable true; radius 9; padding 6; blur false; shadow false } }'
+	sleep 1.2
+	hl_dispatch "toggle_idle_inhibit,0" 1
+	hl_screenshot idle-off
+	local x
+	x=$(hl_rightmost_ink_x "$HL_OUTDIR/idle-off.png" 16 50)
+	hl_dispatch "toggle_idle_inhibit,1" 1
+	hl_screenshot idle-on
+
+	local verdict
+	verdict=$(python3 - "$HL_OUTDIR/idle-off.png" "$HL_OUTDIR/idle-on.png" "$x" <<'PY'
+import sys
+from PIL import Image
+off, on, x = (Image.open(sys.argv[1]).convert("RGB"),
+              Image.open(sys.argv[2]).convert("RGB"), int(sys.argv[3]))
+x0, x1, y0, y1 = max(x - 40, 0), x + 4, 12, 52
+def hist(im):
+    px = im.load()
+    h = {}
+    for xx in range(x0, x1):
+        for yy in range(y0, y1):
+            h[px[xx, yy]] = h.get(px[xx, yy], 0) + 1
+    return h
+h_off = hist(off)
+bg = max(h_off.items(), key=lambda kv: kv[1])[0]      # the panel behind the pill
+ink_off = sum(v for k, v in h_off.items() if k != bg)
+ink_on = sum(v for k, v in hist(on).items() if k != bg)
+print("true" if 0 < ink_on < 2 * ink_off else f"false ({ink_off} -> {ink_on})")
+PY
+)
+	hl_assert_true "the idle mug is still artwork once the inhibitor is on ($verdict)" \
+		"${verdict%% *}"
+	hl_dispatch "toggle_idle_inhibit,0"
+	bar_off
+}
+
 test_bar_tag_app_icons_and_logo() {
 	[ "$(bar_supported)" = "true" ] || { echo "  (skip: built without -Dnative-bar)"; return 0; }
 	# Pill contents are not exposed over IPC, so this asserts the observable
@@ -560,7 +612,11 @@ test_bar_accepts_every_module_at_once_without_dropping_any() {
 	# What this DOES pin is that loading every module at once is survivable:
 	# seventeen modules across three sections, several of them spawning
 	# subprocesses or reaching for a session bus that is not there.
-	bar_set 'bar { enable true; height 30; margin { x 8; y 4 }; modules-left "tags,layout,title"; modules-center "media,clock,weather,idle"; modules-right "cpu,memory,network,vpn,discord,medication,volume,notify,display,tray" }'
+	# daemon-cmd "" on purpose: the discord module SPAWNS the voice daemon when
+	# nothing is serving its socket, and this instance's runtime dir is empty
+	# by construction -- so without this the suite logged a second Discord
+	# session in, with the developer's real token, on every run.
+	bar_set 'bar { enable true; height 30; margin { x 8; y 4 }; modules-left "tags,layout,title"; modules-center "media,clock,weather,idle"; modules-right "cpu,memory,network,vpn,discord,medication,volume,notify,display,tray"; discord { daemon-cmd "" } }'
 	sleep 1
 	hl_assert_true "a bar with every module loaded leaves the compositor healthy" \
 		"$(hl_get "get all-monitors" >/dev/null 2>&1 && echo true || echo false)"

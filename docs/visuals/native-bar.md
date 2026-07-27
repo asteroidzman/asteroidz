@@ -211,6 +211,14 @@ music plays. Three things keep that honest:
 
 Set `media { visualiser false }` to keep the static transport glyph.
 
+The three transport buttons are drawn at **two thirds** of the pill height,
+not the full height every other icon uses. Their svgs run edge to edge in
+their viewBox with none of the margin a themed icon carries, so at the same
+nominal size their ink is half again as large as the status glyphs beside
+them. The knob is per-node (`asteroidz_tab_bar_node_set_icon_scale`) and is
+read by both the width measurement and the draw, so the pill still fits what
+is in it.
+
 ### When the pill is shown
 
 Only while the followed player reports **Playing** or **Paused**. A player that
@@ -327,6 +335,24 @@ where you are — the joined channel's name, or `Idle`/`Connecting` — with a
 mute glyph while self-muted and the theme accent while push-to-talk is held.
 Clicking opens a picker of guild/channel rows with headcounts; a row joins,
 and `Mute`/`Leave` sit at the top while connected.
+
+The controls — Mute, Disconnect, the PTT key, daemon start/stop — sit **above**
+the channel list. Under it they were behind a hundred and thirty rows on a real
+account: the two things you reach for while you are in a call were the two
+furthest away. The viewport also survives a rebuild now, because the daemon
+pushes a fresh channel list whenever anyone anywhere joins or leaves, and a
+menu that snaps back to the top under the pointer is unusable at that length.
+
+Each row carries the **headcount** of that channel, from the `participants`
+array the daemon sends — the one thing worth knowing before joining, and the
+reason to open this menu rather than the app.
+
+The picker holds a **whole account** — a dozen servers is well over a hundred
+channels, and the menu scrolls rather than truncating. It has to: the daemon
+emits its list sorted by channel position across *every* server rather than
+grouped by one, so a cap does not lop off the end of the menu, it takes a bite
+out of each server at once and leaves the last few with no header at all. That
+reads as servers the account is not in, which is exactly how it was reported.
 
 **All Discord, audio and tokio work stays in the daemon.** This is a thin IPC
 client exactly as the Waybar plugin is: newline-JSON events in, newline-JSON
@@ -911,7 +937,10 @@ module in the table above, and the popover layer they drop panels from.
 `idle_inhibit_v1` protocol state — a bar module has no surface to attach a
 protocol inhibitor to, the way Waybar's module does. The same override is
 available as `amsg dispatch toggle_idle_inhibit` (append `,1`/`,0` to force a
-state), so it can be bound to a key as well.
+state), so it can be bound to a key as well. Like the bell, its pill is never
+*filled* to show the state: the icon is tinted with the accent and the filled
+look paints the pill that same accent, so "on" was the one state whose mug you
+could not see. The artwork carries it — crossed mug off, plain accent mug on.
 
 Urgent pills pick their label colour by the **contrast** of the urgent fill
 rather than taking the theme's foreground: the two are configured
