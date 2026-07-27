@@ -2908,6 +2908,13 @@ static bool bar_right_belongs_here(Monitor *m);
 static void bar_module_refresh(BarModule *mod) {
 	AZ_ZONE(az_mod, "module refresh");
 	AZ_ZONE_NAME(az_mod, bar_module_kind_name(mod->kind));
+	/* And as zone TEXT, which is the part that survives a CSV export. A
+	 * runtime zone NAME is a GUI-only facility: exported, every module came
+	 * out as an undifferentiated "module refresh" row and the one blocking
+	 * module could not be named from a trace at all. Text lands in the value
+	 * column -- the same way bar_layout's monitor name does -- so the module
+	 * names itself with no enum to decode on the other side. */
+	AZ_ZONE_TEXT(az_mod, bar_module_kind_name(mod->kind));
 
 	/* A section that is not on this screen renders nothing at all -- no pills,
 	 * so the slot is empty and its panel is not drawn either. */

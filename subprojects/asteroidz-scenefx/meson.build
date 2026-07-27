@@ -161,6 +161,17 @@ if get_option('tracy_enable')
 		'default_library=static',
 		'werror=false',
 		'warning_level=0',
+		# The CLIENT LIBRARY must be told too. add_project_arguments below
+		# scopes -DTRACY_ON_DEMAND to this project's own targets, which covers
+		# the macros in our headers but not the connection handling compiled
+		# into the tracy subproject itself. Without it that library is NOT
+		# on-demand: it buffers from process start whether or not anyone is
+		# watching, and accepts exactly ONE viewer for the lifetime of the
+		# process -- a second capture is refused with "another server was
+		# already connected to it", which is precisely what happened when
+		# trying to take a second measurement on a live desk without
+		# restarting the session.
+		'on_demand=true',
 	]
 	tracy_proj = subproject(
 		'tracy',

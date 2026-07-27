@@ -7544,12 +7544,32 @@ void rendermon(struct wl_listener *listener, void *data) {
 				 * a plot the misses line up against the frac they happened at,
 				 * which is what says whether the loop is tuned too tight. */
 				AZ_PLOT_INT(AZ_PLOT_LATE_SLIP, 1);
-				m->render_late_frac *= 0.6; /* missed: back off hard */
+				m->render_late_frac *= config.render_late_backoff;
+				/* Never cut below the point where a deferral can still be
+				 * ARMED. Arming requires delay_ms >= 1.0 below; miss it and
+				 * render_late_deferred stays false -- and the adaptation this
+				 * block belongs to only runs when that flag is true. So a frac
+				 * small enough to stop arming is a state the loop can never
+				 * climb out of: render-late silently stops deferring, with no
+				 * log and no recovery short of a restart.
+				 *
+				 * Measured on a live desk: frozen at exactly 0.040 for 11900
+				 * consecutive samples, deferring 0.66ms where the healthy run
+				 * deferred 10.83ms. The trap widens with refresh rate --
+				 * frac < 1.0/interval_ms is 0.06 at 60Hz but 0.24 at 240Hz.
+				 *
+				 * 1.5 rather than 1.0 so the cap_ms clamp below cannot shave
+				 * it back under the threshold on a frame that renders slowly. */
+				double arm_floor = 1.5 / interval_ms;
+				if (arm_floor > config.render_late_cap)
+					arm_floor = config.render_late_cap;
+				if (m->render_late_frac < arm_floor)
+					m->render_late_frac = arm_floor;
 				m->render_late_good = 0;
-			} else if (++m->render_late_good >= 20) {
-				m->render_late_frac += 0.03; /* stable: reclaim */
-				if (m->render_late_frac > 0.65)
-					m->render_late_frac = 0.65;
+			} else if (++m->render_late_good >= config.render_late_climb_frames) {
+				m->render_late_frac += config.render_late_climb_step;
+				if (m->render_late_frac > config.render_late_cap)
+					m->render_late_frac = config.render_late_cap;
 				m->render_late_good = 0;
 			}
 		}

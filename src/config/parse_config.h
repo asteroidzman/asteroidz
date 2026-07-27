@@ -613,6 +613,22 @@ typedef struct {
 	 * is extra safety headroom before the deadline (larger = safer). */
 	int32_t render_late;
 	int32_t render_late_margin_us;
+
+	/* The render-late control law, exposed rather than hardcoded so it can be
+	 * A/B'd on a live desk with a reload instead of a rebuild.
+	 *
+	 * Measured on the default values (backoff 0.6, climb every 20 clean
+	 * frames): over 405s and 19185 samples the loop NEVER reached its own cap
+	 * -- max 0.570 against a 0.65 ceiling -- and took 177 hard back-offs, one
+	 * every 2.3s. It climbs 0.03 per 20 clean frames, which at 60Hz is 0.33s a
+	 * step, so ~3.3s to go from 0.2 to 0.5: it is cut before it can climb, and
+	 * parks around 0.33 leaving most of the available deferral unused. A
+	 * gentler backoff or a faster climb should let it converge; these make
+	 * that testable. */
+	double render_late_backoff;       /* multiplier on a missed vblank */
+	double render_late_climb_step;    /* added per successful interval */
+	int32_t render_late_climb_frames; /* clean frames before a climb */
+	double render_late_cap;           /* ceiling on the deferral fraction */
 	int32_t allow_shortcuts_inhibit;
 	int32_t allow_lock_transparent;
 
@@ -1896,6 +1912,14 @@ bool parse_option(Config *config, char *key, char *value) {
 		config->allow_tearing = atoi(value);
 	} else if (strcmp(key, "render_late") == 0) {
 		config->render_late = atoi(value);
+	} else if (strcmp(key, "render_late_backoff") == 0) {
+		config->render_late_backoff = atof(value);
+	} else if (strcmp(key, "render_late_climb_step") == 0) {
+		config->render_late_climb_step = atof(value);
+	} else if (strcmp(key, "render_late_climb_frames") == 0) {
+		config->render_late_climb_frames = atoi(value);
+	} else if (strcmp(key, "render_late_cap") == 0) {
+		config->render_late_cap = atof(value);
 	} else if (strcmp(key, "render_late_margin_us") == 0) {
 		config->render_late_margin_us = atoi(value);
 	} else if (strcmp(key, "allow_shortcuts_inhibit") == 0) {
@@ -3822,6 +3846,10 @@ static const struct {
 	{"misc/allow-tearing", "allow_tearing"},
 	{"misc/render-late", "render_late"},
 	{"misc/render-late-margin-us", "render_late_margin_us"},
+	{"misc/render-late-backoff", "render_late_backoff"},
+	{"misc/render-late-climb-step", "render_late_climb_step"},
+	{"misc/render-late-climb-frames", "render_late_climb_frames"},
+	{"misc/render-late-cap", "render_late_cap"},
 	{"misc/sdr/reference-luminance", "sdr_reference_luminance"},
 	{"misc/sdr/saturation", "sdr_saturation"},
 	{"misc/dpms-wake-retrain", "dpms_wake_retrain"},
@@ -4996,6 +5024,12 @@ void set_value_default() {
 	config.sdr_saturation = 0.0f;
 	config.dpms_wake_retrain = 0;
 	config.blur_optimized = 1;
+	/* Exactly the constants these replaced: behaviour is unchanged unless a
+	 * config asks for something else. */
+	config.render_late_backoff = 0.6;
+	config.render_late_climb_step = 0.03;
+	config.render_late_climb_frames = 20;
+	config.render_late_cap = 0.65;
 	config.render_late = 0;			   /* opt-in; default keeps render-on-vblank */
 	config.render_late_margin_us = 3000; /* 3ms safety headroom before deadline */
 	config.border_radius = 0;
