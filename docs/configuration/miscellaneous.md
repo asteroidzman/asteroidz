@@ -11,9 +11,29 @@ description: Advanced settings for XWayland, focus behavior, and system integrat
 | `syncobj_enable` | `0` | Enable `drm_syncobj` timeline support (helps with gaming stutter/lag). **Requires restart.** |
 | `render_late` | `0` | Adaptive render-late scheduling: defer each frame's render toward the next vblank so input is sampled fresher (cuts up to a frame of input latency). `2` additionally logs per-frame timing for tuning. |
 | `render_late_margin_us` | `3000` | Safety margin (µs) subtracted from the render-late deferral so the render never misses its vblank. |
+| `render_late_backoff` | `0.6` | Multiplier applied to the deferral fraction when a vblank is missed. |
+| `render_late_climb_step` | `0.03` | Added to the deferral fraction after a run of clean frames. |
+| `render_late_climb_frames` | `20` | How many clean frames before the fraction climbs. |
+| `render_late_cap` | `0.65` | Ceiling on the deferral fraction. |
 | `allow_lock_transparent` | `0` | Allow the lock screen to be transparent. |
 | `allow_shortcuts_inhibit` | `1` | Allow shortcuts to be inhibited by clients. |
 | `vrr` | - | Set via [monitor rule](/docs/configuration/monitors#monitor-rules). |
+
+Render-late is a feedback loop: the deferral fraction climbs by
+`render_late_climb_step` after `render_late_climb_frames` clean frames and is
+multiplied by `render_late_backoff` whenever a vblank is missed, bounded by
+`render_late_cap`. The four knobs exist so the law can be measured and adjusted
+without a rebuild; the defaults are what live measurement says is correct
+(the fraction reaches its cap ~74% of the time, with well under one slip per
+thousand frames), so there is normally no reason to touch them.
+
+The fraction is also floored so that a deferral can always still be *armed*.
+Arming requires the computed delay to be at least 1 ms, and the loop only
+adapts on frames where a deferral was armed — so without the floor, a fraction
+small enough to stop arming is a state the loop can never climb out of, and
+render-late silently stops working with no log and no recovery short of a
+restart. The floor scales with the refresh interval, because the trap does:
+the threshold is `1 / interval_ms`, which is 0.06 at 60 Hz but 0.24 at 240 Hz.
 
 ## Focus & Input
 

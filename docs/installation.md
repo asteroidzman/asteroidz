@@ -182,22 +182,13 @@ You will need to build `wlroots` and asteroidz's `scenefx` fork manually as well
    sudo ninja -C build install
    ```
 
-2. **Build asteroidz-scenefx**
-   This library handles the visual effects. asteroidz requires its own fork,
-   not upstream `wlrfx/scenefx` — the two are not interchangeable. The fork is
-   renamed (`libasteroidz-scenefx-0.5` / `asteroidz-scenefx-0.5.pc`) so it
-   won't clash with an upstream `scenefx`, and builds with both the GLES2 and
-   Vulkan (`fx_vk`) renderers.
+2. **Build asteroidz**
+   There is no separate scenefx step. The effects library —
+   `asteroidz-scenefx`, asteroidz's own fork, not upstream `wlrfx/scenefx` —
+   lives in this repository at `subprojects/asteroidz-scenefx` and is built
+   and linked **statically** as part of the compositor. Nothing to install
+   alongside, no `libasteroidz-scenefx-0.5.so` to keep in version step.
 
-   ```bash
-   git clone https://github.com/asteroidzman/asteroidz-scenefx.git
-   cd asteroidz-scenefx
-   meson build -Dprefix=/usr -Drenderers=gles2,vulkan
-   sudo ninja -C build install
-   ```
-
-3. **Build asteroidz**
-   Finally, compile the compositor itself.
    ```bash
    git clone https://github.com/asteroidzman/asteroidz.git
    cd asteroidz
@@ -205,10 +196,17 @@ You will need to build `wlroots` and asteroidz's `scenefx` fork manually as well
    sudo ninja -C build install
    ```
 
-   Build options: `-Dxwayland=disabled` drops X11 support, and
-   `-Dnative-bar=false` compiles out the [built-in status
-   bar](./visuals/native-bar.md) entirely (it is disabled at runtime by
-   default either way).
+   `-Dprefix=/usr` is not optional in practice: the bar's icon search path is
+   built from it, and a build installed under a different prefix from its
+   artwork finds none of the vendored icons — every icon-only module then
+   renders nothing and simply disappears from the strip.
+
+   Build options: `-Dxwayland=disabled` drops X11 support, `-Dnative-bar=false`
+   compiles out the [built-in status bar](./visuals/native-bar.md) entirely (it
+   is disabled at runtime by default either way), and `-Dtracy=true` builds
+   with [Tracy](https://github.com/wolfpld/tracy) profiler instrumentation —
+   off by default, and it fetches the Tracy client over the network, so it is
+   not suitable for an offline or clean-chroot build.
 
    This installs the `asteroidz` binary, the `amsg` IPC tool, two wayland
    session entries (**Asteroidz** = GLES2, the daily driver and default;

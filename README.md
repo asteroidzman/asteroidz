@@ -58,15 +58,18 @@ still pending future wlroots enhancements (see
 known gaps) before it's the recommended default. It's one binary; the
 renderer is chosen per session via `WLR_RENDERER`.
 
-Dependencies: wlroots 0.20, `asteroidz-scenefx` (built with `--prefix=/usr`
-and both renderers), wayland, libinput, xkbcommon, pango/cairo, gdk-pixbuf,
-cJSON, pcre2, libsystemd. The experimental Vulkan renderer additionally
-needs the Vulkan loader/headers and `glslang` (to compile the effect
-shaders to SPIR-V).
+Dependencies: wlroots 0.20, wayland, libinput, xkbcommon, pango/cairo,
+gdk-pixbuf, cJSON, pcre2, libsystemd, plus libglvnd/mesa/lcms2 for the
+effects library. The Vulkan renderer additionally needs the Vulkan
+loader/headers and `glslang` (to compile the effect shaders to SPIR-V).
 
-> The scenefx fork is renamed to **asteroidz-scenefx** — it installs as
-> `libasteroidz-scenefx-0.5` / `asteroidz-scenefx-0.5.pc` and builds with the
-> `gles2,vulkan` renderers, so it won't clash with an upstream `scenefx`.
+> **asteroidz-scenefx is not a separate dependency.** The effects library is
+> asteroidz's own fork — not upstream `wlrfx/scenefx`, and the two are not
+> interchangeable — and it lives in this repository at
+> `subprojects/asteroidz-scenefx`, built and linked statically. One
+> self-contained binary, nothing to install alongside. The
+> [standalone repo](https://github.com/asteroidzman/asteroidz-scenefx)
+> remains the upstream that subtree tracks.
 
 A matching bar is [waybar](https://github.com/Alexays/Waybar) plus a set of
 CFFI plugins: two are asteroidz-specific —
@@ -96,8 +99,8 @@ definition.
 
 ### Arch Linux
 
-The easiest path is the AUR — `asteroidz-scenefx` is a dependency of
-`asteroidz` and gets pulled in automatically:
+The easiest path is the AUR (the effects library is built in, so there is
+no companion package to install):
 
 ```bash
 yay -S asteroidz

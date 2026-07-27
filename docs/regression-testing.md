@@ -17,7 +17,27 @@ bash contrib/regression/run.sh layouts tags  # just these modules
 
 Env: `ASTEROIDZ` (binary under test, default `build/asteroidz` next to the
 repo, falling back to `/usr/bin/asteroidz`), `HL_OUTDIR`, `HL_WIDTH`/
-`HL_HEIGHT`. Set `HL_ALLOW_DESTRUCTIVE=1` to also run
+`HL_HEIGHT`.
+
+`HL_RENDERER` picks the renderer — `gles2` (default) or `vulkan`. gles2 is
+the default because it is the one renderer present on every machine that runs
+this suite, so results stay comparable; set `vulkan` to exercise the `fx_vk`
+path, which is what a real session here actually uses. Editing the launch line
+in `headless.sh` by hand does **not** work once the file is sourced: the
+function body is already parsed, and doing so silently produced a second gles2
+run labelled as vulkan.
+
+`HL_ENV` passes `NAME=VALUE` pairs through to the compositor. The launch uses
+`env -i` so a test instance can never inherit the caller's session — which
+also means an exported variable does not reach it. `FX_VK_VALIDATION` and
+`MESA_VK_TRACE` both looked like the driver was ignoring them when in fact
+they had never arrived:
+
+```sh
+HL_RENDERER=vulkan HL_ENV="FX_VK_VALIDATION=1" bash contrib/regression/run.sh
+```
+
+Set `HL_ALLOW_DESTRUCTIVE=1` to also run
 `destroy-virtual-output.sh`, which is skipped by default (it destroys every
 headless output, including the original one — safe in isolation, but not
 worth risking in a shared run).
