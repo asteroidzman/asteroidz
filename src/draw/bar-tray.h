@@ -45,6 +45,15 @@
 
 typedef struct {
 	char service[128]; /* unique or well-known bus name of the item */
+	/* The unique name (":1.42") that currently owns `service`.
+	 *
+	 * Needed because a signal's sender is ALWAYS the unique name, whatever the
+	 * item registered itself as. An item registered under the conventional
+	 * well-known name -- which is most of them, Steam included -- therefore
+	 * never matched its own change signals, and every NewIcon, NewStatus and
+	 * PropertiesChanged it sent was dropped on the floor. Resolved once,
+	 * asynchronously, when the item is added. */
+	char owner[64];
 	char path[128];    /* object path, usually /StatusNotifierItem */
 	char id[128];      /* Id property: stable, app-chosen */
 	char title[192];   /* Title property: what the tooltip would say */
@@ -67,7 +76,7 @@ static int32_t bar_tray_nitems = 0;
 static sd_bus_slot *bar_tray_watcher_slot = NULL;  /* our vtable, watcher role */
 static sd_bus_slot *bar_tray_fdo_slot = NULL;      /* same vtable, fd.o name */
 static bool bar_tray_is_fdo_watcher = false;
-static sd_bus_slot *bar_tray_signal_slots[4] = {0};
+static sd_bus_slot *bar_tray_signal_slots[5] = {0};
 static bool bar_tray_is_watcher = false;
 static bool bar_tray_started = false;
 static char bar_tray_host_name[128];
@@ -110,6 +119,55 @@ static BarTrayItem *bar_tray_find(const char *service) {
 	return NULL;
 }
 
+/* Find by either spelling of the name: what the item registered as, or the
+ * unique name that owns it. A signal carries only the latter. */
+static BarTrayItem *bar_tray_find_by_bus_name(const char *name) {
+	if (!name || !*name)
+		return NULL;
+	BarTrayItem *it = bar_tray_find(name);
+	if (it)
+		return it;
+	for (int32_t i = 0; i < bar_tray_nitems; i++)
+		if (bar_tray_items[i].used && bar_tray_items[i].owner[0] &&
+			strcmp(bar_tray_items[i].owner, name) == 0)
+			return &bar_tray_items[i];
+	return NULL;
+}
+
+/* Reply to GetNameOwner: remember which unique name is behind a well-known
+ * one, so this item's signals can be recognised. */
+static int bar_tray_on_owner(sd_bus_message *m, void *user, sd_bus_error *err) {
+	(void)err;
+	char *service = user;
+	const char *owner = NULL;
+	if (m && !sd_bus_message_is_method_error(m, NULL) &&
+		sd_bus_message_read(m, "s", &owner) > 0 && owner) {
+		BarTrayItem *it = bar_tray_find(service);
+		if (it)
+			snprintf(it->owner, sizeof(it->owner), "%s", owner);
+	}
+	free(service);
+	return 0;
+}
+
+static void bar_tray_resolve_owner(BarTrayItem *it) {
+	if (!session_bus || !it || it->owner[0])
+		return;
+	if (it->service[0] == ':') {
+		/* already a unique name: it owns itself */
+		snprintf(it->owner, sizeof(it->owner), "%s", it->service);
+		return;
+	}
+	char *service = strdup(it->service);
+	if (!service)
+		return;
+	if (sd_bus_call_method_async(session_bus, NULL, "org.freedesktop.DBus",
+								 "/org/freedesktop/DBus", "org.freedesktop.DBus",
+								 "GetNameOwner", bar_tray_on_owner, service, "s",
+								 it->service) < 0)
+		free(service);
+}
+
 static BarTrayItem *bar_tray_add(const char *service, const char *path) {
 	BarTrayItem *it = bar_tray_find(service);
 	if (it)
@@ -144,10 +202,10 @@ static void bar_tray_remove(const char *service) {
 		key[n] = '\0';
 		service = key;
 	}
-	BarTrayItem *it = bar_tray_find(service);
+	BarTrayItem *it = bar_tray_find_by_bus_name(service);
 	if (!it)
 		return;
-	bar_tray_emit("StatusNotifierItemUnregistered", "s", service);
+	bar_tray_emit("StatusNotifierItemUnregistered", "s", it->service);
 	int32_t idx = (int32_t)(it - bar_tray_items);
 	/* compact rather than leaving a hole: the pills are laid out by index and
 	 * a gap would render as a blank slot in the middle of the tray */
@@ -412,18 +470,32 @@ static void bar_tray_register(const char *arg, const char *sender) {
 	BarTrayItem *it = bar_tray_add(service, path);
 	if (!it)
 		return;
+	bar_tray_resolve_owner(it);
 	bar_tray_fetch_props(it);
 	bar_update_all();
 }
 
 /* An item's own change signals. All three mean the same thing to us -- go and
- * re-read the properties -- because the signals carry no payload. */
+ * re-read the properties -- because the signals carry no payload.
+ *
+ * The legacy New* signals are not the only way an item announces itself. A
+ * modern implementation (quickshell's, for one) annotates its properties
+ * `emits-change` and sends the STANDARD org.freedesktop.DBus.Properties
+ * .PropertiesChanged instead, which this host did not listen for. An item
+ * whose Status was read as Passive before it settled therefore stayed Passive
+ * here forever -- and a Passive item is hidden, so it looked like the tray had
+ * lost the application. It had not: the item was registered, answering, and
+ * Active on the bus the whole time.
+ *
+ * Same handler for both, because the answer to either is identical: re-read
+ * everything. The signals carry no payload worth trusting over a fresh GetAll,
+ * and a tray item has half a dozen properties. */
 static int bar_tray_on_item_changed(sd_bus_message *m, void *user,
 									sd_bus_error *err) {
 	(void)user;
 	(void)err;
 	const char *sender = sd_bus_message_get_sender(m);
-	BarTrayItem *it = bar_tray_find(sender);
+	BarTrayItem *it = bar_tray_find_by_bus_name(sender);
 	if (it)
 		bar_tray_fetch_props(it);
 	return 0;
@@ -708,6 +780,35 @@ static void bar_tray_finish(void) {
 	memset(bar_tray_items, 0, sizeof(bar_tray_items));
 }
 
+/* Re-read every item's properties, at most once every BAR_TRAY_POLL_S.
+ *
+ * The signal matches above cover applications that announce their changes, in
+ * either of the two ways they might. This covers the ones that do not: an item
+ * whose Status or icon changed silently is otherwise wrong on the bar until
+ * something else happens to it, and "wrong" for a Passive-to-Active change
+ * means invisible. Two or three GetAll calls a minute is not a cost worth
+ * optimising against a tray that quietly drops applications.
+ *
+ * Driven from the tray module's refresh rather than its own timer: the module
+ * already ticks with the bar, and a timer would have to be created, cancelled
+ * and re-created around config reloads for no gain. */
+#define BAR_TRAY_POLL_S 30
+
+static void bar_tray_poll_props(void) {
+	static time_t last = 0;
+	time_t now = time(NULL);
+	if (last == 0) {
+		last = now; /* the registration fetch just ran; do not repeat it */
+		return;
+	}
+	if (now - last < BAR_TRAY_POLL_S)
+		return;
+	last = now;
+	for (int32_t i = 0; i < bar_tray_nitems; i++)
+		if (bar_tray_items[i].used)
+			bar_tray_fetch_props(&bar_tray_items[i]);
+}
+
 /* Idempotent: called whenever a bar gains a tray module, which happens once
  * per monitor and again on every config reload. */
 static void bar_tray_start(void) {
@@ -801,6 +902,13 @@ static void bar_tray_start(void) {
 	 * than per-item means a newly registered item needs no extra match. */
 	sd_bus_add_match(session_bus, &bar_tray_signal_slots[0],
 					 "type='signal',interface='" BAR_TRAY_ITEM_IFACE "'",
+					 bar_tray_on_item_changed, NULL);
+	/* ...and the standard property-change signal, filtered to our interface by
+	 * arg0 so this does not wake the compositor for every PropertiesChanged on
+	 * the session bus. */
+	sd_bus_add_match(session_bus, &bar_tray_signal_slots[4],
+					 "type='signal',interface='org.freedesktop.DBus.Properties',"
+					 "member='PropertiesChanged',arg0='" BAR_TRAY_ITEM_IFACE "'",
 					 bar_tray_on_item_changed, NULL);
 	/* and the disappearance of anything we track */
 	sd_bus_add_match(session_bus, &bar_tray_signal_slots[1],

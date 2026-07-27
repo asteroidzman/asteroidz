@@ -2343,6 +2343,7 @@ static void bar_module_refresh_media(BarModule *mod) {
  * showing it anyway is how a tray ends up as a row of identical grey squares. */
 static void bar_module_refresh_tray(BarModule *mod) {
 	bar_tray_start();
+	bar_tray_poll_props();
 
 	int32_t n = 0;
 	for (int32_t i = 0; i < bar_tray_nitems && n < BAR_MAX_PILLS; i++) {

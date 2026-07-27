@@ -177,14 +177,31 @@ theme's urgent colour. A `Passive` item is hidden: that status means "nothing
 to say right now", and drawing it anyway is how a tray becomes a row of
 identical grey squares.
 
+An item announces a change in one of **two** ways, and the host listens for
+both: the legacy `NewIcon`/`NewStatus`/`NewTitle` signals on the item
+interface, and the standard `org.freedesktop.DBus.Properties.PropertiesChanged`
+that a modern implementation sends instead (quickshell annotates its properties
+`emits-change` and does exactly this). Either is matched **by owner**, not by
+the name the item registered under: a signal's sender is always the unique name
+(`:1.42`), so an item registered as `org.kde.StatusNotifierItem-1234-1` — which
+is most of them — never matched its own signals and every change it announced
+was dropped. That is the second half of "the tray keeps losing clients": an
+item read as `Passive` before it settled stayed Passive here, and a Passive
+item is hidden, so the application was absent from the bar while being present,
+Active and answering on the bus.
+
+As a backstop every item's properties are re-read every 30 seconds, which costs
+two or three `GetAll` calls a minute and covers applications that announce
+nothing at all.
+
 Every call is async, so a wedged tray application cannot stall the compositor,
 and an application that exits without unregistering is dropped on
 `NameOwnerChanged` rather than leaving a dead pill behind.
 
-**Not implemented: the DBusMenu context menu.** It needs a popup surface with a
-keyboard grab and its own hit-testing, and the bar has no layer for that yet.
-Right-click sends the item's own `SecondaryActivate`, which most applications
-wire to "show my menu" regardless.
+Right-click opens the item's own **DBusMenu**, over
+`com.canonical.dbusmenu`, in the bar's popover layer. Items that ship no menu
+fall back to `SecondaryActivate`, which most applications wire to "show my
+menu" regardless.
 
 ## Media visualiser
 

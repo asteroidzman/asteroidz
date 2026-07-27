@@ -118,4 +118,53 @@ elif kill -0 $COMP 2>/dev/null; then
   esac
 fi
 
+# A Passive item that goes Active must APPEAR -- even when the only
+# announcement is the standard PropertiesChanged signal.
+#
+# This is the "the tray keeps losing clients" report, second cause. A modern
+# item annotates its properties `emits-change` and sends PropertiesChanged;
+# the host listened only for the legacy New* signals, so it kept the Status it
+# read at registration. Read while the item was still settling, that is
+# Passive -- and Passive is hidden, so the application was simply absent from
+# the bar while being present, Active and answering on the bus.
+if [ ! -x "$SNITEM" ]; then
+  :
+elif ! command -v grim >/dev/null || ! python3 -c "import PIL" 2>/dev/null; then
+  echo "skip - needs grim and python3-pil for the visibility check"
+elif kill -0 $COMP 2>/dev/null; then
+  export XDG_RUNTIME_DIR="$D/xdg" WAYLAND_DISPLAY="$(basename "$SOCK")"
+  "$SNITEM" --register --passive-then-active > "$D/item2.name" 2>/dev/null &
+  ITEM2PID=$!
+  for i in $(seq 1 20); do
+    sleep 0.2
+    [ -s "$D/item2.name" ] && break
+  done
+  sleep 1.5
+  grim "$D/passive.png" 2>/dev/null
+
+  kill -USR1 $ITEM2PID 2>/dev/null
+  sleep 2
+  grim "$D/active.png" 2>/dev/null
+
+  DELTA=$(python3 - "$D/passive.png" "$D/active.png" <<'PYEOF'
+import sys
+from PIL import Image
+a, b = (Image.open(p).convert("RGB") for p in sys.argv[1:3])
+w, h = a.size
+# the right-hand end of the bar strip, where the tray sits
+x0, y0, x1, y1 = int(w * 0.75), 0, w, 40
+pa, pb = a.load(), b.load()
+print(sum(1 for x in range(x0, x1) for y in range(y0, y1)
+          if pa[x, y] != pb[x, y]))
+PYEOF
+)
+  kill $ITEM2PID 2>/dev/null
+  if [ "${DELTA:-0}" -gt 100 ]; then
+    echo "ok - a Passive item that goes Active appears ($DELTA px changed)"
+  else
+    echo "FAIL: going Active over PropertiesChanged changed nothing ($DELTA px)"
+    fail=1
+  fi
+fi
+
 exit $fail
