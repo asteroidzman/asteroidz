@@ -4831,7 +4831,10 @@ void set_value_default() {
 	config.bar_module_spacing = 12;
 	config.bar_tray_spacing = 24;
 	config.bar_volume_step = 5;
-	config.bar_media_bars = 8;
+	/* Fewer, wider bars over more, thinner ones: the glyph is 64px square and
+	 * the gaps are fixed, so every extra bar comes straight out of the width
+	 * of the rest. Eight read as hairlines at this size. */
+	config.bar_media_bars = 6;
 	/* Not the display's rate: this animates for as long as music plays, and
 	 * every frame is a recomposite of the bar's damage region on every
 	 * monitor. 20 reads as fluid and costs a fifth of 100Hz. */

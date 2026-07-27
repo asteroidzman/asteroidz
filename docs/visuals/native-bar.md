@@ -72,7 +72,7 @@ bar {
 | `clock.format` | `"%H:%M:%S"` | `strftime` format |
 | `media-width` | `280` | pinned width of the now-playing pill |
 | `media.visualiser` | `true` | animate a spectrum in the media pill while playing |
-| `media.bars` | `8` | spectrum bars (max 8) — fewer means wider ones |
+| `media.bars` | `6` | spectrum bars (max 8) — fewer means wider ones |
 | `media.fps` | `20` | visualiser frame rate — **this is the cost dial**, see below |
 | `weather.interval` | `15` | minutes between forecast fetches |
 | `weather.location` | *(empty)* | city name; empty means IP geolocation |
