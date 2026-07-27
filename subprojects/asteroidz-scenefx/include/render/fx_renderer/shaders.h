@@ -1,0 +1,240 @@
+#ifndef _FX_SHADERS_H
+#define _FX_SHADERS_H
+
+#include <GLES2/gl2.h>
+#include <stdbool.h>
+#include <scenefx/types/fx/clipped_region.h>
+#include "types/fx/clipped_region.h"
+
+struct fx_renderer;
+
+GLuint compile_shader(GLuint type, const GLchar *src);
+
+GLuint link_program(const GLchar *frag_src);
+
+bool check_gl_ext(const char *exts, const char *ext);
+
+void load_gl_proc(void *proc_ptr, const char *name);
+
+enum fx_tex_shader_source {
+	SHADER_SOURCE_TEXTURE_RGBA = 1,
+	SHADER_SOURCE_TEXTURE_RGBX = 2,
+	SHADER_SOURCE_TEXTURE_EXTERNAL = 3,
+};
+
+struct shader_corner_radii {
+	GLint top_left;
+	GLint top_right;
+	GLint bottom_left;
+	GLint bottom_right;
+};
+
+void uniform_corner_radii_set(const struct shader_corner_radii *uniform,
+		const struct fx_corner_fradii *corners);
+
+struct quad_shader {
+	GLuint program;
+	GLint proj;
+	GLint color;
+	GLint pos_attrib;
+
+	// Only used for the effects shader
+	struct {
+		GLint clip_size;
+		GLint clip_position;
+		struct shader_corner_radii clip_radius;
+	} effects;
+};
+
+bool link_quad_program(struct quad_shader *shader, bool clip);
+
+struct quad_grad_shader {
+	int max_len;
+
+	GLuint program;
+	GLint proj;
+	GLint colors;
+	GLint size;
+	GLint degree;
+	GLint grad_box;
+	GLint pos_attrib;
+	GLint linear;
+	GLint origin;
+	GLint count;
+	GLint blend;
+};
+
+bool link_quad_grad_program(struct quad_grad_shader *shader, int max_len);
+
+struct quad_round_shader {
+	GLuint program;
+	GLint proj;
+	GLint color;
+	GLint pos_attrib;
+	GLint size;
+	GLint position;
+
+	struct shader_corner_radii radius;
+
+	GLint clip_size;
+	GLint clip_position;
+	struct shader_corner_radii clip_radius;
+};
+
+bool link_quad_round_program(struct quad_round_shader *shader);
+
+struct quad_grad_round_shader {
+	GLuint program;
+	GLint proj;
+	GLint color;
+	GLint pos_attrib;
+	GLint size;
+	GLint position;
+
+	GLint colors;
+	GLint grad_size;
+	GLint degree;
+	GLint grad_box;
+	GLint linear;
+	GLint origin;
+	GLint count;
+	GLint blend;
+
+	struct shader_corner_radii radius;
+
+	GLint clip_position;
+	GLint clip_size;
+	struct shader_corner_radii clip_radius;
+
+	int max_len;
+};
+
+bool link_quad_grad_round_program(struct quad_grad_round_shader *shader, int max_len);
+
+struct tex_shader {
+	GLuint program;
+	GLint proj;
+	GLint tex_proj;
+	GLint tex;
+	GLint alpha;
+	GLint pos_attrib;
+
+	GLint discard_transparent;
+	GLint discard_threshold;
+
+	// Per-surface source color management (frog-color-management-v1 /
+	// wp-color-management); see tex.frag's apply_source_color_management
+	GLint transfer_function;
+	GLint luminance_multiplier;
+	GLint color_matrix;
+	GLint content_peak;
+
+	// Only used for the effects shader
+	struct {
+		GLint size;
+		GLint position;
+		struct shader_corner_radii radius;
+
+		GLint clip_size;
+		GLint clip_position;
+		struct shader_corner_radii clip_radius;
+	} effects;
+
+	// Only used for the masked (ignore_transparent) blur-composite variants;
+	// -1 on every other tex shader. mask_tex is bound to GL_TEXTURE1 and
+	// sampled through tex_proj2 / v_texcoord2 (see common.vert).
+	struct {
+		GLint tex;
+		GLint tex_proj2;
+		GLint threshold;
+		GLint has_alpha;
+	} mask;
+};
+
+// Mask source for the ignore_transparent blur composite; matches tex.frag's
+// MASK_* preamble values. FX_TEX_MASK_NONE leaves the mask uniforms unbound.
+enum fx_tex_shader_mask {
+	FX_TEX_MASK_NONE = 0,
+	FX_TEX_MASK_TEXTURE_2D = 1,
+	FX_TEX_MASK_TEXTURE_EXTERNAL = 2,
+};
+
+bool link_tex_program(struct tex_shader *shader, enum fx_tex_shader_source source,
+		bool effects, enum fx_tex_shader_mask mask);
+
+// Like tex_shader, but the box's own edge fades via the same wide analytic
+// gaussian falloff box_shadow_shader uses (blur_sigma), instead of a hard
+// corner_alpha() SDF -- used only for wlr_scene_blur's own edge when
+// blur->edge_softness > 0. Always plain 2D RGBA (the blur's own offscreen
+// buffer), so unlike tex_shader there's no RGBX/EXTERNAL/no-effects variant.
+struct tex_soft_edge_shader {
+	GLuint program;
+	GLint proj;
+	GLint tex_proj;
+	GLint tex;
+	GLint alpha;
+	GLint pos_attrib;
+
+	GLint position;
+	GLint size;
+	GLint blur_sigma;
+	struct shader_corner_radii radius;
+
+	GLint clip_position;
+	GLint clip_size;
+	struct shader_corner_radii clip_radius;
+};
+
+bool link_tex_soft_edge_program(struct tex_soft_edge_shader *shader);
+
+struct box_shadow_shader {
+	GLuint program;
+	GLint proj;
+	GLint color;
+	GLint pos_attrib;
+	GLint position;
+	GLint size;
+	GLint blur_sigma;
+	struct shader_corner_radii corner_radii;
+
+	GLint clip_position;
+	GLint clip_size;
+	struct shader_corner_radii clip_radius;
+};
+
+bool link_box_shadow_program(struct box_shadow_shader *shader);
+
+struct color_transform_shader {
+	GLuint program;
+	GLint proj;
+	GLint tex_proj;
+	GLint pos_attrib;
+	GLint tex;
+	GLint lut;
+	GLint lut_scale;
+	GLint lut_offset;
+};
+
+bool link_color_transform_program(struct color_transform_shader *shader);
+
+struct blur_shader {
+	GLuint program;
+	GLint proj;
+	GLint tex_proj;
+	GLint tex;
+	GLint pos_attrib;
+	GLint radius;
+	GLint halfpixel;
+	// blur2 only (-1 on blur1): final-iteration post-effects fold-in,
+	// replacing the former separate blur_effects fullscreen pass
+	GLint apply_effects;
+	GLint noise;
+	GLint brightness;
+	GLint contrast;
+	GLint saturation;
+};
+
+bool link_blur1_program(struct blur_shader *shader);
+bool link_blur2_program(struct blur_shader *shader);
+
+#endif

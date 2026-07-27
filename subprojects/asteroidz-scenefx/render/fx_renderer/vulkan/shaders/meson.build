@@ -1,0 +1,53 @@
+vulkan_shaders_src = [
+	'common.vert',
+	'texture.frag',
+	'quad.frag',
+	'output.frag',
+	# scenefx effect shaders (fx_vk fork)
+	'quad_round.frag',
+	'texture_round.frag',
+	'box_shadow.frag',
+	'blur1.frag',
+	'blur2.frag',
+	'blur1.comp',
+	'blur2.comp',
+	'blur_effects.frag',
+	'quad_grad_round.frag',
+	'texture_mask_round.frag',
+	'texture_soft_edge.frag',
+]
+
+vulkan_shaders = []
+foreach shader : vulkan_shaders_src
+	name = shader.underscorify() + '_data'
+	args = [glslang, '-V', '@INPUT@', '-o', '@OUTPUT@', '--vn', name]
+	if glslang_version.version_compare('>=11.0.0')
+		args += '--quiet'
+	endif
+	header = custom_target(
+		shader + '_spv',
+		output: shader + '.h',
+		input: shader,
+		command: args)
+
+	vulkan_shaders += [header]
+endforeach
+
+# fp16-arithmetic variants of the blur compute kernels (used when the device
+# enables shaderFloat16; see init_blur_compute).
+foreach shader : ['blur1.comp', 'blur2.comp']
+	name = shader.underscorify() + '_fp16_data'
+	args = [glslang, '-V', '-DUSE_FP16=1', '@INPUT@', '-o', '@OUTPUT@', '--vn', name]
+	if glslang_version.version_compare('>=11.0.0')
+		args += '--quiet'
+	endif
+	header = custom_target(
+		shader + '_fp16_spv',
+		output: shader + '.fp16.h',
+		input: shader,
+		command: args)
+
+	vulkan_shaders += [header]
+endforeach
+
+scenefx_files += vulkan_shaders
