@@ -622,6 +622,7 @@ honestly be:
 | submenu | click re-opens the popover one level down |
 | **stepper** | **scroll** over it to change its value in place |
 | **choice** | click drills into a list of values, picking one applies it and returns |
+| **field** | **type** into it; click aims the caret rather than activating |
 
 A stepper is adjusted by scrolling because painting `−`/`+` zones would be
 decoration that lies about where you may click. Scroll is already routed to
@@ -659,6 +660,24 @@ row cannot show a value the dispatcher would refuse.
 
 Steppers carrying a marked verb dispatch on the **verb**, not on the popover
 kind, so one panel may hold more than one.
+
+A **field** is the one row you *type* into, and it exists because a plugin
+sooner or later needs a name entered — adding a medication, not just picking
+one. The alternative was shelling out to a dialog, which means another process,
+another toolkit and a window that is not part of the bar. The compositor
+already sees every keystroke ahead of the binding tables, which is the hard
+part of a text field and was solved for Escape and the arrows before any of
+this; the rest is a label, a buffer and a caret.
+
+It is **aimed at, never run**: a click moves the caret to it and the panel
+stays up, because clicking the box you want to fill in is not a choice of
+anything. The caret starts in the first field a panel has, so a form is typeable
+the moment it appears. Enter advances to the next field rather than submitting
+— which is why a form ends in an explicit Save row — and activating any row
+hands the plugin *every* field at once, since a form is submitted whole.
+
+There is still no keyboard grab: only keys aimed at a field are taken, and
+everything else keeps working while the panel is up.
 
 ### Arranging displays
 
