@@ -69,7 +69,9 @@ bar {
 | `modules-left` | `"tags,layout,title"` | comma-separated module list |
 | `modules-center` | `"clock"` | " |
 | `modules-right` | *(empty)* | " |
-| `modules-right-monitor` | *(empty)* | which output draws the right section: empty/`all` for every one, `focused` to follow focus, or an output name |
+| `modules-left-monitor` | *(empty)* | which output draws the left section: empty/`all` for every one, `focused` to follow focus, or an output name |
+| `modules-center-monitor` | *(empty)* | " for the centre section |
+| `modules-right-monitor` | *(empty)* | " for the right section |
 | `clock.format` | `"%H:%M:%S"` | `strftime` format |
 | `media-width` | `280` | pinned width of the now-playing pill |
 | `media.visualiser` | `true` | animate a spectrum in the media pill while playing |
@@ -147,24 +149,39 @@ unrelated program starting could push a module off the bar. A module that was
 shed comes back on its own as soon as the width is there again (its nodes are
 disabled, not destroyed).
 
-### Where the right section goes
+### Which monitors a section goes on
 
-The left and centre sections belong to the screen you are looking at — tags and
-the focused window's title describe *that* monitor. The right one is machine
-state: one tray, one clock, one battery, repeated on every screen and competing
-for the same glance.
+Some bar content belongs to the screen you are looking at — tags and the
+focused window's title describe *that* monitor. Other content is machine state:
+one tray, one clock, one battery, repeated on every screen and competing for
+the same glance.
+
+Which is which depends on what you filled the section with, not on where it
+sits, so all three sections answer the question independently and take the same
+values:
 
 ```kdl
 bar { modules-right-monitor "all" }      // default: every monitor
 bar { modules-right-monitor "focused" }  // follows focus as it moves
 bar { modules-right-monitor "DP-1" }     // that output alone
+
+bar { modules-left-monitor "focused" }   // same three modes
+bar { modules-center-monitor "DP-1" }    // e.g. one clock, on the big screen
 ```
+
+The default for all three is every monitor, so the per-monitor behaviour is
+unchanged unless you ask for something else. Confining one section leaves the
+other two alone.
 
 The question is asked on every refresh rather than when the bar is built,
 because `focused` changes under a bar that already exists. The modules are
 always constructed; the ones that do not belong on a screen render nothing,
 which also keeps their state warm as focus moves rather than tearing it down
 and rebuilding on every hop.
+
+An output name that no *connected* monitor matches falls back to the focused
+monitor rather than vanishing — unplugging a screen must not take the tray off
+the desk entirely with no way back short of editing the config.
 
 Naming an output that is not connected falls back to the **focused** monitor
 rather than disappearing: unplugging a screen must not take the tray and the

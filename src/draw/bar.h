@@ -2903,7 +2903,7 @@ static void bar_module_refresh_display(BarModule *mod) {
 		bar_pill_release(&mod->pills[i]);
 }
 
-static bool bar_right_belongs_here(Monitor *m);
+static bool bar_section_belongs_here(Monitor *m, enum bar_slot slot);
 
 static void bar_module_refresh(BarModule *mod) {
 	AZ_ZONE(az_mod, "module refresh");
@@ -2918,7 +2918,7 @@ static void bar_module_refresh(BarModule *mod) {
 
 	/* A section that is not on this screen renders nothing at all -- no pills,
 	 * so the slot is empty and its panel is not drawn either. */
-	if (mod->slot == BAR_SLOT_RIGHT && !bar_right_belongs_here(mod->mon)) {
+	if (!bar_section_belongs_here(mod->mon, mod->slot)) {
 		for (int32_t i = 0; i < BAR_MAX_PILLS; i++)
 			bar_pill_release(&mod->pills[i]);
 		mod->npills = 0;
@@ -3591,10 +3591,10 @@ static uint64_t bar_digest(Monitor *m) {
 	bar_hash(&h, &sel, sizeof(sel));
 	bar_hash(&h, &occ, sizeof(occ));
 	bar_hash(&h, &urg, sizeof(urg));
-	/* Whether this is the focused monitor. Only the right-section rule reads
-	 * it today, and only in "focused" mode -- but leaving it out means the
-	 * monitor LOSING focus keeps a stale section: its own content did not
-	 * change, so its digest did not either, so it never redrew. */
+	/* Whether this is the focused monitor. Read by the per-section monitor
+	 * rule, and only in "focused" mode -- but leaving it out means the monitor
+	 * LOSING focus keeps a stale section: its own content did not change, so
+	 * its digest did not either, so it never redrew. */
 	bool focused = (m == selmon);
 	bar_hash(&h, &focused, sizeof(focused));
 	/* geometry: a mode/scale/position change must force a relayout */
@@ -4012,13 +4012,14 @@ static void bar_destroy(Monitor *m) {
 	bar_clock_sync();
 }
 
-/* Does this monitor draw the right-hand section?
+/* Does this monitor draw the given section?
  *
- * The left and centre sections are per-monitor by nature: tags and the focused
- * window's title describe the screen you are looking at. The right one is
- * machine state -- one tray, one clock, one battery -- and on a multi-head
- * desk that is the same row of pills repeated on every screen, competing for
- * the same glance.
+ * Some bar content is per-monitor by nature: tags and the focused window's
+ * title describe the screen being looked at. Other content is machine state --
+ * one tray, one clock, one battery -- and on a multi-head desk that is the
+ * same row of pills repeated on every screen, competing for the same glance.
+ * Which is which depends on what the sections have been filled with, not on
+ * where they sit, so all three answer the same question independently:
  *
  *   ""/"all"    every monitor (the default, and what this always did)
  *   "focused"   whichever monitor has focus, following it as it moves
@@ -4034,8 +4035,21 @@ static void bar_destroy(Monitor *m) {
  * rather than disappearing: unplugging a screen must not take the tray and the
  * clock off the desk entirely, with no way to get them back short of editing
  * the config. */
-static bool bar_right_belongs_here(Monitor *m) {
-	const char *want = config.bar_modules_right_monitor;
+static bool bar_section_belongs_here(Monitor *m, enum bar_slot slot) {
+	const char *want;
+	switch (slot) {
+	case BAR_SLOT_LEFT:
+		want = config.bar_modules_left_monitor;
+		break;
+	case BAR_SLOT_CENTER:
+		want = config.bar_modules_center_monitor;
+		break;
+	case BAR_SLOT_RIGHT:
+		want = config.bar_modules_right_monitor;
+		break;
+	default:
+		return true;
+	}
 	if (!want[0] || !strcmp(want, "all"))
 		return true;
 	if (!m || !m->wlr_output || !m->wlr_output->name)

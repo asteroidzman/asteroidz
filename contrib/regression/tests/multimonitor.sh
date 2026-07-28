@@ -191,11 +191,12 @@ test_bar_right_section_can_be_pinned_or_follow_focus() {
 		echo "  (skip: python3 PIL not available)"; return 0; }
 	hl_ensure_second_monitor || { hl_skip "test_bar_right_section_can_be_pinned_or_follow_focus: could not get a second monitor"; return 0; }
 
-	# The left and centre sections belong to the screen you are looking at.
-	# The right one is machine state -- one tray, one clock -- and repeating it
-	# on every screen is the same row of pills competing for the same glance.
-	# Three modes, and all three are worth pinning because the difference
-	# between them is invisible on a single-monitor desk.
+	# The right section is usually the machine-state one -- one tray, one
+	# clock -- and repeating it on every screen is the same row of pills
+	# competing for the same glance. Three modes, and all three are worth
+	# pinning because the difference between them is invisible on a
+	# single-monitor desk. The left and centre sections take the same setting;
+	# test_bar_left_and_centre_sections_take_the_same_rule covers those.
 	local cfg='bar { enable true; height 48; position "top"; margin { x 8; y 9 }; pill-inset 6; modules-left "tags"; modules-right "cpu,memory,network,volume"; panel { enable true; radius 9; padding 6; blur false; shadow false }'
 
 	# Ink at the right-hand end of each screen, in one full-layout screenshot.
@@ -245,6 +246,86 @@ test_bar_right_section_can_be_pinned_or_follow_focus() {
 	hl_dispatch "focus_monitor,$HL_MON" 1
 	bar_off
 	unset -f right_ink
+}
+
+test_bar_left_and_centre_sections_take_the_same_rule() {
+	declare -F bar_set >/dev/null || {
+		echo "  (skip: needs the bar module's config helpers -- run with 'bar' too)"
+		return 0; }
+	[ "$(bar_supported)" = "true" ] || { echo "  (skip: built without -Dnative-bar)"; return 0; }
+	command -v python3 >/dev/null && python3 -c "import PIL" 2>/dev/null || {
+		echo "  (skip: python3 PIL not available)"; return 0; }
+	hl_ensure_second_monitor || { hl_skip "test_bar_left_and_centre_sections_take_the_same_rule: could not get a second monitor"; return 0; }
+
+	# Whether content is per-monitor or machine-wide is a property of what the
+	# section was filled with, not of where the section sits. A centre clock is
+	# exactly as duplicated across screens as a tray is, so left and centre
+	# answer the same question the right section does -- and the thing worth
+	# pinning is that confining one section leaves the OTHERS alone, which is
+	# what a shared rule keyed on the wrong slot would break.
+	local cfg='bar { enable true; height 48; position "top"; margin { x 8; y 9 }; pill-inset 6; modules-left "cpu,memory"; modules-center "clock"; modules-right "volume"; panel { enable true; radius 9; padding 6; blur false; shadow false }'
+
+	# Ink at the left end and across the middle of each screen.
+	left_ink() { # left_ink NAME SCREEN(0|1)
+		hl_screenshot "$1"
+		local off=$(( $2 * HL_WIDTH ))
+		hl_region_ink "$HL_OUTDIR/$1.png" $((off + 8)) 8 $((off + 400)) 56
+	}
+	centre_ink() { # centre_ink NAME SCREEN(0|1) -- reuses the shot left_ink took
+		local off=$(( $2 * HL_WIDTH ))
+		hl_region_ink "$HL_OUTDIR/$1.png" $((off + HL_WIDTH / 2 - 150)) 8 \
+			$((off + HL_WIDTH / 2 + 150)) 56
+	}
+
+	bar_set "$cfg }"
+	sleep 1
+	local a b c d
+	a=$(left_ink ls-all 0); b=$(left_ink ls-all 1)
+	hl_assert_true "by default the left section is on every monitor ($a / $b)" \
+		"$([ "${a:-0}" -gt 300 ] && [ "${b:-0}" -gt 300 ] && echo true || echo false)"
+	c=$(centre_ink ls-all 0); d=$(centre_ink ls-all 1)
+	hl_assert_true "and so is the centre one ($c / $d)" \
+		"$([ "${c:-0}" -gt 300 ] && [ "${d:-0}" -gt 300 ] && echo true || echo false)"
+
+	# Pin the left section alone: the centre must not follow it off screen 0.
+	bar_set "$cfg; modules-left-monitor \"$HL_SECOND_MON\" }"
+	sleep 1
+	a=$(left_ink ls-pinned 0); b=$(left_ink ls-pinned 1)
+	hl_assert_true "naming an output puts the left section on that one alone ($a / $b)" \
+		"$([ "${a:-0}" -lt 150 ] && [ "${b:-0}" -gt 300 ] && echo true || echo false)"
+	c=$(centre_ink ls-pinned 0); d=$(centre_ink ls-pinned 1)
+	hl_assert_true "pinning the left section leaves the centre on both ($c / $d)" \
+		"$([ "${c:-0}" -gt 300 ] && [ "${d:-0}" -gt 300 ] && echo true || echo false)"
+
+	# Now the centre alone, with the left back on every screen.
+	bar_set "$cfg; modules-center-monitor \"$HL_SECOND_MON\" }"
+	sleep 1
+	a=$(left_ink cs-pinned 0); b=$(left_ink cs-pinned 1)
+	c=$(centre_ink cs-pinned 0); d=$(centre_ink cs-pinned 1)
+	hl_assert_true "naming an output puts the centre section on that one alone ($c / $d)" \
+		"$([ "${c:-0}" -lt 150 ] && [ "${d:-0}" -gt 300 ] && echo true || echo false)"
+	hl_assert_true "pinning the centre section leaves the left on both ($a / $b)" \
+		"$([ "${a:-0}" -gt 300 ] && [ "${b:-0}" -gt 300 ] && echo true || echo false)"
+
+	# "focused" has to work on these sections too, and the monitor LOSING
+	# focus is the half that regresses when the redraw digest forgets focus.
+	bar_set "$cfg; modules-center-monitor \"focused\" }"
+	sleep 1
+	hl_dispatch "focus_monitor,$HL_MON" 1
+	left_ink cs-focus1 0 >/dev/null
+	c=$(centre_ink cs-focus1 0); d=$(centre_ink cs-focus1 1)
+	hl_assert_true "focused mode draws the centre on the focused monitor ($c / $d)" \
+		"$([ "${c:-0}" -gt 300 ] && [ "${d:-0}" -lt 150 ] && echo true || echo false)"
+
+	hl_dispatch "focus_monitor,$HL_SECOND_MON" 1
+	left_ink cs-focus2 0 >/dev/null
+	c=$(centre_ink cs-focus2 0); d=$(centre_ink cs-focus2 1)
+	hl_assert_true "and the centre moves with focus, leaving the old monitor ($c / $d)" \
+		"$([ "${c:-0}" -lt 150 ] && [ "${d:-0}" -gt 300 ] && echo true || echo false)"
+
+	hl_dispatch "focus_monitor,$HL_MON" 1
+	bar_off
+	unset -f left_ink centre_ink
 }
 
 test_bar_arrange_canvas_drags_a_monitor() {

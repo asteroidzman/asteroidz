@@ -537,11 +537,19 @@ typedef struct {
 	char bar_modules_left[256];
 	char bar_modules_center[256];
 	char bar_modules_right[256];
-	/* Which output draws the right section: empty or "all" means every one,
-	 * otherwise the name of a single output ("DP-1"). The left and centre
-	 * sections are per-monitor by nature -- tags and the focused title belong
-	 * to the screen you are looking at -- but the right one is machine state:
-	 * one tray, one clock's worth of status, repeated on every screen. */
+	/* Which output draws each section: empty or "all" means every one,
+	 * "focused" follows focus, otherwise the name of a single output ("DP-1").
+	 *
+	 * The right section is the one that usually wants confining -- it is
+	 * machine state, one tray and one clock's worth of status, otherwise
+	 * repeated on every screen -- while left and centre are per-monitor by
+	 * nature, tags and the focused title belonging to the screen being looked
+	 * at. But "usually" is not "always": a centre clock is just as duplicated
+	 * as a tray, and someone who puts status modules on the left wants the
+	 * same choice there. All three take the same values and default to "all",
+	 * so the per-monitor behaviour is unchanged unless asked for. */
+	char bar_modules_left_monitor[64];
+	char bar_modules_center_monitor[64];
 	char bar_modules_right_monitor[64];
 #endif
 	float scratchpad_width_ratio;
@@ -2475,6 +2483,12 @@ bool parse_option(Config *config, char *key, char *value) {
 	} else if (strcmp(key, "bar_modules_center") == 0) {
 		snprintf(config->bar_modules_center, sizeof(config->bar_modules_center),
 				 "%s", value);
+	} else if (strcmp(key, "bar_modules_left_monitor") == 0) {
+		snprintf(config->bar_modules_left_monitor,
+				 sizeof(config->bar_modules_left_monitor), "%s", value);
+	} else if (strcmp(key, "bar_modules_center_monitor") == 0) {
+		snprintf(config->bar_modules_center_monitor,
+				 sizeof(config->bar_modules_center_monitor), "%s", value);
 	} else if (strcmp(key, "bar_modules_right_monitor") == 0) {
 		snprintf(config->bar_modules_right_monitor,
 				 sizeof(config->bar_modules_right_monitor), "%s", value);
@@ -3804,6 +3818,8 @@ static const struct {
 	{"bar/modules-left", "bar_modules_left"},
 	{"bar/modules-center", "bar_modules_center"},
 	{"bar/modules-right", "bar_modules_right"},
+	{"bar/modules-left-monitor", "bar_modules_left_monitor"},
+	{"bar/modules-center-monitor", "bar_modules_center_monitor"},
 	{"bar/modules-right-monitor", "bar_modules_right_monitor"},
 #endif
 	/* theme */
@@ -4978,6 +4994,8 @@ void set_value_default() {
 			 "clock");
 	/* right is empty until the tray and the CLI/D-Bus-backed pills exist */
 	config.bar_modules_right[0] = '\0';
+	config.bar_modules_left_monitor[0] = '\0';
+	config.bar_modules_center_monitor[0] = '\0';
 	config.bar_modules_right_monitor[0] = '\0';
 #endif
 	config.overviewgappi = 5;
