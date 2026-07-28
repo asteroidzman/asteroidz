@@ -29,31 +29,32 @@ import time
 
 
 def _find_cli():
-    """Absolute path to the real `nordvpn`, never to this script.
+    """The real `nordvpn` from PATH, resolved once, never this script.
 
-    This is not defensive padding. An earlier version of this plugin lived at
-    contrib/bar-plugins/nordvpn and ran subprocess.run(["nordvpn", "status"]).
-    Put that directory on PATH -- which a test harness did -- and the bare name
-    resolves to THIS FILE: the plugin runs itself, which runs itself, which
-    runs itself. It took a machine down and cost a reboot.
+    PATH is the right way to find a command -- hardcoding /usr/bin is wrong on
+    any distribution that disagrees. What is NOT safe is running a bare name
+    from a wrapper: an earlier version of this plugin was itself called
+    `nordvpn`, a test harness put its directory on PATH, and the bare name
+    resolved to THIS FILE. It ran itself, which ran itself. It took a machine
+    down and cost a reboot.
 
-    So: fixed locations first, then a PATH search with this script's own
-    directory removed, and a final refusal if the answer is still us. A plugin
-    that wraps a CLI must never be able to exec itself, whatever PATH says.
+    The protection is the identity check, not the path: search PATH as normal,
+    then refuse the answer if it is us. Prefixing the plugin name makes the
+    collision impossible in the first place; this makes it impossible anyway.
     """
     me = os.path.realpath(__file__)
-    mydir = os.path.dirname(me)
-    for cand in ("/usr/bin/nordvpn", "/bin/nordvpn", "/usr/local/bin/nordvpn"):
-        if os.path.realpath(cand) != me and os.access(cand, os.X_OK):
-            return cand
-    path = os.pathsep.join(
-        d for d in os.environ.get("PATH", "").split(os.pathsep)
-        if d and os.path.realpath(d) != os.path.realpath(mydir)
-    )
-    found = shutil.which("nordvpn", path=path)
+    found = shutil.which("nordvpn")
     if found and os.path.realpath(found) != me:
         return found
-    return None
+    # PATH points at us (or nothing). Try again with our own directory removed
+    # rather than giving up -- the real CLI may well be further down it.
+    mydir = os.path.realpath(os.path.dirname(me))
+    pruned = os.pathsep.join(
+        d for d in os.environ.get("PATH", "").split(os.pathsep)
+        if d and os.path.realpath(d) != mydir
+    )
+    found = shutil.which("nordvpn", path=pruned)
+    return found if found and os.path.realpath(found) != me else None
 
 
 CLI = _find_cli()

@@ -1638,3 +1638,50 @@ EOF
 	bar_off
 	rm -f "$d/menulog"
 }
+
+test_bar_plugin_menu_survives_a_long_row_list() {
+	[ "$(bar_supported)" = "true" ] || { echo "  (skip: built without -Dnative-bar)"; return 0; }
+	command -v python3 >/dev/null && python3 -c "import PIL" 2>/dev/null || {
+		echo "  (skip: python3 PIL not available)"; return 0; }
+	local d; d="$(bar_plugin_dir)"
+
+	# A plugin's line is a whole DOCUMENT, not a pill's worth of text, and a
+	# menu is as long as the menu is. bar_custom_apply used to copy every line
+	# into a 512-byte scratch before parsing, so anything bigger was truncated
+	# and then failed to parse -- silently. Short menus worked, which made it
+	# look like the one application with a long menu was at fault. Steam's tray
+	# menu is sixteen rows and several kilobytes; this is that, synthetically.
+	python3 - "$d/bigmenu" <<'PYEOF'
+import json, sys
+rows = [{"text": f"Some Reasonably Long Game Title {i:02d}", "value": str(i)}
+        for i in range(24)]
+menu = json.dumps({"menu": {"item": "", "rows": rows}})
+open(sys.argv[1], "w").write(
+    "#!/bin/sh\n"
+    "echo '{\"items\":[{\"id\":\"one\",\"text\":\"BIG\"}]}'\n"
+    "while IFS= read -r line; do\n"
+    "  case \"$line\" in\n"
+    "  *'\"button\":\"right\"'*) echo '" + menu + "' ;;\n"
+    "  esac\n"
+    "done\n")
+PYEOF
+	chmod +x "$d/bigmenu"
+	echo "  (menu payload: $(python3 -c "
+import json
+rows=[{'text':f'Some Reasonably Long Game Title {i:02d}','value':str(i)} for i in range(24)]
+print(len(json.dumps({'menu':{'item':'','rows':rows}})))") bytes)"
+
+	bar_set "bar { enable true; height 30; position \"top\"; margin { x 8; y 4 }; pill-min-width 28; pill-padding 4; panel { enable false }; modules-left \"custom/p1\"; custom \"p1\" { exec \"$d/bigmenu\"; continuous true } }"
+	sleep 2
+	hl_screenshot big-before
+	local before; before="$(hl_region_ink "$HL_OUTDIR/big-before.png" 0 40 500 700)"
+	hl_click 12 19 rclick
+	sleep 2
+	hl_screenshot big-open
+	local opened; opened="$(hl_region_ink "$HL_OUTDIR/big-open.png" 0 40 500 700)"
+
+	hl_assert_true "a menu far larger than one pill's text still opens ($before -> $opened px)" \
+		"$([ "${opened:-0}" -gt $(( ${before:-0} + 5000 )) ] && echo true || echo false)"
+
+	bar_off
+}

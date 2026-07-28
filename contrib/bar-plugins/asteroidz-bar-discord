@@ -18,7 +18,7 @@ update, no polling:
     bar {
         modules-right "custom/discord,volume,clock"
         custom "discord" {
-            exec       "asteroidz-bar-discord-voice"
+            exec       "asteroidz-bar-discord"
             continuous true
         }
     }
@@ -44,6 +44,7 @@ and is inert here.
 
 import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -53,12 +54,28 @@ import time
 SOCKET = os.path.join(
     os.environ.get("XDG_RUNTIME_DIR") or "/tmp", "discord-voiced.sock"
 )
-# Where the daemon lives, matching the built-in module's `discord.daemon`
-# default. Set ASTEROIDZ_DISCORD_DAEMON to override, or to "" to never spawn.
-DAEMON = os.environ.get(
-    "ASTEROIDZ_DISCORD_DAEMON",
-    os.path.expanduser("~/.local/bin/discord-voiced"),
-)
+def _find_daemon():
+    """Where discord-voiced actually is, not where I guessed it would be.
+
+    This was hardcoded to ~/.local/bin/discord-voiced -- one plausible install
+    location out of several, and wrong for a packaged daemon in /usr/bin. The
+    plugin then saw no daemon and no socket, correctly concluded there was
+    nothing to act on, and hid itself: "missing totally" is what a wrong
+    hardcoded path looks like from the outside. PATH is the answer; guessing
+    directories is the bug.
+
+    The realpath check costs nothing and keeps the rule uniform with the
+    nordvpn wrapper: a plugin never execs itself, whatever PATH says.
+    """
+    override = os.environ.get("ASTEROIDZ_DISCORD_DAEMON")
+    if override is not None:
+        return override  # empty string means "never spawn"
+    me = os.path.realpath(__file__)
+    found = shutil.which("discord-voiced")
+    return found if found and os.path.realpath(found) != me else ""
+
+
+DAEMON = _find_daemon()
 
 LOGO = "waybar-discord-voice/discord.svg"
 MIC_MUTED = "waybar-volume/mic-mute.svg"

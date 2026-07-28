@@ -250,14 +250,22 @@ static void bar_custom_apply(int32_t idx, const char *out) {
 		return;
 	BarCustomState *st = &bar_custom_state[idx];
 
-	/* trim: a shell one-liner's output ends in a newline */
-	char buf[BAR_TEXT_MAX * 2];
-	snprintf(buf, sizeof(buf), "%s", out);
-	size_t n = strlen(buf);
-	while (n && (buf[n - 1] == '\n' || buf[n - 1] == '\r' || buf[n - 1] == ' '))
-		buf[--n] = '\0';
-	const char *p = buf;
-	while (*p == ' ' || *p == '\t')
+	/* Parsed IN PLACE, never copied into a fixed buffer.
+	 *
+	 * This used to snprintf into a 512-byte scratch first, which silently
+	 * truncated anything larger and then failed to parse the fragment. A pill's
+	 * TEXT is bounded, so 512 looked generous -- but a plugin's line is not a
+	 * pill, it is a whole document, and a menu is as long as the menu is.
+	 * Steam's tray menu (sixteen rows: games, Store, Library, Friends,
+	 * Settings) is several kilobytes, so every right-click on it was dropped
+	 * while short menus worked, which is a very convincing impression of the
+	 * problem being Steam. It was not; it was this.
+	 *
+	 * Leading whitespace is skipped with a pointer and trailing whitespace is
+	 * left alone -- cJSON tolerates it, and the plain-text branch below trims
+	 * its own copy, which is the only place a bounded buffer belongs. */
+	const char *p = out;
+	while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')
 		p++;
 
 	st->have = true;
@@ -269,6 +277,12 @@ static void bar_custom_apply(int32_t idx, const char *out) {
 		 * that floods gets its first BAR_TEXT_MAX bytes, not a realloc. */
 		snprintf(st->text, sizeof(st->text), "%.*s",
 				 (int32_t)sizeof(st->text) - 1, p);
+		/* trailing newline: a shell one-liner's output ends in one */
+		for (size_t n = strlen(st->text);
+			 n && (st->text[n - 1] == '\n' || st->text[n - 1] == '\r' ||
+				   st->text[n - 1] == ' ');
+			 n--)
+			st->text[n - 1] = '\0';
 		st->nicons = 0;
 		st->nitems = 0;
 		st->tooltip[0] = '\0';
