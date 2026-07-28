@@ -36,10 +36,37 @@
  * here (bar_net_icon, bar_viz_icon) where it can be cached on quantised state.
  */
 
+/* How many pills one plugin may own.
+ *
+ * A plugin normally draws one thing, so `text`/`icon` at the top level stay
+ * the common case. But a tray is N icons appearing and vanishing as
+ * applications come and go, and the whole reason for moving a tray host out of
+ * the compositor is defeated if the bar can only show one of them. Sized to
+ * match the built-in tray's own cap. */
+#define BAR_CUSTOM_MAX_ITEMS 16
+
+/* One pill of a multi-pill plugin. `id` is opaque to the compositor and is
+ * handed straight back in the click event, so the plugin -- not the bar --
+ * decides what identifies an item. */
+typedef struct {
+	char id[128];
+	char text[BAR_TEXT_MAX];
+	char icons[ASTEROIDZ_TAB_MAX_ICONS][192];
+	int32_t nicons;
+	char tooltip[BAR_TEXT_MAX];
+	float tint[4];
+	bool have_tint;
+	enum bar_pill_look look;
+} BarCustomItem;
+
 /* Everything the compositor knows about one plugin. Indexed in lockstep with
  * config.bar_custom, so a module holds an index and never a pointer into a
  * table the next reload rebuilds. */
 typedef struct {
+	/* When nitems > 0 the plugin is drawing a ROW and the scalar fields below
+	 * are unused; the two forms are exclusive per update, not merged. */
+	BarCustomItem items[BAR_CUSTOM_MAX_ITEMS];
+	int32_t nitems;
 	char text[BAR_TEXT_MAX];
 	/* "icon" takes a string OR an array of them, because one pill genuinely
 	 * can show more than one: the built-in discord module draws the logo with
@@ -130,6 +157,40 @@ static bool bar_custom_tint(const char *name, float out[4]) {
 	return true;
 }
 
+/* Read the fields that describe ONE pill out of a JSON object.
+ *
+ * Shared by the scalar form and by each element of an "items" array, so the
+ * two cannot drift: a field added for a tray item is a field a plain plugin
+ * gets for free, and nobody has to remember two places. */
+static void bar_custom_read_fields(cJSON *o, BarCustomItem *it) {
+	cJSON *v;
+	if ((v = cJSON_GetObjectItem(o, "text")) && cJSON_IsString(v))
+		snprintf(it->text, sizeof(it->text), "%s", v->valuestring);
+	v = cJSON_GetObjectItem(o, "icon");
+	if (cJSON_IsString(v)) {
+		snprintf(it->icons[0], sizeof(it->icons[0]), "%s", v->valuestring);
+		it->nicons = 1;
+	} else if (cJSON_IsArray(v)) {
+		cJSON *e = NULL;
+		cJSON_ArrayForEach(e, v) {
+			if (it->nicons >= ASTEROIDZ_TAB_MAX_ICONS)
+				break;
+			if (!cJSON_IsString(e) || !e->valuestring[0])
+				continue; /* skip a gap rather than drawing one */
+			snprintf(it->icons[it->nicons], sizeof(it->icons[0]), "%s",
+					 e->valuestring);
+			it->nicons++;
+		}
+	}
+	if ((v = cJSON_GetObjectItem(o, "tooltip")) && cJSON_IsString(v))
+		snprintf(it->tooltip, sizeof(it->tooltip), "%s", v->valuestring);
+	v = cJSON_GetObjectItem(o, "class");
+	it->look = bar_custom_look(cJSON_IsString(v) ? v->valuestring : NULL);
+	v = cJSON_GetObjectItem(o, "tint");
+	it->have_tint =
+		cJSON_IsString(v) ? bar_custom_tint(v->valuestring, it->tint) : false;
+}
+
 /* Take one update. `out` is a whole JSON object, or plain text.
  *
  * Never fatal: a plugin that emits garbage keeps whatever it last showed,
@@ -160,6 +221,7 @@ static void bar_custom_apply(int32_t idx, const char *out) {
 		snprintf(st->text, sizeof(st->text), "%.*s",
 				 (int32_t)sizeof(st->text) - 1, p);
 		st->nicons = 0;
+		st->nitems = 0;
 		st->tooltip[0] = '\0';
 		st->have_tint = false;
 		st->look = BAR_LOOK_FLAT;
@@ -174,36 +236,56 @@ static void bar_custom_apply(int32_t idx, const char *out) {
 		return;
 	}
 	cJSON *v;
-	if ((v = cJSON_GetObjectItem(root, "text")) && cJSON_IsString(v))
-		snprintf(st->text, sizeof(st->text), "%s", v->valuestring);
-	else
+	/* An "items" array means the plugin is drawing a ROW -- a tray, chiefly.
+	 * Read first and exclusively: an update is one form or the other, never a
+	 * merge, so a plugin switching between them leaves nothing behind. */
+	v = cJSON_GetObjectItem(root, "items");
+	if (cJSON_IsArray(v)) {
+		st->nitems = 0;
 		st->text[0] = '\0';
-	st->nicons = 0;
-	v = cJSON_GetObjectItem(root, "icon");
-	if (cJSON_IsString(v)) {
-		snprintf(st->icons[0], sizeof(st->icons[0]), "%s", v->valuestring);
-		st->nicons = 1;
-	} else if (cJSON_IsArray(v)) {
+		st->nicons = 0;
+		st->tooltip[0] = '\0';
+		st->have_tint = false;
+		st->look = BAR_LOOK_FLAT;
 		cJSON *e = NULL;
 		cJSON_ArrayForEach(e, v) {
-			if (st->nicons >= ASTEROIDZ_TAB_MAX_ICONS)
+			if (st->nitems >= BAR_CUSTOM_MAX_ITEMS)
 				break;
-			if (!cJSON_IsString(e) || !e->valuestring[0])
-				continue; /* skip a gap rather than drawing one */
-			snprintf(st->icons[st->nicons], sizeof(st->icons[0]), "%s",
-					 e->valuestring);
-			st->nicons++;
+			if (!cJSON_IsObject(e))
+				continue;
+			BarCustomItem *it = &st->items[st->nitems];
+			memset(it, 0, sizeof(*it));
+			bar_custom_read_fields(e, it);
+			cJSON *id = cJSON_GetObjectItem(e, "id");
+			if (cJSON_IsString(id))
+				snprintf(it->id, sizeof(it->id), "%s", id->valuestring);
+			/* An item with neither artwork nor a label would be an invisible
+			 * pill you could still click, which is worse than absent. */
+			if (it->nicons || it->text[0])
+				st->nitems++;
 		}
+		v = cJSON_GetObjectItem(root, "hidden");
+		st->hidden = cJSON_IsTrue(v);
+		cJSON_Delete(root);
+		return;
 	}
-	if ((v = cJSON_GetObjectItem(root, "tooltip")) && cJSON_IsString(v))
-		snprintf(st->tooltip, sizeof(st->tooltip), "%s", v->valuestring);
-	else
-		st->tooltip[0] = '\0';
-	v = cJSON_GetObjectItem(root, "class");
-	st->look = bar_custom_look(cJSON_IsString(v) ? v->valuestring : NULL);
-	v = cJSON_GetObjectItem(root, "tint");
-	st->have_tint =
-		cJSON_IsString(v) ? bar_custom_tint(v->valuestring, st->tint) : false;
+	st->nitems = 0;
+
+	{
+		/* The scalar form is one item's worth of fields drawn straight onto
+		 * the plugin's own pill, so it reads them through the same helper --
+		 * two spellings of "what a pill shows" would drift apart. */
+		BarCustomItem one;
+		memset(&one, 0, sizeof(one));
+		bar_custom_read_fields(root, &one);
+		snprintf(st->text, sizeof(st->text), "%s", one.text);
+		memcpy(st->icons, one.icons, sizeof(st->icons));
+		st->nicons = one.nicons;
+		snprintf(st->tooltip, sizeof(st->tooltip), "%s", one.tooltip);
+		memcpy(st->tint, one.tint, sizeof(st->tint));
+		st->have_tint = one.have_tint;
+		st->look = one.look;
+	}
 	v = cJSON_GetObjectItem(root, "hidden");
 	st->hidden = cJSON_IsTrue(v);
 	cJSON_Delete(root);
@@ -245,10 +327,14 @@ static bool bar_custom_spawn(const char *cmd, int32_t idx, bool lines) {
 	 * instantaneous: a reload landing while one is out would otherwise leave a
 	 * child whose completion callback still carries the OLD index, and it
 	 * would report into whatever plugin now sits there. */
+	/* A streaming plugin gets a writable stdin; a one-shot interval run does
+	 * not. Events are only meaningful to something still listening, and an
+	 * interval plugin is a command that has already exited by the time anyone
+	 * could click its pill. */
 	AsyncSpawn *as = async_spawn_run(event_loop, argv,
 									 lines ? NULL : bar_custom_on_output,
 									 lines ? bar_custom_on_line : NULL,
-									 (void *)(intptr_t)idx);
+									 (void *)(intptr_t)idx, lines);
 	if (!as)
 		return false;
 	as->owner = &st->proc;
@@ -347,14 +433,40 @@ static void bar_custom_tick(int32_t elapsed_sec) {
 /* A click on a plugin's pill. Fire-and-forget through the shell, like every
  * other command in the config: the plugin's next update reports the outcome,
  * and waiting for the child here would block the pointer. */
-static bool bar_custom_click(int32_t idx, uint32_t button) {
+static bool bar_custom_click(int32_t idx, uint32_t button, const char *item,
+							 int32_t x, int32_t y) {
 	if (idx < 0 || idx >= config.bar_custom_count)
 		return false;
 	ConfigBarCustom *cm = &config.bar_custom[idx];
-	const char *cmd = button == BTN_RIGHT ? cm->on_click_right : cm->on_click;
-	if (button != BTN_LEFT && button != BTN_RIGHT)
+	const char *name = button == BTN_LEFT	  ? "left"
+					   : button == BTN_RIGHT  ? "right"
+					   : button == BTN_MIDDLE ? "middle"
+											  : NULL;
+	if (!name)
 		return false;
-	if (!cmd || !*cmd)
+
+	/* A streaming plugin hears about it directly.
+	 *
+	 * This is what makes a plugin two-way, and it is why the tray can live
+	 * outside the compositor at all: an item's Activate takes the click's
+	 * SCREEN position so the application can put its own window beside the
+	 * icon, and no amount of `on-click "some command"` can carry that. The
+	 * event names which item was hit, so one plugin can own many pills. */
+	BarCustomState *st = &bar_custom_state[idx];
+	if (cm->continuous && st->proc) {
+		char ev[512];
+		snprintf(ev, sizeof(ev),
+				 "{\"event\":\"click\",\"button\":\"%s\",\"item\":\"%s\","
+				 "\"x\":%d,\"y\":%d}",
+				 name, item ? item : "", x, y);
+		if (async_spawn_send(st->proc, ev))
+			return true;
+		/* fall through to the configured command: a plugin that has stopped
+		 * reading should not silently swallow the click too */
+	}
+
+	const char *cmd = button == BTN_RIGHT ? cm->on_click_right : cm->on_click;
+	if (button == BTN_MIDDLE || !cmd || !*cmd)
 		return false;
 	char *const argv[] = {"/bin/sh", "-c", (char *)cmd, NULL};
 	async_spawn(event_loop, argv, NULL, NULL);

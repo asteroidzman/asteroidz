@@ -61,6 +61,27 @@ Every field is optional.
 | `class` | string | `flat` (default), `active`, `urgent`, `occupied`, `empty`, `sunken` — the same looks the built-in pills use |
 | `tooltip` | string | shown on hover; omit it for no hover at all |
 | `hidden` | bool | render nothing this update |
+| `items` | array | draw a **row** of pills instead of one — see below |
+
+### Rows
+
+A plugin normally draws one pill. `items` draws up to 16, which is what a tray
+needs: icons appearing and vanishing as applications come and go.
+
+```json
+{"items":[
+  {"id":"org.kde.StatusNotifierItem-1234-1","icon":"/run/user/1000/x.png","tooltip":"Steam"},
+  {"id":"nm-applet","icon":"network-wired","class":"urgent"}
+]}
+```
+
+Each item takes the same fields as a single pill, plus `id` — which is opaque
+to the compositor and handed straight back in the click event, so the plugin
+decides what identifies an item. An item with neither `text` nor `icon` is
+dropped rather than drawn as an invisible-but-clickable pill.
+
+The two forms are exclusive per update: an update with `items` ignores the
+top-level `text`/`icon`, and one without clears any row.
 
 A plugin that has not answered yet, that sets `hidden`, or that supplies
 neither `text` nor `icon`, **draws nothing at all** — no placeholder, no error
@@ -153,6 +174,32 @@ changed.
 behave as they do in a shell. It is also why `exec "my script.sh"` with a space
 in the path needs quoting like any other shell word.
 
+### Events, for streaming plugins
+
+A `continuous` plugin gets a **writable stdin**, and a click on one of its
+pills arrives there as one JSON line:
+
+```json
+{"event":"click","button":"left","item":"nm-applet","x":137,"y":19}
+```
+
+`button` is `left`, `right` or `middle`. `item` is the `id` of the pill that
+was hit, empty for a single-pill plugin. `x` and `y` are **screen**
+coordinates.
+
+Those coordinates are the reason this channel exists rather than only
+`on-click`: a tray item's `Activate(x, y)` takes the click position so the
+application can place its own window next to its icon, and no shell command can
+carry that.
+
+Delivery is best-effort. A plugin that has stopped reading its stdin gets the
+event dropped — never queued, never retried, and never allowed to block the
+compositor. If the write fails, the configured `on-click` command runs instead,
+so a wedged plugin does not silently swallow clicks too.
+
+Interval plugins get no stdin: the command has already exited by the time
+anyone could click its pill. They use `on-click` / `on-click-right`.
+
 ## What plugins deliberately cannot do
 
 Not oversights — each one is load-bearing:
@@ -166,8 +213,9 @@ Not oversights — each one is load-bearing:
 - **No control over redraw timing.** An animating bar element damages the
   output every frame, which recomposites the screen for as long as it animates.
   That budget belongs to the compositor, not to a script.
-- **No menus yet.** Popover menus need a bidirectional transport so a click can
-  be delivered back; that is planned alongside a socket-based plugin mode.
+- **No menus yet.** A plugin cannot ask the compositor to draw a popover menu
+  on its behalf. This is the remaining gap, and the only reason the built-in
+  `tray` module still exists — see below.
 
 ## A worked example: Discord voice
 
@@ -199,24 +247,92 @@ reachable by writing to the daemon socket from `on-click-right`; joining a
 channel would need an external picker. That is the current ceiling, not a
 defect in the script.
 
-### What cannot be a plugin at all
+## The tray, and `asteroidz-trayd`
 
-`tray` is the clearest case. It is not a status readout, it is a **D-Bus host**
-— it owns `org.kde.StatusNotifierHost-<pid>` and applications talk to it. It
-needs N pills appearing and vanishing at runtime, raw ARGB pixmaps over the
-bus, the click's screen coordinates so an application can place its own window,
-and a live nested DBusMenu per item. None of that is expressible as "a command
-that prints JSON", and none of it should be.
+A tray looks like the thing that cannot be a plugin, and for a long time it
+was: it needs N pills appearing and vanishing at runtime, raw ARGB pixmaps
+over D-Bus, the click's screen coordinates so an application can place its own
+window, and a live nested DBusMenu per item.
 
-The rule of thumb: if the work can live in a daemon and the bar only needs to
-*display* the result, it can be a plugin. If the bar itself has to be the
-endpoint of a protocol, it cannot.
+Three of those four now work, which is what `items`, the icon array and the
+click event channel are for. `asteroidz-trayd` is the result:
+
+```kdl
+bar {
+    modules-right "custom/tray,volume,clock"
+    custom "tray" { exec "asteroidz-trayd"; continuous true }
+}
+```
+
+### Why it is worth moving
+
+Not because drawing pills is expensive. Because a tray host is the endpoint of
+a protocol driven by **every application you happen to have installed**, and
+one of the things they hand it is a raw pixmap of their own choosing.
+
+The built-in `tray` module decodes those in a D-Bus reply callback on the
+compositor's event loop, and accepts any dimensions an application sends. The
+decode is `O(w × h)`. A badly packaged application shipping one oversized icon
+can therefore stall the compositor — which is the whole desktop, not a bar.
+
+`asteroidz-trayd` caps pixmaps at **512 px a side**, decodes them in its own
+process, and writes a 64 px PNG to `$XDG_RUNTIME_DIR/asteroidz-tray/`. The bar
+receives a file path and loads a bounded PNG from disk, the same as any other
+icon. Nothing an application sent is ever parsed inside the compositor.
+
+Anything above the cap is **refused, not clamped** — an application sending a
+4096² pixmap is broken, and the smaller sizes it almost certainly also sent get
+used instead.
+
+### What it does and does not do
+
+Everything the built-in module does, except context menus:
+
+| | |
+|---|---|
+| Watcher or host role | both, decided at runtime — it mirrors an incumbent watcher rather than fighting it |
+| Adopting items already on the bus | yes, which is what stops a restart losing applications that register only once |
+| `IconName`, `IconThemePath`, `IconPixmap` | yes; a theme name is passed through for the bar to resolve, since a name follows your icon theme and a pixmap does not |
+| `NeedsAttention` | yes, drawn `urgent` |
+| `Passive` items | hidden, as the spec allows |
+| Left click | `Activate(x, y)` |
+| Right / middle click | `SecondaryActivate(x, y)` |
+| **DBusMenu context menus** | **no** — see below |
+
+The context menu is the one real gap. Joining that up needs the compositor to
+draw a menu on a plugin's behalf, which nothing in the plugin contract can ask
+for yet. Right-click falls back to `SecondaryActivate`, which most applications
+map to "show me my menu" anyway — the same fallback the built-in module shipped
+with for the same reason.
+
+So the two coexist, and switching is one word:
+
+```kdl
+modules-right "tray,volume,clock"          // built-in: context menus
+modules-right "custom/tray,volume,clock"   // trayd: no unbounded decode
+```
+
+### Testing it
+
+`contrib/trayd-test.sh` runs the daemon against its own `dbus-daemon` and a
+stand-in item (`contrib/snitem`), so it needs no tray application installed and
+never touches the live session's tray. `snitem --pixmap N` is what exercises
+the cap: point it at any host and watch whether an absurd `N` gets decoded.
+
+### The rule of thumb
+
+If the work can live in a daemon and the bar only needs to *display* the
+result, it can be a plugin. If the bar itself has to be the endpoint of a
+protocol, it needs a helper that is the endpoint instead — which is what trayd
+is, and why it is a separate binary rather than a shell script.
 
 ## Limits
 
 | | |
 |---|---|
 | Plugins per config | 12 |
+| Items per plugin (`items`) | 16 |
+| Icons per pill (`icon` array) | 4 |
 | Label length | 256 bytes, truncated |
 | Modules on a bar, all sections | 24 |
 

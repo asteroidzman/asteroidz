@@ -175,6 +175,27 @@ inline in the relevant test files too):
   Both were ultimately root-caused via `coredumpctl`/static review, not by
   reproducing them live a second time. See "Live-session mode" above.
 
+## A separate layer: the tray host
+
+`contrib/trayd-test.sh` covers `asteroidz-trayd`, the out-of-process
+StatusNotifierItem host, and needs **no compositor at all** — that is the
+point of moving the host out. It is a plain program that reads clicks on stdin
+and writes items on stdout, so it can be driven directly.
+
+It runs against its own `dbus-daemon` (via `dbus-run-session`) and its own
+`XDG_RUNTIME_DIR`, so it never touches the live session's tray, and uses
+`contrib/snitem` as a stand-in item rather than needing a real tray
+application. Each case re-enters the script on a fresh bus, because a watcher
+name can only be claimed once and a stale claim would test the wrong role.
+
+The assertion worth knowing about is the **pixmap cap**. A tray host decodes
+pixmaps whose dimensions the application chooses, which is unbounded work
+driven by whatever the user happens to have installed — in the compositor that
+is a stalled desktop. `snitem --pixmap N` serves an N×N icon, and the test
+checks that 48 and 512 are decoded while 4096 is refused outright and the item
+simply does not appear. Point it at any host to see whether that host is
+bounded; the built-in `tray` module is not, which is why trayd exists.
+
 ## A separate, complementary layer: waybar plugin unit tests
 
 The three-plus custom waybar CFFI plugins (`waybar-display`, `waybar-weather`,

@@ -9,7 +9,7 @@
 // interface returns -- so this is a complete item as far as anything under
 // test is concerned, with no Discord, no Steam and no tray applet needed.
 //
-// Usage: snitem [--register] [--passive-then-active]
+// Usage: snitem [--register] [--passive-then-active] [--pixmap N] [--log F]
 //   --register  also call RegisterStatusNotifierItem on the watcher, i.e.
 //               behave like an application that starts AFTER the compositor.
 //               Without it the name simply exists, which is the state an
@@ -24,9 +24,20 @@
 //               so the application looks like it fell out of the tray.
 //               On a signal rather than a timer so a test can decide when it
 //               happens instead of racing one.
+//   --pixmap N  serve an N x N IconPixmap instead of relying on IconName.
+//               This is the one thing a tray host takes from an application
+//               that is UNBOUNDED: the host decodes whatever dimensions are
+//               sent. Pass a large N to check that a host refuses rather than
+//               decoding it -- an unbounded one will happily chew through
+//               however many megapixels it is handed, which in-compositor is
+//               a stalled desktop and is why asteroidz-trayd exists.
+//   --log F     append each Activate/SecondaryActivate/ContextMenu call to F,
+//               as "<method> <x> <y>", so a test can assert that a click made
+//               it all the way from the bar to the item.
 #include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <errno.h>
 #include <systemd/sd-bus.h>
@@ -37,6 +48,8 @@ static const char *ITEM_IFACE = "org.kde.StatusNotifierItem";
 /* Mutable so --passive-then-active can flip it under a live connection. */
 static const char *item_status = "Active";
 static volatile sig_atomic_t go_active = 0;
+static int pixmap_size = 0;
+static const char *click_log = NULL;
 
 static void on_sigusr1(int sig) {
 	(void)sig;
@@ -51,14 +64,67 @@ static int prop_str(sd_bus *bus, const char *path, const char *iface,
 	if (!strcmp(prop, "Status"))
 		v = item_status;
 	else if (!strcmp(prop, "IconName"))
-		v = "dialog-information";
+		/* Empty when a pixmap was asked for: a host prefers a NAME over a
+		   pixmap (it is themed and scalable), so an item offering both would
+		   never exercise the decode path at all. */
+		v = pixmap_size > 0 ? "" : "dialog-information";
 	else if (!strcmp(prop, "Category"))
 		v = "ApplicationStatus";
 	return sd_bus_message_append(reply, "s", v);
 }
 
+/* A solid opaque square. Content does not matter -- what is being tested is
+   whether a host decodes it at all, and at what size it declines to. */
+static int prop_pixmap(sd_bus *bus, const char *path, const char *iface,
+					   const char *prop, sd_bus_message *reply, void *user,
+					   sd_bus_error *err) {
+	(void)bus; (void)path; (void)iface; (void)prop; (void)user; (void)err;
+	int n = pixmap_size;
+	int r = sd_bus_message_open_container(reply, 'a', "(iiay)");
+	if (r < 0)
+		return r;
+	if (n > 0) {
+		size_t bytes = (size_t)n * n * 4;
+		unsigned char *px = malloc(bytes);
+		if (!px)
+			return -ENOMEM;
+		memset(px, 0xFF, bytes);
+		if ((r = sd_bus_message_open_container(reply, 'r', "iiay")) >= 0) {
+			sd_bus_message_append(reply, "ii", n, n);
+			sd_bus_message_append_array(reply, 'y', px, bytes);
+			sd_bus_message_close_container(reply);
+		}
+		free(px);
+		if (r < 0)
+			return r;
+	}
+	return sd_bus_message_close_container(reply);
+}
+
+static int method_action(sd_bus_message *m, void *user, sd_bus_error *err) {
+	(void)user; (void)err;
+	int x = 0, y = 0;
+	sd_bus_message_read(m, "ii", &x, &y);
+	if (click_log) {
+		FILE *f = fopen(click_log, "a");
+		if (f) {
+			fprintf(f, "%s %d %d\n", sd_bus_message_get_member(m), x, y);
+			fclose(f);
+		}
+	}
+	return sd_bus_reply_method_return(m, "");
+}
+
 static const sd_bus_vtable item_vtable[] = {
 	SD_BUS_VTABLE_START(0),
+	SD_BUS_PROPERTY("IconPixmap", "a(iiay)", prop_pixmap, 0,
+					SD_BUS_VTABLE_PROPERTY_CONST),
+	SD_BUS_METHOD("Activate", "ii", "", method_action,
+				  SD_BUS_VTABLE_UNPRIVILEGED),
+	SD_BUS_METHOD("SecondaryActivate", "ii", "", method_action,
+				  SD_BUS_VTABLE_UNPRIVILEGED),
+	SD_BUS_METHOD("ContextMenu", "ii", "", method_action,
+				  SD_BUS_VTABLE_UNPRIVILEGED),
 	SD_BUS_PROPERTY("Id", "s", prop_str, 0, SD_BUS_VTABLE_PROPERTY_CONST),
 	SD_BUS_PROPERTY("Title", "s", prop_str, 0, SD_BUS_VTABLE_PROPERTY_CONST),
 	/* EMITS_CHANGE, not CONST: this one is allowed to change, and saying so is
@@ -77,6 +143,10 @@ int main(int argc, char **argv) {
 			do_register = true;
 		else if (!strcmp(argv[i], "--passive-then-active"))
 			passive_first = true;
+		else if (!strcmp(argv[i], "--pixmap") && i + 1 < argc)
+			pixmap_size = atoi(argv[++i]);
+		else if (!strcmp(argv[i], "--log") && i + 1 < argc)
+			click_log = argv[++i];
 	}
 	if (passive_first)
 		item_status = "Passive";

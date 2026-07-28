@@ -2945,75 +2945,137 @@ static void bar_module_refresh_display(BarModule *mod) {
  * or not installed is therefore invisible rather than a permanent "?" in the
  * corner of every screen, which is the behaviour the weather and vpn pills
  * were each argued into separately. */
-static void bar_module_refresh_custom(BarModule *mod) {
-	int32_t idx = mod->custom;
-	if (idx < 0 || idx >= config.bar_custom_count) {
-		mod->npills = 0;
-		for (int32_t i = 0; i < BAR_MAX_PILLS; i++)
-			bar_pill_release(&mod->pills[i]);
+/* What a plugin's icon string means, in three tries and without complaining.
+ *
+ * Absolute path, then bar { icon-dir }, then the name passed through untouched
+ * so text-node's XDG icon-theme lookup gets a go at it. That last step is what
+ * lets a tray host name "firefox" and have it work: a StatusNotifierItem's
+ * IconName is a THEME name, and forcing it through bar_icon_path would search
+ * only our own artwork directory, miss, and log a warning per item per update.
+ * Quiet on miss for the same reason -- a plugin naming an icon we do not have
+ * is the plugin's business, not a compositor error. */
+static void bar_custom_icon_resolve(char *out, size_t len, const char *name) {
+	if (!name || !*name) {
+		out[0] = '\0';
 		return;
 	}
-	BarCustomState *st = &bar_custom_state[idx];
-	if (!st->have || st->hidden || (!st->text[0] && !st->nicons &&
-									!config.bar_custom[idx].icon[0])) {
-		mod->npills = 0;
-		for (int32_t i = 0; i < BAR_MAX_PILLS; i++)
-			bar_pill_release(&mod->pills[i]);
+	if (name[0] == '/') {
+		snprintf(out, len, "%s", name);
 		return;
 	}
-	BarPill *p = bar_pill_get(mod, 0);
-	if (!p) {
-		mod->npills = 0;
-		return;
+	const char *p = config.bar_icon_dir;
+	while (p && *p) {
+		const char *sep = strchr(p, ':');
+		int32_t dirlen = sep ? (int32_t)(sep - p) : (int32_t)strlen(p);
+		snprintf(out, len, "%.*s/%s", dirlen, p, name);
+		if (access(out, R_OK) == 0)
+			return;
+		if (!sep)
+			break;
+		p = sep + 1;
 	}
+	snprintf(out, len, "%s", name);
+}
 
-	/* Artwork: what the plugin named this update, else the block's own `icon`.
-	 * An absolute path is taken as given; anything else is resolved against
+/* Draw one item onto one pill. `fallback` is the config block's own icon, used
+ * only when the item named none. */
+static void bar_custom_fill_pill(BarPill *p, const BarCustomItem *it,
+								 const char *fallback) {
+	/* An absolute path is taken as given; anything else is resolved against
 	 * bar { icon-dir } like every built-in module's artwork, so a plugin ships
-	 * its icons the same way the vendored ones are found. */
+	 * its icons the same way the vendored ones are found. A tray host hands us
+	 * absolute paths, because the pixmaps it decoded are files it just wrote. */
 	char resolved[ASTEROIDZ_TAB_MAX_ICONS][512];
 	const char *icons[ASTEROIDZ_TAB_MAX_ICONS];
 	int32_t nicons = 0;
-	/* What the plugin named this update, else the block's own `icon` as a
-	 * fallback -- so a plugin that only ever emits text still gets artwork if
-	 * the config gave it one. */
-	if (st->nicons) {
-		for (int32_t i = 0; i < st->nicons; i++) {
-			if (st->icons[i][0] == '/')
-				snprintf(resolved[nicons], sizeof(resolved[0]), "%s",
-						 st->icons[i]);
-			else
-				bar_icon_path(resolved[nicons], sizeof(resolved[0]),
-							  st->icons[i]);
+	if (it->nicons) {
+		for (int32_t i = 0; i < it->nicons; i++) {
+			bar_custom_icon_resolve(resolved[nicons], sizeof(resolved[0]),
+									it->icons[i]);
 			icons[nicons] = resolved[nicons];
 			nicons++;
 		}
-	} else if (config.bar_custom[idx].icon[0]) {
-		const char *want = config.bar_custom[idx].icon;
-		if (want[0] == '/')
-			snprintf(resolved[0], sizeof(resolved[0]), "%s", want);
-		else
-			bar_icon_path(resolved[0], sizeof(resolved[0]), want);
+	} else if (fallback && *fallback) {
+		bar_custom_icon_resolve(resolved[0], sizeof(resolved[0]), fallback);
 		icons[0] = resolved[0];
 		nicons = 1;
 	}
 	if (nicons) {
 		asteroidz_tab_bar_node_set_icons(p->node, icons, nicons);
 		asteroidz_tab_bar_node_set_icon_tint(p->node,
-											 st->have_tint ? st->tint : NULL);
+											 it->have_tint ? it->tint : NULL);
 	} else {
 		asteroidz_tab_bar_node_set_icon(p->node, NULL);
 	}
 
-	snprintf(p->text, sizeof(p->text), "%s", st->text);
-	p->arg = 0;
+	snprintf(p->text, sizeof(p->text), "%s", it->text);
 	/* Pinned to the width of what is on screen NOW, not to a widest-case
 	 * probe: the built-ins can enumerate their own content (twelve months of
 	 * clock, six network tiers) and a plugin's is arbitrary. Flexible so the
 	 * shed pass can still reclaim it. */
-	p->fixed_width = st->text[0] ? 0 : bar_icon_pill_width(p, bar_pill_height());
+	p->fixed_width = it->text[0] ? 0 : bar_icon_pill_width(p, bar_pill_height());
 	p->flexible = true;
-	bar_pill_style(p, st->look);
+	bar_pill_style(p, it->look);
+}
+
+static void bar_module_refresh_custom(BarModule *mod) {
+	int32_t idx = mod->custom;
+	BarCustomState *st =
+		(idx >= 0 && idx < config.bar_custom_count) ? &bar_custom_state[idx]
+												   : NULL;
+	bool nothing =
+		!st || !st->have || st->hidden ||
+		(!st->nitems && !st->text[0] && !st->nicons &&
+		 !config.bar_custom[idx].icon[0]);
+	if (nothing) {
+		mod->npills = 0;
+		for (int32_t i = 0; i < BAR_MAX_PILLS; i++)
+			bar_pill_release(&mod->pills[i]);
+		return;
+	}
+	const char *fallback = config.bar_custom[idx].icon;
+
+	/* A row of items -- a tray, chiefly. `arg` carries the item's INDEX, which
+	 * the click handler turns back into the plugin's own id; the pills are
+	 * rebuilt on every update, so an index is only ever read against the array
+	 * that produced it. Same shape the built-in tray uses for the same
+	 * reason. */
+	if (st->nitems) {
+		int32_t n = st->nitems;
+		if (n > BAR_MAX_PILLS)
+			n = BAR_MAX_PILLS;
+		int32_t used = 0;
+		for (int32_t i = 0; i < n; i++) {
+			BarPill *p = bar_pill_get(mod, used);
+			if (!p)
+				break;
+			bar_custom_fill_pill(p, &st->items[i], fallback);
+			p->arg = (uint32_t)i;
+			used++;
+		}
+		mod->npills = used;
+		for (int32_t i = used; i < BAR_MAX_PILLS; i++)
+			bar_pill_release(&mod->pills[i]);
+		return;
+	}
+
+	BarPill *p = bar_pill_get(mod, 0);
+	if (!p) {
+		mod->npills = 0;
+		return;
+	}
+	/* The scalar form: the plugin's own fields as a single item, so both
+	 * shapes go through one drawing path. */
+	BarCustomItem one;
+	memset(&one, 0, sizeof(one));
+	snprintf(one.text, sizeof(one.text), "%s", st->text);
+	memcpy(one.icons, st->icons, sizeof(one.icons));
+	one.nicons = st->nicons;
+	memcpy(one.tint, st->tint, sizeof(one.tint));
+	one.have_tint = st->have_tint;
+	one.look = st->look;
+	bar_custom_fill_pill(p, &one, fallback);
+	p->arg = 0;
 	mod->npills = 1;
 	for (int32_t i = 1; i < BAR_MAX_PILLS; i++)
 		bar_pill_release(&mod->pills[i]);
@@ -3830,16 +3892,35 @@ static uint64_t bar_digest(Monitor *m) {
 			int32_t ci = m->bar->modules[i].custom;
 			if (ci >= 0 && ci < config.bar_custom_count) {
 				const BarCustomState *st = &bar_custom_state[ci];
-				bar_hash_str(&h, st->text);
-				bar_hash(&h, &st->nicons, sizeof(st->nicons));
-				for (int32_t k = 0; k < st->nicons; k++)
-					bar_hash_str(&h, st->icons[k]);
-				bar_hash(&h, &st->look, sizeof(st->look));
 				bar_hash(&h, &st->hidden, sizeof(st->hidden));
 				bar_hash(&h, &st->have, sizeof(st->have));
-				bar_hash(&h, &st->have_tint, sizeof(st->have_tint));
-				if (st->have_tint)
-					bar_hash(&h, st->tint, sizeof(st->tint));
+				/* The row form and the scalar form both, because a plugin can
+				 * switch between them: a tray host with no items left emits an
+				 * empty row, and hashing only the scalar fields would call
+				 * that identical to the row it was showing a moment ago. */
+				bar_hash(&h, &st->nitems, sizeof(st->nitems));
+				for (int32_t n = 0; n < st->nitems; n++) {
+					const BarCustomItem *it = &st->items[n];
+					bar_hash_str(&h, it->id);
+					bar_hash_str(&h, it->text);
+					bar_hash(&h, &it->nicons, sizeof(it->nicons));
+					for (int32_t k = 0; k < it->nicons; k++)
+						bar_hash_str(&h, it->icons[k]);
+					bar_hash(&h, &it->look, sizeof(it->look));
+					bar_hash(&h, &it->have_tint, sizeof(it->have_tint));
+					if (it->have_tint)
+						bar_hash(&h, it->tint, sizeof(it->tint));
+				}
+				if (!st->nitems) {
+					bar_hash_str(&h, st->text);
+					bar_hash(&h, &st->nicons, sizeof(st->nicons));
+					for (int32_t k = 0; k < st->nicons; k++)
+						bar_hash_str(&h, st->icons[k]);
+					bar_hash(&h, &st->look, sizeof(st->look));
+					bar_hash(&h, &st->have_tint, sizeof(st->have_tint));
+					if (st->have_tint)
+						bar_hash(&h, st->tint, sizeof(st->tint));
+				}
 			}
 			break;
 		}
@@ -4464,8 +4545,21 @@ static bool bar_handle_node_click(AsteroidzNodeData *hit, uint32_t button) {
 		}
 		break;
 	}
-	case BAR_MODULE_CUSTOM:
-		return bar_custom_click(p->module->custom, button);
+	case BAR_MODULE_CUSTOM: {
+		/* The item's own id when the plugin drew a row, empty when it drew a
+		 * single pill. Screen coordinates ride along because a tray item's
+		 * Activate takes them -- an application places its own window next to
+		 * the icon you clicked. */
+		int32_t ci = p->module->custom;
+		const char *item = "";
+		if (ci >= 0 && ci < config.bar_custom_count) {
+			BarCustomState *cst = &bar_custom_state[ci];
+			if (cst->nitems && p->arg < (uint32_t)cst->nitems)
+				item = cst->items[p->arg].id;
+		}
+		return bar_custom_click(ci, button, item, (int32_t)cursor->x,
+								(int32_t)cursor->y);
+	}
 	case BAR_MODULE_LAYOUT:
 		if (button == BTN_LEFT) {
 			/* switch_layout cycles config.circle_layout on selmon, so point

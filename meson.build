@@ -221,6 +221,24 @@ executable('amsg',
   ],
 )
 
+# The StatusNotifierItem tray host, as a separate process.
+#
+# Separate because a tray host is the endpoint of a protocol driven by every
+# application the user happens to have installed: they hand it raw ARGB
+# pixmaps and it decodes them. In the compositor that decode runs on the event
+# loop with no bound an application cannot choose, so one badly packaged icon
+# can stall the whole desktop. Out here it cannot, and the compositor only
+# ever loads a bounded PNG from disk.
+executable('asteroidz-trayd',
+  'trayd/asteroidz-trayd.c',
+  dependencies : [
+    libsystemd_dep,
+    dependency('cairo'),
+  ],
+  install : true,
+  c_args : ['-g', '-Wno-unused-function'],
+)
+
 # Unit tests for the pure helpers -- the ones whose failure mode is not
 # "the screen looks wrong" (which contrib/regression covers by driving a real
 # compositor) but a corrupted file on disk.

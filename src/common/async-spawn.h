@@ -41,6 +41,13 @@ typedef void (*AsyncSpawnLineCb)(const char *line, void *user);
 typedef struct AsyncSpawn {
 	struct wl_event_source *source;
 	int fd;
+	/* Write end of the child's stdin, or -1 when it was not asked for.
+	 *
+	 * Only streaming children get one, and only when they ask: it is what makes
+	 * a plugin two-way, so the compositor can hand it a click rather than the
+	 * plugin only ever talking at us. A child that never reads it costs one
+	 * unused fd, which is why it is opt-in rather than always. */
+	int in_fd;
 	pid_t pid;
 	char *buf;
 	size_t len, cap;
@@ -58,6 +65,10 @@ typedef struct AsyncSpawn {
 static void async_spawn_finish(AsyncSpawn *as) {
 	if (as->owner)
 		*as->owner = NULL;
+	if (as->in_fd >= 0) {
+		close(as->in_fd);
+		as->in_fd = -1;
+	}
 	if (as->source)
 		wl_event_source_remove(as->source);
 	if (as->fd >= 0)
@@ -138,15 +149,26 @@ static int async_spawn_readable(int fd, uint32_t mask, void *data) {
  * that streams. */
 static AsyncSpawn *async_spawn_run(struct wl_event_loop *loop,
 								   char *const argv[], AsyncSpawnCb cb,
-								   AsyncSpawnLineCb line_cb, void *user) {
+								   AsyncSpawnLineCb line_cb, void *user,
+								   bool with_stdin) {
 	int fds[2];
 	if (pipe(fds) < 0)
 		return NULL;
+	int in[2] = {-1, -1};
+	if (with_stdin && pipe(in) < 0) {
+		close(fds[0]);
+		close(fds[1]);
+		return NULL;
+	}
 
 	pid_t pid = fork();
 	if (pid < 0) {
 		close(fds[0]);
 		close(fds[1]);
+		if (in[0] >= 0) {
+			close(in[0]);
+			close(in[1]);
+		}
 		return NULL;
 	}
 	if (pid == 0) {
@@ -155,6 +177,11 @@ static AsyncSpawn *async_spawn_run(struct wl_event_loop *loop,
 		close(fds[0]);
 		dup2(fds[1], STDOUT_FILENO);
 		close(fds[1]);
+		if (in[0] >= 0) {
+			close(in[1]);
+			dup2(in[0], STDIN_FILENO);
+			close(in[0]);
+		}
 		/* stderr to /dev/null: a failing curl must not spam the session log */
 		int devnull = open("/dev/null", O_WRONLY | O_CLOEXEC);
 		if (devnull >= 0) {
@@ -169,13 +196,23 @@ static AsyncSpawn *async_spawn_run(struct wl_event_loop *loop,
 	close(fds[1]);
 	fcntl(fds[0], F_SETFL, O_NONBLOCK);
 	fcntl(fds[0], F_SETFD, FD_CLOEXEC);
+	if (in[0] >= 0) {
+		close(in[0]);
+		/* Non-blocking on our side too: a child that stops reading must cost
+		 * us a dropped event, never a stalled compositor. */
+		fcntl(in[1], F_SETFL, O_NONBLOCK);
+		fcntl(in[1], F_SETFD, FD_CLOEXEC);
+	}
 
 	AsyncSpawn *as = calloc(1, sizeof(*as));
 	if (!as) {
 		close(fds[0]);
+		if (in[1] >= 0)
+			close(in[1]);
 		return NULL;
 	}
 	as->fd = fds[0];
+	as->in_fd = in[1];
 	as->pid = pid;
 	as->cb = cb;
 	as->line_cb = line_cb;
@@ -184,16 +221,40 @@ static AsyncSpawn *async_spawn_run(struct wl_event_loop *loop,
 									  async_spawn_readable, as);
 	if (!as->source) {
 		close(fds[0]);
+		if (as->in_fd >= 0)
+			close(as->in_fd);
 		free(as);
 		return NULL;
 	}
 	return as;
 }
 
+/* Send one line to a streaming child's stdin.
+ *
+ * Best effort by design. SIGPIPE is ignored process-wide, so a child that has
+ * exited gives EPIPE rather than killing us, and a child that has stopped
+ * reading gives EAGAIN -- both are dropped rather than retried or queued. The
+ * events this carries are user actions: a click that arrives late is worse
+ * than one that does not arrive, and a compositor that blocks on a wedged
+ * plugin is worse than either. Lines are far under PIPE_BUF, so a write that
+ * succeeds is never partial. */
+static bool async_spawn_send(AsyncSpawn *as, const char *line) {
+	if (!as || as->in_fd < 0 || !line)
+		return false;
+	size_t len = strlen(line);
+	if (!len || len > 4000)
+		return false;
+	char buf[4096];
+	memcpy(buf, line, len);
+	buf[len] = '\n';
+	ssize_t n = write(as->in_fd, buf, len + 1);
+	return n == (ssize_t)(len + 1);
+}
+
 /* Collect a command's whole output and deliver it once, when it exits. */
 static bool async_spawn(struct wl_event_loop *loop, char *const argv[],
 						AsyncSpawnCb cb, void *user) {
-	return async_spawn_run(loop, argv, cb, NULL, user) != NULL;
+	return async_spawn_run(loop, argv, cb, NULL, user, false) != NULL;
 }
 
 /* Start a long-lived command and deliver its output a line at a time. The
@@ -202,7 +263,7 @@ static bool async_spawn(struct wl_event_loop *loop, char *const argv[],
 static AsyncSpawn *async_spawn_lines(struct wl_event_loop *loop,
 									 char *const argv[], AsyncSpawnLineCb cb,
 									 void *user, AsyncSpawn **owner) {
-	AsyncSpawn *as = async_spawn_run(loop, argv, NULL, cb, user);
+	AsyncSpawn *as = async_spawn_run(loop, argv, NULL, cb, user, false);
 	if (as && owner) {
 		as->owner = owner;
 		*owner = as;

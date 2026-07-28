@@ -1520,3 +1520,73 @@ test_bar_plugin_icon_array_draws_them_side_by_side() {
 
 	bar_off
 }
+
+test_bar_plugin_items_array_draws_a_row_of_pills() {
+	[ "$(bar_supported)" = "true" ] || { echo "  (skip: built without -Dnative-bar)"; return 0; }
+	command -v python3 >/dev/null && python3 -c "import PIL" 2>/dev/null || {
+		echo "  (skip: python3 PIL not available)"; return 0; }
+	local d; d="$(bar_plugin_dir)"
+
+	# One plugin, N pills. This is what lets a tray host live outside the
+	# compositor at all: a tray is icons appearing and vanishing as
+	# applications come and go, and a plugin limited to a single pill could
+	# never stand in for one.
+	printf '#!/bin/sh\necho %s\n' "'{\"items\":[{\"id\":\"a\",\"text\":\"AAA\"},{\"id\":\"b\",\"text\":\"BBB\"},{\"id\":\"c\",\"text\":\"CCC\"}]}'" > "$d/three"
+	printf '#!/bin/sh\necho %s\n' "'{\"items\":[{\"id\":\"a\",\"text\":\"AAA\"}]}'" > "$d/one"
+	chmod +x "$d/three" "$d/one"
+
+	local cfg='bar { enable true; height 36; position "top"; margin { x 8; y 4 }; panel { enable false }; modules-left "custom/p1"'
+	bar_set "$cfg; custom \"p1\" { exec \"$d/one\" } }"
+	sleep 1.5
+	local one; one="$(bar_plugin_ink items-one)"
+	bar_set "$cfg; custom \"p1\" { exec \"$d/three\" } }"
+	sleep 1.5
+	local three; three="$(bar_plugin_ink items-three)"
+
+	hl_assert_true "one item draws one pill ($one px)" \
+		"$([ "${one:-0}" -gt 200 ] && echo true || echo false)"
+	# Three labels of equal length, so the ink scales with the count. Anything
+	# near parity means only the first item was drawn.
+	hl_assert_true "three items draw three, near triple the ink ($three vs $one px)" \
+		"$([ "${three:-0}" -gt $(( ${one:-0} * 25 / 10 )) ] && echo true || echo false)"
+
+	bar_off
+}
+
+test_bar_plugin_click_reaches_a_streaming_plugin_with_the_item_id() {
+	[ "$(bar_supported)" = "true" ] || { echo "  (skip: built without -Dnative-bar)"; return 0; }
+	local d; d="$(bar_plugin_dir)"
+	rm -f "$d/clicklog"
+
+	# A continuous plugin gets a writable stdin, and a click on one of its
+	# pills arrives there as JSON naming the item. Without this a tray host
+	# outside the compositor could draw icons but never react to them -- and
+	# no on-click shell command can carry the screen coordinates an item's
+	# Activate needs.
+	cat > "$d/clicksink" <<'EOF'
+#!/bin/sh
+echo '{"items":[{"id":"first","text":"AAAA"},{"id":"second","text":"BBBB"}]}'
+while IFS= read -r line; do
+	printf '%s\n' "$line" >> CLICKLOG
+done
+EOF
+	sed -i "s|CLICKLOG|$d/clicklog|" "$d/clicksink"
+	chmod +x "$d/clicksink"
+
+	# Panels off and the plugin alone on the left, so the first pill starts at
+	# margin-x and the click coordinate follows from the config.
+	bar_set "bar { enable true; height 30; position \"top\"; margin { x 8; y 4 }; pill-min-width 28; pill-padding 4; spacing 8; panel { enable false }; modules-left \"custom/p1\"; custom \"p1\" { exec \"$d/clicksink\"; continuous true } }"
+	sleep 2
+	hl_click 12 19
+	sleep 1
+
+	hl_assert_true "a click on a streaming plugin's pill reaches its stdin" \
+		"$([ -s "$d/clicklog" ] && echo true || echo false)"
+	hl_assert_true "and the event names the item that was hit ($(head -1 "$d/clicklog" 2>/dev/null))" \
+		"$(grep -q '"item":"first"' "$d/clicklog" 2>/dev/null && echo true || echo false)"
+	hl_assert_true "and carries the button and screen position" \
+		"$(grep -q '"button":"left"' "$d/clicklog" 2>/dev/null && grep -q '"x":' "$d/clicklog" 2>/dev/null && echo true || echo false)"
+
+	bar_off
+	rm -f "$d/clicklog"
+}

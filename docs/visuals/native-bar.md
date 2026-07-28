@@ -116,7 +116,7 @@ for a newer build still starts.
 | `discord` | voice state from the `discord-voiced` daemon (also accepts `discord-voice`) | click opens Mute, Disconnect, the PTT key and daemon start/stop, then voice channels by server; right-click toggles mute |
 | `vpn` | NordVPN state as a tinted shield (also accepts `nordvpn`). **Icon only** | click opens status + Quick Connect / Disconnect / countries |
 | `display` | a monitor icon (also accepts `monitors`) | click lists every output; drill into one for HDR, resolution and scale |
-| `tray` | one icon per StatusNotifierItem, adopted from the bus at startup as well as registered (also accepts `systray`) | left: `Activate`; right: the item's context menu; middle: `SecondaryActivate` |
+| `tray` | one icon per StatusNotifierItem, adopted from the bus at startup as well as registered (also accepts `systray`). Decodes application-supplied pixmaps **in the compositor** — `asteroidz-trayd` does not, see [Bar Plugins](./bar-plugins.md#the-tray-and-asteroidz-trayd) | left: `Activate`; right: the item's context menu; middle: `SecondaryActivate` |
 | `custom/<name>` | whatever the plugin named by that `custom` block last printed — see [Bar Plugins](./bar-plugins.md) | its `on-click` / `on-click-right` command |
 
 The `tags` module mirrors the Waybar workspace module it replaces: it shows

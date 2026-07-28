@@ -240,7 +240,13 @@ static bool bar_pill_tooltip(const BarPill *p, char *out, size_t len) {
 		int32_t ci = p->module->custom;
 		if (ci < 0 || ci >= config.bar_custom_count)
 			return false;
-		const char *t = bar_custom_state[ci].tooltip;
+		const BarCustomState *cst = &bar_custom_state[ci];
+		/* A row's tooltip belongs to the ITEM under the pointer, not to the
+		 * plugin: a tray where every icon says the same thing would be worse
+		 * than no tooltips at all. */
+		const char *t = (cst->nitems && p->arg < (uint32_t)cst->nitems)
+							? cst->items[p->arg].tooltip
+							: cst->tooltip;
 		if (!t[0])
 			return false;
 		snprintf(out, len, "%s", t);
