@@ -1423,3 +1423,100 @@ test_bar_plugin_survives_reload_with_a_changed_list() {
 	hl_assert_true "taking a continuous plugin off the bar stops its child" \
 		"$(pgrep -f "$d/streamA" >/dev/null && echo false || echo true)"
 }
+
+# The reference plugin: contrib/bar-plugins/discord-voice reimplements the
+# built-in `discord` module as a `continuous` plugin against the same daemon
+# socket. Worth testing precisely because a claim was made about it -- that a
+# module whose real work already lives in a daemon can leave the compositor
+# without losing anything the bar actually draws.
+test_bar_discord_plugin_matches_the_builtin_module() {
+	[ "$(bar_supported)" = "true" ] || { echo "  (skip: built without -Dnative-bar)"; return 0; }
+	command -v socat >/dev/null || { echo "  (skip: socat not available)"; return 0; }
+	command -v python3 >/dev/null && python3 -c "import PIL" 2>/dev/null || {
+		echo "  (skip: python3 PIL not available)"; return 0; }
+	local plugin="$HL_REPO/contrib/bar-plugins/discord-voice"
+	[ -x "$plugin" ] || { echo "  (skip: $plugin not executable)"; return 0; }
+
+	# Connected, in a named channel, so both renderings have a label to draw
+	# rather than the "Offline" both would agree on trivially.
+	local snap="$HL_OUTDIR/dv-plugin.jsonl"
+	python3 - "$snap" <<'PY'
+import json, sys
+events = [
+    {"event": "ready", "username": "tester"},
+    {"event": "channels", "guilds": [{"id": "g1", "name": "Server"}],
+     "channels": [{"id": "c1", "guild": "g1", "name": "General",
+                   "participants": []}]},
+    {"event": "status", "state": "connected", "channel": "c1", "muted": False},
+]
+open(sys.argv[1], "w").write("".join(json.dumps(e) + "\n" for e in events))
+PY
+	voice_serve "$snap"
+	sleep 0.5
+
+	# Both renderings alone on the left, so the same region measures each.
+	local common='bar { enable true; height 36; position "top"; margin { x 8; y 4 }; panel { enable false }'
+
+	bar_set "$common; modules-left \"discord\" }"
+	sleep 1.5
+	local builtin_ink; builtin_ink="$(bar_plugin_ink dv-builtin)"
+
+	# ASTEROIDZ_DISCORD_DAEMON is pinned empty so the test never tries to
+	# start a real daemon on a machine that happens to have one installed.
+	bar_set "$common; modules-left \"custom/discord\"; custom \"discord\" { exec \"ASTEROIDZ_DISCORD_DAEMON= $plugin\"; continuous true } }"
+	sleep 2.5
+	local plugin_ink; plugin_ink="$(bar_plugin_ink dv-plugin)"
+
+	hl_assert_true "the built-in discord module draws a connected pill ($builtin_ink px)" \
+		"$([ "${builtin_ink:-0}" -gt 500 ] && echo true || echo false)"
+	hl_assert_true "the plugin draws one too ($plugin_ink px)" \
+		"$([ "${plugin_ink:-0}" -gt 500 ] && echo true || echo false)"
+	# Not pixel equality: the two resolve the same artwork and the same label,
+	# so they land within a few percent, but the built-in pins no width and the
+	# plugin's pill is measured from its own text. Close is the claim.
+	local lo=$(( builtin_ink * 85 / 100 )) hi=$(( builtin_ink * 115 / 100 ))
+	hl_assert_true "and the two are within 15% of each other ($plugin_ink vs $builtin_ink)" \
+		"$([ "${plugin_ink:-0}" -ge "$lo" ] && [ "${plugin_ink:-0}" -le "$hi" ] && echo true || echo false)"
+
+	voice_stop
+	bar_off
+}
+
+test_bar_plugin_icon_array_draws_them_side_by_side() {
+	[ "$(bar_supported)" = "true" ] || { echo "  (skip: built without -Dnative-bar)"; return 0; }
+	command -v python3 >/dev/null && python3 -c "import PIL" 2>/dev/null || {
+		echo "  (skip: python3 PIL not available)"; return 0; }
+	local d; d="$(bar_plugin_dir)"
+
+	# "icon" taking an ARRAY exists because of a real case: the built-in discord
+	# module draws the logo with the mic-mute glyph beside it while muted, and a
+	# single-icon schema could not express it.
+	#
+	# Tested here with a trivial plugin rather than through discord, because the
+	# muted state ALSO dims the tint -- an earlier version of this test measured
+	# the two states of the real plugin and found them equal, since two icons at
+	# 45% alpha fall below the ink threshold about as far as one at full alpha
+	# rises above it. Two variables, one number, no conclusion. Here the tint is
+	# pinned and only the icon count moves.
+	local icons='waybar-discord-voice/discord.svg'
+	printf '#!/bin/sh\necho %s\n' "'{\"icon\":[\"$icons\"],\"tint\":\"fg\"}'" > "$d/icon1"
+	printf '#!/bin/sh\necho %s\n' "'{\"icon\":[\"$icons\",\"$icons\"],\"tint\":\"fg\"}'" > "$d/icon2"
+	chmod +x "$d/icon1" "$d/icon2"
+
+	local cfg='bar { enable true; height 36; position "top"; margin { x 8; y 4 }; panel { enable false }; modules-left "custom/p1"'
+	bar_set "$cfg; custom \"p1\" { exec \"$d/icon1\" } }"
+	sleep 1.5
+	local one; one="$(bar_plugin_ink icons-one)"
+	bar_set "$cfg; custom \"p1\" { exec \"$d/icon2\" } }"
+	sleep 1.5
+	local two; two="$(bar_plugin_ink icons-two)"
+
+	hl_assert_true "a plugin naming one icon draws it ($one px)" \
+		"$([ "${one:-0}" -gt 300 ] && echo true || echo false)"
+	# The same glyph twice, so the second is exactly as much ink as the first:
+	# anything short of a near-doubling means the array was not honoured.
+	hl_assert_true "and naming two draws both, near double the ink ($two vs $one px)" \
+		"$([ "${two:-0}" -gt $(( ${one:-0} * 17 / 10 )) ] && echo true || echo false)"
+
+	bar_off
+}

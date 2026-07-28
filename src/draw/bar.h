@@ -2954,7 +2954,8 @@ static void bar_module_refresh_custom(BarModule *mod) {
 		return;
 	}
 	BarCustomState *st = &bar_custom_state[idx];
-	if (!st->have || st->hidden || (!st->text[0] && !st->icon[0])) {
+	if (!st->have || st->hidden || (!st->text[0] && !st->nicons &&
+									!config.bar_custom[idx].icon[0])) {
 		mod->npills = 0;
 		for (int32_t i = 0; i < BAR_MAX_PILLS; i++)
 			bar_pill_release(&mod->pills[i]);
@@ -2970,14 +2971,34 @@ static void bar_module_refresh_custom(BarModule *mod) {
 	 * An absolute path is taken as given; anything else is resolved against
 	 * bar { icon-dir } like every built-in module's artwork, so a plugin ships
 	 * its icons the same way the vendored ones are found. */
-	const char *want = st->icon[0] ? st->icon : config.bar_custom[idx].icon;
-	if (want && *want) {
-		char icon[512];
+	char resolved[ASTEROIDZ_TAB_MAX_ICONS][512];
+	const char *icons[ASTEROIDZ_TAB_MAX_ICONS];
+	int32_t nicons = 0;
+	/* What the plugin named this update, else the block's own `icon` as a
+	 * fallback -- so a plugin that only ever emits text still gets artwork if
+	 * the config gave it one. */
+	if (st->nicons) {
+		for (int32_t i = 0; i < st->nicons; i++) {
+			if (st->icons[i][0] == '/')
+				snprintf(resolved[nicons], sizeof(resolved[0]), "%s",
+						 st->icons[i]);
+			else
+				bar_icon_path(resolved[nicons], sizeof(resolved[0]),
+							  st->icons[i]);
+			icons[nicons] = resolved[nicons];
+			nicons++;
+		}
+	} else if (config.bar_custom[idx].icon[0]) {
+		const char *want = config.bar_custom[idx].icon;
 		if (want[0] == '/')
-			snprintf(icon, sizeof(icon), "%s", want);
+			snprintf(resolved[0], sizeof(resolved[0]), "%s", want);
 		else
-			bar_icon_path(icon, sizeof(icon), want);
-		asteroidz_tab_bar_node_set_icon(p->node, icon);
+			bar_icon_path(resolved[0], sizeof(resolved[0]), want);
+		icons[0] = resolved[0];
+		nicons = 1;
+	}
+	if (nicons) {
+		asteroidz_tab_bar_node_set_icons(p->node, icons, nicons);
 		asteroidz_tab_bar_node_set_icon_tint(p->node,
 											 st->have_tint ? st->tint : NULL);
 	} else {
@@ -3810,7 +3831,9 @@ static uint64_t bar_digest(Monitor *m) {
 			if (ci >= 0 && ci < config.bar_custom_count) {
 				const BarCustomState *st = &bar_custom_state[ci];
 				bar_hash_str(&h, st->text);
-				bar_hash_str(&h, st->icon);
+				bar_hash(&h, &st->nicons, sizeof(st->nicons));
+				for (int32_t k = 0; k < st->nicons; k++)
+					bar_hash_str(&h, st->icons[k]);
 				bar_hash(&h, &st->look, sizeof(st->look));
 				bar_hash(&h, &st->hidden, sizeof(st->hidden));
 				bar_hash(&h, &st->have, sizeof(st->have));

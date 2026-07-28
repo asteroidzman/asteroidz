@@ -56,7 +56,7 @@ Every field is optional.
 | Field | Type | Effect |
 |---|---|---|
 | `text` | string | the pill's label |
-| `icon` | string | artwork; an absolute path, or a name resolved against `bar { icon-dir }` like the built-in modules' icons |
+| `icon` | string or array | artwork; an absolute path, or a name resolved against `bar { icon-dir }` like the built-in modules' icons. An array draws up to four side by side — a state glyph next to a logo, say |
 | `tint` | string | recolours the icon — see below |
 | `class` | string | `flat` (default), `active`, `urgent`, `occupied`, `empty`, `sunken` — the same looks the built-in pills use |
 | `tooltip` | string | shown on hover; omit it for no hover at all |
@@ -168,6 +168,49 @@ Not oversights — each one is load-bearing:
   That budget belongs to the compositor, not to a script.
 - **No menus yet.** Popover menus need a bidirectional transport so a click can
   be delivered back; that is planned alongside a socket-based plugin mode.
+
+## A worked example: Discord voice
+
+`contrib/bar-plugins/discord-voice` reimplements the built-in `discord` module
+as a plugin, against the same `discord-voiced` socket:
+
+```kdl
+custom "discord" {
+    exec       "~/asteroidz/contrib/bar-plugins/discord-voice"
+    continuous true
+}
+```
+
+It is worth reading because it is the honest case. Discord converts well for
+one reason: **all the real work already lives in the daemon.** songbird, DAVE,
+the audio thread and the gateway connection are `discord-voiced`'s; the
+compositor's built-in module is only an IPC client reading newline-JSON off a
+socket. Moving that client out moves no work — it just stops the compositor
+being the process that has to survive it.
+
+What the plugin reproduces exactly: state and channel name, push-to-talk as the
+`active` look, mute as a second icon plus a dimmed tint, errors as `urgent`,
+and hiding itself when no daemon is installed.
+
+What it **cannot** reproduce: the popover menu. Joining a channel,
+disconnecting, toggling mute and starting the daemon are rows in a menu the
+compositor draws, and plugins have no way to ask for one. Mute is still
+reachable by writing to the daemon socket from `on-click-right`; joining a
+channel would need an external picker. That is the current ceiling, not a
+defect in the script.
+
+### What cannot be a plugin at all
+
+`tray` is the clearest case. It is not a status readout, it is a **D-Bus host**
+— it owns `org.kde.StatusNotifierHost-<pid>` and applications talk to it. It
+needs N pills appearing and vanishing at runtime, raw ARGB pixmaps over the
+bus, the click's screen coordinates so an application can place its own window,
+and a live nested DBusMenu per item. None of that is expressible as "a command
+that prints JSON", and none of it should be.
+
+The rule of thumb: if the work can live in a daemon and the bar only needs to
+*display* the result, it can be a plugin. If the bar itself has to be the
+endpoint of a protocol, it cannot.
 
 ## Limits
 

@@ -41,7 +41,12 @@
  * table the next reload rebuilds. */
 typedef struct {
 	char text[BAR_TEXT_MAX];
-	char icon[192];
+	/* "icon" takes a string OR an array of them, because one pill genuinely
+	 * can show more than one: the built-in discord module draws the logo with
+	 * the mic-mute glyph beside it while muted, and a plugin reproducing that
+	 * module had no way to say so. Capped at what the pill widget draws. */
+	char icons[ASTEROIDZ_TAB_MAX_ICONS][192];
+	int32_t nicons;
 	char tooltip[BAR_TEXT_MAX];
 	float tint[4];
 	bool have_tint;
@@ -154,7 +159,8 @@ static void bar_custom_apply(int32_t idx, const char *out) {
 		 * that floods gets its first BAR_TEXT_MAX bytes, not a realloc. */
 		snprintf(st->text, sizeof(st->text), "%.*s",
 				 (int32_t)sizeof(st->text) - 1, p);
-		st->icon[0] = st->tooltip[0] = '\0';
+		st->nicons = 0;
+		st->tooltip[0] = '\0';
 		st->have_tint = false;
 		st->look = BAR_LOOK_FLAT;
 		st->hidden = false;
@@ -172,10 +178,23 @@ static void bar_custom_apply(int32_t idx, const char *out) {
 		snprintf(st->text, sizeof(st->text), "%s", v->valuestring);
 	else
 		st->text[0] = '\0';
-	if ((v = cJSON_GetObjectItem(root, "icon")) && cJSON_IsString(v))
-		snprintf(st->icon, sizeof(st->icon), "%s", v->valuestring);
-	else
-		st->icon[0] = '\0';
+	st->nicons = 0;
+	v = cJSON_GetObjectItem(root, "icon");
+	if (cJSON_IsString(v)) {
+		snprintf(st->icons[0], sizeof(st->icons[0]), "%s", v->valuestring);
+		st->nicons = 1;
+	} else if (cJSON_IsArray(v)) {
+		cJSON *e = NULL;
+		cJSON_ArrayForEach(e, v) {
+			if (st->nicons >= ASTEROIDZ_TAB_MAX_ICONS)
+				break;
+			if (!cJSON_IsString(e) || !e->valuestring[0])
+				continue; /* skip a gap rather than drawing one */
+			snprintf(st->icons[st->nicons], sizeof(st->icons[0]), "%s",
+					 e->valuestring);
+			st->nicons++;
+		}
+	}
 	if ((v = cJSON_GetObjectItem(root, "tooltip")) && cJSON_IsString(v))
 		snprintf(st->tooltip, sizeof(st->tooltip), "%s", v->valuestring);
 	else
