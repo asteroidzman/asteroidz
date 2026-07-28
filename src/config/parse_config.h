@@ -116,6 +116,32 @@ typedef struct {
 	KeyBinding globalkeybinding;
 } ConfigWinRule;
 
+#ifdef ASTEROIDZ_NATIVE_BAR
+/* One `bar { custom "name" { ... } }` block: an out-of-process bar module.
+ *
+ * Plugins are processes, never shared objects. A dlopen'd plugin would run on
+ * the compositor's event loop with the compositor's lifetime, where one
+ * blocking read is a frozen screen and one bad free is a lost session -- and
+ * there is no ABI to offer it anyway, `bar.h` being 4000 lines of static
+ * functions over structs that change every release. So a plugin says what it
+ * wants shown and the compositor draws it; the schema is documented in
+ * docs/visuals/bar-plugins.md.
+ *
+ * A fixed array rather than the realloc'd one the window rules use: the module
+ * table these feed is itself fixed (BAR_MAX_MODULES), so an unbounded plugin
+ * list could only ever overflow into a warning. */
+#define MAX_BAR_CUSTOM 12
+typedef struct {
+	char name[32];	 /* what "custom/<name>" in a module list refers to */
+	char exec[512];	 /* argv, split on spaces; empty = nothing to run */
+	char icon[192];	 /* fallback artwork when the plugin names none */
+	char on_click[512];		 /* command run on left click */
+	char on_click_right[512];/* command run on right click */
+	int32_t interval;		 /* seconds between runs; 0 = once at startup */
+	int32_t continuous;		 /* long-lived child, one JSON line per update */
+} ConfigBarCustom;
+#endif
+
 typedef struct {
 	const char *name;			 // Monitor name
 	char *make, *model, *serial; // may be NULL
@@ -551,6 +577,8 @@ typedef struct {
 	char bar_modules_left_monitor[64];
 	char bar_modules_center_monitor[64];
 	char bar_modules_right_monitor[64];
+	ConfigBarCustom bar_custom[MAX_BAR_CUSTOM];
+	int32_t bar_custom_count;
 #endif
 	float scratchpad_width_ratio;
 	float scratchpad_height_ratio;
@@ -2495,6 +2523,47 @@ bool parse_option(Config *config, char *key, char *value) {
 	} else if (strcmp(key, "bar_modules_right") == 0) {
 		snprintf(config->bar_modules_right, sizeof(config->bar_modules_right),
 				 "%s", value);
+		/* `barcustom` OPENS an entry and the barcustom_* keys fill the one it
+		 * opened. Deliberately not the CSV-in-one-value shape the window and
+		 * monitor rules use: those pack every field into "k:v,k:v", which is
+		 * fine for app-ids and modes and unusable here -- a plugin's command
+		 * is arbitrary shell (`sh -c 'x, y'`) and would be cut at the first
+		 * comma with no way to escape it. One key per field passes each value
+		 * through whole. */
+	} else if (strcmp(key, "barcustom") == 0) {
+		if (config->bar_custom_count >= MAX_BAR_CUSTOM) {
+			fprintf(stderr,
+					"\033[1m\033[33m[WARN]:\033[0m bar: more than %d custom "
+					"modules; ignoring '%s'\n",
+					MAX_BAR_CUSTOM, value);
+			return true;
+		}
+		ConfigBarCustom *cm = &config->bar_custom[config->bar_custom_count++];
+		memset(cm, 0, sizeof(*cm));
+		snprintf(cm->name, sizeof(cm->name), "%s", value);
+	} else if (strncmp(key, "barcustom_", 10) == 0) {
+		if (config->bar_custom_count <= 0)
+			return true; /* a field with no block open; nothing to fill */
+		ConfigBarCustom *cm = &config->bar_custom[config->bar_custom_count - 1];
+		const char *f = key + 10;
+		if (strcmp(f, "exec") == 0)
+			snprintf(cm->exec, sizeof(cm->exec), "%s", value);
+		else if (strcmp(f, "icon") == 0)
+			snprintf(cm->icon, sizeof(cm->icon), "%s", value);
+		else if (strcmp(f, "on_click") == 0)
+			snprintf(cm->on_click, sizeof(cm->on_click), "%s", value);
+		else if (strcmp(f, "on_click_right") == 0)
+			snprintf(cm->on_click_right, sizeof(cm->on_click_right), "%s",
+					 value);
+		else if (strcmp(f, "interval") == 0)
+			cm->interval = atoi(value);
+		else if (strcmp(f, "continuous") == 0)
+			cm->continuous = atoi(value) != 0;
+		else
+			fprintf(stderr,
+					"\033[1m\033[33m[WARN]:\033[0m bar: custom '%s' has no "
+					"setting '%s'\n",
+					cm->name, f);
 #endif
 	} else if (strcmp(key, "rootcolor") == 0) {
 		int64_t color = parse_color(value);
@@ -4083,11 +4152,52 @@ static bool kdl_leaf(Config *config, KdlNode *node, const char *path) {
 	return parse_option(config, (char *)key, value);
 }
 
+#ifdef ASTEROIDZ_NATIVE_BAR
+/* bar { custom "mail" { exec "..."; interval 60 } } -> barcustom= + barcustom_*
+ *
+ * Needs a handler of its own because kdl_walk_section recurses on node NAME
+ * alone: three `custom` blocks all flatten to the path "bar/custom" and
+ * overwrite one another, and the block's argument -- which is the plugin's
+ * whole identity -- is dropped on the floor. Same reason window-rule, tag and
+ * output have handlers; the difference is those are dispatched at top level
+ * and this one has to be caught on the way down. */
+static bool kdl_bar_custom(Config *config, KdlNode *node) {
+	if (!node->n_args) {
+		fprintf(stderr, "\033[1m\033[33m[WARN]:\033[0m bar: a custom block "
+						"needs a name, as custom \"mail\" { ... }\n");
+		return true;
+	}
+	bool ok = parse_option(config, "barcustom",
+						   (char *)kdl_legacy_value(&node->args[0]));
+	for (size_t i = 0; i < node->n_children; i++) {
+		KdlNode *ch = &node->children[i];
+		/* on-click -> on_click: the KDL spelling is hyphenated like every
+		 * other nice name, the option keys are not */
+		char key[64];
+		size_t n = snprintf(key, sizeof(key), "barcustom_%s", ch->name);
+		for (size_t c = 10; c < n && c < sizeof(key); c++)
+			if (key[c] == '-')
+				key[c] = '_';
+		ok = parse_option(config, key,
+						  (char *)(ch->n_args ? kdl_legacy_value(&ch->args[0])
+											  : "1")) &&
+			 ok;
+	}
+	return ok;
+}
+#endif
+
 /* recurse through a namespace section, applying leaves and nested blocks */
 static bool kdl_walk_section(Config *config, KdlNode *node, const char *path) {
 	bool ok = true;
 	for (size_t i = 0; i < node->n_children; i++) {
 		KdlNode *ch = &node->children[i];
+#ifdef ASTEROIDZ_NATIVE_BAR
+		if (!strcmp(path, "bar") && !strcmp(ch->name, "custom")) {
+			ok = kdl_bar_custom(config, ch) && ok;
+			continue;
+		}
+#endif
 		if (ch->n_children > 0) {
 			char sub[256];
 			snprintf(sub, sizeof(sub), "%s/%s", path, ch->name);
@@ -4997,6 +5107,12 @@ void set_value_default() {
 	config.bar_modules_left_monitor[0] = '\0';
 	config.bar_modules_center_monitor[0] = '\0';
 	config.bar_modules_right_monitor[0] = '\0';
+	/* No plugins by default. Cleared here rather than only at startup because
+	 * this runs on every reload too, and a `custom` block deleted from the
+	 * config has to actually go away -- otherwise the count only ever grows
+	 * and the twelfth reload hits the cap with eleven copies of one plugin. */
+	memset(config.bar_custom, 0, sizeof(config.bar_custom));
+	config.bar_custom_count = 0;
 #endif
 	config.overviewgappi = 5;
 	config.overviewgappo = 30;
@@ -5674,6 +5790,11 @@ void reset_option(void) {
 }
 
 int32_t reload_config(const Arg *arg) {
+	/* Before the reparse, not after: parse_config clears config.bar_custom,
+	 * and a plugin child outliving that would report into a table its index no
+	 * longer describes. bar_clock_sync starts the ones the new config still
+	 * asks for once the bars are rebuilt below. */
+	bar_custom_finish();
 	parse_config();
 	reset_option();
 	/* re-apply `env = NAME,VALUE` entries and re-broadcast them to the

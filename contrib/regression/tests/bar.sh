@@ -1253,3 +1253,173 @@ test_bar_tooltip_appears_on_hover_and_leaves_on_exit() {
 
 	bar_off
 }
+
+# ─── plugins (custom modules, src/draw/bar-custom.h) ────────────────────────
+
+# A plugin is a command, so these tests write real scripts and let the
+# compositor run them. That is the point of the feature and also its risk: an
+# `exec` that blocks would block the event loop, so every assertion below is
+# also implicitly a check that the compositor is still answering IPC.
+bar_plugin_dir() {
+	local d="$HL_OUTDIR/plugins"
+	mkdir -p "$d"
+	echo "$d"
+}
+
+# Ink across the left end of the bar, where these tests put their pill.
+bar_plugin_ink() { # bar_plugin_ink NAME
+	hl_screenshot "$1"
+	hl_region_ink "$HL_OUTDIR/$1.png" 8 4 400 44
+}
+
+test_bar_plugin_renders_plain_text() {
+	[ "$(bar_supported)" = "true" ] || { echo "  (skip: built without -Dnative-bar)"; return 0; }
+	command -v python3 >/dev/null && python3 -c "import PIL" 2>/dev/null || {
+		echo "  (skip: python3 PIL not available)"; return 0; }
+	local d; d="$(bar_plugin_dir)"
+	# Not JSON: the whole of stdout is the label. A two-line shell script has
+	# to be a valid plugin or the feature is only for people who can emit JSON.
+	printf '#!/bin/sh\necho PLUGINTEXT\n' > "$d/plain"
+	chmod +x "$d/plain"
+
+	bar_set "bar { enable true; height 36; position \"top\"; margin { x 8; y 4 }; panel { enable false }; modules-left \"custom/p1\"; custom \"p1\" { exec \"$d/plain\" } }"
+	sleep 1.5
+	local ink; ink="$(bar_plugin_ink plug-plain)"
+	hl_assert_true "a plugin printing plain text renders it as the pill label ($ink px)" \
+		"$([ "${ink:-0}" -gt 100 ] && echo true || echo false)"
+
+	bar_off
+}
+
+test_bar_plugin_json_fields_are_honoured() {
+	[ "$(bar_supported)" = "true" ] || { echo "  (skip: built without -Dnative-bar)"; return 0; }
+	command -v python3 >/dev/null && python3 -c "import PIL" 2>/dev/null || {
+		echo "  (skip: python3 PIL not available)"; return 0; }
+	local d; d="$(bar_plugin_dir)"
+	printf '#!/bin/sh\necho %s\n' "'{\"text\":\"JSONTEXT\"}'" > "$d/json"
+	printf '#!/bin/sh\necho %s\n' "'{\"text\":\"JSONTEXT\",\"hidden\":true}'" > "$d/hidden"
+	chmod +x "$d/json" "$d/hidden"
+
+	local cfg='bar { enable true; height 36; position "top"; margin { x 8; y 4 }; panel { enable false }; modules-left "custom/p1"'
+	bar_set "$cfg; custom \"p1\" { exec \"$d/json\" } }"
+	sleep 1.5
+	local shown; shown="$(bar_plugin_ink plug-json)"
+	hl_assert_true "a JSON \"text\" field becomes the label ($shown px)" \
+		"$([ "${shown:-0}" -gt 100 ] && echo true || echo false)"
+
+	# "hidden" is the plugin saying it has nothing to show. It must render
+	# NOTHING -- not an empty pill holding a slot, which is what a module that
+	# merely blanked its text would leave behind.
+	bar_set "$cfg; custom \"p1\" { exec \"$d/hidden\" } }"
+	sleep 1.5
+	local gone; gone="$(bar_plugin_ink plug-hidden)"
+	hl_assert_true "\"hidden\":true takes the pill off the bar entirely ($gone px)" \
+		"$([ "${gone:-0}" -lt 20 ] && echo true || echo false)"
+
+	bar_off
+}
+
+test_bar_plugin_updates_on_its_interval() {
+	[ "$(bar_supported)" = "true" ] || { echo "  (skip: built without -Dnative-bar)"; return 0; }
+	command -v python3 >/dev/null && python3 -c "import PIL" 2>/dev/null || {
+		echo "  (skip: python3 PIL not available)"; return 0; }
+	local d; d="$(bar_plugin_dir)"
+	# The bar's redraw is gated on a digest of everything it displays, so a
+	# plugin whose state changed but whose hash did not would update silently
+	# never. This is that gate: the script's output changes on every run, and
+	# the pill has to follow it.
+	printf '#!/bin/sh\nn=$(cat %s/counter 2>/dev/null || echo 0)\nn=$((n+1))\necho $n > %s/counter\n[ $n -ge 2 ] && echo WWWWWWWWWWWWWWWW || echo i\n' "$d" "$d" > "$d/tick"
+	chmod +x "$d/tick"
+	rm -f "$d/counter"
+
+	# Timings have margin on purpose. The first run happens on the first
+	# metrics tick whatever `interval` says (nothing is known yet), so with
+	# interval 3 the narrow output is on screen from ~1s to ~4s and the wide
+	# one from ~4s on. Sampling at 2s and 6s sits well inside both windows --
+	# an earlier version used interval 1 and a 1.5s first sample, which the
+	# cost of taking a screenshot was enough to push past the second run, so
+	# it measured the wide string twice and read as "never updates".
+	bar_set "bar { enable true; height 36; position \"top\"; margin { x 8; y 4 }; interval 1; panel { enable false }; modules-left \"custom/p1\"; custom \"p1\" { exec \"$d/tick\"; interval 3 } }"
+	sleep 2
+	local first; first="$(bar_plugin_ink plug-tick1)"
+	sleep 4
+	local second; second="$(bar_plugin_ink plug-tick2)"
+	hl_assert_true "an interval plugin redraws when its output changes ($first -> $second px)" \
+		"$([ "${second:-0}" -gt $(( ${first:-0} + 100 )) ] && echo true || echo false)"
+
+	bar_off
+	rm -f "$d/counter"
+}
+
+test_bar_plugin_click_runs_its_command() {
+	[ "$(bar_supported)" = "true" ] || { echo "  (skip: built without -Dnative-bar)"; return 0; }
+	local d; d="$(bar_plugin_dir)"
+	printf '#!/bin/sh\necho CLICKME\n' > "$d/clicky"
+	chmod +x "$d/clicky"
+	rm -f "$d/clicked"
+
+	# Panels off and the plugin alone on the left, so the pill starts at
+	# margin-x and the click coordinate follows from the config -- the same
+	# reasoning the tag-pill click test spells out.
+	bar_set "bar { enable true; height 30; position \"top\"; margin { x 8; y 4 }; pill-min-width 28; pill-padding 4; panel { enable false }; modules-left \"custom/p1\"; custom \"p1\" { exec \"$d/clicky\"; on-click \"touch $d/clicked\" } }"
+	sleep 1.5
+	hl_click 12 19
+	sleep 1
+	hl_assert_true "left-clicking a plugin pill runs its on-click command" \
+		"$([ -f "$d/clicked" ] && echo true || echo false)"
+
+	bar_off
+	rm -f "$d/clicked"
+}
+
+test_bar_plugin_that_never_answers_shows_nothing() {
+	[ "$(bar_supported)" = "true" ] || { echo "  (skip: built without -Dnative-bar)"; return 0; }
+	command -v python3 >/dev/null && python3 -c "import PIL" 2>/dev/null || {
+		echo "  (skip: python3 PIL not available)"; return 0; }
+	# A plugin that is not installed is the common case -- someone copies a
+	# config and does not have the script. It must be invisible, not a
+	# permanent error pill, and above all it must not stop the bar working:
+	# the clock beside it is what proves the rest of the strip still drew.
+	bar_set 'bar { enable true; height 36; position "top"; margin { x 8; y 4 }; panel { enable false }; modules-left "custom/nope"; modules-center "clock"; custom "nope" { exec "/nonexistent/bar/plugin"; interval 1 } }'
+	sleep 2
+	hl_screenshot plug-missing
+	local left centre
+	left="$(hl_region_ink "$HL_OUTDIR/plug-missing.png" 8 4 400 44)"
+	centre="$(hl_region_ink "$HL_OUTDIR/plug-missing.png" $((HL_WIDTH / 2 - 150)) 4 $((HL_WIDTH / 2 + 150)) 44)"
+	hl_assert_true "a plugin whose command does not exist draws nothing ($left px)" \
+		"$([ "${left:-0}" -lt 20 ] && echo true || echo false)"
+	hl_assert_true "and the rest of the bar is unaffected ($centre px)" \
+		"$([ "${centre:-0}" -gt 100 ] && echo true || echo false)"
+
+	# and the compositor is still answering, i.e. nothing blocked the loop
+	hl_assert_eq "the event loop is still live" "$(hl_get "get all-monitors" | jq -r '.monitors | length')" "1"
+
+	bar_off
+}
+
+test_bar_plugin_survives_reload_with_a_changed_list() {
+	[ "$(bar_supported)" = "true" ] || { echo "  (skip: built without -Dnative-bar)"; return 0; }
+	local d; d="$(bar_plugin_dir)"
+	# A continuous plugin is a long-lived child holding an INDEX into the
+	# config's plugin table, and a reload rebuilds that table underneath it.
+	# Reloading between differently-shaped lists is what catches a child that
+	# outlived the array it was indexed against.
+	printf '#!/bin/sh\nwhile :; do echo A; sleep 1; done\n' > "$d/streamA"
+	printf '#!/bin/sh\nwhile :; do echo B; sleep 1; done\n' > "$d/streamB"
+	chmod +x "$d/streamA" "$d/streamB"
+
+	bar_set "bar { enable true; height 36; modules-left \"custom/a\"; custom \"a\" { exec \"$d/streamA\"; continuous true } }"
+	sleep 1
+	bar_set "bar { enable true; height 36; modules-left \"custom/b,custom/a\"; custom \"b\" { exec \"$d/streamB\"; continuous true }; custom \"a\" { exec \"$d/streamA\"; continuous true } }"
+	sleep 1
+	bar_set "bar { enable true; height 36; modules-left \"custom/a\"; custom \"a\" { exec \"$d/streamA\"; continuous true } }"
+	sleep 1
+	hl_assert_eq "reloading across changed plugin lists leaves the compositor alive" \
+		"$(hl_get "get all-monitors" | jq -r '.monitors | length')" "1"
+
+	bar_off
+	sleep 0.5
+	# With no plugin on any bar, no plugin child may still be running.
+	hl_assert_true "taking a continuous plugin off the bar stops its child" \
+		"$(pgrep -f "$d/streamA" >/dev/null && echo false || echo true)"
+}

@@ -1065,6 +1065,11 @@ static void printstatus(enum ipc_watch_type type);
  * -- a reload can change the module lists themselves, which a content-only
  * bar_update does not pick up. */
 static void bar_reconfigure_all(void);
+/* Same reason, one step earlier in a reload: bar plugins are children holding
+ * an INDEX into config.bar_custom, and set_value_default clears that array
+ * before the new config is read. A child left running across the reparse would
+ * go on delivering its output to whichever plugin ended up at its old index. */
+static void bar_custom_finish(void);
 static void quitsignal(int32_t signo);
 static void powermgrsetmode(struct wl_listener *listener, void *data);
 static void wake_monitor(Monitor *m);
@@ -3472,6 +3477,7 @@ void cleanup(void) {
 	bar_popover_close();
 	bar_notify_finish();
 	bar_dv_finish();
+	bar_custom_finish();
 	bar_viz_finish();
 	bar_tray_finish();
 	bar_volume_finish();

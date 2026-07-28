@@ -232,6 +232,20 @@ static bool bar_pill_tooltip(const BarPill *p, char *out, size_t len) {
 		snprintf(out, len, "%s", it->title);
 		return true;
 	}
+	case BAR_MODULE_CUSTOM: {
+		/* Whatever the plugin put in its "tooltip" field, and nothing if it
+		 * put nothing there -- a plugin that wants no hover simply omits it,
+		 * which is the same rule the built-ins follow when their whole state
+		 * already fits on the bar. */
+		int32_t ci = p->module->custom;
+		if (ci < 0 || ci >= config.bar_custom_count)
+			return false;
+		const char *t = bar_custom_state[ci].tooltip;
+		if (!t[0])
+			return false;
+		snprintf(out, len, "%s", t);
+		return true;
+	}
 	default:
 		return false;
 	}

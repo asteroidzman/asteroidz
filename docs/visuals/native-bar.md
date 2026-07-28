@@ -117,6 +117,7 @@ for a newer build still starts.
 | `vpn` | NordVPN state as a tinted shield (also accepts `nordvpn`). **Icon only** | click opens status + Quick Connect / Disconnect / countries |
 | `display` | a monitor icon (also accepts `monitors`) | click lists every output; drill into one for HDR, resolution and scale |
 | `tray` | one icon per StatusNotifierItem, adopted from the bus at startup as well as registered (also accepts `systray`) | left: `Activate`; right: the item's context menu; middle: `SecondaryActivate` |
+| `custom/<name>` | whatever the plugin named by that `custom` block last printed — see [Bar Plugins](./bar-plugins.md) | its `on-click` / `on-click-right` command |
 
 The `tags` module mirrors the Waybar workspace module it replaces: it shows
 every tag that is **selected or holds a window**, then pads with the
@@ -137,9 +138,13 @@ rather than letting whatever was laid out last run off the edge of the output:
    string ellipsise down to a floor before anything is dropped, since hiding
    the whole centre section because a title wanted 320px is the wrong trade.
 2. **then whole modules are dropped, least important first**:
-   `weather`, `media`, `medication`, `discord`, `title`, `idle`, `display`,
-   `vpn`, `network`, `memory`, `cpu`, `notifications`, `volume`, `layout`,
-   `clock`.
+   `custom/*`, `weather`, `media`, `medication`, `discord`, `title`, `idle`,
+   `display`, `vpn`, `network`, `memory`, `cpu`, `notifications`, `volume`,
+   `layout`, `clock`.
+   Plugins go first not as a judgement on any particular one, but because the
+   built-ins after them are a known set whose relative worth was argued out
+   once — ranking an arbitrary plugin above them would mean this list silently
+   deciding an unknown module matters more than the clock.
 3. **`tags` and `tray` are never dropped.** Both are the bar's reason to
    exist — one is how you navigate, the other is how applications reach you.
 

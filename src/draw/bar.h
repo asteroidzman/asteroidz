@@ -63,6 +63,12 @@ enum bar_module_kind {
 	BAR_MODULE_DISCORD,
 	BAR_MODULE_VPN,
 	BAR_MODULE_DISPLAY,
+	/* An out-of-process plugin (bar-custom.h). One kind for all of them: WHICH
+	 * plugin is BarModule.custom, an index into config.bar_custom, because the
+	 * set is a runtime property of the config and an enum is a compile-time
+	 * one. Every switch on `kind` that means "which module is this" has to
+	 * consult that index for this case. */
+	BAR_MODULE_CUSTOM,
 	/* not a module: the count, so the cap below can be checked against it */
 	BAR_MODULE_KIND_COUNT,
 };
@@ -117,6 +123,11 @@ typedef struct BarPill {
 
 typedef struct BarModule {
 	enum bar_module_kind kind;
+	/* For BAR_MODULE_CUSTOM: which plugin, as an index into config.bar_custom.
+	 * -1 for every other kind. An index rather than a pointer because a reload
+	 * rebuilds that array while these modules are being destroyed and
+	 * recreated around it. */
+	int32_t custom;
 	enum bar_slot slot;
 	Monitor *mon;
 	BarPill pills[BAR_MAX_PILLS];
@@ -221,6 +232,25 @@ static const char *bar_module_kind_name(enum bar_module_kind k) {
 	return "none";
 }
 
+/* What to call one MODULE in a profiler zone.
+ *
+ * Not bar_module_kind_name: every plugin shares BAR_MODULE_CUSTOM, so keying
+ * the label on the kind would collapse all of them into one undifferentiated
+ * "custom" row -- which is precisely the failure the AZ_ZONE_TEXT call in
+ * bar_module_refresh was added to fix for the built-ins. A plugin is also the
+ * likeliest module to be slow, so it is the last one that should be
+ * anonymous in a trace. */
+static const char *bar_module_label(const BarModule *mod) {
+	if (!mod)
+		return "none";
+	if (mod->kind == BAR_MODULE_CUSTOM) {
+		if (mod->custom >= 0 && mod->custom < config.bar_custom_count)
+			return config.bar_custom[mod->custom].name;
+		return "custom";
+	}
+	return bar_module_kind_name(mod->kind);
+}
+
 /* Which part of the media module a pill is, carried in BarPill.arg. The
  * transport buttons and the track are separate pills because hit testing is
  * per node. */
@@ -270,6 +300,10 @@ static bool bar_pill_is_icon_only(const BarPill *p) {
 		   p->module->kind == BAR_MODULE_VPN ||
 		   p->module->kind == BAR_MODULE_IDLE ||
 		   p->module->kind == BAR_MODULE_NOTIFY ||
+		   /* A plugin showing artwork and no label. The text check above is
+			* what makes this safe to state unconditionally: one that has a
+			* label, or has not answered yet, is not icon-only this pass. */
+		   p->module->kind == BAR_MODULE_CUSTOM ||
 		   p->module->kind == BAR_MODULE_DISPLAY;
 }
 
@@ -1929,6 +1963,7 @@ static void bar_viz_finish(void) {
 		unlink(bar_viz_cfg_path);
 }
 
+#include "bar-custom.h"
 #include "bar-display.h"
 #include "bar-vpn.h"
 #include "bar-discord.h"
@@ -2903,18 +2938,78 @@ static void bar_module_refresh_display(BarModule *mod) {
 		bar_pill_release(&mod->pills[i]);
 }
 
+/* A plugin's pill: whatever bar-custom.h last accepted from it.
+ *
+ * No placeholder before the first answer and none after a bad one -- npills
+ * goes to zero and the module occupies nothing. A plugin that is slow, broken
+ * or not installed is therefore invisible rather than a permanent "?" in the
+ * corner of every screen, which is the behaviour the weather and vpn pills
+ * were each argued into separately. */
+static void bar_module_refresh_custom(BarModule *mod) {
+	int32_t idx = mod->custom;
+	if (idx < 0 || idx >= config.bar_custom_count) {
+		mod->npills = 0;
+		for (int32_t i = 0; i < BAR_MAX_PILLS; i++)
+			bar_pill_release(&mod->pills[i]);
+		return;
+	}
+	BarCustomState *st = &bar_custom_state[idx];
+	if (!st->have || st->hidden || (!st->text[0] && !st->icon[0])) {
+		mod->npills = 0;
+		for (int32_t i = 0; i < BAR_MAX_PILLS; i++)
+			bar_pill_release(&mod->pills[i]);
+		return;
+	}
+	BarPill *p = bar_pill_get(mod, 0);
+	if (!p) {
+		mod->npills = 0;
+		return;
+	}
+
+	/* Artwork: what the plugin named this update, else the block's own `icon`.
+	 * An absolute path is taken as given; anything else is resolved against
+	 * bar { icon-dir } like every built-in module's artwork, so a plugin ships
+	 * its icons the same way the vendored ones are found. */
+	const char *want = st->icon[0] ? st->icon : config.bar_custom[idx].icon;
+	if (want && *want) {
+		char icon[512];
+		if (want[0] == '/')
+			snprintf(icon, sizeof(icon), "%s", want);
+		else
+			bar_icon_path(icon, sizeof(icon), want);
+		asteroidz_tab_bar_node_set_icon(p->node, icon);
+		asteroidz_tab_bar_node_set_icon_tint(p->node,
+											 st->have_tint ? st->tint : NULL);
+	} else {
+		asteroidz_tab_bar_node_set_icon(p->node, NULL);
+	}
+
+	snprintf(p->text, sizeof(p->text), "%s", st->text);
+	p->arg = 0;
+	/* Pinned to the width of what is on screen NOW, not to a widest-case
+	 * probe: the built-ins can enumerate their own content (twelve months of
+	 * clock, six network tiers) and a plugin's is arbitrary. Flexible so the
+	 * shed pass can still reclaim it. */
+	p->fixed_width = st->text[0] ? 0 : bar_icon_pill_width(p, bar_pill_height());
+	p->flexible = true;
+	bar_pill_style(p, st->look);
+	mod->npills = 1;
+	for (int32_t i = 1; i < BAR_MAX_PILLS; i++)
+		bar_pill_release(&mod->pills[i]);
+}
+
 static bool bar_section_belongs_here(Monitor *m, enum bar_slot slot);
 
 static void bar_module_refresh(BarModule *mod) {
 	AZ_ZONE(az_mod, "module refresh");
-	AZ_ZONE_NAME(az_mod, bar_module_kind_name(mod->kind));
+	AZ_ZONE_NAME(az_mod, bar_module_label(mod));
 	/* And as zone TEXT, which is the part that survives a CSV export. A
 	 * runtime zone NAME is a GUI-only facility: exported, every module came
 	 * out as an undifferentiated "module refresh" row and the one blocking
 	 * module could not be named from a trace at all. Text lands in the value
 	 * column -- the same way bar_layout's monitor name does -- so the module
 	 * names itself with no enum to decode on the other side. */
-	AZ_ZONE_TEXT(az_mod, bar_module_kind_name(mod->kind));
+	AZ_ZONE_TEXT(az_mod, bar_module_label(mod));
 
 	/* A section that is not on this screen renders nothing at all -- no pills,
 	 * so the slot is empty and its panel is not drawn either. */
@@ -2973,6 +3068,9 @@ static void bar_module_refresh(BarModule *mod) {
 	case BAR_MODULE_DISPLAY:
 		bar_module_refresh_display(mod);
 		break;
+	case BAR_MODULE_CUSTOM:
+		bar_module_refresh_custom(mod);
+		break;
 	default:
 		mod->npills = 0;
 		break;
@@ -2991,7 +3089,7 @@ static void bar_module_measure(BarModule *mod, int32_t height, float scale) {
 	 * a cold first layout does and a warm one does not. Splitting the two is
 	 * what says whether bar_layout's tail is content or typesetting. */
 	AZ_ZONE(az_meas, "module measure");
-	AZ_ZONE_NAME(az_meas, bar_module_kind_name(mod->kind));
+	AZ_ZONE_NAME(az_meas, bar_module_label(mod));
 	AZ_ZONE_VALUE(az_meas, mod->npills);
 
 	int32_t total = 0;
@@ -3242,6 +3340,12 @@ static int32_t bar_shrink_flexible(AsteroidzBar *bar, int32_t slot,
 
 static int32_t bar_module_shed_rank(enum bar_module_kind k) {
 	switch (k) {
+	/* Plugins go first. Not a judgement on what any particular one shows --
+	 * it is that the built-ins below are a known set whose relative worth
+	 * could be argued out once, and a plugin is whatever someone added last
+	 * week. Ranking it above a built-in would mean this list silently decided
+	 * an unknown module matters more than the clock. */
+	case BAR_MODULE_CUSTOM:     return 5;
 	case BAR_MODULE_WEATHER:    return 10;
 	case BAR_MODULE_MEDIA:      return 20;
 	case BAR_MODULE_MEDICATION: return 30;
@@ -3694,6 +3798,28 @@ static uint64_t bar_digest(Monitor *m) {
 			bar_hash_str(&h, bar_dv.channel_name);
 			bar_hash_str(&h, bar_dv.error);
 			break;
+		/* Everything a plugin can change about its own pill.
+		 *
+		 * The one thing a plugin author cannot fix from outside: leave this
+		 * case out and the module updates its state and never redraws, because
+		 * bar_update's gate sees an unchanged hash and returns before
+		 * bar_layout runs. Silent, and indistinguishable from a plugin that
+		 * simply is not being run. */
+		case BAR_MODULE_CUSTOM: {
+			int32_t ci = m->bar->modules[i].custom;
+			if (ci >= 0 && ci < config.bar_custom_count) {
+				const BarCustomState *st = &bar_custom_state[ci];
+				bar_hash_str(&h, st->text);
+				bar_hash_str(&h, st->icon);
+				bar_hash(&h, &st->look, sizeof(st->look));
+				bar_hash(&h, &st->hidden, sizeof(st->hidden));
+				bar_hash(&h, &st->have, sizeof(st->have));
+				bar_hash(&h, &st->have_tint, sizeof(st->have_tint));
+				if (st->have_tint)
+					bar_hash(&h, st->tint, sizeof(st->tint));
+			}
+			break;
+		}
 		case BAR_MODULE_MEDICATION:
 			bar_hash(&h, &bar_med.ndue, sizeof(bar_med.ndue));
 			bar_hash_str(&h, bar_med.next_time);
@@ -3841,6 +3967,7 @@ static int bar_metrics_tick(void *data) {
 	bar_tray_retry_icons();
 	bar_vpn_poll();
 	(void)data;
+	bar_custom_tick(config.bar_interval > 0 ? config.bar_interval : 1);
 	bar_metrics_sample();
 	bar_update_all();
 	if (bar_metrics_timer)
@@ -3865,6 +3992,17 @@ static void bar_clock_sync(void) {
 					want = true;
 				if (bar_kind_is_metric(m->bar->modules[i].kind))
 					want_metrics = true;
+				/* An interval plugin counts down on the metrics tick rather
+				 * than owning a wl_event_source each -- see bar_custom_tick --
+				 * so it needs that tick armed even on a bar with no cpu or
+				 * memory pill on it. */
+				if (m->bar->modules[i].kind == BAR_MODULE_CUSTOM) {
+					int32_t ci = m->bar->modules[i].custom;
+					if (ci >= 0 && ci < config.bar_custom_count &&
+						!config.bar_custom[ci].continuous &&
+						config.bar_custom[ci].exec[0])
+						want_metrics = true;
+				}
 			}
 		}
 	}
@@ -3940,6 +4078,9 @@ static void bar_clock_sync(void) {
 		wl_event_source_remove(bar_clock_timer);
 		bar_clock_timer = NULL;
 	}
+	/* Long-lived plugin children, started and stopped on the same rule as the
+	 * timers above: on a bar, running; off it, gone. */
+	bar_custom_sync();
 }
 
 /* ─── construction ────────────────────────────────────────────────────────── */
@@ -3963,7 +4104,26 @@ static void bar_add_modules(AsteroidzBar *bar, const char *list,
 			*--end = '\0';
 		if (!*tok)
 			continue;
-		enum bar_module_kind kind = bar_module_kind_from_name(tok);
+		/* "custom/<name>" names a plugin, resolved against the config's
+		 * `custom` blocks rather than the static name table -- the set of
+		 * plugins is a runtime fact. A name with no block behind it is the
+		 * same class of mistake as a misspelled built-in and is reported the
+		 * same way. */
+		int32_t custom = -1;
+		enum bar_module_kind kind;
+		if (strncmp(tok, "custom/", 7) == 0) {
+			custom = bar_custom_index(tok + 7);
+			if (custom < 0) {
+				fprintf(stderr,
+						"\033[1m\033[33m[WARN]:\033[0m bar: no custom block "
+						"named '%s'\n",
+						tok + 7);
+				continue;
+			}
+			kind = BAR_MODULE_CUSTOM;
+		} else {
+			kind = bar_module_kind_from_name(tok);
+		}
 		if (kind == BAR_MODULE_NONE) {
 			fprintf(stderr,
 					"\033[1m\033[33m[WARN]:\033[0m unknown bar module '%s'\n",
@@ -3984,6 +4144,7 @@ static void bar_add_modules(AsteroidzBar *bar, const char *list,
 		}
 		BarModule *mod = &bar->modules[bar->nmodules++];
 		mod->kind = kind;
+		mod->custom = custom;
 		mod->slot = slot;
 		mod->mon = bar->mon;
 	}
@@ -4280,6 +4441,8 @@ static bool bar_handle_node_click(AsteroidzNodeData *hit, uint32_t button) {
 		}
 		break;
 	}
+	case BAR_MODULE_CUSTOM:
+		return bar_custom_click(p->module->custom, button);
 	case BAR_MODULE_LAYOUT:
 		if (button == BTN_LEFT) {
 			/* switch_layout cycles config.circle_layout on selmon, so point
@@ -4405,6 +4568,7 @@ static void bar_volume_finish(void) {}
 static void bar_viz_finish(void) {}
 static void bar_notify_finish(void) {}
 static void bar_dv_finish(void) {}
+static void bar_custom_finish(void) {}
 static void bar_reserve(Monitor *m, struct wlr_box *usable) {
 	(void)m;
 	(void)usable;
