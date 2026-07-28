@@ -92,6 +92,8 @@ static char *resolve_icon_path(const char *name) {
 	return path;
 }
 
+#define LENGTH_TN(X) (sizeof(X) / sizeof((X)[0]))
+
 static char *resolve_icon_path_named(const char *name) {
 	if (name[0] == '/')
 		return g_file_test(name, G_FILE_TEST_EXISTS) ? g_strdup(name) : NULL;
@@ -111,29 +113,44 @@ static char *resolve_icon_path_named(const char *name) {
 						   "32x32", "24x24", "22x22", "16x16",
 						   "32",	"24",	 "22",	  "16"};
 	const char *exts[] = {"svg", "png"};
+	/* Icon theme CATEGORIES, in the order a bar is likely to want them.
+	 *
+	 * `apps` alone was not enough. A StatusNotifierItem's IconName is a plain
+	 * theme name and nothing says it has to be an application icon -- the ones
+	 * that are not are exactly the ones a tray shows: nm-applet reports
+	 * network-wireless-* (status), a battery or bluetooth applet reports a
+	 * device name (devices), and dialog-information -- what contrib/snitem
+	 * serves -- is status too. Searched apps-first so an application icon
+	 * still wins when both exist, which is the common case. */
+	const char *cats[] = {"apps", "status", "devices", "actions",
+						  "categories", "emblems", "mimetypes", "panel"};
 	char *found = NULL;
 
 	for (size_t t = 0; t < 2 && !found; t++) {
 		if (t == 1 && strcmp(themes[0], themes[1]) == 0)
 			break;
 		for (size_t b = 0; b < 2 && !found; b++) {
-			for (size_t z = 0; z < sizeof(sizes) / sizeof(sizes[0]) && !found;
-				 z++) {
-				for (size_t e = 0; e < 2 && !found; e++) {
-					char *path = g_strdup_printf("%s/%s/%s/apps/%s.%s",
-						bases[b], themes[t], sizes[z], name, exts[e]);
-					if (g_file_test(path, G_FILE_TEST_EXISTS))
-						found = path;
-					else
-						g_free(path);
-					if (found)
-						break;
-					path = g_strdup_printf("%s/%s/apps/%s/%s.%s", bases[b],
-						themes[t], sizes[z], name, exts[e]);
-					if (g_file_test(path, G_FILE_TEST_EXISTS))
-						found = path;
-					else
-						g_free(path);
+			for (size_t c = 0; c < LENGTH_TN(cats) && !found; c++) {
+				for (size_t z = 0; z < LENGTH_TN(sizes) && !found; z++) {
+					for (size_t e = 0; e < 2 && !found; e++) {
+						/* both layouts in the wild: <size>/<category> for
+						 * hicolor and Papirus, <category>/<size> for breeze */
+						char *path = g_strdup_printf("%s/%s/%s/%s/%s.%s",
+							bases[b], themes[t], sizes[z], cats[c], name,
+							exts[e]);
+						if (g_file_test(path, G_FILE_TEST_EXISTS))
+							found = path;
+						else
+							g_free(path);
+						if (found)
+							break;
+						path = g_strdup_printf("%s/%s/%s/%s/%s.%s", bases[b],
+							themes[t], cats[c], sizes[z], name, exts[e]);
+						if (g_file_test(path, G_FILE_TEST_EXISTS))
+							found = path;
+						else
+							g_free(path);
+					}
 				}
 			}
 		}
