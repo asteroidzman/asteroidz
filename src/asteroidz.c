@@ -10118,7 +10118,17 @@ static void init_persistent_log(void) {
 	if (!home || !*home)
 		return;
 
-	char *dir = string_printf("%s/.local/state/asteroidz", home);
+	/* XDG_STATE_HOME first, per the basedir spec, falling back to the
+	 * hardcoded default. Not pedantry: the log is keyed on HOME alone, so
+	 * every headless test instance -- which shares HOME by design, to find the
+	 * user's fonts and icons -- appended to the LIVE session's log. A day of
+	 * regression runs left 46 compositor start markers in it, and reading it
+	 * to diagnose the real session meant picking those out first. A harness
+	 * can now point somewhere else with one variable. */
+	const char *state = getenv("XDG_STATE_HOME");
+	char *dir = (state && *state)
+					? string_printf("%s/asteroidz", state)
+					: string_printf("%s/.local/state/asteroidz", home);
 	if (!dir)
 		return;
 

@@ -132,6 +132,20 @@ typedef struct {
 	bool submenu;
 	bool separator;
 	bool selected;
+	/* An editable field.
+	 *
+	 * A popover is rows and nothing else, which is right for a menu and wrong
+	 * the moment a plugin needs a NAME typed into it. The alternative was
+	 * shelling out to a dialog -- zenity, fuzzel -- which means another
+	 * process, another toolkit, and a window that is not part of the bar. So
+	 * the row itself takes text: the popover already sees every keystroke
+	 * ahead of the binding tables, which is the hard part of a text field and
+	 * was already solved for Escape and the arrows.
+	 *
+	 * `text` stays the LABEL and `edit` holds what has been typed, so a
+	 * redraw never has to unpick one from the other. */
+	bool input;
+	char edit[192];
 	bool used;
 } BarPopoverRow;
 
@@ -206,6 +220,7 @@ static BarPopover bar_popover;
 
 static void bar_popover_close(void);
 static void bar_popover_layout(void);
+static void bar_popover_collect_fields(char *out, size_t len);
 static void bar_popover_open_modes(Monitor *anchor_mon, int32_t anchor_x,
 								   const char *name);
 static void bar_popover_open_meds(Monitor *m, int32_t anchor_x);
@@ -520,7 +535,17 @@ static void bar_popover_layout(void) {
 			asteroidz_tab_bar_node_set_icon_scale(r->node, 0.8);
 		asteroidz_tab_bar_node_set_position(r->node, x + pad, ry);
 		asteroidz_tab_bar_node_set_enabled(r->node, true);
-		asteroidz_tab_bar_node_update(r->node, r->text, scale);
+		if (r->input) {
+			/* "Label: typed" with a caret while this is the aimed-at field, so
+			 * it is obvious which one a keystroke lands in -- the cursor
+			 * accent alone does not say "you can type here". */
+			char line[BAR_TEXT_MAX];
+			snprintf(line, sizeof(line), "%s: %s%s", r->text, r->edit,
+					 bar_popover.cursor == i ? "\u2588" : "");
+			asteroidz_tab_bar_node_update(r->node, line, scale);
+		} else {
+			asteroidz_tab_bar_node_update(r->node, r->text, scale);
+		}
 		ry += row_h + config.bar_popover_spacing;
 	}
 }
@@ -821,7 +846,9 @@ static int bar_popover_on_layout(sd_bus_message *msg, void *user,
 					r->id = id;
 					r->enabled = true;
 					bar_popover_read_menu_props(msg, r);
-					if (r->separator && !r->text[0])
+					if (r->input) {
+			/* neither decoration applies to a field */
+		} else if (r->separator && !r->text[0])
 						snprintf(r->text, sizeof(r->text), "%s",
 								 "\u2500\u2500\u2500");
 					if (r->submenu) {
@@ -947,10 +974,14 @@ static void bar_popover_custom_menu_arrived(void) {
 		r->separator = src->separator;
 		r->submenu = src->submenu;
 		r->selected = src->selected;
+		r->input = src->input;
+		snprintf(r->edit, sizeof(r->edit), "%s", src->edit);
 		/* The two decorations the tray menu already draws, applied here so a
 		 * plugin does not have to know our glyphs: a rule for a separator that
 		 * carries no label, and a chevron for a row that leads somewhere. */
-		if (r->separator && !r->text[0])
+		if (r->input) {
+			/* neither decoration applies to a field */
+		} else if (r->separator && !r->text[0])
 			snprintf(r->text, sizeof(r->text), "%s", "───");
 		if (r->submenu) {
 			size_t l = strlen(r->text);
@@ -2405,8 +2436,12 @@ static bool bar_popover_activate_row(BarPopoverRow *r) {
 		 * A `submenu` row additionally keeps the panel up in the meantime, so
 		 * drilling down does not flicker while the reply is in flight. */
 		bar_custom_menu.pending = true;
-		bar_custom_menu_activate(bar_custom_menu.plugin, bar_custom_menu.item,
-								 r->value);
+		{
+			char fields[2048];
+			bar_popover_collect_fields(fields, sizeof(fields));
+			bar_custom_menu_activate(bar_custom_menu.plugin,
+									 bar_custom_menu.item, r->value, fields);
+		}
 		if (r->submenu)
 			return true;
 		break;
@@ -2750,6 +2785,38 @@ static bool bar_popover_row_focusable(const BarPopoverRow *r) {
 	return r && r->used && r->enabled && !r->separator;
 }
 
+/* Every field's current contents, as a JSON object, for handing back to the
+ * plugin when a row is activated. A form is submitted whole -- the plugin
+ * asked for four fields and wants all four, not whichever one had focus. */
+static void bar_popover_collect_fields(char *out, size_t len) {
+	size_t o = 0;
+	o += (size_t)snprintf(out + o, len - o, "{");
+	bool first = true;
+	for (int32_t i = 0; i < bar_popover.nrows && o + 64 < len; i++) {
+		const BarPopoverRow *r = &bar_popover.rows[i];
+		if (!r->used || !r->input || !r->value[0])
+			continue;
+		char esc[384];
+		size_t e = 0;
+		for (const char *p = r->edit; *p && e + 7 < sizeof(esc); p++) {
+			unsigned char c = (unsigned char)*p;
+			if (c == '"' || c == '\\') {
+				esc[e++] = '\\';
+				esc[e++] = (char)c;
+			} else if (c < 0x20) {
+				continue;
+			} else {
+				esc[e++] = (char)c;
+			}
+		}
+		esc[e] = '\0';
+		o += (size_t)snprintf(out + o, len - o, "%s\"%s\":\"%s\"",
+							  first ? "" : ",", r->value, esc);
+		first = false;
+	}
+	snprintf(out + o, len - o, "}");
+}
+
 /* Move the cursor `dir` focusable rows, and bring it into the viewport.
  * Wraps, because a menu is a ring: Down off the bottom of a short list should
  * reach the top rather than stopping dead. */
@@ -2834,14 +2901,71 @@ static bool bar_popover_handle_key(uint32_t keysym) {
 	}
 	case XKB_KEY_Return:
 	case XKB_KEY_KP_Enter:
-	case XKB_KEY_space:
 		if (bar_popover.cursor < 0)
 			return false; /* nothing aimed at: not ours to swallow */
+		/* Enter on a field moves to the next one rather than submitting: a
+		 * form is filled top to bottom, and a plugin puts an explicit Save row
+		 * at the end for the moment you actually mean it. */
+		if (bar_popover.rows[bar_popover.cursor].input) {
+			bar_popover_cursor_move(1);
+			return true;
+		}
 		bar_popover_activate_row(&bar_popover.rows[bar_popover.cursor]);
 		return true;
-	default:
-		return false;
+	case XKB_KEY_space:
+		/* space is a CHARACTER while a field is aimed at, not an activation */
+		if (bar_popover.cursor >= 0 &&
+			bar_popover.rows[bar_popover.cursor].input)
+			break;
+		if (bar_popover.cursor < 0)
+			return false;
+		bar_popover_activate_row(&bar_popover.rows[bar_popover.cursor]);
+		return true;
+	case XKB_KEY_BackSpace: {
+		if (bar_popover.cursor < 0)
+			return false;
+		BarPopoverRow *r = &bar_popover.rows[bar_popover.cursor];
+		if (!r->input)
+			return false;
+		size_t n = strlen(r->edit);
+		if (n) {
+			/* step back over a whole UTF-8 sequence, not one byte of one */
+			do {
+				n--;
+			} while (n && (r->edit[n] & 0xC0) == 0x80);
+			r->edit[n] = '\0';
+			bar_popover_layout();
+		}
+		return true;
 	}
+	default:
+		break;
+	}
+
+	/* Typing into the aimed-at field.
+	 *
+	 * Reached only when a field is under the cursor, so every other key keeps
+	 * working normally while a menu is up -- the property that made a keyboard
+	 * grab unattractive here in the first place. */
+	if (bar_popover.cursor < 0)
+		return false;
+	BarPopoverRow *r = &bar_popover.rows[bar_popover.cursor];
+	if (!r->input)
+		return false;
+	char utf8[8];
+	int n = xkb_keysym_to_utf8(keysym, utf8, sizeof(utf8));
+	/* n includes the NUL; 0 or 1 means the key produces no text (modifiers,
+	 * function keys) and must fall through to whatever is focused. */
+	if (n <= 1)
+		return false;
+	if ((unsigned char)utf8[0] < 0x20)
+		return false; /* control characters are not input */
+	size_t have = strlen(r->edit);
+	if (have + (size_t)n <= sizeof(r->edit)) {
+		memcpy(r->edit + have, utf8, (size_t)n);
+		bar_popover_layout();
+	}
+	return true;
 }
 
 #endif /* ASTEROIDZ_BAR_POPOVER_H */

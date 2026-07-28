@@ -123,6 +123,10 @@ typedef struct {
 	bool separator;
 	bool submenu;
 	bool selected;
+	/* An editable field rather than a target. `edit` is its starting contents,
+	 * which is how an EDIT form arrives prefilled. */
+	bool input;
+	char edit[192];
 } BarCustomMenuRow;
 
 static struct {
@@ -330,6 +334,9 @@ static void bar_custom_apply(int32_t idx, const char *out) {
 			if ((f = cJSON_GetObjectItem(e, "enabled")))
 				r->enabled = cJSON_IsTrue(f);
 			r->separator = cJSON_IsTrue(cJSON_GetObjectItem(e, "separator"));
+			r->input = cJSON_IsTrue(cJSON_GetObjectItem(e, "input"));
+			if ((f = cJSON_GetObjectItem(e, "edit")) && cJSON_IsString(f))
+				snprintf(r->edit, sizeof(r->edit), "%s", f->valuestring);
 			r->submenu = cJSON_IsTrue(cJSON_GetObjectItem(e, "submenu"));
 			r->selected = cJSON_IsTrue(cJSON_GetObjectItem(e, "selected"));
 			/* A separator needs no label; anything else without one would be
@@ -594,16 +601,20 @@ static bool bar_custom_click(int32_t idx, uint32_t button, const char *item,
  * another menu, which replaces the panel in place -- that is how a submenu
  * drills down without the compositor needing to model menu trees at all. */
 static bool bar_custom_menu_activate(int32_t idx, const char *item,
-									 const char *value) {
+									 const char *value, const char *fields) {
 	if (idx < 0 || idx >= config.bar_custom_count)
 		return false;
 	BarCustomState *st = &bar_custom_state[idx];
 	if (!config.bar_custom[idx].continuous || !st->proc)
 		return false;
-	char ev[512];
+	/* Room for a whole form: `fields` carries every input row's contents, and
+	 * a plugin asking for four of them gets four back in one event. */
+	char ev[3072];
 	snprintf(ev, sizeof(ev),
-			 "{\"event\":\"menu\",\"item\":\"%s\",\"value\":\"%s\"}",
-			 item ? item : "", value ? value : "");
+			 "{\"event\":\"menu\",\"item\":\"%s\",\"value\":\"%s\""
+			 ",\"fields\":%s}",
+			 item ? item : "", value ? value : "",
+			 fields && *fields ? fields : "{}");
 	return async_spawn_send(st->proc, ev);
 }
 

@@ -126,11 +126,17 @@ tag 4 { layout scroller; name t4 }
 $extra
 EOF
 
+	# Own state dir, so a test instance's log does not append to the live
+	# session's -- they share HOME (deliberately: fonts, icons, the user's
+	# themes) and the log used to be keyed on HOME alone.
+	HL_STATE="$HL_OUTDIR/state"
+	rm -rf "$HL_STATE"; mkdir -p "$HL_STATE"
 	HL_XDG="$HL_OUTDIR/xdg"
 	rm -rf "$HL_XDG"; mkdir -p "$HL_XDG"; chmod 700 "$HL_XDG"
 
 	# shellcheck disable=SC2086 -- HL_ENV is intentionally word-split
 	env -i HOME="$HOME" PATH="$PATH" XDG_RUNTIME_DIR="$HL_XDG" \
+		XDG_STATE_HOME="$HL_STATE" \
 		WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 \
 		WLR_RENDERER="${HL_RENDERER:-gles2}" \
 		${HL_ENV:-} \

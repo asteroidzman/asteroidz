@@ -19,6 +19,13 @@ a plugin polling it costs nothing.
     }
 
 Left-click lists today's doses; picking one offers Take, Skip and Postpone.
+The same menu adds, edits and removes the medications themselves.
+
+TEXT ENTRY happens in the popover. A menu row marked `input` is an editable
+field: the compositor already sees every keystroke while a menu is up, so a
+form is rows like any other content. No dialog, no second toolkit, no window
+that is not part of the bar -- and activating a row hands back every field's
+contents at once, so a four-field schedule arrives as one event.
 """
 
 import json
@@ -26,6 +33,7 @@ import os
 import sys
 import threading
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
 
 ICON = "waybar-medication/pill.svg"
@@ -208,6 +216,80 @@ def postpone(key):
     save_doc(doc)
 
 
+def new_id():
+    return "med-" + uuid.uuid4().hex[:16]
+
+
+def medications():
+    return (load_doc() or {}).get("medications") or []
+
+
+def form_rows(med=None):
+    """A schedule as editable rows. `edit` prefills them, which is the whole
+    difference between adding and editing."""
+    m = med or {}
+    return [
+        {"text": "Name", "value": "name", "input": True,
+         "edit": m.get("name", "")},
+        {"text": "Times (HH:MM, comma separated)", "value": "times",
+         "input": True, "edit": ",".join(m.get("times") or [])},
+        {"text": "Every N days", "value": "freq", "input": True,
+         "edit": str(m.get("frequencyValue", 1) or 1)},
+        {"text": "Start (YYYY-MM-DD)", "value": "start", "input": True,
+         "edit": m.get("startDate", datetime.now().strftime("%Y-%m-%d"))},
+    ]
+
+
+def save_from_fields(fields, med_id=None):
+    """Turn a submitted form into a medication. Rejects rather than saves
+    something unusable -- a dose with no time would never fire."""
+    name = (fields.get("name") or "").strip()
+    times = [t.strip() for t in (fields.get("times") or "").split(",")
+             if t.strip()]
+    times = [t for t in times
+             if len(t) == 5 and t[2] == ":" and t[:2].isdigit()
+             and t[3:].isdigit() and int(t[:2]) < 24 and int(t[3:]) < 60]
+    if not name or not times:
+        return False
+    try:
+        freq = max(1, int((fields.get("freq") or "1").strip()))
+    except ValueError:
+        freq = 1
+    start = (fields.get("start") or "").strip()
+    try:
+        datetime.strptime(start, "%Y-%m-%d")
+    except ValueError:
+        start = datetime.now().strftime("%Y-%m-%d")
+
+    doc = load_doc() or {"version": 1, "medications": [], "doseState": {},
+                         "history": [], "snoozeMinutes": POSTPONE_MINUTES}
+    meds = doc.setdefault("medications", [])
+    for m in meds:
+        if med_id and m.get("id") == med_id:
+            m.update(name=name, times=sorted(times), frequencyValue=freq,
+                     frequencyUnit="days", startDate=start, enabled=True)
+            break
+    else:
+        meds.append({"id": med_id or new_id(), "name": name,
+                     "dosage": "", "times": sorted(times),
+                     "frequencyValue": freq, "frequencyUnit": "days",
+                     "startDate": start, "enabled": True})
+    save_doc(doc)
+    return True
+
+
+def delete_medication(med_id):
+    doc = load_doc()
+    if doc is None:
+        return
+    doc["medications"] = [m for m in (doc.get("medications") or [])
+                          if m.get("id") != med_id]
+    # its dose state goes too, or a deleted medication keeps ticking
+    doc["doseState"] = {k: v for k, v in (doc.get("doseState") or {}).items()
+                        if not k.startswith(med_id + "@")}
+    save_doc(doc)
+
+
 def menu():
     global menu_level
     rows = []
@@ -226,7 +308,52 @@ def menu():
             # worse than one that opens a panel saying so.
             rows.append({"text": f"{mark_ch}  {d['time']}  {d['name']}",
                          "value": "d:" + d["key"], "submenu": True})
+        rows.append({"separator": True})
+        rows.append({"text": "Add medication…", "value": "add",
+                     "submenu": True})
+        if medications():
+            rows.append({"text": "Manage medications", "value": "manage",
+                         "submenu": True})
         return {"menu": {"item": "", "rows": rows}}
+
+    if level == "add":
+        rows.append({"text": "New medication", "value": "", "enabled": False})
+        rows.append({"separator": True})
+        rows += form_rows()
+        rows.append({"separator": True})
+        rows.append({"text": "Save", "value": "save:"})
+        rows.append({"text": "‹  Cancel", "value": "back", "submenu": True})
+        return {"menu": {"item": "", "rows": rows}}
+
+    if level == "manage":
+        rows.append({"text": "Medications", "value": "", "enabled": False})
+        rows.append({"separator": True})
+        for m in medications():
+            rows.append({"text": f"{m.get('name','')}  "
+                                 f"({', '.join(m.get('times') or [])})",
+                         "value": "m:" + m.get("id", ""), "submenu": True})
+        rows.append({"separator": True})
+        rows.append({"text": "‹  Back", "value": "back", "submenu": True})
+        return {"menu": {"item": "", "rows": rows}}
+
+    if level.startswith("edit:"):
+        mid = level[5:]
+        med = next((m for m in medications() if m.get("id") == mid), None)
+        if not med:
+            return {"menu": {"item": "", "rows": []}}
+        rows.append({"text": f"Edit {med.get('name','')}", "value": "",
+                     "enabled": False})
+        rows.append({"separator": True})
+        rows += form_rows(med)
+        rows.append({"separator": True})
+        rows.append({"text": "Save", "value": "save:" + mid})
+        rows.append({"text": "Remove", "value": "rm:" + mid})
+        rows.append({"text": "‹  Back", "value": "manage", "submenu": True})
+        return {"menu": {"item": "", "rows": rows}}
+
+    if level.startswith("m:"):
+        menu_level = "edit:" + level[2:]
+        return menu()
 
     d = next((x for x in snapshot if x["key"] == level), None)
     if not d:
@@ -273,8 +400,29 @@ def reader():
             emit(menu())
         elif kind == "menu":
             v = ev.get("value") or ""
+            fields = ev.get("fields") or {}
             if v == "back":
                 menu_level = None
+                emit(menu())
+            elif v in ("add", "manage") or v.startswith("m:"):
+                menu_level = v
+                emit(menu())
+            elif v.startswith("save:"):
+                mid = v[5:] or None
+                if save_from_fields(fields, mid):
+                    reload_doses()
+                    emit(render())
+                    menu_level = "manage" if mid else None
+                    emit(menu())
+                else:
+                    # Rejected: keep the form up with what was typed rather
+                    # than closing and losing it.
+                    emit(menu())
+            elif v.startswith("rm:"):
+                delete_medication(v[3:])
+                reload_doses()
+                emit(render())
+                menu_level = "manage"
                 emit(menu())
             elif v.startswith("d:"):
                 menu_level = v[2:]
