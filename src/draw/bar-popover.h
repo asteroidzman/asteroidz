@@ -992,6 +992,22 @@ static void bar_popover_custom_menu_arrived(void) {
 	bar_popover.nrows = n;
 	if (replacing && scroll > 0)
 		bar_popover.scroll = scroll;
+	/* Aim the first field, if the plugin sent any.
+	 *
+	 * A fresh panel has no cursor -- deliberately, so that a plain menu
+	 * swallows nothing but its own navigation keys. For a FORM that reads as
+	 * broken: there is no caret, so nothing says where text would land, and
+	 * every keystroke falls through to whatever is focused behind the bar.
+	 * A form is opened in order to type into it, so put the caret in the first
+	 * field and let Enter or a click move it from there. */
+	if (bar_popover.cursor < 0) {
+		for (int32_t i = 0; i < n; i++) {
+			if (bar_popover.rows[i].input && bar_popover.rows[i].enabled) {
+				bar_popover.cursor = i;
+				break;
+			}
+		}
+	}
 	bar_popover_layout();
 }
 
@@ -2412,6 +2428,18 @@ static bool bar_popover_activate_row(BarPopoverRow *r) {
 	 * selection -- dismissing would punish reaching for it */
 	if (r->stepper)
 		return true;
+	/* A field is AIMED at, never run.
+	 *
+	 * Clicking one used to fall straight through to the kind switch below,
+	 * which handed the plugin an activation carrying that row's value and then
+	 * closed the panel -- so the one gesture everyone tries first, clicking the
+	 * box you want to type in, dismissed the form. The click handler has
+	 * already moved the cursor onto this row by the time we get here, so all
+	 * that is left is a relayout to put the caret where the pointer is. */
+	if (r->input) {
+		bar_popover_layout();
+		return true;
+	}
 	/* An inert row is a reading, not a target: the click is consumed but the
 	 * panel stays up, the way a greyed entry behaves in every other menu.
 	 * Enforced here rather than per kind so a panel made ENTIRELY of readings

@@ -244,6 +244,7 @@ same scrolling, keyboard navigation and dismiss behaviour.
 | `submenu` | draws a `›` and keeps the menu open when activated |
 | `selected` | drawn as checked |
 | `icon` | artwork, resolved like a pill's |
+| `input` | an editable field — see [Text entry](#text-entry) |
 
 ### The flow
 
@@ -272,6 +273,47 @@ nothing appears until there is something to show.
 A menu that arrives when nothing asked for one is ignored: a plugin is a
 process the compositor does not control, and a popup nobody opened appearing
 under the pointer would be worse than a missing one.
+
+### Text entry
+
+A row marked `input` is an editable field. `text` is its label, `value` names
+it, and `edit` seeds it — which is how an *edit* form differs from an *add*
+one:
+
+```json
+{"menu":{"item":"med","rows":[
+  {"text":"Name","value":"name","input":true,"edit":"escitalopram"},
+  {"text":"Times","value":"times","input":true,"edit":"08:00, 20:00"},
+  {"text":"Save","value":"save"},
+  {"text":"Cancel","value":"cancel"}
+]}}
+```
+
+Activating any row hands back **every** field at once:
+
+```json
+{"event":"menu","item":"med","value":"save",
+ "fields":{"name":"escitalopram","times":"08:00, 20:00"}}
+```
+
+A form is submitted whole — a plugin that asked for four fields wants all four,
+not whichever one happened to have the caret. So `fields` is present on every
+menu event from a panel that contains fields, including `cancel`.
+
+**Interaction.** The caret starts in the first field: a form is opened in order
+to type into it, and one that needs a click before it will accept a keystroke
+looks broken. Clicking a field moves the caret there and the panel stays up — a
+field is *aimed at*, never run, so clicking the box you want to fill in is not
+an activation. Enter moves to the next field rather than submitting, which is
+why a form wants an explicit Save row. Up/Down move between rows, Backspace
+deletes a whole character (not a byte of one), and Escape closes without
+sending anything.
+
+Only keys aimed at a field are taken; everything else keeps working while the
+panel is up, because the popover has no keyboard grab. The compositor sees
+keystrokes ahead of the binding tables, which is the whole reason this is
+possible without a dialog, a second toolkit, or a window that is not part of
+the bar.
 
 ## What plugins deliberately cannot do
 

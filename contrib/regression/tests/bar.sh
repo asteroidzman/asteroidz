@@ -1718,8 +1718,11 @@ EOF
 	sleep 2
 	hl_click 12 19 rclick
 	sleep 2
-	# Down lands on the field, then type, then Down to Save and Enter.
-	"$HL_WLVKBD" press DOWN; sleep 0.4
+	# Typed IMMEDIATELY, with no navigation first: a form is opened in order to
+	# fill it in, so the caret starts in the first field. A fresh panel used to
+	# have no cursor at all, which meant a form showed no caret and swallowed
+	# nothing -- every keystroke fell through to whatever was focused behind the
+	# bar, and the box looked dead.
 	"$HL_WLVKBD" press H; sleep 0.2
 	"$HL_WLVKBD" press I; sleep 0.2
 	"$HL_WLVKBD" press DOWN; sleep 0.4
@@ -1727,6 +1730,66 @@ EOF
 
 	hl_assert_true "activating a row hands back the typed field contents ($(head -c 120 "$d/fieldlog" 2>/dev/null))" \
 		"$(grep -qi '"name":"hi"' "$d/fieldlog" 2>/dev/null && echo true || echo false)"
+
+	bar_off
+	rm -f "$d/fieldlog"
+}
+
+test_bar_plugin_menu_field_takes_a_click() {
+	[ "$(bar_supported)" = "true" ] || { echo "  (skip: built without -Dnative-bar)"; return 0; }
+	local d; d="$(bar_plugin_dir)"
+	rm -f "$d/fieldlog"
+
+	# Clicking the box you want to type in is the first thing anyone tries, and
+	# it used to DISMISS the form: a field went through the same activation path
+	# as any other row, so the click was handed to the plugin as though the row
+	# had been chosen and the panel closed on the way out. A field is aimed at,
+	# never run.
+	#
+	# Two fields, and the click lands on the SECOND one, so the assertion can
+	# tell an aimed click apart from the caret merely sitting where it started.
+	cat > "$d/twofield" <<'EOF'
+#!/bin/sh
+echo '{"items":[{"id":"one","text":"FORM"}]}'
+while IFS= read -r line; do
+	case "$line" in
+	*'"event":"click"'*)
+		echo '{"menu":{"item":"one","rows":[{"text":"Name","value":"name","input":true},{"text":"Times","value":"times","input":true},{"text":"Save","value":"save"}]}}'
+		;;
+	*'"value":"save"'*)
+		printf '%s\n' "$line" >> FIELDLOG
+		echo '{"menu":{"item":"one","rows":[]}}'
+		;;
+	esac
+done
+EOF
+	sed -i "s|FIELDLOG|$d/fieldlog|" "$d/twofield"
+	chmod +x "$d/twofield"
+
+	bar_set "bar { enable true; height 30; position \"top\"; margin { x 8; y 4 }; pill-min-width 28; pill-padding 4; panel { enable false }; modules-left \"custom/p1\"; custom \"p1\" { exec \"$d/twofield\"; continuous true } }"
+	sleep 2
+	hl_click 12 19 rclick
+	sleep 2
+	hl_screenshot field-open
+	local open_ink; open_ink="$(hl_region_ink "$HL_OUTDIR/field-open.png" 0 40 360 200)"
+
+	# Row centres: popover top (40) + padding (12) + half a row (17), then one
+	# pitch (row-height 34 + spacing 2) per row after that.
+	hl_click 60 105
+	sleep 0.8
+	hl_screenshot field-clicked
+	local still; still="$(hl_region_ink "$HL_OUTDIR/field-clicked.png" 0 40 360 200)"
+	hl_assert_true "clicking a field does not dismiss the form ($open_ink -> $still px)" \
+		"$([ "${still:-0}" -gt $(( ${open_ink:-0} / 2 )) ] && echo true || echo false)"
+
+	"$HL_WLVKBD" press X; sleep 0.3
+	"$HL_WLVKBD" press DOWN; sleep 0.4
+	"$HL_WLVKBD" press ENTER; sleep 1.5
+
+	hl_assert_true "and puts the caret in the field that was clicked ($(head -c 160 "$d/fieldlog" 2>/dev/null))" \
+		"$(grep -qi '"times":"x"' "$d/fieldlog" 2>/dev/null && echo true || echo false)"
+	hl_assert_true "leaving the other field alone" \
+		"$(grep -qi '"name":""' "$d/fieldlog" 2>/dev/null && echo true || echo false)"
 
 	bar_off
 	rm -f "$d/fieldlog"
