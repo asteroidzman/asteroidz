@@ -31,6 +31,11 @@
 //               decoding it -- an unbounded one will happily chew through
 //               however many megapixels it is handed, which in-compositor is
 //               a stalled desktop and is why asteroidz-trayd exists.
+//   --path P    serve the item at object path P and register by passing that
+//               PATH rather than the bus name. This is what libappindicator
+//               clients do -- Steam registers /org/ayatana/NotificationItem/
+//               steam -- and it takes a different branch in every host. A host
+//               that only ever tested the default path will drop these.
 //   --menu      export a com.canonical.dbusmenu at /MenuBar and point the
 //               item's Menu property at it: Open, a Sub > submenu, a
 //               separator, a checked Toggle, a disabled Greyed, and Quit.
@@ -57,6 +62,8 @@ static volatile sig_atomic_t go_active = 0;
 static int pixmap_size = 0;
 static const char *click_log = NULL;
 static bool have_menu = false;
+static const char *item_path = "/StatusNotifierItem";
+static char menu_path_buf[192];
 
 static void log_line(const char *fmt, int v) {
 	if (!click_log)
@@ -162,7 +169,8 @@ static int prop_menu(sd_bus *bus, const char *path, const char *iface,
 	/* "/" is the root object path and can never be a menu; it is what items
 	   with no menu conventionally report, and what a host must treat as
 	   "there is nothing to show". */
-	return sd_bus_message_append(reply, "o", have_menu ? "/MenuBar" : "/");
+	return sd_bus_message_append(reply, "o",
+								 have_menu ? menu_path_buf : "/");
 }
 
 /* com.canonical.dbusmenu GetLayout: u(ia{sv}av) */
@@ -304,6 +312,8 @@ int main(int argc, char **argv) {
 			click_log = argv[++i];
 		else if (!strcmp(argv[i], "--menu"))
 			have_menu = true;
+		else if (!strcmp(argv[i], "--path") && i + 1 < argc)
+			item_path = argv[++i];
 	}
 	if (passive_first)
 		item_status = "Passive";
@@ -314,8 +324,14 @@ int main(int argc, char **argv) {
 		return 1;
 	}
 
+	/* The menu hangs off the item path, the way a real client's does. */
+	snprintf(menu_path_buf, sizeof(menu_path_buf), "%s/Menu",
+			 strcmp(item_path, "/StatusNotifierItem") ? item_path : "");
+	if (!strcmp(item_path, "/StatusNotifierItem"))
+		snprintf(menu_path_buf, sizeof(menu_path_buf), "/MenuBar");
+
 	sd_bus_slot *slot = NULL;
-	if (sd_bus_add_object_vtable(bus, &slot, "/StatusNotifierItem", ITEM_IFACE,
+	if (sd_bus_add_object_vtable(bus, &slot, item_path, ITEM_IFACE,
 								 item_vtable, NULL) < 0) {
 		fprintf(stderr, "snitem: cannot export the item object\n");
 		return 1;
@@ -323,8 +339,8 @@ int main(int argc, char **argv) {
 
 	sd_bus_slot *menu_slot = NULL;
 	if (have_menu &&
-		sd_bus_add_object_vtable(bus, &menu_slot, "/MenuBar", MENU_IFACE_NAME,
-								 menu_vtable, NULL) < 0) {
+		sd_bus_add_object_vtable(bus, &menu_slot, menu_path_buf,
+								 MENU_IFACE_NAME, menu_vtable, NULL) < 0) {
 		fprintf(stderr, "snitem: cannot export the menu object\n");
 		return 1;
 	}
@@ -343,7 +359,11 @@ int main(int argc, char **argv) {
 								 "/StatusNotifierWatcher",
 								 "org.kde.StatusNotifierWatcher",
 								 "RegisterStatusNotifierItem", NULL, NULL, "s",
-								 name);
+								 /* an item at a non-default path registers the
+								    PATH, which is what libappindicator does */
+								 strcmp(item_path, "/StatusNotifierItem")
+									 ? item_path
+									 : name);
 		sd_bus_flush(bus);
 	}
 

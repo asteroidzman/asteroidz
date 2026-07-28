@@ -607,9 +607,30 @@ static int prop_items(sd_bus *b, const char *path, const char *iface,
 	int r = sd_bus_message_open_container(reply, 'a', "s");
 	if (r < 0)
 		return r;
-	for (int32_t i = 0; i < nitems; i++)
-		if (items[i].used)
+	for (int32_t i = 0; i < nitems; i++) {
+		if (!items[i].used)
+			continue;
+		/* Bus name AND object path, glued, for anything not at the default
+		 * path.
+		 *
+		 * Returning the bare bus name loses where the item actually lives, and
+		 * plenty of real items are not at /StatusNotifierItem -- Steam serves
+		 * its at /org/ayatana/NotificationItem/steam. A host reading this
+		 * property would default to /StatusNotifierItem, find nothing there,
+		 * and silently drop the item. Caught by pointing a second trayd at our
+		 * own watcher: it saw one item where the watcher knew two.
+		 *
+		 * The glued form is what every real watcher emits and what
+		 * register_item already parses on the way back in. */
+		if (strcmp(items[i].path, "/StatusNotifierItem") != 0) {
+			char joined[256];
+			snprintf(joined, sizeof(joined), "%s%s", items[i].service,
+					 items[i].path);
+			sd_bus_message_append(reply, "s", joined);
+		} else {
 			sd_bus_message_append(reply, "s", items[i].service);
+		}
+	}
 	return sd_bus_message_close_container(reply);
 }
 
@@ -993,9 +1014,17 @@ static void menu_open(Item *it) {
 	if (!it)
 		return;
 	if (!it->menu_path[0]) {
+		/* Worth saying out loud. A right-click that produces nothing is
+		 * indistinguishable from a broken menu, and the difference -- no Menu
+		 * property, versus one we failed to read -- is the whole diagnosis.
+		 * stderr reaches the compositor's log for long-lived plugins. */
+		fprintf(stderr, "trayd: %s (%s) has no menu path; falling back\n",
+				it->id[0] ? it->id : it->service, it->path);
 		menu.open = false;
 		return;
 	}
+	fprintf(stderr, "trayd: opening menu for %s at %s%s\n",
+			it->id[0] ? it->id : it->service, it->service, it->menu_path);
 	snprintf(menu.service, sizeof(menu.service), "%s", it->service);
 	snprintf(menu.path, sizeof(menu.path), "%s", it->menu_path);
 	snprintf(menu.item, sizeof(menu.item), "%s", it->service);
@@ -1085,8 +1114,13 @@ static int on_stdin(sd_event_source *s, int fd, uint32_t revents, void *user) {
 		if (!json_field(start, "button", button, sizeof(button)))
 			continue;
 		Item *it = find(id);
-		if (!it)
+		if (!it) {
+			/* The compositor named an item we do not have. That is a real
+			 * failure mode -- ids are ours, so a miss means our table and the
+			 * bar's disagree -- and it is silent without this. */
+			fprintf(stderr, "trayd: click for unknown item '%s'\n", id);
 			continue;
+		}
 		int32_t x = json_int(start, "x", 0), y = json_int(start, "y", 0);
 		if (!strcmp(button, "left")) {
 			menu.open = false;

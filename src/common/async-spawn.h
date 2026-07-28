@@ -182,11 +182,23 @@ static AsyncSpawn *async_spawn_run(struct wl_event_loop *loop,
 			dup2(in[0], STDIN_FILENO);
 			close(in[0]);
 		}
-		/* stderr to /dev/null: a failing curl must not spam the session log */
-		int devnull = open("/dev/null", O_WRONLY | O_CLOEXEC);
-		if (devnull >= 0) {
-			dup2(devnull, STDERR_FILENO);
-			close(devnull);
+		/* One-shot children get /dev/null: a failing curl on a 15-minute timer
+		 * must not spam the session log.
+		 *
+		 * A child with a writable stdin is different. Those are long-lived
+		 * plugins -- there are a handful, they are started once, and they are
+		 * the only thing here that can be DEBUGGED. Discarding their stderr
+		 * meant a plugin that knew exactly what was wrong had no way to say
+		 * so, and the compositor's log showed nothing: chasing why one tray
+		 * item's menu never opened, the answer was in a diagnostic that went
+		 * to /dev/null. So they inherit ours, which init_persistent_log has
+		 * already pointed at ~/.local/state/asteroidz/asteroidz.log. */
+		if (in[0] < 0) {
+			int devnull = open("/dev/null", O_WRONLY | O_CLOEXEC);
+			if (devnull >= 0) {
+				dup2(devnull, STDERR_FILENO);
+				close(devnull);
+			}
 		}
 		setsid();
 		execvp(argv[0], argv);
