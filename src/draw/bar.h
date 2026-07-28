@@ -3027,25 +3027,6 @@ static void bar_module_refresh_custom(BarModule *mod) {
 		!st || !st->have || st->hidden ||
 		(!st->nitems && !st->text[0] && !st->nicons &&
 		 !config.bar_custom[idx].icon[0]);
-	/* BARPLUG: diagnostic. Logged once per transition rather than per refresh
-	 * -- this runs on every arrange, and a line per drag step would bury the
-	 * one moment that matters. */
-	{
-		static int8_t last_state[MAX_BAR_CUSTOM];
-		int8_t now = (int8_t)(nothing ? 1 : 2);
-		if (idx >= 0 && idx < MAX_BAR_CUSTOM && last_state[idx] != now) {
-			last_state[idx] = now;
-			wlr_log(WLR_INFO,
-					"BARPLUG refresh idx=%d mon=%s -> %s (have=%d hidden=%d "
-					"nitems=%d nicons=%d text='%s')",
-					idx,
-					mod->mon && mod->mon->wlr_output ? mod->mon->wlr_output->name
-													 : "?",
-					nothing ? "NOTHING" : "drawing", st ? st->have : -1,
-					st ? st->hidden : -1, st ? st->nitems : -1,
-					st ? st->nicons : -1, st ? st->text : "");
-		}
-	}
 	if (nothing) {
 		mod->npills = 0;
 		for (int32_t i = 0; i < BAR_MAX_PILLS; i++)
@@ -4236,10 +4217,6 @@ static void bar_add_modules(AsteroidzBar *bar, const char *list,
 		enum bar_module_kind kind;
 		if (strncmp(tok, "custom/", 7) == 0) {
 			custom = bar_custom_index(tok + 7);
-			/* BARPLUG: diagnostic -- which index a module resolved to, and how
-			 * many blocks the config had at the time it was asked. */
-			wlr_log(WLR_INFO, "BARPLUG add '%s' -> idx=%d (count=%d) slot=%d",
-					tok, custom, config.bar_custom_count, (int)slot);
 			if (custom < 0) {
 				fprintf(stderr,
 						"\033[1m\033[33m[WARN]:\033[0m bar: no custom block "

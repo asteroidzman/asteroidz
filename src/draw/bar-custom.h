@@ -308,12 +308,6 @@ static void bar_custom_on_line(const char *line, void *user) {
 	if (idx < 0 || idx >= MAX_BAR_CUSTOM)
 		return;
 	bar_custom_apply(idx, line);
-	/* BARPLUG: diagnostic. A plugin's output arriving and the pill appearing
-	 * are two different things, and a cold start has shown them come apart --
-	 * this says which side of that line a given update landed on. */
-	wlr_log(WLR_INFO, "BARPLUG line idx=%d nitems=%d have=%d text='%s' -> %s",
-			idx, bar_custom_state[idx].nitems, bar_custom_state[idx].have,
-			bar_custom_state[idx].text, line);
 	bar_update_all();
 }
 
@@ -381,11 +375,8 @@ static void bar_custom_sync(void) {
 			continue;
 		bool want = bar_custom_in_use(i) && cm->exec[0];
 		if (want && !st->proc) {
-			bool ok = bar_custom_spawn(cm->exec, i, true);
-			wlr_log(WLR_INFO, "BARPLUG spawn '%s' idx=%d ok=%d", cm->name, i,
-					ok);
+			bar_custom_spawn(cm->exec, i, true);
 		} else if (!want && st->proc) {
-			wlr_log(WLR_INFO, "BARPLUG stop '%s' idx=%d", cm->name, i);
 			async_spawn_stop(st->proc);
 			st->proc = NULL;
 		}

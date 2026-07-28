@@ -857,6 +857,19 @@ static int on_tick(sd_event_source *s, uint64_t usec, void *user) {
 			items[i].icon_retries < 5)
 			fetch_props(&items[i]);
 	sd_event_source_set_time(s, usec + 1000000);
+	/* Re-arm. sd_event_add_time creates a ONESHOT source, and sd-event
+	 * disables it the moment it fires -- setting a new time does NOT bring it
+	 * back. Without this the tick runs exactly once and the daemon goes
+	 * permanently silent: it keeps tracking items and decoding their pixmaps,
+	 * and never tells anyone.
+	 *
+	 * That failure is invisible to a test that starts its item BEFORE the
+	 * host, because those items are adopted at startup and caught by the one
+	 * tick that does fire. It is the normal real-world ordering -- an
+	 * application registering after the host is already running -- that never
+	 * reaches the bar. Which is exactly how this shipped and had to be found
+	 * on a live desktop. */
+	sd_event_source_set_enabled(s, SD_EVENT_ONESHOT);
 	return 0;
 }
 

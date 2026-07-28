@@ -20,6 +20,14 @@
 #              be refused rather than decoded, and the item must simply not
 #              appear rather than taking the host down with it.
 #
+#   LATE ITEM  an item that registers AFTER the host is already running must
+#              reach the bar. This is the NORMAL ordering on a real desktop --
+#              applications start after the compositor -- and it is the case
+#              every other test here misses, because they start snitem first
+#              and it gets adopted at startup. A host whose update timer fires
+#              only once passes every adoption test and still shows an empty
+#              tray on a real session; that shipped, and had to be found live.
+#
 #   CLICKS     a click on stdin has to reach the item as Activate with the
 #              screen coordinates intact -- the spec passes them so the
 #              application can place its own window next to the icon, and that
@@ -73,6 +81,18 @@ if [ "${1:-}" = "--case" ]; then
 		ls "$D/asteroidz-tray"/*.png 2>/dev/null | wc -l
 		kill $trayd $item 2>/dev/null
 		;;
+	late)
+		# trayd FIRST, with nothing on the bus, then the item a beat later --
+		# the reverse of every other case here.
+		timeout 12 "$TRAYD" </dev/null >"$D/out" 2>"$D/err" &
+		trayd=$!
+		sleep 2.5
+		"$SNITEM" --register >/dev/null 2>&1 &
+		item=$!
+		sleep 4
+		tail -1 "$D/out"
+		kill $trayd $item 2>/dev/null
+		;;
 	click)
 		"$SNITEM" --log "$D/clicks" >/dev/null 2>&1 &
 		item=$!
@@ -124,6 +144,12 @@ check "$(echo "$line" | grep -q '"items":\[\]' && echo true || echo false)" \
 	"a 4096x4096 IconPixmap is refused, not decoded ($line)"
 check "$([ "${pngs:-0}" -eq 0 ] && echo true || echo false)" \
 	"and nothing was written for it ($pngs files)"
+
+echo "-- an item that registers after the host"
+out="$(run_case late)"
+line="$(echo "$out" | head -1)"
+check "$(echo "$line" | grep -q '"id":"org.kde.StatusNotifierItem-' && echo true || echo false)" \
+	"an item registering after trayd is running still reaches the bar ($line)"
 
 echo "-- clicks"
 out="$(run_case click)"
