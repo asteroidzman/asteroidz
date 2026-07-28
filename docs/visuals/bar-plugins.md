@@ -174,6 +174,25 @@ changed.
 behave as they do in a shell. It is also why `exec "my script.sh"` with a space
 in the path needs quoting like any other shell word.
 
+### Never name a plugin after a command it runs
+
+A plugin that wraps a CLI must not share its name. A wrapper called `nordvpn`
+that runs `nordvpn status` resolves the bare name through `PATH` — and if the
+plugin's own directory is ever on `PATH`, it finds **itself**. It then runs
+itself, which runs itself. That is a fork bomb, and it has taken a machine down
+here.
+
+Two rules, both needed:
+
+- **Prefix the plugin** (`asteroidz-bar-nordvpn`). This is the only protection
+  that survives someone else setting `PATH`.
+- **Exec an absolute path**, resolved once, and refuse to run it if it turns
+  out to be the plugin itself. `asteroidz-bar-nordvpn` does exactly this; copy
+  its `_find_cli()` if you wrap a CLI.
+
+If you are testing a plugin that spawns anything, cap it:
+`systemd-run --user --scope -p TasksMax=60 …`.
+
 ### Events, for streaming plugins
 
 A `continuous` plugin gets a **writable stdin**, and a click on one of its
@@ -274,12 +293,12 @@ Not oversights — each one is load-bearing:
 
 ## A worked example: Discord voice
 
-`contrib/bar-plugins/discord-voice` reimplements the built-in `discord` module
+`contrib/bar-plugins/asteroidz-bar-discord` reimplements the built-in `discord` module
 as a plugin, against the same `discord-voiced` socket:
 
 ```kdl
 custom "discord" {
-    exec       "~/asteroidz/contrib/bar-plugins/discord-voice"
+    exec       "asteroidz-bar-discord"
     continuous true
 }
 ```

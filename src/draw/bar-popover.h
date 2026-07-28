@@ -2391,10 +2391,20 @@ static bool bar_popover_activate_row(BarPopoverRow *r) {
 		return true;
 	switch (bar_popover.kind) {
 	case BAR_POPOVER_CUSTOM:
-		/* Hand the plugin its own value back and let it decide. A submenu row
-		 * is not special here: the plugin answers with that submenu's rows and
-		 * the panel is replaced in place, so the menu STAYS OPEN. Returning
-		 * early keeps it up; falling through would close it on the way in. */
+		/* Hand the plugin its own value back and let it decide.
+		 *
+		 * `pending` is re-armed for EVERY activation, not just for rows the
+		 * plugin marked `submenu`. A plugin cannot always know in advance
+		 * which rows lead somewhere -- the medication plugin drills into any
+		 * dose, and whether a tray row has children is the application's
+		 * business -- so requiring it to predict that meant a menu sent in
+		 * reply to an activation arrived after the panel had closed and was
+		 * silently discarded. Re-arming lets the plugin decide by ANSWERING:
+		 * send rows and the panel comes back, send nothing and it stays shut.
+		 *
+		 * A `submenu` row additionally keeps the panel up in the meantime, so
+		 * drilling down does not flicker while the reply is in flight. */
+		bar_custom_menu.pending = true;
 		bar_custom_menu_activate(bar_custom_menu.plugin, bar_custom_menu.item,
 								 r->value);
 		if (r->submenu)

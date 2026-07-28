@@ -18,9 +18,8 @@ update, no polling:
     bar {
         modules-right "custom/discord,volume,clock"
         custom "discord" {
-            exec           "~/.config/asteroidz/bar/discord-voice"
-            continuous     true
-            on-click-right "..."     # see MUTE below
+            exec       "asteroidz-bar-discord-voice"
+            continuous true
         }
     }
 
@@ -32,18 +31,15 @@ Daemon protocol consumed (the same events bar-discord.h reads):
     ptt       active=<bool>, push-to-talk held
     error     text
 
-WHAT THIS CANNOT DO, versus the built-in module: the popover menu. Joining a
-channel, disconnecting, toggling mute and starting the daemon are all rows in a
-menu the compositor draws, and a plugin has no way to ask for one yet. Mute is
-reachable by writing to the daemon socket from `on-click-right`; joining a
-channel needs an external picker. That gap is the honest result of this
-exercise, not a bug in the script.
+A left click opens the same menu the built-in module drew -- mute, disconnect,
+the push-to-talk key, daemon start/stop, then voice channels grouped by server.
+The compositor renders the rows and owns the panel; this script only decides
+what the rows are and what activating one means.
 
-MUTE: the daemon takes commands on the same socket, so
-
-    on-click-right "printf '{\\"cmd\\":\\"mute\\"}\\n' | socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/discord-voiced.sock"
-
-toggles it without this script being involved at all.
+The one thing it cannot reproduce is the PTT key CHANGE dialog, which is a
+compositor facility (it grabs the next keypress through the global-shortcuts
+portal, of which the compositor is the backend). The row shows the current key
+and is inert here.
 """
 
 import json
@@ -51,6 +47,7 @@ import os
 import socket
 import subprocess
 import sys
+import threading
 import time
 
 SOCKET = os.path.join(
@@ -69,6 +66,7 @@ MIC_MUTED = "waybar-volume/mic-mute.svg"
 
 class State:
     def __init__(self):
+        self.sock = None
         self.reset()
 
     def reset(self):
@@ -79,7 +77,8 @@ class State:
         self.error = ""
         self.muted = False
         self.ptt = False
-        self.channels = {}  # id -> name
+        self.channels = {}      # id -> {name, guild, guild_name, people}
+        self.guilds = {}        # id -> name
         self.linked = False
 
     def label(self):
@@ -141,18 +140,23 @@ class State:
         }
 
 
-def emit(obj, last=[None]):
+def emit(obj, last=[None], menu_ok=False):
     """Print one update, but only when something actually changed.
 
     The compositor gates its own redraw on a digest of everything the bar
     shows, so a repeated identical line costs nothing on that side either --
     but a plugin that chatters still wakes the event loop to parse JSON it
     will then discard. Cheaper to not send it.
+
+    Menus are exempt: sending the same menu twice is two deliberate opens, not
+    a repeat, and deduplicating them would make the second right-click do
+    nothing.
     """
     line = json.dumps(obj, sort_keys=True)
-    if line == last[0]:
-        return
-    last[0] = line
+    if not menu_ok:
+        if line == last[0]:
+            return
+        last[0] = line
     sys.stdout.write(line + "\n")
     sys.stdout.flush()  # unbuffered or the bar sees nothing until we exit
 
@@ -167,16 +171,23 @@ def apply_event(st, ev):
             # Logged out but still running: the channel list belonged to that
             # session, so naming a channel from it would be a lie.
             st.channels.clear()
+            st.guilds.clear()
             st.username = ""
         st.error = ""
-        st.channel_name = st.channels.get(st.channel_id, "")
+        st.channel_name = (st.channels.get(st.channel_id) or {}).get("name", "")
     elif kind == "channels":
-        st.channels = {
-            c["id"]: c.get("name", "")
-            for c in ev.get("channels") or []
-            if c.get("id")
-        }
-        st.channel_name = st.channels.get(st.channel_id, "")
+        st.guilds = {g["id"]: g.get("name", "") for g in ev.get("guilds") or []
+                     if g.get("id")}
+        st.channels = {}
+        for c in ev.get("channels") or []:
+            if not c.get("id"):
+                continue
+            st.channels[c["id"]] = {
+                "name": c.get("name", ""),
+                "guild": c.get("guild", ""),
+                "people": len(c.get("participants") or []),
+            }
+        st.channel_name = (st.channels.get(st.channel_id) or {}).get("name", "")
     elif kind == "ready":
         st.username = ev.get("username") or ""
         st.error = ""
@@ -186,14 +197,117 @@ def apply_event(st, ev):
         st.error = ev.get("text") or ""
 
 
-def spawn_daemon(spawned=[False]):
+def menu(st):
+    """The rows the built-in module drew, in the same order.
+
+    Grouped by server rather than listed flat: the daemon emits channels sorted
+    by position across ALL servers, so a flat list interleaves them and reads as
+    noise. The built-in module groups for the same reason.
+    """
+    rows = []
+    if st.error:
+        rows.append({"text": st.error, "value": "", "enabled": False})
+    elif st.username:
+        rows.append({"text": f"{st.username}  ·  {st.label()}", "value": "",
+                     "enabled": False})
+    else:
+        rows.append({"text": st.label(), "value": "", "enabled": False})
+
+    if st.state == "connected":
+        rows.append({"separator": True})
+        rows.append({"text": "Unmute" if st.muted else "Mute",
+                     "value": "do:mute", "selected": st.muted})
+        rows.append({"text": "Disconnect", "value": "do:leave"})
+
+    rows.append({"separator": True})
+    if st.linked:
+        if st.state == "offline":
+            rows.append({"text": "Connect to Discord", "value": "do:connect"})
+        else:
+            rows.append({"text": "Disconnect from Discord",
+                         "value": "do:disconnect"})
+        rows.append({"text": "Shut down daemon", "value": "do:dstop"})
+    elif DAEMON and os.access(DAEMON, os.X_OK):
+        # Installed but not running: the one state you can actually act on, and
+        # the reason the pill stays visible while offline.
+        rows.append({"text": "Start daemon", "value": "do:dstart"})
+
+    if st.channels:
+        by_guild = {}
+        for cid, c in st.channels.items():
+            by_guild.setdefault(c.get("guild", ""), []).append((cid, c))
+        for gid in sorted(by_guild, key=lambda g: st.guilds.get(g, "")):
+            rows.append({"separator": True})
+            rows.append({"text": st.guilds.get(gid, "Server"), "value": "",
+                         "enabled": False})
+            for cid, c in by_guild[gid]:
+                people = c.get("people", 0)
+                label = c.get("name", "")
+                if people:
+                    label += f"  ({people})"
+                rows.append({"text": "    " + label, "value": "j:" + cid,
+                             "selected": cid == st.channel_id})
+    return {"menu": {"item": "", "rows": rows}}
+
+
+def send(st, obj):
+    """One command to the daemon, on the socket it already streams events on."""
+    if not st.sock:
+        return
+    try:
+        st.sock.sendall((json.dumps(obj) + "\n").encode())
+    except OSError:
+        pass
+
+
+def act(st, value):
+    if value == "do:mute":
+        send(st, {"cmd": "mute"})
+    elif value == "do:leave":
+        send(st, {"cmd": "disconnect"})
+    elif value == "do:connect":
+        send(st, {"cmd": "connect"})
+    elif value == "do:disconnect":
+        send(st, {"cmd": "logout"})
+    elif value == "do:dstop":
+        send(st, {"cmd": "quit"})
+    elif value == "do:dstart":
+        spawn_daemon(force=True)
+    elif value.startswith("j:"):
+        send(st, {"cmd": "join", "channel": value[2:]})
+
+
+def reader(st):
+    """Events from the compositor, on stdin.
+
+    Its own thread because the socket read loop below blocks: the two are
+    independent streams and neither may starve the other.
+    """
+    for line in sys.stdin:
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        kind = ev.get("event")
+        if kind == "click":
+            emit(menu(st), menu_ok=True)
+        elif kind == "menu":
+            v = ev.get("value") or ""
+            if not v:
+                continue
+            act(st, v)
+            # Close the panel; the daemon's next status event redraws the pill.
+            emit({"menu": {"item": "", "rows": []}}, menu_ok=True)
+
+
+def spawn_daemon(spawned=[False], force=False):
     """Start the daemon once per plugin lifetime, never in a loop.
 
     A retry every few seconds would fork a process forever on a machine that
     does not have it installed. Once is enough: if it dies later the pill goes
     offline and stays there, which is at least predictable and visible.
     """
-    if spawned[0] or not DAEMON or not os.access(DAEMON, os.X_OK):
+    if (spawned[0] and not force) or not DAEMON or not os.access(DAEMON, os.X_OK):
         return
     spawned[0] = True
     try:
@@ -209,6 +323,7 @@ def spawn_daemon(spawned=[False]):
 
 def main():
     st = State()
+    threading.Thread(target=reader, args=(st,), daemon=True).start()
     backoff = 1.0
     while True:
         try:
@@ -227,6 +342,7 @@ def main():
 
         backoff = 1.0
         st.linked = True
+        st.sock = s
         emit(st.render())
         with s, s.makefile("r", encoding="utf-8", errors="replace") as f:
             for line in f:
@@ -242,6 +358,7 @@ def main():
 
         # The daemon went away: everything we knew is stale, and showing the
         # last channel would claim a voice connection that no longer exists.
+        st.sock = None
         st.reset()
         emit(st.render())
 

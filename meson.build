@@ -239,6 +239,28 @@ executable('asteroidz-trayd',
   c_args : ['-g', '-Wno-unused-function'],
 )
 
+# Bar plugins that replace built-in modules.
+#
+# Installed with the compositor rather than left in contrib/ because they are
+# not examples any more: a config naming custom/nordvpn has to find one, and a
+# path into someone's git checkout is not a dependency a session should have.
+# Named asteroidz-bar-* so `exec "asteroidz-bar-nordvpn"` needs no path at all,
+# the same way asteroidz-trayd does.
+# The files are NAMED asteroidz-bar-* in the tree, not renamed on install.
+#
+# That matters: a plugin called `nordvpn` sitting next to a plugin called
+# `medication` is a directory of landmines. Put it on PATH -- which a test
+# harness did -- and `nordvpn` resolves to the wrapper instead of the CLI it
+# wraps, so the plugin execs itself recursively. It fork-bombed a machine.
+# Prefixed names cannot collide with anything they shell out to.
+install_data(
+  'contrib/bar-plugins/asteroidz-bar-discord',
+  'contrib/bar-plugins/asteroidz-bar-medication',
+  'contrib/bar-plugins/asteroidz-bar-nordvpn',
+  install_dir : join_paths(prefix, 'bin'),
+  install_mode : 'rwxr-xr-x',
+)
+
 # Unit tests for the pure helpers -- the ones whose failure mode is not
 # "the screen looks wrong" (which contrib/regression covers by driving a real
 # compositor) but a corrupted file on disk.
