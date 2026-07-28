@@ -4558,7 +4558,8 @@ static bool bar_handle_node_click(AsteroidzNodeData *hit, uint32_t button) {
 				item = cst->items[p->arg].id;
 		}
 		return bar_custom_click(ci, button, item, (int32_t)cursor->x,
-								(int32_t)cursor->y);
+								(int32_t)cursor->y, m,
+								p->node->last_x + p->width / 2);
 	}
 	case BAR_MODULE_LAYOUT:
 		if (button == BTN_LEFT) {

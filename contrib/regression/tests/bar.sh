@@ -1590,3 +1590,51 @@ EOF
 	bar_off
 	rm -f "$d/clicklog"
 }
+
+test_bar_plugin_can_open_a_popover_menu() {
+	[ "$(bar_supported)" = "true" ] || { echo "  (skip: built without -Dnative-bar)"; return 0; }
+	command -v python3 >/dev/null && python3 -c "import PIL" 2>/dev/null || {
+		echo "  (skip: python3 PIL not available)"; return 0; }
+	local d; d="$(bar_plugin_dir)"
+	rm -f "$d/menulog"
+
+	# A plugin cannot draw a popover -- it has no scene tree, no hit testing
+	# and no keyboard. So it sends ROWS and the compositor renders them into
+	# the same panel every built-in menu uses. This is what makes a tray host
+	# outside the compositor viable at all: without menus, a tray icon you can
+	# only left-click is not a tray.
+	cat > "$d/menuplug" <<'EOF'
+#!/bin/sh
+echo '{"items":[{"id":"one","text":"MENU"}]}'
+while IFS= read -r line; do
+	printf '%s\n' "$line" >> MENULOG
+	case "$line" in
+	*'"button":"right"'*)
+		echo '{"menu":{"item":"one","rows":[{"text":"Alpha","value":"a"},{"text":"Bravo","value":"b"},{"separator":true},{"text":"Charlie","value":"c"}]}}'
+		;;
+	esac
+done
+EOF
+	sed -i "s|MENULOG|$d/menulog|" "$d/menuplug"
+	chmod +x "$d/menuplug"
+
+	bar_set "bar { enable true; height 30; position \"top\"; margin { x 8; y 4 }; pill-min-width 28; pill-padding 4; panel { enable false }; modules-left \"custom/p1\"; custom \"p1\" { exec \"$d/menuplug\"; continuous true } }"
+	sleep 2
+
+	hl_screenshot menu-before
+	local before; before="$(hl_region_ink "$HL_OUTDIR/menu-before.png" 0 40 500 500)"
+
+	# right-click the pill; the menu arrives a round trip later
+	hl_click 12 19 rclick
+	sleep 2
+	hl_screenshot menu-open
+	local opened; opened="$(hl_region_ink "$HL_OUTDIR/menu-open.png" 0 40 500 500)"
+
+	hl_assert_true "the plugin was told about the right-click" \
+		"$(grep -q '"button":"right"' "$d/menulog" 2>/dev/null && echo true || echo false)"
+	hl_assert_true "and the rows it sent back were drawn as a popover ($before -> $opened px)" \
+		"$([ "${opened:-0}" -gt $(( ${before:-0} + 2000 )) ] && echo true || echo false)"
+
+	bar_off
+	rm -f "$d/menulog"
+}

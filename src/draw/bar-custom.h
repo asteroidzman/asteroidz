@@ -93,6 +93,55 @@ typedef struct {
 
 static BarCustomState bar_custom_state[MAX_BAR_CUSTOM];
 
+/* ─── plugin-driven menus ─────────────────────────────────────────────────── */
+
+/* A menu a plugin asked the compositor to draw.
+ *
+ * The compositor draws it because a plugin cannot: a popover needs a scene
+ * tree above the bar, hit testing, keyboard focus and scroll, none of which a
+ * process outside the compositor has any way to ask for. So the plugin sends
+ * rows and the compositor renders them into the same popover every built-in
+ * menu uses -- the plugin never learns where the panel is or how tall it got.
+ *
+ * ALWAYS asynchronous: the plugin is told about the right-click, goes and
+ * fetches whatever it needs (a tray item's DBusMenu, a round trip to another
+ * process), and sends the rows back some time later. That is why the anchor is
+ * remembered here rather than passed through -- by the time the rows arrive,
+ * the click that asked for them is long over. bar-vpn.h learned the same
+ * lesson the hard way: a menu fetched on open rendered empty the first time
+ * and only looked right on the second. */
+#define BAR_CUSTOM_MENU_MAX_ROWS 64
+
+typedef struct {
+	char text[BAR_TEXT_MAX];
+	/* opaque to the compositor and handed straight back when the row is
+	 * activated, exactly like an item's id -- the plugin decides what a row
+	 * means, and a DBusMenu id is not something the bar should model */
+	char value[192];
+	char icon[192];
+	bool enabled;
+	bool separator;
+	bool submenu;
+	bool selected;
+} BarCustomMenuRow;
+
+static struct {
+	int32_t plugin; /* which plugin owns the open menu, -1 for none */
+	char item[128]; /* which of its pills it hangs from */
+	BarCustomMenuRow rows[BAR_CUSTOM_MENU_MAX_ROWS];
+	int32_t nrows;
+	/* Where the click that asked for it landed. Held rather than recomputed:
+	 * the pill may have moved, or stopped existing, in the time the plugin
+	 * took to answer. */
+	Monitor *mon;
+	int32_t anchor_x;
+	bool pending; /* a right-click went out; a menu answering it may open */
+} bar_custom_menu = {.plugin = -1};
+
+/* Defined in bar-popover.h, which is included after this file -- one
+ * translation unit, so a forward declaration is all this needs. */
+static void bar_popover_custom_menu_arrived(void);
+
 /* Which plugin "custom/<name>" refers to, or -1. */
 static int32_t bar_custom_index(const char *name) {
 	if (!name || !*name)
@@ -236,6 +285,49 @@ static void bar_custom_apply(int32_t idx, const char *out) {
 		return;
 	}
 	cJSON *v;
+	/* A menu is an ANSWER, not a state update: it says "draw this panel now"
+	 * and leaves the pills alone. Handled first and returned from, so a plugin
+	 * replying to a right-click does not have to restate its whole item list
+	 * to avoid clearing it. */
+	v = cJSON_GetObjectItem(root, "menu");
+	if (cJSON_IsObject(v)) {
+		bar_custom_menu.plugin = idx;
+		bar_custom_menu.nrows = 0;
+		cJSON *mi = cJSON_GetObjectItem(v, "item");
+		snprintf(bar_custom_menu.item, sizeof(bar_custom_menu.item), "%s",
+				 cJSON_IsString(mi) ? mi->valuestring : "");
+		cJSON *rows = cJSON_GetObjectItem(v, "rows");
+		cJSON *e = NULL;
+		cJSON_ArrayForEach(e, rows) {
+			if (bar_custom_menu.nrows >= BAR_CUSTOM_MENU_MAX_ROWS)
+				break;
+			if (!cJSON_IsObject(e))
+				continue;
+			BarCustomMenuRow *r = &bar_custom_menu.rows[bar_custom_menu.nrows];
+			memset(r, 0, sizeof(*r));
+			r->enabled = true; /* a row is actionable unless it says otherwise */
+			cJSON *f;
+			if ((f = cJSON_GetObjectItem(e, "text")) && cJSON_IsString(f))
+				snprintf(r->text, sizeof(r->text), "%s", f->valuestring);
+			if ((f = cJSON_GetObjectItem(e, "value")) && cJSON_IsString(f))
+				snprintf(r->value, sizeof(r->value), "%s", f->valuestring);
+			if ((f = cJSON_GetObjectItem(e, "icon")) && cJSON_IsString(f))
+				snprintf(r->icon, sizeof(r->icon), "%s", f->valuestring);
+			if ((f = cJSON_GetObjectItem(e, "enabled")))
+				r->enabled = cJSON_IsTrue(f);
+			r->separator = cJSON_IsTrue(cJSON_GetObjectItem(e, "separator"));
+			r->submenu = cJSON_IsTrue(cJSON_GetObjectItem(e, "submenu"));
+			r->selected = cJSON_IsTrue(cJSON_GetObjectItem(e, "selected"));
+			/* A separator needs no label; anything else without one would be
+			 * an invisible row you could still land on. */
+			if (r->text[0] || r->separator)
+				bar_custom_menu.nrows++;
+		}
+		cJSON_Delete(root);
+		bar_popover_custom_menu_arrived();
+		return;
+	}
+
 	/* An "items" array means the plugin is drawing a ROW -- a tray, chiefly.
 	 * Read first and exclusively: an update is one form or the other, never a
 	 * merge, so a plugin switching between them leaves nothing behind. */
@@ -434,7 +526,8 @@ static void bar_custom_tick(int32_t elapsed_sec) {
  * other command in the config: the plugin's next update reports the outcome,
  * and waiting for the child here would block the pointer. */
 static bool bar_custom_click(int32_t idx, uint32_t button, const char *item,
-							 int32_t x, int32_t y) {
+							 int32_t x, int32_t y, Monitor *mon,
+							 int32_t anchor_x) {
 	if (idx < 0 || idx >= config.bar_custom_count)
 		return false;
 	ConfigBarCustom *cm = &config.bar_custom[idx];
@@ -459,8 +552,16 @@ static bool bar_custom_click(int32_t idx, uint32_t button, const char *item,
 				 "{\"event\":\"click\",\"button\":\"%s\",\"item\":\"%s\","
 				 "\"x\":%d,\"y\":%d}",
 				 name, item ? item : "", x, y);
-		if (async_spawn_send(st->proc, ev))
+		if (async_spawn_send(st->proc, ev)) {
+			/* Remember where to hang a menu, in case this click produces one.
+			 * Recorded for every button, not just right: which button opens a
+			 * menu is the plugin's decision, and a tray item that maps left to
+			 * its menu is entitled to. */
+			bar_custom_menu.pending = true;
+			bar_custom_menu.mon = mon;
+			bar_custom_menu.anchor_x = anchor_x;
 			return true;
+		}
 		/* fall through to the configured command: a plugin that has stopped
 		 * reading should not silently swallow the click too */
 	}
@@ -471,6 +572,25 @@ static bool bar_custom_click(int32_t idx, uint32_t button, const char *item,
 	char *const argv[] = {"/bin/sh", "-c", (char *)cmd, NULL};
 	async_spawn(event_loop, argv, NULL, NULL);
 	return true;
+}
+
+/* Tell a plugin one of its menu rows was activated.
+ *
+ * The plugin decides what happens next: act on it and say nothing, or send
+ * another menu, which replaces the panel in place -- that is how a submenu
+ * drills down without the compositor needing to model menu trees at all. */
+static bool bar_custom_menu_activate(int32_t idx, const char *item,
+									 const char *value) {
+	if (idx < 0 || idx >= config.bar_custom_count)
+		return false;
+	BarCustomState *st = &bar_custom_state[idx];
+	if (!config.bar_custom[idx].continuous || !st->proc)
+		return false;
+	char ev[512];
+	snprintf(ev, sizeof(ev),
+			 "{\"event\":\"menu\",\"item\":\"%s\",\"value\":\"%s\"}",
+			 item ? item : "", value ? value : "");
+	return async_spawn_send(st->proc, ev);
 }
 
 #endif /* ASTEROIDZ_BAR_CUSTOM_H */

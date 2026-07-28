@@ -71,6 +71,11 @@ enum bar_popover_kind {
 	BAR_POPOVER_SYSINFO,  /* cpu/memory/network figures; every row inert */
 	BAR_POPOVER_WEATHER,  /* conditions, metrics and the week; every row inert */
 	BAR_POPOVER_ARRANGE,  /* the monitor layout canvas */
+	/* A menu a PLUGIN supplied. Its rows carry the plugin's own opaque values
+	 * and mean nothing here; activating one hands the value back and lets the
+	 * plugin decide, including by sending a replacement menu -- which is how a
+	 * submenu drills down without the compositor modelling menu trees. */
+	BAR_POPOVER_CUSTOM,
 };
 
 /* One draggable monitor tile on the arrange canvas.
@@ -879,6 +884,84 @@ static void bar_popover_open_menu(Monitor *m, int32_t anchor_x,
 		return;
 	}
 	sd_bus_flush(session_bus);
+}
+
+/* ─── plugin menus ────────────────────────────────────────────────────────── */
+
+/* A plugin sent rows. Draw them.
+ *
+ * Opens on ARRIVAL rather than on the click that asked for it. The plugin has
+ * to go and fetch the thing -- a tray item's DBusMenu is two bus round trips
+ * away -- so opening early would put an empty panel on screen for as long as
+ * that takes, and closing it if nothing came back would flash. Nothing appears
+ * until there is something to show.
+ *
+ * A menu arriving while one is already open REPLACES its rows in place, which
+ * is exactly what a submenu drill-down is: the plugin is told which row was
+ * activated, decides that row was a submenu, and sends its children. The
+ * compositor never learns what a submenu is. */
+static void bar_popover_custom_menu_arrived(void) {
+	/* Nothing asked for this. A plugin may emit a menu at any time -- it is a
+	 * process we do not control -- and one appearing unbidden under the
+	 * pointer would be a popup nobody opened. */
+	if (!bar_custom_menu.pending && !bar_popover_is_open(BAR_POPOVER_CUSTOM))
+		return;
+	Monitor *m = bar_custom_menu.mon;
+	/* The output may have been unplugged in the time the plugin took. */
+	if (!m || !m->wlr_output || !m->wlr_output->enabled) {
+		bar_custom_menu.pending = false;
+		return;
+	}
+	if (bar_custom_menu.nrows <= 0) {
+		/* An empty menu is a plugin saying "nothing to offer". Close a panel
+		 * that was open rather than leaving the previous rows sitting there
+		 * claiming to still be actionable. */
+		if (bar_popover_is_open(BAR_POPOVER_CUSTOM))
+			bar_popover_close();
+		bar_custom_menu.pending = false;
+		return;
+	}
+
+	int32_t ax = m->m.x + bar_custom_menu.anchor_x;
+	/* Keep the viewport across a replacement, for the same reason the voice
+	 * menu does: a submenu is a new list and starts at the top, but a plugin
+	 * REFRESHING the menu it is already showing must not yank it. */
+	int32_t scroll = bar_popover_is_open(BAR_POPOVER_CUSTOM)
+						 ? bar_popover.scroll
+						 : 0;
+	bool replacing = bar_popover_is_open(BAR_POPOVER_CUSTOM);
+	if (!bar_popover_open(m, BAR_POPOVER_CUSTOM, ax))
+		return;
+	bar_custom_menu.pending = false;
+
+	int32_t n = 0;
+	for (int32_t i = 0; i < bar_custom_menu.nrows; i++) {
+		const BarCustomMenuRow *src = &bar_custom_menu.rows[i];
+		BarPopoverRow *r = bar_popover_row_get(n);
+		if (!r)
+			break;
+		snprintf(r->text, sizeof(r->text), "%s", src->text);
+		snprintf(r->value, sizeof(r->value), "%s", src->value);
+		snprintf(r->icon, sizeof(r->icon), "%s", src->icon);
+		r->enabled = src->enabled;
+		r->separator = src->separator;
+		r->submenu = src->submenu;
+		r->selected = src->selected;
+		/* The two decorations the tray menu already draws, applied here so a
+		 * plugin does not have to know our glyphs: a rule for a separator that
+		 * carries no label, and a chevron for a row that leads somewhere. */
+		if (r->separator && !r->text[0])
+			snprintf(r->text, sizeof(r->text), "%s", "───");
+		if (r->submenu) {
+			size_t l = strlen(r->text);
+			snprintf(r->text + l, sizeof(r->text) - l, "  %s", "›");
+		}
+		n++;
+	}
+	bar_popover.nrows = n;
+	if (replacing && scroll > 0)
+		bar_popover.scroll = scroll;
+	bar_popover_layout();
 }
 
 /* ─── discord voice channels ──────────────────────────────────────────────── */
@@ -2307,6 +2390,16 @@ static bool bar_popover_activate_row(BarPopoverRow *r) {
 	if (!r->enabled)
 		return true;
 	switch (bar_popover.kind) {
+	case BAR_POPOVER_CUSTOM:
+		/* Hand the plugin its own value back and let it decide. A submenu row
+		 * is not special here: the plugin answers with that submenu's rows and
+		 * the panel is replaced in place, so the menu STAYS OPEN. Returning
+		 * early keeps it up; falling through would close it on the way in. */
+		bar_custom_menu_activate(bar_custom_menu.plugin, bar_custom_menu.item,
+								 r->value);
+		if (r->submenu)
+			return true;
+		break;
 	case BAR_POPOVER_SINKS: {
 		char *const argv[] = {"pactl", "set-default-sink", r->value, NULL};
 		async_spawn(event_loop, argv, NULL, NULL);

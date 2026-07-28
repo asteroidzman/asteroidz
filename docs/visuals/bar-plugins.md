@@ -200,6 +200,60 @@ so a wedged plugin does not silently swallow clicks too.
 Interval plugins get no stdin: the command has already exited by the time
 anyone could click its pill. They use `on-click` / `on-click-right`.
 
+## Menus
+
+A plugin can ask the compositor to draw a popover menu. It sends rows; the
+compositor renders them into the same panel the built-in menus use, with the
+same scrolling, keyboard navigation and dismiss behaviour.
+
+```json
+{"menu":{"item":"nm-applet","rows":[
+  {"text":"Enable Wi-Fi","value":"wifi","selected":true},
+  {"text":"Connections","value":"conns","submenu":true},
+  {"separator":true},
+  {"text":"Quit","value":"quit"},
+  {"text":"Busy","value":"x","enabled":false}
+]}}
+```
+
+| Field | Effect |
+|---|---|
+| `text` | the row's label |
+| `value` | opaque; handed straight back when the row is activated |
+| `enabled` | `false` greys it — the click is swallowed, the menu stays up |
+| `separator` | a rule; unclickable, and needs no `text` |
+| `submenu` | draws a `›` and keeps the menu open when activated |
+| `selected` | drawn as checked |
+| `icon` | artwork, resolved like a pill's |
+
+### The flow
+
+1. The user clicks a pill. The plugin gets the usual click event.
+2. The plugin decides that means "menu", goes and fetches whatever it needs,
+   and sends `{"menu":{...}}` — possibly seconds later.
+3. The compositor opens the popover **when the rows arrive**, anchored where
+   the click landed.
+4. Activating a row sends `{"event":"menu","item":"…","value":"…"}` back.
+
+**Submenus need no special support.** A row marked `submenu` keeps the panel
+open when activated; the plugin replies with that level's rows, which replace
+the panel in place. The compositor never models a menu tree — it only ever
+knows the list it is currently drawing.
+
+An empty `rows` array closes the menu, which is the right answer after acting
+on a leaf.
+
+### Why it opens late rather than early
+
+The plugin has to go and fetch the menu — a tray item's DBusMenu is two bus
+round trips away. Opening on the click would put an empty panel on screen for
+as long as that takes, and closing it if nothing came back would flash. So
+nothing appears until there is something to show.
+
+A menu that arrives when nothing asked for one is ignored: a plugin is a
+process the compositor does not control, and a popup nobody opened appearing
+under the pointer would be worse than a missing one.
+
 ## What plugins deliberately cannot do
 
 Not oversights — each one is load-bearing:
@@ -213,9 +267,10 @@ Not oversights — each one is load-bearing:
 - **No control over redraw timing.** An animating bar element damages the
   output every frame, which recomposites the screen for as long as it animates.
   That budget belongs to the compositor, not to a script.
-- **No menus yet.** A plugin cannot ask the compositor to draw a popover menu
-  on its behalf. This is the remaining gap, and the only reason the built-in
-  `tray` module still exists — see below.
+- **No menu of its own.** A plugin cannot draw a popover — it has no scene
+  tree, no hit testing and no keyboard. It sends *rows* and the compositor
+  renders them; see [Menus](#menus). The plugin never learns where the panel
+  is or how tall it got.
 
 ## A worked example: Discord voice
 
@@ -297,19 +352,16 @@ Everything the built-in module does, except context menus:
 | `Passive` items | hidden, as the spec allows |
 | Left click | `Activate(x, y)` |
 | Right / middle click | `SecondaryActivate(x, y)` |
-| **DBusMenu context menus** | **no** — see below |
+| DBusMenu context menus | yes — right-click, including submenus, separators, checked and disabled entries |
 
-The context menu is the one real gap. Joining that up needs the compositor to
-draw a menu on a plugin's behalf, which nothing in the plugin contract can ask
-for yet. Right-click falls back to `SecondaryActivate`, which most applications
-map to "show me my menu" anyway — the same fallback the built-in module shipped
-with for the same reason.
+An item that ships no menu at all still falls back to `SecondaryActivate` on
+right-click, which many applications wire to "show my menu" themselves.
 
-So the two coexist, and switching is one word:
+The two hosts coexist, and switching is one word:
 
 ```kdl
-modules-right "tray,volume,clock"          // built-in: context menus
-modules-right "custom/tray,volume,clock"   // trayd: no unbounded decode
+modules-right "tray,volume,clock"          // built-in: decodes pixmaps in-process
+modules-right "custom/tray,volume,clock"   // trayd: bounded, out-of-process
 ```
 
 ### Testing it

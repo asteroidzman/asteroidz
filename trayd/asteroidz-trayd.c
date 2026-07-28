@@ -27,12 +27,14 @@
  *       custom "tray" { exec "asteroidz-trayd"; continuous true }
  *   }
  *
- * WHAT IT DOES NOT DO YET: the DBusMenu context menu. A right-click falls back
- * to the item's own SecondaryActivate, which is what most applications map to
- * "show me my menu" anyway -- the same fallback the built-in module shipped
- * with. Until a plugin can ask the compositor for a menu, the built-in `tray`
- * module remains the one with real context menus, and the two can be swapped
- * by changing one word in the config.
+ * Context menus work: a right-click fetches the item's com.canonical.dbusmenu
+ * layout and hands the rows to the compositor, which draws them in the same
+ * popover every built-in menu uses. Activating a row fires Event(id,"clicked")
+ * back at the application; activating a submenu row fetches that level and
+ * replaces the panel in place, so the compositor never has to model a menu
+ * tree. An item that ships no menu (Menu property absent, or "/") still falls
+ * back to SecondaryActivate, which many applications wire to "show my menu"
+ * themselves.
  *
  * The D-Bus logic is a port of bar-tray.h's, which is proven against real
  * applications (Steam, Discord, Electron appindicators, nm-applet, blueman,
@@ -407,7 +409,12 @@ static int on_props(sd_bus_message *m, void *user, sd_bus_error *err) {
 			if (!dst && !strcmp(key, "Menu")) {
 				const char *mp = NULL;
 				if (sd_bus_message_enter_container(m, 'v', "o") > 0) {
-					if (sd_bus_message_read(m, "o", &mp) > 0 && mp)
+					/* "/" is the root path and can never be a menu -- it is
+					 * what an item with none conventionally reports, and
+					 * taking it literally would offer an empty context menu
+					 * instead of falling back to SecondaryActivate. */
+					if (sd_bus_message_read(m, "o", &mp) > 0 && mp &&
+						strcmp(mp, "/") != 0)
 						snprintf(it->menu_path, sizeof(it->menu_path), "%s", mp);
 					sd_bus_message_exit_container(m);
 				} else {
@@ -781,6 +788,250 @@ static int json_int(const char *line, const char *key, int32_t fallback) {
 	return atoi(p + strlen(pat));
 }
 
+/* ─── context menus (com.canonical.dbusmenu) ──────────────────────────────── */
+
+#define MENU_IFACE "com.canonical.dbusmenu"
+
+/* Which item's menu is being shown, and at which level.
+ *
+ * One at a time, because the compositor draws one popover at a time. The
+ * SERVICE and PATH are held by value rather than as a pointer to the item: a
+ * menu can outlive the application that opened it by a few milliseconds, and
+ * chasing a freed entry to answer a click would be the same class of bug the
+ * item table's by-name lookups already avoid. */
+static struct {
+	char service[128];
+	char path[128];
+	char item[128]; /* the id the compositor knows this pill by */
+	bool open;
+} menu;
+
+static void json_escape(const char *in, char *out, size_t len);
+
+/* Turn one child of a GetLayout reply into a menu row.
+ *
+ * DBusMenu properties are a{sv} with no fixed order and plenty of optional
+ * keys, so everything not recognised is skipped rather than assumed. */
+static void read_menu_row(sd_bus_message *m, char *out, size_t outlen,
+						  bool *drop) {
+	char label[256] = {0}, value[64];
+	bool enabled = true, visible = true, separator = false, submenu = false;
+	int32_t toggle = 0;
+	int32_t id = 0;
+
+	sd_bus_message_read(m, "i", &id);
+	snprintf(value, sizeof(value), "%d", id);
+
+	if (sd_bus_message_enter_container(m, 'a', "{sv}") > 0) {
+		while (sd_bus_message_enter_container(m, 'e', "sv") > 0) {
+			const char *key = NULL;
+			if (sd_bus_message_read(m, "s", &key) <= 0 || !key) {
+				sd_bus_message_exit_container(m);
+				break;
+			}
+			if (!strcmp(key, "label")) {
+				const char *v = NULL;
+				if (sd_bus_message_enter_container(m, 'v', "s") > 0) {
+					if (sd_bus_message_read(m, "s", &v) > 0 && v) {
+						/* GTK mnemonics: "_Quit" is Quit with an accelerator,
+						 * not a leading underscore, and "__" is a literal one */
+						size_t o = 0;
+						for (const char *c = v; *c && o + 1 < sizeof(label);
+							 c++) {
+							if (*c == '_' && c[1] == '_')
+								c++;
+							else if (*c == '_')
+								continue;
+							label[o++] = *c;
+						}
+						label[o] = '\0';
+					}
+					sd_bus_message_exit_container(m);
+				} else {
+					sd_bus_message_skip(m, "v");
+				}
+			} else if (!strcmp(key, "enabled") || !strcmp(key, "visible")) {
+				int v = 1;
+				if (sd_bus_message_enter_container(m, 'v', "b") > 0) {
+					sd_bus_message_read(m, "b", &v);
+					sd_bus_message_exit_container(m);
+				} else {
+					sd_bus_message_skip(m, "v");
+				}
+				if (!strcmp(key, "enabled"))
+					enabled = v != 0;
+				else
+					visible = v != 0;
+			} else if (!strcmp(key, "type")) {
+				const char *v = NULL;
+				if (sd_bus_message_enter_container(m, 'v', "s") > 0) {
+					if (sd_bus_message_read(m, "s", &v) > 0 && v &&
+						!strcmp(v, "separator"))
+						separator = true;
+					sd_bus_message_exit_container(m);
+				} else {
+					sd_bus_message_skip(m, "v");
+				}
+			} else if (!strcmp(key, "children-display")) {
+				const char *v = NULL;
+				if (sd_bus_message_enter_container(m, 'v', "s") > 0) {
+					if (sd_bus_message_read(m, "s", &v) > 0 && v &&
+						!strcmp(v, "submenu"))
+						submenu = true;
+					sd_bus_message_exit_container(m);
+				} else {
+					sd_bus_message_skip(m, "v");
+				}
+			} else if (!strcmp(key, "toggle-state")) {
+				int v = 0;
+				if (sd_bus_message_enter_container(m, 'v', "i") > 0) {
+					sd_bus_message_read(m, "i", &v);
+					sd_bus_message_exit_container(m);
+				} else {
+					sd_bus_message_skip(m, "v");
+				}
+				toggle = v;
+			} else {
+				sd_bus_message_skip(m, "v");
+			}
+			sd_bus_message_exit_container(m);
+		}
+		sd_bus_message_exit_container(m);
+	}
+
+	/* An invisible entry is not a row -- applications hide entries they do not
+	 * currently offer rather than removing them, and drawing those would be a
+	 * menu full of things that do nothing. */
+	*drop = !visible || (!label[0] && !separator);
+	if (*drop) {
+		out[0] = '\0';
+		return;
+	}
+	char elabel[512];
+	json_escape(label, elabel, sizeof(elabel));
+	snprintf(out, outlen,
+			 "{\"text\":\"%s\",\"value\":\"%s\",\"enabled\":%s%s%s%s}", elabel,
+			 value, enabled ? "true" : "false",
+			 separator ? ",\"separator\":true" : "",
+			 submenu ? ",\"submenu\":true" : "",
+			 toggle > 0 ? ",\"selected\":true" : "");
+}
+
+static int on_layout(sd_bus_message *m, void *user, sd_bus_error *err) {
+	(void)user;
+	(void)err;
+	if (!menu.open)
+		return 0;
+	if (!m || sd_bus_message_is_method_error(m, NULL)) {
+		/* Say so with an empty menu rather than silently: the compositor
+		 * closes any panel it had up, instead of leaving stale rows. */
+		printf("{\"menu\":{\"item\":\"%s\",\"rows\":[]}}\n", menu.item);
+		fflush(stdout);
+		return 0;
+	}
+
+	uint32_t revision = 0;
+	if (sd_bus_message_read(m, "u", &revision) <= 0 ||
+		sd_bus_message_enter_container(m, 'r', "ia{sv}av") <= 0)
+		return 0;
+	int32_t root_id = 0;
+	sd_bus_message_read(m, "i", &root_id);
+	sd_bus_message_skip(m, "a{sv}"); /* the root's own properties */
+
+	char buf[16384];
+	size_t o = 0;
+	o += (size_t)snprintf(buf + o, sizeof(buf) - o,
+						  "{\"menu\":{\"item\":\"%s\",\"rows\":[", menu.item);
+	bool first = true;
+	if (sd_bus_message_enter_container(m, 'a', "v") > 0) {
+		while (sd_bus_message_enter_container(m, 'v', "(ia{sv}av)") > 0) {
+			if (sd_bus_message_enter_container(m, 'r', "ia{sv}av") > 0) {
+				char row[1024];
+				bool drop = false;
+				read_menu_row(m, row, sizeof(row), &drop);
+				if (!drop && o + strlen(row) + 8 < sizeof(buf)) {
+					o += (size_t)snprintf(buf + o, sizeof(buf) - o, "%s%s",
+										  first ? "" : ",", row);
+					first = false;
+				}
+				sd_bus_message_skip(m, "av"); /* grandchildren, fetched on demand */
+				sd_bus_message_exit_container(m);
+			}
+			sd_bus_message_exit_container(m);
+		}
+		sd_bus_message_exit_container(m);
+	}
+	sd_bus_message_exit_container(m);
+	snprintf(buf + o, sizeof(buf) - o, "]}}");
+	printf("%s\n", buf);
+	fflush(stdout);
+	return 0;
+}
+
+/* Ask an item for one level of its menu.
+ *
+ * AboutToShow first: Qt and libappindicator applications populate their menu
+ * lazily on it, and skipping it gets an empty or stale layout from anything
+ * Qt-based. Fire-and-forget -- its reply only says whether the layout changed,
+ * and the layout is being fetched either way.
+ *
+ * Depth 1, so only this level's children come back. A tray menu can be deep
+ * and mostly unvisited; fetching the whole tree to show ten rows is work the
+ * application does not need to do. */
+static void menu_fetch(int32_t parent) {
+	if (!menu.open || !menu.service[0])
+		return;
+	sd_bus_call_method_async(bus, NULL, menu.service, menu.path, MENU_IFACE,
+							 "AboutToShow", NULL, NULL, "i", parent);
+	sd_bus_call_method_async(bus, NULL, menu.service, menu.path, MENU_IFACE,
+							 "GetLayout", on_layout, NULL, "iias", parent, 1,
+							 0);
+}
+
+/* Open an item's menu, or report that it has none. */
+static void menu_open(Item *it) {
+	if (!it)
+		return;
+	if (!it->menu_path[0]) {
+		menu.open = false;
+		return;
+	}
+	snprintf(menu.service, sizeof(menu.service), "%s", it->service);
+	snprintf(menu.path, sizeof(menu.path), "%s", it->menu_path);
+	snprintf(menu.item, sizeof(menu.item), "%s", it->service);
+	menu.open = true;
+	menu_fetch(0);
+}
+
+/* A row was activated. Two things it can be, and the id alone does not say
+ * which -- the compositor tells us by asking again for a submenu, because it
+ * knows which row it drew a chevron on. So: fire the click AND offer the
+ * children. An application ignores a clicked event on a submenu parent, and a
+ * leaf has no children to return, so doing both is safe and saves a round
+ * trip deciding. */
+static void menu_activate(const char *value) {
+	if (!menu.open || !value || !*value)
+		return;
+	int32_t id = atoi(value);
+	/* Event(id, "clicked", data, timestamp). The variant is unused for a
+	 * click; the timestamp is advisory and 0 is accepted everywhere. */
+	sd_bus_message *msg = NULL;
+	if (sd_bus_message_new_method_call(bus, &msg, menu.service, menu.path,
+									   MENU_IFACE, "Event") >= 0) {
+		sd_bus_message_append(msg, "is", id, "clicked");
+		sd_bus_message_open_container(msg, 'v', "s");
+		sd_bus_message_append(msg, "s", "");
+		sd_bus_message_close_container(msg);
+		sd_bus_message_append(msg, "u", 0);
+		sd_bus_call_async(bus, NULL, msg, NULL, NULL, 0);
+		sd_bus_message_unref(msg);
+	}
+	/* And offer whatever lives under it. A leaf comes back with no rows, which
+	 * the compositor reads as "nothing to show" and closes the panel -- which
+	 * is exactly right after acting on a leaf. */
+	menu_fetch(id);
+}
+
 static void activate(Item *it, const char *method, int32_t x, int32_t y) {
 	if (!bus || !it)
 		return;
@@ -817,7 +1068,17 @@ static int on_stdin(sd_event_source *s, int fd, uint32_t revents, void *user) {
 	for (char *nl; (nl = strchr(start, '\n')); start = nl + 1) {
 		*nl = '\0';
 		char ev[32], button[16], id[128];
-		if (!json_field(start, "event", ev, sizeof(ev)) || strcmp(ev, "click"))
+		if (!json_field(start, "event", ev, sizeof(ev)))
+			continue;
+
+		/* A row of the menu we are showing. */
+		if (!strcmp(ev, "menu")) {
+			char value[192];
+			if (json_field(start, "value", value, sizeof(value)))
+				menu_activate(value);
+			continue;
+		}
+		if (strcmp(ev, "click"))
 			continue;
 		if (!json_field(start, "item", id, sizeof(id)))
 			continue;
@@ -827,14 +1088,20 @@ static int on_stdin(sd_event_source *s, int fd, uint32_t revents, void *user) {
 		if (!it)
 			continue;
 		int32_t x = json_int(start, "x", 0), y = json_int(start, "y", 0);
-		if (!strcmp(button, "left"))
+		if (!strcmp(button, "left")) {
+			menu.open = false;
 			activate(it, "Activate", x, y);
-		else
-			/* Right and middle both fall back to SecondaryActivate, which is
-			 * what most applications map to "show my menu". A real DBusMenu
-			 * needs the compositor to be able to draw one on a plugin's
-			 * behalf, which it cannot yet. */
+		} else if (!strcmp(button, "right") && it->menu_path[0]) {
+			/* The item's own context menu -- what a right-click on a tray icon
+			 * means everywhere else. */
+			menu_open(it);
+		} else {
+			/* No DBusMenu to show, or a middle click. SecondaryActivate is the
+			 * long-standing fallback: applications shipping no menu often wire
+			 * it to "open my window" or "show my menu" themselves. */
+			menu.open = false;
 			activate(it, "SecondaryActivate", x, y);
+		}
 	}
 	/* keep whatever partial line is left */
 	len = strlen(start);

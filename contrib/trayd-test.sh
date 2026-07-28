@@ -93,6 +93,31 @@ if [ "${1:-}" = "--case" ]; then
 		tail -1 "$D/out"
 		kill $trayd $item 2>/dev/null
 		;;
+	menu)
+		"$SNITEM" --menu --log "$D/log" >/dev/null 2>&1 &
+		item=$!
+		sleep 1.5
+		mkfifo "$D/in"
+		timeout 14 "$TRAYD" <"$D/in" >"$D/out" 2>"$D/err" &
+		trayd=$!
+		exec 9>"$D/in"
+		sleep 2.5
+		id="$(grep -o '"id":"[^"]*"' "$D/out" | tail -1 | cut -d'"' -f4)"
+		printf '{"event":"click","button":"right","item":"%s","x":10,"y":10}\n' "$id" >&9
+		sleep 2
+		grep '"menu"' "$D/out" | tail -1
+		# activate a leaf, then drill into the submenu
+		printf '{"event":"menu","item":"%s","value":"6"}\n' "$id" >&9
+		sleep 1.5
+		printf '{"event":"menu","item":"%s","value":"2"}\n' "$id" >&9
+		sleep 1.5
+		echo "---SUB---"
+		grep '"menu"' "$D/out" | tail -1
+		echo "---EVENTS---"
+		cat "$D/log" 2>/dev/null
+		exec 9>&-
+		kill $trayd $item 2>/dev/null
+		;;
 	click)
 		"$SNITEM" --log "$D/clicks" >/dev/null 2>&1 &
 		item=$!
@@ -150,6 +175,26 @@ out="$(run_case late)"
 line="$(echo "$out" | head -1)"
 check "$(echo "$line" | grep -q '"id":"org.kde.StatusNotifierItem-' && echo true || echo false)" \
 	"an item registering after trayd is running still reaches the bar ($line)"
+
+echo "-- context menus"
+out="$(run_case menu)"
+top="$(echo "$out" | head -1)"
+sub="$(echo "$out" | sed -n '/---SUB---/{n;p}')"
+events="$(echo "$out" | sed -n '/---EVENTS---/,$p')"
+check "$(echo "$top" | grep -q '"text":"Quit"' && echo true || echo false)" \
+	"a right-click returns the item's DBusMenu rows"
+check "$(echo "$top" | grep -q '"submenu":true' && echo true || echo false)" \
+	"a row with children is marked as a submenu"
+check "$(echo "$top" | grep -q '"separator":true' && echo true || echo false)" \
+	"a separator survives as a separator"
+check "$(echo "$top" | grep -q '"enabled":false' && echo true || echo false)" \
+	"a disabled entry comes through disabled rather than being dropped"
+check "$(echo "$top" | grep -q '"selected":true' && echo true || echo false)" \
+	"a checked entry comes through selected"
+check "$(echo "$events" | grep -q '^Event 6$' && echo true || echo false)" \
+	"activating a row fires DBusMenu Event(id,\"clicked\") on the application"
+check "$(echo "$sub" | grep -q '"text":"Deeper"' && echo true || echo false)" \
+	"activating a submenu row returns that submenu's children ($sub)"
 
 echo "-- clicks"
 out="$(run_case click)"

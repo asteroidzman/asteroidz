@@ -31,6 +31,11 @@
 //               decoding it -- an unbounded one will happily chew through
 //               however many megapixels it is handed, which in-compositor is
 //               a stalled desktop and is why asteroidz-trayd exists.
+//   --menu      export a com.canonical.dbusmenu at /MenuBar and point the
+//               item's Menu property at it: Open, a Sub > submenu, a
+//               separator, a checked Toggle, a disabled Greyed, and Quit.
+//               Menu Event() calls are appended to --log as "Event <id>", so a
+//               test can assert a row activation reached the application.
 //   --log F     append each Activate/SecondaryActivate/ContextMenu call to F,
 //               as "<method> <x> <y>", so a test can assert that a click made
 //               it all the way from the bar to the item.
@@ -44,12 +49,44 @@
 #include <unistd.h>
 
 static const char *ITEM_IFACE = "org.kde.StatusNotifierItem";
+#define MENU_IFACE_NAME "com.canonical.dbusmenu"
 
 /* Mutable so --passive-then-active can flip it under a live connection. */
 static const char *item_status = "Active";
 static volatile sig_atomic_t go_active = 0;
 static int pixmap_size = 0;
 static const char *click_log = NULL;
+static bool have_menu = false;
+
+static void log_line(const char *fmt, int v) {
+	if (!click_log)
+		return;
+	FILE *f = fopen(click_log, "a");
+	if (!f)
+		return;
+	fprintf(f, fmt, v);
+	fclose(f);
+}
+
+/* One row of the fake menu. `sub` marks the row that has children, so
+   GetLayout(parent=that id) returns them and a drill-down can be tested. */
+static const struct {
+	int id;
+	const char *label;
+	const char *type;
+	bool submenu;
+	bool enabled;
+	int toggle;
+	int parent;
+} menu_rows[] = {
+	{1, "Open",   NULL,        false, true,  -1, 0},
+	{2, "Sub",    NULL,        true,  true,  -1, 0},
+	{3, "",       "separator", false, true,  -1, 0},
+	{4, "Toggle", NULL,        false, true,   1, 0},
+	{5, "Greyed", NULL,        false, false, -1, 0},
+	{6, "Quit",   NULL,        false, true,  -1, 0},
+	{7, "Deeper", NULL,        false, true,  -1, 2},
+};
 
 static void on_sigusr1(int sig) {
 	(void)sig;
@@ -115,8 +152,126 @@ static int method_action(sd_bus_message *m, void *user, sd_bus_error *err) {
 	return sd_bus_reply_method_return(m, "");
 }
 
+static int prop_menu(sd_bus *bus, const char *path, const char *iface,
+					 const char *prop, sd_bus_message *reply, void *user,
+					 sd_bus_error *err) {
+	(void)bus; (void)path; (void)iface; (void)prop; (void)user; (void)err;
+	/* An object path, not a string. A host reading this as "s" gets nothing
+	   and concludes the item has no menu -- which is a real bug that has been
+	   written twice now, so serve the correct type and let it be caught. */
+	/* "/" is the root object path and can never be a menu; it is what items
+	   with no menu conventionally report, and what a host must treat as
+	   "there is nothing to show". */
+	return sd_bus_message_append(reply, "o", have_menu ? "/MenuBar" : "/");
+}
+
+/* com.canonical.dbusmenu GetLayout: u(ia{sv}av) */
+static int menu_get_layout(sd_bus_message *m, void *user, sd_bus_error *err) {
+	(void)user; (void)err;
+	int parent = 0, depth = 0;
+	sd_bus_message_read(m, "ii", &parent, &depth);
+	sd_bus_message_skip(m, "as");
+
+	sd_bus_message *reply = NULL;
+	int r = sd_bus_message_new_method_return(m, &reply);
+	if (r < 0)
+		return r;
+	sd_bus_message_append(reply, "u", 1u);
+	sd_bus_message_open_container(reply, 'r', "ia{sv}av");
+	sd_bus_message_append(reply, "i", parent);
+	sd_bus_message_open_container(reply, 'a', "{sv}");
+	sd_bus_message_close_container(reply);
+	sd_bus_message_open_container(reply, 'a', "v");
+	for (size_t i = 0; i < sizeof(menu_rows) / sizeof(menu_rows[0]); i++) {
+		if (menu_rows[i].parent != parent)
+			continue;
+		sd_bus_message_open_container(reply, 'v', "(ia{sv}av)");
+		sd_bus_message_open_container(reply, 'r', "ia{sv}av");
+		sd_bus_message_append(reply, "i", menu_rows[i].id);
+		sd_bus_message_open_container(reply, 'a', "{sv}");
+		if (menu_rows[i].label[0]) {
+			sd_bus_message_open_container(reply, 'e', "sv");
+			sd_bus_message_append(reply, "s", "label");
+			sd_bus_message_open_container(reply, 'v', "s");
+			sd_bus_message_append(reply, "s", menu_rows[i].label);
+			sd_bus_message_close_container(reply);
+			sd_bus_message_close_container(reply);
+		}
+		if (menu_rows[i].type) {
+			sd_bus_message_open_container(reply, 'e', "sv");
+			sd_bus_message_append(reply, "s", "type");
+			sd_bus_message_open_container(reply, 'v', "s");
+			sd_bus_message_append(reply, "s", menu_rows[i].type);
+			sd_bus_message_close_container(reply);
+			sd_bus_message_close_container(reply);
+		}
+		if (menu_rows[i].submenu) {
+			sd_bus_message_open_container(reply, 'e', "sv");
+			sd_bus_message_append(reply, "s", "children-display");
+			sd_bus_message_open_container(reply, 'v', "s");
+			sd_bus_message_append(reply, "s", "submenu");
+			sd_bus_message_close_container(reply);
+			sd_bus_message_close_container(reply);
+		}
+		if (!menu_rows[i].enabled) {
+			sd_bus_message_open_container(reply, 'e', "sv");
+			sd_bus_message_append(reply, "s", "enabled");
+			sd_bus_message_open_container(reply, 'v', "b");
+			sd_bus_message_append(reply, "b", 0);
+			sd_bus_message_close_container(reply);
+			sd_bus_message_close_container(reply);
+		}
+		if (menu_rows[i].toggle >= 0) {
+			sd_bus_message_open_container(reply, 'e', "sv");
+			sd_bus_message_append(reply, "s", "toggle-state");
+			sd_bus_message_open_container(reply, 'v', "i");
+			sd_bus_message_append(reply, "i", menu_rows[i].toggle);
+			sd_bus_message_close_container(reply);
+			sd_bus_message_close_container(reply);
+		}
+		sd_bus_message_close_container(reply); /* a{sv} */
+		sd_bus_message_open_container(reply, 'a', "v");
+		sd_bus_message_close_container(reply); /* no grandchildren inline */
+		sd_bus_message_close_container(reply); /* struct */
+		sd_bus_message_close_container(reply); /* variant */
+	}
+	sd_bus_message_close_container(reply); /* av */
+	sd_bus_message_close_container(reply); /* root struct */
+	r = sd_bus_send(NULL, reply, NULL);
+	sd_bus_message_unref(reply);
+	return r < 0 ? r : 1;
+}
+
+static int menu_event(sd_bus_message *m, void *user, sd_bus_error *err) {
+	(void)user; (void)err;
+	int id = 0;
+	const char *type = NULL;
+	if (sd_bus_message_read(m, "is", &id, &type) > 0 && type &&
+		!strcmp(type, "clicked"))
+		log_line("Event %d\n", id);
+	return sd_bus_reply_method_return(m, "");
+}
+
+static int menu_about_to_show(sd_bus_message *m, void *user, sd_bus_error *err) {
+	(void)user; (void)err;
+	int id = 0;
+	sd_bus_message_read(m, "i", &id);
+	return sd_bus_reply_method_return(m, "b", 0);
+}
+
+static const sd_bus_vtable menu_vtable[] = {
+	SD_BUS_VTABLE_START(0),
+	SD_BUS_METHOD("GetLayout", "iias", "u(ia{sv}av)", menu_get_layout,
+				  SD_BUS_VTABLE_UNPRIVILEGED),
+	SD_BUS_METHOD("Event", "isvu", "", menu_event, SD_BUS_VTABLE_UNPRIVILEGED),
+	SD_BUS_METHOD("AboutToShow", "i", "b", menu_about_to_show,
+				  SD_BUS_VTABLE_UNPRIVILEGED),
+	SD_BUS_VTABLE_END,
+};
+
 static const sd_bus_vtable item_vtable[] = {
 	SD_BUS_VTABLE_START(0),
+	SD_BUS_PROPERTY("Menu", "o", prop_menu, 0, SD_BUS_VTABLE_PROPERTY_CONST),
 	SD_BUS_PROPERTY("IconPixmap", "a(iiay)", prop_pixmap, 0,
 					SD_BUS_VTABLE_PROPERTY_CONST),
 	SD_BUS_METHOD("Activate", "ii", "", method_action,
@@ -147,6 +302,8 @@ int main(int argc, char **argv) {
 			pixmap_size = atoi(argv[++i]);
 		else if (!strcmp(argv[i], "--log") && i + 1 < argc)
 			click_log = argv[++i];
+		else if (!strcmp(argv[i], "--menu"))
+			have_menu = true;
 	}
 	if (passive_first)
 		item_status = "Passive";
@@ -161,6 +318,14 @@ int main(int argc, char **argv) {
 	if (sd_bus_add_object_vtable(bus, &slot, "/StatusNotifierItem", ITEM_IFACE,
 								 item_vtable, NULL) < 0) {
 		fprintf(stderr, "snitem: cannot export the item object\n");
+		return 1;
+	}
+
+	sd_bus_slot *menu_slot = NULL;
+	if (have_menu &&
+		sd_bus_add_object_vtable(bus, &menu_slot, "/MenuBar", MENU_IFACE_NAME,
+								 menu_vtable, NULL) < 0) {
+		fprintf(stderr, "snitem: cannot export the menu object\n");
 		return 1;
 	}
 
@@ -207,6 +372,7 @@ int main(int argc, char **argv) {
 		if (sd_bus_wait(bus, 250 * 1000) < 0 && errno != EINTR)
 			break;
 	}
+	sd_bus_slot_unref(menu_slot);
 	sd_bus_slot_unref(slot);
 	sd_bus_unref(bus);
 	return 0;
