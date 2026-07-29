@@ -512,24 +512,34 @@ int32_t quit(const Arg *arg) {
 	return 0;
 }
 
+/* Flip this output's HDR baseline. A convenience over set_output_hdr, and
+ * nothing more.
+ *
+ * It used to assign m->hdr directly, which is a DERIVED value -- hdr_resolve()
+ * recomputes it from the policy ladder and the Monitor struct reserves it to
+ * hdr_resolve alone. So the toggle was thrown away by the next resolve pass,
+ * which any config reload or client change triggers: from outside, HDR
+ * "bounced back" on its own and the dispatch appeared to do nothing.
+ *
+ * An imperative toggle is also the odd one out in what is otherwise a
+ * declarative model (global policy -> per-output baseline -> per-window
+ * override), so it no longer has a mechanism of its own: it reads the current
+ * baseline, inverts it, and hands over. That means it persists to the config
+ * like any other baseline change, instead of being a runtime-only flip that
+ * vanished on reload. */
 int32_t toggle_hdr(const Arg *arg) {
 	Monitor *m = selmon;
-
-	if (!m)
+	if (!m || !m->wlr_output || !m->wlr_output->name)
 		return 0;
-	/* manual toggle takes precedence over the capture-triggered HDR
-	 * fallback; don't let a later capture-session end auto-flip it back */
-	m->hdr_forced_off_for_capture = false;
-	m->hdr = !m->hdr;
-	/* deferred to rendermon()'s next frame commit, not committed here
-	 * directly: an out-of-band commit can race an in-flight page-flip and
-	 * get rejected by the DRM backend */
-	m->hdr_pending_change = true;
-	wlr_output_schedule_frame(m->wlr_output);
-	wlr_log(WLR_INFO, "HDR %s on %s", m->hdr ? "enabled" : "disabled",
-			m->wlr_output->name);
-	printstatus(IPC_WATCH_ARRANGGE);
-	return 0;
+
+	Arg forward = {0};
+	forward.v = strdup(m->wlr_output->name);
+	if (!forward.v)
+		return 0;
+	forward.i = m->hdr_configured > 0 ? 0 : 1;
+	int32_t ret = set_output_hdr(&forward);
+	free(forward.v);
+	return ret;
 }
 
 int32_t set_sdr_luminance(const Arg *arg) {

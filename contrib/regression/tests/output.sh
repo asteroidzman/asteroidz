@@ -87,6 +87,42 @@ test_output_settings_are_written_back_to_the_config() {
 		   | jq -r --arg n "$name" '.monitors[] | select(.name==$n) | .scale')"
 }
 
+test_set_output_hdr_writes_the_baseline_not_the_resolved_state() {
+	command -v jq >/dev/null || { echo "  (skip: jq not available)"; return 0; }
+
+	# set_output_hdr writes hdr_configured -- the INPUT to hdr_resolve -- and
+	# persists it. It must NOT write m->hdr, which is derived: assigning that
+	# was the old toggle_hdr bug, and the next resolve pass threw it away.
+	#
+	# A headless output is not HDR-capable, so the resolver will refuse to
+	# actually turn HDR on here. That is the interesting half: the baseline
+	# still has to be REMEMBERED, so it takes effect on hardware that can.
+	local name="$HL_MON"
+
+	sed -i "s|^output $name .*|output $name { width $HL_WIDTH; height $HL_HEIGHT; refresh 60; }|" \
+		"$HL_CONFIG"
+	hl_dispatch "reload_config" 1
+
+	hl_dispatch "set_output_hdr,$name,1" 1
+	hl_assert_true "an HDR baseline is written to the config" \
+		"$(grep -q "hdr 1" "$HL_CONFIG" && echo true || echo false)"
+
+	# Written as `hdr 1`, never a bare `hdr`: the parser reads it with
+	# atoi(val), so the value form is the one that round-trips.
+	hl_assert_true "it is written as a value, not a bare flag" \
+		"$(grep -qE "hdr 1" "$HL_CONFIG" && echo true || echo false)"
+
+	hl_dispatch "reload_config" 1
+	hl_assert_true "the compositor is still healthy with the baseline set" \
+		"$([ -n "$(hl_get "get all-monitors")" ] && echo true || echo false)"
+
+	# ...and turning it off REMOVES the key rather than writing `hdr 0`: absent
+	# is the default, and an explicit 0 is a second way to say the same thing.
+	hl_dispatch "set_output_hdr,$name,0" 1
+	hl_assert_true "turning it off removes the key" \
+		"$(grep -q "hdr 1" "$HL_CONFIG" && echo false || echo true)"
+}
+
 test_an_output_with_no_block_is_applied_but_not_saved() {
 	command -v jq >/dev/null || { echo "  (skip: jq not available)"; return 0; }
 

@@ -2329,6 +2329,27 @@ bool fx_vk_render_pass_add_optimized_blur(struct wlr_render_pass *wlr_pass,
 			!is_scene_blur_enabled(options->blur_data)) {
 		return false;
 	}
+	/* DIAGNOSTIC: can this output populate its own optimized-blur cache?
+	 *
+	 * The cache is per-output, and only the two-pass path can fill it -- HDR
+	 * and an ICC profile are what force two-pass. An output that consumes
+	 * optimized blur while never being able to FILL it is the shape of the
+	 * reported bug (blur intact on the colour-transformed output, garbage on
+	 * the plain one beside it). Buffer dimensions identify the output. */
+	{
+		int8_t tp = pass->two_pass ? 2 : 1;
+		if (bufs->dbg_two_pass != tp) {
+			bufs->dbg_two_pass = tp;
+			wlr_log(WLR_DEBUG,
+				"fx_vk optblur[%dx%d]: two_pass=%s valid=%s -- %s",
+				bufs->width, bufs->height,
+				pass->two_pass ? "yes" : "no",
+				bufs->optimized_blur_valid ? "yes" : "no",
+				pass->two_pass ? "CAN fill its cache"
+							   : "CANNOT fill its cache");
+		}
+	}
+
 	// Optimized blur relies on the readable scene image of the two-pass path.
 	if (!pass->two_pass) {
 		return false;
@@ -2574,6 +2595,20 @@ void fx_vk_render_pass_add_blur(struct wlr_render_pass *wlr_pass,
 	}
 	// Whatever path we took, never composite an invalid cache image (optimized
 	// blur never ran / single-pass fallback for a live node).
+	if (src == bufs->optimized_blur) {
+		/* DIAGNOSTIC: was the cache usable when a window asked for it?
+		 * "skipped" means this composite drew NOTHING, leaving whatever the
+		 * scene image already held in that region. */
+		int8_t c = bufs->optimized_blur_valid ? 2 : 1;
+		if (bufs->dbg_composited != c) {
+			bufs->dbg_composited = c;
+			wlr_log(WLR_DEBUG, "fx_vk optblur[%dx%d]: consumer %s",
+				bufs->width, bufs->height,
+				bufs->optimized_blur_valid
+					? "composited the cache"
+					: "SKIPPED -- cache never populated, region left as-is");
+		}
+	}
 	if (src == bufs->optimized_blur && !bufs->optimized_blur_valid) {
 		return;
 	}

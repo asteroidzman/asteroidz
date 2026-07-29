@@ -46,6 +46,7 @@ int32_t set_output_mode(const Arg *arg);
 int32_t set_output_scale(const Arg *arg);
 int32_t set_output_position(const Arg *arg);
 int32_t set_output_vrr(const Arg *arg);
+int32_t set_output_hdr(const Arg *arg);
 int32_t set_output_icc(const Arg *arg);
 int32_t moveresize(const Arg *arg);
 int32_t exchange_client(const Arg *arg);

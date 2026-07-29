@@ -325,6 +325,13 @@ struct fx_vk_effect_buffers {
 	// cleared when the buffers are (re)created. add_blur bails when this is
 	// false so it never samples an uninitialized cache.
 	bool optimized_blur_valid;
+
+	/* Diagnostics for the optimized-blur cache, change-gated so a per-frame
+	 * path can log without flooding: each holds the LAST value reported, as
+	 * 0 = never reported, 1 = false, 2 = true. Per buffer set, so the two
+	 * outputs cannot cancel each other's transitions out. */
+	int8_t dbg_two_pass;
+	int8_t dbg_composited;
 };
 
 // Final output framebuffer and image view

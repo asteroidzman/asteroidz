@@ -313,6 +313,54 @@ int32_t set_output_vrr(const Arg *arg) {
 	return ok ? 1 : 0;
 }
 
+/* This output's HDR BASELINE -- "does the desktop run in HDR on this display".
+ *
+ * Declarative and per-output, which is the level the question actually lives
+ * at: a global tri-state cannot say "HDR on the capable panel, SDR on the one
+ * beside it", and that is the ordinary two-monitor case.
+ *
+ * It writes hdr_configured, the INPUT to hdr_resolve(), never m->hdr -- that is
+ * derived, and the Monitor struct reserves it to hdr_resolve alone. So this
+ * stays subordinate to the policy above it: `misc { hdr-mode off }` still wins,
+ * a force_hdr client still wins, and an output that cannot do BT.2020+PQ is
+ * still refused. Setting a baseline the policy overrides is not an error --
+ * the baseline is remembered and takes effect when the policy allows it.
+ *
+ * Persisted as `hdr 1`, or removed entirely when off. Not written as a bare
+ * `hdr` flag: the parser reads it with atoi(val), so the value form is the one
+ * that is unambiguous both to write and to read back. */
+int32_t set_output_hdr(const Arg *arg) {
+	if (!arg || !arg->v)
+		return 0;
+	Monitor *m = output_by_name_or_focus((const char *)arg->v);
+	if (!m || !m->wlr_output)
+		return 0;
+
+	m->hdr_configured = arg->i ? 1 : 0;
+	/* a manual choice outranks the capture-triggered fallback; do not let a
+	 * later capture session end flip it back */
+	m->hdr_forced_off_for_capture = false;
+	hdr_resolve(m);
+
+	const char *keys[] = {"hdr"};
+	const char *vals[] = {m->hdr_configured ? "1" : NULL};
+	output_persist(m, keys, vals, 1);
+
+	if ((m->hdr > 0) != (m->hdr_configured > 0)) {
+		wlr_log(WLR_INFO,
+				"set_output_hdr: %s saved as the baseline for %s, but %s "
+				"overrides it for now (hdr is %s)",
+				m->hdr_configured ? "on" : "off", m->wlr_output->name,
+				m->hdr_capability_failed ? "this output's lack of BT.2020+PQ"
+				: config.hdr_mode == 0	 ? "`misc { hdr-mode off }`"
+				: config.hdr_mode == 2	 ? "`misc { hdr-mode on }`"
+										 : "a force_hdr client",
+				m->hdr > 0 ? "on" : "off");
+	}
+	printstatus(IPC_WATCH_ARRANGGE);
+	return 1;
+}
+
 /* An ICC profile for SDR output. An empty path clears it, which is the only
  * way back to the untransformed pipeline once one is loaded. */
 int32_t set_output_icc(const Arg *arg) {

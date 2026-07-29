@@ -106,6 +106,7 @@ something else to wake it.
 | `set_output_scale,<output>,<scale>` | Fractional scales included. |
 | `set_output_position,<output>,<x>,<y>` | Move it in the layout, live. |
 | `set_output_vrr,<output>,<0\|1>` | Adaptive sync. |
+| `set_output_hdr,<output>,<0\|1>` | This display's HDR **baseline** — see below. |
 | `set_output_icc,<output>,<path>` | ICC profile for SDR output; empty clears it. |
 
 Every one names its output rather than acting on the focused one: a dispatch
@@ -116,6 +117,30 @@ Mode and scale are **tested before they are committed** (`wlr_output_test_state`
 and a rejected commit starts a retrain -- a picker must not be able to black
 out a display. A mode that the output does not advertise is refused rather than
 synthesised.
+
+##### HDR is three levels, not a switch
+
+`set_output_hdr` sets one of them. From weakest to strongest:
+
+| | |
+|---|---|
+| `misc { hdr-mode off\|auto\|on }` | global policy: never / let the levels below decide / always |
+| per-output `hdr` | this display's desktop baseline — what `set_output_hdr` writes |
+| window-rule `force_hdr` | this app overrides, while it is visible on that output |
+
+A global tri-state cannot express "HDR on the capable panel, SDR on the one
+beside it", which is the ordinary two-monitor case — hence the per-output level.
+And `auto` is what makes `force_hdr` useful: SDR desktop, until mpv is on
+screen. `off` is a kill switch that overrides `force_hdr` too.
+
+`set_output_hdr` writes `hdr_configured`, the **input** to the resolver, never
+the resolved `m->hdr`. Setting a baseline the policy currently overrides is not
+an error: it is remembered and applies when the policy allows. `toggle_hdr` is a
+convenience over this and nothing more — it reads the baseline, inverts it, and
+hands over.
+
+Read the result with `hdr` (what the output is really doing),
+`hdr_enabled` (the baseline that was asked for) and `hdr_capable` (hardware).
 
 ##### They are saved, too
 

@@ -621,6 +621,17 @@ static void handle_command(int client_fd, const char *cmd_raw) {
 			arg.tc = client_by_id((uint32_t)client_id);
 
 		if (func) {
+			/* NOTE: "success" means the dispatch NAME parsed and the function
+			 * was called -- not that it did anything. The return value is
+			 * discarded here, so `set_output_mode` refusing an unsupported
+			 * mode, or `toggle_hdr` being overridden by `hdr-mode`, both
+			 * answer success:true.
+			 *
+			 * Not fixed in place because the return conventions differ across
+			 * dispatches -- plenty return 0 unconditionally, so reporting
+			 * `ret != 0` would report failure for most of the working ones and
+			 * break every consumer at once. It needs an audit of all of them
+			 * first; until then, the log is the honest channel. */
 			func(&arg);
 			send_static_json(client_fd, "{\"success\":true}\n");
 		} else {

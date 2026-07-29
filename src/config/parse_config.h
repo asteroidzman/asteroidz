@@ -1501,6 +1501,10 @@ FuncType parse_func_name(char *func_name, Arg *arg, char *arg_value,
 		func = set_output_vrr;
 		(*arg).v = strdup(arg_value);
 		(*arg).i = atoi(arg_value2);
+	} else if (strcmp(func_name, "set_output_hdr") == 0) {
+		func = set_output_hdr;
+		(*arg).v = strdup(arg_value);
+		(*arg).i = atoi(arg_value2);
 	} else if (strcmp(func_name, "set_output_icc") == 0) {
 		/* an empty path clears the profile, which is the only way back to the
 		 * untransformed pipeline once one is loaded */
