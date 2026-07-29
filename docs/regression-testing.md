@@ -139,7 +139,7 @@ Twenty modules as of writing (180 assertions): `layouts`,
 `destroy-virtual-output` (gated behind `HL_ALLOW_DESTRUCTIVE=1`).
 
 `bar` is the pattern to copy for anything that needs a **different config**
-than the shared one: it never enables the native bar globally (that would
+than the shared one: it never turns the bar on globally (that would
 shrink the usable area and silently break every geometry assertion in the
 other modules), but rewrites `$HL_CONFIG` from a pristine copy and calls
 `reload_config` per test, restoring it afterwards. It also skips itself when

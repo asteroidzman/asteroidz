@@ -4,13 +4,13 @@ The bar is **not part of the compositor**. It lives in its own project,
 [`asteroidz-bar`](https://github.com/asteroidzman/asteroidz-bar) — a quickshell
 (QML/Qt6) shell that also owns the wallpaper.
 
-asteroidz grew a native bar because a bar client that forks `wpctl` on its main
-loop is a stutter in a bar and a dropped frame in a compositor. Drawing it in
-the compositor fixed that by making every module the compositor's problem
-instead: a plugin that hangs, a tray icon that decodes a 4096×4096 pixmap, a
-menu that needs a text field. The bar moved back out once the modules that were
-expensive had been made cheap — the `/proc` readers stay cheap wherever they
-run, and a client that misses a frame now misses only its own.
+It was drawn by the compositor for a while, because a bar client that forks
+`wpctl` on its main loop is a stutter in a bar and a dropped frame in a
+compositor. That trade was a bad one: it made every module the compositor's
+problem — a plugin that hangs, a tray icon that decodes a 4096×4096 pixmap, a
+menu that wants a text field. The modules that were expensive were made cheap
+instead (`/proc` readers rather than subprocesses), and cheap modules are cheap
+wherever they run. A client that misses a frame now misses only its own.
 
 ## What the compositor still does
 
@@ -33,3 +33,15 @@ reload.
 
 Build with `-Dbar-config=false` to compile that block and that IPC out
 entirely, which is what a setup driving waybar or yambar exclusively wants.
+
+## Running it
+
+```kdl
+spawn-at-startup "asteroidz-bar"
+```
+
+`bar { enable false }` is what tells it to start: the compositor answers
+`amsg get bar-config` with the resolved block, and the launcher checks that
+`.bar.enable` is explicitly `false` before starting the shell. That is a
+leftover safety catch from the era when both existed and could be stacked, and
+it costs nothing to keep.

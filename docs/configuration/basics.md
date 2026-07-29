@@ -94,7 +94,7 @@ asteroidz can run commands at startup:
 
 ```kdl
 // Start the status bar once
-spawn-at-startup "waybar"
+spawn-at-startup "asteroidz-bar"
 
 // Set the wallpaper (each argv token is its own string)
 spawn-at-startup "swaybg" "-i" "~/.config/asteroidz/wallpaper/room.png"
