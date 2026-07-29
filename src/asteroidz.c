@@ -7449,6 +7449,26 @@ static void render_monitor(Monitor *m) {
 		 * page-flip and get rejected by the DRM backend */
 		struct wlr_output_state state;
 		wlr_output_state_init(&state);
+		/* A COLOUR-STATE change needs a modeset, and the kernel says so by
+		 * refusing the commit outright.
+		 *
+		 * mon_state_apply_color() rewrites the connector's image description
+		 * and can flip render_format to XRGB2101010. Those are modeset-only
+		 * properties on DRM, and wlroots only passes ALLOW_MODESET when the
+		 * state asks for reconfiguration (backend/drm/drm.c: `.modeset =
+		 * state->allow_reconfiguration`). A freshly initialised state does not
+		 * -- only set_mode/set_enabled turn it on -- so every HDR transition
+		 * committed with PAGE_FLIP_EVENT | ATOMIC_NONBLOCK and came back
+		 * `Atomic commit failed: Invalid argument`, 100% of the time.
+		 *
+		 * The fallback then retrained the output, which is two full modesets
+		 * (23.976Hz, then back to 60) and a visible flash -- so the path
+		 * written to AVOID an out-of-band commit was taking the most
+		 * disruptive route available on every single toggle. Allowing
+		 * reconfiguration makes this commit blocking, which is the right
+		 * trade: one blocking commit on a deliberate, rare HDR change beats a
+		 * guaranteed failure plus a retrain. */
+		state.allow_reconfiguration = true;
 		mon_state_apply_color(m, &state);
 		struct wlr_scene_output_state_options options = {
 			.color_transform = m->hdr ? NULL : m->icc_transform,
