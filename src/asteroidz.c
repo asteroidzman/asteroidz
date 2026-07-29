@@ -291,6 +291,16 @@ enum ipc_watch_type {
 	IPC_WATCH_KB_LAYOUT = 1 << 7,
 	IPC_WATCH_LAST_OPEN_SURFACE = 1 << 8,
 	IPC_WATCH_FOCUSED_CLIENT = 1 << 9,
+	/* The resolved bar geometry and theme, for an out-of-process bar.
+	 *
+	 * A bar that lives in another process still has to look like it belongs to
+	 * this compositor: the same palette, the same font, the same pill
+	 * geometry. Handing it the config file to parse would be two KDL readers
+	 * that agree until the day they do not, and matugen rewrites the palette
+	 * at runtime anyway. So the compositor serves what it RESOLVED -- after
+	 * defaults, after clamping, after the theme file -- and pushes it again
+	 * whenever the config is reloaded. */
+	IPC_WATCH_BAR_CONFIG = 1 << 10,
 };
 
 typedef struct Pertag Pertag;
@@ -1070,6 +1080,9 @@ static void bar_reconfigure_all(void);
  * before the new config is read. A child left running across the reparse would
  * go on delivering its output to whichever plugin ended up at its old index. */
 static void bar_custom_finish(void);
+/* And once more for ipc/ipc.h, which is included later still: a reload has to
+ * push the new palette to any bar running out of process. */
+void ipc_notify_bar_config(void);
 static void quitsignal(int32_t signo);
 static void powermgrsetmode(struct wl_listener *listener, void *data);
 static void wake_monitor(Monitor *m);

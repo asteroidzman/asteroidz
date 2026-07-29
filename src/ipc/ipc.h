@@ -299,6 +299,135 @@ static cJSON *build_monitor_tags_response(Monitor *m) {
 	return resp;
 }
 
+#ifdef ASTEROIDZ_NATIVE_BAR
+/* Colours as [r,g,b,a] floats, not "#rrggbbaa".
+ *
+ * Hex would have to pick a byte order, and the two obvious ones disagree:
+ * CSS reads #RRGGBBAA, Qt reads #AARRGGBB, and a string that parses under both
+ * conventions but means different things is the kind of bug that shows up as
+ * "the bar is slightly the wrong colour" months later. Four floats in the
+ * range the compositor already stores them in cannot be misread. */
+static void bar_cfg_color(cJSON *o, const char *key, const float c[4]) {
+	cJSON *arr = cJSON_CreateArray();
+	for (int i = 0; i < 4; i++)
+		cJSON_AddItemToArray(arr, cJSON_CreateNumber((double)c[i]));
+	cJSON_AddItemToObject(o, key, arr);
+}
+
+/* Everything an out-of-process bar needs to draw itself the way the native one
+ * does: the RESOLVED values, after defaults, clamping and the theme file.
+ *
+ * Deliberately not "here is the config file, parse it yourself" -- that is two
+ * KDL readers that agree until one of them gains a default, and the palette is
+ * rewritten at runtime by matugen anyway. The compositor is the only process
+ * that knows what the theme currently IS. */
+static cJSON *build_bar_config_response(void) {
+	cJSON *resp = cJSON_CreateObject();
+
+	cJSON *bar = cJSON_CreateObject();
+	cJSON_AddBoolToObject(bar, "enable", config.bar_enable);
+	cJSON_AddNumberToObject(bar, "height", config.bar_height);
+	cJSON_AddStringToObject(bar, "position",
+							config.bar_position_bottom ? "bottom" : "top");
+	cJSON_AddNumberToObject(bar, "spacing", config.bar_spacing);
+	cJSON_AddNumberToObject(bar, "margin_x", config.bar_margin_x);
+	cJSON_AddNumberToObject(bar, "margin_y", config.bar_margin_y);
+	cJSON_AddNumberToObject(bar, "pill_min_width", config.bar_pill_min_width);
+	cJSON_AddNumberToObject(bar, "pill_inset", config.bar_pill_inset);
+	cJSON_AddNumberToObject(bar, "pill_padding", config.bar_pill_padding);
+	cJSON_AddNumberToObject(bar, "tag_padding", config.bar_tag_padding);
+	cJSON_AddNumberToObject(bar, "module_spacing", config.bar_module_spacing);
+	cJSON_AddNumberToObject(bar, "tray_spacing", config.bar_tray_spacing);
+	cJSON_AddBoolToObject(bar, "tooltip_enable", config.bar_tooltip_enable);
+	cJSON_AddNumberToObject(bar, "tooltip_delay", config.bar_tooltip_delay);
+	cJSON_AddNumberToObject(bar, "interval", config.bar_interval);
+	cJSON_AddNumberToObject(bar, "title_width", config.bar_title_width);
+	cJSON_AddNumberToObject(bar, "media_width", config.bar_media_width);
+	cJSON_AddNumberToObject(bar, "media_bars", config.bar_media_bars);
+	cJSON_AddNumberToObject(bar, "media_fps", config.bar_media_fps);
+	cJSON_AddNumberToObject(bar, "media_viz", config.bar_media_viz);
+	cJSON_AddBoolToObject(bar, "show_all_tags", config.bar_show_all_tags);
+	cJSON_AddNumberToObject(bar, "min_tags", config.bar_min_tags);
+	cJSON_AddBoolToObject(bar, "show_logo", config.bar_show_logo);
+	cJSON_AddNumberToObject(bar, "tag_icons", config.bar_tag_icons);
+	cJSON_AddNumberToObject(bar, "volume_step", config.bar_volume_step);
+	cJSON_AddNumberToObject(bar, "weather_interval",
+							config.bar_weather_interval);
+	cJSON_AddStringToObject(bar, "weather_location",
+							config.bar_weather_location);
+	cJSON_AddNumberToObject(bar, "net_max_down", config.bar_net_max_down);
+	cJSON_AddNumberToObject(bar, "net_max_up", config.bar_net_max_up);
+	cJSON_AddStringToObject(bar, "clock_format", config.bar_clock_format);
+	cJSON_AddStringToObject(bar, "icon_dir", config.bar_icon_dir);
+	cJSON_AddStringToObject(bar, "modules_left", config.bar_modules_left);
+	cJSON_AddStringToObject(bar, "modules_center", config.bar_modules_center);
+	cJSON_AddStringToObject(bar, "modules_right", config.bar_modules_right);
+	cJSON_AddStringToObject(bar, "modules_left_monitor",
+							config.bar_modules_left_monitor);
+	cJSON_AddStringToObject(bar, "modules_center_monitor",
+							config.bar_modules_center_monitor);
+	cJSON_AddStringToObject(bar, "modules_right_monitor",
+							config.bar_modules_right_monitor);
+	cJSON_AddItemToObject(resp, "bar", bar);
+
+	cJSON *panel = cJSON_CreateObject();
+	cJSON_AddBoolToObject(panel, "enable", config.bar_panel_enable);
+	cJSON_AddNumberToObject(panel, "radius", config.bar_panel_radius);
+	cJSON_AddNumberToObject(panel, "padding", config.bar_panel_padding);
+	cJSON_AddBoolToObject(panel, "blur", config.bar_panel_blur);
+	cJSON_AddBoolToObject(panel, "shadow", config.bar_panel_shadow);
+	cJSON_AddNumberToObject(panel, "shadow_size", config.bar_panel_shadow_size);
+	cJSON_AddNumberToObject(panel, "shadow_blur", config.bar_panel_shadow_blur);
+	bar_cfg_color(panel, "color", config.bar_panel_color);
+	bar_cfg_color(panel, "shadow_color", config.bar_panel_shadow_color);
+	cJSON_AddItemToObject(resp, "panel", panel);
+
+	cJSON *pop = cJSON_CreateObject();
+	cJSON_AddNumberToObject(pop, "width", config.bar_popover_width);
+	cJSON_AddNumberToObject(pop, "row_height", config.bar_popover_row_height);
+	cJSON_AddNumberToObject(pop, "spacing", config.bar_popover_spacing);
+	cJSON_AddNumberToObject(pop, "padding", config.bar_popover_padding);
+	cJSON_AddNumberToObject(pop, "gap", config.bar_popover_gap);
+	bar_cfg_color(pop, "color", config.bar_popover_color);
+	cJSON_AddItemToObject(resp, "popover", pop);
+
+	/* The shared UI theme, not a bar-private one: titlebars, the overview and
+	 * the bar have always drawn from this, and a bar in another process must
+	 * keep doing so or it stops matching the desktop on the next matugen run. */
+	cJSON *theme = cJSON_CreateObject();
+	bar_cfg_color(theme, "fg", config.theme.fg_color);
+	bar_cfg_color(theme, "bg", config.theme.bg_color);
+	bar_cfg_color(theme, "focus_fg", config.theme.focus_fg_color);
+	bar_cfg_color(theme, "focus_bg", config.theme.focus_bg_color);
+	bar_cfg_color(theme, "urgent", config.theme.urgent_color);
+	bar_cfg_color(theme, "border", config.theme.border_color);
+	cJSON_AddNumberToObject(theme, "border_width", config.theme.border_width);
+	cJSON_AddNumberToObject(theme, "corner_radius", config.theme.corner_radius);
+	cJSON_AddNumberToObject(theme, "padding_x", config.theme.padding_x);
+	cJSON_AddNumberToObject(theme, "padding_y", config.theme.padding_y);
+	cJSON_AddStringToObject(theme, "font",
+							config.theme.font_desc ? config.theme.font_desc
+												   : "");
+	cJSON_AddItemToObject(resp, "theme", theme);
+
+	cJSON *custom = cJSON_CreateArray();
+	for (int32_t i = 0; i < config.bar_custom_count; i++) {
+		const ConfigBarCustom *c = &config.bar_custom[i];
+		cJSON *o = cJSON_CreateObject();
+		cJSON_AddStringToObject(o, "name", c->name);
+		cJSON_AddStringToObject(o, "exec", c->exec);
+		cJSON_AddStringToObject(o, "icon", c->icon);
+		cJSON_AddStringToObject(o, "on_click", c->on_click);
+		cJSON_AddStringToObject(o, "on_click_right", c->on_click_right);
+		cJSON_AddNumberToObject(o, "interval", c->interval);
+		cJSON_AddBoolToObject(o, "continuous", c->continuous);
+		cJSON_AddItemToArray(custom, o);
+	}
+	cJSON_AddItemToObject(resp, "custom", custom);
+	return resp;
+}
+#endif /* ASTEROIDZ_NATIVE_BAR */
+
 static void send_static_json(int fd, const char *json_str) {
 	size_t len = strlen(json_str);
 	send(fd, json_str, len, 0);
@@ -426,6 +555,10 @@ static void handle_command(int client_fd, const char *cmd_raw) {
 		cJSON_AddItemToObject(resp, "monitors", arr);
 	} else if (strcmp(cmd, "get all-tags") == 0) {
 		resp = build_all_tags_response();
+#ifdef ASTEROIDZ_NATIVE_BAR
+	} else if (strcmp(cmd, "get bar-config") == 0) {
+		resp = build_bar_config_response();
+#endif
 	} else if (strncmp(cmd, "get tags ", 9) == 0) {
 		Monitor *m = monitor_by_name(cmd + 9);
 		if (!m) {
@@ -586,6 +719,10 @@ static bool handle_watch_command(int fd, const char *cmd,
 		type = IPC_WATCH_ALL_TAGS;
 	} else if (strcmp(cmd, "watch all-clients") == 0) {
 		type = IPC_WATCH_ALL_CLIENTS;
+#ifdef ASTEROIDZ_NATIVE_BAR
+	} else if (strcmp(cmd, "watch bar-config") == 0) {
+		type = IPC_WATCH_BAR_CONFIG;
+#endif
 	} else if (strcmp(cmd, "watch keymode") == 0) {
 		type = IPC_WATCH_KEYMODE;
 	} else if (strcmp(cmd, "watch keyboardlayout") == 0) {
@@ -692,6 +829,12 @@ static bool handle_watch_command(int fd, const char *cmd,
 		cJSON_AddItemToObject(json, "clients", arr);
 		break;
 	}
+#ifdef ASTEROIDZ_NATIVE_BAR
+	case IPC_WATCH_BAR_CONFIG: {
+		json = build_bar_config_response();
+		break;
+	}
+#endif
 	case IPC_WATCH_KEYMODE: {
 		json = cJSON_CreateObject();
 		cJSON_AddStringToObject(json, "keymode", keymode.mode);
@@ -1026,6 +1169,36 @@ void ipc_notify_all_tags(void) {
 	if (json_str)
 		free(json_str);
 }
+
+#ifdef ASTEROIDZ_NATIVE_BAR
+/* Called from reload_config(). A bar in another process cannot see the config
+ * being re-read, and polling for it would mean either a lag between the reload
+ * and the repaint or a timer that spends all day finding nothing changed. */
+void ipc_notify_bar_config(void) {
+	char *json_str = NULL;
+	size_t len = 0;
+	struct ipc_watch_client *wc, *tmp;
+	wl_list_for_each_safe(wc, tmp, &watch_clients, link) {
+		if (wc->type != IPC_WATCH_BAR_CONFIG)
+			continue;
+		if (!json_str) {
+			cJSON *json = build_bar_config_response();
+			char *raw = cJSON_PrintUnformatted(json);
+			cJSON_Delete(json);
+			if (!raw)
+				return;
+			len = strlen(raw);
+			json_str = malloc(len + 2);
+			snprintf(json_str, len + 2, "%s\n", raw);
+			free(raw);
+		}
+		if (send(wc->fd, json_str, len + 1, 0) < 0)
+			ipc_remove_watch_client(wc);
+	}
+	if (json_str)
+		free(json_str);
+}
+#endif
 
 void ipc_notify_keymode(void) {
 	char *json_str = NULL;

@@ -59,6 +59,11 @@ List tags for all monitors.
 \fBget tags\fR <monitor>
 List tags for a specific monitor.
 .TP
+\fBget bar\-config\fR
+Print the resolved bar geometry, palette and module lists: what the compositor
+made of \fBbar {}\fR and \fBtheme {}\fR after defaults, clamping and the theme
+file, for a bar running outside the compositor. Colours are [r,g,b,a] floats.
+.TP
 \fBdispatch\fR <func>[,arg...] [client,<id>]
 Invoke an internal compositor function.
 The function name and its arguments are separated by commas.
@@ -112,6 +117,11 @@ Stream keyboard layout changes.
 .TP
 \fBwatch last_open_surface\fR [\fImonitor\fR]
 Stream last open surface changes for a specific monitor (or the focused one).
+.TP
+\fBwatch bar\-config\fR
+Stream the resolved bar configuration, re-sent on every config reload -- so a
+bar in another process repaints with a new palette rather than waiting for
+something else to wake it.
 .SH ENVIRONMENT
 .TP
 \fIASTEROIDZ_INSTANCE_SIGNATURE\fR

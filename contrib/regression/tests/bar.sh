@@ -1794,3 +1794,50 @@ EOF
 	bar_off
 	rm -f "$d/fieldlog"
 }
+
+test_bar_config_is_served_over_ipc() {
+	[ "$(bar_supported)" = "true" ] || { echo "  (skip: built without -Dnative-bar)"; return 0; }
+	command -v jq >/dev/null || { echo "  (skip: jq not available)"; return 0; }
+
+	# A bar running outside the compositor has to look like it belongs to it:
+	# the same palette, the same font, the same pill geometry. Handing it the
+	# config FILE would be two KDL readers that agree until one of them gains a
+	# default -- and it would still not see the palette, which matugen rewrites
+	# at runtime. So the compositor serves what it RESOLVED.
+	bar_set 'bar { enable true; height 42; position "bottom"; margin { x 11; y 7 }
+		pill-inset 5; show-all-tags true
+		panel { enable true; radius 13; padding 9 }
+		modules-left "tags"; modules-center ""; modules-right "clock"
+		clock { format "%H:%M" } }'
+
+	local cfg; cfg="$(hl_get "get bar-config")"
+
+	hl_assert_eq "the served height is the configured one" "42" \
+		"$(printf '%s' "$cfg" | jq -r '.bar.height')"
+	hl_assert_eq "and the position" "bottom" \
+		"$(printf '%s' "$cfg" | jq -r '.bar.position')"
+	hl_assert_eq "and the panel radius" "13" \
+		"$(printf '%s' "$cfg" | jq -r '.panel.radius')"
+
+	# Booleans are real JSON booleans, not 0/1: a client reading `false` as a
+	# number gets the opposite answer in every language with strict equality.
+	hl_assert_eq "flags are JSON booleans" "true" \
+		"$(printf '%s' "$cfg" | jq -r '.bar.show_all_tags')"
+
+	# Colours are [r,g,b,a] floats. Hex would have to pick a byte order, and
+	# CSS (#RRGGBBAA) and Qt (#AARRGGBB) disagree about which.
+	hl_assert_eq "colours are four floats" "4" \
+		"$(printf '%s' "$cfg" | jq -r '.theme.fg | length')"
+
+	# An EMPTY module list is an answer, not an absence: a client that treats
+	# "" as unset draws its default list in a section the user emptied.
+	hl_assert_eq "an empty module list is served as empty" "" \
+		"$(printf '%s' "$cfg" | jq -r '.bar.modules_center')"
+
+	# The reload is what a bar in another process cannot see for itself.
+	bar_set 'bar { enable true; height 55; modules-left "tags" }'
+	hl_assert_eq "a reload changes what is served" "55" \
+		"$(hl_get "get bar-config" | jq -r '.bar.height')"
+
+	bar_off
+}

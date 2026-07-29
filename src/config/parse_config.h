@@ -5807,6 +5807,9 @@ int32_t reload_config(const Arg *arg) {
 	/* rebuild rather than refresh: `bar { modules-left ... }` may name a
 	 * different set of modules than the running bars were built with */
 	bar_reconfigure_all();
+	/* and tell any bar running OUT of process, which cannot see a reload and
+	 * would otherwise keep the old palette until something else woke it */
+	ipc_notify_bar_config();
 	printstatus(IPC_WATCH_ARRANGGE);
 	return 1;
 }

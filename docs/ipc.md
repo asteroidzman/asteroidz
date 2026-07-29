@@ -36,6 +36,7 @@ description: Control asteroidz programmatically using amsg.
 | `get all-monitors` | Returns a JSON array of all connected monitors. |
 | `get all-tags` | Returns a JSON object containing the status of all tags. |
 | `get last_open_surface [<mon>]` | Returns the last focused surface name for a monitor,if the mon not set, it will get current monitor. |
+| `get bar-config` | Returns the resolved bar geometry, palette and module lists, for an out-of-process bar. |
 
 *Example:*
 ```bash
@@ -58,6 +59,7 @@ Subscribes the client to real-time updates. When the state changes, the server p
 * `watch keymode`
 * `watch keyboardlayout`
 * `watch last_open_surface [<mon_name>]`
+* `watch bar-config`
 
 *Example:*
 ```bash
@@ -66,6 +68,35 @@ amsg watch all-monitors
 # watch all tags
 amsg watch all-tags
 ```
+
+#### bar-config, for a bar that is not the compositor
+
+`bar-config` answers with what the compositor **resolved** -- after defaults,
+after clamping, after the theme file -- rather than with the config text:
+
+```json
+{
+  "bar":     { "height": 48, "position": "top", "margin_x": 8, ... },
+  "panel":   { "enable": true, "radius": 9, "blur": true, "color": [...] },
+  "popover": { "width": 340, "row_height": 34, ... },
+  "theme":   { "fg": [1,1,1,1], "focus_bg": [...], "font": "Ubuntu 16", ... },
+  "custom":  [ { "name": "tray", "exec": "asteroidz-trayd", ... } ]
+}
+```
+
+Colours are `[r,g,b,a]` floats, not hex strings: CSS reads `#RRGGBBAA` and Qt
+reads `#AARRGGBB`, and a string that parses under both conventions while
+meaning different things is a bug that surfaces months later as "the bar is
+slightly the wrong colour".
+
+Handing a bar the config file to parse instead would be two KDL readers that
+agree until one of them gains a default -- and it would still not see the
+palette, which matugen rewrites at runtime whenever the wallpaper changes. The
+compositor is the only process that knows what the theme currently *is*.
+
+`watch bar-config` pushes the same object again on every `reload_config`, so a
+bar in another process repaints with the new palette instead of waiting for
+something else to wake it.
 
 ### DISPATCH
 Allows sending commands to the compositor to alter its state.
