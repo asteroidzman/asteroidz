@@ -1852,6 +1852,55 @@ bool fx_vk_render_pass_has_blur(struct wlr_render_pass *wlr_pass) {
 
 // Region copy between two GENERAL-layout 16F images (transfer), same
 // coordinates in both. Must be recorded with no render pass active.
+// Order an effect-image copy against everything around it.
+//
+// These copies sit between work in three different stages -- the graphics pass
+// that wrote the scene image, the compute dispatches that blur it, and the
+// fragment shaders that later sample the result -- and a VkImage in GENERAL
+// layout gets NO implicit ordering from the layout. vkCmdCopyImage is just
+// another command in the queue: nothing makes the colour writes that precede
+// it visible to its read, and nothing makes its write visible to the sampling
+// that follows. Two transfers back to back are not ordered against each other
+// either.
+//
+// These were absent, and the resulting hazards are exactly the shape of the
+// bug they caused: correct on a quiet first frame, corrupt once the queue is
+// busy. See fx_vk_render_pass_add_optimized_blur for the sequence.
+//
+// A global VkMemoryBarrier rather than per-image ones: these are whole-output
+// copies that happen at most a few times a frame, and the alternative is
+// hand-tracking the last writer of five images across two code paths, which is
+// what went wrong in the first place. Correct and coarse beats subtle here.
+static void effect_copy_barrier_before(VkCommandBuffer cb) {
+	// Anything that may have written the source -- the scene render pass, a
+	// compute blur iteration, an earlier copy -- must complete, and any read
+	// still outstanding on the destination must finish before it is
+	// overwritten.
+	blur_compute_barrier(cb,
+		VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT |
+			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
+			VK_PIPELINE_STAGE_TRANSFER_BIT,
+		VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_SHADER_WRITE_BIT |
+			VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT |
+			VK_ACCESS_TRANSFER_READ_BIT,
+		VK_PIPELINE_STAGE_TRANSFER_BIT,
+		VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT);
+}
+
+static void effect_copy_barrier_after(VkCommandBuffer cb) {
+	// The copy's write has to be visible to whoever reads it next: a fragment
+	// shader sampling the cache, a compute iteration blurring it, or another
+	// copy staging it somewhere else.
+	blur_compute_barrier(cb,
+		VK_PIPELINE_STAGE_TRANSFER_BIT,
+		VK_ACCESS_TRANSFER_WRITE_BIT,
+		VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
+			VK_PIPELINE_STAGE_TRANSFER_BIT,
+		VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT |
+			VK_ACCESS_TRANSFER_WRITE_BIT);
+}
+
 static void copy_effect_image_region(struct fx_vk_render_pass *pass,
 		VkImage src, VkImage dst, const struct wlr_box *box) {
 	VkImageCopy region = {
@@ -1867,10 +1916,13 @@ static void copy_effect_image_region(struct fx_vk_render_pass *pass,
 		.dstOffset = { box->x, box->y, 0 },
 		.extent = { box->width, box->height, 1 },
 	};
-	vkCmdCopyImage(pass->command_buffer->vk,
+	VkCommandBuffer cb = pass->command_buffer->vk;
+	effect_copy_barrier_before(cb);
+	vkCmdCopyImage(cb,
 		src, VK_IMAGE_LAYOUT_GENERAL,
 		dst, VK_IMAGE_LAYOUT_GENERAL,
 		1, &region);
+	effect_copy_barrier_after(cb);
 }
 
 // Full-extent image copy between two GENERAL-layout 16F images (transfer).
@@ -1888,10 +1940,13 @@ static void copy_effect_image(struct fx_vk_render_pass *pass, VkImage src,
 		},
 		.extent = { width, height, 1 },
 	};
-	vkCmdCopyImage(pass->command_buffer->vk,
+	VkCommandBuffer cb = pass->command_buffer->vk;
+	effect_copy_barrier_before(cb);
+	vkCmdCopyImage(cb,
 		src, VK_IMAGE_LAYOUT_GENERAL,
 		dst, VK_IMAGE_LAYOUT_GENERAL,
 		1, &region);
+	effect_copy_barrier_after(cb);
 }
 
 // Draws an effect image (e.g. the cached blur) into the currently-open scene
