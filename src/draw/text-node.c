@@ -865,6 +865,19 @@ void asteroidz_jump_label_node_update(struct asteroidz_jump_label_node *node,
 	char *new_cached_text = g_strdup(text);
 	g_free(node->cached_text);
 	node->cached_text = new_cached_text;
+	/* ...and `text` is now dangling for exactly the same reason: the g_free
+	 * above released the buffer it aliases. Guarding only the g_strdup left
+	 * every LATER read of `text` pointing at freed memory -- including the
+	 * pango_layout_set_text() that draws the label, which rendered whatever
+	 * the allocator had put there: tag pills full of tofu and stray letters
+	 * in the overview, on every cell whose focus state had just changed
+	 * (i.e. the ones that are not the current tag) while the current tag,
+	 * whose focus was unchanged and so returned early above, drew correctly.
+	 *
+	 * Re-point at the copy that is guaranteed live. Same string either way
+	 * when the caller passed its own buffer; the difference only matters on
+	 * the aliasing path, which is the one that was broken. */
+	text = node->cached_text;
 	g_free(node->cached_font_desc);
 	node->cached_font_desc = g_strdup(node->font_desc);
 	node->cached_scale = scale;
@@ -1610,9 +1623,18 @@ void asteroidz_tab_bar_node_update(struct asteroidz_tab_bar_node *node,
 		return;
 	}
 
-	// update cache
+	/* update cache
+	 *
+	 * Copy before freeing, and then read the copy. This node is not currently
+	 * reachable with `text` aliasing cached_text -- its own re-entry path
+	 * (set_focus and friends) passes last_text, which is a separate buffer and
+	 * is deliberately not freed when the two alias. But the jump-label node
+	 * next door was reachable that way and shipped a use-after-free twice
+	 * because of this exact ordering, so don't leave the trap armed here. */
+	char *new_cached_text = g_strdup(text);
 	g_free(node->cached_text);
-	node->cached_text = g_strdup(text);
+	node->cached_text = new_cached_text;
+	text = node->cached_text;
 
 	g_free(node->cached_font_desc);
 	node->cached_font_desc = g_strdup(node->font_desc);
