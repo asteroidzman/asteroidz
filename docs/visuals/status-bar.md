@@ -21,7 +21,7 @@ Everything the bar cannot do for itself:
 | `bar {}` and `theme {}` | resolved here — defaults, clamping, the matugen palette — and served over `get`/`watch bar-config` |
 | `watch all-monitors` | tags, layout, focused title, per-output state |
 | `set_output_*` | mode, scale, position, VRR, ICC, tested before they are committed |
-| `ext-background-effect-v1` | the bar reports its panels' region and gets blur behind them, corners included |
+| `ext-background-effect-v1` | the bar reports its panels' region and gets blur behind them, corners included. **Popups too**: a menu is an xdg popup, which is neither a toplevel nor a layer surface, so it used to be silently skipped -- see `popup_update_blur` |
 | layer shell | the bar is an ordinary layer-shell client with an exclusive zone |
 
 The palette is the interesting one. Handing a bar the config file to parse

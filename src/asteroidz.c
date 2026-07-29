@@ -739,6 +739,12 @@ typedef struct {
 	struct wl_listener destroy;
 	struct wl_listener commit;
 	struct wl_listener reposition;
+	/* Blur, for a popup that asks for it via ext-background-effect-v1.
+	 * `commit` above is a one-shot -- it removes itself after the initial
+	 * commit -- so the region and size need a listener that lasts. */
+	struct wlr_scene_blur *blur_node;
+	struct wl_listener surface_commit;
+	bool watching_surface;
 } Popup;
 
 typedef struct {
@@ -3791,6 +3797,85 @@ void layer_update_blur(LayerSurface *l) {
 									   iter_layer_scene_buffers, l);
 }
 
+/* Blur for a popup.
+ *
+ * A popup is neither a toplevel nor a layer surface, so nothing here used to
+ * offer it one: a client could ask for background blur on a menu through
+ * ext-background-effect-v1, get no error, and be handed a plain translucent
+ * surface. asteroidz-bar's popovers are exactly that case -- they hang off the
+ * bar's layer surface as xdg popups, and the frost stopped at the bar.
+ *
+ * Unlike a panel there is no sensible default here, so this is opt-in only: a
+ * popup blurs when it asks to and not otherwise, because blurring every menu
+ * on the desktop is not a default anyone chose.
+ */
+void popup_update_blur(Popup *popup) {
+	struct background_effect_surface *effect;
+	struct wlr_surface *surface;
+	struct wlr_scene_tree *tree;
+	bool want;
+
+	if (!popup || !popup->wlr_popup || !popup->wlr_popup->base)
+		return;
+
+	surface = popup->wlr_popup->base->surface;
+	if (!surface)
+		return;
+	/* commitpopup parks the scene tree here; without it there is nothing to
+	 * put a blur node inside. */
+	tree = surface->data;
+	if (!tree)
+		return;
+
+	effect = background_effect_try_from_surface(surface);
+	want = config.blur && effect && effect->has_region &&
+		pixman_region32_not_empty(&effect->current_region);
+
+	if (!want) {
+		if (popup->blur_node) {
+			wlr_scene_node_destroy(&popup->blur_node->node);
+			popup->blur_node = NULL;
+		}
+		return;
+	}
+
+	if (!popup->blur_node) {
+		popup->blur_node = wlr_scene_blur_create(tree, 0, 0);
+		if (!popup->blur_node)
+			return;
+		/* below the surface buffer, inside the popup's own tree */
+		wlr_scene_node_lower_to_bottom(&popup->blur_node->node);
+		/* a popup floats above windows, so the cached bottom-layer blur
+		 * would show it the wallpaper instead of what is actually under it */
+		wlr_scene_blur_set_should_only_blur_bottom_layer(popup->blur_node,
+														 false);
+	}
+
+	if (popup->blur_node->width != surface->current.width ||
+		popup->blur_node->height != surface->current.height)
+		wlr_scene_blur_set_size(popup->blur_node, surface->current.width,
+								surface->current.height);
+
+	/* verbatim, corners and all -- see layer_update_blur */
+	wlr_scene_blur_set_region(popup->blur_node, &effect->current_region);
+}
+
+/* Reached from the ext-background-effect commit handler, which only has a
+ * wl_surface: a popup resolves UP to its parent through
+ * toplevel_from_wlr_surface, so without this a popover's region would be
+ * applied to the bar's layer surface, where it means something else entirely.
+ * Returns true when the surface was a popup and has been dealt with. */
+bool popup_update_blur_from_surface(struct wlr_surface *surface) {
+	struct wlr_xdg_popup *wlr_popup =
+		wlr_xdg_popup_try_from_wlr_surface(surface);
+
+	if (!wlr_popup || !wlr_popup->base || !wlr_popup->base->data)
+		return false;
+
+	popup_update_blur(wlr_popup->base->data);
+	return true;
+}
+
 /* Lazily creates the monitor's shared optimized-blur cache node (the
  * producer wlr_scene_optimized_blur_create/WLR_SCENE_NODE_OPTIMIZED_BLUR
  * node that should_only_blur_bottom_layer consumers -- regular window blur
@@ -4132,7 +4217,23 @@ static void destroypopup(struct wl_listener *listener, void *data) {
 	Popup *popup = wl_container_of(listener, popup, destroy);
 	wl_list_remove(&popup->destroy.link);
 	wl_list_remove(&popup->reposition.link);
+	if (popup->watching_surface)
+		wl_list_remove(&popup->surface_commit.link);
+	/* the blur node belongs to the popup's scene tree, which wlroots tears
+	 * down with the surface -- only the pointer is ours to drop */
+	popup->blur_node = NULL;
+	if (popup->wlr_popup && popup->wlr_popup->base)
+		popup->wlr_popup->base->data = NULL;
 	free(popup);
+}
+
+/* Every commit, for as long as the popup lives: the region and the size both
+ * change under us -- a menu that grows a submenu recommits at a new size, and
+ * the client can set a new blur region at any time. */
+static void popup_handle_surface_commit(struct wl_listener *listener,
+										void *data) {
+	Popup *popup = wl_container_of(listener, popup, surface_commit);
+	popup_update_blur(popup);
 }
 
 static void commitpopup(struct wl_listener *listener, void *data) {
@@ -4157,6 +4258,16 @@ static void commitpopup(struct wl_listener *listener, void *data) {
 		wlr_scene_xdg_surface_create(wlr_popup->parent->data, wlr_popup->base);
 
 	popup->wlr_popup = wlr_popup;
+	/* so a wl_surface can be traced back here; nothing else uses base->data */
+	wlr_popup->base->data = popup;
+
+	if (!popup->watching_surface) {
+		popup->surface_commit.notify = popup_handle_surface_commit;
+		wl_signal_add(&wlr_popup->base->surface->events.commit,
+					  &popup->surface_commit);
+		popup->watching_surface = true;
+	}
+	popup_update_blur(popup);
 
 	should_destroy = popup_unconstrain(popup);
 

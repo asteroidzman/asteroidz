@@ -16,6 +16,7 @@
 
 void client_update_blur(Client *c);
 void layer_update_blur(LayerSurface *l);
+bool popup_update_blur_from_surface(struct wlr_surface *surface);
 
 struct background_effect_surface {
 	struct wl_resource *resource;
@@ -35,6 +36,13 @@ static const struct wlr_addon_interface background_effect_surface_addon_impl;
 static void background_effect_update_target(struct wlr_surface *surface) {
 	Client *c = NULL;
 	LayerSurface *l = NULL;
+
+	/* Popups first. toplevel_from_wlr_surface walks UP from a popup to
+	 * whatever it hangs off, so a popover's region would otherwise be looked
+	 * for on the bar's layer surface -- where it is not, so the popup got no
+	 * blur and nothing said why. */
+	if (popup_update_blur_from_surface(surface))
+		return;
 
 	toplevel_from_wlr_surface(surface, &c, &l);
 	if (c)
