@@ -332,6 +332,7 @@ struct fx_vk_effect_buffers {
 	 * outputs cannot cancel each other's transitions out. */
 	int8_t dbg_two_pass;
 	int8_t dbg_composited;
+	int8_t dbg_produce_failed;
 };
 
 // Final output framebuffer and image view

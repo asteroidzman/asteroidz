@@ -2384,7 +2384,35 @@ bool fx_vk_render_pass_add_optimized_blur(struct wlr_render_pass *wlr_pass,
 		copy_effect_image(pass, result->image, bufs->optimized_blur->image,
 			width, height);
 	}
-	bufs->optimized_blur_valid = true;
+
+	// The cache is only valid if the work that fills it was actually RECORDED.
+	//
+	// A failed pass discards its whole command buffer, so on failure not one
+	// of the copies and dispatches above ever reaches the GPU and
+	// optimized_blur keeps whatever its memory happened to hold -- for a
+	// freshly created image, nothing at all. Marking it valid regardless (as
+	// this did) hands the consumer an image nobody has written, which it then
+	// composites: uninitialised VRAM, which is exactly the flat dark polygons
+	// with colour fringing that a blurred backdrop should never look like.
+	//
+	// And it does not clear itself. The scene layer leaves the node dirty on
+	// failure and retries next frame, but the valid flag from the failed
+	// attempt survives, so every frame in between composites the same garbage.
+	// One failure is a permanent artifact until an attempt finally succeeds.
+	//
+	// Latching it only on success costs a frame of stale-or-absent blur, which
+	// is the correct failure mode: the consumer's own guard skips compositing
+	// an invalid cache and leaves the region unblurred.
+	if (!pass->failed) {
+		bufs->optimized_blur_valid = true;
+	} else if (bufs->dbg_produce_failed != 1) {
+		bufs->dbg_produce_failed = 1;
+		wlr_log(WLR_ERROR,
+			"fx_vk optblur[%dx%d]: PRODUCER FAILED -- cache left %s",
+			bufs->width, bufs->height,
+			bufs->optimized_blur_valid ? "STALE (previously valid)"
+									   : "invalid (will not be composited)");
+	}
 
 	// Restart the scene pass so the remaining nodes keep drawing into it.
 	begin_scene_pass_reload(pass);
