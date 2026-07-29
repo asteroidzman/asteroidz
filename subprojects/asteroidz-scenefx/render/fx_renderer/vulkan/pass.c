@@ -75,6 +75,41 @@ static float color_to_linear_premult(float non_linear, float alpha) {
 	return (alpha == 0) ? 0 : color_to_linear(non_linear / alpha) * alpha;
 }
 
+/* Is this pass blending on ENCODED values rather than on light?
+ *
+ * The texture side calls this blend_encoded: with srgb-blending preferred and
+ * no colour transform on the pass, SDR sources are sampled as-is instead of
+ * being linearised, so the scene buffer holds encoded values and the output
+ * pass passes them through rather than encoding a second time.
+ *
+ * Solid colours have to answer the same question or they land in the wrong
+ * space. They arrive as sRGB and were linearised UNCONDITIONALLY, so in
+ * encoded-blending mode a border rect was linearised into a buffer holding
+ * encoded values and came out double-darkened: 0x2c2c2c drew as 0x050505 and
+ * 0xa4c8ff as 0x6196ff. Consistently wrong, and only on the outputs where the
+ * condition holds -- a colour-transformed output (HDR, ICC) has
+ * color_transform != NULL, so it linearises like it always did and looks
+ * right, which is why this showed up as "my two monitors draw the same border
+ * colour differently" while textured elements agreed on both.
+ *
+ * This mirrors the output-side predicate rather than re-deriving it: with no
+ * colour transform, that side's tf stays GAMMA22 (an SDR function) and
+ * need_lut is false, so its longer expression reduces to exactly these two
+ * terms. Keeping them equal is the point -- the two must never disagree about
+ * which space the buffer is in. */
+static bool pass_blends_encoded(const struct fx_vk_render_pass *pass) {
+	return pass->renderer->srgb_blending && pass->color_transform == NULL;
+}
+
+/* A solid colour in whichever space this pass blends in, premultiplied. */
+static float color_for_pass_premult(const struct fx_vk_render_pass *pass,
+		float non_linear, float alpha) {
+	if (pass_blends_encoded(pass)) {
+		return non_linear;
+	}
+	return color_to_linear_premult(non_linear, alpha);
+}
+
 static void encode_proj_matrix(const float mat3[9], float mat4[4][4]) {
 	float result[4][4] = {
 		{ mat3[0], mat3[1], 0, mat3[2] },
@@ -724,15 +759,16 @@ static void render_pass_add_rect(struct wlr_render_pass *wlr_pass,
 	struct fx_vk_render_pass *pass = get_render_pass(wlr_pass);
 	VkCommandBuffer cb = pass->command_buffer->vk;
 
-	// Input color values are given in sRGB space, shader expects
-	// them in linear space. The shader does all computation in linear
-	// space and expects in inputs in linear space since it outputs
-	// colors in linear space as well (and vulkan then automatically
-	// does the conversion for out sRGB render targets).
+	// Input color values are given in sRGB space. The shader computes in
+	// whichever space this pass BLENDS in and writes its result there, so the
+	// colour has to be converted to match -- linear normally, left encoded
+	// when the pass is blending on encoded values. See pass_blends_encoded:
+	// converting unconditionally drew every solid colour double-darkened on
+	// exactly the outputs that blend encoded.
 	float linear_color[] = {
-		color_to_linear_premult(options->color.r, options->color.a),
-		color_to_linear_premult(options->color.g, options->color.a),
-		color_to_linear_premult(options->color.b, options->color.a),
+		color_for_pass_premult(pass, options->color.r, options->color.a),
+		color_for_pass_premult(pass, options->color.g, options->color.a),
+		color_for_pass_premult(pass, options->color.b, options->color.a),
 		options->color.a, // no conversion for alpha
 	};
 
@@ -1145,11 +1181,13 @@ static void render_rounded_rect(struct fx_vk_render_pass *pass,
 		const struct clipped_fregion *clipped_region) {
 	VkCommandBuffer cb = pass->command_buffer->vk;
 
-	// Same sRGB -> linear premultiplied conversion as render_pass_add_rect.
+	// Same pass-space conversion as render_pass_add_rect. This is the path a
+	// window border actually takes (borders are rounded rects), so it is the
+	// one the double-darkening was visible through.
 	float linear_color[] = {
-		color_to_linear_premult(options->color.r, options->color.a),
-		color_to_linear_premult(options->color.g, options->color.a),
-		color_to_linear_premult(options->color.b, options->color.a),
+		color_for_pass_premult(pass, options->color.r, options->color.a),
+		color_for_pass_premult(pass, options->color.g, options->color.a),
+		color_for_pass_premult(pass, options->color.b, options->color.a),
 		options->color.a,
 	};
 
