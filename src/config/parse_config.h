@@ -1482,6 +1482,31 @@ FuncType parse_func_name(char *func_name, Arg *arg, char *arg_value,
 		(*arg).v = strdup(arg_value && arg_value[0] != '\0' ? arg_value : "region");
 	} else if (strcmp(func_name, "toggle_hdr") == 0) {
 		func = toggle_hdr;
+	} else if (strcmp(func_name, "set_output_mode") == 0) {
+		/* set_output_mode,<output>,<WxH[@Hz]> */
+		func = set_output_mode;
+		(*arg).v = strdup(arg_value);
+		(*arg).v2 = strdup(arg_value2);
+	} else if (strcmp(func_name, "set_output_scale") == 0) {
+		func = set_output_scale;
+		(*arg).v = strdup(arg_value);
+		(*arg).f = (float)atof(arg_value2);
+	} else if (strcmp(func_name, "set_output_position") == 0) {
+		/* set_output_position,<output>,<x>,<y> */
+		func = set_output_position;
+		(*arg).v = strdup(arg_value);
+		(*arg).i = atoi(arg_value2);
+		(*arg).i2 = atoi(arg_value3);
+	} else if (strcmp(func_name, "set_output_vrr") == 0) {
+		func = set_output_vrr;
+		(*arg).v = strdup(arg_value);
+		(*arg).i = atoi(arg_value2);
+	} else if (strcmp(func_name, "set_output_icc") == 0) {
+		/* an empty path clears the profile, which is the only way back to the
+		 * untransformed pipeline once one is loaded */
+		func = set_output_icc;
+		(*arg).v = strdup(arg_value);
+		(*arg).v2 = strdup(arg_value2);
 	} else if (strcmp(func_name, "set_sdr_luminance") == 0) {
 		func = set_sdr_luminance;
 		(*arg).f = atof(arg_value);

@@ -122,6 +122,23 @@ Stream last open surface changes for a specific monitor (or the focused one).
 Stream the resolved bar configuration, re-sent on every config reload -- so a
 bar in another process repaints with a new palette rather than waiting for
 something else to wake it.
+.SS "Output configuration"
+.TP
+\fBset_output_mode\fR,<output>,<WxH[@Hz]>
+Set a mode the output reports. Tested before it is committed; a mode that is
+not advertised is refused.
+.TP
+\fBset_output_scale\fR,<output>,<scale>
+Set the scale, fractional included.
+.TP
+\fBset_output_position\fR,<output>,<x>,<y>
+Move the output within the layout.
+.TP
+\fBset_output_vrr\fR,<output>,<0|1>
+Enable or disable adaptive sync.
+.TP
+\fBset_output_icc\fR,<output>,<path>
+Load an ICC profile for SDR output; an empty path clears it.
 .SH ENVIRONMENT
 .TP
 \fIASTEROIDZ_INSTANCE_SIGNATURE\fR

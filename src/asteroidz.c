@@ -1228,6 +1228,7 @@ static void open_special_workspace(Monitor *m, char *interned,
 static bool check_trackpad_disabled(struct wlr_pointer *pointer);
 static uint32_t get_tag_status(uint32_t tag, Monitor *m);
 static void enable_adaptive_sync(Monitor *m, struct wlr_output_state *state);
+static void disable_adaptive_sync(Monitor *m, struct wlr_output_state *state);
 static Client *get_next_stack_client(Client *c, bool reverse);
 static void set_float_malposition(Client *tc);
 static void set_size_per(Monitor *m, Client *c);
@@ -1605,6 +1606,7 @@ static struct wl_event_source *sync_keymap;
 #endif
 
 #include "action/client.h"
+#include "action/output.h"
 #include "animation/client.h"
 #include "animation/common.h"
 #include "animation/layer.h"

@@ -98,6 +98,25 @@ compositor is the only process that knows what the theme currently *is*.
 bar in another process repaints with the new palette instead of waiting for
 something else to wake it.
 
+#### Output configuration
+
+| Dispatch | Effect |
+| :--- | :--- |
+| `set_output_mode,<output>,<WxH[@Hz]>` | Pick a mode the output actually reports. |
+| `set_output_scale,<output>,<scale>` | Fractional scales included. |
+| `set_output_position,<output>,<x>,<y>` | Move it in the layout, live. |
+| `set_output_vrr,<output>,<0\|1>` | Adaptive sync. |
+| `set_output_icc,<output>,<path>` | ICC profile for SDR output; empty clears it. |
+
+Every one names its output rather than acting on the focused one: a dispatch
+has no pointer context, and guessing would make the same command do different
+things depending on where the mouse happened to be.
+
+Mode and scale are **tested before they are committed** (`wlr_output_test_state`),
+and a rejected commit starts a retrain -- a picker must not be able to black
+out a display. A mode that the output does not advertise is refused rather than
+synthesised.
+
 ### DISPATCH
 Allows sending commands to the compositor to alter its state.
 * `dispatch <func_name>,[args...] [client,<id>]`
