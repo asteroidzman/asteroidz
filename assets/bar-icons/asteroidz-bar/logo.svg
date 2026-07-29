@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- NOT normalised by contrib/normalize-bar-icons.py, unlike its neighbours.
+
+     That tool scales an icon's ink to fill the canvas so a row of glyphs reads
+     at one visual size. The logo is not in such a row: it is a chip of its own
+     at the head of the tag group, drawn with no horizontal padding and an
+     iconScale of its own (asteroidz-bar shell/modules/Tags.qml). Filling the
+     canvas would fight that sizing rather than agree with it, and the ship is
+     a rotated triangle whose ink bounds are a diagonal, so "fill the square"
+     is the wrong instruction for it. Left as drawn.
+
+     Note for anyone editing this file: no double hyphen may appear inside an
+     XML comment. librsvg rejects the whole document, and the bar then draws
+     nothing at all rather than drawing it wrong. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100">
+  <defs>
+    <linearGradient id="hull" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#cfd6e6"/>
+    </linearGradient>
+    <linearGradient id="flame" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffd27f"/>
+      <stop offset="0.5" stop-color="#ff9a3c"/>
+      <stop offset="1" stop-color="#f2603f"/>
+    </linearGradient>
+  </defs>
+
+  <!-- ship defined pointing up, whole craft rotated 45° to the right -->
+  <g transform="rotate(45 50 50)">
+    <!-- exhaust plume out of the rear notch — big flare; the tip rides the
+         rotated diagonal (rotate(45) leaves ~70 units from centre). The flame
+         hexes below are substituted for shades of the theme accent, by string
+         replacement, in asteroidz-bar's shell/Logo.qml — keep them verbatim.
+         (This was asteroidz_ws.c logo_pixbuf when the bar was a waybar plugin;
+         that plugin is gone, the requirement is not.) -->
+    <path d="M32,63 L50,119 L68,63 Z" fill="url(#flame)"/>
+    <path d="M41,63 L50,104 L59,63 Z" fill="#fff2cf"/>
+    <!-- hollow (wireframe) Atari-Asteroids triangle ship -->
+    <path d="M50,8 L78,84 L50,64 L22,84 Z"
+          fill="none" stroke="url(#hull)" stroke-width="7"
+          stroke-linejoin="round" stroke-linecap="round"/>
+  </g>
+</svg>

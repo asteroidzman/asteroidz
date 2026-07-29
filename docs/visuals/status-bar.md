@@ -23,6 +23,7 @@ Everything the bar cannot do for itself:
 | `set_output_*` | mode, scale, position, VRR, ICC, tested before they are committed |
 | `ext-background-effect-v1` | the bar reports its panels' region and gets blur behind them, corners included. **Popups too**: a menu is an xdg popup, which is neither a toplevel nor a layer surface, so it used to be silently skipped -- see `popup_update_blur` |
 | layer shell | the bar is an ordinary layer-shell client with an exclusive zone |
+| `assets/bar-icons` | the artwork, installed to `/usr/share/asteroidz/bar-icons` and found through the search path in `bar { icon-dir }` |
 
 The palette is the interesting one. Handing a bar the config file to parse
 would be two KDL readers that agree until one of them gains a default — and it
@@ -33,6 +34,30 @@ reload.
 
 Build with `-Dbar-config=false` to compile that block and that IPC out
 entirely, which is what a setup driving waybar or yambar exclusively wants.
+
+## Why the artwork lives here
+
+The bar's icons are in the *compositor's* tree, which looks backwards until you
+ask who installs them. They came from a dozen separate waybar plugin repos, so
+which glyphs you had depended on which plugins you had installed, and a bar that
+draws a blank pill because an unrelated package is missing is not a bar anyone
+can debug. They were vendored into `assets/bar-icons` and normalised to one
+canvas (`contrib/normalize-bar-icons.py`) so the set is complete, tracked, and
+reviewable.
+
+`bar { icon-dir }` is a **search path**, tried in order, first hit wins — the
+packaged directory last, so a locally-customised asset still beats it.
+
+Two of them are drawn rather than merely displayed: the ship logo's exhaust is
+recoloured to the theme accent at runtime by the bar (a string substitution on
+the SVG source, because tinting through the alpha channel would flood the hull
+too), and the layout indicator is keyed on `layout_index` rather than the
+symbol. Both are documented where they happen, in `asteroidz-bar`'s `Logo.qml`
+and `Layout.qml`.
+
+`meson test bar-icons` checks every one of them parses and rasterises to
+something non-empty. A bar icon fails silently — a missing file and an
+unparseable one are both just a blank pill — and both have shipped.
 
 ## Running it
 

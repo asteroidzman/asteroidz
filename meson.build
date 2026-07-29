@@ -238,10 +238,17 @@ install_data('assets/asteroidz.portal', install_dir : join_paths(prefix, 'share/
 install_data('assets/config.kdl', install_dir : join_paths(sysconfdir, 'asteroidz'))
 install_data('amsg/amsg.1', install_dir : join_paths(mandir, 'man1'))
 
-# Bar artwork. Vendored from the waybar plugin repos and normalised to one
-# square canvas (contrib/normalize-bar-icons.py), so the bar no longer depends
-# on which plugins happen to be installed -- and so the icons are tracked and
-# reviewable here rather than living only in ~/.local/share.
+# Bar artwork. Vendored from the waybar plugin repos and mostly normalised to
+# one square canvas (contrib/normalize-bar-icons.py), so the bar no longer
+# depends on which plugins happen to be installed -- and so the icons are
+# tracked and reviewable here rather than living only in ~/.local/share.
+# asteroidz-bar/logo.svg is the deliberate exception to the normalising; it
+# says why in its own header.
 install_subdir('assets/bar-icons', install_dir : join_paths(prefix, 'share/asteroidz'),
                strip_directory : false)
+
+# ...and they are checked, because a bar icon fails SILENTLY: a missing file and
+# an unparseable one both come out as a blank pill. See the script's header for
+# the two that actually shipped.
+test('bar-icons', find_program('tests/check-bar-icons.py'))
 
