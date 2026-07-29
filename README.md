@@ -48,8 +48,7 @@ that stays out of your way.
 
 ## Building
 
-asteroidz renders on **GLES2 by default** — the companion
-[asteroidz-scenefx](https://github.com/asteroidzman/asteroidz-scenefx)
+asteroidz renders on **GLES2 by default** — the in-tree `asteroidz-scenefx`
 fork's GLES2 renderer (HDR10, rounded corners, blur, shadows, gradient
 borders, SDR colour) is the stable, everyday driver. An **experimental
 Vulkan (`fx_vk`) renderer** is also available — near parity already, but
@@ -67,25 +66,22 @@ loader/headers and `glslang` (to compile the effect shaders to SPIR-V).
 > asteroidz's own fork — not upstream `wlrfx/scenefx`, and the two are not
 > interchangeable — and it lives in this repository at
 > `subprojects/asteroidz-scenefx`, built and linked statically. One
-> self-contained binary, nothing to install alongside. The
-> [standalone repo](https://github.com/asteroidzman/asteroidz-scenefx) is
-> archival — it receives no further releases, and this tree is where the
-> library is developed.
+> self-contained binary, nothing to install alongside. It was brought in with
+> `git subtree`, so the fork's own history is part of this repository's — there
+> is no separate repo to clone, track or keep in version lockstep.
 
-A matching bar is [waybar](https://github.com/Alexays/Waybar) plus a set of
-CFFI plugins: two are asteroidz-specific —
-[waybar-asteroidz-workspaces](https://github.com/asteroidzman/waybar-asteroidz-workspaces)
-(tag pills with real app icons) and
-[waybar-display](https://github.com/asteroidzman/waybar-display)
-(per-monitor display/HDR + wallpaper settings, driven by `amsg`) — and the
-rest are general-purpose, usable on any wlroots compositor:
-[waybar-sysmon](https://github.com/asteroidzman/waybar-sysmon),
-[waybar-network](https://github.com/asteroidzman/waybar-network),
-[waybar-volume](https://github.com/asteroidzman/waybar-volume),
-[waybar-medication](https://github.com/asteroidzman/waybar-medication),
-[waybar-media-cava](https://github.com/asteroidzman/waybar-media-cava), and
-[waybar-weather-cffi](https://github.com/asteroidzman/waybar-weather)
-(AUR name `waybar-weather-cffi`). All are on the AUR.
+The bar is [asteroidz-bar](https://github.com/asteroidzman/asteroidz-bar), a
+quickshell (QML/Qt6) shell that also draws the wallpaper — one process for
+both, on one Wayland connection. It is a separate program, not part of this
+one: the compositor resolves `bar {}` and `theme {}` and serves them over
+`get`/`watch bar-config`, and the shell draws from that.
+
+It replaced a compositor-native bar, and before that a waybar plus a set of
+CFFI plugins. Both are gone; `bar { enable false }` and
+`spawn-at-startup "asteroidz-bar"` is the supported arrangement. Any other bar
+still works — build with `-Dbar-config=false` to compile the `bar {}` block and
+its IPC out entirely, which is what a setup driving waybar or yambar
+exclusively wants.
 
 ```bash
 meson setup build --prefix=/usr
@@ -128,17 +124,10 @@ sudo pacman -S --needed base-devel git meson ninja \
   libxcb xcb-util-wm xorg-xwayland
 ```
 
-Build and install the `asteroidz-scenefx` fork with both renderers, then
-asteroidz:
+One clone, one build — the effects library is in this tree and is linked
+statically, so there is nothing to install before it:
 
 ```bash
-git clone https://github.com/asteroidzman/asteroidz-scenefx.git
-cd asteroidz-scenefx
-meson setup build --prefix=/usr -Drenderers=gles2,vulkan
-ninja -C build
-sudo ninja -C build install
-cd ..
-
 git clone https://github.com/asteroidzman/asteroidz.git
 cd asteroidz
 meson setup build --prefix=/usr
