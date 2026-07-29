@@ -5815,11 +5815,6 @@ void reset_option(void) {
 }
 
 int32_t reload_config(const Arg *arg) {
-	/* Before the reparse, not after: parse_config clears config.bar_custom,
-	 * and a plugin child outliving that would report into a table its index no
-	 * longer describes. bar_clock_sync starts the ones the new config still
-	 * asks for once the bars are rebuilt below. */
-	bar_custom_finish();
 	parse_config();
 	reset_option();
 	/* re-apply `env = NAME,VALUE` entries and re-broadcast them to the
@@ -5829,10 +5824,7 @@ int32_t reload_config(const Arg *arg) {
 	 * previously */
 	set_env();
 	set_activation_env();
-	/* rebuild rather than refresh: `bar { modules-left ... }` may name a
-	 * different set of modules than the running bars were built with */
-	bar_reconfigure_all();
-	/* and tell any bar running OUT of process, which cannot see a reload and
+	/* tell the bar, which runs out of process and cannot see a reload -- it
 	 * would otherwise keep the old palette until something else woke it */
 	ipc_notify_bar_config();
 	printstatus(IPC_WATCH_ARRANGGE);

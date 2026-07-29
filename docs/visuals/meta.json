@@ -1,4 +1,9 @@
 {
 	"title": "Visuals",
-	"pages": ["theming", "native-bar", "bar-plugins", "status-bar", "effects", "animations"]
+	"pages": [
+		"theming",
+		"status-bar",
+		"effects",
+		"animations"
+	]
 }

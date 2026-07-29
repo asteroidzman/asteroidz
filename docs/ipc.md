@@ -80,7 +80,7 @@ after clamping, after the theme file -- rather than with the config text:
   "panel":   { "enable": true, "radius": 9, "blur": true, "color": [...] },
   "popover": { "width": 340, "row_height": 34, ... },
   "theme":   { "fg": [1,1,1,1], "focus_bg": [...], "font": "Ubuntu 16", ... },
-  "custom":  [ { "name": "tray", "exec": "asteroidz-trayd", ... } ]
+  "custom":  [ { "name": "nordvpn", "exec": "asteroidz-bar-nordvpn", ... } ]
 }
 ```
 

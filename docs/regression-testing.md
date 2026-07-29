@@ -143,7 +143,7 @@ than the shared one: it never enables the native bar globally (that would
 shrink the usable area and silently break every geometry assertion in the
 other modules), but rewrites `$HL_CONFIG` from a pristine copy and calls
 `reload_config` per test, restoring it afterwards. It also skips itself when
-the binary under test was built with `-Dnative-bar=false`, probing the binary
+the binary under test was built with `-Dbar-config=false`, probing the binary
 rather than assuming — an unknown config key is only warned about, so a
 feature-off build would otherwise silently "pass" by doing nothing.
 
@@ -176,11 +176,6 @@ inline in the relevant test files too):
   reproducing them live a second time. See "Live-session mode" above.
 
 ## A separate layer: the tray host
-
-`contrib/trayd-test.sh` covers `asteroidz-trayd`, the out-of-process
-StatusNotifierItem host, and needs **no compositor at all** — that is the
-point of moving the host out. It is a plain program that reads clicks on stdin
-and writes items on stdout, so it can be driven directly.
 
 It runs against its own `dbus-daemon` (via `dbus-run-session`) and its own
 `XDG_RUNTIME_DIR`, so it never touches the live session's tray, and uses

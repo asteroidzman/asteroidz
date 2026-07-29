@@ -1,150 +1,35 @@
----
-title: Status Bar
-description: Configure Waybar for asteroidz.
----
+# The status bar
 
-> asteroidz also has a **built-in** bar that needs no external process — see
-> [Native Bar](./native-bar.md). It is off by default, and now covers tags,
-> layout, window title, clock, weather, media, volume, the system tray and
-> the cpu/memory/network metrics. Waybar remains the way to get popovers —
-> the volume slider, the output picker and the wifi list all live in one. The two can run side by side: the native bar reserves its space
-> first, and Waybar's exclusive zone stacks below it — and if Waybar's tray is
-> already the session's StatusNotifier watcher, the native tray follows it as a
-> host rather than fighting for the name, so both show the same items.
+The bar is **not part of the compositor**. It lives in its own project,
+[`asteroidz-bar`](https://github.com/asteroidzman/asteroidz-bar) — a quickshell
+(QML/Qt6) shell that also owns the wallpaper.
 
-## Module Configuration
+asteroidz grew a native bar because a bar client that forks `wpctl` on its main
+loop is a stutter in a bar and a dropped frame in a compositor. Drawing it in
+the compositor fixed that by making every module the compositor's problem
+instead: a plugin that hangs, a tray icon that decodes a 4096×4096 pixmap, a
+menu that needs a text field. The bar moved back out once the modules that were
+expensive had been made cheap — the `/proc` readers stay cheap wherever they
+run, and a client that misses a frame now misses only its own.
 
-asteroidz is compatible with Waybar's `ext/workspaces` module (Wayland standard) or the `dwl/tags` module. We recommend `ext/workspaces` for the best experience.
+## What the compositor still does
 
-> **Tip:** You can also use the `dwl/tags` module, but `ext/workspaces` provides better integration with asteroidz's features. The `ext/workspaces` module requires **Waybar > 0.14.0**.
+Everything the bar cannot do for itself:
 
-### `config.jsonc`
+| | |
+|---|---|
+| `bar {}` and `theme {}` | resolved here — defaults, clamping, the matugen palette — and served over `get`/`watch bar-config` |
+| `watch all-monitors` | tags, layout, focused title, per-output state |
+| `set_output_*` | mode, scale, position, VRR, ICC, tested before they are committed |
+| `ext-background-effect-v1` | the bar reports its panels' region and gets blur behind them, corners included |
+| layer shell | the bar is an ordinary layer-shell client with an exclusive zone |
 
-Add the following to your Waybar configuration:
+The palette is the interesting one. Handing a bar the config file to parse
+would be two KDL readers that agree until one of them gains a default — and it
+would still not see the palette, which matugen rewrites at runtime whenever the
+wallpaper changes. The compositor is the only process that knows what the theme
+currently *is*, so it serves the resolved answer and re-sends it on every
+reload.
 
-```jsonc
-{
-  "modules-left": [
-    "ext/workspaces",
-    "dwl/window"
-  ],
-  "ext/workspaces": {
-    "format": "{icon}",
-    "ignore-hidden": true,
-    "on-click": "activate",
-    "on-click-right": "deactivate",
-    "sort-by-id": true
-  },
-  "dwl/window": {
-    "format": "[{layout}] {title}"
-  }
-}
-```
-
-## Styling
-
-You can style the tags using standard CSS in `style.css`.
-
-### `style.css`
-
-```css
-#workspaces {
-  border-radius: 4px;
-  border-width: 2px;
-  border-style: solid;
-  border-color: #c9b890;
-  margin-left: 4px;
-  padding-left: 10px;
-  padding-right: 6px;
-  background: rgba(40, 40, 40, 0.76);
-}
-
-#workspaces button {
-  border: none;
-  background: none;
-  box-shadow: inherit;
-  text-shadow: inherit;
-  color: #ddca9e;
-  padding: 1px;
-  padding-left: 1px;
-  padding-right: 1px;
-  margin-right: 2px;
-  margin-left: 2px;
-}
-
-#workspaces button.hidden {
-  color: #9e906f;
-  background-color: transparent;
-}
-
-#workspaces button.visible {
-  color: #ddca9e;
-}
-
-#workspaces button:hover {
-  color: #d79921;
-}
-
-#workspaces button.active {
-  background-color: #ddca9e;
-  color: #282828;
-  margin-top: 5px;
-  margin-bottom: 5px;
-  padding-top: 1px;
-  padding-bottom: 0px;
-  border-radius: 3px;
-}
-
-#workspaces button.urgent {
-  background-color: #ef5e5e;
-  color: #282828;
-  margin-top: 5px;
-  margin-bottom: 5px;
-  padding-top: 1px;
-  padding-bottom: 0px;
-  border-radius: 3px;
-}
-
-#tags {
-  background-color: transparent;
-}
-
-#tags button {
-  background-color: #fff;
-  color: #a585cd;
-}
-
-#tags button:not(.occupied):not(.focused) {
-  font-size: 0;
-  min-width: 0;
-  min-height: 0;
-  margin: -17px;
-  padding: 0;
-  color: transparent;
-  background-color: transparent;
-}
-
-#tags button.occupied {
-  background-color: #fff;
-  color: #cdc885;
-}
-
-#tags button.focused {
-  background-color: rgb(186, 142, 213);
-  color: #fff;
-}
-
-#tags button.urgent {
-  background: rgb(171, 101, 101);
-  color: #fff;
-}
-
-#window {
-  background-color: rgb(237, 196, 147);
-  color: rgb(63, 37, 5);
-}
-```
-
-## Complete Configuration Example
-
-> **Tip:** You can find a complete Waybar configuration built for upstream mango (compatible with asteroidz, since both speak the same `ext/workspaces`/`dwl/tags` IPC) at [waybar-config](https://github.com/DreamMaoMao/waybar-config).
+Build with `-Dbar-config=false` to compile that block and that IPC out
+entirely, which is what a setup driving waybar or yambar exclusively wants.

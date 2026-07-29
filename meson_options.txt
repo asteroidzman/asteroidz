@@ -1,9 +1,13 @@
 option('xwayland', type : 'feature', value : 'enabled')
 option('asan', type : 'boolean', value : false)
-# The compositor-native status bar. Disabling it compiles the bar out
-# entirely -- no scene nodes, no timer, no config keys, nothing in the binary
-# -- for setups that use an external bar (waybar, yambar, ...) exclusively.
-option('native-bar', type : 'boolean', value : true)
+# The `bar {}` config block and the bar-config IPC.
+#
+# There is no compositor-native bar any more -- asteroidz-bar draws it out of
+# process -- but the compositor is still where the bar's geometry and palette
+# are RESOLVED, and it serves them over `get`/`watch bar-config`. Turning this
+# off compiles out that block and that IPC, which is what a setup driving
+# waybar or yambar exclusively wants: those bring their own config.
+option('bar-config', type : 'boolean', value : true)
 # Tracy profiler support, compiled out entirely when off (the macros in
 # scenefx's include/render/tracy.h expand to nothing without TRACY_ENABLE).
 # Turning this on also builds the in-tree asteroidz-scenefx with tracy_enable,

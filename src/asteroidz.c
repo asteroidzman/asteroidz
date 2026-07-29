@@ -246,10 +246,7 @@ enum asteroidz_node_type {
 	ASTEROIDZ_TITLE_NODE = 100,
 	ASTEROIDZ_jump_label_node,
 	ASTEROIDZ_TITLEBAR_NODE,
-	ASTEROIDZ_TITLEBAR_CLOSE_NODE,
-	ASTEROIDZ_BAR_NODE,    /* a native status-bar pill (draw/bar.h) */
-	ASTEROIDZ_BAR_POPOVER_NODE, /* a row in a bar popover (draw/bar-popover.h) */
-	ASTEROIDZ_BAR_CANVAS_NODE   /* one monitor tile on the arrange canvas */
+	ASTEROIDZ_TITLEBAR_CLOSE_NODE
 };
 
 #ifdef XWAYLAND
@@ -782,10 +779,6 @@ struct Monitor {
 	int32_t render_late_good;   /* consecutive on-time deferred frames */
 	struct wlr_box m;		  /* monitor area, layout-relative */
 	struct wlr_box w;		  /* window area, layout-relative */
-	/* the compositor-native status bar on this output, or NULL when built
-	 * without -Dnative-bar. Defined in draw/bar.h, which is included after
-	 * this struct because it needs Monitor itself. */
-	struct AsteroidzBar *bar;
 	uint32_t cascade_idx;	  /* float layout: next cascade placement slot */
 	struct wl_list layers[4]; /* LayerSurface::link */
 	uint32_t seltags;
@@ -1070,18 +1063,8 @@ static void outputmgrtest(struct wl_listener *listener, void *data);
 static void pointerfocus(Client *c, struct wlr_surface *surface, double sx,
 						 double sy, uint32_t time);
 static void printstatus(enum ipc_watch_type type);
-/* draw/bar.h is included further down (it needs Monitor), but reload_config
- * in config/parse_config.h is parsed before that and has to rebuild the bars
- * -- a reload can change the module lists themselves, which a content-only
- * bar_update does not pick up. */
-static void bar_reconfigure_all(void);
-/* Same reason, one step earlier in a reload: bar plugins are children holding
- * an INDEX into config.bar_custom, and set_value_default clears that array
- * before the new config is read. A child left running across the reparse would
- * go on delivering its output to whichever plugin ended up at its old index. */
-static void bar_custom_finish(void);
-/* And once more for ipc/ipc.h, which is included later still: a reload has to
- * push the new palette to any bar running out of process. */
+/* ipc/ipc.h is included later still, and a reload has to push the new palette
+ * to the bar, which runs out of process. */
 void ipc_notify_bar_config(void);
 static void quitsignal(int32_t signo);
 static void powermgrsetmode(struct wl_listener *listener, void *data);
@@ -1623,7 +1606,6 @@ static struct wl_event_source *sync_keymap;
 #include "layout/dwindle.h"
 #include "layout/horizontal.h"
 #include "common/async-spawn.h"
-#include "draw/bar.h"
 #include "layout/overview.h"
 #include "layout/scroll.h"
 
@@ -2794,7 +2776,6 @@ void arrangelayers(Monitor *m) {
 	 * exclusive zone stacks BELOW it rather than overlapping. That ordering
 	 * is what lets an external bar keep running alongside this one during the
 	 * migration. */
-	bar_reserve(m, &usable_area);
 
 	/* Arrange exclusive surfaces from top->bottom */
 	for (i = 3; i >= 0; i--)
@@ -2860,16 +2841,6 @@ axisnotify(struct wl_listener *listener, void *data) {
 								 event->delta > 0 ? 1 : -1);
 		return;
 	}
-
-	/* A scroll over a native bar pill belongs to that pill, not to the window
-	 * behind it and not to an axis binding: scrolling the volume readout must
-	 * change the volume even when the same wheel is bound to switching tags.
-	 * Resolved through the scene graph exactly like a click, so stacking is
-	 * respected for free and a covered pill is not reachable. */
-	if (bar_scroll_at(cursor->x, cursor->y, event->delta,
-					  event->delta_discrete,
-					  event->orientation == WL_POINTER_AXIS_HORIZONTAL_SCROLL))
-		return;
 
 	if (event->orientation == WL_POINTER_AXIS_VERTICAL_SCROLL)
 		adir = event->delta > 0 ? AxisDown : AxisUp;
@@ -3174,11 +3145,6 @@ bool handle_buttonpress(struct wlr_pointer_button_event *event) {
 		return true;
 	}
 
-	/* Any press dismisses hover text: you have stopped asking what a thing is
-	 * and started using it, and a tooltip left over a popover it just opened
-	 * is the worst of both. */
-	bar_tooltip_hide();
-
 	switch (event->state) {
 	case WL_POINTER_BUTTON_STATE_PRESSED:
 		cursor_mode = CurPressed;
@@ -3240,39 +3206,9 @@ bool handle_buttonpress(struct wlr_pointer_button_event *event) {
 			node = wlr_scene_node_at(&layers[li]->node, cursor->x, cursor->y,
 									 NULL, NULL);
 		}
-		/* A popover is modal: the click either lands on one of its rows or
-		 * dismisses it, and a dismissing click is SPENT -- letting it also
-		 * press what was underneath means closing a menu can trigger the
-		 * thing you were closing it to avoid. */
-		/* A press on the arrange canvas starts a monitor drag. It is a grab
-		 * rather than a click: the tile follows the pointer until the button
-		 * comes up, so the press is claimed here and motionnotify takes over
-		 * from it. */
-		if (node && node->data &&
-			((AsteroidzNodeData *)node->data)->type ==
-				ASTEROIDZ_BAR_CANVAS_NODE &&
-			event->button == BTN_LEFT) {
-			AsteroidzNodeData *nd = (AsteroidzNodeData *)node->data;
-			if (bar_canvas_press((int32_t)(intptr_t)nd->node_data, cursor->x,
-								 cursor->y))
-				return true;
-		}
-		if (node && node->data &&
-			((AsteroidzNodeData *)node->data)->type ==
-				ASTEROIDZ_BAR_POPOVER_NODE) {
-			if (bar_popover_handle_node_click((AsteroidzNodeData *)node->data,
-											  event->button))
-				return true;
-		}
-		if (bar_popover_dismiss_click(node))
-			return true;
-
 		if (node && node->data) {
 			AsteroidzNodeData *nodedata = (AsteroidzNodeData *)node->data;
-			if (nodedata->type == ASTEROIDZ_BAR_NODE) {
-				if (bar_handle_node_click(nodedata, event->button))
-					return true;
-			} else if (nodedata->type == ASTEROIDZ_TITLE_NODE) {
+			if (nodedata->type == ASTEROIDZ_TITLE_NODE) {
 				Client *c = nodedata->node_data;
 				focusclient(c, 1);
 			} else if (nodedata->type == ASTEROIDZ_TITLEBAR_CLOSE_NODE) {
@@ -3323,13 +3259,6 @@ bool handle_buttonpress(struct wlr_pointer_button_event *event) {
 		}
 		break;
 	case WL_POINTER_BUTTON_STATE_RELEASED:
-		/* End a monitor drag before anything else looks at this release: it is
-		 * the other half of the press the canvas claimed, and letting it fall
-		 * through would dismiss the popover the drag was performed in. */
-		if (bar_canvas_release()) {
-			cursor_mode = CurNormal;
-			return true;
-		}
 		/* If you released any buttons, we exit interactive move/resize mode. */
 		if (!locked && cursor_mode != CurNormal && cursor_mode != CurPressed) {
 			cursor_mode = CurNormal;
@@ -3487,15 +3416,6 @@ void cleanup(void) {
 	ufo_egg = NULL;
 
 	ipc_cleanup();
-	/* before session_bus_finish: releasing the watcher/host names and the
-	 * signal matches needs the connection still open */
-	bar_popover_close();
-	bar_notify_finish();
-	bar_dv_finish();
-	bar_custom_finish();
-	bar_viz_finish();
-	bar_tray_finish();
-	bar_volume_finish();
 	session_bus_finish();
 	cleanuplisteners();
 	modern_protocols_finish();
@@ -3551,7 +3471,6 @@ void cleanupmon(struct wl_listener *listener, void *data) {
 
 	/* Before the scene nodes below are torn down: the bar owns scene buffers
 	 * and heap-allocated hit-test tags parented to this monitor's tree. */
-	bar_destroy(m);
 
 	/* m->layers[i] are intentionally not unlinked */
 	for (i = 0; i < LENGTH(m->layers); i++) {
@@ -5070,17 +4989,6 @@ void createmon(struct wl_listener *listener, void *data) {
 	 * hotplug a force_hdr client can already be visible on the new output. */
 	hdr_resolve(m);
 
-	/* After the tagset and pertag layouts exist (the tags/layout modules read
-	 * both) and after m joined `mons` (bar_clock_sync walks the list). */
-	bar_create(m);
-	bar_update(m);
-	/* Re-arrange now that the bar exists. Adding the output to the layout
-	 * above already ran updatemons -> arrangelayers for this monitor, but
-	 * that was before bar_create, so m->w was computed with no bar to
-	 * reserve for and nothing would recompute it until the next layout
-	 * change. Without this the bar renders but windows tile underneath it. */
-	arrangelayers(m);
-
 	printstatus(IPC_WATCH_ARRANGGE);
 }
 
@@ -6015,21 +5923,6 @@ void keypress(struct wl_listener *listener, void *data) {
 		return;
 	}
 
-	/* An open bar popover takes Escape, and only Escape -- it has no keyboard
-	 * grab, so every other key must keep working exactly as it did. Placed
-	 * after the screenshot overlay (which owns the keyboard outright) and
-	 * before the binding tables, so a user-bound Escape does not fire while a
-	 * menu is up. */
-	if (event->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
-		for (i = 0; i < nsyms; i++) {
-			if (bar_popover_handle_key(syms[i])) {
-				group->nsyms = 0;
-				wl_event_source_timer_update(group->key_repeat_source, 0);
-				return;
-			}
-		}
-	}
-
 	/* xdg-desktop-portal global shortcuts get first pick (push-to-talk
 	 * needs both key edges, and matched keys are not forwarded) */
 	if (!locked) {
@@ -6847,16 +6740,6 @@ void motionnotify(uint32_t time, struct wlr_input_device *device, double dx,
 		return;
 	}
 
-	/* Hover text for the bar, which needs every move: the delay timer is armed
-	 * on the pill you settle on and cancelled the moment you leave it. */
-	bar_tooltip_motion(cursor->x, cursor->y);
-
-	/* Dragging a monitor on the arrange canvas owns the pointer outright: the
-	 * tile follows it and nothing underneath should see the motion, the same
-	 * way an interactive window move does. */
-	if (bar_canvas_motion(cursor->x, cursor->y))
-		return;
-
 	/* Find the client under the pointer and send the event along. */
 	xytonode(cursor->x, cursor->y, &surface, &c, NULL, &sx, &sy);
 
@@ -7126,11 +7009,6 @@ void pointerfocus(Client *c, struct wlr_surface *surface, double sx, double sy,
 // modified printstatus function to accept a mask parameter
 void printstatus(enum ipc_watch_type type) {
 	wl_signal_emit(&asteroidz_print_status, &type);
-	/* The native bar is just another observer of the same state changes the
-	 * IPC broadcasts here -- tags, arrange, focus, title, map/unmap all pass
-	 * through this one point, so it needs no hooks of its own. bar_update
-	 * hashes what it displays and returns early when nothing changed. */
-	bar_update_all();
 }
 
 static int monitor_retrain_step(void *data) {
