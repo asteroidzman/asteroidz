@@ -23,25 +23,20 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Rewrite the `x` and `y` of one `output NAME { … }` block in `text`, in
- * place, returning a newly allocated document or NULL if the block is not
- * there.
+/* Find one `output NAME { … }` block, returning its opening brace and the
+ * matching close, or false if it is not there.
  *
- * SURGICAL on purpose: it edits the two numbers and leaves every other byte
- * alone. The alternative -- regenerating the block from the Monitor -- would
- * silently drop whatever the compositor does not model back into KDL, and
- * every comment around it. The file this writes to is hand-maintained as well
- * as machine-written (the user's monitors.kdl explains in a comment why HDR is
- * absent from one output), and losing that to a monitor drag would be an
- * unforgivable trade for a feature this small. */
-static char *kdl_rewrite_output_pos(const char *text, const char *name,
-									 int32_t x, int32_t y) {
-	/* find `output <name>` followed by a brace, ignoring commented lines */
+ * Comment-aware only to the extent it needs to be: a line whose `output` is
+ * preceded by anything other than whitespace is skipped, which covers `//
+ * output DP-1 …` -- the form the file this writes to actually uses to explain
+ * why a setting is absent. */
+static bool kdl_find_output_block(const char *text, const char *name,
+								  const char **out_open,
+								  const char **out_close) {
 	const char *p = text;
 	const char *block = NULL;
 	size_t namelen = strlen(name);
 	while ((p = strstr(p, "output")) != NULL) {
-		/* at the start of a line (bar whitespace)? */
 		const char *ls = p;
 		while (ls > text && ls[-1] != '\n')
 			ls--;
@@ -64,10 +59,10 @@ static char *kdl_rewrite_output_pos(const char *text, const char *name,
 		p += 6;
 	}
 	if (!block)
-		return NULL;
+		return false;
 	const char *open = strchr(block, '{');
 	if (!open)
-		return NULL;
+		return false;
 	/* brace-match so a nested block cannot end the search early */
 	int32_t depth = 0;
 	const char *close = NULL;
@@ -80,24 +75,48 @@ static char *kdl_rewrite_output_pos(const char *text, const char *name,
 		}
 	}
 	if (!close)
+		return false;
+	*out_open = open;
+	*out_close = close;
+	return true;
+}
+
+/* Set (or remove) any number of `key value` entries inside one
+ * `output NAME { … }` block, returning a newly allocated document or NULL if
+ * the block is not there.
+ *
+ * `vals[i] == NULL` REMOVES that key, which is how an ICC profile is cleared:
+ * writing `icc-profile ""` would be a profile whose path is the empty string,
+ * and the way back to the untransformed pipeline is for the entry not to be
+ * there at all.
+ *
+ * Values are passed pre-formatted, so a caller decides for itself whether
+ * something is `0.75`, `1920` or a quoted path. */
+static char *kdl_rewrite_output_props(const char *text, const char *name,
+									  const char *const *keys,
+									  const char *const *vals, size_t nkeys) {
+	const char *open, *close;
+	if (!kdl_find_output_block(text, name, &open, &close))
 		return NULL;
 
-	/* rebuild the block body with x/y replaced (or appended if absent) */
 	size_t body_len = (size_t)(close - open - 1);
 	char *body = strndup(open + 1, body_len);
 	if (!body)
 		return NULL;
 
-	char out_body[2048];
+	char out_body[4096];
 	size_t o = 0;
-	bool wrote_x = false, wrote_y = false;
+	bool *wrote = calloc(nkeys ? nkeys : 1, sizeof(bool));
+	if (!wrote) {
+		free(body);
+		return NULL;
+	}
+
 	const char *b = body;
-	while (*b && o + 64 < sizeof(out_body)) {
-		/* a token is `key value;` or `key;`  -- copy verbatim unless it is
-		 * x or y, which are replaced with the new value */
+	while (*b && o + 128 < sizeof(out_body)) {
 		while (*b && (isspace((unsigned char)*b) || *b == ';')) {
 			out_body[o++] = *b++;
-			if (o + 64 >= sizeof(out_body))
+			if (o + 128 >= sizeof(out_body))
 				break;
 		}
 		if (!*b)
@@ -106,27 +125,50 @@ static char *kdl_rewrite_output_pos(const char *text, const char *name,
 		while (*b && !isspace((unsigned char)*b) && *b != ';')
 			b++;
 		size_t toklen = (size_t)(b - tok);
-		bool is_x = toklen == 1 && tok[0] == 'x';
-		bool is_y = toklen == 1 && tok[0] == 'y';
-		if (is_x || is_y) {
-			/* skip the old value */
-			while (*b == ' ' || *b == '\t')
-				b++;
-			while (*b && !isspace((unsigned char)*b) && *b != ';')
-				b++;
-			o += (size_t)snprintf(out_body + o, sizeof(out_body) - o, "%c %d",
-								  is_x ? 'x' : 'y', is_x ? x : y);
-			if (is_x)
-				wrote_x = true;
-			else
-				wrote_y = true;
-		} else {
+
+		size_t hit = nkeys;
+		for (size_t i = 0; i < nkeys; i++) {
+			if (strlen(keys[i]) == toklen && !strncmp(tok, keys[i], toklen)) {
+				hit = i;
+				break;
+			}
+		}
+
+		if (hit == nkeys) {
 			if (o + toklen + 1 >= sizeof(out_body))
 				break;
 			memcpy(out_body + o, tok, toklen);
 			o += toklen;
+			continue;
 		}
+
+		/* skip whatever value the old entry carried */
+		while (*b == ' ' || *b == '\t')
+			b++;
+		while (*b && !isspace((unsigned char)*b) && *b != ';')
+			b++;
+
+		if (vals[hit]) {
+			o += (size_t)snprintf(out_body + o, sizeof(out_body) - o, "%s %s",
+								  keys[hit], vals[hit]);
+		} else {
+			/* Removed. Give back the SPACES that led up to it and eat the
+			 * separator that followed -- not the other way round, and not the
+			 * separator in front of it: that one terminates the entry BEFORE
+			 * this one, and swallowing it welded two entries together
+			 * (`scale 1 vrr 1`, a two-argument scale). On a multi-line block
+			 * the same rewind takes the indentation with it and the whole line
+			 * disappears cleanly. */
+			while (o > 0 && (out_body[o - 1] == ' ' || out_body[o - 1] == '\t'))
+				o--;
+			while (*b == ' ' || *b == '\t')
+				b++;
+			if (*b == ';')
+				b++;
+		}
+		wrote[hit] = true;
 	}
+
 	/* Appending needs a SEPARATOR, not just a space.
 	 *
 	 * KDL ends a node at a semicolon or a newline; anything else on the line
@@ -135,25 +177,42 @@ static char *kdl_rewrite_output_pos(const char *text, const char *name,
 	 * into `refresh 60 x 3409`, a three-argument node, and the config stops
 	 * meaning what it says. Only a block whose last entry was already
 	 * terminated can take a bare append. */
-	if (!wrote_x || !wrote_y) {
+	bool any_append = false;
+	for (size_t i = 0; i < nkeys; i++)
+		if (!wrote[i] && vals[i])
+			any_append = true;
+	char trailing[64] = "";
+	if (any_append) {
 		size_t last = o;
 		while (last > 0 && isspace((unsigned char)out_body[last - 1]))
 			last--;
+		/* Whatever whitespace closed the block goes back on AFTER the
+		 * appends, so `{ scale 1; }` gains `{ scale 1; vrr 1; }` rather than
+		 * `{ scale 1;  vrr 1;}` -- the entry landing outside the space that
+		 * was holding the brace off. Machine-written lines have to read like
+		 * the hand-written ones around them or nobody trusts the file. */
+		size_t tw = o - last;
+		if (tw < sizeof(trailing)) {
+			memcpy(trailing, out_body + last, tw);
+			trailing[tw] = '\0';
+			o = last;
+		}
 		bool terminated = last == 0 || out_body[last - 1] == ';' ||
 						  out_body[last - 1] == '{';
-		if (!terminated && last + 2 < sizeof(out_body)) {
-			/* right after the last real character, not after the whitespace
-			 * that follows it -- `refresh 60 ; x 3409` parses, but a stray
-			 * space before the semicolon is not how anyone writes it */
-			o = last;
+		if (!terminated && o + 2 < sizeof(out_body))
 			out_body[o++] = ';';
-		}
 	}
-	if (!wrote_x)
-		o += (size_t)snprintf(out_body + o, sizeof(out_body) - o, " x %d;", x);
-	if (!wrote_y)
-		o += (size_t)snprintf(out_body + o, sizeof(out_body) - o, " y %d;", y);
+	for (size_t i = 0; i < nkeys; i++) {
+		if (wrote[i] || !vals[i])
+			continue;
+		o += (size_t)snprintf(out_body + o, sizeof(out_body) - o, " %s %s;",
+							  keys[i], vals[i]);
+	}
+	if (trailing[0] && o + strlen(trailing) < sizeof(out_body))
+		o += (size_t)snprintf(out_body + o, sizeof(out_body) - o, "%s",
+							  trailing);
 	out_body[o < sizeof(out_body) ? o : sizeof(out_body) - 1] = '\0';
+	free(wrote);
 	free(body);
 
 	size_t head = (size_t)(open + 1 - text);
@@ -165,6 +224,27 @@ static char *kdl_rewrite_output_pos(const char *text, const char *name,
 	memcpy(doc + head, out_body, strlen(out_body));
 	memcpy(doc + head + strlen(out_body), close, tail_len + 1);
 	return doc;
+}
+
+/* Rewrite the `x` and `y` of one `output NAME { … }` block in `text`, in
+ * place, returning a newly allocated document or NULL if the block is not
+ * there.
+ *
+ * SURGICAL on purpose: it edits the two numbers and leaves every other byte
+ * alone. The alternative -- regenerating the block from the Monitor -- would
+ * silently drop whatever the compositor does not model back into KDL, and
+ * every comment around it. The file this writes to is hand-maintained as well
+ * as machine-written (the user's monitors.kdl explains in a comment why HDR is
+ * absent from one output), and losing that to a monitor drag would be an
+ * unforgivable trade for a feature this small. */
+static char *kdl_rewrite_output_pos(const char *text, const char *name,
+									 int32_t x, int32_t y) {
+	char xs[32], ys[32];
+	snprintf(xs, sizeof(xs), "%d", x);
+	snprintf(ys, sizeof(ys), "%d", y);
+	const char *keys[] = {"x", "y"};
+	const char *vals[] = {xs, ys};
+	return kdl_rewrite_output_props(text, name, keys, vals, 2);
 }
 
 #endif /* ASTEROIDZ_KDL_EDIT_H */

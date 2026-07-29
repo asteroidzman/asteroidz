@@ -167,6 +167,104 @@ int main(void) {
 		free(out);
 	}
 
+	/* ── kdl_rewrite_output_props ────────────────────────────────────────
+	 *
+	 * The general form, which set_output_mode/scale/vrr/icc all persist
+	 * through. A mistake here writes the wrong resolution into a file nobody
+	 * reads until their screen comes up wrong. */
+
+	/* several keys at once, all already present */
+	{
+		const char *in =
+			"output DP-1 { scale 1; width 1920; height 1080; refresh 60; }\n";
+		const char *keys[] = {"width", "height", "refresh"};
+		const char *vals[] = {"2560", "1440", "144"};
+		char *out = kdl_rewrite_output_props(in, "DP-1", keys, vals, 3);
+		check_str("replaces several keys in one pass", out,
+				  "output DP-1 { scale 1; width 2560; height 1440; "
+				  "refresh 144; }\n");
+		free(out);
+	}
+
+	/* a key that is not there yet is APPENDED -- and appending after an
+	 * unterminated entry needs a `;` first, or it becomes an argument to it */
+	{
+		const char *in = "output DP-1 { scale 1 }\n";
+		const char *keys[] = {"vrr"};
+		const char *vals[] = {"1"};
+		char *out = kdl_rewrite_output_props(in, "DP-1", keys, vals, 1);
+		check_str("terminates the last entry before appending a new one", out,
+				  "output DP-1 { scale 1; vrr 1; }\n");
+		free(out);
+	}
+
+	/* mixed: one present, one absent */
+	{
+		const char *in = "output DP-1 { scale 1; x 0; y 0; }\n";
+		const char *keys[] = {"scale", "vrr"};
+		const char *vals[] = {"1.25", "0"};
+		char *out = kdl_rewrite_output_props(in, "DP-1", keys, vals, 2);
+		check_str("replaces one key and appends another", out,
+				  "output DP-1 { scale 1.25; x 0; y 0; vrr 0; }\n");
+		free(out);
+	}
+
+	/* a quoted value passes through as given -- the caller owns the quoting */
+	{
+		const char *in = "output DP-1 { scale 1; }\n";
+		const char *keys[] = {"icc-profile"};
+		const char *vals[] = {"\"/home/u/p.icm\""};
+		char *out = kdl_rewrite_output_props(in, "DP-1", keys, vals, 1);
+		check_str("appends a quoted path verbatim", out,
+				  "output DP-1 { scale 1; icc-profile \"/home/u/p.icm\"; }\n");
+		free(out);
+	}
+
+	/* NULL removes. Clearing an ICC profile has to take the entry OUT: an
+	 * `icc-profile ""` is a profile whose path is empty, not the absence of
+	 * one, and the untransformed pipeline is reachable only by absence. */
+	{
+		const char *in =
+			"output DP-1 { scale 1; icc-profile \"/p.icm\"; vrr 1; }\n";
+		const char *keys[] = {"icc-profile"};
+		const char *vals[] = {NULL};
+		char *out = kdl_rewrite_output_props(in, "DP-1", keys, vals, 1);
+		check_str("removes a key rather than emptying it", out,
+				  "output DP-1 { scale 1; vrr 1; }\n");
+		free(out);
+	}
+
+	/* removing something that was never there changes nothing */
+	{
+		const char *in = "output DP-1 { scale 1; vrr 1; }\n";
+		const char *keys[] = {"icc-profile"};
+		const char *vals[] = {NULL};
+		char *out = kdl_rewrite_output_props(in, "DP-1", keys, vals, 1);
+		check_str("removing an absent key is a no-op", out,
+				  "output DP-1 { scale 1; vrr 1; }\n");
+		free(out);
+	}
+
+	/* the multi-line form, which is how monitors.kdl looks once someone has
+	 * been editing it by hand */
+	{
+		const char *in = "output DP-1 {\n"
+						 "    // 4K, and it stays 4K\n"
+						 "    scale 1\n"
+						 "    width 3840\n"
+						 "}\n";
+		const char *keys[] = {"scale"};
+		const char *vals[] = {"1.5"};
+		char *out = kdl_rewrite_output_props(in, "DP-1", keys, vals, 1);
+		check_str("keeps a multi-line block and its comment", out,
+				  "output DP-1 {\n"
+				  "    // 4K, and it stays 4K\n"
+				  "    scale 1.5\n"
+				  "    width 3840\n"
+				  "}\n");
+		free(out);
+	}
+
 	printf("\n%s\n", failures ? "FAILED" : "all kdl-edit tests passed");
 	return failures ? 1 : 0;
 }

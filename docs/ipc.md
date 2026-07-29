@@ -117,6 +117,31 @@ and a rejected commit starts a retrain -- a picker must not be able to black
 out a display. A mode that the output does not advertise is refused rather than
 synthesised.
 
+##### They are saved, too
+
+A setting that applies and then vanishes at the next `reload_config` is not a
+setting, so each of these writes itself back to the config -- into whichever
+file already declares that output. `source "./monitors.kdl"` is the
+conventional split, and parse_config records every path it reads precisely so a
+writer can find the right one: putting the rule in the main config while a
+sourced file still sets it would produce a setting that silently loses to one
+you cannot see.
+
+The edit is **textual and surgical**. It replaces the bytes holding those
+values and copies every other byte through, so comments, spacing, and anything
+the compositor does not model survive being written around -- the file is
+hand-maintained as well as machine-written, and regenerating the block from the
+`Monitor` struct would be correct and still lose the comment explaining why an
+output is configured the way it is. It is written to a temporary and renamed
+over, so a crash mid-write cannot leave a config that will not parse.
+See `src/common/kdl-edit.h`, and `tests/test-kdl-edit.c`, which is what a
+change there answers to.
+
+An output with **no block anywhere** is applied but not saved, and logs that it
+was not. Inventing one means choosing a file and a place in it, and guessing
+that about a config someone maintains by hand is worse than a line in the log
+telling you to add `output NAME { }` yourself.
+
 ### DISPATCH
 Allows sending commands to the compositor to alter its state.
 * `dispatch <func_name>,[args...] [client,<id>]`

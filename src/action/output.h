@@ -1,6 +1,8 @@
 #ifndef ASTEROIDZ_ACTION_OUTPUT_H
 #define ASTEROIDZ_ACTION_OUTPUT_H
 
+#include "../common/kdl-edit.h"
+
 /* Output configuration as dispatches.
  *
  * This is the native bar's display popover, turned inside out. That code
@@ -24,6 +26,97 @@
  * such context and guessing selmon would make `set_output_scale` do something
  * different depending on where the pointer happened to be.
  */
+
+/* Write a setting back to whichever config file declares this output.
+ *
+ * Applying a mode and REMEMBERING it are two different features, and only the
+ * first one existed: every dispatch here took effect immediately and was gone
+ * at the next `reload_config`. The panel that drives them looked like it was
+ * configuring a display and was really only nudging it until something else
+ * touched the output.
+ *
+ * Which file is not a guess -- parse_config records every path it reads,
+ * `source "./monitors.kdl"` included, precisely so a writer can find the one
+ * that already declares a setting. Rewriting the rule into the main config
+ * while a sourced file still sets it would produce a setting that silently
+ * loses to the one you cannot see.
+ *
+ * The edit is SURGICAL (see kdl-edit.h): it replaces the bytes that hold these
+ * values and copies everything else through, so comments, spacing and
+ * everything the compositor does not model survive. A config regenerated from
+ * the Monitor struct would be correct and would still be a betrayal of a file
+ * someone maintains by hand.
+ *
+ * An output with no block anywhere is applied but NOT persisted, and says so.
+ * Inventing a block means choosing a file and a place in it, and guessing that
+ * about a hand-maintained config is worse than a warning that tells you to add
+ * three words yourself. */
+static bool output_persist(Monitor *m, const char *const *keys,
+						   const char *const *vals, size_t nkeys) {
+	if (!m || !m->wlr_output || !m->wlr_output->name)
+		return false;
+	const char *name = m->wlr_output->name;
+
+	for (int32_t i = 0; i < nconfig_files; i++) {
+		FILE *f = fopen(config_files[i], "rb");
+		if (!f)
+			continue;
+		fseek(f, 0, SEEK_END);
+		long sz = ftell(f);
+		fseek(f, 0, SEEK_SET);
+		if (sz < 0) {
+			fclose(f);
+			continue;
+		}
+		char *text = malloc((size_t)sz + 1);
+		if (!text) {
+			fclose(f);
+			continue;
+		}
+		size_t rd = fread(text, 1, (size_t)sz, f);
+		text[rd] = '\0';
+		fclose(f);
+
+		char *out = kdl_rewrite_output_props(text, name, keys, vals, nkeys);
+		free(text);
+		if (!out)
+			continue; /* this file does not declare that output */
+
+		/* Written to a temporary and renamed over, never in place: a config
+		 * truncated by a crash mid-write is a compositor that does not come
+		 * back, and this runs on a mode set -- exactly when the machine is
+		 * most likely to be unhappy. */
+		char tmp[1100];
+		snprintf(tmp, sizeof(tmp), "%s.tmp", config_files[i]);
+		bool ok = false;
+		FILE *w = fopen(tmp, "wb");
+		if (w) {
+			size_t len = strlen(out);
+			ok = fwrite(out, 1, len, w) == len;
+			if (ok && fflush(w) != 0)
+				ok = false;
+			if (ok && fsync(fileno(w)) != 0)
+				ok = false;
+			if (fclose(w) != 0)
+				ok = false;
+		}
+		if (ok && rename(tmp, config_files[i]) != 0)
+			ok = false;
+		if (!ok) {
+			unlink(tmp);
+			wlr_log(WLR_ERROR, "output_persist: could not write %s",
+					config_files[i]);
+		}
+		free(out);
+		return ok;
+	}
+
+	wlr_log(WLR_INFO,
+			"output_persist: %s applied but not saved -- no `output %s { }` "
+			"block in any config file",
+			name, name);
+	return false;
+}
 
 static Monitor *output_by_name_or_focus(const char *name) {
 	Monitor *m;
@@ -129,7 +222,19 @@ int32_t set_output_mode(const Arg *arg) {
 				m->wlr_output->name, arg->v2 ? (const char *)arg->v2 : "");
 		return 0;
 	}
-	return output_apply(m, mode, 0.0f) ? 1 : 0;
+	if (!output_apply(m, mode, 0.0f))
+		return 0;
+
+	char w[16], h[16], hz[16];
+	snprintf(w, sizeof(w), "%d", mode->width);
+	snprintf(h, sizeof(h), "%d", mode->height);
+	/* whole Hz, the way the file writes it: the panel reports 143999 mHz as
+	 * "144" and a config saying `refresh 143999` would match no mode at all */
+	snprintf(hz, sizeof(hz), "%d", (mode->refresh + 500) / 1000);
+	const char *keys[] = {"width", "height", "refresh"};
+	const char *vals[] = {w, h, hz};
+	output_persist(m, keys, vals, 3);
+	return 1;
 }
 
 int32_t set_output_scale(const Arg *arg) {
@@ -138,7 +243,18 @@ int32_t set_output_scale(const Arg *arg) {
 	Monitor *m = output_by_name_or_focus((const char *)arg->v);
 	if (!m || arg->f <= 0.0f)
 		return 0;
-	return output_apply(m, NULL, arg->f) ? 1 : 0;
+	if (!output_apply(m, NULL, arg->f))
+		return 0;
+
+	/* %g so 1.0 persists as `scale 1` and 0.75 as `scale 0.75`, which is how
+	 * the file already reads -- `scale 1.000000` is the same number and looks
+	 * like a machine got at it */
+	char sc[32];
+	snprintf(sc, sizeof(sc), "%g", (double)arg->f);
+	const char *keys[] = {"scale"};
+	const char *vals[] = {sc};
+	output_persist(m, keys, vals, 1);
+	return 1;
 }
 
 /* Move an output to a new layout position, live.
@@ -159,6 +275,13 @@ int32_t set_output_position(const Arg *arg) {
 	wlr_output_layout_add(output_layout, m->wlr_output, arg->i, arg->i2);
 	updatemons(NULL, NULL);
 	printstatus(IPC_WATCH_ARRANGGE);
+
+	char xs[16], ys[16];
+	snprintf(xs, sizeof(xs), "%d", arg->i);
+	snprintf(ys, sizeof(ys), "%d", arg->i2);
+	const char *keys[] = {"x", "y"};
+	const char *vals[] = {xs, ys};
+	output_persist(m, keys, vals, 2);
 	return 1;
 }
 
@@ -181,8 +304,12 @@ int32_t set_output_vrr(const Arg *arg) {
 	m->vrr_global_enable = arg->i ? 1 : 0;
 	bool ok = wlr_output_commit_state(m->wlr_output, &state);
 	wlr_output_state_finish(&state);
-	if (ok)
+	if (ok) {
 		printstatus(IPC_WATCH_ARRANGGE);
+		const char *keys[] = {"vrr"};
+		const char *vals[] = {arg->i ? "1" : "0"};
+		output_persist(m, keys, vals, 1);
+	}
 	return ok ? 1 : 0;
 }
 
@@ -197,6 +324,15 @@ int32_t set_output_icc(const Arg *arg) {
 	const char *path = arg->v2 ? (const char *)arg->v2 : "";
 	mon_load_icc_profile(m, *path ? path : NULL);
 	printstatus(IPC_WATCH_ARRANGGE);
+
+	/* An empty path REMOVES the entry rather than writing `icc-profile ""`:
+	 * that would be a profile whose path is the empty string, and the way back
+	 * to the untransformed pipeline is for the setting not to be there. */
+	char quoted[1024];
+	snprintf(quoted, sizeof(quoted), "\"%s\"", path);
+	const char *keys[] = {"icc-profile"};
+	const char *vals[] = {*path ? quoted : NULL};
+	output_persist(m, keys, vals, 1);
 	return 1;
 }
 
