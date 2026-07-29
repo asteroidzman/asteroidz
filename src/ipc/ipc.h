@@ -240,7 +240,15 @@ static cJSON *build_monitor_json(Monitor *m) {
 						   WLR_COLOR_NAMED_PRIMARIES_BT2020) &&
 							  (m->wlr_output->supported_transfer_functions &
 							   WLR_COLOR_TRANSFER_FUNCTION_ST2084_PQ));
-	cJSON_AddNumberToObject(resp, "bitdepth", m->bitdepth);
+	/* The bit depth in USE, not the one configured. m->bitdepth is the
+	 * config value where 0 means "auto" -- reporting that verbatim answered
+	 * "what depth is this output running at?" with 0, which is not a depth.
+	 * Same split as hdr/hdr_enabled above: the plain name is what the output
+	 * is really doing, *_enabled is what was asked for. */
+	cJSON_AddNumberToObject(
+		resp, "bitdepth",
+		m->wlr_output->render_format == DRM_FORMAT_XRGB2101010 ? 10 : 8);
+	cJSON_AddNumberToObject(resp, "bitdepth_enabled", m->bitdepth);
 	cJSON_AddNumberToObject(resp, "hdr_max_luminance", m->hdr_max_luminance);
 	cJSON_AddNumberToObject(resp, "hdr_min_luminance", m->hdr_min_luminance);
 	cJSON_AddNumberToObject(resp, "hdr_max_fall", m->hdr_max_fall);
