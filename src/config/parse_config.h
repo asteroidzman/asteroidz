@@ -593,6 +593,23 @@ typedef struct {
 	float globalcolor[4];
 	float overlaycolor[4];
 
+	/* Did the config actually ASK for these four, or are they still the
+	 * built-in values?
+	 *
+	 * They mark a state of the focused window -- maximized, scratchpad,
+	 * global, overlay -- and their defaults are fixed hues (a green, a blue,
+	 * a magenta, a teal) chosen against no palette in particular. A themed
+	 * setup therefore got a focused border in the theme's colour that turned
+	 * green the moment the window was maximized, with nothing in the config
+	 * to blame: there was no key for them, so they could not be changed.
+	 *
+	 * There is one now, and until it is used these fall back to focuscolor.
+	 * A state nobody has assigned a colour to should not invent one. */
+	bool maximizescreencolor_set;
+	bool scratchpadcolor_set;
+	bool globalcolor_set;
+	bool overlaycolor_set;
+
 	int32_t log_level;
 	uint32_t capslock;
 
@@ -2673,6 +2690,7 @@ bool parse_option(Config *config, char *key, char *value) {
 			return false;
 		} else {
 			convert_hex_to_rgba(config->maximizescreencolor, color);
+			config->maximizescreencolor_set = true;
 		}
 	} else if (strcmp(key, "urgentcolor") == 0) {
 		int64_t color = parse_color(value);
@@ -2696,6 +2714,7 @@ bool parse_option(Config *config, char *key, char *value) {
 			return false;
 		} else {
 			convert_hex_to_rgba(config->scratchpadcolor, color);
+			config->scratchpadcolor_set = true;
 		}
 	} else if (strcmp(key, "globalcolor") == 0) {
 		int64_t color = parse_color(value);
@@ -2707,6 +2726,7 @@ bool parse_option(Config *config, char *key, char *value) {
 			return false;
 		} else {
 			convert_hex_to_rgba(config->globalcolor, color);
+			config->globalcolor_set = true;
 		}
 	} else if (strcmp(key, "overlaycolor") == 0) {
 		int64_t color = parse_color(value);
@@ -2718,6 +2738,7 @@ bool parse_option(Config *config, char *key, char *value) {
 			return false;
 		} else {
 			convert_hex_to_rgba(config->overlaycolor, color);
+			config->overlaycolor_set = true;
 		}
 	} else if (strcmp(key, "monitorrule") == 0) {
 		config->monitor_rules =
@@ -3814,6 +3835,16 @@ static const struct {
 	{"layout/border/color", "bordercolor"},
 	{"layout/border/focus-color", "focuscolor"},
 	{"layout/border/urgent-color", "urgentcolor"},
+	/* Border colours for a focused window in a particular STATE. Each falls
+	 * back to focus-color when absent, so a palette that does not mention
+	 * them stays coherent instead of producing a themed border that changes
+	 * hue when a window is maximized. These had no KDL key at all before, and
+	 * KDL is the only config format -- so their defaults were not merely
+	 * unthemed, they were unreachable. */
+	{"layout/border/maximize-color", "maximizescreencolor"},
+	{"layout/border/scratchpad-color", "scratchpadcolor"},
+	{"layout/border/global-color", "globalcolor"},
+	{"layout/border/overlay-color", "overlaycolor"},
 	{"layout/border/gradient/enable", "border_gradient"},
 	{"layout/border/gradient/angle", "border_gradient_angle"},
 	{"layout/border/gradient/color2", "border_gradient_color2"},
@@ -5329,26 +5360,24 @@ void set_value_default() {
 	config.focuscolor[1] = 0x6b / 255.0f;
 	config.focuscolor[2] = 0x25 / 255.0f;
 	config.focuscolor[3] = 1.0f;
-	config.maximizescreencolor[0] = 0x89 / 255.0f;
-	config.maximizescreencolor[1] = 0xaa / 255.0f;
-	config.maximizescreencolor[2] = 0x61 / 255.0f;
-	config.maximizescreencolor[3] = 1.0f;
 	config.urgentcolor[0] = 0xad / 255.0f;
 	config.urgentcolor[1] = 0x40 / 255.0f;
 	config.urgentcolor[2] = 0x1f / 255.0f;
 	config.urgentcolor[3] = 1.0f;
-	config.scratchpadcolor[0] = 0x51 / 255.0f;
-	config.scratchpadcolor[1] = 0x6c / 255.0f;
-	config.scratchpadcolor[2] = 0x93 / 255.0f;
-	config.scratchpadcolor[3] = 1.0f;
-	config.globalcolor[0] = 0xb1 / 255.0f;
-	config.globalcolor[1] = 0x53 / 255.0f;
-	config.globalcolor[2] = 0xa7 / 255.0f;
-	config.globalcolor[3] = 1.0f;
-	config.overlaycolor[0] = 0x14 / 255.0f;
-	config.overlaycolor[1] = 0xa5 / 255.0f;
-	config.overlaycolor[2] = 0x7c / 255.0f;
-	config.overlaycolor[3] = 1.0f;
+
+	/* maximizescreencolor / scratchpadcolor / globalcolor / overlaycolor are
+	 * deliberately left at zero.
+	 *
+	 * They used to default to a green, a blue, a magenta and a teal, and
+	 * get_border_color reads them ONLY when the matching *_set flag says the
+	 * config asked for one -- so a default here would be dead, and a
+	 * misleading kind of dead: it reads as the colour you will get. You will
+	 * not. Unset, a focused window keeps focus-color in every one of these
+	 * states, which is what makes a themed border stay one colour instead of
+	 * turning green the moment the window is maximized.
+	 *
+	 * Set layout/border/{maximize,scratchpad,global,overlay}-color to get a
+	 * distinct one back. */
 }
 
 void set_default_key_bindings(Config *config) {

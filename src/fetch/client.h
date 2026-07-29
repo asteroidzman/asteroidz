@@ -411,13 +411,22 @@ float *get_border_color(Client *c) {
 		return inactive_color;
 	} else if (c->isurgent) {
 		return config.urgentcolor;
-	} else if (c->is_in_scratchpad && selmon && c == selmon->sel) {
+		/* Each state colour applies only if the config actually asked for
+		 * one. Unset, the window keeps focuscolor via the branch below --
+		 * these mark a STATE of the focused window, so falling back to the
+		 * focused colour is the honest answer, and it keeps a themed border
+		 * one colour instead of turning green on maximize. */
+	} else if (c->is_in_scratchpad && config.scratchpadcolor_set && selmon &&
+			   c == selmon->sel) {
 		return config.scratchpadcolor;
-	} else if (c->isglobal && selmon && c == selmon->sel) {
+	} else if (c->isglobal && config.globalcolor_set && selmon &&
+			   c == selmon->sel) {
 		return config.globalcolor;
-	} else if (c->isoverlay && selmon && c == selmon->sel) {
+	} else if (c->isoverlay && config.overlaycolor_set && selmon &&
+			   c == selmon->sel) {
 		return config.overlaycolor;
-	} else if (c->ismaximizescreen && selmon && c == selmon->sel) {
+	} else if (c->ismaximizescreen && config.maximizescreencolor_set &&
+			   selmon && c == selmon->sel) {
 		return config.maximizescreencolor;
 	} else if (selmon && c == selmon->sel) {
 		return config.focuscolor;

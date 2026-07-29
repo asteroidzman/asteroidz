@@ -36,14 +36,38 @@ layout {
 
 ### State-Specific Colors
 
-You can also color-code windows based on their state:
+The focused window's border can carry a different colour while it is in a
+particular state:
 
-| State | Config Key | Default Color |
-| :--- | :--- | :--- |
-| Maximized | `maximizescreencolor` | `0x89aa61ff` |
-| Scratchpad | `scratchpadcolor` | `0x516c93ff` |
-| Global | `globalcolor` | `0xb153a7ff` |
-| Overlay | `overlaycolor` | `0x14a57cff` |
+| State | Config Key |
+| :--- | :--- |
+| Maximized | `layout/border/maximize-color` |
+| Scratchpad | `layout/border/scratchpad-color` |
+| Global | `layout/border/global-color` |
+| Overlay | `layout/border/overlay-color` |
+
+```kdl
+layout {
+    border {
+        focus-color 0xffb86fff
+        maximize-color 0x89aa61ff
+    }
+}
+```
+
+**All four default to `focus-color`**, and that is deliberate. They apply only
+to a window that is already focused, so they are a variant of the focused
+colour rather than a colour in their own right — and a state nobody has
+assigned a colour to should not invent one. A generated palette (matugen, say)
+sets `color`, `focus-color` and `urgent-color`; if these four defaulted to
+fixed hues, a carefully themed border would turn green the moment you maximized
+the window, with nothing in the config to point at.
+
+> These keys are new. They previously existed only as internal names
+> (`maximizescreencolor` and friends) with no KDL spelling at all, which made
+> their hardcoded defaults unreachable — the colours were documented here but
+> could not actually be set. If you tried the old names and nothing happened,
+> that is why.
 
 > **Tip:** For scratchpad window sizing, see [Scratchpad](/docs/window-management/scratchpad) configuration.
 
@@ -110,7 +134,23 @@ theme {
 
 ## Borders
 
-Control the appearance of window borders.
+Width, and an optional two-tone gradient across the focused border. The
+colours themselves are above, under [Colors](#colors).
+
+```kdl
+layout {
+    border {
+        width 2
+        gradient { enable; angle 45; color2 0x88ceffff }
+    }
+}
+```
+
+`gradient/color2` is the far end of the ramp; the near end is `focus-color`,
+so a gradient follows the theme without a second colour having to be kept in
+step with it. Only the focused border is drawn as a gradient — an unfocused
+one is flat `color`, which is what keeps the focused window obvious in a row
+of tiled ones.
 
 ## Cursor Theme
 
