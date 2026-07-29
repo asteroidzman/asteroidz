@@ -12,15 +12,22 @@
 # logical is smaller and that bug would hide.
 #
 # IT DID NOT REPRODUCE. Blur is intact at 0.75, 1.25 and 1.5, on a single
-# output and on a second output at a non-zero origin, under GLES2. So this is
-# NOT a fractional-scale bug, and the file stays as the regression guard that
-# says so -- the next person to suspect scale can spend one command instead of
-# an afternoon.
+# output and on a second output at a non-zero origin, under BOTH renderers
+# (WLR_RENDERER=gles2 and =vulkan). So this is NOT a fractional-scale bug, and
+# the file stays as the regression guard that says so -- the next person to
+# suspect scale can spend one command instead of an afternoon.
+#
+# Run it under the renderer the SESSION uses, not the one you assume: reading
+# WLR_RENDERER off `pgrep -x asteroidz | head -1` picked a stray headless test
+# compositor left running from the day before, and the first pass here tested
+# GLES2 while the live session was Vulkan.
 #
 # What this harness CANNOT reach is the remaining difference on the machine
-# that reported it: the working output there is HDR, and a headless output is
-# not HDR-capable (toggle_hdr is refused -- see regression/tests/hdr.sh), so
-# "an SDR output beside an HDR one" has no headless equivalent at all.
+# that reported it: the working output there is HDR and carries an ICC profile,
+# and a headless output is neither HDR-capable (toggle_hdr is refused -- see
+# regression/tests/hdr.sh) nor a plausible ICC target. "An SDR output beside a
+# colour-transformed one" has no headless equivalent at all, which is where
+# this stopped being answerable from here.
 #
 # Captured at scale 1 first as the control, then at each scale under test on the
 # SAME output with the same window, so the only variable is the scale.
