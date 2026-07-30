@@ -160,6 +160,37 @@ static void config_schema_list(void) {
 	}
 }
 
+/* Dump provenance for every recorded key: which file, which line, which path
+ * it was written at, and whether that file may be written back to.
+ *
+ * `asteroidz -P -c FILE`. Reads a real config, unlike -S and -L, because
+ * provenance is a property of the files -- there is nothing to report about the
+ * compiled-in defaults. */
+static void config_source_dump(void) {
+	printf("# key\tfile\tline\tpath\twritable\treason\n");
+	for (int32_t i = 0; i < nconfig_origins; i++) {
+		const ConfigOrigin *o = &config_origins[i];
+		const char *file = "<runtime>";
+		const char *writable = "n/a";
+		char why[64] = "";
+		if (o->file >= 0 && o->file < nconfig_files) {
+			file = config_files[o->file];
+			writable = config_file_is_foreign(file, why, sizeof(why)) ? "no"
+																	  : "yes";
+		}
+		printf("%s\t%s\t%d\t%s\t%s\t%s\n", o->key, file, o->line,
+			   o->path, writable, why);
+	}
+}
+
+/* Dump the dispatch-action table, one action per line.
+ *
+ * Same reason config_schema_list exists: tests/check-dispatch-actions.py asks
+ * the binary rather than regexing a multi-line C initialiser out of the source,
+ * because a pattern that quietly over- or under-matches turns a checker into
+ * decoration. Declared here and defined in ipc-config.h, which owns the table. */
+static void dispatch_actions_list(void);
+
 /* Run every check. Returns the number of failures. */
 static int config_schema_self_check(void) {
 	char got[512], want[512], buf[512];

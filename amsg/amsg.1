@@ -83,6 +83,28 @@ Examples:
 (keep the screen awake); append \fB,1\fR or \fB,0\fR to force a state
 instead of toggling
 .RE
+.TP
+\fBget config\-schema\fR [\fIgroup\fR]
+Describe every settable option: its type, range, enum members, default, a label
+and a one\-line explanation. Compile\-time constant, so a client should cache it
+and revalidate with \fBget config\-schema\-digest\fR. An optional \fIgroup\fR
+restricts the reply to one settings page.
+.TP
+\fBget config\-schema\-digest\fR
+Return just the schema's digest, so a cached copy can be revalidated in one
+small request across a compositor restart.
+.TP
+\fBget config\fR [\fIgroup\fR]
+Return the current value of every described option, each with \fBsource\fR:
+which file and line set it, the path it was actually written at, and whether
+that file may be written back to. Colours carry both the \fB0xRRGGBBAA\fR form
+and four floats. \fBkind\fR is \fBfile\fR, \fBdefault\fR, or \fBruntime\fR --
+the last meaning \fBset_option\fR changed it in memory and a reload will undo
+it.
+.TP
+\fBget dispatch\-actions\fR
+Return every dispatchable action with the \fIkinds\fR of its arguments, so a
+keybind editor can offer the right control instead of a text box.
 .SS "Persistent streams (watch)"
 \fBWatch\fR commands keep the connection open and continuously output JSON
 updates. The initial state is sent immediately, followed by updates whenever
@@ -122,6 +144,13 @@ Stream last open surface changes for a specific monitor (or the focused one).
 Stream the resolved bar configuration, re-sent on every config reload -- so a
 bar in another process repaints with a new palette rather than waiting for
 something else to wake it.
+.TP
+\fBwatch config\fR
+Stream config changes as a DIFF: only the keys that changed, with the same
+\fBsource\fR detail \fBget config\fR carries. The first push after subscribing
+is everything (\fBreason\fR is \fBinitial\fR); after that \fBreason\fR is
+\fBreload\fR or \fBset\fR. A change that changes nothing pushes nothing --
+matugen fires on every wallpaper change and often lands on the same colours.
 .SS "Output configuration"
 .TP
 \fBset_output_mode\fR,<output>,<WxH[@Hz]>

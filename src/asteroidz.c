@@ -298,6 +298,14 @@ enum ipc_watch_type {
 	 * defaults, after clamping, after the theme file -- and pushes it again
 	 * whenever the config is reloaded. */
 	IPC_WATCH_BAR_CONFIG = 1 << 10,
+	/* Every option in the schema, pushed as a DIFF when anything changes.
+	 *
+	 * A settings panel showing the live value of an option has to hear about a
+	 * change it did not make -- a matugen palette rewrite, `amsg dispatch
+	 * set_option`, someone editing the file and reloading -- or it sits there
+	 * displaying something that stopped being true. A diff rather than the whole
+	 * set because a palette reload touches nine keys out of ninety-five. */
+	IPC_WATCH_CONFIG = 1 << 11,
 };
 
 typedef struct Pertag Pertag;
@@ -1072,6 +1080,7 @@ static void printstatus(enum ipc_watch_type type);
 /* ipc/ipc.h is included later still, and a reload has to push the new palette
  * to the bar, which runs out of process. */
 void ipc_notify_bar_config(void);
+void ipc_notify_config(const char *reason);
 static void quitsignal(int32_t signo);
 static void powermgrsetmode(struct wl_listener *listener, void *data);
 static void wake_monitor(Monitor *m);
@@ -1495,6 +1504,8 @@ static bool cli_debug_log = false;
 static bool cli_check_config = false;
 static bool cli_check_schema = false;
 static bool cli_list_schema = false;
+static bool cli_dump_source = false;
+static bool cli_list_dispatch = false;
 static KeyMode keymode = {
 	.mode = {'d', 'e', 'f', 'a', 'u', 'l', 't', '\0'},
 	.isdefault = true,
@@ -10214,7 +10225,7 @@ int32_t main(int32_t argc, char *argv[]) {
 		unsetenv("DISPLAY");
 	}
 
-	while ((c = getopt(argc, argv, "s:c:hdvpSL")) != -1) {
+	while ((c = getopt(argc, argv, "s:c:hdvpSLPD")) != -1) {
 		if (c == 's') {
 			startup_cmd = optarg;
 		} else if (c == 'd') {
@@ -10233,6 +10244,10 @@ int32_t main(int32_t argc, char *argv[]) {
 			cli_check_schema = true;
 		} else if (c == 'L') {
 			cli_list_schema = true;
+		} else if (c == 'P') {
+			cli_dump_source = true;
+		} else if (c == 'D') {
+			cli_list_dispatch = true;
 		} else {
 			goto usage;
 		}
@@ -10243,6 +10258,16 @@ int32_t main(int32_t argc, char *argv[]) {
 	 * compiled-in defaults, not whatever the user's file says. */
 	if (cli_list_schema) {
 		config_schema_list();
+		return EXIT_SUCCESS;
+	}
+	if (cli_list_dispatch) {
+		dispatch_actions_list();
+		return EXIT_SUCCESS;
+	}
+	if (cli_dump_source) {
+		if (!parse_config())
+			return EXIT_FAILURE;
+		config_source_dump();
 		return EXIT_SUCCESS;
 	}
 	if (cli_check_schema)
@@ -10280,6 +10305,8 @@ usage:
 		   "  -s <command>   Execute startup command\n"
 		   "  -p             Check configuration file error\n"
 		   "  -S             Check the config schema against the parser\n"
-		   "  -L             List the config schema, one option per line\n");
+		   "  -L             List the config schema, one option per line\n"
+		   "  -P             Show where each config value came from\n"
+		   "  -D             List the dispatch actions, one per line\n");
 	return EXIT_SUCCESS;
 }

@@ -249,6 +249,8 @@ test('kdl-write', test_kdl_write, workdir : meson.project_source_root())
 test('config-schema', asteroidz_exe, args : ['-S'])
 test('config-schema-coverage', find_program('tests/check-config-schema.py'),
      args : [asteroidz_exe])
+test('dispatch-actions-coverage',
+     find_program('tests/check-dispatch-actions.py'), args : [asteroidz_exe])
 
 mandir = get_option('mandir')
 desktop_install_dir = join_paths(prefix, 'share/wayland-sessions')

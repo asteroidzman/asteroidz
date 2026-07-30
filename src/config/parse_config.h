@@ -705,6 +705,7 @@ Config config;
 /* Included HERE, not at the top of the file: every entry in the schema table is
  * an offsetof(Config, …), so the struct has to be complete first. */
 #include "config-schema.h"
+#include "config-source.h"
 
 bool parse_config_file(Config *config, const char *file_path, bool must_exist);
 
@@ -1707,6 +1708,21 @@ void run_exec_once() {
 }
 
 bool parse_option(Config *config, char *key, char *value) {
+	/* One hook for every caller.
+	 *
+	 * Noted BEFORE the chain rather than after, and unconditionally, because the
+	 * chain silently ignores a key it does not know and there is no return value
+	 * to distinguish "applied" from "never heard of it". Recording an unknown
+	 * key costs one array slot and is worth having: the settings app can say
+	 * "your config sets `bordercolour` at line 40 and nothing reads it", which
+	 * is otherwise invisible.
+	 *
+	 * Every caller passes the one global Config -- there is no scratch struct to
+	 * exclude. `asteroidz -S` does apply the whole schema with probe values, so
+	 * it leaves this table full of nonsense; harmless, because it exits
+	 * immediately afterwards and never serves anything from it. */
+	config_source_note(key);
+
 	if (strcmp(key, "keymode") == 0) {
 		snprintf(config->keymode, sizeof(config->keymode), "%.27s", value);
 	} else if (strcmp(key, "animations") == 0) {
@@ -4213,7 +4229,25 @@ static bool kdl_leaf(Config *config, KdlNode *node, const char *path) {
 		key = node->name; /* fall back to the option's own name */
 	char value[2048];
 	kdl_build_value(node, value, sizeof(value));
-	return parse_option(config, (char *)key, value);
+
+	/* Provenance, at the one place that knows both the node's byte span and the
+	 * path the user actually wrote -- which for ~190 keys is not the canonical
+	 * one, because kdl_lookup_key fell through to the node's own name. Saved and
+	 * restored rather than just set: a leaf can be `source`, and that recurses
+	 * into a whole other file. */
+	const KdlNode *prev_node = config_src_ctx.node;
+	const char *prev_path = config_src_ctx.path;
+	bool prev_active = config_src_ctx.active;
+	config_src_ctx.node = node;
+	config_src_ctx.path = full;
+	config_src_ctx.active = true;
+
+	bool ok = parse_option(config, (char *)key, value);
+
+	config_src_ctx.node = prev_node;
+	config_src_ctx.path = prev_path;
+	config_src_ctx.active = prev_active;
+	return ok;
 }
 
 #ifdef ASTEROIDZ_NATIVE_BAR
@@ -4273,10 +4307,35 @@ static bool kdl_walk_section(Config *config, KdlNode *node, const char *path) {
 	return ok;
 }
 
+static bool parse_kdl_node_inner(Config *config, KdlNode *node);
+
 /* top-level dispatcher */
 bool parse_kdl_node(Config *config, KdlNode *node) {
 	if (!node || !node->name)
 		return true;
+	char *n = node->name;
+
+	/* A coarse provenance default for everything below, so the structural
+	 * handlers -- rules, binds, spawn, which flatten a whole block into one
+	 * legacy string and call parse_option once -- still get a file and a line
+	 * number. kdl_leaf overrides it per leaf with the exact span; this is what
+	 * the things that are NOT leaves fall back to. Without it a window rule has
+	 * no provenance at all, and Phase 3's rule editor would have nowhere to
+	 * write. */
+	const KdlNode *prev_node = config_src_ctx.node;
+	const char *prev_path = config_src_ctx.path;
+	bool prev_active = config_src_ctx.active;
+	config_src_ctx.node = node;
+	config_src_ctx.path = n;
+	config_src_ctx.active = true;
+	bool node_ok = parse_kdl_node_inner(config, node);
+	config_src_ctx.node = prev_node;
+	config_src_ctx.path = prev_path;
+	config_src_ctx.active = prev_active;
+	return node_ok;
+}
+
+static bool parse_kdl_node_inner(Config *config, KdlNode *node) {
 	char *n = node->name;
 
 	if (!strcmp(n, "binds"))
@@ -4324,11 +4383,17 @@ bool parse_config_file(Config *config, const char *file_path, bool must_exist) {
 	if (file_path[0] == '.' && file_path[1] == '/') {
 		// Relative path
 
+		/* `+ 2`, skipping "./" -- not `+ 1`, which leaves the slash on and
+		 * produces ".../asteroidz//colors.kdl" once the format adds its own.
+		 * open() does not mind, which is why it survived, but these paths are
+		 * recorded in config_files[] and are about to be shown to a user and
+		 * compared against by a writer. Two spellings of one file is a bug
+		 * waiting for whoever compares them. */
 		if (cli_config_path) {
 			char *config_path = strdup(cli_config_path);
 			char *config_dir = dirname(config_path);
 			snprintf(full_path, sizeof(full_path), "%s/%s", config_dir,
-					 file_path + 1);
+					 file_path + 2);
 			free(config_path);
 		} else {
 			const char *home = getenv("HOME");
@@ -4339,7 +4404,7 @@ bool parse_config_file(Config *config, const char *file_path, bool must_exist) {
 				return false;
 			}
 			snprintf(full_path, sizeof(full_path), "%s/.config/asteroidz/%s",
-					 home, file_path + 1);
+					 home, file_path + 2);
 		}
 		file = fopen(full_path, "r");
 
@@ -4382,18 +4447,18 @@ bool parse_config_file(Config *config, const char *file_path, bool must_exist) {
 	 * setting that silently loses to the one you cannot see. Recorded here,
 	 * where the path has just been resolved, rather than re-derived later from
 	 * a `source` string nobody kept. */
-	if (nconfig_files < (int32_t)LENGTH(config_files)) {
-		const char *resolved = (file_path[0] == '.' && file_path[1] == '/') ||
-									   (file_path[0] == '~')
-								   ? full_path
-								   : file_path;
-		bool seen = false;
-		for (int32_t i = 0; i < nconfig_files; i++)
-			if (!strcmp(config_files[i], resolved))
-				seen = true;
-		if (!seen)
-			snprintf(config_files[nconfig_files++],
-					 sizeof(config_files[0]), "%s", resolved);
+	const char *resolved = (file_path[0] == '.' && file_path[1] == '/') ||
+								   (file_path[0] == '~')
+							   ? full_path
+							   : file_path;
+	int32_t this_file = -1;
+	for (int32_t i = 0; i < nconfig_files; i++)
+		if (!strcmp(config_files[i], resolved))
+			this_file = i;
+	if (this_file < 0 && nconfig_files < (int32_t)LENGTH(config_files)) {
+		this_file = nconfig_files;
+		snprintf(config_files[nconfig_files++], sizeof(config_files[0]), "%s",
+				 resolved);
 	}
 
 	/* read the whole file, then parse it as KDL */
@@ -4423,11 +4488,19 @@ bool parse_config_file(Config *config, const char *file_path, bool must_exist) {
 	}
 	free(text);
 
+	/* Saved and restored around the walk, because `source` recurses straight
+	 * back into here: without this every key in a sourced file would be
+	 * attributed to whichever file happened to be parsed last. */
+	int32_t prev_file = config_src_ctx.file;
+	config_src_ctx.file = this_file;
+
 	bool parse_correct = true;
 	for (size_t i = 0; i < doc.n_nodes; i++) {
 		if (!parse_kdl_node(config, &doc.nodes[i]))
 			parse_correct = false;
 	}
+
+	config_src_ctx.file = prev_file;
 	kdl_free(&doc);
 	return parse_correct;
 }
@@ -5463,6 +5536,11 @@ bool parse_config(void) {
 	/* a reload re-walks the whole tree, so start the file list over rather
 	 * than accumulating paths a removed `source` no longer pulls in */
 	nconfig_files = 0;
+	/* Same reasoning for provenance: a key deleted from the config between
+	 * reloads must stop claiming a line number in a file that no longer sets
+	 * it. Stale provenance is worse than none -- a settings app would edit that
+	 * line, which now belongs to something else. */
+	config_source_reset();
 
 	if (cli_config_path) {
 		snprintf(filename, sizeof(filename), "%s", cli_config_path);
@@ -5890,6 +5968,11 @@ int32_t reload_config(const Arg *arg) {
 	/* tell the bar, which runs out of process and cannot see a reload -- it
 	 * would otherwise keep the old palette until something else woke it */
 	ipc_notify_bar_config();
+	/* And to anyone watching the whole config -- a settings panel showing a
+	 * value that a reload just changed under it is worse than one showing
+	 * nothing. This is the push that makes a matugen wallpaper change appear in
+	 * an open panel. */
+	ipc_notify_config("reload");
 	printstatus(IPC_WATCH_ARRANGGE);
 	return 1;
 }

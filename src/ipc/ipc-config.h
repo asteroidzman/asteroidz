@@ -1,0 +1,436 @@
+#ifndef ASTEROIDZ_IPC_CONFIG_H
+#define ASTEROIDZ_IPC_CONFIG_H
+
+/* The config, over IPC: the schema, the current values, and where they came
+ * from.
+ *
+ * `get bar-config` already establishes the principle these follow, and its
+ * comment says it plainly: the compositor is the only process that knows what
+ * the config currently IS. Defaults, clamping, cross-key coherence and a palette
+ * rewritten at runtime by matugen all happen here, so a client that parsed
+ * config.kdl for itself would be a second reader that agrees with the first
+ * until one of them gains a default.
+ *
+ * Three verbs, because they change at three different rates:
+ *
+ *   get config-schema         compile-time constant. Cache it.
+ *   get config-schema-digest  ~60 bytes, so a cache can be revalidated in one
+ *                             round trip across a compositor restart.
+ *   get config                changes whenever anything is set.
+ *
+ * plus `watch config`, which pushes a DIFF rather than the whole set -- a
+ * matugen reload changes nine keys and should not cost 30KB.
+ */
+
+#include "../config/config-schema.h"
+#include "../config/config-source.h"
+
+/* ---------- schema ---------- */
+
+static cJSON *ipc_schema_enum_array(const ConfigOption *o) {
+	cJSON *arr = cJSON_CreateArray();
+	for (size_t i = 0; i < o->n_members; i++) {
+		cJSON *m = cJSON_CreateObject();
+		cJSON_AddStringToObject(m, "name", o->members[i].name);
+		if (o->members[i].alias)
+			cJSON_AddBoolToObject(m, "alias", true);
+		if (o->members[i].desc)
+			cJSON_AddStringToObject(m, "desc", o->members[i].desc);
+		cJSON_AddItemToArray(arr, m);
+	}
+	return arr;
+}
+
+static void ipc_schema_add_flags(cJSON *obj, uint32_t flags) {
+	cJSON *arr = cJSON_CreateArray();
+	struct {
+		uint32_t bit;
+		const char *name;
+	} names[] = {
+		{SCHEMA_NO_LIVE, "no-live"},
+		{SCHEMA_NEEDS_RESTART, "needs-restart"},
+		{SCHEMA_MATUGEN, "matugen"},
+		{SCHEMA_ADVANCED, "advanced"},
+	};
+	for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++)
+		if (flags & names[i].bit)
+			cJSON_AddItemToArray(arr, cJSON_CreateString(names[i].name));
+	cJSON_AddItemToObject(obj, "flags", arr);
+}
+
+/* FNV-1a over the rendered schema.
+ *
+ * So a client can keep the schema across compositor restarts and revalidate in
+ * one small request. Cheaper than paging the schema, and a great deal less
+ * protocol to maintain: paging is forever, a digest is eight characters. */
+static uint32_t ipc_fnv1a(const char *s) {
+	uint32_t h = 2166136261u;
+	for (; *s; s++) {
+		h ^= (uint8_t)*s;
+		h *= 16777619u;
+	}
+	return h;
+}
+
+static cJSON *build_config_schema_response(const char *only_group) {
+	cJSON *resp = cJSON_CreateObject();
+	cJSON_AddNumberToObject(resp, "schema_version", 1);
+
+	cJSON *groups = cJSON_CreateArray();
+	for (size_t g = 0; g < sizeof(config_groups) / sizeof(config_groups[0]);
+		 g++) {
+		if (only_group && strcmp(config_groups[g].name, only_group))
+			continue;
+		cJSON *o = cJSON_CreateObject();
+		cJSON_AddStringToObject(o, "name", config_groups[g].name);
+		cJSON_AddStringToObject(o, "label", config_groups[g].label);
+		cJSON_AddStringToObject(o, "desc", config_groups[g].desc);
+		cJSON_AddItemToArray(groups, o);
+	}
+	cJSON_AddItemToObject(resp, "groups", groups);
+
+	cJSON *opts = cJSON_CreateArray();
+	for (size_t i = 0; i < CONFIG_SCHEMA_COUNT; i++) {
+		const ConfigOption *o = &config_schema[i];
+		if (only_group && strcmp(o->group, only_group))
+			continue;
+		cJSON *e = cJSON_CreateObject();
+		cJSON_AddStringToObject(e, "key", o->key);
+		if (o->path)
+			cJSON_AddStringToObject(e, "path", o->path);
+		else
+			cJSON_AddNullToObject(e, "path");
+		cJSON_AddStringToObject(e, "group", o->group);
+		if (o->subgroup)
+			cJSON_AddStringToObject(e, "subgroup", o->subgroup);
+		cJSON_AddStringToObject(e, "label", o->label);
+		cJSON_AddStringToObject(e, "desc", o->desc);
+		cJSON_AddStringToObject(e, "type", schema_type_name(o->type));
+		cJSON_AddStringToObject(e, "default", o->def);
+		/* The cap parse_option truncates a string to. Without it a UI offers a
+		 * text box that silently loses the tail -- animation_type_open is
+		 * written with "%.9s". */
+		if (o->size)
+			cJSON_AddNumberToObject(e, "max_length", (double)(o->size - 1));
+		if (!isnan(o->min))
+			cJSON_AddNumberToObject(e, "min", o->min);
+		if (!isnan(o->max))
+			cJSON_AddNumberToObject(e, "max", o->max);
+		if (o->type == OPT_ENUM)
+			cJSON_AddItemToObject(e, "enum", ipc_schema_enum_array(o));
+		ipc_schema_add_flags(e, o->flags);
+		cJSON_AddItemToArray(opts, e);
+	}
+	cJSON_AddItemToObject(resp, "options", opts);
+
+	/* Digested from the rendered options, not from the whole response: the
+	 * group list is derived from the same table, and including it would only
+	 * make the digest depend on the `only_group` argument. */
+	char *rendered = cJSON_PrintUnformatted(opts);
+	if (rendered) {
+		char dig[16];
+		snprintf(dig, sizeof(dig), "%08x", ipc_fnv1a(rendered));
+		cJSON_AddStringToObject(resp, "digest", dig);
+		free(rendered);
+	}
+	return resp;
+}
+
+static cJSON *build_config_schema_digest_response(void) {
+	cJSON *full = build_config_schema_response(NULL);
+	cJSON *resp = cJSON_CreateObject();
+	cJSON *d = cJSON_GetObjectItem(full, "digest");
+	cJSON_AddStringToObject(resp, "digest",
+							(d && d->valuestring) ? d->valuestring : "");
+	cJSON_AddNumberToObject(resp, "options", (double)CONFIG_SCHEMA_COUNT);
+	cJSON_Delete(full);
+	return resp;
+}
+
+/* ---------- current values ---------- */
+
+/* Where a value came from, as the settings UI needs to reason about it. */
+static cJSON *build_config_source_json(const ConfigOption *o) {
+	cJSON *src = cJSON_CreateObject();
+	const ConfigOrigin *g = config_source_of(o->key);
+	if (!g) {
+		/* Never set by anything: this is the compiled-in default. */
+		cJSON_AddStringToObject(src, "kind", "default");
+		cJSON_AddBoolToObject(src, "writable", true);
+		return src;
+	}
+	if (g->file < 0 || g->file >= nconfig_files) {
+		/* Changed in memory and not on disk -- `dispatch set_option`. Invisible
+		 * before provenance existed, and worth showing: it is the one state a
+		 * reload silently undoes. */
+		cJSON_AddStringToObject(src, "kind", "runtime");
+		cJSON_AddBoolToObject(src, "writable", true);
+		return src;
+	}
+	const char *file = config_files[g->file];
+	char why[64] = "";
+	bool foreign = config_file_is_foreign(file, why, sizeof(why));
+	cJSON_AddStringToObject(src, "kind", "file");
+	cJSON_AddStringToObject(src, "file", file);
+	cJSON_AddNumberToObject(src, "line", g->line);
+	/* The path it was ACTUALLY written at, which for ~190 keys is not the
+	 * canonical one -- a writer that assumed otherwise would append a second
+	 * declaration that silently wins by position. */
+	cJSON_AddStringToObject(src, "path", g->path);
+	cJSON_AddBoolToObject(src, "writable", !foreign);
+	if (foreign)
+		cJSON_AddStringToObject(src, "reason", why);
+	return src;
+}
+
+static void ipc_add_config_value(cJSON *dst, const ConfigOption *o) {
+	char buf[512];
+	schema_format(&config, o, buf, sizeof(buf));
+
+	cJSON *e = cJSON_CreateObject();
+	cJSON_AddStringToObject(e, "value", buf);
+	/* Colours carry BOTH forms. `value` is the 0xRRGGBBAA a user types and the
+	 * writer round-trips; `rgba` is what a UI paints with. Neither has to guess
+	 * the other's byte order, which is the same reason bar_cfg_color exists. */
+	if (o->type == OPT_COLOR) {
+		const float *c = schema_field(&config, o);
+		cJSON *arr = cJSON_CreateArray();
+		for (int i = 0; i < 4; i++)
+			cJSON_AddItemToArray(arr, cJSON_CreateNumber(c[i]));
+		cJSON_AddItemToObject(e, "rgba", arr);
+	}
+	cJSON_AddBoolToObject(e, "is_default", strcmp(buf, o->def) == 0);
+	cJSON_AddItemToObject(e, "source", build_config_source_json(o));
+	cJSON_AddItemToObject(dst, o->key, e);
+}
+
+static cJSON *build_config_response(const char *only_group) {
+	cJSON *resp = cJSON_CreateObject();
+	cJSON *vals = cJSON_CreateObject();
+	for (size_t i = 0; i < CONFIG_SCHEMA_COUNT; i++) {
+		const ConfigOption *o = &config_schema[i];
+		if (only_group && strcmp(o->group, only_group))
+			continue;
+		ipc_add_config_value(vals, o);
+	}
+	cJSON_AddItemToObject(resp, "values", vals);
+
+	/* Which files the config was actually read from, and which of them the
+	 * compositor is willing to write. A UI showing "managed by matugen" needs
+	 * the list, not just the per-key flag. */
+	cJSON *files = cJSON_CreateArray();
+	for (int32_t i = 0; i < nconfig_files; i++) {
+		char why[64] = "";
+		bool foreign = config_file_is_foreign(config_files[i], why, sizeof(why));
+		cJSON *f = cJSON_CreateObject();
+		cJSON_AddStringToObject(f, "path", config_files[i]);
+		cJSON_AddBoolToObject(f, "writable", !foreign);
+		if (foreign)
+			cJSON_AddStringToObject(f, "reason", why);
+		cJSON_AddItemToArray(files, f);
+	}
+	cJSON_AddItemToObject(resp, "files", files);
+	return resp;
+}
+
+/* ---------- the dispatch table, for a keybind editor ---------- */
+
+/* What kind of thing an argument is, so a UI can offer the right control
+ * instead of a text box. Hand-written beside parse_func_name, and checked by
+ * tests/check-dispatch-actions.py against the names that function accepts --
+ * the same arrangement as the option schema, for the same reason. */
+typedef struct {
+	const char *name;
+	const char *args; /* space-separated kinds; "" for none */
+	const char *desc;
+} DispatchAction;
+
+static const DispatchAction dispatch_actions[] = {
+	/* windows */
+	{"kill_client", "", "Close the focused window."},
+	{"toggle_floating", "", "Float or tile the focused window."},
+	{"toggle_all_floating", "", "Float or tile every window on the tag."},
+	{"toggle_fullscreen", "", "Fullscreen the focused window."},
+	{"toggle_fake_fullscreen", "",
+	 "Tell the window it is fullscreen without resizing it."},
+	{"toggle_maximize", "int", "Maximize the focused window."},
+	{"toggle_overlay", "", "Keep the focused window above everything."},
+	{"toggle_global", "", "Show the focused window on every tag."},
+	{"minimize", "", "Minimize the focused window."},
+	{"restore_minimized", "", "Restore the last minimized window."},
+	{"pin", "", "Pin the focused window to its position."},
+	{"center_window", "", "Centre a floating window."},
+	{"move_window", "int int", "Move a floating window to x,y."},
+	{"resize_window", "int int", "Resize a window to width,height."},
+	{"smart_move_window", "direction", "Move a floating window by the snap distance."},
+	{"smart_resize_window", "direction", "Resize a floating window by the snap distance."},
+	{"move_resize", "string", "Start an interactive move or resize."},
+	{"toggle_render_border", "", "Show or hide the focused window's border."},
+	/* focus */
+	{"focus_stack", "circle-direction", "Focus the next or previous window."},
+	{"focus_direction", "direction", "Focus the window in a direction."},
+	{"focus_last", "", "Focus the previously focused window."},
+	{"focus_id", "int", "Focus a window by id."},
+	{"focus_monitor", "string", "Focus a monitor by name or direction."},
+	{"exchange_client", "direction", "Swap the focused window with its neighbour."},
+	{"exchange_stack_client", "circle-direction", "Swap along the stack."},
+	{"zoom", "", "Move the focused window to the master area."},
+	/* tags */
+	{"view", "tag-index", "Switch to a tag."},
+	{"toggle_view", "tag-index", "Add or remove a tag from the view."},
+	{"tag", "tag-index", "Move the focused window to a tag."},
+	{"toggle_tag", "tag-index", "Add or remove a tag from the focused window."},
+	{"tag_silent", "tag-index", "Move a window to a tag without following it."},
+	{"view_to_left", "", "Switch to the tag on the left."},
+	{"view_to_right", "", "Switch to the tag on the right."},
+	{"view_to_left_occupied", "", "Switch left, skipping empty tags."},
+	{"view_to_right_occupied", "", "Switch right, skipping empty tags."},
+	{"tag_to_left", "", "Move the focused window one tag left."},
+	{"tag_to_right", "", "Move the focused window one tag right."},
+	{"view_cross_monitor", "tag-index", "Switch to a tag on another monitor."},
+	{"tag_cross_monitor", "tag-index", "Move a window to a tag on another monitor."},
+	{"tag_monitor", "string", "Move the focused window to a monitor."},
+	{"combo_view", "tag-index", "Add a tag to the current view."},
+	{"set_tag_name", "string", "Rename the current tag (memory only)."},
+	/* layout */
+	{"set_layout", "layout-name", "Switch the layout."},
+	{"switch_layout", "circle-direction", "Cycle through layouts."},
+	{"set_master_factor", "float", "Resize the master area."},
+	{"adjust_master_count", "int", "Change how many windows are masters."},
+	{"toggle_gaps", "", "Show or hide the gaps."},
+	{"adjust_gaps", "int", "Change the gap size."},
+	{"set_proportion", "float", "Set the focused window's proportion."},
+	{"switch_proportion_preset", "circle-direction", "Cycle proportion presets."},
+	{"dwindle_split_horizontal", "", "Split horizontally in the dwindle layout."},
+	{"dwindle_split_vertical", "", "Split vertically in the dwindle layout."},
+	{"dwindle_toggle_split_direction", "", "Flip the next dwindle split."},
+	{"scroller_consume", "", "Absorb the next window into this column."},
+	{"scroller_expel", "", "Push a window out of this column."},
+	{"scroller_stack", "", "Stack the column."},
+	/* scratchpad and overview */
+	{"toggle_scratchpad", "", "Show or hide the scratchpad."},
+	{"toggle_named_scratchpad", "string", "Show or hide a named scratchpad."},
+	{"move_to_special_workspace", "string", "Move a window to a special workspace."},
+	{"toggle_special_workspace", "string", "Show or hide a special workspace."},
+	{"toggle_overview", "string", "Open the overview; `jump` for jump mode."},
+	/* monitors */
+	{"set_output_mode", "string string", "Set an output's resolution, WxH@Hz."},
+	{"set_output_scale", "string float", "Set an output's scale."},
+	{"set_output_position", "string int int", "Move an output in the layout."},
+	{"set_output_vrr", "string bool", "Enable adaptive sync on an output."},
+	{"set_output_hdr", "string bool", "Set an output's HDR baseline."},
+	{"set_output_icc", "string string", "Set an output's ICC profile path."},
+	{"toggle_hdr", "", "Invert the focused output's HDR baseline."},
+	{"set_sdr_luminance", "int", "Set the SDR reference luminance."},
+	{"retrain_monitor", "string", "Retrain an output's link."},
+	{"enable_monitor", "string", "Power an output on."},
+	{"disable_monitor", "string", "Shut an output down."},
+	{"toggle_monitor", "string", "Toggle an output's power."},
+	{"dpms_on_monitor", "string", "Wake an output without removing it."},
+	{"dpms_off_monitor", "string", "Blank an output without removing it."},
+	{"dpms_toggle_monitor", "string", "Toggle an output's blanking."},
+	{"create_virtual_output", "", "Create a headless output."},
+	{"destroy_all_virtual_output", "", "Destroy every headless output."},
+	/* zoom */
+	{"zoom_in", "", "Magnify around the cursor."},
+	{"zoom_out", "", "Reduce the magnification."},
+	{"zoom_reset", "", "Reset the magnification."},
+	/* session */
+	{"spawn", "string", "Run a command."},
+	{"spawn_shell", "string", "Run a command through a shell."},
+	{"spawn_on_empty", "string", "Run a command only if the tag is empty."},
+	{"reload_config", "", "Re-read the config from disk."},
+	{"restart", "", "Restart the compositor in place."},
+	{"quit", "", "Exit."},
+	{"chvt", "int", "Switch virtual terminal."},
+	{"screenshot_ui", "string", "Open the screenshot UI: region, window or screen."},
+	{"set_key_mode", "string", "Switch key mode."},
+	{"switch_keyboard_layout", "int", "Switch keyboard layout."},
+	{"toggle_idle_inhibit", "", "Stop or allow idling."},
+	{"toggle_trackpad_enable", "", "Enable or disable the trackpad."},
+	/* the odd one out */
+	{"set_option", "option-key option-value",
+	 "Set a config option in memory only; discarded at the next reload."},
+};
+
+#define DISPATCH_ACTION_COUNT                                                  \
+	(sizeof(dispatch_actions) / sizeof(dispatch_actions[0]))
+
+/* One action per line, tab separated: name, then its argument kinds. */
+static void dispatch_actions_list(void) {
+	printf("# name\targs\n");
+	for (size_t i = 0; i < DISPATCH_ACTION_COUNT; i++)
+		printf("%s\t%s\n", dispatch_actions[i].name, dispatch_actions[i].args);
+}
+
+static cJSON *build_dispatch_actions_response(void) {
+	cJSON *resp = cJSON_CreateObject();
+	cJSON *arr = cJSON_CreateArray();
+	for (size_t i = 0; i < DISPATCH_ACTION_COUNT; i++) {
+		cJSON *a = cJSON_CreateObject();
+		cJSON_AddStringToObject(a, "name", dispatch_actions[i].name);
+		cJSON_AddStringToObject(a, "desc", dispatch_actions[i].desc);
+		cJSON *args = cJSON_CreateArray();
+		const char *p = dispatch_actions[i].args;
+		while (*p) {
+			while (*p == ' ')
+				p++;
+			if (!*p)
+				break;
+			const char *start = p;
+			while (*p && *p != ' ')
+				p++;
+			char kind[32];
+			size_t n = (size_t)(p - start);
+			if (n >= sizeof(kind))
+				n = sizeof(kind) - 1;
+			memcpy(kind, start, n);
+			kind[n] = '\0';
+			cJSON_AddItemToArray(args, cJSON_CreateString(kind));
+		}
+		cJSON_AddItemToObject(a, "args", args);
+		cJSON_AddItemToArray(arr, a);
+	}
+	cJSON_AddItemToObject(resp, "actions", arr);
+	return resp;
+}
+
+/* ---------- watch config ---------- */
+
+/* The previous values, so a push can carry a diff.
+ *
+ * Compared THROUGH THE SCHEMA, field by field, never as a memcmp of the struct:
+ * Config holds heap pointers (cursor_theme, theme.font_desc) and padding, and a
+ * memcmp would report a change on every reload for neither reason. */
+static char config_prev_values[CONFIG_SCHEMA_COUNT][512];
+static bool config_prev_valid;
+
+static void config_snapshot(void) {
+	for (size_t i = 0; i < CONFIG_SCHEMA_COUNT; i++)
+		schema_format(&config, &config_schema[i], config_prev_values[i],
+					  sizeof(config_prev_values[i]));
+	config_prev_valid = true;
+}
+
+/* `reason` is what happened: "initial", "reload", "set". */
+static cJSON *build_config_diff_response(const char *reason, bool everything) {
+	cJSON *resp = cJSON_CreateObject();
+	cJSON_AddStringToObject(resp, "reason", reason);
+	cJSON *changed = cJSON_CreateObject();
+	int n = 0;
+	for (size_t i = 0; i < CONFIG_SCHEMA_COUNT; i++) {
+		const ConfigOption *o = &config_schema[i];
+		char now[512];
+		schema_format(&config, o, now, sizeof(now));
+		if (!everything && config_prev_valid &&
+			!strcmp(now, config_prev_values[i]))
+			continue;
+		ipc_add_config_value(changed, o);
+		n++;
+	}
+	cJSON_AddItemToObject(resp, "changed", changed);
+	cJSON_AddNumberToObject(resp, "count", n);
+	return resp;
+}
+
+#endif /* ASTEROIDZ_IPC_CONFIG_H */

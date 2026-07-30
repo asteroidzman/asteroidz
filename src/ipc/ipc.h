@@ -9,6 +9,7 @@
 #include <sys/un.h>
 #include <unistd.h>
 
+#include "ipc-config.h"
 #include "ipc-out.h"
 
 struct ipc_watch_client {
@@ -584,6 +585,18 @@ static void handle_command(int client_fd, const char *cmd_raw) {
 	} else if (strcmp(cmd, "get bar-config") == 0) {
 		resp = build_bar_config_response();
 #endif
+	} else if (strcmp(cmd, "get config-schema") == 0) {
+		resp = build_config_schema_response(NULL);
+	} else if (strncmp(cmd, "get config-schema ", 18) == 0) {
+		resp = build_config_schema_response(cmd + 18);
+	} else if (strcmp(cmd, "get config-schema-digest") == 0) {
+		resp = build_config_schema_digest_response();
+	} else if (strcmp(cmd, "get config") == 0) {
+		resp = build_config_response(NULL);
+	} else if (strncmp(cmd, "get config ", 11) == 0) {
+		resp = build_config_response(cmd + 11);
+	} else if (strcmp(cmd, "get dispatch-actions") == 0) {
+		resp = build_dispatch_actions_response();
 	} else if (strncmp(cmd, "get tags ", 9) == 0) {
 		Monitor *m = monitor_by_name(cmd + 9);
 		if (!m) {
@@ -787,6 +800,8 @@ static bool handle_watch_command(int fd, const char *cmd,
 	} else if (strcmp(cmd, "watch all-clients") == 0) {
 		type = IPC_WATCH_ALL_CLIENTS;
 #ifdef ASTEROIDZ_NATIVE_BAR
+	} else if (strcmp(cmd, "watch config") == 0) {
+		type = IPC_WATCH_CONFIG;
 	} else if (strcmp(cmd, "watch bar-config") == 0) {
 		type = IPC_WATCH_BAR_CONFIG;
 #endif
@@ -897,6 +912,14 @@ static bool handle_watch_command(int fd, const char *cmd,
 		break;
 	}
 #ifdef ASTEROIDZ_NATIVE_BAR
+	case IPC_WATCH_CONFIG: {
+		/* Everything, once, so the subscriber starts from a known state -- every
+		 * push after this one is a diff and a client that joined mid-stream
+		 * would otherwise have nothing to apply them to. */
+		json = build_config_diff_response("initial", true);
+		config_snapshot();
+		break;
+	}
 	case IPC_WATCH_BAR_CONFIG: {
 		json = build_bar_config_response();
 		break;
@@ -1292,6 +1315,61 @@ void ipc_notify_bar_config(void) {
 		free(json_str);
 }
 #endif
+
+/* Push whatever changed since the last push, to anyone watching the config.
+ *
+ * Called from reload_config, from setoption, and from the write path. The
+ * snapshot is updated whether or not anyone is listening: otherwise the first
+ * subscriber after a quiet period would be diffed against a state from before
+ * however many changes happened while nobody was watching, and would be told
+ * about all of them as if they had just occurred.
+ *
+ * A no-op push is skipped rather than sent as an empty object. A reload that
+ * changes nothing -- which is most of them, since matugen fires on every
+ * wallpaper change and the palette often lands on the same colours -- should
+ * not wake a settings panel to tell it so. */
+void ipc_notify_config(const char *reason) {
+	bool any = false;
+	struct ipc_watch_client *wc;
+	wl_list_for_each(wc, &watch_clients, link) {
+		if (wc->type == IPC_WATCH_CONFIG) {
+			any = true;
+			break;
+		}
+	}
+	if (!any) {
+		config_snapshot();
+		return;
+	}
+
+	cJSON *json = build_config_diff_response(reason, false);
+	cJSON *count = cJSON_GetObjectItem(json, "count");
+	if (!count || count->valueint == 0) {
+		cJSON_Delete(json);
+		config_snapshot();
+		return;
+	}
+	char *raw = cJSON_PrintUnformatted(json);
+	cJSON_Delete(json);
+	if (!raw) {
+		config_snapshot();
+		return;
+	}
+	size_t len = strlen(raw);
+	char *json_str = malloc(len + 2);
+	if (json_str) {
+		snprintf(json_str, len + 2, "%s\n", raw);
+		struct ipc_watch_client *tmp;
+		wl_list_for_each_safe(wc, tmp, &watch_clients, link) {
+			if (wc->type != IPC_WATCH_CONFIG)
+				continue;
+			ipc_watch_send(wc, json_str, len + 1);
+		}
+		free(json_str);
+	}
+	free(raw);
+	config_snapshot();
+}
 
 void ipc_notify_keymode(void) {
 	char *json_str = NULL;

@@ -28,6 +28,7 @@ invisible at the sizes and shapes a running compositor produces:
 | `ipc-out` | queued socket writes, against a socketpair with `SO_SNDBUF` shrunk to force the partial write a normal reply never triggers |
 | `config-schema` | `asteroidz -S`: every schema entry's default, clamp, offset and type, against the real parser |
 | `config-schema-coverage` | the other direction — keys `parse_option` handles that the schema is missing |
+| `dispatch-actions-coverage` | the same both-ways check for the dispatch-action table a keybind editor reads |
 | `bar-icons` | every vendored SVG parses and rasterises to non-empty ink |
 
 Run both before pushing. Neither subsumes the other.
@@ -202,10 +203,11 @@ so the harness includes a few small purpose-built Wayland clients:
 
 ## Module coverage
 
-Twenty modules as of writing (169 assertions): `layouts`,
+Twenty-one modules as of writing (210 assertions): `layouts`,
 `window-states`, `tags`, `focus`, `scratchpad`, `geometry`, `dwindle`,
 `overview`, `multimonitor`, `mousebind`, `hdr`, `scroller`, `animations`,
-`layer-shell`, `ipc-watch`, `keybind-combo`, `set-option`, `border-colors`,
+`layer-shell`, `ipc-watch`, `keybind-combo`, `set-option`, `config-ipc`,
+`border-colors`,
 `output`, `vrr`, `effects`, `floating`, plus `destroy-virtual-output` (gated
 behind `HL_ALLOW_DESTRUCTIVE=1`).
 
@@ -217,6 +219,34 @@ other modules), but rewrites `$HL_CONFIG` from a pristine copy and calls
 the binary under test was built with `-Dbar-config=false`, probing the binary
 rather than assuming — an unknown config key is only warned about, so a
 feature-off build would otherwise silently "pass" by doing nothing.
+
+`config-ipc` covers the settings-UI read surface — `get config-schema`,
+`get config`, `get dispatch-actions` and `watch config` — through the socket,
+because that is how a client sees them. `asteroidz -S` and `-L`/`-D` check the
+tables against the code, but none of them go through IPC. Most of its assertions
+are about whether the reply says something **true** rather than whether a field
+exists: a schema with wrong defaults still parses, provenance naming the wrong
+file still parses, and a watch that pushes the whole config every time still
+parses. So it checks the reported line number really holds that setting, that a
+colour's hex and floats agree on every channel, and that a no-op change pushes
+nothing at all.
+
+Two traps it walked into while being written, both worth knowing:
+
+- **An assertion must not change global state.** Proving a described action is
+  really dispatchable started as `dispatch toggle_gaps` — which turns gaps off
+  *globally* and stays off, and `hl_reset` does not restore it. The whole suite
+  then ran with no gaps, and `geometry`'s `adjust_gaps` test failed three modules
+  later having changed a gap size that was no longer being drawn. Nothing in that
+  failure pointed back at the cause. It now dispatches `zoom_reset`, which sets
+  the cursor zoom to a value that is already the default, and asserts by
+  **contrast**: a real name returns `{"success":true}` and an invented one
+  `{"error":"unknown function"}`. "The compositor still answers" would have
+  passed with a table full of typos.
+- **`jq`'s `tonumber` is decimal only.** The colour round-trip assertion parsed
+  `"0x44" | tonumber`, which is an error, so the comparison ran against nothing
+  and failed against a build whose colours were exactly right. It compares in
+  python now.
 
 Real gaps found by building this out (not just harness bugs — documented
 inline in the relevant test files too):

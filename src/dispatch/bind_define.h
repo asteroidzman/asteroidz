@@ -1908,6 +1908,10 @@ int32_t setoption(const Arg *arg) {
 	/* Not reset_option(): that respawns every `spawn` entry, which is right for
 	 * a reload and wrong for one option changing. See config_apply_live(). */
 	config_apply_live();
+	/* Memory-only, but still a change someone watching should see -- and the
+	 * push carries source.kind == "runtime", which is how a panel can show that
+	 * this value will not survive a reload. */
+	ipc_notify_config("set");
 	return 0;
 }
 

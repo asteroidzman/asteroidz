@@ -37,6 +37,10 @@ description: Control asteroidz programmatically using amsg.
 | `get all-tags` | Returns a JSON object containing the status of all tags. |
 | `get last_open_surface [<mon>]` | Returns the last focused surface name for a monitor,if the mon not set, it will get current monitor. |
 | `get bar-config` | Returns the resolved bar geometry, palette and module lists, for an out-of-process bar. |
+| `get config-schema [<group>]` | Describes every settable option: type, range, enum members, default, label and explanation. |
+| `get config-schema-digest` | Just the schema's digest, so a cached copy can be revalidated in one round trip. |
+| `get config [<group>]` | The current value of every described option, with where it came from. |
+| `get dispatch-actions` | Every dispatchable action and the kinds of its arguments. |
 
 *Example:*
 ```bash
@@ -67,6 +71,75 @@ on a socketpair to force the partial write a normal-sized reply never triggers
 A subscriber that stops reading is dropped once its backlog passes 4MB, rather
 than growing the compositor's memory on its behalf.
 
+#### The config, for a settings UI
+
+Four read verbs, split because they change at four different rates.
+
+`get config-schema` describes every settable option — type, range, enum members
+with their names, the default, a label and a one-line explanation. It is
+compile-time constant, so **cache it**: it carries a `digest`, and
+`get config-schema-digest` is a ~60 byte reply that revalidates that cache in one
+round trip across a compositor restart. Both accept an optional group
+(`get config-schema effects`) for a cheap per-page fetch.
+
+This exists so a client does not have to carry a hardcoded mirror of the
+compositor's parser. Types, ranges and enum members are inline in
+`parse_option`'s if/else chain and defaults are 440 lines of assignments in
+`set_value_default`; a mirror of that drifts the first time either side gains a
+default, silently, and then writes wrong values into a hand-maintained config.
+The table is hand-written and checked from both ends — see
+[regression testing](/docs/regression-testing#the-schema-checked-from-both-ends).
+
+`get config` is the current value of each of them, plus **where it came from**:
+
+```json
+"bordercolor": {
+  "value": "0x2c2c2cff",
+  "rgba": [0.173, 0.173, 0.173, 1.0],
+  "is_default": false,
+  "source": { "kind": "file", "file": "…/colors.kdl", "line": 11,
+              "path": "layout/border/color",
+              "writable": false, "reason": "matugen" }
+}
+```
+
+Three things in there are load-bearing:
+
+- **Colours carry both forms.** `value` is the `0xRRGGBBAA` a user types and a
+  writer round-trips; `rgba` is what a UI paints with. Neither side has to guess
+  the other's byte order. The conversion rounds rather than truncates — a
+  truncating round trip turns `0x2c` into `0x2b`, so a settings app would appear
+  to darken the theme a little every time it saved.
+- **`source.file` and `line` are recorded as the value is applied**, not derived
+  afterwards, because they are not derivable. `source` is applied in place, so a
+  key set in `config.kdl` and again in a sourced `colors.kdl` is won by
+  `colors.kdl` — while `config_files[]` is in the order files were *opened*,
+  which puts `config.kdl` first. A writer that scanned that list would edit a
+  declaration something invisible then overrules.
+- **`source.path` is where it was actually written**, which for most keys is not
+  the canonical path. `misc { border_radius 9 }` is how this config spells a key
+  whose canonical spelling is a bare top-level node, because the leaf lookup
+  falls back to the node's own name. A writer that assumed the canonical path
+  would append a second declaration that silently wins by position.
+
+`writable` is decided **per file**, not per key, from a marker in the file's
+header — matugen's *"Auto-generated file. Do not edit directly."*, the display
+plugin's *"Managed by the waybar-display plugin"*, or a new
+`asteroidz:generated-by <tool>` convention. Per-key would be a list that is wrong
+the moment a generator writes a tenth key, and says nothing about a generator
+nobody here has heard of. `get config` also returns the file list with the same
+flag, so a UI can explain itself without walking every key.
+
+`kind` is `file`, `default`, or `runtime`. `runtime` means `dispatch set_option`
+changed it in memory and a reload will silently undo it — a state that was
+invisible before this existed.
+
+`get dispatch-actions` lists every dispatchable action with the *kinds* of its
+arguments (`direction`, `tag-index`, `layout-name`, `option-key`, …), so a
+keybind editor can offer the right control rather than a text box. `option-key`
+composes with the schema: it means "offer the option list from
+`get config-schema`".
+
 ### WATCH (Event Subscription)
 Subscribes the client to real-time updates. When the state changes, the server pushes a new JSON object to the output stream.
 
@@ -81,6 +154,7 @@ Subscribes the client to real-time updates. When the state changes, the server p
 * `watch keyboardlayout`
 * `watch last_open_surface [<mon_name>]`
 * `watch bar-config`
+* `watch config`
 
 *Example:*
 ```bash
@@ -89,6 +163,28 @@ amsg watch all-monitors
 # watch all tags
 amsg watch all-tags
 ```
+
+#### watch config, and why it is a diff
+
+`watch config` pushes only what **changed**, as `{"reason": ..., "changed": {...},
+"count": n}`. The first push after subscribing is everything, with
+`reason: "initial"` — a client joining mid-stream has nothing for a diff to apply
+to. After that, `reason` is `reload` or `set`.
+
+A diff rather than the whole set because matugen fires on every wallpaper change
+and rewrites nine keys out of ninety-five. And a change that changes nothing
+pushes **nothing at all**: the palette often lands on the same colours, and
+waking a settings panel to tell it so is the difference between a push and a
+poll.
+
+The previous values are compared **through the schema**, field by field — never
+as a `memcmp` of the `Config` struct, which holds heap pointers and padding and
+would report a change on every reload for neither reason.
+
+The snapshot advances whether or not anyone is listening. Otherwise the first
+subscriber after a quiet period would be diffed against a state from before
+however many changes happened while nobody was watching, and told about all of
+them as if they had just occurred.
 
 #### bar-config, for a bar that is not the compositor
 
