@@ -284,6 +284,15 @@ install_data('assets/config.kdl', install_dir : join_paths(sysconfdir, 'asteroid
 # and the place you find that out is the login screen. matugen overwrites this
 # the first time it runs.
 install_data('assets/colors.kdl', install_dir : join_paths(sysconfdir, 'asteroidz'))
+# The session autostart. Executable, and beside the config that runs it.
+#
+# Everything a session starts beyond the compositor itself is conditional -- on a
+# program being installed, on it not already running -- and KDL can express
+# neither. The shipped copy is the fallback the default config falls back TO, so a
+# fresh install has a bar without the user having copied anything.
+install_data('assets/autostart.sh',
+             install_dir : join_paths(sysconfdir, 'asteroidz'),
+             install_mode : 'rwxr-xr-x')
 install_data('amsg/amsg.1', install_dir : join_paths(mandir, 'man1'))
 
 # Bar artwork. Vendored from the waybar plugin repos and mostly normalised to

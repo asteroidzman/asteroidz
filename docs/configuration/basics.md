@@ -22,6 +22,14 @@ like Niri's config. By default it looks for `~/.config/asteroidz/config.kdl`.
    cp /etc/asteroidz/config.kdl /etc/asteroidz/colors.kdl ~/.config/asteroidz/
    ```
 
+   `/etc/asteroidz/autostart.sh` starts the bar and whatever else a session
+   needs. Copy it too only if you want to change that — the config falls back to
+   the shipped one:
+
+   ```bash
+   cp /etc/asteroidz/autostart.sh ~/.config/asteroidz/
+   ```
+
 3. **Launch with Custom Config (Optional)**
 
    ```bash

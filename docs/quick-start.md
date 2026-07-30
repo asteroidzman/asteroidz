@@ -27,6 +27,15 @@ Now that you have asteroidz installed, let's get your environment set up.
    cp /etc/asteroidz/config.kdl /etc/asteroidz/colors.kdl ~/.config/asteroidz/
    ```
 
+   A session autostart lives at `/etc/asteroidz/autostart.sh` — the bar, the
+   clipboard, notifications. The config runs your copy if there is one and the
+   shipped one otherwise, so copying it is optional and only worth doing when you
+   want to change what starts:
+
+   ```bash
+   cp /etc/asteroidz/autostart.sh ~/.config/asteroidz/
+   ```
+
 3. **Launch asteroidz**
 
    You can now start the compositor from your TTY.

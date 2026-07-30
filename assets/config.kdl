@@ -92,17 +92,27 @@ environment {
     MESA_GLTHREAD "true"
 }
 
-spawn xrdb -load "~/.Xresources"
-
+// Hand the environment to the session bus, so systemd --user units and
+// xdg-desktop-portal see WAYLAND_DISPLAY. Needs no guard: it is a no-op without
+// a bus, and everything graphical wants it.
 spawn-at-startup dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP
 
-spawn-at-startup wl-paste -pw wl-copy
-
-spawn-at-startup vivaldi
-
-spawn-at-startup dcal daemon
-
-spawn-at-startup dms run --session
+// Everything else a session starts -- the bar, the clipboard, notifications --
+// lives in one script rather than in a column of lines here.
+//
+// Most of it is conditional: "if it is installed", "if it is not already
+// running". KDL cannot say either, so a `spawn-at-startup` for something absent
+// produces a shell error into the log and nothing else.
+//
+// Your copy first, the shipped one as a fallback, so a fresh install has a
+// working session before you have edited anything.
+//
+// ONE quoted string, not three bare words. `spawn` joins its arguments with
+// spaces and hands the result to `sh -c`, which is why `~` expands and why `||`
+// works at all -- but `/` is not a legal bare-word character in KDL, so an
+// unquoted path is a parse error rather than a path. Quoting the whole command
+// keeps it in one piece.
+spawn-at-startup "~/.config/asteroidz/autostart.sh || /etc/asteroidz/autostart.sh"
 
 binds {
     Super+Ctrl+r { restart; }

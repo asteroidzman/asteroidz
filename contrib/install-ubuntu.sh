@@ -214,6 +214,10 @@ Next:
      cannot open is a fatal error rather than a warning -- so copying one and
      not the other gives you a session that will not start.
 
+     /etc/asteroidz/autostart.sh starts the bar and the rest of the session.
+     Copy it too only if you want to change what starts; the config runs the
+     shipped one when there is no copy.
+
   3. Check the config parses at any time, without starting a session:
 
          asteroidz -p -c ~/.config/asteroidz/config.kdl
