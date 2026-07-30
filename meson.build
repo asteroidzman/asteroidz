@@ -30,7 +30,11 @@ libdrm = dependency('libdrm')
 xcb = dependency('xcb', required : get_option('xwayland'))
 xlibs = dependency('xcb-icccm', required : get_option('xwayland'))
 wayland_server_dep = dependency('wayland-server',version: '>=1.23.1')
-wlroots_dep = dependency('wlroots-0.20',version: '>=0.20.0')
+# >= 0.20.2, not 0.20.0. The vendored scenefx reads wlr_surface_output.suspended,
+# which 0.20.0 does not have -- so a build against it got 116 files in and then
+# failed with a struct-member error, which is a poor way to learn a version
+# requirement. Caught at configure time now.
+wlroots_dep = dependency('wlroots-0.20',version: '>=0.20.2')
 xkbcommon_dep = dependency('xkbcommon')
 libinput_dep = dependency('libinput',version: '>=1.27.1')
 libwayland_client_dep = dependency('wayland-client')
@@ -253,6 +257,17 @@ test('dispatch-actions-coverage',
      find_program('tests/check-dispatch-actions.py'), args : [asteroidz_exe])
 test('rule-schema-coverage',
      find_program('tests/check-rule-schema.py'), args : [asteroidz_exe])
+# The config we SHIP has to parse.
+#
+# It is what /etc/asteroidz/config.kdl becomes and what every new user is told to
+# copy, and nothing was checking it. It had drifted badly: a `pill { }` section
+# renamed to `theme` years ago so five settings inside it were unknown keywords,
+# five dispatch names that no longer exist, and seven `source` lines pointing at
+# files that only ever existed in one person's home directory. `asteroidz -p`
+# exited 1 on it. Found by installing it on a clean machine, which is a poor
+# substitute for a test.
+test('shipped-config', asteroidz_exe,
+     args : ['-p', '-c', meson.current_source_dir() / 'assets/config.kdl'])
 
 mandir = get_option('mandir')
 desktop_install_dir = join_paths(prefix, 'share/wayland-sessions')

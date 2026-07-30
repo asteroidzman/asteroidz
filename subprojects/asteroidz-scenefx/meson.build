@@ -96,7 +96,10 @@ wayland_server = dependency('wayland-server',
 )
 
 wlroots_options = [ 'examples=false' ]
-wlroots_version = ['>=0.20.0', '<0.21.0']
+# >=0.20.2: types/scene/surface.c reads wlr_surface_output.suspended, which
+# arrived after 0.20.0. Against 0.20.0 this builds a hundred files and then fails
+# on a struct member.
+wlroots_version = ['>=0.20.2', '<0.21.0']
 wlroots = dependency('wlroots-0.20',
 	version: wlroots_version,
 	default_options: wlroots_options,

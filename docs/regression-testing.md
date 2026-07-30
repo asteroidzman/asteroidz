@@ -30,6 +30,7 @@ invisible at the sizes and shapes a running compositor produces:
 | `config-schema-coverage` | the other direction — keys `parse_option` handles that the schema is missing |
 | `dispatch-actions-coverage` | the same both-ways check for the dispatch-action table a keybind editor reads |
 | `rule-schema-coverage` | window-rule keys `parse_option` handles that `rule_schema[]` is missing — the direction `-S` structurally cannot see |
+| `shipped-config` | `assets/config.kdl` parses. It becomes `/etc/asteroidz/config.kdl` and is what every new user copies; nothing was checking it, and it had drifted to the point where `asteroidz -p` exited 1 |
 | `bar-icons` | every vendored SVG parses and rasterises to non-empty ink |
 
 Run both before pushing. Neither subsumes the other.

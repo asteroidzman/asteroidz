@@ -145,6 +145,34 @@ The repository provides a Flake with a NixOS module.
 
 ---
 
+## Ubuntu 26.04
+
+`contrib/install-ubuntu.sh` does the whole thing — dependencies, wlroots, the
+compositor and the bar — and is verified against a clean `ubuntu:26.04` container.
+
+```bash
+git clone https://github.com/asteroidzman/asteroidz.git
+bash asteroidz/contrib/install-ubuntu.sh
+```
+
+Everything asteroidz needs is in the Ubuntu archive **except wlroots**: 26.04
+ships 0.19 and asteroidz needs 0.20.2, so the script builds it into `/usr/local`,
+where it sits beside the packaged 0.19 rather than replacing it — different
+soname, different pkg-config name, so anything else wanting 0.19 keeps working.
+
+The bar additionally needs **quickshell**, which is not in the archive. Add
+whichever quickshell PPA you use before running the script; if it is missing the
+script says so and carries on, since the compositor does not need it and the bar
+still builds — it just cannot run until quickshell is there.
+
+The script is re-runnable: each step skips itself if already done, so a failure
+part-way can be fixed and the script run again. `ASTEROIDZ_TAG`, `BAR_TAG`,
+`WLROOTS_TAG`, `PREFIX` and `SRC` are all overridable.
+
+> Because wlroots is built rather than packaged, an Ubuntu update that changes
+> `libwayland` or `libinput` can leave it stale. If asteroidz stops starting after
+> an update, rebuild wlroots from `~/src/wlroots`.
+
 ## Building from Source
 
 > **Info:** Ensure the following dependencies are installed before proceeding:
@@ -176,11 +204,23 @@ You will need to build `wlroots` and asteroidz's `scenefx` fork manually as well
    required version).
 
    ```bash
-   git clone -b 0.20.0 https://gitlab.freedesktop.org/wlroots/wlroots.git
+   git clone -b 0.20.2 https://gitlab.freedesktop.org/wlroots/wlroots.git
    cd wlroots
-   meson build -Dprefix=/usr
+   meson setup build --prefix=/usr \
+     -Dxwayland=enabled -Dcolor-management=enabled
    sudo ninja -C build install
    ```
+
+   **0.20.2, not 0.20.0.** `asteroidz-scenefx` reads
+   `wlr_surface_output.suspended`, which arrived after the `.0` release — against
+   0.20.0 the build gets a hundred files in and then fails on a struct member.
+   `meson.build` requires `>=0.20.2` so this is caught at configure time now.
+
+   **Both flags matter and neither is on by default.** `color-management`
+   requires `lcms2` and asteroidz uses `wlr_color_manager_v1` directly, so
+   without it the compositor does not compile; `xwayland` needs the `xcb-*`
+   development packages present when wlroots is configured, and comes out `NO`
+   silently if they are not. Check the feature summary meson prints.
 
 2. **Build asteroidz**
    There is no separate scenefx step. The effects library —

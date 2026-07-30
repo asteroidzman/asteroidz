@@ -19,7 +19,7 @@ misc {
         saturation 1.25
     }
 }
-pill {
+theme {
     border-width 0
     corner-radius 8
     font "Ubuntu 18"
@@ -110,17 +110,17 @@ binds {
     Super+Ctrl+Up { set_sdr_luminance +25; }
     Super+Ctrl+Down { set_sdr_luminance -25; }
     Super+Shift+p { pin; }
-    Super+grave { togglespecialworkspace term; }
-    Super+Shift+grave { movetospecialworkspace term; }
+    Super+grave { toggle_special_workspace term; }
+    Super+Shift+grave { move_to_special_workspace term; }
     Print { screenshot_ui region; }
     Shift+Print { screenshot_ui screen; }
     Super+Print { screenshot_ui window; }
 }
 
 mouse-binds {
-    Super+btn_left { moveresize curmove; }
-    NONE+btn_middle { togglemaximizescreen 0; }
-    Super+btn_right { moveresize curresize; }
+    Super+btn_left { move_resize curmove; }
+    NONE+btn_middle { toggle_maximize 0; }
+    Super+btn_right { move_resize curresize; }
 }
 
 tag 1 { layout monocle; name web }
@@ -144,17 +144,3 @@ tag 9 { layout tile }
 window-rule { match app-id=^steam_app.*$; vrr_only_fullscreen 1 }
 
 window-rule { match app-id=^gamescope$; vrr_only_fullscreen 1 }
-
-source "./dms/colors.kdl"
-
-source "./dms/layout.kdl"
-
-source "./dms/cursor.kdl"
-
-source "./dms/outputs.kdl"
-
-source "./dms/windowrules.kdl"
-
-source "./dms/binds.kdl"
-
-source "./scenefx.kdl"
