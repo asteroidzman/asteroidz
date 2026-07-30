@@ -454,9 +454,13 @@ static cJSON *build_bar_config_response(void) {
 	cJSON_AddNumberToObject(theme, "corner_radius", config.theme.corner_radius);
 	cJSON_AddNumberToObject(theme, "padding_x", config.theme.padding_x);
 	cJSON_AddNumberToObject(theme, "padding_y", config.theme.padding_y);
+	/* The same fallback the renderers use. set_value_default now assigns it, so
+	 * this only catches the window between a reload freeing the string and the
+	 * new one being parsed -- but reporting "" there told the bar to pick its
+	 * own font while every native overlay drew at monospace Bold 16. */
 	cJSON_AddStringToObject(theme, "font",
 							config.theme.font_desc ? config.theme.font_desc
-												   : "");
+												   : "monospace Bold 16");
 	cJSON_AddItemToObject(resp, "theme", theme);
 
 	cJSON *custom = cJSON_CreateArray();

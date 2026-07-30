@@ -238,7 +238,7 @@ static const ConfigOption config_schema[] = {
 	{"theme_font_desc", "theme/font", "appearance", "theme", "Font",
 	 "Pango font description for every native overlay, e.g. \"Ubuntu 17\".",
 	 OPT_STRPTR, offsetof(Config, theme.font_desc), 0, SCHEMA_NOCLAMP,
-	 SCHEMA_NOCLAMP, NULL, 0, "", 0},
+	 SCHEMA_NOCLAMP, NULL, 0, "monospace Bold 16", 0},
 	{"theme_fg_color", "theme/fg-color", "appearance", "theme", "Text",
 	 "Text colour. Normally set by the generated palette.", OPT_COLOR,
 	 offsetof(Config, theme.fg_color), 0, SCHEMA_NOCLAMP, SCHEMA_NOCLAMP, NULL,
@@ -445,7 +445,8 @@ static const ConfigOption config_schema[] = {
 	 "Vertical gap between the windows and the screen edge.", OPT_INT,
 	 offsetof(Config, gappov), 0, 0, 1000, NULL, 0, "10", 0},
 	{"smartgaps", "smartgaps", "layout", "gaps", "Smart gaps",
-	 "Drop the outer gaps when a tag holds only one window.", OPT_BOOL,
+	 "Drop every gap, inner and outer, when a tag holds only one window.",
+	 OPT_BOOL,
 	 offsetof(Config, smartgaps), 0, 0, 1, NULL, 0, "0", 0},
 
 	/* ===== animations ===== */

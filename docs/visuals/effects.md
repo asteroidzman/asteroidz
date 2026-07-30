@@ -18,6 +18,7 @@ Blur creates a frosted glass effect for transparent windows.
 | `blur_params_brightness` | `0.9` | Blur brightness adjustment. |
 | `blur_params_contrast` | `0.9` | Blur contrast adjustment. |
 | `blur_params_saturation` | `1.2` | Blur saturation adjustment. |
+| `blur_unfocused_strength` | `1` | Blur strength for unfocused windows, animated back up to full on focus, so focus reads as depth. Values **below** `1` weaken it — `0.5` blurs an unfocused window half as much. `1` and above are ignored, which is what makes `1` mean "off". |
 
 > **Warning:** Blur has a relatively high impact on performance. If your hardware is limited, it is not recommended to enable it. If you experience lag with blur on, ensure `blur_optimized=1` — disabling it will significantly increase GPU consumption and may cause rendering lag. To disable blur entirely, set `blur=0`.
 
@@ -29,7 +30,8 @@ Blur creates a frosted glass effect for transparent windows.
 effects { blend-space "srgb" }   // or "linear" (default)
 ```
 
-Which space client alpha is composited in, on the Vulkan renderer.
+Which space client alpha is composited in, on the Vulkan renderer. The option is
+`blend-space` in KDL, `srgb_blending` in the flat form.
 
 `linear` is the default and is physically correct: the renderer composites into
 a 16-bit float buffer in linear light, which is what colour management and HDR
@@ -84,7 +86,10 @@ Drop shadows help distinguish floating windows from the background.
 | `shadows_contact_position_y` | `2` | Contact shadow Y offset |
 | `shadowscolor_contact` | `0x0000004d` | Contact shadow color (RGBA hex) |
 | `shadows_unfocused_scale` | `0.45` | Shadow opacity multiplier for unfocused windows (macOS-style dimming) |
+| `shadows_tiled_scale` | `0.3` | Multiplies `shadows_blur` for tiled windows, which sit flush against their neighbours and have far less room for a shadow than a floating one does. |
 | `shadowscolor` | `0x00000066` | Color of the shadow. Kept well below opaque: a near-opaque peak alpha reads as a hard drop shadow once spread this wide. |
+| `shadows_blur_background` | `0` | Blur what is under the shadow as well as darkening it. Costs a blur pass per shadowed window, so it is off by default. |
+| `shadows_blur_background_strength` | `0.5` | Opacity of that blur, so it can be mixed with the plain tint rather than replacing it. No effect unless `shadows_blur_background` is `1`. |
 
 ```kdl
 effects {

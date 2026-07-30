@@ -5522,6 +5522,13 @@ void set_value_default() {
 	config.animation_curve_opafadeout[2] = 0.5;
 	config.animation_curve_opafadeout[3] = 0.5;
 
+	/* The default lives HERE, not in a fallback at each use site. Four
+	 * renderers spell `font_desc ? font_desc : "monospace Bold 16"`, which made
+	 * the effective default right on screen while leaving the field NULL -- so
+	 * the schema reported no default at all, and build_bar_config_response told
+	 * the bar the theme font was "" while every native overlay drew at
+	 * monospace Bold 16. One assignment, and all five agree. */
+	config.theme.font_desc = strdup("monospace Bold 16");
 	config.theme.fg_color[0] = 0xc4 / 255.0f;
 	config.theme.fg_color[1] = 0x93 / 255.0f;
 	config.theme.fg_color[2] = 0x9d / 255.0f;

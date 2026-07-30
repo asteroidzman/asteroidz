@@ -74,6 +74,23 @@ test_config_values_cover_the_schema() {
 		"$(comm -13 <(echo "$schema_keys") <(echo "$values_keys") | wc -l)" "0"
 }
 
+test_config_reports_the_font_default_not_an_empty_string() {
+	# theme_font_desc used to default to NULL, with four renderers each spelling
+	# `font_desc ? font_desc : "monospace Bold 16"` at the point of use. That put
+	# the right font on screen and the wrong one on the wire: `get config` said
+	# the default was "", and bar-config told the bar the theme font was empty
+	# while every native overlay drew at monospace Bold 16. A bar that believes
+	# it picks its own font there is a bar that does not match the compositor.
+	local f; f="$(_cfg_json "get config" | jq -r '.values.theme_font_desc.value')"
+	hl_assert_eq "get config reports the real font default" \
+		"$f" "monospace Bold 16"
+	# Against the literal, not against $f. Comparing the two responses to each
+	# other passes when BOTH are empty, which is exactly the state this test
+	# exists to reject -- it agreed happily on the build that had the bug.
+	hl_assert_eq "and bar-config reports it too" \
+		"$(_cfg_json "get bar-config" | jq -r '.theme.font')" "monospace Bold 16"
+}
+
 test_config_values_carry_colours_in_both_forms() {
 	local c; c="$(_cfg_json "get config" | jq '.values.bordercolor')"
 	hl_assert_true "a colour has a 0xRRGGBBAA value" \

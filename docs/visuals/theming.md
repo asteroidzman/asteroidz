@@ -14,6 +14,7 @@ Control the sizing of window borders and gaps.
 | `gappiv` | `5` | Vertical inner gap. |
 | `gappoh` | `10` | Horizontal outer gap (between windows and screen edges). |
 | `gappov` | `10` | Vertical outer gap. |
+| `smartgaps` | `0` | Drop every gap, inner and outer, when a tag holds only one window, so a lone window uses the whole screen. |
 
 ## Colors
 
@@ -107,9 +108,9 @@ layout {
 | Setting | Default | Description |
 | :--- | :--- | :--- |
 | `theme_fg_color` | `0xc4939dff` | text color. |
-| `theme_bg_color` | `0x201b14ff` | background color. |
-| `theme_focus_fg_color` | `0x201b14ff` | text color for focus. |
-| `theme_focus_bg_color` | `0xc4939dff` | background color for focus. |
+| `theme_bg_color` | `0x323232ff` | background color. |
+| `theme_focus_fg_color` | `0xeda6b4ff` | text color for focus. |
+| `theme_focus_bg_color` | `0x4e453cff` | background color for focus. |
 | `theme_urgent_color` | `0xffb4abff` | attention accent (matugen error). |
 | `theme_border_color` | `0x8BAA9Bff` | border color. |
 | `theme_border_width` | `4` | border width. |
@@ -146,7 +147,11 @@ layout {
 }
 ```
 
-`gradient/color2` is the far end of the ramp; the near end is `focus-color`,
+`gradient` takes `enable`, an `angle` in degrees, and `color2`. In the flat form
+these are `border_gradient`, `border_gradient_angle` and
+`border_gradient_color2`.
+
+`color2` is the far end of the ramp; the near end is `focus-color`,
 so a gradient follows the theme without a second colour having to be kept in
 step with it. Only the focused border is drawn as a gradient — an unfocused
 one is flat `color`, which is what keeps the focused window obvious in a row
@@ -154,7 +159,9 @@ of tiled ones.
 
 ## Cursor Theme
 
-Set the size and theme of your mouse cursor.
+Set the `size` and `theme` of your mouse cursor — `cursor_size` and
+`cursor_theme` in the flat form. Size is in pixels and clamps to 4–512; the
+theme is an installed cursor theme's name.
 
 ```kdl
 input {

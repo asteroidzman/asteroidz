@@ -5,7 +5,7 @@ description: Configure smooth transitions for windows and layers.
 
 ## Enabling Animations
 
-asteroidz supports animations for both standard windows and layer shell surfaces (like bars and notifications).
+asteroidz supports animations for both standard windows and layer shell surfaces (like bars and notifications). `animations` covers windows; `layer_animations` covers layer-shell surfaces and is off by default, so a bar or notification appears without one until you turn it on.
 
 ```kdl
 misc {
@@ -153,7 +153,7 @@ Control the speed of animations (in milliseconds).
 | `animation_duration_open` | integer | `400` | Open animation duration (ms) |
 | `animation_duration_tag` | integer | `300` | Tag animation duration (ms) |
 | `animation_duration_close` | integer | `300` | Close animation duration (ms) |
-| `animation_duration_focus` | integer | `0` | Focus change (opacity transition) animation duration (ms) |
+| `animation_duration_focus` | integer | `1` | Focus change (opacity transition) animation duration (ms) |
 
 ```kdl
 misc {
@@ -196,6 +196,46 @@ misc {
     animation_curve_focus 0.46,1.0,0.29,0.99
     animation_curve_opafadein 0.46,1.0,0.29,0.99
     animation_curve_opafadeout 0.5,0.5,0.5,0.5
+}
+```
+
+## Spring Curves
+
+Overshoot alone is not the difference — a bezier overshoots too, if you put a
+control point outside `0..1`, which is what the "back" easings on easings.net
+are. But a cubic can only overshoot *once* before it has to settle. A spring with
+low damping **rings**: it crosses the target, comes back past it, and does that
+several times on the way to rest. No cubic bezier produces that shape.
+
+The parameters are the other half of it. Two numbers with physical meaning,
+instead of four control points whose effect you have to see plotted to predict.
+
+The defaults ring gently: `0.75`/`18` overshoots by about 3% and crosses the
+target four times before settling. `0.2`/`40` overshoots by half the distance and
+crosses it twelve times, which is the "bouncy" end. At `damping 1` and above
+there is no overshoot at all.
+
+`spring` does **not** replace every curve above. It applies to **move**, **open**
+and **tag** only; close, focus and both opacity fades stay on their bezier
+whatever this is set to, and for two different reasons. The fades stay because a
+spring overshoots and opacity has nowhere to overshoot to — it would have to
+leave the 0–1 range. Close stays because a spring models arriving at a target,
+and a closing window is not arriving anywhere; springing it would bounce a
+window back toward the viewer on its way out.
+
+| Setting | Default | Description |
+| :--- | :--- | :--- |
+| `animation_curve_type` | `bezier` | `bezier` follows the curves above; `spring` uses the two values below, for move/open/tag. |
+| `spring_damping` | `0.75` | How quickly the spring settles, from `0.1` to `2`. Below `1` it overshoots and springs back; at `1` and above it eases in without overshooting at all, which is a slower bezier by another name. |
+| `spring_frequency` | `18` | How fast the spring moves, from `4` to `60`. Higher is snappier. |
+
+```kdl
+animations {
+    curve "spring"
+    spring {
+        damping 0.75
+        frequency 18
+    }
 }
 ```
 

@@ -257,6 +257,19 @@ test('dispatch-actions-coverage',
      find_program('tests/check-dispatch-actions.py'), args : [asteroidz_exe])
 test('rule-schema-coverage',
      find_program('tests/check-rule-schema.py'), args : [asteroidz_exe])
+# The third direction: the docs.
+#
+# `-S` proves the schema matches the code and says nothing about docs/, where the
+# default column of every option table is maintained by hand. Four rows disagreed
+# with the running code, and `animation_duration_focus` shows how: it was
+# documented as `0`, the value set_value_default assigns, but override_config
+# clamps it to [1, 50000] on the next line, so `0` never once took effect.
+#
+# This CHECKS rather than generates. The schema's `desc` is a one-line tooltip;
+# the docs descriptions carry links, KDL snippets and bitmask tables, and
+# generating over them would trade all of that for the tooltip.
+test('config-docs', find_program('tests/check-config-docs.py'),
+     args : [asteroidz_exe])
 # The config we SHIP has to parse.
 #
 # It is what /etc/asteroidz/config.kdl becomes and what every new user is told to
