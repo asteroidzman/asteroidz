@@ -34,6 +34,33 @@ typedef struct {
 	KdlValueType type;
 } KdlEntry;
 
+/* Where a node's bytes are in the document it was parsed from.
+ *
+ * Byte offsets rather than pointers, so they stay valid after the text buffer
+ * is freed and re-read -- which is what the config writer does: it parses to
+ * LOCATE and then edits the bytes to MUTATE. That split is the whole point.
+ * Locating with the real parser means the writer never has to guess about
+ * comments, `/-` slashdash, `;` terminators or nesting, and editing bytes means
+ * a settings change cannot round-trip a hand-maintained config through a
+ * serialiser and lose every comment in it.
+ *
+ * `end` excludes the node's terminator and any trailing whitespace, so it is
+ * the last byte that belongs to the node and nothing more. */
+typedef struct {
+	size_t start;      /* first byte of the node (its type annotation, if any) */
+	size_t end;        /* one past its last meaningful byte                   */
+	size_t name_end;   /* one past the node name                              */
+	size_t args_end;   /* one past the last POSITIONAL argument; == name_end
+						* when there are none, which makes it the place an
+						* argument would be inserted                          */
+	size_t props_start; /* first property, or KDL_NO_OFFSET                   */
+	size_t body_open;  /* the '{', or KDL_NO_OFFSET                           */
+	size_t body_close; /* the matching '}', or KDL_NO_OFFSET                  */
+	int line;
+} KdlSpan;
+
+#define KDL_NO_OFFSET ((size_t)-1)
+
 typedef struct KdlNode {
 	char *name;
 	KdlEntry *args;
@@ -42,6 +69,7 @@ typedef struct KdlNode {
 	size_t n_props;
 	struct KdlNode *children;
 	size_t n_children;
+	KdlSpan span;
 } KdlNode;
 
 typedef struct {
@@ -51,10 +79,15 @@ typedef struct {
 
 typedef struct {
 	const char *p;
+	const char *base; /* start of the text, so spans can be byte offsets */
 	int line;
 	char err[256];
 	bool failed;
 } KdlParser;
+
+static inline size_t kdl_at(const KdlParser *ps) {
+	return (size_t)(ps->p - ps->base);
+}
 
 static bool kdl_parse_nodes(KdlParser *ps, KdlNode **out_nodes,
 							size_t *out_count, bool in_children);
@@ -282,6 +315,11 @@ static void kdl_add_entry(KdlEntry **arr, size_t *n, char *name, char *value,
 /* parse a single node starting at ps->p (name already known to be present) */
 static bool kdl_parse_one_node(KdlParser *ps, KdlNode *node) {
 	memset(node, 0, sizeof(*node));
+	node->span.start = kdl_at(ps);
+	node->span.line = ps->line;
+	node->span.props_start = KDL_NO_OFFSET;
+	node->span.body_open = KDL_NO_OFFSET;
+	node->span.body_close = KDL_NO_OFFSET;
 	kdl_skip_type(ps);
 	KdlValueType t;
 	node->name = kdl_parse_scalar(ps, &t);
@@ -289,6 +327,9 @@ static bool kdl_parse_one_node(KdlParser *ps, KdlNode *node) {
 		kdl_fail(ps, "expected node name");
 		return false;
 	}
+	node->span.name_end = kdl_at(ps);
+	node->span.args_end = node->span.name_end;
+	node->span.end = node->span.name_end;
 
 	for (;;) {
 		bool nl = kdl_skip_ws(ps, true);
@@ -297,6 +338,7 @@ static bool kdl_parse_one_node(KdlParser *ps, KdlNode *node) {
 		if (*ps->p == '}')
 			break;
 		if (*ps->p == '{') {
+			node->span.body_open = kdl_at(ps);
 			ps->p++;
 			if (!kdl_parse_nodes(ps, &node->children, &node->n_children, true))
 				return false;
@@ -304,7 +346,9 @@ static bool kdl_parse_one_node(KdlParser *ps, KdlNode *node) {
 				kdl_fail(ps, "expected '}'");
 				return false;
 			}
+			node->span.body_close = kdl_at(ps);
 			ps->p++;
+			node->span.end = kdl_at(ps);
 			break; /* children end the node */
 		}
 		/* slashdash: comment out the next arg/prop/children */
@@ -336,6 +380,7 @@ static bool kdl_parse_one_node(KdlParser *ps, KdlNode *node) {
 		/* look ahead: is this "name=value" (property) or a bare arg? */
 		const char *save = ps->p;
 		int save_line = ps->line;
+		size_t entry_start = kdl_at(ps);
 		char *first = kdl_parse_scalar(ps, &t);
 		if (!first) {
 			kdl_fail(ps, "expected argument");
@@ -351,11 +396,15 @@ static bool kdl_parse_one_node(KdlParser *ps, KdlNode *node) {
 				return false;
 			}
 			kdl_add_entry(&node->props, &node->n_props, first, val, vt);
+			if (node->span.props_start == KDL_NO_OFFSET)
+				node->span.props_start = entry_start;
 		} else {
 			(void)save;
 			(void)save_line;
 			kdl_add_entry(&node->args, &node->n_args, NULL, first, t);
+			node->span.args_end = kdl_at(ps);
 		}
+		node->span.end = kdl_at(ps);
 	}
 	return true;
 }
@@ -401,7 +450,7 @@ static bool kdl_parse_nodes(KdlParser *ps, KdlNode **out_nodes,
 /* Parse a whole KDL document. On failure returns false and fills err. */
 static bool kdl_parse(const char *text, KdlDocument *out, char *errbuf,
 					  size_t errlen) {
-	KdlParser ps = {.p = text, .line = 1, .failed = false};
+	KdlParser ps = {.p = text, .base = text, .line = 1, .failed = false};
 	ps.err[0] = '\0';
 	bool ok = kdl_parse_nodes(&ps, &out->nodes, &out->n_nodes, false);
 	if (!ok && errbuf)

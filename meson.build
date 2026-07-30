@@ -233,6 +233,13 @@ test_ipc_out = executable('test-ipc-out', 'tests/test-ipc-out.c',
                           build_by_default : false)
 test('ipc-out', test_ipc_out)
 
+# Runs from the source root so the corpus case can open assets/config.kdl --
+# editing the config we actually ship is the closest thing to editing the
+# user's, and the only case that exercises real comments and real nesting.
+test_kdl_write = executable('test-kdl-write', 'tests/test-kdl-write.c',
+                            build_by_default : false)
+test('kdl-write', test_kdl_write, workdir : meson.project_source_root())
+
 mandir = get_option('mandir')
 desktop_install_dir = join_paths(prefix, 'share/wayland-sessions')
 portal_install_dir = join_paths(prefix, 'share/xdg-desktop-portal')

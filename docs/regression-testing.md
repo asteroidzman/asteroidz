@@ -15,6 +15,21 @@ bash contrib/regression/run.sh              # every module
 bash contrib/regression/run.sh layouts tags  # just these modules
 ```
 
+There is a second, much faster layer beside it: `meson test -C build` runs unit
+tests for the pure helpers — the ones whose failure mode is not "the screen
+looks wrong" but a corrupted file on disk or a reply that arrives with its tail
+missing. Those cannot be reached by driving a compositor, because the bug is
+invisible at the sizes and shapes a running compositor produces:
+
+| Target | Covers |
+| :--- | :--- |
+| `kdl-edit` | rewriting an `output NAME { … }` block without disturbing the comments around it |
+| `kdl-write` | editing an arbitrary nested path; includes a 500-edit corpus run over the shipped `assets/config.kdl` |
+| `ipc-out` | queued socket writes, against a socketpair with `SO_SNDBUF` shrunk to force the partial write a normal reply never triggers |
+| `bar-icons` | every vendored SVG parses and rasterises to non-empty ink |
+
+Run both before pushing. Neither subsumes the other.
+
 Env: `ASTEROIDZ` (binary under test, default `build/asteroidz` next to the
 repo, falling back to `/usr/bin/asteroidz`), `HL_OUTDIR`, `HL_WIDTH`/
 `HL_HEIGHT`.

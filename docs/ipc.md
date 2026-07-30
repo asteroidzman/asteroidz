@@ -183,6 +183,32 @@ over, so a crash mid-write cannot leave a config that will not parse.
 See `src/common/kdl-edit.h`, and `tests/test-kdl-edit.c`, which is what a
 change there answers to.
 
+Three pieces do this, and they are separate because only the first is specific
+to outputs:
+
+| | |
+| :--- | :--- |
+| `src/common/kdl-edit.h` | finds an `output NAME { … }` block as text and rewrites entries in it |
+| `src/common/kdl-write.h` | the same idea at an arbitrary nested path (`layout/border/width`), locating with the real parser rather than a text scan |
+| `src/common/kdl-file.h` | slurp, and replace-by-rename with both the file and its directory fsync'd |
+
+`kdl-write.h` **parses to locate and edits bytes to mutate**. The parser hands
+back a byte span per node (`KdlSpan` in `src/config/kdl.h`), so the writer never
+has to reason about comments, `/-` slashdash, `;` terminators or nesting — the
+thing that already knows how to read KDL does the reading. It resolves a
+duplicated path to the **last** declaration, because `source` is applied in
+place and later declarations win, so the last one is the value actually in
+force. And it honours the bare-name fallback the config front-end uses, so
+`misc { border_radius 9 }` is edited where it sits rather than duplicated at the
+canonical top-level path.
+
+Nothing calls `kdl-write.h` yet; it is the foundation for writing arbitrary
+options, not a feature on its own. `tests/test-kdl-write.c` is a `meson test`
+and includes a corpus case that applies 500 edits to the shipped
+`assets/config.kdl`, asserting after each one that the document re-parses *and*
+that the value written reads back — "it still parses" alone would pass on a
+writer that dropped the edit.
+
 An output with **no block anywhere** is applied but not saved, and logs that it
 was not. Inventing one means choosing a file and a place in it, and guessing
 that about a config someone maintains by hand is worse than a line in the log

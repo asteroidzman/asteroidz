@@ -2,6 +2,7 @@
 #define ASTEROIDZ_ACTION_OUTPUT_H
 
 #include "../common/kdl-edit.h"
+#include "../common/kdl-file.h"
 
 /* Output configuration as dispatches.
  *
@@ -58,55 +59,24 @@ static bool output_persist(Monitor *m, const char *const *keys,
 	const char *name = m->wlr_output->name;
 
 	for (int32_t i = 0; i < nconfig_files; i++) {
-		FILE *f = fopen(config_files[i], "rb");
-		if (!f)
+		char *text = kdl_file_slurp(config_files[i]);
+		if (!text)
 			continue;
-		fseek(f, 0, SEEK_END);
-		long sz = ftell(f);
-		fseek(f, 0, SEEK_SET);
-		if (sz < 0) {
-			fclose(f);
-			continue;
-		}
-		char *text = malloc((size_t)sz + 1);
-		if (!text) {
-			fclose(f);
-			continue;
-		}
-		size_t rd = fread(text, 1, (size_t)sz, f);
-		text[rd] = '\0';
-		fclose(f);
 
 		char *out = kdl_rewrite_output_props(text, name, keys, vals, nkeys);
 		free(text);
 		if (!out)
 			continue; /* this file does not declare that output */
 
-		/* Written to a temporary and renamed over, never in place: a config
-		 * truncated by a crash mid-write is a compositor that does not come
-		 * back, and this runs on a mode set -- exactly when the machine is
-		 * most likely to be unhappy. */
-		char tmp[1100];
-		snprintf(tmp, sizeof(tmp), "%s.tmp", config_files[i]);
-		bool ok = false;
-		FILE *w = fopen(tmp, "wb");
-		if (w) {
-			size_t len = strlen(out);
-			ok = fwrite(out, 1, len, w) == len;
-			if (ok && fflush(w) != 0)
-				ok = false;
-			if (ok && fsync(fileno(w)) != 0)
-				ok = false;
-			if (fclose(w) != 0)
-				ok = false;
-		}
-		if (ok && rename(tmp, config_files[i]) != 0)
-			ok = false;
-		if (!ok) {
-			unlink(tmp);
+		/* No backup here. An output setting is one number the user just chose
+		 * on purpose, from a panel that shows them the current value -- there
+		 * is nothing to undo that they cannot simply undo by choosing again.
+		 * The settings write path asks for one, because applying a batch of
+		 * changes across several options is a different kind of act. */
+		bool ok = kdl_file_replace(config_files[i], out, false);
+		if (!ok)
 			wlr_log(WLR_ERROR, "output_persist: could not write %s",
 					config_files[i]);
-		}
 		free(out);
 		return ok;
 	}
