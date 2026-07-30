@@ -414,6 +414,40 @@ hl_wait_watch_grew() {
 
 # hl_move X Y -- move the pointer without pressing anything, which is what
 # hover behaviour (tooltips) needs and what hl_click cannot express.
+# Recompute the virtual pointer's coordinate space from the CURRENT layout.
+#
+# zwlr_virtual_pointer_v1.motion_absolute maps x/extent_w onto the layout's
+# bounding box, so an extent that no longer matches the layout scales every
+# coordinate. hl_start sets it from the single output it created, and cannot know
+# what a test is about to add -- hl_start_live already does this for the real
+# session for exactly the same reason.
+#
+# Any test that creates, destroys or repositions an output must call this
+# afterwards. It went unnoticed for a long time because multimonitor.sh places
+# its second output BESIDE the first, which leaves the layout height alone.
+# Stacking one BELOW doubled the layout height, so a click aimed at a bar pill
+# 33px down was delivered at 66px -- below the bar entirely -- and the test
+# failed as "the panel did not open", which points nowhere near the pointer.
+hl_sync_pointer_extent() {
+	local dims
+	dims="$(hl_get "get all-monitors" | python3 -c '
+import json, sys
+try:
+    ms = json.load(sys.stdin)["monitors"]
+except Exception:
+    raise SystemExit(1)
+if not ms:
+    raise SystemExit(1)
+x0 = min(m["x"] for m in ms); y0 = min(m["y"] for m in ms)
+x1 = max(m["x"] + m["width"] for m in ms)
+y1 = max(m["y"] + m["height"] for m in ms)
+print(max(1, x1 - x0), max(1, y1 - y0))
+' 2>/dev/null)"
+	[ -n "$dims" ] || return 1
+	read -r HL_PTR_EXTENT_W HL_PTR_EXTENT_H <<<"$dims"
+	return 0
+}
+
 hl_move() { # hl_move X Y
 	"$HL_WLVPTR" "$1" "$2" "$HL_PTR_EXTENT_W" "$HL_PTR_EXTENT_H"
 }
