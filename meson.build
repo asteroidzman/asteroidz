@@ -277,6 +277,13 @@ install_data('assets/asteroidz-vulkan.desktop', install_dir : desktop_install_di
 install_data('assets/asteroidz-portals.conf', install_dir : portal_install_dir)
 install_data('assets/asteroidz.portal', install_dir : join_paths(prefix, 'share/xdg-desktop-portal/portals'))
 install_data('assets/config.kdl', install_dir : join_paths(sysconfdir, 'asteroidz'))
+# The default palette, beside the default config that sources it.
+#
+# Not optional: a missing `source` is a fatal config error, so shipping a config
+# that sources a file nobody installed is a fresh install that refuses to start --
+# and the place you find that out is the login screen. matugen overwrites this
+# the first time it runs.
+install_data('assets/colors.kdl', install_dir : join_paths(sysconfdir, 'asteroidz'))
 install_data('amsg/amsg.1', install_dir : join_paths(mandir, 'man1'))
 
 # Bar artwork. Vendored from the waybar plugin repos and mostly normalised to

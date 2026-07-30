@@ -10,14 +10,16 @@ like Niri's config. By default it looks for `~/.config/asteroidz/config.kdl`.
 
 1. **Locate Default Config**
 
-   A fallback configuration is provided at `/etc/asteroidz/config.kdl`. Use it
+   A fallback configuration is provided at `/etc/asteroidz/config.kdl`, with its
+   palette at `/etc/asteroidz/colors.kdl`. Copy both — the first sources the
+   second, and a `source` that cannot be opened is fatal. Use them
    as a reference.
 
 2. **Create User Config**
 
    ```bash
    mkdir -p ~/.config/asteroidz
-   cp /etc/asteroidz/config.kdl ~/.config/asteroidz/config.kdl
+   cp /etc/asteroidz/config.kdl /etc/asteroidz/colors.kdl ~/.config/asteroidz/
    ```
 
 3. **Launch with Custom Config (Optional)**

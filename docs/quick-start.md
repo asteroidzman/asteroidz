@@ -17,10 +17,14 @@ Now that you have asteroidz installed, let's get your environment set up.
 
 2. **Copy Default Config**
 
-   A default configuration file is provided at `/etc/asteroidz/config.kdl`. Copy it to your local directory to start customizing.
+   A default configuration is provided at `/etc/asteroidz/config.kdl`, with its
+   palette beside it at `/etc/asteroidz/colors.kdl`. Copy **both** — `config.kdl`
+   sources `colors.kdl`, and a `source` that cannot be opened is a fatal error
+   rather than a warning, so copying one and not the other gives you a session
+   that will not start.
 
    ```bash
-   cp /etc/asteroidz/config.kdl ~/.config/asteroidz/config.kdl
+   cp /etc/asteroidz/config.kdl /etc/asteroidz/colors.kdl ~/.config/asteroidz/
    ```
 
 3. **Launch asteroidz**

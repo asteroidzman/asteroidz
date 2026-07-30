@@ -205,10 +205,14 @@ Next:
   1. Log out and pick "Asteroidz" from your display manager's session list.
      A second entry runs the experimental Vulkan renderer.
 
-  2. The default config is at /etc/asteroidz/config.kdl. Copy it before editing:
+  2. Copy the default config AND its palette before editing:
 
          mkdir -p ~/.config/asteroidz
-         cp /etc/asteroidz/config.kdl ~/.config/asteroidz/config.kdl
+         cp /etc/asteroidz/config.kdl /etc/asteroidz/colors.kdl ~/.config/asteroidz/
+
+     Both, not just the first: config.kdl sources colors.kdl, and a source it
+     cannot open is a fatal error rather than a warning -- so copying one and
+     not the other gives you a session that will not start.
 
   3. Check the config parses at any time, without starting a session:
 
@@ -218,6 +222,13 @@ Next:
      run it by hand inside the session to see why:
 
          asteroidz-bar
+
+  5. For wallpaper-driven theming, install matugen and wire up the template:
+
+         see /usr/share/asteroidz-bar/matugen/README.md
+
+     Until then the palette is whatever colors.kdl says, which is a real
+     Material palette rather than a placeholder.
 
 Because wlroots went to $WLROOTS_PREFIX rather than into a package, an Ubuntu
 update that changes libwayland or libinput can leave it stale. If asteroidz stops
