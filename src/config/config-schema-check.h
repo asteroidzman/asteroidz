@@ -167,10 +167,10 @@ static void config_schema_list(void) {
  * provenance is a property of the files -- there is nothing to report about the
  * compiled-in defaults. */
 static void config_source_dump(void) {
-	printf("# key\tfile\tline\tpath\twritable\treason\n");
+	printf("# key\tfile\tline\tpath\twritable\tin-memory\treason\n");
 	for (int32_t i = 0; i < nconfig_origins; i++) {
 		const ConfigOrigin *o = &config_origins[i];
-		const char *file = "<runtime>";
+		const char *file = "<none>";
 		const char *writable = "n/a";
 		char why[64] = "";
 		if (o->file >= 0 && o->file < nconfig_files) {
@@ -178,8 +178,12 @@ static void config_source_dump(void) {
 			writable = config_file_is_foreign(file, why, sizeof(why)) ? "no"
 																	  : "yes";
 		}
-		printf("%s\t%s\t%d\t%s\t%s\t%s\n", o->key, file, o->line,
-			   o->path, writable, why);
+		/* Two columns, not one. A key can have been set in memory AND still have
+		 * a declaration in a file -- that is what a live preview is -- so
+		 * collapsing them into "<runtime>" in the file column hid the file the
+		 * write path needs. */
+		printf("%s\t%s\t%d\t%s\t%s\t%s\t%s\n", o->key, file, o->line,
+			   o->path, writable, o->runtime ? "yes" : "no", why);
 	}
 }
 

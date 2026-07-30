@@ -43,8 +43,26 @@ typedef struct {
 	 * document is done with -- an interned pointer would dangle for exactly the
 	 * ~190 keys that rely on the fallback. */
 	char key[64];
-	int32_t file; /* index into config_files[], or -1 for a runtime change */
+	int32_t file; /* index into config_files[], or -1 if nothing on disk sets it */
 	int32_t line;
+	/* The running value was last set in MEMORY, not by reading a file.
+	 *
+	 * A separate flag rather than file == -1, because the two questions are
+	 * independent and conflating them loses the answer to the second: after a
+	 * `persist:false` write -- which is what a live preview is -- the value in
+	 * memory is a runtime one AND there is still a declaration in a file that a
+	 * later persisting write has to edit.
+	 *
+	 * Wiping the file when a runtime write happened is what this used to do, and
+	 * it broke three things at once. `set-config persist:false` then
+	 * `persist:true` on the same key found no file, fell back to the canonical
+	 * path in the main config, and appended a SECOND declaration -- leaving the
+	 * user's `misc { border_radius 9 }` dead and a duplicate winning by position.
+	 * A previewed removal then could not find the line to delete and reported
+	 * success with it still there. And a previewed matugen colour lost the
+	 * colors.kdl origin that makes it read-only, so the next persisting write
+	 * went to config.kdl without `override:true` ever being asked for. */
+	bool runtime;
 	size_t span_start, span_end; /* the whole node                          */
 	size_t val_start, val_end;   /* just its arguments                      */
 	char path[160];              /* the path it was ACTUALLY written at,
@@ -98,7 +116,9 @@ static void config_source_note(const char *key) {
 		if (nconfig_origins >= CONFIG_ORIGIN_MAX)
 			return;
 		o = &config_origins[nconfig_origins++];
+		memset(o, 0, sizeof(*o));
 		snprintf(o->key, sizeof(o->key), "%s", key);
+		o->file = -1;
 	}
 
 	if (config_src_ctx.active && config_src_ctx.node) {
@@ -111,14 +131,18 @@ static void config_source_note(const char *key) {
 		o->val_end = n->span.args_end;
 		snprintf(o->path, sizeof(o->path), "%s",
 				 config_src_ctx.path ? config_src_ctx.path : "");
+		o->runtime = false;
 	} else {
-		/* Changed in memory and not on disk -- `dispatch set_option`, or a
-		 * default that override_config coerced. Invisible before this. */
-		o->file = -1;
-		o->line = 0;
-		o->span_start = o->span_end = 0;
-		o->val_start = o->val_end = 0;
-		o->path[0] = '\0';
+		/* Changed in memory -- `dispatch set_option`, a `persist:false` write, or
+		 * a default that override_config coerced.
+		 *
+		 * The file fields are deliberately LEFT ALONE. Where the declaration
+		 * lives is still true, and it is the only way a later write can edit the
+		 * declaration in force rather than appending a duplicate. See the comment
+		 * on `runtime` in ConfigOrigin for the three bugs that came of clearing
+		 * them here. A key nothing on disk sets already has file == -1 from
+		 * creation above. */
+		o->runtime = true;
 	}
 }
 

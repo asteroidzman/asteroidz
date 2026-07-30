@@ -246,6 +246,26 @@ proves the schema. That is what caught `theme/border-color` and
 not caught it because every check there went through `parse_option` with the
 internal key and none went `path → key`; it now does.
 
+Its most valuable case was added afterwards, by the settings window:
+`test_set_config_a_preview_does_not_lose_the_declaration`. `set-config` with
+`persist:false` is the live-preview path, and it used to erase the file, line and
+path a key was declared at — one line in `config_source_note`. Three separate bugs
+came out of that, and all three only bite a caller that previews before it saves,
+which is exactly what a settings UI does:
+
+- a persisting write after a preview found no declaration, fell back to the
+  canonical path in the main config, and appended a **second** one — leaving the
+  user's `misc { border_radius 9 }` dead and a duplicate winning by position;
+- a previewed removal had no line left to delete and reported success with the
+  setting still in the file;
+- a previewed `colors.kdl` key lost the origin that makes it read-only, so the next
+  write went to `config.kdl` **without `override:true` ever being asked for** —
+  the guard defeated by the thing it guards.
+
+Only the second had a visible symptom, and it surfaced in a bar test rather than
+here. Provenance now carries "set in memory" as a flag beside the file rather than
+instead of it; `asteroidz -P` shows both as separate columns for the same reason.
+
 Two traps it walked into while being written, both worth knowing:
 
 - **An assertion must not change global state.** Proving a described action is

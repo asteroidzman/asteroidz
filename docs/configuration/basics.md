@@ -85,6 +85,23 @@ your config — `-L` and `-S` report the compiled-in defaults.
 Not every option is described yet. `tests/schema-exempt.txt` lists the ones that
 are not, each under a stated reason, so the gap is visible rather than implied.
 
+To see where the values you are actually running came from:
+
+```bash
+asteroidz -P -c ~/.config/asteroidz/config.kdl
+```
+
+One line per key: the file and line the declaration is in, the path it was
+*written* at (often not the canonical one — `misc { border_radius 9 }` is a legal
+spelling of a top-level `border_radius`), whether that file may be written to, and
+whether the running value was last set in memory rather than read from the file.
+
+The last two are separate columns on purpose. A file is unwritable when it carries
+a generator's marker — matugen's `colors.kdl` is rewritten on every wallpaper
+change, so an edit there is not refused, it is silently reverted. And "set in
+memory" is independent of "declared in a file": both are true after a live preview,
+and a tool that collapses them loses the declaration it needs to edit.
+
 ## Environment Variables
 
 Define environment variables in an `environment` block. They are set before

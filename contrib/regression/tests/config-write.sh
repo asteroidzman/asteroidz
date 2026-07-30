@@ -167,6 +167,89 @@ test_set_config_refuses_a_generated_file_and_can_shadow_it() {
 	_cw_restore
 }
 
+# A live preview must not cost the declaration.
+#
+# This is the whole of what makes `persist:false` usable, and it was broken in
+# three ways at once by one line: config_source_note cleared the file, line and
+# path whenever a value was set in memory, so after a preview the compositor no
+# longer knew where the key was declared.
+#
+# Found by the settings window, which previews every edit as you make it -- so
+# every Apply in that window went through the broken path. The symptom that
+# surfaced was the least serious of the three.
+test_set_config_a_preview_does_not_lose_the_declaration() {
+	_cw_save
+
+	# 1. A key at a NON-CANONICAL path. `misc { border_radius 9 }` is a legal
+	#    spelling of a top-level `border_radius` and this config uses it, so a
+	#    writer that fell back to the canonical path would append a second
+	#    declaration -- leaving the misc block dead and a duplicate winning by
+	#    position. Both would be in the file and both would parse.
+	printf 'misc { border_radius 9 }\n' >> "$HL_CONFIG"
+	hl_dispatch "reload_config" 2
+	hl_assert_eq "the key is read from the misc block" \
+		"$(hl_get 'get config' | jq -r '.values.border_radius.source.path')" \
+		"misc/border_radius"
+	# Counted before, not assumed to be one. The harness config already declares a
+	# top-level `border_radius 8`, so the misc block is the SECOND declaration and
+	# wins by position -- which is the case worth testing, and an assertion of
+	# "exactly one afterwards" would have failed against correct code.
+	local n_before; n_before="$(grep -c 'border_radius' "$HL_CONFIG")"
+
+	_cw '{"changes":[{"key":"border_radius","value":"15"}],"persist":false}' >/dev/null
+	hl_assert_eq "a preview says runtime" "$(_cw_kind border_radius)" "runtime"
+	# The part that was lost: WHERE it is declared is still true after a preview.
+	hl_assert_eq "...and still knows where it is declared" \
+		"$(hl_get 'get config' | jq -r '.values.border_radius.source.path')" \
+		"misc/border_radius"
+
+	_cw '{"changes":[{"key":"border_radius","value":"21"}]}' >/dev/null
+	hl_assert_eq "persisting after a preview adds no new declaration" \
+		"$(grep -c 'border_radius' "$HL_CONFIG")" "$n_before"
+	hl_assert_true "...inside the block it was written in" \
+		"$(grep -q 'misc { border_radius 21 }' "$HL_CONFIG" && echo true || echo false)"
+	hl_assert_eq "...and the value took" "$(_cw_val border_radius)" "21"
+	_cw_restore
+
+	# 2. A previewed REMOVAL still has a line to remove. Before the fix this
+	#    reported success with the declaration untouched, because the preview had
+	#    already forgotten which file it was in.
+	_cw_save
+	printf 'gappoh 17\n' >> "$HL_CONFIG"
+	hl_dispatch "reload_config" 2
+	hl_assert_eq "a key is set in the file" "$(_cw_val gappoh)" "17"
+	_cw '{"changes":[{"key":"gappoh","value":null}],"persist":false}' >/dev/null
+	hl_assert_true "a previewed removal shows the default" \
+		"$([ "$(_cw_val gappoh)" != "17" ] && echo true || echo false)"
+	_cw '{"changes":[{"key":"gappoh","value":null}]}' >/dev/null
+	hl_assert_eq "...and persisting it deletes the line" \
+		"$(grep -c '^gappoh' "$HL_CONFIG")" "0"
+	_cw_restore
+
+	# 3. A previewed key owned by a GENERATED file is still refused. Before the
+	#    fix the preview lost the colors.kdl origin, so the next persisting write
+	#    went to the main config without override:true ever being asked for --
+	#    exactly the thing the read-only guard exists to prevent.
+	_cw_save
+	local gen="$HL_OUTDIR/cw-preview-gen.kdl"
+	printf '// ! Auto-generated file. Do not edit directly.\nlayout { border { color 0xaabbccff } }\n' > "$gen"
+	printf 'source "%s"\n' "$gen" >> "$HL_CONFIG"
+	hl_dispatch "reload_config" 2
+	local sum; sum="$(md5sum "$gen" | cut -d' ' -f1)"
+
+	_cw '{"changes":[{"key":"bordercolor","value":"0x11223344"}],"persist":false}' >/dev/null
+	hl_assert_eq "a previewed generated key still reads as read-only" \
+		"$(hl_get 'get config' | jq -r '.values.bordercolor.source.writable')" "false"
+	local r; r="$(_cw '{"changes":[{"key":"bordercolor","value":"0x11223344"}]}')"
+	hl_assert_eq "...and persisting it is still refused" \
+		"$(printf '%s' "$r" | jq -r '.results[0].error')" "read-only-source"
+	hl_assert_eq "the generated file is untouched" \
+		"$(md5sum "$gen" | cut -d' ' -f1)" "$sum"
+	hl_assert_eq "and nothing was appended to the main config" \
+		"$(grep -c 'border { color' "$HL_CONFIG")" "0"
+	_cw_restore
+}
+
 test_set_config_null_resets_to_the_default() {
 	_cw_save
 	_cw '{"changes":[{"key":"borderpx","value":"15"}]}' >/dev/null

@@ -413,11 +413,19 @@ static void config_write_apply_memory(ConfigWriteBatch *b) {
 				node = kdl_locate_key(&docs[slot], c->opt->key);
 		}
 
-		if (c->remove) {
+		if (c->remove && b->persist && c->file != -2) {
 			parse_option(&config, key, val);
 			/* Gone from the file, so it reads as the compiled-in default again.
 			 * An origin left behind would name a line that no longer holds it. */
 			config_source_forget(c->opt->key);
+		} else if (c->remove) {
+			/* A previewed removal, or a removal with nothing on disk to remove.
+			 * The value in memory becomes the default and parse_option's hook
+			 * marks it runtime, but the origin STAYS: the declaration is still in
+			 * the file, and forgetting it here is what left the next persisting
+			 * removal with no line to delete -- reporting success with the setting
+			 * still in the config. */
+			parse_option(&config, key, val);
 		} else if (node) {
 			parse_option(&config, key, val);
 			config_source_note_at(c->opt->key, target, node, c->path);

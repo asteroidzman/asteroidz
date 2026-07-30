@@ -130,9 +130,40 @@ the moment a generator writes a tenth key, and says nothing about a generator
 nobody here has heard of. `get config` also returns the file list with the same
 flag, so a UI can explain itself without walking every key.
 
-`kind` is `file`, `default`, or `runtime`. `runtime` means `dispatch set_option`
-changed it in memory and a reload will silently undo it — a state that was
-invisible before this existed.
+`kind` is `file`, `default`, or `runtime`, and it answers exactly one question:
+**will a reload change this value?**
+
+| `kind` | meaning |
+|---|---|
+| `file` | the running value came from the declaration named by `file`/`line`/`path` |
+| `runtime` | it was set in memory — `dispatch set_option`, or `set-config` with `persist:false` — and a reload will undo it |
+| `default` | nothing on disk sets it and it is at its compiled-in default |
+
+`runtime` **still carries `file`, `line` and `path` when a declaration exists.**
+Both facts are true after a `persist:false` write: the running value was set in
+memory, *and* there is a line in a file that still says something else. `kind`
+answers "is it saved"; `file`/`line`/`path` answer "where does it live". They are
+different questions, and collapsing them broke three things at once — a
+`persist:false` write used to erase the file fields, so afterwards:
+
+- a persisting write of the same key found no declaration, fell back to the
+  canonical path in the main config, and appended a **second** declaration —
+  leaving `misc { border_radius 9 }` dead and a duplicate winning by position;
+- a previewed removal had no line left to delete and reported success with the
+  setting still in the file;
+- a previewed key owned by `colors.kdl` lost the origin that makes it read-only,
+  so the next persisting write went to `config.kdl` **without `override:true`
+  ever being asked for**.
+
+All three are pinned by
+`contrib/regression/tests/config-write.sh:test_set_config_a_preview_does_not_lose_the_declaration`.
+They matter because a live-preview UI previews *every* edit, so every save in one
+goes through this path.
+
+Conversely, a memory-only write that lands on the value the key would have had
+anyway reports `default`, not `runtime`: the state is indistinguishable from never
+having been touched, and `runtime` would promise a change that a reload will not
+make.
 
 `get dispatch-actions` lists every dispatchable action with the *kinds* of its
 arguments (`direction`, `tag-index`, `layout-name`, `option-key`, …), so a
@@ -173,10 +204,19 @@ how a panel ends up showing 9999 while the compositor runs 200.
 `source.kind` comes back as `runtime` so a panel can show that it will not
 survive. `persist` defaults to **true** — a caller that means preview says so.
 
+It is designed to be sent at interactive rates. A previewed key keeps its file
+provenance (see above), so the eventual `persist:true` edits the declaration in
+force rather than a fresh one, and a previewed generated key is still refused.
+Undo a batch of previews with `dispatch reload_config`, not by writing the old
+values back — writing them back leaves the values right and the provenance wrong,
+so a key that *is* saved reads as `runtime` from then on.
+
 `value: null` removes the declaration and reverts to the compiled-in default.
 Removing it rather than writing the default value matters: a declaration set to
 the default is still a declaration, and would still win over anything `source`d
-after it.
+after it. With `persist: false` it previews the removal — the value becomes the
+default in memory while the line stays in the file — so a later `persist: true`
+for the same key is what actually deletes it.
 
 **A key whose value comes from a generated file is refused**, with
 `error: "read-only-source"` and the reason. `override: true` then appends a

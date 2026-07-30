@@ -161,17 +161,36 @@ static cJSON *build_config_source_json(const ConfigOption *o) {
 		return src;
 	}
 	if (g->file < 0 || g->file >= nconfig_files) {
-		/* Changed in memory and not on disk -- `dispatch set_option`. Invisible
-		 * before provenance existed, and worth showing: it is the one state a
-		 * reload silently undoes. */
-		cJSON_AddStringToObject(src, "kind", "runtime");
+		/* Nothing on disk sets it. Whether that is `runtime` or `default` depends
+		 * on the VALUE, not on how it got here.
+		 *
+		 * `runtime` means "a reload will change this", which is the only reason a
+		 * UI cares. A key set in memory to something a reload would undo is
+		 * runtime; a key set in memory to the value it would have anyway -- an
+		 * un-set, or a preview that happened to land on the default -- is in
+		 * exactly the state it would be in if nobody had touched it, and calling
+		 * that runtime promises a change that will not happen. The settings window
+		 * showed "changed in memory, not saved" against a reset control for
+		 * precisely this reason. */
+		char now[512];
+		schema_format(&config, o, now, sizeof(now));
+		cJSON_AddStringToObject(src, "kind",
+								strcmp(now, o->def) ? "runtime" : "default");
 		cJSON_AddBoolToObject(src, "writable", true);
 		return src;
 	}
 	const char *file = config_files[g->file];
 	char why[64] = "";
 	bool foreign = config_file_is_foreign(file, why, sizeof(why));
-	cJSON_AddStringToObject(src, "kind", "file");
+	/* `runtime`, but the file fields come too.
+	 *
+	 * Both halves are true after a `persist:false` write: the running value was
+	 * set in memory AND there is a declaration in a file that still says something
+	 * else. Reporting only the first would hide the file a UI needs to explain
+	 * itself; reporting only the second would claim a value is saved when it is
+	 * not. `kind` answers "is it saved", `file`/`line`/`path` answer "where does
+	 * it live", and they are different questions. */
+	cJSON_AddStringToObject(src, "kind", g->runtime ? "runtime" : "file");
 	cJSON_AddStringToObject(src, "file", file);
 	cJSON_AddNumberToObject(src, "line", g->line);
 	/* The path it was ACTUALLY written at, which for ~190 keys is not the
