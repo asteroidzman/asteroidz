@@ -14,8 +14,8 @@
 
 set -euo pipefail
 
-ASTEROIDZ_TAG="${ASTEROIDZ_TAG:-0.21.0}"
-BAR_TAG="${BAR_TAG:-0.1.5}"
+ASTEROIDZ_TAG="${ASTEROIDZ_TAG:-0.21.1}"
+BAR_TAG="${BAR_TAG:-0.1.6}"
 # 0.20.2, not 0.20.0. asteroidz-scenefx reads wlr_surface_output.suspended, which
 # arrived after the .0 release -- and 0.20.0 otherwise looks like a perfectly good
 # match, right up to a struct-member error a hundred files into the build.
