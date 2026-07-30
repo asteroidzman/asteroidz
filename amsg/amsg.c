@@ -165,15 +165,20 @@ int main(int argc, char *argv[]) {
 
 	/* A final `@-` means "the rest of the command is on stdin".
 	 *
-	 * For `set-config`, whose argument is a JSON object. Passing that as an argv
-	 * element means quoting it through the shell, which is unpleasant enough by
-	 * hand and worse in a script; and the fixed buffer below caps it at 4KB,
-	 * which a batch of every option in a settings page could reach. The buffer
-	 * itself is not the bug it looks like -- it errors out loudly rather than
-	 * truncating -- but "Error: command too long" is a poor answer to a request
-	 * that is merely large.
+	 * For the verbs whose argument is a JSON object -- `set-config`,
+	 * `set-window-rules`, `set-binds`. Passing that as an argv element means
+	 * quoting it through the shell, which is unpleasant enough by hand and worse
+	 * in a script; and the fixed buffer below caps it at 4KB, which a batch of
+	 * every option in a settings page could reach. The buffer itself is not the
+	 * bug it looks like -- it errors out loudly rather than truncating -- but
+	 * "Error: command too long" is a poor answer to a request that is merely
+	 * large.
+	 *
+	 * Not special-cased per verb: `@-` means "the rest is on stdin" for any
+	 * command, which is one rule rather than a list to keep in step.
 	 *
 	 *   printf '{"changes":[...]}' | amsg set-config @-
+	 *   printf '{"changes":[...]}' | amsg set-window-rules @-
 	 */
 	char *heap_cmd = NULL;
 	if (argc > 1 && strcmp(argv[argc - 1], "@-") == 0) {

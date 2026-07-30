@@ -204,7 +204,7 @@ so the harness includes a few small purpose-built Wayland clients:
 
 ## Module coverage
 
-Twenty-five modules as of writing (308 assertions): `layouts`,
+Twenty-five modules as of writing (373 assertions): `layouts`,
 `window-states`, `tags`, `focus`, `scratchpad`, `geometry`, `dwindle`,
 `overview`, `multimonitor`, `mousebind`, `hdr`, `scroller`, `animations`,
 `layer-shell`, `ipc-watch`, `keybind-combo`, `set-option`, `config-ipc`,
@@ -240,7 +240,14 @@ module of its own is that both structures are **lossy once parsed**: a
 verbs are served from records captured while reading, and the thing to check is
 that the records say what the file said.
 
-Its sharpest assertion is that a rule which sets one field reports **exactly**
+It covers the write path too — `set-window-rules` and `set-binds` — where the
+sharpest assertion is that **a batch of edits does not shift itself apart**. Every
+splice moves every offset after it, so applying edits in the order they arrive
+leaves the second span pointing into the middle of what the first edit produced.
+The result still parses, which is exactly what makes it a bug that ships. Edits go
+back to front; reversing the sort turns that test red.
+
+Its sharpest read assertion is that a rule which sets one field reports **exactly**
 that field. A serialiser emitting all 53 would look correct in a diff and would
 leave a rule editor unable to tell "leave blur alone" from "turn blur off" — and
 would write the latter for every field on the first save.
@@ -257,6 +264,10 @@ It also found two silent bugs while being written, both of the same shape:
   spelling parsed as the *string* `"#true"` and every consumer ran it through
   `atoi` and got `0`. Nothing in the tree writes v2 spelling, which is the only
   reason it never bit. Both spellings are accepted now and both are asserted.
+- **The legacy comma form was swallowed.** `windowrule "appid:x,isfloating:1"` —
+  what an old `windowrule=` line becomes — reached a handler that only read a
+  node's children, so it produced a rule with no matchers. A rule with no matchers
+  matches every window.
 
 `config-write` covers `set-config`, which is the half that makes a setting a
 setting rather than a preview. It **writes to `$HL_CONFIG`** and so restores a

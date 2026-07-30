@@ -611,6 +611,10 @@ static void handle_command(int client_fd, const char *cmd_raw) {
 			return;
 		}
 		resp = build_monitor_tags_response(m);
+	} else if (strncmp(cmd_raw, "set-window-rules ", 17) == 0) {
+		resp = handle_set_window_rules(cmd_raw + 17);
+	} else if (strncmp(cmd_raw, "set-binds ", 10) == 0) {
+		resp = handle_set_binds(cmd_raw + 10);
 	} else if (strncmp(cmd_raw, "set-config ", 11) == 0) {
 		/* cmd_raw, not cmd: the copy has had every comma turned into a space,
 		 * and this body is JSON. */

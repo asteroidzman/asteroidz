@@ -25,6 +25,7 @@
 #include "../config/config-schema.h"
 #include "../config/config-source.h"
 #include "../config/config-write.h"
+#include "../config/rule-write.h"
 
 /* ---------- schema ---------- */
 
@@ -377,6 +378,20 @@ static const DispatchAction dispatch_actions[] = {
 	(sizeof(dispatch_actions) / sizeof(dispatch_actions[0]))
 
 /* One action per line, tab separated: name, then its argument kinds. */
+/* Does a dispatch by this name exist?
+ *
+ * For the keybind writer. A bind naming a dispatch the compositor does not know
+ * writes a config that fails to reload, and the failure surfaces at the next
+ * login rather than at the save -- which is the worst possible place for it. */
+static bool ipc_dispatch_action_known(const char *name) {
+	if (!name || !*name)
+		return false;
+	for (size_t i = 0; i < LENGTH(dispatch_actions); i++)
+		if (!strcmp(dispatch_actions[i].name, name))
+			return true;
+	return false;
+}
+
 static void dispatch_actions_list(void) {
 	printf("# name\targs\n");
 	for (size_t i = 0; i < DISPATCH_ACTION_COUNT; i++)

@@ -200,4 +200,263 @@ static cJSON *build_binds_response(void) {
 	return resp;
 }
 
+/* ---------- set-window-rules, set-binds ---------- */
+
+/* Verbs, not dispatches, for the reasons set-config is one: handle_command
+ * rewrites every comma to a space in its working copy and the dispatch branch
+ * tokenises on commas with a six-token cap, while a rule legitimately contains
+ * commas and a batch of them exceeds the buffer. And a dispatch's reply is a
+ * hardcoded {"success":true} with the return value discarded, when real errors
+ * are the entire point. */
+
+static bool ipc_rw_parse_common(cJSON *jc, RuleWriteChange *c) {
+	const cJSON *op = cJSON_GetObjectItem(jc, "op");
+	const char *ops = cJSON_IsString(op) ? op->valuestring : "update";
+	if (!strcmp(ops, "add"))
+		c->op = RW_ADD;
+	else if (!strcmp(ops, "remove"))
+		c->op = RW_REMOVE;
+	else if (!strcmp(ops, "update"))
+		c->op = RW_UPDATE;
+	else {
+		rw_fail(c, "bad-request", "unknown op \"%s\"", ops);
+		return false;
+	}
+	const cJSON *idx = cJSON_GetObjectItem(jc, "index");
+	c->index = cJSON_IsNumber(idx) ? (int32_t)idx->valuedouble : -1;
+	if (c->op != RW_ADD && c->index < 0) {
+		rw_fail(c, "bad-request", "%s needs an index", ops);
+		return false;
+	}
+	return true;
+}
+
+/* A value out of JSON, in the one representation that crosses this socket: the
+ * string a user would write. Numbers and booleans are accepted because a UI
+ * naturally produces them, and normalised here rather than in four places. */
+static void ipc_rw_value(const cJSON *v, char *out, size_t cap) {
+	if (cJSON_IsString(v))
+		snprintf(out, cap, "%s", v->valuestring);
+	else if (cJSON_IsBool(v))
+		snprintf(out, cap, "%d", cJSON_IsTrue(v) ? 1 : 0);
+	else if (cJSON_IsNumber(v)) {
+		double d = v->valuedouble;
+		if (d == (double)(long long)d)
+			snprintf(out, cap, "%lld", (long long)d);
+		else
+			snprintf(out, cap, "%g", d);
+	} else {
+		out[0] = '\0';
+	}
+}
+
+static cJSON *ipc_rw_reply(RuleWriteBatch *b, bool ok) {
+	cJSON *resp = cJSON_CreateObject();
+	cJSON_AddBoolToObject(resp, "ok", ok);
+	if (b->error[0]) {
+		cJSON_AddStringToObject(resp, "error", b->error);
+		cJSON_AddStringToObject(resp, "detail", b->detail);
+	}
+	cJSON *results = cJSON_CreateArray();
+	int applied = 0;
+	for (size_t i = 0; i < b->n; i++) {
+		RuleWriteChange *c = &b->changes[i];
+		cJSON *r = cJSON_CreateObject();
+		cJSON_AddNumberToObject(r, "index", c->index);
+		if (c->error[0]) {
+			cJSON_AddBoolToObject(r, "ok", false);
+			cJSON_AddStringToObject(r, "error", c->error);
+			cJSON_AddStringToObject(r, "detail", c->detail);
+		} else if (!ok) {
+			/* It did not fail -- it never ran. Saying "ok" here would be a lie
+			 * a UI would act on, and the batch is all-or-nothing. */
+			cJSON_AddBoolToObject(r, "ok", false);
+			cJSON_AddStringToObject(r, "error", "not-applied");
+			cJSON_AddStringToObject(r, "detail",
+									"another change in the batch was refused");
+		} else {
+			cJSON_AddBoolToObject(r, "ok", true);
+			if (c->file >= 0 && c->file < nconfig_files)
+				cJSON_AddStringToObject(r, "file", config_files[c->file]);
+			applied++;
+		}
+		cJSON_AddItemToArray(results, r);
+	}
+	cJSON_AddNumberToObject(resp, "applied", applied);
+	cJSON_AddItemToObject(resp, "results", results);
+	return resp;
+}
+
+static cJSON *handle_set_window_rules(const char *body) {
+	RuleWriteBatch b;
+	memset(&b, 0, sizeof(b));
+
+	cJSON *req = cJSON_Parse(body);
+	if (!req) {
+		cJSON *resp = cJSON_CreateObject();
+		cJSON_AddBoolToObject(resp, "ok", false);
+		cJSON_AddStringToObject(resp, "error", "bad-request");
+		cJSON_AddStringToObject(resp, "detail", "body is not valid JSON");
+		return resp;
+	}
+	cJSON *changes = cJSON_GetObjectItem(req, "changes");
+	if (!cJSON_IsArray(changes) || cJSON_GetArraySize(changes) == 0) {
+		cJSON_Delete(req);
+		cJSON *resp = cJSON_CreateObject();
+		cJSON_AddBoolToObject(resp, "ok", false);
+		cJSON_AddStringToObject(resp, "error", "bad-request");
+		cJSON_AddStringToObject(resp, "detail", "no changes");
+		return resp;
+	}
+
+	bool ok = true;
+	cJSON *jc = NULL;
+	cJSON_ArrayForEach(jc, changes) {
+		if (b.n >= RULE_WRITE_MAX_CHANGES) {
+			snprintf(b.error, sizeof(b.error), "too-many");
+			snprintf(b.detail, sizeof(b.detail), "at most %d changes per batch",
+					 RULE_WRITE_MAX_CHANGES);
+			ok = false;
+			break;
+		}
+		RuleWriteChange *c = &b.changes[b.n++];
+		if (!ipc_rw_parse_common(jc, c)) {
+			ok = false;
+			continue;
+		}
+		cJSON *fields = cJSON_GetObjectItem(jc, "fields");
+		if (c->op != RW_REMOVE && !cJSON_IsObject(fields)) {
+			rw_fail(c, "bad-request", "a rule needs a fields object");
+			ok = false;
+			continue;
+		}
+		cJSON *f = NULL;
+		cJSON_ArrayForEach(f, fields) {
+			if (c->n_fields >= RULE_WRITE_MAX_FIELDS)
+				break;
+			const RuleField *rf = rule_field_by_key(f->string);
+			if (!rf) {
+				const char *k = rule_field_key_for_nice(f->string);
+				rf = rule_field_by_key(k);
+			}
+			if (!rf) {
+				rw_fail(c, "unknown-field", "no window-rule field \"%s\"",
+						f->string);
+				ok = false;
+				break;
+			}
+			snprintf(c->keys[c->n_fields], sizeof(c->keys[0]), "%s", rf->key);
+			ipc_rw_value(f, c->vals[c->n_fields], sizeof(c->vals[0]));
+			c->n_fields++;
+		}
+	}
+	cJSON_Delete(req);
+
+	if (ok)
+		ok = rw_plan_rules(&b);
+	if (ok)
+		ok = rw_commit(&b, true);
+	cJSON *resp = ipc_rw_reply(&b, ok);
+	if (ok)
+		config_reload_quiet();
+	return resp;
+}
+
+static cJSON *handle_set_binds(const char *body) {
+	RuleWriteBatch b;
+	memset(&b, 0, sizeof(b));
+
+	cJSON *req = cJSON_Parse(body);
+	if (!req) {
+		cJSON *resp = cJSON_CreateObject();
+		cJSON_AddBoolToObject(resp, "ok", false);
+		cJSON_AddStringToObject(resp, "error", "bad-request");
+		cJSON_AddStringToObject(resp, "detail", "body is not valid JSON");
+		return resp;
+	}
+	cJSON *changes = cJSON_GetObjectItem(req, "changes");
+	if (!cJSON_IsArray(changes) || cJSON_GetArraySize(changes) == 0) {
+		cJSON_Delete(req);
+		cJSON *resp = cJSON_CreateObject();
+		cJSON_AddBoolToObject(resp, "ok", false);
+		cJSON_AddStringToObject(resp, "error", "bad-request");
+		cJSON_AddStringToObject(resp, "detail", "no changes");
+		return resp;
+	}
+
+	bool ok = true;
+	cJSON *jc = NULL;
+	cJSON_ArrayForEach(jc, changes) {
+		if (b.n >= RULE_WRITE_MAX_CHANGES) {
+			snprintf(b.error, sizeof(b.error), "too-many");
+			snprintf(b.detail, sizeof(b.detail), "at most %d changes per batch",
+					 RULE_WRITE_MAX_CHANGES);
+			ok = false;
+			break;
+		}
+		RuleWriteChange *c = &b.changes[b.n++];
+		if (!ipc_rw_parse_common(jc, c)) {
+			ok = false;
+			continue;
+		}
+		if (c->op == RW_REMOVE)
+			continue;
+
+		const cJSON *v = cJSON_GetObjectItem(jc, "kind");
+		if (cJSON_IsString(v))
+			snprintf(c->kind, sizeof(c->kind), "%s", v->valuestring);
+		else if (c->op == RW_ADD)
+			snprintf(c->kind, sizeof(c->kind), "bind");
+		v = cJSON_GetObjectItem(jc, "chord");
+		if (cJSON_IsString(v))
+			snprintf(c->chord, sizeof(c->chord), "%s", v->valuestring);
+		v = cJSON_GetObjectItem(jc, "action");
+		if (cJSON_IsString(v))
+			snprintf(c->action, sizeof(c->action), "%s", v->valuestring);
+		if (!c->chord[0] || !c->action[0]) {
+			rw_fail(c, "bad-request", "a bind needs a chord and an action");
+			ok = false;
+			continue;
+		}
+		/* The action has to exist. A keybind editor offering a name the
+		 * compositor does not know writes a config that fails to reload -- and
+		 * the failure surfaces at the next login, not at the save. */
+		if (!ipc_dispatch_action_known(c->action)) {
+			rw_fail(c, "unknown-action", "no dispatch called \"%s\"",
+					c->action);
+			ok = false;
+			continue;
+		}
+		cJSON *args = cJSON_GetObjectItem(jc, "args");
+		if (cJSON_IsArray(args)) {
+			cJSON *a = NULL;
+			cJSON_ArrayForEach(a, args) {
+				if (c->n_args >= BIND_SOURCE_ARGS)
+					break;
+				ipc_rw_value(a, c->args[c->n_args], sizeof(c->args[0]));
+				c->n_args++;
+			}
+		}
+		cJSON *flags = cJSON_GetObjectItem(jc, "flags");
+		if (cJSON_IsObject(flags)) {
+			c->flag_keysym =
+				cJSON_IsTrue(cJSON_GetObjectItem(flags, "keysym"));
+			c->flag_lock = cJSON_IsTrue(cJSON_GetObjectItem(flags, "lock"));
+			c->flag_release =
+				cJSON_IsTrue(cJSON_GetObjectItem(flags, "release"));
+			c->flag_pass = cJSON_IsTrue(cJSON_GetObjectItem(flags, "pass"));
+		}
+	}
+	cJSON_Delete(req);
+
+	if (ok)
+		ok = rw_plan_binds(&b);
+	if (ok)
+		ok = rw_commit(&b, false);
+	cJSON *resp = ipc_rw_reply(&b, ok);
+	if (ok)
+		config_reload_quiet();
+	return resp;
+}
+
 #endif /* ASTEROIDZ_IPC_RULES_H */

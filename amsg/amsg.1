@@ -105,6 +105,68 @@ it.
 \fBget dispatch\-actions\fR
 Return every dispatchable action with the \fIkinds\fR of its arguments, so a
 keybind editor can offer the right control instead of a text box.
+.SS "Window rules and keybinds"
+.TP
+\fBget window\-rule\-schema\fR
+Describe every window\-rule field: type, range, group, label and explanation,
+plus both spellings (\fBnice\fR is the canonical dashed KDL name, \fBkey\fR the
+bare one the legacy form uses). Two flags matter and neither is derivable from
+the parsed rule: \fBregex\fR marks the matchers, and \fBtristate\fR marks the
+fields that are unset/0/1 rather than boolean.
+.TP
+\fBget window\-rules\fR
+Return the current rules, each reporting \fIonly the fields it actually sets\fR --
+which is what distinguishes "says nothing about blur" from "turns blur off".
+Values come back in the spelling they were written in, so \fBtags 4\fR reports
+\fB4\fR and not the bitmask the field holds.
+.TP
+\fBget binds\fR
+Return every keyboard and mouse bind with the chord verbatim, the dispatch
+\fIname\fR, the raw argument strings, the keymode, and the four
+\fBlock\fR/\fBkeysym\fR/\fBrelease\fR/\fBpass\fR flags. Served from records
+captured while the config is read, because the parsed \fBKeyBinding\fR is a
+function pointer and a union by then. \fBsource.editable\fR is false for binds
+written in the legacy line form -- they are listed but cannot be rewritten --
+and \fBnot_listed\fR names the kinds with no KDL handler at all.
+.SS "Writing rules and binds"
+.TP
+\fBset\-window\-rules\fR <\fIjson\fR>
+.TP
+\fBset\-binds\fR <\fIjson\fR>
+Add, change or remove window rules and keybinds. The body is a JSON object of
+operations:
+.RS
+.PP
+.nf
+{"changes":[{"op":"update","index":3,"fields":{"appid":"mpv","force_hdr":"1"}},
+            {"op":"add","fields":{"appid":"kitty","isterm":"1"}},
+            {"op":"remove","index":5}]}
+
+{"changes":[{"op":"add","chord":"Super+X","action":"spawn","args":["kitty"]},
+            {"op":"update","index":2,"chord":"Super+Q",
+             "action":"kill_client","flags":{"release":true}}]}
+.fi
+.PP
+\fBindex\fR is the position reported by \fBget window\-rules\fR or
+\fBget binds\fR. An \fBadd\fR needs no index; an \fBupdate\fR replaces the
+declaration wholesale, so it must carry every field that should survive.
+.PP
+Nested KDL is written and the existing reader flattens it, so there is one
+parsing path rather than a writer that also has to know the legacy comma form.
+Edits replace the node's bytes: comments survive, a removal takes the comment
+lines directly above it, and every touched file is re\-parsed before any of them
+is renamed into place.
+.PP
+The batch is all\-or\-nothing. A bind naming a dispatch the compositor does not
+know is refused with \fBunknown\-action\fR rather than written into a config
+that fails at the next login. A rule or bind written in the legacy line form has
+no node to replace and is refused with \fBnot\-editable\fR.
+.PP
+There is no \fBpersist\fR: a window rule takes effect when a window maps and a
+keybind is a lookup, so there is nothing to preview. The config is re\-read
+afterwards \fIwithout\fR respawning the \fBspawn\fR list, which a full
+\fBreload_config\fR would do.
+.RE
 .SS "Writing config (set\-config)"
 .TP
 \fBset\-config\fR <\fIjson\fR>

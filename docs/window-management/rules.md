@@ -34,6 +34,18 @@ this page listed that is not a window rule at all — `single_scratchpad` is a
 global option, documented under
 [Scratchpads](/docs/window-management/special-workspaces).
 
+**The legacy comma form still reads**, written as an argument:
+
+```kdl
+windowrule "appid:mpv,isfullscreen:1"
+```
+
+which is what an old `windowrule=` line becomes. It used to be swallowed: the KDL
+handler only looked at a node's *children*, so a node with an argument and no
+block produced a rule with no matchers — and a rule with no matchers matches every
+window. Silent, and reported as a successful parse. An empty `window-rule { }` is
+now ignored with a warning for the same reason.
+
 **Matching is by regex**, not by literal text. A `.` or a `+` in an app id is a
 wildcard, so `org.gnome.Nautilus` also matches `orgXgnomeXNautilus`. Harmless in
 practice, worth knowing before reaching for `^…$`.

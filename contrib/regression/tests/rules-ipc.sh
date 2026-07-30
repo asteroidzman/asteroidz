@@ -251,3 +251,344 @@ EOF
 			&& echo true || echo false)"
 	_ri_restore
 }
+
+# ── writing ─────────────────────────────────────────────────────────────────
+
+# Through `@-` (the body on stdin), not as an argv element.
+#
+# Two reasons, both of which a real client hits: the IPC protocol is
+# newline-delimited, so a pretty-printed body sent as an argument would be read
+# as several commands and every line after the first would be an unknown one;
+# and the argv path caps the whole command at 4KB, which a batch of a dozen rules
+# reaches. `@-` folds newlines to spaces and grows its buffer.
+_ri_set_rules() { # _ri_set_rules '<json>'
+	printf '%s' "$1" | ASTEROIDZ_INSTANCE_SIGNATURE="$HL_SIG" \
+		"$HL_REPO/build/amsg" set-window-rules @- 2>/dev/null
+}
+
+_ri_set_binds() { # _ri_set_binds '<json>'
+	printf '%s' "$1" | ASTEROIDZ_INSTANCE_SIGNATURE="$HL_SIG" \
+		"$HL_REPO/build/amsg" set-binds @- 2>/dev/null
+}
+
+test_set_window_rules_adds_a_rule_and_it_survives_a_reload() {
+	_ri_save
+	local r; r="$(_ri_set_rules '{"changes":[{"op":"add","fields":{"appid":"ri-add","isfloating":"1","tags":"3"}}]}')"
+	hl_assert_true "an added rule is accepted" \
+		"$(printf '%s' "$r" | jq -r '.ok')"
+	hl_assert_eq "...and names the file it wrote" \
+		"$(printf '%s' "$r" | jq -r '.results[0].file')" "$HL_CONFIG"
+
+	local i; i="$(_ri_index_of ri-add)"
+	hl_assert_true "the rule is live immediately" \
+		"$([ "$i" -ge 0 ] && echo true || echo false)"
+	hl_assert_eq "...with the fields it was given" \
+		"$(_ri_rule "$i" '.fields.isfloating')" "1"
+	hl_assert_eq "...including the tag, as a number" \
+		"$(_ri_rule "$i" '.fields.tags')" "3"
+
+	# Nested KDL was written and the existing reader flattened it. If the writer
+	# had emitted the legacy comma form this would still pass -- so the file is
+	# checked too.
+	hl_assert_true "a window-rule BLOCK was written, not a legacy line" \
+		"$(grep -q 'window-rule {' "$HL_CONFIG" && echo true || echo false)"
+	hl_assert_true "...spelled with the canonical field names" \
+		"$(grep -q 'open-floating' "$HL_CONFIG" && echo true || echo false)"
+	hl_assert_true "the config still parses" \
+		"$("$HL_ASTEROIDZ" -p -c "$HL_CONFIG" 2>/dev/null | grep -q 'config OK' \
+			&& echo true || echo false)"
+	hl_dispatch "reload_config" 2
+	hl_assert_true "and it survives a reload" \
+		"$([ "$(_ri_index_of ri-add)" -ge 0 ] && echo true || echo false)"
+	_ri_restore
+}
+
+test_set_window_rules_updates_in_place_and_keeps_the_comment() {
+	_ri_save
+	# The whole reason the writer edits bytes instead of serialising: a config
+	# regenerated from the parsed tree would be correct and would lose the line
+	# saying why the rule is there.
+	cat >> "$HL_CONFIG" <<'EOF'
+// mpv has to stay on top or the subtitles vanish behind the browser
+window-rule {
+	match app-id="ri-upd"
+	pinned
+}
+EOF
+	hl_dispatch "reload_config" 2
+	local i; i="$(_ri_index_of ri-upd)"
+	local before; before="$(grep -c 'window-rule {' "$HL_CONFIG")"
+
+	local r; r="$(_ri_set_rules "{\"changes\":[{\"op\":\"update\",\"index\":$i,\"fields\":{\"appid\":\"ri-upd\",\"ispinned\":\"1\",\"noblur\":\"1\"}}]}")"
+	hl_assert_true "an update is accepted" "$(printf '%s' "$r" | jq -r '.ok')"
+
+	i="$(_ri_index_of ri-upd)"
+	hl_assert_eq "the new field took" "$(_ri_rule "$i" '.fields.noblur')" "1"
+	hl_assert_eq "...and the old one is still there" \
+		"$(_ri_rule "$i" '.fields.ispinned')" "1"
+	hl_assert_eq "no second rule was appended" \
+		"$(grep -c 'window-rule {' "$HL_CONFIG")" "$before"
+	hl_assert_true "the comment above it survived" \
+		"$(grep -q 'subtitles vanish' "$HL_CONFIG" && echo true || echo false)"
+	hl_assert_true "...still directly above it" \
+		"$(grep -A1 'subtitles vanish' "$HL_CONFIG" | tail -1 \
+			| grep -q 'window-rule {' && echo true || echo false)"
+	_ri_restore
+}
+
+test_set_window_rules_removes_a_rule_with_its_comment() {
+	_ri_save
+	cat >> "$HL_CONFIG" <<'EOF'
+// this rule explains itself and should go with it
+window-rule {
+	match app-id="ri-del"
+	no-shadow
+}
+EOF
+	hl_dispatch "reload_config" 2
+	local i; i="$(_ri_index_of ri-del)"
+	hl_assert_true "the rule exists first" \
+		"$([ "$i" -ge 0 ] && echo true || echo false)"
+
+	local r; r="$(_ri_set_rules "{\"changes\":[{\"op\":\"remove\",\"index\":$i}]}")"
+	hl_assert_true "a removal is accepted" "$(printf '%s' "$r" | jq -r '.ok')"
+	hl_assert_eq "the rule is gone" "$(_ri_index_of ri-del)" "-1"
+	hl_assert_eq "...and so is its text" \
+		"$(grep -c 'ri-del' "$HL_CONFIG")" "0"
+	# The comment goes with the rule it explains. Leaving it orphaned above an
+	# unrelated setting is worse than losing it.
+	hl_assert_eq "...and the comment that explained it" \
+		"$(grep -c 'explains itself' "$HL_CONFIG")" "0"
+	hl_assert_true "the config still parses" \
+		"$("$HL_ASTEROIDZ" -p -c "$HL_CONFIG" 2>/dev/null | grep -q 'config OK' \
+			&& echo true || echo false)"
+	_ri_restore
+}
+
+test_set_window_rules_applies_a_batch_all_or_nothing() {
+	_ri_save
+	local before; before="$(md5sum "$HL_CONFIG" | cut -d' ' -f1)"
+	local r; r="$(_ri_set_rules '{"changes":[{"op":"add","fields":{"appid":"ri-good","noblur":"1"}},{"op":"add","fields":{"appid":"ri-bad","no_such_field":"1"}}]}')"
+	hl_assert_false "a batch with an unknown field is refused" \
+		"$(printf '%s' "$r" | jq -r '.ok')"
+	hl_assert_eq "...naming the field" \
+		"$(printf '%s' "$r" | jq -r '[.results[] | select(.error=="unknown-field")] | length')" "1"
+	# The one that was fine did not run, and says so rather than claiming
+	# success -- a UI would otherwise show one row applied and one failed for a
+	# batch where neither happened.
+	hl_assert_eq "...and the valid one reports not-applied" \
+		"$(printf '%s' "$r" | jq -r '.results[0].error')" "not-applied"
+	hl_assert_eq "nothing was written" \
+		"$(md5sum "$HL_CONFIG" | cut -d' ' -f1)" "$before"
+	hl_assert_eq "and neither rule exists" "$(_ri_index_of ri-good)" "-1"
+	_ri_restore
+}
+
+test_the_legacy_comma_form_is_read_rather_than_swallowed() {
+	_ri_save
+	# `windowrule "appid:x,isfloating:1"` is what someone migrating an old
+	# `windowrule=` line writes. kdl_window_rule only ever looked at CHILDREN, so
+	# a node with an argument and no block built an empty value -- and an empty
+	# window rule has no matchers, which means it matches EVERY window. Silent,
+	# and reported as a successful parse.
+	printf 'windowrule appid:ri-legacy,isfloating:1\n' >> "$HL_CONFIG"
+	hl_dispatch "reload_config" 2
+	local i; i="$(_ri_index_of ri-legacy)"
+	hl_assert_true "the legacy form produces a rule that matches something" \
+		"$([ "$i" -ge 0 ] && echo true || echo false)"
+	hl_assert_eq "...with the field it asked for" \
+		"$(_ri_rule "$i" '.fields.isfloating')" "1"
+	# It has a node and therefore a span, so it can be rewritten -- and doing so
+	# upgrades it to a block, which is the spelling everything else uses.
+	hl_assert_true "...and it is editable, because it has a node" \
+		"$(_ri_rule "$i" '.source.editable')"
+
+	local r; r="$(_ri_set_rules "{\"changes\":[{\"op\":\"update\",\"index\":$i,\"fields\":{\"appid\":\"ri-legacy\",\"isfloating\":\"1\",\"noblur\":\"1\"}}]}")"
+	hl_assert_true "editing it is accepted" "$(printf '%s' "$r" | jq -r '.ok')"
+	hl_assert_true "...and rewrites it as a block" \
+		"$(grep -q 'window-rule {' "$HL_CONFIG" && echo true || echo false)"
+	hl_assert_eq "...with no leftover legacy line" \
+		"$(grep -c '^windowrule ' "$HL_CONFIG")" "0"
+	i="$(_ri_index_of ri-legacy)"
+	hl_assert_eq "...and both fields set" "$(_ri_rule "$i" '.fields.noblur')" "1"
+	_ri_restore
+}
+
+test_an_empty_window_rule_is_ignored_rather_than_matching_everything() {
+	_ri_save
+	local before; before="$(hl_get "get window-rules" | jq '.count')"
+	printf 'window-rule { }\n' >> "$HL_CONFIG"
+	hl_dispatch "reload_config" 2
+	# A rule with no matchers matches every window. One that also sets nothing is
+	# harmless today and a trap the moment someone adds a field to it, so it is
+	# refused with a warning rather than quietly installed.
+	hl_assert_eq "an empty rule creates nothing" \
+		"$(hl_get "get window-rules" | jq '.count')" "$before"
+	_ri_restore
+}
+
+test_set_window_rules_refuses_a_generated_file() {
+	_ri_save
+	local gen="$HL_OUTDIR/ri-gen.kdl"
+	printf '// ! Auto-generated file. Do not edit directly.\nwindow-rule {\n\tmatch app-id="ri-gen"\n\tno-blur\n}\n' > "$gen"
+	printf 'source "%s"\n' "$gen" >> "$HL_CONFIG"
+	hl_dispatch "reload_config" 2
+	local sum; sum="$(md5sum "$gen" | cut -d' ' -f1)"
+	local i; i="$(_ri_index_of ri-gen)"
+	hl_assert_true "a rule in a generated file is listed" \
+		"$([ "$i" -ge 0 ] && echo true || echo false)"
+	# Editable and writable are different questions. The span is perfectly good
+	# and rewriting it would work -- and be undone the next time the generator
+	# runs, which looks like the compositor forgetting things at random.
+	hl_assert_false "...but not editable" "$(_ri_rule "$i" '.source.editable')"
+
+	local r; r="$(_ri_set_rules "{\"changes\":[{\"op\":\"update\",\"index\":$i,\"fields\":{\"appid\":\"ri-gen\",\"noblur\":\"0\"}}]}")"
+	hl_assert_eq "editing it is refused" \
+		"$(printf '%s' "$r" | jq -r '.results[0].error')" "read-only-source"
+	hl_assert_eq "and the generated file is untouched" \
+		"$(md5sum "$gen" | cut -d' ' -f1)" "$sum"
+	_ri_restore
+}
+
+test_set_binds_round_trips_a_keybind() {
+	_ri_save
+	local r; r="$(_ri_set_binds '{"changes":[{"op":"add","chord":"Alt+F7","action":"combo_view","args":["2"],"flags":{"release":true}}]}')"
+	hl_assert_true "an added bind is accepted" \
+		"$(printf '%s' "$r" | jq -r '.ok')"
+
+	local b; b="$(hl_get "get binds")"
+	local got; got="$(printf '%s' "$b" | jq -c '[.binds[] | select(.chord=="Alt+F7")][0]')"
+	hl_assert_eq "it reads back with its chord" \
+		"$(printf '%s' "$got" | jq -r '.chord')" "Alt+F7"
+	hl_assert_eq "...its dispatch" \
+		"$(printf '%s' "$got" | jq -r '.action')" "combo_view"
+	hl_assert_eq "...its argument" \
+		"$(printf '%s' "$got" | jq -r '.args[0]')" "2"
+	# The round trip that matters: a flag written by the writer has to come back
+	# through the reader. These two halves were built separately and each could
+	# be wrong on its own.
+	hl_assert_true "...and its flag" \
+		"$(printf '%s' "$got" | jq -r '.flags.release')"
+	hl_assert_true "it went into a binds block" \
+		"$(grep -q 'Alt+F7 release=true' "$HL_CONFIG" && echo true || echo false)"
+	hl_assert_true "the config still parses" \
+		"$("$HL_ASTEROIDZ" -p -c "$HL_CONFIG" 2>/dev/null | grep -q 'config OK' \
+			&& echo true || echo false)"
+	_ri_restore
+}
+
+test_set_binds_refuses_an_action_that_does_not_exist() {
+	_ri_save
+	local before; before="$(md5sum "$HL_CONFIG" | cut -d' ' -f1)"
+	# A config naming an unknown dispatch fails to reload, and the failure
+	# surfaces at the next login rather than at the save -- the worst place for
+	# it. Caught here instead.
+	local r; r="$(_ri_set_binds '{"changes":[{"op":"add","chord":"Alt+F6","action":"not_a_dispatch"}]}')"
+	hl_assert_false "an unknown dispatch is refused" \
+		"$(printf '%s' "$r" | jq -r '.ok')"
+	hl_assert_eq "...by name" \
+		"$(printf '%s' "$r" | jq -r '.results[0].error')" "unknown-action"
+	hl_assert_eq "and nothing was written" \
+		"$(md5sum "$HL_CONFIG" | cut -d' ' -f1)" "$before"
+	_ri_restore
+}
+
+test_set_binds_removes_a_bind() {
+	_ri_save
+	_ri_set_binds '{"changes":[{"op":"add","chord":"Alt+F5","action":"combo_view","args":["3"]}]}' >/dev/null
+	local i; i="$(hl_get "get binds" \
+		| jq -r '[.binds[] | select(.chord=="Alt+F5")][0].index // -1')"
+	hl_assert_true "the bind exists first" \
+		"$([ "$i" -ge 0 ] && echo true || echo false)"
+
+	local r; r="$(_ri_set_binds "{\"changes\":[{\"op\":\"remove\",\"index\":$i}]}")"
+	hl_assert_true "a removal is accepted" "$(printf '%s' "$r" | jq -r '.ok')"
+	hl_assert_eq "the bind is gone" \
+		"$(hl_get "get binds" | jq '[.binds[] | select(.chord=="Alt+F5")] | length')" "0"
+	hl_assert_eq "...and so is its line" \
+		"$(grep -c 'Alt+F5' "$HL_CONFIG")" "0"
+	hl_assert_true "the config still parses" \
+		"$("$HL_ASTEROIDZ" -p -c "$HL_CONFIG" 2>/dev/null | grep -q 'config OK' \
+			&& echo true || echo false)"
+	_ri_restore
+}
+
+test_writing_rules_does_not_respawn_the_exec_list() {
+	_ri_save
+	# The bug the option writer already had to fix once, one level up.
+	# reload_config runs run_exec() because that is what a reload IS -- but
+	# saving a window rule is not a reload, and on a real machine the exec list
+	# is an `xrdb -load`. Five saves would be five of them.
+	local marker="$HL_OUTDIR/ri-exec-marker"
+	rm -f "$marker"
+	printf 'spawn sh -c "echo x >> %s"\n' "$marker" >> "$HL_CONFIG"
+	hl_dispatch "reload_config" 3
+	local after_reload; after_reload="$(wc -l < "$marker" 2>/dev/null || echo 0)"
+	hl_assert_true "a real reload does run the exec list" \
+		"$([ "${after_reload:-0}" -ge 1 ] && echo true || echo false)"
+
+	_ri_set_rules '{"changes":[{"op":"add","fields":{"appid":"ri-exec","noblur":"1"}}]}' >/dev/null
+	sleep 2
+	local after_write; after_write="$(wc -l < "$marker" 2>/dev/null || echo 0)"
+	hl_assert_eq "but writing a rule does not" \
+		"${after_write:-0}" "${after_reload:-0}"
+	hl_assert_true "...and the rule still took" \
+		"$([ "$(_ri_index_of ri-exec)" -ge 0 ] && echo true || echo false)"
+	rm -f "$marker"
+	_ri_restore
+}
+
+test_a_batch_of_edits_does_not_shift_itself_apart() {
+	_ri_save
+	# The property that is silently wrong if the edits are applied in the order
+	# they arrive. Every splice moves every offset after it, so editing front to
+	# back leaves the second span pointing into the middle of whatever the first
+	# edit produced -- and the result still parses, which is what makes it a bug
+	# that ships. Edits are applied back to front instead.
+	cat >> "$HL_CONFIG" <<'EOF'
+window-rule {
+	match app-id="ri-b1"
+	no-blur
+}
+window-rule {
+	match app-id="ri-b2"
+	no-shadow
+}
+window-rule {
+	match app-id="ri-b3"
+	pinned
+}
+EOF
+	hl_dispatch "reload_config" 2
+	local i1 i2 i3
+	i1="$(_ri_index_of ri-b1)"; i2="$(_ri_index_of ri-b2)"; i3="$(_ri_index_of ri-b3)"
+	hl_assert_true "three rules to work with" \
+		"$([ "$i1" -ge 0 ] && [ "$i2" -ge 0 ] && [ "$i3" -ge 0 ] \
+			&& echo true || echo false)"
+
+	# The first one grows a lot, which is what moves everything below it, and the
+	# LAST one is removed. Listed first-to-last on purpose: if the writer honours
+	# the request order rather than sorting, this is where it breaks.
+	local r; r="$(_ri_set_rules "{\"changes\":[
+		{\"op\":\"update\",\"index\":$i1,\"fields\":{\"appid\":\"ri-b1\",\"noblur\":\"1\",\"isnoshadow\":\"1\",\"ispinned\":\"1\",\"isnoradius\":\"1\",\"isnotitlebar\":\"1\"}},
+		{\"op\":\"update\",\"index\":$i2,\"fields\":{\"appid\":\"ri-b2\",\"isnoshadow\":\"1\",\"noblur\":\"1\"}},
+		{\"op\":\"remove\",\"index\":$i3}]}")"
+	hl_assert_true "the batch is accepted" "$(printf '%s' "$r" | jq -r '.ok')"
+	hl_assert_true "the config still parses" \
+		"$("$HL_ASTEROIDZ" -p -c "$HL_CONFIG" 2>/dev/null | grep -q 'config OK' \
+			&& echo true || echo false)"
+
+	i1="$(_ri_index_of ri-b1)"; i2="$(_ri_index_of ri-b2)"
+	hl_assert_eq "the first rule got its new fields" \
+		"$(_ri_rule "$i1" '.fields.isnotitlebar')" "1"
+	hl_assert_eq "...and kept its matcher" \
+		"$(_ri_rule "$i1" '.fields.appid')" "ri-b1"
+	hl_assert_eq "the second rule got its new field" \
+		"$(_ri_rule "$i2" '.fields.noblur')" "1"
+	hl_assert_eq "...and kept its own matcher, not the first one's" \
+		"$(_ri_rule "$i2" '.fields.appid')" "ri-b2"
+	hl_assert_eq "the third is gone" "$(_ri_index_of ri-b3)" "-1"
+	hl_assert_eq "...and nothing is left of it" \
+		"$(grep -c 'ri-b3' "$HL_CONFIG")" "0"
+	_ri_restore
+}

@@ -4230,6 +4230,42 @@ static bool kdl_window_rule(Config *config, KdlNode *node) {
 	value[0] = '\0';
 	size_t vn = 0;
 	bool first = true;
+
+	/* The legacy comma form, written as a KDL node argument:
+	 *
+	 *     windowrule "appid:mpv,isfullscreen:1"
+	 *
+	 * which is what someone migrating an old `windowrule=` line writes. It used
+	 * to be swallowed whole: this function only ever looked at CHILDREN, so a
+	 * node with an argument and no block built an empty value, and the empty
+	 * value produced a rule with no matchers -- which matches every window --
+	 * setting nothing. Silent, and reported as a successful parse.
+	 *
+	 * Passed straight through, because the argument already IS the format
+	 * parse_option's windowrule branch reads. */
+	if (node->n_children == 0) {
+		if (node->n_args == 0) {
+			fprintf(stderr,
+					"\033[1m\033[33m[WARN]:\033[0m an empty `window-rule` "
+					"matches every window and sets nothing -- ignoring it\n");
+			return true;
+		}
+		for (size_t a = 0; a < node->n_args; a++) {
+			int32_t w = snprintf(value + vn, sizeof(value) - vn, "%s%s",
+								 a ? "," : "", kdl_legacy_value(&node->args[a]));
+			if (w > 0)
+				vn += (size_t)w;
+		}
+		const KdlNode *prev_node = rule_src_ctx.node;
+		int32_t prev_file = rule_src_ctx.file;
+		rule_src_ctx.node = node;
+		rule_src_ctx.file = config_src_ctx.file;
+		bool ok = parse_option(config, "windowrule", value);
+		rule_src_ctx.node = prev_node;
+		rule_src_ctx.file = prev_file;
+		return ok;
+	}
+
 	for (size_t i = 0; i < node->n_children; i++) {
 		KdlNode *ch = &node->children[i];
 		if (strcmp(ch->name, "match") == 0) {
@@ -6057,6 +6093,26 @@ void reset_option(void) {
 	config_apply_live();
 	set_env();
 	run_exec();
+}
+
+/* Re-read the config and apply it, WITHOUT respawning the exec list.
+ *
+ * What a settings app's Save does. `reload_config` runs run_exec() because that
+ * is what a reload is -- the user asked for their config to start over -- but
+ * saving a window rule is not that, and on this machine the exec list is an
+ * `xrdb -load`. Ten saves would be ten of them.
+ *
+ * set_env() stays: it is a loop of setenv() and re-running it is idempotent,
+ * where run_exec() forks. The two are separated for exactly this reason; see
+ * config_apply_live, which is the same split one level down. */
+void config_reload_quiet(void) {
+	parse_config();
+	config_apply_live();
+	set_env();
+	set_activation_env();
+	ipc_notify_bar_config();
+	ipc_notify_config("set");
+	printstatus(IPC_WATCH_ARRANGGE);
 }
 
 int32_t reload_config(const Arg *arg) {

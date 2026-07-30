@@ -222,6 +222,50 @@ but it cannot be rewritten. `not_listed` names the kinds that have no KDL block
 handler at all (`axisbind`, `switchbind`, `gesturebind`), so a bind list is not
 quietly claiming those do not exist.
 
+#### set-window-rules and set-binds, for writing those back
+
+```
+set-window-rules {"changes":[{"op":"update","index":3,
+                              "fields":{"appid":"mpv","force_hdr":"1"}},
+                             {"op":"add","fields":{"appid":"kitty","isterm":"1"}},
+                             {"op":"remove","index":5}]}
+
+set-binds {"changes":[{"op":"add","chord":"Super+X","action":"spawn",
+                       "args":["kitty"],"flags":{"release":true}}]}
+```
+
+`index` is the position reported by `get window-rules` / `get binds`. An `update`
+replaces the declaration wholesale, so it must carry every field that should
+survive — there is no merge, because a merge cannot express "remove this field".
+
+**Nested KDL is written and the existing reader flattens it.** The writer never
+learns the legacy `windowrule=` comma form: a `window-rule { … }` block goes into
+the file, and on the next read the existing `kdl_window_rule` →
+`windowrule=` → `parse_option` chain consumes it. One parsing path, and the thing
+written is the thing read.
+
+Edits are span replacements, so comments survive and a removal takes the comment
+lines directly above it — those are its explanation, and orphaning "// keep mpv on
+top" above an unrelated rule is worse than losing it.
+
+**Several edits to one file are applied back to front.** Every splice moves every
+offset after it, so front-to-back would leave the second span pointing into the
+middle of whatever the first edit produced — and the result still parses, which is
+what makes it a bug that ships rather than one that is caught.
+
+Errors: `unknown-field`, `unknown-action` (a bind naming a dispatch the compositor
+does not know is refused rather than written into a config that fails at the next
+*login*), `not-editable` (no KDL node, so no span to replace), `read-only-source`,
+`would-not-parse`, `write-failed`. The batch is all-or-nothing and a change that
+never ran reports `not-applied` rather than success.
+
+There is no `persist` flag. A window rule takes effect when a window maps and a
+keybind is a lookup, so there is nothing to preview; and the arrays behind both
+are rebuilt wholesale on read, so "apply in memory" would mean reimplementing the
+reader. The config is re-read afterwards **without** respawning the `spawn` list —
+`reload_config` does that because a reload is a reload, but saving a keybind is
+not, and on a real machine the exec list is an `xrdb -load`.
+
 #### set-config, for writing it back
 
 ```
