@@ -702,6 +702,10 @@ typedef struct {
 typedef int32_t (*FuncType)(const Arg *);
 Config config;
 
+/* Included HERE, not at the top of the file: every entry in the schema table is
+ * an offsetof(Config, …), so the struct has to be complete first. */
+#include "config-schema.h"
+
 bool parse_config_file(Config *config, const char *file_path, bool must_exist);
 
 /* Every file the running config was actually read from, main plus everything

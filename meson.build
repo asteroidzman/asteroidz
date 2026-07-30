@@ -161,7 +161,7 @@ if get_option('asan')
   link_args += '-fsanitize=address'
 endif
 
-executable('asteroidz',
+asteroidz_exe = executable('asteroidz',
   'src/asteroidz.c',
   'src/common/util.c',
   'src/draw/text-node.c',
@@ -239,6 +239,16 @@ test('ipc-out', test_ipc_out)
 test_kdl_write = executable('test-kdl-write', 'tests/test-kdl-write.c',
                             build_by_default : false)
 test('kdl-write', test_kdl_write, workdir : meson.project_source_root())
+
+# The config schema, checked in both directions against the code it describes.
+#
+# `-S` drives the real parse_option, set_value_default and override_config and
+# asserts every default, clamp, offset and type. It cannot see a key that is
+# MISSING from the table, because there is no entry to check -- that is the other
+# script's job, and it is the direction that matters as the parser grows.
+test('config-schema', asteroidz_exe, args : ['-S'])
+test('config-schema-coverage', find_program('tests/check-config-schema.py'),
+     args : [asteroidz_exe])
 
 mandir = get_option('mandir')
 desktop_install_dir = join_paths(prefix, 'share/wayland-sessions')

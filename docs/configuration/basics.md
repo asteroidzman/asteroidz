@@ -66,6 +66,25 @@ Check your configuration for errors without starting asteroidz:
 asteroidz -c /path/to/config.kdl -p
 ```
 
+### Inspect the option schema
+
+Every settable option is also described in a table the compositor carries —
+type, range, enum members, default, and a one-line explanation — so that tools
+do not have to re-implement the parser to know what an option accepts.
+
+```bash
+asteroidz -L    # list every described option, tab separated
+asteroidz -S    # check that table against the parser it describes
+```
+
+`-L` is the list a settings UI reads. `-S` is what keeps it honest: it drives
+the real parser and asserts every default, clamp and type against it, so a table
+entry cannot drift from the code without a test going red. Neither flag reads
+your config — `-L` and `-S` report the compiled-in defaults.
+
+Not every option is described yet. `tests/schema-exempt.txt` lists the ones that
+are not, each under a stated reason, so the gap is visible rather than implied.
+
 ## Environment Variables
 
 Define environment variables in an `environment` block. They are set before

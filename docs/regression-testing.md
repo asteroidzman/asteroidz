@@ -26,9 +26,64 @@ invisible at the sizes and shapes a running compositor produces:
 | `kdl-edit` | rewriting an `output NAME { … }` block without disturbing the comments around it |
 | `kdl-write` | editing an arbitrary nested path; includes a 500-edit corpus run over the shipped `assets/config.kdl` |
 | `ipc-out` | queued socket writes, against a socketpair with `SO_SNDBUF` shrunk to force the partial write a normal reply never triggers |
+| `config-schema` | `asteroidz -S`: every schema entry's default, clamp, offset and type, against the real parser |
+| `config-schema-coverage` | the other direction — keys `parse_option` handles that the schema is missing |
 | `bar-icons` | every vendored SVG parses and rasterises to non-empty ink |
 
 Run both before pushing. Neither subsumes the other.
+
+### The schema, checked from both ends
+
+`src/config/config-schema.h` describes every settable option — type, range, enum
+members, default, and a human label and description — so a settings UI does not
+have to carry a hardcoded mirror of the compositor's parser. It is hand-written,
+because the failure modes are not symmetric: a wrong *generator* produces a wrong
+schema silently and the UI then writes wrong values into someone's config, where
+a wrong *checker* produces a red test.
+
+So there are two checkers, and they cover opposite directions.
+
+`asteroidz -S` runs without a compositor, the same way `-p` does, and drives the
+real `set_value_default`, `override_config` and `parse_option`. It parses no C at
+all. For every entry it asserts the default matches what the code produces, that
+a value past each bound lands on the bound, that poisoning the field and writing
+the default actually changes it (which catches a renamed key — the `if/else`
+chain silently ignores one it does not know), and that a value survives a round
+trip. On its first run against a hand-written table it found 21 wrong defaults
+and three wrong types, including a `float` field described as an `int`.
+
+Two details in there are load-bearing and easy to get wrong:
+
+- **Clamps are derived from behaviour, not from where they are written.** They
+  live in both `parse_option` (`blur_transparency_threshold`) and
+  `override_config` (`borderpx`), so a check that looked in one place would
+  report half the table as unclamped.
+- **The poison value has to be inside the valid range.** An out-of-range
+  sentinel gets clamped by `override_config`, which changes the field on its
+  own — so the reachability check passed for a deliberately renamed key, and only
+  the round-trip assertions noticed. Renaming a key in the table is now caught
+  by the check that exists for it.
+
+`tests/check-config-schema.py` covers what `-S` structurally cannot: a key that
+exists in `parse_option` and is simply **absent** from the table, which has no
+entry to run a check against. It takes the described keys from the binary
+(`asteroidz -L`) rather than by regex over the C table — an over-matching pattern
+reported 100 keys where there were 95, which would have hidden five omissions —
+and the handled keys by parsing `parse_option` at brace depth 1, so the sub-keys
+inside the `windowrule`/`monitorrule`/`tagrule` branches are not mistaken for
+standalone options.
+
+Exemptions live in `tests/schema-exempt.txt` and must sit under a `## reason:`
+heading; a bare list of exempt keys is an escape hatch nobody has to justify,
+which is not one. The checker also fails on a key that is both described and
+exempt, and on an exemption for a key `parse_option` no longer handles — either
+would let the next real omission hide behind a stale line.
+
+Coverage today: `parse_option` handles 287 keys, of which 95 are described. Of
+the 192 exempt, 55 configure the removed native bar, 17 are structural (rules,
+binds, lists, directives) and **120 are simply not described yet** — listed key
+by key so the gap is auditable and so adding one is deliberate. The file
+shrinking is the measure of progress.
 
 Env: `ASTEROIDZ` (binary under test, default `build/asteroidz` next to the
 repo, falling back to `/usr/bin/asteroidz`), `HL_OUTDIR`, `HL_WIDTH`/

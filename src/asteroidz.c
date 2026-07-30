@@ -1493,6 +1493,8 @@ static bool tag_combo = false;
 static const char *cli_config_path = NULL;
 static bool cli_debug_log = false;
 static bool cli_check_config = false;
+static bool cli_check_schema = false;
+static bool cli_list_schema = false;
 static KeyMode keymode = {
 	.mode = {'d', 'e', 'f', 'a', 'u', 'l', 't', '\0'},
 	.isdefault = true,
@@ -1534,6 +1536,9 @@ struct Pertag {
 	struct TagScrollerState *scroller_state[LENGTH(tags) + 1];
 };
 #include "config/parse_config.h"
+/* After parse_config.h: the self-check drives set_value_default,
+ * override_config and parse_option directly. */
+#include "config/config-schema-check.h"
 
 static struct wl_signal asteroidz_print_status;
 
@@ -10209,7 +10214,7 @@ int32_t main(int32_t argc, char *argv[]) {
 		unsetenv("DISPLAY");
 	}
 
-	while ((c = getopt(argc, argv, "s:c:hdvp")) != -1) {
+	while ((c = getopt(argc, argv, "s:c:hdvpSL")) != -1) {
 		if (c == 's') {
 			startup_cmd = optarg;
 		} else if (c == 'd') {
@@ -10224,12 +10229,24 @@ int32_t main(int32_t argc, char *argv[]) {
 			 * the DEFAULT config (getopt hadn't reached -c yet) and report
 			 * success while the named file had errors */
 			cli_check_config = true;
+		} else if (c == 'S') {
+			cli_check_schema = true;
+		} else if (c == 'L') {
+			cli_list_schema = true;
 		} else {
 			goto usage;
 		}
 	}
 	if (optind < argc)
 		goto usage;
+	/* Before -p, and before any config is read: the schema check wants the
+	 * compiled-in defaults, not whatever the user's file says. */
+	if (cli_list_schema) {
+		config_schema_list();
+		return EXIT_SUCCESS;
+	}
+	if (cli_check_schema)
+		return config_schema_self_check() ? EXIT_FAILURE : EXIT_SUCCESS;
 	if (cli_check_config) {
 		/* NO stderr redirect here: -p's whole job is showing parse errors on
 		 * the terminal, not burying them in the persistent log (which is
@@ -10261,6 +10278,8 @@ usage:
 		   "  -d             Enable debug log\n"
 		   "  -c <file>      Use custom configuration file\n"
 		   "  -s <command>   Execute startup command\n"
-		   "  -p             Check configuration file error\n");
+		   "  -p             Check configuration file error\n"
+		   "  -S             Check the config schema against the parser\n"
+		   "  -L             List the config schema, one option per line\n");
 	return EXIT_SUCCESS;
 }
