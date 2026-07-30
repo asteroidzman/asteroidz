@@ -24,6 +24,7 @@
 
 #include "../config/config-schema.h"
 #include "../config/config-source.h"
+#include "../config/config-write.h"
 
 /* ---------- schema ---------- */
 
@@ -434,3 +435,166 @@ static cJSON *build_config_diff_response(const char *reason, bool everything) {
 }
 
 #endif /* ASTEROIDZ_IPC_CONFIG_H */
+
+/* ---------- set-config ---------- */
+
+/* A VERB, not a dispatch, for three reasons visible in handle_command:
+ *
+ *   1. It rewrites every `,` to ` ` in its cmd[1024] copy, and the dispatch
+ *      branch then tokenises on commas with a six-token cap. Values legitimately
+ *      contain commas -- an animation curve is four numbers.
+ *   2. cmd[1024] truncates. A batch of twenty changes is one to two kilobytes.
+ *      Read from cmd_raw the way the dispatch branch does; the read buffer
+ *      already grows to a megabyte.
+ *   3. Dispatch's reply is a hardcoded {"success":true} with the return value
+ *      discarded. Real errors are the entire point of this.
+ *
+ *   set-config {"changes":[{"path":"effects/blur/radius","value":"8"},
+ *                          {"key":"cursor_theme","value":null}],
+ *               "persist":true,"override":false}
+ *
+ * `value: null` removes the declaration and reverts to the compiled-in default.
+ * `persist: false` is the live-preview path: memory only, nothing written. */
+static cJSON *handle_set_config(const char *body) {
+	cJSON *resp = cJSON_CreateObject();
+	cJSON *req = cJSON_Parse(body ? body : "");
+	if (!req) {
+		cJSON_AddBoolToObject(resp, "ok", false);
+		cJSON_AddStringToObject(resp, "error", "bad-request");
+		cJSON_AddStringToObject(resp, "detail", "body is not valid JSON");
+		return resp;
+	}
+
+	static ConfigWriteBatch b;
+	memset(&b, 0, sizeof(b));
+	cJSON *persist = cJSON_GetObjectItem(req, "persist");
+	/* Persisting is the DEFAULT. A caller that means "preview only" says so;
+	 * a caller that forgot means the ordinary thing, which is a setting that
+	 * survives a reload. */
+	b.persist = !persist || cJSON_IsTrue(persist);
+	b.override_foreign = cJSON_IsTrue(cJSON_GetObjectItem(req, "override"));
+
+	cJSON *changes = cJSON_GetObjectItem(req, "changes");
+	if (!cJSON_IsArray(changes) || cJSON_GetArraySize(changes) == 0) {
+		cJSON_AddBoolToObject(resp, "ok", false);
+		cJSON_AddStringToObject(resp, "error", "bad-request");
+		cJSON_AddStringToObject(resp, "detail", "no changes");
+		cJSON_Delete(req);
+		return resp;
+	}
+
+	cJSON *item;
+	cJSON_ArrayForEach(item, changes) {
+		if (b.n >= CONFIG_WRITE_MAX_CHANGES)
+			break;
+		ConfigChange *c = &b.changes[b.n++];
+		cJSON *jk = cJSON_GetObjectItem(item, "key");
+		cJSON *jp = cJSON_GetObjectItem(item, "path");
+		const char *ident = NULL;
+		if (cJSON_IsString(jk) && jk->valuestring[0]) {
+			ident = jk->valuestring;
+			c->opt = schema_by_key(ident);
+		} else if (cJSON_IsString(jp) && jp->valuestring[0]) {
+			ident = jp->valuestring;
+			c->opt = schema_by_path(ident);
+		}
+		if (!c->opt) {
+			snprintf(c->error, sizeof(c->error), "unknown-key");
+			snprintf(c->detail, sizeof(c->detail), "%s",
+					 ident ? ident : "no key or path given");
+			/* Remembered so the reply can name it, since c->opt is NULL. */
+			snprintf(c->value, sizeof(c->value), "%s", ident ? ident : "");
+			continue;
+		}
+		cJSON *jv = cJSON_GetObjectItem(item, "value");
+		if (!jv || cJSON_IsNull(jv)) {
+			c->remove = true;
+		} else if (cJSON_IsString(jv)) {
+			snprintf(c->value, sizeof(c->value), "%s", jv->valuestring);
+		} else if (cJSON_IsNumber(jv)) {
+			/* Accepted for convenience, but rendered through the same path as a
+			 * string so there is one formatting rule, not two. */
+			double d = jv->valuedouble;
+			if (d == (double)(long long)d)
+				snprintf(c->value, sizeof(c->value), "%lld", (long long)d);
+			else
+				snprintf(c->value, sizeof(c->value), "%g", d);
+		} else if (cJSON_IsBool(jv)) {
+			snprintf(c->value, sizeof(c->value), "%d", cJSON_IsTrue(jv) ? 1 : 0);
+		} else {
+			snprintf(c->error, sizeof(c->error), "bad-value");
+			snprintf(c->detail, sizeof(c->detail),
+					 "value must be a string, number, bool or null");
+		}
+	}
+	cJSON_Delete(req);
+
+	bool ok = config_write_plan(&b);
+	if (ok && b.persist) {
+		ok = config_write_stage(&b) && config_write_commit(&b);
+	}
+	if (ok)
+		config_write_apply_memory(&b);
+
+	cJSON_AddBoolToObject(resp, "ok", ok);
+	cJSON_AddBoolToObject(resp, "persisted", ok && b.persist);
+	if (b.error[0]) {
+		cJSON_AddStringToObject(resp, "error", b.error);
+		cJSON_AddStringToObject(resp, "detail", b.detail);
+	}
+
+	int applied = 0;
+	cJSON *results = cJSON_CreateArray();
+	for (size_t i = 0; i < b.n; i++) {
+		ConfigChange *c = &b.changes[i];
+		cJSON *r = cJSON_CreateObject();
+		cJSON_AddStringToObject(r, "key",
+								c->opt ? c->opt->key : c->value);
+		if (c->error[0]) {
+			cJSON_AddBoolToObject(r, "ok", false);
+			cJSON_AddStringToObject(r, "error", c->error);
+			cJSON_AddStringToObject(r, "detail", c->detail);
+			/* The bounds, so a UI can fix its own control rather than guess. */
+			if (c->opt && !strcmp(c->error, "out-of-range")) {
+				if (!isnan(c->opt->min))
+					cJSON_AddNumberToObject(r, "min", c->opt->min);
+				if (!isnan(c->opt->max))
+					cJSON_AddNumberToObject(r, "max", c->opt->max);
+			}
+		} else if (!ok) {
+			/* Nothing was applied, so this one did not fail -- it never ran.
+			 * Saying "ok" here would be a lie a UI would act on. */
+			cJSON_AddBoolToObject(r, "ok", false);
+			cJSON_AddStringToObject(r, "error", "not-applied");
+			cJSON_AddStringToObject(r, "detail",
+									"another change in the batch was refused");
+		} else {
+			cJSON_AddBoolToObject(r, "ok", true);
+			char now[512];
+			schema_format(&config, c->opt, now, sizeof(now));
+			cJSON_AddStringToObject(r, "value", now);
+			if (b.persist && c->file >= -1) {
+				cJSON_AddStringToObject(
+					r, "file", config_files[c->file < 0 ? 0 : c->file]);
+				if (c->created)
+					cJSON_AddBoolToObject(r, "created", true);
+			}
+			applied++;
+		}
+		cJSON_AddItemToArray(results, r);
+	}
+	cJSON_AddNumberToObject(resp, "applied", applied);
+	cJSON_AddItemToObject(resp, "results", results);
+
+	cJSON *written = cJSON_CreateArray();
+	if (ok && b.persist)
+		for (size_t i = 0; i < b.n_staged; i++)
+			cJSON_AddItemToArray(
+				written, cJSON_CreateString(config_files[b.staged[i].file]));
+	cJSON_AddItemToObject(resp, "written", written);
+
+	config_write_free(&b);
+	if (ok)
+		ipc_notify_config("set");
+	return resp;
+}

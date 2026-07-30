@@ -105,6 +105,49 @@ it.
 \fBget dispatch\-actions\fR
 Return every dispatchable action with the \fIkinds\fR of its arguments, so a
 keybind editor can offer the right control instead of a text box.
+.SS "Writing config (set\-config)"
+.TP
+\fBset\-config\fR <\fIjson\fR>
+Apply a batch of config changes and write them to the file that declares them.
+The body is a JSON object:
+.RS
+.PP
+.nf
+{"changes":[{"path":"effects/blur/radius","value":"8"},
+            {"key":"cursor_theme","value":null}],
+ "persist":true,"override":false}
+.fi
+.PP
+Either \fBkey\fR (the internal name) or \fBpath\fR (the nested KDL path)
+identifies an option. \fBvalue\fR of \fBnull\fR removes the declaration and
+reverts to the compiled\-in default.
+.PP
+The batch is all\-or\-nothing: every change is resolved and validated before
+anything is touched, and a change that did not run reports
+\fBnot\-applied\fR rather than success. Out\-of\-range values are refused,
+not clamped, and the reply carries the bounds.
+.PP
+\fBpersist\fR defaults to true. \fBfalse\fR applies in memory only -- the
+live\-preview path -- and the value then reads as \fBruntime\fR in
+\fBget config\fR.
+.PP
+A key whose value comes from a generated file (a matugen palette, say) is
+refused with \fBread\-only\-source\fR. \fBoverride\fR:\fBtrue\fR appends a
+shadowing block to the main config instead, never to the generated file.
+.PP
+Edits are surgical: comments survive, every file is re\-parsed before it is
+renamed into place, and the previous contents are kept at \fI<file>.bak\fR.
+.RE
+.TP
+\fBset\-config @\-\fR
+Read the JSON body from standard input instead of from the command line, which
+avoids quoting it through a shell and lifts the 4KB argument limit:
+.RS
+.PP
+.nf
+printf '{"changes":[{"key":"borderpx","value":"3"}]}' | amsg set\-config @\-
+.fi
+.RE
 .SS "Persistent streams (watch)"
 \fBWatch\fR commands keep the connection open and continuously output JSON
 updates. The initial state is sent immediately, followed by updates whenever

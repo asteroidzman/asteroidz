@@ -163,13 +163,79 @@ int main(int argc, char *argv[]) {
 		return EXIT_FAILURE;
 	}
 
+	/* A final `@-` means "the rest of the command is on stdin".
+	 *
+	 * For `set-config`, whose argument is a JSON object. Passing that as an argv
+	 * element means quoting it through the shell, which is unpleasant enough by
+	 * hand and worse in a script; and the fixed buffer below caps it at 4KB,
+	 * which a batch of every option in a settings page could reach. The buffer
+	 * itself is not the bug it looks like -- it errors out loudly rather than
+	 * truncating -- but "Error: command too long" is a poor answer to a request
+	 * that is merely large.
+	 *
+	 *   printf '{"changes":[...]}' | amsg set-config @-
+	 */
+	char *heap_cmd = NULL;
+	if (argc > 1 && strcmp(argv[argc - 1], "@-") == 0) {
+		size_t cap = 8192, len = 0;
+		heap_cmd = malloc(cap);
+		if (!heap_cmd) {
+			fprintf(stderr, "Error: out of memory.\n");
+			close(sock);
+			return EXIT_FAILURE;
+		}
+		for (int i = 1; i < argc - 1; i++) {
+			size_t need = strlen(argv[i]) + 2;
+			while (len + need >= cap) {
+				cap *= 2;
+				char *g = realloc(heap_cmd, cap);
+				if (!g) {
+					free(heap_cmd);
+					fprintf(stderr, "Error: out of memory.\n");
+					close(sock);
+					return EXIT_FAILURE;
+				}
+				heap_cmd = g;
+			}
+			len += (size_t)snprintf(heap_cmd + len, cap - len, "%s ", argv[i]);
+		}
+		/* Newlines inside the body would each read as a separate command, so
+		 * they are folded to spaces -- harmless in JSON, and it lets a caller
+		 * pipe in a pretty-printed object. */
+		int ch;
+		while ((ch = fgetc(stdin)) != EOF) {
+			if (len + 2 >= cap) {
+				cap *= 2;
+				char *g = realloc(heap_cmd, cap);
+				if (!g) {
+					free(heap_cmd);
+					fprintf(stderr, "Error: out of memory.\n");
+					close(sock);
+					return EXIT_FAILURE;
+				}
+				heap_cmd = g;
+			}
+			heap_cmd[len++] = (ch == '\n' || ch == '\r') ? ' ' : (char)ch;
+		}
+		heap_cmd[len++] = '\n';
+		heap_cmd[len] = '\0';
+		if (send(sock, heap_cmd, len, MSG_NOSIGNAL) < 0) {
+			perror("send");
+			free(heap_cmd);
+			close(sock);
+			return EXIT_FAILURE;
+		}
+		free(heap_cmd);
+		goto read_reply;
+	}
+
 	char cmd[4096] = {0};
 	int offset = 0;
 	for (int i = 1; i < argc; i++) {
 		int n = snprintf(cmd + offset, sizeof(cmd) - offset, "%s%s", argv[i],
 						 (i == argc - 1) ? "" : " ");
 		if (n < 0 || n >= (int)(sizeof(cmd) - offset)) {
-			fprintf(stderr, "Error: command too long.\n");
+			fprintf(stderr, "Error: command too long (try `@-` and stdin).\n");
 			close(sock);
 			return EXIT_FAILURE;
 		}
@@ -188,6 +254,8 @@ int main(int argc, char *argv[]) {
 		close(sock);
 		return EXIT_FAILURE;
 	}
+
+read_reply:;
 
 	FILE *stream = fdopen(sock, "r");
 	if (!stream) {

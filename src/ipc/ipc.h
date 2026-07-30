@@ -604,6 +604,10 @@ static void handle_command(int client_fd, const char *cmd_raw) {
 			return;
 		}
 		resp = build_monitor_tags_response(m);
+	} else if (strncmp(cmd_raw, "set-config ", 11) == 0) {
+		/* cmd_raw, not cmd: the copy has had every comma turned into a space,
+		 * and this body is JSON. */
+		resp = handle_set_config(cmd_raw + 11);
 	} else if (strncmp(cmd, "dispatch ", 9) == 0) {
 		char *dispatch_copy = strdup(cmd_raw + 9);
 		char *out = dispatch_copy, *ptr = dispatch_copy;

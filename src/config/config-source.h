@@ -122,6 +122,46 @@ static void config_source_note(const char *key) {
 	}
 }
 
+/* Point a key's provenance at a node in a named file, explicitly.
+ *
+ * For the write path. After a batch is committed the values are re-applied in
+ * memory, and going through parse_option's hook with no context recorded them as
+ * `runtime` -- so `get config` reported "changed in memory, will not survive a
+ * reload" about a value that had just been written to disk. Worse, the next
+ * removal of that key then saw no file provenance and skipped the file edit
+ * entirely, leaving the declaration behind while reporting success. */
+static void config_source_note_at(const char *key, int32_t file,
+								  const KdlNode *node, const char *path) {
+	const KdlNode *prev_node = config_src_ctx.node;
+	const char *prev_path = config_src_ctx.path;
+	int32_t prev_file = config_src_ctx.file;
+	bool prev_active = config_src_ctx.active;
+	config_src_ctx.node = node;
+	config_src_ctx.path = path;
+	config_src_ctx.file = file;
+	config_src_ctx.active = node != NULL;
+	config_source_note(key);
+	config_src_ctx.node = prev_node;
+	config_src_ctx.path = prev_path;
+	config_src_ctx.file = prev_file;
+	config_src_ctx.active = prev_active;
+}
+
+/* Drop a key's provenance, so it reads as the compiled-in default again.
+ *
+ * For a removal: the declaration is gone from the file, and leaving an origin
+ * behind would have `get config` naming a line that no longer holds it -- which
+ * a settings app would then edit. */
+static void config_source_forget(const char *key) {
+	for (int32_t i = 0; i < nconfig_origins; i++) {
+		if (strcmp(config_origins[i].key, key))
+			continue;
+		config_origins[i] = config_origins[nconfig_origins - 1];
+		nconfig_origins--;
+		return;
+	}
+}
+
 static const ConfigOrigin *config_source_of(const char *key) {
 	if (!key)
 		return NULL;

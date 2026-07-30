@@ -242,6 +242,36 @@ static int config_schema_self_check(void) {
 		schema_check_ok();
 	}
 
+	/* ---- every claimed KDL path is one the parser can read back ----
+	 *
+	 * The hole this closes: every other check here goes through parse_option with
+	 * the internal KEY, so a schema entry could name a nested `path` that
+	 * kdl_lookup_key has no entry for and nothing would notice. The write path
+	 * then produces exactly that path in the config file, and the next reload
+	 * answers "Unknown keyword". Found the hard way -- theme/border-color and
+	 * animations/enable were both claimed here and unreachable, and the failure
+	 * surfaced as a config that would not load after a settings batch. */
+	for (size_t i = 0; i < CONFIG_SCHEMA_COUNT; i++) {
+		const ConfigOption *o = &config_schema[i];
+		if (!o->path)
+			continue;
+		if (!strcmp(o->path, o->key)) {
+			/* A bare top-level key: kdl_leaf's fallback to the node's own name
+			 * handles it, and no map entry is needed or wanted. */
+			schema_check_ok();
+			continue;
+		}
+		const char *back = kdl_lookup_key(o->path);
+		if (!back)
+			schema_check_fail(o, "claims a KDL path the parser cannot resolve",
+							  o->path, "an entry in kdl_key_map");
+		else if (strcmp(back, o->key))
+			schema_check_fail(o, "its KDL path resolves to another key", back,
+							  o->key);
+		else
+			schema_check_ok();
+	}
+
 	/* ---- defaults: locked to set_value_default, with no C parsed ---- */
 	set_value_default();
 	override_config();

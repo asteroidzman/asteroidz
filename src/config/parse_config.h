@@ -3982,7 +3982,17 @@ static const struct {
 	{"theme/focus-bg-color", "theme_focus_bg_color"},
 	{"theme/focus-fg-color", "theme_focus_fg_color"},
 	{"theme/urgent-color", "theme_urgent_color"},
+	/* The outline colour of a native overlay. Had no nested spelling at all --
+	 * reachable only as the raw `theme_border_color`, exactly like the four
+	 * border state colours were before 0.20.6. Found by the settings write path:
+	 * the schema claimed this path, the writer produced `theme { border-color
+	 * … }`, and the next reload answered "Unknown keyword: border-color". */
+	{"theme/border-color", "theme_border_color"},
 	/* animations */
+	/* `animations` is both a section and a boolean, so the section spelling needs
+	 * an explicit `enable` leaf -- the bare-name fallback cannot reach it, because
+	 * the leaf is called `enable` and nothing is. */
+	{"animations/enable", "animations"},
 	{"animations/curve", "animation_curve_type"},
 	{"animations/spring/damping", "spring_damping"},
 	{"animations/spring/frequency", "spring_frequency"},

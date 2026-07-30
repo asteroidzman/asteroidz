@@ -203,10 +203,10 @@ so the harness includes a few small purpose-built Wayland clients:
 
 ## Module coverage
 
-Twenty-one modules as of writing (210 assertions): `layouts`,
+Twenty-two modules as of writing (260 assertions): `layouts`,
 `window-states`, `tags`, `focus`, `scratchpad`, `geometry`, `dwindle`,
 `overview`, `multimonitor`, `mousebind`, `hdr`, `scroller`, `animations`,
-`layer-shell`, `ipc-watch`, `keybind-combo`, `set-option`, `config-ipc`,
+`layer-shell`, `ipc-watch`, `keybind-combo`, `set-option`, `config-ipc`, `config-write`,
 `border-colors`,
 `output`, `vrr`, `effects`, `floating`, plus `destroy-virtual-output` (gated
 behind `HL_ALLOW_DESTRUCTIVE=1`).
@@ -230,6 +230,21 @@ file still parses, and a watch that pushes the whole config every time still
 parses. So it checks the reported line number really holds that setting, that a
 colour's hex and floats agree on every channel, and that a no-op change pushes
 nothing at all.
+
+`config-write` covers `set-config`, which is the half that makes a setting a
+setting rather than a preview. It **writes to `$HL_CONFIG`** and so restores a
+pristine copy after every test, the way `bar.sh` does — modules run in name
+order, which puts it ahead of `geometry`, whose assertions depend on gaps and
+border widths a test here could have left changed.
+
+Its sharpest case is the corpus one: writing *every* described option, group by
+group, then asserting the config still parses **and** that a reload logs no
+`Unknown keyword`. Writing one option proves the mechanism; writing all of them
+proves the schema. That is what caught `theme/border-color` and
+`animations/enable` claiming nested KDL paths that `kdl_key_map` had no entry for
+— the write succeeded and the *next reload* rejected the file. `asteroidz -S` had
+not caught it because every check there went through `parse_option` with the
+internal key and none went `path → key`; it now does.
 
 Two traps it walked into while being written, both worth knowing:
 

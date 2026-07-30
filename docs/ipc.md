@@ -140,6 +140,72 @@ keybind editor can offer the right control rather than a text box. `option-key`
 composes with the schema: it means "offer the option list from
 `get config-schema`".
 
+#### set-config, for writing it back
+
+```
+set-config {"changes":[{"path":"effects/blur/radius","value":"8"},
+                       {"key":"cursor_theme","value":null}],
+            "persist":true,"override":false}
+```
+
+A **verb**, not a dispatch, for three reasons visible in `handle_command`: it
+rewrites every `,` to a space in its `cmd[1024]` copy and the dispatch branch
+then tokenises on commas with a six-token cap, while values legitimately contain
+commas; `cmd[1024]` truncates and a batch of twenty changes is a couple of
+kilobytes; and dispatch's reply is a hardcoded `{"success":true}` with the return
+value discarded, when real errors are the entire point.
+
+`dispatch set_option` still exists and still works. It changes a value in memory
+and writes nothing, so a reload discards it — which makes it a preview, not a
+setting.
+
+A **batch**, because that is how a settings panel works: you touch six controls
+and press Apply, and either all six take effect or none do. So the order is
+*resolve everything, validate everything, and only then touch anything.* A change
+that never ran reports `error: "not-applied"` rather than `ok` — a UI told "ok"
+for something that did not happen will display the wrong value.
+
+Out-of-range values are **refused, not clamped**, and the reply carries the
+bounds. A UI has the schema and can bound its own controls; clamping silently is
+how a panel ends up showing 9999 while the compositor runs 200.
+
+`persist: false` is the live-preview path: applied in memory, nothing written, and
+`source.kind` comes back as `runtime` so a panel can show that it will not
+survive. `persist` defaults to **true** — a caller that means preview says so.
+
+`value: null` removes the declaration and reverts to the compiled-in default.
+Removing it rather than writing the default value matters: a declaration set to
+the default is still a declaration, and would still win over anything `source`d
+after it.
+
+**A key whose value comes from a generated file is refused**, with
+`error: "read-only-source"` and the reason. `override: true` then appends a
+shadowing block to the *main* config — never to the generated file — with a
+comment saying what it shadows and why it wins. Refusing forever is a dead end;
+overriding silently is worse.
+
+Writes are surgical, so comments survive being written around, and every staged
+document is **re-parsed before anything is renamed into place**: "Apply must never
+leave me with a config that does not load" is what this owes a file someone
+maintains by hand. A `<file>.bak` is kept, because one Apply can rewrite a dozen
+options across two files and "undo the last apply" should not require having
+thought about it first.
+
+True atomicity *across* files is not achievable with `rename(2)` and a journal is
+not worth it here: a crash between two renames leaves one file updated, which is
+survivable, where an unparseable config is not.
+
+Errors: `bad-request`, `unknown-key`, `bad-value`, `out-of-range` (with `min`
+and `max`), `read-only-source` (with `file` and a hint), `no-writable-file`,
+`would-not-parse`, `write-failed`, `not-applied`.
+
+`amsg set-config @-` reads the body from stdin, which avoids quoting JSON through
+a shell and lifts amsg's 4KB argument cap:
+
+```bash
+printf '{"changes":[{"key":"borderpx","value":"3"}]}' | amsg set-config @-
+```
+
 ### WATCH (Event Subscription)
 Subscribes the client to real-time updates. When the state changes, the server pushes a new JSON object to the output stream.
 
