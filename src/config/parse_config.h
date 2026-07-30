@@ -703,8 +703,11 @@ typedef int32_t (*FuncType)(const Arg *);
 Config config;
 
 /* Included HERE, not at the top of the file: every entry in the schema table is
- * an offsetof(Config, …), so the struct has to be complete first. */
+ * an offsetof(Config, …), so the struct has to be complete first. The rule
+ * schema is offsetof(ConfigWinRule, …) and needs the same. */
 #include "config-schema.h"
+#include "rule-schema.h"
+#include "bind-source.h"
 #include "config-source.h"
 
 bool parse_config_file(Config *config, const char *file_path, bool must_exist);
@@ -3272,6 +3275,10 @@ bool parse_option(Config *config, char *key, char *value) {
 			token = strtok(NULL, ",");
 		}
 		config->window_rules_count++;
+		/* In lockstep with the rules array, so index i of one is index i of the
+		 * other. Both are appended to only here, and every early return above
+		 * leaves both untouched. */
+		rule_source_note();
 		return !parse_error;
 	} else if (strncmp(key, "env", 3) == 0) {
 
@@ -3449,6 +3456,16 @@ bool parse_option(Config *config, char *key, char *value) {
 						func_name);
 			return false;
 		} else {
+			/* Recorded HERE rather than in kdl_binds, so the legacy `bind=`
+			 * line form is captured too -- one hook, both spellings. The raw
+			 * strings are still in scope; ten lines further on they are a
+			 * function pointer and a union. */
+			const char *raw[BIND_SOURCE_ARGS] = {arg_value, arg_value2,
+												 arg_value3, arg_value4,
+												 arg_value5};
+			bind_source_note("bind", mod_str, keysym_str, func_name, raw,
+							 bind_source_arity(raw, BIND_SOURCE_ARGS),
+							 binding->mode, binding);
 			config->key_bindings_count++;
 		}
 
@@ -3542,6 +3559,12 @@ bool parse_option(Config *config, char *key, char *value) {
 						func_name);
 			return false;
 		} else {
+			const char *raw[BIND_SOURCE_ARGS] = {arg_value, arg_value2,
+												 arg_value3, arg_value4,
+												 arg_value5};
+			bind_source_note("mousebind", mod_str, button_str, func_name, raw,
+							 bind_source_arity(raw, BIND_SOURCE_ARGS),
+							 config->keymode, NULL);
 			config->mouse_bindings_count++;
 		}
 	} else if (strncmp(key, "axisbind", 8) == 0) {
@@ -4103,6 +4126,62 @@ static void kdl_split_chord(const char *chord, char *mods, size_t mcap,
 }
 
 /* binds { Super+Ctrl+R { restart }  Super+T { spawn "kitty" } } */
+/* Is this chord node carrying `name=#true`?
+ *
+ * Absent is false, which is what makes these optional. An explicit `#false` is
+ * also false, so a flag can be turned off in a file that is otherwise generated
+ * -- the writer emits properties and needs a way to say "not this one" without
+ * deleting the node. */
+static bool kdl_bind_flag(const KdlNode *n, const char *name) {
+	for (size_t i = 0; i < n->n_props; i++)
+		if (!strcmp(n->props[i].name, name))
+			return !strcmp(kdl_legacy_value(&n->props[i]), "1");
+	return false;
+}
+
+/* The flag suffix parse_bind_flags reads, composed from the chord's properties.
+ *
+ * parse_option receives the flags as part of its KEY -- "bindlr", not "bind"
+ * plus a field -- because the legacy line format spells them that way and
+ * parse_bind_flags reads the characters after "bind". kdl_binds always passed
+ * the bare "bind", so every one of these was reachable only by writing the
+ * legacy string by hand, and a KDL config could not express a release binding at
+ * all.
+ *
+ * Order matters: parse_bind_flags walks the characters in sequence and the
+ * legacy documentation writes them s, l, r, p. */
+static void kdl_bind_flags(const KdlNode *kc, const char *bindkey, char *out,
+						   size_t cap) {
+	size_t n = (size_t)snprintf(out, cap, "%s", bindkey);
+	const struct {
+		const char *prop;
+		char flag;
+	} map[] = {
+		{"keysym", 's'}, {"lock", 'l'}, {"release", 'r'}, {"pass", 'p'},
+	};
+	/* Keyboard binds only. A MouseBinding is {mod, button, func, arg} with
+	 * nowhere to put a flag, and the mousebind branch matches on a prefix -- so
+	 * "mousebindr" would be accepted and the r dropped on the floor. Saying so
+	 * is the point of the exercise; a flag that is quietly ignored is how these
+	 * four came to be unreachable from KDL in the first place. */
+	bool keyboard = !strcmp(bindkey, "bind");
+	for (size_t i = 0; i < LENGTH(map); i++) {
+		if (!kdl_bind_flag(kc, map[i].prop))
+			continue;
+		if (!keyboard) {
+			fprintf(stderr,
+					"\033[1m\033[33m[WARN]:\033[0m %s=#true on %s \"%s\" has "
+					"no effect -- flags apply to keyboard binds only\n",
+					map[i].prop, bindkey, kc->name);
+			continue;
+		}
+		if (n + 1 >= cap)
+			break;
+		out[n++] = map[i].flag;
+		out[n] = '\0';
+	}
+}
+
 static bool kdl_binds(Config *config, KdlNode *node, const char *bindkey) {
 	bool ok = true;
 	for (size_t i = 0; i < node->n_children; i++) {
@@ -4120,29 +4199,31 @@ static bool kdl_binds(Config *config, KdlNode *node, const char *bindkey) {
 			 a++)
 			vn += snprintf(value + vn, sizeof(value) - vn, ",%s",
 						   kdl_legacy_value(&act->args[a]));
-		ok = parse_option(config, (char *)bindkey, value) && ok;
+		char flagged[32];
+		kdl_bind_flags(kc, bindkey, flagged, sizeof(flagged));
+		/* The chord node, for the source record the bind branch writes. Saved
+		 * and restored rather than cleared: `source` makes this reentrant, and a
+		 * bind block inside a sourced file would otherwise leave the outer
+		 * walker pointing at a node from a document that has been freed. */
+		const KdlNode *prev_node = bind_src_ctx.node;
+		int32_t prev_file = bind_src_ctx.file;
+		bind_src_ctx.node = kc;
+		bind_src_ctx.file = config_src_ctx.file;
+		ok = parse_option(config, flagged, value) && ok;
+		bind_src_ctx.node = prev_node;
+		bind_src_ctx.file = prev_file;
 	}
 	return ok;
 }
 
-/* window-rule { match app-id="mpv"; tags 4; open-fullscreen } -> windowrule= */
-static const struct {
-	const char *nice;
-	const char *key;
-} kdl_rule_map[] = {
-	{"app-id", "appid"},		  {"title", "title"},
-	{"open-floating", "isfloating"}, {"open-fullscreen", "isfullscreen"},
-	{"no-blur", "noblur"},		  {"no-border", "isnoborder"},
-	{"no-shadow", "isnoshadow"},  {"no-rounding", "isnoradius"},
-	{"no-animation", "isnoanimation"}, {"no-titlebar", "isnotitlebar"},
-	{"no-scanout", "noscanout"},
-};
-static const char *kdl_rule_key(const char *nice) {
-	for (size_t i = 0; i < LENGTH(kdl_rule_map); i++)
-		if (strcmp(kdl_rule_map[i].nice, nice) == 0)
-			return kdl_rule_map[i].key;
-	return nice;
-}
+/* window-rule { match app-id="mpv"; tags 4; open-fullscreen } -> windowrule=
+ *
+ * The nice-name table used to live here and covered eleven of the fifty-three
+ * fields; everything else fell through to the bare key. It is rule_schema[] now,
+ * so the KDL spelling sits beside the key it maps to and cannot disagree with it
+ * -- the same reason kdl_key_map[] was folded into config_schema[]. The
+ * fall-through is kept, which is what leaves every underscore spelling working. */
+#define kdl_rule_key(nice) rule_field_key_for_nice(nice)
 
 static bool kdl_window_rule(Config *config, KdlNode *node) {
 	char value[2048];
@@ -4166,7 +4247,14 @@ static bool kdl_window_rule(Config *config, KdlNode *node) {
 							 first ? "" : ",", k, v);
 		if (w > 0) { vn += w; first = false; }
 	}
-	return parse_option(config, "windowrule", value);
+	const KdlNode *prev_node = rule_src_ctx.node;
+	int32_t prev_file = rule_src_ctx.file;
+	rule_src_ctx.node = node;
+	rule_src_ctx.file = config_src_ctx.file;
+	bool ok = parse_option(config, "windowrule", value);
+	rule_src_ctx.node = prev_node;
+	rule_src_ctx.file = prev_file;
+	return ok;
 }
 
 /* tag "1" { name "web"; layout "monocle" } -> tagrule=id:1,... */
@@ -5551,6 +5639,12 @@ bool parse_config(void) {
 	 * it. Stale provenance is worse than none -- a settings app would edit that
 	 * line, which now belongs to something else. */
 	config_source_reset();
+	/* And the declaration records, for the same reason and one more: they are
+	 * indexed by POSITION in the bindings and rules arrays, which are rebuilt
+	 * from scratch on every reload. A stale record does not merely name the
+	 * wrong line, it describes a different rule. */
+	bind_source_reset();
+	rule_source_reset();
 
 	if (cli_config_path) {
 		snprintf(filename, sizeof(filename), "%s", cli_config_path);

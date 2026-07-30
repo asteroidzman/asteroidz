@@ -29,6 +29,7 @@ invisible at the sizes and shapes a running compositor produces:
 | `config-schema` | `asteroidz -S`: every schema entry's default, clamp, offset and type, against the real parser |
 | `config-schema-coverage` | the other direction — keys `parse_option` handles that the schema is missing |
 | `dispatch-actions-coverage` | the same both-ways check for the dispatch-action table a keybind editor reads |
+| `rule-schema-coverage` | window-rule keys `parse_option` handles that `rule_schema[]` is missing — the direction `-S` structurally cannot see |
 | `bar-icons` | every vendored SVG parses and rasterises to non-empty ink |
 
 Run both before pushing. Neither subsumes the other.
@@ -203,11 +204,11 @@ so the harness includes a few small purpose-built Wayland clients:
 
 ## Module coverage
 
-Twenty-two modules as of writing (260 assertions): `layouts`,
+Twenty-five modules as of writing (308 assertions): `layouts`,
 `window-states`, `tags`, `focus`, `scratchpad`, `geometry`, `dwindle`,
 `overview`, `multimonitor`, `mousebind`, `hdr`, `scroller`, `animations`,
-`layer-shell`, `ipc-watch`, `keybind-combo`, `set-option`, `config-ipc`, `config-write`,
-`border-colors`,
+`layer-shell`, `ipc-watch`, `keybind-combo`, `set-option`, `config-ipc`,
+`config-write`, `rules-ipc`, `border-colors`,
 `output`, `vrr`, `effects`, `floating`, plus `destroy-virtual-output` (gated
 behind `HL_ALLOW_DESTRUCTIVE=1`).
 
@@ -230,6 +231,32 @@ file still parses, and a watch that pushes the whole config every time still
 parses. So it checks the reported line number really holds that setting, that a
 colour's hex and floats agree on every channel, and that a no-op change pushes
 nothing at all.
+
+`rules-ipc` covers the same read surface for window rules and keybinds —
+`get window-rule-schema`, `get window-rules`, `get binds`. What makes it worth a
+module of its own is that both structures are **lossy once parsed**: a
+`KeyBinding` is a function pointer and a union by the time it exists, and a
+`ConfigWinRule` cannot say whether the file wrote `0` or wrote nothing. So those
+verbs are served from records captured while reading, and the thing to check is
+that the records say what the file said.
+
+Its sharpest assertion is that a rule which sets one field reports **exactly**
+that field. A serialiser emitting all 53 would look correct in a diff and would
+leave a rule editor unable to tell "leave blur alone" from "turn blur off" — and
+would write the latter for every field on the first save.
+
+It also found two silent bugs while being written, both of the same shape:
+
+- **`kdl_binds` always passed the bare `bind`**, so `parse_bind_flags`' `s`, `l`,
+  `r` and `p` were reachable only from the legacy line format. A `binds` block
+  could not express a release binding at all, and the flag was discarded without
+  a word. The test asserts the flag by **contrast** — one chord with
+  `release=#true` and one without — because "release is true" alone would pass
+  against a build that reported true for everything.
+- **`#true` was not a boolean.** `#` is a legal bare-word character, so KDL v2's
+  spelling parsed as the *string* `"#true"` and every consumer ran it through
+  `atoi` and got `0`. Nothing in the tree writes v2 spelling, which is the only
+  reason it never bit. Both spellings are accepted now and both are asserted.
 
 `config-write` covers `set-config`, which is the half that makes a setting a
 setting rather than a preview. It **writes to `$HL_CONFIG`** and so restores a

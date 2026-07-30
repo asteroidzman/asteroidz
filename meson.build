@@ -251,6 +251,8 @@ test('config-schema-coverage', find_program('tests/check-config-schema.py'),
      args : [asteroidz_exe])
 test('dispatch-actions-coverage',
      find_program('tests/check-dispatch-actions.py'), args : [asteroidz_exe])
+test('rule-schema-coverage',
+     find_program('tests/check-rule-schema.py'), args : [asteroidz_exe])
 
 mandir = get_option('mandir')
 desktop_install_dir = join_paths(prefix, 'share/wayland-sessions')

@@ -21,10 +21,34 @@ binds {
 
 ### Flags
 
-- `l`: Works even when screen is locked.
-- `s`: Uses keysym instead of keycode to bind.
-- `r`: Triggers on key release instead of press.
-- `p`: Pass key event to client.
+Four modifiers on how a bind fires, written as **properties on the chord**:
+
+| Property | Effect |
+| :--- | :--- |
+| `lock=#true` | Still fires while the screen is locked. |
+| `keysym=#true` | Match by keysym rather than by keycode. |
+| `release=#true` | Fire on release instead of press. |
+| `pass=#true` | Also pass the key through to the focused client. |
+
+```kdl
+binds {
+    Super+L lock=#true { spawn swaylock; }
+    Super+Shift+P release=#true { spawn "grim -g \"$(slurp)\""; }
+    Super+Tab pass=#true { focus_stack next; }
+}
+```
+
+Absent is off, and `#false` is off too — so a generated config can say "not this
+one" without deleting the node. Both KDL boolean spellings work: `#true` (KDL v2)
+and bare `true` (v1).
+
+Flags apply to **keyboard binds only**. `mousebind` has nowhere to put them, and
+a mouse chord carrying one logs a warning rather than dropping it silently.
+
+> These were reachable only from the legacy `bindlr=` line format until
+> 0.20.9 — `kdl_binds` always passed the bare `bind`, so a `binds` block could
+> not express a release binding at all and the flag was quietly discarded.
+> `amsg get binds` reports the four per bind, which is how that is now pinned.
 
 **Examples:**
 
@@ -33,12 +57,16 @@ binds {
     Super+Q { kill_client; }
     Super+L { spawn swaylock; }
     Alt+code:24 { kill_client; }
-    code:64+code:24 { kill_client; }
-    code:64+code:133+code:24 { kill_client; }
     NONE+XF86MonBrightnessUp { spawn "brightnessctl set +5%"; }
     alt+shift_l { switch_keyboard_layout; }
 }
 ```
+
+`code:<n>` names a raw keycode and can be used for **the key**, not for a
+modifier: `parse_mod` only understands modifier names, so `code:64+code:24` is
+rejected with "Unknown modifier". Modifiers are joined with `+` and nothing else —
+`SUPER SHIFT+S` is not two modifiers, it is a node called `SUPER` with an argument,
+because a space separates nodes from their arguments in KDL.
 
 ## Key Modes (Submaps)
 
@@ -191,8 +219,8 @@ Suggested scroller binds (not bound by default — uncomment to use):
 ```kdl
 binds {
     Super+S { screenshot_ui region; }
-    SUPER SHIFT+S { screenshot_ui window; }
-    SUPER CTRL+S { screenshot_ui screen; }
+    Super+Shift+S { screenshot_ui window; }
+    Super+Ctrl+S { screenshot_ui screen; }
 }
 ```
 

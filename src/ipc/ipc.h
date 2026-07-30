@@ -10,6 +10,7 @@
 #include <unistd.h>
 
 #include "ipc-config.h"
+#include "ipc-rules.h"
 #include "ipc-out.h"
 
 struct ipc_watch_client {
@@ -597,6 +598,12 @@ static void handle_command(int client_fd, const char *cmd_raw) {
 		resp = build_config_response(cmd + 11);
 	} else if (strcmp(cmd, "get dispatch-actions") == 0) {
 		resp = build_dispatch_actions_response();
+	} else if (strcmp(cmd, "get window-rule-schema") == 0) {
+		resp = build_rule_schema_response();
+	} else if (strcmp(cmd, "get window-rules") == 0) {
+		resp = build_window_rules_response();
+	} else if (strcmp(cmd, "get binds") == 0) {
+		resp = build_binds_response();
 	} else if (strncmp(cmd, "get tags ", 9) == 0) {
 		Monitor *m = monitor_by_name(cmd + 9);
 		if (!m) {

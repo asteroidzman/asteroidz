@@ -15,6 +15,34 @@ window-rule { match title="<regex>"; <action> <value>... }
 window-rule { match app-id="<regex>" title="<regex>"; <action> <value>...; <action> }
 ```
 
+**Two spellings, both accepted.** Every parameter below has a dashed KDL name and
+a bare key — `no-blur` and `noblur`, `vrr-only-fullscreen` and
+`vrr_only_fullscreen`. The dashed one is canonical and is what a writer should
+emit; the bare key is what the legacy `windowrule=` line format uses and what
+existing configs are written with, and it keeps working. `asteroidz -R` lists
+both:
+
+```bash
+asteroidz -R    # every rule field: key, KDL name, group, type, range
+```
+
+The compositor carries this table itself (`src/config/rule-schema.h`), which is
+what `get window-rule-schema` serves to a rule editor and what
+`asteroidz -S` checks against the real parser. Writing it turned up six
+parameters the parser has always accepted and this page did not mention, and one
+this page listed that is not a window rule at all — `single_scratchpad` is a
+global option, documented under
+[Scratchpads](/docs/window-management/special-workspaces).
+
+**Matching is by regex**, not by literal text. A `.` or a `+` in an app id is a
+wildcard, so `org.gnome.Nautilus` also matches `orgXgnomeXNautilus`. Harmless in
+practice, worth knowing before reaching for `^…$`.
+
+**Most parameters are tri-state**, not boolean: unset, `0`, or `1`. Unset means
+"this rule says nothing, use the global setting", which is a different thing from
+`0`. A rule that sets `no-blur 0` turns blur *on* for that window even where the
+global setting is off.
+
 ### State & Behavior Parameters
 
 | Parameter | Type | Values | Description |
@@ -34,9 +62,9 @@ window-rule { match app-id="<regex>" title="<regex>"; <action> <value>...; <acti
 | `ignore_maximize` | integer | `0` / `1` (default 1) | Don't handle maximize request from client |
 | `ignore_minimize` | integer | `0` / `1` (default 1) | Don't handle minimize request from client |
 | `force_tiled_state` | integer | `0` / `1` | Deceive the window into thinking it is tiling, so it better adheres to assigned dimensions |
-| `single_scratchpad` | integer | `0` / `1` (default 1) | Only show one out of named scratchpads or the normal scratchpad |
 | `allow_shortcuts_inhibit` | integer | `0` / `1` (default 1) | Allow shortcuts to be inhibited by clients |
 | `idleinhibit_when_focus` | integer | `0` / `1` (default 0) | Automatically keep idle inhibit active when this window is focused |
+| `nofocus` / `no-focus` | integer | `0` / `1` | Refuse focus entirely. For overlays and pets that should never take the keyboard — distinct from `isopensilent`, which only declines focus at map |
 
 ### Geometry & Position
 
@@ -64,7 +92,7 @@ window-rule { match app-id="<regex>" title="<regex>"; <action> <value>...; <acti
 | `unfocused_opacity` | integer | `0` / `1` | Window unfocused opacity |
 | `allow_csd` | integer | `0` / `1` | Allow client side decoration |
 | `force_ssd` | integer | `0` / `1` | Force server-side decorations (titlebar/border) for apps that support neither xdg-decoration nor client-side decorations (e.g. SDL/GLFW games) |
-| `no-scanout` | integer | `0` / `1` | Exclude this window from direct scan-out, forcing it through the compositor's render pass. Use for clients whose buffer commits aren't safe to hand straight to a KMS plane (e.g. gamescope without explicit sync) |
+| `isnotitlebar` / `no-titlebar` | integer | `0` / `1` | Draw no titlebar for this window, whatever the global titlebar setting is |
 
 > **Tip:** For detailed visual effects configuration, see the [Window Effects](/docs/visuals/effects) page for blur, shadows, and opacity settings.
 
@@ -110,14 +138,18 @@ window-rule { match app-id="<regex>" title="<regex>"; <action> <value>...; <acti
 
 | Parameter | Type | Values | Description |
 | :--- | :--- | :--- | :--- |
-| `force_tearing` | integer | `0` / `1` | Set window to tearing state, refer to [Tearing](/docs/configuration/monitors#tearing-game-mode) |
+| `force_tearing` / `force-tearing` | integer | `0` / `1` | Let this window's frames reach the screen without waiting for vblank. Lower latency, visible tearing. See [Tearing](/docs/configuration/monitors#tearing-game-mode) |
+| `noscanout` / `no-scanout` | integer | `0` / `1` | Keep this window out of direct scan-out and push it through the render pass. For clients whose buffers are not safe to hand straight to a KMS plane — gamescope without explicit sync tears RGB noise across the screen otherwise |
+| `vrr_only_fullscreen` / `vrr-only-fullscreen` | integer | `0` / `1` | Turn variable refresh on while this window is fullscreen and off again afterwards, rather than leaving it on for the whole output |
+| `force_hdr` / `force-hdr` | integer | `0` / `1` | Switch the output to HDR while this window is on it. The way to run HDR for one player without an HDR desktop |
+| `shield_when_capture` / `shield-when-capture` | integer | `0` / `1` | Cover this window with an opaque shield while a screen capture is running, so it does not appear in recordings or shares |
 
 ### Examples
 
 ```kdl
 binds {
     alt+h { toggle_named_scratchpad st-yazi none "st -c st-yazi -e yazi"; }
-    Super+s { togglespecialworkspace term; }
+    Super+s { toggle_special_workspace term; }
 }
 
 window-rule { match app-id=yesplaymusic title=Demons; width 1000; height 900 }

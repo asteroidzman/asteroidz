@@ -1506,6 +1506,7 @@ static bool cli_check_schema = false;
 static bool cli_list_schema = false;
 static bool cli_dump_source = false;
 static bool cli_list_dispatch = false;
+static bool cli_list_rules = false;
 static KeyMode keymode = {
 	.mode = {'d', 'e', 'f', 'a', 'u', 'l', 't', '\0'},
 	.isdefault = true,
@@ -10225,7 +10226,7 @@ int32_t main(int32_t argc, char *argv[]) {
 		unsetenv("DISPLAY");
 	}
 
-	while ((c = getopt(argc, argv, "s:c:hdvpSLPD")) != -1) {
+	while ((c = getopt(argc, argv, "s:c:hdvpSLPDR")) != -1) {
 		if (c == 's') {
 			startup_cmd = optarg;
 		} else if (c == 'd') {
@@ -10248,6 +10249,8 @@ int32_t main(int32_t argc, char *argv[]) {
 			cli_dump_source = true;
 		} else if (c == 'D') {
 			cli_list_dispatch = true;
+		} else if (c == 'R') {
+			cli_list_rules = true;
 		} else {
 			goto usage;
 		}
@@ -10262,6 +10265,10 @@ int32_t main(int32_t argc, char *argv[]) {
 	}
 	if (cli_list_dispatch) {
 		dispatch_actions_list();
+		return EXIT_SUCCESS;
+	}
+	if (cli_list_rules) {
+		rule_schema_list();
 		return EXIT_SUCCESS;
 	}
 	if (cli_dump_source) {
@@ -10307,6 +10314,7 @@ usage:
 		   "  -S             Check the config schema against the parser\n"
 		   "  -L             List the config schema, one option per line\n"
 		   "  -P             Show where each config value came from\n"
-		   "  -D             List the dispatch actions, one per line\n");
+		   "  -D             List the dispatch actions, one per line\n"
+		   "  -R             List the window-rule schema, one field per line\n");
 	return EXIT_SUCCESS;
 }

@@ -195,6 +195,239 @@ static void config_source_dump(void) {
  * decoration. Declared here and defined in ipc-config.h, which owns the table. */
 static void dispatch_actions_list(void);
 
+static void rule_check_fail(const RuleField *f, const char *what,
+							const char *got, const char *want) {
+	fprintf(stderr, "  rule %-28s %s", f ? f->key : "?", what);
+	if (got)
+		fprintf(stderr, " (got '%s'", got);
+	if (want)
+		fprintf(stderr, ", want '%s'", want);
+	fprintf(stderr, "%s\n", got ? ")" : "");
+	schema_check_failures++;
+}
+
+/* Check the rule table against the parser it describes.
+ *
+ * Every field is written through the REAL windowrule branch -- one rule per
+ * field, built as the legacy comma string parse_option takes -- and read back
+ * through its own offset. That is what makes a wrong offset a red test rather
+ * than a rule editor that silently writes `isnoborder` into `isnoshadow`: the
+ * struct is thirty-odd consecutive int32_t and nothing about a wrong offsetof is
+ * visible by eye or to the compiler.
+ *
+ * On a scratch Config, never `config`: this runs before a session exists on the
+ * -S path, and appending fifty rules to the live one would be a compositor that
+ * starts with fifty rules matching nothing.
+ */
+static void rule_schema_self_check(void) {
+	char buf[512];
+
+	/* ---- table sanity ---- */
+	for (size_t i = 0; i < RULE_SCHEMA_COUNT; i++) {
+		const RuleField *f = &rule_schema[i];
+		if (!f->key || !*f->key || !f->nice || !*f->nice || !f->label ||
+			!f->desc || !f->group) {
+			rule_check_fail(f, "missing a required field", NULL, NULL);
+			continue;
+		}
+		for (size_t j = i + 1; j < RULE_SCHEMA_COUNT; j++) {
+			if (!strcmp(f->key, rule_schema[j].key))
+				rule_check_fail(f, "duplicate key", NULL, NULL);
+			if (!strcmp(f->nice, rule_schema[j].nice))
+				rule_check_fail(f, "duplicate KDL name", f->nice, NULL);
+		}
+		/* A nice name that collides with a DIFFERENT field's key would make the
+		 * fall-through resolve to the wrong branch: rule_field_key_for_nice
+		 * returns its argument unchanged when nothing matches, so a nice name
+		 * equal to another key silently becomes that key. */
+		for (size_t j = 0; j < RULE_SCHEMA_COUNT; j++) {
+			if (i == j)
+				continue;
+			if (!strcmp(f->nice, rule_schema[j].key))
+				rule_check_fail(f, "KDL name collides with another field's key",
+								f->nice, rule_schema[j].key);
+		}
+		bool group_known = false;
+		for (size_t g = 0; g < LENGTH(rule_groups); g++)
+			if (!strcmp(f->group, rule_groups[g].name))
+				group_known = true;
+		if (!group_known)
+			rule_check_fail(f, "group is not in rule_groups", f->group, NULL);
+		if (f->type == RULE_ENUM && f->n_members == 0)
+			rule_check_fail(f, "enum with no members", NULL, NULL);
+		if (f->type != RULE_ENUM && f->n_members != 0)
+			rule_check_fail(f, "members on a non-enum", NULL, NULL);
+		if (f->offset >= sizeof(ConfigWinRule))
+			rule_check_fail(f, "offset is outside ConfigWinRule", NULL, NULL);
+		schema_check_count++;
+
+		/* Both directions of the name mapping. The second is the one that keeps
+		 * old configs working, and nothing else tests it. */
+		if (strcmp(rule_field_key_for_nice(f->nice), f->key))
+			rule_check_fail(f, "the KDL name does not map back to the key",
+							rule_field_key_for_nice(f->nice), f->key);
+		else
+			schema_check_count++;
+		if (strcmp(rule_field_key_for_nice(f->key), f->key))
+			rule_check_fail(f, "the bare key no longer falls through",
+							rule_field_key_for_nice(f->key), f->key);
+		else
+			schema_check_count++;
+	}
+
+	/* ---- reachability and offsets, through the real parser ---- */
+	Config scratch;
+	memset(&scratch, 0, sizeof(scratch));
+
+	for (size_t i = 0; i < RULE_SCHEMA_COUNT; i++) {
+		const RuleField *f = &rule_schema[i];
+		/* RULE_BIND resolves to a mod mask and a keysym and cannot be formatted
+		 * back, so there is nothing to compare against. Its reachability is
+		 * covered by the coverage checker instead. */
+		if (f->type == RULE_BIND)
+			continue;
+
+		/* A probe value that is legal for the type AND distinguishable from the
+		 * unset state -- which for the numeric kinds means not zero, since zero
+		 * IS unset for every int and float rule here. */
+		const char *probe;
+		switch (f->type) {
+		case RULE_MATCH:
+		case RULE_STRING:
+			probe = "asteroidz-probe";
+			break;
+		case RULE_ENUM:
+			probe = f->members[0].name;
+			break;
+		case RULE_TAG:
+		case RULE_INT:
+			/* The SAME probe for both, and not 1.
+			 *
+			 * A tag is written 1..9 and stored as 1 << (n-1), so the only way to
+			 * tell RULE_TAG from RULE_INT is a value where the two disagree --
+			 * and 1 is not one, because 1 << 0 is 1. Relabelling `tags` as an
+			 * int passed this check cleanly until the probe stopped being a
+			 * fixed point of the mask. */
+			probe = "4";
+			break;
+		case RULE_FLOAT:
+			probe = "0.5";
+			break;
+		default:
+			probe = "1";
+			break;
+		}
+
+		snprintf(buf, sizeof(buf), "%s:%s", f->key, probe);
+		scratch.window_rules_count = 0;
+		if (!parse_option(&scratch, "windowrule", buf)) {
+			rule_check_fail(f, "the parser refused its own key", buf, NULL);
+			continue;
+		}
+		if (scratch.window_rules_count != 1) {
+			rule_check_fail(f, "no rule was produced", buf, NULL);
+			continue;
+		}
+		char got[256];
+		const ConfigWinRule *r = &scratch.window_rules[0];
+		if (!rule_format(r, f, got, sizeof(got)))
+			rule_check_fail(f, "wrote nothing the schema can read back", probe,
+							NULL);
+		else if (strcmp(got, probe))
+			rule_check_fail(f, "read back as something else", got, probe);
+		else
+			schema_check_count++;
+
+		/* And that it wrote ONLY its own field. The check that catches a
+		 * copy-pasted offsetof: every other field must still be unset, which is
+		 * exactly what rule_format reports by returning false. */
+		for (size_t j = 0; j < RULE_SCHEMA_COUNT; j++) {
+			if (j == i || rule_schema[j].type == RULE_BIND)
+				continue;
+			char other[256];
+			if (rule_format(r, &rule_schema[j], other, sizeof(other))) {
+				rule_check_fail(f, "also set another field",
+								rule_schema[j].key, other);
+				break;
+			}
+		}
+		schema_check_count++;
+	}
+
+	/* Both ends of the tag arithmetic, explicitly.
+	 *
+	 * The round trip above uses one value, and one value cannot distinguish an
+	 * off-by-one in the shift from a correct one: `1 << (n-1)` and `1 << n` both
+	 * round-trip if the formatter makes the matching mistake. Tag 1 is the low
+	 * bit and tag 9 is the top of the range, so a shift that is off by one lands
+	 * outside the first or produces the wrong number for the second. */
+	for (int32_t tag = 1; tag <= 9; tag += 8) {
+		const RuleField *f = rule_field_by_key("tags");
+		snprintf(buf, sizeof(buf), "tags:%d", tag);
+		scratch.window_rules_count = 0;
+		char want[32];
+		snprintf(want, sizeof(want), "%d", tag);
+		if (parse_option(&scratch, "windowrule", buf) &&
+			scratch.window_rules_count == 1) {
+			char got[32];
+			if (!rule_format(&scratch.window_rules[0], f, got, sizeof(got)))
+				rule_check_fail(f, "a tag read back as unset", want, NULL);
+			else if (strcmp(got, want))
+				rule_check_fail(f, "a tag did not round-trip", got, want);
+			else
+				schema_check_count++;
+		} else {
+			rule_check_fail(f, "a tag rule did not parse", buf, NULL);
+		}
+	}
+
+	/* The unset state is what an untouched rule reports, and every RULE_TRISTATE
+	 * has to start at -1 rather than 0 for that to be true. Checked against a
+	 * rule the parser produced from a match alone, not against a memset one:
+	 * the initialisation lives in the parser branch, which is the thing that
+	 * could stop doing it. */
+	scratch.window_rules_count = 0;
+	/* A writable copy, not a literal: the windowrule branch tokenises its value
+	 * with strtok, which writes NULs into the string it is given. A literal
+	 * there is a segfault, and the compiler has nothing to say about it. */
+	snprintf(buf, sizeof(buf), "appid:probe");
+	if (parse_option(&scratch, "windowrule", buf) &&
+		scratch.window_rules_count == 1) {
+		const ConfigWinRule *r = &scratch.window_rules[0];
+		for (size_t i = 0; i < RULE_SCHEMA_COUNT; i++) {
+			const RuleField *f = &rule_schema[i];
+			if (f->type == RULE_BIND || !strcmp(f->key, "appid"))
+				continue;
+			if (rule_format(r, f, buf, sizeof(buf)))
+				rule_check_fail(f, "is set in a rule that only matched", buf,
+								NULL);
+			else
+				schema_check_count++;
+		}
+	} else {
+		rule_check_fail(NULL, "a match-only rule did not parse", NULL, NULL);
+	}
+	free(scratch.window_rules);
+}
+
+/* One rule field per line, for tests/check-rule-schema.py. Same reason
+ * config_schema_list exists: the checker asks the binary rather than regexing a
+ * multi-line C initialiser, because a pattern that quietly under-matches turns a
+ * coverage test into decoration. */
+static void rule_schema_list(void) {
+	printf("# key\tnice\tgroup\ttype\tmin\tmax\tlabel\n");
+	for (size_t i = 0; i < RULE_SCHEMA_COUNT; i++) {
+		const RuleField *f = &rule_schema[i];
+		char lo[32] = "-", hi[32] = "-";
+		if (!isnan(f->min))
+			snprintf(lo, sizeof(lo), "%g", f->min);
+		if (!isnan(f->max))
+			snprintf(hi, sizeof(hi), "%g", f->max);
+		printf("%s\t%s\t%s\t%s\t%s\t%s\t%s\n", f->key, f->nice, f->group,
+			   rule_type_name(f->type), lo, hi, f->label);
+	}
+}
+
 /* Run every check. Returns the number of failures. */
 static int config_schema_self_check(void) {
 	char got[512], want[512], buf[512];
@@ -416,8 +649,11 @@ static int config_schema_self_check(void) {
 		}
 	}
 
-	printf("%zu options, %d checks, %d failures\n", CONFIG_SCHEMA_COUNT,
-		   schema_check_count, schema_check_failures);
+	rule_schema_self_check();
+
+	printf("%zu options, %zu rule fields, %d checks, %d failures\n",
+		   CONFIG_SCHEMA_COUNT, RULE_SCHEMA_COUNT, schema_check_count,
+		   schema_check_failures);
 	return schema_check_failures;
 }
 

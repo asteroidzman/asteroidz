@@ -74,13 +74,19 @@ do not have to re-implement the parser to know what an option accepts.
 
 ```bash
 asteroidz -L    # list every described option, tab separated
-asteroidz -S    # check that table against the parser it describes
+asteroidz -R    # list every window-rule field, tab separated
+asteroidz -S    # check both tables against the parsers they describe
 ```
 
-`-L` is the list a settings UI reads. `-S` is what keeps it honest: it drives
-the real parser and asserts every default, clamp and type against it, so a table
-entry cannot drift from the code without a test going red. Neither flag reads
-your config — `-L` and `-S` report the compiled-in defaults.
+`-L` and `-R` are the lists a settings UI reads — one for options, one for
+[window-rule fields](/docs/window-management/rules). `-S` is what keeps both
+honest: it drives the real parsers and asserts every default, clamp, offset and
+type against them, so a table entry cannot drift from the code without a test
+going red. For rules that means writing each field through the real `windowrule`
+branch and reading it back through its own `offsetof`, which is what makes a
+copy-pasted offset a red test rather than a rule that silently sets its
+neighbour. None of these flags read your config — they report the compiled-in
+defaults.
 
 Not every option is described yet. `tests/schema-exempt.txt` lists the ones that
 are not, each under a stated reason, so the gap is visible rather than implied.

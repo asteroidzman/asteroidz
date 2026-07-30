@@ -171,6 +171,57 @@ keybind editor can offer the right control rather than a text box. `option-key`
 composes with the schema: it means "offer the option list from
 `get config-schema`".
 
+#### Window rules and binds
+
+```
+get window-rule-schema      get window-rules      get binds
+```
+
+`get window-rule-schema` is the option schema one level down: all 53 window-rule
+fields with their type, range, group and explanation. Two of its flags are the
+whole reason it exists, because a UI gets both wrong by default:
+
+- **`regex: true`** on `app-id`, `title` and `toplevel-tag`. A plain text field
+  there produces rules that never match, because a `.` in an app id is a wildcard
+  and the user meant a dot.
+- **`tristate: true`** on most of the rest. These are `-1` unset, `0` off, `1`
+  on. A checkbox cannot express three states, and one drawn against them turns
+  every field the rule never mentioned into an explicit `0` the moment it is
+  saved.
+
+Every field carries both spellings: `nice` is the canonical dashed KDL name a
+writer should emit, `key` is the bare name the legacy `windowrule=` form uses and
+what everything else is keyed by. Both parse.
+
+`get window-rules` serves the current rules, and reports **only the fields each
+rule actually sets**. That is not a size optimisation — it is the difference
+between "this rule says nothing about blur" and "this rule turns blur off", which
+`ConfigWinRule` can express and a serialiser that emitted all 53 fields could not.
+Values come back in the spelling they were written in, so `tags 4` reports `4`
+and not the `1 << 3` the field holds.
+
+`get binds` is served from records captured **while the config is read**, not from
+the parsed `KeyBinding` array, because that parse is lossy in exactly the place an
+editor needs:
+
+```
+focus_stack next     becomes    func = focusstack, arg.i = NEXT
+tag_silent 3         becomes    func = tagsilent,  arg.ui = 1 << 2
+```
+
+There is no way back — two dispatch names can share a function, `Arg` is a union
+whose meaning depends on which function reads it, and `1 << 2` is a plausible
+value for four different fields. So each bind reports the chord verbatim, the
+dispatch name, the raw argument strings, the keymode it was declared in, and the
+four `lock`/`keysym`/`release`/`pass` flags.
+
+`source.editable` is the honest field. A bind written in the legacy `bind=` line
+form has no KDL node and therefore no byte span to replace; it is still listed —
+hiding binds a UI cannot write is how someone edits around one they cannot see —
+but it cannot be rewritten. `not_listed` names the kinds that have no KDL block
+handler at all (`axisbind`, `switchbind`, `gesturebind`), so a bind list is not
+quietly claiming those do not exist.
+
 #### set-config, for writing it back
 
 ```

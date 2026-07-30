@@ -285,6 +285,22 @@ static char *kdl_parse_scalar(KdlParser *ps, KdlValueType *type) {
 			return NULL;
 		}
 		buf[len] = '\0';
+		/* KDL v2 spells the keywords `#true`, `#false` and `#null`; v1 spells
+		 * them bare. Both are accepted, and the `#` is dropped here so nothing
+		 * downstream has to know which spelling the file used.
+		 *
+		 * `#` is a legal bare-word character, so before this a spec-correct
+		 * `#true` parsed as the STRING "#true" -- and every consumer ran it
+		 * through atoi and got 0. A boolean silently reading as false is the
+		 * exact failure this whole schema effort exists to remove, and it was
+		 * sitting in the parser. Nothing in the tree writes v2 spelling, which
+		 * is the only reason it never bit. */
+		if (buf[0] == '#' && (!strcmp(buf + 1, "true") ||
+							  !strcmp(buf + 1, "false") ||
+							  !strcmp(buf + 1, "null"))) {
+			memmove(buf, buf + 1, strlen(buf));
+			len--;
+		}
 		if (type) {
 			if (strcmp(buf, "true") == 0 || strcmp(buf, "false") == 0)
 				*type = KDL_BOOL;
