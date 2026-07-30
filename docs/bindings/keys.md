@@ -178,7 +178,7 @@ Suggested scroller binds (not bound by default — uncomment to use):
 | `toggle_trackpad_enable` | - | Toggle trackpad enable. |
 | `set_key_mode` | `mode` | Set keymode. |
 | `switch_keyboard_layout` | `[index]` | Switch keyboard layout. Optional index (0, 1, 2...) to switch to specific layout. |
-| `set_option` | `key,value` | Set config option temporarily. |
+| `set_option` | `key,value` | Set config option temporarily — in memory only; see the note below. |
 | `dpms_off_monitor` | `monitor_spec` | Power off monitor without removing it from the layout. |
 | `dpms_on_monitor` | `monitor_spec` | Power monitor back on. |
 | `dpms_toggle_monitor` | `monitor_spec` | Toggle monitor power without removing it. |
@@ -195,6 +195,23 @@ binds {
     SUPER CTRL+S { screenshot_ui screen; }
 }
 ```
+
+#### `set_option` is temporary, and quiet
+
+`set_option` takes the **internal** option name — the one `parse_option` matches
+(`bordercolor`, `blur_params_radius`), not the nested KDL path
+(`layout/border/color`). It changes the value in memory and nothing else: it
+writes no file, and the next `reload_config` discards it. It also answers
+`{"success":true}` for a key that does not exist, because the dispatch reply is
+fixed and the return value is not consulted.
+
+It no longer re-runs your `spawn` entries. It used to: applying one option went
+through the full reload path, which respawns every `spawn` command in the
+config, so ten adjustments launched your whole startup list ten times. A reload
+still runs it — that is what a reload is — but one option changing is not a
+reload. See `config_apply_live()` in `src/config/parse_config.h`, and
+`contrib/regression/tests/set-option.sh`, which holds the split in place because
+the symptom is invisible in a single call.
 
 ### Cursor Zoom
 

@@ -46,6 +46,27 @@ amsg get all-monitors
 amsg get cursorpos
 ```
 
+#### Large replies
+
+A reply of any size arrives whole. Worth stating because it was not always
+true: every IPC connection is non-blocking, and `send()` on a non-blocking
+socket writes what fits in `SO_SNDBUF` and returns *that count* — which is not
+negative, so a `< 0` error test reports success on a partial write. The
+connection was then closed immediately, so anything past the socket buffer
+(~208KB on a Linux `AF_UNIX` socket, though the kernel picks the number) was
+lost with nothing logged anywhere. What a client saw was JSON ending
+mid-string.
+
+Nothing served at the time was large enough to reach it. Replies are now queued
+and flushed across as many event-loop cycles as it takes, and a one-shot
+connection closes when its reply is out rather than when the handler returns.
+See `src/ipc/ipc-out.h`, and `tests/test-ipc-out.c`, which shrinks `SO_SNDBUF`
+on a socketpair to force the partial write a normal-sized reply never triggers
+— asserting against a normal socket would pass on the broken code.
+
+A subscriber that stops reading is dropped once its backlog passes 4MB, rather
+than growing the compositor's memory on its behalf.
+
 ### WATCH (Event Subscription)
 Subscribes the client to real-time updates. When the state changes, the server pushes a new JSON object to the output stream.
 

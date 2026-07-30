@@ -132,11 +132,12 @@ so the harness includes a few small purpose-built Wayland clients:
 
 ## Module coverage
 
-Twenty modules as of writing (180 assertions): `layouts`,
+Twenty modules as of writing (169 assertions): `layouts`,
 `window-states`, `tags`, `focus`, `scratchpad`, `geometry`, `dwindle`,
 `overview`, `multimonitor`, `mousebind`, `hdr`, `scroller`, `animations`,
-`layer-shell`, `ipc-watch`, `keybind-combo`, `bar`, plus
-`destroy-virtual-output` (gated behind `HL_ALLOW_DESTRUCTIVE=1`).
+`layer-shell`, `ipc-watch`, `keybind-combo`, `set-option`, `border-colors`,
+`output`, `vrr`, `effects`, `floating`, plus `destroy-virtual-output` (gated
+behind `HL_ALLOW_DESTRUCTIVE=1`).
 
 `bar` is the pattern to copy for anything that needs a **different config**
 than the shared one: it never turns the bar on globally (that would
@@ -174,6 +175,22 @@ inline in the relevant test files too):
   a frozen display and an unbounded memory leak as the same root cause).
   Both were ultimately root-caused via `coredumpctl`/static review, not by
   reproducing them live a second time. See "Live-session mode" above.
+- `dispatch set_option` respawned every `spawn` entry in the config, once per
+  call, because it applied the change through the full reload path. One extra
+  short-lived process is invisible; a settings panel with a live-preview
+  control sends `set_option` per frame and would fork per frame. Split into
+  `config_apply_live()` and `reset_option()`; `set-option.sh` pins both halves,
+  because a test that only asserts "set_option is quiet" passes just as well on
+  a build where `run_exec` was deleted outright.
+
+Two things about writing a test that uses `spawn`, both of which produced a
+*passing* assertion that proved nothing before being noticed. A path must be
+**quoted** — a bare leading `/` starts a KDL comment, so `spawn /tmp/x.sh` is a
+parse error that takes the rest of the config with it, and the reload then
+silently does nothing. And an inline `sh -c "..."` does not survive: the KDL
+handler joins the node's argv tokens with spaces before handing the result to
+`spawn_shell`, which runs it as `sh -c <string>`, so the inner quotes are gone
+by then. Point `spawn` at a script.
 
 ## A separate layer: the tray host
 

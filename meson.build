@@ -223,10 +223,15 @@ executable('amsg',
 
 # Unit tests for the pure helpers -- the ones whose failure mode is not
 # "the screen looks wrong" (which contrib/regression covers by driving a real
-# compositor) but a corrupted file on disk.
+# compositor) but a corrupted file on disk, or a reply that arrives with its
+# tail missing.
 test_kdl_edit = executable('test-kdl-edit', 'tests/test-kdl-edit.c',
                            build_by_default : false)
 test('kdl-edit', test_kdl_edit)
+
+test_ipc_out = executable('test-ipc-out', 'tests/test-ipc-out.c',
+                          build_by_default : false)
+test('ipc-out', test_ipc_out)
 
 mandir = get_option('mandir')
 desktop_install_dir = join_paths(prefix, 'share/wayland-sessions')

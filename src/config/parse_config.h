@@ -5812,7 +5812,19 @@ void reapply_tagrule(void) {
 	}
 }
 
-void reset_option(void) {
+/* Re-apply everything a changed VALUE needs, and nothing else.
+ *
+ * Deliberately not set_env() and not run_exec(). `spawn` entries are respawned
+ * on RELOAD by design -- that is what a reload is -- but a settings panel
+ * adjusting a blur radius is not a reload, and the dispatch that adjusts it
+ * used to go through the full reset. Ten commits from a slider therefore
+ * launched the user's entire spawn list ten times, and a live-preview control
+ * that sends on every frame would fork per frame.
+ *
+ * Everything below is idempotent, which is why the split is safe: reload_config
+ * still calls reset_option(), which is this plus the environment and the exec
+ * list. */
+void config_apply_live(void) {
 	init_baked_points();
 	handlecursoractivity();
 	reset_keyboard_layout();
@@ -5821,8 +5833,6 @@ void reset_option(void) {
 										  config.sdr_reference_luminance);
 	wlr_scene_set_sdr_saturation(scene, config.sdr_saturation);
 	asteroidz_text_node_set_icon_theme(config.icon_theme);
-	set_env();
-	run_exec();
 
 	reapply_cursor_style();
 	reapply_property();
@@ -5845,6 +5855,22 @@ void reset_option(void) {
 	}
 
 	arrange(selmon, false, false);
+}
+
+/* A full reload: everything a changed value needs, plus the environment and
+ * the exec list -- the two things that belong to starting the config over
+ * rather than to any one setting having changed.
+ *
+ * These two now run AFTER the reapply pass rather than in the middle of it.
+ * set_env() is a loop of setenv() and nothing in the reapply pass reads those,
+ * and run_exec()'s children now start against an already-arranged desktop
+ * instead of racing it -- so the move is at worst neutral. Their order relative
+ * to EACH OTHER is what matters, and is unchanged: children inherit the new
+ * environment. */
+void reset_option(void) {
+	config_apply_live();
+	set_env();
+	run_exec();
 }
 
 int32_t reload_config(const Arg *arg) {

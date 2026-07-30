@@ -9,11 +9,14 @@
 #include <sys/un.h>
 #include <unistd.h>
 
+#include "ipc-out.h"
+
 struct ipc_watch_client {
 	struct wl_list link;
 	int fd;
 	struct wl_event_source *source;
 	enum ipc_watch_type type;
+	struct ipc_out out;
 	union {
 		struct {
 			char name[64];
@@ -36,6 +39,9 @@ struct ipc_client_state {
 	char *buf;
 	size_t buf_len;
 	size_t buf_cap;
+	struct ipc_out out;
+	/* The reply has been queued and the connection closes once it is out. */
+	bool closing;
 };
 
 static void ipc_remove_watch_client(struct ipc_watch_client *wc);
@@ -436,9 +442,20 @@ static cJSON *build_bar_config_response(void) {
 }
 #endif /* ASTEROIDZ_NATIVE_BAR */
 
+/* The one-shot client whose command is being served right now.
+ *
+ * handle_command reaches its replies through a dozen paths (`send_static_json`
+ * early-outs, the dispatch fast path, the cJSON tail) and threading a client
+ * pointer through all of them would be a large diff for no gain: the IPC socket
+ * is serviced from the compositor's own event loop, one command at a time, and
+ * there is no reentrancy for it to get wrong. */
+static struct ipc_client_state *ipc_serving;
+
 static void send_static_json(int fd, const char *json_str) {
-	size_t len = strlen(json_str);
-	send(fd, json_str, len, 0);
+	(void)fd;
+	if (!ipc_serving)
+		return;
+	ipc_out_append(&ipc_serving->out, json_str, strlen(json_str));
 }
 
 /* ---------- one-shot command handling ---------- */
@@ -658,17 +675,45 @@ static void handle_command(int client_fd, const char *cmd_raw) {
 			char *msg = malloc(len + 2);
 			if (msg) {
 				snprintf(msg, len + 2, "%s\n", json_str);
-				send(client_fd, msg, len + 1, 0);
+				if (ipc_serving)
+					ipc_out_append(&ipc_serving->out, msg, len + 1);
 				free(msg);
 			}
 			free(json_str);
 		}
 		cJSON_Delete(resp);
 	}
+	(void)client_fd;
 }
 
 /* ---------- watch mode support ---------- */
+
+/* Queue one already-newline-terminated message on a watcher, dropping it if
+ * the write fails outright or its backlog has run away. */
+static void ipc_watch_send(struct ipc_watch_client *wc, const char *msg,
+						   size_t len) {
+	if (!ipc_out_append(&wc->out, msg, len) ||
+		!ipc_out_flush(wc->fd, &wc->out)) {
+		ipc_remove_watch_client(wc);
+		return;
+	}
+	wl_event_source_fd_update(wc->source,
+							  WL_EVENT_READABLE | WL_EVENT_HANGUP |
+								  WL_EVENT_ERROR |
+								  (ipc_out_pending(&wc->out) ? WL_EVENT_WRITABLE
+															 : 0));
+}
+
 static void ipc_notify_json_to_fd(int fd, cJSON *json) {
+	struct ipc_watch_client *wc, *tmp, *found = NULL;
+	wl_list_for_each_safe(wc, tmp, &watch_clients, link) {
+		if (wc->fd == fd) {
+			found = wc;
+			break;
+		}
+	}
+	if (!found)
+		return;
 	char *str = cJSON_PrintUnformatted(json);
 	if (!str)
 		return;
@@ -679,15 +724,7 @@ static void ipc_notify_json_to_fd(int fd, cJSON *json) {
 		return;
 	}
 	snprintf(msg, len + 2, "%s\n", str);
-	if (send(fd, msg, len + 1, 0) < 0) {
-		struct ipc_watch_client *wc, *tmp;
-		wl_list_for_each_safe(wc, tmp, &watch_clients, link) {
-			if (wc->fd == fd) {
-				ipc_remove_watch_client(wc);
-				break;
-			}
-		}
-	}
+	ipc_watch_send(found, msg, len + 1);
 	free(msg);
 	free(str);
 }
@@ -696,6 +733,7 @@ static void ipc_remove_watch_client(struct ipc_watch_client *wc) {
 	wl_list_remove(&wc->link);
 	wl_event_source_remove(wc->source);
 	close(wc->fd);
+	ipc_out_reset(&wc->out);
 	free(wc);
 }
 
@@ -704,6 +742,16 @@ static int ipc_watch_data_handler(int fd, uint32_t mask, void *data) {
 	if (mask & (WL_EVENT_HANGUP | WL_EVENT_ERROR)) {
 		ipc_remove_watch_client(wc);
 		return 0;
+	}
+	if (mask & WL_EVENT_WRITABLE) {
+		if (!ipc_out_flush(fd, &wc->out)) {
+			ipc_remove_watch_client(wc);
+			return 0;
+		}
+		if (!ipc_out_pending(&wc->out))
+			wl_event_source_fd_update(wc->source, WL_EVENT_READABLE |
+													  WL_EVENT_HANGUP |
+													  WL_EVENT_ERROR);
 	}
 	if (mask & WL_EVENT_READABLE) {
 		char buf[64];
@@ -873,6 +921,11 @@ static bool handle_watch_command(int fd, const char *cmd,
 		cJSON_Delete(json);
 	}
 
+	/* The one-shot state is discarded: the fd now belongs to the watch client,
+	 * which has an output queue of its own. Nothing can be queued on this one
+	 * yet, but freeing it without resetting would be a leak the moment
+	 * anything ever is. */
+	ipc_out_reset(&client->out);
 	free(client->buf);
 	free(client);
 	return true;
@@ -883,6 +936,20 @@ static int ipc_handle_client_data(int fd, uint32_t mask, void *data) {
 	struct ipc_client_state *client = data;
 	if (mask & (WL_EVENT_HANGUP | WL_EVENT_ERROR))
 		goto cleanup;
+
+	/* The rest of a reply that did not fit the socket buffer first time. */
+	if (mask & WL_EVENT_WRITABLE) {
+		if (!ipc_out_flush(fd, &client->out))
+			goto cleanup;
+		if (ipc_out_pending(&client->out))
+			return 0;
+		if (client->closing)
+			goto cleanup;
+		wl_event_source_fd_update(client->source, WL_EVENT_READABLE |
+													  WL_EVENT_HANGUP |
+													  WL_EVENT_ERROR);
+		return 0;
+	}
 
 	if (mask & WL_EVENT_READABLE) {
 		size_t available = client->buf_cap - client->buf_len;
@@ -918,14 +985,30 @@ static int ipc_handle_client_data(int fd, uint32_t mask, void *data) {
 		if (is_watch)
 			return 0;
 
+		ipc_serving = client;
 		handle_command(fd, cmd);
-		goto cleanup;
+		ipc_serving = NULL;
+
+		/* The connection closes when the REPLY IS OUT, not when the handler
+		 * returns. Closing here dropped whatever the socket buffer could not
+		 * take -- which for everything served until now was nothing, and for
+		 * a config schema is most of it. */
+		if (!ipc_out_flush(fd, &client->out))
+			goto cleanup;
+		if (!ipc_out_pending(&client->out))
+			goto cleanup;
+		client->closing = true;
+		wl_event_source_fd_update(client->source,
+								  WL_EVENT_WRITABLE | WL_EVENT_HANGUP |
+									  WL_EVENT_ERROR);
+		return 0;
 	}
 	return 0;
 
 cleanup:
 	close(client->fd);
 	wl_event_source_remove(client->source);
+	ipc_out_reset(&client->out);
 	free(client->buf);
 	free(client);
 	return 0;
@@ -973,8 +1056,7 @@ void ipc_notify_monitor(Monitor *m) {
 				snprintf(json_str, len + 2, "%s\n", raw);
 				free(raw);
 			}
-			if (send(wc->fd, json_str, len + 1, 0) < 0)
-				ipc_remove_watch_client(wc);
+			ipc_watch_send(wc, json_str, len + 1);
 		}
 	}
 	if (json_str)
@@ -1015,8 +1097,7 @@ void ipc_notify_last_surface_ws_name(Monitor *m) {
 			snprintf(json_str, len + 2, "%s\n", raw);
 			free(raw);
 		}
-		if (send(wc->fd, json_str, len + 1, 0) < 0)
-			ipc_remove_watch_client(wc);
+		ipc_watch_send(wc, json_str, len + 1);
 	}
 	free(json_str);
 }
@@ -1046,8 +1127,7 @@ void ipc_notify_focused_client(void) {
 				snprintf(json_str, len + 2, "%s\n", raw);
 				free(raw);
 			}
-			if (send(wc->fd, json_str, len + 1, 0) < 0)
-				ipc_remove_watch_client(wc);
+			ipc_watch_send(wc, json_str, len + 1);
 		}
 	}
 	free(json_str);
@@ -1070,8 +1150,7 @@ void ipc_notify_client(Client *c) {
 				snprintf(json_str, len + 2, "%s\n", raw);
 				free(raw);
 			}
-			if (send(wc->fd, json_str, len + 1, 0) < 0)
-				ipc_remove_watch_client(wc);
+			ipc_watch_send(wc, json_str, len + 1);
 		}
 	}
 	if (json_str)
@@ -1096,8 +1175,7 @@ void ipc_notify_tags(Monitor *m) {
 				snprintf(json_str, len + 2, "%s\n", raw);
 				free(raw);
 			}
-			if (send(wc->fd, json_str, len + 1, 0) < 0)
-				ipc_remove_watch_client(wc);
+			ipc_watch_send(wc, json_str, len + 1);
 		}
 	}
 	if (json_str)
@@ -1126,8 +1204,7 @@ void ipc_notify_all_monitors(void) {
 				snprintf(json_str, len + 2, "%s\n", raw);
 				free(raw);
 			}
-			if (send(wc->fd, json_str, len + 1, 0) < 0)
-				ipc_remove_watch_client(wc);
+			ipc_watch_send(wc, json_str, len + 1);
 		}
 	}
 	if (json_str)
@@ -1156,8 +1233,7 @@ void ipc_notify_all_clients(void) {
 				snprintf(json_str, len + 2, "%s\n", raw);
 				free(raw);
 			}
-			if (send(wc->fd, json_str, len + 1, 0) < 0)
-				ipc_remove_watch_client(wc);
+			ipc_watch_send(wc, json_str, len + 1);
 		}
 	}
 	if (json_str)
@@ -1181,8 +1257,7 @@ void ipc_notify_all_tags(void) {
 				snprintf(json_str, len + 2, "%s\n", raw);
 				free(raw);
 			}
-			if (send(wc->fd, json_str, len + 1, 0) < 0)
-				ipc_remove_watch_client(wc);
+			ipc_watch_send(wc, json_str, len + 1);
 		}
 	}
 	if (json_str)
@@ -1211,8 +1286,7 @@ void ipc_notify_bar_config(void) {
 			snprintf(json_str, len + 2, "%s\n", raw);
 			free(raw);
 		}
-		if (send(wc->fd, json_str, len + 1, 0) < 0)
-			ipc_remove_watch_client(wc);
+		ipc_watch_send(wc, json_str, len + 1);
 	}
 	if (json_str)
 		free(json_str);
@@ -1237,8 +1311,7 @@ void ipc_notify_keymode(void) {
 				snprintf(json_str, len + 2, "%s\n", raw);
 				free(raw);
 			}
-			if (send(wc->fd, json_str, len + 1, 0) < 0)
-				ipc_remove_watch_client(wc);
+			ipc_watch_send(wc, json_str, len + 1);
 		}
 	}
 	if (json_str)
@@ -1263,8 +1336,7 @@ void ipc_notify_kb_layout(void) {
 				snprintf(json_str, len + 2, "%s\n", raw);
 				free(raw);
 			}
-			if (send(wc->fd, json_str, len + 1, 0) < 0)
-				ipc_remove_watch_client(wc);
+			ipc_watch_send(wc, json_str, len + 1);
 		}
 	}
 	if (json_str)

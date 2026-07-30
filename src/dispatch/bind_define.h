@@ -1905,7 +1905,9 @@ int32_t zoom_reset(const Arg *arg) {
 int32_t setoption(const Arg *arg) {
 	parse_option(&config, arg->v, arg->v2);
 	override_config();
-	reset_option();
+	/* Not reset_option(): that respawns every `spawn` entry, which is right for
+	 * a reload and wrong for one option changing. See config_apply_live(). */
+	config_apply_live();
 	return 0;
 }
 
