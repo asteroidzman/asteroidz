@@ -128,6 +128,23 @@ captured while the config is read, because the parsed \fBKeyBinding\fR is a
 function pointer and a union by then. \fBsource.editable\fR is false for binds
 written in the legacy line form -- they are listed but cannot be rewritten --
 and \fBnot_listed\fR names the kinds with no KDL handler at all.
+.TP
+\fBcapture\-chord\fR
+Wait for a key combination and print it, e.g.
+\fB{"ok":true,"chord":"SUPER+SHIFT+Q"}\fR. The reply is \fIdeferred\fR: nothing
+is sent until a key is pressed, so this blocks.
+.RS
+.PP
+Capturing happens in the compositor because bindings are taken before the focused
+surface sees them \(em a client reading its own key events would receive
+everything \fIexcept\fR the combinations already bound, which is exactly the set
+you reach for when rebinding.
+.PP
+A bare modifier keeps the capture open. The captured chord is swallowed, so a
+bound combination does not also run while it is being captured, and works again
+immediately afterwards. Unmodified \fBEscape\fR cancels; a second client gets
+\fBbusy\fR.
+.RE
 .SS "Writing rules and binds"
 .TP
 \fBset\-window\-rules\fR <\fIjson\fR>

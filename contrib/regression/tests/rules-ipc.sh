@@ -592,3 +592,148 @@ EOF
 		"$(grep -c 'ri-b3' "$HL_CONFIG")" "0"
 	_ri_restore
 }
+
+# ── capture-chord ───────────────────────────────────────────────────────────
+
+_ri_active_tag() {
+	hl_get "get all-tags" \
+		| jq -r '[.all_tags[0].tags[] | select(.is_active)][0].index // 0'
+}
+
+# Start a capture in the background and return the file its reply will land in.
+# The reply is DEFERRED -- the compositor answers when a key is pressed, not when
+# the command is sent -- so amsg sits there until then.
+_ri_capture_start() {
+	: > "$HL_OUTDIR/chord.txt"
+	( ASTEROIDZ_INSTANCE_SIGNATURE="$HL_SIG" \
+		"$HL_REPO/build/amsg" capture-chord > "$HL_OUTDIR/chord.txt" 2>&1 & )
+	sleep 1
+}
+
+_ri_captured() { cat "$HL_OUTDIR/chord.txt" 2>/dev/null; }
+
+test_capture_chord_reports_what_was_pressed() {
+	_ri_capture_start
+	"$HL_WLVKBD" press LEFTMETA LEFTSHIFT Q >/dev/null 2>&1
+	sleep 1.5
+	hl_assert_eq "a modified chord comes back in the config's own spelling" \
+		"$(_ri_captured | jq -r '.chord')" "SUPER+SHIFT+Q"
+
+	_ri_capture_start
+	"$HL_WLVKBD" press LEFTCTRL LEFTALT DELETE >/dev/null 2>&1
+	sleep 1.5
+	# The KEY NAME is whatever xkb calls it, which is what parse_key reads back
+	# -- `Delete`, not `DEL` or `KEY_DELETE`. Naming it any other way would need a
+	# table kept in step with xkb by hand.
+	hl_assert_eq "...using xkb's name for the key" \
+		"$(_ri_captured | jq -r '.chord')" "CTRL+ALT+Delete"
+
+	_ri_capture_start
+	"$HL_WLVKBD" press F5 >/dev/null 2>&1
+	sleep 1.5
+	hl_assert_eq "an unmodified key is a chord too" \
+		"$(_ri_captured | jq -r '.chord')" "F5"
+}
+
+test_capture_chord_waits_for_a_real_key() {
+	_ri_capture_start
+	"$HL_WLVKBD" press LEFTMETA >/dev/null 2>&1
+	sleep 1.5
+	# Holding Super is the beginning of a chord, not one. Without this the first
+	# modifier down would be captured instantly and every chord would come out as
+	# "SUPER".
+	hl_assert_eq "a modifier on its own does not end the capture" \
+		"$(_ri_captured)" ""
+	"$HL_WLVKBD" press F2 >/dev/null 2>&1
+	sleep 1.5
+	hl_assert_eq "...and the next real key does" \
+		"$(_ri_captured | jq -r '.chord')" "F2"
+}
+
+test_capture_chord_sees_chords_that_are_already_bound() {
+	_ri_save
+	# THE reason this lives in the compositor rather than in the settings window.
+	# Bindings are taken before the focused surface sees the key, so a client
+	# reading its own key events would receive everything EXCEPT the combinations
+	# that are already bound -- exactly the ones you reach for when rebinding.
+	#
+	# The bound action is `set_option`, and the observable is a config VALUE,
+	# because both cheaper choices turned out to be order-dependent. combo_view
+	# keeps a process-global chord flag that only a real key release clears; and
+	# `view` then ORs rather than replaces while that flag is set, so an earlier
+	# module leaving it on made "which tag is active" mean something different
+	# here. This assertion passed alone and failed twice in the full suite before
+	# landing on an observable with no state behind it at all.
+	cat >> "$HL_CONFIG" <<'EOF'
+binds { Alt+F12 { set_option "gappoh" "23"; } }
+EOF
+	hl_dispatch "reload_config" 2
+	local before; before="$(hl_get 'get config' | jq -r '.values.gappoh.value')"
+	hl_assert_true "the probe value does not start at the target" \
+		"$([ "$before" != "23" ] && echo true || echo false)"
+
+	_ri_capture_start
+	"$HL_WLVKBD" press LEFTALT F12 >/dev/null 2>&1
+	sleep 1.5
+	hl_assert_eq "a bound chord is still captured" \
+		"$(_ri_captured | jq -r '.chord')" "ALT+F12"
+	# And it must not ALSO run. A captured Super+Q that closed a window would be
+	# a keybind editor that shuts the window you are editing from.
+	hl_assert_eq "...and does not fire while it is being captured" \
+		"$(hl_get 'get config' | jq -r '.values.gappoh.value')" "$before"
+
+	# The keyboard is not left captured: the same chord works immediately after.
+	"$HL_WLVKBD" press LEFTALT F12 >/dev/null 2>&1
+	sleep 1
+	hl_assert_eq "...and fires normally once capture is over" \
+		"$(hl_get 'get config' | jq -r '.values.gappoh.value')" "23"
+	_ri_restore
+}
+
+test_capture_chord_can_be_cancelled_and_is_exclusive() {
+	_ri_capture_start
+	"$HL_WLVKBD" press ESC >/dev/null 2>&1
+	sleep 1.5
+	hl_assert_eq "Escape cancels" "$(_ri_captured | jq -r '.error')" "cancelled"
+
+	# Unmodified Escape only, so Shift+Escape is still a chord you can bind.
+	_ri_capture_start
+	"$HL_WLVKBD" press LEFTSHIFT ESC >/dev/null 2>&1
+	sleep 1.5
+	hl_assert_eq "...but a modified Escape is a chord" \
+		"$(_ri_captured | jq -r '.chord')" "SHIFT+Escape"
+
+	_ri_capture_start
+	local second; second="$(ASTEROIDZ_INSTANCE_SIGNATURE="$HL_SIG" \
+		"$HL_REPO/build/amsg" capture-chord)"
+	hl_assert_eq "a second capture is refused rather than queued" \
+		"$(printf '%s' "$second" | jq -r '.error')" "busy"
+	"$HL_WLVKBD" press F3 >/dev/null 2>&1
+	sleep 1
+	hl_assert_eq "...and the first one still gets its chord" \
+		"$(_ri_captured | jq -r '.chord')" "F3"
+	hl_assert_true "and the compositor is unharmed" \
+		"$(hl_get 'get version' | grep -q version && echo true || echo false)"
+}
+
+test_a_captured_chord_can_be_written_as_a_bind() {
+	_ri_save
+	# The loop closed: capture a chord, write it, read it back. Each half was
+	# built separately and either could be wrong on its own -- a chord that
+	# formats prettily and does not parse would pass every test above.
+	_ri_capture_start
+	"$HL_WLVKBD" press LEFTMETA LEFTALT F4 >/dev/null 2>&1
+	sleep 1.5
+	local chord; chord="$(_ri_captured | jq -r '.chord')"
+	hl_assert_eq "the chord was captured" "$chord" "SUPER+ALT+F4"
+
+	local r; r="$(_ri_set_binds "{\"changes\":[{\"op\":\"add\",\"chord\":\"$chord\",\"action\":\"kill_client\"}]}")"
+	hl_assert_true "it is accepted as a bind" "$(printf '%s' "$r" | jq -r '.ok')"
+	hl_assert_eq "...and reads back unchanged" \
+		"$(hl_get "get binds" | jq -r --arg c "$chord" \
+			'[.binds[] | select(.chord==$c)][0].action')" "kill_client"
+	hl_assert_true "...and the config still parses" \
+		"$("$HL_ASTEROIDZ" -p -c "$HL_CONFIG" 2>/dev/null | grep -q 'config OK' \
+			&& echo true || echo false)"
+	_ri_restore
+}

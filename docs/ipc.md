@@ -222,6 +222,42 @@ but it cannot be rewritten. `not_listed` names the kinds that have no KDL block
 handler at all (`axisbind`, `switchbind`, `gesturebind`), so a bind list is not
 quietly claiming those do not exist.
 
+#### capture-chord, for a keybind editor
+
+```
+capture-chord
+```
+
+Press a key combination; get it back as a chord string. `amsg capture-chord`
+blocks until you press something and then prints
+`{"ok":true,"chord":"SUPER+SHIFT+Q"}`.
+
+**A deferred reply, not a watch.** The request arrives, nothing is sent, and the
+answer goes out when a key is pressed — so an ordinary request/reply client works
+unchanged. That the reply *can* be deferred is a property of the output queue:
+replies are queued and the connection closes when the queue drains, not when the
+handler returns.
+
+It has to be here and not in the client. **The compositor takes bindings before
+the focused surface sees them**, so a settings window reading its own key events
+would receive everything *except* the combinations that are already bound — which
+is precisely the set you reach for when rebinding. `Super+Q` would close a window
+instead of being captured.
+
+- A bare modifier keeps the capture open. Holding Super is the beginning of a
+  chord, not one.
+- The captured chord is **swallowed**: a captured `Super+Q` that also ran
+  `kill_client` would be a keybind editor that closes the window you are editing
+  from. The binding works again as soon as the capture ends.
+- Unmodified `Escape` cancels, answering `{"ok":false,"error":"cancelled"}`.
+  `Shift+Escape` is a chord you can still bind.
+- A second client gets `busy` rather than being queued.
+- The key name is whatever xkb calls it (`Delete`, `XF86AudioRaiseVolume`), which
+  is exactly what `parse_key` reads back — so the string round-trips by
+  construction rather than through a table kept in step by hand. A key with no
+  keysym under the current layout comes back as `code:<n>`, which is a spelling
+  the parser already accepts.
+
 #### set-window-rules and set-binds, for writing those back
 
 ```

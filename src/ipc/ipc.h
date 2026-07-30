@@ -44,10 +44,43 @@ struct ipc_client_state {
 	struct ipc_out out;
 	/* The reply has been queued and the connection closes once it is out. */
 	bool closing;
+	/* The handler answered nothing and the connection must STAY OPEN.
+	 *
+	 * For `capture-chord`, whose reply arrives when a key is pressed rather than
+	 * when the handler returns. Without it the normal path sees an empty output
+	 * queue, concludes the reply is out, and closes -- so the client would get
+	 * EOF instead of a chord. */
+	bool deferred;
 };
 
 static void ipc_remove_watch_client(struct ipc_watch_client *wc);
 static void ipc_notify_json_to_fd(int fd, cJSON *json);
+
+/* Answer a request whose handler returned without answering.
+ *
+ * The other half of `deferred`: queue the reply now, arm the writable handler,
+ * and let the ordinary drain-then-close path finish the connection. Nothing here
+ * closes the fd itself -- doing so would race whatever is still in the queue,
+ * which is the bug the output queue exists to have fixed. */
+static void ipc_capture_reply(struct ipc_client_state *c, const char *json) {
+	if (!c)
+		return;
+	if (!ipc_out_append(&c->out, json, strlen(json)) ||
+		!ipc_out_append(&c->out, "\n", 1)) {
+		return;
+	}
+	c->deferred = false;
+	c->closing = true;
+	if (!ipc_out_flush(c->fd, &c->out))
+		return;
+	wl_event_source_fd_update(c->source, WL_EVENT_WRITABLE | WL_EVENT_HANGUP |
+											 WL_EVENT_ERROR);
+}
+
+/* Included HERE rather than beside the other ipc-* headers: it calls
+ * ipc_capture_reply above and takes an ipc_client_state, so both have to exist
+ * first. */
+#include "ipc-capture.h"
 
 /* ---------- utility functions ---------- */
 
@@ -604,6 +637,20 @@ static void handle_command(int client_fd, const char *cmd_raw) {
 		resp = build_window_rules_response();
 	} else if (strcmp(cmd, "get binds") == 0) {
 		resp = build_binds_response();
+	} else if (strcmp(cmd, "capture-chord") == 0) {
+		/* No reply now. The next key press is the reply. */
+		if (chord_capture.active) {
+			send_static_json(client_fd,
+							 "{\"ok\":false,\"error\":\"busy\","
+							 "\"detail\":\"another client is capturing\"}\n");
+			return;
+		}
+		chord_capture.active = true;
+		chord_capture.client = ipc_serving;
+		chord_capture.fd = client_fd;
+		if (ipc_serving)
+			ipc_serving->deferred = true;
+		return;
 	} else if (strncmp(cmd, "get tags ", 9) == 0) {
 		Monitor *m = monitor_by_name(cmd + 9);
 		if (!m) {
@@ -1024,8 +1071,20 @@ static int ipc_handle_client_data(int fd, uint32_t mask, void *data) {
 			return 0;
 
 		ipc_serving = client;
+		client->deferred = false;
 		handle_command(fd, cmd);
 		ipc_serving = NULL;
+
+		/* A handler that answers later keeps its connection. The consumed
+		 * command is dropped from the buffer first, so a second line already in
+		 * flight is not re-read as a fresh request. */
+		if (client->deferred) {
+			size_t consumed = (size_t)(nl - client->buf) + 1;
+			memmove(client->buf, client->buf + consumed,
+					client->buf_len - consumed);
+			client->buf_len -= consumed;
+			return 0;
+		}
 
 		/* The connection closes when the REPLY IS OUT, not when the handler
 		 * returns. Closing here dropped whatever the socket buffer could not
@@ -1044,6 +1103,10 @@ static int ipc_handle_client_data(int fd, uint32_t mask, void *data) {
 	return 0;
 
 cleanup:
+	/* Before the struct is freed, or a chord captured afterwards would be
+	 * written to a file descriptor number that has already been handed to
+	 * somebody else. */
+	chord_capture_cancel(client);
 	close(client->fd);
 	wl_event_source_remove(client->source);
 	ipc_out_reset(&client->out);

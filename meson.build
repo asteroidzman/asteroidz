@@ -273,6 +273,17 @@ install_data('amsg/amsg.1', install_dir : join_paths(mandir, 'man1'))
 install_subdir('assets/bar-icons', install_dir : join_paths(prefix, 'share/asteroidz'),
                strip_directory : false)
 
+# The ship again, this time as an icon-THEME entry.
+#
+# The settings window is an ordinary xdg toplevel, and xdg-toplevel-icon-v1
+# carries an icon NAME rather than pixels -- which anything listing windows then
+# resolves through the icon theme. The copy above is on the bar's own private
+# search path, which nothing else knows how to look in, so a second copy has to
+# live where a theme lookup finds it. Same file, installed twice on purpose.
+install_data('assets/bar-icons/asteroidz-bar/logo.svg',
+             install_dir : join_paths(prefix, 'share/icons/hicolor/scalable/apps'),
+             rename : 'asteroidz-settings.svg')
+
 # ...and they are checked, because a bar icon fails SILENTLY: a missing file and
 # an unparseable one both come out as a blank pill. See the script's header for
 # the two that actually shipped.

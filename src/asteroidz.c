@@ -6031,6 +6031,19 @@ void keypress(struct wl_listener *listener, void *data) {
 	if (event->state == WL_KEYBOARD_KEY_STATE_PRESSED)
 		wake_sleeping_monitors();
 
+	/* A keybind editor is asking what you just pressed.
+	 *
+	 * BEFORE the binding loop, and swallowing the event either way. That order is
+	 * the whole point of capturing here rather than in the client: the compositor
+	 * takes bindings before the focused surface sees them, so a client reading
+	 * its own key events receives everything except the combinations that are
+	 * already bound -- exactly the ones you reach for when rebinding. And a
+	 * captured Super+Q that also ran kill_client would close the window you were
+	 * editing from. */
+	if (chord_capture_handle(event->state, mods, nsyms > 0 ? syms[0] : 0,
+							 keycode))
+		return;
+
 	/* the screenshot overlay owns the keyboard outright while active:
 	 * Escape cancels it, everything else is swallowed so global shortcuts
 	 * and clients underneath the frozen frame don't react to it */

@@ -204,7 +204,7 @@ so the harness includes a few small purpose-built Wayland clients:
 
 ## Module coverage
 
-Twenty-five modules as of writing (373 assertions): `layouts`,
+Twenty-five modules as of writing (391 assertions): `layouts`,
 `window-states`, `tags`, `focus`, `scratchpad`, `geometry`, `dwindle`,
 `overview`, `multimonitor`, `mousebind`, `hdr`, `scroller`, `animations`,
 `layer-shell`, `ipc-watch`, `keybind-combo`, `set-option`, `config-ipc`,
@@ -251,6 +251,20 @@ Its sharpest read assertion is that a rule which sets one field reports **exactl
 that field. A serialiser emitting all 53 would look correct in a diff and would
 leave a rule editor unable to tell "leave blur alone" from "turn blur off" — and
 would write the latter for every field on the first save.
+
+It covers `capture-chord` too, whose sharpest assertion is that **a chord which is
+already bound is still captured, and does not fire**. Both halves matter: the
+first is the whole reason capture lives in the compositor rather than in the
+settings window, and the second is what stops a captured `Super+Q` from also
+closing the window you are editing from.
+
+That test was order-dependent twice before it settled, which is worth recording.
+It started on the harness's `F11 -> combo_view`, whose chord flag is
+process-global and cleared only by a real key release — so whether it changed the
+tag depended on whether `keybind-combo` had run first. Rebinding to `view` did not
+help, because `view` ORs rather than replaces while that flag is set. It observes
+a **config value** now, set through `set_option`, which has no state behind it at
+all. Both earlier versions passed when the module was run alone.
 
 It also found two silent bugs while being written, both of the same shape:
 
