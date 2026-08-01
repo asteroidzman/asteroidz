@@ -306,6 +306,14 @@ enum ipc_watch_type {
 	 * displaying something that stopped being true. A diff rather than the whole
 	 * set because a palette reload touches nine keys out of ninety-five. */
 	IPC_WATCH_CONFIG = 1 << 11,
+	/* Whether idling is being held off, and by whom.
+	 *
+	 * `toggle_idle_inhibit` was write-only: a bar could flip it and had no way
+	 * to ask what it was, so the pill that flips it had to REMEMBER what it had
+	 * done. That guess is wrong after a bar restart, after a keybind flips the
+	 * same state, and after any client takes an inhibitor out -- and being
+	 * wrong here means the machine never sleeps while the icon says it will. */
+	IPC_WATCH_IDLE = 1 << 12,
 };
 
 typedef struct Pertag Pertag;
@@ -1073,6 +1081,7 @@ static void printstatus(enum ipc_watch_type type);
  * to the bar, which runs out of process. */
 void ipc_notify_bar_config(void);
 void ipc_notify_config(const char *reason);
+void ipc_notify_idle(void);
 static void powermgrsetmode(struct wl_listener *listener, void *data);
 static void wake_monitor(Monitor *m);
 static void wake_sleeping_monitors(void);
@@ -1328,6 +1337,10 @@ static struct wlr_idle_inhibit_manager_v1 *idle_inhibit_mgr;
  * creating a protocol inhibitor of its own; a native bar module has no
  * surface to attach one to, so the compositor holds the flag instead. */
 static bool idle_inhibit_manual = false;
+/* What was last handed to the idle notifier -- the manual flag OR a client's
+ * protocol inhibitor. Kept so `watch idle` can push on change rather than on
+ * every call: checkidleinhibitor() runs on every arrange and every map. */
+static bool idle_inhibited = false;
 static struct wlr_layer_shell_v1 *layer_shell;
 static struct wlr_output_manager_v1 *output_mgr;
 static struct wlr_virtual_keyboard_manager_v1 *virtual_keyboard_mgr;
@@ -3353,6 +3366,18 @@ void checkidleinhibitor(struct wlr_surface *exclude) {
 		inhibited = 1;
 
 	wlr_idle_notifier_v1_set_inhibited(idle_notifier, inhibited);
+
+	/* Both halves are compared, not just the effective one: with a video
+	 * player already holding an inhibitor, flipping the manual flag changes
+	 * nothing about whether idling happens, but it is still what the pill
+	 * showing that flag has to redraw from. */
+	static bool pushed_manual = false;
+	if ((bool)inhibited != idle_inhibited ||
+		idle_inhibit_manual != pushed_manual) {
+		idle_inhibited = inhibited;
+		pushed_manual = idle_inhibit_manual;
+		ipc_notify_idle();
+	}
 }
 
 void last_cursor_surface_destroy(struct wl_listener *listener, void *data) {

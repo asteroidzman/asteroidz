@@ -25,6 +25,12 @@ Return compositor version.
 Return the global pointer position (\fBx\fR, \fBy\fR) and the monitor under it
 (\fBnull\fR if over no output).
 .TP
+\fBget idle\fR
+Return whether idling is currently held off. \fBinhibited\fR is what the idle
+notifier was told, and answers "will this machine sleep"; \fBmanual\fR is the
+flag \fBtoggle_idle_inhibit\fR owns, separated out because a client's own
+inhibitor (a video player's, say) is not something a toggle can clear.
+.TP
 \fBget keymode\fR
 Return current keymode.
 .TP
@@ -252,6 +258,12 @@ Stream updates for all tags.
 .TP
 \fBwatch all\-clients\fR
 Stream updates for all clients.
+.TP
+\fBwatch idle\fR
+Stream idle-inhibit changes, in the shape \fBget idle\fR returns. Pushed when
+either field changes -- including when the manual flag flips while a client
+inhibitor already holds idling off, which changes nothing about sleeping but is
+still what a pill showing that flag has to redraw from.
 .TP
 \fBwatch keymode\fR
 Stream keymode changes.

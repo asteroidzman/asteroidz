@@ -323,6 +323,22 @@ static cJSON *build_monitor_json(Monitor *m) {
 	return resp;
 }
 
+/* Whether idling is being held off, and by whom.
+ *
+ * Two fields rather than one, because a client that wants to DRAW this state
+ * and a client that wants to change it need different answers. `inhibited` is
+ * what the idle notifier was actually told and is the honest answer to "will
+ * this machine sleep"; `manual` is the flag `toggle_idle_inhibit` owns, and is
+ * the only one a bar's toggle may show as its own -- a pill lit because mpv
+ * holds an inhibitor would go dark when the user clicked it, having in fact
+ * changed nothing they can see. */
+static cJSON *build_idle_response(void) {
+	cJSON *resp = cJSON_CreateObject();
+	cJSON_AddBoolToObject(resp, "inhibited", idle_inhibited);
+	cJSON_AddBoolToObject(resp, "manual", idle_inhibit_manual);
+	return resp;
+}
+
 static cJSON *build_all_tags_entry(Monitor *m) {
 	cJSON *entry = cJSON_CreateObject();
 	cJSON_AddStringToObject(entry, "monitor", m->wlr_output->name);
@@ -540,6 +556,8 @@ static void handle_command(int client_fd, const char *cmd_raw) {
 			cJSON_AddStringToObject(resp, "monitor", m->wlr_output->name);
 		else
 			cJSON_AddNullToObject(resp, "monitor");
+	} else if (strcmp(cmd, "get idle") == 0) {
+		resp = build_idle_response();
 	} else if (strcmp(cmd, "get keymode") == 0) {
 		resp = cJSON_CreateObject();
 		cJSON_AddStringToObject(resp, "keymode", keymode.mode);
@@ -890,6 +908,8 @@ static bool handle_watch_command(int fd, const char *cmd,
 	} else if (strcmp(cmd, "watch bar-config") == 0) {
 		type = IPC_WATCH_BAR_CONFIG;
 #endif
+	} else if (strcmp(cmd, "watch idle") == 0) {
+		type = IPC_WATCH_IDLE;
 	} else if (strcmp(cmd, "watch keymode") == 0) {
 		type = IPC_WATCH_KEYMODE;
 	} else if (strcmp(cmd, "watch keyboardlayout") == 0) {
@@ -1010,6 +1030,10 @@ static bool handle_watch_command(int fd, const char *cmd,
 		break;
 	}
 #endif
+	case IPC_WATCH_IDLE: {
+		json = build_idle_response();
+		break;
+	}
 	case IPC_WATCH_KEYMODE: {
 		json = cJSON_CreateObject();
 		cJSON_AddStringToObject(json, "keymode", keymode.mode);
@@ -1470,6 +1494,29 @@ void ipc_notify_config(const char *reason) {
 	}
 	free(raw);
 	config_snapshot();
+}
+
+void ipc_notify_idle(void) {
+	char *json_str = NULL;
+	size_t len = 0;
+	struct ipc_watch_client *wc, *tmp;
+	wl_list_for_each_safe(wc, tmp, &watch_clients, link) {
+		if (wc->type != IPC_WATCH_IDLE)
+			continue;
+		if (!json_str) {
+			cJSON *json = build_idle_response();
+			char *raw = cJSON_PrintUnformatted(json);
+			cJSON_Delete(json);
+			if (!raw)
+				return;
+			len = strlen(raw);
+			json_str = malloc(len + 2);
+			snprintf(json_str, len + 2, "%s\n", raw);
+			free(raw);
+		}
+		ipc_watch_send(wc, json_str, len + 1);
+	}
+	free(json_str);
 }
 
 void ipc_notify_keymode(void) {

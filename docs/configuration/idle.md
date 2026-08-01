@@ -67,10 +67,26 @@ does not have to re-implement turning the screens back on.
 ## Inhibitors
 
 `respect-inhibitors` covers the Wayland protocol's own inhibitors, which is what
-a video player uses. The bar's own idle pill toggles the compositor-level
-inhibitor (`toggle_idle_inhibit`) and is honoured the same way. See also
+a video player uses. See also
 [`idleinhibit_ignore_visible`](/docs/configuration/miscellaneous), which decides
 whether a client that is not visible may inhibit at all.
+
+The bar's idle pill — the cup — is **not** one of those, and turning
+`respect-inhibitors` off does not turn it off. It flips the compositor's own
+manual inhibit (`toggle_idle_inhibit`), which is a deliberate instruction from
+the person at the keyboard rather than a request from a program; the option is
+about programs. So "stop the browser holding my screen awake" and "keep my
+screen awake right now" remain separate answers to separate questions.
+
+The pill shows the compositor's state rather than remembering its own, so a
+keybind bound to `toggle_idle_inhibit` and the cup always agree, and restarting
+the bar does not lose an inhibit that is still in force. `amsg get idle` returns
+the same two fields it reads (`inhibited`, `manual`), and `amsg watch idle`
+streams them.
+
+It is hidden when nothing would idle anyway — `enable false`, or every timeout
+at `0`. A "keep awake" button in a session where the screen never sleeps is
+describing something that is not happening.
 
 ## Replacing swayidle
 

@@ -25,6 +25,7 @@ description: Control asteroidz programmatically using amsg.
 | :--- | :--- |
 | `get version` | Returns the current version of the compositor. |
 | `get cursorpos` | Returns the global pointer position (`x`, `y`) and the monitor under it. |
+| `get idle` | Returns `inhibited` (what the idle notifier was told — will this machine sleep) and `manual` (the flag `toggle_idle_inhibit` owns). Two fields because a client's own inhibitor is not something a toggle can clear. |
 | `get keymode` | Returns the current active keyboard mode (e.g., normal, insert). |
 | `get keyboardlayout` | Returns the active XKB layout (abbreviated). |
 | `get monitor <name>` | Returns full JSON details for a specific monitor. |
@@ -387,6 +388,7 @@ Subscribes the client to real-time updates. When the state changes, the server p
 * `watch all-monitors`
 * `watch all-tags`
 * `watch all-clients`
+* `watch idle`
 * `watch keymode`
 * `watch keyboardlayout`
 * `watch last_open_surface [<mon_name>]`

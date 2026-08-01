@@ -70,6 +70,8 @@ static void usage(void) {
 		"  get version                              Show compositor version\n");
 	printf("  get cursorpos                            Show pointer position + "
 		   "monitor\n");
+	printf("  get idle                                 Show whether idling is "
+		   "inhibited, and whether manually\n");
 	printf("  get keymode                              Show current keymode\n");
 	printf("  get keyboardlayout                       Show current keyboard "
 		   "layout\n");
@@ -111,6 +113,8 @@ static void usage(void) {
 	printf(
 		"  watch all-tags                           Stream all tags changes\n");
 	printf("  watch all-clients                        Stream all clients "
+		   "changes\n");
+	printf("  watch idle                               Stream idle-inhibit "
 		   "changes\n");
 	printf(
 		"  watch keymode                            Stream keymode changes\n");
