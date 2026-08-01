@@ -564,30 +564,40 @@ void client_draw_shadow(Client *c) {
 		if (c->shadow_blur->alpha != config.shadows_blur_background_strength)
 			wlr_scene_blur_set_alpha(c->shadow_blur,
 									 config.shadows_blur_background_strength);
-		/* ALWAYS the cached bottom-layer path, for this blur.
+		/* Cached bottom-layer path (cheap: reuses the monitor's shared
+		 * blurred-wallpaper snapshot instead of re-blurring every frame) is
+		 * correct only when the shadow's actual backdrop IS just the
+		 * wallpaper -- true for tiled windows, not guaranteed for floating
+		 * ones (which can sit over arbitrary other windows). Same rule
+		 * client_update_blur already applies to regular window blur. The
+		 * cache node is monitor-shared and lazily created on demand --
+		 * ensure it exists before relying on it (it may not if
+		 * shadows_blur_background was only just turned on).
 		 *
-		 * It used to follow the rule regular window blur uses -- cache for
-		 * tiled windows, live re-blur for floating ones, since a floating
-		 * window can sit over arbitrary other windows and the shadow should
-		 * blend with what is actually under it. That is the right rule for a
-		 * window's own blur and the wrong one here, because a live blur
-		 * samples the framebuffer and the shadow's footprint HUGS THE WINDOW:
-		 * what it picks up is the window's own pixels, smeared outward. On a
-		 * dark wallpaper that is a coloured glow around every floating window
-		 * -- the exact opposite of a shadow, and reported as one.
+		 * BOTH PATHS HAVE AN ARTEFACT, and forcing this one for floating
+		 * windows too (tried 2026-08-01, reverted the same day) trades a
+		 * smaller one for a bigger one:
 		 *
-		 * Measured rather than reasoned about: on a black wallpaper the
-		 * pixels approaching the edge went 0, 5, 12, 20 instead of staying
-		 * black, and the halo turned green when the window did.
+		 *   live  -- samples the framebuffer, and a shadow's footprint hugs
+		 *            its window, so it picks up the window's OWN pixels and
+		 *            smears them outward. On a black wallpaper the pixels
+		 *            approaching the edge read 0, 5, 12, 20 instead of
+		 *            staying black, and the halo takes the window's colour.
+		 *            A thin rim, visible on a dark desktop.
+		 *   cached -- draws the blurred WALLPAPER whatever is really beneath.
+		 *            Over a dark window on a bright wallpaper that is a broad
+		 *            bright haze, much worse than the rim, and it is what
+		 *            a real desktop looks like: floating windows sit over
+		 *            other windows, not over bare wallpaper.
 		 *
-		 * The wallpaper snapshot cannot do that, and it is also the cheaper
-		 * path. What it costs is accuracy over another window -- a shadow
-		 * blending with the blurred wallpaper rather than with the window
-		 * beneath it, which is a subtlety nobody has reported missing and is
-		 * what tiled windows have always had. The cache node is
-		 * monitor-shared and lazily created, so make sure it exists. */
-		bool blur_cached = true;
-		ensure_monitor_blur_node(c->mon);
+		 * The honest fix is in the sampling, not in the choice between them:
+		 * the blur wants what is beneath the window MINUS the window itself,
+		 * and scenefx has no way to ask for that today. Until it does, the
+		 * feature is off by default and `shadows_blur_background 0` gives a
+		 * plain shadow with neither artefact. */
+		bool blur_cached = config.blur_optimized && !c->isfloating;
+		if (blur_cached)
+			ensure_monitor_blur_node(c->mon);
 		if (c->shadow_blur->should_only_blur_bottom_layer != blur_cached)
 			wlr_scene_blur_set_should_only_blur_bottom_layer(c->shadow_blur,
 															 blur_cached);

@@ -91,16 +91,18 @@ Drop shadows help distinguish floating windows from the background.
 | `shadows_blur_background` | `0` | Blur what is under the shadow as well as darkening it. Costs a blur pass per shadowed window, so it is off by default. |
 | `shadows_blur_background_strength` | `0.5` | Opacity of that blur, so it can be mixed with the plain tint rather than replacing it. No effect unless `shadows_blur_background` is `1`. |
 
-`shadows_blur_background` always blurs the **wallpaper**, using the monitor's
-cached snapshot, never a live re-blur of whatever is actually under the window.
-That is not only the cheap path, it is the correct one here: a live blur
-samples the framebuffer, and a shadow's footprint hugs its own window, so what
-it picks up is the window's own pixels smeared outward. Floating windows took
-that path until 2026-08-01 and wore a coloured glow the size of their shadow —
-green around a green window, and unmissable on a dark wallpaper, where a shadow
-has nothing to darken but a glow has everything to light up. The cost is that a
-shadow over another window blends with the wallpaper rather than with that
-window, which is what tiled windows have always done.
+`shadows_blur_background` has an artefact either way it is implemented, which
+is part of why it is off by default. The blur wants *what is beneath the window
+minus the window itself*, and there is no way to ask scenefx for that: blurring
+live samples the framebuffer, and a shadow's footprint hugs its own window, so
+it picks up the window's own pixels and smears them outward — a thin rim in the
+window's colour, obvious on a dark wallpaper. Blurring the cached wallpaper
+snapshot instead has no rim, but paints the blurred *wallpaper* over whatever is
+really beneath: over a dark window on a bright wallpaper, a broad bright haze,
+which is worse on a real desktop where floating windows sit over other windows.
+Floating windows use the live path; tiled ones, whose backdrop really is the
+wallpaper, use the snapshot. `shadows_blur_background 0` gives a plain shadow
+with neither.
 
 ```kdl
 effects {
