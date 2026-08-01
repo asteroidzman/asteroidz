@@ -335,6 +335,33 @@ hl_unmount_xdg() {
 			| sort -r)
 }
 
+# hl_restart -- bring up a fresh compositor after a test deliberately exited
+# the shared one.
+#
+# Exactly one test does that (quit-confirm's "Enter exits", which cannot be
+# written any other way), and every module alphabetically after it used to fail
+# with an empty reply because the instance they all share was gone -- 60-odd
+# assertions reported as broken code by a run that had simply lost its
+# compositor. Refuses in live mode, where the compositor is the user's own and
+# is not ours to restart.
+#
+# The new instance gets hl_start's PRISTINE config: a module that appended its
+# own binds must re-append them after calling this.
+hl_restart() {
+	if [ "${HL_LIVE_MODE:-0}" = "1" ]; then
+		echo "hl_restart: refusing in live mode" >&2
+		return 1
+	fi
+	for pid in "${HL_SPAWNED_PIDS[@]:-}"; do [ -n "$pid" ] && kill "$pid" 2>/dev/null; done
+	HL_SPAWNED_PIDS=()
+	[ -n "${HL_SWAYBG_PID:-}" ] && kill "$HL_SWAYBG_PID" 2>/dev/null
+	if [ -n "${HL_COMP_PID:-}" ]; then
+		kill "$HL_COMP_PID" 2>/dev/null
+		wait "$HL_COMP_PID" 2>/dev/null
+	fi
+	hl_start
+}
+
 hl_stop() {
 	for pid in "${HL_SPAWNED_PIDS[@]:-}"; do [ -n "$pid" ] && kill "$pid" 2>/dev/null; done
 	if [ "${HL_LIVE_MODE:-0}" = "1" ]; then
@@ -352,7 +379,26 @@ hl_stop() {
 	fi
 	[ -n "${HL_SWAYBG_PID:-}" ] && kill "$HL_SWAYBG_PID" 2>/dev/null
 	[ -n "${HL_COMP_PID:-}" ] && kill "$HL_COMP_PID" 2>/dev/null
-	wait "${HL_COMP_PID:-}" 2>/dev/null
+	# Bounded, and loud about it. This used to be a bare `wait`, which is
+	# correct exactly as long as the compositor honours SIGTERM -- and when it
+	# stopped doing so (handlesig() raised the exit-confirmation prompt instead
+	# of exiting, so a signal waited for a keystroke nobody was there to press)
+	# every single run hung until its outer timeout and left its compositor
+	# alive. Twenty-eight of them accumulated before anyone noticed, because a
+	# run that has already printed its summary looks finished.
+	if [ -n "${HL_COMP_PID:-}" ]; then
+		local waited=0
+		while kill -0 "$HL_COMP_PID" 2>/dev/null && [ "$waited" -lt 50 ]; do
+			sleep 0.1
+			waited=$((waited + 1))
+		done
+		if kill -0 "$HL_COMP_PID" 2>/dev/null; then
+			echo "hl_stop: the compositor ignored SIGTERM for 5s -- SIGKILLing it." >&2
+			echo "hl_stop: that is a COMPOSITOR bug, not a harness one: a signal must exit." >&2
+			kill -9 "$HL_COMP_PID" 2>/dev/null
+		fi
+		wait "$HL_COMP_PID" 2>/dev/null
+	fi
 	# After the compositor is down, not before: a client still holding a file
 	# under the mount keeps it busy and turns the unmount into a lazy one.
 	hl_unmount_xdg

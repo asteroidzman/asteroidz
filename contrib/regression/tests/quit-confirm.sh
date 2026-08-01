@@ -34,6 +34,21 @@
 # file, so the variable is set long after the compositor read its config. The
 # first version did that, and with F9 and F8 bound to nothing every "the prompt
 # swallowed it" assertion passed by measuring a key that was never bound.
+
+# NEVER in live mode. Every test in this file presses the real quit bind: the
+# gentle ones put a modal prompt on the user's own screen and take their
+# keyboard for a second, and the last one answers it with Enter -- which in live
+# mode means logging the user out mid-run. hl_start_live attaches to the
+# caller's compositor; this module is the one thing in the suite that must not
+# be pointed at it.
+_qc_live_skip() { # _qc_live_skip NAME -> 0 if the test should be skipped
+	if [ "${HL_LIVE_MODE:-0}" = "1" ]; then
+		hl_skip "$1: live mode -- this module presses the real quit bind, and would exit the session"
+		return 0
+	fi
+	return 1
+}
+
 _qc_setup_done=""
 _qc_setup() {
 	[ -z "$_qc_setup_done" ] || return 0
@@ -66,6 +81,7 @@ _qc_hold_quit() { "$HL_WLVKBD" hold F9 -- sleep 1.2 >/dev/null 2>&1; sleep 0.8; 
 _qc_tag() { hl_current_tag_index; }
 
 test_quit_asks_before_exiting() {
+	_qc_live_skip test_quit_asks_before_exiting && return
 	_qc_setup
 	hl_dispatch "view,1" 0.3
 	_qc_hold_quit
@@ -105,6 +121,7 @@ test_quit_asks_before_exiting() {
 }
 
 test_the_prompt_can_be_reopened() {
+	_qc_live_skip test_the_prompt_can_be_reopened && return
 	_qc_setup
 	# Dismissing must not leave it unable to ask again -- that would be the
 	# other way to break this, and just as quiet.
@@ -118,11 +135,14 @@ test_the_prompt_can_be_reopened() {
 	hl_dispatch "view,1" 0.3
 }
 
-# Deliberately last in this file, and it takes the compositor with it. The
-# harness starts a fresh instance per module, so that costs nothing -- whereas
+# Deliberately last in this file, and it takes the compositor with it --
 # asserting Enter exits without letting it exit would be asserting something
-# else.
+# else. The comment that used to sit here said the harness starts a fresh
+# instance per module, so this "costs nothing". It does not: ONE instance is
+# shared by the whole run, and believing otherwise is what let this file
+# silently break every module after it. It puts one back itself now.
 test_enter_exits() {
+	_qc_live_skip test_enter_exits && return
 	_qc_setup
 	_qc_hold_quit
 	hl_assert_true "quit is still pending before Enter" "$(_qc_alive)"
@@ -130,4 +150,17 @@ test_enter_exits() {
 	_qc_press ENTER
 	sleep 1
 	hl_assert_false "Enter exits" "$(_qc_alive)"
+
+	# And now put one back, or every module that runs after this one tests
+	# nothing against a compositor that no longer exists -- which is exactly
+	# what happened the first time the whole suite was run with this file in
+	# it: rules-ipc through window-states, sixty-odd assertions, all reported
+	# as "got ''" by a run that had killed its own instance three modules
+	# earlier. The restart takes hl_start's pristine config, so the binds
+	# above are gone with it; _qc_setup_done is cleared so a later call
+	# re-appends them rather than trusting binds that died with the process.
+	_qc_setup_done=""
+	hl_restart
+	hl_assert_true "a fresh compositor is up for the modules that follow" \
+		"$(_qc_alive)"
 }

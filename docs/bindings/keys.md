@@ -246,6 +246,12 @@ nobody is at the keyboard to answer; scripts that mean it should signal the
 process rather than dispatch. With no output to draw on, `quit` exits rather
 than waiting for an answer to a prompt nobody can see.
 
+That sentence was true when it was written, false for a day, and is now tested.
+`handlesig()` — the one installed handler — called `quit()`, the asking one, so
+a signal put a prompt on screen and waited for a keystroke until whatever sent
+it gave up and sent `SIGKILL`. `contrib/signal-exit-test.sh` holds it: both
+signals must exit within five seconds.
+
 The overlay is the same one the global-shortcuts key picker uses, so the two
 look alike by construction.
 

@@ -1073,7 +1073,6 @@ static void printstatus(enum ipc_watch_type type);
  * to the bar, which runs out of process. */
 void ipc_notify_bar_config(void);
 void ipc_notify_config(const char *reason);
-static void quitsignal(int32_t signo);
 static void powermgrsetmode(struct wl_listener *listener, void *data);
 static void wake_monitor(Monitor *m);
 static void wake_sleeping_monitors(void);
@@ -2093,7 +2092,15 @@ void handlesig(int32_t signo) {
 		while (waitpid(-1, NULL, WNOHANG) > 0)
 			;
 	else if (signo == SIGINT || signo == SIGTERM)
-		quit(NULL);
+		/* quit_now, NOT quit: a signal is not a question. quit() raises the
+		 * exit confirmation and waits for a keystroke, so a compositor sent
+		 * SIGTERM by a session manager, a shutdown, or a test harness put a
+		 * prompt on screen and then sat there until it was SIGKILLed -- which
+		 * is how a regression run started leaving a live compositor behind on
+		 * every single module. This is the ONE installed handler; the
+		 * quitsignal() this file also used to carry was never wired to
+		 * anything, so fixing that one fixed nothing. */
+		quit_now(NULL);
 }
 
 void toggle_hotarea(int32_t x_root, int32_t y_root) {
@@ -7314,8 +7321,6 @@ void powermgrsetmode(struct wl_listener *listener, void *data) {
 	m->asleep = 1;
 	updatemons(NULL, NULL);
 }
-
-void quitsignal(int32_t signo) { quit_now(NULL); }
 
 void scene_buffer_apply_opacity(struct wlr_scene_buffer *buffer, int32_t sx,
 								int32_t sy, void *data) {

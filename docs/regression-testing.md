@@ -35,6 +35,15 @@ invisible at the sizes and shapes a running compositor produces:
 
 Run both before pushing. Neither subsumes the other.
 
+There is a third, one-purpose script beside them: `contrib/signal-exit-test.sh`
+asserts that SIGTERM and SIGINT each exit the compositor within five seconds. It
+cannot live in `run.sh`, because every module there shares one compositor and
+this one's whole job is to kill it. It exists because `handlesig()` once called
+`quit()` — the *asking* one — so a signal raised the exit-confirmation prompt and
+then waited for a keystroke: logout stalled until systemd's SIGKILL, and every
+regression module hung after printing its summary and leaked its compositor.
+`hl_stop` now bounds its own wait and says so loudly rather than hanging.
+
 ### The schema, checked from both ends
 
 `src/config/config-schema.h` describes every settable option — type, range, enum
@@ -205,13 +214,22 @@ so the harness includes a few small purpose-built Wayland clients:
 
 ## Module coverage
 
-Twenty-five modules as of writing (391 assertions): `layouts`,
+Twenty-eight modules as of writing: `layouts`,
 `window-states`, `tags`, `focus`, `scratchpad`, `geometry`, `dwindle`,
 `overview`, `multimonitor`, `mousebind`, `hdr`, `scroller`, `animations`,
 `layer-shell`, `ipc-watch`, `keybind-combo`, `set-option`, `config-ipc`,
 `config-write`, `rules-ipc`, `border-colors`,
-`output`, `vrr`, `effects`, `floating`, plus `destroy-virtual-output` (gated
+`output`, `vrr`, `effects`, `floating`, `quit-confirm`, `screenshot-ui`,
+`fullscreen-bleed`, plus `destroy-virtual-output` (gated
 behind `HL_ALLOW_DESTRUCTIVE=1`).
+
+`screenshot-ui` and `fullscreen-bleed` both need **two** monitors and skip
+themselves on one, the way `multimonitor` does — each is about a boundary, and
+with no neighbour every assertion in them would pass by default. `screenshot-ui`
+measures the overlay's pointer confinement, which doubles as the only handle on
+"is the overlay up" the socket offers; `fullscreen-bleed` compares pixels on the
+neighbouring output before and after a fullscreen round trip, because the
+geometry can be correct while the surface is drawn past it.
 
 `bar` is the pattern to copy for anything that needs a **different config**
 than the shared one: it never turns the bar on globally (that would
