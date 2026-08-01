@@ -539,61 +539,18 @@ static bool gs_sym_is_modifier(xkb_keysym_t sym) {
 /* Compositor-native modal prompt: a full-monitor dim rect + a centered label,
  * drawn with the existing jump-label text node — no GTK/Qt. */
 static void gs_pick_overlay_show(const char *desc) {
-	if (!selmon)
-		return;
-	gs_pick.tree = wlr_scene_tree_create(layers[LyrOverlay]);
-	if (!gs_pick.tree)
-		return;
-	float dim[4] = {0.f, 0.f, 0.f, 0.55f};
-	struct wlr_scene_rect *bg = wlr_scene_rect_create(
-		gs_pick.tree, selmon->m.width, selmon->m.height, dim);
-	if (bg)
-		wlr_scene_node_set_position(&bg->node, selmon->m.x, selmon->m.y);
-
-	AsteroidzTheme th = {0};
-	th.fg_color[0] = th.fg_color[1] = th.fg_color[2] = th.fg_color[3] = 1.f;
-	th.bg_color[0] = 0.08f;
-	th.bg_color[1] = 0.08f;
-	th.bg_color[2] = 0.10f;
-	th.bg_color[3] = 0.97f;
-	th.border_color[0] = 1.f;
-	th.border_color[1] = 0.70f;
-	th.border_color[2] = 0.73f;
-	th.border_color[3] = 1.f;
-	th.border_width = 2;
-	th.corner_radius = 12;
-	th.padding_x = 28;
-	th.padding_y = 18;
-	th.font_desc = "monospace Bold 18";
-	gs_pick.label = asteroidz_jump_label_node_create(gs_pick.tree, th);
-	if (gs_pick.label) {
-		char msg[256];
-		snprintf(msg, sizeof(msg),
-				 "Press a key for \xe2\x80\x9c%s\xe2\x80\x9d\n(Esc to cancel)",
-				 desc && *desc ? desc : "global shortcut");
-		float scale = selmon->wlr_output ? selmon->wlr_output->scale : 1.f;
-		asteroidz_jump_label_node_update(gs_pick.label, msg, scale);
-		int lw = 360, lh = 90;
-		if (gs_pick.label->scene_buffer && gs_pick.label->scene_buffer->buffer) {
-			lw = gs_pick.label->scene_buffer->buffer->width;
-			lh = gs_pick.label->scene_buffer->buffer->height;
-		}
-		wlr_scene_node_set_position(&gs_pick.label->scene_buffer->node,
-									selmon->m.x + (selmon->m.width - lw) / 2,
-									selmon->m.y + (selmon->m.height - lh) / 2);
-	}
-	wlr_scene_node_raise_to_top(&gs_pick.tree->node);
+	char msg[256];
+	snprintf(msg, sizeof(msg),
+			 "Press a key for \xe2\x80\x9c%s\xe2\x80\x9d\n(Esc to cancel)",
+			 desc && *desc ? desc : "global shortcut");
+	/* The prompt itself is shared with the exit confirmation -- see
+	 * asteroidz_prompt_show in bind_define.h. This one only decides what it
+	 * says and who is allowed to answer it. */
+	asteroidz_prompt_show(&gs_pick.tree, &gs_pick.label, msg);
 }
 
 static void gs_pick_overlay_hide(void) {
-	if (gs_pick.label) {
-		asteroidz_jump_label_node_destroy(gs_pick.label);
-		gs_pick.label = NULL;
-	}
-	if (gs_pick.tree) {
-		wlr_scene_node_destroy(&gs_pick.tree->node);
-		gs_pick.tree = NULL;
-	}
+	asteroidz_prompt_hide(&gs_pick.tree, &gs_pick.label);
 }
 
 static void gs_pick_finish(uint32_t mods, xkb_keysym_t sym, bool cancelled) {

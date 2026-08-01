@@ -507,8 +507,157 @@ int32_t movewin(const Arg *arg) {
 	return 0;
 }
 
-int32_t quit(const Arg *arg) {
+/* ── a modal prompt on the focused output ───────────────────────────────────
+ *
+ * The dimmed screen with a bordered label in the middle of it, which the global
+ * shortcuts picker put up first and the exit confirmation now shares. Extracted
+ * rather than copied: "looks like the other prompt" is a requirement that a
+ * second copy of the theme block satisfies until somebody edits one of them.
+ *
+ * It draws and nothing else. Who may dismiss it, what dismisses it, and what
+ * happens then belong to the caller -- the picker waits for any key, the exit
+ * confirmation waits for exactly two, and neither is a property of a rectangle.
+ */
+static bool asteroidz_prompt_show(struct wlr_scene_tree **tree_out,
+								  struct asteroidz_jump_label_node **label_out,
+								  const char *msg) {
+	if (!selmon)
+		return false;
+	struct wlr_scene_tree *tree = wlr_scene_tree_create(layers[LyrOverlay]);
+	if (!tree)
+		return false;
+	*tree_out = tree;
+
+	float dim[4] = {0.f, 0.f, 0.f, 0.55f};
+	struct wlr_scene_rect *bg =
+		wlr_scene_rect_create(tree, selmon->m.width, selmon->m.height, dim);
+	if (bg)
+		wlr_scene_node_set_position(&bg->node, selmon->m.x, selmon->m.y);
+
+	/* Deliberately NOT config.theme. This is a compositor prompt over whatever
+	 * is on screen, and it has to stay legible against a palette the user is in
+	 * the middle of changing -- including one where fg and bg have just been set
+	 * to the same colour. */
+	AsteroidzTheme th = {0};
+	th.fg_color[0] = th.fg_color[1] = th.fg_color[2] = th.fg_color[3] = 1.f;
+	th.bg_color[0] = 0.08f;
+	th.bg_color[1] = 0.08f;
+	th.bg_color[2] = 0.10f;
+	th.bg_color[3] = 0.97f;
+	th.border_color[0] = 1.f;
+	th.border_color[1] = 0.70f;
+	th.border_color[2] = 0.73f;
+	th.border_color[3] = 1.f;
+	th.border_width = 2;
+	th.corner_radius = 12;
+	th.padding_x = 28;
+	th.padding_y = 18;
+	th.font_desc = "monospace Bold 18";
+
+	struct asteroidz_jump_label_node *label =
+		asteroidz_jump_label_node_create(tree, th);
+	*label_out = label;
+	if (label) {
+		float scale = selmon->wlr_output ? selmon->wlr_output->scale : 1.f;
+		asteroidz_jump_label_node_update(label, msg, scale);
+		int lw = 360, lh = 90;
+		if (label->scene_buffer && label->scene_buffer->buffer) {
+			lw = label->scene_buffer->buffer->width;
+			lh = label->scene_buffer->buffer->height;
+		}
+		wlr_scene_node_set_position(&label->scene_buffer->node,
+									selmon->m.x + (selmon->m.width - lw) / 2,
+									selmon->m.y + (selmon->m.height - lh) / 2);
+	}
+	wlr_scene_node_raise_to_top(&tree->node);
+	return true;
+}
+
+static void asteroidz_prompt_hide(struct wlr_scene_tree **tree,
+								  struct asteroidz_jump_label_node **label) {
+	if (*label) {
+		asteroidz_jump_label_node_destroy(*label);
+		*label = NULL;
+	}
+	if (*tree) {
+		wlr_scene_node_destroy(&(*tree)->node);
+		*tree = NULL;
+	}
+}
+
+/* ── confirm before exiting ─────────────────────────────────────────────────
+ *
+ * Exiting takes every client with it -- editors, terminals, a game mid-session
+ * -- and the compositor cannot ask them whether they mind. So the one question
+ * it can ask, it asks.
+ *
+ * Enter exits, Escape does not, and there is no third answer: anything else is
+ * swallowed and the prompt stays. A prompt that dismissed itself on a stray key
+ * would be worse than none, because it would train the reflex of pressing
+ * through it.
+ *
+ * Only the DISPATCH is confirmed. SIGTERM and SIGINT go straight to
+ * wl_display_terminate through quit_now(): a session manager shutting the
+ * machine down is not asking, and a compositor that stalled a reboot behind a
+ * dialogue nobody is at the keyboard to answer would be a fault, not a
+ * safeguard.
+ */
+static struct {
+	bool active;
+	struct wlr_scene_tree *tree;
+	struct asteroidz_jump_label_node *label;
+} quit_confirm;
+
+static void quit_confirm_hide(void) {
+	quit_confirm.active = false;
+	asteroidz_prompt_hide(&quit_confirm.tree, &quit_confirm.label);
+}
+
+/* Called from keypress() before anything else looks at the key. Returns true
+ * when the event was consumed -- which the caller must honour, or the Enter
+ * that confirms the exit is also delivered to whatever had focus. */
+bool quit_confirm_handle_key(uint32_t state, xkb_keysym_t sym) {
+	if (!quit_confirm.active)
+		return false;
+	if (state != WL_KEYBOARD_KEY_STATE_PRESSED)
+		return true; /* swallow the releases of keys we swallowed the press of */
+	if (sym == XKB_KEY_Return || sym == XKB_KEY_KP_Enter) {
+		quit_confirm_hide();
+		wl_display_terminate(dpy);
+		return true;
+	}
+	if (sym == XKB_KEY_Escape) {
+		wlr_log(WLR_INFO, "exit cancelled");
+		quit_confirm_hide();
+		return true;
+	}
+	return true; /* everything else: swallowed, prompt stays up */
+}
+
+/* Exit with no questions. The signal handlers' path, and the way out for
+ * anything scripted. */
+int32_t quit_now(const Arg *arg) {
 	wl_display_terminate(dpy);
+	return 0;
+}
+
+int32_t quit(const Arg *arg) {
+	if (quit_confirm.active) {
+		/* Dispatched twice. Reading the second one as confirmation would let a
+		 * key held down on a repeating bind exit the session, so it is the
+		 * keyboard's answer or nothing. */
+		return 0;
+	}
+	if (!asteroidz_prompt_show(&quit_confirm.tree, &quit_confirm.label,
+							   "Exit asteroidz?\n"
+							   "Enter to exit, Esc to stay")) {
+		/* No output to draw on -- headless, or mid-teardown. Asking a question
+		 * nobody can see and then waiting for an answer would hang. */
+		wl_display_terminate(dpy);
+		return 0;
+	}
+	quit_confirm.active = true;
+	wlr_log(WLR_INFO, "exit requested: waiting for confirmation");
 	return 0;
 }
 

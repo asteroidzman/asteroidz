@@ -1,0 +1,11 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<!-- A settings gear, drawn as one filled path so the bar's iconTint can
+     recolour it wholesale.
+
+     Solid white rather than currentColor: ColorOverlay paints through the alpha
+     channel, so the source colour is discarded and only the coverage matters.
+     A stroked outline would leave the tint painting the strokes AND the holes
+     between the teeth, which reads as a blob at pill size. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+  <path fill="#ffffff" fill-rule="evenodd" d="M13.4 2h-2.8a.6.6 0 0 0-.59.5l-.28 1.86a7.9 7.9 0 0 0-1.63.95L6.36 4.6a.6.6 0 0 0-.72.26L4.24 7.28a.6.6 0 0 0 .13.76l1.46 1.2a8 8 0 0 0 0 1.88l-1.46 1.2a.6.6 0 0 0-.13.76l1.4 2.42a.6.6 0 0 0 .72.26l1.74-.71c.5.38 1.05.7 1.63.95l.28 1.86a.6.6 0 0 0 .59.5h2.8a.6.6 0 0 0 .59-.5l.28-1.86a7.9 7.9 0 0 0 1.63-.95l1.74.71a.6.6 0 0 0 .72-.26l1.4-2.42a.6.6 0 0 0-.13-.76l-1.46-1.2a8 8 0 0 0 0-1.88l1.46-1.2a.6.6 0 0 0 .13-.76l-1.4-2.42a.6.6 0 0 0-.72-.26l-1.74.71a7.9 7.9 0 0 0-1.63-.95l-.28-1.86A.6.6 0 0 0 13.4 2zM12 8.7a3.3 3.3 0 1 1 0 6.6 3.3 3.3 0 0 1 0-6.6z" transform="translate(0 1.8)"/>
+</svg>

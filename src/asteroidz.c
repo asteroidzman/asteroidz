@@ -6064,6 +6064,18 @@ void keypress(struct wl_listener *listener, void *data) {
 		return;
 	}
 
+	/* The exit confirmation outranks everything, including the global
+	 * shortcuts below. It is a modal question with an exclusive grab in all but
+	 * name: while it is up, a push-to-talk key that still reached its bridge
+	 * would open a microphone the user cannot see they have opened. */
+	{
+		bool quit_handled = false;
+		for (i = 0; i < nsyms; i++)
+			quit_handled |= quit_confirm_handle_key(event->state, syms[i]);
+		if (quit_handled)
+			return;
+	}
+
 	/* xdg-desktop-portal global shortcuts get first pick (push-to-talk
 	 * needs both key edges, and matched keys are not forwarded) */
 	if (!locked) {
@@ -7285,7 +7297,7 @@ void powermgrsetmode(struct wl_listener *listener, void *data) {
 	updatemons(NULL, NULL);
 }
 
-void quitsignal(int32_t signo) { quit(NULL); }
+void quitsignal(int32_t signo) { quit_now(NULL); }
 
 void scene_buffer_apply_opacity(struct wlr_scene_buffer *buffer, int32_t sx,
 								int32_t sy, void *data) {

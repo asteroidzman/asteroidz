@@ -196,7 +196,7 @@ Suggested scroller binds (not bound by default — uncomment to use):
 | `spawn_shell` | `cmd` | Execute shell command (supports pipes `\|`). |
 | `spawn_on_empty` | `cmd,tagnumber` | Open command on empty tag. |
 | `reload_config` | - | Hot-reload configuration. |
-| `quit` | - | Exit asteroidz. |
+| `quit` | - | Exit asteroidz, after a confirmation prompt. |
 | `restart` | - | Restart asteroidz in place (re-exec, keeps the login session; running clients are restarted). |
 | `toggle_overview` | - | Toggle overview mode. |
 | `toggle_overview` | `jump` | Open the overview in jump mode: every window gets a letter hint; pressing it focuses that window. |
@@ -215,6 +215,22 @@ Suggested scroller binds (not bound by default — uncomment to use):
 | `toggle_monitor` | `monitor_spec` | Toggle monitor power. Accepts a [monitor spec](/docs/configuration/monitors#monitor-spec-format). |
 | `chvt` | `1-9` | Change virtual terminal (tty, equivalent to using ctrl+alt+Fkeys) |
 | `screenshot_ui` | `[screen/region/window]` | Compositor-native screenshot UI (defaults to `region`). Freezes the focused output and shows it full-screen while you pick what to capture; saves to `~/Pictures/Screenshots/screenshot_<timestamp>.png` and copies it to the clipboard (requires `wl-copy`). `region` lets you drag a selection rectangle (Escape cancels, release confirms); `window` captures whatever window you click; `screen` captures the whole focused output immediately, with no interaction. |
+
+### Exiting
+
+`quit` puts a prompt on the focused output rather than exiting immediately:
+**Enter** exits, **Escape** stays, and anything else is swallowed while the
+prompt is up. Dispatching `quit` a second time is not an answer either — a
+keybind that repeats would otherwise confirm its own prompt.
+
+The confirmation is on the *dispatch* only. `SIGTERM` and `SIGINT` exit at once,
+so a session manager shutting the machine down is never held up by a question
+nobody is at the keyboard to answer; scripts that mean it should signal the
+process rather than dispatch. With no output to draw on, `quit` exits rather
+than waiting for an answer to a prompt nobody can see.
+
+The overlay is the same one the global-shortcuts key picker uses, so the two
+look alike by construction.
 
 ```kdl
 binds {

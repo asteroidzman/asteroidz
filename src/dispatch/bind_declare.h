@@ -37,6 +37,10 @@ int32_t switch_layout(const Arg *arg);
 int32_t toggle_idle_inhibit(const Arg *arg);
 int32_t setmfact(const Arg *arg);
 int32_t quit(const Arg *arg);
+/* Exit without the confirmation prompt. Not a dispatch -- the signal handlers'
+ * path, so that a shutdown is not stalled behind a question nobody is there to
+ * answer. */
+int32_t quit_now(const Arg *arg);
 int32_t restart(const Arg *arg);
 int32_t screenshot_ui(const Arg *arg);
 int32_t set_sdr_luminance(const Arg *arg);
