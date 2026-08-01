@@ -270,6 +270,15 @@ test('rule-schema-coverage',
 # generating over them would trade all of that for the tooltip.
 test('config-docs', find_program('tests/check-config-docs.py'),
      args : [asteroidz_exe])
+# The man page's dispatch list, against the compositor's own.
+#
+# amsg.1 documents all 94 actions, which is a second copy of a table -- and a
+# second copy drifts silently: the first action added after it was written would
+# simply be absent, with nothing to say so. The block between the BEGIN/END
+# markers is generated from `asteroidz -D`; this asserts it still matches, and
+# names the actions that differ rather than only reporting that they do.
+test('amsg-man', find_program('tests/check-amsg-man.py'),
+     args : ['--asteroidz', asteroidz_exe])
 # The config we SHIP has to parse.
 #
 # It is what /etc/asteroidz/config.kdl becomes and what every new user is told to
