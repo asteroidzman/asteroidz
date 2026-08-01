@@ -1,0 +1,33 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<!-- An alarm clock: the reminders module's pill.
+
+     Not the bell. `notify` already owns that one, and two bells on the same
+     bar would say the same thing twice. A reminder is a time you asked to be
+     told about, so the clock face carries the meaning and the caps only say
+     "and it will go off".
+
+     Solid white, filled paths, no strokes: the bar tints icons with a
+     ColorOverlay, which paints through the alpha channel and discards the
+     source colour, so coverage is all that survives. A stroked outline would
+     tint the strokes and the gaps between them alike and read as a blob at
+     pill size. The face is a RING (evenodd) rather than a disc for the same
+     reason: at 24px a solid disc with knocked-out hands loses the hands.
+
+     No double hyphen anywhere in here. It is not legal inside an XML comment
+     and rsvg refuses the whole file, which cost the power icon a round trip. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+  <!-- the caps, sitting on the shoulders of the face -->
+  <path fill="#ffffff" d="M6.7 3.05a2.05 2.05 0 0 1 1.62 3.3A9.3 9.3 0 0 0 5.6 8.1 2.05 2.05 0 0 1 6.7 3.05z"/>
+  <path fill="#ffffff" d="M17.3 3.05a2.05 2.05 0 0 1 1.1 5.05 9.3 9.3 0 0 0-2.72-1.75 2.05 2.05 0 0 1 1.62-3.3z"/>
+
+  <!-- the face -->
+  <path fill="#ffffff" fill-rule="evenodd"
+        d="M12 5.1a7.95 7.95 0 1 1 0 15.9 7.95 7.95 0 0 1 0-15.9zm0 1.9a6.05 6.05 0 1 0 0 12.1 6.05 6.05 0 0 0 0-12.1z"/>
+
+  <!-- the hands: one up, one to the right, meeting at the middle -->
+  <path fill="#ffffff" d="M11.2 9.1h1.6v4.75h3.3v1.6h-4.9z"/>
+
+  <!-- the feet -->
+  <path fill="#ffffff" d="M6.05 20.2l1.3 1.05-1.35 1.65-1.3-1.05z"/>
+  <path fill="#ffffff" d="M17.95 20.2l1.35 1.65-1.3 1.05-1.35-1.65z"/>
+</svg>
