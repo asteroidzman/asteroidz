@@ -6072,8 +6072,22 @@ void keypress(struct wl_listener *listener, void *data) {
 		bool quit_handled = false;
 		for (i = 0; i < nsyms; i++)
 			quit_handled |= quit_confirm_handle_key(event->state, syms[i]);
-		if (quit_handled)
+		if (quit_handled) {
+			/* Disarm the repeat, exactly as the overlay above does, and for
+			 * exactly the reason its comment gives.
+			 *
+			 * The press that DISPATCHED quit armed the repeat timer for that
+			 * chord, and every early return here skips the disarm below. So
+			 * keyrepeat() kept calling keybinding() -> quit(), which did
+			 * nothing while the prompt was up -- and the moment Escape cleared
+			 * `active`, the next repeat put the prompt straight back. Escape
+			 * appeared not to work and the only way out was to confirm the
+			 * exit, which is the worst possible failure for this particular
+			 * dialogue. */
+			group->nsyms = 0;
+			wl_event_source_timer_update(group->key_repeat_source, 0);
 			return;
+		}
 	}
 
 	/* xdg-desktop-portal global shortcuts get first pick (push-to-talk
