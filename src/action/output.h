@@ -309,7 +309,6 @@ int32_t set_output_hdr(const Arg *arg) {
 	m->hdr_configured = arg->i ? 1 : 0;
 	/* a manual choice outranks the capture-triggered fallback; do not let a
 	 * later capture session end flip it back */
-	m->hdr_forced_off_for_capture = false;
 	hdr_resolve(m);
 
 	const char *keys[] = {"hdr"};

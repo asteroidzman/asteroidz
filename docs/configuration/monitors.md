@@ -94,17 +94,25 @@ Takes effect on config reload without a restart.
 
 ### Recording/screenshotting an HDR output
 
-Screencopy protocols don't carry colorimetry metadata, so captures of an HDR output look washed out by default. asteroidz automatically drops an output out of HDR for as long as it's being captured via `ext-image-copy-capture`, restoring it afterward. Disable with the global option (not part of `monitorrule`) if you'd rather keep true HDR on screen during capture, at the cost of washed-out recordings:
+Screencopy protocols don't carry colorimetry metadata, so a capture of an HDR
+output looks washed out.
 
-```kdl
-misc {
-    hdr_capture_fallback 0
-}
-```
+asteroidz used to answer this by dropping the output out of HDR for as long as
+it was being captured, behind an `hdr_capture_fallback` option. **That is gone.**
+It changed the *physical display* to fix a *file*: every capture flashed the
+screen, cost two modesets, and could take 1–1.5s when the commit fell back to a
+retrain — for a single screenshot. The option no longer exists and setting it
+now warns about an unknown key.
 
-See [XDG Portals → 10-bit / HDR Screencasting](./xdg-portals.md#10-bit--hdr-screencasting) for details.
+Use `screenshot_ui` (see [Keybindings](../bindings/keys.md#screenshot_ui)), which
+never had the problem. It reads the composited buffer back directly rather than
+through `ext-image-copy-capture`, so it owns the whole pixel pipeline and
+tonemaps PQ to sRGB in software (decode against `sdr_reference_luminance`,
+re-encode as sRGB) before writing the PNG. Correct output, nothing toggled on
+screen, no flash and no retrain delay.
 
-The built-in `screenshot_ui` (see [Keybindings](../bindings/keys.md#screenshot_ui)) doesn't go through this fallback at all — it reads the composited buffer back directly instead of via `ext-image-copy-capture`, so `hdr_capture_fallback` never applies to it either way. Since it owns the whole pixel pipeline, it tonemaps PQ down to sRGB itself (decode against `sdr_reference_luminance`, re-encode as sRGB) before writing the PNG, so screenshots come out correct without ever toggling the output's live HDR state — no flash, no retrain delay.
+For recording, capture in HDR and tonemap afterwards, or record through the
+portal — see [XDG Portals → 10-bit / HDR Screencasting](./xdg-portals.md#10-bit--hdr-screencasting).
 
 ### Gamescope HDR passthrough
 

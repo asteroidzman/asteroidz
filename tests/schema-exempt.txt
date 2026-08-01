@@ -151,7 +151,6 @@ focus_cross_monitor
 focus_cross_tag
 focus_on_activate
 frog_color_management
-hdr_capture_fallback
 hdr_mode
 icon_theme
 idleinhibit_ignore_visible

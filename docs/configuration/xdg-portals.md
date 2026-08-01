@@ -54,7 +54,17 @@ OBS Studio: set **Settings → Advanced → Color Format** to `P010` (or `I010`)
 
 **Caveat — no colorimetry passthrough:** when HDR is active, the composited buffer contains PQ (ST2084)-encoded samples, since asteroidz applies the PQ inverse-EOTF during rendering to drive the display. Neither `wlr-screencopy` nor `ext-image-copy-capture` transmit any colorimetry/transfer-function metadata alongside the captured frame — only raw pixel data and bit depth. A capture tool has no way to know the samples are PQ-encoded rather than plain gamma, so it will decode them as SDR/BT.709 by default, and recordings of bright/highlight content would look flat or washed out. This is a limitation of the upstream screencopy protocols (confirmed: no compositor, including KDE/KWin, ships a fix for this today), not something a compositor-side render change alone can fully resolve.
 
-**Automatic fallback:** to avoid washed-out recordings, asteroidz automatically drops an output out of HDR for as long as an `ext-image-copy-capture` session (screenshot or screencast) is active on it, and restores HDR once capture ends. A short debounce (300ms) avoids a visible flash for quick screenshots. This means the *physical display* also visibly leaves HDR while something is recording it — not just the recorded file. Disable this with `hdr_capture_fallback=0` in your config if you'd rather keep true HDR on screen at all times (recordings will then look washed out per the caveat above). Note this only covers `ext-image-copy-capture` clients; legacy `wlr-screencopy`-only tools aren't covered since that protocol has no equivalent per-session signal.
+**No automatic fallback, deliberately.** asteroidz used to drop an output out of
+HDR for as long as an `ext-image-copy-capture` session was active on it, behind
+an `hdr_capture_fallback` option. That has been removed: it fixed the recorded
+file by changing the *physical display*, so every capture flashed the screen and
+cost two modesets — and when the commit fell back to a retrain (see below), up to
+~1–1.5s. The option no longer exists; a config that still sets it gets an
+unknown-key warning.
+
+What to do instead: capture in HDR and tonemap afterwards, or use the built-in
+`screenshot_ui`, which reads the composited buffer back directly and tonemaps PQ
+to sRGB in software, so it never touches the output's live HDR state.
 
 The HDR/color-state change is folded into the output's next regular frame commit (not issued as a separate out-of-band commit) to avoid racing an in-flight page-flip. On some backends this can still occasionally fail a swapchain re-test; when that happens asteroidz falls back to the same mode-cycle "retrain" used elsewhere for HDR/DSC recovery, which can add up to ~1-1.5s of delay and a brief blink before the fallback fully lands, instead of applying near-instantly.
 

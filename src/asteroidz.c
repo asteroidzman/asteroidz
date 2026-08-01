@@ -898,14 +898,6 @@ struct Monitor {
 								 * special-workspace open/close/switch, used to
 								 * pick the slide animation in animation/tag.h */
 
-	/* HDR capture fallback: while an ext-image-copy-capture session targets
-	 * this output, screencopy clients receive PQ-encoded samples with no
-	 * colorimetry metadata (wlr-screencopy/ext-image-copy-capture carry
-	 * none), so recordings look washed out. As a workaround, temporarily
-	 * drop this output out of HDR for the duration of any capture. */
-	uint32_t hdr_capture_count;		 /* active capture sessions on this output */
-	bool hdr_forced_off_for_capture;	 /* true while we're overriding hdr off */
-	struct wl_event_source *hdr_capture_debounce_timer;
 	/* an HDR-affecting commit issued out-of-band (outside the normal frame
 	 * cycle) can race an in-flight page-flip and get rejected by the DRM
 	 * backend. Instead, set this and let rendermon() fold the color-state
@@ -1259,8 +1251,6 @@ static void check_keep_idle_inhibit(Client *c);
 static void check_vrr_enable(Client *c);
 static int monitor_retrain_step(void *data);
 void monitor_start_retrain(Monitor *m, uint32_t delay_ms);
-static int32_t hdr_capture_debounce_timeout(void *data);
-static void update_hdr_capture_override(Monitor *m);
 static void hdr_resolve(Monitor *m);
 static void hdr_resolve_all(void);
 static void handle_image_copy_capture_new_session(struct wl_listener *listener,
@@ -3534,10 +3524,6 @@ void cleanupmon(struct wl_listener *listener, void *data) {
 		wl_event_source_remove(m->retrain_timer);
 		m->retrain_timer = NULL;
 	}
-	if (m->hdr_capture_debounce_timer) {
-		wl_event_source_remove(m->hdr_capture_debounce_timer);
-		m->hdr_capture_debounce_timer = NULL;
-	}
 	m->wlr_output->data = NULL;
 
 	cleanup_monitor_dwindle(m);
@@ -4925,8 +4911,6 @@ void createmon(struct wl_listener *listener, void *data) {
 	m->render_late_pending = false;
 	m->render_late_good = 0;
 	m->retrain_timer = wl_event_loop_add_timer(loop, monitor_retrain_step, m);
-	m->hdr_capture_debounce_timer =
-		wl_event_loop_add_timer(loop, hdr_capture_debounce_timeout, m);
 	m->skiping_frame = false;
 	m->resizing_count_pending = 0;
 	m->resizing_count_current = 0;
@@ -9184,10 +9168,6 @@ static void handle_capture_session_destroy(struct wl_listener *listener,
 	wlr_log(WLR_DEBUG, "capture session ended, active count: %d",
 			active_capture_count);
 
-	if (tracker->mon) {
-		tracker->mon->hdr_capture_count--;
-		update_hdr_capture_override(tracker->mon);
-	}
 	free(tracker);
 }
 
@@ -9211,50 +9191,6 @@ void handle_image_copy_capture_new_session(struct wl_listener *listener,
 	wlr_log(WLR_DEBUG, "capture session started, active count: %d",
 			active_capture_count);
 
-	if (tracker->mon) {
-		tracker->mon->hdr_capture_count++;
-		update_hdr_capture_override(tracker->mon);
-	}
-}
-
-/* Delay (ms) a capture session must stay open before we force HDR off, so a
- * quick screenshot doesn't cause a visible flash on the real display. */
-#define HDR_CAPTURE_DEBOUNCE_MS 300
-
-/* wlr-screencopy and ext-image-copy-capture hand out PQ-encoded samples
- * with no colorimetry metadata, so capture clients decode them as plain
- * gamma and recordings look washed out. Temporarily drop the output out
- * of HDR for as long as it's being captured, as a workaround. */
-static int32_t hdr_capture_debounce_timeout(void *data) {
-	Monitor *m = data;
-	if (config.hdr_capture_fallback && m->hdr_capture_count > 0 && m->hdr &&
-		!m->hdr_forced_off_for_capture) {
-		m->hdr_forced_off_for_capture = true;
-		/* resolver honours the flag; it must not restore to a hardcoded 1
-		 * afterwards, which is why this no longer assigns m->hdr itself --
-		 * the output may legitimately be SDR once the capture ends */
-		hdr_resolve(m);
-	}
-	return 0;
-}
-
-/* Re-evaluate whether output m's HDR should be forced off because it's
- * being captured. Called whenever a capture session on m starts or ends. */
-static void update_hdr_capture_override(Monitor *m) {
-	if (!config.hdr_capture_fallback)
-		return;
-
-	if (m->hdr_capture_count > 0) {
-		if (!m->hdr_forced_off_for_capture)
-			wl_event_source_timer_update(m->hdr_capture_debounce_timer,
-										  HDR_CAPTURE_DEBOUNCE_MS);
-	} else {
-		wl_event_source_timer_update(m->hdr_capture_debounce_timer, 0);
-		if (m->hdr_forced_off_for_capture) {
-			m->hdr_forced_off_for_capture = false;
-			hdr_resolve(m);
-		}
-	}
 }
 
 /* True while any client carrying the force_hdr window rule is visible on m.
@@ -9288,8 +9224,7 @@ static void hdr_resolve(Monitor *m) {
 		return;
 
 	bool want;
-	if (m->hdr_forced_off_for_capture || config.hdr_mode == 0 ||
-		m->hdr_capability_failed) {
+	if (config.hdr_mode == 0 || m->hdr_capability_failed) {
 		want = false;
 	} else if (config.hdr_mode == 2) {
 		want = true;

@@ -280,7 +280,6 @@ typedef struct {
 	int32_t scroller_edge_scroll;
 	int32_t scroller_edge_scroll_size;
 	int32_t scroller_edge_scroll_delay;
-	int32_t hdr_capture_fallback;
 	/* Global HDR policy, gating every output's own `hdr` setting:
 	 *   0 = off   -- never HDR, whatever monitors.kdl or a window rule asks for
 	 *   1 = auto  -- per-output `hdr` applies; a force_hdr window rule may
@@ -1877,8 +1876,6 @@ bool parse_option(Config *config, char *key, char *value) {
 		config->scroller_edge_scroll_size = atoi(value);
 	} else if (strcmp(key, "scroller_edge_scroll_delay") == 0) {
 		config->scroller_edge_scroll_delay = atoi(value);
-	} else if (strcmp(key, "hdr_capture_fallback") == 0) {
-		config->hdr_capture_fallback = atoi(value);
 	} else if (strcmp(key, "hdr_mode") == 0) {
 		/* named values only -- a bare integer here would be indistinguishable
 		 * from the old per-output boolean and silently mean the wrong thing */
@@ -4995,7 +4992,6 @@ void override_config(void) {
 		CLAMP_INT(config.scroller_edge_scroll_size, 1, 500);
 	config.scroller_edge_scroll_delay =
 		CLAMP_INT(config.scroller_edge_scroll_delay, 50, 5000);
-	config.hdr_capture_fallback = CLAMP_INT(config.hdr_capture_fallback, 0, 1);
 	config.hdr_mode = CLAMP_INT(config.hdr_mode, 0, 2);
 	config.scroller_structs = CLAMP_INT(config.scroller_structs, 0, 1000);
 	config.default_mfact = CLAMP_FLOAT(config.default_mfact, 0.1f, 0.9f);
@@ -5218,7 +5214,6 @@ void set_value_default() {
 	config.scroller_edge_scroll = 0;
 	config.scroller_edge_scroll_size = 15;
 	config.scroller_edge_scroll_delay = 500;
-	config.hdr_capture_fallback = 1;
 	config.hdr_mode = 1; /* auto -- preserves pre-hdr-mode per-output behaviour */
 	config.focus_cross_monitor = 0;
 	config.exchange_cross_monitor = 0;

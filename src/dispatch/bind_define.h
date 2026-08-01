@@ -2889,11 +2889,12 @@ static float screenshot_srgb_oetf(float l) {
 }
 
 /* screenshot_ui reads back the raw composited buffer directly (not through
- * wlr-screencopy/ext-image-copy-capture), so it never gets the benefit of
- * config.hdr_capture_fallback's "drop the output to SDR for the capture"
- * workaround -- and even if it did, that workaround visibly flashes the
- * real display and can take 1-1.5s on a retrain fallback, which is a bad
- * trade for a single freeze-frame. Since PQ-encoded samples carry no
+ * wlr-screencopy/ext-image-copy-capture). asteroidz used to answer the
+ * washed-out-capture problem by dropping the whole output to SDR for the
+ * duration of a capture; that is gone, because it flashed the real display and
+ * could take 1-1.5s on a retrain fallback -- a bad trade for a freeze-frame,
+ * and a worse one for a recording. This is the answer instead, and it is the
+ * better one: it costs nothing on screen. Since PQ-encoded samples carry no
  * colorimetry metadata, writing them straight to a PNG makes it look flat
  * and washed out (the same caveat documented for external capture tools).
  * Decode PQ -> linear, normalize against the configured SDR reference
