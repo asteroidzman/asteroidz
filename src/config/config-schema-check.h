@@ -467,12 +467,17 @@ static int config_schema_self_check(void) {
 		/* A default that is not a legal value is a Reset button that fails. */
 		if (!schema_validate(o, o->def, buf, sizeof(buf)))
 			schema_check_fail(o, "default is not a valid value", o->def, buf);
-		if (o->type == OPT_ENUM) {
+		/* Any option with members, not only OPT_ENUM: a string-backed closed
+		 * set (the animation types) has exactly the same failure, where Reset
+		 * writes a value the dropdown cannot show. */
+		if (o->n_members) {
 			bool def_is_real = false;
 			for (size_t m = 0; m < o->n_members; m++)
 				if (!o->members[m].alias && !strcmp(o->members[m].name, o->def))
 					def_is_real = true;
-			if (!def_is_real)
+			/* An empty default means "inherit / unset", which is a legal
+			 * state for the open animation and is not a member of anything. */
+			if (!def_is_real && o->def && o->def[0])
 				schema_check_fail(
 					o, "enum default is an alias or not a member", o->def, NULL);
 		}

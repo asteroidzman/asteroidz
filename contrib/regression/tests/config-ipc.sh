@@ -257,3 +257,48 @@ test_dispatch_actions_are_described_for_a_bind_editor() {
 	hl_assert_eq "...and an undescribed one is refused" \
 		"$(hl_get "dispatch make_coffee")" '{"error":"unknown function"}'
 }
+
+test_closed_sets_are_served_as_choices() {
+	local s; s="$(_cfg_json "get config-schema")"
+
+	# The dropdown in the settings window is generated from `enum`, so an option
+	# with a fixed set of answers that does not carry one gets a TEXT BOX -- and
+	# the reader is asked to know the spellings of values only the source lists.
+	# The animation types were exactly that.
+	hl_assert_true "an option with a closed set carries its choices" \
+		"$(printf '%s' "$s" | jq -e '
+			.options[] | select(.key == "animation_type_open")
+			| .enum | length >= 4' >/dev/null 2>&1 && echo true || echo false)"
+
+	# Served on MEMBERS, not on type. These are stored as strings because the
+	# name is the value rather than an index, so a client keying off
+	# `type == "enum"` would still draw a text box.
+	hl_assert "...even though it is stored as a string" \
+		"$(printf '%s' "$s" | jq -r '
+			.options[] | select(.key == "animation_type_open") | .type')" \
+		"string"
+
+	# `fall` is close-only and is NOT an alias of `asteroid` any more -- it
+	# selects the tile scatter. Dropping it from the list would quietly remove a
+	# working animation from the only place it is discoverable.
+	hl_assert_true "the close list has both break-apart animations" \
+		"$(printf '%s' "$s" | jq -e '
+			.options[] | select(.key == "animation_type_close") | [.enum[].name]
+			| index("asteroid") != null and index("fall") != null
+		' >/dev/null 2>&1 && echo true || echo false)"
+
+	# Every name offered has to be one parse_option accepts, or the dropdown
+	# writes a config the compositor ignores.
+	local bad=""
+	for v in $(printf '%s' "$s" | jq -r '
+			.options[] | select(.key == "animation_type_close") | .enum[].name'); do
+		hl_dispatch "set_option,animation_type_close,$v" 0.2
+		local got
+		# `get config` is an OBJECT keyed by option name, not an array of
+		# options -- the schema is the array, the values are the map.
+		got="$(_cfg_json "get config" | jq -r '.values.animation_type_close.value')"
+		[ "$got" = "$v" ] || bad="$bad $v(got:$got)"
+	done
+	hl_assert "every offered choice is one the parser accepts" "$bad" ""
+	hl_dispatch "set_option,animation_type_close,asteroid" 0.2
+}

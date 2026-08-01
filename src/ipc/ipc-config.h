@@ -118,7 +118,11 @@ static cJSON *build_config_schema_response(const char *only_group) {
 			cJSON_AddNumberToObject(e, "min", o->min);
 		if (!isnan(o->max))
 			cJSON_AddNumberToObject(e, "max", o->max);
-		if (o->type == OPT_ENUM)
+		/* Members, not type. An OPT_STRING can have a closed set too --
+		 * animation types are stored as names rather than indices because the
+		 * name IS the value -- and a client that keyed off the type alone would
+		 * put a text box in front of a fixed list of five answers. */
+		if (o->n_members)
 			cJSON_AddItemToObject(e, "enum", ipc_schema_enum_array(o));
 		ipc_schema_add_flags(e, o->flags);
 		cJSON_AddItemToArray(opts, e);

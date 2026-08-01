@@ -110,6 +110,35 @@ static const OptEnumMember schema_blend_space[] = {
 	{"encoded", 1, true, NULL},
 };
 
+/* Stored as a STRING, not an index, unlike the two tables below it.
+ *
+ * OPT_ENUM writes an int32_t into the struct, and these fields are char[10] --
+ * so the type stays OPT_STRING and the closed set is carried in `members`
+ * alone. Everything downstream keys off "does this option have members", not
+ * off the type, which is what lets a fixed set of names be a dropdown without
+ * inventing a second enum type for the one case where the name IS the value.
+ *
+ * `asteroid` and `fall` are close-only: they break the window into pieces, and
+ * there is nothing to break on the way in. They are NOT the same effect and
+ * neither is an alias of the other -- `fall` was the old name for `asteroid`
+ * and now selects the tile scatter it always actually was, so both are real
+ * members and both belong in the list. */
+static const OptEnumMember schema_anim_type_open[] = {
+	{"none", 0, false, "Appear instantly."},
+	{"zoom", 0, false, "Scale up from the centre."},
+	{"slide", 0, false, "Slide in from the nearest edge."},
+	{"fade", 0, false, "Fade in."},
+};
+
+static const OptEnumMember schema_anim_type_close[] = {
+	{"none", 0, false, "Disappear instantly."},
+	{"zoom", 0, false, "Scale down to the centre."},
+	{"slide", 0, false, "Slide out to the nearest edge."},
+	{"fade", 0, false, "Fade out."},
+	{"asteroid", 0, false, "Break apart and fly off."},
+	{"fall", 0, false, "Break into a grid of tiles and scatter."},
+};
+
 static const OptEnumMember schema_curve_type[] = {
 	{"bezier", 0, false, "A cubic bezier, from the curve control points."},
 	{"spring", 1, false, "A damped spring, from damping and frequency."},
@@ -478,10 +507,11 @@ static const ConfigOption config_schema[] = {
 	 offsetof(Config, animation_duration_open), 0, 1, 50000, NULL, 0, "400", 0},
 	{"animation_type_open", "animations/window-open/type", "animations",
 	 "window-open", "Type",
-	 "Which opening animation to use, e.g. zoom, slide, fade.", OPT_STRING,
+	 "Which opening animation to use.", OPT_STRING,
 	 offsetof(Config, animation_type_open),
 	 sizeof(((Config *)0)->animation_type_open), SCHEMA_NOCLAMP,
-	 SCHEMA_NOCLAMP, NULL, 0, "", 0},
+	 SCHEMA_NOCLAMP, schema_anim_type_open,
+	 sizeof(schema_anim_type_open) / sizeof(schema_anim_type_open[0]), "", 0},
 	{"fadein_begin_opacity", "animations/window-open/fade-begin-opacity",
 	 "animations", "window-open", "Fade from",
 	 "Opacity a window fades in from.", OPT_FLOAT,
@@ -495,7 +525,9 @@ static const ConfigOption config_schema[] = {
 	 "window-close", "Type", "Which closing animation to use.", OPT_STRING,
 	 offsetof(Config, animation_type_close),
 	 sizeof(((Config *)0)->animation_type_close), SCHEMA_NOCLAMP,
-	 SCHEMA_NOCLAMP, NULL, 0, "asteroid", 0},
+	 SCHEMA_NOCLAMP, schema_anim_type_close,
+	 sizeof(schema_anim_type_close) / sizeof(schema_anim_type_close[0]),
+	 "asteroid", 0},
 	{"fadeout_begin_opacity", "animations/window-close/fade-begin-opacity",
 	 "animations", "window-close", "Fade to",
 	 "Opacity a window fades out to.", OPT_FLOAT,
