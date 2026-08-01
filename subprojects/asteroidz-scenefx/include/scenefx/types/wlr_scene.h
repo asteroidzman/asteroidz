@@ -201,6 +201,26 @@ struct wlr_scene_blur {
 
 	bool should_only_blur_bottom_layer;
 
+	// A box, in the node's own coordinate space, whose contents must NOT
+	// reach the blur's SOURCE. Everything outside it is sampled live as
+	// usual; inside it the unblurred bottom-layer snapshot is used instead.
+	//
+	// This exists for a shadow's backdrop blur. A shadow is drawn behind its
+	// window and is the size of that window plus its spread, so the region a
+	// live blur samples necessarily covers the window itself -- and the scene
+	// image it samples holds the PREVIOUS frame there, because the window is
+	// drawn after this node and undamaged areas are never re-rendered. The
+	// blur therefore picked up the window's own pixels and spread them
+	// outward: a halo in the window's own colour, which on a dark backdrop
+	// reads as a glow around every window with a shadow.
+	//
+	// Excluding the window's own box is what "blur what is BEHIND this" means.
+	// Under the window the true backdrop is unknowable (the window covers it),
+	// so the wallpaper snapshot stands in -- which is what the whole region
+	// used to be filled with anyway on the cache-backed path.
+	bool has_sample_exclude;
+	struct wlr_box sample_exclude;
+
 	struct linked_node transparency_mask_source;
 	// Pixel-accurate clip in node-local coords (e.g. the client's
 	// ext-background-effect region). When set it takes precedence over
@@ -733,6 +753,19 @@ void wlr_scene_blur_set_corner_radii(struct wlr_scene_blur *blur, struct fx_corn
  */
 void wlr_scene_blur_set_should_only_blur_bottom_layer(struct wlr_scene_blur *blur,
 	bool should_only_blur_bottom_layer);
+
+/**
+ * Keep a box out of the blur's SOURCE.
+ *
+ * The box is in the blur node's own coordinate space. Content inside it is
+ * replaced by the unblurred bottom-layer (wallpaper) snapshot before the blur
+ * runs, so it cannot bleed outward. Pass NULL to clear.
+ *
+ * For a shadow's backdrop blur this is the shadowed window's own box: see the
+ * note on `sample_exclude` in struct wlr_scene_blur.
+ */
+void wlr_scene_blur_set_sample_exclude(struct wlr_scene_blur *blur,
+	const struct wlr_box *box);
 
 /**
  * Set the transparency mask source for the blur, only rendering blur where the

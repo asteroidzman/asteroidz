@@ -491,6 +491,25 @@ static void client_draw_one_shadow(Client *c, struct wlr_scene_shadow *shadow,
 		if (blur_backdrop->width != blur_width ||
 			blur_backdrop->height != blur_height)
 			wlr_scene_blur_set_size(blur_backdrop, blur_width, blur_height);
+		/* The window's own box, kept out of what this blur SAMPLES.
+		 *
+		 * The blur's box is the shadow's, which is the window plus its
+		 * spread -- so the region it samples covers the window itself, and
+		 * the scene image holds the PREVIOUS frame there (this node draws
+		 * beneath the window, and an undamaged area is never re-rendered).
+		 * Without this the blur picks up the window's own pixels and spreads
+		 * them outward: a halo in the window's own colour, a glow rather than
+		 * a shadow on a dark backdrop.
+		 *
+		 * In the node's own coordinates, which start at the shadow box's
+		 * top-left -- hence the subtraction. */
+		struct wlr_box exclude = {
+			.x = client_box.x - (shadow_box.x + left_offset),
+			.y = client_box.y - (shadow_box.y + top_offset),
+			.width = client_box.width,
+			.height = client_box.height,
+		};
+		wlr_scene_blur_set_sample_exclude(blur_backdrop, &exclude);
 		/* edge_softness makes the blur's own visibility fade via the same
 		 * analytic falloff as the shadow tint (same box, same sigma), so
 		 * the two blend into one continuous halo instead of the blur

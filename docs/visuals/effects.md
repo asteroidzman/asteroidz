@@ -91,18 +91,17 @@ Drop shadows help distinguish floating windows from the background.
 | `shadows_blur_background` | `0` | Blur what is under the shadow as well as darkening it. Costs a blur pass per shadowed window, so it is off by default. |
 | `shadows_blur_background_strength` | `0.5` | Opacity of that blur, so it can be mixed with the plain tint rather than replacing it. No effect unless `shadows_blur_background` is `1`. |
 
-`shadows_blur_background` has an artefact either way it is implemented, which
-is part of why it is off by default. The blur wants *what is beneath the window
-minus the window itself*, and there is no way to ask scenefx for that: blurring
-live samples the framebuffer, and a shadow's footprint hugs its own window, so
-it picks up the window's own pixels and smears them outward — a thin rim in the
-window's colour, obvious on a dark wallpaper. Blurring the cached wallpaper
-snapshot instead has no rim, but paints the blurred *wallpaper* over whatever is
-really beneath: over a dark window on a bright wallpaper, a broad bright haze,
-which is worse on a real desktop where floating windows sit over other windows.
-Floating windows use the live path; tiled ones, whose backdrop really is the
-wallpaper, use the snapshot. `shadows_blur_background 0` gives a plain shadow
-with neither.
+`shadows_blur_background` keeps the shadowed window's own box out of what the
+blur samples. It has to: the blur's box is the *shadow's* box, which is the
+window plus its spread, so the sampled region covers the window itself — and
+the scene image holds the previous frame there, because the blur draws beneath
+the window and an undamaged region is never re-rendered. Without the exclusion
+the blur picks the window's own pixels up and spreads them outward: a halo in
+the window's own colour, a glow rather than a shadow on a dark backdrop
+(measured on black: 13 levels of stray light on GLES, 71 on Vulkan, 0 with it).
+Under the window the true backdrop is unknowable, so the wallpaper snapshot
+stands in — which is what the cache-backed path fills the whole region with in
+any case. See `wlr_scene_blur_set_sample_exclude()` in scenefx.
 
 ```kdl
 effects {

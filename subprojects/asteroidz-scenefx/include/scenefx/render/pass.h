@@ -126,6 +126,16 @@ struct fx_render_blur_pass_options {
 	// same wide analytic falloff wlr_scene_shadow uses, and tex_options.corners
 	// is instead the box's own corner radii for that falloff.
 	float edge_softness;
+	// A box in BUFFER coordinates whose content must not reach the blur's
+	// source: it is overwritten with the unblurred bottom-layer snapshot
+	// before the blur runs. width/height 0 means "no exclusion".
+	//
+	// See wlr_scene_blur_set_sample_exclude(). A shadow's backdrop blur
+	// covers its own window, and the scene image holds the PREVIOUS frame
+	// there (the window is drawn after this node, and undamaged regions are
+	// not re-rendered), so without this the blur spreads the window's own
+	// pixels outward as a halo.
+	struct wlr_box sample_exclude;
 };
 
 struct fx_gles_render_pass *fx_get_render_pass(struct wlr_render_pass *render_pass);

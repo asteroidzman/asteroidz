@@ -1410,6 +1410,39 @@ static struct fx_framebuffer *get_main_buffer_blur(struct fx_gles_render_pass *p
 	// Artifacts with NEAREST filter
 	fx_options->tex_options.base.filter_mode = WLR_SCALE_FILTER_BILINEAR;
 
+	// Keep a box out of the SOURCE, replacing it with the unblurred
+	// bottom-layer snapshot. See wlr_scene_blur_set_sample_exclude().
+	//
+	// A shadow's backdrop blur covers its own window, and the framebuffer
+	// holds the window there (it was drawn last frame; this node renders
+	// beneath it), so the blur was picking the window's own pixels up and
+	// spreading them outward -- a halo in the window's own colour.
+	//
+	// The live source is the screen and cannot be written to, so this stages
+	// a patched copy: the region as it stands, then the wallpaper snapshot
+	// over the excluded box, and the down/up passes below start from that
+	// instead. Only for the live path -- a cache-backed blur never samples
+	// the screen in the first place.
+	struct fx_framebuffer *no_blur =
+		pass->fx_offscreen_buffers->optimized_no_blur_buffer;
+	if (fx_options->sample_exclude.width > 0 &&
+			fx_options->sample_exclude.height > 0 &&
+			fx_options->current_buffer == pass->buffer && no_blur != NULL) {
+		struct fx_framebuffer *staged = pass->fx_offscreen_buffers->effects_buffer;
+		pixman_region32_t ex;
+		pixman_region32_init_rect(&ex,
+			fx_options->sample_exclude.x, fx_options->sample_exclude.y,
+			fx_options->sample_exclude.width, fx_options->sample_exclude.height);
+		pixman_region32_intersect(&ex, &ex, &damage);
+		if (pixman_region32_not_empty(&ex)) {
+			fx_render_pass_read_to_buffer(pass, &damage, staged,
+				fx_options->current_buffer);
+			fx_render_pass_read_to_buffer(pass, &ex, staged, no_blur);
+			fx_options->current_buffer = staged;
+		}
+		pixman_region32_fini(&ex);
+	}
+
 	TRACY_BOTH_ZONES_START(renderer);
 	TRACY_ZONE_TEXT_f("dst_box (WxH, X, Y): %dx%d, %d, %d",
 			fx_options->tex_options.base.dst_box.width,

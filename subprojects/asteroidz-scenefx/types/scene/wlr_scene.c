@@ -1161,6 +1161,8 @@ struct wlr_scene_blur *wlr_scene_blur_create(struct wlr_scene_tree *parent,
 	blur->has_clip_region = false;
 	blur->corners = corner_radii_all(0);
 	blur->should_only_blur_bottom_layer = false;
+	blur->has_sample_exclude = false;
+	blur->sample_exclude = (struct wlr_box){0};
 	blur->transparency_mask_source = linked_node_init();
 	blur->width = width;
 	blur->height = height;
@@ -1220,6 +1222,21 @@ void wlr_scene_blur_set_should_only_blur_bottom_layer(struct wlr_scene_blur *blu
 	}
 
 	blur->should_only_blur_bottom_layer = should_only_blur_bottom_layer;
+	scene_node_update(&blur->node, NULL);
+}
+
+void wlr_scene_blur_set_sample_exclude(struct wlr_scene_blur *blur,
+		const struct wlr_box *box) {
+	bool have = box != NULL && box->width > 0 && box->height > 0;
+	if (!have && !blur->has_sample_exclude) {
+		return;
+	}
+	if (have && blur->has_sample_exclude &&
+			wlr_box_equal(&blur->sample_exclude, box)) {
+		return;
+	}
+	blur->has_sample_exclude = have;
+	blur->sample_exclude = have ? *box : (struct wlr_box){0};
 	scene_node_update(&blur->node, NULL);
 }
 
@@ -2653,6 +2670,18 @@ static void scene_entry_render(struct render_list_entry *entry, const struct ren
 			.blur_strength = blur->strength,
 			.edge_softness = blur->edge_softness * data->scale,
 		};
+		// The excluded box travels the same road dst_box just did: it is
+		// given in the node's own space, so it is offset by the node's
+		// position on the output and then transformed into buffer
+		// coordinates. Doing it here rather than in the renderer keeps every
+		// coordinate conversion for this node in one place.
+		if (blur->has_sample_exclude) {
+			struct wlr_box ex = blur->sample_exclude;
+			ex.x += x;
+			ex.y += y;
+			transform_output_box(&ex, data);
+			blur_options.sample_exclude = ex;
+		}
 		scene_pass_add_blur(data->render_pass, &blur_options);
 		break;
 	}

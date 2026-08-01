@@ -1939,6 +1939,39 @@ static void effect_copy_barrier_after(VkCommandBuffer cb) {
 			VK_ACCESS_TRANSFER_WRITE_BIT);
 }
 
+// Keep a box out of a live blur's SOURCE, replacing it with the unblurred
+// bottom-layer snapshot. See wlr_scene_blur_set_sample_exclude().
+//
+// A shadow's backdrop blur covers its own window: the blur source is the
+// shadow's footprint, and a shadow is the window's box plus its spread. The
+// scene image holds the PREVIOUS frame inside that window -- the window is
+// drawn after this node, and an undamaged region is never re-rendered -- so
+// the blur was picking the window's own pixels up and spreading them outward.
+// A halo in the window's own colour, which on a dark backdrop reads as a glow.
+//
+// optimized_no_blur is the scene as it was when the bottom-layer blur node
+// ran, i.e. below every window: the wallpaper. Under the window that is the
+// best available answer to "what is behind this", and it is what the
+// cache-backed path fills the whole region with anyway.
+static void blur_exclude_from_source(struct fx_vk_render_pass *pass,
+		struct fx_vk_effect_buffers *bufs, struct fx_vk_effect_image *dst,
+		const struct wlr_box *blur_region, const struct wlr_box *exclude) {
+	if (exclude->width <= 0 || exclude->height <= 0 || dst == NULL) {
+		return;
+	}
+	// No snapshot yet (blur only just enabled, or the cache never ran): leave
+	// the source alone rather than copying an undefined image over it.
+	if (bufs->optimized_no_blur == NULL || !bufs->optimized_blur_valid) {
+		return;
+	}
+	struct wlr_box box;
+	if (!wlr_box_intersection(&box, blur_region, exclude)) {
+		return;
+	}
+	copy_effect_image_region(pass, bufs->optimized_no_blur->image, dst->image,
+		&box);
+}
+
 static void copy_effect_image_region(struct fx_vk_render_pass *pass,
 		VkImage src, VkImage dst, const struct wlr_box *box) {
 	VkImageCopy region = {
@@ -2671,6 +2704,8 @@ void fx_vk_render_pass_add_blur(struct wlr_render_pass *wlr_pass,
 		copy_effect_image_region(pass,
 			pass->render_buffer->two_pass.blend_image,
 			live_src->image, &blur_region);
+		blur_exclude_from_source(pass, bufs, live_src, &blur_region,
+			&options->sample_exclude);
 		struct fx_vk_effect_image *src =
 			fx_vk_render_pass_blur(pass, bufs, live_src, &bd, &blur_region);
 		defer_blur_composite(pass, src, &dst_box, &blur_region, tex_options,
@@ -2702,6 +2737,8 @@ void fx_vk_render_pass_add_blur(struct wlr_render_pass *wlr_pass,
 			copy_effect_image_region(pass,
 				pass->render_buffer->two_pass.blend_image,
 				live_src->image, &blur_region);
+			blur_exclude_from_source(pass, bufs, live_src, &blur_region,
+				&options->sample_exclude);
 			src = fx_vk_render_pass_blur(pass, bufs, live_src, &bd,
 				&blur_region);
 			begin_scene_pass_reload(pass);
