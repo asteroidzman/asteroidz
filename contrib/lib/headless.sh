@@ -132,6 +132,11 @@ EOF
 	HL_STATE="$HL_OUTDIR/state"
 	rm -rf "$HL_STATE"; mkdir -p "$HL_STATE"
 	HL_XDG="$HL_OUTDIR/xdg"
+	# Before the rm, not only in hl_stop. A run killed with ^C or timed out
+	# never reaches its trap, so the mounts from that one are still there --
+	# and `rm -rf` over a live mount fails with EBUSY, which aborts the next
+	# run with "no IPC socket" and no hint about why.
+	hl_unmount_xdg
 	rm -rf "$HL_XDG"; mkdir -p "$HL_XDG"; chmod 700 "$HL_XDG"
 
 	# shellcheck disable=SC2086 -- HL_ENV is intentionally word-split
@@ -296,6 +301,40 @@ hl_notify() {
 	notify-send -a "asteroidz regression" -- "$1" "${2:-}" 2>/dev/null
 }
 
+# Unmount the fuse filesystems the portals mount inside our XDG_RUNTIME_DIR.
+#
+# Anything that starts xdg-document-portal or gvfsd under our runtime dir leaves
+# `doc` and `gvfs` mounted at $HL_XDG when the test ends -- and a mount holds its
+# directory, so the next run's `rm -rf "$HL_XDG"` fails, the run aborts with no
+# IPC socket, and the mount survives to do it again. They accumulate: this landed
+# with 136 of them on one machine, 68 runs' worth, each still holding a
+# gvfsd-fuse and a fusermount3 process.
+#
+# SCOPE IS THE WHOLE SAFETY ARGUMENT HERE. The user's own session has
+# /run/user/1000/doc and /run/user/1000/gvfs, which are the same two filesystems
+# from the same two programs and are indistinguishable in /proc/mounts except by
+# path. Unmounting those takes out their file dialogs and every gvfs mount they
+# have open. So this only ever touches paths that are a prefix match under
+# $HL_XDG, and refuses outright if that is empty or looks like a real runtime
+# dir -- rather than matching on `fuse.portal`, which would find both.
+hl_unmount_xdg() {
+	local base="${HL_XDG:-}"
+	[ -n "$base" ] || return 0
+	case "$base" in
+		/run/user/* | / | /tmp | "") return 0 ;;
+	esac
+	local m
+	# Deepest first: a nested mount holds its parent busy, so unmounting the
+	# outer one first fails and leaves both.
+	while read -r m; do
+		[ -n "$m" ] || continue
+		fusermount3 -u "$m" 2>/dev/null \
+			|| fusermount3 -uz "$m" 2>/dev/null \
+			|| umount -l "$m" 2>/dev/null
+	done < <(awk -v b="$base/" 'index($2, b) == 1 { print $2 }' /proc/mounts \
+			| sort -r)
+}
+
 hl_stop() {
 	for pid in "${HL_SPAWNED_PIDS[@]:-}"; do [ -n "$pid" ] && kill "$pid" 2>/dev/null; done
 	if [ "${HL_LIVE_MODE:-0}" = "1" ]; then
@@ -314,6 +353,9 @@ hl_stop() {
 	[ -n "${HL_SWAYBG_PID:-}" ] && kill "$HL_SWAYBG_PID" 2>/dev/null
 	[ -n "${HL_COMP_PID:-}" ] && kill "$HL_COMP_PID" 2>/dev/null
 	wait "${HL_COMP_PID:-}" 2>/dev/null
+	# After the compositor is down, not before: a client still holding a file
+	# under the mount keeps it busy and turns the unmount into a lazy one.
+	hl_unmount_xdg
 }
 
 # kill test-spawned windows and return to a known-clean state, WITHOUT
