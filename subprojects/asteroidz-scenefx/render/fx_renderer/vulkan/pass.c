@@ -1939,8 +1939,8 @@ static void effect_copy_barrier_after(VkCommandBuffer cb) {
 			VK_ACCESS_TRANSFER_WRITE_BIT);
 }
 
-// Keep a box out of a live blur's SOURCE, replacing it with the unblurred
-// bottom-layer snapshot. See wlr_scene_blur_set_sample_exclude().
+// Keep a box out of a live blur's SOURCE.
+// See wlr_scene_blur_set_sample_exclude().
 //
 // A shadow's backdrop blur covers its own window: the blur source is the
 // shadow's footprint, and a shadow is the window's box plus its spread. The
@@ -1949,27 +1949,103 @@ static void effect_copy_barrier_after(VkCommandBuffer cb) {
 // the blur was picking the window's own pixels up and spreading them outward.
 // A halo in the window's own colour, which on a dark backdrop reads as a glow.
 //
-// optimized_no_blur is the scene as it was when the bottom-layer blur node
-// ran, i.e. below every window: the wallpaper. Under the window that is the
-// best available answer to "what is behind this", and it is what the
-// cache-backed path fills the whole region with anyway.
+// One stretched blit: `src` scaled to fill `dst`, within the same image.
+static void stretch_effect_image_region(struct fx_vk_render_pass *pass,
+		VkImage image, const struct wlr_box *src, const struct wlr_box *dst) {
+	if (src->width <= 0 || src->height <= 0 ||
+			dst->width <= 0 || dst->height <= 0) {
+		return;
+	}
+	VkImageBlit blit = {
+		.srcSubresource = {
+			.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+			.layerCount = 1,
+		},
+		.srcOffsets = {
+			{ src->x, src->y, 0 },
+			{ src->x + src->width, src->y + src->height, 1 },
+		},
+		.dstSubresource = {
+			.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+			.layerCount = 1,
+		},
+		.dstOffsets = {
+			{ dst->x, dst->y, 0 },
+			{ dst->x + dst->width, dst->y + dst->height, 1 },
+		},
+	};
+	VkCommandBuffer cb = pass->command_buffer->vk;
+	effect_copy_barrier_before(cb);
+	vkCmdBlitImage(cb,
+		image, VK_IMAGE_LAYOUT_GENERAL,
+		image, VK_IMAGE_LAYOUT_GENERAL,
+		1, &blit, VK_FILTER_LINEAR);
+	effect_copy_barrier_after(cb);
+}
+
 static void blur_exclude_from_source(struct fx_vk_render_pass *pass,
 		struct fx_vk_effect_buffers *bufs, struct fx_vk_effect_image *dst,
 		const struct wlr_box *blur_region, const struct wlr_box *exclude) {
 	if (exclude->width <= 0 || exclude->height <= 0 || dst == NULL) {
 		return;
 	}
-	// No snapshot yet (blur only just enabled, or the cache never ran): leave
-	// the source alone rather than copying an undefined image over it.
-	if (bufs->optimized_no_blur == NULL || !bufs->optimized_blur_valid) {
-		return;
-	}
 	struct wlr_box box;
 	if (!wlr_box_intersection(&box, blur_region, exclude)) {
 		return;
 	}
-	copy_effect_image_region(pass, bufs->optimized_no_blur->image, dst->image,
-		&box);
+
+	// EDGE EXTENSION, not substitution.
+	//
+	// The first version of this filled the hole with the unblurred wallpaper
+	// snapshot, on the reasoning that under the window the true backdrop is
+	// unknowable. It is -- but whatever goes in there is what the kernel
+	// spreads outward, so a wallpaper brighter than what surrounds the window
+	// bleeds out as a halo of its own. Measured over a dark window on a bright
+	// wallpaper: 9 -> 17 approaching the edge, where a shadow should be going
+	// DOWN. That is the same artefact the window's own pixels caused, wearing
+	// the wallpaper's colours.
+	//
+	// So the hole is filled from its own edges: each side's strip of ring
+	// content, stretched inward over the quarter nearest it. Near an edge --
+	// which is the only place the kernel's reach matters -- the hole then
+	// holds a continuation of the very content the blur is meant to be
+	// blurring, so nothing foreign can bleed out. Clamp-to-edge sampling,
+	// done with four blits because the sampler cannot be told to do it for a
+	// sub-rectangle.
+	//
+	// The middle is left as it was. At 72px of blur over a window hundreds of
+	// pixels wide, it is further from every edge than the kernel can reach.
+	int32_t qw = box.width / 4;
+	int32_t qh = box.height / 4;
+	if (qw < 1 || qh < 1) {
+		return;
+	}
+
+	// Each source strip is one pixel of the ring just outside the hole, and is
+	// only used when it exists -- a window flush against the screen edge has
+	// no ring on that side.
+	if (box.y > 0) {
+		struct wlr_box src = { box.x, box.y - 1, box.width, 1 };
+		struct wlr_box dst_box = { box.x, box.y, box.width, qh };
+		stretch_effect_image_region(pass, dst->image, &src, &dst_box);
+	}
+	if (box.y + box.height < bufs->height) {
+		struct wlr_box src = { box.x, box.y + box.height, box.width, 1 };
+		struct wlr_box dst_box = { box.x, box.y + box.height - qh, box.width, qh };
+		stretch_effect_image_region(pass, dst->image, &src, &dst_box);
+	}
+	// Columns last, so a vertical edge's own content wins over the rows' near
+	// the corners -- that is the side whose reach it is.
+	if (box.x > 0) {
+		struct wlr_box src = { box.x - 1, box.y, 1, box.height };
+		struct wlr_box dst_box = { box.x, box.y, qw, box.height };
+		stretch_effect_image_region(pass, dst->image, &src, &dst_box);
+	}
+	if (box.x + box.width < bufs->width) {
+		struct wlr_box src = { box.x + box.width, box.y, 1, box.height };
+		struct wlr_box dst_box = { box.x + box.width - qw, box.y, qw, box.height };
+		stretch_effect_image_region(pass, dst->image, &src, &dst_box);
+	}
 }
 
 static void copy_effect_image_region(struct fx_vk_render_pass *pass,

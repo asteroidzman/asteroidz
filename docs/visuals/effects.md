@@ -99,9 +99,21 @@ the window and an undamaged region is never re-rendered. Without the exclusion
 the blur picks the window's own pixels up and spreads them outward: a halo in
 the window's own colour, a glow rather than a shadow on a dark backdrop
 (measured on black: 13 levels of stray light on GLES, 71 on Vulkan, 0 with it).
-Under the window the true backdrop is unknowable, so the wallpaper snapshot
-stands in — which is what the cache-backed path fills the whole region with in
-any case. See `wlr_scene_blur_set_sample_exclude()` in scenefx.
+
+Under the window the true backdrop is unknowable, and what goes in its place is
+what the kernel spreads outward — so it cannot be a stand-in for the backdrop,
+it has to be a continuation of it. The excluded box is filled from its own
+edges: each side's strip of surrounding content, stretched inward over the
+quarter nearest it. Near an edge, which is the only place the blur's reach
+matters, the source then holds more of the very thing being blurred.
+
+The first attempt substituted the unblurred wallpaper snapshot there instead,
+on the reasoning that the wallpaper is what lies under everything. It is, but a
+floating window usually sits over *another window* rather than over the
+wallpaper, and a wallpaper brighter than that window bled out as a halo of its
+own — the same artefact wearing different colours (measured on a dark window
+under a bright wallpaper: 8 levels on GLES, 28 on Vulkan, 0 with edge
+extension). See `wlr_scene_blur_set_sample_exclude()` in scenefx.
 
 ```kdl
 effects {

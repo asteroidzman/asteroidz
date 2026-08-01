@@ -1360,6 +1360,93 @@ static void render_blur_segments(struct fx_gles_render_pass *pass,
 	}
 }
 
+// One stretched blit: `src` of `src_buffer` scaled to fill `dst` of
+// `dst_buffer`. The two buffers must differ -- sampling a framebuffer that is
+// also the render target is undefined.
+static void stretch_region_to_buffer(struct fx_gles_render_pass *pass,
+		struct fx_framebuffer *dst_buffer, struct fx_framebuffer *src_buffer,
+		const struct wlr_box *src, const struct wlr_box *dst) {
+	if (src->width <= 0 || src->height <= 0 ||
+			dst->width <= 0 || dst->height <= 0) {
+		return;
+	}
+	struct wlr_texture *src_tex = fx_framebuffer_get_texture(src_buffer);
+	if (src_tex == NULL) {
+		return;
+	}
+
+	pixman_region32_t clip;
+	pixman_region32_init_rect(&clip, dst->x, dst->y, dst->width, dst->height);
+
+	fx_framebuffer_bind(dst_buffer);
+	wlr_render_pass_add_texture(&pass->base, &(struct wlr_render_texture_options) {
+		.texture = src_tex,
+		.clip = &clip,
+		.transform = WL_OUTPUT_TRANSFORM_NORMAL,
+		.blend_mode = WLR_RENDER_BLEND_MODE_NONE,
+		.filter_mode = WLR_SCALE_FILTER_BILINEAR,
+		.dst_box = *dst,
+		.src_box = (struct wlr_fbox){
+			.x = src->x,
+			.y = src->y,
+			.width = src->width,
+			.height = src->height,
+		},
+	});
+	fx_framebuffer_put_texture(src_buffer, src_tex);
+
+	fx_framebuffer_bind(pass->buffer);
+	pixman_region32_fini(&clip);
+}
+
+// Fill `box` in `dst_buffer` from the content that surrounds it in
+// `src_buffer`: each side's one-pixel strip of ring, stretched inward over the
+// quarter nearest it.
+//
+// Whatever ends up in the hole is what the blur kernel spreads outward, so it
+// has to be a continuation of the real backdrop rather than a stand-in for it.
+// Near an edge -- the only place the kernel's reach matters -- it now is. The
+// middle is left alone: at any useful blur radius it is further from every
+// edge than the kernel can reach.
+static void blur_exclude_from_source(struct fx_gles_render_pass *pass,
+		struct fx_framebuffer *dst_buffer, struct fx_framebuffer *src_buffer,
+		const struct wlr_box *box, const struct wlr_box *bounds) {
+	int qw = box->width / 4;
+	int qh = box->height / 4;
+	if (qw < 1 || qh < 1) {
+		return;
+	}
+
+	// Each strip is only used where it exists: a window flush against the
+	// screen edge has no ring on that side.
+	if (box->y > bounds->y) {
+		struct wlr_box src = { box->x, box->y - 1, box->width, 1 };
+		struct wlr_box dst = { box->x, box->y, box->width, qh };
+		stretch_region_to_buffer(pass, dst_buffer, src_buffer, &src, &dst);
+	}
+	if (box->y + box->height < bounds->y + bounds->height) {
+		struct wlr_box src = { box->x, box->y + box->height, box->width, 1 };
+		struct wlr_box dst = {
+			box->x, box->y + box->height - qh, box->width, qh,
+		};
+		stretch_region_to_buffer(pass, dst_buffer, src_buffer, &src, &dst);
+	}
+	// Columns last, so a vertical edge's own content wins over the rows' near
+	// the corners -- that is the side whose reach it is.
+	if (box->x > bounds->x) {
+		struct wlr_box src = { box->x - 1, box->y, 1, box->height };
+		struct wlr_box dst = { box->x, box->y, qw, box->height };
+		stretch_region_to_buffer(pass, dst_buffer, src_buffer, &src, &dst);
+	}
+	if (box->x + box->width < bounds->x + bounds->width) {
+		struct wlr_box src = { box->x + box->width, box->y, 1, box->height };
+		struct wlr_box dst = {
+			box->x + box->width - qw, box->y, qw, box->height,
+		};
+		stretch_region_to_buffer(pass, dst_buffer, src_buffer, &src, &dst);
+	}
+}
+
 // Blurs the fx_options current_buffer content and returns the blurred framebuffer.
 // Returns NULL when the blur parameters reach 0.
 static struct fx_framebuffer *get_main_buffer_blur(struct fx_gles_render_pass *pass,
@@ -1410,8 +1497,7 @@ static struct fx_framebuffer *get_main_buffer_blur(struct fx_gles_render_pass *p
 	// Artifacts with NEAREST filter
 	fx_options->tex_options.base.filter_mode = WLR_SCALE_FILTER_BILINEAR;
 
-	// Keep a box out of the SOURCE, replacing it with the unblurred
-	// bottom-layer snapshot. See wlr_scene_blur_set_sample_exclude().
+	// Keep a box out of the SOURCE. See wlr_scene_blur_set_sample_exclude().
 	//
 	// A shadow's backdrop blur covers its own window, and the framebuffer
 	// holds the window there (it was drawn last frame; this node renders
@@ -1419,15 +1505,17 @@ static struct fx_framebuffer *get_main_buffer_blur(struct fx_gles_render_pass *p
 	// spreading them outward -- a halo in the window's own colour.
 	//
 	// The live source is the screen and cannot be written to, so this stages
-	// a patched copy: the region as it stands, then the wallpaper snapshot
-	// over the excluded box, and the down/up passes below start from that
+	// a patched copy: the region as it stands, then the excluded box filled
+	// from its own edges, and the down/up passes below start from that
 	// instead. Only for the live path -- a cache-backed blur never samples
 	// the screen in the first place.
-	struct fx_framebuffer *no_blur =
-		pass->fx_offscreen_buffers->optimized_no_blur_buffer;
+	//
+	// EDGE EXTENSION, not substitution -- see blur_exclude_from_source() in
+	// vulkan/pass.c for why the wallpaper snapshot that used to go here was
+	// its own halo, and keep the two renderers doing the same thing.
 	if (fx_options->sample_exclude.width > 0 &&
 			fx_options->sample_exclude.height > 0 &&
-			fx_options->current_buffer == pass->buffer && no_blur != NULL) {
+			fx_options->current_buffer == pass->buffer) {
 		struct fx_framebuffer *staged = pass->fx_offscreen_buffers->effects_buffer;
 		pixman_region32_t ex;
 		pixman_region32_init_rect(&ex,
@@ -1435,9 +1523,18 @@ static struct fx_framebuffer *get_main_buffer_blur(struct fx_gles_render_pass *p
 			fx_options->sample_exclude.width, fx_options->sample_exclude.height);
 		pixman_region32_intersect(&ex, &ex, &damage);
 		if (pixman_region32_not_empty(&ex)) {
+			pixman_box32_t *e = pixman_region32_extents(&ex);
+			struct wlr_box box = {
+				e->x1, e->y1, e->x2 - e->x1, e->y2 - e->y1,
+			};
 			fx_render_pass_read_to_buffer(pass, &damage, staged,
 				fx_options->current_buffer);
-			fx_render_pass_read_to_buffer(pass, &ex, staged, no_blur);
+			// Read from the SCREEN and write to the staged copy: the ring
+			// strips are outside the hole, so they are real backdrop, and
+			// source and destination are different buffers, so there is no
+			// feedback loop to worry about.
+			blur_exclude_from_source(pass, staged, pass->buffer, &box,
+				&buffer_bounds);
 			fx_options->current_buffer = staged;
 		}
 		pixman_region32_fini(&ex);
