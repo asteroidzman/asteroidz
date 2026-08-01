@@ -507,32 +507,54 @@ int32_t movewin(const Arg *arg) {
 	return 0;
 }
 
-/* ── a modal prompt on the focused output ───────────────────────────────────
+/* ── a modal prompt, on every output ────────────────────────────────────────
  *
  * The dimmed screen with a bordered label in the middle of it, which the global
  * shortcuts picker put up first and the exit confirmation now shares. Extracted
  * rather than copied: "looks like the other prompt" is a requirement that a
  * second copy of the theme block satisfies until somebody edits one of them.
  *
+ * EVERY output, not the focused one. Both of these prompts take the keyboard
+ * away from everything: nothing else will answer a key until they are dismissed.
+ * Dimming one screen said the opposite -- the other monitor kept a window that
+ * looked live, was not, and was where the eyes already were. On a multi-head
+ * desk the question can easily be asked on the screen nobody is looking at.
+ *
  * It draws and nothing else. Who may dismiss it, what dismisses it, and what
  * happens then belong to the caller -- the picker waits for any key, the exit
  * confirmation waits for exactly two, and neither is a property of a rectangle.
  */
-static bool asteroidz_prompt_show(struct wlr_scene_tree **tree_out,
-								  struct asteroidz_jump_label_node **label_out,
-								  const char *msg, bool markup) {
+typedef struct {
+	struct wlr_scene_tree *tree;
+	/* One per output. The scene nodes die with the tree, but each label owns a
+	 * pango layout and a buffer of its own, so every one has to be destroyed --
+	 * keeping only the focused monitor's would leak the rest per prompt. */
+	struct asteroidz_jump_label_node **labels;
+	size_t n_labels;
+} AsteroidzPrompt;
+
+static bool asteroidz_prompt_show(AsteroidzPrompt *p, const char *msg,
+								  bool markup) {
 	if (!selmon)
 		return false;
 	struct wlr_scene_tree *tree = wlr_scene_tree_create(layers[LyrOverlay]);
 	if (!tree)
 		return false;
-	*tree_out = tree;
+
+	p->tree = tree;
+	p->labels = NULL;
+	p->n_labels = 0;
+
+	size_t n = 0;
+	Monitor *m;
+	wl_list_for_each(m, &mons, link) {
+		if (m->wlr_output && m->wlr_output->enabled)
+			n++;
+	}
+	if (n > 0)
+		p->labels = calloc(n, sizeof(*p->labels));
 
 	float dim[4] = {0.f, 0.f, 0.f, 0.55f};
-	struct wlr_scene_rect *bg =
-		wlr_scene_rect_create(tree, selmon->m.width, selmon->m.height, dim);
-	if (bg)
-		wlr_scene_node_set_position(&bg->node, selmon->m.x, selmon->m.y);
 
 	/* Deliberately NOT config.theme. This is a compositor prompt over whatever
 	 * is on screen, and it has to stay legible against a palette the user is in
@@ -560,36 +582,61 @@ static bool asteroidz_prompt_show(struct wlr_scene_tree **tree_out,
 	th.font_desc = config.theme.font_desc ? config.theme.font_desc
 										  : "monospace Bold 18";
 
-	struct asteroidz_jump_label_node *label =
-		asteroidz_jump_label_node_create(tree, th);
-	*label_out = label;
-	if (label) {
+	wl_list_for_each(m, &mons, link) {
+		if (!m->wlr_output || !m->wlr_output->enabled)
+			continue;
+
+		/* m->m, not m->w: the dim covers the whole output, bars included.
+		 * Leaving a lit strip of bar above a dimmed desktop would look like
+		 * the bar was still taking clicks, which it is not. */
+		struct wlr_scene_rect *bg =
+			wlr_scene_rect_create(tree, m->m.width, m->m.height, dim);
+		if (bg)
+			wlr_scene_node_set_position(&bg->node, m->m.x, m->m.y);
+
+		if (!p->labels || p->n_labels >= n)
+			continue;
+		struct asteroidz_jump_label_node *label =
+			asteroidz_jump_label_node_create(tree, th);
+		if (!label)
+			continue;
+		p->labels[p->n_labels++] = label;
+
 		/* Before the first update, which is what measures and draws it. */
 		asteroidz_jump_label_node_set_markup(label, markup);
-		float scale = selmon->wlr_output ? selmon->wlr_output->scale : 1.f;
+		/* Each output's OWN scale. A prompt rendered once at the focused
+		 * monitor's scale and reused would be soft on a monitor that does not
+		 * share it, which is the general case for a laptop beside a desktop
+		 * display -- and it is text whose whole purpose is to be read. */
+		float scale = m->wlr_output->scale;
 		asteroidz_jump_label_node_update(label, msg, scale);
-		int lw = 360, lh = 90;
-		if (label->scene_buffer && label->scene_buffer->buffer) {
-			lw = label->scene_buffer->buffer->width;
-			lh = label->scene_buffer->buffer->height;
-		}
+		/* logical_*, not the buffer's pixel dimensions. The buffer is drawn at
+		 * the output's scale while this position is in layout coordinates, so
+		 * the two agree only at scale 1 -- which is why centring off the
+		 * buffer looked right here and would have put the prompt up and to the
+		 * left of centre on any scaled output. */
+		int lw = label->logical_width > 0 ? label->logical_width : 360;
+		int lh = label->logical_height > 0 ? label->logical_height : 90;
 		wlr_scene_node_set_position(&label->scene_buffer->node,
-									selmon->m.x + (selmon->m.width - lw) / 2,
-									selmon->m.y + (selmon->m.height - lh) / 2);
+									m->m.x + (m->m.width - lw) / 2,
+									m->m.y + (m->m.height - lh) / 2);
 	}
+
 	wlr_scene_node_raise_to_top(&tree->node);
 	return true;
 }
 
-static void asteroidz_prompt_hide(struct wlr_scene_tree **tree,
-								  struct asteroidz_jump_label_node **label) {
-	if (*label) {
-		asteroidz_jump_label_node_destroy(*label);
-		*label = NULL;
+static void asteroidz_prompt_hide(AsteroidzPrompt *p) {
+	for (size_t i = 0; i < p->n_labels; i++) {
+		if (p->labels[i])
+			asteroidz_jump_label_node_destroy(p->labels[i]);
 	}
-	if (*tree) {
-		wlr_scene_node_destroy(&(*tree)->node);
-		*tree = NULL;
+	free(p->labels);
+	p->labels = NULL;
+	p->n_labels = 0;
+	if (p->tree) {
+		wlr_scene_node_destroy(&p->tree->node);
+		p->tree = NULL;
 	}
 }
 
@@ -612,13 +659,12 @@ static void asteroidz_prompt_hide(struct wlr_scene_tree **tree,
  */
 static struct {
 	bool active;
-	struct wlr_scene_tree *tree;
-	struct asteroidz_jump_label_node *label;
+	AsteroidzPrompt prompt;
 } quit_confirm;
 
 static void quit_confirm_hide(void) {
 	quit_confirm.active = false;
-	asteroidz_prompt_hide(&quit_confirm.tree, &quit_confirm.label);
+	asteroidz_prompt_hide(&quit_confirm.prompt);
 }
 
 /* Called from keypress() before anything else looks at the key. Returns true
@@ -674,8 +720,7 @@ int32_t quit(const Arg *arg) {
 			 (unsigned)lround(config.theme.urgent_color[1] * 255.0f),
 			 (unsigned)lround(config.theme.urgent_color[2] * 255.0f));
 
-	if (!asteroidz_prompt_show(&quit_confirm.tree, &quit_confirm.label, msg,
-							   true)) {
+	if (!asteroidz_prompt_show(&quit_confirm.prompt, msg, true)) {
 		/* No output to draw on -- headless, or mid-teardown. Asking a question
 		 * nobody can see and then waiting for an answer would hang. */
 		wl_display_terminate(dpy);

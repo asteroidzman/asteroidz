@@ -55,8 +55,7 @@ static struct {
 	bool active;
 	GlobalShortcutsSession *session;
 	GlobalShortcut *shortcut;
-	struct wlr_scene_tree *tree;
-	struct asteroidz_jump_label_node *label;
+	AsteroidzPrompt prompt;
 	struct wl_event_source *timeout;
 } gs_pick;
 
@@ -549,11 +548,11 @@ static void gs_pick_overlay_show(const char *desc) {
 	/* Plain text, not markup: `msg` carries an app id chosen by the client,
 	 * and a `<` in it would be parsed rather than shown -- or refused, taking
 	 * the whole prompt with it. */
-	asteroidz_prompt_show(&gs_pick.tree, &gs_pick.label, msg, false);
+	asteroidz_prompt_show(&gs_pick.prompt, msg, false);
 }
 
 static void gs_pick_overlay_hide(void) {
-	asteroidz_prompt_hide(&gs_pick.tree, &gs_pick.label);
+	asteroidz_prompt_hide(&gs_pick.prompt);
 }
 
 static void gs_pick_finish(uint32_t mods, xkb_keysym_t sym, bool cancelled) {
