@@ -743,7 +743,13 @@ static void get_text_pixel_size(struct asteroidz_jump_label_node *node,
 
 	PangoFontDescription *desc = get_cached_font_desc(node->font_desc);
 	pango_layout_set_font_description(node->measure_layout, desc);
-	pango_layout_set_text(node->measure_layout, text, -1);
+	/* Measured the same way it is drawn, or the box is sized for the markup's
+	 * tags and comes out far too wide. */
+	if (node->markup) {
+		pango_layout_set_markup(node->measure_layout, text, -1);
+	} else {
+		pango_layout_set_text(node->measure_layout, text, -1);
+	}
 
 	pango_layout_get_pixel_size(node->measure_layout, out_w, out_h);
 }
@@ -824,6 +830,18 @@ static void draw_titlebar_border_path(cairo_t *cr, double x, double y, double w,
 					  0 * degrees);
 		cairo_line_to(cr, right_edge, bottom);
 	}
+}
+
+void asteroidz_jump_label_node_set_markup(
+		struct asteroidz_jump_label_node *node, bool markup) {
+	if (!node || node->markup == markup) {
+		return;
+	}
+	node->markup = markup;
+	/* The cached text was measured and drawn under the old rule, so the next
+	 * update must not take the "same text, nothing to do" early return. */
+	g_free(node->cached_text);
+	node->cached_text = NULL;
 }
 
 void asteroidz_jump_label_node_update(struct asteroidz_jump_label_node *node,
@@ -1017,7 +1035,11 @@ void asteroidz_jump_label_node_update(struct asteroidz_jump_label_node *node,
 	PangoLayout *layout = pango_layout_new(ctx);
 	PangoFontDescription *desc = get_cached_font_desc(node->font_desc);
 	pango_layout_set_font_description(layout, desc);
-	pango_layout_set_text(layout, text, -1);
+	if (node->markup) {
+		pango_layout_set_markup(layout, text, -1);
+	} else {
+		pango_layout_set_text(layout, text, -1);
+	}
 
 	cairo_set_source_rgba(cr, active_fg[0], active_fg[1], active_fg[2],
 						  active_fg[3]);

@@ -520,7 +520,7 @@ int32_t movewin(const Arg *arg) {
  */
 static bool asteroidz_prompt_show(struct wlr_scene_tree **tree_out,
 								  struct asteroidz_jump_label_node **label_out,
-								  const char *msg) {
+								  const char *msg, bool markup) {
 	if (!selmon)
 		return false;
 	struct wlr_scene_tree *tree = wlr_scene_tree_create(layers[LyrOverlay]);
@@ -552,12 +552,20 @@ static bool asteroidz_prompt_show(struct wlr_scene_tree **tree_out,
 	th.corner_radius = 12;
 	th.padding_x = 28;
 	th.padding_y = 18;
-	th.font_desc = "monospace Bold 18";
+	/* The FONT is the theme's, unlike the colours above. Nothing about a
+	 * palette being mid-change makes a font unreadable, and a prompt drawn in
+	 * a typeface that appears nowhere else on the desktop reads as something
+	 * other than asteroidz asking. Falls back to the old hardcoded string when
+	 * the theme sets none. */
+	th.font_desc = config.theme.font_desc ? config.theme.font_desc
+										  : "monospace Bold 18";
 
 	struct asteroidz_jump_label_node *label =
 		asteroidz_jump_label_node_create(tree, th);
 	*label_out = label;
 	if (label) {
+		/* Before the first update, which is what measures and draws it. */
+		asteroidz_jump_label_node_set_markup(label, markup);
 		float scale = selmon->wlr_output ? selmon->wlr_output->scale : 1.f;
 		asteroidz_jump_label_node_update(label, msg, scale);
 		int lw = 360, lh = 90;
@@ -648,9 +656,26 @@ int32_t quit(const Arg *arg) {
 		 * keyboard's answer or nothing. */
 		return 0;
 	}
-	if (!asteroidz_prompt_show(&quit_confirm.tree, &quit_confirm.label,
-							   "Exit asteroidz?\n"
-							   "Enter to exit, Esc to stay")) {
+	/* ENTER in the theme's urgent colour, in caps, bold: it is the one key
+	 * here that ends the session, and a prompt where both answers look alike
+	 * is a prompt people learn to dismiss without reading. Escape stays plain
+	 * -- it is the harmless one, and colouring both would say nothing.
+	 *
+	 * The colour is read from the theme rather than pinned like the prompt's
+	 * own palette above, because "urgent" is the one entry whose whole job is
+	 * to be noticed, and it is legible on this prompt's fixed dark panel
+	 * whatever matugen makes of it. */
+	char msg[192];
+	snprintf(msg, sizeof(msg),
+			 "Exit asteroidz?\n"
+			 "<b><span foreground=\"#%02x%02x%02x\">ENTER</span></b> to exit, "
+			 "Esc to stay",
+			 (unsigned)lround(config.theme.urgent_color[0] * 255.0f),
+			 (unsigned)lround(config.theme.urgent_color[1] * 255.0f),
+			 (unsigned)lround(config.theme.urgent_color[2] * 255.0f));
+
+	if (!asteroidz_prompt_show(&quit_confirm.tree, &quit_confirm.label, msg,
+							   true)) {
 		/* No output to draw on -- headless, or mid-teardown. Asking a question
 		 * nobody can see and then waiting for an answer would hang. */
 		wl_display_terminate(dpy);

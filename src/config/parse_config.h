@@ -525,6 +525,30 @@ typedef struct {
 	float bar_net_max_down;
 	float bar_net_max_up;
 	char bar_weather_location[128]; /* city name; empty = IP geolocation */
+	/* Idle handling, done by the bar.
+	 *
+	 * The compositor already implements ext-idle-notify-v1 and owns DPMS, so
+	 * an external daemon (swayidle) was only ever translating one into the
+	 * other -- a second process, its own config file, and a set of timeouts
+	 * nothing else could see. The bar is a Wayland client that speaks both, so
+	 * it does the translating and these are the dials.
+	 *
+	 * Every timeout is in SECONDS and 0 means "never", which is what an
+	 * unconfigured idle section does: nothing. */
+	int32_t bar_idle_enable;
+	int32_t bar_idle_dpms_timeout;
+	int32_t bar_idle_lock_timeout;
+	int32_t bar_idle_suspend_timeout;
+	int32_t bar_idle_lock_before_suspend;
+	/* Idle-inhibitors are the protocol's own (a video player holding sleep
+	 * off). Off makes the timeouts absolute. */
+	int32_t bar_idle_respect_inhibitors;
+	char bar_idle_lock_command[256];
+	/* Run alongside the built-in actions rather than instead of them: this
+	 * desktop has to re-lock an S/PDIF DAC after the outputs come back, which
+	 * is a machine-specific thing no compositor should know about. */
+	char bar_idle_on_idle[256];
+	char bar_idle_on_resume[256];
 	/* Daemon the discord module launches when nothing is serving its socket,
 	 * mirroring the waybar plugin's own daemon-cmd. Empty disables spawning. */
 	char bar_discord_daemon[256];
@@ -2524,6 +2548,29 @@ bool parse_option(Config *config, char *key, char *value) {
 	} else if (strcmp(key, "bar_discord_daemon") == 0) {
 		snprintf(config->bar_discord_daemon,
 				 sizeof(config->bar_discord_daemon), "%s", value);
+	} else if (strcmp(key, "bar_idle_enable") == 0) {
+		config->bar_idle_enable = atoi(value);
+	} else if (strcmp(key, "bar_idle_dpms_timeout") == 0) {
+		/* Twelve hours is the cap on every idle timeout: past that it is not a
+		 * timeout, it is "off", which 0 already says. */
+		config->bar_idle_dpms_timeout = CLAMP_INT(atoi(value), 0, 43200);
+	} else if (strcmp(key, "bar_idle_lock_timeout") == 0) {
+		config->bar_idle_lock_timeout = CLAMP_INT(atoi(value), 0, 43200);
+	} else if (strcmp(key, "bar_idle_suspend_timeout") == 0) {
+		config->bar_idle_suspend_timeout = CLAMP_INT(atoi(value), 0, 43200);
+	} else if (strcmp(key, "bar_idle_lock_before_suspend") == 0) {
+		config->bar_idle_lock_before_suspend = atoi(value);
+	} else if (strcmp(key, "bar_idle_respect_inhibitors") == 0) {
+		config->bar_idle_respect_inhibitors = atoi(value);
+	} else if (strcmp(key, "bar_idle_lock_command") == 0) {
+		snprintf(config->bar_idle_lock_command,
+				 sizeof(config->bar_idle_lock_command), "%s", value);
+	} else if (strcmp(key, "bar_idle_on_idle") == 0) {
+		snprintf(config->bar_idle_on_idle, sizeof(config->bar_idle_on_idle),
+				 "%s", value);
+	} else if (strcmp(key, "bar_idle_on_resume") == 0) {
+		snprintf(config->bar_idle_on_resume, sizeof(config->bar_idle_on_resume),
+				 "%s", value);
 	} else if (strcmp(key, "bar_weather_location") == 0) {
 		snprintf(config->bar_weather_location,
 				 sizeof(config->bar_weather_location), "%s", value);
@@ -3952,6 +3999,15 @@ static const struct {
 	{"bar/tooltip/delay", "bar_tooltip_delay"},
 	{"bar/module-spacing", "bar_module_spacing"},
 	{"bar/tray-spacing", "bar_tray_spacing"},
+	{"bar/idle/enable", "bar_idle_enable"},
+	{"bar/idle/dpms-timeout", "bar_idle_dpms_timeout"},
+	{"bar/idle/lock-timeout", "bar_idle_lock_timeout"},
+	{"bar/idle/suspend-timeout", "bar_idle_suspend_timeout"},
+	{"bar/idle/lock-before-suspend", "bar_idle_lock_before_suspend"},
+	{"bar/idle/respect-inhibitors", "bar_idle_respect_inhibitors"},
+	{"bar/idle/lock-command", "bar_idle_lock_command"},
+	{"bar/idle/on-idle", "bar_idle_on_idle"},
+	{"bar/idle/on-resume", "bar_idle_on_resume"},
 	{"bar/media/bars", "bar_media_bars"},
 	{"bar/media/fps", "bar_media_fps"},
 	{"bar/media/visualiser", "bar_media_viz"},
@@ -5103,6 +5159,11 @@ void override_config(void) {
 		CLAMP_FLOAT(config.scratchpad_height_ratio, 0.1f, 1.0f);
 	config.borderpx = CLAMP_INT(config.borderpx, 0, 200);
 	config.enable_titlebar = CLAMP_INT(config.enable_titlebar, 0, 1);
+	config.bar_idle_enable = CLAMP_INT(config.bar_idle_enable, 0, 1);
+	config.bar_idle_lock_before_suspend =
+		CLAMP_INT(config.bar_idle_lock_before_suspend, 0, 1);
+	config.bar_idle_respect_inhibitors =
+		CLAMP_INT(config.bar_idle_respect_inhibitors, 0, 1);
 	config.titlebar_height = CLAMP_INT(config.titlebar_height, 0, 200);
 	config.smartgaps = CLAMP_INT(config.smartgaps, 0, 1);
 	config.blur = CLAMP_INT(config.blur, 0, 1);
@@ -5317,6 +5378,19 @@ void set_value_default() {
 	 * lights it. */
 	config.bar_net_max_down = 0.0f;
 	config.bar_net_max_up = 0.0f;
+	/* Idle: nothing, until asked. A compositor that blanked the screen on a
+	 * timeout nobody set would be a worse neighbour than one that never does.
+	 * Inhibitors are respected by default because ignoring them is the
+	 * surprising choice -- a video player asks for a reason. */
+	config.bar_idle_enable = 0;
+	config.bar_idle_dpms_timeout = 0;
+	config.bar_idle_lock_timeout = 0;
+	config.bar_idle_suspend_timeout = 0;
+	config.bar_idle_lock_before_suspend = 0;
+	config.bar_idle_respect_inhibitors = 1;
+	config.bar_idle_lock_command[0] = '\0';
+	config.bar_idle_on_idle[0] = '\0';
+	config.bar_idle_on_resume[0] = '\0';
 	config.bar_media_width = 280;
 	config.bar_weather_location[0] = '\0';
 	config.bar_panel_enable = 1;

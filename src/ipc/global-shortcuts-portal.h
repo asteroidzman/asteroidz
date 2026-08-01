@@ -546,7 +546,10 @@ static void gs_pick_overlay_show(const char *desc) {
 	/* The prompt itself is shared with the exit confirmation -- see
 	 * asteroidz_prompt_show in bind_define.h. This one only decides what it
 	 * says and who is allowed to answer it. */
-	asteroidz_prompt_show(&gs_pick.tree, &gs_pick.label, msg);
+	/* Plain text, not markup: `msg` carries an app id chosen by the client,
+	 * and a `<` in it would be parsed rather than shown -- or refused, taking
+	 * the whole prompt with it. */
+	asteroidz_prompt_show(&gs_pick.tree, &gs_pick.label, msg, false);
 }
 
 static void gs_pick_overlay_hide(void) {

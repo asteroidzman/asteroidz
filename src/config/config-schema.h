@@ -160,6 +160,8 @@ static const ConfigGroup config_groups[] = {
 	{"animations", "Animations", "How windows move, open and close."},
 	{"overview", "Overview", "The zoomed-out view of every tag."},
 	{"input", "Input", "Cursor, keyboard and pointer behaviour."},
+	{"idle", "Idle",
+	 "What happens when nothing has been touched for a while."},
 };
 
 /* ---------- the table ---------- */
@@ -609,6 +611,65 @@ static const ConfigOption config_schema[] = {
 	{"cursor_zoom_rigid", "cursor_zoom_rigid", "input", "cursor",
 	 "Rigid zoom", "Keep the magnifier's view locked to the cursor.",
 	 OPT_BOOL, offsetof(Config, cursor_zoom_rigid), 0, 0, 1, NULL, 0, "0", 0},
+
+	/* ===== idle =====
+	 *
+	 * Carried out by the bar, configured here. The compositor implements
+	 * ext-idle-notify-v1 and owns DPMS; the bar is the client that can hold a
+	 * timer and dispatch to it. What used to sit between them was swayidle,
+	 * with its own config file and timeouts nothing else could read. */
+	{"bar_idle_enable", "bar/idle/enable", "idle", "general", "Enable",
+	 "Act on idle at all. Off leaves every timeout below inert, which is also "
+	 "what an unconfigured desktop does.",
+	 OPT_BOOL, offsetof(Config, bar_idle_enable), 0, 0, 1, NULL, 0, "0", 0},
+	{"bar_idle_dpms_timeout", "bar/idle/dpms-timeout", "idle", "general",
+	 "Screen off after",
+	 "Seconds of inactivity before the outputs are powered down. 0 never does. "
+	 "Any input wakes them.",
+	 OPT_INT, offsetof(Config, bar_idle_dpms_timeout), 0, 0, 43200, NULL, 0,
+	 "0", 0},
+	{"bar_idle_lock_timeout", "bar/idle/lock-timeout", "idle", "general",
+	 "Lock after",
+	 "Seconds of inactivity before the lock command runs. 0 never locks.",
+	 OPT_INT, offsetof(Config, bar_idle_lock_timeout), 0, 0, 43200, NULL, 0,
+	 "0", 0},
+	{"bar_idle_suspend_timeout", "bar/idle/suspend-timeout", "idle", "general",
+	 "Suspend after",
+	 "Seconds of inactivity before the machine suspends. 0 never suspends.",
+	 OPT_INT, offsetof(Config, bar_idle_suspend_timeout), 0, 0, 43200, NULL, 0,
+	 "0", 0},
+	{"bar_idle_lock_before_suspend", "bar/idle/lock-before-suspend", "idle",
+	 "general", "Lock before suspending",
+	 "Run the lock command on the way down, so the machine comes back locked "
+	 "even when the lock timeout is longer than the suspend one.",
+	 OPT_BOOL, offsetof(Config, bar_idle_lock_before_suspend), 0, 0, 1, NULL, 0,
+	 "0", 0},
+	{"bar_idle_respect_inhibitors", "bar/idle/respect-inhibitors", "idle",
+	 "general", "Respect inhibitors",
+	 "Honour idle-inhibitors, which is how a video player holds sleep off. Off "
+	 "makes the timeouts absolute.",
+	 OPT_BOOL, offsetof(Config, bar_idle_respect_inhibitors), 0, 0, 1, NULL, 0,
+	 "1", 0},
+	{"bar_idle_lock_command", "bar/idle/lock-command", "idle", "commands",
+	 "Lock command",
+	 "What locking means on this machine. Empty means the lock timeout and "
+	 "lock-before-suspend do nothing.",
+	 OPT_STRING, offsetof(Config, bar_idle_lock_command),
+	 sizeof(((Config *)0)->bar_idle_lock_command), SCHEMA_NOCLAMP,
+	 SCHEMA_NOCLAMP, NULL, 0, "", 0},
+	{"bar_idle_on_idle", "bar/idle/on-idle", "idle", "commands",
+	 "On idle",
+	 "Run alongside the built-in idle actions, not instead of them. For the "
+	 "machine-specific things a compositor should not know about.",
+	 OPT_STRING, offsetof(Config, bar_idle_on_idle),
+	 sizeof(((Config *)0)->bar_idle_on_idle), SCHEMA_NOCLAMP, SCHEMA_NOCLAMP,
+	 NULL, 0, "", 0},
+	{"bar_idle_on_resume", "bar/idle/on-resume", "idle", "commands",
+	 "On resume",
+	 "Run when activity returns, after the outputs are back.",
+	 OPT_STRING, offsetof(Config, bar_idle_on_resume),
+	 sizeof(((Config *)0)->bar_idle_on_resume), SCHEMA_NOCLAMP, SCHEMA_NOCLAMP,
+	 NULL, 0, "", 0},
 };
 
 #define CONFIG_SCHEMA_COUNT                                                    \

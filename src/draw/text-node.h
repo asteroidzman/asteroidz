@@ -49,6 +49,13 @@ struct asteroidz_jump_label_node {
 	int32_t padding_y;
 	char *font_desc;
 
+	/* The text is Pango MARKUP rather than a plain string. Off by default:
+	 * every other label draws text that came from a client (a window title, an
+	 * app id) and would have to be escaped first. The exit prompt sets it,
+	 * because "ENTER" has to carry weight and colour the rest of the sentence
+	 * does not. */
+	bool markup;
+
 	// cache
 	char *cached_text;
 	char *cached_font_desc;
@@ -246,6 +253,11 @@ void asteroidz_jump_label_node_set_border(struct asteroidz_jump_label_node *node
 									  int32_t width, int32_t radius);
 void asteroidz_jump_label_node_set_padding(struct asteroidz_jump_label_node *node,
 									   int32_t pad_x, int32_t pad_y);
+/* Draw this label's text as Pango markup. The caller owns escaping anything
+ * that did not come from asteroidz itself. */
+void asteroidz_jump_label_node_set_markup(
+	struct asteroidz_jump_label_node *node, bool markup);
+
 void asteroidz_jump_label_node_update(struct asteroidz_jump_label_node *node,
 								  const char *text, float scale);
 

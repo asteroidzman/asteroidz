@@ -419,6 +419,25 @@ static cJSON *build_bar_config_response(void) {
 							config.bar_modules_right_monitor);
 	cJSON_AddItemToObject(resp, "bar", bar);
 
+	/* Idle, which the BAR carries out: it is the Wayland client that can hold
+	 * an ext-idle-notify timer, and the compositor is the thing it dispatches
+	 * DPMS to. Sent even when disabled, so turning it on is a reload rather
+	 * than a restart. */
+	cJSON *idle = cJSON_CreateObject();
+	cJSON_AddBoolToObject(idle, "enable", config.bar_idle_enable);
+	cJSON_AddNumberToObject(idle, "dpms_timeout", config.bar_idle_dpms_timeout);
+	cJSON_AddNumberToObject(idle, "lock_timeout", config.bar_idle_lock_timeout);
+	cJSON_AddNumberToObject(idle, "suspend_timeout",
+							config.bar_idle_suspend_timeout);
+	cJSON_AddBoolToObject(idle, "lock_before_suspend",
+						  config.bar_idle_lock_before_suspend);
+	cJSON_AddBoolToObject(idle, "respect_inhibitors",
+						  config.bar_idle_respect_inhibitors);
+	cJSON_AddStringToObject(idle, "lock_command", config.bar_idle_lock_command);
+	cJSON_AddStringToObject(idle, "on_idle", config.bar_idle_on_idle);
+	cJSON_AddStringToObject(idle, "on_resume", config.bar_idle_on_resume);
+	cJSON_AddItemToObject(resp, "idle", idle);
+
 	cJSON *panel = cJSON_CreateObject();
 	cJSON_AddBoolToObject(panel, "enable", config.bar_panel_enable);
 	cJSON_AddNumberToObject(panel, "radius", config.bar_panel_radius);
