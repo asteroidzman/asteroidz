@@ -171,3 +171,68 @@ test_a_floating_window_does_not_bleed_after_fullscreen() {
 		"$([ "${changed:-0}" -ge 0 ] && [ "${changed:-0}" -lt 50 ] && echo clean || echo "dirty ($changed px)")" \
 		"clean"
 }
+
+# The reported sequence, exactly: a window opened FULLSCREEN BY RULE onto a
+# scroller tag, another window opened beside it, then a tag switch.
+#
+# What makes this one different from the round trips above is that the window
+# never leaves fullscreen as far as its own state is concerned.
+# clear_fullscreen_flag() returns early for a non-floating client on a SCROLLER
+# tag (asteroidz.c), so the new window makes the scroller re-arrange it while
+# `isfullscreen` stays set and its border stays zeroed -- a monitor-sized
+# surface being laid out as a column. The tag switch then animates it off the
+# edge, which is where it showed up on the neighbouring output.
+_fb_rule_done=""
+_fb_rule() {
+	[ -z "$_fb_rule_done" ] || return 0
+	cat >> "$HL_CONFIG" <<'EOF'
+window-rule {
+	match title="FB-FS"
+	open-fullscreen #true
+	no-animation #true
+}
+EOF
+	hl_dispatch "reload_config" 1
+	_fb_rule_done=1
+}
+
+test_a_rule_fullscreened_window_does_not_bleed_when_the_tag_changes() {
+	if ! _fb_setup; then
+		hl_skip "test_a_rule_fullscreened_window_does_not_bleed_when_the_tag_changes: no second monitor"
+		return
+	fi
+	_fb_rule
+
+	hl_dispatch "focus_monitor,$HL_MON" 0.3
+	# A TILE tag, which is what the report came from -- and the detail that
+	# decides the whole thing. clear_fullscreen_flag() returns early for a
+	# non-floating client on a scroller tag, so there the window never leaves
+	# fullscreen and set_arrange_hidden's fullscreen guard hides it outright.
+	# On a tile tag it really is unfullscreened, so the tag switch slides it.
+	hl_dispatch "view,3" 0.5
+	sleep 0.5
+	grim -o "$_fb_second_mon" "$HL_OUTDIR/fb-rule-before.png" 2>/dev/null
+
+	hl_spawn_kitty FB-FS >/dev/null
+	hl_wait_client_count 1
+	sleep 1
+	hl_assert_true "the rule really did fullscreen it" \
+		"$(hl_client_field FB-FS is_fullscreen)"
+
+	hl_spawn_kitty FB-SECOND >/dev/null
+	hl_wait_client_count 2
+	sleep 1
+
+	hl_dispatch "view,1" 1.5
+	sleep 1.5
+	grim -o "$_fb_second_mon" "$HL_OUTDIR/fb-rule-after.png" 2>/dev/null
+
+	local changed
+	changed="$(_fb_changed_px "$HL_OUTDIR/fb-rule-before.png" \
+		"$HL_OUTDIR/fb-rule-after.png")"
+	hl_assert "the neighbour is unchanged after the tag switch" \
+		"$([ "${changed:-0}" -ge 0 ] && [ "${changed:-0}" -lt 50 ] && echo clean || echo "dirty ($changed px)")" \
+		"clean"
+
+	hl_dispatch "view,1" 0.3
+}

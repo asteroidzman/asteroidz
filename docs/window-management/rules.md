@@ -106,6 +106,13 @@ global setting is off.
 | `force_ssd` | integer | `0` / `1` | Force server-side decorations (titlebar/border) for apps that support neither xdg-decoration nor client-side decorations (e.g. SDL/GLFW games) |
 | `isnotitlebar` / `no-titlebar` | integer | `0` / `1` | Draw no titlebar for this window, whatever the global titlebar setting is |
 
+`isnoanimation` also changes how the window LEAVES a tag, not only how it
+moves. The tag-out slide parks a window past its monitor's edge and it is the
+slide *finishing* that hides it, so a window that never animates would sit
+parked there — on the next monitor, in a side-by-side layout — for as long as
+its tag was hidden. Windows with this rule are hidden outright on a tag switch
+instead, the same as fullscreen ones.
+
 > **Tip:** For detailed visual effects configuration, see the [Window Effects](/docs/visuals/effects) page for blur, shadows, and opacity settings.
 
 ### Layout & Scroller

@@ -210,8 +210,26 @@ void set_arrange_hidden(Monitor *m, Client *c, bool want_animation) {
 	 * client's tagout target lands exactly on the neighbouring monitor's own
 	 * screen space in a side-by-side layout, so sliding it out is a
 	 * transient cross-monitor bleed risk -- go straight to the immediate
-	 * hide below instead. */
-	if (c->isfullscreen) {
+	 * hide below instead.
+	 *
+	 * `isnoanimation` is here for a worse version of the same thing, and one
+	 * that does not clear itself. The slide parks the window at
+	 * `geom.x + mon.width` -- deliberately off this monitor, which on a
+	 * side-by-side layout is ON the next one -- and it is the animation
+	 * REACHING ITS END that disables the scene node and clears `tagouting`
+	 * (see the animation_passed >= 1.0 branch in animation/client.h). A client
+	 * that does not animate never reaches an end: client_set_pending_state
+	 * clears should_animate for it, so `running` never goes true, no tick ever
+	 * fires, and the window simply stays parked and ENABLED on the neighbour
+	 * until something else re-arranges it.
+	 *
+	 * Reported live 2026-08-01 with `window-rule { match app-id=mpv; ...
+	 * open-fullscreen; no-animation }`: the rule opened mpv fullscreen on a
+	 * tile tag, opening a second window there unfullscreened it (so the guard
+	 * above no longer applied), and the next tag switch left it painted across
+	 * the HDMI output for as long as it was hidden. Fullscreening it again
+	 * "fixed" it because that re-arranged it. */
+	if (c->isfullscreen || c->isnoanimation) {
 		c->animation.running = false;
 		wlr_scene_node_set_enabled(&c->scene->node, false);
 		c->animainit_geom = c->current = c->pending = c->animation.current =
