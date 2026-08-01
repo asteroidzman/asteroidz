@@ -91,6 +91,17 @@ Drop shadows help distinguish floating windows from the background.
 | `shadows_blur_background` | `0` | Blur what is under the shadow as well as darkening it. Costs a blur pass per shadowed window, so it is off by default. |
 | `shadows_blur_background_strength` | `0.5` | Opacity of that blur, so it can be mixed with the plain tint rather than replacing it. No effect unless `shadows_blur_background` is `1`. |
 
+`shadows_blur_background` always blurs the **wallpaper**, using the monitor's
+cached snapshot, never a live re-blur of whatever is actually under the window.
+That is not only the cheap path, it is the correct one here: a live blur
+samples the framebuffer, and a shadow's footprint hugs its own window, so what
+it picks up is the window's own pixels smeared outward. Floating windows took
+that path until 2026-08-01 and wore a coloured glow the size of their shadow —
+green around a green window, and unmissable on a dark wallpaper, where a shadow
+has nothing to darken but a glow has everything to light up. The cost is that a
+shadow over another window blends with the wallpaper rather than with that
+window, which is what tiled windows have always done.
+
 ```kdl
 effects {
     shadow {
