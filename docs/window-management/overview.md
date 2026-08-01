@@ -31,3 +31,17 @@ When in overview mode:
 
 - **Left mouse button** — Jump to (focus) a window.
 - **Right mouse button** — Close a window.
+
+### Keybindings in Overview
+
+The overview is modal: while it is open, Escape closes it and the only bindings
+honoured are the ones that operate the overview itself (`toggle_overview` and
+`toggle_overview,jump`). Tag switches, window operations and spawns are held
+until it closes.
+
+[`screenshot_ui`](/docs/bindings/keys#screenshot_ui) is the one exception. It
+changes nothing and photographs whatever is on screen, and the overview — the
+whole tag laid out at once — cannot be captured any other way; closing it to
+take the picture destroys the subject. Window mode picks from the tiles the
+overview is actually showing, including the tag being previewed rather than the
+active one.

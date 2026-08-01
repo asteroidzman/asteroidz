@@ -22,12 +22,39 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TESTS_DIR="$REPO/contrib/regression/tests"
 . "$REPO/contrib/lib/headless.sh"
 
+# Default order is alphabetical, with one exception: a module that declares
+#
+#     # harness: needs-second-monitor
+#
+# runs at the END, after every single-monitor module.
+#
+# All modules share one compositor, and create_virtual_output has no
+# counterpart that removes just the output it made (destroy_all_virtual_output
+# takes HEADLESS-1 with it under a headless backend). So a two-monitor module
+# leaves a second monitor behind for everything that follows, and modules that
+# assume one output start failing in ways that point nowhere near themselves:
+# adding fullscreen-bleed put a monitor in place at "f", and keybind-combo and
+# layer-shell -- untouched, six modules later -- began reporting a view that
+# would not switch and a bar that reserved no space. Sorting them last means
+# only modules that already tolerate two monitors ever see one.
+#
+# An explicit module list on the command line is run exactly as given: if you
+# name them, you meant that order.
 MODULES=("$@")
 if [ "${#MODULES[@]}" -eq 0 ]; then
 	MODULES=()
+	LAST=()
 	for f in "$TESTS_DIR"/*.sh; do
-		MODULES+=("$(basename "$f" .sh)")
+		mod="$(basename "$f" .sh)"
+		if grep -q '^# harness: needs-second-monitor' "$f"; then
+			LAST+=("$mod")
+		else
+			MODULES+=("$mod")
+		fi
 	done
+	MODULES+=("${LAST[@]:-}")
+	# ${LAST[@]:-} contributes an empty element when nothing is marked
+	[ -n "${MODULES[-1]}" ] || unset 'MODULES[-1]'
 fi
 
 if [ "${HL_LIVE:-0}" = "1" ]; then

@@ -29,6 +29,9 @@
 # backend is ALL of them including the original HEADLESS-1 -- calling it
 # here would kill the whole test compositor, not just the "virtual" one
 # just created.
+#
+# harness: needs-second-monitor -- run.sh sorts this after every
+# single-monitor module; the output it creates outlives it.
 
 hl_monitor_names() { hl_get "get all-monitors" | jq -c '[.monitors[].name] | sort'; }
 hl_monitor_field() { hl_get "get all-monitors" | jq -r ".monitors[] | select(.name==\"$1\") | .$2"; }

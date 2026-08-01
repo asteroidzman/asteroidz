@@ -216,6 +216,23 @@ Suggested scroller binds (not bound by default — uncomment to use):
 | `chvt` | `1-9` | Change virtual terminal (tty, equivalent to using ctrl+alt+Fkeys) |
 | `screenshot_ui` | `[screen/region/window]` | Compositor-native screenshot UI (defaults to `region`). Freezes the focused output and shows it full-screen while you pick what to capture; saves to `~/Pictures/Screenshots/screenshot_<timestamp>.png` and copies it to the clipboard (requires `wl-copy`). `region` lets you drag a selection rectangle (Escape cancels, release confirms); `window` captures whatever window you click; `screen` captures the whole focused output immediately, with no interaction. |
 
+#### The overlay owns the pointer
+
+While the region or window overlay is up, the pointer is confined to the output
+the capture froze, and pushing past an edge pins it to the last row or column
+rather than crossing to the next screen — overshooting is how you select the
+last pixel, and the selection was already clamped to that output, so a pointer
+that could leave only ever left the crosshair somewhere the rectangle could not
+follow. It is released the moment the shot is taken or cancelled. A client
+holding a pointer *lock* (a game, typically) does not keep it while the overlay
+is up, or the crosshair could not move at all.
+
+`screenshot_ui` also works **from the overview**, which is otherwise modal and
+drops every bind that is not its own. The spread of every window on a tag is
+not something you can capture any other way, and closing the overview to take
+the picture destroys the thing being pictured. Escape while the overlay is up
+cancels the *screenshot*; the overview stays open.
+
 ### Exiting
 
 `quit` puts a prompt on the focused output rather than exiting immediately:

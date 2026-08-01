@@ -5890,9 +5890,15 @@ keybinding(uint32_t state, bool locked, uint32_t mods, xkb_keysym_t sym,
 		/* the overview is modal: while it's open, only Escape (handled above)
 		 * and the binds that operate the overview itself (toggle to close it,
 		 * jump mode for its labels) are honoured -- tag switches, window ops,
-		 * spawns etc. are suppressed until it closes */
+		 * spawns etc. are suppressed until it closes.
+		 *
+		 * screenshot_ui is the exception: it changes nothing, it photographs
+		 * whatever is on the screen, and the overview is a view worth
+		 * photographing like any other -- the spread of every window on a tag
+		 * is not something you can capture any other way. Closing the overview
+		 * to take the picture destroys the thing being pictured. */
 		if (selmon && selmon->isoverview && k->func != toggleoverview &&
-			k->func != togglejump)
+			k->func != togglejump && k->func != screenshot_ui)
 			continue;
 
 		if ((k->iscommonmode || (k->isdefaultmode && keymode.isdefault) ||
@@ -6847,7 +6853,12 @@ void motionnotify(uint32_t time, struct wlr_input_device *device, double dx,
 			relative_pointer_mgr, seat, (uint64_t)time * 1000, dx, dy,
 			dx_unaccel, dy_unaccel);
 
-		if (active_constraint && cursor_mode != CurResize &&
+		/* Not while the screenshot overlay is up. Opening it does not clear
+		 * pointer focus, so a client that had the pointer LOCKED -- a game,
+		 * typically -- still holds it, and the early return below would pin
+		 * the crosshair in place for as long as the overlay lived. The
+		 * overlay's own confinement replaces it for the duration. */
+		if (active_constraint && !shotui.active && cursor_mode != CurResize &&
 			cursor_mode != CurMove) {
 			if (active_constraint->surface ==
 				seat->pointer_state.focused_surface) {
@@ -6874,14 +6885,23 @@ void motionnotify(uint32_t time, struct wlr_input_device *device, double dx,
 		wlr_idle_notifier_v1_notify_activity(idle_notifier, seat);
 		wake_sleeping_monitors();
 
-		/* Update selmon (even while dragging a window) */
-		if (config.sloppyfocus)
+		/* Update selmon (even while dragging a window) -- but not under the
+		 * screenshot overlay, which is modal: nothing below it is focusable,
+		 * and letting the pointer's monitor lead selmon there would leave the
+		 * selection behind on the captured output and, worse, aim the NEXT
+		 * screenshot at a monitor the user never focused. */
+		if (config.sloppyfocus && !shotui.active)
 			selmon = xytomon(cursor->x, cursor->y);
 
 		/* overview: hovering a strip tile previews that tag in the main area */
 		if (selmon && selmon->isoverview)
 			overview_pointer_preview(selmon, cursor->x, cursor->y);
 	}
+
+	/* After every mover, not inside the block above: the tablet path warps the
+	 * cursor itself and then calls in here with time 0, so a clamp under
+	 * `if (time)` would let a stylus walk straight off the captured output. */
+	screenshot_ui_confine_cursor();
 
 	cursor_zoom_update();
 

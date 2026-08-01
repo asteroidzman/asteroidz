@@ -2617,6 +2617,39 @@ static double screenshot_ui_clampd(double v, double lo, double hi) {
 	return v < lo ? lo : (v > hi ? hi : v);
 }
 
+/* Keep the pointer on the monitor the capture froze.
+ *
+ * The overlay is one output's worth of frozen pixels and the selection is
+ * clamped to that output, so a cursor free to walk onto the next screen leaves
+ * the crosshair somewhere the drag cannot follow: the rectangle stops dead at
+ * the shared edge while the pointer keeps travelling, and the pixels it is
+ * over belong to a live desktop that is not part of this shot. Confining is
+ * also what makes the far edge reachable at all -- overshooting is how you
+ * select the last column, and on a multi-monitor layout overshooting used to
+ * mean landing on the neighbour.
+ *
+ * A pointer constraint is the protocol-level way to do this, but constraints
+ * belong to a client surface and this overlay has none, so it is a warp
+ * applied after every move. */
+static void screenshot_ui_confine_cursor(void) {
+	Monitor *m = shotui.mon;
+	if (!shotui.active || !m)
+		return;
+
+	/* The far edges are exclusive: at exactly m.x + m.width the pointer is
+	 * already on the next output. A hair inside still rounds up to the full
+	 * width in screenshot_ui_update_selection(), so the last pixel column and
+	 * row stay selectable. */
+	const double edge = 0.01;
+	double x = screenshot_ui_clampd(cursor->x, m->m.x,
+									m->m.x + m->m.width - edge);
+	double y = screenshot_ui_clampd(cursor->y, m->m.y,
+									m->m.y + m->m.height - edge);
+
+	if (x != cursor->x || y != cursor->y)
+		wlr_cursor_warp_closest(cursor, NULL, x, y);
+}
+
 static void screenshot_ui_reset_cursor(void) {
 	wlr_cursor_set_xcursor(cursor, cursor_mgr, "default");
 	wlr_seat_pointer_clear_focus(seat);
@@ -2751,6 +2784,24 @@ static void screenshot_ui_update_selection(double cx, double cy) {
 
 	screenshot_ui_layout_dim_and_border();
 	screenshot_ui_update_label();
+}
+
+/* Windows the frozen frame actually shows on this monitor -- the set window
+ * mode may pick from.
+ *
+ * In the overview that is not "visible on the active tag": the big area
+ * mirrors whichever tag is being PREVIEWED, so a tag test excludes exactly the
+ * windows on screen and includes ones that are not. What is on the overview
+ * desktop is what overview_arrange_main left enabled, and it resized each of
+ * those to its tile with client_tile_resize(), so the geometry the snapshot
+ * reads is already the drawn rectangle. */
+static bool screenshot_ui_snapable(Client *sc, Monitor *m) {
+	if (client_is_unmanaged(sc) || sc->isminimized || sc->iskilling)
+		return false;
+	if (m->isoverview)
+		return sc->mon == m && !sc->is_overview_hidden && sc->scene &&
+			   sc->scene->node.enabled;
+	return VISIBLEON(sc, m);
 }
 
 /* hit-test against the freeze-time snapshot (topmost/focus order), never
@@ -3190,16 +3241,14 @@ static void screenshot_ui_on_captured(Monitor *m, ScreenshotMode mode,
 		Client *sc;
 		int32_t count = 0;
 		wl_list_for_each(sc, &fstack, flink) {
-			if (VISIBLEON(sc, m) && !client_is_unmanaged(sc) &&
-					!sc->isminimized && !sc->iskilling)
+			if (screenshot_ui_snapable(sc, m))
 				count++;
 		}
 		if (count > 0)
 			shotui.snap = ecalloc(count, sizeof(*shotui.snap));
 		if (shotui.snap) {
 			wl_list_for_each(sc, &fstack, flink) {
-				if (!VISIBLEON(sc, m) || client_is_unmanaged(sc) ||
-						sc->isminimized || sc->iskilling)
+				if (!screenshot_ui_snapable(sc, m))
 					continue;
 				shotui.snap[shotui.snap_len].c = sc;
 				shotui.snap[shotui.snap_len].box = (struct wlr_box){
@@ -3236,20 +3285,21 @@ static void screenshot_ui_on_captured(Monitor *m, ScreenshotMode mode,
 		wlr_scene_node_set_enabled(&shotui.label->scene_buffer->node, false);
 	}
 
-	double start_x = cursor->x, start_y = cursor->y;
-	if (start_x < m->m.x || start_x > m->m.x + m->m.width)
-		start_x = m->m.x;
-	if (start_y < m->m.y || start_y > m->m.y + m->m.height)
-		start_y = m->m.y;
-	shotui.start_x = start_x;
-	shotui.start_y = start_y;
-
 	shotui.active = true;
+
+	/* Bring the pointer onto the captured output before anything reads it.
+	 * Without sloppyfocus the cursor and selmon can be on different monitors
+	 * altogether, and the crosshair would open on a screen the overlay is not
+	 * even drawn on; from here on it cannot leave. */
+	screenshot_ui_confine_cursor();
+
+	shotui.start_x = cursor->x;
+	shotui.start_y = cursor->y;
 
 	if (mode == ShotWindow)
 		screenshot_ui_hover_window(cursor->x, cursor->y);
 	else
-		screenshot_ui_update_selection(start_x, start_y);
+		screenshot_ui_update_selection(cursor->x, cursor->y);
 
 	wlr_cursor_set_xcursor(cursor, cursor_mgr, "crosshair");
 }
