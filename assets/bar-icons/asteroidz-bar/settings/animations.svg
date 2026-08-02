@@ -1,0 +1,13 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<!-- Animations: an ease curve with its control points.
+
+     One filled path, solid white, so the bar's iconTint can recolour it
+     wholesale: ColorOverlay paints through the alpha channel, so the source
+     colour is discarded and only the coverage matters. A stroked outline
+     would leave the tint painting the strokes and the holes alike, which
+     reads as a blob at sidebar size. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+  <path fill="#ffffff" d="M3.2 20.4a1.2 1.2 0 0 1-.15-2.39C8.6 17.2 12 14 14.6 8.3l.5-1.1 2 .9-.5 1.1C13.8 15.5 9.8 19 3.6 20.4z"/>
+  <circle fill="#ffffff" cx="4" cy="19.2" r="2.4"/>
+  <circle fill="#ffffff" cx="18.6" cy="6" r="2.4"/>
+</svg>

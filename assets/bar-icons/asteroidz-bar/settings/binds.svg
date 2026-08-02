@@ -1,0 +1,11 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<!-- Keybinds: a keycap.
+
+     One filled path, solid white, so the bar's iconTint can recolour it
+     wholesale: ColorOverlay paints through the alpha channel, so the source
+     colour is discarded and only the coverage matters. A stroked outline
+     would leave the tint painting the strokes and the holes alike, which
+     reads as a blob at sidebar size. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+  <path fill="#ffffff" fill-rule="evenodd" d="M4.4 3.6h15.2a2.4 2.4 0 0 1 2.4 2.4v12a2.4 2.4 0 0 1-2.4 2.4H4.4A2.4 2.4 0 0 1 2 18V6a2.4 2.4 0 0 1 2.4-2.4zM8 7.6v8.8h2.5v-3.2l2.6 3.2H16l-3.4-4.4L16 7.6h-2.9l-2.6 3.3V7.6z"/>
+</svg>

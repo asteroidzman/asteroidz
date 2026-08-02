@@ -1,0 +1,12 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<!-- Effects: a sparkle.
+
+     One filled path, solid white, so the bar's iconTint can recolour it
+     wholesale: ColorOverlay paints through the alpha channel, so the source
+     colour is discarded and only the coverage matters. A stroked outline
+     would leave the tint painting the strokes and the holes alike, which
+     reads as a blob at sidebar size. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+  <path fill="#ffffff" d="M13 2.5l1.6 4.6 4.6 1.6-4.6 1.6L13 15l-1.6-4.7L6.8 8.7l4.6-1.6z"/>
+  <path fill="#ffffff" d="M6.4 14l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9z"/>
+</svg>
