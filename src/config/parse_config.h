@@ -574,13 +574,17 @@ typedef struct {
 	int32_t bar_panel_shadow;
 	int32_t bar_interval; /* seconds between /proc + /sys metric samples */
 	int32_t bar_title_width; /* pinned title pill width, 0 = size to content */
-	/* Colon-separated search path of waybar plugin asset roots, so the bar uses
-	 * the very same SVGs as the modules it replaces
-	 * (<dir>/waybar-sysinfo/cpu.svg, ...). A path list rather than one
-	 * directory because the plugins do not all install to the same prefix:
-	 * some are packaged into /usr/share, others land in ~/.local/share from a
-	 * plain `make install`. First readable hit wins; no hit at all just means
-	 * no icon, never a failure. */
+	/* Colon-separated search path of artwork roots
+	 * (<dir>/asteroidz-bar/sysinfo/cpu.svg, ...). A path list rather than one
+	 * directory because our own vendored assets and anything a user drops in
+	 * do not share a prefix: the package installs into /usr/share, a hand-made
+	 * override lands in ~/.local/share. First readable hit wins; no hit at all
+	 * just means no icon, never a failure.
+	 *
+	 * The subdirectories were named for the waybar plugins these modules
+	 * replaced (waybar-sysinfo/, waybar-weather/); they are asteroidz-bar/*
+	 * now, and the bar still tries the old name as a fallback so a personal
+	 * override under the old path keeps working. */
 	char bar_icon_dir[512];
 	char bar_clock_format[64];
 	char bar_modules_left[256];
