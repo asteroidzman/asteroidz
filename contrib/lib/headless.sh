@@ -593,6 +593,22 @@ hl_scroll() { # hl_scroll X Y AMT
 # an IPC dispatch) -- needs hl_start's own test config to actually bind one
 # (mousebind SUPER,BTN_LEFT,move_resize,curmove), a compositor default
 # can't be assumed.
+# A plain press-move-release, no modifier. hl_super_drag is for the
+# compositor's own Super+drag bindings; this is for dragging something inside a
+# client, which is a different gesture entirely -- holding Super would move the
+# WINDOW instead.
+hl_drag() { # hl_drag <from-x> <from-y> <to-x> <to-y>
+	# Move FIRST, as its own call. wlvptr presses wherever the pointer already
+	# is -- the x,y it takes only seeds the interpolation for the motion that
+	# follows -- so a drag issued without positioning the pointer starts from
+	# wherever the last test left it, and every event lands on some other
+	# widget. hl_click gets away with it because callers here always hl_move
+	# first; this reads as one gesture, so it does its own.
+	"$HL_WLVPTR" "$1" "$2" "$HL_PTR_EXTENT_W" "$HL_PTR_EXTENT_H"
+	sleep 0.3
+	"$HL_WLVPTR" "$1" "$2" "$HL_PTR_EXTENT_W" "$HL_PTR_EXTENT_H" "drag:$3,$4"
+}
+
 hl_super_drag() {
 	"$HL_WLVKBD" hold LEFTMETA -- "$HL_WLVPTR" "$1" "$2" "$HL_PTR_EXTENT_W" "$HL_PTR_EXTENT_H" "drag:$3,$4"
 }
