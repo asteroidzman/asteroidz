@@ -65,6 +65,23 @@ CURRENT_TEST="${CURRENT_TEST:-(no test)}"
 
 # ─── lifecycle ────────────────────────────────────────────────────────────
 
+# The private session bus started alongside the compositor, by recorded PID.
+# Never by pattern: a pattern that matched the user's real dbus-daemon would
+# take their whole desktop down with it.
+hl_dbus_stop() {
+	[ -n "${HL_DBUS_PID:-}" ] && kill "$HL_DBUS_PID" 2>/dev/null
+	HL_DBUS_PID=""
+	HL_DBUS_ADDR=""
+}
+
+# Run a busctl call against the test compositor's own bus. Empty output and a
+# non-zero status when there is no bus, which is what lets a portal module skip
+# itself rather than fail.
+hl_busctl() { # hl_busctl ARGS...
+	[ -n "${HL_DBUS_ADDR:-}" ] || return 1
+	busctl --address="$HL_DBUS_ADDR" "$@" 2>&1
+}
+
 hl_start() { # hl_start [EXTRA_KDL]
 	HL_OUTDIR="${HL_OUTDIR:-/tmp/asteroidz-hl-$$}"
 	mkdir -p "$HL_OUTDIR"
@@ -139,9 +156,32 @@ EOF
 	hl_unmount_xdg
 	rm -rf "$HL_XDG"; mkdir -p "$HL_XDG"; chmod 700 "$HL_XDG"
 
+	# A session bus of its very own.
+	#
+	# The compositor's portal backends (global shortcuts, inhibit) live on
+	# D-Bus, so without one they are simply not there to test. The real user
+	# bus is the wrong answer twice over: the live session already owns
+	# org.freedesktop.impl.portal.desktop.asteroidz, so a test instance could
+	# never take the name -- and if it somehow did, it would be answering
+	# Discord's push-to-talk and mpv's inhibit requests from a headless
+	# compositor with no screen. A private daemon is isolated by construction.
+	#
+	# Optional: nothing outside the portal modules needs it, and the rest of
+	# the suite must still run on a machine without dbus-daemon.
+	hl_dbus_stop
+	HL_DBUS_ADDR=""
+	if command -v dbus-daemon >/dev/null; then
+		exec 9>"$HL_OUTDIR/dbus.pid"
+		HL_DBUS_ADDR="$(dbus-daemon --session --fork --print-address --print-pid=9 2>/dev/null)"
+		exec 9>&-
+		HL_DBUS_PID="$(cat "$HL_OUTDIR/dbus.pid" 2>/dev/null)"
+		[ -n "$HL_DBUS_ADDR" ] || echo "hl_start: dbus-daemon failed; portal tests will skip" >&2
+	fi
+
 	# shellcheck disable=SC2086 -- HL_ENV is intentionally word-split
 	env -i HOME="$HOME" PATH="$PATH" XDG_RUNTIME_DIR="$HL_XDG" \
 		XDG_STATE_HOME="$HL_STATE" \
+		${HL_DBUS_ADDR:+DBUS_SESSION_BUS_ADDRESS="$HL_DBUS_ADDR"} \
 		WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 \
 		WLR_RENDERER="${HL_RENDERER:-gles2}" \
 		${HL_ENV:-} \
@@ -402,6 +442,7 @@ hl_stop() {
 	# After the compositor is down, not before: a client still holding a file
 	# under the mount keeps it busy and turns the unmount into a lazy one.
 	hl_unmount_xdg
+	hl_dbus_stop
 }
 
 # kill test-spawned windows and return to a known-clean state, WITHOUT

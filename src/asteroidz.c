@@ -1082,6 +1082,18 @@ static void printstatus(enum ipc_watch_type type);
 void ipc_notify_bar_config(void);
 void ipc_notify_config(const char *reason);
 void ipc_notify_idle(void);
+/* ipc/portals.h is later still, and three things that come before it need to
+ * ask the Inhibit backend something: checkidleinhibitor() whether anything is
+ * holding idling off, the exit prompt who asked not to be interrupted, and
+ * the session lock that it changed. */
+bool inhibit_portal_holds_idle(void);
+uint32_t inhibit_portal_generation(void);
+size_t inhibit_portal_count(void);
+bool inhibit_portal_get(size_t index, const char **app_id, const char **reason,
+						uint32_t *flags);
+bool inhibit_portal_logout_summary(char *buf, size_t cap);
+void inhibit_portal_screensaver_changed(void);
+void inhibit_portal_set_session_state(uint32_t state);
 static void powermgrsetmode(struct wl_listener *listener, void *data);
 static void wake_monitor(Monitor *m);
 static void wake_sleeping_monitors(void);
@@ -1625,7 +1637,7 @@ static struct wl_event_source *sync_keymap;
 #include "ext-protocol/frog-color-management.h"
 #include "fetch/fetch.h"
 #include "ipc/ipc.h"
-#include "ipc/global-shortcuts-portal.h"
+#include "ipc/portals.h"
 #include "layout/floating.h"
 #include "layout/arrange.h"
 #include "layout/dwindle.h"
@@ -3365,17 +3377,29 @@ void checkidleinhibitor(struct wlr_surface *exclude) {
 	if (idle_inhibit_manual)
 		inhibited = 1;
 
+	/* A portal client -- a sandboxed video player, an installer -- has no
+	 * surface to hang an idle_inhibit_v1 inhibitor on, so it asks over D-Bus
+	 * instead. Same lever, different door: see ipc/inhibit-portal.h. */
+	if (inhibit_portal_holds_idle())
+		inhibited = 1;
+
 	wlr_idle_notifier_v1_set_inhibited(idle_notifier, inhibited);
 
-	/* Both halves are compared, not just the effective one: with a video
+	/* Every half is compared, not just the effective one: with a video
 	 * player already holding an inhibitor, flipping the manual flag changes
 	 * nothing about whether idling happens, but it is still what the pill
-	 * showing that flag has to redraw from. */
+	 * showing that flag has to redraw from. The portal generation is here for
+	 * the same reason -- a second app taking an inhibition while one already
+	 * holds it moves nothing about sleeping, and everything about the list of
+	 * who is holding it that `get idle` hands out. */
 	static bool pushed_manual = false;
+	static uint32_t pushed_portal_gen = 0;
 	if ((bool)inhibited != idle_inhibited ||
-		idle_inhibit_manual != pushed_manual) {
+		idle_inhibit_manual != pushed_manual ||
+		inhibit_portal_generation() != pushed_portal_gen) {
 		idle_inhibited = inhibited;
 		pushed_manual = idle_inhibit_manual;
+		pushed_portal_gen = inhibit_portal_generation();
 		ipc_notify_idle();
 	}
 }
@@ -3464,7 +3488,7 @@ void cleanup(void) {
 	session_bus_finish();
 	cleanuplisteners();
 	modern_protocols_finish();
-	global_shortcuts_portal_finish();
+	portals_finish();
 #ifdef XWAYLAND
 	wlr_xwayland_destroy(xwayland);
 	xwayland = NULL;
@@ -5434,6 +5458,11 @@ destroy:
 	wlr_scene_node_destroy(&lock->scene->node);
 	cur_lock = NULL;
 	free(lock);
+	/* After the goto's target, so both ways out are covered: a lock client
+	 * that crashed without unlocking leaves `locked` set, and a monitor told
+	 * the screensaver had gone away when it had not would be worse than not
+	 * being told at all. */
+	inhibit_portal_screensaver_changed();
 }
 
 void destroylocksurface(struct wl_listener *listener, void *data) {
@@ -6298,6 +6327,7 @@ void locksession(struct wl_listener *listener, void *data) {
 	lock->scene = wlr_scene_tree_create(layers[LyrBlock]);
 	cur_lock = lock->lock = session_lock;
 	locked = 1;
+	inhibit_portal_screensaver_changed();
 
 	LISTEN(&session_lock->events.new_surface, &lock->new_surface,
 		   createlocksurface);
@@ -8594,7 +8624,7 @@ void setup(void) {
 	 * clients from the Unix socket, manging Wayland globals, and so on. */
 	dpy = wl_display_create();
 	event_loop = wl_display_get_event_loop(dpy);
-	global_shortcuts_portal_init();
+	portals_init();
 
 	ipc_init(event_loop);
 	session_bus_init();

@@ -677,12 +677,16 @@ bool quit_confirm_handle_key(uint32_t state, xkb_keysym_t sym) {
 		return true; /* swallow the releases of keys we swallowed the press of */
 	if (sym == XKB_KEY_Return || sym == XKB_KEY_KP_Enter) {
 		quit_confirm_hide();
+		/* Ending is emitted from inhibit_portal_finish(), which runs in
+		 * cleanup() and so covers the signal path too -- not here, where it
+		 * would only cover the one exit a human confirmed. */
 		wl_display_terminate(dpy);
 		return true;
 	}
 	if (sym == XKB_KEY_Escape) {
 		wlr_log(WLR_INFO, "exit cancelled");
 		quit_confirm_hide();
+		inhibit_portal_set_session_state(1 /* Running */);
 		return true;
 	}
 	return true; /* everything else: swallowed, prompt stays up */
@@ -711,11 +715,24 @@ int32_t quit(const Arg *arg) {
 	 * own palette above, because "urgent" is the one entry whose whole job is
 	 * to be noticed, and it is legible on this prompt's fixed dark panel
 	 * whatever matugen makes of it. */
-	char msg[192];
+	/* An application that took a logout inhibition through the portal gets a
+	 * line of its own here, naming it. The compositor is the session, so
+	 * there is no session manager to veto the exit -- and refusing outright
+	 * would be the wrong answer anyway, since the person at the keyboard
+	 * outranks a background request. What they were missing is the fact, and
+	 * the fact is what this puts in front of them: the unsaved editor gets
+	 * named instead of dying quietly behind a prompt that said nothing.
+	 * See ipc/inhibit-portal.h. */
+	char busy[256];
+	bool inhibited = inhibit_portal_logout_summary(busy, sizeof(busy));
+
+	char msg[512];
 	snprintf(msg, sizeof(msg),
 			 "Exit asteroidz?\n"
+			 "%s%s"
 			 "<b><span foreground=\"#%02x%02x%02x\">ENTER</span></b> to exit, "
 			 "Esc to stay",
+			 inhibited ? busy : "", inhibited ? "\n" : "",
 			 (unsigned)lround(config.theme.urgent_color[0] * 255.0f),
 			 (unsigned)lround(config.theme.urgent_color[1] * 255.0f),
 			 (unsigned)lround(config.theme.urgent_color[2] * 255.0f));
@@ -727,7 +744,12 @@ int32_t quit(const Arg *arg) {
 		return 0;
 	}
 	quit_confirm.active = true;
-	wlr_log(WLR_INFO, "exit requested: waiting for confirmation");
+	/* Query End, for anything monitoring the session: the spec's own name for
+	 * "the session is being asked to end and has not yet". Nothing waits on
+	 * the acknowledgement -- what the exit waits for is a keypress. */
+	inhibit_portal_set_session_state(2 /* Query End */);
+	wlr_log(WLR_INFO, "exit requested: waiting for confirmation%s",
+			inhibited ? " (an application asked not to be interrupted)" : "");
 	return 0;
 }
 

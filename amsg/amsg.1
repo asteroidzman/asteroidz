@@ -32,10 +32,17 @@ name. The cursor is drawn by the compositor and does not appear in a
 screenshot, so this is the only way to check it from outside the client.
 .TP
 \fBget idle\fR
-Return whether idling is currently held off. \fBinhibited\fR is what the idle
-notifier was told, and answers "will this machine sleep"; \fBmanual\fR is the
-flag \fBtoggle_idle_inhibit\fR owns, separated out because a client's own
-inhibitor (a video player's, say) is not something a toggle can clear.
+Return whether idling is currently held off, and by whom. \fBinhibited\fR is
+what the idle notifier was told, and answers "will this machine sleep";
+\fBmanual\fR is the flag \fBtoggle_idle_inhibit\fR owns, separated out because a
+client's own inhibitor (a video player's, say) is not something a toggle can
+clear. \fBportal\fR lists every live
+\fBorg.freedesktop.portal.Inhibit\fR request -- \fBapp_id\fR, \fBreason\fR, the
+raw \fBflags\fR bitmask and a boolean per flag (\fBlogout\fR,
+\fBuser_switch\fR, \fBsuspend\fR, \fBidle\fR). Such a request arrives over
+D\-Bus and has no window to point at, so this is the only place it is visible;
+an entry that appears here without raising \fBinhibited\fR is one asteroidz
+records and does not enforce.
 .TP
 \fBget keymode\fR
 Return current keymode.
@@ -289,9 +296,10 @@ Stream updates for all clients.
 .TP
 \fBwatch idle\fR
 Stream idle-inhibit changes, in the shape \fBget idle\fR returns. Pushed when
-either field changes -- including when the manual flag flips while a client
+any field changes -- including when the manual flag flips while a client
 inhibitor already holds idling off, which changes nothing about sleeping but is
-still what a pill showing that flag has to redraw from.
+still what a pill showing that flag has to redraw from, and including a second
+portal request arriving while one already holds it, which moves only the list.
 .TP
 \fBwatch keymode\fR
 Stream keymode changes.

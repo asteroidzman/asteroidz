@@ -25,7 +25,7 @@ description: Control asteroidz programmatically using amsg.
 | :--- | :--- |
 | `get version` | Returns the current version of the compositor. |
 | `get cursorpos` | Returns the global pointer position (`x`, `y`), the monitor under it, and what the pointer currently looks like: `cursor-shape` is the [`wp_cursor_shape_v1`](https://wayland.app/protocols/cursor-shape-v1) name the focused client last asked for (`"default"`, `"pointer"`, `"text"`, …, or `"unset"` if none has), and `cursor-surface` is `true` when the client supplied a surface of its own instead, in which case there is no shape to name. |
-| `get idle` | Returns `inhibited` (what the idle notifier was told — will this machine sleep) and `manual` (the flag `toggle_idle_inhibit` owns). Two fields because a client's own inhibitor is not something a toggle can clear. |
+| `get idle` | Returns `inhibited` (what the idle notifier was told — will this machine sleep), `manual` (the flag `toggle_idle_inhibit` owns), and `portal` (every live [Inhibit portal](./configuration/xdg-portals.md#inhibit) request, with the app that asked, its reason and its flags). Separate fields because a client's own inhibitor is not something a toggle can clear, and a portal request has no window to point at. |
 | `get keymode` | Returns the current active keyboard mode (e.g., normal, insert). |
 | `get keyboardlayout` | Returns the active XKB layout (abbreviated). |
 | `get monitor <name>` | Returns full JSON details for a specific monitor. |

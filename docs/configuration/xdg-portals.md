@@ -12,6 +12,72 @@ You can customize portal settings via the following paths:
 
 > **Warning:** If you previously added `dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP=wlroots` to your config, remove it. asteroidz now handles this automatically.
 
+## Portals asteroidz Implements Itself
+
+asteroidz is its own portal backend for two interfaces, served straight from
+the compositor on `org.freedesktop.impl.portal.desktop.asteroidz`. Neither
+needs a helper daemon installed, and both are selected by default in the
+shipped `asteroidz-portals.conf`:
+
+| Interface | What it gives you |
+| --- | --- |
+| `org.freedesktop.impl.portal.GlobalShortcuts` | Global shortcuts and push-to-talk for portal-aware apps (Discord, ashpd apps). A shortcut the app gives no usable trigger for raises a modal key-picker, and the pick persists in `~/.config/asteroidz/global-shortcuts`. |
+| `org.freedesktop.impl.portal.Inhibit` | "Not now" — an app asking the screen not to blank, or the session not to end. |
+
+### Inhibit
+
+A sandboxed application has no Wayland surface to hang an `idle-inhibit-v1`
+inhibitor on, so it asks over D-Bus instead. With no backend for that
+interface, `xdg-desktop-portal` answers those requests with *"no such
+interface"* and they silently do nothing — which is how a full-screen video
+ends up blanking halfway through on a desktop where the same player's native
+inhibitor would have worked.
+
+The portal defines four things an app can ask to block. asteroidz enforces
+two of them, records all four, and does not pretend about the rest:
+
+| Flag | Asked for | What asteroidz does |
+| --- | --- | --- |
+| `1` | Logout | **Named in the exit prompt.** The compositor *is* the session — there is no session manager to veto an exit, and the person at the keyboard outranks a background request. What honouring this means is that the confirmation prompt says who asked, and why, instead of the unsaved editor dying quietly behind a prompt that said nothing. |
+| `2` | User switch | Recorded and listed, not enforced — asteroidz has no user switching, so there is nothing to inhibit. |
+| `4` | Suspend | **Held**, as idle inhibition. |
+| `8` | Idle | **Held**, against `wlr-idle-notifier-v1` — exactly like a client's own idle-inhibitor, so blanking, locking and an idle daemon's suspend are all held off. |
+
+Suspend is deliberately the same lever as idle rather than a logind sleep
+block. Idle-driven suspend is what an app asking not to be suspended almost
+always means, and it is the half a compositor is genuinely in charge of. A
+logind inhibitor lock would also override your own `systemctl suspend` and
+your laptop lid — so one leaked request from one crashed application would
+turn closing the lid into a no-op, with nothing on screen to say why. What is
+enforced is the part that goes away when the app does.
+
+An inhibition ends when the application closes its request, when the portal it
+came through drops off the bus (watched for directly, so a crashed
+`xdg-desktop-portal` cannot leave the machine awake for the rest of the
+session), or at shutdown.
+
+**Seeing who is holding it.** An inhibition taken this way has no window to
+point at, so `get idle` lists them:
+
+```console
+$ amsg get idle
+{"inhibited":true,"manual":false,
+ "portal":[{"app_id":"org.mpv.Player","reason":"Playing video","flags":8,
+            "logout":false,"user_switch":false,"suspend":false,"idle":true}]}
+```
+
+`inhibited` is the honest answer to "will this machine sleep"; an entry that
+appears in `portal` without raising it is one asteroidz recorded and does not
+enforce. `watch idle` pushes on any change to either, including a change that
+only moves the list. See [IPC](../ipc.md).
+
+**Monitoring the session state.** `CreateMonitor` sessions receive
+`StateChanged` with `screensaver-active` (tracking the `ext-session-lock`
+state) and `session-state` — Running, Query End while the exit prompt is up,
+and Ending at shutdown. `QueryEndResponse` is accepted and logged, but nothing
+waits on it: Query End here means a person is looking at the exit prompt, and
+the exit waits for their keypress, not for a bus round trip.
+
 ## Screen Sharing
 
 To enable screen sharing (OBS, Discord, WebRTC), you need `xdg-desktop-portal-wlr`.
@@ -98,8 +164,13 @@ default=gtk
 org.freedesktop.impl.portal.ScreenCast=wlr
 org.freedesktop.impl.portal.Screenshot=wlr
 org.freedesktop.impl.portal.Secret=gnome-keyring
-org.freedesktop.impl.portal.Inhibit=none
+org.freedesktop.impl.portal.Inhibit=asteroidz
+org.freedesktop.impl.portal.GlobalShortcuts=asteroidz
 ```
+
+A user config **replaces** the shipped one rather than merging with it, so
+copy the two `asteroidz` lines across when you write your own — leaving them
+out silently gives back the "no such interface" behaviour they exist to fix.
 
 ## File Picker (File Selector)
 

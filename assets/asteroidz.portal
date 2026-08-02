@@ -1,4 +1,4 @@
 [portal]
 DBusName=org.freedesktop.impl.portal.desktop.asteroidz
-Interfaces=org.freedesktop.impl.portal.GlobalShortcuts
+Interfaces=org.freedesktop.impl.portal.GlobalShortcuts;org.freedesktop.impl.portal.Inhibit;
 UseIn=asteroidz

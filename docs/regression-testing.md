@@ -167,6 +167,18 @@ focused) between test cases so they can't leak state into one another.
 `hl_assert`/`hl_assert_eq`/`hl_assert_true`/`hl_assert_false` are the
 pass/fail primitives, tallied globally; `hl_summary` prints totals.
 
+`hl_start` also brings up a **private `dbus-daemon --session`** and points the
+compositor at it, because the portal backends (global shortcuts, inhibit) live
+on D-Bus and without a bus they are not there to test. The real user bus is the
+wrong answer twice over: your live session already owns
+`org.freedesktop.impl.portal.desktop.asteroidz`, so a test instance could never
+take the name — and if it somehow did, a headless compositor with no screen
+would be the thing answering Discord's push-to-talk. `hl_busctl` runs `busctl`
+against that private bus, and returns non-zero when there is none, which is
+what lets `inhibit-portal` skip itself on a machine with no `dbus-daemon`
+installed rather than fail. The daemon is killed by recorded PID in `hl_stop`,
+never by pattern.
+
 A test that needs a daemon the bar talks to should **stand one in** rather
 than let the real one start: the voice-menu test serves a synthetic snapshot
 over the instance's own socket with `socat` and sets `discord { daemon-cmd
@@ -211,14 +223,26 @@ so the harness includes a few small purpose-built Wayland clients:
   bound key is held at the moment focus arrives, and the release that would
   stop it is deliberately swallowed. Use `hl_spawn_wlkeys` and
   `hl_wlkeys_last_enter`.
+- **`contrib/portal-inhibit-client.py`** — not a Wayland client at all: a D-Bus
+  one that takes an `org.freedesktop.impl.portal.Inhibit` request and then
+  *stays connected*. `busctl` cannot test that interface, because an inhibition
+  lives only as long as the connection that asked for it — asteroidz watches
+  for the owner dropping off the bus so a crashed `xdg-desktop-portal` cannot
+  leave the machine awake forever, and `busctl` exits the instant its call
+  returns, so every inhibition it takes is reclaimed a millisecond later,
+  correctly and uselessly. It speaks the *impl* interface directly, standing in
+  for what `xdg-desktop-portal` would send, so no portal daemon has to be
+  installed or raced and the object paths are the test's to choose. `--monitor`
+  prints each `StateChanged` as a JSON line.
 
 ## Module coverage
 
-Twenty-eight modules as of writing: `layouts`,
-`window-states`, `tags`, `focus`, `scratchpad`, `geometry`, `dwindle`,
-`overview`, `multimonitor`, `mousebind`, `hdr`, `scroller`, `animations`,
-`layer-shell`, `ipc-watch`, `keybind-combo`, `set-option`, `config-ipc`,
-`config-write`, `rules-ipc`, `border-colors`,
+Thirty-two modules as of writing: `layouts`,
+`window-states`, `tags`, `tag-rules-ipc`, `focus`, `scratchpad`, `geometry`,
+`dwindle`, `overview`, `multimonitor`, `mousebind`, `hdr`, `scroller`,
+`animations`, `layer-shell`, `ipc-watch`, `keybind-combo`, `set-option`,
+`config-ipc`, `config-write`, `rules-ipc`, `border-colors`, `idle`,
+`inhibit-portal`, `prompt`,
 `output`, `vrr`, `effects`, `floating`, `quit-confirm`, `screenshot-ui`,
 `fullscreen-bleed`, plus `destroy-virtual-output` (gated
 behind `HL_ALLOW_DESTRUCTIVE=1`).
@@ -230,6 +254,20 @@ measures the overlay's pointer confinement, which doubles as the only handle on
 "is the overlay up" the socket offers; `fullscreen-bleed` compares pixels on the
 neighbouring output before and after a fullscreen round trip, because the
 geometry can be correct while the surface is drawn past it.
+
+`inhibit-portal` is the only module that leaves Wayland entirely: it drives
+`org.freedesktop.impl.portal.Inhibit` over the private bus described above, and
+skips itself when there is no `dbus-daemon` or no PyGObject. Its assertions are
+weighted towards **release** rather than acquisition, because a stub that
+accepts an inhibition and does nothing and a backend that takes one and never
+gives it back fail in the same direction — silently, hours later, on a flat
+battery. So it closes a request while its client stays connected (the
+application's path), `SIGKILL`s a client that is still holding one (the crash
+path), and checks that releasing one client's inhibition does not release
+another's. It also carries the one test for the refactor that let two backends
+share a bus name: a global-shortcuts session must still close through the now
+shared `Session` object, which is a failure that would otherwise stay invisible
+until an app tried to close one.
 
 `bar` is the pattern to copy for anything that needs a **different config**
 than the shared one: it never turns the bar on globally (that would

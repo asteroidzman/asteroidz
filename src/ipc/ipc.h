@@ -325,17 +325,42 @@ static cJSON *build_monitor_json(Monitor *m) {
 
 /* Whether idling is being held off, and by whom.
  *
- * Two fields rather than one, because a client that wants to DRAW this state
+ * Two flags rather than one, because a client that wants to DRAW this state
  * and a client that wants to change it need different answers. `inhibited` is
  * what the idle notifier was actually told and is the honest answer to "will
  * this machine sleep"; `manual` is the flag `toggle_idle_inhibit` owns, and is
  * the only one a bar's toggle may show as its own -- a pill lit because mpv
  * holds an inhibitor would go dark when the user clicked it, having in fact
- * changed nothing they can see. */
+ * changed nothing they can see.
+ *
+ * `portal` is the third answer, to a question the first two cannot settle:
+ * WHO. A request that arrives over org.freedesktop.portal.Inhibit has no
+ * window and no surface, so there is nothing on screen to point at when the
+ * machine will not sleep -- which is exactly the shape of the failure that
+ * matters, a laptop awake in a bag with no visible cause. Each entry carries
+ * the app that asked and the reason it gave; `flags` is the portal's own
+ * bitmask (1 logout, 2 user-switch, 4 suspend, 8 idle), so an entry that
+ * appears here without raising `inhibited` is one asteroidz recorded and does
+ * not enforce. See src/ipc/inhibit-portal.h. */
 static cJSON *build_idle_response(void) {
 	cJSON *resp = cJSON_CreateObject();
 	cJSON_AddBoolToObject(resp, "inhibited", idle_inhibited);
 	cJSON_AddBoolToObject(resp, "manual", idle_inhibit_manual);
+
+	cJSON *portal = cJSON_AddArrayToObject(resp, "portal");
+	const char *app_id, *reason;
+	uint32_t flags;
+	for (size_t i = 0; inhibit_portal_get(i, &app_id, &reason, &flags); i++) {
+		cJSON *entry = cJSON_CreateObject();
+		cJSON_AddStringToObject(entry, "app_id", app_id);
+		cJSON_AddStringToObject(entry, "reason", reason);
+		cJSON_AddNumberToObject(entry, "flags", flags);
+		cJSON_AddBoolToObject(entry, "logout", flags & 1);
+		cJSON_AddBoolToObject(entry, "user_switch", flags & 2);
+		cJSON_AddBoolToObject(entry, "suspend", flags & 4);
+		cJSON_AddBoolToObject(entry, "idle", flags & 8);
+		cJSON_AddItemToArray(portal, entry);
+	}
 	return resp;
 }
 

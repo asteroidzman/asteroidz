@@ -5,18 +5,16 @@
  * key presses/releases emit Activated/Deactivated and are consumed.
  *
  * Registered as the "asteroidz" portal backend via
- * /usr/share/xdg-desktop-portal/portals/asteroidz.portal.
+ * /usr/share/xdg-desktop-portal/portals/asteroidz.portal. The connection, the
+ * bus name and the shared Session object belong to portal-bus.h, which every
+ * backend here exports onto.
  */
 #include <stdio.h>
 #include <strings.h>
 #include <sys/stat.h>
 #include <systemd/sd-bus.h>
 
-#define GS_BUS_NAME "org.freedesktop.impl.portal.desktop.asteroidz"
-#define GS_OBJ_PATH "/org/freedesktop/portal/desktop"
 #define GS_IFACE "org.freedesktop.impl.portal.GlobalShortcuts"
-#define GS_SESSION_IFACE "org.freedesktop.impl.portal.Session"
-#define GS_SESSION_PREFIX "/org/freedesktop/portal/desktop/session"
 #define GS_MOD_MASK                                                           \
 	(WLR_MODIFIER_CTRL | WLR_MODIFIER_ALT | WLR_MODIFIER_SHIFT |               \
 	 WLR_MODIFIER_LOGO)
@@ -39,10 +37,8 @@ typedef struct GlobalShortcutsSession {
 	struct wl_list shortcuts; // GlobalShortcut.link
 } GlobalShortcutsSession;
 
-static sd_bus *gs_bus;
 static uint32_t gs_portal_version = 1;
-static sd_bus_slot *gs_slot, *gs_session_slot;
-static struct wl_event_source *gs_bus_source;
+static sd_bus_slot *gs_slot;
 static struct wl_list gs_sessions;
 
 /* Interactive key-picker state. asteroidz's portal binds the app's
@@ -413,16 +409,17 @@ static int gs_handle_list_shortcuts(sd_bus_message *msg, void *data,
 	return gs_reply_shortcuts(msg, session);
 }
 
-static int gs_handle_session_close(sd_bus_message *msg, void *data,
-								   sd_bus_error *err) {
-	GlobalShortcutsSession *session =
-		gs_session_find(sd_bus_message_get_path(msg));
-	if (session) {
-		wlr_log(WLR_INFO, "global shortcuts session closed for %s",
-				session->app_id);
-		gs_session_destroy(session);
-	}
-	return sd_bus_reply_method_return(msg, "");
+/* Registered with portal-bus.h, which owns the one Session vtable every
+ * backend's sessions live under. False means the path belongs to some other
+ * backend's session, not that closing failed. */
+static bool gs_session_close(const char *path) {
+	GlobalShortcutsSession *session = gs_session_find(path);
+	if (!session)
+		return false;
+	wlr_log(WLR_INFO, "global shortcuts session closed for %s",
+			session->app_id);
+	gs_session_destroy(session);
+	return true;
 }
 
 static const sd_bus_vtable gs_vtable[] = {
@@ -441,19 +438,11 @@ static const sd_bus_vtable gs_vtable[] = {
 	SD_BUS_VTABLE_END,
 };
 
-static const sd_bus_vtable gs_session_vtable[] = {
-	SD_BUS_VTABLE_START(0),
-	SD_BUS_METHOD("Close", "", "", gs_handle_session_close,
-				  SD_BUS_VTABLE_UNPRIVILEGED),
-	SD_BUS_PROPERTY("version", "u", NULL, 0, SD_BUS_VTABLE_PROPERTY_CONST),
-	SD_BUS_VTABLE_END,
-};
-
 static void gs_emit_state(GlobalShortcutsSession *session,
 						  GlobalShortcut *shortcut, bool activated,
 						  uint32_t time_msec) {
 	sd_bus_message *sig = NULL;
-	if (sd_bus_message_new_signal(gs_bus, &sig, GS_OBJ_PATH, GS_IFACE,
+	if (sd_bus_message_new_signal(portal_bus, &sig, PORTAL_OBJ_PATH, GS_IFACE,
 								  activated ? "Activated" : "Deactivated") < 0)
 		return;
 	sd_bus_message_append(sig, "ost", session->path, shortcut->id,
@@ -462,14 +451,14 @@ static void gs_emit_state(GlobalShortcutsSession *session,
 	sd_bus_message_close_container(sig);
 	sd_bus_send(NULL, sig, NULL);
 	sd_bus_message_unref(sig);
-	sd_bus_flush(gs_bus);
+	sd_bus_flush(portal_bus);
 }
 
 /* Emit ShortcutsChanged so a bound app learns the new trigger after a pick. */
 static void gs_emit_changed(GlobalShortcutsSession *session) {
 	sd_bus_message *sig = NULL;
 	GlobalShortcut *sc;
-	if (sd_bus_message_new_signal(gs_bus, &sig, GS_OBJ_PATH, GS_IFACE,
+	if (sd_bus_message_new_signal(portal_bus, &sig, PORTAL_OBJ_PATH, GS_IFACE,
 								  "ShortcutsChanged") < 0)
 		return;
 	sd_bus_message_append(sig, "o", session->path);
@@ -490,7 +479,7 @@ static void gs_emit_changed(GlobalShortcutsSession *session) {
 	sd_bus_message_close_container(sig); /* a(sa{sv}) */
 	sd_bus_send(NULL, sig, NULL);
 	sd_bus_message_unref(sig);
-	sd_bus_flush(gs_bus);
+	sd_bus_flush(portal_bus);
 }
 
 /* Inverse of gs_parse_trigger: build "CTRL+ALT+F13" from mods + keysym. */
@@ -629,7 +618,7 @@ bool global_shortcuts_handle_key(uint32_t state, uint32_t mods,
 	bool consumed = false;
 	xkb_keysym_t lsym;
 
-	if (!gs_bus || wl_list_empty(&gs_sessions))
+	if (!portal_bus || wl_list_empty(&gs_sessions))
 		return false;
 	lsym = xkb_keysym_to_lower(sym);
 
@@ -654,62 +643,27 @@ bool global_shortcuts_handle_key(uint32_t state, uint32_t mods,
 	return consumed;
 }
 
-static int gs_bus_dispatch(int fd, uint32_t mask, void *data) {
-	while (sd_bus_process(gs_bus, NULL) > 0)
-		;
-	return 0;
-}
-
+/* Export the interface on the shared portal connection. The connection, the
+ * bus name and the Session object all belong to portal-bus.h -- see the note
+ * there about why a backend does not get one of its own. */
 void global_shortcuts_portal_init(void) {
-	int ret;
-
 	wl_list_init(&gs_sessions);
-
-	ret = sd_bus_default_user(&gs_bus);
-	if (ret < 0) {
-		wlr_log(WLR_ERROR, "global shortcuts: no session bus (%s)",
-				strerror(-ret));
-		gs_bus = NULL;
+	if (!portal_bus)
 		return;
-	}
-
-	sd_bus_add_object_vtable(gs_bus, &gs_slot, GS_OBJ_PATH, GS_IFACE,
+	sd_bus_add_object_vtable(portal_bus, &gs_slot, PORTAL_OBJ_PATH, GS_IFACE,
 							 gs_vtable, &gs_portal_version);
-	sd_bus_add_fallback_vtable(gs_bus, &gs_session_slot, GS_SESSION_PREFIX,
-							   GS_SESSION_IFACE, gs_session_vtable, NULL,
-							   &gs_portal_version);
-
-	ret = sd_bus_request_name(gs_bus, GS_BUS_NAME, 0);
-	if (ret < 0) {
-		wlr_log(WLR_ERROR, "global shortcuts: cannot own %s (%s)", GS_BUS_NAME,
-				strerror(-ret));
-		sd_bus_unref(gs_bus);
-		gs_bus = NULL;
-		return;
-	}
-
-	gs_bus_source = wl_event_loop_add_fd(event_loop, sd_bus_get_fd(gs_bus),
-										 WL_EVENT_READABLE, gs_bus_dispatch,
-										 NULL);
-	while (sd_bus_process(gs_bus, NULL) > 0)
-		;
-	wlr_log(WLR_INFO, "global shortcuts portal backend at %s", GS_BUS_NAME);
+	portal_bus_add_session_closer(gs_session_close);
 }
 
 void global_shortcuts_portal_finish(void) {
 	GlobalShortcutsSession *session, *tmp;
 
-	if (!gs_bus)
+	if (!portal_bus)
 		return;
 	if (gs_pick.active)
 		gs_pick_finish(0, XKB_KEY_NoSymbol, true);
 	wl_list_for_each_safe(session, tmp, &gs_sessions, link)
 		gs_session_destroy(session);
-	if (gs_bus_source)
-		wl_event_source_remove(gs_bus_source);
 	sd_bus_slot_unref(gs_slot);
-	sd_bus_slot_unref(gs_session_slot);
-	sd_bus_release_name(gs_bus, GS_BUS_NAME);
-	sd_bus_unref(gs_bus);
-	gs_bus = NULL;
+	gs_slot = NULL;
 }
