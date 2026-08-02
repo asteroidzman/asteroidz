@@ -84,6 +84,14 @@ one\-line explanation. \fBlayout\fR is an enum over the real layout names, and
 \fBscroller\-ignore\-proportion\-single\fR is a tri\-state rather than a
 boolean.
 .TP
+\fBset\-tag\-rules\fR <json>|@\-
+Add, update or remove per\-tag layout rules. The body is
+\fB{"changes":[...]}\fR, each change an \fBadd\fR, an \fBupdate\fR with the
+\fBindex\fR from \fBget tag\-rules\fR, or a \fBremove\fR. Blocks are edited
+by byte span, so comments and formatting survive. Use \fB@\-\fR to read the
+body from standard input: the protocol is newline\-delimited, so a
+pretty\-printed body passed as an argument would be read as several commands.
+.TP
 \fBdispatch\fR <func>[,arg...] [client,<id>]
 Invoke an internal compositor function.
 The function name and its arguments are separated by commas.

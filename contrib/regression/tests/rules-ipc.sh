@@ -271,6 +271,50 @@ _ri_set_binds() { # _ri_set_binds '<json>'
 		"$HL_REPO/build/amsg" set-binds @- 2>/dev/null
 }
 
+test_a_second_rule_is_added_beside_the_first_not_inside_it() {
+	# The case a test that adds the FIRST rule cannot reach.
+	#
+	# rw_insert_point took "the last node of this name has a body" to mean "go
+	# inside it". True of `binds { }`, which holds many chords; false of
+	# `window-rule { }`, which is a sibling with a body of its own. So the second
+	# rule was spliced INSIDE the first:
+	#
+	#     window-rule { match app-id=^mpv$; isfloating 	window-rule {
+	#         match app-id="probe-nest"
+	#     }
+	#     }
+	#
+	# The file still parsed, kdl_window_rule ignored the nested node, the count
+	# did not move, and the reply said {"ok":true,"applied":1}. A settings window
+	# offering "New rule" damaged an existing rule and reported success.
+	_ri_save
+	_ri_set_rules '{"changes":[{"op":"add","fields":{"appid":"ri-first"}}]}' >/dev/null
+	local before; before="$(hl_get "get window-rules" | jq '.count')"
+
+	_ri_set_rules '{"changes":[{"op":"add","fields":{"appid":"ri-second"}}]}' >/dev/null
+	local after; after="$(hl_get "get window-rules" | jq '.count')"
+
+	hl_assert_eq "adding a second rule increases the count" \
+		"$after" "$((before + 1))"
+	hl_assert_true "and the first rule is still there" \
+		"$([ "$(_ri_index_of ri-first)" -ge 0 ] && echo true || echo false)"
+	hl_assert_true "and so is the second" \
+		"$([ "$(_ri_index_of ri-second)" -ge 0 ] && echo true || echo false)"
+	# The shape on disk, not just the count.
+	#
+	# INDENTATION, not "both on one line" -- which is what this asserted first
+	# and it passed against the bug: the nested block only shares a line with its
+	# host when the host was written on one line. A top-level rule starts at
+	# column 0, so anything indented is inside something.
+	hl_assert_eq "no window-rule block is nested inside another" \
+		"$(grep -cE '^[[:space:]]+window-rule' "$HL_CONFIG")" "0"
+	hl_assert_true "and the file still parses" \
+		"$("$HL_ASTEROIDZ" -p -c "$HL_CONFIG" 2>/dev/null | grep -q 'config OK' \
+			&& echo true || echo false)"
+
+	_ri_restore
+}
+
 test_set_window_rules_adds_a_rule_and_it_survives_a_reload() {
 	_ri_save
 	local r; r="$(_ri_set_rules '{"changes":[{"op":"add","fields":{"appid":"ri-add","isfloating":"1","tags":"3"}}]}')"

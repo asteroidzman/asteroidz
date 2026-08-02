@@ -703,6 +703,8 @@ static void handle_command(int client_fd, const char *cmd_raw) {
 			return;
 		}
 		resp = build_monitor_tags_response(m);
+	} else if (strncmp(cmd_raw, "set-tag-rules ", 14) == 0) {
+		resp = handle_set_tag_rules(cmd_raw + 14);
 	} else if (strncmp(cmd_raw, "set-window-rules ", 17) == 0) {
 		resp = handle_set_window_rules(cmd_raw + 17);
 	} else if (strncmp(cmd_raw, "set-binds ", 10) == 0) {

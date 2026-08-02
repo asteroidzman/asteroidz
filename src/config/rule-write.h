@@ -200,6 +200,78 @@ static bool rw_render_rule(const RuleWriteChange *c, const char *indent,
 	return w >= 0 && (size_t)w < cap - o;
 }
 
+/* One `tag N { ... }` block.
+ *
+ * The id is the node's ARGUMENT rather than a child, which is the one shape
+ * difference from a window rule: `tag 3 { layout "tile" }`, not
+ * `tag { id 3; ... }`. kdl_tag reads args[0] as the id and everything else from
+ * the children, so a writer that emitted it as a child would produce a block
+ * applying to tag 0.
+ */
+static bool rw_render_tag(const RuleWriteChange *c, const char *indent,
+						  char *out, size_t cap) {
+	const char *id = NULL;
+	char body[2048];
+	size_t bo = 0;
+
+	for (size_t s = 0; s < TAG_SCHEMA_COUNT; s++) {
+		const TagField *f = &tag_schema[s];
+		const char *val = NULL;
+		for (size_t i = 0; i < c->n_fields; i++)
+			if (!strcmp(c->keys[i], f->key) || !strcmp(c->keys[i], f->nice)) {
+				val = c->vals[i];
+				break;
+			}
+		if (!val || !*val)
+			continue;
+
+		if (!strcmp(f->key, "id")) {
+			id = val;
+			continue;
+		}
+
+		char quoted[512];
+		int32_t w;
+		switch (f->type) {
+		case RULE_TRISTATE:
+			/* A bare node means 1, the way kdl_tag reads an argument-less child.
+			 * For 0 the value is written, and `0` rather than `#false`: the
+			 * tagrule parser runs atoi over it. */
+			w = strcmp(val, "0")
+					? snprintf(body + bo, sizeof(body) - bo, "%s\t%s\n", indent,
+							   f->nice)
+					: snprintf(body + bo, sizeof(body) - bo, "%s\t%s 0\n",
+							   indent, f->nice);
+			break;
+		case RULE_STRING:
+		case RULE_ENUM:
+			if (!rw_quote(val, quoted, sizeof(quoted)))
+				return false;
+			w = snprintf(body + bo, sizeof(body) - bo, "%s\t%s %s\n", indent,
+						 f->nice, quoted);
+			break;
+		default: /* numbers */
+			w = snprintf(body + bo, sizeof(body) - bo, "%s\t%s %s\n", indent,
+						 f->nice, val);
+			break;
+		}
+		if (w < 0 || (size_t)w >= sizeof(body) - bo)
+			return false;
+		bo += (size_t)w;
+	}
+
+	/* Without an id there is nothing to write: a tag rule is identified by which
+	 * tag it is for, and one without would apply to tag 0 -- the ~0 tag -- which
+	 * is never what an editor meant to say. */
+	if (!id || !*id)
+		return false;
+	if (bo == 0)
+		return false; /* a rule that sets nothing */
+
+	int32_t w = snprintf(out, cap, "tag %s {\n%s%s}", id, body, indent);
+	return w >= 0 && (size_t)w < cap;
+}
+
 /* One chord node inside a `binds` block. */
 static bool rw_render_bind(const RuleWriteChange *c, const char *indent,
 						   char *out, size_t cap) {
@@ -303,6 +375,49 @@ static bool rw_plan_rules(RuleWriteBatch *b) {
 	return ok;
 }
 
+static bool rw_plan_tags(RuleWriteBatch *b) {
+	bool ok = true;
+	for (size_t i = 0; i < b->n; i++) {
+		RuleWriteChange *c = &b->changes[i];
+		if (c->op == RW_ADD) {
+			if (nconfig_files < 1) {
+				rw_fail(c, "no-writable-file",
+						"the config was not read from any file");
+				ok = false;
+				continue;
+			}
+			c->file = 0;
+			continue;
+		}
+		const RuleOrigin *o = tag_source_at(c->index);
+		if (!o) {
+			rw_fail(c, "unknown-rule", "no tag rule at index %d", c->index);
+			ok = false;
+			continue;
+		}
+		if (!o->editable || o->file < 0 || o->file >= nconfig_files) {
+			/* A legacy `tagrule=` leaf has no node and no span, and rewriting it
+			 * would mean writing the comma form -- the one thing this writer
+			 * deliberately does not know how to do. */
+			rw_fail(c, "not-editable",
+					"this rule was not written as a `tag` block");
+			ok = false;
+			continue;
+		}
+		const char *file = config_files[o->file];
+		char why[64] = "";
+		if (config_file_is_foreign(file, why, sizeof(why))) {
+			rw_fail(c, "read-only-source", "%s is generated (%s)", file, why);
+			ok = false;
+			continue;
+		}
+		c->file = o->file;
+		c->span_start = o->span_start;
+		c->span_end = o->span_end;
+	}
+	return ok;
+}
+
 static bool rw_plan_binds(RuleWriteBatch *b) {
 	bool ok = true;
 	for (size_t i = 0; i < b->n; i++) {
@@ -372,8 +487,30 @@ static void rw_sort_desc(RuleWriteChange **v, size_t n) {
  * ones above it -- which is what a person adding a rule means. Appending after
  * the last EXISTING rule gets both: it wins, and it is where you would look for
  * it. */
+/* Where a new node of this kind goes.
+ *
+ * `container` is the whole distinction and it cannot be inferred, which is what
+ * this got wrong: it took "the last node of this name has a body" to mean "go
+ * inside it". That is right for `binds { }`, which is one block holding many
+ * chords, and wrong for `window-rule { }` and `tag N { }`, which are siblings
+ * that each have a body of their own.
+ *
+ * So adding a second window rule spliced it INSIDE the first:
+ *
+ *     window-rule { match app-id=^mpv$; isfloating 	window-rule {
+ *         match app-id="probe-nest"
+ *     }
+ *     }
+ *
+ * The file still parsed, kdl_window_rule ignored the nested node, the rule count
+ * did not move, and the reply said {"ok":true,"applied":1}. A settings window
+ * offering "New rule" therefore damaged an existing rule and reported success --
+ * and it only happened once there was already a rule to nest into, which is why
+ * a test that adds the first one never saw it.
+ */
 static size_t rw_insert_point(const KdlDocument *doc, const char *name,
-							  const char *text, bool *inside_block) {
+							  bool container, const char *text,
+							  bool *inside_block) {
 	*inside_block = false;
 	const KdlNode *last = NULL;
 	for (size_t i = 0; i < doc->n_nodes; i++)
@@ -381,11 +518,12 @@ static size_t rw_insert_point(const KdlDocument *doc, const char *name,
 			last = &doc->nodes[i];
 	if (!last)
 		return strlen(text);
-	if (last->span.body_close != KDL_NO_OFFSET) {
-		/* A block with children: go inside it, just before the closing brace. */
+	if (container && last->span.body_close != KDL_NO_OFFSET) {
+		/* A block that holds others: go inside it, before the closing brace. */
 		*inside_block = true;
 		return last->span.body_close;
 	}
+	/* A sibling: after the whole node. */
 	return last->span.end;
 }
 
@@ -396,11 +534,13 @@ static void rw_free_texts(char **texts, size_t n) {
 
 /* Apply every change to the staged file texts and write them out.
  *
- * `rules` selects which vocabulary is being written; the two differ only in what
- * is rendered and where a new node goes, so sharing the traversal keeps the
+ * `kind` selects which vocabulary is being written; they differ only in what is
+ * rendered and where a new node goes, so sharing the traversal keeps the
  * transactional part -- read, edit, re-parse, replace -- in one place instead of
- * two that drift. */
-static bool rw_commit(RuleWriteBatch *b, bool rules) {
+ * three that drift. It was a bool while there were two. */
+typedef enum { RW_KIND_RULE, RW_KIND_BIND, RW_KIND_TAG } RuleWriteKind;
+
+static bool rw_commit(RuleWriteBatch *b, RuleWriteKind kind) {
 	char *texts[CONFIG_WRITE_MAX_FILES] = {0};
 	bool touched[CONFIG_WRITE_MAX_FILES] = {false};
 
@@ -468,10 +608,18 @@ static bool rw_commit(RuleWriteBatch *b, bool rules) {
 			}
 		} else {
 			char rendered[4096];
-			bool made = rules ? rw_render_rule(c, indent, rendered,
-											   sizeof(rendered))
-							  : rw_render_bind(c, indent, rendered,
-											   sizeof(rendered));
+			bool made;
+			switch (kind) {
+			case RW_KIND_RULE:
+				made = rw_render_rule(c, indent, rendered, sizeof(rendered));
+				break;
+			case RW_KIND_TAG:
+				made = rw_render_tag(c, indent, rendered, sizeof(rendered));
+				break;
+			default:
+				made = rw_render_bind(c, indent, rendered, sizeof(rendered));
+				break;
+			}
 			if (!made) {
 				rw_fail(c, "bad-value", "cannot be written as KDL");
 				rw_free_texts(texts, CONFIG_WRITE_MAX_FILES);
@@ -516,25 +664,35 @@ static bool rw_commit(RuleWriteBatch *b, bool rules) {
 			return false;
 		}
 		bool inside = false;
-		size_t at = rw_insert_point(&doc, rules ? "window-rule" : "binds", text,
+		const char *node_name = kind == RW_KIND_RULE   ? "window-rule"
+								: kind == RW_KIND_TAG ? "tag"
+													  : "binds";
+		/* Only `binds` is a container. A window-rule and a tag are siblings that
+		 * happen to have bodies of their own; see rw_insert_point. */
+		size_t at = rw_insert_point(&doc, node_name,
+									/* container: */ kind == RW_KIND_BIND, text,
 									&inside);
 		kdl_free(&doc);
 
 		char indent[32] = "";
 		char rendered[4096];
-		if (rules) {
-			if (!rw_render_rule(c, indent, rendered, sizeof(rendered))) {
-				rw_fail(c, "bad-value", "cannot be written as KDL");
-				rw_free_texts(texts, CONFIG_WRITE_MAX_FILES);
-				return false;
-			}
-		} else {
+		bool made;
+		switch (kind) {
+		case RW_KIND_RULE:
+			made = rw_render_rule(c, indent, rendered, sizeof(rendered));
+			break;
+		case RW_KIND_TAG:
+			made = rw_render_tag(c, indent, rendered, sizeof(rendered));
+			break;
+		default:
 			kdl_detect_indent(text, indent, sizeof(indent));
-			if (!rw_render_bind(c, indent, rendered, sizeof(rendered))) {
-				rw_fail(c, "bad-value", "cannot be written as KDL");
-				rw_free_texts(texts, CONFIG_WRITE_MAX_FILES);
-				return false;
-			}
+			made = rw_render_bind(c, indent, rendered, sizeof(rendered));
+			break;
+		}
+		if (!made) {
+			rw_fail(c, "bad-value", "cannot be written as KDL");
+			rw_free_texts(texts, CONFIG_WRITE_MAX_FILES);
+			return false;
 		}
 
 		char ins[4352];
@@ -543,12 +701,12 @@ static bool rw_commit(RuleWriteBatch *b, bool rules) {
 			 * closing brace. */
 			snprintf(ins, sizeof(ins), "%s%s\n", indent[0] ? indent : "\t",
 					 rendered);
-		else if (rules)
-			snprintf(ins, sizeof(ins), "\n%s\n", rendered);
-		else
+		else if (kind == RW_KIND_BIND)
 			/* No binds block at all: make one. */
 			snprintf(ins, sizeof(ins), "\nbinds {\n%s%s\n}\n",
 					 indent[0] ? indent : "\t", rendered);
+		else
+			snprintf(ins, sizeof(ins), "\n%s\n", rendered);
 
 		char *next = kdl_splice(text, at, at, ins);
 		if (!next) {

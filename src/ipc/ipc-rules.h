@@ -449,7 +449,85 @@ static cJSON *handle_set_window_rules(const char *body) {
 	if (ok)
 		ok = rw_plan_rules(&b);
 	if (ok)
-		ok = rw_commit(&b, true);
+		ok = rw_commit(&b, RW_KIND_RULE);
+	cJSON *resp = ipc_rw_reply(&b, ok);
+	if (ok)
+		config_reload_quiet();
+	return resp;
+}
+
+/* set-tag-rules: the same shape as set-window-rules, over the tag vocabulary. */
+static cJSON *handle_set_tag_rules(const char *body) {
+	RuleWriteBatch b;
+	memset(&b, 0, sizeof(b));
+
+	cJSON *req = cJSON_Parse(body);
+	if (!req) {
+		cJSON *resp = cJSON_CreateObject();
+		cJSON_AddBoolToObject(resp, "ok", false);
+		cJSON_AddStringToObject(resp, "error", "bad-request");
+		cJSON_AddStringToObject(resp, "detail", "body is not JSON");
+		return resp;
+	}
+	cJSON *changes = cJSON_GetObjectItem(req, "changes");
+	if (!cJSON_IsArray(changes) || cJSON_GetArraySize(changes) == 0) {
+		cJSON_Delete(req);
+		cJSON *resp = cJSON_CreateObject();
+		cJSON_AddBoolToObject(resp, "ok", false);
+		cJSON_AddStringToObject(resp, "error", "bad-request");
+		cJSON_AddStringToObject(resp, "detail", "no changes");
+		return resp;
+	}
+
+	bool ok = true;
+	cJSON *jc = NULL;
+	cJSON_ArrayForEach(jc, changes) {
+		if (b.n >= RULE_WRITE_MAX_CHANGES) {
+			snprintf(b.error, sizeof(b.error), "too-many");
+			snprintf(b.detail, sizeof(b.detail), "at most %d changes per batch",
+					 RULE_WRITE_MAX_CHANGES);
+			ok = false;
+			break;
+		}
+		RuleWriteChange *c = &b.changes[b.n++];
+		if (!ipc_rw_parse_common(jc, c)) {
+			ok = false;
+			continue;
+		}
+		cJSON *fields = cJSON_GetObjectItem(jc, "fields");
+		if (c->op != RW_REMOVE && !cJSON_IsObject(fields)) {
+			rw_fail(c, "bad-request", "a tag rule needs a fields object");
+			ok = false;
+			continue;
+		}
+		cJSON *f = NULL;
+		cJSON_ArrayForEach(f, fields) {
+			if (c->n_fields >= RULE_WRITE_MAX_FIELDS)
+				break;
+			/* Both spellings, like the window-rule path: a client may send the
+			 * schema's `key` or its `nice`. */
+			const TagField *tf = NULL;
+			for (size_t i = 0; i < TAG_SCHEMA_COUNT && !tf; i++)
+				if (!strcmp(tag_schema[i].key, f->string)
+					|| !strcmp(tag_schema[i].nice, f->string))
+					tf = &tag_schema[i];
+			if (!tf) {
+				rw_fail(c, "unknown-field", "no tag-rule field \"%s\"",
+						f->string);
+				ok = false;
+				break;
+			}
+			snprintf(c->keys[c->n_fields], sizeof(c->keys[0]), "%s", tf->key);
+			ipc_rw_value(f, c->vals[c->n_fields], sizeof(c->vals[0]));
+			c->n_fields++;
+		}
+	}
+	cJSON_Delete(req);
+
+	if (ok)
+		ok = rw_plan_tags(&b);
+	if (ok)
+		ok = rw_commit(&b, RW_KIND_TAG);
 	cJSON *resp = ipc_rw_reply(&b, ok);
 	if (ok)
 		config_reload_quiet();
@@ -546,7 +624,7 @@ static cJSON *handle_set_binds(const char *body) {
 	if (ok)
 		ok = rw_plan_binds(&b);
 	if (ok)
-		ok = rw_commit(&b, false);
+		ok = rw_commit(&b, RW_KIND_BIND);
 	cJSON *resp = ipc_rw_reply(&b, ok);
 	if (ok)
 		config_reload_quiet();

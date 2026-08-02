@@ -151,3 +151,101 @@ EOF
 
 	_tr_restore
 }
+
+# ── writing ─────────────────────────────────────────────────────────────────
+
+# Through `@-`, for the reasons rules-ipc gives: the protocol is
+# newline-delimited so a pretty-printed body sent as argv would be read as
+# several commands, and argv caps the whole thing at 4KB.
+_tr_set() { # _tr_set '<json>'
+	printf '%s' "$1" | ASTEROIDZ_INSTANCE_SIGNATURE="$HL_SIG" \
+		"$HL_REPO/build/amsg" set-tag-rules @- 2>/dev/null
+}
+
+_tr_index_of() { # _tr_index_of <tag-id> -> the LAST rule for that tag, or -1
+	hl_get "get tag-rules" \
+		| jq -r --arg id "$1" \
+			'[.rules[] | select(.fields.id == $id)] | last | .index // -1'
+}
+
+test_set_tag_rules_adds_a_rule_and_it_is_live_immediately() {
+	_tr_save
+	local r; r="$(_tr_set '{"changes":[{"op":"add","fields":{"id":"7","layout_name":"monocle","nmaster":"2"}}]}')"
+	hl_assert_true "an added tag rule is accepted" \
+		"$(printf '%s' "$r" | jq -r '.ok')"
+	hl_assert_eq "...and names the file it wrote" \
+		"$(printf '%s' "$r" | jq -r '.results[0].file')" "$HL_CONFIG"
+
+	hl_assert_eq "the layout is live without a reload" "$(_tr_last 7 '.layout_name')" "monocle"
+	hl_assert_eq "and so is nmaster" "$(_tr_last 7 '.nmaster')" "2"
+
+	# The id is the block's ARGUMENT, not a child. Written the other way the
+	# block would apply to tag 0 -- the ~0 tag -- while looking right.
+	hl_assert_true "it is written as a \`tag N\` block" \
+		"$(grep -qE '^tag 7 \{' "$HL_CONFIG" && echo true || echo false)"
+	hl_assert_true "the config still parses" \
+		"$("$HL_ASTEROIDZ" -p -c "$HL_CONFIG" 2>/dev/null | grep -q 'config OK' \
+			&& echo true || echo false)"
+	_tr_restore
+}
+
+test_a_second_tag_rule_is_added_beside_the_first() {
+	# The nesting bug rw_insert_point had for window rules, which a tag block
+	# would have inherited: a `tag N { }` has a body, but it is a sibling and not
+	# a container.
+	_tr_save
+	_tr_set '{"changes":[{"op":"add","fields":{"id":"7","layout_name":"monocle"}}]}' >/dev/null
+	local before; before="$(hl_get "get tag-rules" | jq '.count')"
+	_tr_set '{"changes":[{"op":"add","fields":{"id":"8","layout_name":"float"}}]}' >/dev/null
+
+	hl_assert_eq "the count goes up" \
+		"$(hl_get "get tag-rules" | jq '.count')" "$((before + 1))"
+	hl_assert_eq "no tag block is nested inside another" \
+		"$(grep -cE '^[[:space:]]+tag [0-9]' "$HL_CONFIG")" "0"
+	hl_assert_eq "and both are in force" "$(_tr_last 8 '.layout_name')" "float"
+	_tr_restore
+}
+
+test_set_tag_rules_updates_in_place() {
+	_tr_save
+	_tr_set '{"changes":[{"op":"add","fields":{"id":"7","layout_name":"monocle"}}]}' >/dev/null
+	local i; i="$(_tr_index_of 7)"
+	_tr_set "{\"changes\":[{\"op\":\"update\",\"index\":$i,\"fields\":{\"id\":\"7\",\"layout_name\":\"scroller\",\"scroller_default_proportion\":\"0.5\"}}]}" >/dev/null
+
+	hl_assert_eq "the layout changed" "$(_tr_last 7 '.layout_name')" "scroller"
+	hl_assert_eq "and the new field is set" \
+		"$(_tr_last 7 '.scroller_default_proportion')" "0.5"
+	# Written in the canonical hyphenated spelling, which is what the schema
+	# publishes and what kdl_tag now folds.
+	hl_assert_true "...spelled the hyphenated way" \
+		"$(grep -q 'scroller-default-proportion' "$HL_CONFIG" && echo true || echo false)"
+	hl_assert_true "the config still parses" \
+		"$("$HL_ASTEROIDZ" -p -c "$HL_CONFIG" 2>/dev/null | grep -q 'config OK' \
+			&& echo true || echo false)"
+	_tr_restore
+}
+
+test_set_tag_rules_removes_a_rule() {
+	_tr_save
+	_tr_set '{"changes":[{"op":"add","fields":{"id":"7","layout_name":"monocle"}}]}' >/dev/null
+	local before; before="$(hl_get "get tag-rules" | jq '.count')"
+	local i; i="$(_tr_index_of 7)"
+	_tr_set "{\"changes\":[{\"op\":\"remove\",\"index\":$i}]}" >/dev/null
+
+	hl_assert_eq "the count goes down" \
+		"$(hl_get "get tag-rules" | jq '.count')" "$((before - 1))"
+	hl_assert_eq "and the block is gone from the file" \
+		"$(grep -cE '^tag 7 \{' "$HL_CONFIG")" "0"
+	_tr_restore
+}
+
+test_a_tag_rule_without_an_id_is_refused() {
+	# A block with no id applies to tag 0 -- the ~0 tag -- which is never what an
+	# editor meant. Refused rather than written somewhere surprising.
+	_tr_save
+	local r; r="$(_tr_set '{"changes":[{"op":"add","fields":{"layout_name":"monocle"}}]}')"
+	hl_assert_eq "it is refused" "$(printf '%s' "$r" | jq -r '.ok')" "false"
+	hl_assert_eq "and nothing was written" \
+		"$(grep -cE '^tag 0 \{' "$HL_CONFIG")" "0"
+	_tr_restore
+}

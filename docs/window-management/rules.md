@@ -163,6 +163,23 @@ instead, the same as fullscreen ones.
 | `force_hdr` / `force-hdr` | integer | `0` / `1` | Switch the output to HDR while this window is on it. The way to run HDR for one player without an HDR desktop |
 | `shield_when_capture` / `shield-when-capture` | integer | `0` / `1` | Cover this window with an opaque shield while a screen capture is running, so it does not appear in recordings or shares |
 
+### Writing them back
+
+```sh
+amsg set-tag-rules @- <<'JSON'
+{"changes":[{"op":"add","fields":{"id":"7","layout":"monocle","nmaster":"2"}}]}
+JSON
+```
+
+`add`, `update` (by `index`, from `get tag-rules`) and `remove`. The block is
+edited by byte span, so comments, spacing and anything the compositor does not
+model survive; a rule that came from a generated file is refused with
+`read-only-source`, and a legacy `tagrule=` leaf with `not-editable`, because
+there is no block to rewrite.
+
+A change with no `id` is refused rather than written: a `tag` block without one
+applies to tag 0 — the `~0` tag — which is never what an editor meant.
+
 ### Examples
 
 ```kdl
