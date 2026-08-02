@@ -23,7 +23,13 @@ Return compositor version.
 .TP
 \fBget cursorpos\fR
 Return the global pointer position (\fBx\fR, \fBy\fR) and the monitor under it
-(\fBnull\fR if over no output).
+(\fBnull\fR if over no output), together with what the pointer looks like.
+\fBcursor-shape\fR is the \fBwp_cursor_shape_v1\fR name the focused client last
+asked for \(em \fBdefault\fR, \fBpointer\fR, \fBtext\fR and so on, or
+\fBunset\fR if no client has asked. \fBcursor-surface\fR is \fBtrue\fR when the
+client supplied a surface of its own instead, and then there is no shape to
+name. The cursor is drawn by the compositor and does not appear in a
+screenshot, so this is the only way to check it from outside the client.
 .TP
 \fBget idle\fR
 Return whether idling is currently held off. \fBinhibited\fR is what the idle

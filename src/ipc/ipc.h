@@ -532,6 +532,57 @@ static void send_static_json(int fd, const char *json_str) {
 	ipc_out_append(&ipc_serving->out, json_str, strlen(json_str));
 }
 
+/* The cursor-shape protocol's names, as the protocol spells them.
+ *
+ * Its own names rather than any of ours: a caller comparing against "pointer"
+ * is comparing against wp_cursor_shape_device_v1, which is also what the client
+ * asked for, so there is no third vocabulary in between to keep in step. The
+ * two DND-only shapes and the resize family are all here for the same reason --
+ * a table that covers most of an enum is one somebody has to check. */
+static const char *cursor_shape_name(enum wp_cursor_shape_device_v1_shape s) {
+	switch (s) {
+	case WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_DEFAULT: return "default";
+	case WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_CONTEXT_MENU: return "context-menu";
+	case WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_HELP: return "help";
+	case WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_POINTER: return "pointer";
+	case WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_PROGRESS: return "progress";
+	case WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_WAIT: return "wait";
+	case WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_CELL: return "cell";
+	case WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_CROSSHAIR: return "crosshair";
+	case WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_TEXT: return "text";
+	case WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_VERTICAL_TEXT: return "vertical-text";
+	case WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_ALIAS: return "alias";
+	case WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_COPY: return "copy";
+	case WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_MOVE: return "move";
+	case WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_NO_DROP: return "no-drop";
+	case WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_NOT_ALLOWED: return "not-allowed";
+	case WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_GRAB: return "grab";
+	case WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_GRABBING: return "grabbing";
+	case WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_E_RESIZE: return "e-resize";
+	case WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_N_RESIZE: return "n-resize";
+	case WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_NE_RESIZE: return "ne-resize";
+	case WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_NW_RESIZE: return "nw-resize";
+	case WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_S_RESIZE: return "s-resize";
+	case WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_SE_RESIZE: return "se-resize";
+	case WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_SW_RESIZE: return "sw-resize";
+	case WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_W_RESIZE: return "w-resize";
+	case WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_EW_RESIZE: return "ew-resize";
+	case WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_NS_RESIZE: return "ns-resize";
+	case WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_NESW_RESIZE: return "nesw-resize";
+	case WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_NWSE_RESIZE: return "nwse-resize";
+	case WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_COL_RESIZE: return "col-resize";
+	case WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_ROW_RESIZE: return "row-resize";
+	case WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_ALL_SCROLL: return "all-scroll";
+	case WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_ZOOM_IN: return "zoom-in";
+	case WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_ZOOM_OUT: return "zoom-out";
+	case WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_DND_ASK: return "dnd-ask";
+	case WP_CURSOR_SHAPE_DEVICE_V1_SHAPE_ALL_RESIZE: return "all-resize";
+	}
+	/* 0 is not a member: it is what the tracker holds before any client has
+	 * named a shape, and after one attached a surface instead. */
+	return "unset";
+}
+
 /* ---------- one-shot command handling ---------- */
 static void handle_command(int client_fd, const char *cmd_raw) {
 	cJSON *resp = NULL;
@@ -556,6 +607,24 @@ static void handle_command(int client_fd, const char *cmd_raw) {
 			cJSON_AddStringToObject(resp, "monitor", m->wlr_output->name);
 		else
 			cJSON_AddNullToObject(resp, "monitor");
+		/* What the pointer currently LOOKS like, which is the only way to check
+		 * a client's hover cursors from outside it: the cursor is drawn by the
+		 * compositor and does not appear in a screenshot, so a test driving a
+		 * bar or a settings window has nothing else to assert against. Tracked
+		 * here already -- setcursorshape() and the set_cursor request both
+		 * write it -- and simply never reported.
+		 *
+		 * A client may name a shape or attach a surface of its own, and those
+		 * are different answers rather than degrees of one: `shape` is null
+		 * when a surface is in use. */
+		if (last_cursor.surface) {
+			cJSON_AddNullToObject(resp, "cursor-shape");
+			cJSON_AddBoolToObject(resp, "cursor-surface", true);
+		} else {
+			cJSON_AddStringToObject(resp, "cursor-shape",
+									cursor_shape_name(last_cursor.shape));
+			cJSON_AddBoolToObject(resp, "cursor-surface", false);
+		}
 	} else if (strcmp(cmd, "get idle") == 0) {
 		resp = build_idle_response();
 	} else if (strcmp(cmd, "get keymode") == 0) {
