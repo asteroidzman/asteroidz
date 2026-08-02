@@ -237,10 +237,7 @@ You will need to build `wlroots` and asteroidz's `scenefx` fork manually as well
    ```
 
    `-Dprefix=/usr` is not optional in practice: the bar's icon search path is
-   Build options: `-Dxwayland=disabled` drops X11 support, `-Dbar-config=false`
-   compiles out the `bar {}` block and the bar-config IPC that
-   [asteroidz-bar](./visuals/status-bar.md) reads (it
-   is disabled at runtime by default either way), and `-Dtracy=true` builds
+   Build options: `-Dxwayland=disabled` drops X11 support, and `-Dtracy=true` builds
    with [Tracy](https://github.com/wolfpld/tracy) profiler instrumentation —
    off by default, and it fetches the Tracy client over the network, so it is
    not suitable for an offline or clean-chroot build.

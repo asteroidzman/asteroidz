@@ -139,10 +139,6 @@ if xcb.found() and xlibs.found()
   c_args += '-DXWAYLAND'
 endif
 
-if get_option('bar-config')
-  c_args += '-DASTEROIDZ_NATIVE_BAR'
-endif
-
 if get_option('tracy')
   # The subproject sets these with add_project_arguments, which is scoped to
   # ITS targets only -- without repeating them here every TRACY_* macro in the

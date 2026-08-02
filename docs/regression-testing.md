@@ -91,11 +91,13 @@ which is not one. The checker also fails on a key that is both described and
 exempt, and on an exemption for a key `parse_option` no longer handles — either
 would let the next real omission hide behind a stale line.
 
-Coverage today: `parse_option` handles 287 keys, of which 95 are described. Of
-the 192 exempt, 55 configure the removed native bar, 17 are structural (rules,
-binds, lists, directives) and **120 are simply not described yet** — listed key
-by key so the gap is auditable and so adding one is deliberate. The file
-shrinking is the measure of progress.
+Coverage today: `parse_option` handles 231 keys, of which 95 are described. Of
+the 136 exempt, 17 are structural (rules, binds, lists, directives) and **119
+are simply not described yet** — listed key by key so the gap is auditable and
+so adding one is deliberate. The file shrinking is the measure of progress, and
+the largest single drop so far was not describing anything: 55 of those keys
+configured a bar the compositor stopped drawing, and deleting them beat
+documenting them.
 
 Env: `ASTEROIDZ` (binary under test, default `build/asteroidz` next to the
 repo, falling back to `/usr/bin/asteroidz`), `HL_OUTDIR`, `HL_WIDTH`/

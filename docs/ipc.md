@@ -37,7 +37,7 @@ description: Control asteroidz programmatically using amsg.
 | `get all-monitors` | Returns a JSON array of all connected monitors. |
 | `get all-tags` | Returns a JSON object containing the status of all tags. |
 | `get last_open_surface [<mon>]` | Returns the last focused surface name for a monitor,if the mon not set, it will get current monitor. |
-| `get bar-config` | Returns the resolved bar geometry, palette and module lists, for an out-of-process bar. |
+| `get bar-config` | Returns the resolved theme -- palette, font, border and corner metrics -- for an out-of-process bar. |
 | `get config-schema [<group>]` | Describes every settable option: type, range, enum members, default, label and explanation. |
 | `get config-schema-digest` | Just the schema's digest, so a cached copy can be revalidated in one round trip. |
 | `get config [<group>]` | The current value of every described option, with where it came from. |
@@ -432,23 +432,30 @@ after clamping, after the theme file -- rather than with the config text:
 
 ```json
 {
-  "bar":     { "height": 48, "position": "top", "margin_x": 8, ... },
-  "panel":   { "enable": true, "radius": 9, "blur": true, "color": [...] },
-  "popover": { "width": 340, "row_height": 34, ... },
-  "theme":   { "fg": [1,1,1,1], "focus_bg": [...], "font": "Ubuntu 16", ... },
-  "custom":  [ { "name": "nordvpn", "exec": "asteroidz-bar-nordvpn", ... } ]
+  "theme": { "fg": [1,1,1,1], "bg": [...], "focus_bg": [...], "urgent": [...],
+             "border": [...], "border_width": 4, "corner_radius": 5,
+             "padding_x": 16, "padding_y": 0, "font": "Ubuntu 16" }
 }
 ```
+
+It used to carry the bar's whole appearance too -- its height, its pills, its
+panel, its popovers, its module lists, its idle timeouts, its plugins. Sixty-two
+values the compositor stored, clamped, described and served, and never once
+read, left behind when the drawing moved out of this process. They live in
+`~/.config/asteroidz-bar/config.kdl` now, and the `bar {}` block is gone from
+the compositor's config entirely.
 
 Colours are `[r,g,b,a]` floats, not hex strings: CSS reads `#RRGGBBAA` and Qt
 reads `#AARRGGBB`, and a string that parses under both conventions while
 meaning different things is a bug that surfaces months later as "the bar is
 slightly the wrong colour".
 
-Handing a bar the config file to parse instead would be two KDL readers that
-agree until one of them gains a default -- and it would still not see the
-palette, which matugen rewrites at runtime whenever the wallpaper changes. The
-compositor is the only process that knows what the theme currently *is*.
+The theme stays here because it is genuinely shared -- titlebars and the
+overview draw from the same palette -- and because handing a bar the config
+file to parse would be two KDL readers that agree until one of them gains a
+default, and it still would not see the palette, which matugen rewrites at
+runtime whenever the wallpaper changes. The compositor is the only process that
+knows what the theme currently *is*.
 
 `watch bar-config` pushes the same object again on every `reload_config`, so a
 bar in another process repaints with the new palette instead of waiting for

@@ -2817,11 +2817,6 @@ void arrangelayers(Monitor *m) {
 	if (m->iscleanuping)
 		return;
 
-	/* The native bar claims its strip first, so a layer-shell client's
-	 * exclusive zone stacks BELOW it rather than overlapping. That ordering
-	 * is what lets an external bar keep running alongside this one during the
-	 * migration. */
-
 	/* Arrange exclusive surfaces from top->bottom */
 	for (i = 3; i >= 0; i--)
 		arrangelayer(m, &m->layers[i], &usable_area, 1);

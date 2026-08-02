@@ -1,13 +1,5 @@
 option('xwayland', type : 'feature', value : 'enabled')
 option('asan', type : 'boolean', value : false)
-# The `bar {}` config block and the bar-config IPC.
-#
-# The bar is drawn by asteroidz-bar, out of process, but the compositor is
-# where its geometry and palette are RESOLVED -- it serves them over
-# `get`/`watch bar-config`. Turning this off compiles out that block and that
-# IPC, which is what a setup driving waybar or yambar exclusively wants: those
-# bring their own config.
-option('bar-config', type : 'boolean', value : true)
 # Tracy profiler support, compiled out entirely when off (the macros in
 # scenefx's include/render/tracy.h expand to nothing without TRACY_ENABLE).
 # Turning this on also builds the in-tree asteroidz-scenefx with tracy_enable,

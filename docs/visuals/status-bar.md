@@ -14,16 +14,20 @@ wherever they run. A client that misses a frame now misses only its own.
 
 ## What the compositor still does
 
-Everything the bar cannot do for itself:
+Everything the bar cannot do for itself — and nothing else. There was a `bar {}`
+block here for a while: sixty-two values the compositor stored, clamped,
+described over IPC and never once read, left behind when the drawing moved out.
+They live in `~/.config/asteroidz-bar/config.kdl` now. A config this program
+does not read is a config it should not own.
 
 | | |
 |---|---|
-| `bar {}` and `theme {}` | resolved here — defaults, clamping, the matugen palette — and served over `get`/`watch bar-config` |
+| `theme {}` | resolved here — defaults, clamping, the matugen palette — and served over `get`/`watch bar-config` |
 | `watch all-monitors` | tags, layout, focused title, per-output state |
 | `set_output_*` | mode, scale, position, VRR, ICC, tested before they are committed |
 | `ext-background-effect-v1` | the bar reports its panels' region and gets blur behind them, corners included. **Popups too**: a menu is an xdg popup, which is neither a toplevel nor a layer surface, so it used to be silently skipped -- see `popup_update_blur` |
 | layer shell | the bar is an ordinary layer-shell client with an exclusive zone |
-| `assets/bar-icons` | the artwork, installed to `/usr/share/asteroidz/bar-icons` and found through the search path in `bar { icon-dir }` |
+| `assets/bar-icons` | the artwork, installed to `/usr/share/asteroidz/bar-icons`, which the bar searches by default |
 
 The palette is the interesting one. Handing a bar the config file to parse
 would be two KDL readers that agree until one of them gains a default — and it
@@ -45,8 +49,10 @@ can debug. They were vendored into `assets/bar-icons` and normalised to one
 canvas (`contrib/normalize-bar-icons.py`) so the set is complete, tracked, and
 reviewable.
 
-`bar { icon-dir }` is a **search path**, tried in order, first hit wins — the
-packaged directory last, so a locally-customised asset still beats it.
+The bar's own `bar { icon-dir }` is a **search path**, tried in order, first hit
+wins — the packaged directory last, so a locally-customised asset still beats
+it. Unset, it searches the packaged directory, `~/.local/share` and
+`/usr/share`, which is where these are installed.
 
 Two of them are drawn rather than merely displayed: the ship logo's exhaust is
 recoloured to the theme accent at runtime by the bar (a string substitution on
@@ -65,8 +71,7 @@ unparseable one are both just a blank pill — and both have shipped.
 spawn-at-startup "asteroidz-bar"
 ```
 
-`bar { enable false }` is what tells it to start: the compositor answers
-`amsg get bar-config` with the resolved block, and the launcher checks that
-`.bar.enable` is explicitly `false` before starting the shell. That is a
-leftover safety catch from the era when both existed and could be stacked, and
-it costs nothing to keep.
+Nothing gates it any more. There was a `bar { enable false }` flag the
+autostart script read as "the compositor is not drawing one, so start the
+shell" -- a guard against two bars stacking, from when this program drew one.
+It cannot draw one now.

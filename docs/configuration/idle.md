@@ -11,22 +11,26 @@ external daemon between the two — swayidle and friends — was only ever
 translating one into the other, with its own config file and a set of timeouts
 nothing else in the desktop could read.
 
-So the timeouts live here, in the compositor's config, and the bar carries them
-out. Change one and reload; nothing needs restarting.
+So the timeouts live with the program that carries them out: the bar, in
+`~/.config/asteroidz-bar/config.kdl`. It watches that file, so changing one
+takes effect without restarting anything.
+
+They were in the compositor's config until the `bar {}` block was removed --
+the compositor implements `ext-idle-notify-v1` and owns DPMS, but it is the bar
+that holds the timer and dispatches, and a setting belongs with whatever acts
+on it.
 
 ```kdl
-bar {
-    idle {
-        enable true
-        dpms-timeout 600            // screen off after 10 minutes
-        lock-timeout 0              // never lock on idle
-        suspend-timeout 0           // never suspend on idle
-        lock-before-suspend false
-        respect-inhibitors true
-        lock-command "swaylock -f"
-        on-idle ""
-        on-resume "~/.config/scripts/audio-resync.sh"
-    }
+idle {
+    enable #true
+    dpms-timeout 600            // screen off after 10 minutes
+    lock-timeout 0              // never lock on idle
+    suspend-timeout 0           // never suspend on idle
+    lock-before-suspend #false
+    respect-inhibitors #true
+    lock-command "swaylock -f"
+    on-idle ""
+    on-resume "~/.config/asteroidz/scripts/audio-resync.sh"
 }
 ```
 

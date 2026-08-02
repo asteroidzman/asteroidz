@@ -97,18 +97,7 @@ hl_start() { # hl_start [EXTRA_KDL]
 	[ -x "$HL_WLKEYS" ] || { echo "hl_start: wlkeys not built -- run: cd contrib/wlkeys && make" >&2; exit 1; }
 
 	HL_CONFIG="$HL_OUTDIR/config.kdl"
-	# Point the bar at the artwork in THIS checkout, not at whatever is
-	# installed. The compositor's default search path is built from
-	# ASTEROIDZ_PREFIX, so a build configured with meson's default
-	# -Dprefix=/usr/local finds none of the vendored icons when they are
-	# installed under /usr -- and an icon-only module with no icon renders
-	# nothing, takes no width, and simply disappears from the strip. That made
-	# test_bar_spaces_modules_evenly fail with a baffling "spread 13px" (six
-	# modules, four gaps, two of them merged) on any build whose prefix did not
-	# happen to match the installed package. Tests should measure the tree they
-	# are run from.
 	cat > "$HL_CONFIG" <<EOF
-bar { icon-dir "$HL_REPO/assets/bar-icons:$HOME/.local/share:/usr/share" }
 border_radius 8
 borderpx 2
 shadows 1

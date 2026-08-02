@@ -79,9 +79,11 @@ List tags for all monitors.
 List tags for a specific monitor.
 .TP
 \fBget bar\-config\fR
-Print the resolved bar geometry, palette and module lists: what the compositor
-made of \fBbar {}\fR and \fBtheme {}\fR after defaults, clamping and the theme
-file, for a bar running outside the compositor. Colours are [r,g,b,a] floats.
+Print the resolved theme: what the compositor made of \fBtheme {}\fR after
+defaults, clamping and the theme file, for a bar running outside the
+compositor. Colours are [r,g,b,a] floats. It carried a whole \fBbar {}\fR block
+as well until that block was removed \(em sixty\-two values this program stored
+and never read. How the bar looks is the bar's own config now.
 .TP
 \fBget tag\-rules\fR
 List the per\-tag layout rules: which layout each tag opens in, on which
@@ -311,9 +313,10 @@ Stream keyboard layout changes.
 Stream last open surface changes for a specific monitor (or the focused one).
 .TP
 \fBwatch bar\-config\fR
-Stream the resolved bar configuration, re-sent on every config reload -- so a
-bar in another process repaints with a new palette rather than waiting for
-something else to wake it.
+Stream the resolved theme, re-sent on every config reload -- so a bar in
+another process repaints with a new palette rather than waiting for something
+else to wake it. This carried the whole of a `bar {}` block until that block was
+removed; how the bar looks is the bar's own config now.
 .TP
 \fBwatch config\fR
 Stream config changes as a DIFF: only the keys that changed, with the same

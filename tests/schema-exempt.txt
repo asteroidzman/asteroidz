@@ -8,67 +8,6 @@
 # Adding a key to the schema means deleting its line from here. The file
 # shrinking is the measure of progress.
 
-## reason: Configures the compositor's own native bar, which was removed -- these
-# live behind #ifdef ASTEROIDZ_NATIVE_BAR and are not present in a default
-# build. The bar is a separate process now and gets its theme over
-# `watch bar-config`, so a settings UI has nothing to write here.
-
-bar_clock_format
-bar_discord_daemon
-bar_enable
-bar_height
-bar_icon_dir
-bar_interval
-bar_margin_x
-bar_margin_y
-bar_media_bars
-bar_media_fps
-bar_media_viz
-bar_media_width
-bar_min_tags
-bar_module_spacing
-bar_modules_center
-bar_modules_center_monitor
-bar_modules_left
-bar_modules_left_monitor
-bar_modules_right
-bar_modules_right_monitor
-bar_net_max_down
-bar_net_max_up
-bar_panel_blur
-bar_panel_color
-bar_panel_enable
-bar_panel_padding
-bar_panel_radius
-bar_panel_shadow
-bar_panel_shadow_blur
-bar_panel_shadow_color
-bar_panel_shadow_size
-bar_pill_inset
-bar_pill_min_width
-bar_pill_padding
-bar_popover_color
-bar_popover_gap
-bar_popover_padding
-bar_popover_row_height
-bar_popover_spacing
-bar_popover_width
-bar_position
-bar_show_all_tags
-bar_show_logo
-bar_spacing
-bar_tag_icons
-bar_tag_padding
-bar_title_width
-bar_tooltip_delay
-bar_tooltip_enable
-bar_tray_spacing
-bar_volume_step
-bar_weather_interval
-bar_weather_location
-barcustom
-barcustom_
-
 ## reason: Not a scalar option. A bind is a chord plus an action plus arguments, and
 # it needs a structured editor rather than a value field -- Phase 3.
 
