@@ -206,4 +206,53 @@ static const RuleOrigin *rule_source_at(int32_t index) {
 	return &rule_origins[index];
 }
 
+/* ---------- the same, for tag rules ---------- */
+/*
+ * A second array rather than a shared one. The two are indexed by position in
+ * their OWN config array -- config.window_rules[] and config.tag_rules[] -- and
+ * a single list would have to carry which kind each entry is and be searched
+ * rather than indexed.
+ */
+
+static RuleOrigin tag_origins[BIND_SOURCE_MAX];
+static int32_t ntag_origins;
+
+static struct {
+	const KdlNode *node;
+	int32_t file;
+} tag_src_ctx = {.file = -1};
+
+static void tag_source_reset(void) {
+	ntag_origins = 0;
+	tag_src_ctx.node = NULL;
+	tag_src_ctx.file = -1;
+}
+
+static void tag_source_note(void) {
+	if (ntag_origins >= BIND_SOURCE_MAX)
+		return;
+	RuleOrigin *o = &tag_origins[ntag_origins++];
+	memset(o, 0, sizeof(*o));
+	if (tag_src_ctx.node) {
+		const KdlNode *n = tag_src_ctx.node;
+		o->file = tag_src_ctx.file;
+		o->line = n->span.line;
+		o->span_start = n->span.start;
+		o->span_end = n->span.end;
+		o->editable = true;
+	} else {
+		/* A `tagrule=` leaf in a legacy config: parsed and applied, but there is
+		 * no block to rewrite, so an editor must show it read-only rather than
+		 * offer to save over a span it does not have. */
+		o->file = -1;
+		o->editable = false;
+	}
+}
+
+static const RuleOrigin *tag_source_at(int32_t index) {
+	if (index < 0 || index >= ntag_origins)
+		return NULL;
+	return &tag_origins[index];
+}
+
 #endif /* ASTEROIDZ_BIND_SOURCE_H */

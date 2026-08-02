@@ -676,6 +676,10 @@ static void handle_command(int client_fd, const char *cmd_raw) {
 		resp = build_rule_schema_response();
 	} else if (strcmp(cmd, "get window-rules") == 0) {
 		resp = build_window_rules_response();
+	} else if (strcmp(cmd, "get tag-rule-schema") == 0) {
+		resp = build_tag_rule_schema_response();
+	} else if (strcmp(cmd, "get tag-rules") == 0) {
+		resp = build_tag_rules_response();
 	} else if (strcmp(cmd, "get binds") == 0) {
 		resp = build_binds_response();
 	} else if (strcmp(cmd, "capture-chord") == 0) {

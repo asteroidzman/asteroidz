@@ -730,6 +730,7 @@ Config config;
  * schema is offsetof(ConfigWinRule, …) and needs the same. */
 #include "config-schema.h"
 #include "rule-schema.h"
+#include "tag-schema.h"
 #include "bind-source.h"
 #include "config-source.h"
 
@@ -3019,6 +3020,10 @@ bool parse_option(Config *config, char *key, char *value) {
 		}
 
 		config->tag_rules_count++;
+		/* In lockstep with the count, so the two arrays stay aligned: an early
+		 * return above leaves both untouched. Same contract rule_source_note has
+		 * with config.window_rules[]. */
+		tag_source_note();
 		return !parse_error;
 	} else if (strcmp(key, "layerrule") == 0) {
 		config->layer_rules =
@@ -4354,11 +4359,33 @@ static bool kdl_tag(Config *config, KdlNode *node) {
 	for (size_t i = 0; i < node->n_children && (size_t)vn < sizeof(value);
 		 i++) {
 		KdlNode *ch = &node->children[i];
-		const char *k = strcmp(ch->name, "layout") == 0 ? "layout_name" : ch->name;
+		/* `layout` is the nice name for layout_name, and the rest fold hyphens
+		 * to underscores the way kdl_bar_custom does.
+		 *
+		 * They did not, and the child name went through verbatim -- so
+		 * `tag 6 { no-render-border 1 }`, spelled the way every other block in
+		 * this language spells things, produced the key `no-render-border`,
+		 * which parse_option does not know. It set nothing and said nothing. */
+		char k[64];
+		if (strcmp(ch->name, "layout") == 0) {
+			snprintf(k, sizeof(k), "layout_name");
+		} else {
+			size_t n = snprintf(k, sizeof(k), "%s", ch->name);
+			for (size_t c = 0; c < n && c < sizeof(k); c++)
+				if (k[c] == '-')
+					k[c] = '_';
+		}
 		vn += snprintf(value + vn, sizeof(value) - vn, ",%s:%s", k,
 					   ch->n_args ? kdl_legacy_value(&ch->args[0]) : "1");
 	}
-	return parse_option(config, "tagrule", value);
+	const KdlNode *prev_node = tag_src_ctx.node;
+	int32_t prev_file = tag_src_ctx.file;
+	tag_src_ctx.node = node;
+	tag_src_ctx.file = config_src_ctx.file;
+	bool ok = parse_option(config, "tagrule", value);
+	tag_src_ctx.node = prev_node;
+	tag_src_ctx.file = prev_file;
+	return ok;
 }
 
 /* output "DP-1" { hdr; bit-depth 10; icc-profile "..." } -> monitorrule= */
@@ -5757,6 +5784,7 @@ bool parse_config(void) {
 	 * wrong line, it describes a different rule. */
 	bind_source_reset();
 	rule_source_reset();
+	tag_source_reset();
 
 	if (cli_config_path) {
 		snprintf(filename, sizeof(filename), "%s", cli_config_path);

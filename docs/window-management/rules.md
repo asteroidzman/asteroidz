@@ -246,6 +246,34 @@ tag "<number>" { monitor_make "<make>"; monitor_model "<model>"; layout "<layout
 | `scroller_default_proportion_single` | float | 0.1-1.0 | Set scroller auto adjust proportion when it is single window(only apply when set `scroller_ignore_proportion_single` to `0`) |
 | `scroller_ignore_proportion_single` | integer | `0` / `1` | Ignore scroller single proportion setting. |
 
+Every field also accepts its **hyphenated** spelling — `no-render-border`,
+`open-as-floating`, `monitor-name`, `scroller-default-proportion` — which is how
+the rest of this config language is written, and which is what the settings
+window emits. The underscore forms above keep working.
+
+They did not both work before: a `tag` block passed its child names through
+verbatim, so a hyphenated field became a key the parser does not know and was
+dropped in silence — the block parsed, the setting simply never applied.
+
+### Reading them back
+
+```sh
+amsg get tag-rules          # every tag rule, with the file and line it came from
+amsg get tag-rule-schema    # the fields: type, range, enum members, description
+```
+
+`get tag-rules` reports **only the fields a rule actually sets**. That is not an
+economy: `ConfigTagRule` cannot distinguish a rule that wrote `0` from one that
+wrote nothing, so a response listing every field with its default would make
+"says nothing about nmaster" and "pins nmaster to its default" identical, and an
+editor round-tripping them would turn every silence into an override.
+
+Each rule carries where it came from — file, line, and whether it is `editable`
+— so a tool can offer to rewrite the block it was read from rather than guess.
+A rule from a generated file reports `writable: false` with the reason; a legacy
+`tagrule=` leaf reports `kind: "legacy"` and is not editable, because there is no
+block to rewrite.
+
 ### Examples
 
 ```kdl

@@ -200,6 +200,100 @@ static cJSON *build_binds_response(void) {
 	return resp;
 }
 
+/* ---------- the tag-rule schema, and the current tag rules ---------- */
+
+static cJSON *build_tag_rule_schema_response(void) {
+	cJSON *resp = cJSON_CreateObject();
+
+	cJSON *groups = cJSON_CreateArray();
+	for (size_t g = 0; g < sizeof(tag_groups) / sizeof(tag_groups[0]); g++) {
+		cJSON *e = cJSON_CreateObject();
+		cJSON_AddStringToObject(e, "name", tag_groups[g].name);
+		cJSON_AddStringToObject(e, "label", tag_groups[g].label);
+		cJSON_AddStringToObject(e, "desc", tag_groups[g].desc);
+		cJSON_AddItemToArray(groups, e);
+	}
+	cJSON_AddItemToObject(resp, "groups", groups);
+
+	cJSON *fields = cJSON_CreateArray();
+	for (size_t i = 0; i < TAG_SCHEMA_COUNT; i++) {
+		const TagField *f = &tag_schema[i];
+		cJSON *e = cJSON_CreateObject();
+		cJSON_AddStringToObject(e, "key", f->key);
+		cJSON_AddStringToObject(e, "nice", f->nice);
+		cJSON_AddStringToObject(e, "group", f->group);
+		cJSON_AddStringToObject(e, "label", f->label);
+		cJSON_AddStringToObject(e, "desc", f->desc);
+		cJSON_AddStringToObject(e, "type", rule_type_name(f->type));
+		if (!isnan(f->min))
+			cJSON_AddNumberToObject(e, "min", f->min);
+		if (!isnan(f->max))
+			cJSON_AddNumberToObject(e, "max", f->max);
+		if (f->type == RULE_ENUM) {
+			cJSON *arr = cJSON_CreateArray();
+			for (size_t m = 0; m < f->n_members; m++) {
+				cJSON *mo = cJSON_CreateObject();
+				cJSON_AddStringToObject(mo, "name", f->members[m].name);
+				if (f->members[m].desc)
+					cJSON_AddStringToObject(mo, "desc", f->members[m].desc);
+				cJSON_AddItemToArray(arr, mo);
+			}
+			cJSON_AddItemToObject(e, "enum", arr);
+		}
+		if (f->type == RULE_TRISTATE)
+			cJSON_AddBoolToObject(e, "tristate", true);
+		cJSON_AddItemToArray(fields, e);
+	}
+	cJSON_AddItemToObject(resp, "fields", fields);
+	return resp;
+}
+
+static cJSON *build_tag_rules_response(void) {
+	cJSON *resp = cJSON_CreateObject();
+	cJSON *arr = cJSON_CreateArray();
+	for (int32_t i = 0; i < config.tag_rules_count; i++) {
+		const ConfigTagRule *r = &config.tag_rules[i];
+		cJSON *e = cJSON_CreateObject();
+		cJSON_AddNumberToObject(e, "index", i);
+
+		cJSON *fields = cJSON_CreateObject();
+		char buf[512];
+		for (size_t f = 0; f < TAG_SCHEMA_COUNT; f++) {
+			/* Only what this rule SETS -- see tag_format, which returns false
+			 * for a field the rule is silent about. Emitting every field with
+			 * its unset marker would make a rule that says nothing about
+			 * nmaster indistinguishable from one that pins it, and an editor
+			 * would write both back the same way. */
+			if (tag_format(r, &tag_schema[f], buf, sizeof(buf)))
+				cJSON_AddStringToObject(fields, tag_schema[f].key, buf);
+		}
+		cJSON_AddItemToObject(e, "fields", fields);
+
+		cJSON *src = cJSON_CreateObject();
+		const RuleOrigin *o = tag_source_at(i);
+		if (o && o->file >= 0 && o->file < nconfig_files) {
+			const char *file = config_files[o->file];
+			char why[64] = "";
+			bool foreign = config_file_is_foreign(file, why, sizeof(why));
+			cJSON_AddStringToObject(src, "kind", "file");
+			cJSON_AddStringToObject(src, "file", file);
+			cJSON_AddNumberToObject(src, "line", o->line);
+			cJSON_AddBoolToObject(src, "writable", !foreign);
+			if (foreign)
+				cJSON_AddStringToObject(src, "reason", why);
+			cJSON_AddBoolToObject(src, "editable", o->editable && !foreign);
+		} else {
+			cJSON_AddStringToObject(src, "kind", "legacy");
+			cJSON_AddBoolToObject(src, "editable", false);
+		}
+		cJSON_AddItemToObject(e, "source", src);
+		cJSON_AddItemToArray(arr, e);
+	}
+	cJSON_AddItemToObject(resp, "rules", arr);
+	cJSON_AddNumberToObject(resp, "count", config.tag_rules_count);
+	return resp;
+}
+
 /* ---------- set-window-rules, set-binds ---------- */
 
 /* Verbs, not dispatches, for the reasons set-config is one: handle_command

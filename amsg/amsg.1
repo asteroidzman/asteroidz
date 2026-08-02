@@ -70,6 +70,20 @@ Print the resolved bar geometry, palette and module lists: what the compositor
 made of \fBbar {}\fR and \fBtheme {}\fR after defaults, clamping and the theme
 file, for a bar running outside the compositor. Colours are [r,g,b,a] floats.
 .TP
+\fBget tag\-rules\fR
+List the per\-tag layout rules: which layout each tag opens in, on which
+monitor, and the master and scroller settings that go with it. Only the fields
+a rule actually sets are reported \(em a rule that says nothing about
+\fBnmaster\fR and one that pins it to its default are different things, and a
+response listing every field with its default could not tell them apart. Each
+rule carries the file and line it was read from.
+.TP
+\fBget tag\-rule\-schema\fR
+Describe every tag\-rule field: its type, its range, its enum members and a
+one\-line explanation. \fBlayout\fR is an enum over the real layout names, and
+\fBscroller\-ignore\-proportion\-single\fR is a tri\-state rather than a
+boolean.
+.TP
 \fBdispatch\fR <func>[,arg...] [client,<id>]
 Invoke an internal compositor function.
 The function name and its arguments are separated by commas.
