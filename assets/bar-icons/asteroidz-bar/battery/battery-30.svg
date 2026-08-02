@@ -1,0 +1,14 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<!-- Battery, low.
+
+     Filled paths in solid white, so the bar's iconTint recolours the whole
+     glyph: ColorOverlay paints through the alpha channel, so the source
+     colour is discarded and only coverage matters. The shell is drawn as a
+     ring (an even-odd path) rather than a stroke, for that same reason: a
+     stroked outline would leave the tint painting the strokes and the hole
+     alike, which reads as a solid block at pill size. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+  <path fill="#ffffff" fill-rule="evenodd" d="M2.4 7.2h15.2a1.6 1.6 0 0 1 1.6 1.6v6.4a1.6 1.6 0 0 1-1.6 1.6H2.4A1.6 1.6 0 0 1 .8 15.2V8.8a1.6 1.6 0 0 1 1.6-1.6zm0 1.8a.4.4 0 0 0-.4.4v5.2a.4.4 0 0 0 .4.4h15.2a.4.4 0 0 0 .4-.4V9.4a.4.4 0 0 0-.4-.4z"/>
+  <path fill="#ffffff" d="M20.4 10.2h1.2a1.4 1.4 0 0 1 0 3.6h-1.2z"/>
+  <path fill="#ffffff" d="M3.1 9.9h4.4v4.2H3.1z"/>
+</svg>
