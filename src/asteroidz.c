@@ -1077,6 +1077,16 @@ static void outputmgrtest(struct wl_listener *listener, void *data);
 static void pointerfocus(Client *c, struct wlr_surface *surface, double sx,
 						 double sy, uint32_t time);
 static void printstatus(enum ipc_watch_type type);
+/* Move the focus to another output and TELL anyone watching.
+ *
+ * `active` on a monitor is `m == selmon`, and a client that wants to act on the
+ * focused screen -- the bar's wallpaper keybind, for one -- has no other way to
+ * learn it. The dispatch path pushed already, because focusmon() ends in
+ * focusclient() and that notifies; the pointer paths assign selmon directly and
+ * said nothing, so moving the pointer onto an empty area of the other monitor
+ * changed the focus without a single watcher hearing about it. The bar went on
+ * believing the old output was focused until something else happened to push. */
+static void set_selmon(Monitor *m);
 /* ipc/ipc.h is included later still, and a reload has to push the new palette
  * to the bar, which runs out of process. */
 void ipc_notify_bar_config(void);
@@ -3188,7 +3198,7 @@ bool handle_buttonpress(struct wlr_pointer_button_event *event) {
 	switch (event->state) {
 	case WL_POINTER_BUTTON_STATE_PRESSED:
 		cursor_mode = CurPressed;
-		selmon = xytomon(cursor->x, cursor->y);
+		set_selmon(xytomon(cursor->x, cursor->y));
 		if (locked)
 			break;
 
@@ -6948,7 +6958,7 @@ void motionnotify(uint32_t time, struct wlr_input_device *device, double dx,
 		 * selection behind on the captured output and, worse, aim the NEXT
 		 * screenshot at a monitor the user never focused. */
 		if (config.sloppyfocus && !shotui.active)
-			selmon = xytomon(cursor->x, cursor->y);
+			set_selmon(xytomon(cursor->x, cursor->y));
 
 		/* overview: hovering a strip tile previews that tag in the main area */
 		if (selmon && selmon->isoverview)
@@ -7235,6 +7245,16 @@ void pointerfocus(Client *c, struct wlr_surface *surface, double sx, double sy,
 }
 
 // modified printstatus function to accept a mask parameter
+void set_selmon(Monitor *m) {
+	if (m == selmon)
+		return;
+	selmon = m;
+	/* ALL_MONITORS rather than a narrower type: what changed is which output
+	 * is `active`, which is a property of every monitor in the reply, not of
+	 * the focused client or of any tag. */
+	printstatus(IPC_WATCH_ALL_MONITORS);
+}
+
 void printstatus(enum ipc_watch_type type) {
 	wl_signal_emit(&asteroidz_print_status, &type);
 }

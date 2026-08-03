@@ -172,3 +172,56 @@ test_toggle_monitor() {
 	hl_assert_true "toggle_monitor,\$HL_SECOND_MON again re-enables it" "$(hl_monitor_field "$HL_SECOND_MON" enabled)"
 }
 
+
+test_focusing_another_monitor_is_announced() {
+	hl_ensure_second_monitor || { hl_skip "needs a second monitor"; return 0; }
+	# `active` on a monitor is `m == selmon`, and it is the only way a client
+	# can learn which screen has the focus. The bar's wallpaper keybind acts on
+	# that -- "change the wallpaper on the screen I am looking at" -- and it
+	# kept changing the same one, because moving the pointer to the other
+	# output assigned selmon directly and told nobody. focusmon() got away with
+	# it by ending in focusclient(), which notifies for its own reasons.
+	#
+	# Driven by a CLICK on the other monitor, not by focus_monitor. The
+	# dispatch was never the broken half -- it ends in focusclient(), which
+	# notifies for its own reasons -- so a test using it would pass against the
+	# bug it is here to catch.
+	#
+	# A click rather than a move, and that is a limitation worth stating: plain
+	# MOTION also moves the focus (sloppyfocus), but motionnotify gates that on
+	# `time`, and a virtual pointer reports time_msec 0. So the motion path
+	# cannot be driven from here at all. The button path sets selmon through
+	# the same helper, so this covers the notification; what it does not cover
+	# is sloppy focus, which is how a person actually does it.
+	# The pointer's absolute coordinates are a fraction of the whole layout's
+	# bounding box, not of one output -- so with a second monitor attached the
+	# extent has to be resynced or every coordinate lands at roughly half where
+	# it was aimed, and the pointer never leaves the first screen.
+	hl_sync_pointer_extent
+
+	local other="$HL_SECOND_MON"
+	local ox oy
+	ox="$(hl_get "get all-monitors" | jq -r --arg m "$other" \
+		'.monitors[] | select(.name==$m) | .x')"
+	oy="$(hl_get "get all-monitors" | jq -r --arg m "$other" \
+		'.monitors[] | select(.name==$m) | .y')"
+
+	# Park on the first monitor, so the move to the second is a real change.
+	hl_move 100 100; sleep 0.5
+	hl_watch_start "watch all-monitors" wmon >/dev/null
+	local before; before="$(hl_watch_line_count wmon)"
+
+	hl_move $((ox + 200)) $((oy + 200)); sleep 0.3
+	hl_click $((ox + 200)) $((oy + 200)); sleep 0.5
+	hl_assert "clicking on the other monitor focuses it" \
+		"$(hl_get "get all-monitors" | jq -r --arg m "$other" \
+			'.monitors[] | select(.name==$m) | .active')" "true"
+	hl_assert_true "...and a watcher was told" \
+		"$(hl_wait_watch_grew wmon "$before" && echo true || echo false)"
+
+	before="$(hl_watch_line_count wmon)"
+	hl_move 100 100; sleep 0.3
+	hl_click 100 100; sleep 0.5
+	hl_assert_true "...and told again on the way back" \
+		"$(hl_wait_watch_grew wmon "$before" && echo true || echo false)"
+}
