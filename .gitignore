@@ -18,3 +18,14 @@ contrib/wllayer/wllayer
 # the checkout -- which is its own git clone -- is not.
 /subprojects/tracy/
 /subprojects/.wraplock
+
+# makepkg builds in place. `pkg/` is its staging root and the .zst is the
+# finished package -- both are outputs, and eight of the latter reached this
+# repository before anyone noticed, at 3-9 MB each. Not `src/`, which makepkg
+# also uses but which is this project's actual source tree.
+#
+# BUILDDIR is set for every build here so makepkg works elsewhere entirely;
+# these two patterns are the backstop for the run where it is forgotten.
+*.pkg.tar.zst
+*.pkg.tar.xz
+/pkg/
