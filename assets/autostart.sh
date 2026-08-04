@@ -39,14 +39,30 @@ have() { command -v "$1" >/dev/null 2>&1; }
 # asteroidz-bar draws the bar AND the wallpaper -- they share one process and one
 # Wayland connection, so there is nothing else to start for either.
 #
-# The guard matches the QML PATH, not a process name. The launcher execs
-# quickshell, so `pgrep -x asteroidz-bar` never matches anything and the check
-# would silently do nothing. It is anchored for the opposite reason: an
-# unanchored `pgrep -f` also matches any shell that merely mentions the string --
-# including a terminal running this very script, which answered "already running"
-# and left the session with no bar.
+# The guard asks quickshell, not `ps`.
+#
+# It used to match the command line -- `pgrep -f "^/usr/bin/qs -p /usr/share/
+# asteroidz-bar"` -- and that cannot see a bar which has already crashed once.
+# Quickshell supervises its own shell: on a fault it writes a crash report and
+# re-execs, and the replacement's argv is a bare `/usr/bin/quickshell`, with no
+# `-p` and no path. The guard then matches nothing and starts a SECOND bar
+# beside a live one, which is how a session ends up with two.
+#
+# `qs list` reads quickshell's own registry under $XDG_RUNTIME_DIR/quickshell,
+# where an instance is keyed by the config it is running rather than by how it
+# happened to be spelled on the command line.
+#
+# Two earlier traps this still avoids: `pgrep -x asteroidz-bar` never matched
+# anything, because the launcher execs quickshell; and an UNanchored `pgrep -f`
+# matched any shell merely mentioning the string, including a terminal running
+# this very script, which answered "already running" and left the session with
+# no bar at all.
 if have asteroidz-bar; then
-	pgrep -f "^/usr/bin/qs -p /usr/share/asteroidz-bar" >/dev/null 2>&1 \
+	# Loose enough to match a working tree too: the installed copy is
+	# .../asteroidz-bar/shell.qml, a developer's is
+	# .../asteroidz-bar/shell/shell.qml, and starting a packaged bar beside a
+	# tree one is the same mistake in a more confusing outfit.
+	qs list --all 2>/dev/null | grep -qE 'asteroidz-bar/.*shell\.qml' \
 		|| asteroidz-bar >/tmp/asteroidz-bar-session.log 2>&1 &
 fi
 
