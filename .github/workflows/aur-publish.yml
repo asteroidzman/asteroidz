@@ -23,14 +23,17 @@ jobs:
           sed -i "s/^pkgver=.*/pkgver=${VERSION}/" PKGBUILD
           sed -i "s/^pkgrel=.*/pkgrel=1/" PKGBUILD
 
-      - name: Commit bumped PKGBUILD back to the repo
-        run: |
-          git config user.name "asteroidzman"
-          git config user.email "asteroidzman@users.noreply.github.com"
-          git add PKGBUILD
-          git diff --cached --quiet || git commit -m "PKGBUILD: bump to ${{ github.event.release.tag_name }}"
-          git push origin HEAD:${{ github.event.repository.default_branch }}
-
+      # The publish comes FIRST, before anything is pushed back here.
+      #
+      # It used to come last, and that is how a release could report failure
+      # having never attempted the thing it exists to do. `actions/checkout` on
+      # a `release` event checks out the TAG, in detached HEAD; the commit-back
+      # step then pushed that commit to `main`, which is rejected outright
+      # whenever main has moved on since the tag -- and the job stopped there.
+      # asteroidz-bar sat at 0.1.4 through three releases for exactly this.
+      #
+      # The action needs nothing but the bumped PKGBUILD in the workspace, so
+      # the ordering costs nothing.
       - name: Publish to the AUR
         uses: KSXGitHub/github-actions-deploy-aur@v4.2.0
         with:
@@ -56,3 +59,35 @@ jobs:
           # verification -- build plus the full regression suite -- happens
           # locally before a release is cut either way.
           test: false
+
+      # Housekeeping, so the PKGBUILD in this repo shows the version that was
+      # published. Applied to the default BRANCH rather than pushed out of the
+      # detached tag checkout, which is what used to fail.
+      #
+      # `continue-on-error` because this is the tidying, not the job: the AUR
+      # is already updated by the time it runs, and a release cut from a tag
+      # that main has since moved past must not be reported as a failed
+      # publish.
+      - name: Record the published version on the default branch
+        continue-on-error: true
+        run: |
+          BRANCH="${{ github.event.repository.default_branch }}"
+          VERSION="${{ github.event.release.tag_name }}"
+          VERSION="${VERSION#v}"
+
+          git config user.name "asteroidzman"
+          git config user.email "asteroidzman@users.noreply.github.com"
+
+          git fetch --quiet origin "$BRANCH"
+          git checkout --quiet -B aur-bump "origin/$BRANCH"
+
+          sed -i "s/^pkgver=.*/pkgver=${VERSION}/" PKGBUILD
+          sed -i "s/^pkgrel=.*/pkgrel=1/" PKGBUILD
+
+          git add PKGBUILD
+          # Already correct, which is the normal case when the release was cut
+          # from a tree that was bumped before tagging. Nothing to record.
+          git diff --cached --quiet && exit 0
+
+          git commit -m "PKGBUILD: bump to ${{ github.event.release.tag_name }}"
+          git push origin "aur-bump:$BRANCH"
