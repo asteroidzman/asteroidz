@@ -61,11 +61,13 @@ fi
 
 # ── notifications ───────────────────────────────────────────────────────────
 #
-# The bar's notification module talks to swaync over its own D-Bus name, so
-# without a daemon that pill is simply absent rather than broken.
-if have swaync; then
-	pgrep -x swaync >/dev/null 2>&1 || swaync &
-fi
+# Nothing to start. asteroidz-bar IS org.freedesktop.Notifications -- it owns the
+# name, keeps the history and draws the popups itself.
+#
+# Starting swaync here as well is actively harmful rather than redundant: two
+# daemons race for one bus name, whichever loses never sees a notification, and
+# which one that is depends on start order. If you use a different shell and want
+# swaync back, start it from your own copy of this file.
 
 # ── idle handling ───────────────────────────────────────────────────────────
 #

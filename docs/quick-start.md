@@ -28,7 +28,9 @@ Now that you have asteroidz installed, let's get your environment set up.
    ```
 
    A session autostart lives at `/etc/asteroidz/autostart.sh` — the bar, the
-   clipboard, notifications. The config runs your copy if there is one and the
+   clipboard, idle handling. No notification daemon: asteroidz-bar is one, so
+   starting a second would only race it for the bus name. The config runs your
+   copy if there is one and the
    shipped one otherwise, so copying it is optional and only worth doing when you
    want to change what starts:
 
@@ -78,7 +80,7 @@ To get a fully functional desktop experience, we recommend installing the follow
 | Status Bar | waybar, eww, quickshell, ags |
 | Desktop Shell | Noctalia, DankMaterialShell |
 | Wallpaper Setup | awww(swww), swaybg |
-| Notification Daemon | swaync, dunst, mako |
+| Notification Daemon | none needed with asteroidz-bar, which is one; otherwise dunst, mako |
 | Desktop Portal | xdg-desktop-portal, xdg-desktop-portal-wlr, xdg-desktop-portal-gtk |
 | Clipboard | wl-clipboard, wl-clip-persist, cliphist |
 | Gamma Control / Night Light | wlsunset, gammastep |
