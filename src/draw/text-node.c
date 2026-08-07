@@ -489,6 +489,13 @@ int32_t asteroidz_font_line_height(const char *font_desc) {
 		metrics_surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, 1, 1);
 		metrics_cr = cairo_create(metrics_surface);
 		metrics_context = pango_cairo_create_context(metrics_cr);
+		/* The same options every layout in this file draws with. hint_metrics
+		 * is a METRICS setting -- measuring a font under different rules than
+		 * the text is laid out under is how a box comes out a pixel short of
+		 * what goes in it. It happens to change nothing for the fonts on this
+		 * desktop; that is not a reason to measure differently. */
+		pango_cairo_context_set_font_options(metrics_context,
+											 asteroidz_font_options());
 		pango_cairo_context_set_resolution(metrics_context, 96.0);
 	}
 
@@ -1853,7 +1860,6 @@ void asteroidz_tab_bar_node_update(struct asteroidz_tab_bar_node *node,
 
 		PangoContext *ctx = pango_cairo_create_context(cr);
 		pango_cairo_context_set_font_options(ctx, asteroidz_font_options());
-	pango_cairo_context_set_font_options(ctx, asteroidz_font_options());
 		pango_cairo_context_set_resolution(ctx, 96.0 * scale);
 		PangoLayout *layout = pango_layout_new(ctx);
 		PangoFontDescription *desc = get_cached_font_desc(node->font_desc);
