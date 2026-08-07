@@ -136,6 +136,19 @@ struct fx_render_blur_pass_options {
 	// not re-rendered), so without this the blur spreads the window's own
 	// pixels outward as a halo.
 	struct wlr_box sample_exclude;
+	// The blur may only ever DARKEN what it replaces.
+	//
+	// Blurring is an average, and averaging bright detail on a dark ground
+	// raises the mean wherever the ground is dark -- a terminal's text is
+	// exactly that. A shadow whose backdrop blur is brighter than the backdrop
+	// it replaced reads as a glow around the window, growing toward it as the
+	// shadow's own alpha ramps up. Smooth content (a photograph) barely moves
+	// its own mean, which is why this only ever showed over other windows.
+	//
+	// So a shadow's blur is clamped per pixel against its own unblurred
+	// source. Set for shadow backdrop blurs and nothing else: a frosted panel
+	// is SUPPOSED to be able to come out lighter than what is behind it.
+	bool darken_only;
 };
 
 struct fx_gles_render_pass *fx_get_render_pass(struct wlr_render_pass *render_pass);

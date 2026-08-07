@@ -1722,7 +1722,8 @@ struct wlr_box fx_vk_blur_padded_region(struct fx_vk_effect_buffers *bufs,
 
 struct fx_vk_effect_image *fx_vk_render_pass_blur(struct fx_vk_render_pass *pass,
 		struct fx_vk_effect_buffers *bufs, struct fx_vk_effect_image *source,
-		const struct blur_data *blur_data, const struct wlr_box *region) {
+		const struct blur_data *blur_data, const struct wlr_box *region,
+		bool darken_only) {
 	int w = bufs->width, h = bufs->height;
 	if (w <= 0 || h <= 0 || blur_data->num_passes <= 0) {
 		return source;
@@ -1806,6 +1807,12 @@ struct fx_vk_effect_image *fx_vk_render_pass_blur(struct fx_vk_render_pass *pass
 				u.contrast = blur_data->contrast;
 				u.saturation = blur_data->saturation;
 				u.noise = blur_data->noise;
+			}
+			// Only the last pass, and only here: mip 0 still holds the
+			// unblurred source until this dispatch overwrites it, which is
+			// what makes the clamp free. See blur2.comp.
+			if (i == 0 && darken_only) {
+				u.clamp_darken = 1.0f;
 			}
 			VkRect2D lrect = blur_level_rect(&rbox, i);
 			clamp_rect_to_mip(&lrect, bufs->width, bufs->height, i);
@@ -1952,6 +1959,17 @@ static void effect_copy_barrier_after(VkCommandBuffer cb) {
 // A halo in the window's own colour, which on a dark backdrop reads as a glow.
 //
 // One stretched blit: `src` scaled to fill `dst`, within the same image.
+//
+// NEAREST, and it has to be. Every `src` here is a ONE-pixel strip, and a
+// Vulkan blit's filter samples the source IMAGE, not the source rectangle: with
+// VK_FILTER_LINEAR the destination texels interpolate between the ring pixel
+// and the pixel just inside the hole -- the window's own edge -- ramping to a
+// ~50% blend of it by the far end of the stretch. Dumping the staged source
+// (FX_BLUR_DUMP, see blur_debug.c) showed the fill crossing from the wallpaper
+// to the window's border colour across each quarter, matching the bilinear
+// weight max(0, t - 0.5) to three decimals. That is not an edge extension, it
+// is a gradient back into exactly the content this function exists to remove,
+// and the blur then spreads it outward as a halo in the window's own colour.
 static void stretch_effect_image_region(struct fx_vk_render_pass *pass,
 		VkImage image, const struct wlr_box *src, const struct wlr_box *dst) {
 	if (src->width <= 0 || src->height <= 0 ||
@@ -1981,13 +1999,60 @@ static void stretch_effect_image_region(struct fx_vk_render_pass *pass,
 	vkCmdBlitImage(cb,
 		image, VK_IMAGE_LAYOUT_GENERAL,
 		image, VK_IMAGE_LAYOUT_GENERAL,
-		1, &blit, VK_FILTER_LINEAR);
+		1, &blit, VK_FILTER_NEAREST);
+	effect_copy_barrier_after(cb);
+}
+
+static int32_t imin3(int32_t a, int32_t b, int32_t c) {
+	int32_t m = a < b ? a : b;
+	return m < c ? m : c;
+}
+
+// Reflect a band of real content back across an edge, in place.
+//
+// The blit's offsets are given in REVERSE order along the mirrored axis, which
+// is how Vulkan expresses a flip. Source and destination are the same size, so
+// nearest sampling reproduces the content exactly; the two never overlap
+// (source is outside the hole, destination inside).
+static void mirror_effect_image_region(struct fx_vk_render_pass *pass,
+		VkImage image, const struct wlr_box *src, const struct wlr_box *dst,
+		bool flip_x, bool flip_y) {
+	if (src->width <= 0 || src->height <= 0 ||
+			dst->width <= 0 || dst->height <= 0) {
+		return;
+	}
+	int32_t sx0 = src->x, sx1 = src->x + src->width;
+	int32_t sy0 = src->y, sy1 = src->y + src->height;
+	if (flip_x) { int32_t t = sx0; sx0 = sx1; sx1 = t; }
+	if (flip_y) { int32_t t = sy0; sy0 = sy1; sy1 = t; }
+	VkImageBlit blit = {
+		.srcSubresource = {
+			.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+			.layerCount = 1,
+		},
+		.srcOffsets = { { sx0, sy0, 0 }, { sx1, sy1, 1 } },
+		.dstSubresource = {
+			.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+			.layerCount = 1,
+		},
+		.dstOffsets = {
+			{ dst->x, dst->y, 0 },
+			{ dst->x + dst->width, dst->y + dst->height, 1 },
+		},
+	};
+	VkCommandBuffer cb = pass->command_buffer->vk;
+	effect_copy_barrier_before(cb);
+	vkCmdBlitImage(cb,
+		image, VK_IMAGE_LAYOUT_GENERAL,
+		image, VK_IMAGE_LAYOUT_GENERAL,
+		1, &blit, VK_FILTER_NEAREST);
 	effect_copy_barrier_after(cb);
 }
 
 static void blur_exclude_from_source(struct fx_vk_render_pass *pass,
 		struct fx_vk_effect_buffers *bufs, struct fx_vk_effect_image *dst,
-		const struct wlr_box *blur_region, const struct wlr_box *exclude) {
+		const struct wlr_box *blur_region, const struct wlr_box *exclude,
+		const struct blur_data *blur_data) {
 	if (exclude->width <= 0 || exclude->height <= 0 || dst == NULL) {
 		return;
 	}
@@ -2015,38 +2080,109 @@ static void blur_exclude_from_source(struct fx_vk_render_pass *pass,
 	// done with four blits because the sampler cannot be told to do it for a
 	// sub-rectangle.
 	//
-	// The middle is left as it was. At 72px of blur over a window hundreds of
-	// pixels wide, it is further from every edge than the kernel can reach.
-	int32_t qw = box.width / 4;
-	int32_t qh = box.height / 4;
-	if (qw < 1 || qh < 1) {
-		return;
+	// The ROWS cover the hole between them -- top strip over the top half,
+	// bottom strip over the bottom half -- so no pixel of the window survives
+	// anywhere in it.
+	//
+	// This used to fill a quarter from each of the four sides and leave the
+	// middle, on the reasoning that the middle is further from every edge than
+	// the kernel can reach. That holds for a big window and fails for a small
+	// one: the fill reaches width/4 in, the blur reaches whatever its padded
+	// region is (~50px at the shipped radius), and the moment a window is
+	// narrower than about eight times that, the untouched middle is inside the
+	// kernel's reach. A dialog or a notification card is exactly that window.
+	// Covering the whole hole costs nothing measurable -- the same two blits,
+	// with a taller destination -- and removes the size dependence completely.
+	//
+	// Each source strip is one pixel of the ring just outside the hole, and is
+	// only used when it exists: a window flush against the screen edge has no
+	// ring on that side, so the opposite strip covers the whole hole alone.
+	const bool have_top = box.y > 0;
+	const bool have_bottom = box.y + box.height < bufs->height;
+	const bool have_left = box.x > 0;
+	const bool have_right = box.x + box.width < bufs->width;
+
+	int32_t top_h = have_bottom ? (box.height + 1) / 2 : box.height;
+	if (have_top) {
+		struct wlr_box src = { box.x, box.y - 1, box.width, 1 };
+		struct wlr_box dst_box = { box.x, box.y, box.width, top_h };
+		stretch_effect_image_region(pass, dst->image, &src, &dst_box);
+	}
+	if (have_bottom) {
+		int32_t y = have_top ? box.y + top_h : box.y;
+		struct wlr_box src = { box.x, box.y + box.height, box.width, 1 };
+		struct wlr_box dst_box = { box.x, y, box.width, box.y + box.height - y };
+		stretch_effect_image_region(pass, dst->image, &src, &dst_box);
 	}
 
-	// Each source strip is one pixel of the ring just outside the hole, and is
-	// only used when it exists -- a window flush against the screen edge has
-	// no ring on that side.
-	if (box.y > 0) {
-		struct wlr_box src = { box.x, box.y - 1, box.width, 1 };
-		struct wlr_box dst_box = { box.x, box.y, box.width, qh };
-		stretch_effect_image_region(pass, dst->image, &src, &dst_box);
-	}
-	if (box.y + box.height < bufs->height) {
-		struct wlr_box src = { box.x, box.y + box.height, box.width, 1 };
-		struct wlr_box dst_box = { box.x, box.y + box.height - qh, box.width, qh };
-		stretch_effect_image_region(pass, dst->image, &src, &dst_box);
-	}
 	// Columns last, so a vertical edge's own content wins over the rows' near
-	// the corners -- that is the side whose reach it is.
-	if (box.x > 0) {
+	// that edge -- that is the side whose reach it is. A quarter each, or half
+	// each when there is no row above or below to have covered the middle.
+	int32_t qw = (have_top || have_bottom) ? box.width / 4 : (box.width + 1) / 2;
+	if (qw < 1) {
+		return;
+	}
+	if (have_left) {
 		struct wlr_box src = { box.x - 1, box.y, 1, box.height };
 		struct wlr_box dst_box = { box.x, box.y, qw, box.height };
 		stretch_effect_image_region(pass, dst->image, &src, &dst_box);
 	}
-	if (box.x + box.width < bufs->width) {
+	if (have_right) {
 		struct wlr_box src = { box.x + box.width, box.y, 1, box.height };
 		struct wlr_box dst_box = { box.x + box.width - qw, box.y, qw, box.height };
 		stretch_effect_image_region(pass, dst->image, &src, &dst_box);
+	}
+
+	// ── and now the part that actually has to be right ──────────────────────
+	//
+	// Everything above stretches ONE pixel of ring across the hole, which is a
+	// fair guess at what is underneath only while the surroundings are smooth.
+	// Over a wallpaper they are. Over another window they are not, and the
+	// difference is not subtle: measured with a six-pixel bright band running
+	// under a floating window, the stretch turned it into two hundred and fifty
+	// pixels of solid saturated colour inside the source, which the blur then
+	// spread out as a coloured halo. On a terminal the "band" is a line of
+	// text, so the halo takes the colour of whatever happens to sit on that one
+	// scanline and changes as the text does.
+	//
+	// So within the blur's REACH -- the only depth that can influence a pixel
+	// outside the hole at all -- the fill is a REFLECTION of the real content
+	// across each edge instead. Mirroring is the standard boundary mode for
+	// convolution for exactly this reason: it preserves the local statistics of
+	// the neighbourhood, where clamp-to-edge replaces them with a single
+	// sample. Past the reach the stretch above still stands, and does not
+	// matter -- nothing that deep can reach the outside; it only has to not be
+	// the window.
+	int32_t reach = blur_data_calc_size((struct blur_data *)blur_data);
+	if (reach < 1) {
+		return;
+	}
+	int32_t half_h = box.height / 2, half_w = box.width / 2;
+	int32_t band;
+
+	if (have_top && (band = imin3(reach, box.y, half_h)) > 0) {
+		struct wlr_box src = { box.x, box.y - band, box.width, band };
+		struct wlr_box dst_box = { box.x, box.y, box.width, band };
+		mirror_effect_image_region(pass, dst->image, &src, &dst_box, false, true);
+	}
+	if (have_bottom && (band = imin3(reach, bufs->height - (box.y + box.height), half_h)) > 0) {
+		struct wlr_box src = { box.x, box.y + box.height, box.width, band };
+		struct wlr_box dst_box = { box.x, box.y + box.height - band,
+			box.width, band };
+		mirror_effect_image_region(pass, dst->image, &src, &dst_box, false, true);
+	}
+	// Columns last, for the same reason as above: at a corner the vertical
+	// edge's own neighbourhood is the one whose reach it is.
+	if (have_left && (band = imin3(reach, box.x, half_w)) > 0) {
+		struct wlr_box src = { box.x - band, box.y, band, box.height };
+		struct wlr_box dst_box = { box.x, box.y, band, box.height };
+		mirror_effect_image_region(pass, dst->image, &src, &dst_box, true, false);
+	}
+	if (have_right && (band = imin3(reach, bufs->width - (box.x + box.width), half_w)) > 0) {
+		struct wlr_box src = { box.x + box.width, box.y, band, box.height };
+		struct wlr_box dst_box = { box.x + box.width - band, box.y,
+			band, box.height };
+		mirror_effect_image_region(pass, dst->image, &src, &dst_box, true, false);
 	}
 }
 
@@ -2581,7 +2717,7 @@ bool fx_vk_render_pass_add_optimized_blur(struct wlr_render_pass *wlr_pass,
 	// Dual-Kawase blur of the snapshot into the ping-pong effect buffers.
 	struct fx_vk_effect_image *result =
 		fx_vk_render_pass_blur(pass, bufs, bufs->optimized_no_blur, &blur_data,
-			NULL);
+			NULL, false);
 
 	// Persist the blurred result in the cache.
 	if (result != NULL && result != bufs->optimized_blur) {
@@ -2785,11 +2921,12 @@ void fx_vk_render_pass_add_blur(struct wlr_render_pass *wlr_pass,
 		fx_vk_blur_debug_capture(pass->renderer, cb, live_src->image,
 			&blur_region, &options->sample_exclude, "staged");
 		blur_exclude_from_source(pass, bufs, live_src, &blur_region,
-			&options->sample_exclude);
+			&options->sample_exclude, &bd);
 		fx_vk_blur_debug_capture(pass->renderer, cb, live_src->image,
 			&blur_region, &options->sample_exclude, "patched");
 		struct fx_vk_effect_image *src =
-			fx_vk_render_pass_blur(pass, bufs, live_src, &bd, &blur_region);
+			fx_vk_render_pass_blur(pass, bufs, live_src, &bd, &blur_region,
+				options->darken_only);
 		defer_blur_composite(pass, src, &dst_box, &blur_region, tex_options,
 			alpha);
 		return;
@@ -2822,18 +2959,18 @@ void fx_vk_render_pass_add_blur(struct wlr_render_pass *wlr_pass,
 			fx_vk_blur_debug_capture(pass->renderer, cb, live_src->image,
 				&blur_region, &options->sample_exclude, "staged");
 			blur_exclude_from_source(pass, bufs, live_src, &blur_region,
-				&options->sample_exclude);
+				&options->sample_exclude, &bd);
 			fx_vk_blur_debug_capture(pass->renderer, cb, live_src->image,
 				&blur_region, &options->sample_exclude, "patched");
 			src = fx_vk_render_pass_blur(pass, bufs, live_src, &bd,
-				&blur_region);
+				&blur_region, options->darken_only);
 			begin_scene_pass_reload(pass);
 		} else if (options->blur_strength < 1.0f && is_scene_blur_enabled(&bd) &&
 				blur_region.width > 0 && blur_region.height > 0) {
 			vkCmdEndRenderPass(pass->command_buffer->vk);
 			pass->bound_pipeline = VK_NULL_HANDLE;
 			src = fx_vk_render_pass_blur(pass, bufs, bufs->optimized_no_blur,
-				&bd, &blur_region);
+				&bd, &blur_region, options->darken_only);
 			begin_scene_pass_reload(pass);
 		}
 	}

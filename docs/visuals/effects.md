@@ -103,9 +103,75 @@ the window's own colour, a glow rather than a shadow on a dark backdrop
 Under the window the true backdrop is unknowable, and what goes in its place is
 what the kernel spreads outward — so it cannot be a stand-in for the backdrop,
 it has to be a continuation of it. The excluded box is filled from its own
-edges: each side's strip of surrounding content, stretched inward over the
-quarter nearest it. Near an edge, which is the only place the blur's reach
-matters, the source then holds more of the very thing being blurred.
+edges: the strips above and below it are stretched over a half each, covering
+it between them, and the strips to either side are then stretched over the
+quarter nearest them so that a vertical edge's own content wins where its reach
+is. Near an edge, which is the only place the blur's reach matters, the source
+then holds more of the very thing being blurred.
+
+That stretch is only ever a base coat. Within the blur's REACH of each edge —
+the only depth that can influence a pixel outside the hole at all — the fill is
+a **reflection** of the real content across that edge instead. Mirroring is the
+standard boundary mode for convolution because it preserves the neighbourhood's
+statistics; clamp-to-edge replaces them with a single sample, and a single
+sample of structured content is not a sample of anything. Measured with a
+six-pixel bright band running under a floating window, the stretch turned it
+into two hundred and fifty pixels of solid saturated colour inside the source,
+which the blur duly spread out as a coloured halo. On a terminal that "band" is
+a line of text, so the halo took the colour of whatever sat on that one scanline
+and changed as the text did. Past the reach the stretch stands and does not
+matter: nothing that deep can reach the outside, so it only has to not be the
+window.
+
+Two further details are load-bearing, and both were got wrong first:
+
+- The stretch samples with **nearest**, not linear. Every source strip is one
+  pixel wide, and a Vulkan blit's filter samples the source *image* rather than
+  the source rectangle — so with linear filtering each destination texel came
+  out a blend of the ring pixel and the pixel just inside the hole, which is the
+  window's own edge, ramping to about half the window's colour by the far end of
+  the stretch. That is a gradient back into exactly the content the exclusion
+  exists to remove.
+- The rows cover the hole **between them**. They used to fill a quarter from
+  each of the four sides and leave the middle, on the reasoning that the middle
+  is further from every edge than the kernel can reach. That holds for a large
+  window and fails for a small one: the fill reaches a quarter of the way in and
+  the blur reaches whatever its padded region is, so once a window is narrower
+  than roughly eight times that, the untouched middle — pure window — is inside
+  the kernel's reach. A dialog or a notification card is exactly that window.
+
+None of these shows up on a screenshot, because the blur averages the evidence
+away before anything reaches the screen. See
+[Dumping a blur's source](#dumping-a-blurs-source).
+
+### A shadow may only ever darken
+
+Getting the source right is not enough, and for a long time this looked like the
+same bug wearing a different hat. It is a separate one, and it is not in the
+exclusion at all.
+
+A blur is an average, and averaging bright detail over a dark ground **raises
+the mean wherever the ground is dark**. A terminal is mostly dark with sparse
+bright text, so its blur genuinely comes out lighter than the thing it replaced.
+The shadow's own alpha ramps up toward the window, so the closer to the edge the
+more of that lifted version shows: a smooth brightening gradient running into
+the window. A photograph is already smooth and its mean barely moves, which is
+why this was only ever visible over other *windows* and never over a wallpaper.
+
+So the shadow's blurred backdrop is clamped per pixel against its own unblurred
+source, and can never come out lighter than what it replaced. The clamp is free:
+the mip chain walks away from mip 0 and only returns on the final upsample, so
+mip 0 still holds the untouched source until that pass overwrites it — one image
+read, no extra buffer and no copy. It applies to shadow backdrop blurs and
+nothing else, because a frosted panel is *supposed* to be able to come out
+lighter than what is behind it.
+
+Compute path only. The GLES renderer and the Vulkan graphics ping-pong fallback
+have both overwritten the source by the time the last pass runs.
+
+`contrib/shadow-darken-test.sh` holds the line, against fine bright lines on
+black — the structure of text without needing a terminal to make it. Measured
+there: 60 levels of stray light in the shadow band before the clamp, 0 after.
 
 The first attempt substituted the unblurred wallpaper snapshot there instead,
 on the reasoning that the wallpaper is what lies under everything. It is, but a

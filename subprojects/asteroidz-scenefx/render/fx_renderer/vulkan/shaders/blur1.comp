@@ -35,6 +35,8 @@ layout(push_constant) uniform UBO {
 	float contrast;
 	float saturation;
 	float noise;
+	float clamp_darken;
+	float _pad0;
 	uvec2 extent;
 	uvec2 offset;
 } data;

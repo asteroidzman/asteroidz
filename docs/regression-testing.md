@@ -55,6 +55,42 @@ about 16. Counting mid-tones instead does not separate the two — the backgroun
 borders and icon supply plenty either way, and the first version of this
 measured 22.2 against 20.5 and could not tell the builds apart.
 
+`contrib/blur-exclusion-test.sh` is the third. It asserts that no pixel of a
+window survives anywhere in its own shadow's backdrop-blur source — the scratch
+image the blur samples, which covers the window because a shadow is the window
+plus its spread. It reads that image directly, through the `FX_BLUR_DUMP`
+facility (see [effects](./visuals/effects.md#dumping-a-blurs-source)), instead of
+looking for the consequence on screen, because whether the consequence is
+*visible* depends on the window's size, its colour against the backdrop and the
+blur's reach. The two shadow scenes in `contrib/regression/tests/effects.sh`
+happen to sit where it is not: both passed on a build whose fill left 7575 of
+30800 hole pixels holding the window's own colour. Vulkan only — the GLES path
+patches the hole in a shader, with no equivalent image to read back.
+
+It also has to run its own compositor, because the dump is armed from the
+environment at startup and every module in `run.sh` shares one instance. (It can
+be armed at runtime too — `amsg dispatch dump_blur_source` — but that only helps
+a compositor that already has the dispatch, which is to say not the one you are
+trying to diagnose after a fix.)
+
+`contrib/shadow-darken-test.sh` is the fourth, and it exists because of what the
+other three could not see. A blur is an average, and averaging bright detail
+over a dark ground raises the mean where the ground is dark — so a shadow's
+blurred backdrop over a terminal comes out *lighter* than the backdrop it
+replaced, and reads as a halo brightening toward the window. Every shadow scene
+in `effects.sh` uses flat single-colour windows on a flat wallpaper, and a blur
+of a flat field is the same flat field: there is no high-frequency detail for
+the average to redistribute, so all three of them pass on a build with the bug,
+including the one actually named `a shadow over a dark window only ever darkens
+it`. This one uses fine bright lines on black instead — the structure of text
+without needing a terminal to produce it — and asserts the plain rule the
+feature is named for: nothing under the shadow may end up brighter than the same
+wallpaper well away from it. 60 levels of stray light before the clamp, 0 after.
+
+The lesson is worth more than the test. A scene built to be *easy to measure* —
+flat colours, no texture — can be systematically blind to a whole class of
+fault, and it will keep passing while looking like real coverage.
+
 ### The schema, checked from both ends
 
 `src/config/config-schema.h` describes every settable option — type, range, enum

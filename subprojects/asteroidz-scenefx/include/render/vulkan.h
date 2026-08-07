@@ -408,9 +408,13 @@ struct blur_data;
 struct fx_vk_render_pass; // defined below
 // region: pre-padded write/copy region (see fx_vk_blur_padded_region) or
 // NULL for the whole buffer.
+// darken_only: clamp the result against the unblurred source, so the blur can
+// never come out lighter than what it replaces. Compute path only -- the
+// graphics ping-pong path has overwritten the source by the final pass.
 struct fx_vk_effect_image *fx_vk_render_pass_blur(struct fx_vk_render_pass *pass,
 	struct fx_vk_effect_buffers *bufs, struct fx_vk_effect_image *source,
-	const struct blur_data *blur_data, const struct wlr_box *region);
+	const struct blur_data *blur_data, const struct wlr_box *region,
+	bool darken_only);
 struct wlr_box fx_vk_blur_padded_region(struct fx_vk_effect_buffers *bufs,
 	const struct blur_data *blur_data, const struct wlr_box *box);
 
@@ -650,6 +654,11 @@ struct fx_vk_blur_pcr {
 	float contrast;
 	float saturation;
 	float noise;
+	// Clamp the result against the destination texel (mip 0 still holds the
+	// unblurred source until the final upsample overwrites it). Non-zero only
+	// on that last pass, and only for a shadow's backdrop blur.
+	float clamp_darken;
+	float _pad0; // the uvec2 in fx_vk_blur_compute_pcr is 8-byte aligned
 };
 
 // Compute-blur push block (offset 0, VK_SHADER_STAGE_COMPUTE_BIT): the

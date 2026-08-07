@@ -20,7 +20,7 @@
 layout(local_size_x = 8, local_size_y = 8) in;
 
 layout(set = 0, binding = 0) uniform sampler2D tex;
-layout(set = 1, binding = 0, rgba16f) writeonly uniform image2D out_img;
+layout(set = 1, binding = 0, rgba16f) uniform image2D out_img;
 
 // Matches fx_vk_blur_compute_pcr (see blur1.comp).
 layout(push_constant) uniform UBO {
@@ -33,6 +33,10 @@ layout(push_constant) uniform UBO {
 	float contrast;
 	float saturation;
 	float noise;
+	// Non-zero on the FINAL upsample only, and only for a shadow's backdrop
+	// blur: clamp the result against what this texel already holds.
+	float clamp_darken;
+	float _pad0;
 	uvec2 extent;
 	uvec2 offset;
 } data;
@@ -124,6 +128,22 @@ void main() {
 	vec4 color = vec4(sum) / 12.0;
 	if (data.apply_effects > 0.5) {
 		color = apply_blur_effects(color, uv);
+	}
+	// A shadow may only ever darken what it covers.
+	//
+	// A blur is an average, and averaging bright detail over a dark ground
+	// raises the mean wherever the ground is dark: a terminal is mostly dark
+	// with sparse bright text, so its blur comes out LIGHTER than it was, and
+	// the shadow that shows it reads as a glow. A photograph is already smooth
+	// and barely moves, which is why this only ever appeared over windows.
+	//
+	// The chain walks away from mip 0 and only returns on this last pass, so
+	// until this store mip 0 still holds the unblurred source -- the clamp
+	// costs one image read and no memory at all. Each invocation reads exactly
+	// the texel it is about to write, so the read-modify-write is its own.
+	if (data.clamp_darken > 0.5) {
+		vec4 src = imageLoad(out_img, ivec2(px));
+		color.rgb = min(color.rgb, src.rgb);
 	}
 	imageStore(out_img, ivec2(px), color);
 }

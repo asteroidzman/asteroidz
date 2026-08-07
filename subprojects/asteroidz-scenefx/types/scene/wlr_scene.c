@@ -2681,6 +2681,9 @@ static void scene_entry_render(struct render_list_entry *entry, const struct ren
 			ex.y += y;
 			transform_output_box(&ex, data);
 			blur_options.sample_exclude = ex;
+			// Same condition, because it identifies the same thing: only a
+			// shadow's backdrop blur excludes its own window.
+			blur_options.darken_only = true;
 		}
 		scene_pass_add_blur(data->render_pass, &blur_options);
 		break;
