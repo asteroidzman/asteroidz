@@ -74,6 +74,21 @@ void fx_vk_blur_debug_arm(const char *prefix, int frames) {
 		dump.prefix, dump.budget);
 }
 
+// FX_BLUR_NO_DARKEN_CLAMP=1 turns the shadow's darken clamp off for the whole
+// process. Its purpose is the one assertion no single-build test can otherwise
+// make: the clamp must change nothing INSIDE the excluded window box, where
+// the "source" it clamps against is synthetic fill rather than backdrop. With
+// this the same scene can be captured both ways and the two compared -- equal
+// inside the hole, different outside it, which also proves the clamp was on.
+bool fx_vk_blur_debug_no_darken_clamp(void) {
+	static int cached = -1;
+	if (cached < 0) {
+		const char *v = getenv("FX_BLUR_NO_DARKEN_CLAMP");
+		cached = (v != NULL && v[0] != '\0' && strcmp(v, "0") != 0);
+	}
+	return cached == 1;
+}
+
 bool fx_vk_blur_debug_enabled(void) {
 	if (!dump.checked) {
 		dump.checked = true;

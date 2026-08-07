@@ -91,6 +91,24 @@ The lesson is worth more than the test. A scene built to be *easy to measure* �
 flat colours, no texture — can be systematically blind to a whole class of
 fault, and it will keep passing while looking like real coverage.
 
+`contrib/shadow-exclude-clamp-test.sh` is the fifth, and it covers the clamp's
+own blind spot: the clamp takes a minimum against the unblurred source, and
+inside the window box the shadow excluded there is no unblurred source, only the
+synthetic fill the exclusion left behind. Clamping against a fabrication drags
+the region toward the fabrication's darkest structure, which is invisible behind
+an opaque window and a dark window-shaped patch through a translucent one — so
+the scene here puts a 15%-opaque terminal over the fine-lines wallpaper.
+
+Its shape is different from the other four: the assertion is about *two*
+renderings of one scene, which no single capture can make, so the script
+re-invokes itself and runs the compositor twice — once normally, once with
+`FX_BLUR_NO_DARKEN_CLAMP=1`. Inside the hole the two captures must agree; below
+the window they must not, and that second check is not decoration. Run against a
+binary predating the environment hook, the clamp stayed on for both captures,
+the two images were identical inside the hole, and the real assertion passed for
+entirely the wrong reason. A test whose premise can silently stop holding needs
+that premise asserted next to it.
+
 ### The schema, checked from both ends
 
 `src/config/config-schema.h` describes every settable option — type, range, enum

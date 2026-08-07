@@ -173,6 +173,25 @@ have both overwritten the source by the time the last pass runs.
 black — the structure of text without needing a terminal to make it. Measured
 there: 60 levels of stray light in the shadow band before the clamp, 0 after.
 
+**The clamp stops at the hole.** Its whole premise is that the source it takes
+the minimum against is the real backdrop, and inside the excluded window box
+that is false: what sits there is the fill described above — a stretched pixel
+row and a mirrored band, a fabrication that only has to keep the window from
+bleeding out of its own shadow. Clamping against it drags the region down toward
+the fill's own darkest structure. Behind an opaque window nobody can tell; a
+translucent one shows a dark patch shaped exactly like itself.
+
+So the clamp is skipped inside that box, and the plain blur stands there. It is
+the same principle as the clamp itself, applied in the other direction: a
+minimum is only meaningful against something true.
+
+`contrib/shadow-exclude-clamp-test.sh` asserts it, and needs two renderings of
+one scene to do so — inside the hole they must agree, below the window they must
+not, the second being what proves the clamp was running at all. `FX_BLUR_NO_
+DARKEN_CLAMP=1` turns the clamp off for a process so that comparison can be
+made; it exists for that test and is not otherwise useful. Measured: 9 levels of
+difference inside the hole through a 15%-opaque window before the fix, 0 after.
+
 The first attempt substituted the unblurred wallpaper snapshot there instead,
 on the reasoning that the wallpaper is what lies under everything. It is, but a
 floating window usually sits over *another window* rather than over the

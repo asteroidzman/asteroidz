@@ -508,6 +508,7 @@ typedef struct {
 
 	int32_t single_scratchpad;
 	int32_t xwayland_persistence;
+	int32_t primary_selection;
 	int32_t syncobj_enable;
 	int32_t tag_carousel;
 	float drag_tile_refresh_interval;
@@ -1861,6 +1862,8 @@ bool parse_option(Config *config, char *key, char *value) {
 		config->single_scratchpad = atoi(value);
 	} else if (strcmp(key, "xwayland_persistence") == 0) {
 		config->xwayland_persistence = atoi(value);
+	} else if (strcmp(key, "primary_selection") == 0) {
+		config->primary_selection = atoi(value);
 	} else if (strcmp(key, "syncobj_enable") == 0) {
 		config->syncobj_enable = atoi(value);
 	} else if (strcmp(key, "tag_carousel") == 0) {
@@ -3644,6 +3647,7 @@ static const struct {
 	{"overview/no-resize", "ov_no_resize"},
 	/* misc */
 	{"misc/xwayland-persistence", "xwayland_persistence"},
+	{"misc/primary-selection", "primary_selection"},
 	{"misc/syncobj", "syncobj_enable"},
 	{"misc/focus-on-activate", "focus_on_activate"},
 	{"misc/ufo-easter-egg", "ufo_easter_egg"},
@@ -4609,6 +4613,7 @@ void override_config(void) {
 	config.overviewgappi = CLAMP_INT(config.overviewgappi, 0, 1000);
 	config.overviewgappo = CLAMP_INT(config.overviewgappo, 0, 1000);
 	config.xwayland_persistence = CLAMP_INT(config.xwayland_persistence, 0, 1);
+	config.primary_selection = CLAMP_INT(config.primary_selection, 0, 1);
 	config.syncobj_enable = CLAMP_INT(config.syncobj_enable, 0, 1);
 	config.drag_tile_refresh_interval =
 		CLAMP_FLOAT(config.drag_tile_refresh_interval, 1.0f, 16.0f);
@@ -4834,6 +4839,7 @@ void set_value_default() {
 	config.view_current_to_back = 0;
 	config.single_scratchpad = 1;
 	config.xwayland_persistence = 1;
+	config.primary_selection = 1;
 	config.syncobj_enable = 0;
 	config.tag_carousel = 0;
 	config.drag_tile_refresh_interval = 8.0f;

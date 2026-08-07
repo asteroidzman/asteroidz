@@ -4,6 +4,7 @@ misc {
     drag-tile-to-tile 1
     icon-theme Papirus-Dark
     xwayland-persistence 1
+    primary-selection 1
     syncobj 1
     focus-on-activate 1
     // easter egg: at random intervals an Asteroids-style ship flies across the

@@ -1632,9 +1632,12 @@ static void blur_compute_barrier(VkCommandBuffer cb,
 // (set 1) over the extent x extent region -- the compute equivalent of
 // render_effect_blur_pass's scaled scissor. MUST be called with no render
 // pass active. The caller is responsible for barriers between iterations.
-static void render_effect_blur_dispatch(struct fx_vk_render_pass *pass,
+// `skip` is the region the darken clamp must NOT touch, in mip-0 pixels; an
+// empty box means "clamp everywhere". Ignored unless pcr->clamp_darken is set.
+static void render_effect_blur_dispatch_ex(struct fx_vk_render_pass *pass,
 		VkDescriptorSet src_ds, VkDescriptorSet dst_ds,
-		VkPipeline pipe, const struct fx_vk_blur_pcr *pcr, VkRect2D rect) {
+		VkPipeline pipe, const struct fx_vk_blur_pcr *pcr, VkRect2D rect,
+		const struct wlr_box *skip) {
 	struct fx_vk_renderer *renderer = pass->renderer;
 	VkCommandBuffer cb = pass->command_buffer->vk;
 
@@ -1643,6 +1646,12 @@ static void render_effect_blur_dispatch(struct fx_vk_render_pass *pass,
 		.extent = { rect.extent.width, rect.extent.height },
 		.offset = { rect.offset.x, rect.offset.y },
 	};
+	if (skip != NULL && skip->width > 0 && skip->height > 0) {
+		cpcr.skip_min[0] = skip->x;
+		cpcr.skip_min[1] = skip->y;
+		cpcr.skip_max[0] = skip->x + skip->width;
+		cpcr.skip_max[1] = skip->y + skip->height;
+	}
 	VkDescriptorSet sets[] = { src_ds, dst_ds };
 
 	vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipe);
@@ -1723,7 +1732,7 @@ struct wlr_box fx_vk_blur_padded_region(struct fx_vk_effect_buffers *bufs,
 struct fx_vk_effect_image *fx_vk_render_pass_blur(struct fx_vk_render_pass *pass,
 		struct fx_vk_effect_buffers *bufs, struct fx_vk_effect_image *source,
 		const struct blur_data *blur_data, const struct wlr_box *region,
-		bool darken_only) {
+		const struct wlr_box *darken_except) {
 	int w = bufs->width, h = bufs->height;
 	if (w <= 0 || h <= 0 || blur_data->num_passes <= 0) {
 		return source;
@@ -1787,9 +1796,9 @@ struct fx_vk_effect_image *fx_vk_render_pass_blur(struct fx_vk_render_pass *pass
 			d.halfpixel[1] = 1.0f / (sh < 1 ? 1 : sh);
 			VkRect2D lrect = blur_level_rect(&rbox, i + 1);
 			clamp_rect_to_mip(&lrect, bufs->width, bufs->height, i + 1);
-			render_effect_blur_dispatch(pass, chain->mip_src_ds[i],
+			render_effect_blur_dispatch_ex(pass, chain->mip_src_ds[i],
 				chain->mip_dst_ds[i + 1], renderer->blur_down_comp_pipe,
-				&d, lrect);
+				&d, lrect, NULL);
 			blur_compute_barrier(cb,
 				VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
 				VK_ACCESS_SHADER_WRITE_BIT,
@@ -1811,14 +1820,17 @@ struct fx_vk_effect_image *fx_vk_render_pass_blur(struct fx_vk_render_pass *pass
 			// Only the last pass, and only here: mip 0 still holds the
 			// unblurred source until this dispatch overwrites it, which is
 			// what makes the clamp free. See blur2.comp.
-			if (i == 0 && darken_only) {
+			struct wlr_box skip = {0};
+			if (i == 0 && darken_except != NULL &&
+					!fx_vk_blur_debug_no_darken_clamp()) {
 				u.clamp_darken = 1.0f;
+				skip = *darken_except;
 			}
 			VkRect2D lrect = blur_level_rect(&rbox, i);
 			clamp_rect_to_mip(&lrect, bufs->width, bufs->height, i);
-			render_effect_blur_dispatch(pass, chain->mip_src_ds[i + 1],
+			render_effect_blur_dispatch_ex(pass, chain->mip_src_ds[i + 1],
 				chain->mip_dst_ds[i], renderer->blur_up_comp_pipe,
-				&u, lrect);
+				&u, lrect, &skip);
 			if (i > 0) {
 				blur_compute_barrier(cb,
 					VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
@@ -2717,7 +2729,7 @@ bool fx_vk_render_pass_add_optimized_blur(struct wlr_render_pass *wlr_pass,
 	// Dual-Kawase blur of the snapshot into the ping-pong effect buffers.
 	struct fx_vk_effect_image *result =
 		fx_vk_render_pass_blur(pass, bufs, bufs->optimized_no_blur, &blur_data,
-			NULL, false);
+			NULL, NULL);
 
 	// Persist the blurred result in the cache.
 	if (result != NULL && result != bufs->optimized_blur) {
@@ -2900,7 +2912,8 @@ void fx_vk_render_pass_add_blur(struct wlr_render_pass *wlr_pass,
 	// unsafe to batch. live_src == blur_chain is exactly the compute path (same
 	// predicate fx_vk_render_pass_blur uses to pick it). Non-compute hardware
 	// simply keeps the original one-split-per-node behaviour.
-	if (live_eligible && !masked && !soft_edge && live_src == bufs->blur_chain) {
+	if (live_eligible && !masked && !soft_edge &&
+			live_src == bufs->blur_chain) {
 		VkCommandBuffer cb = pass->command_buffer->vk;
 		// Can't join the open batch (would overlap a queued region, or it's
 		// full): composite what's queued first, which re-opens the scene pass.
@@ -2926,7 +2939,7 @@ void fx_vk_render_pass_add_blur(struct wlr_render_pass *wlr_pass,
 			&blur_region, &options->sample_exclude, "patched");
 		struct fx_vk_effect_image *src =
 			fx_vk_render_pass_blur(pass, bufs, live_src, &bd, &blur_region,
-				options->darken_only);
+				options->darken_only ? &options->sample_exclude : NULL);
 		defer_blur_composite(pass, src, &dst_box, &blur_region, tex_options,
 			alpha);
 		return;
@@ -2963,14 +2976,14 @@ void fx_vk_render_pass_add_blur(struct wlr_render_pass *wlr_pass,
 			fx_vk_blur_debug_capture(pass->renderer, cb, live_src->image,
 				&blur_region, &options->sample_exclude, "patched");
 			src = fx_vk_render_pass_blur(pass, bufs, live_src, &bd,
-				&blur_region, options->darken_only);
+				&blur_region, options->darken_only ? &options->sample_exclude : NULL);
 			begin_scene_pass_reload(pass);
 		} else if (options->blur_strength < 1.0f && is_scene_blur_enabled(&bd) &&
 				blur_region.width > 0 && blur_region.height > 0) {
 			vkCmdEndRenderPass(pass->command_buffer->vk);
 			pass->bound_pipeline = VK_NULL_HANDLE;
 			src = fx_vk_render_pass_blur(pass, bufs, bufs->optimized_no_blur,
-				&bd, &blur_region, options->darken_only);
+				&bd, &blur_region, options->darken_only ? &options->sample_exclude : NULL);
 			begin_scene_pass_reload(pass);
 		}
 	}

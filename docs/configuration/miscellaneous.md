@@ -9,6 +9,7 @@ description: Advanced settings for XWayland, focus behavior, and system integrat
 | :--- | :--- | :--- |
 | `xwayland_persistence` | `1` | Keep XWayland running even when no X11 apps are open (reduces startup lag). |
 | `syncobj_enable` | `0` | Enable `drm_syncobj` timeline support (helps with gaming stutter/lag). **Requires restart.** |
+| `primary_selection` | `1` | Advertise the middle-click "copy on select" clipboard. Set to `0` for one clipboard only: the global is not bound, so toolkits stop publishing on select and middle-click paste does nothing, and XWayland's X `PRIMARY` is refused too. **Requires restart.** |
 | `render_late` | `0` | Adaptive render-late scheduling: defer each frame's render toward the next vblank so input is sampled fresher (cuts up to a frame of input latency). `2` additionally logs per-frame timing for tuning. |
 | `render_late_margin_us` | `3000` | Safety margin (µs) subtracted from the render-late deferral so the render never misses its vblank. |
 | `render_late_backoff` | `0.6` | Multiplier applied to the deferral fraction when a vblank is missed. |

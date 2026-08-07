@@ -8433,6 +8433,12 @@ void setpsel(struct wl_listener *listener, void *data) {
 	 * always honor
 	 */
 	struct wlr_seat_request_set_primary_selection_event *event = data;
+	// XWayland syncs the X PRIMARY selection onto the seat through this same
+	// signal, so dropping the Wayland global is not enough on its own: refuse
+	// here too and the primary selection stays empty for everyone.
+	if (!config.primary_selection) {
+		return;
+	}
 	wlr_seat_set_primary_selection(seat, event->source, event->serial);
 }
 
@@ -8723,7 +8729,16 @@ void setup(void) {
 	wlr_ext_output_image_capture_source_manager_v1_create(dpy, 1);
 	wlr_data_control_manager_v1_create(dpy);
 	wlr_data_device_manager_create(dpy);
-	wlr_primary_selection_v1_device_manager_create(dpy);
+	// The middle-click "copy on select" buffer is a second, invisible
+	// clipboard: selecting text overwrites it without anyone asking, and a
+	// stray middle click pastes whatever it happens to hold. Not advertising
+	// the protocol is what actually turns it off -- toolkits offer the
+	// selection only when the compositor binds the global, so with this off
+	// GTK/Qt clients stop publishing on select and middle-click paste does
+	// nothing, leaving exactly one clipboard.
+	if (config.primary_selection) {
+		wlr_primary_selection_v1_device_manager_create(dpy);
+	}
 	wlr_viewporter_create(dpy);
 	wlr_single_pixel_buffer_manager_v1_create(dpy);
 	wlr_fractional_scale_manager_v1_create(dpy, 1);

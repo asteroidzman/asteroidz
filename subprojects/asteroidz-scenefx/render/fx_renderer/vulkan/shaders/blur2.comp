@@ -39,6 +39,9 @@ layout(push_constant) uniform UBO {
 	float _pad0;
 	uvec2 extent;
 	uvec2 offset;
+	// Half-open region the clamp skips (the shadow's excluded window box).
+	ivec2 skip_min;
+	ivec2 skip_max;
 } data;
 
 vec3 linear_to_oklab(vec3 c) {
@@ -141,7 +144,20 @@ void main() {
 	// until this store mip 0 still holds the unblurred source -- the clamp
 	// costs one image read and no memory at all. Each invocation reads exactly
 	// the texel it is about to write, so the read-modify-write is its own.
-	if (data.clamp_darken > 0.5) {
+	//
+	// EXCEPT inside skip_min..skip_max, the window box the caller excluded
+	// from its own blur. There the "source" is not backdrop at all: it is the
+	// synthetic fill blur_exclude_from_source stretched and mirrored in, so
+	// min() against it preserves the fill's own hard structure -- a stretched
+	// scanline's colour, the seam where a mirrored band meets a stretched row
+	// -- as sharp dark streaks, in a region shaped exactly like the window.
+	// Invisible behind an opaque window and plainly visible through a
+	// translucent one, which is what "corruption under a kitty window" was.
+	// The premise of the clamp is that the source is real; where it isn't,
+	// there is nothing to clamp against and the plain blur is correct.
+	if (data.clamp_darken > 0.5 && !(
+			all(greaterThanEqual(ivec2(px), data.skip_min)) &&
+			all(lessThan(ivec2(px), data.skip_max)))) {
 		vec4 src = imageLoad(out_img, ivec2(px));
 		color.rgb = min(color.rgb, src.rgb);
 	}

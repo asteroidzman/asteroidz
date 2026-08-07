@@ -408,13 +408,15 @@ struct blur_data;
 struct fx_vk_render_pass; // defined below
 // region: pre-padded write/copy region (see fx_vk_blur_padded_region) or
 // NULL for the whole buffer.
-// darken_only: clamp the result against the unblurred source, so the blur can
-// never come out lighter than what it replaces. Compute path only -- the
-// graphics ping-pong path has overwritten the source by the final pass.
+// darken_except: non-NULL turns on the darken clamp -- the result may never
+// come out lighter than the unblurred source it replaces -- everywhere EXCEPT
+// inside that box, which is the caller's sample-exclude hole (pass an empty
+// box to clamp the whole region). Compute path only; the graphics ping-pong
+// path has overwritten the source by the final pass.
 struct fx_vk_effect_image *fx_vk_render_pass_blur(struct fx_vk_render_pass *pass,
 	struct fx_vk_effect_buffers *bufs, struct fx_vk_effect_image *source,
 	const struct blur_data *blur_data, const struct wlr_box *region,
-	bool darken_only);
+	const struct wlr_box *darken_except);
 struct wlr_box fx_vk_blur_padded_region(struct fx_vk_effect_buffers *bufs,
 	const struct blur_data *blur_data, const struct wlr_box *box);
 
@@ -664,11 +666,17 @@ struct fx_vk_blur_pcr {
 // Compute-blur push block (offset 0, VK_SHADER_STAGE_COMPUTE_BIT): the
 // graphics block plus the write-region offset/extent in pixels -- the
 // compute replacement for the graphics path's scaled scissor rect. Matches
-// the UBO in blur1.comp / blur2.comp (std430: uvec2 at 32 and 40, total 48).
+// the UBO in blur1.comp / blur2.comp (std430: base is 40 bytes, then four
+// 8-byte-aligned pairs at 40/48/56/64, total 72).
 struct fx_vk_blur_compute_pcr {
 	struct fx_vk_blur_pcr base;
 	uint32_t extent[2];
 	uint32_t offset[2];
+	// Half-open mip-0 region the darken clamp skips: the shadow's excluded
+	// window box, where the "source" is synthetic fill, not backdrop. Equal
+	// min/max (the zero default) clamps everywhere. See blur2.comp.
+	int32_t skip_min[2];
+	int32_t skip_max[2];
 };
 
 // Per-draw transparency-mask parameters for the masked per-window/layer blur
@@ -934,6 +942,7 @@ void vk_color_transform_destroy(struct wlr_addon *addon);
 // blur source dump -- debug only, off unless FX_BLUR_DUMP is set.
 // See render/fx_renderer/vulkan/blur_debug.c.
 bool fx_vk_blur_debug_enabled(void);
+bool fx_vk_blur_debug_no_darken_clamp(void);
 void fx_vk_blur_debug_capture(struct fx_vk_renderer *renderer,
 	VkCommandBuffer cb, VkImage image, const struct wlr_box *region,
 	const struct wlr_box *exclude, const char *tag);
