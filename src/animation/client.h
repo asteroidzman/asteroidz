@@ -728,7 +728,18 @@ void client_draw_monocle_titlebar_segment(Client *c, int32_t x, int32_t y,
 									layers[LyrDecorate]);
 		asteroidz_tab_bar_node_set_enabled(c->titlebar_close_node, true);
 		asteroidz_tab_bar_node_set_position(c->titlebar_close_node, x, y);
-		asteroidz_tab_bar_node_set_size(c->titlebar_close_node, close_w, th);
+		/* One logical pixel WIDER than the gap it fills, so it underlaps the
+		 * tab that starts at x + close_w.
+		 *
+		 * The two segments abut exactly in logical coordinates, which was
+		 * enough while both were rasterised at logical size and upscaled by
+		 * one shared resampling. Each is now rasterised at the output's own
+		 * scale, and at a fractional one close_w * scale is not a whole
+		 * device pixel -- so the two buffers' edges land either side of a
+		 * boundary and the backdrop shows through the join. Overlapping
+		 * costs nothing: the pixel underneath is the same colour, and the
+		 * tab draws over it. */
+		asteroidz_tab_bar_node_set_size(c->titlebar_close_node, close_w + 1, th);
 		asteroidz_tab_bar_node_set_content_scale(c->titlebar_close_node, 1.0f);
 		/* close is the segment's left part: it owns the strip's left border
 		 * when the segment is leftmost; its right side touches this
@@ -890,7 +901,18 @@ void client_draw_titlebar(Client *c) {
 	if (c->titlebar_close_node) {
 		asteroidz_tab_bar_node_set_enabled(c->titlebar_close_node, true);
 		asteroidz_tab_bar_node_set_position(c->titlebar_close_node, tb_x, tb_y);
-		asteroidz_tab_bar_node_set_size(c->titlebar_close_node, close_w, th);
+		/* One logical pixel WIDER than the gap it fills, so it underlaps the
+		 * tab that starts at x + close_w.
+		 *
+		 * The two segments abut exactly in logical coordinates, which was
+		 * enough while both were rasterised at logical size and upscaled by
+		 * one shared resampling. Each is now rasterised at the output's own
+		 * scale, and at a fractional one close_w * scale is not a whole
+		 * device pixel -- so the two buffers' edges land either side of a
+		 * boundary and the backdrop shows through the join. Overlapping
+		 * costs nothing: the pixel underneath is the same colour, and the
+		 * tab draws over it. */
+		asteroidz_tab_bar_node_set_size(c->titlebar_close_node, close_w + 1, th);
 		/* content_scale shrinks font+padding+icon to fit the scaled-down bar;
 		 * the _update scale param is a HiDPI density scale (dest-size cancels
 		 * it visually), so it must stay 1.0 here */
