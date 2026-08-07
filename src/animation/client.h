@@ -752,7 +752,8 @@ void client_draw_monocle_titlebar_segment(Client *c, int32_t x, int32_t y,
 										   false, is_last);
 	asteroidz_tab_bar_node_set_titlebar_separator(c->titlebar_node, !is_last);
 	asteroidz_tab_bar_node_set_content_scale(c->titlebar_node, 1.0f);
-	asteroidz_tab_bar_node_update(c->titlebar_node, client_get_title(c), 1.0);
+	asteroidz_tab_bar_node_update(c->titlebar_node, client_get_title(c),
+								  client_render_scale(c));
 	asteroidz_tab_bar_node_set_focus(c->titlebar_node, focused);
 }
 
@@ -894,7 +895,8 @@ void client_draw_titlebar(Client *c) {
 		 * the _update scale param is a HiDPI density scale (dest-size cancels
 		 * it visually), so it must stay 1.0 here */
 		asteroidz_tab_bar_node_set_content_scale(c->titlebar_close_node, tbs);
-		asteroidz_tab_bar_node_update(c->titlebar_close_node, "×", 1.0);
+		asteroidz_tab_bar_node_update(c->titlebar_close_node, "×",
+								  client_render_scale(c));
 		asteroidz_tab_bar_node_set_titlebar_border(c->titlebar_close_node,
 											   config.borderpx, true, false);
 		asteroidz_tab_bar_node_set_focus(c->titlebar_close_node, focused);
@@ -913,7 +915,8 @@ void client_draw_titlebar(Client *c) {
 	 * a shared strip (reset in case this window came from a monocle tag) */
 	asteroidz_tab_bar_node_set_titlebar_separator(c->titlebar_node, false);
 	asteroidz_tab_bar_node_set_content_scale(c->titlebar_node, tbs);
-	asteroidz_tab_bar_node_update(c->titlebar_node, client_get_title(c), 1.0);
+	asteroidz_tab_bar_node_update(c->titlebar_node, client_get_title(c),
+								  client_render_scale(c));
 	asteroidz_tab_bar_node_set_focus(c->titlebar_node, focused);
 }
 

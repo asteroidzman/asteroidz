@@ -627,3 +627,20 @@ static inline void client_set_size_bound(Client *c) {
 		c->geom.height = state.max_height + 2 * c->bw;
 	}
 }
+
+/* The scale a client's native overlays should RASTERISE at: its output's.
+ *
+ * asteroidz_tab_bar_node_update() takes this as its `scale`, and it decides two
+ * things at once -- the pixel size of the surface it draws into
+ * (logical * scale) and the Pango resolution (96 * scale) -- while the scene
+ * buffer is displayed at the LOGICAL size. Hand it the output's scale and the
+ * titlebar is rasterised at the panel's real resolution. Hand it 1.0, as every
+ * caller but one did, and it is rasterised at logical resolution and then
+ * resampled up by the scene graph: a titlebar that is exactly the right size
+ * and visibly soft on any output above scale 1.
+ */
+static inline float client_render_scale(Client *c) {
+	if (c && c->mon && c->mon->wlr_output && c->mon->wlr_output->scale > 0.0f)
+		return c->mon->wlr_output->scale;
+	return 1.0f;
+}

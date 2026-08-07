@@ -157,7 +157,8 @@ void client_add_titlebar(Client *c) {
 	 * usual padding_x (~16px) leaves almost no room for the × glyph at this
 	 * width, so it gets ellipsized into "..." */
 	asteroidz_tab_bar_node_set_padding(c->titlebar_close_node, 4, 4);
-	asteroidz_tab_bar_node_update(c->titlebar_close_node, "×", 1.0);
+	asteroidz_tab_bar_node_update(c->titlebar_close_node, "×",
+								  client_render_scale(c));
 
 	/* title tab sits immediately to the close button's right */
 	AsteroidzNodeData *nodedata = ecalloc(1, sizeof(AsteroidzNodeData));
@@ -176,7 +177,8 @@ void client_add_titlebar(Client *c) {
 	asteroidz_tab_bar_node_set_text_align_left(c->titlebar_node, true);
 	asteroidz_tab_bar_node_set_icon(
 		c->titlebar_node, c->icon_name ? c->icon_name : client_get_appid(c));
-	asteroidz_tab_bar_node_update(c->titlebar_node, client_get_title(c), 1.0);
+	asteroidz_tab_bar_node_update(c->titlebar_node, client_get_title(c),
+								  client_render_scale(c));
 }
 
 void client_apply_decoration_config(Client *c) {

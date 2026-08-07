@@ -44,6 +44,17 @@ then waited for a keystroke: logout stalled until systemd's SIGKILL, and every
 regression module hung after printing its summary and leaked its compositor.
 `hl_stop` now bounds its own wait and says so loudly rather than hanging.
 
+`contrib/titlebar-sharpness-test.sh` is the other one-purpose script. It asserts
+that a titlebar is *rasterised* at its output's scale rather than drawn at
+logical size and resampled up, which no IPC assertion can see — the geometry is
+identical either way and only the pixels differ. It measures soft ramps per
+steep edge across the titlebar band: text rendered at the panel's own
+resolution goes background-to-ink in one step and scores about 0.8, while the
+same text resampled up arrives as a ramp across two or three pixels and scores
+about 16. Counting mid-tones instead does not separate the two — the background,
+borders and icon supply plenty either way, and the first version of this
+measured 22.2 against 20.5 and could not tell the builds apart.
+
 ### The schema, checked from both ends
 
 `src/config/config-schema.h` describes every settable option — type, range, enum

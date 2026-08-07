@@ -93,7 +93,7 @@ An optional server-side titlebar, reserving real space above each tiled window's
 
 **Its height is not a setting.** It is the line height of `theme { font }` plus `theme { padding { y } }` above and below — so the bar is always exactly as tall as the text it holds, and changing the theme font resizes it to match instead of putting bigger text into a box that stayed where it was. `theme { font "Ubuntu 17"; padding { y 4 } }` gives a 35px titlebar; `"Ubuntu 10"` gives 24px.
 
-Sizes here are logical pixels at 96 dpi, like everything else in the config: a display running at `scale 1.75` gets a titlebar 1.75× larger in real pixels, without a number changing anywhere.
+Sizes here are logical pixels at 96 dpi, like everything else in the config: a display running at `scale 1.75` gets a titlebar 1.75× larger in real pixels, without a number changing anywhere. The text in it is *rasterised* at that scale too, not drawn small and scaled up, so it is as sharp as the panel allows.
 
 | Setting | Default | Description |
 | :--- | :--- | :--- |

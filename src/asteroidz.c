@@ -9777,12 +9777,13 @@ void updatetitle(struct wl_listener *listener, void *data) {
 
 	const char *title;
 	title = client_get_title(c);
-	/* keep the tab's CURRENT font scale (overview tabs are drawn scaled down):
-	 * a hardcoded 1.0 here would redraw the title full-size on every title
-	 * change, stomping the overview's scaled draw moments after it happens */
+	/* keep the tab's CURRENT font scale: a title change must not stomp a draw
+	 * that was made at a different scale moments earlier. Falls back to the
+	 * output's, not to 1.0 -- 1.0 rasterises at logical resolution and leaves
+	 * the title soft on any scaled output (see client_render_scale). */
 	float title_scale = (c->titlebar_node && c->titlebar_node->last_scale > 0.0f)
 							? c->titlebar_node->last_scale
-							: 1.0f;
+							: client_render_scale(c);
 	asteroidz_tab_bar_node_update(c->titlebar_node, title, title_scale);
 	if (title && c->foreign_toplevel)
 		wlr_foreign_toplevel_handle_v1_set_title(c->foreign_toplevel, title);
