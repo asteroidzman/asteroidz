@@ -1163,6 +1163,7 @@ struct wlr_scene_blur *wlr_scene_blur_create(struct wlr_scene_tree *parent,
 	blur->should_only_blur_bottom_layer = false;
 	blur->has_sample_exclude = false;
 	blur->sample_exclude = (struct wlr_box){0};
+	blur->darken = true;
 	blur->transparency_mask_source = linked_node_init();
 	blur->width = width;
 	blur->height = height;
@@ -1269,6 +1270,15 @@ struct wlr_scene_buffer *wlr_scene_blur_get_transparency_mask_source(
 
 	struct wlr_scene_buffer *output = wl_container_of(node, output, blur);
 	return output;
+}
+
+void wlr_scene_blur_set_darken(struct wlr_scene_blur *blur, bool darken) {
+	if (blur->darken == darken) {
+		return;
+	}
+
+	blur->darken = darken;
+	scene_node_update(&blur->node, NULL);
 }
 
 void wlr_scene_blur_set_alpha(struct wlr_scene_blur *blur, float alpha) {
@@ -2683,7 +2693,7 @@ static void scene_entry_render(struct render_list_entry *entry, const struct ren
 			blur_options.sample_exclude = ex;
 			// Same condition, because it identifies the same thing: only a
 			// shadow's backdrop blur excludes its own window.
-			blur_options.darken_only = true;
+			blur_options.darken_only = blur->darken;
 		}
 		scene_pass_add_blur(data->render_pass, &blur_options);
 		break;

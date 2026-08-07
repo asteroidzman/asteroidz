@@ -160,6 +160,7 @@ static const ConfigGroup config_groups[] = {
 	{"animations", "Animations", "How windows move, open and close."},
 	{"overview", "Overview", "The zoomed-out view of every tag."},
 	{"input", "Input", "Cursor, keyboard and pointer behaviour."},
+	{"misc", "Miscellaneous", "System integration and everything else."},
 };
 
 /* ---------- the table ---------- */
@@ -400,6 +401,21 @@ static const ConfigOption config_schema[] = {
 	 "Blur what is under the shadow as well as darkening it.", OPT_BOOL,
 	 offsetof(Config, shadows_blur_background), 0, SCHEMA_NOCLAMP,
 	 SCHEMA_NOCLAMP, NULL, 0, "0", 0},
+	{"primary_selection", "misc/primary-selection", "misc", "general",
+	 "Primary selection",
+	 "Advertise the middle-click \"copy on select\" clipboard. Off leaves one "
+	 "clipboard: the global is never bound, so toolkits stop publishing on "
+	 "select, and XWayland's X PRIMARY is refused as well.",
+	 OPT_BOOL, offsetof(Config, primary_selection), 0, 0, 1, NULL, 0, "1",
+	 SCHEMA_NEEDS_RESTART},
+	{"shadows_blur_background_darken", "effects/shadow/blur-background-darken",
+	 "effects", "shadow", "Blur-behind may only darken",
+	 "Clamp the blurred backdrop against the unblurred one, so a shadow can "
+	 "never brighten what it covers. A blur is an average, and averaging "
+	 "bright detail over a dark ground raises the mean -- without this a "
+	 "shadow over a terminal reads as a glow.",
+	 OPT_BOOL, offsetof(Config, shadows_blur_background_darken), 0, 0, 1,
+	 NULL, 0, "1", 0},
 	{"shadows_blur_background_strength",
 	 "effects/shadow/blur-background-strength", "effects", "shadow",
 	 "Blur-behind strength", "How strongly the area under the shadow blurs.",

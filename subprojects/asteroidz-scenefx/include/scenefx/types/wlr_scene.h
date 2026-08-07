@@ -221,6 +221,15 @@ struct wlr_scene_blur {
 	bool has_sample_exclude;
 	struct wlr_box sample_exclude;
 
+	// Clamp the blurred backdrop against its own unblurred source, so the
+	// blur can never come out LIGHTER than what it replaced. A blur is an
+	// average and averaging bright detail over a dark ground raises the mean,
+	// so over a terminal a shadow's backdrop reads as a glow. Default true;
+	// only ever consulted where has_sample_exclude is set, since that is what
+	// identifies a shadow, and skipped inside the excluded box itself where
+	// the "source" is the substitute fill rather than real backdrop.
+	bool darken;
+
 	struct linked_node transparency_mask_source;
 	// Pixel-accurate clip in node-local coords (e.g. the client's
 	// ext-background-effect region). When set it takes precedence over
@@ -766,6 +775,12 @@ void wlr_scene_blur_set_should_only_blur_bottom_layer(struct wlr_scene_blur *blu
  */
 void wlr_scene_blur_set_sample_exclude(struct wlr_scene_blur *blur,
 	const struct wlr_box *box);
+
+/**
+ * Enable or disable the darken clamp (see `darken` in struct wlr_scene_blur).
+ * On by default. Has no effect on a node with no sample exclude.
+ */
+void wlr_scene_blur_set_darken(struct wlr_scene_blur *blur, bool darken);
 
 /**
  * Set the transparency mask source for the blur, only rendering blur where the

@@ -90,6 +90,7 @@ Drop shadows help distinguish floating windows from the background.
 | `shadowscolor` | `0x00000066` | Color of the shadow. Kept well below opaque: a near-opaque peak alpha reads as a hard drop shadow once spread this wide. |
 | `shadows_blur_background` | `0` | Blur what is under the shadow as well as darkening it. Costs a blur pass per shadowed window, so it is off by default. |
 | `shadows_blur_background_strength` | `0.5` | Opacity of that blur, so it can be mixed with the plain tint rather than replacing it. No effect unless `shadows_blur_background` is `1`. |
+| `shadows_blur_background_darken` | `1` | Clamp that blur against the unblurred backdrop so a shadow can never brighten what it covers (see [A shadow may only ever darken](#a-shadow-may-only-ever-darken)). Set to `0` to get the plain blur back. |
 
 `shadows_blur_background` keeps the shadowed window's own box out of what the
 blur samples. It has to: the blur's box is the *shadow's* box, which is the

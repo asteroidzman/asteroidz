@@ -580,6 +580,8 @@ void client_draw_shadow(Client *c) {
 		 * general "alpha alone can look off" caveat). Leave scenefx's own
 		 * strength at its 1.0 default (set once at creation, untouched).
 		 */
+		wlr_scene_blur_set_darken(c->shadow_blur,
+								  config.shadows_blur_background_darken);
 		if (c->shadow_blur->alpha != config.shadows_blur_background_strength)
 			wlr_scene_blur_set_alpha(c->shadow_blur,
 									 config.shadows_blur_background_strength);

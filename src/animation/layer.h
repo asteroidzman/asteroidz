@@ -230,6 +230,8 @@ void layer_draw_shadow(LayerSurface *l) {
 		}
 	}
 	if (l->shadow_blur) {
+		wlr_scene_blur_set_darken(l->shadow_blur,
+								  config.shadows_blur_background_darken);
 		if (l->shadow_blur->alpha != config.shadows_blur_background_strength)
 			wlr_scene_blur_set_alpha(l->shadow_blur,
 									 config.shadows_blur_background_strength);

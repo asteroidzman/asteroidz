@@ -391,6 +391,9 @@ typedef struct {
 	 * shared window-blur radius/passes -- lower reads as a lighter, more
 	 * "blended" halo instead of an obviously blurred patch. */
 	float shadows_blur_background_strength;
+	/* clamp the shadow's blurred backdrop so it can never come out lighter
+	 * than what it replaced (see docs/visuals/effects.md) */
+	int32_t shadows_blur_background_darken;
 	/* macOS-style second shadow layer: a tight dark "contact" shadow on
 	 * top of the large soft ambient one, and dimming when unfocused */
 	int32_t shadows_contact;
@@ -1809,6 +1812,8 @@ bool parse_option(Config *config, char *key, char *value) {
 		config->shadows_blur = atof(value);
 	} else if (strcmp(key, "shadows_blur_background") == 0) {
 		config->shadows_blur_background = atoi(value);
+	} else if (strcmp(key, "shadows_blur_background_darken") == 0) {
+		config->shadows_blur_background_darken = atoi(value);
 	} else if (strcmp(key, "shadows_blur_background_strength") == 0) {
 		config->shadows_blur_background_strength =
 			CLAMP_FLOAT(atof(value), 0.0f, 1.0f);
@@ -3591,6 +3596,7 @@ static const struct {
 	{"effects/shadow/size", "shadows_size"},
 	{"effects/shadow/blur", "shadows_blur"},
 	{"effects/shadow/blur-background", "shadows_blur_background"},
+	{"effects/shadow/blur-background-darken", "shadows_blur_background_darken"},
 	{"effects/shadow/blur-background-strength", "shadows_blur_background_strength"},
 	{"effects/shadow/position/x", "shadows_position_x"},
 	{"effects/shadow/position/y", "shadows_position_y"},
@@ -4612,6 +4618,8 @@ void override_config(void) {
 	config.ov_no_resize = CLAMP_INT(config.ov_no_resize, 0, 1);
 	config.overviewgappi = CLAMP_INT(config.overviewgappi, 0, 1000);
 	config.overviewgappo = CLAMP_INT(config.overviewgappo, 0, 1000);
+	config.shadows_blur_background_darken =
+		CLAMP_INT(config.shadows_blur_background_darken, 0, 1);
 	config.xwayland_persistence = CLAMP_INT(config.xwayland_persistence, 0, 1);
 	config.primary_selection = CLAMP_INT(config.primary_selection, 0, 1);
 	config.syncobj_enable = CLAMP_INT(config.syncobj_enable, 0, 1);
@@ -4944,6 +4952,7 @@ void set_value_default() {
 	config.shadows_position_x = 0;
 	config.shadows_position_y = 10;
 	config.shadows_blur_background = 0;
+	config.shadows_blur_background_darken = 1;
 	config.shadows_blur_background_strength = 0.5f;
 	config.shadows_contact = 1;
 	config.shadows_contact_size = 8;
