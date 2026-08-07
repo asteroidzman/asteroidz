@@ -922,6 +922,14 @@ struct fx_vk_color_transform {
 };
 void vk_color_transform_destroy(struct wlr_addon *addon);
 
+// blur source dump -- debug only, off unless FX_BLUR_DUMP is set.
+// See render/fx_renderer/vulkan/blur_debug.c.
+bool fx_vk_blur_debug_enabled(void);
+void fx_vk_blur_debug_capture(struct fx_vk_renderer *renderer,
+	VkCommandBuffer cb, VkImage image, const struct wlr_box *region,
+	const struct wlr_box *exclude, const char *tag);
+void fx_vk_blur_debug_flush(struct fx_vk_renderer *renderer);
+
 // util
 const char *fx_vulkan_strerror(VkResult err);
 void fx_vulkan_change_layout(VkCommandBuffer cb, VkImage img,

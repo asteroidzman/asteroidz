@@ -715,6 +715,8 @@ static bool render_pass_submit(struct wlr_render_pass *wlr_pass) {
 
 	free(render_wait);
 
+	fx_vk_blur_debug_flush(renderer);
+
 	fx_vulkan_stage_mark_submit(renderer, render_timeline_point);
 
 	if (!fx_vulkan_sync_render_pass_release(renderer, pass)) {
@@ -2780,8 +2782,12 @@ void fx_vk_render_pass_add_blur(struct wlr_render_pass *wlr_pass,
 		copy_effect_image_region(pass,
 			pass->render_buffer->two_pass.blend_image,
 			live_src->image, &blur_region);
+		fx_vk_blur_debug_capture(pass->renderer, cb, live_src->image,
+			&blur_region, &options->sample_exclude, "staged");
 		blur_exclude_from_source(pass, bufs, live_src, &blur_region,
 			&options->sample_exclude);
+		fx_vk_blur_debug_capture(pass->renderer, cb, live_src->image,
+			&blur_region, &options->sample_exclude, "patched");
 		struct fx_vk_effect_image *src =
 			fx_vk_render_pass_blur(pass, bufs, live_src, &bd, &blur_region);
 		defer_blur_composite(pass, src, &dst_box, &blur_region, tex_options,
@@ -2813,8 +2819,12 @@ void fx_vk_render_pass_add_blur(struct wlr_render_pass *wlr_pass,
 			copy_effect_image_region(pass,
 				pass->render_buffer->two_pass.blend_image,
 				live_src->image, &blur_region);
+			fx_vk_blur_debug_capture(pass->renderer, cb, live_src->image,
+				&blur_region, &options->sample_exclude, "staged");
 			blur_exclude_from_source(pass, bufs, live_src, &blur_region,
 				&options->sample_exclude);
+			fx_vk_blur_debug_capture(pass->renderer, cb, live_src->image,
+				&blur_region, &options->sample_exclude, "patched");
 			src = fx_vk_render_pass_blur(pass, bufs, live_src, &bd,
 				&blur_region);
 			begin_scene_pass_reload(pass);

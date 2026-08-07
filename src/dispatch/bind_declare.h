@@ -106,3 +106,4 @@ int32_t dwindle_split_horizontal(const Arg *arg);
 int32_t dwindle_split_vertical(const Arg *arg);
 int32_t focusid(const Arg *arg);
 int32_t ufo_easter_egg(const Arg *arg);
+int32_t dump_blur_source(const Arg *arg);

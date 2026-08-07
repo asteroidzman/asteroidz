@@ -48,4 +48,17 @@ bool fx_vk_texture_has_alpha(struct wlr_texture *texture);
  */
 void fx_renderer_set_srgb_blending(struct wlr_renderer *renderer, bool enabled);
 
+/* Arm the blur-source dump: write the next `frames` frames' staged backdrop
+ * blur sources to `prefix`-<n>-<tag>.pam, with a sidecar naming the boxes.
+ *
+ * The same facility FX_BLUR_DUMP arms at startup, reachable while running so a
+ * live session can be inspected without being restarted -- which severs every
+ * client, and is a steep price for three frames. Pass prefix = NULL to disarm.
+ *
+ * Each armed frame ends in a full device wait, so this is a diagnostic and not
+ * something to leave on: keep `frames` small. A no-op on the GLES renderer,
+ * which patches the hole in a shader with no image to read back.
+ */
+void fx_vk_blur_debug_arm(const char *prefix, int frames);
+
 #endif

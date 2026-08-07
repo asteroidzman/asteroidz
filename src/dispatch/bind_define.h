@@ -3479,3 +3479,51 @@ int32_t ufo_easter_egg(const Arg *arg) {
 	ufo_egg_trigger(ufo_egg);
 	return 0;
 }
+
+/* Write the next few frames' backdrop-blur SOURCE images to disk.
+ *
+ * A diagnostic, for the one question that cannot be answered from a
+ * screenshot: what a window's shadow is about to blur, before it blurs it. The
+ * source is a scratch image that never reaches the screen, and the blur
+ * averages away whatever was wrong with it, so the artefact and its cause never
+ * appear in the same picture.
+ *
+ * Arg: "<prefix>" or "<prefix>,<frames>"; no argument disarms. Vulkan only.
+ * Each armed frame ends in a full device wait, so this stutters by design --
+ * it defaults to three frames and stops on its own.
+ *
+ * Writes wherever it is pointed, with this compositor's privileges: it is
+ * reachable over the same IPC socket as every other dispatch, which is already
+ * the boundary that decides who may drive this session.
+ */
+int32_t dump_blur_source(const Arg *arg) {
+	const char *spec = arg != NULL ? arg->v : NULL;
+	if (spec == NULL || *spec == '\0') {
+		fx_vk_blur_debug_arm(NULL, 0);
+		return 0;
+	}
+	char prefix[512];
+	int frames = 3;
+	const char *comma = strrchr(spec, ',');
+	if (comma != NULL && comma[1] != '\0' && atoi(comma + 1) > 0) {
+		size_t n = (size_t)(comma - spec);
+		if (n >= sizeof(prefix)) {
+			n = sizeof(prefix) - 1;
+		}
+		memcpy(prefix, spec, n);
+		prefix[n] = '\0';
+		frames = CLAMP_INT(atoi(comma + 1), 1, 60);
+	} else {
+		snprintf(prefix, sizeof(prefix), "%s", spec);
+	}
+	fx_vk_blur_debug_arm(prefix, frames);
+	/* Nothing is captured until something redraws, and a settled desktop does
+	 * not. Damage every output so the next frames actually happen. */
+	Monitor *m;
+	wl_list_for_each(m, &mons, link) {
+		if (m->wlr_output != NULL && m->wlr_output->enabled) {
+			wlr_output_schedule_frame(m->wlr_output);
+		}
+	}
+	return 0;
+}

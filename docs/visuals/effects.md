@@ -132,6 +132,41 @@ effects {
 }
 ```
 
+### Dumping a blur's source
+
+A backdrop blur's *source* is a scratch image that never reaches the screen: the
+scene so far, copied aside and then patched to keep the shadowed window out of
+it. Every question about a halo around a floating window — is the hole filled,
+with what, does the fill reach far enough — is a question about that image, and
+a screenshot cannot answer any of them, because the blur has already averaged
+the evidence away by the time anything is visible.
+
+So it can be written out. Vulkan only; the GLES path patches the hole in a
+shader with no equivalent image to read back.
+
+```sh
+# at startup, before anything else has drawn
+FX_BLUR_DUMP=/tmp/blur FX_BLUR_DUMP_FRAMES=3 asteroidz
+
+# or on a session that is already running, which is the point:
+# a restart severs every client, which is a steep price for three frames
+amsg dispatch 'dump_blur_source,/tmp/blur,3'
+amsg dispatch dump_blur_source          # no argument disarms
+```
+
+Each armed frame writes `/tmp/blur-<n>-staged.pam` (the source as copied, hole
+still full of the window) and `/tmp/blur-<n>-patched.pam` (after the fill), plus
+a `.txt` sidecar giving the blur region and the excluded box in screen
+coordinates so a measurement taken in the crop can be stated on screen. PAM
+rather than PNG because the source is premultiplied and the alpha is part of the
+evidence; ImageMagick reads it.
+
+It stops on its own after the requested frames. It has to: each armed frame ends
+in a full device wait, so leaving it on turns a session into a slideshow.
+
+`contrib/blur-exclusion-test.sh` is this facility as an assertion — that no
+pixel of a window survives anywhere in its own shadow's blur source.
+
 ---
 
 ## Opacity & Corner Radius

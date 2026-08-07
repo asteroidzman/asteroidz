@@ -1414,6 +1414,9 @@ FuncType parse_func_name(char *func_name, Arg *arg, char *arg_value,
 		func = reload_config;
 	} else if (strcmp(func_name, "ufo") == 0) {
 		func = ufo_easter_egg;
+	} else if (strcmp(func_name, "dump_blur_source") == 0) {
+		func = dump_blur_source;
+		(*arg).v = arg_value && *arg_value ? strdup(arg_value) : NULL;
 	} else if (strcmp(func_name, "tag") == 0) {
 		func = tag;
 		(*arg).ui = 1 << (atoi(arg_value) - 1);

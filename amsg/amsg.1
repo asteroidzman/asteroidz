@@ -354,6 +354,21 @@ the same table as JSON and is what a program should read.
 .PP
 Arguments are comma\-separated with no spaces, and a \fBclient,<id>\fR prefix
 targets a window other than the focused one \- see \fBdispatch\fR above.
+.PP
+One of them does not drive the session but looks at it.
+\fBdump_blur_source\fR,\fIprefix\fR[,\fIframes\fR] writes the next few frames'
+backdrop\-blur SOURCE images \- the scratch copy of the scene a window's shadow
+is about to blur, before and after the window's own box is patched out of it \-
+to \fIprefix\fR\-<n>\-staged.pam and \fIprefix\fR\-<n>\-patched.pam, each with a
+.txt sidecar giving the blur region and the excluded box in screen coordinates.
+With no argument it disarms; it also stops on its own after \fIframes\fR
+(default 3).
+.PP
+It exists because that image never reaches the screen and the blur averages away
+whatever was wrong with it, so the artefact and its cause never appear in the
+same screenshot. Vulkan only. Each armed frame ends in a full device wait, so it
+stutters by design, and it writes wherever it is pointed with the compositor's
+privileges. See \fBdocs/visuals/effects.md\fR.
 .\" BEGIN GENERATED DISPATCHES
 .TP
 \fBkill_client\fR
@@ -543,6 +558,8 @@ targets a window other than the focused one \- see \fBdispatch\fR above.
 \fBtoggle_trackpad_enable\fR
 .TP
 \fBset_option\fR,<option-key>,<option-value>
+.TP
+\fBdump_blur_source\fR,<string>
 .\" END GENERATED DISPATCHES
 .SH ENVIRONMENT
 .TP

@@ -376,6 +376,10 @@ static const DispatchAction dispatch_actions[] = {
 	/* the odd one out */
 	{"set_option", "option-key option-value",
 	 "Set a config option in memory only; discarded at the next reload."},
+	/* and the diagnostic: not a way to drive the session, a way to look at it */
+	{"dump_blur_source", "string",
+	 "Write the next few backdrop-blur SOURCE images to <prefix>[,<frames>]; "
+	 "no argument disarms. Vulkan only."},
 };
 
 #define DISPATCH_ACTION_COUNT                                                  \
