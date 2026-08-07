@@ -2694,6 +2694,42 @@ static void scene_entry_render(struct render_list_entry *entry, const struct ren
 			// Same condition, because it identifies the same thing: only a
 			// shadow's backdrop blur excludes its own window.
 			blur_options.darken_only = blur->darken;
+
+			// And keep the composite OUT of that box as well.
+			//
+			// What sits inside it is not a backdrop, it is the substitute
+			// fill the exclusion left behind -- a stretched strip and a
+			// mirrored band, built so that nothing foreign bleeds outward and
+			// never meant to be looked at. Behind an opaque window nobody
+			// can; a window at 0.98 opacity shows two percent of it, and two
+			// percent of a fabrication is still a fabrication. It reads as
+			// soft rectangles following the stretch, and during a move, as
+			// hard black blocks where the frame's damage never wrote.
+			//
+			// Clipping it away leaves the real thing showing through instead,
+			// which is both correct and cheaper. The corner arcs are kept:
+			// there the backdrop genuinely IS visible past the window's
+			// rounded edge, so the hole is the window box minus its four
+			// corner squares -- the standard two-rectangle cross.
+			struct fx_corner_fradii wc = fx_corner_radii_scale(blur_corners,
+				data->scale);
+			int rt = (int)(wc.top_left > wc.top_right
+				? wc.top_left : wc.top_right);
+			int rb = (int)(wc.bottom_left > wc.bottom_right
+				? wc.bottom_left : wc.bottom_right);
+			int rl = (int)(wc.top_left > wc.bottom_left
+				? wc.top_left : wc.bottom_left);
+			int rr = (int)(wc.top_right > wc.bottom_right
+				? wc.top_right : wc.bottom_right);
+			if (rt + rb > ex.height) { rt = rb = ex.height / 2; }
+			if (rl + rr > ex.width) { rl = rr = ex.width / 2; }
+			pixman_region32_t hole;
+			pixman_region32_init_rect(&hole, ex.x, ex.y + rt,
+				ex.width, ex.height - rt - rb);
+			pixman_region32_union_rect(&hole, &hole, ex.x + rl, ex.y,
+				ex.width - rl - rr, ex.height);
+			pixman_region32_subtract(&render_region, &render_region, &hole);
+			pixman_region32_fini(&hole);
 		}
 		scene_pass_add_blur(data->render_pass, &blur_options);
 		break;

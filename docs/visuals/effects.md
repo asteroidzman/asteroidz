@@ -110,6 +110,21 @@ quarter nearest them so that a vertical edge's own content wins where its reach
 is. Near an edge, which is the only place the blur's reach matters, the source
 then holds more of the very thing being blurred.
 
+**The fill is never composited where it can be seen.** It exists so the blur
+cannot bleed the window outward, and that is all it is fit for — behind an
+opaque window nobody can tell what is in there, but a terminal at
+`background_opacity 0.98` shows two percent of whatever is beneath it, and two
+percent of a fabrication is still a fabrication. It read as soft saturated
+rectangles following the stretch, and during a window move as hard black blocks
+where that frame's damage never wrote. So the shadow's blur composite is
+clipped out of the window's own box, and the real backdrop shows through
+instead — which is both correct and one fewer region to draw. The four corner
+arcs are kept, because past a rounded corner the backdrop genuinely is visible
+and the blur still belongs there.
+
+Every shadow scene in the suite used opaque windows, so none of them could see
+any of this; `contrib/shadow-hole-visible-test.sh` is the one that can.
+
 That stretch is only ever a base coat. Within the blur's REACH of each edge —
 the only depth that can influence a pixel outside the hole at all — the fill is
 a **reflection** of the real content across that edge instead. Mirroring is the

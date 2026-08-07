@@ -109,6 +109,28 @@ the two images were identical inside the hole, and the real assertion passed for
 entirely the wrong reason. A test whose premise can silently stop holding needs
 that premise asserted next to it.
 
+
+`contrib/shadow-hole-visible-test.sh` is the sixth, and it covers what all five
+of the others share: they use opaque windows. A shadow's backdrop blur fills the
+excluded window box with a fabrication — a stretched strip, a mirrored band —
+and behind an opaque window that is unobservable by construction. Through a
+terminal at 0.98 opacity it is two percent of every pixel, which is how it was
+found: on a real desktop, not here.
+
+It renders one scene twice, with `shadows_blur_background` on and off, and
+asserts that inside the window the two are identical (the blur must contribute
+nothing there) while the shadow band outside them differs (which proves the
+feature was running). Measured: 70.0 levels of change inside the window before
+the composite was clipped, 0.011 after, with the band at 4.56 in both.
+
+Two earlier versions of this measurement were wrong in instructive ways.
+Correlating what shows through the window against the bare wallpaper is
+confounded — a translucent window has its *own* backdrop blur, so what shows
+through is a blurred wallpaper and does not track a sharp one; that scored 0.76
+on a correct build against 0.57 on a broken one. And the first wallpaper put its
+detail in the centre and left the shadow band over a flat field, where a blur
+returns the field unchanged and nothing can be detected at all — the premise
+check caught it and refused to certify the scene.
 ### The schema, checked from both ends
 
 `src/config/config-schema.h` describes every settable option — type, range, enum

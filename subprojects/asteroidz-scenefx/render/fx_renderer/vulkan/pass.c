@@ -2169,6 +2169,7 @@ static void blur_exclude_from_source(struct fx_vk_render_pass *pass,
 	if (reach < 1) {
 		return;
 	}
+
 	int32_t half_h = box.height / 2, half_w = box.width / 2;
 	int32_t band;
 
