@@ -115,7 +115,7 @@ theme { bg-color 0x2a6fd6ff; fg-color 0xffffffff; focus-bg-color 0x2a6fd6ff; foc
 input { keyboard { xkb { layout "us,de" } } }
 output $HL_MON { width $HL_WIDTH; height $HL_HEIGHT; refresh 60 }
 layout {
-	titlebar { enable 1; height 28 }
+	titlebar { enable 1 }
 	scroller { preset 0.3,0.5,0.8 }
 }
 dwindle_manual_split 1

@@ -213,6 +213,17 @@ struct asteroidz_tab_bar_node {
 
 void asteroidz_text_global_finish(void);
 
+/* The natural line height of a Pango font description, in LOGICAL pixels at
+ * 96 dpi -- the same resolution every native overlay measures at, so the
+ * answer is in the units a config value is written in and the output scale is
+ * applied to it later like any other size.
+ *
+ * The font's own ascent plus descent, NOT the extent of some particular
+ * string. A box sized from a string changes height with its contents: a
+ * titlebar would be one pixel taller for a title with a "g" in it than for one
+ * without, and every tiled window below it would move. */
+int32_t asteroidz_font_line_height(const char *font_desc);
+
 /* Install a raw ARGB32 (network byte order, straight alpha) image into the
  * shared icon cache under `key`, so it can then be drawn with
  * _set_icon/_set_icons exactly like a themed icon name. This is how a

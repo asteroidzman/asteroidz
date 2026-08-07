@@ -21,7 +21,6 @@ KEY_MAP = {
     "cursor_theme": "input/cursor/theme",
     "cursor_size": "input/cursor/size",
     "enable_titlebar": "layout/titlebar/enable",
-    "titlebar_height": "layout/titlebar/height",
     "borderpx": "layout/border/width",
     "bordercolor": "layout/border/color",
     "focuscolor": "layout/border/focus-color",

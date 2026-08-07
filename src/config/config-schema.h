@@ -254,9 +254,9 @@ static const ConfigOption config_schema[] = {
 	 "window does not grow to compensate, so enabling this shrinks the usable "
 	 "content area.",
 	 OPT_BOOL, offsetof(Config, enable_titlebar), 0, 0, 1, NULL, 0, "0", 0},
-	{"titlebar_height", "layout/titlebar/height", "appearance", "titlebar",
-	 "Height", "Titlebar height in pixels.", OPT_INT,
-	 offsetof(Config, titlebar_height), 0, 0, 200, NULL, 0, "28", 0},
+	/* There is deliberately no titlebar height here. It is DERIVED in
+	 * override_config() from the theme font's line height plus theme/padding/y,
+	 * so a settings UI has nothing to offer -- see the comment there. */
 
 	/* ===== appearance / theme =====
 	 *

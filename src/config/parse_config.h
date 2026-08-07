@@ -2288,8 +2288,6 @@ bool parse_option(Config *config, char *key, char *value) {
 		config->float_keep_onscreen = CLAMP_INT(atoi(value), 0, 100000);
 	} else if (strcmp(key, "enable_titlebar") == 0) {
 		config->enable_titlebar = atoi(value);
-	} else if (strcmp(key, "titlebar_height") == 0) {
-		config->titlebar_height = atoi(value);
 	} else if (strcmp(key, "monocle_tab_max_width") == 0) {
 		config->monocle_tab_max_width = CLAMP_INT(atoi(value), 0, 10000);
 	} else if (strcmp(key, "icon_theme") == 0) {
@@ -3530,7 +3528,6 @@ static const struct {
 	{"input/cursor/size", "cursor_size"},
 	/* layout */
 	{"layout/titlebar/enable", "enable_titlebar"},
-	{"layout/titlebar/height", "titlebar_height"},
 	{"layout/border/width", "borderpx"},
 	{"layout/floating/center-new", "float_center_new"},
 	{"layout/floating/click-to-focus", "float_click_to_focus"},
@@ -4696,7 +4693,24 @@ void override_config(void) {
 		CLAMP_FLOAT(config.scratchpad_height_ratio, 0.1f, 1.0f);
 	config.borderpx = CLAMP_INT(config.borderpx, 0, 200);
 	config.enable_titlebar = CLAMP_INT(config.enable_titlebar, 0, 1);
-	config.titlebar_height = CLAMP_INT(config.titlebar_height, 0, 200);
+
+	/* The titlebar is as tall as its own text, plus the theme's vertical
+	 * padding above and below it. DERIVED, not configured.
+	 *
+	 * It used to be `layout { titlebar { height 28 } }` -- a pixel count with
+	 * no relation to the font drawn inside it, so raising `theme { font }` put
+	 * bigger text in a box that stayed where it was, and every display scale
+	 * change meant re-tuning the number by hand. There is nothing a separate
+	 * height can express that this does not: a taller bar around the same text
+	 * is padding, which the theme already has, and the text is the only thing
+	 * in the bar with a size of its own.
+	 *
+	 * Logical pixels at 96 dpi, like every other size in the config -- the
+	 * output scale is applied to it at render time. */
+	config.titlebar_height =
+		CLAMP_INT(asteroidz_font_line_height(config.theme.font_desc) +
+					  2 * config.theme.padding_y,
+				  0, 200);
 	config.smartgaps = CLAMP_INT(config.smartgaps, 0, 1);
 	config.blur = CLAMP_INT(config.blur, 0, 1);
 	config.blur_layer = CLAMP_INT(config.blur_layer, 0, 1);
@@ -4843,7 +4857,6 @@ void set_value_default() {
 	config.float_max_height = 0;
 	config.float_keep_onscreen = 30;
 	config.enable_titlebar = 0;
-	config.titlebar_height = 28;
 	config.monocle_tab_max_width = 0;
 	config.icon_theme[0] = '\0';
 	config.overviewgappi = 5;

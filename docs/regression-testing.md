@@ -239,12 +239,12 @@ so the harness includes a few small purpose-built Wayland clients:
 
 ## Module coverage
 
-Thirty-two modules as of writing: `layouts`,
+Thirty-three modules as of writing: `layouts`,
 `window-states`, `tags`, `tag-rules-ipc`, `focus`, `scratchpad`, `geometry`,
 `dwindle`, `overview`, `multimonitor`, `mousebind`, `hdr`, `scroller`,
 `animations`, `layer-shell`, `ipc-watch`, `keybind-combo`, `set-option`,
 `config-ipc`, `config-write`, `rules-ipc`, `border-colors`, `idle`,
-`inhibit-portal`, `prompt`,
+`inhibit-portal`, `prompt`, `titlebar`,
 `output`, `vrr`, `effects`, `floating`, `quit-confirm`, `screenshot-ui`,
 `fullscreen-bleed`, plus `destroy-virtual-output` (gated
 behind `HL_ALLOW_DESTRUCTIVE=1`).

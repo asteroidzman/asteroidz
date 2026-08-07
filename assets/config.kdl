@@ -34,7 +34,6 @@ layout {
     }
     titlebar {
         enable 1
-        height 36
     }
     scroller {
         structs 20

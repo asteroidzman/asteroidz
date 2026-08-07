@@ -40,7 +40,7 @@ Settings are grouped into sections. A small example:
 
 ```kdl
 layout {
-    titlebar { enable; height 36 }
+    titlebar { enable }
     border { width 2; gradient { enable; angle 45 } }
 }
 effects {

@@ -474,10 +474,54 @@ static PangoFontDescription *get_cached_font_desc(const char *font_desc) {
 	return desc;
 }
 
+/* A one-pixel scratch surface kept alive for the sake of its Pango context.
+ * Measuring needs a context and a context needs a cairo target; nothing is ever
+ * drawn into it. Pinned at 96 dpi -- see the header. */
+static cairo_surface_t *metrics_surface = NULL;
+static cairo_t *metrics_cr = NULL;
+static PangoContext *metrics_context = NULL;
+
+int32_t asteroidz_font_line_height(const char *font_desc) {
+	if (!font_desc || !*font_desc)
+		return 0;
+
+	if (!metrics_context) {
+		metrics_surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, 1, 1);
+		metrics_cr = cairo_create(metrics_surface);
+		metrics_context = pango_cairo_create_context(metrics_cr);
+		pango_cairo_context_set_resolution(metrics_context, 96.0);
+	}
+
+	PangoFontMetrics *m = pango_context_get_metrics(
+		metrics_context, get_cached_font_desc(font_desc), NULL);
+	if (!m)
+		return 0;
+
+	/* Rounded UP. Half a pixel short of the ascent clips the tops of capitals,
+	 * and the box this sizes has no way to grow afterwards. */
+	int32_t h = (pango_font_metrics_get_ascent(m) +
+				 pango_font_metrics_get_descent(m) + PANGO_SCALE - 1) /
+				PANGO_SCALE;
+	pango_font_metrics_unref(m);
+	return h > 0 ? h : 0;
+}
+
 void asteroidz_text_global_finish(void) {
 	if (font_desc_cache) {
 		g_hash_table_destroy(font_desc_cache);
 		font_desc_cache = NULL;
+	}
+	if (metrics_context) {
+		g_object_unref(metrics_context);
+		metrics_context = NULL;
+	}
+	if (metrics_cr) {
+		cairo_destroy(metrics_cr);
+		metrics_cr = NULL;
+	}
+	if (metrics_surface) {
+		cairo_surface_destroy(metrics_surface);
+		metrics_surface = NULL;
 	}
 }
 
