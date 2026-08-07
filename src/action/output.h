@@ -115,10 +115,117 @@ static Monitor *output_by_name_or_focus(const char *name) {
  *
  * `mode` NULL means "leave the mode alone", `scale <= 0` means "leave the
  * scale alone", so one function serves both. */
+/* Move an output and remember where it went. No-op if it is already there --
+ * output_persist rewrites a config file, and a reflow that touched nothing
+ * should not rewrite anything either. */
+static void output_place(Monitor *m, int32_t x, int32_t y) {
+	if (!m || !m->wlr_output)
+		return;
+	wlr_output_layout_add(output_layout, m->wlr_output, x, y);
+
+	char xs[16], ys[16];
+	snprintf(xs, sizeof(xs), "%d", x);
+	snprintf(ys, sizeof(ys), "%d", y);
+	const char *keys[] = {"x", "y"};
+	const char *vals[] = {xs, ys};
+	output_persist(m, keys, vals, 2);
+}
+
+/* Keep the layout coherent when an output's LOGICAL SIZE changes.
+ *
+ * `x` is an absolute logical coordinate in monitors.kdl, and an output's
+ * logical width is its mode divided by its scale. Those two facts do not
+ * survive each other. Taking a real case: DP-1 is a 3840-wide panel, so it is
+ * 2194 logical pixels at scale 1.75 and 2560 at 1.5, and HDMI-A-1 sitting
+ * flush to its right belongs at a different x in each case. Nothing revisited
+ * it, so changing the scale left HDMI-A-1 pinned at the previous scale's
+ * number: 366 columns of overlap going one way, 366 of dead gap going the
+ * other, and a different wrong number for every scale.
+ *
+ * Overlap is the bad half. Two outputs owning the same pixel is not a state
+ * anything downstream can render: the wallpaper composited twice at two
+ * scales with a seam down it, both bars drawing into the strip, and one
+ * output's blur cache sampling the other's contents.
+ *
+ * ADJACENCY, not repacking. Everything past the resized output's old edge
+ * shifts by the same delta, so an output that was flush stays flush and an
+ * output someone deliberately offset keeps its offset. Repacking the layout
+ * left-to-right would also have fixed the overlap, and would silently
+ * flatten an arrangement that was chosen.
+ *
+ * Only outputs actually BESIDE the resized one move -- one stacked above or
+ * below it shares no rows with it and has no reason to care how wide it got.
+ *
+ * Returns whether anything moved. */
+static bool output_reflow(Monitor *resized, struct wlr_box before) {
+	if (!resized || !resized->wlr_output)
+		return false;
+
+	struct wlr_box after;
+	wlr_output_layout_get_box(output_layout, resized->wlr_output, &after);
+	int32_t dx = (after.x + after.width) - (before.x + before.width);
+	int32_t dy = (after.y + after.height) - (before.y + before.height);
+	if (dx == 0 && dy == 0)
+		return false;
+
+	bool moved = false;
+	Monitor *o;
+	wl_list_for_each(o, &mons, link) {
+		if (o == resized || !o->wlr_output || !o->wlr_output->enabled)
+			continue;
+		struct wlr_box b;
+		wlr_output_layout_get_box(output_layout, o->wlr_output, &b);
+		int32_t nx = b.x, ny = b.y;
+
+		/* Past the right edge, and sharing rows with it. */
+		if (dx != 0 && b.x >= before.x + before.width &&
+			b.y < before.y + before.height && b.y + b.height > before.y)
+			nx = b.x + dx;
+		/* Past the bottom edge, and sharing columns with it. */
+		if (dy != 0 && b.y >= before.y + before.height &&
+			b.x < before.x + before.width && b.x + b.width > before.x)
+			ny = b.y + dy;
+
+		if (nx != b.x || ny != b.y) {
+			output_place(o, nx, ny);
+			moved = true;
+		}
+	}
+
+	/* Backstop. The shift above keeps a coherent layout coherent; it cannot
+	 * repair one that was not. A hand-edited monitors.kdl can put two outputs
+	 * on the same pixels, and then growing one of them leaves them there --
+	 * so anything still overlapping the resized output is pushed clear of it,
+	 * whatever the file asked for. An unrenderable layout is not a preference
+	 * worth honouring. */
+	wl_list_for_each(o, &mons, link) {
+		if (o == resized || !o->wlr_output || !o->wlr_output->enabled)
+			continue;
+		struct wlr_box b;
+		wlr_output_layout_get_box(output_layout, o->wlr_output, &b);
+		if (b.x >= after.x + after.width || b.x + b.width <= after.x)
+			continue;
+		if (b.y >= after.y + after.height || b.y + b.height <= after.y)
+			continue;
+		wlr_log(WLR_INFO, "output: %s overlapped %s; moving it clear",
+				o->wlr_output->name, resized->wlr_output->name);
+		output_place(o, after.x + after.width, b.y);
+		moved = true;
+	}
+
+	return moved;
+}
+
 static bool output_apply(Monitor *m, struct wlr_output_mode *mode,
 						 float scale) {
 	if (!m || !m->wlr_output || (!mode && scale <= 0.0f))
 		return false;
+
+	/* Where it sat before, so the reflow below can tell what its edges moved
+	 * by. Read from the LAYOUT rather than m->m, which updatemons() rewrites
+	 * as a side effect of the commit that is about to happen. */
+	struct wlr_box before;
+	wlr_output_layout_get_box(output_layout, m->wlr_output, &before);
 
 	struct wlr_output_state state;
 	wlr_output_state_init(&state);
@@ -148,6 +255,12 @@ static bool output_apply(Monitor *m, struct wlr_output_mode *mode,
 			m->wlr_output->width, m->wlr_output->height,
 			(int32_t)((m->wlr_output->refresh + 500) / 1000),
 			(double)m->wlr_output->scale);
+
+	/* The commit changed this output's logical size, so every output placed
+	 * relative to it is now measured against a number that no longer holds. */
+	if (output_reflow(m, before))
+		updatemons(NULL, NULL);
+
 	printstatus(IPC_WATCH_ARRANGGE);
 	return true;
 }

@@ -58,6 +58,26 @@ output "<name>" { <property> <value>; <property> <value> }
 
 > **Note:** that "name" is a regular expression. If you want an exact match, you need to add `^` and `$` to the beginning and end of the expression, for example, `^eDP-1$` matches exactly the string `eDP-1`.
 
+### Positions and scale
+
+`x` and `y` are **logical** coordinates, and an output's logical size is its
+mode divided by its scale. A 3840-wide panel is 2194 logical pixels at `scale
+1.75` and 2560 at `scale 1.5`, so an output sitting flush to its right belongs
+at a different `x` in each case.
+
+You do not have to keep those in step yourself. Changing an output's scale or
+mode moves everything positioned past its edges by the same amount, so an
+output that was flush stays flush and a gap you set deliberately stays the size
+you set it. Only outputs actually beside the resized one move — one stacked
+above or below shares no rows with it and is left alone. The new positions are
+written back to whichever file declares them, exactly as `set_output_position`
+would.
+
+Overlap is resolved unconditionally, whatever the file asks for: two outputs
+claiming the same pixel is not a state anything downstream can render, and it
+shows up as the wallpaper composited twice with a seam down it, two bars
+drawing into the same strip, and blur sampling the wrong output's contents.
+
 ### Examples
 
 ```kdl
