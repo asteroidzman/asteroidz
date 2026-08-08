@@ -58,6 +58,7 @@
 #include <wlr/types/wlr_ext_image_copy_capture_v1.h>
 /* privacy shield: count live capture sessions to know when to cover
  * shield_when_capture surfaces */
+#include <wlr/types/wlr_fixes.h>
 #include <wlr/types/wlr_fractional_scale_v1.h>
 #include <wlr/types/wlr_gamma_control_v1.h>
 #include <wlr/types/wlr_idle_inhibit_v1.h>
@@ -8702,7 +8703,7 @@ void setup(void) {
 	if (wlr_renderer_get_texture_formats(drw, WLR_BUFFER_CAP_DMABUF)) {
 		wlr_drm_create(dpy, drw);
 		wlr_scene_set_linux_dmabuf_v1(
-			scene, wlr_linux_dmabuf_v1_create_with_renderer(dpy, 4, drw));
+			scene, wlr_linux_dmabuf_v1_create_with_renderer(dpy, 5, drw));
 	}
 
 	if (config.syncobj_enable && (drm_fd = wlr_renderer_get_drm_fd(drw)) >= 0 &&
@@ -8727,6 +8728,10 @@ void setup(void) {
 	wl_signal_add(&img_copy_mgr->events.new_session,
 				  &ext_image_copy_capture_new_session);
 	wlr_ext_output_image_capture_source_manager_v1_create(dpy, 1);
+	/* the per-window capture source, i.e. what a portal binds for "share a
+	 * window" rather than "share a screen". Both source managers gate on the
+	 * security-context filter in modern.h. */
+	wlr_ext_foreign_toplevel_image_capture_source_manager_v1_create(dpy, 1);
 	wlr_data_control_manager_v1_create(dpy);
 	wlr_data_device_manager_create(dpy);
 	// The middle-click "copy on select" buffer is a second, invisible
@@ -8740,6 +8745,9 @@ void setup(void) {
 		wlr_primary_selection_v1_device_manager_create(dpy);
 	}
 	wlr_viewporter_create(dpy);
+	/* wl_fixes: gives clients wl_registry.destroy. Without it every registry a
+	 * client creates is leaked server-side until it disconnects. */
+	wlr_fixes_create(dpy, 1);
 	wlr_single_pixel_buffer_manager_v1_create(dpy);
 	wlr_fractional_scale_manager_v1_create(dpy, 1);
 	wlr_presentation_create(dpy, backend, 2);
@@ -8790,7 +8798,7 @@ void setup(void) {
 			.primaries = cm_primaries,
 			.primaries_len = cm_primaries_len,
 		};
-		color_manager = wlr_color_manager_v1_create(dpy, 1, &cm_options);
+		color_manager = wlr_color_manager_v1_create(dpy, 2, &cm_options);
 		wlr_scene_set_color_manager_v1(scene, color_manager);
 		free(cm_tfs);
 		free(cm_primaries);
@@ -8847,10 +8855,13 @@ void setup(void) {
 	keep_idle_inhibit_source = wl_event_loop_add_timer(
 		wl_display_get_event_loop(dpy), keep_idle_inhibit, NULL);
 
-	layer_shell = wlr_layer_shell_v1_create(dpy, 4);
+	/* v5 for set_exclusive_edge: a surface anchored to three edges can say
+	 * which one its exclusive zone applies to instead of leaving us to guess.
+	 * wlr_scene_layer_surface_v1_configure() honours it for us. */
+	layer_shell = wlr_layer_shell_v1_create(dpy, 5);
 	wl_signal_add(&layer_shell->events.new_surface, &new_layer_surface);
 
-	xdg_shell = wlr_xdg_shell_create(dpy, 6);
+	xdg_shell = wlr_xdg_shell_create(dpy, 7);
 	wl_signal_add(&xdg_shell->events.new_toplevel, &new_xdg_toplevel);
 	wl_signal_add(&xdg_shell->events.new_popup, &new_xdg_popup);
 
@@ -8918,7 +8929,7 @@ void setup(void) {
 	wl_signal_add(&cursor->events.tablet_tool_tip, &tablet_tool_tip);
 
 	// these two lines make the cursor disappear inside OBS windows; unclear what commenting them out would affect
-	cursor_shape_mgr = wlr_cursor_shape_manager_v1_create(dpy, 1);
+	cursor_shape_mgr = wlr_cursor_shape_manager_v1_create(dpy, 2);
 	wl_signal_add(&cursor_shape_mgr->events.request_set_shape,
 				  &request_set_cursor_shape);
 	hide_cursor_source = wl_event_loop_add_timer(wl_display_get_event_loop(dpy),
