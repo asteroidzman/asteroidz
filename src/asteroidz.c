@@ -1873,8 +1873,11 @@ void client_replace(Client *c, Client *w) {
 
 	client_remove_ext_foreign_toplevel(w);
 	if (w->foreign_toplevel) {
-		wlr_foreign_toplevel_handle_v1_output_leave(w->foreign_toplevel,
-													w->mon->wlr_output);
+		/* the handle outlives the monitor: it is created while w->mon is set,
+		 * but an output going away clears w->mon without destroying it */
+		if (w->mon)
+			wlr_foreign_toplevel_handle_v1_output_leave(w->foreign_toplevel,
+														w->mon->wlr_output);
 		wlr_foreign_toplevel_handle_v1_destroy(w->foreign_toplevel);
 		w->foreign_toplevel = NULL;
 	}
@@ -4240,7 +4243,6 @@ static bool popup_unconstrain(Popup *popup) {
 	struct wlr_xdg_popup *wlr_popup = popup->wlr_popup;
 	Client *c = NULL;
 	LayerSurface *l = NULL;
-	int32_t type = -1;
 
 	if (!wlr_popup || !wlr_popup->parent) {
 		return false;
@@ -4252,17 +4254,36 @@ static bool popup_unconstrain(Popup *popup) {
 		return false;
 	}
 
-	type = toplevel_from_wlr_surface(wlr_popup->base->surface, &c, &l);
+	/* called for the out-params; the returned type is no longer consulted --
+	 * see the comment below on branching by pointer instead */
+	toplevel_from_wlr_surface(wlr_popup->base->surface, &c, &l);
+	/* Resolving to NEITHER is its own case, not covered by the two below:
+	 * toplevel_from_wlr_surface returns -1 with both out-params left NULL (a
+	 * parent chain ending in ROLE_NONE, a popup whose parent is going away),
+	 * and -1 is not LayerShell -- so the ternary would take the c branch and
+	 * dereference a NULL c. Both `l && ...` and `c && ...` are false in that
+	 * state, so neither guards it. */
+	if (!c && !l) {
+		return true;
+	}
 	if ((l && !l->mon) || (c && !c->mon)) {
 		return true;
 	}
 
-	struct wlr_box usable = type == LayerShell ? l->mon->m : c->mon->w;
+	/* Branch on the POINTER, not on type -- here and in the block below, which
+	 * must agree with this line about which of the two it is using.
+	 *
+	 * They match in the normal case, but type is LayerShell as soon as a layer
+	 * surface is found, while l is that surface's ->data, which is NULL until
+	 * we attach our own wrapper -- so type can say LayerShell with l still
+	 * NULL, and the type form would then dereference it. Combined with the
+	 * !c && !l guard above, "l ? l : c" cannot dereference NULL either way. */
+	struct wlr_box usable = l ? l->mon->m : c->mon->w;
 
 	int lx, ly;
 	struct wlr_box constraint_box;
 
-	if (type == LayerShell) {
+	if (l) {
 		wlr_scene_node_coords(&l->scene_layer->tree->node, &lx, &ly);
 		constraint_box.x = usable.x - lx;
 		constraint_box.y = usable.y - ly;
@@ -5677,7 +5698,9 @@ void focusclient(Client *c, int32_t lift) {
 
 	if (c && !c->iskilling && !client_is_unmanaged(c) && c->mon) {
 
-		last_focus_client = selmon->sel;
+		/* selmon is NULL-checked twice immediately above; it can be NULL here
+		 * too, and this is the line that reassigns it from c->mon. */
+		last_focus_client = selmon ? selmon->sel : NULL;
 		selmon = c->mon;
 		selmon->prevsel = selmon->sel;
 		selmon->sel = c;
@@ -9401,17 +9424,25 @@ void check_vrr_enable(Client *c) {
 		return;
 	}
 
-	if (VISIBLEON(c, c->mon) && c->vrr_only_fullscreen && c->isfullscreen &&
-		!c->mon->is_vrr_opening) {
-		commit_vrr_state(c->mon, true);
+	/* m, not c->mon, for the rest of this function. The two are the same
+	 * whenever the client has a monitor; when it does not, m is the selmon
+	 * fallback resolved above and c->mon is NULL. Dereferencing c->mon here
+	 * crashed: setfakefullscreen() calls this before the client is placed --
+	 * the arrange(c->mon, ...) four lines below its call already treats that
+	 * monitor as possibly-NULL -- and the guard above only rejects the case
+	 * where selmon is ALSO gone, so a running session with an unplaced client
+	 * walked straight into it. */
+	if (VISIBLEON(c, m) && c->vrr_only_fullscreen && c->isfullscreen &&
+		!m->is_vrr_opening) {
+		commit_vrr_state(m, true);
 		return;
 	}
 
-	if (!c->mon->is_vrr_opening && c->mon->vrr_global_enable) {
-		commit_vrr_state(c->mon, true);
-	} else if (c->mon->is_vrr_opening && !c->mon->vrr_global_enable &&
+	if (!m->is_vrr_opening && m->vrr_global_enable) {
+		commit_vrr_state(m, true);
+	} else if (m->is_vrr_opening && !m->vrr_global_enable &&
 			   !(c->vrr_only_fullscreen && c->isfullscreen)) {
-		commit_vrr_state(c->mon, false);
+		commit_vrr_state(m, false);
 	}
 }
 
@@ -10078,8 +10109,12 @@ void activatex11(struct wl_listener *listener, void *data) {
 	bool in_overview = (c->mon && c->mon->isoverview) ||
 					   (selmon && selmon->isoverview);
 
-	if (config.focus_on_activate && !c->istagsilent && c != selmon->sel &&
-			!activate_is_steal && !in_overview) {
+	/* selmon is NULL with no enabled output -- the line above already guards it
+	 * for exactly that reason, and an X11 activate arriving during output
+	 * teardown reaches this. The guard covers the body too: c->mon == selmon
+	 * is TRUE when both are NULL, which would then walk into c->mon->tagset. */
+	if (config.focus_on_activate && !c->istagsilent && selmon &&
+			c != selmon->sel && !activate_is_steal && !in_overview) {
 		if (!(c->mon == selmon && c->tags & c->mon->tagset[c->mon->seltags]))
 			view_in_mon(&(Arg){.ui = c->tags}, true, c->mon, true);
 		wlr_xwayland_surface_activate(c->surface.xwayland, 1);
