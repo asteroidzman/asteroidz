@@ -48,6 +48,7 @@ HL_WLVPTR="$HL_REPO/contrib/wlvptr/wlvptr"
 HL_WLVKBD="$HL_REPO/contrib/wlvkbd/wlvkbd"
 HL_WLLAYER="$HL_REPO/contrib/wllayer/wllayer"
 HL_WLKEYS="$HL_REPO/contrib/wlkeys/wlkeys"
+HL_WLSANDBOX="$HL_REPO/contrib/wlsandbox/wlsandbox"
 HL_WIDTH="${HL_WIDTH:-1920}"
 HL_HEIGHT="${HL_HEIGHT:-1080}"
 # wlvptr's absolute-pointer extent -- equal to HL_WIDTH/HL_HEIGHT except in
@@ -676,6 +677,13 @@ hl_wlkeys_last_enter() { # hl_wlkeys_last_enter [LOGNAME]
 	local logname="${1:-wlkeys}"
 	grep '^enter keys=' "$HL_OUTDIR/$logname.log" 2>/dev/null | tail -1 |
 		sed 's/^enter keys=//'
+}
+
+# Interfaces a client connecting through security-context-v1 is shown, one per
+# line. Runs to completion (no hold), so this blocks rather than backgrounding.
+hl_sandbox_globals() { # hl_sandbox_globals -> interface names on stdout
+	"$HL_WLSANDBOX" "hl-sandbox-$$" 2>"$HL_OUTDIR/wlsandbox.err" |
+		sed -n 's/^sandboxed \([a-z_0-9]*\) .*/\1/p'
 }
 
 hl_spawn_wllayer() { # hl_spawn_wllayer LAYER ANCHOR EXCL_ZONE W H KB HOLD_S [RESIZE_SPEC] LOGNAME -> pid

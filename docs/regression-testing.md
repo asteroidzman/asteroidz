@@ -249,7 +249,8 @@ socket, `ASTEROIDZ_INSTANCE_SIGNATURE`) plus a flat-color `swaybg` wallpaper,
 never touching your real session. `hl_dispatch`/`hl_get` wrap `amsg
 dispatch`/`amsg get` scoped to that instance; `hl_watch_start` backgrounds an
 `amsg watch ...` stream for asserting on IPC notifications. `hl_spawn_kitty`/
-`hl_spawn_wllayer`/`hl_spawn_wlkeys` spawn tracked, throwaway test clients.
+`hl_spawn_wllayer`/`hl_spawn_wlkeys` spawn tracked, throwaway test clients;
+`hl_sandbox_globals` runs one to completion.
 `hl_reset` kills
 spawned windows and returns to a known state (tag 1, tile layout, `HEADLESS-1`
 focused) between test cases so they can't leak state into one another.
@@ -312,6 +313,19 @@ so the harness includes a few small purpose-built Wayland clients:
   bound key is held at the moment focus arrives, and the release that would
   stop it is deliberately swallowed. Use `hl_spawn_wlkeys` and
   `hl_wlkeys_last_enter`.
+- **`contrib/wlsandbox`** — a `security-context-v1` client: it creates a real
+  security context over a listening socket of its own, connects a *second*
+  display through it, and reports the globals the compositor is willing to show
+  a sandboxed client. The privileged deny list in `modern.h` is interface-name
+  strings matched with `strcmp`, so an entry naming no real global is not a
+  build error and not a runtime error — just a line that never fires. That is
+  exactly how `wlr_export_dmabuf_manager_v1` (missing the `zwlr_` prefix) sat
+  in the list handing full-screen capture to every Flatpak. Enumerating the
+  registry from inside the sandbox is the only way to see it. Use
+  `hl_sandbox_globals`, and assert the *whole* list — see
+  `tests/security-context.sh`, which also asserts the mirror image (an ordinary
+  client still sees the global) so a compositor that simply stopped
+  advertising it can't read as a pass.
 - **`contrib/portal-inhibit-client.py`** — not a Wayland client at all: a D-Bus
   one that takes an `org.freedesktop.impl.portal.Inhibit` request and then
   *stays connected*. `busctl` cannot test that interface, because an inhibition

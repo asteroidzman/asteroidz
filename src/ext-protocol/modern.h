@@ -119,7 +119,7 @@ static void handle_system_bell_ring(struct wl_listener *listener, void *data) {
 static const char *const privileged_global_interfaces[] = {
 	"wp_security_context_manager_v1",
 	"zwlr_screencopy_manager_v1",
-	"wlr_export_dmabuf_manager_v1",
+	"zwlr_export_dmabuf_manager_v1",
 	"ext_image_copy_capture_manager_v1",
 	"ext_output_image_capture_source_manager_v1",
 	"ext_foreign_toplevel_image_capture_source_manager_v1",
