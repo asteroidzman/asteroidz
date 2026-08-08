@@ -218,6 +218,14 @@ static cJSON *build_client_json(Client *c) {
 	cJSON_AddBoolToObject(obj, "is_overlay", c->isoverlay);
 	cJSON_AddBoolToObject(obj, "is_fakefullscreen", c->isfakefullscreen);
 	cJSON_AddBoolToObject(obj, "is_minimized", c->isminimized);
+	/* xdg_toplevel.suspended as last configured: true means we have told this
+	 * client its content isn't visible and it may stop rendering. Reported
+	 * because the state is otherwise unobservable from outside -- it lives
+	 * only on the wire, and inferring it from tags re-derives the very
+	 * predicate you'd be trying to check. Always false for X11 (no
+	 * equivalent) and for clients that bound xdg_wm_base below v6, which must
+	 * never be sent the state at all. */
+	cJSON_AddBoolToObject(obj, "is_suspended", c->issuspended);
 	cJSON_AddBoolToObject(obj, "is_urgent", c->isurgent);
 	cJSON_AddBoolToObject(obj, "is_scratchpad", c->is_in_scratchpad);
 	cJSON_AddBoolToObject(obj, "is_namedscratchpad", c->isnamedscratchpad);

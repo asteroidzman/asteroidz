@@ -526,6 +526,9 @@ struct Client {
 		need_float_size_reduce, isminimized, isoverlay, isnosizehint,
 		ignore_maximize, ignore_minimize, idleinhibit_when_focus;
 	int32_t ismaximizescreen;
+	/* last xdg_toplevel.suspended state we configured, so the sweep in
+	 * update_client_suspended() only sends a configure when it flips */
+	bool issuspended;
 	int32_t overview_backup_bw;
 	int32_t fullscreen_backup_x, fullscreen_backup_y, fullscreen_backup_w,
 		fullscreen_backup_h;

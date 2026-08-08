@@ -48,6 +48,7 @@ HL_WLVPTR="$HL_REPO/contrib/wlvptr/wlvptr"
 HL_WLVKBD="$HL_REPO/contrib/wlvkbd/wlvkbd"
 HL_WLLAYER="$HL_REPO/contrib/wllayer/wllayer"
 HL_WLKEYS="$HL_REPO/contrib/wlkeys/wlkeys"
+HL_WLSTATES="$HL_REPO/contrib/wlstates/wlstates"
 HL_WLSANDBOX="$HL_REPO/contrib/wlsandbox/wlsandbox"
 HL_WIDTH="${HL_WIDTH:-1920}"
 HL_HEIGHT="${HL_HEIGHT:-1080}"
@@ -677,6 +678,25 @@ hl_wlkeys_last_enter() { # hl_wlkeys_last_enter [LOGNAME]
 	local logname="${1:-wlkeys}"
 	grep '^enter keys=' "$HL_OUTDIR/$logname.log" 2>/dev/null | tail -1 |
 		sed 's/^enter keys=//'
+}
+
+hl_spawn_wlstates() { # hl_spawn_wlstates APPID HOLD_S [LOGNAME] -> pid
+	# Logs one line per xdg_toplevel.configure to $HL_OUTDIR/$logname.log with
+	# the state array spelled out. Binds xdg_wm_base v6, so it is the only
+	# client here that can be sent -- and can therefore observe -- `suspended`.
+	local appid="$1" hold="$2" logname="${3:-wlstates}"
+	"$HL_WLSTATES" "$appid" "$hold" > "$HL_OUTDIR/$logname.log" 2>&1 &
+	local pid=$!
+	HL_SPAWNED_PIDS+=("$pid")
+	echo "$pid"
+}
+
+# The state list from the LAST configure this client was sent ("-" when the
+# compositor sent an empty array).
+hl_wlstates_last() { # hl_wlstates_last [LOGNAME]
+	local logname="${1:-wlstates}"
+	grep '^configure ' "$HL_OUTDIR/$logname.log" 2>/dev/null | tail -1 |
+		sed 's/^.* states=//'
 }
 
 # Interfaces a client connecting through security-context-v1 is shown, one per

@@ -545,11 +545,40 @@ void arrange_special(Monitor *m) {
 	}
 }
 
+/* Sweep every client and tell the ones the user can't currently see to
+ * suspend. Without this a window on an unselected tag keeps decoding video and
+ * running animations at full rate purely to render into a scene node nothing
+ * composites.
+ *
+ * Global rather than per-monitor on purpose: one tag switch can change what is
+ * visible on another output (a global/pinned window, a special workspace), and
+ * the sweep is a cheap list walk that only sends a configure on a real flip. */
+static void update_client_suspended(void) {
+	Client *c = NULL;
+
+	wl_list_for_each(c, &clients, link) {
+		bool visible;
+
+		if (c->iskilling || client_is_unmanaged(c) || !client_surface(c))
+			continue;
+
+		visible = client_surface(c)->mapped && c->mon &&
+				  c->mon->wlr_output->enabled && !c->mon->asleep &&
+				  VISIBLEON(c, c->mon);
+		client_set_suspended(c, !visible);
+	}
+}
+
 void // 17
 arrange(Monitor *m, bool want_animation, bool from_view) {
 
 	if (!m)
 		return;
+
+	/* deliberately above the disabled-output return: the sweep is global, and
+	 * an arrange on a monitor that just went to sleep is exactly the event
+	 * that should suspend the clients sitting on it */
+	update_client_suspended();
 
 	if (!m->wlr_output->enabled)
 		return;

@@ -12,6 +12,7 @@ build/
 contrib/wlvptr/wlvptr
 contrib/wlvkbd/wlvkbd
 contrib/wllayer/wllayer
+contrib/wlstates/wlstates
 contrib/wlsandbox/wlsandbox
 
 # meson downloads the tracy client into subprojects/tracy (see

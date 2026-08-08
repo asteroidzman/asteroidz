@@ -438,6 +438,27 @@ static inline void client_set_tiled(Client *c, uint32_t edges) {
 	}
 }
 
+/* xdg-shell's suspended state: tells a toplevel its content isn't visible to
+ * the user, so a browser or player can throttle rendering and decoding. Only
+ * flip it when it actually changes -- each call schedules a configure.
+ *
+ * X11 has no equivalent, and wlroots asserts if the client bound wm_base below
+ * v6, hence the version guard (same shape as client_set_tiled above). */
+static inline void client_set_suspended(Client *c, bool suspended) {
+#ifdef XWAYLAND
+	if (client_is_x11(c))
+		return;
+#endif
+	if (c->issuspended == suspended)
+		return;
+	if (wl_resource_get_version(c->surface.xdg->toplevel->resource) <
+		XDG_TOPLEVEL_STATE_SUSPENDED_SINCE_VERSION)
+		return;
+
+	c->issuspended = suspended;
+	wlr_xdg_toplevel_set_suspended(c->surface.xdg->toplevel, suspended);
+}
+
 static inline int32_t client_should_ignore_focus(Client *c) {
 
 #ifdef XWAYLAND

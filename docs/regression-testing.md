@@ -249,8 +249,8 @@ socket, `ASTEROIDZ_INSTANCE_SIGNATURE`) plus a flat-color `swaybg` wallpaper,
 never touching your real session. `hl_dispatch`/`hl_get` wrap `amsg
 dispatch`/`amsg get` scoped to that instance; `hl_watch_start` backgrounds an
 `amsg watch ...` stream for asserting on IPC notifications. `hl_spawn_kitty`/
-`hl_spawn_wllayer`/`hl_spawn_wlkeys` spawn tracked, throwaway test clients;
-`hl_sandbox_globals` runs one to completion.
+`hl_spawn_wllayer`/`hl_spawn_wlkeys`/`hl_spawn_wlstates` spawn tracked,
+throwaway test clients; `hl_sandbox_globals` runs one to completion.
 `hl_reset` kills
 spawned windows and returns to a known state (tag 1, tile layout, `HEADLESS-1`
 focused) between test cases so they can't leak state into one another.
@@ -313,6 +313,15 @@ so the harness includes a few small purpose-built Wayland clients:
   bound key is held at the moment focus arrives, and the release that would
   stop it is deliberately swallowed. Use `hl_spawn_wlkeys` and
   `hl_wlkeys_last_enter`.
+- **`contrib/wlstates`** — an `xdg-shell` toplevel that reports the state array
+  from every `xdg_toplevel.configure`, spelled out by name. It binds
+  `xdg_wm_base` at **version 6** on purpose, because that is the floor for
+  `suspended` and a compositor must withhold that state from older clients.
+  `WAYLAND_DEBUG` is not a substitute: it renders the array as `array[20]` and
+  never its contents, and a tag hide does not even change the array's *length*
+  (the window loses `activated` exactly as it gains `suspended`), so a byte
+  count reads identically whether suspension is implemented or not. Use
+  `hl_spawn_wlstates` and `hl_wlstates_last`.
 - **`contrib/wlsandbox`** — a `security-context-v1` client: it creates a real
   security context over a listening socket of its own, connects a *second*
   display through it, and reports the globals the compositor is willing to show
