@@ -125,3 +125,49 @@ test_outputs_never_overlap_after_a_scale_change() {
 	hl_assert_true "...and do not after a scale change (seam $(_orf_seam))" \
 		"$([ "$(_orf_seam)" -ge 0 ] && echo true || echo false)"
 }
+
+# ── the config-load path, which output_reflow() never sees ──────────────────
+#
+# Everything above changes a scale, and a scale change calls output_reflow().
+# A config does not: it applies to every output at once, nothing is "resized",
+# and an overlap written in a file is applied exactly as written. The backstop
+# inside output_reflow only repairs outputs that overlap the one being resized,
+# which on a config load is none of them.
+#
+# That is not a hypothetical gap, it is how this was hit. Setting DP-1 to scale
+# 1.75 through the settings page reflows HDMI-A-1 to x=2194 and persists it,
+# which is right for that scale. Editing the scale back to 1.5 by hand then
+# makes DP-1 2560 logical pixels wide again while HDMI-A-1 is still at 2194 --
+# "the adjacency failed and hdmi was inside dp-1", 366 columns of overlap, and
+# no scale change afterwards to trigger a repair.
+test_a_config_reload_resolves_an_overlap() {
+	if ! _orf_layout -400; then
+		echo "  ..   skipped: no second output"
+		return 0
+	fi
+	# The premise. Without this the assertion below is satisfied by a layout
+	# that never overlapped, which is most of them.
+	hl_assert_true "the outputs overlap before the reload" \
+		"$([ "$(_orf_seam)" -lt 0 ] && echo true || echo false)"
+
+	# No scale change, no position dispatch -- only the reload. This is the
+	# whole point: the repair has to come from applying the config, because
+	# that is the state a hand-edited monitors.kdl leaves behind.
+	hl_dispatch "reload_config" 1
+	hl_assert_true "a config reload clears it (seam $(_orf_seam))" \
+		"$([ "$(_orf_seam)" -ge 0 ] && echo true || echo false)"
+}
+
+# The other half, and the one that keeps the fix from being "repack on every
+# reload". output_place() PERSISTS, so a pass that nudged a healthy layout
+# would rewrite monitors.kdl every time the config was read -- and would
+# flatten a deliberate gap, which is the arrangement someone actually chose.
+test_a_config_reload_leaves_a_good_layout_alone() {
+	if ! _orf_layout 300; then
+		echo "  ..   skipped: no second output"
+		return 0
+	fi
+	hl_assert_eq "a 300px gap is set up" "$(_orf_seam)" "300"
+	hl_dispatch "reload_config" 1
+	hl_assert_eq "a config reload leaves the gap alone" "$(_orf_seam)" "300"
+}

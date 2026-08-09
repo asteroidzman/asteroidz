@@ -216,6 +216,95 @@ static bool output_reflow(Monitor *resized, struct wlr_box before) {
 	return moved;
 }
 
+/* Make the whole layout renderable, wherever it came from.
+ *
+ * output_reflow above keeps things coherent when an output is RESIZED, and it
+ * cannot help here: a config is applied to every output at once and nothing
+ * was resized, so an overlap written in a file survives untouched. Its own
+ * backstop only repairs outputs that overlap the one being resized, which on a
+ * config load is none of them.
+ *
+ * That gap is how this was actually hit, and the sequence is worth keeping
+ * because none of the steps is a mistake. Setting DP-1 to scale 1.75 through
+ * the settings page reflows HDMI-A-1 to x=2194 and PERSISTS it, which is
+ * correct -- 2194 is where flush is at that scale. Editing the scale back to
+ * 1.5 by hand in monitors.kdl then makes DP-1 2560 logical pixels wide again,
+ * while HDMI-A-1 is still at the 1.75-era 2194. Reported as "the adjacency
+ * failed and hdmi was inside dp-1", which is exactly what it is: 366 columns of
+ * two outputs owning the same pixels.
+ *
+ * A left-to-right sweep, so it is IDEMPOTENT: a layout with no overlap comes
+ * out of this untouched, which matters because output_place persists, and a
+ * pass that nudged things would rewrite monitors.kdl on every config reload.
+ * Only the outputs that actually collide move, and each moves the minimum --
+ * flush to the right edge of what it overlapped, keeping its own row.
+ *
+ * Overlap is resolved along X only. Two outputs sharing rows is the case that
+ * arises from a scale change, and pushing on both axes at once turns one
+ * collision into a diagonal shuffle whose result nobody can predict from the
+ * file they just edited.
+ *
+ * Returns whether anything moved. */
+bool output_resolve_overlaps(void) {
+	/* Ascending x, so each output is only ever compared against ones already
+	 * settled. wl_list order is creation order, which is not layout order. */
+	Monitor *sorted[32];
+	size_t n = 0;
+	Monitor *m;
+	wl_list_for_each(m, &mons, link) {
+		if (!m->wlr_output || !m->wlr_output->enabled)
+			continue;
+		if (n == LENGTH(sorted))
+			break;
+		sorted[n++] = m;
+	}
+	for (size_t i = 1; i < n; i++) {
+		Monitor *key = sorted[i];
+		struct wlr_box kb;
+		wlr_output_layout_get_box(output_layout, key->wlr_output, &kb);
+		size_t j = i;
+		while (j > 0) {
+			struct wlr_box pb;
+			wlr_output_layout_get_box(output_layout, sorted[j - 1]->wlr_output,
+									  &pb);
+			if (pb.x <= kb.x)
+				break;
+			sorted[j] = sorted[j - 1];
+			j--;
+		}
+		sorted[j] = key;
+	}
+
+	bool moved = false;
+	for (size_t i = 0; i < n; i++) {
+		struct wlr_box b;
+		wlr_output_layout_get_box(output_layout, sorted[i]->wlr_output, &b);
+
+		/* The furthest right edge of anything already placed that this one
+		 * runs into. Taking the furthest rather than the first keeps one move
+		 * enough when an output overlaps two at once. */
+		int32_t push = b.x;
+		for (size_t k = 0; k < i; k++) {
+			struct wlr_box p;
+			wlr_output_layout_get_box(output_layout, sorted[k]->wlr_output, &p);
+			if (b.x >= p.x + p.width || b.x + b.width <= p.x)
+				continue;
+			if (b.y >= p.y + p.height || b.y + b.height <= p.y)
+				continue;
+			if (p.x + p.width > push)
+				push = p.x + p.width;
+		}
+		if (push != b.x) {
+			wlr_log(WLR_INFO,
+					"output: %s overlapped the layout at x=%d; moving to %d",
+					sorted[i]->wlr_output->name, b.x, push);
+			output_place(sorted[i], push, b.y);
+			moved = true;
+		}
+	}
+	return moved;
+}
+
 static bool output_apply(Monitor *m, struct wlr_output_mode *mode,
 						 float scale) {
 	if (!m || !m->wlr_output || (!mode && scale <= 0.0f))

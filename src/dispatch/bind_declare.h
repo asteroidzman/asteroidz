@@ -52,6 +52,10 @@ int32_t set_output_position(const Arg *arg);
 int32_t set_output_vrr(const Arg *arg);
 int32_t set_output_hdr(const Arg *arg);
 int32_t set_output_icc(const Arg *arg);
+/* Declared here rather than only in action/output.h because parse_config.h is
+ * included BEFORE it and is the caller that matters: a config is the one way
+ * an overlapping layout gets in. */
+bool output_resolve_overlaps(void);
 int32_t moveresize(const Arg *arg);
 int32_t exchange_client(const Arg *arg);
 int32_t exchange_stack_client(const Arg *arg);

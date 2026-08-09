@@ -5302,6 +5302,15 @@ void reapply_monitor_rules(void) {
 
 		wlr_output_state_finish(&state);
 	}
+	/* Before updatemons, which is what hands the new geometry to everything
+	 * downstream -- there is no point publishing a layout with two outputs on
+	 * the same pixels and correcting it afterwards.
+	 *
+	 * A config is the one way an overlapping layout gets in: every runtime path
+	 * that changes a logical size goes through output_reflow, which keeps
+	 * adjacency itself. See output_resolve_overlaps for the sequence that
+	 * produced one here. */
+	output_resolve_overlaps();
 	updatemons(NULL, NULL);
 }
 

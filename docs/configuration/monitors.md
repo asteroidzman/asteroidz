@@ -78,6 +78,19 @@ claiming the same pixel is not a state anything downstream can render, and it
 shows up as the wallpaper composited twice with a seam down it, two bars
 drawing into the same strip, and blur sampling the wrong output's contents.
 
+This applies when the config is **loaded**, not only when something is resized
+at runtime — which matters most for a file you edited by hand. Setting a scale
+through the settings page moves the neighbours to match and writes their new
+`x` back, so editing that scale afterwards in the file leaves those neighbours
+at the previous scale's numbers. In the case this was found from, DP-1 went to
+`scale 1.75`, HDMI-A-1 was moved to `x 2194` to stay flush, and editing the
+scale back to `1.5` by hand made DP-1 2560 logical pixels wide again with
+HDMI-A-1 still at 2194 — 366 columns of two outputs on the same pixels. Any
+output overlapping another when the config is applied is pushed clear along X,
+in ascending `x` order, each by the smallest amount that frees it. A layout
+with no overlap is left exactly as written, including deliberate gaps, and
+nothing is rewritten in that case.
+
 ### Examples
 
 ```kdl
