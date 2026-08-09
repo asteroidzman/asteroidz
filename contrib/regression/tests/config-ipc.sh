@@ -39,9 +39,26 @@ test_config_schema_describes_types_ranges_and_enums() {
 	local s; s="$(_cfg_json "get config-schema")"
 	# A range where one exists, so a UI can bound its own control instead of
 	# discovering the clamp by being refused.
+	#
+	# Ordered, not equal to a particular number. This asserted max==200
+	# literally and broke the moment the bound was tuned, which taught nothing:
+	# what the settings window needs is that a range is PRESENT and sane, and
+	# the specific ceiling is a judgement that is allowed to change.
 	hl_assert_true "a clamped option carries min and max" \
 		"$(printf '%s' "$s" | jq -e '
-			.options[] | select(.key=="borderpx") | (.min==0 and .max==200)
+			.options[] | select(.key=="borderpx") | (.min==0 and .max>.min)
+		' >/dev/null 2>&1 && echo true || echo false)"
+
+	# ...and a ceiling a slider can actually be driven with. A range is only
+	# useful to a control if the useful values are not crushed into the first
+	# few pixels of it: borderpx allowed 200, so every border anyone would
+	# choose lived in the leftmost 5% of the track. Same for the animation
+	# durations, which allowed fifty seconds.
+	hl_assert_true "the ranges are usable, not merely present" \
+		"$(printf '%s' "$s" | jq -e '
+			([.options[] | select(.key=="borderpx") | .max] == [32])
+			and ([.options[] | select(.key=="animation_duration_move") | .max] == [3000])
+			and ([.options[] | select(.path=="gappih") | .max] == [200])
 		' >/dev/null 2>&1 && echo true || echo false)"
 	# Enum members by NAME: the field holds an int, and a UI offering "0" and "1"
 	# for a blend space is useless.

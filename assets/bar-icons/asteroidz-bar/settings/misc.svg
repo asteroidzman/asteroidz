@@ -1,0 +1,20 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<!-- Miscellaneous: three sliders.
+
+     The group is the settings that belong to no other group, so the icon has
+     to say "assorted adjustments" without claiming a subject. Three sliders at
+     different positions do that, and nothing else in this directory is a
+     slider; the nearest neighbours are a keyboard, four panes and a funnel.
+
+     Not an ellipsis, which is the obvious choice and the wrong one. Three dots
+     read as "more items follow" beside a list of groups, and this group is not
+     a continuation of the ones above it.
+
+     One filled path, solid white, so the bar's iconTint can recolour it
+     wholesale: ColorOverlay paints through the alpha channel, so the source
+     colour is discarded and only the coverage matters. A stroked outline
+     would leave the tint painting the strokes and the holes alike, which
+     reads as a blob at sidebar size. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+  <path fill="#ffffff" fill-rule="evenodd" d="M2.6 5.2h6.1v1.6H2.6zm8.9 0h9.9v1.6h-9.9zM9.2 3.2h2v5.6h-2zM2.6 11.2h9.9v1.6H2.6zm12.7 0h6.1v1.6h-6.1zM13 9.2h2v5.6h-2zM2.6 17.2h4.3v1.6H2.6zm7.1 0h11.7v1.6H9.7zM7.4 15.2h2v5.6h-2z"/>
+</svg>
