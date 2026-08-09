@@ -612,8 +612,12 @@ static const ConfigOption config_schema[] = {
 	 "", 0},
 	{"cursor_hide_timeout", "cursor_hide_timeout", "input", "cursor",
 	 "Hide after",
+	 /* 60s, not an hour. This is a slider, and a ceiling nobody would choose
+	  * puts every usable value in the first pixels of the track: at 3600 the
+	  * whole 1-30s range anyone actually wants was under 1% of it. Reported as
+	  * "impossible to set to a reasonable level". */
 	 "Seconds of inactivity before the cursor hides. 0 never hides it.",
-	 OPT_INT, offsetof(Config, cursor_hide_timeout), 0, 0, 3600, NULL, 0, "0",
+	 OPT_INT, offsetof(Config, cursor_hide_timeout), 0, 0, 60, NULL, 0, "0",
 	 0},
 	{"cursor_hide_on_keypress", "cursor_hide_on_keypress", "input", "cursor",
 	 "Hide on keypress", "Hide the cursor as soon as you start typing.",
