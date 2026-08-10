@@ -14,8 +14,8 @@
 
 set -euo pipefail
 
-ASTEROIDZ_TAG="${ASTEROIDZ_TAG:-0.22.1}"
-BAR_TAG="${BAR_TAG:-0.3.1}"
+ASTEROIDZ_TAG="${ASTEROIDZ_TAG:-0.24.0}"
+BAR_TAG="${BAR_TAG:-0.4.0}"
 # 0.20.2, not 0.20.0. asteroidz-scenefx reads wlr_surface_output.suspended, which
 # arrived after the .0 release -- and 0.20.0 otherwise looks like a perfectly good
 # match, right up to a struct-member error a hundred files into the build.
@@ -81,10 +81,19 @@ BAR_DEPS=(
 	# asteroidzbg, the wallpaper, linked into the bar's QML plugin. libjxl and
 	# libavif are what make it an HDR wallpaper renderer rather than a PNG one.
 	libcairo2-dev libjxl-dev libavif-dev
+	# The calendar's credentials live in the Secret Service.
+	libsecret-1-dev
+	# Apple dynamic wallpapers: several images in one HEIC, of which gdk-pixbuf
+	# only ever hands back the primary one.
+	libheif-dev
 )
 
 RUNTIME=(
 	xwayland
+	# The wallpaper browser watches its folder through inotifywait. Optional --
+	# without it the browser still rescans when it opens -- but it is one small
+	# package and the alternative is a browser that is quietly less immediate.
+	inotify-tools
 )
 
 TOOLS=(build-essential meson ninja-build pkgconf git ca-certificates)
@@ -116,6 +125,10 @@ else
 	note "NOT FOUND -- continuing; the bar will install but will not run."
 	note "It is not in the Ubuntu archive; add the quickshell-git PPA you use,"
 	note "then: sudo apt-get update && sudo apt-get install quickshell"
+	note ""
+	note "Whichever build you use, it must have PAM support compiled in:"
+	note "the lock screen authenticates through Quickshell.Services.Pam, and a"
+	note "quickshell without it loads the shell but cannot unlock the session."
 fi
 
 # ── wlroots 0.20 ────────────────────────────────────────────────────────────
@@ -182,7 +195,13 @@ else
 	git -C "$SRC/asteroidz-bar" checkout --quiet "$BAR_TAG"
 fi
 cd "$SRC/asteroidz-bar"
-meson setup build --wipe --prefix="$PREFIX" --buildtype=debugoptimized
+# --sysconfdir=/etc, exactly as the compositor's setup above has it. The bar
+# installs the lock screen's PAM stack to $sysconfdir/pam.d/asteroidz-bar, and
+# PAM reads /etc/pam.d and nowhere else -- with the default prefix-relative
+# sysconfdir it lands in /usr/local/etc/pam.d, where nothing will ever find it.
+# The lock screen then comes up, takes a password, and refuses it.
+meson setup build --wipe --prefix="$PREFIX" --sysconfdir=/etc \
+	--buildtype=debugoptimized
 meson compile -C build -j "$JOBS"
 sudo meson install -C build
 

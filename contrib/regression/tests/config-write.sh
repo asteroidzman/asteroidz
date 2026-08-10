@@ -64,9 +64,22 @@ test_set_config_refuses_out_of_range_rather_than_clamping() {
 		"$(printf '%s' "$r" | jq -r '.results[0].error')" "out-of-range"
 	# The bounds come back, so a UI can correct its own control instead of
 	# guessing. Clamping silently is how a panel ends up showing 9999 while the
-	# compositor runs 200.
-	hl_assert_eq "...and the bound it broke" \
-		"$(printf '%s' "$r" | jq -r '.results[0].max')" "200"
+	# compositor runs whatever the real limit is.
+	#
+	# ASKED FOR, not written down here. This assertion said "200" for as long
+	# as that was borderpx's ceiling, and when the sliders were re-clamped to
+	# something a person can actually aim -- 32 -- the test failed against a
+	# correct compositor for a value nobody had changed on purpose. The
+	# contract is that the error carries the REAL bound; the number itself is
+	# the schema's business.
+	local want_max
+	want_max="$(hl_get 'get config-schema' \
+		| jq -r '.options[] | select(.key=="borderpx") | .max')"
+	hl_assert_true "the schema states a ceiling for borderpx ($want_max)" \
+		"$([ -n "$want_max" ] && [ "$want_max" != "null" ] && [ "$want_max" -gt 0 ] \
+			&& echo true || echo false)"
+	hl_assert_eq "...and the bound it broke is that one" \
+		"$(printf '%s' "$r" | jq -r '.results[0].max')" "$want_max"
 	hl_assert_eq "the value is unchanged, not clamped" "$(_cw_val borderpx)" "$before"
 	_cw_restore
 }
