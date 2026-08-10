@@ -131,6 +131,33 @@ on a correct build against 0.57 on a broken one. And the first wallpaper put its
 detail in the centre and left the shadow band over a flat field, where a blur
 returns the field unchanged and nothing can be detected at all — the premise
 check caught it and refused to certify the scene.
+
+
+`contrib/shadow-tiled-neighbour-test.sh` is the seventh, and it is the first to
+put two windows on screen at once. Every other shadow scene here renders a
+single floating window, and a shadow that spills onto a neighbour needs a
+neighbour to spill onto. Reported as "the blended shadow currently will clip
+through and affect adjacent windows".
+
+Two tiled windows with a 26px gap and a 60px shadow, rendered with shadows on
+and off, asserting that nothing changes *inside* either window. A window's own
+shadow is already clipped out of its own box, so anything that moves there came
+from the other window's shadow being drawn over it.
+
+The first version of this measurement passed against the build that had the
+bug, and the reason is worth keeping. It averaged over each window's whole
+interior — and the fault is a 40px band along one edge of a 921px-wide window,
+so a 15-level darkening that is obvious to look at arrived as **0.11 levels**
+once spread across the rest. Narrowing the sample to the strip facing the
+neighbour put it at 4.35 before the fix and 0.003 after, with the gap between
+the windows measuring an identical 25.35 in both: the shadow is exactly as
+visible where it belongs, and gone where it is not.
+
+The scene is also the first to need `shadows_blur_background 1` and
+`blur_optimized 0` to reproduce. With the optimized path a tiled window's shadow
+blur draws the cached wallpaper rather than sampling live, so it never picks the
+neighbour up — the same fault, invisible to a test that leaves the default on.
+
 ### The schema, checked from both ends
 
 `src/config/config-schema.h` describes every settable option — type, range, enum

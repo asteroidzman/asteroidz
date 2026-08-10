@@ -525,10 +525,64 @@ static void client_draw_one_shadow(Client *c, struct wlr_scene_shadow *shadow,
 	}
 }
 
+/* Put the shadow tree where this window's shadow is allowed to be drawn, and
+ * keep it where the window is.
+ *
+ * A TILED window's shadow goes on LyrTileShadow, beneath every tiled window,
+ * so it cannot reach a neighbour's pixels. A window that is anywhere else --
+ * floating on LyrTop, maximized, fullscreen, animating out on LyrFadeOut, or
+ * laid out by the overview -- keeps its shadow inside its own tree, which is
+ * both correct (it really is above whatever is under it) and what makes it
+ * travel with the window through every reparent those paths already do.
+ *
+ * Which of the two is decided by where c->scene actually IS, not by
+ * c->isfloating: the flag and the tree disagree for a frame or two around
+ * fullscreen and overview transitions, and it is the tree that decides what
+ * gets drawn over what. */
+static void client_sync_shadow_tree(Client *c) {
+	if (!c->shadow_tree || !c->scene)
+		return;
+
+	bool tiled = c->scene->node.parent == layers[LyrTile];
+	struct wlr_scene_tree *want = tiled ? layers[LyrTileShadow] : c->scene;
+
+	if (c->shadow_tree->node.parent != want) {
+		wlr_scene_node_reparent(&c->shadow_tree->node, want);
+		/* reparent puts a node on top of its new siblings, which inside
+		 * c->scene would be over the window's own surface */
+		if (!tiled)
+			wlr_scene_node_lower_to_bottom(&c->shadow_tree->node);
+	}
+
+	if (tiled) {
+		/* c->scene sits at the window's layout position and LyrTileShadow is
+		 * at the origin, so mirroring the one onto the other is what keeps
+		 * every shadow box below in the window's own coordinates. */
+		if (c->shadow_tree->node.x != c->scene->node.x ||
+			c->shadow_tree->node.y != c->scene->node.y)
+			wlr_scene_node_set_position(&c->shadow_tree->node, c->scene->node.x,
+										c->scene->node.y);
+		/* Enabled-ness no longer comes for free from the parent: a window on
+		 * a hidden tag has its own tree disabled, and its shadow is no longer
+		 * inside it. Without this the shadows of every window on every other
+		 * tag stay on screen. */
+		if (c->shadow_tree->node.enabled != c->scene->node.enabled)
+			wlr_scene_node_set_enabled(&c->shadow_tree->node,
+									   c->scene->node.enabled);
+	} else {
+		if (c->shadow_tree->node.x != 0 || c->shadow_tree->node.y != 0)
+			wlr_scene_node_set_position(&c->shadow_tree->node, 0, 0);
+		if (!c->shadow_tree->node.enabled)
+			wlr_scene_node_set_enabled(&c->shadow_tree->node, true);
+	}
+}
+
 void client_draw_shadow(Client *c) {
 
 	if (c->iskilling || !client_surface(c)->mapped || c->isnoshadow)
 		return;
+
+	client_sync_shadow_tree(c);
 
 	bool active = config.shadows && !c->isfullscreen &&
 				  (c->isfloating || !config.shadow_only_floating);
@@ -561,7 +615,13 @@ void client_draw_shadow(Client *c) {
 			c->shadow_blur = NULL;
 		}
 	} else if (!c->shadow_blur) {
-		c->shadow_blur = wlr_scene_blur_create(c->scene, 0, 0);
+		/* Into the shadow tree, beside the shadows it belongs to -- not into
+		 * c->scene. A blur node under LyrTile would sample the neighbouring
+		 * window it overlaps and spread that window's own pixels along the
+		 * seam; on LyrTileShadow nothing tiled has been drawn yet when it
+		 * runs, so what it samples is the backdrop it is named for. */
+		c->shadow_blur = wlr_scene_blur_create(
+			c->shadow_tree ? c->shadow_tree : c->scene, 0, 0);
 		if (c->shadow_blur) {
 			wlr_scene_node_place_below(&c->shadow_blur->node, &c->shadow->node);
 		}
@@ -1282,12 +1342,12 @@ struct ivec2 clip_to_hide(Client *c, struct wlr_box *clip_box) {
 	if ((clip_box->width + bw <= 0 || clip_box->height + bw <= 0) &&
 		(ISSCROLLTILED(c) || c->animation.tagouting || c->animation.tagining)) {
 		c->is_clip_to_hide = true;
-		wlr_scene_node_set_enabled(&c->scene->node, false);
+		client_set_scene_enabled(c, false);
 	} else if (c->is_clip_to_hide && VISIBLEON(c, c->mon) &&
 			   (!c->is_monocle_hide || !is_monocle_layout(c->mon))) {
 		c->is_clip_to_hide = false;
 		c->is_monocle_hide = false;
-		wlr_scene_node_set_enabled(&c->scene->node, true);
+		client_set_scene_enabled(c, true);
 	}
 
 	return offset;
@@ -2231,7 +2291,7 @@ void client_animation_next_tick(Client *c) {
 
 		if (c->animation.tagouting) {
 			c->animation.tagouting = false;
-			wlr_scene_node_set_enabled(&c->scene->node, false);
+			client_set_scene_enabled(c, false);
 			c->animation.tagouted = true;
 			c->animation.current = c->geom;
 		}
@@ -2290,7 +2350,7 @@ void init_fadeout_client(Client *c) {
 
 	Client *fadeout_client = ecalloc(1, sizeof(*fadeout_client));
 
-	wlr_scene_node_set_enabled(&c->scene->node, true);
+	client_set_scene_enabled(c, true);
 	client_set_border_color(c, config.bordercolor);
 	if (c->overview_scene_surface) {
 		wlr_scene_node_destroy(&c->overview_scene_surface->node);
@@ -2321,7 +2381,7 @@ void init_fadeout_client(Client *c) {
 	if (!built)
 		fadeout_client->scene =
 			wlr_scene_tree_snapshot(&c->scene->node, layers[LyrFadeOut]);
-	wlr_scene_node_set_enabled(&c->scene->node, false);
+	client_set_scene_enabled(c, false);
 
 	if (!fadeout_client->scene) {
 		free(fadeout_client);
@@ -2856,7 +2916,7 @@ bool client_draw_frame(Client *c) {
 	 * the draw/clip path re-enable it) until overview exit clears the flag */
 	if (c->is_overview_hidden) {
 		if (c->scene->node.enabled)
-			wlr_scene_node_set_enabled(&c->scene->node, false);
+			client_set_scene_enabled(c, false);
 		return false;
 	}
 

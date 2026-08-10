@@ -690,7 +690,7 @@ void overview_arrange_main(Monitor *m, bool instant) {
 			c->is_monocle_hide = false;
 			c->is_clip_to_hide = false;
 			if (c->scene && !c->scene->node.enabled)
-				wlr_scene_node_set_enabled(&c->scene->node, true);
+				client_set_scene_enabled(c, true);
 			if (c->scene_surface && !c->scene_surface->node.enabled)
 				wlr_scene_node_set_enabled(&c->scene_surface->node, true);
 			int32_t col = i % cols, row = i / cols;
@@ -920,7 +920,7 @@ void overview_arrange_main(Monitor *m, bool instant) {
 			 * re-runs only this, not the full arrange that resets bars) */
 			if (c->scene && !c->is_overview_hidden) {
 				c->is_overview_hidden = true;
-				wlr_scene_node_set_enabled(&c->scene->node, false);
+				client_set_scene_enabled(c, false);
 			}
 			if (c->ov_icon)
 				wlr_scene_node_set_enabled(&c->ov_icon->scene_buffer->node,
@@ -947,7 +947,7 @@ void overview_arrange_main(Monitor *m, bool instant) {
 		c->is_monocle_hide = false;
 		c->is_clip_to_hide = false;
 		if (c->scene && !c->scene->node.enabled)
-			wlr_scene_node_set_enabled(&c->scene->node, true);
+			client_set_scene_enabled(c, true);
 		if (c->scene_surface && !c->scene_surface->node.enabled)
 			wlr_scene_node_set_enabled(&c->scene_surface->node, true);
 		int32_t bx, by, bw, bh;
@@ -1409,7 +1409,7 @@ void overview_tags(Monitor *m) {
 			 * previewed tag (whose live nodes fill the main area below) */
 			if (!current && c->scene && !c->is_overview_hidden) {
 				c->is_overview_hidden = true;
-				wlr_scene_node_set_enabled(&c->scene->node, false);
+				client_set_scene_enabled(c, false);
 			}
 			float gx = c->overview_backup_geom.x, gy = c->overview_backup_geom.y;
 			float gw = fmaxf(1.0f, (float)c->overview_backup_geom.width);

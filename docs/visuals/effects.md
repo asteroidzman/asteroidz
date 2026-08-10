@@ -125,6 +125,38 @@ and the blur still belongs there.
 Every shadow scene in the suite used opaque windows, so none of them could see
 any of this; `contrib/shadow-hole-visible-test.sh` is the one that can.
 
+**A tiled window's shadow is below every tiled window, not just its own.** A
+shadow used to sit at the bottom of its own client's scene tree, which is only
+"below" that one window — and a shadow is the window's box plus its spread, so
+on a tiled layout it reaches into whatever is beside it. That neighbour is a
+sibling tree under `LyrTile`, not something the shadow is above, so whichever
+window was raised last had its shadow painted over the other one: a dark band
+along the inner edge that moved from window to window as focus changed, and a
+backdrop blur that sampled the neighbour's own pixels and smeared them along
+the seam.
+
+The fix is stacking, not arithmetic. Every tiled window's shadow tree goes on
+`LyrTileShadow`, a layer between the decorations and the tiles, so no shadow can
+reach another window's pixels whatever order the windows are in. What survives
+is the gap between tiles and the outer edge of the layout, which is where there
+is actually something to cast onto. The backdrop blur comes out right for free:
+it now samples a frame with no tiled window drawn into it yet, which is what
+"the backdrop" means.
+
+A **floating** window keeps its shadow inside its own tree, where it belongs —
+it really is above the tiles, and its shadow really does fall on them. Which of
+the two applies is decided by where `c->scene` currently is rather than by
+`c->isfloating`, because the flag and the tree disagree for a frame or two
+around fullscreen and overview transitions, and it is the tree that decides
+what gets drawn over what.
+
+The cost of a sibling tree is that visibility no longer arrives through the
+parent: every place that hides a window must hide its shadow too, or a tag
+switch leaves the shadows of the tag you left painted on the wallpaper. There
+were seventeen such places, so they go through one `client_set_scene_enabled()`
+rather than seventeen edits that have to keep agreeing.
+`contrib/shadow-tiled-neighbour-test.sh` covers it.
+
 That stretch is only ever a base coat. Within the blur's REACH of each edge —
 the only depth that can influence a pixel outside the hole at all — the fill is
 a **reflection** of the real content across that edge instead. Mirroring is the

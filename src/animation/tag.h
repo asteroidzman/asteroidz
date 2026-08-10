@@ -94,7 +94,7 @@ void set_arrange_visible(Monitor *m, Client *c, bool want_animation) {
 						(!c->is_monocle_hide || !is_monocle_layout(c->mon)))) {
 		c->is_clip_to_hide = false;
 		c->is_monocle_hide = false;
-		wlr_scene_node_set_enabled(&c->scene->node, true);
+		client_set_scene_enabled(c, true);
 		wlr_scene_node_set_enabled(&c->scene_surface->node, true);
 	}
 
@@ -231,7 +231,7 @@ void set_arrange_hidden(Monitor *m, Client *c, bool want_animation) {
 	 * "fixed" it because that re-arranged it. */
 	if (c->isfullscreen || c->isnoanimation) {
 		c->animation.running = false;
-		wlr_scene_node_set_enabled(&c->scene->node, false);
+		client_set_scene_enabled(c, false);
 		c->animainit_geom = c->current = c->pending = c->animation.current =
 			c->geom;
 	} else if (m->special_transitioning && c->scene->node.enabled && want_animation &&
@@ -247,7 +247,7 @@ void set_arrange_hidden(Monitor *m, Client *c, bool want_animation) {
 		set_tagout_animation(m, c);
 	} else {
 		c->animation.running = false;
-		wlr_scene_node_set_enabled(&c->scene->node, false);
+		client_set_scene_enabled(c, false);
 		c->animainit_geom = c->current = c->pending = c->animation.current =
 			c->geom;
 	}

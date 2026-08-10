@@ -38,7 +38,7 @@ void monocle_set_focus(Client *c, bool focused) {
 		return;
 
 	c->is_monocle_hide = !focused;
-	wlr_scene_node_set_enabled(&c->scene->node, focused);
+	client_set_scene_enabled(c, focused);
 
 	if (!focused) {
 		c->animation.current = c->animainit_geom = c->animation.initial =

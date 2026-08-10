@@ -227,6 +227,30 @@ enum {
 	LyrBlur,
 	LyrBottom,
 	LyrDecorate,
+	/* Every TILED window's shadow, below every tiled window.
+	 *
+	 * A shadow used to live at the bottom of its own client's tree, which
+	 * is only "below" that one window -- and a shadow is the window's box
+	 * plus its spread, so it reaches into whatever is beside it. Between
+	 * two tiles that neighbour is another window, drawn from a sibling tree
+	 * under LyrTile, so whichever window was raised last had its shadow
+	 * painted over the other one: the dark edge moved from window to window
+	 * as focus changed, and the backdrop blur sampled the neighbour's own
+	 * pixels and smeared them along the seam.
+	 *
+	 * The fix is stacking, not arithmetic. With every tiled shadow beneath
+	 * every tiled window, no shadow can reach another window's pixels no
+	 * matter what order the windows are in, and what survives is what
+	 * should: the gaps between tiles, and the outside edge of the layout
+	 * where the wallpaper actually is. It also makes the backdrop blur
+	 * correct for free -- it now samples a frame with no tiled window drawn
+	 * into it yet, which is what "the backdrop" means.
+	 *
+	 * FLOATING windows keep their shadow inside their own tree, where it
+	 * belongs: a floating window really is above the tiles, and its shadow
+	 * really does fall on them. client_sync_shadow_tree() is what moves a
+	 * window's shadow between the two as it floats and tiles. */
+	LyrTileShadow,
 	LyrTile,
 	LyrMaximize,
 	LyrTop,
@@ -468,6 +492,17 @@ struct Client {
 	 * Created/destroyed on demand like blur_node, not just enabled/disabled
 	 * like shadow/contact_shadow -- it has the same real GPU cost. */
 	struct wlr_scene_blur *shadow_blur;
+	/* Holds shadow, contact_shadow and shadow_blur -- all three together,
+	 * so moving a window's shadows between LyrTileShadow and its own tree
+	 * is one reparent rather than three, and their order among themselves
+	 * survives the move.
+	 *
+	 * Positioned to match c->scene while it sits on LyrTileShadow, and at
+	 * the origin while it sits inside c->scene. That is what lets the three
+	 * nodes keep the SAME local coordinates in both cases: every box in
+	 * client_draw_one_shadow() is relative to the window's own origin, and
+	 * none of that arithmetic has to know where the tree currently lives. */
+	struct wlr_scene_tree *shadow_tree;
 	struct wlr_scene_blur *blur_node;
 	struct wlr_scene_tree *scene_surface;
 	struct wlr_scene_tree *overview_scene_surface;
@@ -1344,6 +1379,29 @@ static struct wlr_backend *backend;
 static struct wlr_backend *headless_backend;
 static struct wlr_scene *scene;
 static struct wlr_scene_tree *layers[NUM_LAYERS];
+
+/* Show or hide a client -- its shadow included.
+ *
+ * While a window is TILED its shadow tree is a sibling of c->scene on
+ * LyrTileShadow, not a child of it, so enabling and disabling no longer reach
+ * the shadow through the parent. Every place that hides a window has to hide
+ * the shadow with it, or switching tags leaves the shadows of the tag you left
+ * painted on the wallpaper -- and there are seventeen such places, in tag
+ * switching, monocle, the overview and the animation ticks.
+ *
+ * One function rather than seventeen edits that have to keep agreeing: the
+ * pairing is the invariant, and the next place that hides a window should not
+ * have to know why.
+ *
+ * A FLOATING window's shadow is inside c->scene and inherits as it always did,
+ * which is what the parent check is for. And a window whose tree does not
+ * exist yet -- this runs once during map, before the shadow is created -- is
+ * simply not a case: the creation code takes its initial state from c->scene. */
+static inline void client_set_scene_enabled(Client *c, bool enabled) {
+	wlr_scene_node_set_enabled(&c->scene->node, enabled);
+	if (c->shadow_tree && c->shadow_tree->node.parent != c->scene)
+		wlr_scene_node_set_enabled(&c->shadow_tree->node, enabled);
+}
 static struct wlr_renderer *drw;
 static struct wlr_allocator *alloc;
 static struct wlr_compositor *compositor;
@@ -1882,8 +1940,8 @@ void client_replace(Client *c, Client *w) {
 		w->foreign_toplevel = NULL;
 	}
 
-	wlr_scene_node_set_enabled(&w->scene->node, false);
-	wlr_scene_node_set_enabled(&c->scene->node, true);
+	client_set_scene_enabled(w, false);
+	client_set_scene_enabled(c, true);
 	wlr_scene_node_set_enabled(&c->scene_surface->node, true);
 
 	if (!c->foreign_toplevel && c->mon)
@@ -6471,6 +6529,7 @@ void init_client_properties(Client *c) {
 	c->ov_clip_active = false;
 	c->blur_node = NULL;
 	c->shadow_blur = NULL;
+	c->shadow_tree = NULL;
 	c->overview_scene_surface = NULL;
 	c->drop_direction = UNDIR;
 	c->enable_drop_area_draw = false;
@@ -6662,8 +6721,16 @@ mapnotify(struct wl_listener *listener, void *data) {
 								   config.border_radius_location_default));
 	wlr_scene_node_set_enabled(&c->border->node, true);
 
+	/* On LyrTileShadow to begin with -- a window is tiled until something
+	 * says otherwise, and client_sync_shadow_tree() moves it into c->scene
+	 * on the first draw if it turns out to be floating. */
+	c->shadow_tree = wlr_scene_tree_create(layers[LyrTileShadow]);
+	wlr_scene_node_set_position(&c->shadow_tree->node, c->scene->node.x,
+								c->scene->node.y);
+	wlr_scene_node_set_enabled(&c->shadow_tree->node, c->scene->node.enabled);
+
 	c->shadow =
-		wlr_scene_shadow_create(c->scene, 0, 0, config.border_radius,
+		wlr_scene_shadow_create(c->shadow_tree, 0, 0, config.border_radius,
 								config.shadows_blur, config.shadowscolor);
 
 	wlr_scene_node_lower_to_bottom(&c->shadow->node);
@@ -6671,7 +6738,7 @@ mapnotify(struct wl_listener *listener, void *data) {
 
 	/* tight dark contact layer above the soft ambient shadow */
 	c->contact_shadow = wlr_scene_shadow_create(
-		c->scene, 0, 0, config.border_radius, config.shadows_contact_blur,
+		c->shadow_tree, 0, 0, config.border_radius, config.shadows_contact_blur,
 		config.shadowscolor_contact);
 	wlr_scene_node_lower_to_bottom(&c->contact_shadow->node);
 	wlr_scene_node_place_above(&c->contact_shadow->node, &c->shadow->node);
@@ -9188,7 +9255,7 @@ void overview_restore(Client *c, const Arg *arg) {
 	 * the normal visibility logic (clip_to_hide / tag show) */
 	if (c->is_overview_hidden) {
 		c->is_overview_hidden = false;
-		wlr_scene_node_set_enabled(&c->scene->node, true);
+		client_set_scene_enabled(c, true);
 	}
 	if (c->ov_icon)
 		wlr_scene_node_set_enabled(&c->ov_icon->scene_buffer->node, false);
@@ -9676,6 +9743,20 @@ void unmapnotify(struct wl_listener *listener, void *data) {
 	if (c->ov_snap_buf) {
 		wlr_buffer_unlock(c->ov_snap_buf);
 		c->ov_snap_buf = NULL;
+	}
+
+	/* Before c->scene, and unconditionally: the shadow tree is a sibling of
+	 * the window's tree rather than a child of it while the window is tiled,
+	 * so destroying c->scene does not take it with it. Missing this leaves a
+	 * window's shadow on screen after the window is gone. Destroying the tree
+	 * destroys shadow, contact_shadow and shadow_blur with it -- the pointers
+	 * are cleared so nothing between here and free(c) can follow them. */
+	if (c->shadow_tree) {
+		wlr_scene_node_destroy(&c->shadow_tree->node);
+		c->shadow_tree = NULL;
+		c->shadow = NULL;
+		c->contact_shadow = NULL;
+		c->shadow_blur = NULL;
 	}
 
 	wlr_scene_node_destroy(&c->scene->node);
