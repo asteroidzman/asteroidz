@@ -109,6 +109,12 @@ struct wlr_scene {
 
 	// May be NULL
 	struct wlr_linux_dmabuf_v1 *linux_dmabuf_v1;
+	/* Compositor-owned DMA-BUF capabilities; see
+	 * wlr_scene_set_linux_dmabuf_capabilities(). `caps_set` distinguishes
+	 * "not supplied" from "supplied and empty". */
+	bool dmabuf_caps_set;
+	dev_t dmabuf_main_device;
+	struct wlr_drm_format_set dmabuf_composition_formats;
 	struct wlr_gamma_control_manager_v1 *gamma_control_manager_v1;
 	struct wlr_color_manager_v1 *color_manager_v1;
 
@@ -535,6 +541,28 @@ void wlr_scene_set_blur_saturation(struct wlr_scene *scene, float saturation);
  */
 void wlr_scene_set_linux_dmabuf_v1(struct wlr_scene *scene,
 	struct wlr_linux_dmabuf_v1 *linux_dmabuf_v1);
+
+/**
+ * Supply COMPOSITOR-OWNED DMA-BUF capabilities for per-surface feedback.
+ *
+ * By default the scene builds feedback with
+ * wlr_linux_dmabuf_feedback_v1_init_with_options(), whose only capability
+ * source is a struct wlr_renderer. That is correct when the compositor's
+ * renderer is the thing importing client buffers, and wrong when it is not --
+ * a compositor with its own engine ends up telling clients what some other
+ * renderer can consume.
+ *
+ * When capabilities are set here, the scene uses them instead of the
+ * renderer's: `main_device` becomes the feedback's main device, and
+ * `composition_formats` becomes the composition tranche and the set that
+ * scanout tranches are intersected against. Pass NULL formats to go back to
+ * the renderer-derived behaviour.
+ *
+ * The format set is COPIED. Deliberately generic: this says "the compositor
+ * knows its capabilities", not anything about which engine it uses.
+ */
+void wlr_scene_set_linux_dmabuf_capabilities(struct wlr_scene *scene,
+	dev_t main_device, const struct wlr_drm_format_set *composition_formats);
 
 /**
  * Handles gamma_control_v1 for all outputs in the scene.

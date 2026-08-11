@@ -12,6 +12,7 @@
 #include <wlr/types/wlr_damage_ring.h>
 #include <wlr/types/wlr_gamma_control_v1.h>
 #include <wlr/types/wlr_linux_dmabuf_v1.h>
+#include "linux-dmabuf-v1-protocol.h"
 #include <wlr/types/wlr_presentation_time.h>
 #include <wlr/util/log.h>
 #include <wlr/util/region.h>
@@ -2784,6 +2785,34 @@ void wlr_scene_set_linux_dmabuf_v1(struct wlr_scene *scene,
 	wl_signal_add(&linux_dmabuf_v1->events.destroy, &scene->linux_dmabuf_v1_destroy);
 }
 
+void wlr_scene_set_linux_dmabuf_capabilities(struct wlr_scene *scene,
+		dev_t main_device, const struct wlr_drm_format_set *composition_formats) {
+	if (scene->dmabuf_caps_set) {
+		wlr_drm_format_set_finish(&scene->dmabuf_composition_formats);
+		scene->dmabuf_composition_formats = (struct wlr_drm_format_set){0};
+		scene->dmabuf_caps_set = false;
+	}
+	if (composition_formats == NULL) {
+		return;
+	}
+	// Copied, not borrowed: feedback is rebuilt whenever a surface changes
+	// output, long after the caller's set may have gone.
+	for (size_t i = 0; i < composition_formats->len; i++) {
+		const struct wlr_drm_format *f = &composition_formats->formats[i];
+		for (size_t j = 0; j < f->len; j++) {
+			if (!wlr_drm_format_set_add(&scene->dmabuf_composition_formats,
+					f->format, f->modifiers[j])) {
+				wlr_log(WLR_ERROR, "failed to copy compositor DMA-BUF capabilities");
+				wlr_drm_format_set_finish(&scene->dmabuf_composition_formats);
+				scene->dmabuf_composition_formats = (struct wlr_drm_format_set){0};
+				return;
+			}
+		}
+	}
+	scene->dmabuf_main_device = main_device;
+	scene->dmabuf_caps_set = true;
+}
+
 static void scene_handle_gamma_control_manager_v1_set_gamma(struct wl_listener *listener,
 		void *data) {
 	const struct wlr_gamma_control_manager_v1_set_gamma_event *event = data;
@@ -3213,6 +3242,65 @@ static bool construct_render_list_iterator(struct wlr_scene_node *node,
 	return false;
 }
 
+// Feedback from compositor-supplied capabilities. Mirrors the structure of
+// wlr_linux_dmabuf_feedback_v1_init_with_options() -- scanout tranche first if
+// the buffer is a scanout candidate, then the composition tranche -- but takes
+// every capability from the compositor instead of from a struct wlr_renderer.
+static bool scene_build_compositor_feedback(const struct wlr_scene *scene,
+		const struct wlr_linux_dmabuf_feedback_v1_init_options *options,
+		struct wlr_linux_dmabuf_feedback_v1 *feedback) {
+	*feedback = (struct wlr_linux_dmabuf_feedback_v1){0};
+	feedback->main_device = scene->dmabuf_main_device;
+
+	if (options->scanout_primary_output != NULL) {
+		int backend_drm_fd =
+			wlr_backend_get_drm_fd(options->scanout_primary_output->backend);
+		const struct wlr_drm_format_set *scanout_formats =
+			wlr_output_get_primary_formats(options->scanout_primary_output,
+				WLR_BUFFER_CAP_DMABUF);
+		struct stat st;
+		if (backend_drm_fd >= 0 && scanout_formats != NULL &&
+				fstat(backend_drm_fd, &st) == 0) {
+			struct wlr_linux_dmabuf_feedback_v1_tranche *tranche =
+				wlr_linux_dmabuf_feedback_add_tranche(feedback);
+			if (tranche == NULL) {
+				goto error;
+			}
+			tranche->target_device = st.st_rdev;
+			tranche->flags = ZWP_LINUX_DMABUF_FEEDBACK_V1_TRANCHE_FLAGS_SCANOUT;
+			// advertised_scanout = compositor-importable AND KMS-scannable.
+			// Advertising either alone would name an impossible intersection.
+			if (!wlr_drm_format_set_intersect(&tranche->formats,
+					scanout_formats, &scene->dmabuf_composition_formats)) {
+				goto error;
+			}
+		}
+	}
+
+	struct wlr_linux_dmabuf_feedback_v1_tranche *tranche =
+		wlr_linux_dmabuf_feedback_add_tranche(feedback);
+	if (tranche == NULL) {
+		goto error;
+	}
+	tranche->target_device = scene->dmabuf_main_device;
+	tranche->flags = 0;
+	for (size_t i = 0; i < scene->dmabuf_composition_formats.len; i++) {
+		const struct wlr_drm_format *f =
+			&scene->dmabuf_composition_formats.formats[i];
+		for (size_t j = 0; j < f->len; j++) {
+			if (!wlr_drm_format_set_add(&tranche->formats, f->format,
+					f->modifiers[j])) {
+				goto error;
+			}
+		}
+	}
+	return true;
+
+error:
+	wlr_linux_dmabuf_feedback_v1_finish(feedback);
+	return false;
+}
+
 static void scene_buffer_send_dmabuf_feedback(const struct wlr_scene *scene,
 		struct wlr_scene_buffer *scene_buffer,
 		const struct wlr_linux_dmabuf_feedback_v1_init_options *options) {
@@ -3234,7 +3322,16 @@ static void scene_buffer_send_dmabuf_feedback(const struct wlr_scene *scene,
 	scene_buffer->prev_feedback_options = *options;
 
 	struct wlr_linux_dmabuf_feedback_v1 feedback = {0};
-	if (!wlr_linux_dmabuf_feedback_v1_init_with_options(&feedback, options)) {
+	if (scene->dmabuf_caps_set) {
+		// The compositor told us what it can consume, so wlroots' renderer
+		// query is not consulted at all -- that is the entire point of the
+		// hook. Scanout tranches are still the OUTPUT's business and are
+		// intersected against the compositor's set, because a buffer must be
+		// both scannable-out and importable to be worth recommending.
+		if (!scene_build_compositor_feedback(scene, options, &feedback)) {
+			return;
+		}
+	} else if (!wlr_linux_dmabuf_feedback_v1_init_with_options(&feedback, options)) {
 		return;
 	}
 

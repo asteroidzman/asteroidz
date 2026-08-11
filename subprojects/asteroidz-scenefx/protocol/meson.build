@@ -16,6 +16,12 @@ wayland_scanner = find_program(
 
 protocols = {
 	'xdg-shell': wl_protocol_dir / 'stable/xdg-shell/xdg-shell.xml',
+	# For ZWP_LINUX_DMABUF_FEEDBACK_V1_TRANCHE_FLAGS_SCANOUT, used when the
+	# scene builds feedback from compositor-supplied capabilities. wlroots
+	# generates this header too but does not install it, and the alternative
+	# -- hardcoding the flag's numeric value -- is a constant that would go
+	# unnoticed if the protocol ever added another.
+	'linux-dmabuf-v1': wl_protocol_dir / 'stable/linux-dmabuf/linux-dmabuf-v1.xml',
 }
 
 protocols_code = {}

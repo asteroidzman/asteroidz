@@ -88,6 +88,8 @@ static void usage(void) {
 	printf("  get all-monitors                         List all monitors\n");
 	printf("  get avk-stats                            Native Vulkan renderer "
 		   "counters\n");
+	printf("  get dmabuf-feedback                      DMA-BUF capabilities "
+		   "advertised to clients, and the AVK/KMS sets they come from\n");
 	printf("  get all-tags                             List all tags (all "
 		   "monitors)\n");
 	printf(

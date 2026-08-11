@@ -1777,6 +1777,7 @@ static uint64_t az_pointer_notify_internal;
  * tearing path is one of az_output_build_frame()'s four callers. */
 #ifdef AZ_HAVE_VULKAN
 #include "render/az_avk.h"
+#include "render/az_dmabuf_caps.h"
 #endif
 #include "render/az_output.h"
 
@@ -8984,9 +8985,10 @@ void setup(void) {
 	wlr_renderer_init_wl_shm(drw, dpy);
 
 	if (wlr_renderer_get_texture_formats(drw, WLR_BUFFER_CAP_DMABUF)) {
+		/* wl_drm is the legacy, pre-feedback interface and is renderer-shaped
+		 * by definition; it stays with drw. linux-dmabuf is created further
+		 * down, once it is known which engine will be importing. */
 		wlr_drm_create(dpy, drw);
-		wlr_scene_set_linux_dmabuf_v1(
-			scene, wlr_linux_dmabuf_v1_create_with_renderer(dpy, 5, drw));
 	}
 
 	if (config.syncobj_enable && (drm_fd = wlr_renderer_get_drm_fd(drw)) >= 0 &&
@@ -9038,6 +9040,39 @@ void setup(void) {
 		die("ASTEROIDZ_RENDERER must be 'avk' or 'wlr'");
 	} else {
 		wlr_log(WLR_INFO, "Asteroidz rendering backend: SceneFX on wlroots");
+	}
+
+	/*
+	 * linux-dmabuf, built AFTER the engine is chosen, because what a client
+	 * should allocate depends on who is going to import it.
+	 *
+	 * In AVK mode the source of truth is avk_format_table -- probed with
+	 * vkGetPhysicalDeviceImageFormatProperties2, not inferred -- and the main
+	 * device is AVK's own DRM node. In wlr mode nothing changes: the same
+	 * wlr_linux_dmabuf_v1_create_with_renderer() as before, so the recovery
+	 * path neither gains a dependency on AVK nor needs it to have started.
+	 *
+	 * See src/render/az_dmabuf_caps.h for why this moved.
+	 */
+	if (wlr_renderer_get_texture_formats(drw, WLR_BUFFER_CAP_DMABUF)) {
+		struct wlr_linux_dmabuf_v1 *linux_dmabuf = NULL;
+#ifdef AZ_HAVE_VULKAN
+		if (az_renderer == AZ_RENDERER_AVK && !az_dmabuf_break_use_gles()) {
+			linux_dmabuf = az_dmabuf_create_from_avk(dpy);
+			if (linux_dmabuf == NULL) {
+				die("AVK is compositing but could not describe its own "
+					"DMA-BUF capabilities; advertising the compatibility "
+					"renderer's instead would tell clients to allocate "
+					"buffers AVK may not be able to import");
+			}
+		}
+#endif
+		if (linux_dmabuf == NULL) {
+			linux_dmabuf =
+				wlr_linux_dmabuf_v1_create_with_renderer(dpy, 5, drw);
+			wlr_log(WLR_INFO, "dmabuf: feedback source: wlroots renderer");
+		}
+		wlr_scene_set_linux_dmabuf_v1(scene, linux_dmabuf);
 	}
 
 	/* This creates some hands-off wlroots interfaces. The compositor is

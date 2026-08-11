@@ -672,6 +672,13 @@ static void handle_command(int client_fd, const char *cmd_raw) {
 		cJSON_AddStringToObject(resp, "backend", "scenefx");
 		cJSON_AddBoolToObject(resp, "active", false);
 #endif
+	} else if (strcmp(cmd, "get dmabuf-feedback") == 0) {
+#ifdef AZ_HAVE_VULKAN
+		resp = az_dmabuf_feedback_json();
+#else
+		resp = cJSON_CreateObject();
+		cJSON_AddStringToObject(resp, "source", "wlr_renderer");
+#endif
 	} else if (strcmp(cmd, "get all-tags") == 0) {
 		resp = build_all_tags_response();
 	} else if (strcmp(cmd, "get bar-config") == 0) {
