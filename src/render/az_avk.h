@@ -308,6 +308,21 @@ static bool az_avk_env_flag(const char *name) {
 struct az_avk_buffer {
 	struct wlr_addon addon;
 	struct wl_list link;      /* az_avk.buffers */
+	/*
+	 * The pool this buffer belongs to, if a surface has committed it.
+	 *
+	 * A client is entitled to rotate several wl_buffers behind one surface,
+	 * and the damage it posts is defined against the PREVIOUS SURFACE
+	 * CONTENT -- not against the previous content of the buffer being
+	 * committed. Those are the same thing only while a client keeps reusing
+	 * one buffer. Rotate two, and the damage at commit N understates what
+	 * differs from the copy AVK holds of the buffer last seen at commit N-2.
+	 *
+	 * So a commit's damage is owed to every buffer in the surface's pool, not
+	 * just the one carrying it. Membership is what makes "every buffer" a
+	 * question this file can answer.
+	 */
+	struct wl_list pool_link;  /* az_avk_surface.pool */
 	struct wlr_buffer *buffer;
 	struct avk_image *image;
 
@@ -405,6 +420,13 @@ static void az_avk_buffer_destroy(struct az_avk_buffer *entry) {
 				avk_device_timeline_value(avk.device) + 1, avk_upload_retire,
 				up);
 		}
+	}
+	/* Out of its surface's pool before the memory goes: the list outlives the
+	 * buffer, and a stale link is a use-after-free the next commit would walk
+	 * straight into. */
+	if (!wl_list_empty(&entry->pool_link)) {
+		wl_list_remove(&entry->pool_link);
+		wl_list_init(&entry->pool_link);
 	}
 	pixman_region32_fini(&entry->pending_damage);
 	wlr_addon_finish(&entry->addon);
@@ -754,6 +776,9 @@ static struct avk_image *az_avk_image_for_buffer(struct wlr_buffer *buffer) {
 		return NULL;
 	}
 	entry->buffer = buffer;
+	/* Empty means "in no pool"; az_avk_pool_add() and the destroy path both
+	 * rely on being able to ask. */
+	wl_list_init(&entry->pool_link);
 	pixman_region32_init(&entry->pending_damage);
 	/* Nothing is on the GPU yet, so the first upload is necessarily whole. */
 	entry->pending_full = true;
@@ -2184,7 +2209,53 @@ struct az_avk_surface {
 	struct wlr_surface *surface;
 	struct wl_listener commit;
 	struct wl_listener destroy;
+	/* Every buffer this surface has committed and that AVK still caches an
+	 * image for. See az_avk_buffer.pool_link for why the list has to exist. */
+	struct wl_list pool;      /* az_avk_buffer.pool_link */
 };
+
+/*
+ * Bring `entry` into `as`'s pool, moving it out of any pool it was in.
+ *
+ * A buffer normally belongs to one surface for its whole life, but nothing in
+ * the protocol requires that, and a buffer sitting in two pools would be
+ * corrupt in a way that only shows up much later.
+ */
+static void az_avk_pool_add(struct az_avk_surface *as,
+		struct az_avk_buffer *entry) {
+	if (!wl_list_empty(&entry->pool_link)) {
+		if (entry->pool_link.next == &as->pool
+				|| entry->pool_link.prev == &as->pool) {
+			return;   /* already ours */
+		}
+		wl_list_remove(&entry->pool_link);
+		wl_list_init(&entry->pool_link);
+	}
+	wl_list_insert(&as->pool, &entry->pool_link);
+}
+
+/*
+ * Give a commit's damage to every buffer in the pool.
+ *
+ * The committed buffer needs it because its pixels just changed. The others
+ * need it because their cached images are now one commit further out of date,
+ * and the next time one of them is committed the client will only report what
+ * changed since THAT commit -- never the difference from the copy AVK holds.
+ *
+ * Each entry clears its own pending_damage when it uploads, so a buffer that
+ * is committed every frame carries one frame's damage, and one that comes
+ * round every fourth frame carries four frames' worth. That is precisely the
+ * buffer-age accumulation the source side was missing.
+ */
+static void az_avk_pool_note_damage(struct az_avk_surface *as,
+		const pixman_region32_t *damage) {
+	struct az_avk_buffer *entry;
+	wl_list_for_each(entry, &as->pool, pool_link) {
+		if (entry->is_shm) {
+			az_avk_note_source_damage(entry, damage);
+		}
+	}
+}
 
 static void az_avk_surface_commit(struct wl_listener *listener, void *data) {
 	struct az_avk_surface *as = wl_container_of(listener, as, commit);
@@ -2210,6 +2281,7 @@ static void az_avk_surface_commit(struct wl_listener *listener, void *data) {
 		 * putting this in and a terminal freezes on whatever it drew first.
 		 */
 		struct az_avk_buffer *entry = wl_container_of(addon, entry, addon);
+		az_avk_pool_add(as, entry);
 		if (entry->is_shm) {
 			entry->content_generation++;
 			entry->stat_generations++;
@@ -2219,8 +2291,17 @@ static void az_avk_surface_commit(struct wl_listener *listener, void *data) {
 			 * has surface-coordinate damage folded through the surface's
 			 * scale, transform and viewport -- see surface_update_damage(),
 			 * which runs before this signal is emitted. Recomputing any of
-			 * that here would be a second implementation to keep in step. */
-			az_avk_note_source_damage(entry, &as->surface->buffer_damage);
+			 * that here would be a second implementation to keep in step.
+			 *
+			 * To the whole pool, not to this buffer alone: the damage is
+			 * stated against the previous SURFACE content, so every buffer
+			 * behind this surface is owed it. Giving it only to the committed
+			 * buffer is correct exactly while a client reuses one buffer, and
+			 * silently wrong the moment it rotates two -- which is what every
+			 * Qt/KDE application does, and what made them flicker on their
+			 * own recently-changed pixels while a single-buffer test client
+			 * passed. */
+			az_avk_pool_note_damage(as, &as->surface->buffer_damage);
 		}
 		return;
 	}
@@ -2230,6 +2311,7 @@ static void az_avk_surface_commit(struct wl_listener *listener, void *data) {
 		if (addon != NULL) {
 			struct az_avk_buffer *entry = wl_container_of(addon, entry, addon);
 			entry->taken_at_commit = true;
+			az_avk_pool_add(as, entry);
 			if (entry->is_shm) {
 				avk.shm_commits++;
 			}
@@ -2283,6 +2365,17 @@ static void az_avk_surface_destroy(struct wl_listener *listener, void *data) {
 	struct az_avk_surface *as = wl_container_of(listener, as, destroy);
 	wl_list_remove(&as->commit.link);
 	wl_list_remove(&as->destroy.link);
+	/*
+	 * Empty the pool before the head goes away. Buffers outlive the surface
+	 * that committed them -- a client can destroy a surface and keep its
+	 * wl_buffers -- and an entry still linked here would hold a pointer into
+	 * freed memory until its own destroy walked it.
+	 */
+	struct az_avk_buffer *entry, *tmp;
+	wl_list_for_each_safe(entry, tmp, &as->pool, pool_link) {
+		wl_list_remove(&entry->pool_link);
+		wl_list_init(&entry->pool_link);
+	}
 	free(as);
 }
 
@@ -2296,6 +2389,7 @@ static void az_avk_new_surface(struct wl_listener *listener, void *data) {
 		return;
 	}
 	as->surface = surface;
+	wl_list_init(&as->pool);
 	as->commit.notify = az_avk_surface_commit;
 	wl_signal_add(&surface->events.commit, &as->commit);
 	as->destroy.notify = az_avk_surface_destroy;
