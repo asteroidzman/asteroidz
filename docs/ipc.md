@@ -35,6 +35,7 @@ description: Control asteroidz programmatically using amsg.
 | `get tags <mon>` | Returns a JSON object containing the status of all tags on a monitor. |
 | `get all-clients` | Returns a JSON array of all active clients. |
 | `get all-monitors` | Returns a JSON array of all connected monitors. |
+| `get avk-stats` | Returns the native Vulkan engine's live counters (see below). |
 | `get all-tags` | Returns a JSON object containing the status of all tags. |
 | `get last_open_surface [<mon>]` | Returns the last focused surface name for a monitor,if the mon not set, it will get current monitor. |
 | `get bar-config` | Returns the resolved theme -- palette, font, border and corner metrics -- for an out-of-process bar. |
@@ -385,6 +386,37 @@ Subscribes the client to real-time updates. When the state changes, the server p
 * `watch focused-client`
 * `watch client <id>`
 * `watch tags <mon_name>`
+### `get avk-stats`
+
+Live counters for the AVK renderer (`ASTEROIDZ_RENDERER=avk`). Returns
+`{"backend":"scenefx","active":false}` when AVK is not the renderer.
+
+```bash
+amsg get avk-stats | jq
+amsg dispatch reset_avk_stats     # zero the counters without restarting
+```
+
+The reset exists because benchmarking a workload should not require restarting
+the compositor, which destroys the workload. It zeroes accumulating counters
+only; `client_images_cached` and `output_targets_in_flight` describe the
+present rather than an interval and are left alone.
+
+Fields worth knowing:
+
+| field | meaning |
+|---|---|
+| `wl_compositor_has_renderer` | false in AVK mode — wlroots uploads no client buffers |
+| `dmabuf_zero_copy` / `dmabuf_implicit_fallback` | imports that cost nothing, versus imports that cost a copy |
+| `implicit_copy_bytes` / `implicit_copy_us` | what that copy actually costs |
+| `commit_imports` / `late_imports` | content taken at commit, versus discovered at a frame. `late_imports` must be 0 |
+| `damage_ratio` | `damage_pixels / output_pixels` over the run. 1.0 means every frame is a full redraw |
+| `cpu_sync_waits` | must be 0 — a nonzero value means the frame path blocks on the GPU |
+| `validation_errors` | Vulkan validation errors seen this run (needs `ASTEROIDZ_VK_DEBUG=1`) |
+
+Anything not yet measured is reported as `null`, not `0`. A zero is a
+measurement; a null is an admission. `gpu_frame_us` is null today because
+GPU timestamp queries are not yet recorded.
+
 * `watch all-monitors`
 * `watch all-tags`
 * `watch all-clients`

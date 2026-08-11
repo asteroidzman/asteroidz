@@ -86,6 +86,8 @@ static void usage(void) {
 		   "(1‑based index)\n");
 	printf("  get all-clients                          List all clients\n");
 	printf("  get all-monitors                         List all monitors\n");
+	printf("  get avk-stats                            Native Vulkan renderer "
+		   "counters\n");
 	printf("  get all-tags                             List all tags (all "
 		   "monitors)\n");
 	printf(

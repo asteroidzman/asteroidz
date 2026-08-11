@@ -664,6 +664,14 @@ static void handle_command(int client_fd, const char *cmd_raw) {
 			cJSON_AddItemToArray(arr, build_monitor_json(m));
 		resp = cJSON_CreateObject();
 		cJSON_AddItemToObject(resp, "monitors", arr);
+	} else if (strcmp(cmd, "get avk-stats") == 0) {
+#ifdef AZ_HAVE_VULKAN
+		resp = az_avk_stats_json();
+#else
+		resp = cJSON_CreateObject();
+		cJSON_AddStringToObject(resp, "backend", "scenefx");
+		cJSON_AddBoolToObject(resp, "active", false);
+#endif
 	} else if (strcmp(cmd, "get all-tags") == 0) {
 		resp = build_all_tags_response();
 	} else if (strcmp(cmd, "get bar-config") == 0) {

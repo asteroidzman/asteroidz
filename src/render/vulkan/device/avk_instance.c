@@ -54,6 +54,7 @@ static VkBool32 VKAPI_PTR debug_messenger_cb(
 	enum avk_log_level level = AVK_DEBUG;
 	if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
 		level = AVK_ERROR;
+		avk_validation_error_count();
 	} else if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) {
 		level = AVK_WARN;
 	} else if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT) {

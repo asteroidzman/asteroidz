@@ -49,6 +49,13 @@ enum avk_log_level avk_log_get_level(void);
 void avk_log(enum avk_log_level level, const char *fmt, ...)
 	__attribute__((format(printf, 2, 3)));
 
+/* How many validation errors the debug messenger has reported.
+ *
+ * A number rather than a log line, because "was this run clean?" should be
+ * answerable by a test and by `amsg get avk-stats` without anyone grepping. */
+uint64_t avk_validation_errors(void);
+void avk_validation_error_count(void);
+
 /* Whether developer mode is on (ASTEROIDZ_VK_DEBUG=1): validation layers,
  * object names, debug labels. Read once, at first use. */
 bool avk_debug_enabled(void);

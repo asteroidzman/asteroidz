@@ -2,6 +2,8 @@
 
 #include "avk_dmabuf.h"
 
+#include <time.h>
+
 #include "../image/avk_upload.h"
 
 #include <drm_fourcc.h>
@@ -597,6 +599,9 @@ static struct avk_image *import_by_copy(struct avk_dmabuf_importer *importer,
 		return NULL;
 	}
 
+	struct timespec copy_t0;
+	clock_gettime(CLOCK_MONOTONIC, &copy_t0);
+
 	uint32_t map_stride = 0;
 	void *map_data = NULL;
 	void *pixels = gbm_bo_map(bo, 0, 0, (uint32_t)attribs->width,
@@ -635,6 +640,12 @@ static struct avk_image *import_by_copy(struct avk_dmabuf_importer *importer,
 	avk_retire_push(&importer->retire, dev, timeline, avk_upload_retire,
 		staging);
 	staging = NULL;
+
+	struct timespec copy_t1;
+	clock_gettime(CLOCK_MONOTONIC, &copy_t1);
+	importer->copied_bytes += (uint64_t)map_stride * attribs->height;
+	importer->copied_us += (uint64_t)((copy_t1.tv_sec - copy_t0.tv_sec) * 1000000
+		+ (copy_t1.tv_nsec - copy_t0.tv_nsec) / 1000);
 
 	gbm_bo_unmap(bo, map_data);
 	gbm_bo_destroy(bo);

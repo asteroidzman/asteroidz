@@ -365,6 +365,8 @@ static const DispatchAction dispatch_actions[] = {
 	{"spawn_shell", "string", "Run a command through a shell."},
 	{"spawn_on_empty", "string", "Run a command only if the tag is empty."},
 	{"reload_config", "", "Re-read the config from disk."},
+	{"reset_avk_stats", "",
+	 "Zero the Vulkan renderer's counters (see amsg get avk-stats)."},
 	{"restart", "", "Restart the compositor in place."},
 	{"quit", "", "Exit."},
 	{"chvt", "int", "Switch virtual terminal."},

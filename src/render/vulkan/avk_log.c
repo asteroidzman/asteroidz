@@ -113,3 +113,14 @@ bool avk_check(VkResult res, const char *msg) {
 	avk_log(AVK_ERROR, "%s: %s (%d)", msg, avk_strerror(res), (int)res);
 	return false;
 }
+
+/* Counted rather than only logged: see avk.h. */
+static uint64_t validation_errors = 0;
+
+uint64_t avk_validation_errors(void) {
+	return validation_errors;
+}
+
+void avk_validation_error_count(void) {
+	validation_errors++;
+}

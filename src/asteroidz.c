@@ -1646,6 +1646,9 @@ struct Pertag {
 	const Layout *ltidxs[LENGTH(tags) + 1];
 	struct TagScrollerState *scroller_state[LENGTH(tags) + 1];
 };
+/* Defined after render/az_avk.h is available; named by the dispatch table in
+ * parse_config.h, which is included first. */
+static int32_t reset_avk_stats(const Arg *arg);
 #include "config/parse_config.h"
 /* After parse_config.h: the self-check drives set_value_default,
  * override_config and parse_option directly. */
@@ -1724,6 +1727,21 @@ static struct wl_event_source *sync_keymap;
 #include "render/az_avk.h"
 #endif
 #include "render/az_output.h"
+
+/*
+ * `amsg dispatch reset_avk_stats` -- zero the AVK counters in place.
+ *
+ * Benchmarking a workload should not require restarting the compositor, which
+ * destroys the workload.
+ */
+static int32_t reset_avk_stats(const Arg *arg) {
+	(void)arg;
+#ifdef AZ_HAVE_VULKAN
+	az_avk_stats_reset();
+	wlr_log(WLR_INFO, "AVK: statistics reset");
+#endif
+	return 0;
+}
 #include "ext-protocol/all.h"
 #include "ext-protocol/frog-color-management.h"
 #include "fetch/fetch.h"

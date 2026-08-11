@@ -1414,6 +1414,8 @@ FuncType parse_func_name(char *func_name, Arg *arg, char *arg_value,
 	} else if (strcmp(func_name, "view_to_right_occupied") == 0) {
 		func = viewtoright_have_client;
 		(*arg).i = atoi(arg_value);
+	} else if (strcmp(func_name, "reset_avk_stats") == 0) {
+		func = reset_avk_stats;
 	} else if (strcmp(func_name, "reload_config") == 0) {
 		func = reload_config;
 	} else if (strcmp(func_name, "ufo") == 0) {

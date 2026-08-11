@@ -108,6 +108,12 @@ struct avk_dmabuf_importer {
 	uint64_t imports_recovered;
 	uint64_t imports_copied;
 	uint64_t imports_failed;
+
+	/* What the slow rung actually costs, in bytes moved and wall-clock time
+	 * spent moving them. "How often" was already measurable; "how much" is
+	 * what decides whether it matters. */
+	uint64_t copied_bytes;
+	uint64_t copied_us;
 };
 
 bool avk_dmabuf_importer_init(struct avk_dmabuf_importer *importer,

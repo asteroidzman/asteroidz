@@ -40,6 +40,7 @@
 #include "vulkan/scene/avk_render.h"
 #include "vulkan/scene/avk_scene.h"
 
+#include <cjson/cJSON.h>
 #include <wlr/render/swapchain.h>
 #include <wlr/util/addon.h>
 #include <wlr/util/transform.h>
@@ -95,6 +96,21 @@ struct az_avk {
 	                               * surfaces; see az_avk_walk_node() */
 	uint64_t cache_hits;
 	uint64_t cache_misses;
+	uint64_t shm_upload_bytes;
+	uint64_t client_images_cached;   /* live entries, not a total */
+	uint64_t output_targets;         /* live imported scan-out images */
+	uint64_t software_cursor_frames;
+	uint64_t presentation_waits;
+	/* Damage, in pixels actually redrawn versus pixels the outputs have. Both
+	 * accumulate, so the ratio is over the whole run rather than one frame. */
+	uint64_t damage_pixels;
+	uint64_t output_pixels;
+	uint64_t full_redraw_frames;
+	uint64_t partial_redraw_frames;
+	/* Wall clock spent building a frame on the CPU, and the rolling maximum,
+	 * because a mean hides exactly the frames that miss a vblank. */
+	uint64_t cpu_frame_us;
+	uint64_t cpu_frame_us_max;
 
 	/* Each of these is a real limitation, and each is said exactly once so a
 	 * log stays readable while still telling the truth. */
@@ -164,6 +180,9 @@ static void az_avk_buffer_destroy(struct az_avk_buffer *entry) {
 	}
 	wlr_addon_finish(&entry->addon);
 	wl_list_remove(&entry->link);
+	if (avk.client_images_cached > 0) {
+		avk.client_images_cached--;
+	}
 	free(entry);
 }
 
@@ -328,6 +347,7 @@ static bool az_avk_upload_shm(struct az_avk_buffer *entry) {
 		(uint32_t)entry->buffer->height, &wait, wait_count) != 0;
 	if (ok) {
 		avk.shm_uploads++;
+		avk.shm_upload_bytes += (uint64_t)stride * entry->buffer->height;
 	}
 
 out:
@@ -371,6 +391,7 @@ static struct avk_image *az_avk_image_for_buffer(struct wlr_buffer *buffer) {
 	wlr_addon_init(&entry->addon, &buffer->addons, &avk,
 		&az_avk_buffer_addon_impl);
 	wl_list_insert(&avk.buffers, &entry->link);
+	avk.client_images_cached++;
 
 	struct az_buffer_source source;
 	az_buffer_get_source(buffer, &source);
@@ -428,6 +449,9 @@ static void az_avk_target_addon_destroy(struct wlr_addon *addon) {
 	if (target->image != NULL) {
 		avk_retire_push(&avk.importer.retire, avk.device,
 			target->image->last_use, avk_image_destroy, target->image);
+		if (avk.output_targets > 0) {
+			avk.output_targets--;
+		}
 	}
 	wlr_addon_finish(&target->addon);
 	free(target);
@@ -479,6 +503,7 @@ static struct avk_image *az_avk_target_for_buffer(struct wlr_buffer *buffer) {
 	target->image = image;
 	wlr_addon_init(&target->addon, &buffer->addons, &avk,
 		&az_avk_target_addon_impl);
+	avk.output_targets++;
 	return image;
 }
 
@@ -937,6 +962,9 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 		return false;
 	}
 
+	struct timespec frame_t0;
+	clock_gettime(CLOCK_MONOTONIC, &frame_t0);
+
 	struct wlr_output *output = m->wlr_output;
 	struct az_avk_output *out = m->avk;
 	if (out == NULL) {
@@ -1076,6 +1104,24 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 	pixman_region32_init_rect(&damage, 0, 0, width, height);
 	wlr_output_state_set_damage(state, &damage);
 	pixman_region32_fini(&damage);
+
+	/* Damage accounting. Both totals accumulate over the run, so
+	 * damage_pixels/output_pixels is the fraction of the desktop AVK actually
+	 * redrew -- the single number that says whether damage tracking is doing
+	 * anything. It reads 1.0 today, deliberately, and M3.5D is what changes
+	 * that. */
+	avk.damage_pixels += (uint64_t)width * (uint64_t)height;
+	avk.output_pixels += (uint64_t)width * (uint64_t)height;
+	avk.full_redraw_frames++;
+
+	struct timespec frame_t1;
+	clock_gettime(CLOCK_MONOTONIC, &frame_t1);
+	uint64_t us = (uint64_t)((frame_t1.tv_sec - frame_t0.tv_sec) * 1000000
+		+ (frame_t1.tv_nsec - frame_t0.tv_nsec) / 1000);
+	avk.cpu_frame_us += us;
+	if (us > avk.cpu_frame_us_max) {
+		avk.cpu_frame_us_max = us;
+	}
 
 	avk.frames++;
 	return true;
@@ -1235,6 +1281,162 @@ static bool az_avk_init(int drm_fd) {
 
 	avk.active = true;
 	return true;
+}
+
+/*
+ * `amsg get avk-stats`.
+ *
+ * Counters only mattered at shutdown until now, which made every question
+ * about a running desktop ("is the copy path hot?", "did damage actually
+ * shrink?") unanswerable without killing the thing you were measuring.
+ *
+ * Anything not yet measured is reported as JSON null rather than 0. A zero is
+ * a measurement; a null is an admission. Reporting "gpu_frame_us: 0" for a
+ * timing this build does not collect would be the kind of number that gets
+ * quoted back later as evidence.
+ */
+static cJSON *az_avk_stats_json(void) {
+	cJSON *o = cJSON_CreateObject();
+	if (o == NULL) {
+		return NULL;
+	}
+	if (!avk.active) {
+		cJSON_AddStringToObject(o, "backend", "scenefx");
+		cJSON_AddBoolToObject(o, "active", false);
+		return o;
+	}
+
+	const struct avk_caps *caps = &avk.device->caps;
+	cJSON_AddStringToObject(o, "backend", "avk");
+	cJSON_AddBoolToObject(o, "active", true);
+	cJSON_AddStringToObject(o, "physical_device", caps->device_name);
+	cJSON_AddStringToObject(o, "driver", caps->driver_name);
+	char drm[64];
+	snprintf(drm, sizeof(drm), "%" PRId64 ":%" PRId64,
+		caps->drm_render_major, caps->drm_render_minor);
+	cJSON_AddStringToObject(o, "drm_device", drm);
+	cJSON_AddBoolToObject(o, "wl_compositor_has_renderer", false);
+
+	/* composition */
+	uint64_t surfaces = 0, rects = 0, submit_ns = 0, sync_waits = 0;
+	for (size_t i = 0; i < AZ_AVK_MAX_FORMATS; i++) {
+		if (!avk.renderers[i].used) {
+			continue;
+		}
+		const struct avk_renderer_stats *st = &avk.renderers[i].renderer.stats;
+		surfaces += st->surfaces;
+		rects += st->rects;
+		submit_ns += st->gpu_submit_ns;
+		sync_waits += st->cpu_sync_waits;
+	}
+	cJSON_AddNumberToObject(o, "frames", (double)avk.frames);
+	cJSON_AddNumberToObject(o, "fallback_frames", (double)avk.fallback_frames);
+	cJSON_AddNumberToObject(o, "surfaces", (double)surfaces);
+	cJSON_AddNumberToObject(o, "rects", (double)rects);
+
+	/* import */
+	const struct avk_dmabuf_importer *imp = &avk.importer;
+	cJSON_AddNumberToObject(o, "dmabuf_zero_copy",
+		(double)(imp->imports_explicit + imp->imports_recovered));
+	cJSON_AddNumberToObject(o, "dmabuf_explicit_modifier",
+		(double)imp->imports_explicit);
+	cJSON_AddNumberToObject(o, "dmabuf_implicit_fallback",
+		(double)imp->imports_copied);
+	cJSON_AddNumberToObject(o, "dmabuf_import_failures",
+		(double)imp->imports_failed);
+	cJSON_AddNumberToObject(o, "shm_upload_bytes",
+		(double)avk.shm_upload_bytes);
+	cJSON_AddNumberToObject(o, "implicit_copy_bytes",
+		(double)imp->copied_bytes);
+	cJSON_AddNumberToObject(o, "implicit_copy_us", (double)imp->copied_us);
+
+	/* ownership */
+	cJSON_AddNumberToObject(o, "commit_imports", (double)avk.commit_imports);
+	cJSON_AddNumberToObject(o, "late_imports", (double)avk.late_imports);
+	cJSON_AddNumberToObject(o, "client_images_cached",
+		(double)avk.client_images_cached);
+	cJSON_AddNumberToObject(o, "client_image_cache_hits",
+		(double)avk.cache_hits);
+	cJSON_AddNumberToObject(o, "client_image_cache_misses",
+		(double)avk.cache_misses);
+
+	/* timing */
+	cJSON_AddNumberToObject(o, "gpu_submit_us", (double)(submit_ns / 1000));
+	cJSON_AddNumberToObject(o, "cpu_frame_us", (double)avk.cpu_frame_us);
+	cJSON_AddNumberToObject(o, "cpu_frame_us_max",
+		(double)avk.cpu_frame_us_max);
+	/* Not measured: needs GPU timestamp queries around the frame, which this
+	 * build does not record. Null, not zero. */
+	cJSON_AddNullToObject(o, "gpu_frame_us");
+
+	/* damage */
+	cJSON_AddNumberToObject(o, "damage_pixels", (double)avk.damage_pixels);
+	cJSON_AddNumberToObject(o, "output_pixels", (double)avk.output_pixels);
+	if (avk.output_pixels > 0) {
+		cJSON_AddNumberToObject(o, "damage_ratio",
+			(double)avk.damage_pixels / (double)avk.output_pixels);
+	} else {
+		cJSON_AddNullToObject(o, "damage_ratio");
+	}
+	cJSON_AddNumberToObject(o, "full_redraw_frames",
+		(double)avk.full_redraw_frames);
+	cJSON_AddNumberToObject(o, "partial_redraw_frames",
+		(double)avk.partial_redraw_frames);
+
+	/* synchronisation and presentation */
+	cJSON_AddNumberToObject(o, "cpu_sync_waits", (double)sync_waits);
+	cJSON_AddNumberToObject(o, "presentation_waits",
+		(double)avk.presentation_waits);
+	cJSON_AddNumberToObject(o, "output_targets_in_flight",
+		(double)avk.output_targets);
+
+	cJSON_AddNumberToObject(o, "software_cursor_frames",
+		(double)avk.software_cursor_frames);
+	cJSON_AddNumberToObject(o, "validation_errors",
+		(double)avk_validation_errors());
+	return o;
+}
+
+/*
+ * Zero the counters without restarting.
+ *
+ * Live values -- how many images are cached, how many targets exist -- are
+ * deliberately NOT reset: they describe the present, not an interval, and
+ * zeroing them would make the next reading a lie until the caches turned over.
+ */
+static void az_avk_stats_reset(void) {
+	avk.frames = 0;
+	avk.fallback_frames = 0;
+	avk.buffer_imports = 0;
+	avk.buffer_import_fails = 0;
+	avk.shm_uploads = 0;
+	avk.shm_upload_bytes = 0;
+	avk.commit_imports = 0;
+	avk.late_imports = 0;
+	avk.cache_hits = 0;
+	avk.cache_misses = 0;
+	avk.damage_pixels = 0;
+	avk.output_pixels = 0;
+	avk.full_redraw_frames = 0;
+	avk.partial_redraw_frames = 0;
+	avk.cpu_frame_us = 0;
+	avk.cpu_frame_us_max = 0;
+	avk.software_cursor_frames = 0;
+	avk.presentation_waits = 0;
+	if (avk.active) {
+		avk.importer.imports_explicit = 0;
+		avk.importer.imports_recovered = 0;
+		avk.importer.imports_copied = 0;
+		avk.importer.imports_failed = 0;
+		avk.importer.copied_bytes = 0;
+		avk.importer.copied_us = 0;
+		for (size_t i = 0; i < AZ_AVK_MAX_FORMATS; i++) {
+			if (avk.renderers[i].used) {
+				avk.renderers[i].renderer.stats =
+					(struct avk_renderer_stats){0};
+			}
+		}
+	}
 }
 
 static void az_avk_log_stats(void) {

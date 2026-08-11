@@ -31,6 +31,15 @@ client supplied a surface of its own instead, and then there is no shape to
 name. The cursor is drawn by the compositor and does not appear in a
 screenshot, so this is the only way to check it from outside the client.
 .TP
+\fBget avk\-stats\fR
+Return live counters for the native Vulkan renderer, or
+\fB{"backend":"scenefx","active":false}\fR when \fBASTEROIDZ_RENDERER=avk\fR
+is not in effect. \fBamsg dispatch reset_avk_stats\fR zeroes the accumulating
+counters in place, so a workload can be benchmarked without restarting the
+compositor that is running it. Counters this build does not yet collect are
+reported as JSON \fBnull\fR rather than \fB0\fR \(em a zero is a
+measurement, a null is an admission. See \fBdocs/ipc.md\fR for the fields.
+.TP
 \fBget idle\fR
 Return whether idling is currently held off, and by whom. \fBinhibited\fR is
 what the idle notifier was told, and answers "will this machine sleep";
@@ -540,6 +549,8 @@ privileges. See \fBdocs/visuals/effects.md\fR.
 \fBspawn_on_empty\fR,<string>
 .TP
 \fBreload_config\fR
+.TP
+\fBreset_avk_stats\fR
 .TP
 \fBrestart\fR
 .TP
