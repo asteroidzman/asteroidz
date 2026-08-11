@@ -619,6 +619,43 @@ standing permission, and prefer chasing anything it turns up via
 `coredumpctl`/static review afterward (as with both bugs above) rather than
 reproducing it live again.
 
+### A live test that is not a live *run*: software cursor acceptance
+
+`contrib/avk-software-cursor-acceptance.sh` is a different animal from
+`HL_LIVE=1`, and the distinction is worth naming. It attaches to the real
+session, but it **drives nothing**: the user moves the pointer and watches the
+screen, the script reads counters at phase boundaries, and the only write in
+it is an optional `dispatch reset_avk_stats`, which sets counters to zero and
+touches no rendering or window state. There is no virtual output, no synthetic
+input, no window created or destroyed. That is why it can be run on a working
+desktop when `HL_LIVE=1` cannot.
+
+It exists because **a headless output is structurally incapable of measuring
+what it measures.** The headless backend implements `output_set_cursor()` as
+`return true;`, so it believes it always has a hardware plane — a fresh
+headless AVK instance reports `hardware_cursor_frames: 3, software_cursor_frames: 0`
+without a cursor plane existing anywhere. Forced software and hardware-planed
+are the same code path there. On real KMS they are not: one hands 64×64 to a
+plane, the other puts the compositor in the frame path for every pointer
+motion, at pointer rates, indefinitely.
+
+It needs a session started from
+`/usr/share/wayland-sessions/asteroidz-avk-swcursor.desktop`
+(`ASTEROIDZ_AVK_FORCE_SOFTWARE_CURSOR=1`). There is deliberately no runtime
+toggle: promotion and demotion are startup decisions, and a switch would let a
+test claim a transition the compositor never makes. The script checks
+`/proc/<pid>/environ` rather than the counters, because a counter cannot
+distinguish "forced software" from "software because something demoted it a
+moment ago", and refuses to run otherwise.
+
+Five phases: 30 seconds of pointer motion over static content (the invariant —
+localized damage, no full redraws, no CPU waits, p95 inside a frame budget),
+shapes, output crossings, the client matrix, and hide/restore. Each ends with a
+question only a pair of eyes can answer, asked and **counted** at the end — a
+correct-looking cursor is invisible to every counter, which can see a missing
+one and not a wrong one. An acceptance run that quietly drops its visual half
+is not an acceptance run.
+
 ## How it works
 
 `contrib/lib/headless.sh` is the shared library: `hl_start` launches one

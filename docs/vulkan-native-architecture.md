@@ -1583,6 +1583,18 @@ It is a **startup** flag. There is no runtime toggle, so live evidence for
 promotion and demotion has to come from a recorder taking and dropping the lock
 rather than from flipping a switch.
 
+Which is also why the acceptance run for it is a live one.
+`/usr/share/wayland-sessions/asteroidz-avk-swcursor.desktop` starts a session
+with the flag set, and `contrib/avk-software-cursor-acceptance.sh` measures it.
+A headless output cannot: the headless backend's `output_set_cursor()` is
+`return true;`, so it believes it always has a plane — a fresh headless AVK
+instance reports `hardware_cursor_frames: 3, software_cursor_frames: 0` with no
+cursor plane anywhere in the system. Forced software and hardware-planed are
+the same code path there and every cursor test in `contrib/` runs on both
+without being able to tell them apart. See `docs/regression-testing.md` for
+what the run asks and why half of its questions go to the user rather than to a
+counter.
+
 ### Counters for the live runs
 
 `cursor_moves`, `cursor_damage_pixels`, `cursor_hw_to_sw`, `cursor_sw_to_hw`,
