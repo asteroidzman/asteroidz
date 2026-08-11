@@ -274,6 +274,15 @@ if build_vulkan
                                dependencies : [avk_dep],
                                build_by_default : false)
   test('avk-dmabuf', test_avk_dmabuf, timeout : 60)
+
+  # M3: AVK composites a scene snapshot and the pixels are read back and
+  # compared. These assert on the framebuffer, not on functions returning
+  # true -- a renderer with the wrong blend state or a mis-folded transform
+  # succeeds at every call it makes and draws the wrong picture.
+  test_avk_render = executable('test-avk-render', 'tests/test-avk-render.c',
+                               dependencies : [avk_dep],
+                               build_by_default : false)
+  test('avk-render', test_avk_render, timeout : 60)
 endif
 
 # Runs from the source root so the corpus case can open assets/config.kdl --

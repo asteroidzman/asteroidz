@@ -323,6 +323,34 @@ The compositor emits a flat command list; the renderer consumes it. Commands:
 metadata. This decouples window management from GPU evolution: the scene can
 gain an effect without the renderer gaining a downcast.
 
+### 5.4a What M3 actually built
+
+The snapshot is `struct avk_scene`: a flat, immutable array of `avk_cmd`, each
+carrying its destination in output pixels, a visible region, an opacity, and
+for surfaces an `avk_image` the compositor-side cache has already resolved. It
+holds no `wlr_render_pass`, no `wlr_texture` and no scene node — so the
+renderer can never walk a live tree while a client commit mutates it.
+
+Two decisions worth recording because they are not obvious:
+
+- **Transforms are folded into a UV origin plus two edge vectors on the CPU**,
+  not passed as an enum to be branched on in the shader. All eight Wayland
+  transforms, the flips, and a source crop become the same three vec2s, so
+  there is one code path instead of eight and the numbers can be read in a
+  test. (fx_vk's rounded corners rounded the wrong edges precisely because
+  `gl_FragCoord` disagreed with box space under a flipped projection; there is
+  no flipped projection here — Vulkan's NDC Y already points down.)
+- **`loadOp` is always LOAD, never CLEAR.** A damaged frame redraws part of the
+  target and the rest must survive; the background is a normal draw command,
+  scissored to damage like everything else. CLEAR would be a full-screen clear
+  wearing damage tracking's clothes — correct on a full-damage frame and
+  destructive on every other.
+
+Composition is in the surfaces' own 8-bit sRGB-encoded, premultiplied
+representation. That is what SDR compositors do today, it makes the tests exact
+integers, and M5 will change it to linear FP16 deliberately rather than by
+accident.
+
 ### 5.5 Render graph
 
 A lightweight pass scheduler over: scene composition → HDR/linear intermediate →
@@ -425,4 +453,30 @@ and `contrib/regression/`. New Vulkan-core tests are plain binaries under
   retired on the GPU timeline, but one allocation per import), damage-region
   SHM upload, YUV sampler-conversion sampling, and DMA-BUF feedback tranches
   (which need protocol wiring, so they land with M3).
-- M3-M10: not started
+- M3 — native scene submission: **the renderer half is done; the compositor
+  half is not.**
+  - **Done.** `src/render/vulkan/scene/` + `pipeline/` + `shader/`: an
+    Asteroidz-owned command IR (`avk_scene`), two pipelines over one
+    push-constant block, dynamic rendering, premultiplied source-over,
+    source crop, destination scale, all eight Wayland transforms, per-command
+    visible-region clipping, per-command opacity, damage-scissored drawing,
+    and the X-format opaque-alpha fix. `tests/test-avk-render.c` asserts all
+    of it on read-back pixels (37 checks). No `wlr_render_pass` anywhere on
+    this path, enforced by `check-vulkan-isolation.py`.
+  - **Not done.** `az_output_build_frame()`, the `ASTEROIDZ_RENDERER` switch,
+    the wlr_scene → snapshot builder, the client-buffer cache keyed to
+    `wlr_buffer` lifetime, the render-completion → sync_file → KMS
+    `IN_FENCE_FD` bridge, software cursor, output-target lifecycle against
+    presentation, DMA-BUF feedback from AVK's capability set, and the live
+    session boot. **AVK does not yet render a desktop.**
+- M4-M10: not started
+
+## Pre-existing test failures (not caused by this work)
+
+`meson test` reports `config-schema` with 22 failures: values above the
+maximum are not clamped for `animation_duration_tag`, `animation_duration_focus`,
+`overviewgappi`, `overviewgappo`, `hotarea_size`, `cursor_size`,
+`cursor_hide_timeout` and others. **Verified against the pre-AVK tree** by
+stashing this work and rebuilding: same 22 failures, same 1022 checks. Nothing
+in the Vulkan work touches config parsing. Recorded here so scope attribution
+stays clean; deliberately not fixed as part of the renderer migration.

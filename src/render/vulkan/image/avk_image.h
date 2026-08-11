@@ -59,6 +59,14 @@ struct avk_image {
 	 * Both are maintained by whoever records commands against it. */
 	VkImageLayout layout;
 	uint64_t last_use;
+
+	/* Descriptor sets for sampling this image, [0] nearest and [1] linear,
+	 * allocated lazily and cached HERE rather than per frame. A client
+	 * surface is sampled every frame for as long as its window is open, so
+	 * writing its descriptor once instead of 144 times a second is the
+	 * difference between descriptor work being invisible and being a
+	 * profile entry. Owned by the image; freed with the pool. */
+	VkDescriptorSet sampler_set[2];
 };
 
 /*

@@ -17,6 +17,33 @@
 vulkan_dep = dependency('vulkan')
 avk_libdrm_dep = dependency('libdrm')
 avk_gbm_dep = dependency('gbm')
+# pixman for regions. Not a renderer abstraction -- it is the region algebra
+# the whole graphics stack already speaks, and damage handling that invented
+# its own would have to be converted at every boundary.
+avk_pixman_dep = dependency('pixman-1')
+
+# ── shaders ────────────────────────────────────────────────────────────────
+# GLSL -> SPIR-V at build time, then embedded as a C array. Compiling at build
+# time means a shader syntax error is a build failure rather than a compositor
+# that starts and renders nothing; embedding means there is no install path to
+# get wrong and no runtime file to be missing.
+glslang = find_program('glslangValidator')
+avk_embed = find_program('shader/embed.py')
+
+avk_shader_headers = []
+foreach shader : [['quad.vert', 'quad_vert_spv'],
+                  ['quad.frag', 'quad_frag_spv'],
+                  ['texture.frag', 'texture_frag_spv']]
+  spv = custom_target(shader[0] + '.spv',
+    input : 'shader/src' / shader[0],
+    output : shader[0] + '.spv',
+    command : [glslang, '-V', '--target-env', 'vulkan1.3',
+               '@INPUT@', '-o', '@OUTPUT@'])
+  avk_shader_headers += custom_target(shader[1] + '.h',
+    input : spv,
+    output : shader[0].split('.')[0] + '_' + shader[0].split('.')[1] + '.spv.h',
+    command : [avk_embed, '@INPUT@', '@OUTPUT@', shader[1]])
+endforeach
 
 avk_sources = files(
   'avk_log.c',
@@ -30,21 +57,25 @@ avk_sources = files(
   'device/avk_instance.c',
   'device/avk_phys.c',
   'image/avk_image.c',
+  'pipeline/avk_pipeline.c',
+  'scene/avk_render.c',
+  'scene/avk_scene.c',
 )
 
 avk_lib = static_library('avk',
   avk_sources,
+  avk_shader_headers,
   # Deliberately short: vulkan and libc. No wayland, no wlroots, no scenefx,
   # no EGL. Anything added here should have to be argued for.
   # Each file declares the feature-test macro it needs at the top, so nothing
   # is set here: avk_device.c wants _GNU_SOURCE for asprintf() and a
   # command-line _POSIX_C_SOURCE would just have to be undefined again.
-  dependencies : [vulkan_dep, avk_libdrm_dep, avk_gbm_dep],
+  dependencies : [vulkan_dep, avk_libdrm_dep, avk_gbm_dep, avk_pixman_dep],
   include_directories : include_directories('../..'),
 )
 
 avk_dep = declare_dependency(
   link_with : avk_lib,
-  dependencies : [vulkan_dep, avk_libdrm_dep, avk_gbm_dep],
+  dependencies : [vulkan_dep, avk_libdrm_dep, avk_gbm_dep, avk_pixman_dep],
   include_directories : include_directories('../..'),
 )

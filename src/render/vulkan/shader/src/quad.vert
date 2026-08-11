@@ -1,0 +1,33 @@
+#version 450
+
+/*
+ * One vertex shader for every command AVK draws.
+ *
+ * There are no vertex buffers and no index buffers. A quad is four vertices
+ * whose positions are a function of gl_VertexIndex, so a draw is
+ * vkCmdDraw(cb, 4, 1, 0, 0) with nothing bound -- no per-frame vertex upload,
+ * no buffer to keep alive, and no descriptor for geometry.
+ *
+ * The UV mapping is passed as an origin and two edge vectors rather than a
+ * source rectangle plus a transform enum. That is what makes all eight Wayland
+ * output transforms, the flipped variants, and a source crop the SAME code
+ * path: the CPU folds rotation, flip and crop into two vectors, and the shader
+ * has no idea any of it happened. A transform enum in here would be eight
+ * branches and eight chances to get a corner wrong.
+ */
+
+layout(push_constant) uniform Push {
+	vec4 dst;        // x0, y0, x1, y1 in normalised device coordinates
+	vec4 uv_org_dx;  // uv origin (xy), du/dx (zw)
+	vec4 uv_dy;      // du/dy (xy), unused (zw)
+	vec4 color;      // premultiplied solid colour
+	vec4 params;     // opacity, alpha_mask, unused, unused
+} pc;
+
+layout(location = 0) out vec2 v_uv;
+
+void main() {
+	vec2 p = vec2(float(gl_VertexIndex & 1), float((gl_VertexIndex >> 1) & 1));
+	gl_Position = vec4(mix(pc.dst.xy, pc.dst.zw, p), 0.0, 1.0);
+	v_uv = pc.uv_org_dx.xy + p.x * pc.uv_org_dx.zw + p.y * pc.uv_dy.xy;
+}
