@@ -873,6 +873,46 @@ only the bytes changing between commits. It is the only client in the tree that
 does this, and `BREAK=identity` freezes it on red while every other assertion in
 the suite still passes.
 
+### Damage belongs to the surface, not to the buffer that carried it
+
+The cache holds one image per `wl_buffer`, so it is tempting to apply a
+commit's damage to the buffer that commit attached. That is wrong, and it was
+wrong in shipped code until `ef45327`.
+
+`wl_surface.damage_buffer` states what changed since the **previous commit of
+the surface**. It says nothing about how far any particular `wl_buffer` has
+drifted from the last time the compositor uploaded *it*. Those two quantities
+are identical for exactly as long as the client reuses one buffer, and diverge
+on the second commit of a rotating pool:
+
+```
+commit 1   buffer A   marks 0            damage = mark 0
+commit 2   buffer B   marks 0,1          damage = mark 1
+commit 3   buffer A   marks 0,1,2        damage = mark 2
+```
+
+Commit 3 is entirely correct: A really does contain all three marks, and mark 2
+really is all that changed since commit 2. But the cache last uploaded A at
+commit 1, so applying only "mark 2" leaves **mark 1 missing from its copy** —
+and presenting A and B alternately blinks the client's own recently drawn
+pixels.
+
+So a surface keeps the pool of buffers it has committed, and a commit's damage
+is noted against **every** buffer in it. Each buffer's pending damage is
+cleared when that buffer is uploaded, so the cost is bounded by pool size and
+paid only for buffers that are actually presented again.
+
+This shipped as KDE applications flickering on their status bar and hover
+highlight for the first seconds of their life — every Qt/KDE app rotates a
+pool, `kitty` and `contrib/wlreuse` do not, and the entire SHM suite was built
+on clients that do not. Full **output** damage does not mask it: it faithfully
+recomposites the wrong pixels, which is why `AZ_AVK_FULL_DAMAGE=1` came back
+negative and nearly closed the investigation, while `AZ_AVK_SOURCE_FULL=1`
+— upload every buffer whole — made it vanish. `contrib/wlrotate` and
+`contrib/avk-shm-rotate-test.sh` exist to keep it fixed; see
+`docs/regression-testing.md` for why the obvious pixel assertion does not
+falsify it and the upload accounting does.
+
 ### Why deferring the upload to lookup is safe
 
 The copy happens at the next lookup rather than at the commit, which raises the

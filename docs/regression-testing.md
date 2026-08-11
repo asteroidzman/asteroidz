@@ -275,6 +275,7 @@ suite:
 | `avk-sync` `presentsync` 8/10 | fails correctly |
 | `avk-damage` `preserve` 6/12, `stale` 9/12 | fail correctly |
 | `avk-damage-domains` `no-cull` | fails correctly *(after the harness change below)* |
+| `avk-shm-rotate` `one-buffer` / `source-full` | fail correctly |
 | `avk-shm-partial` `unsafe-reuse` | **NOT TESTED** — documented, could not be made observable |
 
 `no-cull` failed differently from `lookup`, and the distinction is worth
@@ -455,6 +456,58 @@ There is deliberately **no `BREAK=cursor-old-damage`**. AVK does not compute
 old-position damage; wlroots emits it and scenefx feeds it into the ring AVK
 reads. A switch to disable it would mean punching a hole in AVK to suppress
 wlroots' work, which tests a fabrication rather than the compositor.
+
+### The seventeenth, and a bug the whole suite was built not to see
+
+`contrib/avk-shm-rotate-test.sh` exists because every SHM test before it used a
+client that keeps **one** buffer.
+
+```bash
+cd contrib/wlrotate && make           # once
+ASTEROIDZ=build-vk/asteroidz bash contrib/avk-shm-rotate-test.sh
+BREAK=one-buffer  ASTEROIDZ=build-vk/asteroidz bash contrib/avk-shm-rotate-test.sh  # must FAIL
+BREAK=source-full ASTEROIDZ=build-vk/asteroidz bash contrib/avk-shm-rotate-test.sh  # must FAIL
+```
+
+`wl_surface.damage_buffer` states what changed since the previous **commit of
+the surface**. A renderer caching one image per `wl_buffer` needs a different
+quantity: what changed since it last saw *that buffer*. Those are the same
+region for as long as a client reuses one buffer, and `contrib/wlreuse` holds
+exactly one for its whole life — so `avk-shm-partial` passed 23/23 against a
+desktop on which every KDE application visibly flickered. Rotate a pool and the
+two quantities come apart on the second commit.
+
+The instructive part is what happened to the first version of this test, which
+asserted the obvious thing — every mark the client drew is on screen in every
+capture. **It passed against the pre-fix binary.** The marks survive a
+screenshot on a build that flickered a real desktop; something restores the
+displayed content before a capture lands. It was committed with a
+`STATUS: NOT YET VALID COVERAGE` header rather than counted, because a test that
+cannot fail is worse than no test — it is a green checkmark over a live bug.
+
+What does falsify is the upload accounting, which measures the mechanism
+directly instead of its consequences. Per-buffer stats come from `get avk-stats`
+→ `shm_sources[]`, and every mark commit reports exactly one 24×24 rectangle, so
+bytes convert straight into "how many marks' worth of damage did this buffer
+receive". With four buffers and eight marks each buffer carries two mark
+commits of its own, so anything above two marks' worth can only have come from
+commits it did not carry:
+
+| | partial bytes per buffer | in marks | bound |
+| :--- | ---: | ---: | ---: |
+| pre-fix `a00a911` | 2312 | 1.00 | 2 |
+| post-fix `ef45327` | 9224 | 4.00 | 2 |
+
+The bound is deliberately generous to the broken build: it counts the buffer's
+*first* mark commit, which is always a full upload and contributes no partial
+damage at all. Upload **counts** are identical on both builds (1 full + 3
+partial per buffer, same generations) — only the bytes differ, which is why a
+counter-based assertion would have been as blind as the pixel one.
+
+Both breaks remove the condition rather than the fix — `one-buffer` stops the
+rotation, `source-full` stops partial uploads — so both land on the
+accumulation assertion with nothing left to measure. Neither is a falsifier for
+the fix itself; the pre-`ef45327` binary is, and that is the one that matters.
 
 ### The schema, checked from both ends
 
@@ -647,6 +700,15 @@ so the harness includes a few small purpose-built Wayland clients:
   (the window loses `activated` exactly as it gains `suspended`), so a byte
   count reads identically whether suspension is implemented or not. Use
   `hl_spawn_wlstates` and `hl_wlstates_last`.
+- **`contrib/wlrotate`** — a `wl_shm` client that rotates a **pool**, which no
+  other client here does. It draws a row of marks, one added per commit, and
+  repaints every buffer it acquires with every mark so far — the age-correct
+  repaint a real toolkit performs — while damaging only the newest mark. That
+  is entirely correct Wayland and it is the exact shape of client that broke
+  AVK's per-buffer image cache. `--buffers 1` collapses it into a `wlreuse`
+  lookalike, which is how a test proves it is measuring rotation and not
+  something else; `--full-damage` is the wasteful control that is immune to the
+  bug by construction.
 - **`contrib/wlsandbox`** — a `security-context-v1` client: it creates a real
   security context over a listening socket of its own, connects a *second*
   display through it, and reports the globals the compositor is willing to show

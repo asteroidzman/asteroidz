@@ -33,8 +33,15 @@
  * far before being committed, which is the age-correct repaint a real toolkit
  * performs. Damage covers only the newest mark.
  *
- * So the assertion available to a test is simply: every mark that has been
- * drawn is on screen, in every frame, no matter which buffer is showing.
+ * The obvious assertion -- every mark drawn is on screen in every frame, no
+ * matter which buffer is showing -- turns out NOT to falsify the bug: it
+ * passes against the pre-fix compositor, which visibly flickered a real
+ * desktop. What does falsify it is the compositor's own per-buffer upload
+ * accounting, because every mark commit here reports exactly one 24x24
+ * rectangle and so a buffer's upload bytes convert directly into "how many
+ * marks' worth of damage did this buffer receive". A buffer that receives
+ * more than its own commits reported got them from commits it did not carry,
+ * which is the whole point. See contrib/avk-shm-rotate-test.sh.
  *
  *   --buffers N     how many buffers to rotate (default 2, max 8). 1 makes
  *                   this client behave like wlreuse, and the bug it exists to
