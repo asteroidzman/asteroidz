@@ -1,5 +1,25 @@
 # asteroidz on Vulkan — decisions, state, and how to switch
 
+> **Superseded architecturally by `docs/vulkan-native-architecture.md`
+> (2026-08-10).** That document is the plan of record for the Vulkan-native
+> renderer asteroidz now owns (`src/render/vulkan/`, the `avk` engine). This
+> file remains the history of the fx_vk effort and is still the right place to
+> look for why a particular fx_vk decision was made — but where the two
+> disagree about architecture, that one wins.
+>
+> Two findings in this file have since been corrected by measurement:
+>
+> - "**wlroots' Vulkan renderer cannot import implicit-modifier DMABUFs**" is
+>   true but the mechanism is narrower than the prose suggests: the importer
+>   resolves modifiers by exact-equality scan
+>   (`vulkan/pixel_format.c:612`) over a list `VK_EXT_image_drm_format_modifier`
+>   never puts `MOD_INVALID` into, so the lookup cannot succeed. It is an
+>   implementation limitation, not a Vulkan one — and avk now imports those
+>   buffers correctly.
+> - The obvious repair — recover the modifier through GBM's legacy import — was
+>   tried and **does not work on Mesa**; the modifier does not survive the
+>   round trip. See §5.2 of the architecture doc for what does.
+
 Living record of the Vulkan effort so we can switch renderers at will and never
 re-litigate what we already learned. Keep this updated as decisions change.
 
