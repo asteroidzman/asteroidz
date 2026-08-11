@@ -178,10 +178,30 @@ rendered as a flat block of its own border colour. `BREAK=border` puts that bug
 back and the run must fail; it is the only break switch here that breaks
 anything, and the header comment says why the other one does not.
 
-Two differences are deliberately not asserted equal: the wallpaper, which AVK
-cannot draw for a structural reason recorded in
-[`docs/vulkan-native-architecture.md`](./vulkan-native-architecture.md) §5.4b,
-and effects, which the scene config turns off because they are M4.
+One difference is deliberately not asserted equal: effects, which the scene
+config turns off because they are M4. The wallpaper used to be the other one and
+is now asserted to the exact pixel — see
+[`docs/vulkan-native-architecture.md`](./vulkan-native-architecture.md) §5.4c
+for why it was missing and what fixed it.
+
+`contrib/avk-sync-test.sh` is the ninth, and it asserts on nothing you can see.
+
+```bash
+ASTEROIDZ=build-vk/asteroidz bash contrib/avk-sync-test.sh
+BREAK=presentsync ASTEROIDZ=build-vk/asteroidz bash contrib/avk-sync-test.sh  # must FAIL
+```
+
+The question it answers is whether a finished frame reaches the display with a
+fence attached, and it is counters rather than pixels because an unsynchronised
+frame *looks correct nearly always* — which is exactly why the missing fence
+survived a whole milestone. `present_sync_timeline + present_sync_dmabuf` must
+equal `frames`, and `present_sync_none` must be zero.
+
+Its limitation is stated in its own header and worth repeating: **the headless
+backend has no DRM device, so this test can only exercise the dma-buf route.**
+The drm_syncobj timeline route — the one a real monitor takes — is covered at
+the primitive level by `test-avk-core`'s round trip and at the compositor level
+by nothing but a person reading `amsg get avk-stats` on a display.
 
 ### The schema, checked from both ends
 

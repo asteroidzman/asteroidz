@@ -521,11 +521,8 @@ All of that is M4.
 - **Full damage every frame.** The scene's damage ring is maintained by
   `wlr_scene` for its own build path. Consuming it correctly from here is the
   next commit, not this one.
-- **Implicit synchronisation.** The frame is submitted without exporting a
-  sync_file for KMS. `avk.cpu_sync_waits` is 0, so this is not a CPU stall;
-  it is a missing explicit fence, and the bridge
-  (`vkGetSemaphoreFdKHR` → sync_file → `wlr_output_state_set_wait_timeline`)
-  is the following commit.
+- **Implicit synchronisation.** ~~The frame is submitted without exporting a
+  sync_file for KMS.~~ **FIXED in M3.5C — see §5.4d.**
 - **No direct scan-out, no gamma LUT, no DMA-BUF feedback from AVK's table.**
   Absent rather than half-present.
 
@@ -656,6 +653,87 @@ the only way to test it at all.
    this GPU, but the earlier note claiming `AVK_NO_FOREIGN_ACQUIRE=1` gives a
    "pixel-identical desktop" was measured with the release already disabled.
    The switch turns off both halves and turns a real display white.
+
+## 5.4d M3.5C — the frame reaches the display with a fence
+
+Before this, `az_avk_build_frame()` submitted the render and then called
+`wlr_output_state_set_buffer()`. Nothing between those two lines told the
+display engine that the GPU had not finished writing the buffer. It worked,
+and it worked for a reason that is not a guarantee: the amdgpu kernel driver
+attaches implicit fences to the buffers in a submission, so the atomic commit
+happened to wait. AVK also releases its scan-out target back to
+`VK_QUEUE_FAMILY_FOREIGN_EXT`, which is precisely the operation that says
+"another owner takes it from here" — relying on the driver to fence it anyway
+is relying on the thing being contradicted.
+
+### The chain
+
+```
+avk_render_frame()  signals a binary semaphore alongside the device timeline
+      |
+vkGetSemaphoreFdKHR(SYNC_FD)              src/render/vulkan/sync/avk_sync.c
+      |    a sync_file: a kernel fence with a file descriptor
+      +---> wlr_drm_syncobj_timeline_import_sync_file(in_timeline, point)
+      |     wlr_output_state_set_wait_timeline(state, in_timeline, point)
+      |         KMS waits on it in the atomic commit's IN_FENCE_FD
+      |
+      +---> DMA_BUF_IOCTL_IMPORT_SYNC_FILE on every plane of the target
+                any implicitly synchronised consumer finds it there
+```
+
+and the release direction, so a target is not rendered into while it is still
+being read:
+
+```
+wlr_output_state_set_signal_timeline(state, out_timeline, point)
+      KMS signals when it has finished with the buffer
+            |
+      checked at the next acquire; if unsignalled, exported as a sync_file and
+      imported as a VkSemaphore the render waits on -- a GPU wait, not a stall
+```
+
+### Which route, and why it is not a preference
+
+`AZ_AVK_PRESENT_SYNC_TIMELINE` needs `wlr_backend_get_drm_fd() >= 0` **and**
+`backend->features.timeline`. The headless backend satisfies the second and not
+the first, and — separately — its `SUPPORTED_OUTPUT_STATE` excludes both
+timeline fields, so a commit carrying one is rejected outright. So headless
+always takes the dma-buf route and a real DRM backend always takes the timeline
+route. `AZ_AVK_NO_TIMELINE=1` forces the fallback on hardware that would not
+otherwise use it, because an untested fallback is not a fallback.
+
+If neither route works the output is marked `BROKEN` and stays on SceneFX
+permanently. There is deliberately no third option: presenting anyway and
+hoping the driver fences it is the assumption this section removes.
+
+### Target states
+
+`az_avk_target` now carries `FREE` / `RENDERED` / `IN_FLIGHT`.
+`RENDERED` — submitted but never committed, because the output state was
+rejected — is safe to render into again without a wait, since both submissions
+are on one queue and a queue orders its own work. `IN_FLIGHT` is not, and
+`avk.target_state_violations` counts every time the swapchain hands back a
+buffer whose release cannot be established.
+
+One subtlety: a rejected commit leaves a release point that will never
+materialise, and waiting on it would hang the output forever. The acquire asks
+`DRM_SYNCOBJ_WAIT_FLAGS_WAIT_AVAILABLE` before waiting, which distinguishes
+"still in use" from "never submitted".
+
+### What is tested, and what is not
+
+| | headless | a monitor |
+|---|---|---|
+| dma-buf route end to end | `contrib/avk-sync-test.sh` | — |
+| syncobj timeline round trip | `test-avk-core` (primitive level, no compositor) | — |
+| timeline route end to end | **not covered** | `amsg get avk-stats` |
+
+`present_sync_timeline` can only ever be 0 in a headless run. A build that broke
+the timeline path entirely would pass the whole suite. That is the same shape of
+gap that shipped a white screen once, and it is written here rather than
+discovered again.
+
+---
 
 ## M3b work plan (the compositor half) — DONE, kept for the record
 

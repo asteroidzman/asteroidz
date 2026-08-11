@@ -29,7 +29,13 @@
 #include <string.h>
 #include <unistd.h>
 
+#include <linux/dma-buf.h>
+#include <poll.h>
+#include <time.h>
+
 #include "render/vulkan/dmabuf/avk_dmabuf.h"
+#include "render/vulkan/image/avk_upload.h"
+#include "render/vulkan/sync/avk_sync.h"
 
 static int failures = 0;
 static int checks = 0;
@@ -510,6 +516,221 @@ static void test_rejections(struct avk_dmabuf_importer *importer,
 	gbm_bo_destroy(bo);
 }
 
+/*
+ * The other way a finished frame carries its fence.
+ *
+ * When the backend has no drm_syncobj timeline -- the headless backend has no
+ * DRM device at all, and an older kernel has no timeline capability -- AVK puts
+ * the fence on the target's own dma-buf instead, where any implicitly
+ * synchronised consumer will find it. This is the path every headless test run
+ * actually takes, so it is worth its own assertions rather than being the
+ * branch nobody looks at.
+ *
+ * Getting a real premise out of this took a correction. The obvious one --
+ * "a fresh buffer carries no fences" -- was written first and MEASURED FALSE:
+ * a buffer straight out of gbm_bo_create_with_modifiers2() already has one,
+ * because the driver initialises the modifier's compression metadata with a
+ * GPU write. So "the buffer has a fence afterwards" proves nothing at all; it
+ * was already true beforehand, and a version of avk_sync_dmabuf_attach() that
+ * returned true and did nothing would have passed.
+ *
+ * What is used instead is a fence that is still PENDING when it is looked at:
+ * the buffer's own fence is waited to completion first (asserted), so a
+ * pending fence found on it afterwards can only have arrived through the
+ * attach. Then the work is waited out and the same fence is observed to
+ * signal.
+ *
+ * Making the fence reliably pending took a second correction. The obvious way
+ * -- submit behind a timeline wait the test holds shut, then open it -- DEADLOCKS
+ * on RADV: amdgpu has no wait-before-signal, Mesa defers such a submission in
+ * userspace, and vkGetSemaphoreFdKHR then blocks waiting for a submission that
+ * cannot be dispatched until the test opens the gate it is blocked before
+ * opening. So the work is made genuinely long instead: repeated large fills,
+ * serialised with barriers so the driver cannot collapse them. The margin is
+ * measured and printed rather than assumed, because "long enough" is a
+ * property of the machine and not of the source.
+ */
+#define FILL_BYTES (256u << 20)
+#define FILL_REPEATS 48
+static bool fence_signalled(int sync_file_fd) {
+	struct pollfd pfd = { .fd = sync_file_fd, .events = POLLIN };
+	return poll(&pfd, 1, 0) > 0;
+}
+
+static bool fence_wait(int sync_file_fd, int timeout_ms) {
+	struct pollfd pfd = { .fd = sync_file_fd, .events = POLLIN };
+	return poll(&pfd, 1, timeout_ms) > 0;
+}
+
+static void test_dmabuf_fences(struct avk_dmabuf_importer *importer,
+		struct gbm_device *gbm) {
+	printf("fences on the buffer itself (the no-timeline path)\n");
+
+	struct gbm_bo *bo = alloc_tiled(importer, gbm, DRM_FORMAT_ARGB8888);
+	if (bo == NULL) {
+		printf("  (no tiled modifier available -- skipped)\n");
+		return;
+	}
+	struct avk_dmabuf_attributes attribs;
+	if (!bo_to_attribs(bo, DRM_FORMAT_ARGB8888, &attribs)) {
+		CHECK(false, "export the buffer as dma-buf fds");
+		gbm_bo_destroy(bo);
+		return;
+	}
+
+	/* Premise: whatever the allocator left on the buffer has finished, so any
+	 * pending fence seen later is one this test put there. */
+	int idle = -1;
+	if (!avk_sync_dmabuf_fences(attribs.fd[0], DMA_BUF_SYNC_WRITE, &idle)) {
+		printf("  (kernel does not support dma-buf sync_file ioctls -- "
+			"skipped)\n");
+		close_attribs(&attribs);
+		gbm_bo_destroy(bo);
+		return;
+	}
+	if (idle >= 0) {
+		CHECK(fence_wait(idle, 2000),
+			"the buffer starts idle (allocation fence has signalled)");
+		close(idle);
+	} else {
+		CHECK(true, "the buffer starts idle (no fences at all)");
+	}
+
+	struct avk_sync sync;
+	struct avk_cmd_ring ring;
+	if (!avk_sync_init(&sync, importer->dev, "dmabuf-test")) {
+		CHECK(false, "the fence bridge initialises");
+		close_attribs(&attribs);
+		gbm_bo_destroy(bo);
+		return;
+	}
+	if (!avk_cmd_ring_init(&ring, importer->dev, "dmabuf-sync-test")) {
+		CHECK(false, "ring initialises");
+		avk_sync_finish(&sync);
+		close_attribs(&attribs);
+		gbm_bo_destroy(bo);
+		return;
+	}
+
+	/* Something for the GPU to be busy with for long enough that its completion
+	 * fence is unambiguously pending while the CPU looks at it. */
+	VkBuffer scratch = VK_NULL_HANDLE;
+	VkDeviceMemory scratch_mem = VK_NULL_HANDLE;
+	VkBufferCreateInfo buf_info = {
+		.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+		.size = FILL_BYTES,
+		.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+		.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+	};
+	bool have_scratch = vkCreateBuffer(importer->dev->dev, &buf_info, NULL,
+		&scratch) == VK_SUCCESS;
+	if (have_scratch) {
+		VkMemoryRequirements req;
+		vkGetBufferMemoryRequirements(importer->dev->dev, scratch, &req);
+		uint32_t type = 0;
+		have_scratch = avk_find_memory_type(importer->dev, req.memoryTypeBits,
+				VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &type);
+		if (have_scratch) {
+			VkMemoryAllocateInfo alloc = {
+				.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+				.allocationSize = req.size,
+				.memoryTypeIndex = type,
+			};
+			have_scratch = vkAllocateMemory(importer->dev->dev, &alloc, NULL,
+					&scratch_mem) == VK_SUCCESS
+				&& vkBindBufferMemory(importer->dev->dev, scratch, scratch_mem,
+					0) == VK_SUCCESS;
+		}
+	}
+	if (!have_scratch) {
+		CHECK(false, "a scratch buffer to keep the GPU busy");
+		goto cleanup;
+	}
+
+	VkCommandBuffer cb = avk_cmd_ring_begin(&ring);
+	if (cb == VK_NULL_HANDLE) {
+		CHECK(false, "a command buffer to record into");
+		goto cleanup;
+	}
+	for (unsigned i = 0; i < FILL_REPEATS; i++) {
+		vkCmdFillBuffer(cb, scratch, 0, FILL_BYTES, i);
+		/* Serialised on purpose: without the barrier the driver is free to
+		 * overlap the fills and the work stops being long. */
+		VkMemoryBarrier2 mb = {
+			.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+			.srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
+			.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+			.dstStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
+			.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+		};
+		VkDependencyInfo dep = {
+			.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+			.memoryBarrierCount = 1,
+			.pMemoryBarriers = &mb,
+		};
+		vkCmdPipelineBarrier2(cb, &dep);
+	}
+
+	VkSemaphoreSubmitInfo signal = {
+		.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+		.semaphore = avk_sync_signal_semaphore(&sync),
+		.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+	};
+	struct timespec t0, t1;
+	clock_gettime(CLOCK_MONOTONIC, &t0);
+	uint64_t point = avk_cmd_ring_submit(&ring, NULL, 0, &signal, 1);
+	CHECK(point != 0, "a long frame submits");
+
+	int fence = -1;
+	CHECK(avk_sync_export_sync_file(&sync, &fence) && fence >= 0,
+		"its completion exports as a sync_file");
+	if (fence >= 0) {
+		/* The premise, asserted rather than hoped for. If this fails the GPU
+		 * finished sooner than the CPU could look, and nothing below it means
+		 * anything -- so it fails here, where the message says so, instead of
+		 * quietly weakening the assertion that follows. */
+		CHECK(!fence_signalled(fence),
+			"the work is still running when the fence is looked at");
+		CHECK(avk_sync_dmabuf_attach(attribs.fd[0], DMA_BUF_SYNC_WRITE, fence),
+			"it attaches to the target's dma-buf");
+
+		int attached = -1;
+		CHECK(avk_sync_dmabuf_fences(attribs.fd[0], DMA_BUF_SYNC_WRITE,
+				&attached) && attached >= 0,
+			"the buffer's fences read back");
+		if (attached >= 0) {
+			/* The load-bearing one. The buffer was idle a moment ago and is
+			 * now pending, which can only be the fence just attached. An
+			 * attach that returned true and did nothing fails here. */
+			CHECK(!fence_signalled(attached),
+				"the buffer now makes a consumer wait for work not yet done");
+			CHECK(fence_wait(attached, 5000),
+				"and stops making it wait once the work completes");
+			clock_gettime(CLOCK_MONOTONIC, &t1);
+			printf("  note: the GPU stayed busy for %.1f ms (the margin this "
+				"test's premise rests on)\n",
+				(t1.tv_sec - t0.tv_sec) * 1e3
+					+ (t1.tv_nsec - t0.tv_nsec) / 1e6);
+			close(attached);
+		}
+	}
+
+	CHECK(avk_device_timeline_wait(importer->dev, point, 5000000000ULL),
+		"the work completes");
+
+cleanup:
+	avk_cmd_ring_finish(&ring);
+	avk_sync_finish(&sync);
+	if (scratch != VK_NULL_HANDLE) {
+		vkDestroyBuffer(importer->dev->dev, scratch, NULL);
+	}
+	if (scratch_mem != VK_NULL_HANDLE) {
+		vkFreeMemory(importer->dev->dev, scratch_mem, NULL);
+	}
+	close_attribs(&attribs);
+	gbm_bo_destroy(bo);
+}
+
 int main(void) {
 	printf("== avk dmabuf (M2) ==\n");
 
@@ -558,6 +779,7 @@ int main(void) {
 	test_explicit_modifier(&importer, gbm);
 	test_implicit_modifier(&importer, gbm);
 	test_rejections(&importer, gbm);
+	test_dmabuf_fences(&importer, gbm);
 
 	avk_dmabuf_importer_log_stats(&importer);
 	avk_dmabuf_importer_finish(&importer);

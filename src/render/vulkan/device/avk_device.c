@@ -252,6 +252,21 @@ struct avk_device *avk_device_create(struct avk_instance *inst, int drm_fd) {
 	vkGetDeviceQueue(dev->dev, dev->caps.graphics_family, 0,
 		&dev->graphics_queue);
 
+	/* VK_KHR_external_semaphore_fd is always in the extension list above, so a
+	 * NULL here means the loader and the driver disagree about what was
+	 * enabled -- worth saying out loud, because the consequence is that AVK
+	 * cannot attach a fence to a presented frame and will decline every
+	 * output rather than present one unsynchronised. */
+	dev->api.vkGetSemaphoreFdKHR = (PFN_vkGetSemaphoreFdKHR)
+		vkGetDeviceProcAddr(dev->dev, "vkGetSemaphoreFdKHR");
+	dev->api.vkImportSemaphoreFdKHR = (PFN_vkImportSemaphoreFdKHR)
+		vkGetDeviceProcAddr(dev->dev, "vkImportSemaphoreFdKHR");
+	if (dev->api.vkGetSemaphoreFdKHR == NULL ||
+			dev->api.vkImportSemaphoreFdKHR == NULL) {
+		avk_log(AVK_ERROR, "VK_KHR_external_semaphore_fd was enabled but its "
+			"entry points are missing");
+	}
+
 	/* ── the device timeline ───────────────────────────────────────────── */
 	VkSemaphoreTypeCreateInfo timeline_type = {
 		.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,

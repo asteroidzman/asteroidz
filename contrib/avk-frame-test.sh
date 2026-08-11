@@ -42,6 +42,10 @@
 # release half of that transfer -- the half that hands the finished frame back
 # to KMS -- is invisible to every assertion below. Presentation is not covered
 # by this file and cannot be; it takes a monitor.
+#
+# contrib/avk-sync-test.sh covers as much of the handover as a headless run can:
+# whether every frame leaves with a fence attached at all. It cannot cover which
+# fence, or whether the display honoured it, for the same reason.
 set -u
 
 . "$(dirname "$0")/lib/headless.sh"

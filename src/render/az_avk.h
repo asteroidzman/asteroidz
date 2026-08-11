@@ -39,8 +39,14 @@
 #include "vulkan/image/avk_upload.h"
 #include "vulkan/scene/avk_render.h"
 #include "vulkan/scene/avk_scene.h"
+#include "vulkan/sync/avk_sync.h"
 
 #include <cjson/cJSON.h>
+#include <drm.h>
+#include <fcntl.h>
+#include <linux/dma-buf.h>
+#include <wlr/backend.h>
+#include <wlr/render/drm_syncobj.h>
 #include <wlr/render/swapchain.h>
 #include <wlr/util/addon.h>
 #include <wlr/util/transform.h>
@@ -100,7 +106,29 @@ struct az_avk {
 	uint64_t client_images_cached;   /* live entries, not a total */
 	uint64_t output_targets;         /* live imported scan-out images */
 	uint64_t software_cursor_frames;
+
+	/* Presentation synchronisation. Every frame AVK composites must leave
+	 * through exactly one of the first two, and `present_sync_none` must stay
+	 * at zero: a frame handed to a display engine with no fence attached is a
+	 * frame the display may scan out while the GPU is still writing it. */
+	uint64_t present_sync_timeline;  /* fence passed as a drm_syncobj point */
+	uint64_t present_sync_dmabuf;    /* fence attached to the target dma-buf */
+	uint64_t present_sync_none;      /* MUST stay 0 outside the break test */
+	uint64_t present_sync_fails;
+	/* GPU-side waits inserted before rendering into a target somebody else may
+	 * still be reading. A wait, not a stall: it is the GPU that waits, and the
+	 * CPU returns from the frame immediately.
+	 *
+	 * It means slightly different things on the two routes, which is worth
+	 * knowing before reading anything into the number. On the timeline route
+	 * it counts only the frames where the display engine had genuinely not
+	 * released the target yet, and should be rare. On the dma-buf route the
+	 * buffer's fence list also contains our own previous write, so the count
+	 * is close to one per frame and says nothing about contention. */
 	uint64_t presentation_waits;
+	/* A target re-acquired in a state it should not have been in. Anything but
+	 * zero means the swapchain handed back a buffer that was still in use. */
+	uint64_t target_state_violations;
 	/* Damage, in pixels actually redrawn versus pixels the outputs have. Both
 	 * accumulate, so the ratio is over the whole run rather than one frame. */
 	uint64_t damage_pixels;
@@ -123,6 +151,7 @@ struct az_avk {
 	bool warned_shm_source_gone;
 	bool warned_gradient;
 	bool warned_late_import;
+	bool warned_no_present_sync;
 };
 
 static struct az_avk avk = {0};
@@ -439,9 +468,39 @@ static struct avk_image *az_avk_image_for_buffer(struct wlr_buffer *buffer) {
  * would mean the two paths silently fight over buffer lifetime the first time
  * a frame falls back.
  */
+/*
+ * Where a scan-out target is in its cycle.
+ *
+ * The states exist so that "may I render into this?" is a question with an
+ * answer rather than an assumption. wlr_swapchain will only hand back a buffer
+ * nobody holds a lock on, and until now that was the entire argument for
+ * reusing it -- an argument that is true of the CPU's view and says nothing
+ * about whether the display engine has finished reading the pixels. On an
+ * implicitly synchronised path the kernel covered the difference. On an
+ * explicitly synchronised one nothing does, and rendering into a buffer the
+ * scanout engine is still reading produces tearing that looks like a damage
+ * bug.
+ */
+enum az_avk_target_state {
+	/* Never used, or the display engine has signalled it is done. */
+	AZ_AVK_TARGET_FREE,
+	/* A render was submitted into it but it never reached a commit -- a
+	 * rejected output state, or a frame we abandoned. Safe to render into
+	 * again: both submissions are on the same queue and therefore ordered. */
+	AZ_AVK_TARGET_RENDERED,
+	/* Handed to the display engine. Must not be rendered into until its
+	 * release point is signalled. */
+	AZ_AVK_TARGET_IN_FLIGHT,
+};
+
 struct az_avk_target {
 	struct wlr_addon addon;
 	struct avk_image *image;
+
+	enum az_avk_target_state state;
+	/* The point on the output's release timeline that frees this target, or 0
+	 * when the release travels through the buffer's own dma-buf fences. */
+	uint64_t release_point;
 };
 
 static void az_avk_target_addon_destroy(struct wlr_addon *addon) {
@@ -462,20 +521,69 @@ static const struct wlr_addon_interface az_avk_target_addon_impl = {
 	.destroy = az_avk_target_addon_destroy,
 };
 
+/*
+ * How this output's finished frame reaches the display engine with a fence
+ * attached to it.
+ *
+ * Two mechanisms, chosen from what the backend can actually do rather than
+ * from what is nicer:
+ *
+ *   TIMELINE  The backend supports drm_syncobj timelines in an output commit.
+ *             AVK exports its render completion as a sync_file, imports it at
+ *             a point on a timeline, and hands the point to the output state.
+ *             KMS waits on it in the kernel, and signals a second timeline
+ *             when it has finished with the buffer. This is the good path: two
+ *             fences, both directions covered, nothing polled.
+ *
+ *   DMABUF    The backend has no timeline support -- the headless backend has
+ *             no DRM device at all, and a DRM backend on a kernel without
+ *             DRM_CAP_SYNCOBJ_TIMELINE has no timelines either. The fence is
+ *             instead attached to the target's own dma-buf reservation object,
+ *             where any implicitly synchronised consumer will find it. The
+ *             release direction comes back out of the same object.
+ *
+ * There is deliberately no third mechanism. If neither works the output is
+ * declined and SceneFX renders it, because the alternative -- present anyway
+ * and hope the driver is inserting fences on our behalf -- is exactly the
+ * assumption this milestone exists to remove.
+ */
+enum az_avk_present_sync {
+	AZ_AVK_PRESENT_SYNC_UNSET,
+	AZ_AVK_PRESENT_SYNC_TIMELINE,
+	AZ_AVK_PRESENT_SYNC_DMABUF,
+	AZ_AVK_PRESENT_SYNC_BROKEN,
+};
+
 struct az_avk_output {
 	struct wlr_swapchain *swapchain;
 	int width, height;
 	uint32_t drm_format;
 	VkFormat vk_format;
 	struct az_avk_renderer_slot *slot;
+
+	/* The Vulkan end of the fence bridge. Per output rather than per device:
+	 * two monitors run two independent frame cadences, and one shared export
+	 * semaphore would have each one exporting the other's frame. */
+	struct avk_sync sync;
+	bool sync_ready;
+
+	enum az_avk_present_sync present_sync;
+	/* AVK -> display. A point is signalled by importing the frame's sync_file
+	 * and handed to the output state as its wait point. */
+	struct wlr_drm_syncobj_timeline *in_timeline;
+	uint64_t in_point;
+	/* display -> AVK. KMS signals a point when it has released the buffer. */
+	struct wlr_drm_syncobj_timeline *out_timeline;
+	uint64_t out_point;
 };
 
-static struct avk_image *az_avk_target_for_buffer(struct wlr_buffer *buffer) {
+static struct az_avk_target *az_avk_target_for_buffer(
+		struct wlr_buffer *buffer) {
 	struct wlr_addon *addon = wlr_addon_find(&buffer->addons, &avk,
 		&az_avk_target_addon_impl);
 	if (addon != NULL) {
 		struct az_avk_target *target = wl_container_of(addon, target, addon);
-		return target->image;
+		return target;
 	}
 
 	struct wlr_dmabuf_attributes dmabuf;
@@ -501,10 +609,11 @@ static struct avk_image *az_avk_target_for_buffer(struct wlr_buffer *buffer) {
 		return NULL;
 	}
 	target->image = image;
+	target->state = AZ_AVK_TARGET_FREE;
 	wlr_addon_init(&target->addon, &buffer->addons, &avk,
 		&az_avk_target_addon_impl);
 	avk.output_targets++;
-	return image;
+	return target;
 }
 
 static struct az_avk_renderer_slot *az_avk_renderer_for(VkFormat format) {
@@ -607,6 +716,286 @@ static bool az_avk_pick_format(struct wlr_output *output, uint32_t fourcc,
 	return true;
 }
 
+/* ── presentation synchronisation ───────────────────────────────────────── */
+
+/*
+ * Two switches, both of them for tests, both of them named for what they
+ * break rather than what they enable.
+ *
+ * AZ_AVK_NO_PRESENT_SYNC=1 hands the frame over with no fence at all. It is
+ * the break test for this whole file: with it set, `present_sync_none` climbs
+ * and a test that claims to prove synchronisation had better start failing.
+ *
+ * AZ_AVK_NO_TIMELINE=1 pretends the backend has no drm_syncobj timeline
+ * support, which forces the dma-buf reservation path. Without it that path is
+ * only reachable on hardware nobody here has, and an untested fallback is a
+ * fallback that does not work.
+ */
+static bool az_avk_env_flag(const char *name) {
+	const char *v = getenv(name);
+	return v != NULL && v[0] == '1';
+}
+
+/*
+ * Decide, once per output, how a finished frame will carry its fence.
+ *
+ * Returns false when neither mechanism is available, in which case the output
+ * is marked BROKEN and stays on the SceneFX path for the rest of the session.
+ */
+static bool az_avk_present_sync_prepare(struct az_avk_output *out,
+		struct wlr_output *output) {
+	if (out->present_sync == AZ_AVK_PRESENT_SYNC_BROKEN) {
+		return false;
+	}
+	if (out->present_sync != AZ_AVK_PRESENT_SYNC_UNSET) {
+		return true;
+	}
+
+	if (!out->sync_ready) {
+		if (!avk_sync_init(&out->sync, avk.device, output->name)) {
+			wlr_log(WLR_ERROR, "AVK: %s cannot be presented safely -- this "
+				"device cannot turn a finished frame into a fence the display "
+				"engine can wait on; staying on the SceneFX path",
+				output->name);
+			out->present_sync = AZ_AVK_PRESENT_SYNC_BROKEN;
+			return false;
+		}
+		out->sync_ready = true;
+	}
+
+	int drm_fd = wlr_backend_get_drm_fd(output->backend);
+	bool want_timeline = drm_fd >= 0 && output->backend->features.timeline
+		&& !az_avk_env_flag("AZ_AVK_NO_TIMELINE");
+	if (want_timeline) {
+		out->in_timeline = wlr_drm_syncobj_timeline_create(drm_fd);
+		out->out_timeline = wlr_drm_syncobj_timeline_create(drm_fd);
+		if (out->in_timeline != NULL && out->out_timeline != NULL) {
+			out->present_sync = AZ_AVK_PRESENT_SYNC_TIMELINE;
+			wlr_log(WLR_INFO, "AVK: %s presents with drm_syncobj timelines; "
+				"the display engine waits for the GPU in the kernel",
+				output->name);
+			return true;
+		}
+		wlr_drm_syncobj_timeline_unref(out->in_timeline);
+		wlr_drm_syncobj_timeline_unref(out->out_timeline);
+		out->in_timeline = NULL;
+		out->out_timeline = NULL;
+		wlr_log(WLR_ERROR, "AVK: %s supports timelines but they could not be "
+			"created; falling back to dma-buf fences", output->name);
+	}
+
+	/* The dma-buf path cannot be probed without a real fence to attach, so it
+	 * is assumed here and verified on the first frame -- see the handover.
+	 * A kernel too old for the ioctl marks the output BROKEN there. */
+	out->present_sync = AZ_AVK_PRESENT_SYNC_DMABUF;
+	wlr_log(WLR_INFO, "AVK: %s has no drm_syncobj timeline support%s; the "
+		"frame's fence travels on the target's dma-buf instead", output->name,
+		az_avk_env_flag("AZ_AVK_NO_TIMELINE") ? " (forced by "
+			"AZ_AVK_NO_TIMELINE)" : "");
+	return true;
+}
+
+/*
+ * Has the display engine finished with this target, and if not, what do we
+ * wait on?
+ *
+ * Appends at most one wait to `waits`. Returns false only when the target is
+ * genuinely unusable, which is the assertion the state machine exists for.
+ */
+static bool az_avk_target_acquire(struct az_avk_output *out,
+		struct az_avk_target *target, struct wlr_buffer *buffer,
+		VkSemaphoreSubmitInfo *waits, uint32_t *wait_count) {
+	if (target->state == AZ_AVK_TARGET_FREE ||
+			target->state == AZ_AVK_TARGET_RENDERED) {
+		/* RENDERED is safe without a wait: the earlier submission and this one
+		 * are on the same queue, and a queue orders its own work. */
+		return true;
+	}
+
+	int fence = -1;
+	if (out->present_sync == AZ_AVK_PRESENT_SYNC_TIMELINE) {
+		bool signalled = false;
+		if (wlr_drm_syncobj_timeline_check(out->out_timeline,
+				target->release_point, 0, &signalled) && signalled) {
+			target->state = AZ_AVK_TARGET_FREE;
+			return true;
+		}
+		/* Not signalled. Either the display engine is still using it, or the
+		 * commit that would have signalled it was rejected and the point will
+		 * never materialise. Those need opposite responses, and asking is one
+		 * ioctl. */
+		bool available = false;
+		if (!wlr_drm_syncobj_timeline_check(out->out_timeline,
+				target->release_point, DRM_SYNCOBJ_WAIT_FLAGS_WAIT_AVAILABLE,
+				&available) || !available) {
+			target->state = AZ_AVK_TARGET_FREE;
+			return true;
+		}
+		fence = wlr_drm_syncobj_timeline_export_sync_file(out->out_timeline,
+			target->release_point);
+		if (fence < 0) {
+			wlr_log(WLR_ERROR, "AVK: cannot export the release fence for a "
+				"target still held by the display engine");
+			avk.target_state_violations++;
+			return false;
+		}
+	} else {
+		/* The reservation object carries whatever anyone put on it -- the
+		 * display engine's read, and also our own last write. Asking as a
+		 * WRITER returns both, which is what we are about to become. Waiting
+		 * on our own write is redundant, since one queue orders its own work,
+		 * but it is one semaphore on a wait list rather than a stall and
+		 * telling the two apart would cost more than it saves. */
+		struct wlr_dmabuf_attributes dmabuf;
+		if (!wlr_buffer_get_dmabuf(buffer, &dmabuf) || dmabuf.n_planes < 1) {
+			avk.target_state_violations++;
+			return false;
+		}
+		if (!avk_sync_dmabuf_fences(dmabuf.fd[0], DMA_BUF_SYNC_WRITE, &fence)) {
+			avk.target_state_violations++;
+			return false;
+		}
+		if (fence < 0) {
+			/* No fences on the buffer: nobody is using it. */
+			target->state = AZ_AVK_TARGET_FREE;
+			return true;
+		}
+	}
+
+	VkSemaphore sem = avk_sync_import_sync_file(&out->sync, fence);
+	if (sem == VK_NULL_HANDLE) {
+		avk.target_state_violations++;
+		return false;
+	}
+	waits[*wait_count] = (VkSemaphoreSubmitInfo){
+		.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+		.semaphore = sem,
+		/* The wait guards the colour attachment write, so that is the stage
+		 * that has to block. Everything earlier in the pipeline may run. */
+		.stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+	};
+	(*wait_count)++;
+	avk.presentation_waits++;
+	target->state = AZ_AVK_TARGET_FREE;
+	return true;
+}
+
+/*
+ * Attach the frame's completion fence to the thing being presented.
+ *
+ * Called after the render has been submitted and before the output state is
+ * committed. Returns false if the fence could not be attached, in which case
+ * the caller must NOT present the frame: an unfenced buffer handed to a display
+ * engine is a buffer that may be scanned out while the GPU is still writing it,
+ * and the resulting tearing is indistinguishable from a damage-tracking bug.
+ */
+static bool az_avk_present_handover(struct az_avk_output *out,
+		struct az_avk_target *target, struct wlr_buffer *buffer,
+		struct wlr_output_state *state) {
+	/* The export happens first and unconditionally, even in the break test.
+	 * A binary semaphore signalled by one submission and then signalled again
+	 * by the next, with nothing in between consuming the payload, is undefined
+	 * behaviour -- so a break test that simply skipped the export would not be
+	 * testing "no fence is handed on", it would be testing "the semaphore is
+	 * misused", and it would fail for the wrong reason. Exporting and dropping
+	 * the fence on the floor is exactly and only the missing handover. */
+	int fence = -1;
+	if (!avk_sync_export_sync_file(&out->sync, &fence)) {
+		/* Not transient: the device either can export its completion or it
+		 * cannot, and retrying every frame would produce one error line per
+		 * vblank forever. */
+		wlr_log(WLR_ERROR, "AVK: the frame's completion could not be exported "
+			"as a fence; this output goes back to the SceneFX path");
+		out->present_sync = AZ_AVK_PRESENT_SYNC_BROKEN;
+		avk.present_sync_fails++;
+		return false;
+	}
+
+	if (az_avk_env_flag("AZ_AVK_NO_PRESENT_SYNC")) {
+		if (!avk.warned_no_present_sync) {
+			avk.warned_no_present_sync = true;
+			wlr_log(WLR_ERROR, "AVK: AZ_AVK_NO_PRESENT_SYNC=1 -- frames are "
+				"being handed to the display with no fence attached. This is "
+				"the break test for presentation synchronisation and it must "
+				"never be set on a desktop you care about.");
+		}
+		if (fence >= 0) {
+			close(fence);
+		}
+		avk.present_sync_none++;
+		target->state = AZ_AVK_TARGET_RENDERED;
+		return true;
+	}
+
+	if (out->present_sync == AZ_AVK_PRESENT_SYNC_TIMELINE) {
+		if (fence >= 0) {
+			out->in_point++;
+			if (!wlr_drm_syncobj_timeline_import_sync_file(out->in_timeline,
+					out->in_point, fence)) {
+				wlr_log(WLR_ERROR, "AVK: the frame's fence could not be placed "
+					"on the output's wait timeline");
+				close(fence);
+				avk.present_sync_fails++;
+				return false;
+			}
+			close(fence);
+			wlr_output_state_set_wait_timeline(state, out->in_timeline,
+				out->in_point);
+		}
+		/* The release direction is asked for whether or not there was anything
+		 * to wait on: it is how the target gets back to FREE. */
+		out->out_point++;
+		wlr_output_state_set_signal_timeline(state, out->out_timeline,
+			out->out_point);
+		target->release_point = out->out_point;
+		target->state = AZ_AVK_TARGET_IN_FLIGHT;
+		avk.present_sync_timeline++;
+		return true;
+	}
+
+	if (fence < 0) {
+		/* Already complete. Nothing to attach, and nothing to wait for. */
+		target->release_point = 0;
+		target->state = AZ_AVK_TARGET_IN_FLIGHT;
+		avk.present_sync_dmabuf++;
+		return true;
+	}
+
+	struct wlr_dmabuf_attributes dmabuf;
+	if (!wlr_buffer_get_dmabuf(buffer, &dmabuf)) {
+		close(fence);
+		avk.present_sync_fails++;
+		return false;
+	}
+	/* One fence, every plane: a multi-planar target is one image to the GPU
+	 * and several reservation objects to the kernel, and a consumer that reads
+	 * plane 1 without waiting is just as wrong as one that reads plane 0.
+	 * avk_sync_dmabuf_attach consumes the fd, so each plane gets its own dup. */
+	bool ok = true;
+	for (int i = 0; i < dmabuf.n_planes; i++) {
+		int dup = fcntl(fence, F_DUPFD_CLOEXEC, 0);
+		if (dup < 0 || !avk_sync_dmabuf_attach(dmabuf.fd[i],
+				DMA_BUF_SYNC_WRITE, dup)) {
+			ok = false;
+			break;
+		}
+	}
+	close(fence);
+	if (!ok) {
+		wlr_log(WLR_ERROR, "AVK: the frame's fence could not be attached to "
+			"the target dma-buf; this output cannot be presented safely and "
+			"is going back to the SceneFX path");
+		out->present_sync = AZ_AVK_PRESENT_SYNC_BROKEN;
+		avk.present_sync_fails++;
+		return false;
+	}
+
+	target->release_point = 0;
+	target->state = AZ_AVK_TARGET_IN_FLIGHT;
+	avk.present_sync_dmabuf++;
+	return true;
+}
+
 /* Called when a monitor goes away. The swapchain's buffers carry the target
  * addons, so destroying it destroys those too -- which is the reason the
  * images are hung off the buffers rather than kept in a list here. */
@@ -617,6 +1006,24 @@ static void az_avk_output_finish(struct az_avk_output *out) {
 	if (out->swapchain != NULL) {
 		wlr_swapchain_destroy(out->swapchain);
 		out->swapchain = NULL;
+	}
+	/* Signal the timelines to their maximum before dropping them: anything
+	 * still waiting on a point that will now never be reached would wait for
+	 * the lifetime of the process. */
+	if (out->in_timeline != NULL) {
+		wlr_drm_syncobj_timeline_signal(out->in_timeline, UINT64_MAX);
+		wlr_drm_syncobj_timeline_unref(out->in_timeline);
+		out->in_timeline = NULL;
+	}
+	if (out->out_timeline != NULL) {
+		wlr_drm_syncobj_timeline_signal(out->out_timeline, UINT64_MAX);
+		wlr_drm_syncobj_timeline_unref(out->out_timeline);
+		out->out_timeline = NULL;
+	}
+	if (out->sync_ready) {
+		avk_sync_log_stats(&out->sync, "output");
+		avk_sync_finish(&out->sync);
+		out->sync_ready = false;
 	}
 	free(out);
 }
@@ -901,6 +1308,13 @@ static bool az_avk_output_supported(Monitor *m,
 		struct wlr_color_transform *color_transform) {
 	struct wlr_output *output = m->wlr_output;
 
+	/* Decided once, on the first frame, and permanent: an output whose frames
+	 * cannot be handed over with a fence attached is not one AVK may present,
+	 * however well it composites. */
+	if (m->avk != NULL && m->avk->present_sync == AZ_AVK_PRESENT_SYNC_BROKEN) {
+		return false;
+	}
+
 	if (color_transform != NULL || output->image_description != NULL) {
 		if (!avk.warned_color_transform) {
 			avk.warned_color_transform = true;
@@ -1034,6 +1448,14 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 		return false;
 	}
 
+	/* Before anything is rendered: can this frame be handed over with a fence
+	 * at the end of it? Finding out afterwards would mean either presenting it
+	 * unsynchronised or throwing away work already submitted. */
+	if (!az_avk_present_sync_prepare(out, output)) {
+		avk.fallback_frames++;
+		return false;
+	}
+
 	struct wlr_buffer *buffer = wlr_swapchain_acquire(out->swapchain);
 	if (buffer == NULL) {
 		wlr_log(WLR_ERROR, "AVK: no free buffer in %s's swapchain",
@@ -1041,8 +1463,20 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 		avk.fallback_frames++;
 		return false;
 	}
-	struct avk_image *target = az_avk_target_for_buffer(buffer);
-	if (target == NULL) {
+	struct az_avk_target *target_rec = az_avk_target_for_buffer(buffer);
+	if (target_rec == NULL) {
+		wlr_buffer_unlock(buffer);
+		avk.fallback_frames++;
+		return false;
+	}
+	struct avk_image *target = target_rec->image;
+
+	/* Is the display engine still reading it? */
+	VkSemaphoreSubmitInfo waits[2];
+	uint32_t wait_count = 0;
+	if (!az_avk_target_acquire(out, target_rec, buffer, waits, &wait_count)) {
+		wlr_log(WLR_ERROR, "AVK: %s's swapchain handed back a target the "
+			"display engine has not released", output->name);
 		wlr_buffer_unlock(buffer);
 		avk.fallback_frames++;
 		return false;
@@ -1081,10 +1515,29 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 	};
 	az_avk_walk_children(&walk, &m->scene_output->scene->tree, 0, 0);
 
+	/* The extra signal is the frame's completion as something exportable: a
+	 * timeline semaphore cannot become a sync_file, so a binary one rides
+	 * alongside it purely to be turned into a file descriptor a moment later. */
+	VkSemaphoreSubmitInfo signals[1] = {{
+		.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+		.semaphore = avk_sync_signal_semaphore(&out->sync),
+		.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+	}};
 	uint64_t timeline = avk_render_frame(&out->slot->renderer, target, &scene,
-		NULL, 0, NULL, 0);
+		waits, wait_count, signals, 1);
 	avk_scene_finish(&scene);
 	if (timeline == 0) {
+		wlr_buffer_unlock(buffer);
+		avk.fallback_frames++;
+		return false;
+	}
+	target_rec->state = AZ_AVK_TARGET_RENDERED;
+
+	/* Submitted. Now give the display engine something to wait on. */
+	if (!az_avk_present_handover(out, target_rec, buffer, state)) {
+		/* The work is already in flight and will complete; the buffer just
+		 * never becomes a frame. SceneFX renders this one into a different
+		 * buffer, so nothing is torn and nothing is lost but the effort. */
 		wlr_buffer_unlock(buffer);
 		avk.fallback_frames++;
 		return false;
@@ -1387,6 +1840,16 @@ static cJSON *az_avk_stats_json(void) {
 	cJSON_AddNumberToObject(o, "cpu_sync_waits", (double)sync_waits);
 	cJSON_AddNumberToObject(o, "presentation_waits",
 		(double)avk.presentation_waits);
+	cJSON_AddNumberToObject(o, "present_sync_timeline",
+		(double)avk.present_sync_timeline);
+	cJSON_AddNumberToObject(o, "present_sync_dmabuf",
+		(double)avk.present_sync_dmabuf);
+	cJSON_AddNumberToObject(o, "present_sync_none",
+		(double)avk.present_sync_none);
+	cJSON_AddNumberToObject(o, "present_sync_failures",
+		(double)avk.present_sync_fails);
+	cJSON_AddNumberToObject(o, "target_state_violations",
+		(double)avk.target_state_violations);
 	cJSON_AddNumberToObject(o, "output_targets_in_flight",
 		(double)avk.output_targets);
 
@@ -1423,6 +1886,11 @@ static void az_avk_stats_reset(void) {
 	avk.cpu_frame_us_max = 0;
 	avk.software_cursor_frames = 0;
 	avk.presentation_waits = 0;
+	avk.present_sync_timeline = 0;
+	avk.present_sync_dmabuf = 0;
+	avk.present_sync_none = 0;
+	avk.present_sync_fails = 0;
+	avk.target_state_violations = 0;
 	if (avk.active) {
 		avk.importer.imports_explicit = 0;
 		avk.importer.imports_recovered = 0;
@@ -1451,6 +1919,12 @@ static void az_avk_log_stats(void) {
 		" avk.cache_hits=%" PRIu64 " avk.cache_misses=%" PRIu64,
 		avk.commit_imports, avk.late_imports, avk.cache_hits,
 		avk.cache_misses);
+	wlr_log(WLR_INFO, "avk.present_sync_timeline=%" PRIu64
+		" avk.present_sync_dmabuf=%" PRIu64 " avk.present_sync_none=%" PRIu64
+		" avk.present_sync_fails=%" PRIu64 " avk.presentation_waits=%" PRIu64
+		" avk.target_state_violations=%" PRIu64, avk.present_sync_timeline,
+		avk.present_sync_dmabuf, avk.present_sync_none, avk.present_sync_fails,
+		avk.presentation_waits, avk.target_state_violations);
 	for (size_t i = 0; i < AZ_AVK_MAX_FORMATS; i++) {
 		if (avk.renderers[i].used) {
 			avk_renderer_log_stats(&avk.renderers[i].renderer);

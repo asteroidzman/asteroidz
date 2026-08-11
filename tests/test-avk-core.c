@@ -25,11 +25,14 @@
 #include <sys/sysmacros.h>
 #include <unistd.h>
 
+#include <xf86drm.h>
+
 #include "render/vulkan/command/avk_command.h"
 #include "render/vulkan/command/avk_retire.h"
 #include "render/vulkan/debug/avk_debug.h"
 #include "render/vulkan/device/avk_device.h"
 #include "render/vulkan/device/avk_phys.h"
+#include "render/vulkan/sync/avk_sync.h"
 
 static int failures = 0;
 static int checks = 0;
@@ -317,6 +320,140 @@ static void test_retire(struct avk_device *dev) {
 	avk_cmd_ring_finish(&ring);
 }
 
+/* ── presentation synchronisation ───────────────────────────────────────────
+ *
+ * The round trip a presented frame makes, without a compositor or a display:
+ *
+ *     GPU work -> VkSemaphore -> sync_file -> drm_syncobj timeline point
+ *              -> sync_file -> VkSemaphore -> GPU wait
+ *
+ * The middle of that chain is exactly what wlr_output_state_set_wait_timeline()
+ * hands to KMS, and it is the one part of the presentation path a headless
+ * compositor cannot exercise: the headless backend has no DRM device, so it
+ * rejects any commit carrying a timeline and AVK uses the dma-buf fallback
+ * there. That leaves the timeline bridge testable only on a real monitor --
+ * unless it is tested here, against a render node, with no display involved.
+ *
+ * The assertion that carries the weight is the last one. If the fence handed
+ * around this loop were the wrong fence, or an already-signalled one, or one
+ * that never signals, the second submission's wait would either complete
+ * before its dependency or never complete at all. Waiting on the device
+ * timeline with a real timeout tells those apart.
+ *
+ * Measured, not assumed: dropping the signal semaphore from the first
+ * submission does not make this test fail politely -- it exports a fence that
+ * never signals, the dependent submission never retires, and teardown wedges.
+ * A hang is a worse failure than a red line but it is still a failure, and it
+ * is proof that the chain below is load-bearing rather than decorative.
+ */
+static void test_sync(struct avk_device *dev) {
+	printf("presentation synchronisation\n");
+
+	if (dev->drm_fd < 0) {
+		printf("  note: device has no DRM fd; skipping the syncobj round trip\n");
+		return;
+	}
+
+	struct avk_sync sync;
+	if (!avk_sync_init(&sync, dev, "test")) {
+		CHECK(false, "the fence bridge initialises");
+		return;
+	}
+	CHECK(avk_sync_signal_semaphore(&sync) != VK_NULL_HANDLE,
+		"an exportable completion semaphore exists");
+
+	struct avk_cmd_ring ring;
+	if (!avk_cmd_ring_init(&ring, dev, "sync-test")) {
+		CHECK(false, "ring initialises");
+		avk_sync_finish(&sync);
+		return;
+	}
+
+	/* A frame: submit, signalling the exportable semaphore alongside the
+	 * device timeline exactly as az_avk_build_frame() does. */
+	VkCommandBuffer cb = avk_cmd_ring_begin(&ring);
+	CHECK(cb != VK_NULL_HANDLE, "a command buffer to submit");
+	VkSemaphoreSubmitInfo signal = {
+		.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+		.semaphore = avk_sync_signal_semaphore(&sync),
+		.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+	};
+	uint64_t frame = avk_cmd_ring_submit(&ring, NULL, 0, &signal, 1);
+	CHECK(frame != 0, "the frame submits, reserving timeline %" PRIu64, frame);
+
+	int fence = -1;
+	CHECK(avk_sync_export_sync_file(&sync, &fence),
+		"the frame's completion exports as a sync_file");
+	/* Not a tolerance: the export happens microseconds after the submit and
+	 * there is definitely a pending signal, so a driver returning "nothing to
+	 * wait for" here would mean the semaphore was never in the submission. */
+	CHECK(fence >= 0, "the exported sync_file is a real file descriptor");
+	if (fence < 0) {
+		goto out;
+	}
+
+	/* Into a drm_syncobj timeline, at a point, the way an output commit
+	 * receives it. Done with libdrm directly rather than through wlroots so
+	 * this test keeps working with no compositor linked in. */
+	uint32_t timeline = 0;
+	if (drmSyncobjCreate(dev->drm_fd, 0, &timeline) != 0) {
+		CHECK(false, "a drm_syncobj timeline can be created");
+		close(fence);
+		goto out;
+	}
+	uint32_t staging = 0;
+	bool imported = drmSyncobjCreate(dev->drm_fd, 0, &staging) == 0
+		&& drmSyncobjImportSyncFile(dev->drm_fd, staging, fence) == 0
+		&& drmSyncobjTransfer(dev->drm_fd, timeline, 1, staging, 0, 0) == 0;
+	close(fence);
+	drmSyncobjDestroy(dev->drm_fd, staging);
+	CHECK(imported, "the fence lands on timeline point 1");
+
+	/* And back out again, which is what the DRM backend does to turn the
+	 * point into the atomic commit's IN_FENCE_FD. */
+	int returned = -1;
+	uint32_t out_handle = 0;
+	bool exported = imported
+		&& drmSyncobjCreate(dev->drm_fd, 0, &out_handle) == 0
+		&& drmSyncobjTransfer(dev->drm_fd, out_handle, 0, timeline, 1, 0) == 0
+		&& drmSyncobjExportSyncFile(dev->drm_fd, out_handle, &returned) == 0;
+	drmSyncobjDestroy(dev->drm_fd, out_handle);
+	CHECK(exported && returned >= 0,
+		"the point comes back out as a sync_file");
+
+	if (exported && returned >= 0) {
+		/* The release direction: a second submission waits on the fence the
+		 * display engine would have handed back. */
+		VkSemaphore wait_sem = avk_sync_import_sync_file(&sync, returned);
+		CHECK(wait_sem != VK_NULL_HANDLE,
+			"the returned sync_file imports as a semaphore to wait on");
+		if (wait_sem != VK_NULL_HANDLE) {
+			VkCommandBuffer cb2 = avk_cmd_ring_begin(&ring);
+			CHECK(cb2 != VK_NULL_HANDLE, "a second command buffer");
+			VkSemaphoreSubmitInfo wait = {
+				.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+				.semaphore = wait_sem,
+				.stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+			};
+			uint64_t second = avk_cmd_ring_submit(&ring, &wait, 1, NULL, 0);
+			CHECK(second != 0, "the dependent submission is accepted");
+			CHECK(second != 0 && avk_device_timeline_wait(dev, second,
+					2000000000ULL),
+				"and completes, so the fence it waited on really signalled");
+		}
+	}
+
+	drmSyncobjDestroy(dev->drm_fd, timeline);
+
+	CHECK(sync.reuse_hazards == 0, "no wait slot was reused while pending");
+	CHECK(sync.export_fails == 0 && sync.import_fails == 0,
+		"no export or import failed");
+
+out:
+	avk_cmd_ring_finish(&ring);
+	avk_sync_finish(&sync);
+}
+
 int main(void) {
 	printf("== avk core (M1) ==\n");
 
@@ -355,6 +492,7 @@ int main(void) {
 	test_caps(dev);
 	test_command_ring(dev);
 	test_retire(dev);
+	test_sync(dev);
 
 	avk_device_destroy(dev);
 	avk_instance_destroy(inst);

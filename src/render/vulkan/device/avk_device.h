@@ -90,11 +90,24 @@ struct avk_caps {
 	VkDeviceSize optimal_buffer_copy_row_pitch_alignment;
 };
 
+/*
+ * Device entry points that are not in core Vulkan and so have no linkable
+ * symbol: they have to be fetched with vkGetDeviceProcAddr after the device
+ * exists. Kept in one struct so that "is this call available?" is answered by a
+ * NULL check on the pointer rather than by re-reading which extension was
+ * enabled where.
+ */
+struct avk_device_api {
+	PFN_vkGetSemaphoreFdKHR vkGetSemaphoreFdKHR;
+	PFN_vkImportSemaphoreFdKHR vkImportSemaphoreFdKHR;
+};
+
 struct avk_device {
 	struct avk_instance *instance;   /* borrowed */
 	VkPhysicalDevice phys;
 	VkDevice dev;
 	struct avk_caps caps;
+	struct avk_device_api api;
 
 	VkQueue graphics_queue;
 

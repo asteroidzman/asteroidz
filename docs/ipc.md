@@ -411,7 +411,18 @@ Fields worth knowing:
 | `commit_imports` / `late_imports` | content taken at commit, versus discovered at a frame. `late_imports` must be 0 |
 | `damage_ratio` | `damage_pixels / output_pixels` over the run. 1.0 means every frame is a full redraw |
 | `cpu_sync_waits` | must be 0 — a nonzero value means the frame path blocks on the GPU |
+| `present_sync_timeline` / `present_sync_dmabuf` | frames handed to the display with a fence, by which route |
+| `present_sync_none` | **must be 0.** Frames handed over unsynchronised — only reachable via `AZ_AVK_NO_PRESENT_SYNC=1` |
+| `present_sync_failures` | a fence could not be attached, so the frame was dropped and SceneFX rendered it instead |
+| `presentation_waits` | GPU-side waits before reusing a target. Not a stall — the CPU returns immediately. Rare on the timeline route; ~1 per frame on the dma-buf route, where the buffer's fence list also holds our own last write |
+| `target_state_violations` | must be 0 — the swapchain handed back a buffer the display had not released |
 | `validation_errors` | Vulkan validation errors seen this run (needs `ASTEROIDZ_VK_DEBUG=1`) |
+
+`present_sync_timeline + present_sync_dmabuf` should equal `frames`. Which of
+the two is nonzero depends on the backend, not on a setting: a DRM backend with
+`DRM_CAP_SYNCOBJ_TIMELINE` uses timelines, and everything else — including every
+headless test run — puts the fence on the target's own dma-buf. Both are
+correct; only the first lets KMS wait on the fence in the atomic commit itself.
 
 Anything not yet measured is reported as `null`, not `0`. A zero is a
 measurement; a null is an admission. `gpu_frame_us` is null today because
