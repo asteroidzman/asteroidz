@@ -480,3 +480,84 @@ maximum are not clamped for `animation_duration_tag`, `animation_duration_focus`
 stashing this work and rebuilding: same 22 failures, same 1022 checks. Nothing
 in the Vulkan work touches config parsing. Recorded here so scope attribution
 stays clean; deliberately not fixed as part of the renderer migration.
+
+---
+
+## M3b work plan (the compositor half)
+
+Written down here rather than left in a conversation, because this is the queue
+the next working session executes. Everything below lands **behind
+`ASTEROIDZ_RENDERER=avk`, defaulting off** — which is what makes partial
+progress safe: an unfinished AVK mode is a flag nobody sets, and the GLES path
+stays byte-identical.
+
+### Facts already established (do not re-derive)
+
+- wlroots 0.20 headers: `/usr/include/wlroots-0.20/wlr/`. A 0.21 tree is also
+  installed and a source checkout sits at `~/wlroots`; asteroidz builds against
+  **0.20**.
+- Scene node types are in
+  `subprojects/asteroidz-scenefx/include/scenefx/types/wlr_scene.h:60` —
+  `TREE`, `RECT`, `BUFFER`, plus scenefx's `SHADOW`, `OPTIMIZED_BLUR`, `BLUR`.
+  The last three are M4; M3b must recognise and skip them with one warning, not
+  silently drop them.
+- Swapchain API (`/usr/include/wlroots-0.20/wlr/render/swapchain.h`):
+  `wlr_swapchain_create()`, `wlr_swapchain_acquire()`,
+  `wlr_swapchain_destroy()`. This is the least invasive way to get output
+  buffers without writing an allocator (§ "Output buffer strategy").
+- The three build sites to unify are `src/asteroidz.c:7654` (screenshot),
+  `:7707` (HDR pending change) and `:7724` (ordinary), plus
+  `src/ext-protocol/tearing.h:101`.
+
+### Order of work
+
+1. **Runtime switch.** `ASTEROIDZ_RENDERER` read once in `setup()`. Log
+   `Asteroidz rendering backend: AVK native Vulkan` and
+   `wlroots compatibility renderer: GLES2` — the second line must not imply
+   GLES participates in composition.
+2. **`az_output_build_frame(Monitor *, struct wlr_output_state *,
+   const struct az_frame_options *)`** in `src/render/az_output.c`. All four
+   sites above call it. GLES backend = today's
+   `wlr_scene_output_build_state()`; AVK backend = steps 3-6.
+3. **Output target.** Per-monitor `wlr_swapchain`; `wlr_swapchain_acquire()`
+   per frame; `wlr_buffer_get_dmabuf()` → import through M2 as a render target
+   (`for_render = true`); cache the `avk_image` per `wlr_buffer`;
+   `wlr_output_state_set_buffer()`. Assert the target is not reacquired while
+   the backend still owns it.
+4. **Scene walker.** Recurse the scene tree accumulating x/y, emit
+   `AVK_CMD_RECT` and `AVK_CMD_TEXTURE` in tree order. Painter's algorithm is
+   *correct* without occlusion culling — occlusion is an optimisation, so the
+   first cut may skip it. Same for damage: **full damage per frame is
+   acceptable for the first working version** and must be logged as an AVK-mode
+   regression, then fixed immediately after.
+5. **Client buffer cache.** `wlr_buffer` → `avk_image`, keyed on the buffer
+   pointer, with a `wlr_buffer.events.destroy` listener and retirement on the
+   AVK timeline. DMA-BUF via M2; SHM via `wlr_buffer_begin_data_ptr_access()`
+   and the staging path. **Never `wlr_texture_from_buffer()`.**
+6. **Sync.** First cut may rely on implicit sync on the dmabuf — that is not a
+   CPU wait and is what wlroots does when timelines are unavailable. The
+   explicit bridge (exportable binary semaphore → `vkGetSemaphoreFdKHR`
+   sync_file → output wait timeline → KMS `IN_FENCE_FD`) follows.
+7. **Software cursor.** `wlr_output_add_software_cursors_to_render_pass()` is
+   forbidden in AVK mode. Emit the cursor as an AVK command instead. Do not
+   ship a disappearing cursor.
+8. **DMA-BUF feedback** rebuilt from AVK's capability table, so clients are not
+   told about modifiers AVK cannot import.
+
+### Acceptance gate for the first slice
+
+Compositor boots with `ASTEROIDZ_RENDERER=avk` on a **headless** output and
+`contrib/anim-test.sh` captures a correct frame. Only after that does it go
+near a real display, and only with the user watching — a new renderer under an
+unattended session is exactly what that standing rule exists for.
+
+### Break tests still owed (from the M3 brief)
+
+A: poison `wlr_renderer_begin_buffer_pass()`, AVK frame still correct.
+B: disable explicit-modifier import → explicit DMA-BUF test fails.
+C: disable the MOD_INVALID fallback → Electron-style test fails.
+D: retire an imported client image early → lifetime test fails.
+E: reuse an output target before presentation release → assertion fires.
+F: remove damage expansion for a moved surface → damage test fails. **(F is
+already done and passing at the engine level; it needs redoing at the
+compositor level once damage is real.)**
