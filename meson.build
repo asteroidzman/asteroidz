@@ -266,6 +266,14 @@ if build_vulkan
                              dependencies : [avk_dep],
                              build_by_default : false)
   test('avk-core', test_avk_core, timeout : 60)
+
+  # The one that reproduces the blank-window class: a real GBM buffer whose
+  # modifier is thrown away before import, which is what wl_drm and
+  # modifier-less Electron/Chromium hand over.
+  test_avk_dmabuf = executable('test-avk-dmabuf', 'tests/test-avk-dmabuf.c',
+                               dependencies : [avk_dep],
+                               build_by_default : false)
+  test('avk-dmabuf', test_avk_dmabuf, timeout : 60)
 endif
 
 # Runs from the source root so the corpus case can open assets/config.kdl --

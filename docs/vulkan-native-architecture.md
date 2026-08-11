@@ -270,23 +270,39 @@ record *actual* max extents and usage, not assumptions.
 For `DRM_FORMAT_MOD_INVALID`, the ordered ladder — **never** "assume LINEAR",
 which silently displays corrupt tiled memory as if it were pixels:
 
-1. **Recover the real modifier.** The buffer came from somewhere. Try
-   `gbm_bo_import(GBM_BO_IMPORT_FD)` on our own GBM device and read back
-   `gbm_bo_get_modifier()`. If the producer used the same device this returns
-   the true modifier and the import proceeds zero-copy on the normal path.
-2. **Driver-side implicit import.** Where the driver exposes a legacy implicit
-   path, use it. This is the equivalent of what EGL does today, without EGL.
-3. **Copy through a known-layout intermediate.** Import as a *buffer* (not an
-   image) where the size is derivable and blit into a LINEAR staging image, or
-   round-trip through GBM. Slow, correct, and only on the failure path.
-4. **Prevent it at the source.** DMA-BUF feedback tranches computed from what
+1. **Recover the real modifier**, via `gbm_bo_import(GBM_BO_IMPORT_FD)` +
+   `gbm_bo_get_modifier()`, and import zero-copy on the normal path.
+   **Measured, and it does not work on Mesa.** A buffer allocated with
+   `GFX11,256KB_R_X,PIPE_XOR_BITS=5,PACKERS=5` (`0x0200000028A01F04`),
+   exported and re-imported through the legacy path, comes back reporting
+   `MOD_INVALID`; Mesa's implicit import discards the modifier rather than
+   re-deriving it, and no usage-flag combination changes that. (Asking for
+   `GBM_BO_USE_SCANOUT` on a render-only buffer makes the import fail
+   outright — usage is a layout constraint, not a hint.) So this rung is
+   **probed at startup** with a real round-tripped allocation and used only
+   where it works. Capability detection, not a vendor branch and not a
+   hopeful assumption.
+2. **Copy through a driver-detiled mapping.** `gbm_bo_map()` with
+   `GBM_BO_TRANSFER_READ` returns a linear view — the driver detiles on the
+   way, so the layout never has to be *named* to be read correctly — then a
+   staged `vkCmdCopyBufferToImage2` into an OPTIMAL image we own. Costs a
+   surface read plus an upload per import. **This is what actually fixes the
+   blank window**, and it works regardless of what rung 1 says.
+3. **Prevent it at the source.** DMA-BUF feedback tranches computed from what
    *this* importer can actually import, so conforming clients never allocate an
-   unimportable buffer in the first place. This is the real fix; 1-3 are for
+   unimportable buffer in the first place. This is the real fix; 1-2 are for
    clients that ignore feedback.
 
 Every failure logs format, modifier (both as names), plane count, per-plane
 size/offset/stride, the target device, and which rungs of the ladder were tried
 and why each failed. **A blank window is a bug. A slow window is a fallback.**
+
+Correctness here is asserted on *pixels*, not on the import succeeding:
+`tests/test-avk-dmabuf.c` writes a coordinate-derived pattern into a genuinely
+tiled buffer, blanks the modifier, imports, reads the `VkImage` back and
+compares all 32768 pixels. An import that guessed LINEAR, or that computed its
+row pitch in bytes where Vulkan wants pixels, succeeds and returns garbage —
+only the readback separates the two.
 
 ### 5.3 Multi-GPU
 
@@ -398,5 +414,15 @@ and `contrib/regression/`. New Vulkan-core tests are plain binaries under
 ## Status
 
 - Phase 0 audit: **done** (this document)
-- M1: **in progress**
-- M2-M10: not started
+- M1 — Vulkan core: **done**. `src/render/vulkan/`, `tests/test-avk-core.c`
+  (32 checks), `tests/check-vulkan-isolation.py`.
+- M2 — image/DMA-BUF import: **substantially done**.
+  `tests/test-avk-dmabuf.c` (23 checks). Format/modifier capability table
+  probed per modifier; explicit-modifier zero-copy import with disjoint and
+  multi-plane handling; the implicit-modifier ladder above, verified
+  pixel-exact. **Not yet done in M2:** the persistent staging *ring* (each
+  copy currently allocates and retires its own staging buffer — correct, and
+  retired on the GPU timeline, but one allocation per import), damage-region
+  SHM upload, YUV sampler-conversion sampling, and DMA-BUF feedback tranches
+  (which need protocol wiring, so they land with M3).
+- M3-M10: not started
