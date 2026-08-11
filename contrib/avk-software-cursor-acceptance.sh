@@ -275,10 +275,19 @@ note "software cursor frames $SW3  hardware $HW3  culled $CULLED  reimports $REI
 
 assert "crossings stayed on the software path ($HW3 hardware frames)" \
 	"$([ "$HW3" -eq 0 ] && echo true || echo false)"
-assert "the cursor was culled from the output it was not on ($CULLED)" \
-	"$([ "$CULLED" -gt 0 ] && echo true || echo false)"
+assert "the cursor was still being drawn while crossing ($SW3 frames)" \
+	"$([ "$SW3" -gt 0 ] && echo true || echo false)"
 assert "no import failed while crossing ($FAILS3)" \
 	"$([ "$FAILS3" -eq 0 ] && echo true || echo false)"
+
+# NOT an assertion. `cursor_culled` counts a cursor whose box lies entirely
+# outside the output being composited, and it is expected to stay at zero:
+# wlroots' cursor is per-output and is unset on leave, so AVK is never asked
+# to draw one for an output the pointer is not on. It is a defensive check on
+# a case the layer above already prevents, and the first version of this
+# script demanded it go green -- which would have made a live run fail for
+# the compositor being correct. Reported, never required.
+note "cursor_culled $CULLED (defensive only; zero is the expected value)"
 
 eyes "phase 3: the cursor crossed cleanly -- never vanished at the seam, left \
 no copy behind, and changed size only where the outputs differ in scale"
