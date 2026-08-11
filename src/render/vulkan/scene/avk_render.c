@@ -22,15 +22,22 @@ bool avk_renderer_init(struct avk_renderer *renderer, struct avk_device *dev,
 		avk_pipelines_finish(&renderer->pipes);
 		return false;
 	}
-	avk_retire_init(&renderer->retire);
+	avk_retire_init(&renderer->retire, "renderer");
+	renderer->ring.retire = &renderer->retire;
 	return true;
 }
 
+/*
+ * Destroy the renderer's resources. The GPU must already be idle -- the caller
+ * establishes that with avk_device_wait_idle(), because it is the caller that
+ * knows the order in which several subsystems are coming down. The wait that
+ * used to be the first line here was correct about this renderer's own
+ * resources and silent about everything destroyed before it.
+ */
 void avk_renderer_finish(struct avk_renderer *renderer) {
 	if (renderer->dev == NULL) {
 		return;
 	}
-	vkDeviceWaitIdle(renderer->dev->dev);
 	avk_retire_finish(&renderer->retire, renderer->dev);
 	avk_cmd_ring_finish(&renderer->ring);
 	avk_pipelines_finish(&renderer->pipes);
@@ -396,6 +403,7 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 			avk_cmd_ring_abandon(&renderer->ring);
 			return 0;
 		}
+		AVK_LIVE_INC(dev, image_views);
 	}
 	color.imageView = target->view;
 

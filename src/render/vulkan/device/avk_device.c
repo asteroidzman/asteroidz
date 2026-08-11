@@ -278,6 +278,9 @@ struct avk_device *avk_device_create(struct avk_instance *inst, int drm_fd) {
 		.pNext = &timeline_type,
 	};
 	res = vkCreateSemaphore(dev->dev, &sem_info, NULL, &dev->timeline);
+	if (res == VK_SUCCESS) {
+		AVK_LIVE_INC(dev, semaphores);
+	}
 	if (res != VK_SUCCESS) {
 		avk_check(res, "vkCreateSemaphore (device timeline)");
 		goto error;
@@ -311,6 +314,72 @@ error:
 	return NULL;
 }
 
+/*
+ * Wait for the GPU to finish everything.
+ *
+ * Separated from destruction on purpose. The wait used to live inside
+ * avk_device_destroy() alone, which is the LAST thing shutdown calls -- so
+ * every caller that needed quiescence before destroying its own resources had
+ * either to know that some other finish() happened to wait too, or to do
+ * without. Quiescence is a precondition of destruction, not a step inside it,
+ * and a precondition a caller cannot invoke is not one they can rely on.
+ *
+ * This is a shutdown and device-loss facility. A frame path that calls it is
+ * a bug -- see docs/vulkan-native-architecture.md §5.7 -- and it deliberately
+ * does not touch avk.cpu_sync_waits, which counts stalls in the frame path.
+ */
+void avk_device_wait_idle(struct avk_device *dev) {
+	if (dev == NULL || dev->dev == VK_NULL_HANDLE) {
+		return;
+	}
+	vkDeviceWaitIdle(dev->dev);
+}
+
+int avk_device_log_live_objects(const struct avk_device *dev, const char *when) {
+	if (dev == NULL) {
+		return 0;
+	}
+	const struct avk_live_objects *l = &dev->live;
+	struct { const char *name; int64_t n; } classes[] = {
+		{ "images", l->images },
+		{ "image_views", l->image_views },
+		{ "device_memory", l->device_memory },
+		{ "buffers", l->buffers },
+		{ "samplers", l->samplers },
+		{ "pipelines", l->pipelines },
+		{ "pipeline_layouts", l->pipeline_layouts },
+		{ "descriptor_set_layouts", l->descriptor_set_layouts },
+		{ "descriptor_pools", l->descriptor_pools },
+		{ "command_pools", l->command_pools },
+		{ "semaphores", l->semaphores },
+		{ "avk_images", l->avk_images },
+		{ "avk_uploads", l->avk_uploads },
+		{ "retire_entries", l->retire_entries },
+	};
+
+	int nonzero = 0;
+	char line[512];
+	size_t off = 0;
+	for (size_t i = 0; i < sizeof(classes) / sizeof(classes[0]); i++) {
+		if (classes[i].n != 0) {
+			nonzero++;
+		}
+		int n = snprintf(line + off, sizeof(line) - off, "%s%s=%" PRId64,
+			off == 0 ? "" : " ", classes[i].name, classes[i].n);
+		if (n < 0 || (size_t)n >= sizeof(line) - off) {
+			break;
+		}
+		off += (size_t)n;
+	}
+	/* Loud when it matters, quiet when it does not: a leak or a double
+	 * destruction at shutdown is a defect, and a defect that logs at DEBUG is
+	 * a defect nobody reads. */
+	avk_log(nonzero == 0 ? AVK_INFO : AVK_ERROR,
+		"live objects %s: %s%s", when, line,
+		nonzero == 0 ? " (all zero)" : "  <-- NOT ZERO");
+	return nonzero;
+}
+
 void avk_device_destroy(struct avk_device *dev) {
 	if (dev == NULL) {
 		return;
@@ -318,19 +387,35 @@ void avk_device_destroy(struct avk_device *dev) {
 
 	avk_device_save_pipeline_cache(dev);
 
-	/* The one legitimate vkDeviceWaitIdle in the codebase. Teardown is not the
-	 * frame path: everything below is about to be destroyed and the GPU has to
-	 * be finished with all of it first. Anywhere else, this call is a bug. */
-	if (dev->dev != VK_NULL_HANDLE) {
-		vkDeviceWaitIdle(dev->dev);
-	}
+	/* Belt to az_avk_finish()'s braces. By the time shutdown gets here the
+	 * GPU has already been waited for once, before anything was destroyed --
+	 * which is the wait that matters. This one covers avk_device_destroy()
+	 * being called on its own, as the tests and the device-loss path do. */
+	avk_device_wait_idle(dev);
 
+	/* The device's own two children go first, so that what the census below
+	 * reports is what AVK's SUBSYSTEMS still hold. Counting the device's own
+	 * timeline semaphore as an outstanding object would put a permanent 1 in
+	 * a line whose entire value is that every number in it is 0. */
 	if (dev->pipeline_cache != VK_NULL_HANDLE) {
 		vkDestroyPipelineCache(dev->dev, dev->pipeline_cache, NULL);
 	}
 	if (dev->timeline != VK_NULL_HANDLE) {
 		vkDestroySemaphore(dev->dev, dev->timeline, NULL);
+		AVK_LIVE_DEC(dev, semaphores);
 	}
+
+	/* What AVK still owns, immediately before the device that owns it goes.
+	 * Every count must be zero here. A positive one is a leak; a negative one
+	 * is a double destruction, which is a double free of the driver's host
+	 * allocation and the reason a shutdown can abort inside glibc with no AVK
+	 * frame on the stack. */
+	avk_device_log_live_objects(dev, "before vkDestroyDevice");
+	if (dev->lifecycle_violations > 0) {
+		avk_log(AVK_ERROR, "%" PRIu64 " AVK ownership violations were detected "
+			"during this session", dev->lifecycle_violations);
+	}
+
 	if (dev->dev != VK_NULL_HANDLE) {
 		vkDestroyDevice(dev->dev, NULL);
 	}

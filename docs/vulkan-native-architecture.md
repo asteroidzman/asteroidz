@@ -1635,6 +1635,153 @@ thing it claims to describe — which is the exact class of bug D.1 removed.
 
 ---
 
+## 5.4l Teardown: who destroys what, and when the GPU has to be finished
+
+Four real sessions ended in `double free or corruption (out)` or `corrupted
+double-linked list`, always at the same place: immediately after the last line
+`az_avk_log_stats()` prints, in the destruction that follows it. Four aborts in
+sixteen logged exits, across four commits — the earliest of which predates
+M3.5E entirely, so this is not a cursor bug that arrived with M3.5E. It is
+teardown, and it has been there since AVK first had a teardown path.
+
+### The rule that was not being followed
+
+> A Vulkan object may not be destroyed while a submitted batch still refers to
+> it.
+
+`cleanup()` destroys the backend, which destroys the outputs, which runs
+`az_avk_output_destroy()` → `avk_sync_finish()` → `vkDestroySemaphore()` on
+each output's present fence and its wait slots. The last frame's submission
+refers to those semaphores. Nothing in `cleanup()` had waited for it.
+
+The waits that did exist were all inside `az_avk_finish()`'s callees — one at
+the top of `avk_renderer_finish()`, one at the top of
+`avk_dmabuf_importer_finish()`, one inside `avk_device_destroy()`. Each was
+correct about its own resources and silent about everything destroyed before
+it, and `az_avk_finish()` runs *after* the outputs are gone. So the first
+destruction of teardown had no wait in front of it at all, and the comment at
+the call site said the opposite.
+
+A driver asked to destroy an object a pending submission still lists does not
+usually fail loudly. It frees the host allocation and leaves the submission's
+reference dangling; the damage surfaces at some later, unrelated `free()`.
+That is exactly why every abort landed inside `az_avk_finish()` — in the frees
+that came *after* the violation, never at the violation.
+
+### The order now
+
+```
+cleanup()
+    allow_frame_scheduling = false          submissions stop
+    az_avk_quiesce()                        <-- ONE wait, before anything dies
+    wlr_backend_destroy()                   outputs, swapchains, avk_sync_*
+    wl_display_destroy()                    client buffers -> retire queue
+    wlr_scene_node_destroy()
+    az_avk_finish()
+        avk_device_wait_idle()              belt to the braces above
+        client images        -> retire queue
+        avk_renderer_finish()               ring, pipelines, pools
+        avk_dmabuf_importer_finish()        retire queue drained, upload ring
+        avk_device_destroy()
+            pipeline cache, timeline semaphore
+            live-object census              every count must be 0
+            vkDestroyDevice()
+```
+
+A shutdown wait is not a frame-path wait. `cpu_sync_waits` counts stalls in the
+frame path and stays at 0; there is no frame after `az_avk_quiesce()`.
+
+`avk_device_wait_idle()` is now a function of its own rather than the first
+line of a destructor, because quiescence is a *precondition* of destruction,
+not a step inside it — and a precondition a caller cannot invoke is not one a
+caller can rely on. Every caller of a `*_finish()` establishes it explicitly,
+including the tests and `avk-probe`.
+
+### The ownership ledger
+
+| resource | created by | stored in | destruction owner | retired? |
+|---|---|---|---|---|
+| `avk_image` (client content) | `avk_dmabuf_import` / `avk_upload_image_create` | `az_avk_buffer.image`, keyed on the `wlr_buffer` addon | the importer retire queue, after `az_avk_buffer_destroy()` hands it over | yes, at `image->last_use` |
+| `avk_image` (output target) | `avk_dmabuf_import(for_render)` | `az_avk_target.image`, addon on the output buffer | same queue, via `az_avk_target_addon_destroy()` | yes, at `image->last_use` |
+| `avk_upload` (SHM staging) | `staging_ensure()` | `az_avk_buffer.upload`, by value | the importer retire queue | yes, at `up->last_use` |
+| `avk_upload` (one-shot copy) | `import_by_copy()` | heap, owned by the queue from the moment it is pushed | the importer retire queue | yes |
+| pipelines, layouts, samplers, descriptor pools | `avk_pipelines_init` / `add_pool` | `avk_renderer.pipes` | `avk_pipelines_finish()` | no |
+| command pools and buffers | `avk_cmd_ring_init` | `avk_cmd_ring.slots[]` | `avk_cmd_ring_finish()` | no |
+| present fence, wait slots | `avk_sync_init` | `az_avk_output.sync` | `avk_sync_finish()`, at output destroy | no |
+| device timeline semaphore, pipeline cache | `avk_device_create` | `avk_device` | `avk_device_destroy()` | no |
+
+The rule the table encodes: **at every instant a resource has exactly one
+destruction owner.** References may live in several containers; destruction
+ownership may not.
+
+`avk_retire_push()` therefore *transfers* ownership rather than notifying, and
+says so in its header. It refuses a pointer already in the queue and counts the
+attempt in `lifecycle_violations`, because the opposite reading — "the queue
+just notifies, the original owner still frees" — is precisely the double free
+this section is about.
+
+### The two retire queues
+
+There are two, and only one is used.
+
+- `avk.importer.retire` ("importer") takes every client image, every output
+  target image and every staging buffer. Collected once per frame from
+  `avk_dmabuf_importer_collect()`, drained at teardown by
+  `avk_dmabuf_importer_finish()`.
+- `renderer->retire` ("renderer"), one per format slot, is initialised,
+  collected every frame and drained at teardown — and **nothing ever pushes
+  into it**. It has been empty for its whole existence.
+
+So no resource can be in both, and no wrapper in one can own a child in the
+other. That is worth stating rather than leaving as an accident: it was the
+leading hypothesis for the double free and it is false.
+
+### Two fabricated timeline values, now derived
+
+`az_avk_buffer_destroy()` retired the SHM staging buffer at
+`avk_device_timeline_value() + 1` — a point no submission owns, meaning "one
+more frame from now". During a session that is accidentally safe: uploads and
+frames share one queue, so completion follows submission order. At teardown it
+is a point nothing will ever signal.
+
+`staging_ensure()` was worse: growing the buffer called `avk_upload_finish()`
+on the old one immediately, destroying a `VkBuffer` and its memory that a copy
+the GPU had not yet run might still be reading — the one place in AVK that
+destroyed in use, in the file that exists to avoid doing so.
+
+Both are fixed by recording the real point. `avk_upload.last_use` is set by the
+submission that reads the staging buffer, `staging_ensure()` hands the outgoing
+buffer to the retire queue against it, and the destroy path retires against it
+too.
+
+### What is instrumented, and why counters rather than assertions
+
+`lifecycle_violations`, a signed live-object census per class, and a
+`LIVE`/`DESTROYED` state word on `avk_image` with a stable id. The census is
+logged immediately before `vkDestroyDevice`, where every count must be zero — a
+positive count is a leak, a **negative** one is a double destruction.
+
+The double-destroy check reads memory the function may already have freed,
+which is itself undefined, and that is deliberate: under ASan it is a
+use-after-free report with both stacks, which is the best available outcome,
+and without ASan a freed chunk essentially never still reads as `AVK_IMAGE_LIVE`.
+It is a diagnostic, not a protection, so it counts a violation rather than
+quietly carrying on.
+
+### What this does not claim
+
+The live abort was **not** reproduced headlessly. Forty-six headless graceful
+exits of the unmodified pre-fix build produced zero validation errors; the
+violation is timing-dependent — whether a submission is outstanding at the
+instant the outputs are destroyed — and headless timing hides it. What *is*
+established: the ordering violation is real and spec-cited
+(`VUID-vkDestroySemaphore-semaphore-05149`), it is of the right class and in
+the right place for the observed aborts, and it is reproducible on demand via
+`BREAK=destroy-before-idle`, which restores the shipped ordering and fails
+every cycle.
+
+---
+
 ## M3b work plan (the compositor half) — DONE, kept for the record
 
 Written down here rather than left in a conversation, because this was the

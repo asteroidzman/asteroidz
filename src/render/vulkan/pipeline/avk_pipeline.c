@@ -143,6 +143,7 @@ static bool create_pipeline(struct avk_pipelines *pipes, VkFormat format,
 		avk_check(res, "vkCreateGraphicsPipelines");
 		return false;
 	}
+	AVK_LIVE_INC(dev, pipelines);
 	avk_device_name_object(dev, VK_OBJECT_TYPE_PIPELINE, (uint64_t)*out,
 		"avk pipeline %s", name);
 	return true;
@@ -167,6 +168,7 @@ static bool create_sampler(struct avk_device *dev, VkFilter filter,
 	if (res != VK_SUCCESS) {
 		return avk_check(res, "vkCreateSampler");
 	}
+	AVK_LIVE_INC(dev, samplers);
 	avk_device_name_object(dev, VK_OBJECT_TYPE_SAMPLER, (uint64_t)*out,
 		"avk sampler %s", name);
 	return true;
@@ -194,6 +196,7 @@ bool avk_pipelines_init(struct avk_pipelines *pipes, struct avk_device *dev,
 		avk_check(res, "vkCreateDescriptorSetLayout");
 		goto error;
 	}
+	AVK_LIVE_INC(dev, descriptor_set_layouts);
 
 	VkPushConstantRange range = {
 		.stageFlags = VK_SHADER_STAGE_VERTEX_BIT
@@ -214,6 +217,7 @@ bool avk_pipelines_init(struct avk_pipelines *pipes, struct avk_device *dev,
 		avk_check(res, "vkCreatePipelineLayout");
 		goto error;
 	}
+	AVK_LIVE_INC(dev, pipeline_layouts);
 
 	if (!create_sampler(dev, VK_FILTER_NEAREST, &pipes->nearest, "nearest")
 			|| !create_sampler(dev, VK_FILTER_LINEAR, &pipes->linear,
@@ -266,24 +270,31 @@ void avk_pipelines_finish(struct avk_pipelines *pipes) {
 
 	if (pipes->rect != VK_NULL_HANDLE) {
 		vkDestroyPipeline(dev, pipes->rect, NULL);
+		AVK_LIVE_DEC(pipes->dev, pipelines);
 	}
 	if (pipes->texture != VK_NULL_HANDLE) {
 		vkDestroyPipeline(dev, pipes->texture, NULL);
+		AVK_LIVE_DEC(pipes->dev, pipelines);
 	}
 	if (pipes->layout != VK_NULL_HANDLE) {
 		vkDestroyPipelineLayout(dev, pipes->layout, NULL);
+		AVK_LIVE_DEC(pipes->dev, pipeline_layouts);
 	}
 	if (pipes->texture_set_layout != VK_NULL_HANDLE) {
 		vkDestroyDescriptorSetLayout(dev, pipes->texture_set_layout, NULL);
+		AVK_LIVE_DEC(pipes->dev, descriptor_set_layouts);
 	}
 	if (pipes->nearest != VK_NULL_HANDLE) {
 		vkDestroySampler(dev, pipes->nearest, NULL);
+		AVK_LIVE_DEC(pipes->dev, samplers);
 	}
 	if (pipes->linear != VK_NULL_HANDLE) {
 		vkDestroySampler(dev, pipes->linear, NULL);
+		AVK_LIVE_DEC(pipes->dev, samplers);
 	}
 	for (uint32_t i = 0; i < pipes->pool_count; i++) {
 		vkDestroyDescriptorPool(dev, pipes->pools[i], NULL);
+		AVK_LIVE_DEC(pipes->dev, descriptor_pools);
 	}
 	free(pipes->pools);
 	memset(pipes, 0, sizeof(*pipes));
@@ -305,11 +316,13 @@ static bool add_pool(struct avk_pipelines *pipes) {
 	if (res != VK_SUCCESS) {
 		return avk_check(res, "vkCreateDescriptorPool");
 	}
+	AVK_LIVE_INC(pipes->dev, descriptor_pools);
 
 	VkDescriptorPool *pools = realloc(pipes->pools,
 		(pipes->pool_count + 1) * sizeof(*pools));
 	if (pools == NULL) {
 		vkDestroyDescriptorPool(pipes->dev->dev, pool, NULL);
+		AVK_LIVE_DEC(pipes->dev, descriptor_pools);
 		return false;
 	}
 	pipes->pools = pools;
@@ -343,6 +356,7 @@ VkDescriptorSet avk_pipelines_texture_set(struct avk_pipelines *pipes,
 			avk_check(res, "vkCreateImageView");
 			return VK_NULL_HANDLE;
 		}
+		AVK_LIVE_INC(pipes->dev, image_views);
 	}
 
 	if (pipes->sets_left_in_current_pool == 0 && !add_pool(pipes)) {

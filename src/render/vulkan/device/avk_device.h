@@ -102,6 +102,41 @@ struct avk_device_api {
 	PFN_vkImportSemaphoreFdKHR vkImportSemaphoreFdKHR;
 };
 
+/*
+ * What is still alive on the device, by class.
+ *
+ * The point of this is the one number that matters at shutdown: how many
+ * device children AVK still owns when it is about to call vkDestroyDevice.
+ * Every one of them should be zero. A non-zero count is a leak; a NEGATIVE
+ * count -- which is why these are signed -- is a double destruction, and a
+ * double destruction of a driver object is a double free of the driver's host
+ * allocation, which is how a clean-looking shutdown ends in "double free or
+ * corruption (out)" with no AVK frame anywhere near the abort.
+ *
+ * Counted at the two or three places each class is actually created and
+ * destroyed, so the numbers cannot drift from the code the way a hand-kept
+ * tally does.
+ */
+struct avk_live_objects {
+	int64_t images;
+	int64_t image_views;
+	int64_t device_memory;
+	int64_t buffers;
+	int64_t samplers;
+	int64_t pipelines;
+	int64_t pipeline_layouts;
+	int64_t descriptor_set_layouts;
+	int64_t descriptor_pools;
+	int64_t command_pools;
+	int64_t semaphores;
+
+	/* AVK-level wrappers, which are host allocations rather than device
+	 * children but have exactly the same ownership question. */
+	int64_t avk_images;
+	int64_t avk_uploads;
+	int64_t retire_entries;
+};
+
 struct avk_device {
 	struct avk_instance *instance;   /* borrowed */
 	VkPhysicalDevice phys;
@@ -126,7 +161,28 @@ struct avk_device {
 
 	VkPipelineCache pipeline_cache;
 	char *pipeline_cache_path;   /* owned, may be NULL */
+
+	struct avk_live_objects live;
+	/* Stable identity for AVK-level objects, so a lifecycle complaint names
+	 * something a log can be searched for rather than an address that has
+	 * already been recycled. */
+	uint64_t next_object_id;
+	/* Ownership violations detected rather than crashed on. Every one of
+	 * these is a bug; zero is the only correct value. */
+	uint64_t lifecycle_violations;
 };
+
+/* Both no-ops when dev is NULL, because a failed create unwinds through paths
+ * that may not have one yet. */
+#define AVK_LIVE_INC(dev, field) \
+	do { if ((dev) != NULL) { (dev)->live.field++; } } while (0)
+#define AVK_LIVE_DEC(dev, field) \
+	do { if ((dev) != NULL) { (dev)->live.field--; } } while (0)
+
+/* Log what AVK still owns. Called immediately before vkDestroyDevice, where
+ * every count must be zero, and available over IPC while running. Returns the
+ * number of classes with a non-zero count. */
+int avk_device_log_live_objects(const struct avk_device *dev, const char *when);
 
 /*
  * Create a device for the DRM node `drm_fd` refers to.
@@ -139,6 +195,12 @@ struct avk_device {
  */
 struct avk_device *avk_device_create(struct avk_instance *inst, int drm_fd);
 void avk_device_destroy(struct avk_device *dev);
+
+/* Wait for the GPU to finish everything in flight. Shutdown and device-loss
+ * only -- a frame path that calls this is a bug. Separate from
+ * avk_device_destroy() so a caller can establish quiescence BEFORE destroying
+ * the resources submitted work still refers to. */
+void avk_device_wait_idle(struct avk_device *dev);
 
 void avk_device_log_caps(const struct avk_device *dev);
 

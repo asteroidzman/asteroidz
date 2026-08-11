@@ -44,6 +44,7 @@ bool avk_sync_init(struct avk_sync *sync, struct avk_device *dev,
 	if (res != VK_SUCCESS) {
 		return avk_check(res, "vkCreateSemaphore (sync_file export)");
 	}
+	AVK_LIVE_INC(dev, semaphores);
 	avk_device_name_object(dev, VK_OBJECT_TYPE_SEMAPHORE,
 		(uint64_t)sync->export_sem, "avk %s present fence", name);
 
@@ -61,6 +62,7 @@ bool avk_sync_init(struct avk_sync *sync, struct avk_device *dev,
 			avk_sync_finish(sync);
 			return false;
 		}
+		AVK_LIVE_INC(dev, semaphores);
 		avk_device_name_object(dev, VK_OBJECT_TYPE_SEMAPHORE,
 			(uint64_t)sync->waits[i].semaphore, "avk %s wait slot %u", name, i);
 	}
@@ -74,11 +76,13 @@ void avk_sync_finish(struct avk_sync *sync) {
 	}
 	if (sync->export_sem != VK_NULL_HANDLE) {
 		vkDestroySemaphore(sync->dev->dev, sync->export_sem, NULL);
+		AVK_LIVE_DEC(sync->dev, semaphores);
 		sync->export_sem = VK_NULL_HANDLE;
 	}
 	for (uint32_t i = 0; i < AVK_SYNC_WAIT_SLOTS; i++) {
 		if (sync->waits[i].semaphore != VK_NULL_HANDLE) {
 			vkDestroySemaphore(sync->dev->dev, sync->waits[i].semaphore, NULL);
+			AVK_LIVE_DEC(sync->dev, semaphores);
 			sync->waits[i].semaphore = VK_NULL_HANDLE;
 		}
 	}

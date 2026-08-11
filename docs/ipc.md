@@ -441,6 +441,10 @@ Fields worth knowing:
 | `presentation_waits` | GPU-side waits before reusing a target. Not a stall — the CPU returns immediately. Rare on the timeline route; ~1 per frame on the dma-buf route, where the buffer's fence list also holds our own last write |
 | `target_state_violations` | must be 0 — the swapchain handed back a buffer the display had not released |
 | `validation_errors` | Vulkan validation errors seen this run (needs `ASTEROIDZ_VK_DEBUG=1`) |
+| `lifecycle_violations` | **must be 0.** Every AVK resource caught being double-owned or double-destroyed: an image destroyed twice, a pointer handed to the retire queue while already in it, a queue drained with the GPU still behind its entries. This is the counter to assert on, because the alternative — asserting that no glibc abort happened — is also satisfied by code that never ran |
+| `retire_duplicate_pushes` | pushes refused because the resource was already queued for destruction. A subset of `lifecycle_violations`, broken out because it names the specific failure that produces a double free |
+| `live_images` / `live_image_views` / `live_device_memory` / `live_buffers` / `live_descriptor_pools` / `live_command_pools` / `live_semaphores` | a running census of the Vulkan objects AVK owns. Read mid-session they say what is outstanding right now; at `vkDestroyDevice` every one of them must be 0, which the compositor logs rather than reports here (nothing can query a device that is being destroyed). **Signed**, deliberately: a negative count is a double destruction, and a double destruction of a driver object is a double free of the driver's host allocation |
+| `live_avk_images` / `live_avk_uploads` / `retire_entries_live` | the same census for AVK's own host-side wrappers |
 
 `frames` counts **output** frames, not compositor-wide ones: a two-monitor
 desktop increments it twice per refresh. Divide byte counters by it accordingly.

@@ -276,6 +276,8 @@ suite:
 | `avk-damage` `preserve` 6/12, `stale` 9/12 | fail correctly |
 | `avk-damage-domains` `no-cull` | fails correctly *(after the harness change below)* |
 | `avk-shm-rotate` `one-buffer` / `source-full` | fail correctly |
+| `avk-cursor-lifetime` `cursor-stale-xcursor` | fails correctly |
+| `avk-teardown` `destroy-before-idle` | fails correctly, every cycle |
 | `avk-shm-partial` `unsafe-reuse` | **NOT TESTED** — documented, could not be made observable |
 
 `no-cull` failed differently from `lookup`, and the distinction is worth
@@ -554,6 +556,68 @@ The instrumentation is diagnostic and does not change the production model: the
 durable state is the name and scale, and the pointer is resolved at the point
 of use and never stored. Rebuilding that as "cache the pointer plus a
 generation number" would keep the wrong ownership and merely detect it.
+
+### A teardown test, and how the first one managed to prove nothing
+
+`contrib/avk-teardown-test.sh` covers AVK's destruction path.
+
+```bash
+ASTEROIDZ=build-asan/asteroidz CONFIG=all CYCLES=10 bash contrib/avk-teardown-test.sh
+BREAK=destroy-before-idle ASTEROIDZ=build-asan/asteroidz bash contrib/avk-teardown-test.sh  # must FAIL
+```
+
+The first attempt at this ran ten headless cycles, reported all ten clean, and
+was worthless. `headless.sh` resolves `HL_ASTEROIDZ` from `$ASTEROIDZ` at
+**source** time, so `ASTEROIDZ=x hl_start` — a per-command assignment — arrives
+far too late and silently launches `build/asteroidz`, which on this machine was
+a fortnight-old build with no Vulkan in it. `az_avk_finish()` returned at its
+first line and the thing under test never executed. **No crash is also what
+code that never ran produces**, and nothing in that harness could tell the two
+apart.
+
+That is why the compositor now prints four markers from inside the path:
+
+```
+CLEANUP_BEGIN          cleanup() entered
+AVK_TEARDOWN_BEGIN     az_avk_finish() entered, and whether AVK was active
+AVK_TEARDOWN_END       it returned having destroyed everything
+CLEANUP_END            cleanup() returned
+```
+
+and a cycle missing any of them — or reporting `active=no` — is counted as
+**INVALID**, not as a pass. The stats line `avk.shm_commits=` is not a
+substitute: it is skipped when AVK is inactive, so its absence is ambiguous
+between three different failures.
+
+A related correction: the earlier note that a headless `hl_stop` kills the
+compositor before `cleanup()` runs is **wrong**. `handlesig()` routes
+SIGINT/SIGTERM to `quit_now()` → `wl_display_terminate()` → `run()` returns →
+`cleanup()`, and the markers prove it every cycle. SIGTERM is a real graceful
+exit here. The dispatch `quit` deliberately is not — it raises the confirmation
+prompt and waits for a keystroke — so a signal is both correct and the only
+option a harness has.
+
+`CONFIG` selects what there is to tear down, because a teardown test of an
+empty renderer tests nothing: `bare`, `shm` (wlrotate's rotating pool),
+`dmabuf` (a GPU client), `mixed`, `cursor-xcursor`, `cursor-software`,
+`cursor-churn`, or `all`. Hardware cursor planes are absent by construction —
+a headless output has no plane — and are left to live acceptance rather than
+faked.
+
+The assertions that matter are the ownership ones, not the absence of a crash:
+`lifecycle_violations` at 0, and every AVK-owned device child at 0 in the
+census logged immediately before `vkDestroyDevice`. Those fire *at* the
+violation. A glibc abort fires somewhere else entirely, or — three times in
+four, on the desktop this was found on — not at all.
+
+`BREAK=destroy-before-idle` removes the device-idle wait that now precedes
+output destruction, which is the shipped ordering restored. It fails every
+cycle with `VUID-vkDestroySemaphore-semaphore-05149`: the per-output present
+fence being destroyed while a submitted batch still refers to it. Normal runs
+report zero. Note what this break does **not** claim — see
+`docs/vulkan-native-architecture.md` §5.4l: the original live abort was never
+reproduced headlessly, and 46 graceful exits of the unmodified pre-fix build
+produced no validation error at all.
 
 One assertion in this test was wrong on its first run and is worth recording,
 because it failed against the *fixed* build: it demanded the cursor be

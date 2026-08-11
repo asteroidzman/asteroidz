@@ -436,6 +436,7 @@ static void report_composition(struct avk_device *dev, const char *png_path) {
 		| VK_IMAGE_USAGE_TRANSFER_SRC_BIT, true);
 	if (target == NULL) {
 		bad("output target would not allocate");
+		avk_device_wait_idle(dev);
 		avk_renderer_finish(&renderer);
 		return;
 	}
@@ -566,6 +567,7 @@ out:
 		avk_image_destroy(dev, quad);
 	}
 	avk_image_destroy(dev, target);
+	avk_device_wait_idle(dev);
 	avk_renderer_finish(&renderer);
 }
 
@@ -643,6 +645,7 @@ int main(int argc, char **argv) {
 	struct avk_dmabuf_importer importer;
 	if (gbm != NULL && avk_dmabuf_importer_init(&importer, dev)) {
 		report_import(&importer, gbm);
+		avk_device_wait_idle(dev);
 		avk_dmabuf_importer_finish(&importer);
 	} else {
 		bad("could not start the DMA-BUF importer");

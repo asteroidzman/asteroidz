@@ -67,6 +67,15 @@ struct avk_image {
 	 * difference between descriptor work being invisible and being a
 	 * profile entry. Owned by the image; freed with the pool. */
 	VkDescriptorSet sampler_set[2];
+
+	/* Ownership state and identity. See avk_image_destroy(). The enum values
+	 * are deliberately not 0 and 1: a freed chunk that happens to be zeroed
+	 * must not read as LIVE. */
+	enum avk_image_life {
+		AVK_IMAGE_LIVE = 0x41564b4c,      /* 'AVKL' */
+		AVK_IMAGE_DESTROYED = 0x41564b44, /* 'AVKD' */
+	} life;
+	uint64_t id;
 };
 
 /*
@@ -108,5 +117,10 @@ static inline bool avk_image_is_foreign(const struct avk_image *image) {
  * purpose -- or call it directly only when the GPU is known to be idle.
  */
 void avk_image_destroy(struct avk_device *dev, void *image);
+
+/* Allocate a zeroed avk_image with its identity and ownership state set. Every
+ * avk_image must come from here -- a bare calloc() produces one whose `life`
+ * is 0, which avk_image_destroy() correctly refuses to destroy. */
+struct avk_image *avk_image_alloc(struct avk_device *dev);
 
 #endif /* AVK_IMAGE_H */

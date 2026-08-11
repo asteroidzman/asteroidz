@@ -415,10 +415,19 @@ static void az_avk_buffer_destroy(struct az_avk_buffer *entry) {
 	if (entry->is_shm) {
 		struct avk_upload *up = calloc(1, sizeof(*up));
 		if (up != NULL) {
+			AVK_LIVE_INC(avk.device, avk_uploads);
 			*up = entry->upload;
-			avk_retire_push(&avk.importer.retire, avk.device,
-				avk_device_timeline_value(avk.device) + 1, avk_upload_retire,
-				up);
+			/* Against the submission that actually read it. This used to be
+			 * `current value + 1` -- a point no submission owns, chosen to
+			 * mean "one more frame from now". During a session that is
+			 * accidentally safe, because uploads and frames share one queue
+			 * and so complete in submission order. At teardown it is a point
+			 * nothing will ever signal, so the entry is destroyed by
+			 * avk_retire_finish() with its stated precondition unmet -- which
+			 * is indistinguishable, from inside the queue, from a genuine
+			 * destroy-before-idle. */
+			avk_retire_push(&avk.importer.retire, avk.device, up->last_use,
+				avk_upload_retire, up);
 		}
 	}
 	/* Out of its surface's pool before the memory goes: the list outlives the
@@ -2730,6 +2739,44 @@ static cJSON *az_avk_stats_json(void) {
 	cJSON_AddNumberToObject(o, "cursor_mgr_generation",
 		(double)az_cursor_mgr_generation);
 	/*
+	 * Ownership accounting. `lifecycle_violations` is the headline: every kind
+	 * of double-owned or double-destroyed AVK resource increments it, and it
+	 * is the counter a test asserts on, because the alternative is asserting
+	 * on the absence of a glibc abort -- which is also what a code path that
+	 * never ran produces.
+	 *
+	 * The live_* counts are a running census, not just a shutdown one. Read
+	 * mid-session they say what AVK owns right now; read after teardown they
+	 * would all be zero, but nothing can read them then, which is why
+	 * avk_device_log_live_objects() also writes them to the log immediately
+	 * before vkDestroyDevice.
+	 */
+	if (avk.device != NULL) {
+		cJSON_AddNumberToObject(o, "lifecycle_violations",
+			(double)avk.device->lifecycle_violations);
+		cJSON_AddNumberToObject(o, "retire_duplicate_pushes",
+			(double)(avk.importer.retire.duplicate_pushes));
+		cJSON_AddNumberToObject(o, "retire_entries_live",
+			(double)avk.device->live.retire_entries);
+		cJSON_AddNumberToObject(o, "live_images", (double)avk.device->live.images);
+		cJSON_AddNumberToObject(o, "live_image_views",
+			(double)avk.device->live.image_views);
+		cJSON_AddNumberToObject(o, "live_device_memory",
+			(double)avk.device->live.device_memory);
+		cJSON_AddNumberToObject(o, "live_buffers",
+			(double)avk.device->live.buffers);
+		cJSON_AddNumberToObject(o, "live_descriptor_pools",
+			(double)avk.device->live.descriptor_pools);
+		cJSON_AddNumberToObject(o, "live_command_pools",
+			(double)avk.device->live.command_pools);
+		cJSON_AddNumberToObject(o, "live_semaphores",
+			(double)avk.device->live.semaphores);
+		cJSON_AddNumberToObject(o, "live_avk_images",
+			(double)avk.device->live.avk_images);
+		cJSON_AddNumberToObject(o, "live_avk_uploads",
+			(double)avk.device->live.avk_uploads);
+	}
+	/*
 	 * Pointer focus traffic. Not renderer state, and it does not belong to
 	 * AVK -- it is here because this is the channel that can be read from a
 	 * running session, and because the question it answers is otherwise pure
@@ -2889,11 +2936,83 @@ static void az_avk_log_stats(void) {
 	avk_dmabuf_importer_log_stats(&avk.importer);
 }
 
-static void az_avk_finish(void) {
+/*
+ * Stop the GPU before anything AVK owns starts being destroyed.
+ *
+ * This is called from cleanup() BEFORE wlr_backend_destroy(), and the "before"
+ * is the entire point. Destroying the outputs runs az_avk_output_destroy() ->
+ * avk_sync_finish(), which calls vkDestroySemaphore on the per-output present
+ * fence and its wait slots -- semaphores that the last frame's submission
+ * still refers to. Vulkan requires that "all submitted batches that refer to
+ * semaphore must have completed execution"
+ * (VUID-vkDestroySemaphore-semaphore-05149), and nothing had made that true:
+ * the only waits in teardown were inside az_avk_finish(), which runs long
+ * afterwards.
+ *
+ * A driver asked to destroy an object a pending submission still lists does
+ * not usually fail loudly. It frees the host allocation behind that object and
+ * leaves the submission's reference dangling, and the damage surfaces later,
+ * at some unrelated free() -- which is why every one of the four aborts this
+ * was found through landed inside az_avk_finish(), in the frees that came
+ * afterwards, rather than at the destruction that actually caused it.
+ *
+ * AZ_AVK_NO_TEARDOWN_IDLE=1 removes the wait. That is the break switch, and it
+ * puts the compositor back on the code that crashed.
+ */
+static void az_avk_quiesce(void) {
 	if (!avk.active) {
 		return;
 	}
+	if (az_avk_env_flag("AZ_AVK_NO_TEARDOWN_IDLE")) {
+		wlr_log(WLR_ERROR, "AZ_AVK_NO_TEARDOWN_IDLE=1 -- outputs will be torn "
+			"down with GPU work still in flight");
+		return;
+	}
+	avk_device_wait_idle(avk.device);
+}
+
+/*
+ * Teardown markers.
+ *
+ * These exist because a teardown test that cannot prove teardown RAN is not a
+ * teardown test. Ten headless "clean shutdown" cycles were once reported as
+ * evidence when the compositor under test had no Vulkan in it at all: the
+ * check was the absence of a crash, and absence of a crash is also what you
+ * get from code that never executed.
+ *
+ * The stats line below is not a substitute. It is skipped when AVK is
+ * inactive, so its absence is ambiguous between "cleanup() never ran", "this
+ * binary has no AVK" and "AVK was never asked for" -- three different
+ * failures that a harness must not confuse. BEGIN is printed before any
+ * decision, END only after the last object is gone, and both name the state,
+ * so a log answers the question directly.
+ */
+static void az_avk_finish(void) {
+	wlr_log(WLR_INFO, "AVK_TEARDOWN_BEGIN active=%s", avk.active ? "yes" : "no");
+	if (!avk.active) {
+		wlr_log(WLR_INFO, "AVK_TEARDOWN_END reason=inactive");
+		return;
+	}
 	az_avk_log_stats();
+
+	/*
+	 * Submissions stop, THEN the GPU is waited for, THEN anything is
+	 * destroyed. In that order and once, at the top.
+	 *
+	 * It used to be three separate waits buried one each inside
+	 * avk_renderer_finish(), avk_dmabuf_importer_finish() and
+	 * avk_device_destroy(). Each was correct about its own resources and none
+	 * of them said anything about the order between them -- so the loop below,
+	 * which hands every client image to the retire queue, ran with no wait in
+	 * front of it at all, and a caller wanting quiescence had no way to ask
+	 * for it except by knowing which finish() happened to include one.
+	 *
+	 * A wait here is not a frame-path wait. avk.cpu_sync_waits stays zero:
+	 * there is no frame after this. Submissions have already stopped --
+	 * cleanup() clears allow_frame_scheduling before anything else, and the
+	 * backend and the scene are already gone by the time this runs.
+	 */
+	avk_device_wait_idle(avk.device);
 
 	/* The images first, then the queues that free them, then the device. Any
 	 * other order either leaks or frees twice. */
@@ -2909,12 +3028,12 @@ static void az_avk_finish(void) {
 		}
 	}
 	avk_dmabuf_importer_finish(&avk.importer);
-	avk_device_save_pipeline_cache(avk.device);
 	avk_device_destroy(avk.device);
 	avk_instance_destroy(avk.instance);
 	avk.device = NULL;
 	avk.instance = NULL;
 	avk.active = false;
+	wlr_log(WLR_INFO, "AVK_TEARDOWN_END reason=complete");
 }
 
 #endif /* AZ_AVK_H */

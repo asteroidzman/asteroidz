@@ -161,7 +161,7 @@ bool avk_dmabuf_importer_init(struct avk_dmabuf_importer *importer,
 
 	importer->gbm_recovers_modifiers = probe_modifier_recovery(importer);
 
-	avk_retire_init(&importer->retire);
+	avk_retire_init(&importer->retire, "importer");
 	if (!avk_cmd_ring_init(&importer->upload_ring, dev, "avk upload")) {
 		avk_format_table_finish(&importer->table);
 		if (importer->gbm != NULL) {
@@ -169,6 +169,8 @@ bool avk_dmabuf_importer_init(struct avk_dmabuf_importer *importer,
 		}
 		return false;
 	}
+	/* The ring's submissions read staging buffers this queue destroys. */
+	importer->upload_ring.retire = &importer->retire;
 
 	return true;
 }
@@ -179,9 +181,11 @@ void avk_dmabuf_importer_collect(struct avk_dmabuf_importer *importer) {
 
 void avk_dmabuf_importer_finish(struct avk_dmabuf_importer *importer) {
 	if (importer->dev != NULL) {
-		/* Uploads may still be in flight; teardown is the one place a wait is
-		 * the right answer. */
-		vkDeviceWaitIdle(importer->dev->dev);
+		/* Uploads may still be in flight. The caller has already waited for
+		 * the device -- see az_avk_finish() -- which is where quiescence
+		 * belongs, because destroying THIS importer's staging buffers is not
+		 * the first destruction of teardown and a wait here would not have
+		 * covered the ones before it. */
 		avk_retire_finish(&importer->retire, importer->dev);
 		avk_cmd_ring_finish(&importer->upload_ring);
 	}
@@ -344,12 +348,11 @@ static struct avk_image *import_with_modifier(
 		return NULL;
 	}
 
-	struct avk_image *image = calloc(1, sizeof(*image));
+	struct avk_image *image = avk_image_alloc(dev);
 	if (image == NULL) {
 		avk_log(AVK_ERROR, "allocation failed");
 		return NULL;
 	}
-	image->dev = dev;
 	image->format = fmt->vk;
 	image->drm_format = attribs->format;
 	image->extent = (VkExtent2D){ (uint32_t)attribs->width,
@@ -414,6 +417,9 @@ static struct avk_image *import_with_modifier(
 	};
 
 	VkResult res = vkCreateImage(dev->dev, &image_info, NULL, &image->image);
+	if (res == VK_SUCCESS) {
+		AVK_LIVE_INC(dev, images);
+	}
 	if (res != VK_SUCCESS) {
 		avk_check(res, "vkCreateImage (dmabuf import)");
 		free(image);
@@ -519,6 +525,7 @@ static struct avk_image *import_with_modifier(
 			close(fd);
 			goto error;
 		}
+		AVK_LIVE_INC(dev, device_memory);
 		image->memory_count++;
 
 		binds[i] = (VkBindImageMemoryInfo){
@@ -632,6 +639,7 @@ static struct avk_image *import_by_copy(struct avk_dmabuf_importer *importer,
 	if (staging == NULL) {
 		goto out;
 	}
+	AVK_LIVE_INC(dev, avk_uploads);
 	uint64_t timeline = avk_upload_image_write(dev, &importer->upload_ring,
 		staging, image, pixels, map_stride, (uint32_t)attribs->height, NULL, 0);
 	if (timeline == 0) {

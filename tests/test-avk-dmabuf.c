@@ -782,6 +782,7 @@ int main(void) {
 	test_dmabuf_fences(&importer, gbm);
 
 	avk_dmabuf_importer_log_stats(&importer);
+	avk_device_wait_idle(dev);
 	avk_dmabuf_importer_finish(&importer);
 	gbm_device_destroy(gbm);
 	avk_device_destroy(dev);

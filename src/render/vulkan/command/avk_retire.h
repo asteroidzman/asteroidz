@@ -2,6 +2,7 @@
 #define AVK_RETIRE_H
 
 #include "../device/avk_device.h"
+#include "../avk.h"
 
 /*
  * Deferred destruction, keyed to GPU timeline progress.
@@ -16,6 +17,20 @@
  * the last submission that touched it. Once per frame the queue is collected:
  * one vkGetSemaphoreCounterValue, then every entry at or below that value runs
  * its destructor. No waiting, ever.
+ *
+ * OWNERSHIP
+ *
+ * A successful push TRANSFERS DESTRUCTION OWNERSHIP to the queue. From that
+ * moment the resource has exactly one destruction owner and it is not the
+ * caller: the previous owner must drop its pointer (or mark its slot empty)
+ * before returning, and must never destroy the resource itself afterwards.
+ *
+ * This is stated because the alternative reading -- that a push is merely a
+ * notification and the original owner still frees -- produces a double free
+ * that surfaces as heap corruption inside glibc during shutdown, a long way
+ * from any AVK code. avk_retire_push() now REFUSES a pointer that is already
+ * in the queue and counts the attempt, so that reading is detected rather
+ * than obeyed.
  */
 
 typedef void (*avk_retire_fn)(struct avk_device *dev, void *data);
@@ -35,9 +50,17 @@ struct avk_retire_queue {
 	 * pushed and never retired -- usually a submission that failed, so its
 	 * timeline point is never reached. */
 	size_t peak;
+
+	/* Pushes refused because the resource was already queued for destruction.
+	 * Every one of these is a caller with a double-owned resource; zero is the
+	 * only correct value. */
+	uint64_t duplicate_pushes;
+
+	/* What this queue is called, for the message that reports one. */
+	const char *name;
 };
 
-void avk_retire_init(struct avk_retire_queue *q);
+void avk_retire_init(struct avk_retire_queue *q, const char *name);
 
 /*
  * Run every remaining destructor unconditionally.

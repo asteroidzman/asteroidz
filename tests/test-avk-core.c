@@ -278,7 +278,7 @@ static void test_retire(struct avk_device *dev) {
 		CHECK(false, "ring initialises");
 		return;
 	}
-	avk_retire_init(&q);
+	avk_retire_init(&q, "test");
 
 	struct retire_probe done = { 0 };
 	struct retire_probe pending = { 0 };

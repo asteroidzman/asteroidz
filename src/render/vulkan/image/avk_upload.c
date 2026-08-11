@@ -64,11 +64,10 @@ struct avk_image *avk_upload_image_create(struct avk_device *dev,
 		return NULL;
 	}
 
-	struct avk_image *image = calloc(1, sizeof(*image));
+	struct avk_image *image = avk_image_alloc(dev);
 	if (image == NULL) {
 		return NULL;
 	}
-	image->dev = dev;
 	image->format = fmt->vk;
 	image->drm_format = drm_format;
 	image->extent = (VkExtent2D){ width, height };
@@ -102,6 +101,7 @@ struct avk_image *avk_upload_image_create(struct avk_device *dev,
 		avk_check(res, "vkCreateImage (upload)");
 		goto error;
 	}
+	AVK_LIVE_INC(dev, images);
 
 	VkMemoryRequirements reqs;
 	vkGetImageMemoryRequirements(dev->dev, image->image, &reqs);
@@ -121,6 +121,7 @@ struct avk_image *avk_upload_image_create(struct avk_device *dev,
 		avk_check(res, "vkAllocateMemory (upload image)");
 		goto error;
 	}
+	AVK_LIVE_INC(dev, device_memory);
 	image->memory_count = 1;
 	res = vkBindImageMemory(dev->dev, image->image, image->memory[0], 0);
 	if (res != VK_SUCCESS) {
@@ -139,13 +140,41 @@ error:
 }
 
 static bool staging_ensure(struct avk_device *dev, struct avk_upload *up,
-		VkDeviceSize size) {
+		struct avk_retire_queue *retire, VkDeviceSize size) {
 	if (up->buffer != VK_NULL_HANDLE && up->size >= size) {
 		return true;
 	}
-	/* Grow, never shrink: a window that resizes back and forth should not
-	 * reallocate on every wobble. */
-	avk_upload_finish(dev, up);
+	/*
+	 * Grow, never shrink: a window that resizes back and forth should not
+	 * reallocate on every wobble.
+	 *
+	 * The old buffer may still be the source of a copy the GPU has not run
+	 * yet, and destroying it here would be destroying it in use -- the exact
+	 * thing the retire queue exists to prevent, done in the one place that
+	 * did not use it. Refusing to grow is not an option (the upload would be
+	 * wrong), and waiting is not an option (this is reached from a client
+	 * commit), so the old buffer is handed to the retire queue against the
+	 * submission that read it and a fresh one is built alongside.
+	 */
+	if (up->buffer != VK_NULL_HANDLE && retire != NULL) {
+		struct avk_upload *old = calloc(1, sizeof(*old));
+		if (old != NULL) {
+			*old = *up;
+			AVK_LIVE_INC(dev, avk_uploads);
+			memset(up, 0, sizeof(*up));
+			avk_retire_push(retire, dev, old->last_use, avk_upload_retire,
+				old);
+		} else {
+			/* Out of memory. Destroying in place is the lesser evil of the
+			 * two remaining, and it is loud rather than silent. */
+			avk_log(AVK_ERROR, "staging: cannot defer the old buffer's "
+				"destruction; destroying it in place, which may race a copy "
+				"the GPU has not run yet");
+			avk_upload_finish(dev, up);
+		}
+	} else {
+		avk_upload_finish(dev, up);
+	}
 
 	VkBufferCreateInfo info = {
 		.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
@@ -158,6 +187,7 @@ static bool staging_ensure(struct avk_device *dev, struct avk_upload *up,
 		avk_check(res, "vkCreateBuffer (staging)");
 		return false;
 	}
+	AVK_LIVE_INC(dev, buffers);
 	VkMemoryRequirements reqs;
 	vkGetBufferMemoryRequirements(dev->dev, up->buffer, &reqs);
 	uint32_t type = 0;
@@ -177,6 +207,7 @@ static bool staging_ensure(struct avk_device *dev, struct avk_upload *up,
 		avk_check(res, "vkAllocateMemory (staging)");
 		goto error;
 	}
+	AVK_LIVE_INC(dev, device_memory);
 	res = vkBindBufferMemory(dev->dev, up->buffer, up->memory, 0);
 	if (res != VK_SUCCESS) {
 		avk_check(res, "vkBindBufferMemory (staging)");
@@ -245,7 +276,7 @@ uint64_t avk_upload_image_write(struct avk_device *dev,
 	}
 
 	VkDeviceSize size = (VkDeviceSize)stride * height;
-	if (!staging_ensure(dev, up, size)) {
+	if (!staging_ensure(dev, up, ring->retire, size)) {
 		return 0;
 	}
 	memcpy(up->mapped, pixels, (size_t)size);
@@ -327,6 +358,7 @@ uint64_t avk_upload_image_write(struct avk_device *dev,
 
 	image->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 	image->last_use = timeline;
+	up->last_use = timeline;
 	return timeline;
 }
 
@@ -337,10 +369,12 @@ void avk_upload_finish(struct avk_device *dev, struct avk_upload *up) {
 	}
 	if (up->buffer != VK_NULL_HANDLE) {
 		vkDestroyBuffer(dev->dev, up->buffer, NULL);
+		AVK_LIVE_DEC(dev, buffers);
 		up->buffer = VK_NULL_HANDLE;
 	}
 	if (up->memory != VK_NULL_HANDLE) {
 		vkFreeMemory(dev->dev, up->memory, NULL);
+		AVK_LIVE_DEC(dev, device_memory);
 		up->memory = VK_NULL_HANDLE;
 	}
 	up->size = 0;
@@ -349,6 +383,7 @@ void avk_upload_finish(struct avk_device *dev, struct avk_upload *up) {
 void avk_upload_retire(struct avk_device *dev, void *upload) {
 	struct avk_upload *up = upload;
 	avk_upload_finish(dev, up);
+	AVK_LIVE_DEC(dev, avk_uploads);
 	free(up);
 }
 
@@ -417,7 +452,7 @@ uint64_t avk_upload_image_write_regions(struct avk_device *dev,
 	if (total == 0) {
 		return 0;
 	}
-	if (!staging_ensure(dev, up, total)) {
+	if (!staging_ensure(dev, up, ring->retire, total)) {
 		return 0;
 	}
 
@@ -526,5 +561,6 @@ uint64_t avk_upload_image_write_regions(struct avk_device *dev,
 	}
 	image->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 	image->last_use = timeline;
+	up->last_use = timeline;
 	return timeline;
 }

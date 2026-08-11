@@ -32,6 +32,17 @@ struct avk_upload {
 	VkDeviceMemory memory;
 	VkDeviceSize size;
 	void *mapped;   /* persistently mapped for the buffer's whole life */
+
+	/* The timeline point of the last submission that READ this staging
+	 * buffer, and therefore the point at which it becomes safe to destroy.
+	 *
+	 * Recorded because it was previously not recorded, and both places that
+	 * needed it made something up instead: the retire at destroy used
+	 * "current + 1" -- a point that no submission owns and that, at teardown,
+	 * nothing will ever signal -- and staging_ensure() used nothing at all,
+	 * destroying a buffer that a copy might still be reading. Neither can be
+	 * right, because neither is derived from the submission that used it. */
+	uint64_t last_use;
 };
 
 /*

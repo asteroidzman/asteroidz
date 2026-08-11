@@ -2,6 +2,7 @@
 #define AVK_COMMAND_H
 
 #include "../device/avk_device.h"
+#include "avk_retire.h"
 
 /*
  * A ring of reusable command pools.
@@ -45,6 +46,12 @@ struct avk_cmd_ring {
 	uint64_t acquires;
 	uint64_t submits;
 	uint64_t stalls;
+
+	/* Where resources this ring's submissions read are handed for deferred
+	 * destruction. Borrowed; set by whoever owns both. May be NULL, in which
+	 * case anything that would have been deferred is destroyed in place and
+	 * says so. */
+	struct avk_retire_queue *retire;
 };
 
 bool avk_cmd_ring_init(struct avk_cmd_ring *ring, struct avk_device *dev,

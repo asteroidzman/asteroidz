@@ -32,6 +32,7 @@ bool avk_cmd_ring_init(struct avk_cmd_ring *ring, struct avk_device *dev,
 			avk_check(res, "vkCreateCommandPool");
 			goto error;
 		}
+		AVK_LIVE_INC(dev, command_pools);
 
 		VkCommandBufferAllocateInfo alloc_info = {
 			.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
@@ -68,6 +69,7 @@ void avk_cmd_ring_finish(struct avk_cmd_ring *ring) {
 		 * legal but pointless. */
 		if (ring->slots[i].pool != VK_NULL_HANDLE) {
 			vkDestroyCommandPool(ring->dev->dev, ring->slots[i].pool, NULL);
+			AVK_LIVE_DEC(ring->dev, command_pools);
 			ring->slots[i].pool = VK_NULL_HANDLE;
 			ring->slots[i].cb = VK_NULL_HANDLE;
 		}

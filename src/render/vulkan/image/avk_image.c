@@ -1,7 +1,9 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "avk_image.h"
+#include "../avk.h"
 
+#include <inttypes.h>
 #include <stdlib.h>
 
 void avk_image_destroy(struct avk_device *dev, void *data) {
@@ -10,11 +12,38 @@ void avk_image_destroy(struct avk_device *dev, void *data) {
 		return;
 	}
 
+	/*
+	 * Destroying an image twice destroys the driver's host allocation for its
+	 * VkImage twice, and that is a plain double free wearing a Vulkan hat: it
+	 * aborts inside glibc, at a free() with no AVK symbol anywhere near it, at
+	 * whatever unrelated moment the allocator next notices its arena is
+	 * inconsistent. This catches it at the second destroy instead, names the
+	 * image, and declines to do it.
+	 *
+	 * The read is of memory this function may already have freed, which is
+	 * itself undefined -- deliberately. Under ASan it is a use-after-free
+	 * report with both stacks, which is the best possible outcome; without
+	 * ASan the freed chunk almost never still reads as AVK_IMAGE_LIVE, so the
+	 * check holds. What it must NOT do is be relied on as protection, which is
+	 * why it counts a violation rather than quietly carrying on.
+	 */
+	if (image->life != AVK_IMAGE_LIVE) {
+		if (dev != NULL) {
+			dev->lifecycle_violations++;
+		}
+		avk_log(AVK_ERROR, "avk_image #%" PRIu64 " destroyed twice (state %u) "
+			"-- something owns it that should not", image->id, image->life);
+		return;
+	}
+	image->life = AVK_IMAGE_DESTROYED;
+
 	if (image->view != VK_NULL_HANDLE) {
 		vkDestroyImageView(dev->dev, image->view, NULL);
+		AVK_LIVE_DEC(dev, image_views);
 	}
 	if (image->image != VK_NULL_HANDLE) {
 		vkDestroyImage(dev->dev, image->image, NULL);
+		AVK_LIVE_DEC(dev, images);
 	}
 	/* Memory after the image, always: freeing memory an image is still bound
 	 * to is undefined behaviour that happens to work on desktop drivers right
@@ -22,8 +51,22 @@ void avk_image_destroy(struct avk_device *dev, void *data) {
 	for (uint32_t i = 0; i < image->memory_count; i++) {
 		if (image->memory[i] != VK_NULL_HANDLE) {
 			vkFreeMemory(dev->dev, image->memory[i], NULL);
+			AVK_LIVE_DEC(dev, device_memory);
 		}
 	}
 
+	AVK_LIVE_DEC(dev, avk_images);
 	free(image);
+}
+
+struct avk_image *avk_image_alloc(struct avk_device *dev) {
+	struct avk_image *image = calloc(1, sizeof(*image));
+	if (image == NULL) {
+		return NULL;
+	}
+	image->dev = dev;
+	image->life = AVK_IMAGE_LIVE;
+	image->id = ++dev->next_object_id;
+	AVK_LIVE_INC(dev, avk_images);
+	return image;
 }

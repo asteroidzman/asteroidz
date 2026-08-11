@@ -748,6 +748,7 @@ done:
 	if (h.target != NULL) {
 		avk_image_destroy(h.dev, h.target);
 	}
+	avk_device_wait_idle(h.dev);
 	avk_renderer_finish(&h.renderer);
 	avk_device_destroy(h.dev);
 	avk_instance_destroy(h.inst);

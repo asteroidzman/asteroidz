@@ -3641,6 +3641,11 @@ void cleanuplisteners(void) {
 }
 
 void cleanup(void) {
+	/* Paired with CLEANUP_END at the bottom. A shutdown that crashes leaves
+	 * BEGIN with no END, which is the difference between "teardown was tested
+	 * and passed" and "teardown was never reached" -- and a harness that
+	 * cannot tell those apart reports the second as the first. */
+	wlr_log(WLR_INFO, "CLEANUP_BEGIN");
 	allow_frame_scheduling = false;
 
 	ufo_egg_destroy(ufo_egg);
@@ -3668,6 +3673,13 @@ void cleanup(void) {
 
 	destroykeyboardgroup(&kb_group->destroy, NULL);
 
+#ifdef AZ_HAVE_VULKAN
+	/* BEFORE the backend, because destroying the outputs destroys AVK's
+	 * per-output synchronisation objects, and the last frame's submission
+	 * still refers to them. See az_avk_quiesce(). */
+	az_avk_quiesce();
+#endif
+
 	/* If it's not destroyed manually it will cause a use-after-free of
 	 * wlr_seat. Destroy it until it's fixed in the wlroots side */
 	wlr_backend_destroy(backend);
@@ -3693,13 +3705,18 @@ void cleanup(void) {
 	wlr_scene_node_destroy(&scene->tree.node);
 
 #ifdef AZ_HAVE_VULKAN
-	/* After the scene and the outputs: az_avk_finish() waits for the device
-	 * to go idle and then frees images, and anything still holding one would
-	 * be freeing it a second time. */
+	/* After the scene and the outputs, because both of them hand images back
+	 * on the way down and az_avk_finish() must be the last owner standing.
+	 *
+	 * It waits for the device to go idle FIRST and then destroys, in that
+	 * order -- which this comment used to claim while the only wait was
+	 * buried inside avk_device_destroy(), the very last call. Every resource
+	 * freed before it was freed with no wait in front of it at all. */
 	az_avk_finish();
 #endif
 
 	asteroidz_text_global_finish();
+	wlr_log(WLR_INFO, "CLEANUP_END");
 }
 
 void cleanupmon(struct wl_listener *listener, void *data) {
