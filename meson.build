@@ -283,6 +283,16 @@ if build_vulkan
                                dependencies : [avk_dep],
                                build_by_default : false)
   test('avk-render', test_avk_render, timeout : 60)
+
+  # asteroidz-avk-probe: run the engine on real hardware and say what it can
+  # do. Installed, because until AVK renders the desktop (M3b) this is the
+  # only way to exercise it on the machine it will eventually run on -- and it
+  # touches nothing the compositor owns, so it is safe to run in a live
+  # session.
+  executable('asteroidz-avk-probe', 'tools/avk-probe.c',
+             dependencies : [avk_dep, dependency('cairo')],
+             install : true,
+             c_args : c_args)
 endif
 
 # Runs from the source root so the corpus case can open assets/config.kdl --
