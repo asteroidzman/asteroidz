@@ -1366,6 +1366,109 @@ arrives from wlroots, not from AVK.
   directions.
 - **Live acceptance** on DP-1 + HDMI-A-1.
 
+*(Stage 3 closed the first three of these; the rest still stand.)*
+
+---
+
+## 5.4j M3.5E stage 3 — scale, content and handover
+
+`contrib/avk-cursor-content-test.sh`. Stage 2's test asks whether a cursor
+reaches the screen; this one asks the three questions that only arise once it
+does, in one compositor run, because one client can exhibit all three: a
+scaled, animating, buffer-reusing cursor.
+
+### A real bug, found by the first test that used a scale other than 1
+
+`wlr_cursor_set_buffer()` wants the hotspot in **logical** units, and its
+sibling `wlr_output_cursor_set_buffer()` wants it in **buffer pixels**. The
+first passes the value through to `output_cursor_set_texture()`, which
+*multiplies* by the output scale; the second *divides* by it first. asteroidz
+was converting surface-local hotspots up into buffer pixels, which is the
+second convention fed to the first function.
+
+The two conventions are identical at scale 1, so every test up to this point
+passed, and on an ordinary desktop nothing would ever show it. At scale 2 the
+cursor lands offset by half of itself — measured as an origin of 624,344 where
+632,352 was required.
+
+Both sources needed opposite fixes, which is what makes the units worth stating
+in the header rather than inferring:
+
+- a **client** states its hotspot in surface-local coordinates, which are
+  already logical — it passes through untouched;
+- an **xcursor image** states its hotspot in buffer pixels, because the theme
+  loads a larger image for a larger scale — it is divided by the scale.
+
+### What the three sections establish
+
+| | measured |
+|---|---|
+| **scale** | a 64×64 buffer at scale 2 occupies **32×32** on screen, with its origin 8 px in — the hotspot in surface units, not buffer units |
+| **content** | red → blue under **one** `wl_shm` buffer, one pool, one fd, one mapping. D.1's content model, applied to the cursor |
+| **handover** | 32 frames carried by the plane with `software_cursor_frames` 0, then AVK compositing once screencopy locked software cursors |
+
+### Two breaks, each failing exactly one thing
+
+`BREAK=cursor-generation` (`AZ_AVK_CACHE_BY_IDENTITY=1`) fails **only** the
+content assertion — the cursor freezes on red while the client goes on
+committing. `BREAK=cursor-hotspot` (`AZ_AVK_NO_CURSOR_HOTSPOT=1`) fails **only**
+the two placement assertions.
+
+The second break turned up something worth keeping. Drawn without the hotspot
+subtracted, the cursor comes back **24×24 instead of 32×32** — because wlroots
+computes the cursor's damage from where the cursor actually *is*, so a draw
+placed 8 px away falls partly outside the damaged region and is scissored. That
+is independent confirmation that the cursor damage really is tight around the
+cursor rather than a full-output repaint: if it were not, the misplaced draw
+would have come out whole.
+
+### Two test-design mistakes, both of which produced a green run
+
+Recorded because both are the kind that look like coverage:
+
+1. **The content assertion first read "capture 2 is blue".** Under
+   `BREAK=cursor-generation` the cursor froze on whatever colour was current at
+   first upload — which, with an animation already running, was blue. The
+   assertion passed while the bug it existed for was fully present. An
+   assertion about a *change* has to name both endpoints, so it now reads
+   "capture 1 was red and not blue, and capture 2 is blue and not red".
+2. **A cycling animation is a race, not a test.** At 2000 ms spacing, a capture
+   three seconds later landed on the *second* transition and read the original
+   colour back. `wlcursor --animate-once` makes exactly one transition and
+   stops, so a capture at any later moment sees the same thing.
+
+### And one that was not this milestone's fault
+
+Adding "moving a cursor re-uploads nothing" to stage 2's test needed a break to
+falsify it, and the obvious one already existed: `AZ_AVK_UPLOAD_ON_LOOKUP`, from
+D.1. It did not work — the assertion passed with the switch set.
+
+The reason turned out to matter more than the cursor. That switch restores the
+unconditional upload **call**, but D.1 *Phase 2* made the copy damage-driven, so
+the call now finds no pending damage and `az_avk_upload_shm()` returns at
+`rect_count == 0` having copied nothing. Phase 2 neutralised Phase 1's break
+test, in the same milestone, and nothing noticed: running
+`BREAK=lookup ./contrib/avk-shm-cache-test.sh` today returns **7/7 passed**,
+where the documented behaviour is 3,723,720 bytes per frame.
+
+Both breaks now set `AZ_AVK_SOURCE_FULL` alongside it, and both fail again with
+exactly the documented numbers — 3,723,720 B/frame for the wallpaper case,
+44,883,968 B for the cursor case.
+
+The general point: a break test stays a break only while the implementation it
+subverts still works the way it did when the switch was written. An
+implementation change can neutralise a switch without touching the switch, the
+test, or anything visible in a diff — so a break run that comes back green is a
+failure of the suite, not a curiosity.
+
+### A third, smaller test-design mistake
+
+`wlcursor` originally committed its animation only while
+the pointer was inside. `contrib/wlvptr` moves the pointer and exits, so the
+leave arrived seconds before the first tick and the cursor appeared frozen for
+a reason that had nothing to do with the compositor. A real client animates on
+a timer, so it does now too.
+
 ---
 
 ## M3b work plan (the compositor half) — DONE, kept for the record

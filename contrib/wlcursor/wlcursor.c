@@ -19,7 +19,8 @@
  *     wlcursor [--size WxH] [--colour RRGGBB]
  *              [--cursor-size WxH] [--cursor-colour RRGGBB]
  *              [--hotspot X,Y] [--cursor-scale N]
- *              [--animate-ms N] [--reuse-buffer] [--no-cursor]
+ *              [--animate-ms N] [--animate-once] [--reuse-buffer]
+ *              [--no-cursor]
  *
  * The window is a flat colour so a screenshot can tell window from cursor by
  * pixel count alone. The cursor is a different flat colour with a one-pixel
@@ -30,6 +31,10 @@
  *   --animate-ms N    commit a new cursor colour every N ms. The cursor is a
  *                     surface like any other and an animated one has to keep
  *                     working.
+ *   --animate-once    make exactly one transition and then stop, so a capture
+ *                     taken at any later moment sees the same image. A cycling
+ *                     animation makes an assertion depend on catching the
+ *                     right instant, which is a race, not a test.
  *   --reuse-buffer    animate by rewriting ONE wl_buffer instead of rotating
  *                     through two. This is wlreuse's trick applied to the
  *                     cursor: a compositor that decides "same wl_buffer, so
@@ -87,11 +92,16 @@ static int hotspot_x = 4, hotspot_y = 4;
 static int cursor_scale = 1;
 static int animate_ms;
 static bool reuse_buffer;
+static bool animate_once;
 static bool no_cursor;
 
 static bool running = true;
 static uint32_t enter_serial;
 static bool have_enter;
+static bool animation_started;
+static uint64_t animation_epoch;
+
+static uint64_t now_ms(void);
 
 static void wm_base_ping(void *data, struct xdg_wm_base *base, uint32_t serial) {
 	(void)data;
@@ -202,6 +212,14 @@ static void pointer_enter(void *data, struct wl_pointer *p, uint32_t serial,
 	(void)data; (void)p; (void)surf; (void)sx; (void)sy;
 	enter_serial = serial;
 	have_enter = true;
+	/* The animation clock starts here, not at startup. A cursor nobody can
+	 * see has no business animating, and a test that captures it needs the
+	 * sequence to be deterministic relative to the moment it became visible
+	 * rather than to process start. */
+	if (!animation_started) {
+		animation_started = true;
+		animation_epoch = now_ms();
+	}
 	set_cursor();
 }
 static void pointer_leave(void *data, struct wl_pointer *p, uint32_t serial,
@@ -312,6 +330,7 @@ static const struct xdg_toplevel_listener toplevel_listener = {
 	.close = toplevel_close,
 };
 
+uint64_t now_ms(void);
 static uint64_t now_ms(void) {
 	struct timespec ts;
 	clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -340,6 +359,15 @@ int main(int argc, char **argv) {
 			animate_ms = atoi(argv[++i]);
 		} else if (strcmp(argv[i], "--reuse-buffer") == 0) {
 			reuse_buffer = true;
+		} else if (strcmp(argv[i], "--animate-once") == 0) {
+			/* Advance to the next colour once and then stop, so a capture
+			 * taken any time afterwards sees the same thing. A cycling
+			 * animation makes the assertion depend on catching the right
+			 * moment: at 2000ms spacing a capture three seconds later landed
+			 * on the SECOND transition and read back the original colour, and
+			 * the test failed for a reason that had nothing to do with the
+			 * compositor. */
+			animate_once = true;
 		} else if (strcmp(argv[i], "--no-cursor") == 0) {
 			no_cursor = true;
 		} else {
@@ -422,19 +450,37 @@ int main(int argc, char **argv) {
 		reuse_buffer ? ", reusing one buffer" : "",
 		no_cursor ? ", NOT setting a cursor" : "");
 
-	uint64_t next_animation = now_ms() + (animate_ms > 0 ? animate_ms : 0);
+	uint64_t next_animation = 0;
 	while (running && wl_display_dispatch_pending(display) != -1) {
+		if (animation_started && next_animation == 0) {
+			next_animation = animation_epoch + (uint64_t)animate_ms;
+		}
 		if (wl_display_flush(display) < 0 && errno != EAGAIN) {
 			break;
 		}
-		if (animate_ms > 0 && cursor_colour_count > 1 &&
+		if (animate_ms > 0 && cursor_colour_count > 1 && animation_started &&
 				now_ms() >= next_animation) {
 			cursor_colour_index =
 				(cursor_colour_index + 1) % cursor_colour_count;
-			if (have_enter) {
-				commit_cursor();
-			}
+			/*
+			 * Committed whether or not the pointer is still inside.
+			 *
+			 * A real client animating a cursor does it on a timer, not out of
+			 * an enter handler, and the surface stays the pointer's cursor
+			 * until something replaces it. Gating this on have_enter also made
+			 * the test depend on how long contrib/wlvptr's virtual pointer
+			 * happens to live -- it moves the pointer and exits, so the leave
+			 * arrives seconds before the first animation tick and the cursor
+			 * appeared frozen for a reason that had nothing to do with the
+			 * compositor.
+			 */
+			commit_cursor();
+			fprintf(stderr, "wlcursor: animation tick -> colour %d\n",
+				cursor_colour_index);
 			next_animation = now_ms() + animate_ms;
+			if (animate_once) {
+				animate_ms = 0;
+			}
 		}
 		if (wl_display_prepare_read(display) == 0) {
 			wl_display_flush(display);

@@ -57,7 +57,14 @@ OUTDIR="${TMPDIR:-/tmp}/asteroidz-avk-shmcache-$$"
 HL_OUTDIR="$OUTDIR"
 HL_WIDTH=1280 HL_HEIGHT=720
 HL_ENV="ASTEROIDZ_RENDERER=avk"
-[ "$BREAK" = lookup ] && HL_ENV="$HL_ENV AZ_AVK_UPLOAD_ON_LOOKUP=1"
+# BOTH, and the second is not redundant -- this break silently stopped breaking
+# anything when D.1 Phase 2 landed. AZ_AVK_UPLOAD_ON_LOOKUP restores the
+# unconditional upload CALL, but Phase 2 made the copy damage-driven, so the
+# call now finds no pending damage and az_avk_upload_shm() returns at
+# rect_count == 0 having copied nothing. The run came back 7/7 -- a break test
+# passing, which is the same thing as no coverage at all. AZ_AVK_SOURCE_FULL is
+# what makes it copy the whole buffer again.
+[ "$BREAK" = lookup ] && HL_ENV="$HL_ENV AZ_AVK_UPLOAD_ON_LOOKUP=1 AZ_AVK_SOURCE_FULL=1"
 [ "$BREAK" = identity ] && HL_ENV="$HL_ENV AZ_AVK_CACHE_BY_IDENTITY=1"
 export HL_OUTDIR HL_WIDTH HL_HEIGHT HL_ENV
 

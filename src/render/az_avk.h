@@ -1764,9 +1764,19 @@ static void az_avk_emit_cursors(struct az_avk_walk *walk,
 			return;
 		}
 
+		/*
+		 * BREAK SWITCH: draw at the pointer instead of at the pointer minus
+		 * the hotspot.
+		 *
+		 * A compositor that ignores the hotspot draws the complete image,
+		 * correctly, one hotspot away from where it belongs -- so it passes
+		 * every assertion that counts pixels and only fails one that asks
+		 * where they are. This is that assertion's falsifier.
+		 */
+		bool no_hotspot = az_avk_env_flag("AZ_AVK_NO_CURSOR_HOTSPOT");
 		struct wlr_box box = {
-			.x = (int)oc->x - oc->hotspot_x,
-			.y = (int)oc->y - oc->hotspot_y,
+			.x = (int)oc->x - (no_hotspot ? 0 : oc->hotspot_x),
+			.y = (int)oc->y - (no_hotspot ? 0 : oc->hotspot_y),
 			.width = (int)oc->width,
 			.height = (int)oc->height,
 		};

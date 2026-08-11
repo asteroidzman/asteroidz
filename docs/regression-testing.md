@@ -243,7 +243,23 @@ BREAK=identity ASTEROIDZ=build-vk/asteroidz bash contrib/avk-shm-cache-test.sh  
 It asks whether a CPU-backed buffer is uploaded because its pixels changed or
 because something looked at it, and there are two opposite ways to get that
 wrong. `BREAK=lookup` is too much — 3,723,720 bytes per frame, the wallpaper,
-recopied every frame. `BREAK=identity` is too little — cache on the buffer
+recopied every frame.
+
+**That break silently stopped breaking anything, and was caught months later
+by an unrelated test.** `AZ_AVK_UPLOAD_ON_LOOKUP` restores the unconditional
+upload *call*, but D.1 Phase 2 made the copy itself damage-driven — so the call
+began finding no pending damage and `az_avk_upload_shm()` returned at
+`rect_count == 0` having copied nothing. The break run came back **7/7**, which
+is indistinguishable from having no coverage. It now sets `AZ_AVK_SOURCE_FULL`
+alongside it and produces the documented 3,723,720 B/frame again.
+
+The lesson generalises past this one switch: a break test is only a break while
+the code it subverts still works the way it did when the switch was written.
+Changing the *implementation* a switch pokes at can neutralise it without
+touching the switch, the test, or anything that would show up in a diff. Break
+tests need re-running on the schedule the real tests do, and a break run that
+comes back green has to be treated as a failure of the suite rather than a
+curiosity. `BREAK=identity` is too little — cache on the buffer
 pointer, never re-upload, and a client that reuses a `wl_buffer` freezes on its
 first frame. **Neither break is caught by the other's assertions**, which is why
 both are here.
@@ -319,6 +335,43 @@ The hotspot assertion is the one that carries weight. wlcursor paints a single
 opaque-black pixel at its hotspot, because a compositor that ignores the
 hotspot entirely draws the whole image, correctly, one hotspot away — and
 passes every pixel-count assertion ever written.
+
+`contrib/avk-cursor-content-test.sh` is the fifteenth, and it exists because
+everything before it ran the cursor at scale 1.
+
+```bash
+ASTEROIDZ=build-vk/asteroidz bash contrib/avk-cursor-content-test.sh
+BREAK=cursor-generation ASTEROIDZ=build-vk/asteroidz bash contrib/avk-cursor-content-test.sh  # must FAIL
+BREAK=cursor-hotspot    ASTEROIDZ=build-vk/asteroidz bash contrib/avk-cursor-content-test.sh  # must FAIL
+```
+
+It found a real bug on its first run. `wlr_cursor_set_buffer()` takes the
+hotspot in *logical* units while its sibling `wlr_output_cursor_set_buffer()`
+takes it in *buffer pixels* — one multiplies by the output scale downstream and
+the other divides. The two are identical at scale 1, so nothing before this
+could see it; at scale 2 the cursor landed offset by half of itself.
+
+Two mistakes in writing it are worth more than the test:
+
+**An assertion about a change has to name both endpoints.** The content check
+first read "capture 2 is blue". Under `BREAK=cursor-generation` the cursor
+freezes on whatever colour was current when the image was first uploaded —
+which, with an animation already running, was blue. The assertion passed
+perfectly while the bug it existed for was fully present. It now reads "capture
+1 was red and not blue, and capture 2 is blue and not red".
+
+**A cycling animation is a race.** At 2000 ms spacing a capture three seconds
+later landed on the *second* transition and read the original colour back, and
+the test failed for a reason that had nothing to do with the compositor.
+`wlcursor --animate-once` makes one transition and stops, so any later capture
+sees the same thing. The same applies to `--reuse-buffer`: gating its commits
+on the pointer being inside made the result depend on how long `contrib/wlvptr`
+happens to live.
+
+One incidental finding from `BREAK=cursor-hotspot`: a cursor drawn 8 px from
+where wlroots believes it is comes back **24×24 instead of 32×32**, scissored
+by a damage region computed around the real position. That is independent
+confirmation that cursor damage is tight rather than a full-output repaint.
 
 ### The schema, checked from both ends
 

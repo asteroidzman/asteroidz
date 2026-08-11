@@ -49,6 +49,9 @@
 #                          asked who put it there" -- which was true of every
 #                          frame before, when the whole output fell back to
 #                          SceneFX the moment a software cursor existed.
+#   BREAK=cursor-upload    AZ_AVK_UPLOAD_ON_LOOKUP=1 -- re-upload every buffer
+#                          the frame looks at, including the cursor's. Moving
+#                          the pointer then costs a copy per motion.
 #   BREAK=cursor-damage    AZ_AVK_FULL_DAMAGE=1 -- repaint everything, every
 #                          frame. Honest about its scope: it breaks damage
 #                          globally rather than only for the cursor, and it is
@@ -86,6 +89,13 @@ HL_ENV="ASTEROIDZ_RENDERER=avk"
 [ "$BREAK" = cursor-texture ] && HL_ENV="$HL_ENV AZ_CURSOR_LEGACY_SURFACE=1"
 [ "$BREAK" = cursor-command ] && HL_ENV="$HL_ENV AZ_AVK_NO_CURSOR=1"
 [ "$BREAK" = cursor-damage ] && HL_ENV="$HL_ENV AZ_AVK_FULL_DAMAGE=1"
+# BOTH switches, and the second is not redundant. AZ_AVK_UPLOAD_ON_LOOKUP
+# restores the unconditional upload CALL, but D.1 Phase 2 made the copy itself
+# damage-driven, so the call finds no pending damage and copies nothing --
+# az_avk_upload_shm() returns early at rect_count == 0. AZ_AVK_SOURCE_FULL is
+# what makes it copy the whole buffer again. Either alone leaves this test
+# passing, which is a fact worth knowing about the D.1 switches generally.
+[ "$BREAK" = cursor-upload ] && HL_ENV="$HL_ENV AZ_AVK_UPLOAD_ON_LOOKUP=1 AZ_AVK_SOURCE_FULL=1"
 export HL_OUTDIR HL_WIDTH HL_HEIGHT HL_ENV
 
 # Where the pointer is put, and therefore where the hotspot must land.
@@ -231,6 +241,7 @@ SW="$(field software_cursor_frames)"
 NOIMG="$(field cursor_no_image)"
 IMPFAIL="$(field cursor_import_failures)"
 DMG="$(field damage_pixels)"
+UPBYTES="$(( $(field shm_upload_bytes) ))"
 PERFRAME="$(python3 -c "print(int($DMG/$FRAMES) if '$FRAMES'.isdigit() and $FRAMES else -1)" 2>/dev/null || echo -1)"
 echo "  note: $FRAMES frames ($FALLBACK fallback), $SW with an AVK cursor, "\
 "$NOIMG no-image, $IMPFAIL import failures, ${PERFRAME} damaged px/frame"
@@ -255,6 +266,12 @@ hl_assert "repainting a small fraction of the output ($PERFRAME of $FULL px)" \
 	"$([ "${PERFRAME:--1}" -ge 0 ] \
 		&& [ "${PERFRAME:-0}" -lt $(( FULL / 10 )) ] \
 		&& echo true || echo false)" "true"
+# Moving a cursor changes where its pixels go, not what they are. The image is
+# already on the GPU and must stay there: re-uploading a 32x32 cursor on every
+# motion event is small in isolation and is exactly the shape of the bug D.1
+# removed for wallpapers, at pointer rates.
+hl_assert "and re-uploading nothing to move it (${UPBYTES} B)" \
+	"$([ "${UPBYTES:-999999}" -lt 8192 ] && echo true || echo false)" "true"
 
 kill "$WLCURSOR_PID" 2>/dev/null
 hl_stop

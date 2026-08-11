@@ -85,7 +85,22 @@ static struct az_cursor {
 	 * release it the instant it commits the next one.
 	 */
 	struct wlr_buffer *buffer;
-	int hotspot_x, hotspot_y;   /* buffer pixels */
+	/*
+	 * The hotspot in LOGICAL units -- the same units as the cursor's on-screen
+	 * size, not the buffer's pixels.
+	 *
+	 * This is the convention wlr_cursor_set_buffer() wants, and it is not the
+	 * one its sibling uses: wlr_output_cursor_set_buffer() takes buffer pixels
+	 * and divides by the output scale, while wlr_cursor_set_buffer() passes
+	 * the value straight through to output_cursor_set_texture(), which
+	 * MULTIPLIES by the output scale -- so it has to arrive already reduced by
+	 * the buffer's own scale, exactly like the dst_width it is paired with.
+	 *
+	 * The two conventions are identical at scale 1, which is why getting this
+	 * wrong is invisible on an ordinary desktop and shows up only as a
+	 * scale-2 cursor offset by half of itself.
+	 */
+	int hotspot_x, hotspot_y;
 	float scale;                /* buffer pixels per logical pixel */
 
 	/*
@@ -228,8 +243,12 @@ static void az_cursor_xcursor_show(size_t index) {
 	 *
 	 * Each animation frame is a distinct buffer owned by the theme, so no
 	 * forced re-import is ever needed here. */
-	az_cursor_set_image(buffer, image->hotspot_x, image->hotspot_y,
-		az_cursor.xcursor_scale, false);
+	/* An xcursor image's hotspot is in BUFFER pixels -- the theme loads a
+	 * bigger image for a bigger scale and scales the hotspot with it -- so it
+	 * has to come down to logical units here. */
+	float scale = az_cursor.xcursor_scale > 0 ? az_cursor.xcursor_scale : 1.0f;
+	az_cursor_set_image(buffer, (int)roundf(image->hotspot_x / scale),
+		(int)roundf(image->hotspot_y / scale), scale, false);
 
 	if (xc->image_count > 1 && image->delay > 0 &&
 			az_cursor.xcursor_timer != NULL) {
@@ -328,14 +347,14 @@ static void az_cursor_surface_update(bool content_changed) {
 		return;
 	}
 
-	/* Hotspots arrive in surface-local coordinates and the image is in buffer
-	 * pixels, so the surface's own buffer scale is the conversion. */
+	/* A client states its hotspot in surface-local coordinates, which are
+	 * already the logical units wanted here -- so it passes through untouched.
+	 * The scale is reported separately, and is what turns the buffer's size
+	 * into the cursor's size. */
 	float scale = surface->current.scale > 0 ? (float)surface->current.scale
 		: 1.0f;
-	az_cursor_set_image(buffer,
-		(int)roundf(az_cursor.surface_hotspot_x * scale),
-		(int)roundf(az_cursor.surface_hotspot_y * scale), scale,
-		content_changed);
+	az_cursor_set_image(buffer, az_cursor.surface_hotspot_x,
+		az_cursor.surface_hotspot_y, scale, content_changed);
 
 	az_cursor_surface_outputs(surface);
 }
