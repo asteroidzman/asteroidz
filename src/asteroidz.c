@@ -1713,6 +1713,25 @@ static struct wlr_xwayland *xwayland;
 static struct wl_event_source *sync_keymap;
 #endif
 
+/*
+ * Pointer focus traffic, counted where wlroots is actually told.
+ *
+ * Not cursor state and not renderer state, and reported through avk-stats only
+ * because that is the channel a running session can be read from. They answer
+ * a question nothing else can: when a client's hover state changes while the
+ * pointer and the window are both stationary, is the client being told the
+ * pointer moved?
+ *
+ * Declared here rather than beside the cursor's own counters because
+ * animation/client.h re-enters the pointer too and is included first.
+ *
+ * Monotonic on purpose -- reset_avk_stats does not clear them, so a sample
+ * taken across a reproduction still has a usable baseline on either side.
+ */
+static uint64_t az_pointer_enters;
+static uint64_t az_pointer_focus_clears;
+static uint64_t az_pointer_motions;
+
 #include "action/client.h"
 #include "action/output.h"
 #include "animation/client.h"
@@ -7407,6 +7426,7 @@ void pointerfocus(Client *c, struct wlr_surface *surface, double sx, double sy,
 
 	/* If surface is NULL, clear pointer focus */
 	if (!surface) {
+		az_pointer_focus_clears++;
 		wlr_seat_pointer_notify_clear_focus(seat);
 		return;
 	}
@@ -7423,9 +7443,11 @@ void pointerfocus(Client *c, struct wlr_surface *surface, double sx, double sy,
 	if (!c || !c->mon || !c->mon->isoverview) {
 		// don't let window get pointer focus,
 		// avoid game window force grab pointer in overview mode
+		az_pointer_enters++;
 		wlr_seat_pointer_notify_enter(seat, surface, sx, sy);
 	}
 
+	az_pointer_motions++;
 	wlr_seat_pointer_notify_motion(seat, time, sx, sy);
 }
 

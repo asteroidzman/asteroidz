@@ -2619,6 +2619,30 @@ static cJSON *az_avk_stats_json(void) {
 	cJSON_AddNumberToObject(o, "cursor_unsets", (double)az_cursor.unsets);
 	cJSON_AddNumberToObject(o, "cursor_forced_reimports",
 		(double)az_cursor.forced_reimports);
+	/*
+	 * Counted since M3.5E stage 1 and never reported, which made it useless
+	 * for the one question it answers: a client asked for a cursor surface
+	 * and the surface had nothing to show, so the pointer was hidden rather
+	 * than given the image the client meant. That is indistinguishable on
+	 * screen from "the cursor never changes shape" -- the compositor's own
+	 * default is put back on the next motion, so the pointer simply stays an
+	 * arrow. Worth a number, because reading the code cannot tell you whether
+	 * it is happening on a particular machine with a particular client.
+	 */
+	cJSON_AddNumberToObject(o, "cursor_client_no_buffer",
+		(double)az_cursor.client_no_buffer);
+	/*
+	 * Pointer focus traffic. Not renderer state, and it does not belong to
+	 * AVK -- it is here because this is the channel that can be read from a
+	 * running session, and because the question it answers is otherwise pure
+	 * inference: a client whose hover state flickers while the pointer and
+	 * the window are both stationary is either being told the pointer moved,
+	 * or it is not. These two counters decide it.
+	 */
+	cJSON_AddNumberToObject(o, "pointer_enters", (double)az_pointer_enters);
+	cJSON_AddNumberToObject(o, "pointer_focus_clears",
+		(double)az_pointer_focus_clears);
+	cJSON_AddNumberToObject(o, "pointer_motions", (double)az_pointer_motions);
 	cJSON_AddBoolToObject(o, "cursor_force_software",
 		az_cursor_force_software());
 	/*

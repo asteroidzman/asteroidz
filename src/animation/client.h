@@ -2320,6 +2320,9 @@ void client_animation_next_tick(Client *c) {
 
 		// avoid game window force grab pointer in overview mode
 		if (surface && pointer_c == selmon->sel && !selmon->isoverview) {
+			/* Counted like the ones in pointerfocus(): a client cannot tell
+			 * which code path re-entered it, so neither should the number. */
+			az_pointer_enters++;
 			wlr_seat_pointer_notify_enter(seat, surface, sx, sy);
 		}
 
