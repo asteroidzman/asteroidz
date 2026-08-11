@@ -20,6 +20,7 @@
  *              [--cursor-size WxH] [--cursor-colour RRGGBB]
  *              [--hotspot X,Y] [--cursor-scale N]
  *              [--animate-ms N] [--animate-once] [--reuse-buffer]
+ *              [--hide-after-ms N] [--reshow-after-ms N] [--swap-after-ms N]
  *              [--no-cursor]
  *
  * The window is a flat colour so a screenshot can tell window from cursor by
@@ -42,6 +43,13 @@
  *                     wlroots' own wlr_cursor_set_buffer() and any renderer
  *                     cache keyed on the pointer do exactly that unless
  *                     something forces the re-import.
+ *   --hide-after-ms N   set_cursor(NULL) N ms after the first pointer enter:
+ *                     the client asking for no pointer image at all.
+ *   --reshow-after-ms N   set_cursor(same surface) again, unchanged.
+ *   --swap-after-ms N   set_cursor with a DIFFERENT wl_buffer and colour, so a
+ *                     stale image shows up as the wrong colour rather than as
+ *                     nothing. Cursor A to cursor B is not the same question
+ *                     as A to NULL to A.
  *   --no-cursor       never call set_cursor. The compositor's own xcursor
  *                     stays visible, which is the control case: it proves a
  *                     test that sees a cursor is seeing THIS client's cursor
@@ -94,6 +102,14 @@ static int animate_ms;
 static bool reuse_buffer;
 static bool animate_once;
 static bool no_cursor;
+/* One-shot cursor changes, at fixed times after the first pointer enter.
+ * Timed rather than triggered because a headless test has no other way to say
+ * "now", and one-shot rather than cycling because a cycling change makes the
+ * capture a race -- the lesson from --animate-once. */
+static int hide_after_ms;
+static int reshow_after_ms;
+static int swap_after_ms;
+static bool hide_done, reshow_done, swap_done;
 
 static bool running = true;
 static uint32_t enter_serial;
@@ -359,6 +375,16 @@ int main(int argc, char **argv) {
 			animate_ms = atoi(argv[++i]);
 		} else if (strcmp(argv[i], "--reuse-buffer") == 0) {
 			reuse_buffer = true;
+		} else if (strcmp(argv[i], "--hide-after-ms") == 0 && i + 1 < argc) {
+			/* set_cursor(NULL): the client asks for NO pointer image. */
+			hide_after_ms = atoi(argv[++i]);
+		} else if (strcmp(argv[i], "--reshow-after-ms") == 0 && i + 1 < argc) {
+			/* set_cursor(same surface) again, unchanged. */
+			reshow_after_ms = atoi(argv[++i]);
+		} else if (strcmp(argv[i], "--swap-after-ms") == 0 && i + 1 < argc) {
+			/* set_cursor with a DIFFERENT wl_buffer and colour: cursor A to
+			 * cursor B, which is not the same question as A to NULL to A. */
+			swap_after_ms = atoi(argv[++i]);
 		} else if (strcmp(argv[i], "--animate-once") == 0) {
 			/* Advance to the next colour once and then stop, so a capture
 			 * taken any time afterwards sees the same thing. A cycling
@@ -480,6 +506,46 @@ int main(int argc, char **argv) {
 			next_animation = now_ms() + animate_ms;
 			if (animate_once) {
 				animate_ms = 0;
+			}
+		}
+		if (animation_started) {
+			uint64_t t = now_ms() - animation_epoch;
+			if (hide_after_ms > 0 && !hide_done && t >= (uint64_t)hide_after_ms) {
+				hide_done = true;
+				wl_pointer_set_cursor(pointer, enter_serial, NULL, 0, 0);
+				wl_display_flush(display);
+				fprintf(stderr, "wlcursor: set_cursor(NULL) -- hidden\n");
+			}
+			if (reshow_after_ms > 0 && !reshow_done &&
+					t >= (uint64_t)reshow_after_ms) {
+				reshow_done = true;
+				commit_cursor();
+				wl_pointer_set_cursor(pointer, enter_serial, cursor_surface,
+					hotspot_x, hotspot_y);
+				wl_display_flush(display);
+				fprintf(stderr, "wlcursor: set_cursor(surface) -- reshown\n");
+			}
+			if (swap_after_ms > 0 && !swap_done && t >= (uint64_t)swap_after_ms) {
+				swap_done = true;
+				/* A different buffer AND a different colour, so a stale image
+				 * is visible as the old colour rather than as nothing. */
+				if (cursor_colour_count > 1) {
+					cursor_colour_index =
+						(cursor_colour_index + 1) % cursor_colour_count;
+				}
+				cursor_slot = 1;
+				paint_cursor(cursor_pixels[1],
+					cursor_colours[cursor_colour_index]);
+				wl_surface_attach(cursor_surface, cursor_buffers[1], 0, 0);
+				wl_surface_set_buffer_scale(cursor_surface, cursor_scale);
+				wl_surface_damage_buffer(cursor_surface, 0, 0, cursor_w,
+					cursor_h);
+				wl_surface_commit(cursor_surface);
+				wl_pointer_set_cursor(pointer, enter_serial, cursor_surface,
+					hotspot_x, hotspot_y);
+				wl_display_flush(display);
+				fprintf(stderr, "wlcursor: set_cursor(second buffer) -- "
+					"swapped to colour %d\n", cursor_colour_index);
 			}
 		}
 		if (wl_display_prepare_read(display) == 0) {

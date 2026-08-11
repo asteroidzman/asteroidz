@@ -424,6 +424,38 @@ where wlroots believes it is comes back **24×24 instead of 32×32**, scissored
 by a damage region computed around the real position. That is independent
 confirmation that cursor damage is tight rather than a full-output repaint.
 
+`contrib/avk-cursor-hide-test.sh` is the sixteenth, and it is entirely
+differential.
+
+```bash
+ASTEROIDZ=build-vk/asteroidz bash contrib/avk-cursor-hide-test.sh
+BREAK=cursor-command    ASTEROIDZ=build-vk/asteroidz bash contrib/avk-cursor-hide-test.sh  # must FAIL
+BREAK=cursor-generation ASTEROIDZ=build-vk/asteroidz bash contrib/avk-cursor-hide-test.sh  # must FAIL
+```
+
+"The cursor went away" has four failure modes and three of them survive a
+screenshot taken a moment too late: a **ghost** (the pixels stay because
+nothing damaged the rectangle), **over-damage** (repainting the whole output to
+remove 32×32 — correct, invisible to any pixel comparison, ruinous at pointer
+rates), **collateral** (the rectangle repainted with the wrong thing), and a
+**stale image** (the cursor returns or changes and the old one appears).
+
+So every assertion compares frames rather than inspecting one: the strongest is
+that hide-then-show is **byte-identical** to before the hide (0 px differ), and
+that hiding changes exactly 1024 pixels at exactly the cursor's rectangle with
+0 full-output redraws.
+
+It needed `hold:<ms>` on `contrib/wlvptr`. That tool moves the pointer and
+exits, which destroys the virtual pointer device and the seat's pointer
+capability with it — and `set_cursor` carries an enter serial the compositor
+checks against the currently focused pointer client, which by then is nobody.
+Every hide/unset step would have been silently dropped.
+
+There is deliberately **no `BREAK=cursor-old-damage`**. AVK does not compute
+old-position damage; wlroots emits it and scenefx feeds it into the ring AVK
+reads. A switch to disable it would mean punching a hole in AVK to suppress
+wlroots' work, which tests a fabrication rather than the compositor.
+
 ### The schema, checked from both ends
 
 `src/config/config-schema.h` describes every settable option — type, range, enum

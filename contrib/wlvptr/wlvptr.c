@@ -28,6 +28,7 @@
 
 #include <stdbool.h>
 #include <stdio.h>
+#include <time.h>
 #include <stdlib.h>
 #include <string.h>
 #include <wayland-client.h>
@@ -162,6 +163,29 @@ int main(int argc, char **argv) {
 											WL_POINTER_BUTTON_STATE_RELEASED);
 			zwlr_virtual_pointer_v1_frame(ptr);
 			wl_display_roundtrip(display);
+		}
+	}
+
+	/*
+	 * hold:<ms> -- stay connected, doing nothing, for that long.
+	 *
+	 * The virtual pointer is destroyed when this process exits, and with it
+	 * the seat's pointer capability. A client that wants to CHANGE its cursor
+	 * afterwards -- set_cursor(NULL) to hide it, or set_cursor with a
+	 * different surface -- cannot: the request carries an enter serial and the
+	 * compositor checks it against the currently focused pointer client, which
+	 * by then is nobody. Holding keeps the pointer present for as long as the
+	 * test needs it.
+	 */
+	for (int i = 5; i < argc; i++) {
+		if (!strncmp(argv[i], "hold:", 5)) {
+			int ms = atoi(argv[i] + 5);
+			struct timespec ts = {
+				.tv_sec = ms / 1000,
+				.tv_nsec = (long)(ms % 1000) * 1000000L,
+			};
+			wl_display_roundtrip(display);
+			nanosleep(&ts, NULL);
 		}
 	}
 

@@ -1366,7 +1366,8 @@ arrives from wlroots, not from AVK.
   directions.
 - **Live acceptance** on DP-1 + HDMI-A-1.
 
-*(Stage 3 closed the first three of these. Multi-output became testable once
+*(Stage 4 closed hide/unset; see §5.4k. Stage 3 closed the first three of these.
+Multi-output became testable once
 the harness grew `HL_OUTPUTS=2` — see below. Hide/unset damage and live
 acceptance still stand.)*
 
@@ -1484,6 +1485,75 @@ the pointer was inside. `contrib/wlvptr` moves the pointer and exits, so the
 leave arrived seconds before the first tick and the cursor appeared frozen for
 a reason that had nothing to do with the compositor. A real client animates on
 a timer, so it does now too.
+
+---
+
+## 5.4k M3.5E stage 4 — hide, unset, and forcing software
+
+### Hide/unset was already correct. The test says so, rather than fixing it.
+
+`contrib/avk-cursor-hide-test.sh`. Written because "the cursor went away" has
+four failure modes and three of them look fine in a screenshot taken a moment
+too late: a **ghost** (state cleared, pixels left behind because nothing damaged
+the rectangle), **over-damage** (cleaned up by repainting the whole output —
+correct, invisible to any pixel comparison, ruinous at pointer rates),
+**collateral** (the rectangle repainted with the wrong thing), and a **stale
+image** (the cursor returns or changes and the old picture appears).
+
+Every assertion is therefore differential — the same scene with the cursor,
+without it, and with it again — because no single capture can express any of
+this. Measured:
+
+| | |
+|---|---|
+| hiding damages | **1024 px**, at exactly 636,356, 32×32 |
+| full-output redraws to do it | **0** |
+| hide → show versus before the hide | **0 px differ** — byte-identical |
+| A → NULL → B | 1023 px of B, **0 px of A** |
+| cursor image uploads across the whole sequence | 2, one per distinct `wl_buffer` |
+
+Three sequences, one client, one run: `visible → hidden`,
+`hidden → visible (same image)`, and `A → NULL → B`. `contrib/wlvptr` grew
+`hold:<ms>` for it — it normally moves the pointer and exits, which destroys the
+virtual pointer device, and a `set_cursor` request carries an enter serial the
+compositor checks against the focused pointer client, which by then is nobody.
+
+### There is no BREAK=cursor-old-damage, and there should not be
+
+AVK does not compute old-position damage. wlroots emits
+`wlr_output.events.damage` for the rectangle a software cursor vacated and
+scenefx feeds it into the ring AVK rotates out of. **AVK consumes that damage;
+it does not own the calculation.** A switch that disabled it would be disabling
+wlroots' work through a hole punched in AVK for the purpose — a test of a
+fabrication rather than of the compositor. The assertions above observe the
+*result*, which is the honest thing available. The two breaks that do exist,
+`cursor-command` and `cursor-generation`, fail on the premise and on the stale
+image respectively.
+
+### Forcing software: `ASTEROIDZ_AVK_FORCE_SOFTWARE_CURSOR=1`
+
+Takes a permanent `wlr_output_lock_software_cursors()` at output creation. No
+new backend behaviour: that is the same call screencopy's `overlay_cursor`
+makes, and the same one a screen recorder trips — this is a permanent version
+of a lock normally held for the duration of a capture. Logged per output at
+INFO, because a session quietly paying for a composite instead of a plane is
+not something anyone should have to infer from a frame rate.
+
+It is a **startup** flag. There is no runtime toggle, so live evidence for
+promotion and demotion has to come from a recorder taking and dropping the lock
+rather than from flipping a switch.
+
+### Counters for the live runs
+
+`cursor_moves`, `cursor_damage_pixels`, `cursor_hw_to_sw`, `cursor_sw_to_hw`,
+`cursor_client_surface_sets`, `cursor_shape_sets`, `cursor_xcursor_sets`,
+`cursor_unsets`, `cursor_forced_reimports`, `cursor_force_software`, and the
+cursor image's own `cursor_source_{commits,uploads,upload_bytes,upload_skips}`.
+
+The last four are read straight off D.1's existing per-buffer record rather
+than counted again, deliberately: they are the "position changed != pixels
+changed" invariant in four numbers, and a separate counter could drift from the
+thing it claims to describe — which is the exact class of bug D.1 removed.
 
 ---
 
