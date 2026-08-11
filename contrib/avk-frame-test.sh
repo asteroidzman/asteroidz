@@ -32,12 +32,12 @@
 # MUST fail; a pass there means the assertions are measuring nothing.
 #
 # There is a second switch, AVK_NO_FOREIGN_ACQUIRE=1, which disables the
-# queue-family ownership transfer on imported client buffers. It is NOT a break
-# test, because it does not break anything here -- the desktop comes out
-# pixel-identical on this GPU. It was added believing it fixed the flat-colour
-# windows; running it proved the border clip was the entire cause. The switch
-# stays so the question can be re-asked on hardware where the answer may
-# differ.
+# queue-family ownership transfer on imported buffers. It is NOT a break test
+# HERE, and that is the interesting part: this suite passes with it set, and a
+# real display comes up flat white. Nothing scans a headless buffer out, so the
+# release half of that transfer -- the half that hands the finished frame back
+# to KMS -- is invisible to every assertion below. Presentation is not covered
+# by this file and cannot be; it takes a monitor.
 set -u
 
 . "$(dirname "$0")/lib/headless.sh"

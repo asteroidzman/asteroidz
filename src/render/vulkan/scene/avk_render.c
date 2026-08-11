@@ -167,17 +167,17 @@ struct avk_barrier_batch {
  * pixels visible; the release is what leaves the buffer in a state its real
  * owner can use again.
  *
- * Omitting it is not observable on this hardware -- see avk_image_is_foreign()
- * for the measurement -- so this is defence against drivers and layouts where
- * it would be, not a fix for anything currently reproducible.
+ * The release is not optional and not defensive: without it a real display
+ * shows a flat white screen. See avk_image_is_foreign() for how that was
+ * learned and why no headless test could have told us.
  */
 static void batch_add(struct avk_barrier_batch *acquire,
 		struct avk_barrier_batch *release, struct avk_device *dev,
 		struct avk_image *image, VkImageLayout new_layout,
 		VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access) {
-	/* AVK_NO_FOREIGN_ACQUIRE=1 turns the transfer off. It produces an
-	 * identical desktop here, which is the point of having it: the switch is
-	 * how that keeps being checked instead of assumed. */
+	/* AVK_NO_FOREIGN_ACQUIRE=1 turns the whole transfer off -- both halves.
+	 * On a real output that means a white screen, so it is a diagnostic, not
+	 * a tuning knob. */
 	static int no_foreign = -1;
 	if (no_foreign < 0) {
 		const char *env = getenv("AVK_NO_FOREIGN_ACQUIRE");
@@ -222,15 +222,23 @@ static void batch_add(struct avk_barrier_batch *acquire,
 		},
 	};
 
-	if (false && foreign && release->count < AVK_MAX_BARRIERS) {
+	if (foreign && release->count < AVK_MAX_BARRIERS) {
 		release->barriers[release->count++] = (VkImageMemoryBarrier2){
 			.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
 			.srcStageMask = dst_stage,
 			.srcAccessMask = dst_access,
-			.dstStageMask = VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
+			/* NONE, not BOTTOM_OF_PIPE: the second scope of a release is
+			 * ignored, and synchronization2 wants NONE said explicitly. */
+			.dstStageMask = VK_PIPELINE_STAGE_2_NONE,
 			.dstAccessMask = 0,
 			.oldLayout = new_layout,
-			/* Back to the layout the foreign owner expects. */
+			/* Back to the layout the foreign owner expects. THIS IS WHAT
+			 * MAKES THE FRAME VISIBLE. Without the release, the scan-out
+			 * buffer is never handed back to KMS in a state the display
+			 * engine can read, and on a compressed AMD modifier the monitor
+			 * shows a flat white screen -- windows and all, rendered
+			 * perfectly, into an image nothing can interpret. A headless test
+			 * cannot catch it, because nothing scans a headless buffer out. */
 			.newLayout = VK_IMAGE_LAYOUT_GENERAL,
 			.srcQueueFamilyIndex = dev->caps.graphics_family,
 			.dstQueueFamilyIndex = VK_QUEUE_FAMILY_FOREIGN_EXT,

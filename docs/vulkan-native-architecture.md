@@ -529,6 +529,16 @@ All of that is M4.
 - **No direct scan-out, no gamma LUT, no DMA-BUF feedback from AVK's table.**
   Absent rather than half-present.
 
+### The render target's first transition
+
+A scan-out buffer is imported with `layout = VK_IMAGE_LAYOUT_UNDEFINED`, not
+`GENERAL`, even though every other foreign image claims `GENERAL`. The
+difference is whether the contents matter: a client buffer arrives full of
+pixels somebody else wrote, and UNDEFINED would license the driver to discard
+them; a render target arrives empty, and its first `UNDEFINED -> ...`
+transition is where the driver initialises the image's compression metadata.
+Claiming `GENERAL` for it skips that.
+
 ### SHM surfaces and the wlr_client_buffer problem
 
 The one class of client AVK cannot draw correctly, and the reason is
@@ -570,13 +580,25 @@ invalidation when a client re-commits the same buffer pointer with new content.
    every window renders as a flat block. It looked like a texture bug for far
    longer than it should have. `AVK_NO_BORDER_CLIP=1` puts it back, and
    `BREAK=border contrib/avk-frame-test.sh` must fail.
-2. **The foreign-queue acquire was a wrong diagnosis.** Imported client
-   buffers are now acquired from `VK_QUEUE_FAMILY_FOREIGN_EXT` and released
-   back, which the spec requires and wlroots does. It was added believing it
-   explained the flat-colour windows. It did not: `AVK_NO_FOREIGN_ACQUIRE=1`
-   produces a pixel-identical desktop on this GPU. It stays as defence for
-   hardware and layouts where an absent ownership transfer would matter, and
-   the switch stays so that keeps being checked rather than assumed.
+2. **A white screen on both monitors, from a diagnostic left switched off.**
+   Imported buffers are acquired from `VK_QUEUE_FAMILY_FOREIGN_EXT` and
+   released back. While testing whether the *acquire* mattered, the *release*
+   was disabled with a `false &&` — and that shipped, because every headless
+   assertion still passed. On a real display it did not: both outputs came up
+   flat white, with every window rendered correctly inside a scan-out buffer
+   KMS could not interpret.
+
+   The lesson is not "do not leave debug code in". It is that **headless
+   testing proves composition and can say nothing about presentation.**
+   Nothing scans a headless buffer out, so the barrier that hands a finished
+   frame back to the display engine is invisible to the entire suite. A
+   passing `contrib/avk-frame-test.sh` is necessary and it is not sufficient;
+   the last step is always a monitor.
+
+   Also corrected here: the acquire half genuinely has no measurable effect on
+   this GPU, but the earlier note claiming `AVK_NO_FOREIGN_ACQUIRE=1` gives a
+   "pixel-identical desktop" was measured with the release already disabled.
+   The switch turns off both halves and turns a real display white.
 
 ## M3b work plan (the compositor half) — DONE, kept for the record
 

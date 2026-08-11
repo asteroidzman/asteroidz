@@ -679,12 +679,21 @@ struct avk_image *avk_dmabuf_import(struct avk_dmabuf_importer *importer,
 			attribs->modifier, for_render, caps);
 		if (image != NULL) {
 			image->origin = AVK_IMAGE_DMABUF_EXPLICIT;
-			/* GENERAL, not UNDEFINED: the buffer already has pixels in it, put
-			 * there by an owner outside this device. UNDEFINED tells the driver
-			 * the contents may be discarded, which on a compressed AMD buffer
-			 * means the next sample reads metadata instead of the image. See
-			 * avk_image_is_foreign(). */
-			image->layout = VK_IMAGE_LAYOUT_GENERAL;
+			/*
+			 * A buffer we will SAMPLE already has pixels in it, put there by an
+			 * owner outside this device, so its first barrier must come from
+			 * GENERAL -- UNDEFINED tells the driver the contents may be
+			 * discarded.
+			 *
+			 * A buffer we will RENDER INTO has no contents worth keeping, and
+			 * claiming GENERAL for it is actively wrong: the driver never gets
+			 * the UNDEFINED -> layout transition in which it initialises an
+			 * image's compression metadata. Leave it UNDEFINED and let the
+			 * first frame do that properly.
+			 */
+			if (!for_render) {
+				image->layout = VK_IMAGE_LAYOUT_GENERAL;
+			}
 			importer->imports_explicit++;
 			return image;
 		}
@@ -709,7 +718,9 @@ struct avk_image *avk_dmabuf_import(struct avk_dmabuf_importer *importer,
 			avk_log(AVK_DEBUG, "recovered implicit modifier as %s; imported "
 				"zero-copy", mod_name);
 			image->origin = AVK_IMAGE_DMABUF_RECOVERED;
-			image->layout = VK_IMAGE_LAYOUT_GENERAL;
+			if (!for_render) {
+				image->layout = VK_IMAGE_LAYOUT_GENERAL;
+			}
 			importer->imports_recovered++;
 			return image;
 		}

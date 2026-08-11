@@ -78,18 +78,18 @@ struct avk_image {
  * RELEASED back afterwards, and it lives in VK_IMAGE_LAYOUT_GENERAL in
  * between.
  *
- * This is required by the spec whenever memory is shared with an owner outside
- * the device, and it is what wlroots' own Vulkan renderer does. It is worth
- * being precise about what it buys, though: on this machine -- RADV, Navi31,
- * the modifiers Mesa clients actually allocate -- turning the transfer off
- * (AVK_NO_FOREIGN_ACQUIRE=1) produces a pixel-identical desktop. It was added
- * on the theory that a missing acquire explained windows rendering as flat
- * blocks of colour; it did not, the real cause was elsewhere, and the switch
- * exists so that claim can be re-tested rather than believed.
+ * The RELEASE half is what makes a frame visible on a real display. A scan-out
+ * buffer that is never released back to VK_QUEUE_FAMILY_FOREIGN_EXT is handed
+ * to KMS in a state the display engine cannot interpret, and on a compressed
+ * AMD modifier the monitor comes up flat white -- with every window rendered
+ * correctly inside an image nothing can read. That was shipped once, on a
+ * headless test suite that passed throughout, because nothing scans a headless
+ * buffer out. Headless proves composition; only a display proves presentation.
  *
- * It stays because "correct on the hardware in front of me" is not the same
- * as correct: a compressed or metadata-bearing layout on other hardware is
- * exactly where an absent ownership transfer stops being free.
+ * The ACQUIRE half has no measurable effect on this machine (RADV, Navi31),
+ * which is why AVK_NO_FOREIGN_ACQUIRE=1 exists -- but note that the switch
+ * disables both halves, so it is not a subtle knob: it turns the desktop
+ * white.
  *
  * An image we allocated ourselves (AVK_IMAGE_OWNED, or a dma-buf we copied
  * out of) has no foreign owner and must NOT be transferred, because there is
