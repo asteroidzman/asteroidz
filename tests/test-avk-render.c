@@ -485,6 +485,227 @@ static void test_crop_scale(struct harness *h) {
 	avk_image_destroy(h->dev, surface);
 }
 
+/* ── rounded clipping: per corner, and owned by the destination ─────────── */
+
+/*
+ * M4A. Four DIFFERENT radii and a corner-coded source, so every mistake the
+ * audit identified is separately visible:
+ *
+ *   one radius for all four   -> every corner cut the same, TL stops being square
+ *   bottom corners swapped    -> BR and BL cut by each other's radius (19 vs 37)
+ *   rounding in source space  -> a crop or a destination scale moves the arcs
+ *   radii not permuted with a transform -> the right corner keeps the wrong arc
+ *
+ * The clear colour is opaque black, so "clipped" is measurable: a pixel inside
+ * the arc carries the source quadrant's colour and one outside it is black.
+ */
+#define R_TL 0
+#define R_TR 7
+#define R_BR 19
+#define R_BL 37
+
+static bool clipped(struct harness *h, uint32_t x, uint32_t y) {
+	uint32_t p = px(h, x, y);
+	return r_of(p) == 0 && g_of(p) == 0 && b_of(p) == 0;
+}
+
+/* The deepest inset along a corner's diagonal that is still cut away. For a
+ * quarter-disc of radius r the diagonal is cut for about r*(1 - 1/sqrt2)
+ * pixels, so this rises and falls with r without having to model the AA. */
+static int corner_cut_depth(struct harness *h, int cx, int cy, int dx, int dy) {
+	int depth = 0;
+	for (int i = 0; i < 48; i++) {
+		int x = cx + (dx > 0 ? i : -i - 1);
+		int y = cy + (dy > 0 ? i : -i - 1);
+		if (x < 0 || y < 0 || x >= (int)W || y >= (int)H) {
+			break;
+		}
+		if (!clipped(h, (uint32_t)x, (uint32_t)y)) {
+			break;
+		}
+		depth = i + 1;
+	}
+	return depth;
+}
+
+static struct avk_image *quadrant_surface(struct harness *h) {
+	uint32_t src[32 * 32];
+	for (uint32_t y = 0; y < 32; y++) {
+		for (uint32_t x = 0; x < 32; x++) {
+			uint32_t c;
+			if (x < 16 && y < 16)       c = 0xFFFF0000u;  /* TL red    */
+			else if (x >= 16 && y < 16) c = 0xFF00FF00u;  /* TR green  */
+			else if (x < 16)            c = 0xFF0000FFu;  /* BL blue   */
+			else                        c = 0xFFFFFF00u;  /* BR yellow */
+			src[y * 32 + x] = c;
+		}
+	}
+	struct avk_image *s = make_image(h->dev, 32, 32,
+		VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, true);
+	if (s == NULL || !upload(h, s, src, 32, 32)) {
+		return NULL;
+	}
+	return s;
+}
+
+static void scene_begin(struct avk_scene *scene) {
+	avk_scene_init(scene);
+	pixman_region32_union_rect(&scene->damage, &scene->damage, 0, 0, W, H);
+	scene->has_clear = true;
+	scene->clear_color[3] = 1.0f;   /* opaque black */
+}
+
+static void test_rounded_asymmetric(struct harness *h) {
+	printf("test 6: per-corner rounded clipping\n");
+	struct avk_image *surface = quadrant_surface(h);
+	if (surface == NULL) {
+		CHECK(false, "prepare the quadrant surface");
+		return;
+	}
+
+	struct avk_scene scene;
+	scene_begin(&scene);
+	struct avk_cmd *tex = avk_scene_add(&scene, AVK_CMD_TEXTURE);
+	tex->dst = (struct avk_box){ 0, 0, W, H };
+	tex->image = surface;
+	tex->src = (struct avk_fbox){ 0, 0, 32, 32 };
+	tex->corners[0] = R_TL; tex->corners[1] = R_TR;
+	tex->corners[2] = R_BR; tex->corners[3] = R_BL;
+	CHECK(render(h, &scene), "rendered four different radii");
+
+	int d_tl = corner_cut_depth(h, 0, 0, 1, 1);
+	int d_tr = corner_cut_depth(h, W, 0, -1, 1);
+	int d_br = corner_cut_depth(h, W, H, -1, -1);
+	int d_bl = corner_cut_depth(h, 0, H, 1, -1);
+	printf("  cut depth  TL=%d TR=%d BR=%d BL=%d  (radii %d %d %d %d)\n",
+		d_tl, d_tr, d_br, d_bl, R_TL, R_TR, R_BR, R_BL);
+
+	CHECK(d_tl == 0, "TL radius 0 leaves the corner square (cut %d)", d_tl);
+	CHECK(d_tr > 0, "TR radius 7 cuts the corner (%d)", d_tr);
+	/* THE ordering assertion. Swapping the two bottom corners exchanges 19
+	 * and 37, and nothing else in the suite would notice. */
+	CHECK(d_br > d_tr, "BR radius 19 cuts deeper than TR's 7 (%d > %d)",
+		d_br, d_tr);
+	CHECK(d_bl > d_br, "BL radius 37 cuts deeper than BR's 19 (%d > %d)",
+		d_bl, d_br);
+
+	/* The surviving content at each corner must be that corner's own quadrant:
+	 * a build that clipped correctly but sampled wrongly would pass the depth
+	 * checks alone. */
+	CHECK(r_of(px(h, 3, 3)) > 200 && g_of(px(h, 3, 3)) < 60,
+		"the square TL corner still shows the red quadrant");
+	CHECK(b_of(px(h, W - 4, H - 4 - d_br)) < 60
+			&& r_of(px(h, W - 4, H - 4 - d_br)) > 150,
+		"content under the BR arc is the yellow quadrant");
+
+	avk_scene_finish(&scene);
+	avk_image_destroy(h->dev, surface);
+}
+
+static void test_rounded_destination_space(struct harness *h) {
+	printf("test 7: rounding follows the destination, not the source\n");
+	struct avk_image *surface = quadrant_surface(h);
+	if (surface == NULL) {
+		CHECK(false, "prepare the quadrant surface");
+		return;
+	}
+
+	/*
+	 * Crop ONE quadrant and blow it up to the whole target. Every pixel that
+	 * survives is yellow, so the arcs cannot be coming from the source's own
+	 * corners -- the source crop has no corners of its own in the destination.
+	 * If coverage were computed in source space the arcs would shrink by the
+	 * 4x scale factor, or land in the wrong place entirely.
+	 */
+	struct avk_scene scene;
+	scene_begin(&scene);
+	struct avk_cmd *tex = avk_scene_add(&scene, AVK_CMD_TEXTURE);
+	tex->dst = (struct avk_box){ 0, 0, W, H };
+	tex->image = surface;
+	tex->src = (struct avk_fbox){ 16, 16, 16, 16 };   /* BR quadrant only */
+	tex->corners[0] = R_TL; tex->corners[1] = R_TR;
+	tex->corners[2] = R_BR; tex->corners[3] = R_BL;
+	CHECK(render(h, &scene), "rendered a 16x16 crop upscaled 4x, rounded");
+
+	int u_tr = corner_cut_depth(h, W, 0, -1, 1);
+	int u_br = corner_cut_depth(h, W, H, -1, -1);
+	int u_bl = corner_cut_depth(h, 0, H, 1, -1);
+	printf("  upscaled crop cut depth  TR=%d BR=%d BL=%d\n", u_tr, u_br, u_bl);
+	CHECK(u_bl > u_br && u_br > u_tr,
+		"the destination's own radii still order the corners (%d > %d > %d)",
+		u_bl, u_br, u_tr);
+	CHECK(r_of(px(h, W / 2, H / 2)) > 200 && g_of(px(h, W / 2, H / 2)) > 200
+			&& b_of(px(h, W / 2, H / 2)) < 60,
+		"the interior is the cropped yellow quadrant");
+
+	/* Now DOWNSCALE the whole source into a small destination. The radii are
+	 * in destination pixels, so the arcs must not shrink with the content. */
+	avk_scene_finish(&scene);
+	scene_begin(&scene);
+	tex = avk_scene_add(&scene, AVK_CMD_TEXTURE);
+	tex->dst = (struct avk_box){ 0, 0, 48, 48 };
+	tex->image = surface;
+	tex->src = (struct avk_fbox){ 0, 0, 32, 32 };
+	tex->corners[0] = 0; tex->corners[1] = 4;
+	tex->corners[2] = 16; tex->corners[3] = 0;
+	CHECK(render(h, &scene), "rendered the source downscaled into 48x48");
+	int s_tr = corner_cut_depth(h, 48, 0, -1, 1);
+	int s_br = corner_cut_depth(h, 48, 48, -1, -1);
+	printf("  downscaled cut depth  TR=%d BR=%d\n", s_tr, s_br);
+	CHECK(s_br > s_tr, "the destination radii survive a downscale (%d > %d)",
+		s_br, s_tr);
+	CHECK(clipped(h, 60, 60), "nothing is drawn outside the 48x48 destination");
+
+	avk_scene_finish(&scene);
+	avk_image_destroy(h->dev, surface);
+}
+
+static void test_rounded_with_transform(struct harness *h) {
+	printf("test 8: rounded clipping composed with a transform\n");
+	struct avk_image *surface = quadrant_surface(h);
+	if (surface == NULL) {
+		CHECK(false, "prepare the quadrant surface");
+		return;
+	}
+
+	/*
+	 * The defect this catches: the texture transform is applied and the radii
+	 * are not, so the right corner shows the right CONTENT with the wrong ARC.
+	 * A symmetric-radius test cannot see it at all.
+	 *
+	 * The radii handed to the renderer are already in output space -- the
+	 * compositor permutes them (az_avk_corners_from_scenefx) before they get
+	 * here -- so what is asserted here is that the two are applied to the SAME
+	 * corner, independently of which corner the compositor chose.
+	 */
+	struct avk_scene scene;
+	scene_begin(&scene);
+	struct avk_cmd *tex = avk_scene_add(&scene, AVK_CMD_TEXTURE);
+	tex->dst = (struct avk_box){ 0, 0, W, H };
+	tex->image = surface;
+	tex->src = (struct avk_fbox){ 0, 0, 32, 32 };
+	tex->transform = AVK_TRANSFORM_90;
+	tex->corners[0] = R_TL; tex->corners[1] = R_TR;
+	tex->corners[2] = R_BR; tex->corners[3] = R_BL;
+	CHECK(render(h, &scene), "rendered 90-degree transform with four radii");
+
+	int t_tl = corner_cut_depth(h, 0, 0, 1, 1);
+	int t_tr = corner_cut_depth(h, W, 0, -1, 1);
+	int t_br = corner_cut_depth(h, W, H, -1, -1);
+	int t_bl = corner_cut_depth(h, 0, H, 1, -1);
+	printf("  transformed cut depth  TL=%d TR=%d BR=%d BL=%d\n",
+		t_tl, t_tr, t_br, t_bl);
+	CHECK(t_tl == 0 && t_bl > t_br && t_br > t_tr,
+		"the arcs stay on the physical corners they were given");
+	/* 90 degrees puts the source's BLUE (bottom-left) quadrant top-left --
+	 * the existing transform test asserts the same mapping. */
+	CHECK(b_of(px(h, 4, 4)) > 200 && r_of(px(h, 4, 4)) < 60,
+		"the transformed content is in place too (blue at top-left)");
+
+	avk_scene_finish(&scene);
+	avk_image_destroy(h->dev, surface);
+}
+
 /* ── test 3: transforms ─────────────────────────────────────────────────── */
 
 static void test_transforms(struct harness *h) {
@@ -735,6 +956,9 @@ int main(void) {
 	test_crop_scale(&h);
 	test_transforms(&h);
 	test_damage(&h);
+	test_rounded_asymmetric(&h);
+	test_rounded_destination_space(&h);
+	test_rounded_with_transform(&h);
 	test_clip(&h);
 	test_opacity(&h);
 

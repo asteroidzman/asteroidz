@@ -1465,6 +1465,8 @@ static void az_avk_box_to_output(const struct az_avk_walk *walk,
 		walk->width, walk->height);
 }
 
+#include "az_corner_permute.h"
+
 /*
  * SceneFX radii -> AVK command radii: logical units to output pixels, and
  * logical corners to physical ones.
@@ -1498,18 +1500,10 @@ static void az_avk_corners_from_scenefx(const struct az_avk_walk *walk,
 		return;
 	}
 
-	enum wl_output_transform t = wlr_output_transform_invert(walk->transform);
-	/* Probe positions in a 2x2 square, clockwise from the top left. */
-	static const int px[4] = { 0, 1, 1, 0 };
-	static const int py[4] = { 0, 0, 1, 1 };
+	az_corner_permute(logical, wlr_output_transform_invert(walk->transform),
+		out);
 	for (int i = 0; i < 4; i++) {
-		struct wlr_box probe = { px[i], py[i], 1, 1 };
-		wlr_box_transform(&probe, &probe, t, 2, 2);
-		/* Which physical corner did it land in? Same clockwise indexing. */
-		int j = (probe.x == 0 && probe.y == 0) ? 0
-			: (probe.x == 1 && probe.y == 0) ? 1
-			: (probe.x == 1 && probe.y == 1) ? 2 : 3;
-		out[j] = logical[i] * (float)walk->scale;
+		out[i] *= (float)walk->scale;
 	}
 }
 

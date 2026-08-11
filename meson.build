@@ -290,6 +290,18 @@ if build_vulkan
                                     build_by_default : false)
   test('dmabuf-feedback', test_dmabuf_feedback, timeout : 30)
 
+  # Corner permutation under output transforms. A rotated output cannot be
+  # built in the headless fixture (monitorrule's key:value format is not
+  # emittable from harness KDL), so the production helper is driven directly
+  # rather than leaving the invariant untested.
+  test_corner_permute = executable('test-corner-permute',
+                                   'tests/test-corner-permute.c',
+                                   dependencies : [wlroots_dep, wayland_server_dep],
+                                   include_directories : include_directories('src'),
+                                   c_args : ['-DWLR_USE_UNSTABLE'],
+                                   build_by_default : false)
+  test('corner-permute', test_corner_permute, timeout : 30)
+
   # The one that reproduces the blank-window class: a real GBM buffer whose
   # modifier is thrown away before import, which is what wl_drm and
   # modifier-less Electron/Chromium hand over.
