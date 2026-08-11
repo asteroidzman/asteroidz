@@ -26,6 +26,28 @@
  *
  * Usage:
  *     wlreuse --colour RRGGBB [--colour RRGGBB ...] [--hold-ms N] [--size WxH]
+ *            [--stride-pad N] [--damage WxH+X+Y] [--two-regions] [--no-damage]
+ *
+ * The later options serve the partial-upload path:
+ *
+ *   --damage WxH+X+Y   after the first generation, change and report ONLY
+ *                      this rectangle. Everything outside it keeps the
+ *                      previous colour, so "the rest is still correct" is a
+ *                      real assertion rather than a tautology.
+ *   --two-regions      a second rectangle in the opposite corner. A
+ *                      bounding-box implementation repaints between them; an
+ *                      omitted region leaves one stale.
+ *   --stride-pad N     rows N bytes further apart than width * 4. A copy that
+ *                      treats a rectangle as contiguous, or computes the
+ *                      source row as y * width * bpp, shears or offsets.
+ *   --many-regions N   N disjoint 8x8 rectangles. Past the compositor's
+ *                      packing limit this is damage it cannot represent, which
+ *                      must become ONE full upload rather than a wrong partial
+ *                      one.
+ *   --no-damage        commit a new generation and say nothing about what
+ *                      changed. Per the protocol that means "nothing changed",
+ *                      and the correct response is to upload nothing at all --
+ *                      which is what wlroots' own texture path does too.
  *
  * It cycles through the colours, one per commit, holding each for --hold-ms
  * (default 1500), and runs until killed. A test screenshots between commits
@@ -43,7 +65,6 @@
 #define _GNU_SOURCE   /* memfd_create */
 
 #include <errno.h>
-#include <sys/mman.h>
 #include <fcntl.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -66,6 +87,11 @@ static struct xdg_toplevel *toplevel;
 static struct wl_buffer *buffer;
 static uint32_t *pixels;
 static int width = 400, height = 300;
+static int stride_pad = 0;      /* extra bytes per row beyond width * 4 */
+static int damage_w = 0, damage_h = 0, damage_x = 0, damage_y = 0;
+static bool two_regions = false;
+static bool no_damage = false;
+static int many_regions = 0;
 static bool configured;
 static bool running = true;
 
@@ -152,6 +178,30 @@ int main(int argc, char **argv) {
 			hold_ms = atoi(argv[++i]);
 		} else if (strcmp(argv[i], "--size") == 0 && i + 1 < argc) {
 			sscanf(argv[++i], "%dx%d", &width, &height);
+		} else if (strcmp(argv[i], "--stride-pad") == 0 && i + 1 < argc) {
+			/* Rows further apart than width * 4. A copy that treats a
+			 * rectangle as one contiguous block, or that computes the source
+			 * address as y * width * bpp, shears or offsets the result. */
+			stride_pad = atoi(argv[++i]);
+		} else if (strcmp(argv[i], "--damage") == 0 && i + 1 < argc) {
+			/* Change ONLY this rectangle after the first generation, and
+			 * report only it as damage. */
+			sscanf(argv[++i], "%dx%d+%d+%d", &damage_w, &damage_h,
+				&damage_x, &damage_y);
+		} else if (strcmp(argv[i], "--two-regions") == 0) {
+			/* A second, widely separated rectangle. Catches a bounding-box
+			 * implementation (which would also repaint between them) and an
+			 * omitted region (which would leave one of them stale). */
+			two_regions = true;
+		} else if (strcmp(argv[i], "--many-regions") == 0 && i + 1 < argc) {
+			/* N disjoint little rectangles. Past the compositor's packing
+			 * limit this is damage it cannot represent as regions, which has
+			 * to become one full upload rather than a wrong partial one. */
+			many_regions = atoi(argv[++i]);
+		} else if (strcmp(argv[i], "--no-damage") == 0) {
+			/* Commit a new generation without saying what changed. The
+			 * compositor has to fall back to one full upload. */
+			no_damage = true;
 		} else {
 			fprintf(stderr, "usage: %s --colour RRGGBB [--colour RRGGBB ...] "
 				"[--hold-ms N] [--size WxH]\n", argv[0]);
@@ -176,7 +226,7 @@ int main(int argc, char **argv) {
 		return 1;
 	}
 
-	size_t stride = (size_t)width * 4;
+	size_t stride = (size_t)width * 4 + (size_t)stride_pad;
 	size_t size = stride * (size_t)height;
 	int fd = anon_file(size);
 	if (fd < 0) {
@@ -211,13 +261,76 @@ int main(int argc, char **argv) {
 
 	for (int generation = 0; running; generation++) {
 		uint32_t colour = colours[generation % colour_count];
-		for (size_t i = 0; i < size / 4; i++) {
-			pixels[i] = colour;
+		bool partial = generation > 0 && damage_w > 0 && damage_h > 0;
+		bool many = generation > 0 && many_regions > 0;
+		if (many) {
+			for (int k = 0; k < many_regions; k++) {
+				int rx = (k * 11) % (width - 8);
+				int ry = (k * 13) % (height - 8);
+				for (int r = 0; r < 8; r++) {
+					uint32_t *row = (uint32_t *)((uint8_t *)pixels
+						+ (size_t)(ry + r) * stride);
+					for (int c = 0; c < 8; c++) {
+						row[rx + c] = colour;
+					}
+				}
+			}
+		}
+
+		if (many) {
+			/* handled above */
+		} else if (partial) {
+			/* Only the damaged rectangles change. Everything else keeps the
+			 * previous generation's pixels, which is what makes the "the rest
+			 * is still correct" assertion meaningful. Written row by row
+			 * through the real stride. */
+			for (int r = 0; r < damage_h; r++) {
+				uint32_t *row = (uint32_t *)((uint8_t *)pixels
+					+ (size_t)(damage_y + r) * stride);
+				for (int c = 0; c < damage_w; c++) {
+					row[damage_x + c] = colour;
+				}
+			}
+			if (two_regions) {
+				int x2 = width - damage_w - damage_x;
+				int y2 = height - damage_h - damage_y;
+				for (int r = 0; r < damage_h; r++) {
+					uint32_t *row = (uint32_t *)((uint8_t *)pixels
+						+ (size_t)(y2 + r) * stride);
+					for (int c = 0; c < damage_w; c++) {
+						row[x2 + c] = colour;
+					}
+				}
+			}
+		} else {
+			for (int r = 0; r < height; r++) {
+				uint32_t *row = (uint32_t *)((uint8_t *)pixels
+					+ (size_t)r * stride);
+				for (int c = 0; c < width; c++) {
+					row[c] = colour;
+				}
+			}
 		}
 
 		/* The same wl_buffer object, every single time. */
 		wl_surface_attach(surface, buffer, 0, 0);
-		wl_surface_damage_buffer(surface, 0, 0, width, height);
+		if (no_damage && generation > 0) {
+			/* Deliberately silent about what changed. */
+		} else if (many) {
+			for (int k = 0; k < many_regions; k++) {
+				wl_surface_damage_buffer(surface, (k * 11) % (width - 8),
+					(k * 13) % (height - 8), 8, 8);
+			}
+		} else if (partial) {
+			wl_surface_damage_buffer(surface, damage_x, damage_y,
+				damage_w, damage_h);
+			if (two_regions) {
+				wl_surface_damage_buffer(surface, width - damage_w - damage_x,
+					height - damage_h - damage_y, damage_w, damage_h);
+			}
+		} else {
+			wl_surface_damage_buffer(surface, 0, 0, width, height);
+		}
 		wl_surface_commit(surface);
 		wl_display_flush(display);
 

@@ -75,6 +75,34 @@ uint64_t avk_upload_image_write(struct avk_device *dev,
 	const void *pixels, uint32_t stride, uint32_t height,
 	const VkSemaphoreSubmitInfo *waits, uint32_t wait_count);
 
+/*
+ * The same, for a list of changed rectangles instead of the whole image.
+ *
+ * Each rectangle is copied ROW BY ROW out of the source, because a source row
+ * is `stride` bytes apart and a rectangle's rows are not contiguous unless it
+ * happens to span the full width. Copying `width * height * bpp` as one block
+ * is the obvious shortcut and it produces a diagonally sheared rectangle the
+ * moment the rectangle is narrower than the buffer -- which is every
+ * interesting case.
+ *
+ * Rows are packed tightly into staging, so each region's bufferRowLength is
+ * its own width rather than the source stride. Offsets are aligned to what
+ * Vulkan requires of bufferOffset: a multiple of 4 and of the texel size.
+ *
+ * `bytes_copied` receives what was actually moved, which is the number the
+ * whole exercise exists to reduce.
+ */
+struct avk_upload_rect {
+	uint32_t x, y, width, height;
+};
+
+uint64_t avk_upload_image_write_regions(struct avk_device *dev,
+	struct avk_cmd_ring *ring, struct avk_upload *up, struct avk_image *image,
+	const void *pixels, uint32_t stride, uint32_t height,
+	const struct avk_upload_rect *rects, uint32_t rect_count,
+	uint64_t *bytes_copied,
+	const VkSemaphoreSubmitInfo *waits, uint32_t wait_count);
+
 /* Release the staging buffer. Does NOT wait for the GPU -- retire it. */
 void avk_upload_finish(struct avk_device *dev, struct avk_upload *up);
 

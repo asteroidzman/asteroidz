@@ -64,6 +64,17 @@
  */
 #define AZ_AVK_MAX_FORMATS 4
 
+/* How many source-damage rectangles a partial upload packs before giving up
+ * and copying the whole buffer. wlroots' own damage ring collapses past 20, so
+ * a client rarely presents more than a handful; the fallback is correct rather
+ * than merely cheaper, so the limit costs nothing but a full copy. */
+#define AZ_AVK_MAX_DAMAGE_RECTS 32
+
+/* How many SHM sources the debug view reports. A desktop has a handful of
+ * CPU-backed surfaces; the cap is there so the reply cannot grow with a
+ * misbehaving client rather than because eight is a meaningful number. */
+#define AZ_AVK_STAT_SOURCES 8
+
 struct az_avk_renderer_slot {
 	bool used;
 	VkFormat format;
@@ -102,7 +113,17 @@ struct az_avk {
 	 * is the whole point: it should dwarf the second on a static desktop. */
 	uint64_t shm_commits;
 	uint64_t shm_full_uploads;
+	uint64_t shm_partial_uploads;
 	uint64_t shm_upload_skips;
+	/* Source pixels the client said it changed, versus the whole area of the
+	 * buffers those generations belonged to. The ratio is how much partial
+	 * uploads are worth on this workload. */
+	uint64_t shm_damage_pixels;
+	uint64_t shm_committed_pixels;
+	/* Buffers the walker asked to resolve, and nodes it discarded before
+	 * asking because they cannot touch this output at all. */
+	uint64_t buffer_resolve_attempts;
+	uint64_t nodes_output_culled_before_resolve;
 	uint64_t commit_imports;      /* buffers taken ownership of at commit */
 	uint64_t late_imports;        /* taken at DRAW time -- must stay 0 for
 	                               * surfaces; see az_avk_walk_node() */
@@ -232,6 +253,38 @@ struct az_avk_buffer {
 	 */
 	uint64_t content_generation;
 	uint64_t uploaded_generation;
+
+	/*
+	 * WHICH pixels changed in the generations not yet uploaded, in
+	 * buffer-local coordinates.
+	 *
+	 * A different region from anything the output knows about, and the
+	 * distinction is the point of Phase 2. Source damage says what the client
+	 * redrew; scene damage says what the compositor must recomposite. Moving a
+	 * static terminal across the desktop produces a great deal of the second
+	 * and none of the first.
+	 *
+	 * wlroots has already done the hard part: wlr_surface.buffer_damage is
+	 * buffer-local, clipped to the buffer bounds, and has surface-coordinate
+	 * damage folded in through the surface's scale, transform and viewport
+	 * (wlr_compositor.c surface_update_damage). Redoing that arithmetic here
+	 * would be a second implementation of it to keep in step.
+	 *
+	 * `pending_full` is the honest fallback: a generation whose damage is
+	 * unknown or unrepresentable uploads the whole buffer ONCE, which is the
+	 * correct answer and still nothing like uploading it every frame.
+	 */
+	pixman_region32_t pending_damage;
+	bool pending_full;
+
+	/* Per-source accounting, so "which surface is uploading the most" is a
+	 * question with an answer instead of a guess. Cheap: five counters on an
+	 * object that already exists, and read only over IPC. */
+	uint64_t stat_generations;
+	uint64_t stat_full_uploads;
+	uint64_t stat_partial_uploads;
+	uint64_t stat_upload_bytes;
+	uint64_t stat_lookups;
 };
 
 static void az_avk_buffer_destroy(struct az_avk_buffer *entry) {
@@ -253,6 +306,7 @@ static void az_avk_buffer_destroy(struct az_avk_buffer *entry) {
 				up);
 		}
 	}
+	pixman_region32_fini(&entry->pending_damage);
 	wlr_addon_finish(&entry->addon);
 	wl_list_remove(&entry->link);
 	if (avk.client_images_cached > 0) {
@@ -364,6 +418,24 @@ static void az_avk_attribs_from_wlr(struct avk_dmabuf_attributes *dst,
  * "SHM surfaces and the wlr_client_buffer problem" in
  * docs/vulkan-native-architecture.md.
  */
+/*
+ * Record what changed in a generation that has not been uploaded yet.
+ *
+ * Accumulated rather than replaced: several commits may land between two
+ * frames, and the upload owes all of them. A NULL or empty region means the
+ * source did not say, which is not the same as "nothing changed" -- it has to
+ * become a full upload, because guessing the other way shows stale pixels.
+ */
+static void az_avk_note_source_damage(struct az_avk_buffer *entry,
+		const pixman_region32_t *damage) {
+	if (damage == NULL) {
+		entry->pending_full = true;
+		return;
+	}
+	pixman_region32_union(&entry->pending_damage, &entry->pending_damage,
+		(pixman_region32_t *)damage);
+}
+
 static bool az_avk_upload_shm(struct az_avk_buffer *entry) {
 	void *data = NULL;
 	uint32_t format = 0;
@@ -416,6 +488,86 @@ static bool az_avk_upload_shm(struct az_avk_buffer *entry) {
 		.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
 	};
 	uint32_t wait_count = entry->image->last_use > 0 ? 1 : 0;
+	if (az_avk_env_flag("AZ_AVK_UNSAFE_REUSE")) {
+		/* Break test: overwrite the image with no ordering against the frames
+		 * still sampling it. The copy races the fragment shader reading the
+		 * previous generation, which synchronisation validation reports as a
+		 * write-after-read hazard -- and which, without validation, shows up
+		 * as an occasional torn surface that looks like a client bug. */
+		wait_count = 0;
+	}
+
+	/*
+	 * Whole buffer, or only the rectangles the client says it changed?
+	 *
+	 * Full whenever the answer is not certain: a first upload, a generation
+	 * whose damage nobody reported, or more rectangles than the packed-copy
+	 * path takes. One full upload for a generation is a correct answer and is
+	 * still nothing like one per frame.
+	 */
+	uint64_t committed_px =
+		(uint64_t)entry->buffer->width * (uint64_t)entry->buffer->height;
+	avk.shm_committed_pixels += committed_px;
+
+	bool want_full = entry->pending_full
+		|| az_avk_env_flag("AZ_AVK_SOURCE_FULL");
+	int rect_count = 0;
+	const pixman_box32_t *boxes = want_full ? NULL
+		: pixman_region32_rectangles(&entry->pending_damage, &rect_count);
+
+	if (!want_full && rect_count == 0) {
+		/* A generation whose client reported no damage at all changed no
+		 * pixels. wlroots' own texture path copies nothing here too. */
+		wlr_buffer_end_data_ptr_access(entry->buffer);
+		avk.shm_upload_skips++;
+		return true;
+	}
+
+	if (!want_full && rect_count <= AZ_AVK_MAX_DAMAGE_RECTS) {
+		struct avk_upload_rect rects[AZ_AVK_MAX_DAMAGE_RECTS];
+		uint32_t n = 0;
+		uint64_t damage_px = 0;
+		for (int i = 0; i < rect_count; i++) {
+			/* Clamped to the buffer, always. wlroots clips buffer_damage to
+			 * the committed buffer bounds, but this copy reads a client's
+			 * mapping and a rectangle that escaped that would read past it. */
+			int32_t x1 = boxes[i].x1 < 0 ? 0 : boxes[i].x1;
+			int32_t y1 = boxes[i].y1 < 0 ? 0 : boxes[i].y1;
+			int32_t x2 = boxes[i].x2 > entry->buffer->width
+				? entry->buffer->width : boxes[i].x2;
+			int32_t y2 = boxes[i].y2 > entry->buffer->height
+				? entry->buffer->height : boxes[i].y2;
+			if (x2 <= x1 || y2 <= y1) {
+				continue;
+			}
+			if (az_avk_env_flag("AZ_AVK_OMIT_REGION") && i == rect_count - 1
+					&& rect_count > 1) {
+				/* Break test: drop one rectangle and leave the rest. */
+				continue;
+			}
+			rects[n++] = (struct avk_upload_rect){
+				.x = (uint32_t)x1, .y = (uint32_t)y1,
+				.width = (uint32_t)(x2 - x1), .height = (uint32_t)(y2 - y1),
+			};
+			damage_px += (uint64_t)(x2 - x1) * (uint64_t)(y2 - y1);
+		}
+		uint64_t copied = 0;
+		if (n > 0 && avk_upload_image_write_regions(avk.device,
+				&avk.importer.upload_ring, &entry->upload, entry->image, data,
+				(uint32_t)stride, (uint32_t)entry->buffer->height, rects, n,
+				&copied, &wait, wait_count) != 0) {
+			avk.shm_uploads++;
+			avk.shm_partial_uploads++;
+			avk.shm_upload_bytes += copied;
+			entry->stat_partial_uploads++;
+			entry->stat_upload_bytes += copied;
+			avk.shm_damage_pixels += damage_px;
+			ok = true;
+			goto uploaded;
+		}
+		/* The partial path declined; fall through and do it whole rather than
+		 * leaving the image holding a stale generation. */
+	}
 
 	ok = avk_upload_image_write(avk.device, &avk.importer.upload_ring,
 		&entry->upload, entry->image, data, (uint32_t)stride,
@@ -424,6 +576,15 @@ static bool az_avk_upload_shm(struct az_avk_buffer *entry) {
 		avk.shm_uploads++;
 		avk.shm_full_uploads++;
 		avk.shm_upload_bytes += (uint64_t)stride * entry->buffer->height;
+		avk.shm_damage_pixels += committed_px;
+		entry->stat_full_uploads++;
+		entry->stat_upload_bytes += (uint64_t)stride * entry->buffer->height;
+	}
+
+uploaded:
+	if (ok) {
+		pixman_region32_clear(&entry->pending_damage);
+		entry->pending_full = false;
 	}
 
 out:
@@ -453,6 +614,7 @@ static struct avk_image *az_avk_image_for_buffer(struct wlr_buffer *buffer) {
 		}
 		avk.cache_hits++;
 		if (entry->is_shm) {
+			entry->stat_lookups++;
 			/*
 			 * Lookup, not upload. The copy happens only for a generation the
 			 * GPU does not already hold -- see content_generation.
@@ -492,6 +654,9 @@ static struct avk_image *az_avk_image_for_buffer(struct wlr_buffer *buffer) {
 		return NULL;
 	}
 	entry->buffer = buffer;
+	pixman_region32_init(&entry->pending_damage);
+	/* Nothing is on the GPU yet, so the first upload is necessarily whole. */
+	entry->pending_full = true;
 	wlr_addon_init(&entry->addon, &buffer->addons, &avk,
 		&az_avk_buffer_addon_impl);
 	wl_list_insert(&avk.buffers, &entry->link);
@@ -1307,6 +1472,26 @@ static void az_avk_walk_node(struct az_avk_walk *walk,
 			return;
 		}
 		/*
+		 * Cull against THIS output before resolving anything.
+		 *
+		 * The walk starts at the scene root, so it visits every node on every
+		 * output -- including a 4K wallpaper belonging to a monitor 3840
+		 * pixels to the left. Resolving its buffer costs an import or a copy
+		 * and produces a command the renderer then scissors away to nothing.
+		 * Measured on the live desktop, that was each output frame resolving
+		 * BOTH monitors' full-screen wallpapers.
+		 *
+		 * The test is the same one the renderer would apply anyway, moved
+		 * ahead of the resolve rather than after it, so no command that would
+		 * have drawn anything is lost.
+		 */
+		if (!az_avk_env_flag("AZ_AVK_NO_OUTPUT_CULL") &&
+				(dst.x >= walk->width || dst.y >= walk->height ||
+				dst.x + dst.width <= 0 || dst.y + dst.height <= 0)) {
+			avk.nodes_output_culled_before_resolve++;
+			return;
+		}
+		/*
 		 * A surface's content must already be ours by now.
 		 *
 		 * If this is the first time AVK has seen a surface's buffer at DRAW
@@ -1327,6 +1512,7 @@ static void az_avk_walk_node(struct az_avk_walk *walk,
 			}
 		}
 
+		avk.buffer_resolve_attempts++;
 		struct avk_image *image = az_avk_image_for_buffer(buf->buffer);
 		if (image == NULL) {
 			/* Already logged, in full, by the importer. Dropping the command
@@ -1778,7 +1964,15 @@ static void az_avk_surface_commit(struct wl_listener *listener, void *data) {
 		struct az_avk_buffer *entry = wl_container_of(addon, entry, addon);
 		if (entry->is_shm) {
 			entry->content_generation++;
+			entry->stat_generations++;
 			avk.shm_commits++;
+			/* WHICH pixels, straight from wlroots. surface->buffer_damage is
+			 * already buffer-local, already clipped to the buffer, and already
+			 * has surface-coordinate damage folded through the surface's
+			 * scale, transform and viewport -- see surface_update_damage(),
+			 * which runs before this signal is emitted. Recomputing any of
+			 * that here would be a second implementation to keep in step. */
+			az_avk_note_source_damage(entry, &as->surface->buffer_damage);
 		}
 		return;
 	}
@@ -1832,6 +2026,9 @@ static void az_avk_scene_content_notify(
 		return;
 	}
 	entry->content_generation++;
+	entry->stat_generations++;
+	avk.shm_commits++;
+	az_avk_note_source_damage(entry, event->damage);
 }
 
 static void az_avk_surface_destroy(struct wl_listener *listener, void *data) {
@@ -2011,8 +2208,18 @@ static cJSON *az_avk_stats_json(void) {
 	cJSON_AddNumberToObject(o, "shm_commits", (double)avk.shm_commits);
 	cJSON_AddNumberToObject(o, "shm_full_uploads",
 		(double)avk.shm_full_uploads);
+	cJSON_AddNumberToObject(o, "shm_partial_uploads",
+		(double)avk.shm_partial_uploads);
 	cJSON_AddNumberToObject(o, "shm_upload_skips",
 		(double)avk.shm_upload_skips);
+	cJSON_AddNumberToObject(o, "shm_damage_pixels",
+		(double)avk.shm_damage_pixels);
+	cJSON_AddNumberToObject(o, "shm_committed_pixels",
+		(double)avk.shm_committed_pixels);
+	cJSON_AddNumberToObject(o, "buffer_resolve_attempts",
+		(double)avk.buffer_resolve_attempts);
+	cJSON_AddNumberToObject(o, "nodes_output_culled_before_resolve",
+		(double)avk.nodes_output_culled_before_resolve);
 	cJSON_AddNumberToObject(o, "implicit_copy_bytes",
 		(double)imp->copied_bytes);
 	cJSON_AddNumberToObject(o, "implicit_copy_us", (double)imp->copied_us);
@@ -2069,6 +2276,62 @@ static cJSON *az_avk_stats_json(void) {
 	cJSON_AddNumberToObject(o, "output_targets_in_flight",
 		(double)avk.output_targets);
 
+	/*
+	 * The largest SHM sources, so a pathological client can be identified
+	 * instead of guessed at. Deliberately a debug view rather than a stable
+	 * API: it is a list of whatever happens to be cached right now, ordered by
+	 * bytes moved, and capped so the reply cannot grow without bound.
+	 */
+	cJSON *sources = cJSON_AddArrayToObject(o, "shm_sources");
+	if (sources != NULL) {
+		struct az_avk_buffer *entry;
+		struct az_avk_buffer *top[AZ_AVK_STAT_SOURCES] = {0};
+		size_t top_len = 0;
+		wl_list_for_each(entry, &avk.buffers, link) {
+			if (!entry->is_shm) {
+				continue;
+			}
+			size_t at = top_len;
+			while (at > 0 &&
+					top[at - 1]->stat_upload_bytes < entry->stat_upload_bytes) {
+				if (at < AZ_AVK_STAT_SOURCES) {
+					top[at] = top[at - 1];
+				}
+				at--;
+			}
+			if (at < AZ_AVK_STAT_SOURCES) {
+				top[at] = entry;
+				if (top_len < AZ_AVK_STAT_SOURCES) {
+					top_len++;
+				}
+			}
+		}
+		for (size_t i = 0; i < top_len; i++) {
+			cJSON *src = cJSON_CreateObject();
+			if (src == NULL) {
+				break;
+			}
+			char id[32];
+			snprintf(id, sizeof(id), "%p", (void *)top[i]->buffer);
+			cJSON_AddStringToObject(src, "buffer", id);
+			cJSON_AddNumberToObject(src, "width", top[i]->buffer->width);
+			cJSON_AddNumberToObject(src, "height", top[i]->buffer->height);
+			cJSON_AddBoolToObject(src, "from_surface_commit",
+				top[i]->taken_at_commit);
+			cJSON_AddNumberToObject(src, "generations",
+				(double)top[i]->stat_generations);
+			cJSON_AddNumberToObject(src, "full_uploads",
+				(double)top[i]->stat_full_uploads);
+			cJSON_AddNumberToObject(src, "partial_uploads",
+				(double)top[i]->stat_partial_uploads);
+			cJSON_AddNumberToObject(src, "upload_bytes",
+				(double)top[i]->stat_upload_bytes);
+			cJSON_AddNumberToObject(src, "frame_lookups",
+				(double)top[i]->stat_lookups);
+			cJSON_AddItemToArray(sources, src);
+		}
+	}
+
 	cJSON_AddNumberToObject(o, "software_cursor_frames",
 		(double)avk.software_cursor_frames);
 	cJSON_AddNumberToObject(o, "validation_errors",
@@ -2092,7 +2355,12 @@ static void az_avk_stats_reset(void) {
 	avk.shm_upload_bytes = 0;
 	avk.shm_commits = 0;
 	avk.shm_full_uploads = 0;
+	avk.shm_partial_uploads = 0;
 	avk.shm_upload_skips = 0;
+	avk.shm_damage_pixels = 0;
+	avk.shm_committed_pixels = 0;
+	avk.buffer_resolve_attempts = 0;
+	avk.nodes_output_culled_before_resolve = 0;
 	avk.commit_imports = 0;
 	avk.late_imports = 0;
 	avk.cache_hits = 0;
@@ -2136,9 +2404,15 @@ static void az_avk_log_stats(void) {
 		" avk.shm_uploads=%" PRIu64, avk.frames, avk.fallback_frames,
 		avk.buffer_imports, avk.buffer_import_fails, avk.shm_uploads);
 	wlr_log(WLR_INFO, "avk.shm_commits=%" PRIu64 " avk.shm_full_uploads=%" PRIu64
-		" avk.shm_upload_skips=%" PRIu64 " avk.shm_upload_bytes=%" PRIu64,
-		avk.shm_commits, avk.shm_full_uploads, avk.shm_upload_skips,
-		avk.shm_upload_bytes);
+		" avk.shm_partial_uploads=%" PRIu64 " avk.shm_upload_skips=%" PRIu64
+		" avk.shm_upload_bytes=%" PRIu64, avk.shm_commits, avk.shm_full_uploads,
+		avk.shm_partial_uploads, avk.shm_upload_skips, avk.shm_upload_bytes);
+	wlr_log(WLR_INFO, "avk.shm_damage_pixels=%" PRIu64
+		" avk.shm_committed_pixels=%" PRIu64
+		" avk.buffer_resolve_attempts=%" PRIu64
+		" avk.nodes_output_culled_before_resolve=%" PRIu64,
+		avk.shm_damage_pixels, avk.shm_committed_pixels,
+		avk.buffer_resolve_attempts, avk.nodes_output_culled_before_resolve);
 	wlr_log(WLR_INFO, "avk.commit_imports=%" PRIu64 " avk.late_imports=%" PRIu64
 		" avk.cache_hits=%" PRIu64 " avk.cache_misses=%" PRIu64,
 		avk.commit_imports, avk.late_imports, avk.cache_hits,

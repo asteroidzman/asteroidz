@@ -900,6 +900,71 @@ and no `vkDeviceWaitIdle` on this path.
 | reused buffer, red then blue | +1 | one buffer |
 | `BREAK=identity` | 0 | frozen on red |
 
+### Phase 2 — only the rectangles that changed
+
+Source damage comes from `wlr_surface.buffer_damage`, which wlroots has
+already made buffer-local, clipped to the buffer, and corrected for the
+surface's scale, transform and viewport (`surface_update_damage()`, run before
+the commit signal). Redoing that arithmetic here would be a second
+implementation to keep in step with the first.
+
+`avk_upload_image_write_regions()` packs the damaged rectangles tightly into
+staging and issues **one** `vkCmdCopyBufferToImage2` with N regions, in one
+submission. Rows are copied one at a time from `base + y * stride + x * bpp`,
+because a rectangle's rows are not contiguous unless it spans the full width —
+copying `width * height * bpp` as a block is the obvious shortcut and shears
+the result. `bufferOffset` is aligned to lcm(bpp, 4), computed rather than
+assumed 4.
+
+Falls back to one full upload per generation when the damage is unknown
+(`pending_full`) or has more rectangles than the packed path takes. Correct
+once beats wrong cheaply, and it is still nothing like once per frame.
+
+Measured headless, 512x512 buffer:
+
+| case | uploaded | changed area |
+|---|---|---|
+| one 64x64 rectangle | **16,384 B** | 64x64x4 = 16,384 |
+| two 64x64 rectangles | **32,768 B** | 2 x 16,384 |
+| the same with 512 bytes of row padding | **16,384 B** | unchanged |
+| 40 rectangles (past the packing limit) | 1 full upload, then 0 | — |
+| `AZ_AVK_SOURCE_FULL=1` | 1,048,576 B | — |
+
+Zero amplification: the copy is exactly the damaged area.
+
+And the domains stay separate. Dragging a static terminal across the desktop:
+**4,182,480 damaged output pixels, 21 buffer lookups, 0 uploads, 0 bytes.**
+
+### Cull before resolve
+
+The walk starts at the scene root, so it visits every node for every output —
+including a 4K wallpaper belonging to a monitor 3840 pixels away. Resolving it
+costs an import or a copy and produces a command the renderer then scissors to
+nothing. The output-intersection test is now applied *before*
+`az_avk_image_for_buffer()` rather than after, which is the same test the
+renderer would have applied anyway. `avk.nodes_output_culled_before_resolve`
+counts it.
+
+### One break test that could not be made to fail
+
+`BREAK=unsafe-reuse` removes both protections around updating an image a frame
+in flight may still be sampling: the timeline wait on `image->last_use`, and
+the barrier's read-before-write dependency. **Synchronisation validation
+reports nothing**, with the layer demonstrably loaded, including in a case
+where 221 generations and 82 partial uploads genuinely overlap frames.
+
+The likely reason is that uploads and frames are submitted to the same
+`VkQueue`, each upload ordered after the frame that read the image, so there is
+no concurrency for validation to object to. Both protections are kept — they
+cost nothing, they are correct, and they become load-bearing the moment uploads
+move to the dedicated transfer queue the capability table already records — but
+this suite cannot presently prove they are, and that is recorded rather than
+papered over.
+
+Worth noting how it was narrowed: removing only the timeline wait changed
+nothing, which is what led to removing the barrier's dependency as well. The
+barrier, not the semaphore, is what orders this today.
+
 ---
 
 ## M3b work plan (the compositor half) — DONE, kept for the record

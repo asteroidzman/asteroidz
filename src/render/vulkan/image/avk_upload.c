@@ -197,6 +197,36 @@ error:
 	return false;
 }
 
+
+/*
+ * AVK_UNSAFE_REUSE=1 -- the break switch for image-update ordering.
+ *
+ * It strips the read-before-write dependency from the barrier that guards
+ * overwriting an image a frame in flight may still be sampling.
+ *
+ * It removes the BARRIER and not a semaphore wait, and that distinction was
+ * measured rather than assumed. The caller also passes a timeline wait on the
+ * image's last use; removing only that changed nothing and validation stayed
+ * clean, because uploads and frames are submitted to the same queue and a
+ * pipeline barrier orders against earlier submissions on that queue in
+ * submission order. The barrier is what protects this. The timeline wait is
+ * belt to its braces, and worth keeping for the day an upload moves to a
+ * transfer queue -- but it is not the thing under test.
+ */
+static bool unsafe_reuse(void) {
+	static int cached = -1;
+	if (cached < 0) {
+		const char *env = getenv("AVK_UNSAFE_REUSE");
+		cached = env != NULL && env[0] == '1';
+		if (cached) {
+			avk_log(AVK_ERROR, "AVK_UNSAFE_REUSE=1 -- image updates are being "
+				"recorded with no dependency on the frames still reading "
+				"them");
+		}
+	}
+	return cached != 0;
+}
+
 uint64_t avk_upload_image_write(struct avk_device *dev,
 		struct avk_cmd_ring *ring, struct avk_upload *up,
 		struct avk_image *image, const void *pixels, uint32_t stride,
@@ -245,7 +275,7 @@ uint64_t avk_upload_image_write(struct avk_device *dev,
 			.layerCount = 1,
 		},
 	};
-	if (image->layout == VK_IMAGE_LAYOUT_UNDEFINED) {
+	if (image->layout == VK_IMAGE_LAYOUT_UNDEFINED || unsafe_reuse()) {
 		/* Nothing has read it yet, and claiming a shader read happened would
 		 * be a barrier describing a dependency that does not exist. */
 		to_dst.srcStageMask = VK_PIPELINE_STAGE_2_NONE;
@@ -320,4 +350,181 @@ void avk_upload_retire(struct avk_device *dev, void *upload) {
 	struct avk_upload *up = upload;
 	avk_upload_finish(dev, up);
 	free(up);
+}
+
+/* lcm(bpp, 4): what Vulkan requires of bufferOffset -- a multiple of 4 and of
+ * the texel size. Computed rather than assumed 4, because a format with an odd
+ * texel size would silently produce a misaligned copy. */
+static VkDeviceSize copy_offset_align(uint32_t bpp) {
+	VkDeviceSize align = bpp;
+	while (align % 4 != 0) {
+		align += bpp;
+	}
+	return align;
+}
+
+uint64_t avk_upload_image_write_regions(struct avk_device *dev,
+		struct avk_cmd_ring *ring, struct avk_upload *up,
+		struct avk_image *image, const void *pixels, uint32_t stride,
+		uint32_t height, const struct avk_upload_rect *rects,
+		uint32_t rect_count, uint64_t *bytes_copied,
+		const VkSemaphoreSubmitInfo *waits, uint32_t wait_count) {
+	if (bytes_copied != NULL) {
+		*bytes_copied = 0;
+	}
+	if (rect_count == 0) {
+		return 0;
+	}
+
+	uint32_t bpp = avk_format_bytes_per_pixel(image->format);
+	if (bpp == 0) {
+		return 0;
+	}
+
+	enum { MAX_REGIONS = 64 };
+	if (rect_count > MAX_REGIONS) {
+		/* The caller is expected to coalesce before it gets here; refusing is
+		 * better than truncating, because a truncated copy leaves the image
+		 * holding a mixture of two generations with nothing to say so. */
+		avk_log(AVK_ERROR, "upload: %u regions is more than the %d this path "
+			"packs at once", rect_count, MAX_REGIONS);
+		return 0;
+	}
+
+	const VkDeviceSize align = copy_offset_align(bpp);
+	VkBufferImageCopy2 regions[MAX_REGIONS];
+	VkDeviceSize offsets[MAX_REGIONS];
+	VkDeviceSize total = 0;
+
+	for (uint32_t i = 0; i < rect_count; i++) {
+		const struct avk_upload_rect *r = &rects[i];
+		if (r->width == 0 || r->height == 0) {
+			continue;
+		}
+		/* Bounds are the caller's job, but a rectangle that escaped it would
+		 * read past the client's mapping -- so it is checked here as well. */
+		if (r->x + r->width > image->extent.width ||
+				r->y + r->height > image->extent.height) {
+			avk_log(AVK_ERROR, "upload: region %u,%u %ux%u is outside a %ux%u "
+				"image", r->x, r->y, r->width, r->height,
+				image->extent.width, image->extent.height);
+			return 0;
+		}
+		total = (total + align - 1) / align * align;
+		offsets[i] = total;
+		total += (VkDeviceSize)r->width * r->height * bpp;
+	}
+	if (total == 0) {
+		return 0;
+	}
+	if (!staging_ensure(dev, up, total)) {
+		return 0;
+	}
+
+	uint8_t *dst = up->mapped;
+	const uint8_t *src = pixels;
+	uint32_t packed = 0;
+	for (uint32_t i = 0; i < rect_count; i++) {
+		const struct avk_upload_rect *r = &rects[i];
+		if (r->width == 0 || r->height == 0) {
+			continue;
+		}
+		size_t row_bytes = (size_t)r->width * bpp;
+		for (uint32_t row = 0; row < r->height; row++) {
+			memcpy(dst + offsets[i] + (size_t)row * row_bytes,
+				src + (size_t)(r->y + row) * stride + (size_t)r->x * bpp,
+				row_bytes);
+		}
+		regions[packed++] = (VkBufferImageCopy2){
+			.sType = VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2,
+			.bufferOffset = offsets[i],
+			/* Tightly packed in staging, so the row length is this
+			 * rectangle's own width and NOT the source stride. */
+			.bufferRowLength = r->width,
+			.bufferImageHeight = r->height,
+			.imageSubresource = {
+				.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+				.layerCount = 1,
+			},
+			.imageOffset = { (int32_t)r->x, (int32_t)r->y, 0 },
+			.imageExtent = { r->width, r->height, 1 },
+		};
+	}
+	if (packed == 0) {
+		return 0;
+	}
+
+	VkCommandBuffer cb = avk_cmd_ring_begin(ring);
+	if (cb == VK_NULL_HANDLE) {
+		return 0;
+	}
+
+	VkImageMemoryBarrier2 to_dst = {
+		.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+		.srcStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+		.srcAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+		.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+		.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+		.oldLayout = image->layout,
+		.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+		.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+		.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+		.image = image->image,
+		.subresourceRange = {
+			.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+			.levelCount = 1,
+			.layerCount = 1,
+		},
+	};
+	if (unsafe_reuse()) {
+		to_dst.srcStageMask = VK_PIPELINE_STAGE_2_NONE;
+		to_dst.srcAccessMask = 0;
+	}
+	if (image->layout == VK_IMAGE_LAYOUT_UNDEFINED) {
+		/* UNDEFINED discards the contents, which for a partial update would
+		 * throw away every pixel outside the damaged rectangles. A partial
+		 * update into an image nothing has written yet is a caller bug. */
+		avk_log(AVK_ERROR, "upload: a partial update of an image with no "
+			"previous contents would discard everything outside the damage");
+		avk_cmd_ring_abandon(ring);
+		return 0;
+	}
+	VkDependencyInfo dep = {
+		.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+		.imageMemoryBarrierCount = 1,
+		.pImageMemoryBarriers = &to_dst,
+	};
+	vkCmdPipelineBarrier2(cb, &dep);
+
+	VkCopyBufferToImageInfo2 copy = {
+		.sType = VK_STRUCTURE_TYPE_COPY_BUFFER_TO_IMAGE_INFO_2,
+		.srcBuffer = up->buffer,
+		.dstImage = image->image,
+		.dstImageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+		.regionCount = packed,
+		.pRegions = regions,
+	};
+	vkCmdCopyBufferToImage2(cb, &copy);
+
+	VkImageMemoryBarrier2 to_read = to_dst;
+	to_read.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+	to_read.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+	to_read.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+	to_read.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+	to_read.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+	to_read.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	dep.pImageMemoryBarriers = &to_read;
+	vkCmdPipelineBarrier2(cb, &dep);
+
+	uint64_t timeline = avk_cmd_ring_submit(ring, waits, wait_count, NULL, 0);
+	if (timeline == 0) {
+		return 0;
+	}
+
+	if (bytes_copied != NULL) {
+		*bytes_copied = (uint64_t)total;
+	}
+	image->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	image->last_use = timeline;
+	return timeline;
 }

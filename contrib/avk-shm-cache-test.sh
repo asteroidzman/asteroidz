@@ -99,7 +99,7 @@ hl_get "get avk-stats" > "$OUTDIR/stats-idle.json"
 
 echo "-- a static SHM surface is uploaded once, not once per frame --"
 IDLE_FRAMES="$(field "$OUTDIR/stats-idle.json" frames)"
-IDLE_UPLOADS="$(field "$OUTDIR/stats-idle.json" shm_full_uploads)"
+IDLE_UPLOADS="$(( $(field "$OUTDIR/stats-idle.json" shm_full_uploads) + $(field "$OUTDIR/stats-idle.json" shm_partial_uploads) ))"
 IDLE_SKIPS="$(field "$OUTDIR/stats-idle.json" shm_upload_skips)"
 IDLE_BYTES="$(field "$OUTDIR/stats-idle.json" shm_upload_bytes)"
 PER_FRAME="$(python3 -c "print(int($IDLE_BYTES/$IDLE_FRAMES) if $IDLE_FRAMES else -1)" 2>/dev/null || echo -1)"
@@ -143,7 +143,10 @@ hl_screenshot gen1
 R1="$(count_colour "$OUTDIR/gen1.png" "#ff0000")"
 B1="$(count_colour "$OUTDIR/gen1.png" "#0000ff")"
 hl_get "get avk-stats" > "$OUTDIR/s1.json"
-UP1="$(field "$OUTDIR/s1.json" shm_full_uploads)"
+# Full AND partial: since Phase 2 a whole-buffer damage region is served by the
+# partial path (one rectangle that happens to cover everything), so counting
+# only full uploads would miss the very upload this asserts on.
+UP1="$(( $(field "$OUTDIR/s1.json" shm_full_uploads) + $(field "$OUTDIR/s1.json" shm_partial_uploads) ))"
 
 # Wait past the hold so the client has committed the SECOND colour into the
 # SAME buffer.
@@ -152,7 +155,7 @@ hl_screenshot gen2
 R2="$(count_colour "$OUTDIR/gen2.png" "#ff0000")"
 B2="$(count_colour "$OUTDIR/gen2.png" "#0000ff")"
 hl_get "get avk-stats" > "$OUTDIR/s2.json"
-UP2="$(field "$OUTDIR/s2.json" shm_full_uploads)"
+UP2="$(( $(field "$OUTDIR/s2.json" shm_full_uploads) + $(field "$OUTDIR/s2.json" shm_partial_uploads) ))"
 
 echo "  note: red/blue px was $R1/$B1, then $R2/$B2; uploads $UP1 -> $UP2"
 kill "$WLREUSE_PID" 2>/dev/null
