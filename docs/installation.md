@@ -242,10 +242,21 @@ You will need to build `wlroots` and asteroidz's `scenefx` fork manually as well
    off by default, and it fetches the Tracy client over the network, so it is
    not suitable for an offline or clean-chroot build.
 
-   This installs the `asteroidz` binary, the `amsg` IPC tool, two wayland
-   session entries (**Asteroidz** = GLES2, the daily driver and default;
-   **Asteroidz (Vulkan, experimental)** = the `fx_vk` renderer), and the
-   GlobalShortcuts portal definition.
+   This installs the `asteroidz` binary, the `amsg` IPC tool, three wayland
+   session entries, and the GlobalShortcuts portal definition.
+
+   | session | what composites the frame |
+   |---|---|
+   | **Asteroidz** | SceneFX on wlroots' GLES2 renderer — the daily driver and default |
+   | **Asteroidz (Vulkan, experimental)** | SceneFX on wlroots' Vulkan renderer (`fx_vk`) |
+   | **Asteroidz (AVK native Vulkan)** | asteroidz's own Vulkan engine, no `wlr_renderer` involved |
+
+   The AVK session is under construction — no effects, no colour management,
+   full damage every frame — and it pins `WLR_RENDERER=gles2` on purpose:
+   wlroots still needs a renderer for shm formats, the allocator and
+   screencopy, none of which are composition. If AVK cannot render an output
+   correctly (a colour-managed display, a software cursor) it hands that frame
+   back to SceneFX and says so in the log rather than drawing it wrongly.
 
    There is a third, separate switch: `ASTEROIDZ_RENDERER=avk` selects
    asteroidz's own native Vulkan engine, which composites the desktop itself

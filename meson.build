@@ -363,6 +363,12 @@ desktop_install_dir = join_paths(prefix, 'share/wayland-sessions')
 portal_install_dir = join_paths(prefix, 'share/xdg-desktop-portal')
 install_data('assets/asteroidz.desktop', install_dir : desktop_install_dir)
 install_data('assets/asteroidz-vulkan.desktop', install_dir : desktop_install_dir)
+# The AVK session sets WLR_RENDERER=gles2 deliberately rather than leaving it
+# unset. ASTEROIDZ_RENDERER is independent of it -- wlroots still needs a
+# renderer for shm formats, the allocator and screencopy, none of which are
+# composition -- and pinning it to GLES2 makes the session exactly the
+# configuration contrib/avk-frame-test.sh asserts against.
+install_data('assets/asteroidz-avk.desktop', install_dir : desktop_install_dir)
 install_data('assets/asteroidz-portals.conf', install_dir : portal_install_dir)
 install_data('assets/asteroidz.portal', install_dir : join_paths(prefix, 'share/xdg-desktop-portal/portals'))
 install_data('assets/config.kdl', install_dir : join_paths(sysconfdir, 'asteroidz'))

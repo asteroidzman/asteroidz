@@ -74,7 +74,7 @@ stdenv.mkDerivation {
     ];
 
   passthru = {
-    providedSessions = ["asteroidz" "asteroidz-vulkan"];
+    providedSessions = ["asteroidz" "asteroidz-vulkan" "asteroidz-avk"];
   };
 
   meta = {

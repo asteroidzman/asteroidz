@@ -1,0 +1,8 @@
+[Desktop Entry]
+Encoding=UTF-8
+Name=Asteroidz (AVK native Vulkan)
+DesktopNames=asteroidz;wlroots
+Comment=asteroidz WM composited by its own Vulkan engine -- under construction: no effects, no HDR/ICC, full damage every frame
+Exec=env WLR_RENDERER=gles2 ASTEROIDZ_RENDERER=avk asteroidz
+Icon=asteroidz
+Type=Application
