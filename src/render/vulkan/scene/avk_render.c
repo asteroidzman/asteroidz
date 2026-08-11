@@ -31,6 +31,7 @@ bool avk_renderer_init(struct avk_renderer *renderer, struct avk_device *dev,
 	 * ones worth having a falsifier for. */
 	renderer->break_rounded_off = getenv("AZ_ROUNDED_OFF") != NULL;
 	renderer->break_rounded_single = getenv("AZ_ROUNDED_SINGLE_RADIUS") != NULL;
+	renderer->break_bottom_swap = getenv("AZ_ROUNDED_BOTTOM_SWAP") != NULL;
 	const char *dbl = getenv("AZ_ROUNDED_DOUBLE_SCALE");
 	renderer->break_rounded_double_scale = dbl != NULL;
 	renderer->break_scale_hint = dbl != NULL ? (float)atof(dbl) : 1.0f;
@@ -599,6 +600,16 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 		 */
 		float radii[4] = { cmd->corners[0], cmd->corners[1],
 			cmd->corners[2], cmd->corners[3] };
+		if (renderer->break_bottom_swap) {
+			/* The exact bug the M4A audit found waiting to happen:
+			 * fx_corner_radii is CLOCKWISE (tl, tr, br, bl) and SceneFX's own
+			 * shader helper takes (tl, tr, bl, br). Handing the struct
+			 * straight over swaps the two bottom corners -- which is only
+			 * visible when they differ, i.e. never in a symmetric test. */
+			float t = radii[2];
+			radii[2] = radii[3];
+			radii[3] = t;
+		}
 		if (renderer->break_rounded_single) {
 			radii[1] = radii[2] = radii[3] = radii[0];
 		}

@@ -36,6 +36,7 @@ struct avk_renderer {
 	 * draw loop, so a break costs nothing when it is off. */
 	bool break_rounded_off;
 	bool break_rounded_single;
+	bool break_bottom_swap;
 	bool break_rounded_double_scale;
 	float break_scale_hint;
 	struct avk_device *dev;
