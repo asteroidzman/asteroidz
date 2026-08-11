@@ -348,6 +348,96 @@ static void test_format_table(struct avk_dmabuf_importer *importer) {
 		"an unknown fourcc is not in the table");
 }
 
+/*
+ * THE ADVERTISEMENT PROBE (M3.6).
+ *
+ * M3.6 made avk_format_table the source of the format/modifier pairs the
+ * compositor advertises to clients. That is a PROMISE: a conforming client
+ * allocating one of those pairs must get a buffer AVK can import. The probe
+ * keeps the promise honest by taking pairs straight out of the advertised set
+ * and allocating real buffers with them.
+ *
+ * "the table says it is importable" is not the claim being tested -- the table
+ * already says that, and it is what the advertisement is derived from, so
+ * asserting it here would be a tautology. What is tested is that GBM can
+ * ALLOCATE the pair and AVK can then import the result: the whole round trip a
+ * client performs, for pairs the compositor asked clients to use.
+ *
+ * Representative rather than exhaustive: the common compositor formats, every
+ * modifier each of them advertises. A driver whose table lists a modifier GBM
+ * refuses to allocate is a real finding and is reported, not skipped silently.
+ */
+static void test_advertised_pairs_import(struct avk_dmabuf_importer *importer,
+		struct gbm_device *gbm) {
+	printf("every advertised pair can be allocated and imported\n");
+
+	const uint32_t interesting[] = {
+		DRM_FORMAT_XRGB8888, DRM_FORMAT_ARGB8888, DRM_FORMAT_XRGB2101010,
+	};
+	uint32_t tried = 0, ok = 0, unallocatable = 0, failed_import = 0;
+
+	for (size_t f = 0; f < sizeof(interesting) / sizeof(interesting[0]); f++) {
+		const struct avk_format_caps *caps =
+			avk_format_table_find(&importer->table, interesting[f]);
+		if (caps == NULL) {
+			continue;
+		}
+		char fname[64];
+		avk_drm_format_name(interesting[f], fname, sizeof(fname));
+		for (uint32_t m = 0; m < caps->texture_mod_count; m++) {
+			uint64_t mod = caps->texture_mods[m].modifier;
+			tried++;
+
+			struct gbm_bo *bo = gbm_bo_create_with_modifiers2(gbm, WIDTH,
+				HEIGHT, interesting[f], &mod, 1, GBM_BO_USE_RENDERING);
+			if (bo == NULL) {
+				/* The pair is advertised and the allocator will not produce
+				 * it. Not fatal -- a client would simply pick another -- but
+				 * it means the advertisement is wider than reality, so it is
+				 * counted and named rather than passed over. */
+				char mname[80];
+				avk_drm_modifier_name(mod, mname, sizeof(mname));
+				printf("  note: %s %s is advertised but GBM would not "
+					"allocate it\n", fname, mname);
+				unallocatable++;
+				continue;
+			}
+
+			struct avk_dmabuf_attributes attribs;
+			if (!bo_to_attribs(bo, interesting[f], &attribs)) {
+				gbm_bo_destroy(bo);
+				failed_import++;
+				continue;
+			}
+			struct avk_image *image =
+				avk_dmabuf_import(importer, &attribs, false);
+			if (image != NULL) {
+				/* Zero-copy, not the compatibility ladder: an advertised
+				 * explicit modifier that lands on the copy rung would be a
+				 * promise kept by accident. */
+				if (image->origin == AVK_IMAGE_DMABUF_EXPLICIT) {
+					ok++;
+				} else {
+					failed_import++;
+				}
+				avk_image_destroy(importer->dev, image);
+			} else {
+				failed_import++;
+			}
+			close_attribs(&attribs);
+			gbm_bo_destroy(bo);
+		}
+	}
+
+	printf("  %" PRIu32 " advertised pairs tried: %" PRIu32 " imported "
+		"zero-copy, %" PRIu32 " not allocatable by GBM\n",
+		tried, ok, unallocatable);
+	CHECK(tried > 0, "there were advertised pairs to probe");
+	CHECK(failed_import == 0,
+		"every pair GBM allocated imported zero-copy (%" PRIu32 " did not)",
+		failed_import);
+}
+
 static void test_explicit_modifier(struct avk_dmabuf_importer *importer,
 		struct gbm_device *gbm) {
 	printf("import with an explicit modifier (the ordinary path)\n");
@@ -777,6 +867,7 @@ int main(void) {
 
 	test_format_table(&importer);
 	test_explicit_modifier(&importer, gbm);
+	test_advertised_pairs_import(&importer, gbm);
 	test_implicit_modifier(&importer, gbm);
 	test_rejections(&importer, gbm);
 	test_dmabuf_fences(&importer, gbm);
