@@ -22,6 +22,8 @@ layout(push_constant) uniform Push {
 	vec4 uv_dy;      // du/dy (xy), unused (zw)
 	vec4 color;      // premultiplied solid colour
 	vec4 params;     // opacity, alpha_mask, unused, unused
+	vec4 round_box;  // x0, y0, x1, y1 in output pixels
+	vec4 corners;    // CLOCKWISE: tl, tr, br, bl, in output pixels
 } pc;
 
 layout(location = 0) out vec2 v_uv;

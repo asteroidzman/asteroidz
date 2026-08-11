@@ -17,6 +17,11 @@
  */
 
 struct avk_renderer_stats {
+	/* M4A. Proof the rounded path is being taken at all, and how often it is
+	 * taken with corners that differ -- the case a single-radius
+	 * implementation renders wrong while looking almost right. */
+	uint64_t rounded_clip_draws;
+	uint64_t rounded_asymmetric_draws;
 	uint64_t frames;
 	uint64_t surfaces;
 	uint64_t rects;
@@ -27,6 +32,12 @@ struct avk_renderer_stats {
 };
 
 struct avk_renderer {
+	/* M4A break switches; see avk_render.c. Read once at init, never in the
+	 * draw loop, so a break costs nothing when it is off. */
+	bool break_rounded_off;
+	bool break_rounded_single;
+	bool break_rounded_double_scale;
+	float break_scale_hint;
 	struct avk_device *dev;
 	struct avk_pipelines pipes;
 	struct avk_cmd_ring ring;

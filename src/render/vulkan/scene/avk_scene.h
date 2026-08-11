@@ -89,11 +89,21 @@ struct avk_cmd {
 	 * ratio gets fractional-scale cases wrong. */
 	bool filter_linear;
 
-	/* ── reserved for M4, present so effects do not require a redesign ──
-	 * None of these are honoured yet. A command that sets one is rendered
-	 * WITHOUT it and AVK says so once, rather than silently dropping the
-	 * effect or silently corrupting the frame. */
-	float corner_radius;
+	/*
+	 * Rounded corners, in OUTPUT PIXELS, clockwise from the top left:
+	 * top-left, top-right, bottom-right, bottom-left.
+	 *
+	 * Four values and not one because SceneFX stores four
+	 * (struct fx_corner_radii), and asteroidz uses them: a window joined to
+	 * its titlebar is rounded on two corners and square on the other two.
+	 * Anything carrying a single radius renders that wrong.
+	 *
+	 * All zero means no rounding, which is the common case and costs one
+	 * uniform branch in the shader.
+	 */
+	float corners[4];
+
+	/* reserved for later M4 stages */
 	bool has_shadow;
 	bool has_blur;
 };

@@ -24,6 +24,26 @@ bool avk_renderer_init(struct avk_renderer *renderer, struct avk_device *dev,
 	}
 	avk_retire_init(&renderer->retire, "renderer");
 	renderer->ring.retire = &renderer->retire;
+
+	/* M4A breaks, read once. Each restores a specific wrong implementation
+	 * rather than merely disabling the feature -- "single radius" and "scaled
+	 * twice" are the two mistakes that render plausibly and are therefore the
+	 * ones worth having a falsifier for. */
+	renderer->break_rounded_off = getenv("AZ_ROUNDED_OFF") != NULL;
+	renderer->break_rounded_single = getenv("AZ_ROUNDED_SINGLE_RADIUS") != NULL;
+	const char *dbl = getenv("AZ_ROUNDED_DOUBLE_SCALE");
+	renderer->break_rounded_double_scale = dbl != NULL;
+	renderer->break_scale_hint = dbl != NULL ? (float)atof(dbl) : 1.0f;
+	if (renderer->break_scale_hint <= 0.0f) {
+		renderer->break_scale_hint = 1.5f;
+	}
+	if (renderer->break_rounded_off || renderer->break_rounded_single ||
+			renderer->break_rounded_double_scale) {
+		avk_log(AVK_ERROR, "M4A break switch active: rounded clipping is "
+			"deliberately wrong (off=%d single=%d double_scale=%d)",
+			renderer->break_rounded_off, renderer->break_rounded_single,
+			renderer->break_rounded_double_scale);
+	}
 	return true;
 }
 
@@ -57,6 +77,59 @@ void avk_renderer_collect(struct avk_renderer *renderer) {
  * round the wrong edges: gl_FragCoord was in flipped space and only agreed
  * with box space for vertically centred boxes.)
  */
+/*
+ * Clamp per-corner radii to something the SDF can express.
+ *
+ * Two independent limits, and both are needed:
+ *
+ *   - no radius may exceed half the box, or the corner arc would wrap past
+ *     the centre and the distance field folds back on itself;
+ *   - two radii sharing an edge may not sum to more than that edge, or the
+ *     two arcs overlap and the boundary between them is undefined.
+ *
+ * The second is the one that bites in practice: a 40px radius on both left
+ * corners of a 60px-tall window is individually legal and jointly impossible.
+ * The fix is the CSS rule -- scale every radius by the worst offending edge's
+ * ratio, so the shape shrinks proportionally instead of one corner winning.
+ * SceneFX clamps only against the box (corner_radius_clamp is a range check on
+ * the config value, not a geometric one) and relies on the shader degrading
+ * gracefully; doing it here is a strictly narrower set of shapes, and never
+ * produces a boundary the max-of-four SDF cannot evaluate.
+ */
+static void az_corner_normalise(const float in[4], float w, float h,
+		float out[4]) {
+	float half = 0.5f * (w < h ? w : h);
+	if (w <= 0.0f || h <= 0.0f || half <= 0.0f) {
+		out[0] = out[1] = out[2] = out[3] = 0.0f;
+		return;
+	}
+	/* clockwise: tl, tr, br, bl */
+	for (int i = 0; i < 4; i++) {
+		out[i] = in[i] < 0.0f ? 0.0f : (in[i] > half ? half : in[i]);
+	}
+	float edges[4] = {
+		out[0] + out[1],   /* top:    tl + tr */
+		out[1] + out[2],   /* right:  tr + br */
+		out[2] + out[3],   /* bottom: br + bl */
+		out[3] + out[0],   /* left:   bl + tl */
+	};
+	float lengths[4] = { w, h, w, h };
+	float scale = 1.0f;
+	for (int i = 0; i < 4; i++) {
+		if (edges[i] > lengths[i] && edges[i] > 0.0f) {
+			float s = lengths[i] / edges[i];
+			if (s < scale) {
+				scale = s;
+			}
+		}
+	}
+	if (scale < 1.0f) {
+		for (int i = 0; i < 4; i++) {
+			out[i] *= scale;
+		}
+	}
+}
+
 static void box_to_ndc(const struct avk_box *box, uint32_t width,
 		uint32_t height, float out[4]) {
 	out[0] = (float)box->x / (float)width * 2.0f - 1.0f;
@@ -475,14 +548,15 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 	for (size_t i = 0; i < scene->len; i++) {
 		const struct avk_cmd *cmd = &scene->cmds[i];
 
-		if ((cmd->corner_radius > 0.0f || cmd->has_shadow || cmd->has_blur)
+		if ((cmd->has_shadow || cmd->has_blur)
 				&& !renderer->warned_unimplemented_effect) {
-			/* Loud once. M3 renders the command WITHOUT the effect rather
-			 * than dropping it: a missing rounded corner is a cosmetic
-			 * regression, a missing window is not. */
-			avk_log(AVK_WARN, "avk: this scene asks for corner radius, shadow "
-				"or blur, which M3 does not implement -- rendering without "
-				"them (effects are M4)");
+			/* Loud once, and still loud: rounded corners are implemented
+			 * (M4A) but shadows and blur are not, and a compositor that
+			 * quietly renders an incomplete desktop is worse than one that
+			 * says so. The warning goes when the effect arrives, not before.
+			 */
+			avk_log(AVK_WARN, "avk: this scene asks for shadow or blur, which "
+				"is not implemented yet -- rendering without them (M4D/M4F)");
 			renderer->warned_unimplemented_effect = true;
 		}
 
@@ -499,6 +573,54 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 		struct avk_push_constants pc = {0};
 		box_to_ndc(&cmd->dst, width, height, pc.dst);
 		pc.params[0] = cmd->opacity;
+		/*
+		 * The rounding rectangle is the destination, in OUTPUT PIXELS -- the
+		 * same space gl_FragCoord is in. Not NDC: a signed distance is only
+		 * meaningful where the units are uniform, and NDC's are not.
+		 *
+		 * Radii arrive already scaled to output pixels (the compositor scales
+		 * them where it scales the box, so the two cannot disagree), and are
+		 * CLOCKWISE: tl, tr, br, bl.
+		 */
+		pc.round_box[0] = (float)cmd->dst.x;
+		pc.round_box[1] = (float)cmd->dst.y;
+		pc.round_box[2] = (float)(cmd->dst.x + cmd->dst.width);
+		pc.round_box[3] = (float)(cmd->dst.y + cmd->dst.height);
+		/*
+		 * BREAK SWITCHES, all three at the point the radii become shader
+		 * input, because that is the narrowest place that can express them.
+		 *
+		 *   rounded-clip          no rounding at all
+		 *   rounded-single-radius all four corners take the first one, which
+		 *                         is what a single-scalar implementation does
+		 *                         and what the audit found SceneFX does NOT do
+		 *   rounded-double-scale  scale applied twice, the fractional-scale
+		 *                         mistake that looks fine at scale 1.0
+		 */
+		float radii[4] = { cmd->corners[0], cmd->corners[1],
+			cmd->corners[2], cmd->corners[3] };
+		if (renderer->break_rounded_single) {
+			radii[1] = radii[2] = radii[3] = radii[0];
+		}
+		if (renderer->break_rounded_double_scale) {
+			for (int i = 0; i < 4; i++) {
+				radii[i] *= renderer->break_scale_hint;
+			}
+		}
+		if (renderer->break_rounded_off) {
+			radii[0] = radii[1] = radii[2] = radii[3] = 0.0f;
+		}
+		az_corner_normalise(radii, (float)cmd->dst.width,
+			(float)cmd->dst.height, pc.corners);
+		if (pc.corners[0] > 0.0f || pc.corners[1] > 0.0f ||
+				pc.corners[2] > 0.0f || pc.corners[3] > 0.0f) {
+			renderer->stats.rounded_clip_draws++;
+			if (pc.corners[0] != pc.corners[1] ||
+					pc.corners[1] != pc.corners[2] ||
+					pc.corners[2] != pc.corners[3]) {
+				renderer->stats.rounded_asymmetric_draws++;
+			}
+		}
 
 		VkPipeline want;
 		if (cmd->type == AVK_CMD_TEXTURE) {

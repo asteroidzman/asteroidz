@@ -1465,6 +1465,54 @@ static void az_avk_box_to_output(const struct az_avk_walk *walk,
 		walk->width, walk->height);
 }
 
+/*
+ * SceneFX radii -> AVK command radii: logical units to output pixels, and
+ * logical corners to physical ones.
+ *
+ * TWO conversions, and both have a way of being silently wrong.
+ *
+ * SCALE. Radii are logical, like the geometry they belong to, so they are
+ * multiplied by the same output scale az_avk_box_to_output() applies. Doing it
+ * anywhere else is how a radius ends up scaled twice (too round at 1.5) or not
+ * at all (too square). One call site, next to the box, so the two cannot drift.
+ *
+ * ORIENTATION. wlr_box_transform() moves the box, so a rotated output puts the
+ * logical top-left somewhere else physically -- and the shader works in output
+ * pixels, where "top left" means the physical one. The permutation is
+ * DERIVED rather than reasoned about: a 1x1 probe box is placed at each corner
+ * of a unit square and pushed through the same transform, and where it lands
+ * says which output corner that logical corner became. Working it out from the
+ * Wayland rotation convention instead is a coin flip that renders correctly on
+ * a normal output either way, so nothing would catch it.
+ */
+static void az_avk_corners_from_scenefx(const struct az_avk_walk *walk,
+		struct fx_corner_radii in, float out[4]) {
+	/* clockwise, matching struct fx_corner_radii and struct avk_cmd.corners */
+	float logical[4] = {
+		(float)in.top_left, (float)in.top_right,
+		(float)in.bottom_right, (float)in.bottom_left,
+	};
+	if (logical[0] == 0.0f && logical[1] == 0.0f &&
+			logical[2] == 0.0f && logical[3] == 0.0f) {
+		out[0] = out[1] = out[2] = out[3] = 0.0f;
+		return;
+	}
+
+	enum wl_output_transform t = wlr_output_transform_invert(walk->transform);
+	/* Probe positions in a 2x2 square, clockwise from the top left. */
+	static const int px[4] = { 0, 1, 1, 0 };
+	static const int py[4] = { 0, 0, 1, 1 };
+	for (int i = 0; i < 4; i++) {
+		struct wlr_box probe = { px[i], py[i], 1, 1 };
+		wlr_box_transform(&probe, &probe, t, 2, 2);
+		/* Which physical corner did it land in? Same clockwise indexing. */
+		int j = (probe.x == 0 && probe.y == 0) ? 0
+			: (probe.x == 1 && probe.y == 0) ? 1
+			: (probe.x == 1 && probe.y == 1) ? 2 : 3;
+		out[j] = logical[i] * (float)walk->scale;
+	}
+}
+
 static void az_avk_walk_node(struct az_avk_walk *walk,
 		struct wlr_scene_node *node, int lx, int ly);
 
@@ -1541,6 +1589,7 @@ static void az_avk_walk_node(struct az_avk_walk *walk,
 			return;
 		}
 		cmd->dst = (struct avk_box){ dst.x, dst.y, dst.width, dst.height };
+		az_avk_corners_from_scenefx(walk, rect->corners, cmd->corners);
 		/*
 		 * A window border is not four rectangles -- SceneFX draws it as ONE
 		 * filled rect with the window's interior clipped OUT of it, which is
@@ -1669,6 +1718,10 @@ static void az_avk_walk_node(struct az_avk_walk *walk,
 		cmd->dst = (struct avk_box){ dst.x, dst.y, dst.width, dst.height };
 		cmd->image = image;
 		cmd->opacity = buf->opacity;
+		/* Rounding belongs to the DESTINATION geometry, not the source: a
+		 * cropped or scaled client is still rounded at the window's corners,
+		 * not at its texture's. */
+		az_avk_corners_from_scenefx(walk, buf->corners, cmd->corners);
 		if (wlr_fbox_empty(&buf->src_box)) {
 			cmd->src = (struct avk_fbox){ 0, 0, image->extent.width,
 				image->extent.height };
@@ -2537,6 +2590,19 @@ static bool az_avk_init(int drm_fd) {
  * timing this build does not collect would be the kind of number that gets
  * quoted back later as evidence.
  */
+/* Renderer stats live per format slot; the IPC view wants the total. Summed
+ * by offset so adding a counter does not mean adding a function. */
+static uint64_t az_avk_renderer_stat_sum(size_t off) {
+	uint64_t total = 0;
+	for (size_t i = 0; i < AZ_AVK_MAX_FORMATS; i++) {
+		if (avk.renderers[i].used) {
+			total += *(const uint64_t *)((const char *)
+				&avk.renderers[i].renderer.stats + off);
+		}
+	}
+	return total;
+}
+
 static cJSON *az_avk_stats_json(void) {
 	cJSON *o = cJSON_CreateObject();
 	if (o == NULL) {
@@ -2729,6 +2795,12 @@ static cJSON *az_avk_stats_json(void) {
 		}
 	}
 
+	cJSON_AddNumberToObject(o, "rounded_clip_draws",
+		(double)az_avk_renderer_stat_sum(offsetof(struct avk_renderer_stats,
+			rounded_clip_draws)));
+	cJSON_AddNumberToObject(o, "rounded_asymmetric_draws",
+		(double)az_avk_renderer_stat_sum(offsetof(struct avk_renderer_stats,
+			rounded_asymmetric_draws)));
 	cJSON_AddNumberToObject(o, "software_cursor_frames",
 		(double)avk.software_cursor_frames);
 	cJSON_AddNumberToObject(o, "cursor_geometry_mismatch",

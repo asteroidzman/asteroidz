@@ -29,8 +29,23 @@ struct avk_push_constants {
 	float uv_dy[4];       /* du/dy xy, unused zw */
 	float color[4];       /* premultiplied */
 	float params[4];      /* opacity, alpha_mask, unused, unused */
+	/*
+	 * The rounded-corner rectangle, in OUTPUT PIXELS: x0, y0, x1, y1.
+	 *
+	 * Pixels rather than NDC because the shader evaluates a signed distance
+	 * field against gl_FragCoord, and a distance is only meaningful in a space
+	 * with uniform units. It is also why a window hanging off the edge of an
+	 * output still rounds correctly: both the fragment position and the box are
+	 * absolute, so a clipped draw is not a different shape.
+	 */
+	float round_box[4];
+	/* top-left, top-right, bottom-right, bottom-left, in output pixels.
+	 * All zero means no rounding. */
+	float corners[4];
 };
-_Static_assert(sizeof(struct avk_push_constants) == 80,
+/* 112 <= 128, the minimum maxPushConstantsSize every Vulkan implementation
+ * must support, so this needs no capability check. */
+_Static_assert(sizeof(struct avk_push_constants) == 112,
 	"push constants must match the shader block");
 
 struct avk_pipelines {
