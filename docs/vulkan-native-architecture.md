@@ -1109,8 +1109,13 @@ barrier, not the semaphore, is what orders this today.
 ## 5.4g M3.5E — the cursor audit, before anything is changed
 
 Three cursor sources reach the screen, and they do **not** share a path. Two
-survived the NULL-renderer topology and one did not. Every line reference below
-is `~/wlroots` at 0.20.
+survived the NULL-renderer topology and one did not.
+
+Line references below are the `~/wlroots` working tree, which is checked out at
+`0.21.0-dev`, while asteroidz links **0.20.2**. Every line quoted here was
+re-read from `git show 0.20.2:` and is byte-identical in the version actually
+linked; the two trees do diverge elsewhere, so anything else read from that
+checkout has to be checked against the tag before it is relied on.
 
 ### The three sources
 
@@ -1187,6 +1192,95 @@ carries the cursor and the image itself is missing — i.e. client-set cursors.
   surface's committed buffer, locked, with no dependence on a wrapper — which
   is precisely what the client cursor path needs. Cursor content can go through
   the same content-generation cache D.1 built.
+
+---
+
+## 5.4h M3.5E stage 1 — asteroidz owns the cursor image
+
+`src/render/az_cursor.h`. The audit's prediction held: the client cursor was
+invisible, and it is now drawn.
+
+### What changed
+
+asteroidz stops asking wlroots to choose a cursor image and chooses one itself,
+always expressing the answer as a **`wlr_buffer`** — the one representation
+both consumers can take. `wlr_cursor_set_xcursor()` and
+`wlr_cursor_set_surface()` are gone from `asteroidz.c`; all seven call sites go
+through `az_cursor_set_xcursor()` / `az_cursor_set_surface()` /
+`az_cursor_hide()` / `az_cursor_show()`, which end at `wlr_cursor_set_buffer()`.
+
+That single change fixes the regression, because `wlr_cursor_set_buffer()`
+imports through `output->renderer` — the GLES compatibility renderer, which is
+non-NULL — rather than through `wlr_surface_get_texture()`, which needs the
+`wlr_client_buffer` wrapper a NULL-renderer `wl_compositor` never creates.
+
+**Nothing about position moved.** `wlr_cursor` and `wlr_output_cursor` still
+own the per-output box, scale, transform and visibility, and the hardware plane
+is still wlroots' and still preferred, for all three sources.
+
+### What it costs, stated plainly
+
+- **xcursor scale is now global, not per-output.** wlroots picked an image per
+  output at that output's scale with a per-output animation timer; asteroidz
+  picks one at the largest scale in the layout, the same rule wlroots itself
+  applies to client surfaces. On a mixed-scale layout the cursor is drawn from
+  the sharper output's buffer and scaled down on the other. This is not
+  laziness: `wlr_cursor_output_cursor` is private, so its per-output animation
+  index cannot be read, and an AVK that guessed would draw a different
+  animation frame than the plane.
+- **A same-pointer content change costs one extra cursor commit.**
+  `wlr_cursor_set_buffer()` early-returns when the buffer pointer, hotspot and
+  scale all match (`wlr_cursor.c:520`) — which is the M3.5D.1 bug, in wlroots,
+  on the cursor path: a client animating a cursor by rewriting one `wl_buffer`
+  would freeze on its first image. `az_cursor_push()` clears the image first to
+  force the re-import, but only when the content generation actually moved
+  under an unchanged pointer, and counts it in `forced_reimports`.
+
+### What this stage does NOT do
+
+AVK still does not composite a cursor. `az_avk_output_supported()` continues to
+decline any frame that needs a software cursor, so those frames fall back to
+SceneFX — which is why the test below passes today. Making that fallback
+unnecessary is stage 2, and the same test has to keep passing once it is gone.
+
+### How it is tested, and why it could not have been before
+
+`contrib/avk-cursor-test.sh`, with two new clients, because the existing suite
+was structurally incapable of seeing this bug:
+
+- **`contrib/wlcursor`** is the only client in the tree that calls
+  `wl_pointer.set_cursor`. Everything else leaves the pointer to the
+  compositor's theme, so the whole suite ran green while client cursors were
+  invisible. It paints one opaque-black pixel at its hotspot, which is what
+  makes *placement* assertable rather than merely presence — a compositor that
+  ignores the hotspot draws the complete image one hotspot away and passes
+  every pixel-count assertion.
+- **`contrib/wlshot`** is a screencopy client that asks for
+  `overlay_cursor = 1`. grim always asks for `0`, so its captures contain no
+  cursor at all and every assertion on one would be vacuous. This matters
+  doubly on headless, where the backend implements `set_cursor()` as
+  `return true;` and does nothing (`backend/headless/output.c:82`): it believes
+  it has a plane, so cursors go to a plane that does not exist and a headless
+  screenshot is *structurally* blind to them. `overlay_cursor` calls
+  `wlr_output_lock_software_cursors()`, so asking for the cursor in the capture
+  IS the request to composite it — no debug environment variable and no
+  test-only branch in the compositor.
+
+Captures are taken **cursorless first**. wlroots deliberately does not
+re-enable the hardware cursor when a software lock drops (`output/cursor.c:75`),
+so a cursorless capture taken after a cursored one still contains the cursor,
+and the control would silently become a copy of the experiment.
+
+Verified three independent ways, because one of them alone is not evidence:
+
+| | client cursor |
+|---|---|
+| pre-M3.5E binary (`2a4bad1`), built from a clean worktree | **absent** |
+| `BREAK=cursor-texture` (`AZ_CURSOR_LEGACY_SURFACE=1`) | **absent**, with `wlr_surface_get_texture()` observed returning NULL |
+| this build | 1023 of 1023 px, hotspot marker at exactly the pointer |
+
+`AZ_CURSOR_LEGACY_SURFACE=1` is not a simulated failure — it is the original
+`wlr_cursor_set_surface()` call, restored.
 
 ---
 

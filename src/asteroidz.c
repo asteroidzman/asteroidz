@@ -1721,6 +1721,9 @@ static struct wl_event_source *sync_keymap;
 #include "animation/tag.h"
 #include "ipc/session-bus.h"
 #include "dispatch/bind_define.h"
+/* Cursor image ownership, before AVK: AVK draws a software cursor from this
+ * state, so it has to exist by the time az_avk.h is compiled. */
+#include "render/az_cursor.h"
 /* The rendering seam, before anything that builds a frame: ext-protocol's
  * tearing path is one of az_output_build_frame()'s four callers. */
 #ifdef AZ_HAVE_VULKAN
@@ -3532,8 +3535,7 @@ void setcursorshape(struct wl_listener *listener, void *data) {
 		last_cursor.shape = event->shape;
 		last_cursor.surface = NULL;
 		if (!cursor_hidden)
-			wlr_cursor_set_xcursor(cursor, cursor_mgr,
-								   wlr_cursor_shape_v1_name(event->shape));
+			az_cursor_set_xcursor(wlr_cursor_shape_v1_name(event->shape));
 	}
 }
 
@@ -3606,6 +3608,9 @@ void cleanup(void) {
 		kill(-child_pid, SIGTERM);
 		waitpid(child_pid, NULL, 0);
 	}
+	/* Before the theme goes: az_cursor holds a lock on an image the manager
+	 * owns, and its animation timer points into the event loop. */
+	az_cursor_finish();
 	wlr_xcursor_manager_destroy(cursor_mgr);
 
 	destroykeyboardgroup(&kb_group->destroy, NULL);
@@ -7201,7 +7206,7 @@ void motionnotify(uint32_t time, struct wlr_input_device *device, double dx,
 	 * to a default. This is what makes the cursor image appear when you
 	 * move it off of a client or over its border. */
 	if (!surface && !seat->drag && !cursor_hidden)
-		wlr_cursor_set_xcursor(cursor, cursor_mgr, "default");
+		az_cursor_set_xcursor("default");
 
 	if (c && c->mon && !c->animation.running &&
 		(INSIDEMON(c) || !ISSCROLLTILED(c))) {
@@ -8157,7 +8162,7 @@ run(char *startup_cmd) {
 	 * initialized, as the image/coordinates are not transformed for the
 	 * monitor when displayed here */
 	wlr_cursor_warp_closest(cursor, NULL, cursor->x, cursor->y);
-	wlr_cursor_set_xcursor(cursor, cursor_mgr, "left_ptr");
+	az_cursor_set_xcursor("left_ptr");
 	handlecursoractivity();
 
 	set_activation_env();
@@ -8206,8 +8211,8 @@ void setcursor(struct wl_listener *listener, void *data) {
 						  &last_cursor_surface_destroy_listener);
 
 		if (!cursor_hidden)
-			wlr_cursor_set_surface(cursor, event->surface, event->hotspot_x,
-								   event->hotspot_y);
+			az_cursor_set_surface(event->surface, event->hotspot_x,
+								  event->hotspot_y);
 	}
 }
 
@@ -9501,15 +9506,16 @@ void handlecursoractivity(void) {
 	cursor_hidden = false;
 
 	if (last_cursor.shape)
-		wlr_cursor_set_xcursor(cursor, cursor_mgr,
-							   wlr_cursor_shape_v1_name(last_cursor.shape));
+		az_cursor_set_xcursor(wlr_cursor_shape_v1_name(last_cursor.shape));
 	else if (last_cursor.surface)
-		wlr_cursor_set_surface(cursor, last_cursor.surface,
-							   last_cursor.hotspot_x, last_cursor.hotspot_y);
+		az_cursor_set_surface(last_cursor.surface, last_cursor.hotspot_x,
+							  last_cursor.hotspot_y);
+	else
+		az_cursor_show();
 }
 
 int32_t hidecursor(void *data) {
-	wlr_cursor_unset_image(cursor);
+	az_cursor_hide();
 	cursor_hidden = true;
 	return 1;
 }
@@ -10284,7 +10290,7 @@ void warp_cursor_to_selmon(Monitor *m) {
 
 	wlr_cursor_warp_closest(cursor, NULL, m->w.x + m->w.width / 2.0,
 							m->w.y + m->w.height / 2.0);
-	wlr_cursor_set_xcursor(cursor, cursor_mgr, "default");
+	az_cursor_set_xcursor("default");
 	handlecursoractivity();
 }
 

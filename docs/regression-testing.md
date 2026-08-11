@@ -260,6 +260,55 @@ so "static buffer, thousands of frames, no uploads" needs something animating
 to be measurable at all. A terminal's blinking cursor supplies the frames while
 the wallpaper underneath stays static.
 
+`contrib/avk-shm-partial-test.sh` (twelfth, `BREAK=source-full`,
+`BREAK=omit-region`, `BREAK=unsafe-reuse`) and
+`contrib/avk-damage-domains-test.sh` (thirteenth, `BREAK=no-cull`) complete the
+M3.5D.1 set: the first asks whether a partial upload copies the right bytes,
+the second whether source damage and scene damage are genuinely separate
+domains. `BREAK=unsafe-reuse` is documented in its own header as **NOT TESTED**
+rather than passing — it could not be made to fail observably, and saying so is
+better than a checklist that lies.
+
+`contrib/avk-cursor-test.sh` is the fourteenth, and it needed **two** new
+clients because the suite was structurally incapable of seeing the bug it
+covers.
+
+```bash
+cd contrib/wlcursor && make           # once
+cd contrib/wlshot   && make           # once
+ASTEROIDZ=build-vk/asteroidz bash contrib/avk-cursor-test.sh
+BREAK=cursor-texture ASTEROIDZ=build-vk/asteroidz bash contrib/avk-cursor-test.sh  # must FAIL
+```
+
+A client that sets its own cursor image had it silently dropped under AVK, and
+**nothing in contrib/ sets one** — every test client leaves the pointer to the
+compositor's xcursor theme, so the entire suite ran green through an invisible
+cursor. `contrib/wlcursor` is the only client that calls
+`wl_pointer.set_cursor`.
+
+Two things about observing a cursor at all are worth knowing before writing any
+further cursor test:
+
+- **grim cannot see cursors.** It asks screencopy for `overlay_cursor = 0`, so
+  its captures never contain one and any assertion about a cursor drawn from a
+  grim screenshot is vacuous. `contrib/wlshot` asks for the cursor.
+- **A headless output is blind to them by construction.** The headless backend
+  implements `set_cursor()` as `return true;` and does nothing, so it believes
+  it has a hardware plane and every cursor goes to a plane that does not exist.
+  Asking screencopy for the cursor calls `wlr_output_lock_software_cursors()`,
+  which is what forces it to be composited into the frame — so requesting the
+  cursor in the capture *is* the request to exercise the software path, with no
+  debug switch in the compositor.
+
+Capture cursorless **first**. wlroots deliberately keeps software cursors on
+after a lock drops (`output/cursor.c:75`), so a cursorless capture taken second
+still contains the cursor and the control becomes a copy of the experiment.
+
+The hotspot assertion is the one that carries weight. wlcursor paints a single
+opaque-black pixel at its hotspot, because a compositor that ignores the
+hotspot entirely draws the whole image, correctly, one hotspot away — and
+passes every pixel-count assertion ever written.
+
 ### The schema, checked from both ends
 
 `src/config/config-schema.h` describes every settable option — type, range, enum
