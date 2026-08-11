@@ -203,6 +203,33 @@ The drm_syncobj timeline route — the one a real monitor takes — is covered a
 the primitive level by `test-avk-core`'s round trip and at the compositor level
 by nothing but a person reading `amsg get avk-stats` on a display.
 
+`contrib/avk-damage-test.sh` is the tenth, and it is another two-run comparison
+— but of the same renderer against itself with damage tracking turned off.
+
+```bash
+ASTEROIDZ=build-vk/asteroidz bash contrib/avk-damage-test.sh
+BREAK=preserve ASTEROIDZ=build-vk/asteroidz bash contrib/avk-damage-test.sh  # must FAIL
+BREAK=stale    ASTEROIDZ=build-vk/asteroidz bash contrib/avk-damage-test.sh  # must FAIL
+```
+
+`AZ_AVK_FULL_DAMAGE=1` produces the reference, because a frame that redraws
+everything cannot be wrong. The assertions are on regions that never change —
+wallpaper, decorations, window interiors — which is exactly the part of the
+buffer partial damage never touches.
+
+Two premises are checked first, and neither is optional. The partial run has to
+have genuinely redrawn less, or the two runs agree by construction; and the
+frames the *screenshot* came from have to have been partial redraws, which the
+test establishes by resetting the counters immediately before capturing. A
+capture taken just after a full redraw looks perfect however broken preservation
+is. `BREAK=stale` runs both passes with full damage and must fail on exactly
+those premise assertions — it breaks the test rather than the code, which is the
+point.
+
+The first version of `BREAK=preserve` used `loadOp DONT_CARE` and **the whole
+suite passed with it set**: a driver may leave "undefined" contents alone, and
+RADV does. It clears to magenta now.
+
 ### The schema, checked from both ends
 
 `src/config/config-schema.h` describes every settable option — type, range, enum

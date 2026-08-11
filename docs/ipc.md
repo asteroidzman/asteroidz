@@ -410,6 +410,8 @@ Fields worth knowing:
 | `implicit_copy_bytes` / `implicit_copy_us` | what that copy actually costs |
 | `commit_imports` / `late_imports` | content taken at commit, versus discovered at a frame. `late_imports` must be 0 |
 | `damage_ratio` | `damage_pixels / output_pixels` over the run. 1.0 means every frame is a full redraw |
+| `full_redraw_frames` / `partial_redraw_frames` | how many frames redrew the whole output versus part of it |
+| `damage_rects_max` | most rectangles one frame's damage arrived in. Pinned at 20 means the ring is collapsing damage to a bounding box rather than tracking it |
 | `cpu_sync_waits` | must be 0 — a nonzero value means the frame path blocks on the GPU |
 | `present_sync_timeline` / `present_sync_dmabuf` | frames handed to the display with a fence, by which route |
 | `present_sync_none` | **must be 0.** Frames handed over unsynchronised — only reachable via `AZ_AVK_NO_PRESENT_SYNC=1` |

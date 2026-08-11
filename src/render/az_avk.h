@@ -135,6 +135,11 @@ struct az_avk {
 	uint64_t output_pixels;
 	uint64_t full_redraw_frames;
 	uint64_t partial_redraw_frames;
+	/* The most rectangles one frame's damage arrived in. Worth watching: the
+	 * ring collapses to a bounding box past WLR_DAMAGE_RING_MAX_RECTS, so a
+	 * number stuck at that limit means damage is being rounded up rather than
+	 * tracked. */
+	uint64_t damage_rects_max;
 	/* Wall clock spent building a frame on the CPU, and the rolling maximum,
 	 * because a mean hides exactly the frames that miss a vblank. */
 	uint64_t cpu_frame_us;
@@ -146,7 +151,6 @@ struct az_avk {
 	bool warned_color_transform;
 	bool warned_software_cursor;
 	bool warned_zoom;
-	bool warned_full_damage;
 	bool warned_shm;
 	bool warned_shm_source_gone;
 	bool warned_gradient;
@@ -1486,17 +1490,42 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 	struct avk_scene scene;
 	avk_scene_init(&scene);
 
-	/* Full damage, every frame. This is a known AVK-mode regression, taken
-	 * deliberately so the switch could land: the scene's damage ring is
-	 * maintained by wlr_scene for its own build path, and consuming it
-	 * correctly from here is the next commit rather than this one. */
-	if (!avk.warned_full_damage) {
-		avk.warned_full_damage = true;
-		wlr_log(WLR_INFO, "AVK: rendering full damage every frame; partial "
-			"damage is the next step and this is a real cost until then");
+	/*
+	 * What has to be redrawn into THIS buffer.
+	 *
+	 * Not "what changed since the last frame" -- that would be right only for a
+	 * swapchain one buffer deep. A target that last held frame N-3 needs
+	 * everything that has changed since frame N-3, and the ring is what knows
+	 * that, per buffer, because it is keyed on the wlr_buffer itself. A buffer
+	 * it has never seen comes back fully damaged, which is exactly right for a
+	 * target whose contents are undefined.
+	 *
+	 * It is the *scene's* ring, deliberately, and shared with the SceneFX path:
+	 * a frame that falls back renders into a different buffer, and the ring
+	 * accounts for both because it tracks buffers rather than frames. Keeping a
+	 * second ring here would mean each path silently forgetting the other's
+	 * frames.
+	 *
+	 * rotate_buffer MUTATES the ring -- it moves `current` into this buffer's
+	 * entry -- so it happens after every check that can still decline the
+	 * frame, and every failure below it has to trash the ring. Rotating and
+	 * then not rendering is how a region gets acknowledged without ever being
+	 * drawn, which shows up as a stale rectangle that survives until something
+	 * else happens to damage it.
+	 */
+	pixman_region32_t damage;
+	pixman_region32_init(&damage);
+	wlr_damage_ring_rotate_buffer(&m->scene_output->damage_ring, buffer,
+		&damage);
+	if (az_avk_env_flag("AZ_AVK_FULL_DAMAGE")) {
+		/* What M3b did on every frame. Kept as a switch because it is the
+		 * reference a damage test compares against: the same scene, redrawn
+		 * whole, is the only thing that can say whether the partially redrawn
+		 * one is right. */
+		pixman_region32_clear(&damage);
+		pixman_region32_union_rect(&damage, &damage, 0, 0, width, height);
 	}
-	pixman_region32_union_rect(&scene.damage, &scene.damage, 0, 0, width,
-		height);
+	pixman_region32_copy(&scene.damage, &damage);
 
 	/* Cleared black underneath everything. asteroidz's own root_bg rect
 	 * normally covers the output, but a clear costs one scissored draw and
@@ -1527,6 +1556,12 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 		waits, wait_count, signals, 1);
 	avk_scene_finish(&scene);
 	if (timeline == 0) {
+		/* The ring has already been rotated, so the damage this frame was
+		 * going to draw is now recorded as drawn. Trashing it is the only
+		 * honest recovery: the next frame redraws everything rather than
+		 * inheriting a region nobody ever painted. */
+		wlr_damage_ring_add_whole(&m->scene_output->damage_ring);
+		pixman_region32_fini(&damage);
 		wlr_buffer_unlock(buffer);
 		avk.fallback_frames++;
 		return false;
@@ -1538,6 +1573,8 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 		/* The work is already in flight and will complete; the buffer just
 		 * never becomes a frame. SceneFX renders this one into a different
 		 * buffer, so nothing is torn and nothing is lost but the effort. */
+		wlr_damage_ring_add_whole(&m->scene_output->damage_ring);
+		pixman_region32_fini(&damage);
 		wlr_buffer_unlock(buffer);
 		avk.fallback_frames++;
 		return false;
@@ -1553,19 +1590,54 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 	 * ours to drop. */
 	wlr_buffer_unlock(buffer);
 
-	pixman_region32_t damage;
-	pixman_region32_init_rect(&damage, 0, 0, width, height);
+	/*
+	 * What the BACKEND is told changed, which is a slightly different question
+	 * from what we just redrew.
+	 *
+	 * The minimal answer is "the region that differs from what is currently on
+	 * screen", and wlr_scene keeps exactly that -- but in a WLR_PRIVATE field,
+	 * and reaching into one of those to save a few pixels of blit is not a
+	 * trade worth making.
+	 *
+	 * The redraw region is the honest superset. It is damage accumulated since
+	 * THIS buffer was last presented, and the on-screen buffer was presented
+	 * more recently, so it contains the minimal answer and over-reports by at
+	 * most the last few frames' damage. Over-reporting output damage costs the
+	 * backend a little extra work and is never wrong; under-reporting leaves
+	 * stale pixels on screen.
+	 *
+	 * Containing it also matters for a second reason. wlr_scene subtracts the
+	 * committed damage from its own pending region, and
+	 * wlr_scene_output_needs_frame() is true while that region is non-empty --
+	 * so a report that did not cover it would leave the compositor rendering
+	 * frames forever on an idle desktop.
+	 */
 	wlr_output_state_set_damage(state, &damage);
-	pixman_region32_fini(&damage);
 
 	/* Damage accounting. Both totals accumulate over the run, so
 	 * damage_pixels/output_pixels is the fraction of the desktop AVK actually
 	 * redrew -- the single number that says whether damage tracking is doing
-	 * anything. It reads 1.0 today, deliberately, and M3.5D is what changes
-	 * that. */
-	avk.damage_pixels += (uint64_t)width * (uint64_t)height;
-	avk.output_pixels += (uint64_t)width * (uint64_t)height;
-	avk.full_redraw_frames++;
+	 * anything at all. */
+	uint64_t damage_px = 0;
+	int rect_count = 0;
+	const pixman_box32_t *rects = pixman_region32_rectangles(&damage,
+		&rect_count);
+	for (int i = 0; i < rect_count; i++) {
+		damage_px += (uint64_t)(rects[i].x2 - rects[i].x1)
+			* (uint64_t)(rects[i].y2 - rects[i].y1);
+	}
+	uint64_t output_px = (uint64_t)width * (uint64_t)height;
+	avk.damage_pixels += damage_px;
+	avk.output_pixels += output_px;
+	if (damage_px >= output_px) {
+		avk.full_redraw_frames++;
+	} else {
+		avk.partial_redraw_frames++;
+	}
+	if (rect_count > (int)avk.damage_rects_max) {
+		avk.damage_rects_max = (uint64_t)rect_count;
+	}
+	pixman_region32_fini(&damage);
 
 	struct timespec frame_t1;
 	clock_gettime(CLOCK_MONOTONIC, &frame_t1);
@@ -1835,6 +1907,8 @@ static cJSON *az_avk_stats_json(void) {
 		(double)avk.full_redraw_frames);
 	cJSON_AddNumberToObject(o, "partial_redraw_frames",
 		(double)avk.partial_redraw_frames);
+	cJSON_AddNumberToObject(o, "damage_rects_max",
+		(double)avk.damage_rects_max);
 
 	/* synchronisation and presentation */
 	cJSON_AddNumberToObject(o, "cpu_sync_waits", (double)sync_waits);
@@ -1882,6 +1956,7 @@ static void az_avk_stats_reset(void) {
 	avk.output_pixels = 0;
 	avk.full_redraw_frames = 0;
 	avk.partial_redraw_frames = 0;
+	avk.damage_rects_max = 0;
 	avk.cpu_frame_us = 0;
 	avk.cpu_frame_us_max = 0;
 	avk.software_cursor_frames = 0;
@@ -1919,6 +1994,11 @@ static void az_avk_log_stats(void) {
 		" avk.cache_hits=%" PRIu64 " avk.cache_misses=%" PRIu64,
 		avk.commit_imports, avk.late_imports, avk.cache_hits,
 		avk.cache_misses);
+	wlr_log(WLR_INFO, "avk.damage_pixels=%" PRIu64 " avk.output_pixels=%" PRIu64
+		" avk.full_redraw_frames=%" PRIu64 " avk.partial_redraw_frames=%" PRIu64
+		" avk.damage_rects_max=%" PRIu64, avk.damage_pixels, avk.output_pixels,
+		avk.full_redraw_frames, avk.partial_redraw_frames,
+		avk.damage_rects_max);
 	wlr_log(WLR_INFO, "avk.present_sync_timeline=%" PRIu64
 		" avk.present_sync_dmabuf=%" PRIu64 " avk.present_sync_none=%" PRIu64
 		" avk.present_sync_fails=%" PRIu64 " avk.presentation_waits=%" PRIu64

@@ -518,9 +518,8 @@ All of that is M4.
 
 ### Known AVK-mode regressions, deliberate and logged
 
-- **Full damage every frame.** The scene's damage ring is maintained by
-  `wlr_scene` for its own build path. Consuming it correctly from here is the
-  next commit, not this one.
+- **Full damage every frame.** ~~The scene's damage ring is maintained by
+  `wlr_scene` for its own build path.~~ **FIXED in M3.5D — see §5.4e.**
 - **Implicit synchronisation.** ~~The frame is submitted without exporting a
   sync_file for KMS.~~ **FIXED in M3.5C — see §5.4d.**
 - **No direct scan-out, no gamma LUT, no DMA-BUF feedback from AVK's table.**
@@ -732,6 +731,83 @@ materialise, and waiting on it would hang the output forever. The acquire asks
 the timeline path entirely would pass the whole suite. That is the same shape of
 gap that shipped a white screen once, and it is written here rather than
 discovered again.
+
+---
+
+## 5.4e M3.5D — redrawing only what changed
+
+The renderer was already damage-aware and had been since M3: `loadOp` is
+`LOAD`, the background clear is an ordinary scissored draw, and every command
+is clipped to `scene->damage`. What it never received was any damage but the
+whole output. So this is almost entirely a compositor-side change.
+
+### Whose damage
+
+`wlr_scene`'s, and specifically `scene_output->damage_ring` — not a second
+ring of AVK's own. The ring is keyed on the **`wlr_buffer`**, which is the
+detail that makes sharing correct rather than merely convenient:
+
+- A target that last held frame N-3 needs everything damaged since frame N-3.
+  "What changed since the last frame" is right only for a swapchain one buffer
+  deep, and `WLR_SWAPCHAIN_CAP` is 4.
+- A buffer the ring has never seen comes back fully damaged, which is exactly
+  right for a target whose contents are undefined.
+- A frame that falls back to SceneFX renders into a *different* buffer, and the
+  ring accounts for both, because it tracks buffers rather than frames. Two
+  rings would mean each path silently forgetting the other's frames.
+
+`wlr_damage_ring_rotate_buffer()` **mutates** the ring — it moves `current` into
+this buffer's entry — so it happens after every check that can still decline
+the frame, and every failure below it calls `wlr_damage_ring_add_whole()`.
+Rotating and then not rendering is how a region gets recorded as drawn without
+ever being drawn.
+
+### The commit-failure hole this opened
+
+`wlr_scene_output_commit()` trashes the ring when the commit fails. asteroidz
+replicates that function by hand across four call sites and did not replicate
+that part — which did nothing while AVK redrew everything, and became a source
+of permanently stale rectangles the moment it did not.
+`az_output_commit_failed()` in `src/render/az_output.h` is that line, now called
+from all four.
+
+### Output damage versus redraw damage
+
+They are different questions. The redraw region is "what differs from what this
+buffer last held"; output damage is "what differs from what is on screen now".
+`wlr_scene` keeps the minimal answer in a `WLR_PRIVATE` field, and reaching into
+one of those to save a few pixels of blit is not a trade worth making. The
+redraw region is the honest superset — the on-screen buffer was presented more
+recently, so it contains the minimal answer — and over-reporting output damage
+costs the backend a little work and is never wrong.
+
+Containing it matters for a second reason: `wlr_scene` subtracts the committed
+damage from its pending region and `wlr_scene_output_needs_frame()` is true
+while that region is non-empty. A report that did not cover it would leave the
+compositor rendering frames forever on an idle desktop.
+
+### What the test does, and one thing it had to learn
+
+`contrib/avk-damage-test.sh` runs the same scene twice — once normally, once
+with `AZ_AVK_FULL_DAMAGE=1` — and asserts the pictures agree. The full-damage
+run is the reference precisely because it cannot be wrong.
+
+Two premises are asserted before any of that counts, and both were needed:
+
+1. The partial run must actually have redrawn less (`damage_ratio < 0.9`,
+   `partial_redraw_frames > 0`), or the two runs agree by construction.
+2. **The frames the screenshot came from must have been partial redraws.** The
+   counters are reset immediately before the capture to establish this. Without
+   it, a capture taken just after a full redraw looks correct however badly
+   preservation is broken.
+
+And a measured correction worth keeping: the first break switch made `loadOp`
+`DONT_CARE`, and **the entire suite passed with it set**. `DONT_CARE` means the
+contents become undefined, and a driver is entitled to leave them alone — which
+is what RADV does on a desktop GPU, where there are no tiles to avoid loading.
+A break switch the hardware is allowed to ignore is not a break switch. It
+clears to magenta instead, which is the mistake the `loadOp` comment actually
+warns about, and it fails six assertions.
 
 ---
 

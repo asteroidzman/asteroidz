@@ -56,6 +56,26 @@ static inline bool az_output_build_frame(Monitor *m,
 }
 
 /*
+ * A commit that was built but did not land.
+ *
+ * wlr_scene_output_commit() calls wlr_damage_ring_add_whole() when the commit
+ * fails, and asteroidz replicates that function by hand -- so it has to
+ * replicate this too. Building a frame rotates the damage ring, which records
+ * the damage as having been drawn into that buffer. It *was* drawn; the buffer
+ * simply never reached the screen. Without trashing the ring, the next frame
+ * inherits a region nobody will ever repaint, and the result is a rectangle of
+ * stale pixels that survives until something else happens to damage it.
+ *
+ * This did nothing while AVK redrew everything every frame, which is exactly
+ * why it is easy to leave out and hard to find afterwards.
+ */
+static inline void az_output_commit_failed(Monitor *m) {
+	if (m->scene_output != NULL) {
+		wlr_damage_ring_add_whole(&m->scene_output->damage_ring);
+	}
+}
+
+/*
  * The colour transform for an ordinary frame on `m`.
  *
  * The expression was written out at each of the four call sites and had to

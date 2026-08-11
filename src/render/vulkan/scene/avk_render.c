@@ -171,6 +171,21 @@ struct avk_barrier_batch {
  * shows a flat white screen. See avk_image_is_foreign() for how that was
  * learned and why no headless test could have told us.
  */
+/* Read once. Never true in a session anybody is using -- see the loadOp. */
+static bool avk_no_load_preserve(void) {
+	static int cached = -1;
+	if (cached < 0) {
+		const char *env = getenv("AVK_NO_LOAD_PRESERVE");
+		cached = env != NULL && env[0] == '1';
+		if (cached) {
+			avk_log(AVK_ERROR, "AVK_NO_LOAD_PRESERVE=1 -- the target's "
+				"previous contents are being discarded, so every frame that "
+				"redraws less than the whole output will be wrong");
+		}
+	}
+	return cached != 0;
+}
+
 static void batch_add(struct avk_barrier_batch *acquire,
 		struct avk_barrier_batch *release, struct avk_device *dev,
 		struct avk_image *image, VkImageLayout new_layout,
@@ -340,13 +355,28 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 	 * damage tracking, which looks correct on a full-damage frame and
 	 * destroys everything else. The background clear is a normal draw
 	 * command, scissored to the damage like everything else.
+	 *
+	 * AVK_NO_LOAD_PRESERVE=1 replaces it with CLEAR to magenta, which is the
+	 * break test for partial damage: it is precisely the mistake described
+	 * above, and everything outside the damage becomes a colour nothing else
+	 * on a desktop produces.
+	 *
+	 * DONT_CARE was tried first and MEASURED USELESS as a break. It means the
+	 * contents become undefined, and a driver is entitled to leave them alone
+	 * -- which is exactly what RADV does on a desktop GPU, where there are no
+	 * tiles to avoid loading. The whole test suite passed with it set. A break
+	 * switch the hardware is allowed to ignore is not a break switch.
 	 */
+	bool break_preserve = avk_no_load_preserve();
 	VkRenderingAttachmentInfo color = {
 		.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
 		.imageView = VK_NULL_HANDLE,   /* filled below */
 		.imageLayout = target_layout,
-		.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
+		.loadOp = break_preserve
+			? VK_ATTACHMENT_LOAD_OP_CLEAR
+			: VK_ATTACHMENT_LOAD_OP_LOAD,
 		.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+		.clearValue = { .color = { .float32 = { 1.0f, 0.0f, 1.0f, 1.0f } } },
 	};
 
 	if (target->view == VK_NULL_HANDLE) {

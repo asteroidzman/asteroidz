@@ -7712,10 +7712,12 @@ static void render_monitor(Monitor *m) {
 		if (az_output_build_frame(m, &state, &frame_options)) {
 			if (state.buffer)
 				captured = wlr_buffer_lock(state.buffer);
-			if (!wlr_output_commit_state(m->wlr_output, &state))
+			if (!wlr_output_commit_state(m->wlr_output, &state)) {
 				wlr_log(WLR_ERROR,
 						"screenshot_ui: failed to commit capture frame on %s",
 						m->wlr_output->name);
+				az_output_commit_failed(m);
+			}
 		} else {
 			wlr_log(WLR_ERROR,
 					"screenshot_ui: failed to build capture state for %s",
@@ -7764,6 +7766,7 @@ static void render_monitor(Monitor *m) {
 				wlr_log(WLR_ERROR,
 						"HDR pending-change commit failed on %s, retraining",
 						m->wlr_output->name);
+				az_output_commit_failed(m);
 				monitor_start_retrain(m, 50);
 			}
 		} else {
@@ -7789,9 +7792,11 @@ static void render_monitor(Monitor *m) {
 			.color_transform = az_output_color_transform(m),
 		};
 		if (az_output_build_frame(m, &state, &frame_options)) {
-			if (!wlr_output_commit_state(m->wlr_output, &state))
+			if (!wlr_output_commit_state(m->wlr_output, &state)) {
 				wlr_log(WLR_ERROR, "Failed to commit frame on %s",
 						m->wlr_output->name);
+				az_output_commit_failed(m);
+			}
 		} else {
 			wlr_log(WLR_ERROR, "Failed to build frame for %s",
 					m->wlr_output->name);

@@ -147,6 +147,7 @@ bool custom_wlr_scene_output_commit(struct wlr_scene_output *scene_output,
 		}
 	} else {
 		wlr_log(WLR_ERROR, "Failed to commit output %s", wlr_output->name);
+		az_output_commit_failed(m);
 		// clean up state even on commit failure, to avoid buildup
 		if (state == &m->pending) {
 			wlr_output_state_finish(&m->pending);
