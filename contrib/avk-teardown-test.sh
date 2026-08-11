@@ -157,10 +157,10 @@ run_cycle() { # run_cycle CONFIG N
 			> "$dir/wlrotate.log" 2>&1 &
 		HL_SPAWNED_PIDS+=("$!")
 		sleep 2
-		"$HL_WLVPTR" move:400,400 >/dev/null 2>&1
+		hl_move 400 400 >/dev/null 2>&1
 		# Across the output boundary: a second output means a second target
 		# and a second cursor image, both live at exit.
-		"$HL_WLVPTR" move:2200,500 >/dev/null 2>&1
+		hl_move 2200 500 >/dev/null 2>&1
 		sleep 1
 		;;
 	esac
@@ -171,8 +171,8 @@ run_cycle() { # run_cycle CONFIG N
 		# harness can put it. The idle hide (2s above) fires in here too, so
 		# the hide/restore path contributes its own images.
 		for i in 1 2 3 4 5 6; do
-			"$HL_WLVPTR" "move:$((300 + i * 90)),$((300 + i * 30))" >/dev/null 2>&1
-			"$HL_WLVPTR" "move:$((2100 + i * 40)),400" >/dev/null 2>&1
+			hl_move $((300 + i * 90)) $((300 + i * 30)) >/dev/null 2>&1
+			hl_move $((2100 + i * 40)) 400 >/dev/null 2>&1
 		done
 		sleep 0.2
 	fi

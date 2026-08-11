@@ -1635,6 +1635,68 @@ thing it claims to describe — which is the exact class of bug D.1 removed.
 
 ---
 
+## 5.4m The cursor has one owner, and seven call sites did not know it
+
+M3.5E stage 1 is titled "asteroidz owns the cursor image". It did not, quite.
+Seven call sites kept calling wlroots' own `wlr_cursor_set_xcursor()`:
+
+```text
+bind_define.h:439/464/466   move and resize cursors ("grab", "<corner>-resize")
+bind_define.h:2238/2746     "default" resets
+bind_define.h:3396          the screenshot UI's "crosshair"
+parse_config.h:5362         "left_ptr", inside reapply_cursor_style()
+```
+
+That is a different ownership model, not a different spelling:
+
+| | image | scale handed to wlroots |
+|---|---|---|
+| `az_cursor_set_xcursor()` | ONE, at the **sharpest** scale in the layout | `wlr_cursor_set_buffer(..., scale)` — wlroots divides back to a logical size identical on every output |
+| `wlr_cursor_set_xcursor()` | **per output**, at each output's **native** scale | `wlr_output_cursor_set_buffer()` — **no scale argument**, 1:1 |
+
+Both are self-consistent. Mixing them is not, because
+`az_avk_emit_cursors()` takes the destination box from `wlr_output_cursor`
+and the pixels from `az_cursor.buffer`. After a bypassing call the box
+describes wlroots' image and the pixels are asteroidz's.
+
+Found on a real desktop, in forced-software mode, on a 1.5 / 1.0 layout:
+
+- **dragging a window showed no grab cursor at all** — the shape wlroots
+  selected was never given to `az_cursor`, so AVK kept drawing the arrow;
+- **resizing on the 1.0 output made the arrow bigger** — asteroidz's image is
+  36px at scale 1.5, which is 24 output px there, and wlroots' own choice for
+  a scale-1.0 output at `cursor_size 28` is larger.
+
+It is invisible with a hardware cursor plane, because there wlroots' image is
+what reaches the plane and asteroidz's never enters the frame. The daily
+driver uses the plane, so nothing showed for the whole of M3.5E.
+
+The fix routes all seven through `az_cursor_set_xcursor()`.
+`reapply_cursor_style()` gets `az_cursor_theme_replaced()` instead, which
+re-*pushes* the current cursor against the new manager rather than
+re-*selecting* `left_ptr` — the old call discarded whatever shape was showing
+on every live config apply, and a re-selection is waste besides, since the
+locked buffer survives the rebuild.
+
+`cursor_geometry_mismatch` now counts the disagreement directly:
+
+```text
+expected = image_size / az_cursor.scale * output_scale
+```
+
+Zero is the only correct value, and it is asserted rather than assumed.
+
+### Three conditions, and no test had all three
+
+The bug needed forced software composition, **two outputs at different
+scales**, and a **compositor-driven** move or resize. Every cursor test drove
+shapes from clients, which take the `az_cursor` path and therefore agree with
+themselves; the mixed-scale tests that existed were not mixed-scale at all
+(see docs/regression-testing.md). `contrib/avk-cursor-owner-test.sh` supplies
+all three and asserts each premise before relying on it.
+
+---
+
 ## 5.4l Teardown: who destroys what, and when the GPU has to be finished
 
 Four real sessions ended in `double free or corruption (out)` or `corrupted

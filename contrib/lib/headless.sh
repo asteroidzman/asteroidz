@@ -122,9 +122,23 @@ hl_start() { # hl_start [EXTRA_KDL]
 	# one monitor is not done for the other -- is silently untestable. The
 	# offset is HL_WIDTH exactly, so a node at x >= HL_WIDTH is on the second
 	# output and nowhere else.
+	#
+	# HL_SCALE1 / HL_SCALE2 set the outputs' scales. They belong in the
+	# `output` block and NOWHERE ELSE: `monitorrule` parses colon-separated
+	# key:value pairs, so the KDL-child form `monitorrule { scale 1.5 }` is
+	# accepted, ignored, and leaves the output at scale 1 without a word. Two
+	# tests here claimed to run at mixed scales for weeks on that basis.
+	#
+	# Mixed scales are not a detail: at equal scales, a cursor sized by
+	# wlroots per-output and one sized by asteroidz at the sharpest scale come
+	# out identical, so a whole class of ownership bug is invisible.
+	local scale1="" scale2=""
+	[ -n "${HL_SCALE1:-}" ] && scale1="scale $HL_SCALE1; "
+	[ -n "${HL_SCALE2:-}" ] && scale2="scale $HL_SCALE2; "
+
 	local secondary_output=""
 	if [ "${HL_OUTPUTS:-1}" -ge 2 ]; then
-		secondary_output="output HEADLESS-2 { x $HL_WIDTH; y 0; width $HL_WIDTH; height $HL_HEIGHT; refresh 60 }"
+		secondary_output="output HEADLESS-2 { ${scale2}x $HL_WIDTH; y 0; width $HL_WIDTH; height $HL_HEIGHT; refresh 60 }"
 	fi
 
 	cat > "$HL_CONFIG" <<EOF
@@ -143,7 +157,7 @@ effects {
 }
 theme { bg-color 0x2a6fd6ff; fg-color 0xffffffff; focus-bg-color 0x2a6fd6ff; focus-fg-color 0xffffffff }
 input { keyboard { xkb { layout "us,de" } } }
-output $HL_MON { x 0; y 0; width $HL_WIDTH; height $HL_HEIGHT; refresh 60 }
+output $HL_MON { ${scale1}x 0; y 0; width $HL_WIDTH; height $HL_HEIGHT; refresh 60 }
 $secondary_output
 layout {
 	titlebar { enable 1 }
@@ -237,6 +251,16 @@ EOF
 	swaybg -o '*' -i "$HL_WALLPAPER" -m fill > "$HL_OUTDIR/swaybg.log" 2>&1 &
 	HL_SWAYBG_PID=$!
 	sleep 0.5
+
+	# The virtual pointer's coordinate space is the LAYOUT bounding box, not
+	# one monitor. Until this ran, HL_PTR_EXTENT_W/H kept their defaults of
+	# HL_WIDTH/HL_HEIGHT -- so on a two-output layout every hl_move past the
+	# first output's width was scaled into the first output and landed
+	# nowhere near its target. The function existed and nothing called it,
+	# which is worse than not having it: `hl_move 2880 555` looked like it
+	# aimed at the second monitor and silently did not, so a test could drive
+	# a window that was never under the pointer and report a pass.
+	hl_sync_pointer_extent || echo "hl_start: could not read the layout extent; pointer coordinates will be wrong on a multi-output layout" >&2
 }
 
 # hl_start_live — attach to the CALLER'S OWN already-running compositor

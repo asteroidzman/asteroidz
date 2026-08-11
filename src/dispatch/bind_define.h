@@ -436,7 +436,7 @@ int32_t begin_move_or_resize(Client *target, uint32_t mode) {
 	case CurMove:
 		grabcx = cursor->x - grabc->geom.x;
 		grabcy = cursor->y - grabc->geom.y;
-		wlr_cursor_set_xcursor(cursor, cursor_mgr, "grab");
+		az_cursor_set_xcursor("grab");
 		break;
 	case CurResize:
 		if (grabc->isfloating) {
@@ -461,9 +461,9 @@ int32_t begin_move_or_resize(Client *target, uint32_t mode) {
 				wlr_cursor_warp_closest(cursor, NULL, grabcx, grabcy);
 			}
 
-			wlr_cursor_set_xcursor(cursor, cursor_mgr, cursors[rzcorner]);
+			az_cursor_set_xcursor(cursors[rzcorner]);
 		} else {
-			wlr_cursor_set_xcursor(cursor, cursor_mgr, "grab");
+			az_cursor_set_xcursor("grab");
 		}
 		break;
 	}
@@ -2235,7 +2235,7 @@ int32_t toggleoverview(const Arg *arg) {
 		if (cursor_hidden) {
 			handlecursoractivity();
 		} else {
-			wlr_cursor_set_xcursor(cursor, cursor_mgr, "default");
+			az_cursor_set_xcursor("default");
 		}
 
 		wl_list_for_each(c, &clients, link) {
@@ -2743,7 +2743,7 @@ static void screenshot_ui_confine_cursor(void) {
 }
 
 static void screenshot_ui_reset_cursor(void) {
-	wlr_cursor_set_xcursor(cursor, cursor_mgr, "default");
+	az_cursor_set_xcursor("default");
 	wlr_seat_pointer_clear_focus(seat);
 	motionnotify(0, NULL, 0, 0, 0, 0);
 }
@@ -3393,7 +3393,7 @@ static void screenshot_ui_on_captured(Monitor *m, ScreenshotMode mode,
 	else
 		screenshot_ui_update_selection(cursor->x, cursor->y);
 
-	wlr_cursor_set_xcursor(cursor, cursor_mgr, "crosshair");
+	az_cursor_set_xcursor("crosshair");
 }
 
 /* returns true if the event was consumed by the screenshot UI */

@@ -432,9 +432,74 @@ static void az_cursor_xcursor_show(size_t index) {
 
 static void az_cursor_drop_surface(void);
 
+/* See az_cursor_set_xcursor(). */
+static void az_cursor_forget_pushed(void) {
+	az_cursor.image_pushed = false;
+}
+
+/*
+ * Select a themed cursor by name. THE way to do it.
+ *
+ * wlr_cursor_set_xcursor() is not an alternative spelling of this, and calling
+ * it from compositor code is a bug. The two differ in who owns the image:
+ *
+ *   this          one image, chosen at the SHARPEST scale in the layout, and
+ *                 pushed with wlr_cursor_set_buffer(..., scale) so wlroots
+ *                 divides it back down to a logical size that is the same on
+ *                 every output.
+ *   wlroots'      a PER-OUTPUT image at each output's NATIVE scale, handed to
+ *                 wlr_output_cursor_set_buffer() 1:1 -- there is no scale
+ *                 argument on that call.
+ *
+ * Both are self-consistent; mixing them is not. az_avk_emit_cursors() draws
+ * az_cursor.buffer into a box sized from wlr_output_cursor's width/height, so
+ * the moment something selects a cursor through wlroots the pixels come from
+ * one owner and the geometry from the other. On a mixed-scale layout that is
+ * visible immediately: with outputs at 1.5 and 1.0, this path yields 24
+ * physical px on the 1.0 output and wlroots' yields ~28, so the cursor grows
+ * -- while still showing the old shape, because the shape wlroots picked was
+ * never given to az_cursor at all.
+ *
+ * Found on a real desktop: dragging a window showed no "grab" cursor, and
+ * resizing one on the 1.0 output made the arrow bigger instead of becoming a
+ * resize cursor. Seven call sites were doing this. It is invisible with a
+ * hardware cursor plane, because there wlroots' own image is what reaches the
+ * plane and asteroidz's never enters it -- which is why the daily driver
+ * never showed it.
+ */
 static void az_cursor_set_xcursor(const char *name) {
 	if (cursor_mgr == NULL || name == NULL) {
 		return;
+	}
+	/*
+	 * BREAK SWITCH: hand the selection to wlroots, as the seven call sites
+	 * that bypassed this function used to. One place rather than seven,
+	 * because what is being restored is the OWNERSHIP MODEL, not a particular
+	 * caller -- and a break that has to be spelled out seven times is a break
+	 * that will be half-removed later.
+	 */
+	const char *wlr_break = getenv("AZ_CURSOR_WLROOTS_XCURSOR");
+	if (wlr_break != NULL) {
+		/*
+		 * "moveresize" restores the SHIPPED defect exactly: only the
+		 * compositor's own move/resize shapes went to wlroots, while client
+		 * shapes and motion kept coming through here. That mixture is the
+		 * interesting one -- az_cursor still holds a valid image, so AVK
+		 * still composites, and the disagreement shows up as a box that does
+		 * not fit the image rather than as no cursor at all.
+		 *
+		 * Without the qualifier every selection goes to wlroots, az_cursor
+		 * ends up with no image, and cursor_no_image fires instead. That is a
+		 * louder failure but a different one, and it leaves
+		 * cursor_geometry_mismatch untested -- which is why both exist.
+		 */
+		bool only_moveresize = strcmp(wlr_break, "moveresize") == 0;
+		bool is_moveresize = strcmp(name, "grab") == 0 ||
+			strcmp(name, "grabbing") == 0 || strstr(name, "-resize") != NULL;
+		if (!only_moveresize || is_moveresize) {
+			wlr_cursor_set_xcursor(cursor, cursor_mgr, name);
+			return;
+		}
 	}
 	az_cursor_drop_surface();
 
@@ -666,6 +731,36 @@ static void az_cursor_show(void) {
 	case AZ_CURSOR_SOURCE_NONE:
 		break;
 	}
+}
+
+/*
+ * The xcursor manager was destroyed and rebuilt -- a new theme, a new size, or
+ * just a live config apply.
+ *
+ * Two things have to happen and neither is optional. wlroots' image was
+ * cleared by the caller, so something must put one back or the pointer stays
+ * invisible until the next motion. And whatever is put back has to be resolved
+ * from the NEW manager, because the old one's images are freed.
+ *
+ * What must NOT happen is a re-SELECTION. The cursor showing before a config
+ * apply should still be showing after it: forcing "left_ptr" throws away the
+ * client's or the compositor's current shape for no reason, which is what the
+ * old wlr_cursor_set_xcursor(cursor, cursor_mgr, "left_ptr") here did. Nor is
+ * a fresh selection needed to get correct pixels -- az_cursor_show() replays
+ * the current source, and the xcursor branch re-resolves by name against the
+ * new manager on its way through.
+ */
+static void az_cursor_show(void);
+
+static void az_cursor_theme_replaced(void) {
+	/* Without this the guard in az_cursor_set_xcursor() and the early-out in
+	 * wlr_cursor_set_buffer() both think the image is already up. */
+	az_cursor_forget_pushed();
+	if (az_cursor.source == AZ_CURSOR_SOURCE_NONE) {
+		az_cursor_set_xcursor("left_ptr");
+		return;
+	}
+	az_cursor_show();
 }
 
 /* An output's scale changed, so the image chosen for the old scale may be the

@@ -369,6 +369,16 @@ install_data('assets/asteroidz-vulkan.desktop', install_dir : desktop_install_di
 # composition -- and pinning it to GLES2 makes the session exactly the
 # configuration contrib/avk-frame-test.sh asserts against.
 install_data('assets/asteroidz-avk.desktop', install_dir : desktop_install_dir)
+
+# Acceptance sessions. Installed rather than left as hand-written files under
+# /usr/share, because an acceptance run whose environment is a local artefact
+# cannot be reproduced later -- and "validation was on" is a claim the session
+# entry has to be able to back up. Both are deliberately slower than the plain
+# AVK session and say so in their own Comment.
+install_data('assets/asteroidz-avk-debug.desktop',
+	install_dir : desktop_install_dir)
+install_data('assets/asteroidz-avk-swcursor-debug.desktop',
+	install_dir : desktop_install_dir)
 install_data('assets/asteroidz-portals.conf', install_dir : portal_install_dir)
 install_data('assets/asteroidz.portal', install_dir : join_paths(prefix, 'share/xdg-desktop-portal/portals'))
 install_data('assets/config.kdl', install_dir : join_paths(sysconfdir, 'asteroidz'))

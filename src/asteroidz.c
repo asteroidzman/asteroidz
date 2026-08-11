@@ -1653,6 +1653,19 @@ static int32_t reset_avk_stats(const Arg *arg);
  * xcursor manager, which every borrowed cursor pointer depends on. Defined in
  * render/az_cursor.h, included later. */
 static void az_cursor_manager_replaced(void);
+/*
+ * The ONE way to select a themed cursor.
+ *
+ * Forward-declared here because parse_config.h and bind_define.h are included
+ * before render/az_cursor.h and both need it. They used to call wlroots'
+ * wlr_cursor_set_xcursor() instead, which is not an equivalent -- see the
+ * comment on az_cursor_set_xcursor() itself. Anything reaching for the
+ * wlroots function from compositor code is a bug.
+ */
+static void az_cursor_set_xcursor(const char *name);
+/* The xcursor manager was rebuilt: re-establish the image from the new one
+ * without re-selecting a shape. */
+static void az_cursor_theme_replaced(void);
 #include "config/parse_config.h"
 /* After parse_config.h: the self-check drives set_value_default,
  * override_config and parse_option directly. */

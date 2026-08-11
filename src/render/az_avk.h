@@ -208,6 +208,10 @@ struct az_avk {
 	 * and asteroidz has no picture to draw for it.
 	 */
 	uint64_t software_cursor_frames;  /* frames AVK composited a cursor into */
+	/* Frames where wlr_output_cursor's box did not describe the image AVK was
+	 * about to draw into it. Every one is a second owner of the cursor; zero
+	 * is the only correct value. */
+	uint64_t cursor_geometry_mismatch;
 	uint64_t hardware_cursor_frames;  /* frames the plane carried it instead */
 	uint64_t cursor_commands;         /* cursor draws emitted */
 	uint64_t cursor_no_image;         /* visible cursor, no buffer to draw */
@@ -1852,6 +1856,34 @@ static void az_avk_emit_cursors(struct az_avk_walk *walk,
 			avk.cursor_import_failures++;
 			return;
 		}
+
+		/*
+		 * The pixels come from az_cursor and the box comes from wlroots. They
+		 * describe the same cursor only while az_cursor is its sole owner, so
+		 * that is checked here rather than assumed.
+		 *
+		 * wlroots sizes an output cursor as buffer_size / buffer_scale *
+		 * output_scale, and az_cursor supplied both the buffer and the scale
+		 * -- so the two must agree exactly. They stop agreeing the moment
+		 * something selects a cursor through wlr_cursor_set_xcursor(), which
+		 * puts a per-output image at the output's native scale into
+		 * wlr_output_cursor while az_cursor still holds the old one: the box
+		 * describes wlroots' image and the pixels are asteroidz's.
+		 *
+		 * That shipped. Dragging a window showed no grab cursor and resizing
+		 * one on the coarser of two outputs made the arrow bigger, because
+		 * 36px at scale 1.5 is 24 output px and wlroots' own choice was 28.
+		 * Nothing counted it, so nothing could fail on it.
+		 */
+		if (az_cursor.scale > 0.0f) {
+			int expect_w = (int)lroundf((float)image->extent.width
+				/ az_cursor.scale * output->scale);
+			int expect_h = (int)lroundf((float)image->extent.height
+				/ az_cursor.scale * output->scale);
+			if ((int)oc->width != expect_w || (int)oc->height != expect_h) {
+				avk.cursor_geometry_mismatch++;
+			}
+		}
 		struct avk_cmd *cmd = avk_scene_add(walk->scene, AVK_CMD_TEXTURE);
 		if (cmd == NULL) {
 			return;
@@ -2699,6 +2731,8 @@ static cJSON *az_avk_stats_json(void) {
 
 	cJSON_AddNumberToObject(o, "software_cursor_frames",
 		(double)avk.software_cursor_frames);
+	cJSON_AddNumberToObject(o, "cursor_geometry_mismatch",
+		(double)avk.cursor_geometry_mismatch);
 	cJSON_AddNumberToObject(o, "hardware_cursor_frames",
 		(double)avk.hardware_cursor_frames);
 	cJSON_AddNumberToObject(o, "cursor_commands",
@@ -2860,6 +2894,7 @@ static void az_avk_stats_reset(void) {
 	avk.damage_permille_hist = (struct az_avk_hist){0};
 	avk.software_cursor_frames = 0;
 	avk.hardware_cursor_frames = 0;
+	avk.cursor_geometry_mismatch = 0;
 	avk.cursor_commands = 0;
 	avk.cursor_no_image = 0;
 	avk.cursor_import_failures = 0;

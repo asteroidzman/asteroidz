@@ -62,19 +62,18 @@ HL_OUTDIR="$OUTDIR"
 HL_OUTPUTS=2
 HL_ENV="ASTEROIDZ_RENDERER=avk"
 [ "$BREAK" = cursor-stale-xcursor ] && HL_ENV="$HL_ENV AZ_CURSOR_STALE_XCURSOR=1"
-export HL_OUTDIR HL_OUTPUTS HL_ENV
+# Mixed scales, set where they actually take effect. This used to be two
+# `monitorrule { scale N }` blocks, which parse as key:value pairs and so were
+# silently ignored -- the test claimed mixed scales and ran both outputs at 1.
+HL_SCALE1=1.0
+HL_SCALE2=2.0
+export HL_OUTDIR HL_OUTPUTS HL_ENV HL_SCALE1 HL_SCALE2
 
 # Mixed scales, because the live layout was mixed and the per-scale themes are
 # what make the manager hold more than one thing to free.
 hl_start "cursor_hide_timeout 1
-monitorrule {
-    name \"HEADLESS-1\"
-    scale 1.0
-}
-monitorrule {
-    name \"HEADLESS-2\"
-    scale 2.0
-}"
+cursor_theme Adwaita
+cursor_size 28"
 sleep 2
 
 gen() { hl_get "get avk-stats" | jq -r '.cursor_mgr_generation // 0'; }
@@ -96,7 +95,7 @@ hl_assert "the compositor reports a manager generation ($GEN0)" \
 	"$([ "$GEN0" -ge 1 ] && echo true || echo false)" "true"
 
 # Select an xcursor: this is what the old code cached.
-"$HL_WLVPTR" move:300,300 >/dev/null 2>&1
+hl_move 300 300 >/dev/null 2>&1
 sleep 0.3
 SETS_BEFORE="$(xsets)"
 hl_assert "an xcursor was selected before the rebuild ($SETS_BEFORE)" \
@@ -116,11 +115,11 @@ echo "-- replaying a cursor across a manager rebuild --"
 # Each iteration crosses both scales, lets the idle timeout hide the cursor so
 # the az_cursor_show() restore path runs, and rebuilds the manager underneath.
 for i in 1 2 3 4 5 6 7 8; do
-	"$HL_WLVPTR" "move:$((250 + i * 40)),300" >/dev/null 2>&1
-	"$HL_WLVPTR" "move:$((1400 + i * 20)),400" >/dev/null 2>&1
+	hl_move $((250 + i * 40)) 300 >/dev/null 2>&1
+	hl_move $((1400 + i * 20)) 400 >/dev/null 2>&1
 	rebuild_manager $((2 + i % 5))
 	sleep 1.3          # idle hide, with the manager now replaced
-	"$HL_WLVPTR" "move:$((300 + i * 30)),350" >/dev/null 2>&1
+	hl_move $((300 + i * 30)) 350 >/dev/null 2>&1
 	sleep 0.2
 done
 
@@ -153,11 +152,11 @@ echo "-- re-selection is not needed, and must not be forced --"
 # allocator would be a test that passes for the wrong reason. The name-based
 # comparison is exercised by avk-cursor-content, which changes shapes.
 SETS_A="$(xsets)"
-"$HL_WLVPTR" move:400,300 >/dev/null 2>&1
+hl_move 400 300 >/dev/null 2>&1
 sleep 0.3
 rebuild_manager 5
 sleep 0.4
-"$HL_WLVPTR" move:420,320 >/dev/null 2>&1
+hl_move 420 320 >/dev/null 2>&1
 sleep 0.3
 SETS_B="$(xsets)"
 echo "  note: xcursor selections $SETS_A -> $SETS_B"

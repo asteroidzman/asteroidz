@@ -278,6 +278,7 @@ suite:
 | `avk-shm-rotate` `one-buffer` / `source-full` | fail correctly |
 | `avk-cursor-lifetime` `cursor-stale-xcursor` | fails correctly |
 | `avk-teardown` `destroy-before-idle` | fails correctly, every cycle |
+| `avk-cursor-owner` `wlroots-move-resize` / `wlroots-xcursor` | fail correctly |
 | `avk-shm-partial` `unsafe-reuse` | **NOT TESTED** — documented, could not be made observable |
 
 `no-cull` failed differently from `lookup`, and the distinction is worth
@@ -556,6 +557,81 @@ The instrumentation is diagnostic and does not change the production model: the
 durable state is the name and scale, and the pointer is resolved at the point
 of use and never stored. Rebuilding that as "cache the pointer plus a
 generation number" would keep the wrong ownership and merely detect it.
+
+### Three harness bugs that made tests pass by doing nothing
+
+Found while chasing a live cursor defect, and worth more than the defect. All
+three had the same shape: a call that looked like it did something, did
+nothing, and said nothing.
+
+**`hl_move`/`hl_click` past the first output went nowhere.** wlvptr's
+coordinate space is the LAYOUT bounding box, and `HL_PTR_EXTENT_W/H` default
+to one monitor's size. `hl_sync_pointer_extent()` exists to correct that and
+**nothing called it** — so on a two-output layout `hl_move 2880 555` was
+scaled into the first output and landed nowhere near its target. A test could
+drive a window that was never under the pointer and report a pass.
+`hl_start` now calls it.
+
+**`"$HL_WLVPTR" move:X,Y` is not wlvptr syntax.** wlvptr takes
+`x y extent_w extent_h [action]`; the `move:` form prints usage and exits 1,
+and every call site had `>/dev/null 2>&1` over it. Fourteen calls across three
+AVK tests were silent no-ops. Use `hl_move`.
+
+**`monitorrule { scale 1.5 }` is silently ignored.** `monitorrule` parses
+colon-separated `key:value` pairs, so the KDL-child form is accepted and
+discarded. Two tests claimed mixed scales and ran both outputs at scale 1 —
+including the P0 cursor-lifetime test, whose "mixed scales and output
+crossings" therefore never happened. Per-output scale belongs in the `output`
+block; `HL_SCALE1`/`HL_SCALE2` now set it, and tests that depend on mixed
+scales **assert the scales** before relying on them.
+
+The last one is the sharpest lesson. Mixed scales are not decoration: at equal
+scales a cursor sized per-output by wlroots and one sized at the sharpest
+scale by asteroidz come out identical, so an entire class of ownership bug is
+invisible. A test that silently loses its mixed-scale setup does not get
+weaker, it goes blind — and it keeps printing "ok".
+
+### A cursor with two owners
+
+`contrib/avk-cursor-owner-test.sh` covers the defect those three hid.
+
+```bash
+ASTEROIDZ=build-vk/asteroidz bash contrib/avk-cursor-owner-test.sh
+BREAK=wlroots-move-resize ASTEROIDZ=build-vk/asteroidz bash contrib/avk-cursor-owner-test.sh  # must FAIL
+BREAK=wlroots-xcursor     ASTEROIDZ=build-vk/asteroidz bash contrib/avk-cursor-owner-test.sh  # must FAIL
+```
+
+Seven call sites bypassed `az_cursor_set_xcursor()` for wlroots' own, which
+selects a per-output image at native scale — so `az_avk_emit_cursors()` drew
+asteroidz's pixels into wlroots' box. See
+`docs/vulkan-native-architecture.md` §5.4m.
+
+It needs three things at once and asserts all three as premises: software
+composition (`software_cursor_frames > 0`, `hardware_cursor_frames == 0`),
+outputs at genuinely different scales, and a window actually under the pointer
+— `moveresize()` resolves its target with `xytonode(cursor->x, cursor->y)` and
+returns 0 when it finds nothing, while the IPC call still answers
+`{"success":true}`. The window centre is read from `get all-clients` rather
+than hard-coded.
+
+`cursor_size` is **pinned to 28**. The two ownership models only produce
+different pixel sizes when the theme's nearest available size differs between
+`base * sharpest_scale` and `base * output_scale`; at the harness default they
+coincide, both models agree, and the size half of the bug is invisible — a
+test passing because two answers agree, not because either is right.
+
+Two breaks, because one is not enough:
+
+| break | what it restores | how it fails |
+| :--- | :--- | :--- |
+| `wlroots-move-resize` | the shipped defect exactly — only move/resize shapes go to wlroots | `cursor_geometry_mismatch` **50**, plus both shape assertions |
+| `wlroots-xcursor` | the whole ownership model handed to wlroots | `cursor_no_image` **95** — AVK has nothing to draw |
+
+The second was written first and left `cursor_geometry_mismatch` **asserted
+but never falsified**: with every selection going to wlroots, `az_cursor` ends
+up with no image, AVK composites nothing, and a counter over zero frames is
+trivially zero. A break that fails loudly for the wrong reason still leaves an
+assertion untested.
 
 ### A teardown test, and how the first one managed to prove nothing
 

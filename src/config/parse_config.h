@@ -5359,7 +5359,9 @@ void reapply_cursor_style(void) {
 		wlr_xcursor_manager_load(cursor_mgr, m->wlr_output->scale);
 	}
 
-	wlr_cursor_set_xcursor(cursor, cursor_mgr, "left_ptr");
+	/* Re-establish the image against the NEW manager, keeping whatever cursor
+	 * was showing. See az_cursor_theme_replaced(). */
+	az_cursor_theme_replaced();
 
 	hide_cursor_source = wl_event_loop_add_timer(wl_display_get_event_loop(dpy),
 												 hidecursor, cursor);
