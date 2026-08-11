@@ -142,6 +142,17 @@ static struct az_cursor {
 	uint64_t sets_shape;        /* wp_cursor_shape_v1 */
 	uint64_t sets_xcursor;      /* the compositor's own theme */
 	uint64_t unsets;            /* set_cursor(NULL), or hidden */
+
+	/*
+	 * Whether wlroots currently HAS an image from us.
+	 *
+	 * Not derivable from `buffer`, which deliberately survives a hide so the
+	 * cursor can come back. Without this the re-selection guard below is a
+	 * trap: hide the cursor, ask for the same xcursor again, and the guard
+	 * says "already showing that" and returns without ever pushing the image
+	 * back -- an invisible pointer that stays invisible.
+	 */
+	bool image_pushed;
 } az_cursor;
 
 /*
@@ -161,13 +172,42 @@ static bool az_cursor_force_software(void) {
 	return value == 1;
 }
 
-/* The scale to pick an image for: the sharpest output in the layout. */
+/*
+ * Load the theme at every scale anything might ask for, and return the one to
+ * pick an image at: the sharpest output in the layout.
+ *
+ * Loading EVERY output's scale matters even though only one is used here,
+ * because this is no longer the only consumer of the manager. wlroots used to
+ * load per output as a side effect of choosing a per-output image; taking that
+ * over meant scales nobody here wanted stopped being loaded, and
+ * wlr_xcursor_manager_get_xcursor() returns NULL for a scale that was never
+ * loaded rather than loading it on demand.
+ *
+ * That is not hypothetical. xwaylandready() asks for "default" at scale 1 and
+ * hands the result to wlr_xwayland_set_cursor(). On a layout whose sharpest
+ * output is 1.5, scale 1 was never loaded, the lookup returned NULL, XWayland
+ * was never given a cursor at all -- and every X11 window showed the X server's
+ * own 'X' root cursor. Nothing logged it, on either side.
+ *
+ * Scale 1 is loaded unconditionally for that reason: it is what a consumer with
+ * no output in hand asks for.
+ */
 static float az_cursor_target_scale(void) {
 	float scale = 1.0f;
+	/* BREAK SWITCH: load only the sharpest scale, as the shipped bug did. */
+	bool one_scale = getenv("AZ_CURSOR_ONE_SCALE") != NULL;
+	if (cursor_mgr != NULL && !one_scale) {
+		wlr_xcursor_manager_load(cursor_mgr, 1.0f);
+	}
 	Monitor *m;
 	wl_list_for_each(m, &mons, link) {
-		if (m->wlr_output != NULL && m->wlr_output->enabled &&
-				m->wlr_output->scale > scale) {
+		if (m->wlr_output == NULL || !m->wlr_output->enabled) {
+			continue;
+		}
+		if (cursor_mgr != NULL && !one_scale) {
+			wlr_xcursor_manager_load(cursor_mgr, m->wlr_output->scale);
+		}
+		if (m->wlr_output->scale > scale) {
 			scale = m->wlr_output->scale;
 		}
 	}
@@ -193,6 +233,7 @@ static void az_cursor_push(struct wlr_buffer *buffer, int hotspot_x,
 	}
 	if (buffer == NULL) {
 		wlr_cursor_unset_image(cursor);
+		az_cursor.image_pushed = false;
 		return;
 	}
 	if (content_changed) {
@@ -200,6 +241,7 @@ static void az_cursor_push(struct wlr_buffer *buffer, int hotspot_x,
 		az_cursor.forced_reimports++;
 	}
 	wlr_cursor_set_buffer(cursor, buffer, hotspot_x, hotspot_y, scale);
+	az_cursor.image_pushed = true;
 }
 
 /*
@@ -291,6 +333,7 @@ static void az_cursor_set_xcursor(const char *name) {
 
 	float scale = az_cursor_target_scale();
 	wlr_xcursor_manager_load(cursor_mgr, scale);
+	(void)0;
 	struct wlr_xcursor *xc =
 		wlr_xcursor_manager_get_xcursor(cursor_mgr, name, scale);
 	if (xc == NULL) {
@@ -304,10 +347,24 @@ static void az_cursor_set_xcursor(const char *name) {
 		return;
 	}
 
-	/* Re-selecting the same cursor at the same scale must not restart its
-	 * animation: pointer motion re-asserts the cursor constantly. */
-	if (az_cursor.source == AZ_CURSOR_SOURCE_XCURSOR &&
-			az_cursor.xcursor == xc && az_cursor.xcursor_scale == scale) {
+	/*
+	 * Re-selecting the same cursor at the same scale must not restart its
+	 * animation: pointer motion re-asserts the cursor constantly.
+	 *
+	 * `image_pushed` is the part that is easy to leave out and expensive to
+	 * leave out. Hiding the cursor -- the idle timeout, or a client asking for
+	 * none -- clears the image from wlroots but not the record of WHICH
+	 * xcursor we last chose. Without the extra term, the first thing to ask
+	 * for that same cursor again matches the guard, returns, and the pointer
+	 * never comes back. handlecursoractivity() does exactly that: it replays
+	 * `last_cursor.shape`, which is usually the shape that was showing when
+	 * the cursor was hidden.
+	 */
+	/* BREAK SWITCH: drop the image_pushed term, restoring the trap. */
+	bool pushed = az_cursor.image_pushed ||
+		getenv("AZ_CURSOR_NO_PUSH_CHECK") != NULL;
+	if (pushed && az_cursor.source == AZ_CURSOR_SOURCE_XCURSOR
+			&& az_cursor.xcursor == xc && az_cursor.xcursor_scale == scale) {
 		return;
 	}
 

@@ -10545,7 +10545,19 @@ void xwaylandready(struct wl_listener *listener, void *data) {
 	/* assign the one and only seat */
 	wlr_xwayland_set_seat(xwayland, seat);
 
-	/* Set the default XWayland cursor to match the rest of dwl. */
+	/* Set the default XWayland cursor to match the rest of dwl.
+	 *
+	 * The load is not redundant. wlr_xcursor_manager_get_xcursor() returns
+	 * NULL for a scale that was never loaded -- it does not load on demand --
+	 * and this asks for scale 1 regardless of what any output is running at.
+	 * When asteroidz took over choosing cursor images it stopped loading every
+	 * output's scale as a side effect, so on a layout whose sharpest output is
+	 * 1.5 this lookup returned NULL, XWayland was never given a cursor, and
+	 * every X11 window showed the X server's own 'X' root cursor with nothing
+	 * logged anywhere. */
+	if (getenv("AZ_CURSOR_ONE_SCALE") == NULL) {
+		wlr_xcursor_manager_load(cursor_mgr, 1);
+	}
 	if ((xcursor = wlr_xcursor_manager_get_xcursor(cursor_mgr, "default", 1))) {
 		struct wlr_buffer *xcursor_buffer =
 			wlr_xcursor_image_get_buffer(xcursor->images[0]);
@@ -10553,6 +10565,15 @@ void xwaylandready(struct wl_listener *listener, void *data) {
 			wlr_xwayland_set_cursor(xwayland, xcursor_buffer,
 									xcursor->images[0]->hotspot_x,
 									xcursor->images[0]->hotspot_y);
+		else
+			wlr_log(WLR_ERROR, "xwayland: the 'default' cursor has no buffer; "
+					"X11 windows will show the X server's own cursor");
+	} else {
+		/* Said out loud, because the failure mode is a wrong-looking pointer
+		 * in X11 windows only, which reads as an XWayland problem. */
+		wlr_log(WLR_ERROR, "xwayland: no 'default' cursor at scale 1 in theme "
+				"'%s'; X11 windows will show the X server's own 'X' cursor",
+				config.cursor_theme ? config.cursor_theme : "(default)");
 	}
 	/* xwayland can't auto sync the keymap, so we do it manually
 	  and we need to wait the xwayland completely inited

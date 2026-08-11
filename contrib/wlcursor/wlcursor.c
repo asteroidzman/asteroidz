@@ -21,7 +21,7 @@
  *              [--hotspot X,Y] [--cursor-scale N]
  *              [--animate-ms N] [--animate-once] [--reuse-buffer]
  *              [--hide-after-ms N] [--reshow-after-ms N] [--swap-after-ms N]
- *              [--no-cursor]
+ *              [--shape NAME] [--no-cursor]
  *
  * The window is a flat colour so a screenshot can tell window from cursor by
  * pixel count alone. The cursor is a different flat colour with a one-pixel
@@ -50,6 +50,13 @@
  *                     stale image shows up as the wrong colour rather than as
  *                     nothing. Cursor A to cursor B is not the same question
  *                     as A to NULL to A.
+ *   --shape NAME      use wp_cursor_shape_v1 instead of a surface: ask the
+ *                     compositor for a NAMED cursor from its own theme.
+ *                     Measured live, this is what real toolkits use -- 254
+ *                     shape requests against zero surface requests across a
+ *                     session of Firefox, Chromium, Qt6, GTK and a terminal --
+ *                     and every other test here used surfaces, so the dominant
+ *                     path had nothing watching it.
  *   --no-cursor       never call set_cursor. The compositor's own xcursor
  *                     stays visible, which is the control case: it proves a
  *                     test that sees a cursor is seeing THIS client's cursor
@@ -73,12 +80,25 @@
 #include <wayland-client.h>
 
 #include "xdg-shell-client-protocol.h"
+#include "cursor-shape-v1-client-protocol.h"
 
 static struct wl_compositor *compositor;
 static struct wl_shm *shm;
 static struct wl_seat *seat;
 static struct xdg_wm_base *wm_base;
 static struct wl_pointer *pointer;
+static struct wp_cursor_shape_manager_v1 *shape_manager;
+static struct wp_cursor_shape_device_v1 *shape_device;
+/*
+ * The cursor-shape path, which is what real toolkits actually use.
+ *
+ * Measured on a live desktop: 254 cursor-shape requests and ZERO
+ * wl_pointer.set_cursor-with-a-surface requests across a full session of
+ * Firefox, Chromium, Qt6, GTK and a terminal. Every headless cursor test used
+ * surfaces, so the dominant path had nothing watching it -- and a bug that
+ * lived on it shipped.
+ */
+static uint32_t shape_id;
 
 static struct wl_surface *surface;
 static struct xdg_surface *xdg_surface;
@@ -218,6 +238,17 @@ static void set_cursor(void) {
 	if (no_cursor || !have_enter) {
 		return;
 	}
+	if (shape_id != 0) {
+		if (shape_device == NULL && shape_manager != NULL && pointer != NULL) {
+			shape_device = wp_cursor_shape_manager_v1_get_pointer(
+				shape_manager, pointer);
+		}
+		if (shape_device != NULL) {
+			wp_cursor_shape_device_v1_set_shape(shape_device, enter_serial,
+				shape_id);
+		}
+		return;
+	}
 	commit_cursor();
 	wl_pointer_set_cursor(pointer, enter_serial, cursor_surface,
 		hotspot_x, hotspot_y);
@@ -310,6 +341,10 @@ static void registry_global(void *data, struct wl_registry *registry,
 	} else if (strcmp(interface, wl_seat_interface.name) == 0) {
 		seat = wl_registry_bind(registry, name, &wl_seat_interface, 5);
 		wl_seat_add_listener(seat, &seat_listener, NULL);
+	} else if (strcmp(interface,
+			wp_cursor_shape_manager_v1_interface.name) == 0) {
+		shape_manager = wl_registry_bind(registry, name,
+			&wp_cursor_shape_manager_v1_interface, 1);
 	} else if (strcmp(interface, xdg_wm_base_interface.name) == 0) {
 		wm_base = wl_registry_bind(registry, name, &xdg_wm_base_interface, 1);
 		xdg_wm_base_add_listener(wm_base, &wm_base_listener, NULL);
@@ -394,6 +429,21 @@ int main(int argc, char **argv) {
 			 * the test failed for a reason that had nothing to do with the
 			 * compositor. */
 			animate_once = true;
+		} else if (strcmp(argv[i], "--shape") == 0 && i + 1 < argc) {
+			/* wp_cursor_shape_v1 instead of a surface of our own. The
+			 * compositor resolves the name against its theme, so there is no
+			 * client-supplied image at all. */
+			const char *n = argv[++i];
+			if (strcmp(n, "default") == 0) shape_id = 1;
+			else if (strcmp(n, "pointer") == 0) shape_id = 4;
+			else if (strcmp(n, "wait") == 0) shape_id = 6;
+			else if (strcmp(n, "crosshair") == 0) shape_id = 8;
+			else if (strcmp(n, "text") == 0) shape_id = 9;
+			else shape_id = (uint32_t)atoi(n);
+			if (shape_id == 0) {
+				fprintf(stderr, "wlcursor: unknown shape '%s'\n", n);
+				return 1;
+			}
 		} else if (strcmp(argv[i], "--no-cursor") == 0) {
 			no_cursor = true;
 		} else {

@@ -5,6 +5,7 @@
 # NULL-renderer compositor and the one nothing else could catch.
 CFLAGS ?= -O2 -Wall -Wextra
 XDG := xdg-shell
+SHAPE := cursor-shape-v1
 
 all: wlcursor
 
@@ -14,10 +15,16 @@ $(XDG)-client-protocol.h: $(XDG).xml
 $(XDG)-protocol.c: $(XDG).xml
 	wayland-scanner private-code $< $@
 
-wlcursor: wlcursor.c $(XDG)-protocol.c $(XDG)-client-protocol.h
-	$(CC) $(CFLAGS) -o $@ wlcursor.c $(XDG)-protocol.c $$(pkg-config --cflags --libs wayland-client)
+$(SHAPE)-client-protocol.h: $(SHAPE).xml
+	wayland-scanner client-header $< $@
+
+$(SHAPE)-protocol.c: $(SHAPE).xml
+	wayland-scanner private-code $< $@
+
+wlcursor: wlcursor.c $(XDG)-protocol.c $(XDG)-client-protocol.h $(SHAPE)-protocol.c $(SHAPE)-client-protocol.h
+	$(CC) $(CFLAGS) -o $@ wlcursor.c $(XDG)-protocol.c $(SHAPE)-protocol.c $$(pkg-config --cflags --libs wayland-client)
 
 clean:
-	rm -f wlcursor $(XDG)-protocol.c $(XDG)-client-protocol.h
+	rm -f wlcursor $(XDG)-protocol.c $(XDG)-client-protocol.h $(SHAPE)-protocol.c $(SHAPE)-client-protocol.h
 
 .PHONY: all clean
