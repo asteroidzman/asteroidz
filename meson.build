@@ -177,14 +177,10 @@ if get_option('asan')
   link_args += '-fsanitize=address'
 endif
 
-asteroidz_exe = executable('asteroidz',
-  'src/asteroidz.c',
-  'src/common/util.c',
-  'src/draw/text-node.c',
-  'src/draw/ufo-node.c',
-  'src/ext-protocol/wlr_ext_workspace_v1.c',
-  wayland_sources,
-  dependencies : [
+# The native Vulkan engine is compiled into the compositor when it is built.
+# A separate flag from -Drenderers so the guard in the source says what it
+# means: "this build has AVK", not "this build was configured a certain way".
+asteroidz_deps = [
     libm,
     libdrm,
     xcb,
@@ -201,7 +197,20 @@ asteroidz_exe = executable('asteroidz',
     pangocairo_dep,
     gdkpixbuf_dep,
     libsystemd_dep,
-  ],
+]
+if build_vulkan
+  asteroidz_deps += avk_dep
+  c_args += '-DAZ_HAVE_VULKAN'
+endif
+
+asteroidz_exe = executable('asteroidz',
+  'src/asteroidz.c',
+  'src/common/util.c',
+  'src/draw/text-node.c',
+  'src/draw/ufo-node.c',
+  'src/ext-protocol/wlr_ext_workspace_v1.c',
+  wayland_sources,
+  dependencies : asteroidz_deps,
   install : true,
   c_args : c_args,
   link_args : link_args,

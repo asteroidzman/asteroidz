@@ -453,22 +453,20 @@ and `contrib/regression/`. New Vulkan-core tests are plain binaries under
   retired on the GPU timeline, but one allocation per import), damage-region
   SHM upload, YUV sampler-conversion sampling, and DMA-BUF feedback tranches
   (which need protocol wiring, so they land with M3).
-- M3 — native scene submission: **the renderer half is done; the compositor
-  half is not.**
-  - **Done.** `src/render/vulkan/scene/` + `pipeline/` + `shader/`: an
-    Asteroidz-owned command IR (`avk_scene`), two pipelines over one
-    push-constant block, dynamic rendering, premultiplied source-over,
+- M3 — native scene submission: **done. AVK renders the desktop.**
+  - **M3a, the renderer.** `src/render/vulkan/scene/` + `pipeline/` +
+    `shader/`: an Asteroidz-owned command IR (`avk_scene`), two pipelines over
+    one push-constant block, dynamic rendering, premultiplied source-over,
     source crop, destination scale, all eight Wayland transforms, per-command
     visible-region clipping, per-command opacity, damage-scissored drawing,
     and the X-format opaque-alpha fix. `tests/test-avk-render.c` asserts all
     of it on read-back pixels (37 checks). No `wlr_render_pass` anywhere on
     this path, enforced by `check-vulkan-isolation.py`.
-  - **Not done.** `az_output_build_frame()`, the `ASTEROIDZ_RENDERER` switch,
-    the wlr_scene → snapshot builder, the client-buffer cache keyed to
-    `wlr_buffer` lifetime, the render-completion → sync_file → KMS
-    `IN_FENCE_FD` bridge, software cursor, output-target lifecycle against
-    presentation, DMA-BUF feedback from AVK's capability set, and the live
-    session boot. **AVK does not yet render a desktop.**
+  - **M3b, the compositor.** `src/render/az_output.h` (the single build seam,
+    used by all four callers), `src/render/az_avk.h` (the scene walker, the
+    buffer cache, the per-output swapchain), and the `ASTEROIDZ_RENDERER=avk`
+    switch. `contrib/avk-frame-test.sh` boots a real compositor twice and
+    compares the frames; see §5.4b for what it does and does not cover.
 - M4-M10: not started
 
 ## Pre-existing test failures (not caused by this work)
@@ -483,10 +481,108 @@ stays clean; deliberately not fixed as part of the renderer migration.
 
 ---
 
-## M3b work plan (the compositor half)
+## 5.4b What M3b built, and what it refuses to do
 
-Written down here rather than left in a conversation, because this is the queue
-the next working session executes. Everything below lands **behind
+`ASTEROIDZ_RENDERER=avk` is read once in `setup()`, independently of
+`WLR_RENDERER`. The pairing that proves the two are unrelated is
+`WLR_RENDERER=gles2 ASTEROIDZ_RENDERER=avk`: a Vulkan-composited desktop with
+GLES2 sitting alongside, touching no part of composition. That is what
+`contrib/avk-frame-test.sh` runs.
+
+The frame path, in one sentence: `az_output_build_frame()` (src/render/
+az_output.h) replaces the four scattered `wlr_scene_output_build_state()` calls
+with one seam; in AVK mode it walks the live `wlr_scene` tree into a flat
+`avk_scene` command list, resolves each `wlr_buffer` to an `avk_image` cached
+on the buffer via `wlr_addon`, and renders into a buffer from a per-output
+`wlr_swapchain` we own. `wlr_render_pass`, `wlr_renderer_begin_buffer_pass()`
+and `wlr_texture_from_buffer()` are not on it.
+
+### What it refuses, per output, per frame
+
+`az_avk_output_supported()` hands a frame back to SceneFX rather than render it
+wrongly. Each of these is a thing M3 does not implement, and each is logged
+once:
+
+| condition | why | lands in |
+|---|---|---|
+| ICC transform or an output image description | AVK does no colour management | M6 |
+| output magnification (`cursor_zoom`) | not implemented | later |
+| a visible software cursor and no hardware cursor plane | the only wlroots API for it takes a `wlr_render_pass` | M3 follow-up |
+
+On the DRM backend with a working cursor plane — a real desktop — none of these
+fire, and `avk.fallback_frames` stays 0.
+
+Shadow, blur and rounded-corner nodes are *recognised and skipped* with one
+warning rather than silently dropped. Gradients render as their first colour.
+All of that is M4.
+
+### Known AVK-mode regressions, deliberate and logged
+
+- **Full damage every frame.** The scene's damage ring is maintained by
+  `wlr_scene` for its own build path. Consuming it correctly from here is the
+  next commit, not this one.
+- **Implicit synchronisation.** The frame is submitted without exporting a
+  sync_file for KMS. `avk.cpu_sync_waits` is 0, so this is not a CPU stall;
+  it is a missing explicit fence, and the bridge
+  (`vkGetSemaphoreFdKHR` → sync_file → `wlr_output_state_set_wait_timeline`)
+  is the following commit.
+- **No direct scan-out, no gamma LUT, no DMA-BUF feedback from AVK's table.**
+  Absent rather than half-present.
+
+### SHM surfaces and the wlr_client_buffer problem
+
+The one class of client AVK cannot draw correctly, and the reason is
+structural rather than a bug to be fixed in this file.
+
+When the compositor is created with a `wlr_renderer`, wlroots wraps each
+client buffer in a `wlr_client_buffer`, uploads it into a `wlr_texture`, and
+lets go of the original. From that point the wrapper answers *"not a dma-buf"*
+and *"not CPU-readable"* to everything AVK can ask: the only surviving copy of
+the pixels is inside a `wlr_texture`, which is precisely the object this
+renderer may not touch. Measured, not assumed — it is the one remaining entry
+in `avk.buffer_import_fails` in the harness run, and it is `swaybg`.
+
+AVK's mitigation is to keep the copy it made while the source was still
+readable, so static content stays correct. That leaves exactly one broken case:
+a CPU-drawing client whose content changes *and* whose buffer wlroots has
+already reclaimed. A wallpaper drawn once and never redrawn is the common
+shape, and it is the one the harness hits.
+
+`wlr_surface.current.buffer` was tried as a way round it and does not work —
+wlroots has released that too by the time the frame is built.
+
+The real fix, which is M3 follow-up work and touches the vendored SceneFX:
+create the compositor with a **NULL renderer**, so wlroots uploads nothing and
+`wlr_surface.current.buffer` stays locked, and teach
+`subprojects/asteroidz-scenefx/types/scene/surface.c` to feed the scene the raw
+buffer when there is no client buffer. `scene_buffer_get_texture()` already
+falls back to `wlr_texture_from_buffer()` for a non-client buffer, so the
+SceneFX path keeps working — the open question there is stale-texture
+invalidation when a client re-commits the same buffer pointer with new content.
+
+### Two bugs this cost, both worth remembering
+
+1. **Borders are one rect with the interior clipped out.** SceneFX draws a
+   window border as a single filled rect carrying a `clipped_region` that
+   removes the window's inside — that is how a rounded border gets a rounded
+   inner edge. A walker that ignores the clip fills the whole window with the
+   border colour, and since the border sits *above* the surface in the scene,
+   every window renders as a flat block. It looked like a texture bug for far
+   longer than it should have. `AVK_NO_BORDER_CLIP=1` puts it back, and
+   `BREAK=border contrib/avk-frame-test.sh` must fail.
+2. **The foreign-queue acquire was a wrong diagnosis.** Imported client
+   buffers are now acquired from `VK_QUEUE_FAMILY_FOREIGN_EXT` and released
+   back, which the spec requires and wlroots does. It was added believing it
+   explained the flat-colour windows. It did not: `AVK_NO_FOREIGN_ACQUIRE=1`
+   produces a pixel-identical desktop on this GPU. It stays as defence for
+   hardware and layouts where an absent ownership transfer would matter, and
+   the switch stays so that keeps being checked rather than assumed.
+
+## M3b work plan (the compositor half) — DONE, kept for the record
+
+Written down here rather than left in a conversation, because this was the
+queue the working session executed. §5.4b above records what actually landed
+and where it differed. Everything below lands **behind
 `ASTEROIDZ_RENDERER=avk`, defaulting off** — which is what makes partial
 progress safe: an unfinished AVK mode is a flag nobody sets, and the GLES path
 stays byte-identical.

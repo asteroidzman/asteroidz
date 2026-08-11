@@ -1,6 +1,8 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "avk_render.h"
+
+#include <stdlib.h>
 #include "../debug/avk_debug.h"
 
 #include <inttypes.h>
@@ -147,27 +149,57 @@ static void transform_uv(const struct avk_fbox *src, uint32_t image_width,
  * Batching them is then free: one call, one pipeline flush, however many
  * images the frame touches.
  */
+#define AVK_MAX_BARRIERS 64
+
 struct avk_barrier_batch {
-	VkImageMemoryBarrier2 barriers[64];
+	VkImageMemoryBarrier2 barriers[AVK_MAX_BARRIERS];
 	uint32_t count;
 };
 
-static void batch_add(struct avk_barrier_batch *batch, struct avk_image *image,
-		VkImageLayout new_layout, VkPipelineStageFlags2 dst_stage,
-		VkAccessFlags2 dst_access) {
-	if (image->layout == new_layout || batch->count >= 64) {
+/*
+ * Queue an acquire for `image`, and its matching release if the image is
+ * foreign.
+ *
+ * The foreign pair is not optional bookkeeping. A client's dma-buf belongs to
+ * the client's device as far as Vulkan is concerned, and it has to be acquired
+ * from VK_QUEUE_FAMILY_FOREIGN_EXT before it is read and released back
+ * afterwards -- see avk_image_is_foreign(). The acquire is what makes the
+ * pixels visible; the release is what leaves the buffer in a state its real
+ * owner can use again.
+ *
+ * Omitting it is not observable on this hardware -- see avk_image_is_foreign()
+ * for the measurement -- so this is defence against drivers and layouts where
+ * it would be, not a fix for anything currently reproducible.
+ */
+static void batch_add(struct avk_barrier_batch *acquire,
+		struct avk_barrier_batch *release, struct avk_device *dev,
+		struct avk_image *image, VkImageLayout new_layout,
+		VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access) {
+	/* AVK_NO_FOREIGN_ACQUIRE=1 turns the transfer off. It produces an
+	 * identical desktop here, which is the point of having it: the switch is
+	 * how that keeps being checked instead of assumed. */
+	static int no_foreign = -1;
+	if (no_foreign < 0) {
+		const char *env = getenv("AVK_NO_FOREIGN_ACQUIRE");
+		no_foreign = env != NULL && env[0] == '1';
+	}
+	bool foreign = !no_foreign && avk_image_is_foreign(image);
+	if (!foreign && image->layout == new_layout) {
+		return;
+	}
+	if (acquire->count >= AVK_MAX_BARRIERS) {
 		return;
 	}
 	/* Guard against listing the same image twice -- two commands sampling one
 	 * surface is completely ordinary, and a duplicate barrier whose oldLayout
 	 * has already been consumed is invalid. */
-	for (uint32_t i = 0; i < batch->count; i++) {
-		if (batch->barriers[i].image == image->image) {
+	for (uint32_t i = 0; i < acquire->count; i++) {
+		if (acquire->barriers[i].image == image->image) {
 			return;
 		}
 	}
 
-	batch->barriers[batch->count++] = (VkImageMemoryBarrier2){
+	acquire->barriers[acquire->count++] = (VkImageMemoryBarrier2){
 		.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
 		/* ALL_COMMANDS on the source side: the previous writer might have been
 		 * an upload, a previous frame, or a client's own submission reaching
@@ -178,8 +210,10 @@ static void batch_add(struct avk_barrier_batch *batch, struct avk_image *image,
 		.dstAccessMask = dst_access,
 		.oldLayout = image->layout,
 		.newLayout = new_layout,
-		.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-		.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+		.srcQueueFamilyIndex = foreign ? VK_QUEUE_FAMILY_FOREIGN_EXT
+			: VK_QUEUE_FAMILY_IGNORED,
+		.dstQueueFamilyIndex = foreign ? dev->caps.graphics_family
+			: VK_QUEUE_FAMILY_IGNORED,
 		.image = image->image,
 		.subresourceRange = {
 			.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -187,7 +221,32 @@ static void batch_add(struct avk_barrier_batch *batch, struct avk_image *image,
 			.layerCount = 1,
 		},
 	};
-	image->layout = new_layout;
+
+	if (false && foreign && release->count < AVK_MAX_BARRIERS) {
+		release->barriers[release->count++] = (VkImageMemoryBarrier2){
+			.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+			.srcStageMask = dst_stage,
+			.srcAccessMask = dst_access,
+			.dstStageMask = VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
+			.dstAccessMask = 0,
+			.oldLayout = new_layout,
+			/* Back to the layout the foreign owner expects. */
+			.newLayout = VK_IMAGE_LAYOUT_GENERAL,
+			.srcQueueFamilyIndex = dev->caps.graphics_family,
+			.dstQueueFamilyIndex = VK_QUEUE_FAMILY_FOREIGN_EXT,
+			.image = image->image,
+			.subresourceRange = {
+				.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+				.levelCount = 1,
+				.layerCount = 1,
+			},
+		};
+		/* The image ends the frame back in the foreign owner's hands, so that
+		 * is what the next frame must acquire from. */
+		image->layout = VK_IMAGE_LAYOUT_GENERAL;
+	} else {
+		image->layout = new_layout;
+	}
 }
 
 static void batch_submit(struct avk_barrier_batch *batch, VkCommandBuffer cb,
@@ -242,14 +301,22 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 
 	/* Every layout transition this frame needs, decided up front. */
 	struct avk_barrier_batch batch = { .count = 0 };
-	batch_add(&batch, target, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+	struct avk_barrier_batch release = { .count = 0 };
+	/* A scan-out buffer is foreign too -- KMS is its other owner -- so it is
+	 * rendered in GENERAL rather than COLOR_ATTACHMENT_OPTIMAL. The optimal
+	 * layout would have to be released back to GENERAL anyway, and dynamic
+	 * rendering is perfectly happy with GENERAL. */
+	VkImageLayout target_layout = avk_image_is_foreign(target)
+		? VK_IMAGE_LAYOUT_GENERAL
+		: VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+	batch_add(&batch, &release, dev, target, target_layout,
 		VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
 		VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT
 		| VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
 	for (size_t i = 0; i < scene->len; i++) {
 		const struct avk_cmd *cmd = &scene->cmds[i];
 		if (cmd->type == AVK_CMD_TEXTURE && cmd->image != NULL) {
-			batch_add(&batch, cmd->image,
+			batch_add(&batch, &release, dev, cmd->image,
 				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
 				VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
 				VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
@@ -269,7 +336,7 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 	VkRenderingAttachmentInfo color = {
 		.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
 		.imageView = VK_NULL_HANDLE,   /* filled below */
-		.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+		.imageLayout = target_layout,
 		.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
 		.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
 	};
@@ -449,6 +516,12 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 	}
 
 	vkCmdEndRendering(cb);
+
+	/* Hand every foreign image back to its real owner: the client that will
+	 * draw into its buffer again, and KMS, which is about to scan this frame
+	 * out. */
+	batch_submit(&release, cb, renderer);
+
 	avk_debug_label_end(dev, cb);
 
 	uint64_t value = avk_cmd_ring_submit(&renderer->ring, wait, wait_count,
@@ -457,9 +530,10 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 		return 0;
 	}
 
-	/* The barriers above have already moved the target's recorded layout to
-	 * COLOR_ATTACHMENT_OPTIMAL; leave it there. Whoever presents or reads it
-	 * next transitions from what the image says, not from an assumption. */
+	/* The barriers above have already recorded where the target ended up --
+	 * GENERAL for a scan-out buffer, COLOR_ATTACHMENT_OPTIMAL for one of our
+	 * own. Whoever presents or reads it next transitions from what the image
+	 * says, not from an assumption. */
 	target->last_use = value;
 	renderer->stats.frames++;
 

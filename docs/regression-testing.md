@@ -158,6 +158,31 @@ The scene is also the first to need `shadows_blur_background 1` and
 blur draws the cached wallpaper rather than sampling live, so it never picks the
 neighbour up — the same fault, invisible to a test that leaves the default on.
 
+`contrib/avk-frame-test.sh` is the eighth, and the only one that compares two
+*renderers* rather than two settings. It boots a real compositor twice with the
+same config and the same clients — once on SceneFX, once on asteroidz's own
+Vulkan engine (`ASTEROIDZ_RENDERER=avk`) — and asserts the frames agree.
+
+```bash
+ASTEROIDZ=build-vk/asteroidz bash contrib/avk-frame-test.sh
+BREAK=border ASTEROIDZ=build-vk/asteroidz bash contrib/avk-frame-test.sh  # must FAIL
+```
+
+The critical detail is that it leaves `WLR_RENDERER=gles2`. If the two switches
+were coupled the test would be comparing the Vulkan renderer against itself;
+composited by Vulkan *while* wlroots holds GLES2 is the entire claim.
+
+The assertions are on named colours at named places, because the obvious weaker
+version — "AVK produced a frame" — passed on the build where every window
+rendered as a flat block of its own border colour. `BREAK=border` puts that bug
+back and the run must fail; it is the only break switch here that breaks
+anything, and the header comment says why the other one does not.
+
+Two differences are deliberately not asserted equal: the wallpaper, which AVK
+cannot draw for a structural reason recorded in
+[`docs/vulkan-native-architecture.md`](./vulkan-native-architecture.md) §5.4b,
+and effects, which the scene config turns off because they are M4.
+
 ### The schema, checked from both ends
 
 `src/config/config-schema.h` describes every settable option — type, range, enum

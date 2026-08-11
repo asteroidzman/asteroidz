@@ -2,6 +2,8 @@
 
 #include "avk_dmabuf.h"
 
+#include "../image/avk_upload.h"
+
 #include <drm_fourcc.h>
 #include <fcntl.h>
 #include <gbm.h>
@@ -560,57 +562,6 @@ error:
  * alternative on this rung is a blank one.
  */
 
-struct avk_staging_retire {
-	VkBuffer buffer;
-	VkDeviceMemory memory;
-};
-
-static void retire_staging(struct avk_device *dev, void *data) {
-	struct avk_staging_retire *staging = data;
-	if (staging->buffer != VK_NULL_HANDLE) {
-		vkDestroyBuffer(dev->dev, staging->buffer, NULL);
-	}
-	if (staging->memory != VK_NULL_HANDLE) {
-		vkFreeMemory(dev->dev, staging->memory, NULL);
-	}
-	free(staging);
-}
-
-static uint32_t format_bpp(VkFormat format) {
-	switch (format) {
-	case VK_FORMAT_B8G8R8A8_UNORM:
-	case VK_FORMAT_R8G8B8A8_UNORM:
-	case VK_FORMAT_A2R10G10B10_UNORM_PACK32:
-	case VK_FORMAT_A2B10G10R10_UNORM_PACK32:
-		return 4;
-	case VK_FORMAT_R16G16B16A16_SFLOAT:
-	case VK_FORMAT_R16G16B16A16_UNORM:
-		return 8;
-	case VK_FORMAT_R5G6B5_UNORM_PACK16:
-		return 2;
-	default:
-		/* Planar and anything else: no single bytes-per-pixel exists, so the
-		 * copy path refuses rather than computing a wrong size. */
-		return 0;
-	}
-}
-
-static bool find_memory_type_with(struct avk_device *dev, uint32_t type_bits,
-		VkMemoryPropertyFlags want, uint32_t *out) {
-	VkPhysicalDeviceMemoryProperties props;
-	vkGetPhysicalDeviceMemoryProperties(dev->phys, &props);
-	for (uint32_t i = 0; i < props.memoryTypeCount; i++) {
-		if (!(type_bits & (1u << i))) {
-			continue;
-		}
-		if ((props.memoryTypes[i].propertyFlags & want) == want) {
-			*out = i;
-			return true;
-		}
-	}
-	return false;
-}
-
 static struct avk_image *import_by_copy(struct avk_dmabuf_importer *importer,
 		const struct avk_dmabuf_attributes *attribs,
 		const struct avk_format_caps *caps) {
@@ -626,8 +577,7 @@ static struct avk_image *import_by_copy(struct avk_dmabuf_importer *importer,
 		return NULL;
 	}
 
-	uint32_t bpp = format_bpp(fmt->vk);
-	if (bpp == 0) {
+	if (avk_format_bytes_per_pixel(fmt->vk) == 0) {
 		avk_log(AVK_DEBUG, "copy path: no single bytes-per-pixel for this "
 			"format");
 		return NULL;
@@ -658,218 +608,41 @@ static struct avk_image *import_by_copy(struct avk_dmabuf_importer *importer,
 		return NULL;
 	}
 
-	struct avk_image *image = NULL;
-	struct avk_staging_retire *staging = NULL;
-	VkBuffer buffer = VK_NULL_HANDLE;
-	VkDeviceMemory buffer_memory = VK_NULL_HANDLE;
-	VkResult res;
+	struct avk_upload *staging = NULL;
 
-	/* ── the destination, allocated by us ─────────────────────────────── */
-	image = calloc(1, sizeof(*image));
+	/* The destination and the copy itself are avk_upload's job -- the same
+	 * code the SHM client path uses, so there is one implementation of
+	 * "CPU pixels onto the GPU" rather than two that drift. */
+	struct avk_image *image = avk_upload_image_create(dev, attribs->format,
+		(uint32_t)attribs->width, (uint32_t)attribs->height,
+		AVK_IMAGE_DMABUF_COPIED);
 	if (image == NULL) {
 		goto out;
 	}
-	image->dev = dev;
-	image->format = fmt->vk;
-	image->drm_format = attribs->format;
-	image->extent = (VkExtent2D){ (uint32_t)attribs->width,
-		(uint32_t)attribs->height };
-	image->modifier = DRM_FORMAT_MOD_INVALID;
-	image->plane_count = 1;
-	image->has_alpha = fmt->has_alpha;
-	image->origin = AVK_IMAGE_DMABUF_COPIED;
-	image->layout = VK_IMAGE_LAYOUT_UNDEFINED;
 
-	VkImageCreateInfo image_info = {
-		.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-		.imageType = VK_IMAGE_TYPE_2D,
-		.format = fmt->vk,
-		.extent = { (uint32_t)attribs->width, (uint32_t)attribs->height, 1 },
-		.mipLevels = 1,
-		.arrayLayers = 1,
-		.samples = VK_SAMPLE_COUNT_1_BIT,
-		/* OPTIMAL, because nothing external touches this image -- it is ours,
-		 * so it may as well be laid out the way the GPU samples fastest. */
-		.tiling = VK_IMAGE_TILING_OPTIMAL,
-		.usage = VK_IMAGE_USAGE_SAMPLED_BIT
-			| VK_IMAGE_USAGE_TRANSFER_DST_BIT
-			| VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-		.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-		.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-	};
-	res = vkCreateImage(dev->dev, &image_info, NULL, &image->image);
-	if (res != VK_SUCCESS) {
-		avk_check(res, "vkCreateImage (copy path)");
+	/* One-shot staging: this bo is about to be unmapped and destroyed, so the
+	 * buffer is dead as soon as the GPU has read it. Retired, not freed --
+	 * the copy has not necessarily happened yet. */
+	staging = calloc(1, sizeof(*staging));
+	if (staging == NULL) {
 		goto out;
 	}
-
-	VkMemoryRequirements image_reqs;
-	vkGetImageMemoryRequirements(dev->dev, image->image, &image_reqs);
-	uint32_t image_type = 0;
-	if (!find_memory_type_with(dev, image_reqs.memoryTypeBits,
-			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &image_type)) {
-		avk_log(AVK_ERROR, "copy path: no device-local memory type");
-		goto out;
-	}
-	VkMemoryAllocateInfo image_alloc = {
-		.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-		.allocationSize = image_reqs.size,
-		.memoryTypeIndex = image_type,
-	};
-	res = vkAllocateMemory(dev->dev, &image_alloc, NULL, &image->memory[0]);
-	if (res != VK_SUCCESS) {
-		avk_check(res, "vkAllocateMemory (copy path image)");
-		goto out;
-	}
-	image->memory_count = 1;
-	res = vkBindImageMemory(dev->dev, image->image, image->memory[0], 0);
-	if (res != VK_SUCCESS) {
-		avk_check(res, "vkBindImageMemory (copy path)");
-		goto out;
-	}
-
-	/* ── staging ──────────────────────────────────────────────────────── */
-	VkDeviceSize size = (VkDeviceSize)map_stride * attribs->height;
-	VkBufferCreateInfo buffer_info = {
-		.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-		.size = size,
-		.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-		.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-	};
-	res = vkCreateBuffer(dev->dev, &buffer_info, NULL, &buffer);
-	if (res != VK_SUCCESS) {
-		avk_check(res, "vkCreateBuffer (staging)");
-		goto out;
-	}
-	VkMemoryRequirements buffer_reqs;
-	vkGetBufferMemoryRequirements(dev->dev, buffer, &buffer_reqs);
-	uint32_t buffer_type = 0;
-	if (!find_memory_type_with(dev, buffer_reqs.memoryTypeBits,
-			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
-			| VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, &buffer_type)) {
-		avk_log(AVK_ERROR, "copy path: no host-visible coherent memory type");
-		goto out;
-	}
-	VkMemoryAllocateInfo buffer_alloc = {
-		.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-		.allocationSize = buffer_reqs.size,
-		.memoryTypeIndex = buffer_type,
-	};
-	res = vkAllocateMemory(dev->dev, &buffer_alloc, NULL, &buffer_memory);
-	if (res != VK_SUCCESS) {
-		avk_check(res, "vkAllocateMemory (staging)");
-		goto out;
-	}
-	res = vkBindBufferMemory(dev->dev, buffer, buffer_memory, 0);
-	if (res != VK_SUCCESS) {
-		avk_check(res, "vkBindBufferMemory (staging)");
-		goto out;
-	}
-
-	void *dst = NULL;
-	res = vkMapMemory(dev->dev, buffer_memory, 0, size, 0, &dst);
-	if (res != VK_SUCCESS) {
-		avk_check(res, "vkMapMemory (staging)");
-		goto out;
-	}
-	memcpy(dst, pixels, (size_t)size);
-	vkUnmapMemory(dev->dev, buffer_memory);
-
-	/* ── the copy ─────────────────────────────────────────────────────── */
-	VkCommandBuffer cb = avk_cmd_ring_begin(&importer->upload_ring);
-	if (cb == VK_NULL_HANDLE) {
-		goto out;
-	}
-
-	VkImageMemoryBarrier2 to_dst = {
-		.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-		.srcStageMask = VK_PIPELINE_STAGE_2_NONE,
-		.srcAccessMask = 0,
-		.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
-		.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-		.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-		.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-		.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-		.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-		.image = image->image,
-		.subresourceRange = {
-			.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-			.levelCount = 1,
-			.layerCount = 1,
-		},
-	};
-	VkDependencyInfo dep = {
-		.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-		.imageMemoryBarrierCount = 1,
-		.pImageMemoryBarriers = &to_dst,
-	};
-	vkCmdPipelineBarrier2(cb, &dep);
-
-	VkBufferImageCopy2 region = {
-		.sType = VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2,
-		.bufferOffset = 0,
-		/* In PIXELS, not bytes -- the classic way to get a sheared image. */
-		.bufferRowLength = map_stride / bpp,
-		.bufferImageHeight = (uint32_t)attribs->height,
-		.imageSubresource = {
-			.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-			.layerCount = 1,
-		},
-		.imageExtent = { (uint32_t)attribs->width,
-			(uint32_t)attribs->height, 1 },
-	};
-	VkCopyBufferToImageInfo2 copy = {
-		.sType = VK_STRUCTURE_TYPE_COPY_BUFFER_TO_IMAGE_INFO_2,
-		.srcBuffer = buffer,
-		.dstImage = image->image,
-		.dstImageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-		.regionCount = 1,
-		.pRegions = &region,
-	};
-	vkCmdCopyBufferToImage2(cb, &copy);
-
-	VkImageMemoryBarrier2 to_read = to_dst;
-	to_read.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
-	to_read.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-	to_read.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-	to_read.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
-	to_read.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-	to_read.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-	dep.pImageMemoryBarriers = &to_read;
-	vkCmdPipelineBarrier2(cb, &dep);
-
-	uint64_t timeline = avk_cmd_ring_submit(&importer->upload_ring, NULL, 0,
-		NULL, 0);
+	uint64_t timeline = avk_upload_image_write(dev, &importer->upload_ring,
+		staging, image, pixels, map_stride, (uint32_t)attribs->height, NULL, 0);
 	if (timeline == 0) {
 		goto out;
 	}
-
-	/* The image's layout is now what the barrier left it as -- recorded on the
-	 * object so the render graph does not have to assume. */
-	image->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-	image->last_use = timeline;
-
-	/* Staging is freed when the GPU has read it, not now. */
-	staging = calloc(1, sizeof(*staging));
-	if (staging != NULL) {
-		staging->buffer = buffer;
-		staging->memory = buffer_memory;
-		avk_retire_push(&importer->retire, dev, timeline, retire_staging,
-			staging);
-		buffer = VK_NULL_HANDLE;
-		buffer_memory = VK_NULL_HANDLE;
-	}
+	avk_retire_push(&importer->retire, dev, timeline, avk_upload_retire,
+		staging);
+	staging = NULL;
 
 	gbm_bo_unmap(bo, map_data);
 	gbm_bo_destroy(bo);
 	return image;
 
 out:
-	if (buffer != VK_NULL_HANDLE) {
-		vkDestroyBuffer(dev->dev, buffer, NULL);
-	}
-	if (buffer_memory != VK_NULL_HANDLE) {
-		vkFreeMemory(dev->dev, buffer_memory, NULL);
+	if (staging != NULL) {
+		avk_upload_retire(dev, staging);
 	}
 	if (image != NULL) {
 		avk_image_destroy(dev, image);
@@ -906,6 +679,12 @@ struct avk_image *avk_dmabuf_import(struct avk_dmabuf_importer *importer,
 			attribs->modifier, for_render, caps);
 		if (image != NULL) {
 			image->origin = AVK_IMAGE_DMABUF_EXPLICIT;
+			/* GENERAL, not UNDEFINED: the buffer already has pixels in it, put
+			 * there by an owner outside this device. UNDEFINED tells the driver
+			 * the contents may be discarded, which on a compressed AMD buffer
+			 * means the next sample reads metadata instead of the image. See
+			 * avk_image_is_foreign(). */
+			image->layout = VK_IMAGE_LAYOUT_GENERAL;
 			importer->imports_explicit++;
 			return image;
 		}
@@ -930,6 +709,7 @@ struct avk_image *avk_dmabuf_import(struct avk_dmabuf_importer *importer,
 			avk_log(AVK_DEBUG, "recovered implicit modifier as %s; imported "
 				"zero-copy", mod_name);
 			image->origin = AVK_IMAGE_DMABUF_RECOVERED;
+			image->layout = VK_IMAGE_LAYOUT_GENERAL;
 			importer->imports_recovered++;
 			return image;
 		}

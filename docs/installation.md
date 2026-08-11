@@ -247,6 +247,14 @@ You will need to build `wlroots` and asteroidz's `scenefx` fork manually as well
    **Asteroidz (Vulkan, experimental)** = the `fx_vk` renderer), and the
    GlobalShortcuts portal definition.
 
+   There is a third, separate switch: `ASTEROIDZ_RENDERER=avk` selects
+   asteroidz's own native Vulkan engine, which composites the desktop itself
+   instead of going through a `wlr_renderer` at all. It is under construction
+   — no effects, no colour management, no partial damage yet — and it is
+   deliberately independent of `WLR_RENDERER`, so
+   `WLR_RENDERER=gles2 ASTEROIDZ_RENDERER=avk` is a valid and useful pairing.
+   See [`docs/vulkan-native-architecture.md`](./vulkan-native-architecture.md).
+
    asteroidz uses the GLES2 renderer by default; the renderer is selected
    per session via `WLR_RENDERER` (`gles2` or `vulkan`). Vulkan is
    experimental — near feature parity for everyday use, pending future

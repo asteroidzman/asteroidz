@@ -809,6 +809,10 @@ typedef struct {
 	uint32_t id;
 } Layout;
 
+/* Defined in src/render/az_avk.h, which cannot be included this early because
+ * it needs Monitor. A monitor only ever holds a pointer to it. */
+struct az_avk_output;
+
 struct Monitor {
 	struct wl_list link;
 	struct wlr_output *wlr_output;
@@ -950,6 +954,12 @@ struct Monitor {
 	 * backend. Instead, set this and let rendermon() fold the color-state
 	 * change into the next regular frame's own commit. */
 	bool hdr_pending_change;
+
+	/* AVK's per-output state: its own swapchain and the renderer built for
+	 * this output's colour format. NULL unless ASTEROIDZ_RENDERER=avk, and
+	 * still NULL on an output AVK has decided it cannot render correctly --
+	 * see az_avk_output_supported() in src/render/az_avk.h. */
+	struct az_avk_output *avk;
 };
 
 typedef struct {
@@ -1705,6 +1715,12 @@ static struct wl_event_source *sync_keymap;
 #include "animation/tag.h"
 #include "ipc/session-bus.h"
 #include "dispatch/bind_define.h"
+/* The rendering seam, before anything that builds a frame: ext-protocol's
+ * tearing path is one of az_output_build_frame()'s four callers. */
+#ifdef AZ_HAVE_VULKAN
+#include "render/az_avk.h"
+#endif
+#include "render/az_output.h"
 #include "ext-protocol/all.h"
 #include "ext-protocol/frog-color-management.h"
 #include "fetch/fetch.h"
@@ -3590,6 +3606,13 @@ void cleanup(void) {
 	   destroyed) to avoid destroying them with an invalid scene output. */
 	wlr_scene_node_destroy(&scene->tree.node);
 
+#ifdef AZ_HAVE_VULKAN
+	/* After the scene and the outputs: az_avk_finish() waits for the device
+	 * to go idle and then frees images, and anything still holding one would
+	 * be freeing it a second time. */
+	az_avk_finish();
+#endif
+
 	asteroidz_text_global_finish();
 }
 
@@ -3607,6 +3630,15 @@ void cleanupmon(struct wl_listener *listener, void *data) {
 		screenshot_ui_cancel();
 
 	m->iscleanuping = true;
+
+#ifdef AZ_HAVE_VULKAN
+	/* First: destroying the swapchain destroys its buffers, and each of those
+	 * carries the addon that retires this output's target image. Leaving it
+	 * until after the output is gone would mean rendering into a swapchain
+	 * sized for a monitor that no longer exists. */
+	az_avk_output_finish(m->avk);
+	m->avk = NULL;
+#endif
 
 	/* Before the scene nodes below are torn down: the bar owns scene buffers
 	 * and heap-allocated hit-test tags parented to this monitor's tree. */
@@ -7645,14 +7677,11 @@ static void render_monitor(Monitor *m) {
 		 * handed to the output */
 		struct wlr_output_state state;
 		wlr_output_state_init(&state);
-		struct wlr_scene_output_state_options icc_options = {
-			.color_transform = m->wlr_output->image_description == NULL
-				? m->icc_transform
-				: NULL,
+		struct az_frame_options frame_options = {
+			.color_transform = az_output_color_transform(m),
 		};
 		struct wlr_buffer *captured = NULL;
-		if (wlr_scene_output_build_state(m->scene_output, &state,
-										 &icc_options)) {
+		if (az_output_build_frame(m, &state, &frame_options)) {
 			if (state.buffer)
 				captured = wlr_buffer_lock(state.buffer);
 			if (!wlr_output_commit_state(m->wlr_output, &state))
@@ -7699,10 +7728,10 @@ static void render_monitor(Monitor *m) {
 		 * guaranteed failure plus a retrain. */
 		state.allow_reconfiguration = true;
 		mon_state_apply_color(m, &state);
-		struct wlr_scene_output_state_options options = {
+		struct az_frame_options frame_options = {
 			.color_transform = m->hdr ? NULL : m->icc_transform,
 		};
-		if (wlr_scene_output_build_state(m->scene_output, &state, &options)) {
+		if (az_output_build_frame(m, &state, &frame_options)) {
 			if (!wlr_output_commit_state(m->wlr_output, &state)) {
 				wlr_log(WLR_ERROR,
 						"HDR pending-change commit failed on %s, retraining",
@@ -7720,14 +7749,26 @@ static void render_monitor(Monitor *m) {
 		}
 		wlr_output_state_finish(&state);
 		m->hdr_pending_change = false;
-	} else {
-		wlr_scene_output_commit(
-			m->scene_output,
-			&(struct wlr_scene_output_state_options){
-				.color_transform = m->wlr_output->image_description == NULL
-					? m->icc_transform
-					: NULL,
-			});
+	} else if (wlr_scene_output_needs_frame(m->scene_output)) {
+		/* What wlr_scene_output_commit() does, written out, because the
+		 * build step in the middle has to be az_output_build_frame(). The
+		 * needs-frame check stays: scene_output clears its own pending damage
+		 * from the committed state's damage region, so it goes quiet again
+		 * whatever built the frame. */
+		struct wlr_output_state state;
+		wlr_output_state_init(&state);
+		struct az_frame_options frame_options = {
+			.color_transform = az_output_color_transform(m),
+		};
+		if (az_output_build_frame(m, &state, &frame_options)) {
+			if (!wlr_output_commit_state(m->wlr_output, &state))
+				wlr_log(WLR_ERROR, "Failed to commit frame on %s",
+						m->wlr_output->name);
+		} else {
+			wlr_log(WLR_ERROR, "Failed to build frame for %s",
+					m->wlr_output->name);
+		}
+		wlr_output_state_finish(&state);
 	}
 
 	AZ_ZONE_END(az_commit);
@@ -8806,6 +8847,49 @@ void setup(void) {
 	/* Create a default allocator */
 	if (!(alloc = wlr_allocator_autocreate(backend, drw)))
 		die("couldn't create allocator");
+
+	/* ── which engine composites ──────────────────────────────────────────
+	 *
+	 * ASTEROIDZ_RENDERER selects asteroidz's own renderer, and it is
+	 * deliberately independent of WLR_RENDERER. wlroots still needs a
+	 * renderer for the things it does that are not compositing -- shm
+	 * formats, the allocator, screencopy -- and which one that is has no
+	 * bearing on whether AVK builds the frame. The pair
+	 * `WLR_RENDERER=gles2 ASTEROIDZ_RENDERER=avk` is the test that proves it:
+	 * a Vulkan-composited desktop with GLES2 sitting alongside, touching none
+	 * of it. */
+	const char *renderer_env = getenv("ASTEROIDZ_RENDERER");
+	if (renderer_env != NULL && strcmp(renderer_env, "avk") == 0) {
+#ifdef AZ_HAVE_VULKAN
+		avk.requested = true;
+		/* The renderer's DRM node, not the backend's: this is the device the
+		 * allocator allocates output buffers on, and AVK has to be on the
+		 * same one to import them without a copy. */
+		int32_t avk_fd = wlr_renderer_get_drm_fd(drw);
+		if (avk_fd < 0)
+			avk_fd = wlr_backend_get_drm_fd(backend);
+		if (avk_fd < 0)
+			wlr_log(WLR_ERROR, "ASTEROIDZ_RENDERER=avk: no DRM node to bind "
+					"to; AVK will pick a device on its own, which is only "
+					"appropriate in tests");
+		if (!az_avk_init(avk_fd))
+			die("ASTEROIDZ_RENDERER=avk was requested and the Vulkan engine "
+				"could not start");
+		az_renderer = AZ_RENDERER_AVK;
+		wlr_log(WLR_INFO, "Asteroidz rendering backend: AVK native Vulkan");
+		wlr_log(WLR_INFO, "wlroots compatibility renderer: %s -- protocols, "
+				"allocation and screencopy only, no part of composition",
+				getenv("WLR_RENDERER") ? getenv("WLR_RENDERER")
+									   : "GLES2 (default)");
+#else
+		die("ASTEROIDZ_RENDERER=avk was requested, but this build was "
+			"configured with -Drenderers=gles2");
+#endif
+	} else if (renderer_env != NULL && strcmp(renderer_env, "wlr") != 0) {
+		die("ASTEROIDZ_RENDERER must be 'avk' or 'wlr'");
+	} else {
+		wlr_log(WLR_INFO, "Asteroidz rendering backend: SceneFX on wlroots");
+	}
 
 	/* This creates some hands-off wlroots interfaces. The compositor is
 	 * necessary for clients to allocate surfaces and the data device

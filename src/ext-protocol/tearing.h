@@ -110,12 +110,10 @@ bool custom_wlr_scene_output_commit(struct wlr_scene_output *scene_output,
 	}
 
 	// build the output state
-	struct wlr_scene_output_state_options icc_options = {
-		.color_transform = wlr_output->image_description == NULL
-			? m->icc_transform
-			: NULL,
+	struct az_frame_options frame_options = {
+		.color_transform = az_output_color_transform(m),
 	};
-	if (!wlr_scene_output_build_state(scene_output, state, &icc_options)) {
+	if (!az_output_build_frame(m, state, &frame_options)) {
 		wlr_log(WLR_ERROR, "Failed to build output state for %s",
 				wlr_output->name);
 		return false;

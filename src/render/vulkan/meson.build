@@ -57,6 +57,7 @@ avk_sources = files(
   'device/avk_instance.c',
   'device/avk_phys.c',
   'image/avk_image.c',
+  'image/avk_upload.c',
   'pipeline/avk_pipeline.c',
   'scene/avk_render.c',
   'scene/avk_scene.c',
