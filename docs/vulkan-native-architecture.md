@@ -945,6 +945,70 @@ nothing. The output-intersection test is now applied *before*
 renderer would have applied anyway. `avk.nodes_output_culled_before_resolve`
 counts it.
 
+### Why the same-queue path is correct, written out
+
+The production dependency chain for updating a cached SHM image that a frame
+may still be reading, with every mask named. Everything below happens on
+`dev->graphics_queue` -- one queue, for both the frame renderer's ring and the
+importer's upload ring.
+
+```
+frame N  (avk_render.c)
+  samples the image
+    stage  FRAGMENT_SHADER          access  SHADER_SAMPLED_READ
+    layout SHADER_READ_ONLY_OPTIMAL
+        |
+        |  submission order on one queue: the upload is submitted after
+        |  the frame that read the image, never before
+        v
+generation N+1  (avk_upload_image_write_regions)
+  barrier: read -> transfer write
+    srcStageMask   VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT
+    srcAccessMask  VK_ACCESS_2_SHADER_SAMPLED_READ_BIT
+    dstStageMask   VK_PIPELINE_STAGE_2_COPY_BIT
+    dstAccessMask  VK_ACCESS_2_TRANSFER_WRITE_BIT
+    oldLayout      SHADER_READ_ONLY_OPTIMAL   (image->layout, observed)
+    newLayout      TRANSFER_DST_OPTIMAL
+        |
+  vkCmdCopyBufferToImage2, N packed regions
+        |
+  barrier: transfer write -> shader read
+    srcStageMask   VK_PIPELINE_STAGE_2_COPY_BIT
+    srcAccessMask  VK_ACCESS_2_TRANSFER_WRITE_BIT
+    dstStageMask   VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT
+    dstAccessMask  VK_ACCESS_2_SHADER_SAMPLED_READ_BIT
+    oldLayout      TRANSFER_DST_OPTIMAL
+    newLayout      SHADER_READ_ONLY_OPTIMAL
+        |
+  submitted with a wait on the device timeline at image->last_use
+        |
+        v
+frame N+1
+  samples the image, no barrier needed: image->layout already matches, and
+  batch_add() skips a transition that would be a no-op
+```
+
+Three things make it correct, and it is worth being clear about which does
+what:
+
+- **The first barrier's `src` half** is the read-before-write dependency. It is
+  what makes overwriting the image ordered against the sampling in earlier
+  submissions on this queue. It is the load-bearing one.
+- **The layout is read from `image->layout`, never assumed.** A barrier that
+  transitions from the layout the code *believes* the image is in produces
+  garbage on one driver and nothing on another; the field exists so the
+  transition is emitted from observed state.
+- **The timeline wait on `image->last_use`** is a second, coarser expression of
+  the same ordering. On one queue it is redundant with the barrier. It is kept
+  because it is the dependency that survives the upload moving to a transfer
+  queue, where submission order no longer relates the two.
+
+The image is never in `UNDEFINED` on this path: a partial update into an image
+with no previous contents would discard everything outside the damage, and
+`avk_upload_image_write_regions()` refuses rather than doing it.
+
+`cpu_sync_waits` stays 0 throughout. Nothing here waits on the host.
+
 ### One break test that could not be made to fail
 
 `BREAK=unsafe-reuse` removes both protections around updating an image a frame
@@ -955,11 +1019,18 @@ where 221 generations and 82 partial uploads genuinely overlap frames.
 
 The likely reason is that uploads and frames are submitted to the same
 `VkQueue`, each upload ordered after the frame that read the image, so there is
-no concurrency for validation to object to. Both protections are kept — they
-cost nothing, they are correct, and they become load-bearing the moment uploads
-move to the dedicated transfer queue the capability table already records — but
-this suite cannot presently prove they are, and that is recorded rather than
-papered over.
+no concurrency for validation to object to.
+
+Stated so it cannot be misread later:
+
+> **`BREAK=unsafe-reuse` could not be made observationally failing on the
+> current single-queue architecture.** Removing the read→write image barrier
+> also did not produce a validation failure, so synchronization validation is
+> **not accepted as proof** for this hazard. The barrier and the timeline
+> dependency remain in production. **Cross-queue upload work must add a
+> deterministic synchronization test before a transfer queue is enabled.**
+
+This case is *not tested*. That is preferable to false coverage.
 
 Worth noting how it was narrowed: removing only the timeline wait changed
 nothing, which is what led to removing the barrier's dependency as well. The

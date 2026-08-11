@@ -62,6 +62,71 @@
  * a mixed SDR/HDR/10-bit desktop can present at once, and running out is
  * logged rather than silently mishandled.
  */
+/*
+ * A fixed-bucket histogram, so a distribution can be reported instead of a
+ * mean.
+ *
+ * An average hides exactly the frames that matter. A 6.6 ms mean is compatible
+ * with every frame taking 6.6 ms and with nine frames taking 2 ms and one
+ * taking 48 -- and only the second of those drops frames at 144 Hz. What is
+ * wanted is p95 and p99 against a 6.944 ms budget, which needs the shape.
+ *
+ * Fixed buckets rather than a reservoir sample: no allocation, no per-frame
+ * branchy bookkeeping, and the resolution is chosen per metric so the answer
+ * is exact to within one bucket rather than statistically approximate.
+ */
+#define AZ_AVK_HIST_BUCKETS 512
+/* 20us per bucket: 10.24ms of exact resolution, which brackets the 6.944ms a
+ * 144Hz frame has and leaves room to see the tail past it. */
+#define AZ_AVK_CPU_BUCKET_US 20
+
+struct az_avk_hist {
+	uint64_t count;
+	uint64_t sum;
+	uint64_t max;
+	/* Values are divided by `scale` to pick a bucket; anything past the end
+	 * lands in the last one, which is why `max` is kept separately. */
+	uint64_t bucket[AZ_AVK_HIST_BUCKETS];
+};
+
+static void az_avk_hist_add(struct az_avk_hist *h, uint64_t value,
+		uint64_t scale) {
+	h->count++;
+	h->sum += value;
+	if (value > h->max) {
+		h->max = value;
+	}
+	uint64_t idx = scale > 0 ? value / scale : value;
+	if (idx >= AZ_AVK_HIST_BUCKETS) {
+		idx = AZ_AVK_HIST_BUCKETS - 1;
+	}
+	h->bucket[idx]++;
+}
+
+/* The value at `pct` (0..100), in the histogram's own units. Returns the upper
+ * edge of the bucket the percentile falls in, which is an over-estimate by at
+ * most one bucket -- stated rather than hidden, because a percentile quoted to
+ * three decimals from bucketed data would be a false precision. */
+static double az_avk_hist_pct(const struct az_avk_hist *h, double pct,
+		uint64_t scale) {
+	if (h->count == 0) {
+		return 0.0;
+	}
+	uint64_t want = (uint64_t)((double)h->count * pct / 100.0);
+	if (want == 0) {
+		want = 1;
+	}
+	uint64_t seen = 0;
+	for (size_t i = 0; i < AZ_AVK_HIST_BUCKETS; i++) {
+		seen += h->bucket[i];
+		if (seen >= want) {
+			double edge = (double)((i + 1) * scale);
+			return edge > (double)h->max ? (double)h->max : edge;
+		}
+	}
+	return (double)h->max;
+}
+
 #define AZ_AVK_MAX_FORMATS 4
 
 /* How many source-damage rectangles a partial upload packs before giving up
@@ -171,6 +236,14 @@ struct az_avk {
 	 * because a mean hides exactly the frames that miss a vblank. */
 	uint64_t cpu_frame_us;
 	uint64_t cpu_frame_us_max;
+	/* Distributions, because the mean is the wrong statistic for a deadline.
+	 * 20us buckets over 512 gives 10.2ms of exact resolution, which brackets
+	 * the 6.944ms budget at 144Hz with room to see the tail. */
+	struct az_avk_hist cpu_frame_hist;
+	struct az_avk_hist gpu_submit_hist;
+	/* Damage as parts per thousand of the output, so the ratio has a
+	 * distribution too rather than only a run-long total. */
+	struct az_avk_hist damage_permille_hist;
 
 	/* Each of these is a real limitation, and each is said exactly once so a
 	 * log stays readable while still telling the truth. */
@@ -821,6 +894,10 @@ struct az_avk_output {
 	/* display -> AVK. KMS signals a point when it has released the buffer. */
 	struct wlr_drm_syncobj_timeline *out_timeline;
 	uint64_t out_point;
+
+	/* The renderer's running submit total as of this output's last frame,
+	 * so a per-frame delta can be taken from it. */
+	uint64_t last_submit_ns;
 };
 
 static struct az_avk_target *az_avk_target_for_buffer(
@@ -1841,6 +1918,16 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 
 	/* Retire whatever the GPU has finished with. Once per frame, never
 	 * blocking -- one vkGetSemaphoreCounterValue and a walk of a short list. */
+	/* The submit cost of THIS frame, taken as the delta of the renderer's
+	 * running total, so the distribution can be built without the renderer
+	 * needing to know what a histogram is. */
+	uint64_t submit_ns_now = out->slot->renderer.stats.gpu_submit_ns;
+	if (submit_ns_now > out->last_submit_ns) {
+		az_avk_hist_add(&avk.gpu_submit_hist,
+			(submit_ns_now - out->last_submit_ns) / 1000, 5);
+	}
+	out->last_submit_ns = submit_ns_now;
+
 	avk_renderer_collect(&out->slot->renderer);
 	avk_dmabuf_importer_collect(&avk.importer);
 
@@ -1905,6 +1992,11 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 	avk.cpu_frame_us += us;
 	if (us > avk.cpu_frame_us_max) {
 		avk.cpu_frame_us_max = us;
+	}
+	az_avk_hist_add(&avk.cpu_frame_hist, us, AZ_AVK_CPU_BUCKET_US);
+	if (output_px > 0) {
+		az_avk_hist_add(&avk.damage_permille_hist,
+			damage_px * 1000 / output_px, 2);
 	}
 
 	avk.frames++;
@@ -2239,6 +2331,20 @@ static cJSON *az_avk_stats_json(void) {
 	cJSON_AddNumberToObject(o, "cpu_frame_us", (double)avk.cpu_frame_us);
 	cJSON_AddNumberToObject(o, "cpu_frame_us_max",
 		(double)avk.cpu_frame_us_max);
+	cJSON_AddNumberToObject(o, "cpu_frame_us_p50",
+		az_avk_hist_pct(&avk.cpu_frame_hist, 50.0, AZ_AVK_CPU_BUCKET_US));
+	cJSON_AddNumberToObject(o, "cpu_frame_us_p95",
+		az_avk_hist_pct(&avk.cpu_frame_hist, 95.0, AZ_AVK_CPU_BUCKET_US));
+	cJSON_AddNumberToObject(o, "cpu_frame_us_p99",
+		az_avk_hist_pct(&avk.cpu_frame_hist, 99.0, AZ_AVK_CPU_BUCKET_US));
+	cJSON_AddNumberToObject(o, "gpu_submit_us_p95",
+		az_avk_hist_pct(&avk.gpu_submit_hist, 95.0, 5));
+	cJSON_AddNumberToObject(o, "gpu_submit_us_p99",
+		az_avk_hist_pct(&avk.gpu_submit_hist, 99.0, 5));
+	cJSON_AddNumberToObject(o, "damage_ratio_p50",
+		az_avk_hist_pct(&avk.damage_permille_hist, 50.0, 2) / 1000.0);
+	cJSON_AddNumberToObject(o, "damage_ratio_p95",
+		az_avk_hist_pct(&avk.damage_permille_hist, 95.0, 2) / 1000.0);
 	/* Not measured: needs GPU timestamp queries around the frame, which this
 	 * build does not record. Null, not zero. */
 	cJSON_AddNullToObject(o, "gpu_frame_us");
@@ -2372,6 +2478,9 @@ static void az_avk_stats_reset(void) {
 	avk.damage_rects_max = 0;
 	avk.cpu_frame_us = 0;
 	avk.cpu_frame_us_max = 0;
+	avk.cpu_frame_hist = (struct az_avk_hist){0};
+	avk.gpu_submit_hist = (struct az_avk_hist){0};
+	avk.damage_permille_hist = (struct az_avk_hist){0};
 	avk.software_cursor_frames = 0;
 	avk.presentation_waits = 0;
 	avk.present_sync_timeline = 0;
