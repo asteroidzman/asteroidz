@@ -196,6 +196,30 @@ M4F  blur                 dual-Kawase, source-region expansion, and every one
 M4G  interactions         ordering, alpha, and the combinations
 ```
 
+## M4A test-harness traps (do not repeat)
+
+**`border_radius_location_default` cannot force asymmetric client radii.** It
+is an integer bitmask read with `atoi()` and is not in the schema, so a name
+like `bottom` parses as 0 and the default silently stands. A test built on it
+reported the compositor's CORRECT titlebar behaviour as a per-corner bug.
+Asymmetry comes from `set_client_corner_location()` and is driven by layout:
+a titlebar'd window clear of the screen edges gives `0, r, r, r`.
+
+**A boolean "round or square" probe cannot detect double-scaling.** "Is it
+round?" is equally true of a 28px arc and a 63px one, so
+`BREAK=rounded-double-scale` passed at BOTH scales until the probe started
+measuring. The cut corner has area `r²(1 − π/4)`, so counting background pixels
+in a corner box recovers `r` without having to find the arc. Use the RATIO
+across scales as the invariant: the estimator undercounts by ~14% because the
+antialiased boundary is not background, and that is the estimator being
+approximate rather than the renderer being wrong.
+
+**Two more, both of which produced believable wrong conclusions:** the window's
+top corners belong to the TITLEBAR node, not the client, so a probe there reads
+the wrong node; and sampling just above the client box hits the titlebar, which
+made a correct renderer look like it was painting 90 stray pixels outside its
+destination rectangle.
+
 ## Traps already paid for
 
 - **Flat-colour test scenes are blind to blur bugs.** Both `sample_exclude` and
