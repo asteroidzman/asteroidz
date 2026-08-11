@@ -1595,6 +1595,32 @@ without being able to tell them apart. See `docs/regression-testing.md` for
 what the run asks and why half of its questions go to the user rather than to a
 counter.
 
+### Who owns an xcursor, and what invalidates it
+
+Read out of wlroots 0.20.2 (the version this machine runs: `wlroots0.20
+0.20.2-1.1`, the signed upstream tag with no downstream patches), because a
+live desktop was lost to getting this wrong.
+
+| call | ownership consequence |
+| :--- | :--- |
+| `wlr_xcursor_manager_get_xcursor()` | returns **manager-owned** memory. Borrowed, no refcount, no lock to take |
+| `wlr_xcursor_manager_load(scale)` | **additive**. Appends a scaled theme to a list and frees nothing (`wlr_xcursor_manager.c:33-54`), so pointers handed out earlier stay valid |
+| `wlr_xcursor_manager_destroy()` | **invalidates everything.** Walks every scaled theme → `xcursor_destroy()` → frees each image, each pixel buffer and the cursor itself (`wlr_xcursor.c:38-47`) |
+| `wlr_xcursor_image_get_buffer()` | `&image->readonly_buffer->base`, embedded in the theme's image |
+| `readonly_data_buffer_drop()` | if locks are held, **copies the pixels into `saved_data`** first (`readonly_data.c:66-88`), so a locked cursor buffer survives its theme |
+| `wlr_cursor_set_buffer()` | takes its **own** `wlr_buffer_lock()` (`wlr_cursor.c:475`). The caller need not keep one |
+
+Two of those corrected a wrong theory during the M3.5E crash investigation, and
+both are worth keeping written down. Mixed-scale loading was blamed first — it
+cannot invalidate anything. And the buffer contract was blamed second — wlroots
+locks correctly, so a wild `wlr_buffer` there was never a lock-balance bug; it
+had been read out of an already-freed image.
+
+The rule that follows: **the only durable cursor identity is the name and the
+scale.** A `struct wlr_xcursor *` is a temporary answer to "what does the
+current manager have for this name", and `reapply_cursor_style()` rebuilds that
+manager on any live config change.
+
 ### Counters for the live runs
 
 `cursor_moves`, `cursor_damage_pixels`, `cursor_hw_to_sw`, `cursor_sw_to_hw`,

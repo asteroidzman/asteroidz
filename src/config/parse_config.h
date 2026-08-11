@@ -5350,6 +5350,9 @@ void reapply_cursor_style(void) {
 
 	cursor_mgr =
 		wlr_xcursor_manager_create(config.cursor_theme, config.cursor_size);
+	/* Every pointer the previous manager handed out died with it. Nothing may
+	 * carry one across this line -- see az_cursor_resolve_xcursor(). */
+	az_cursor_manager_replaced();
 
 	Monitor *m = NULL;
 	wl_list_for_each(m, &mons, link) {

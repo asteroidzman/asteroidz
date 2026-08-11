@@ -1649,6 +1649,10 @@ struct Pertag {
 /* Defined after render/az_avk.h is available; named by the dispatch table in
  * parse_config.h, which is included first. */
 static int32_t reset_avk_stats(const Arg *arg);
+/* Same reason: reapply_cursor_style() lives in parse_config.h and destroys the
+ * xcursor manager, which every borrowed cursor pointer depends on. Defined in
+ * render/az_cursor.h, included later. */
+static void az_cursor_manager_replaced(void);
 #include "config/parse_config.h"
 /* After parse_config.h: the self-check drives set_value_default,
  * override_config and parse_option directly. */

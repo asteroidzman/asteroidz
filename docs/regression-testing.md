@@ -509,6 +509,65 @@ rotation, `source-full` stops partial uploads — so both land on the
 accumulation assertion with nothing left to measure. Neither is a falsifier for
 the fix itself; the pre-`ef45327` binary is, and that is the one that matters.
 
+### A test for a bug that would not crash on demand
+
+`contrib/avk-cursor-lifetime-test.sh` covers the use-after-free that killed a
+live desktop during M3.5E, and it is the clearest example in this document of
+why "reproduce the crash" is sometimes the wrong goal.
+
+```bash
+ASTEROIDZ=build-vk/asteroidz bash contrib/avk-cursor-lifetime-test.sh
+BREAK=cursor-stale-xcursor ASTEROIDZ=build-vk/asteroidz bash contrib/avk-cursor-lifetime-test.sh  # must FAIL
+```
+
+M3.5E stage 1 kept the resolved `struct wlr_xcursor *` as durable cursor
+identity. That memory belongs to a theme inside `wlr_xcursor_manager`, and
+`reapply_cursor_style()` destroys and rebuilds the whole manager on **any**
+live config change — a settings slider, `set-config`, a reload. Two paths
+replayed the cached pointer with no re-resolve: `az_cursor_show()`, the
+idle-hide restore, and `az_cursor_xcursor_tick()`, the animation timer.
+
+**The crash was never reproduced headlessly.** Roughly 110 iterations across
+four reproducer shapes, under ASan, with mixed scales, output crossings,
+hide/restore and repeated manager rebuilds — the pre-fix build never faulted
+and the sanitizer never fired. Freed heap usually stays mapped and usually
+still holds plausible bytes, so the old code mostly read garbage quietly. The
+live SIGSEGV was the rare case where the wild pointer happened to be unmapped.
+Two of those attempts failed for reasons worth knowing: `cursor_hide_timeout 0`
+means `handlecursoractivity()` returns before the replay path, and
+`config_apply_live()` un-hides the cursor *before* it destroys the manager, so
+the hide has to come afterwards.
+
+Waiting for undefined behaviour to happen to fault is not coverage. So the test
+asserts the **invariant** one step before the dereference:
+
+> a borrowed xcursor may only be used while the manager generation that
+> produced it is still current
+
+`cursor_mgr_generation` increments on every rebuild; `cursor_stale_xcursor`
+counts borrowed resolutions used after theirs expired, and zero is the only
+correct value. `BREAK=cursor-stale-xcursor` restores the shipped model — keep
+the pointer, replay it — and the run comes back with **57** stale uses instead
+of 0, deterministically, without depending on allocator behaviour or timing.
+
+The instrumentation is diagnostic and does not change the production model: the
+durable state is the name and scale, and the pointer is resolved at the point
+of use and never stored. Rebuilding that as "cache the pointer plus a
+generation number" would keep the wrong ownership and merely detect it.
+
+One assertion in this test was wrong on its first run and is worth recording,
+because it failed against the *fixed* build: it demanded the cursor be
+re-selected after a manager rebuild. It must not be. The buffer asteroidz holds
+stays valid across the rebuild — `readonly_data_buffer_drop()` copies the
+pixels into `saved_data` whenever locks are held — so re-importing on every
+settings change would be pure waste. The test now asserts the opposite.
+
+Deliberately **not** asserted: that a *different* cursor name re-selects
+because identity is compared by name rather than by pointer. That failure needs
+the allocator to return the same address for a different cursor, which a test
+cannot arrange on demand; asserting it anyway would pass for the wrong reason.
+The name comparison is exercised by `avk-cursor-content`, which changes shapes.
+
 ### The schema, checked from both ends
 
 `src/config/config-schema.h` describes every settable option — type, range, enum

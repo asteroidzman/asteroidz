@@ -114,12 +114,43 @@ static struct az_cursor {
 	 */
 	uint64_t generation;
 
-	/* ── xcursor source ── */
-	struct wlr_xcursor *xcursor;
+	/* ── xcursor source ──
+	 *
+	 * The durable state here is the NAME and the scale, deliberately: a
+	 * `struct wlr_xcursor *` belongs to a theme inside wlr_xcursor_manager,
+	 * and `wlr_xcursor_manager_destroy()` frees every cursor, image and pixel
+	 * buffer it owns. reapply_cursor_style() destroys and recreates that
+	 * manager on ANY live config change, so a cached pointer outlives its
+	 * owner by construction. It is resolved from the current manager at the
+	 * point of use and never stored.
+	 *
+	 * That cost a live desktop: az_cursor_show() replayed the cached pointer
+	 * to restore the cursor after an idle hide, read a freed
+	 * wlr_xcursor_image, and handed wlroots a wild wlr_buffer.
+	 * `image->hotspot_x / scale` on freed memory produced a NaN, so the core
+	 * dump's hotspot read INT32_MIN -- the saturating result of casting it to
+	 * int, and the fingerprint of this bug if it ever comes back.
+	 */
 	size_t xcursor_index;
 	struct wl_event_source *xcursor_timer;
 	char *xcursor_name;
 	float xcursor_scale;
+
+	/*
+	 * DIAGNOSTIC ONLY -- not cursor state, and deliberately not consulted by
+	 * anything that draws.
+	 *
+	 * The production model above has no durable borrowed pointer, so the bug
+	 * this milestone fixed can no longer be reached; that also means nothing
+	 * observable is left to write a regression test against. These two fields
+	 * let a test build the OLD model on purpose -- keep the borrowed pointer,
+	 * remember which manager generation produced it -- so the invalid lifetime
+	 * can be detected as a generation mismatch BEFORE the freed memory is
+	 * read. That turns a bug which only manifested as undefined behaviour into
+	 * a deterministic assertion.
+	 */
+	struct wlr_xcursor *dbg_borrowed;
+	uint64_t dbg_borrowed_generation;
 
 	/* ── client surface source ── */
 	struct wlr_surface *surface;
@@ -142,6 +173,9 @@ static struct az_cursor {
 	uint64_t sets_shape;        /* wp_cursor_shape_v1 */
 	uint64_t sets_xcursor;      /* the compositor's own theme */
 	uint64_t unsets;            /* set_cursor(NULL), or hidden */
+	/* Borrowed resolutions used after their manager was replaced. Must be 0:
+	 * a nonzero value is a use-after-free that has not faulted yet. */
+	uint64_t stale_xcursor;
 
 	/*
 	 * Whether wlroots currently HAS an image from us.
@@ -278,19 +312,92 @@ static void az_cursor_set_image(struct wlr_buffer *buffer, int hotspot_x,
 
 static void az_cursor_xcursor_show(size_t index);
 
+/*
+ * Which generation of the xcursor manager is current.
+ *
+ * Bumped every time the manager is destroyed and rebuilt. Nothing in the
+ * drawing path reads it -- it exists so a test can state the ownership rule
+ * as a checkable proposition:
+ *
+ *   a borrowed xcursor may only be dereferenced while the manager generation
+ *   that produced it is still current.
+ *
+ * wlr_xcursor_manager_load() is NOT a generation change. It appends a scaled
+ * theme to a list and frees nothing (wlr_xcursor_manager.c:33-54), so pointers
+ * handed out earlier stay valid. Only destruction invalidates, which is worth
+ * writing down because the first theory of the live crash blamed mixed-scale
+ * loading and was wrong.
+ */
+static uint64_t az_cursor_mgr_generation = 1;
+
+static void az_cursor_manager_replaced(void) {
+	az_cursor_mgr_generation++;
+}
+
+/*
+ * The xcursor for the current name and scale, from the CURRENT manager.
+ *
+ * Always a fresh lookup. The manager owns what it returns and frees it on
+ * destroy, so the answer is only valid until the next thing that could
+ * rebuild the manager -- which is why nothing keeps it.
+ */
+static struct wlr_xcursor *az_cursor_resolve_xcursor(void) {
+	if (cursor_mgr == NULL || az_cursor.source != AZ_CURSOR_SOURCE_XCURSOR ||
+			az_cursor.xcursor_name == NULL) {
+		return NULL;
+	}
+
+	/*
+	 * BREAK SWITCH: AZ_CURSOR_STALE_XCURSOR=1 restores the shipped bug --
+	 * keep the borrowed pointer and replay it instead of asking the manager
+	 * again. The generation check in front of the dereference is what makes
+	 * the defect observable: the old code went straight to freed memory and
+	 * only sometimes faulted, which is why ~110 headless attempts under ASan
+	 * never caught it.
+	 */
+	if (getenv("AZ_CURSOR_STALE_XCURSOR") != NULL) {
+		if (az_cursor.dbg_borrowed != NULL) {
+			if (az_cursor.dbg_borrowed_generation != az_cursor_mgr_generation) {
+				az_cursor.stale_xcursor++;
+				wlr_log(WLR_ERROR, "cursor: borrowed xcursor from manager "
+					"generation %" PRIu64 " used at generation %" PRIu64
+					" -- this is the use-after-free M3.5E shipped",
+					az_cursor.dbg_borrowed_generation,
+					az_cursor_mgr_generation);
+				/* Deliberately do NOT dereference it. The point is to prove
+				 * the lifetime is invalid, not to crash the test host. */
+				return NULL;
+			}
+			return az_cursor.dbg_borrowed;
+		}
+	}
+
+	struct wlr_xcursor *xc = wlr_xcursor_manager_get_xcursor(cursor_mgr,
+		az_cursor.xcursor_name, az_cursor.xcursor_scale);
+	if (xc == NULL) {
+		xc = wlr_xcursor_manager_get_xcursor(cursor_mgr, "default",
+			az_cursor.xcursor_scale);
+	}
+	if (xc != NULL && getenv("AZ_CURSOR_STALE_XCURSOR") != NULL) {
+		az_cursor.dbg_borrowed = xc;
+		az_cursor.dbg_borrowed_generation = az_cursor_mgr_generation;
+	}
+	return xc;
+}
+
 static int az_cursor_xcursor_tick(void *data) {
 	(void)data;
-	if (az_cursor.xcursor == NULL || az_cursor.xcursor->image_count == 0) {
+	struct wlr_xcursor *xc = az_cursor_resolve_xcursor();
+	if (xc == NULL || xc->image_count == 0) {
 		return 0;
 	}
 	az_cursor.xcursor_frames++;
-	az_cursor_xcursor_show(
-		(az_cursor.xcursor_index + 1) % az_cursor.xcursor->image_count);
+	az_cursor_xcursor_show((az_cursor.xcursor_index + 1) % xc->image_count);
 	return 0;
 }
 
 static void az_cursor_xcursor_show(size_t index) {
-	struct wlr_xcursor *xc = az_cursor.xcursor;
+	struct wlr_xcursor *xc = az_cursor_resolve_xcursor();
 	if (xc == NULL || index >= xc->image_count) {
 		return;
 	}
@@ -363,14 +470,22 @@ static void az_cursor_set_xcursor(const char *name) {
 	/* BREAK SWITCH: drop the image_pushed term, restoring the trap. */
 	bool pushed = az_cursor.image_pushed ||
 		getenv("AZ_CURSOR_NO_PUSH_CHECK") != NULL;
+	/*
+	 * Compared by NAME, not by pointer. The pointer test that used to be here
+	 * was wrong twice over: it kept a theme-owned pointer alive as durable
+	 * state, and after a manager rebuild the allocator can hand the same
+	 * address back for a different cursor, so it could match on identity that
+	 * no longer means anything.
+	 */
 	if (pushed && az_cursor.source == AZ_CURSOR_SOURCE_XCURSOR
-			&& az_cursor.xcursor == xc && az_cursor.xcursor_scale == scale) {
+			&& az_cursor.xcursor_name != NULL
+			&& strcmp(az_cursor.xcursor_name, name) == 0
+			&& az_cursor.xcursor_scale == scale) {
 		return;
 	}
 
 	az_cursor.sets_xcursor++;
 	az_cursor.source = AZ_CURSOR_SOURCE_XCURSOR;
-	az_cursor.xcursor = xc;
 	az_cursor.xcursor_scale = scale;
 	free(az_cursor.xcursor_name);
 	az_cursor.xcursor_name = strdup(name);
@@ -522,7 +637,8 @@ static void az_cursor_set_surface(struct wlr_surface *surface, int hotspot_x,
 	az_cursor.source = AZ_CURSOR_SOURCE_CLIENT;
 	az_cursor.surface_hotspot_x = hotspot_x;
 	az_cursor.surface_hotspot_y = hotspot_y;
-	az_cursor.xcursor = NULL;
+	free(az_cursor.xcursor_name);
+	az_cursor.xcursor_name = NULL;
 
 	/* Re-asserting the same surface is not new content; only a commit is. */
 	az_cursor_surface_update(false);
@@ -566,7 +682,8 @@ static void az_cursor_reload(void) {
 	if (name == NULL) {
 		return;
 	}
-	az_cursor.xcursor = NULL;   /* force reselection */
+	free(az_cursor.xcursor_name);
+	az_cursor.xcursor_name = NULL;   /* force reselection */
 	az_cursor_set_xcursor(name);
 	free(name);
 }

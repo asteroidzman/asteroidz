@@ -2725,6 +2725,10 @@ static cJSON *az_avk_stats_json(void) {
 	 */
 	cJSON_AddNumberToObject(o, "cursor_client_no_buffer",
 		(double)az_cursor.client_no_buffer);
+	cJSON_AddNumberToObject(o, "cursor_stale_xcursor",
+		(double)az_cursor.stale_xcursor);
+	cJSON_AddNumberToObject(o, "cursor_mgr_generation",
+		(double)az_cursor_mgr_generation);
 	/*
 	 * Pointer focus traffic. Not renderer state, and it does not belong to
 	 * AVK -- it is here because this is the channel that can be read from a
