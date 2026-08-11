@@ -422,7 +422,15 @@ Fields worth knowing:
 | `cursor_commands` | cursor draws emitted. At most one per output frame |
 | `cursor_no_image` | **must be 0.** wlroots says a cursor is enabled and visible and asteroidz has no picture to draw for it — the exact fingerprint of the regression M3.5E fixed, where a client's own cursor image was silently dropped |
 | `cursor_import_failures` | the cursor image would not go to the GPU. Also expected to be 0 |
-| `cursor_culled` | cursors discarded as entirely outside this output. Reads 0 on a single-output setup, like `nodes_output_culled_before_resolve` |
+| `cursor_culled` | cursors discarded as entirely outside this output. Defensive only — `wlr_output_cursor.visible` is per-output and wlroots computes it, so a cursor on another monitor is skipped as not-visible before this test is reached. A permanent 0 is correct, not missing coverage |
+| `cursor_moves` | frames whose cursor box differs from the previous frame's. **Not** a count of pointer motion events — several can land inside one frame — because what matters here is what drives damage |
+| `cursor_damage_pixels` | area AVK drew for the cursor. Two 32x32 boxes per moving frame is the expected shape |
+| `cursor_hw_to_sw` / `cursor_sw_to_hw` | plane handovers in each direction. A recorder starting and stopping produces one of each |
+| `cursor_client_surface_sets` / `cursor_shape_sets` / `cursor_xcursor_sets` | which of the three sources asked for the image. They are three different paths through wlroots and only one was ever broken, so a session with 0 client sets has not exercised what M3.5E fixed |
+| `cursor_unsets` | `set_cursor(NULL)` — a client asking for no pointer image. Distinct from the idle-timeout hide, which is the compositor's decision and reversible without a client request |
+| `cursor_forced_reimports` | same buffer, new pixels, so the image had to be cleared before `wlr_cursor_set_buffer()` would take it again. Nonzero only for a client animating a cursor into one reused `wl_buffer` |
+| `cursor_force_software` | whether `ASTEROIDZ_AVK_FORCE_SOFTWARE_CURSOR=1` is in effect |
+| `cursor_source_commits` / `cursor_source_uploads` / `cursor_source_upload_bytes` / `cursor_source_upload_skips` | the current cursor image's own upload history, read straight off the same per-buffer record every other client buffer uses. This is "position changed != pixels changed" in four numbers: dragging a cursor for thirty seconds must move the skip count and leave commits, uploads and bytes where they were. Absent when the cursor has no image |
 | `cpu_sync_waits` | must be 0 — a nonzero value means the frame path blocks on the GPU |
 | `present_sync_timeline` / `present_sync_dmabuf` | frames handed to the display with a fence, by which route |
 | `present_sync_none` | **must be 0.** Frames handed over unsynchronised — only reachable via `AZ_AVK_NO_PRESENT_SYNC=1` |

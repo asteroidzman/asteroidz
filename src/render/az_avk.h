@@ -213,6 +213,15 @@ struct az_avk {
 	uint64_t cursor_no_image;         /* visible cursor, no buffer to draw */
 	uint64_t cursor_import_failures;  /* the image would not go to the GPU */
 	uint64_t cursor_culled;           /* entirely outside this output */
+	/* Position, kept rigorously apart from content -- the D.1 principle
+	 * applied to the cursor. `cursor_moves` counts frames whose cursor box
+	 * differs from the previous frame's, which is what actually drives damage;
+	 * it is not a count of pointer motion EVENTS, several of which can land
+	 * inside one frame. */
+	uint64_t cursor_moves;
+	uint64_t cursor_damage_pixels;    /* area AVK drew for the cursor */
+	uint64_t cursor_hw_to_sw;         /* plane gave it up */
+	uint64_t cursor_sw_to_hw;         /* plane took it back */
 
 	/* Presentation synchronisation. Every frame AVK composites must leave
 	 * through exactly one of the first two, and `present_sync_none` must stay
@@ -262,6 +271,10 @@ struct az_avk {
 
 	/* Each of these is a real limitation, and each is said exactly once so a
 	 * log stays readable while still telling the truth. */
+	/* Transition and motion bookkeeping for the counters above. */
+	bool cursor_was_software;
+	int cursor_last_x, cursor_last_y;
+
 	bool warned_effect_node;
 	bool warned_color_transform;
 	bool warned_zoom;
@@ -1752,8 +1765,16 @@ static void az_avk_emit_cursors(struct az_avk_walk *walk,
 		if (output->hardware_cursor == oc) {
 			/* On the plane. Costs this path nothing, which is the point of
 			 * preferring it. */
+			if (avk.cursor_was_software) {
+				avk.cursor_sw_to_hw++;
+				avk.cursor_was_software = false;
+			}
 			avk.hardware_cursor_frames++;
 			return;
+		}
+		if (!avk.cursor_was_software) {
+			avk.cursor_hw_to_sw++;
+			avk.cursor_was_software = true;
 		}
 
 		if (az_cursor.buffer == NULL) {
@@ -1819,6 +1840,12 @@ static void az_avk_emit_cursors(struct az_avk_walk *walk,
 			box.height != (int)cmd->src.height;
 		avk.cursor_commands++;
 		avk.software_cursor_frames++;
+		avk.cursor_damage_pixels += (uint64_t)box.width * (uint64_t)box.height;
+		if (box.x != avk.cursor_last_x || box.y != avk.cursor_last_y) {
+			avk.cursor_moves++;
+			avk.cursor_last_x = box.x;
+			avk.cursor_last_y = box.y;
+		}
 		return;
 	}
 }
@@ -2578,6 +2605,47 @@ static cJSON *az_avk_stats_json(void) {
 	cJSON_AddNumberToObject(o, "cursor_import_failures",
 		(double)avk.cursor_import_failures);
 	cJSON_AddNumberToObject(o, "cursor_culled", (double)avk.cursor_culled);
+	cJSON_AddNumberToObject(o, "cursor_moves", (double)avk.cursor_moves);
+	cJSON_AddNumberToObject(o, "cursor_damage_pixels",
+		(double)avk.cursor_damage_pixels);
+	cJSON_AddNumberToObject(o, "cursor_hw_to_sw", (double)avk.cursor_hw_to_sw);
+	cJSON_AddNumberToObject(o, "cursor_sw_to_hw", (double)avk.cursor_sw_to_hw);
+	cJSON_AddNumberToObject(o, "cursor_client_surface_sets",
+		(double)az_cursor.sets_client);
+	cJSON_AddNumberToObject(o, "cursor_shape_sets",
+		(double)az_cursor.sets_shape);
+	cJSON_AddNumberToObject(o, "cursor_xcursor_sets",
+		(double)az_cursor.sets_xcursor);
+	cJSON_AddNumberToObject(o, "cursor_unsets", (double)az_cursor.unsets);
+	cJSON_AddNumberToObject(o, "cursor_forced_reimports",
+		(double)az_cursor.forced_reimports);
+	cJSON_AddBoolToObject(o, "cursor_force_software",
+		az_cursor_force_software());
+	/*
+	 * The cursor image's OWN upload history, read straight off D.1's per-buffer
+	 * record rather than counted again here.
+	 *
+	 * This is the whole "position changed != pixels changed" invariant in four
+	 * numbers: a cursor dragged across the screen for thirty seconds must move
+	 * the lookup count and leave commits, uploads and bytes exactly where they
+	 * were. Counting it separately would have let the two drift apart, which is
+	 * precisely the class of bug D.1 existed to remove.
+	 */
+	if (az_cursor.buffer != NULL) {
+		struct wlr_addon *cursor_addon = wlr_addon_find(
+			&az_cursor.buffer->addons, &avk, &az_avk_buffer_addon_impl);
+		if (cursor_addon != NULL) {
+			struct az_avk_buffer *ce = wl_container_of(cursor_addon, ce, addon);
+			cJSON_AddNumberToObject(o, "cursor_source_commits",
+				(double)ce->stat_generations);
+			cJSON_AddNumberToObject(o, "cursor_source_uploads",
+				(double)(ce->stat_full_uploads + ce->stat_partial_uploads));
+			cJSON_AddNumberToObject(o, "cursor_source_upload_bytes",
+				(double)ce->stat_upload_bytes);
+			cJSON_AddNumberToObject(o, "cursor_source_upload_skips",
+				(double)ce->stat_lookups);
+		}
+	}
 	cJSON_AddNumberToObject(o, "validation_errors",
 		(double)avk_validation_errors());
 	return o;
@@ -2625,6 +2693,15 @@ static void az_avk_stats_reset(void) {
 	avk.cursor_no_image = 0;
 	avk.cursor_import_failures = 0;
 	avk.cursor_culled = 0;
+	avk.cursor_moves = 0;
+	avk.cursor_damage_pixels = 0;
+	avk.cursor_hw_to_sw = 0;
+	avk.cursor_sw_to_hw = 0;
+	az_cursor.sets_client = 0;
+	az_cursor.sets_shape = 0;
+	az_cursor.sets_xcursor = 0;
+	az_cursor.unsets = 0;
+	az_cursor.forced_reimports = 0;
 	avk.presentation_waits = 0;
 	avk.present_sync_timeline = 0;
 	avk.present_sync_dmabuf = 0;

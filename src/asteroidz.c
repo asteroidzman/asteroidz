@@ -3534,6 +3534,10 @@ void setcursorshape(struct wl_listener *listener, void *data) {
 
 		last_cursor.shape = event->shape;
 		last_cursor.surface = NULL;
+		/* cursor-shape resolves to an xcursor name, so the image path is the
+		 * theme's -- but the REQUEST came from a client, and the two are worth
+		 * counting apart when asking what a session exercised. */
+		az_cursor.sets_shape++;
 		if (!cursor_hidden)
 			az_cursor_set_xcursor(wlr_cursor_shape_v1_name(event->shape));
 	}
@@ -5097,6 +5101,28 @@ void createmon(struct wl_listener *listener, void *data) {
 
 	if (!wlr_output_init_render(wlr_output, alloc, drw))
 		return;
+
+	/*
+	 * ASTEROIDZ_AVK_FORCE_SOFTWARE_CURSOR=1 -- never use the cursor plane.
+	 *
+	 * There is no new backend behaviour here and deliberately so:
+	 * wlr_output_lock_software_cursors() already exists, is what screencopy's
+	 * overlay_cursor uses, and is the same mechanism a screen recorder trips.
+	 * Taking a permanent lock at output creation means every frame on this
+	 * output composites its cursor through az_avk_emit_cursors(), which is the
+	 * path that otherwise only runs while something is capturing.
+	 *
+	 * Said out loud, once per output, because a session where the cursor is
+	 * quietly costing a composite instead of a plane is exactly the kind of
+	 * thing that should never be inferred from a frame rate.
+	 */
+	if (az_cursor_force_software()) {
+		wlr_output_lock_software_cursors(wlr_output, true);
+		wlr_log(WLR_INFO, "cursor: %s locked to SOFTWARE cursors "
+				"(ASTEROIDZ_AVK_FORCE_SOFTWARE_CURSOR=1); the hardware plane "
+				"will not be used and AVK composites the cursor into every "
+				"frame", wlr_output->name);
+	}
 
 	if (wlr_output->non_desktop) {
 		if (drm_lease_manager) {

@@ -134,7 +134,32 @@ static struct az_cursor {
 	uint64_t xcursor_frames;    /* animation ticks */
 	uint64_t forced_reimports;  /* same buffer, new pixels (see below) */
 	uint64_t client_no_buffer;  /* set_cursor with nothing committed yet */
+	/* Which SOURCE asked for the image. Kept apart because they are three
+	 * different paths through wlroots (§5.4g) and only one of them was ever
+	 * broken; a session where client sets are 0 is a session that has not
+	 * exercised the thing M3.5E fixed. */
+	uint64_t sets_client;       /* wl_pointer.set_cursor with a surface */
+	uint64_t sets_shape;        /* wp_cursor_shape_v1 */
+	uint64_t sets_xcursor;      /* the compositor's own theme */
+	uint64_t unsets;            /* set_cursor(NULL), or hidden */
 } az_cursor;
+
+/*
+ * Never use the cursor plane.
+ *
+ * Read once. The mechanism is wlr_output_lock_software_cursors(), which
+ * already exists and is what screencopy's overlay_cursor trips -- there is no
+ * new backend behaviour here, only a permanent version of a lock that is
+ * normally held for the duration of a capture.
+ */
+static bool az_cursor_force_software(void) {
+	static int value = -1;
+	if (value < 0) {
+		const char *env = getenv("ASTEROIDZ_AVK_FORCE_SOFTWARE_CURSOR");
+		value = (env != NULL && env[0] == '1');
+	}
+	return value == 1;
+}
 
 /* The scale to pick an image for: the sharpest output in the layout. */
 static float az_cursor_target_scale(void) {
@@ -286,6 +311,7 @@ static void az_cursor_set_xcursor(const char *name) {
 		return;
 	}
 
+	az_cursor.sets_xcursor++;
 	az_cursor.source = AZ_CURSOR_SOURCE_XCURSOR;
 	az_cursor.xcursor = xc;
 	az_cursor.xcursor_scale = scale;
@@ -415,6 +441,10 @@ static void az_cursor_set_surface(struct wlr_surface *surface, int hotspot_x,
 		return;
 	}
 	if (surface == NULL) {
+		/* The client asking for NO pointer image. Distinct from the
+		 * compositor hiding it on an idle timeout: this is a request, it
+		 * persists, and only another set_cursor undoes it. */
+		az_cursor.unsets++;
 		az_cursor_drop_surface();
 		az_cursor.source = AZ_CURSOR_SOURCE_NONE;
 		az_cursor_set_image(NULL, 0, 0, 1.0f, false);
@@ -431,6 +461,7 @@ static void az_cursor_set_surface(struct wlr_surface *surface, int hotspot_x,
 		az_cursor.surface_listening = true;
 	}
 
+	az_cursor.sets_client++;
 	az_cursor.source = AZ_CURSOR_SOURCE_CLIENT;
 	az_cursor.surface_hotspot_x = hotspot_x;
 	az_cursor.surface_hotspot_y = hotspot_y;
