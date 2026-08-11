@@ -1106,6 +1106,90 @@ barrier, not the semaphore, is what orders this today.
 
 ---
 
+## 5.4g M3.5E — the cursor audit, before anything is changed
+
+Three cursor sources reach the screen, and they do **not** share a path. Two
+survived the NULL-renderer topology and one did not. Every line reference below
+is `~/wlroots` at 0.20.
+
+### The three sources
+
+```
+compositor xcursor / cursor-shape          client wl_surface
+  wlr_cursor_set_xcursor()                   wl_pointer.set_cursor
+  asteroidz.c:8160, 7204, 3535               -> setcursor(), asteroidz.c:8175
+        |                                          |
+  output_cursor_set_xcursor_image()          wlr_cursor_set_surface()
+  wlr_cursor.c:497                           wlr_cursor.c:687
+        |                                          |
+  wlr_xcursor_image_get_buffer()             wlr_surface_get_texture()
+  -> a wlr_buffer          <-- WORKS         -> a wlr_texture   <-- BROKEN
+        |                                          |
+  wlr_output_cursor_set_buffer()             output_cursor_set_texture()
+  wlr_cursor.c:502                           wlr_cursor.c:578
+        \____________________  ____________________/
+                             \/
+                    wlr_output_cursor
+                             |
+             output_cursor_attempt_hardware()   output/cursor.c:291
+                    /                 \
+        hardware plane          software: cursor->texture
+        (a wlr_buffer)          wlr_output_add_software_cursors_to_render_pass()
+                                output/cursor.c:91
+```
+
+**Where AVK broke it, exactly:** `wlr_cursor.c:560`,
+`wlr_texture *texture = wlr_surface_get_texture(surface)`. That reads
+`surface->buffer`, the `wlr_client_buffer` wrapper wlroots creates only when
+the compositor was given a renderer. AVK gives `wl_compositor` NULL, so the
+wrapper never exists, the texture is NULL, and the client's cursor has no
+image. Nothing logs it.
+
+**Why xcursor and cursor-shape did NOT break.** Both end at
+`wlr_xcursor_image_get_buffer()`, which returns a **`wlr_buffer`** and never
+touches the compositor's renderer. asteroidz maps cursor-shape onto xcursor at
+`asteroidz.c:3535`, so `wp_cursor_shape_v1` inherits that immunity.
+
+**A second, separate breakage that has not fired yet.** `wlr_cursor.c:530-531`
+does `struct wlr_renderer *renderer = output->renderer; assert(renderer != NULL);`
+on the `wlr_cursor_set_buffer()` path. `output->renderer` is the GLES
+compatibility renderer, which is still non-NULL, so the assert holds today —
+but it is a renderer dependency reachable from the cursor path and it is why
+"the compositor is NULL-renderer" and "the output is NULL-renderer" must not be
+conflated.
+
+**And a third thing, which is why the desktop still works at all.**
+`az_avk_output_supported()` already declines any output that needs a software
+cursor, so those frames silently fall back to SceneFX. AVK has never composited
+a cursor. The regression is therefore visible only where the *hardware* plane
+carries the cursor and the image itself is missing — i.e. client-set cursors.
+
+### The five concepts, kept apart
+
+| | owner today | owner after E |
+|---|---|---|
+| **cursor image ownership** | `wlr_texture` (client) / `wlr_buffer` (xcursor) | AVK image cache, content-generation keyed |
+| **cursor position** | `wlr_cursor` + `wlr_output_cursor` | unchanged — wlroots |
+| **cursor hotspot** | `wlr_output_cursor.hotspot_x/y` | asteroidz cursor state, applied by AVK |
+| **hardware-plane presentation** | `output_cursor_attempt_hardware()` | unchanged — wlroots, still preferred |
+| **software composition** | `wlr_output_add_software_cursors_to_render_pass()` | AVK render command |
+
+### What can be reused rather than reinvented
+
+- **Forcing software mode**: `wlr_output_lock_software_cursors()`
+  (`output/cursor.c:60`) already exists and already disables the hardware
+  cursor. No new backend behaviour is needed for the test switch.
+- **Knowing which mode is live**: `output->hardware_cursor` names the cursor
+  currently on the plane, and the software helper skips exactly that one
+  (`output/cursor.c:99`). That is the state to read rather than re-deriving
+  hardware capability.
+- **Getting the pixels**: `az_surface_buffer()` from M3.5A already holds each
+  surface's committed buffer, locked, with no dependence on a wrapper — which
+  is precisely what the client cursor path needs. Cursor content can go through
+  the same content-generation cache D.1 built.
+
+---
+
 ## M3b work plan (the compositor half) — DONE, kept for the record
 
 Written down here rather than left in a conversation, because this was the
