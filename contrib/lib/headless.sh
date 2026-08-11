@@ -19,6 +19,16 @@
 #               repo, falling back to /usr/bin/asteroidz)
 #   HL_OUTDIR   work dir (default /tmp/asteroidz-hl-<random>)
 #   HL_WIDTH / HL_HEIGHT   output size (default 1920x1080)
+#   HL_OUTPUTS             how many headless outputs (default 1). 2 creates
+#                          HEADLESS-2 immediately to the RIGHT of HEADLESS-1,
+#                          which is what makes "this node belongs to the other
+#                          monitor" a real condition rather than a hypothetical
+#                          -- several AVK counters (nodes_output_culled_before_
+#                          resolve, cursor_culled) can only ever read 0 with a
+#                          single output, and a break test that flips them is
+#                          inert until a second one exists. Costs a second
+#                          compositor output's worth of frames and GPU memory,
+#                          so it is not the default.
 #   HL_EXTRA_KDL           extra config appended verbatim (e.g. a second
 #                          `output HEADLESS-2 { ... }` block for
 #                          multi-monitor tests)
@@ -51,6 +61,10 @@ HL_WLKEYS="$HL_REPO/contrib/wlkeys/wlkeys"
 HL_WLSTATES="$HL_REPO/contrib/wlstates/wlstates"
 HL_WLSANDBOX="$HL_REPO/contrib/wlsandbox/wlsandbox"
 HL_WIDTH="${HL_WIDTH:-1920}"
+# How many headless outputs the backend creates. One unless a test says
+# otherwise; see the HL_OUTPUTS note in the header for why a second one is not
+# free.
+HL_OUTPUTS="${HL_OUTPUTS:-1}"
 HL_HEIGHT="${HL_HEIGHT:-1080}"
 # wlvptr's absolute-pointer extent -- equal to HL_WIDTH/HL_HEIGHT except in
 # hl_start_live's HL_LIVE_MON branch, which overrides these to the full
@@ -99,6 +113,20 @@ hl_start() { # hl_start [EXTRA_KDL]
 	[ -x "$HL_WLKEYS" ] || { echo "hl_start: wlkeys not built -- run: cd contrib/wlkeys && make" >&2; exit 1; }
 
 	HL_CONFIG="$HL_OUTDIR/config.kdl"
+
+	# A second output, placed to the RIGHT of the first with no overlap.
+	#
+	# Side by side matters more than it looks. A pair of outputs stacked at the
+	# same layout origin makes every node touch both of them, so the very
+	# thing a second output is usually added to test -- that work belonging to
+	# one monitor is not done for the other -- is silently untestable. The
+	# offset is HL_WIDTH exactly, so a node at x >= HL_WIDTH is on the second
+	# output and nowhere else.
+	local secondary_output=""
+	if [ "${HL_OUTPUTS:-1}" -ge 2 ]; then
+		secondary_output="output HEADLESS-2 { x $HL_WIDTH; y 0; width $HL_WIDTH; height $HL_HEIGHT; refresh 60 }"
+	fi
+
 	cat > "$HL_CONFIG" <<EOF
 border_radius 8
 borderpx 2
@@ -115,7 +143,8 @@ effects {
 }
 theme { bg-color 0x2a6fd6ff; fg-color 0xffffffff; focus-bg-color 0x2a6fd6ff; focus-fg-color 0xffffffff }
 input { keyboard { xkb { layout "us,de" } } }
-output $HL_MON { width $HL_WIDTH; height $HL_HEIGHT; refresh 60 }
+output $HL_MON { x 0; y 0; width $HL_WIDTH; height $HL_HEIGHT; refresh 60 }
+$secondary_output
 layout {
 	titlebar { enable 1 }
 	scroller { preset 0.3,0.5,0.8 }
@@ -174,6 +203,7 @@ EOF
 		XDG_STATE_HOME="$HL_STATE" \
 		${HL_DBUS_ADDR:+DBUS_SESSION_BUS_ADDRESS="$HL_DBUS_ADDR"} \
 		WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 \
+		WLR_HEADLESS_OUTPUTS="$HL_OUTPUTS" \
 		WLR_RENDERER="${HL_RENDERER:-gles2}" \
 		${HL_ENV:-} \
 		"$HL_ASTEROIDZ" -c "$HL_CONFIG" > "$HL_OUTDIR/comp-stdout.log" 2>&1 &

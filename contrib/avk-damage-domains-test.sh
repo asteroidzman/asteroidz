@@ -21,30 +21,20 @@
 # full-screen wallpapers. With two outputs side by side, a node parked entirely
 # on one of them must be culled before its buffer is resolved.
 #
-# Break test:
+# Break test, which MUST fail:
 #
 #   BREAK=no-cull   AZ_AVK_NO_OUTPUT_CULL=1 -- resolve buffers before testing
 #                   whether the node can touch this output at all.
 #
-#                   *** NOT A FALSIFIER. DO NOT READ ITS PASS AS COVERAGE. ***
+# That break was inert for as long as this script ran a single output, and said
+# so in its own header. A node can only be culled for being entirely on ANOTHER
+# monitor, so with one output `nodes_output_culled_before_resolve` measured 0
+# with the switch on and off alike and the run came back 4/4 either way -- a
+# break test indistinguishable from no coverage.
 #
-#                   This harness runs ONE output, and a node can only be culled
-#                   for being entirely on some other one. Measured with the
-#                   switch on and off, `nodes_output_culled_before_resolve` is
-#                   0 both ways and `shm_upload_bytes` is 0 both ways: there is
-#                   nothing for the switch to stop doing, so the run comes back
-#                   4/4 either way.
-#
-#                   It is left here rather than deleted because the cull is
-#                   real and is measured live -- 2970 of 8010 nodes on the
-#                   dual-monitor desktop. Making it falsifiable needs a second
-#                   headless output (WLR_HEADLESS_OUTPUTS=2) placed beside the
-#                   first, which is a harness change, not a test change.
-#
-#                   The assertions below are about the DAMAGE DOMAINS, and
-#                   those are falsifiable and are what this script is for. The
-#                   cull is described in the commentary because it was found
-#                   here; it is not asserted here.
+# It runs two outputs now (HL_OUTPUTS=2, HEADLESS-2 placed immediately to the
+# right of HEADLESS-1), which is the condition the cull exists for and the only
+# way the counter can move at all.
 set -u
 
 . "$(dirname "$0")/lib/headless.sh"
@@ -61,8 +51,11 @@ OUTDIR="${TMPDIR:-/tmp}/asteroidz-avk-domains-$$"
 HL_OUTDIR="$OUTDIR"
 HL_WIDTH=1280 HL_HEIGHT=720
 HL_ENV="ASTEROIDZ_RENDERER=avk"
+# Two outputs, side by side. Without a second one the cull below is not merely
+# untested, it is unreachable.
+HL_OUTPUTS=2
 [ "$BREAK" = no-cull ] && HL_ENV="$HL_ENV AZ_AVK_NO_OUTPUT_CULL=1"
-export HL_OUTDIR HL_WIDTH HL_HEIGHT HL_ENV
+export HL_OUTDIR HL_WIDTH HL_HEIGHT HL_ENV HL_OUTPUTS
 
 field() { python3 - "$1" "$2" <<'PY'
 import json, sys
@@ -112,6 +105,21 @@ hl_assert "and the surface was looked up on those frames" \
 # than demanding a hard zero.
 hl_assert "but the copy cost stayed negligible (${BYTES} B over $FRAMES frames)" \
 	"$([ "${BYTES:-999999999}" -lt 400000 ] && echo true || echo false)" "true"
+
+# ── the output cull ────────────────────────────────────────────────────────
+# The scene walk starts at the ROOT, so every output frame visits every node --
+# including the other monitor's full-screen wallpaper, thousands of pixels
+# away. Resolving one costs an import or a copy and produces a command the
+# renderer then scissors to nothing.
+#
+# This is the assertion that needs the second output to exist at all: a node
+# can only be culled for being entirely somewhere else.
+CULLED="$(field "$OUTDIR/stats-move.json" nodes_output_culled_before_resolve)"
+RESOLVES="$(field "$OUTDIR/stats-move.json" buffer_resolve_attempts)"
+echo "  note: $CULLED nodes culled before resolve, $RESOLVES resolved"
+
+hl_assert "nodes belonging to the other output were culled before resolving ($CULLED)" \
+	"$([ "${CULLED:-0}" -gt 0 ] && echo true || echo false)" "true"
 
 hl_stop
 

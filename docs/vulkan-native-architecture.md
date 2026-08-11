@@ -1366,7 +1366,23 @@ arrives from wlroots, not from AVK.
   directions.
 - **Live acceptance** on DP-1 + HDMI-A-1.
 
-*(Stage 3 closed the first three of these; the rest still stand.)*
+*(Stage 3 closed the first three of these. Multi-output became testable once
+the harness grew `HL_OUTPUTS=2` — see below. Hide/unset damage and live
+acceptance still stand.)*
+
+**Multi-output, resolved.** `nodes_output_culled_before_resolve` reads 0 on a
+single output by construction, so both the counter and the break test that
+flips it were unreachable. `contrib/lib/headless.sh` now takes `HL_OUTPUTS=2`
+and places `HEADLESS-2` immediately to the right of `HEADLESS-1`;
+`avk-damage-domains-test.sh` runs two outputs and asserts the cull, measuring 6
+culled / 24 resolved normally against 0 culled / 40 resolved under
+`BREAK=no-cull`.
+
+`cursor_culled` stays at 0, and correctly: `wlr_output_cursor.visible` is
+per-output and wlroots computes it, so a cursor belonging to the other monitor
+is skipped as not-visible long before the cull test. The check is defensive
+against a visible cursor landing outside the buffer, which normal operation
+does not produce. Recorded so a permanent 0 is not read as missing coverage.
 
 ---
 

@@ -274,19 +274,43 @@ suite:
 | `avk-shm-partial` `source-full` 18/23, `omit-region` 22/23 | fail correctly |
 | `avk-sync` `presentsync` 8/10 | fails correctly |
 | `avk-damage` `preserve` 6/12, `stale` 9/12 | fail correctly |
+| `avk-damage-domains` `no-cull` | fails correctly *(after the harness change below)* |
 | `avk-shm-partial` `unsafe-reuse` | **NOT TESTED** — documented, could not be made observable |
-| `avk-damage-domains` `no-cull` | **NOT A FALSIFIER** — 4/4 either way |
 
-The last one is a different failure from the `lookup` one, and worth
-distinguishing. `lookup` was a working break that an implementation change
-neutralised. `no-cull` never could have failed in this harness: the suite runs
-**one output**, a node is only culled for being entirely on *another* one, and
-`nodes_output_culled_before_resolve` measures 0 with the switch on and off
-alike. The cull is real — 2970 of 8010 nodes on the live dual-monitor desktop —
-but nothing in a single-output run depends on it, so the script now says so in
-its header instead of listing it as a break that must fail. Making it real needs
-a second headless output (`WLR_HEADLESS_OUTPUTS=2`), which is a harness change
-rather than a test change. `BREAK=identity` is too little — cache on the buffer
+`no-cull` failed differently from `lookup`, and the distinction is worth
+keeping. `lookup` was a working break that an implementation change
+neutralised. `no-cull` never *could* have failed: the suite ran **one output**,
+a node is only culled for being entirely on *another* one, and
+`nodes_output_culled_before_resolve` measured 0 with the switch on and off
+alike. Not weak coverage — none, from the day it was written, while looking
+exactly like a break test.
+
+### A second output, and why several counters needed one
+
+`HL_OUTPUTS=2` makes the backend create `HEADLESS-2` and places it immediately
+to the **right** of `HEADLESS-1`. Side by side is the whole point: a pair
+stacked at the same layout origin makes every node touch both outputs, so the
+thing a second output is usually added to test — that work belonging to one
+monitor is not done for the other — stays untestable.
+
+With it, `avk-damage-domains-test.sh` asserts the cull directly, and the break
+finally fails:
+
+| | culled | resolved |
+| :--- | ---: | ---: |
+| normal | 6 | 24 |
+| `BREAK=no-cull` | 0 | 40 |
+
+It is not the default. A second output costs another output's worth of frames
+and GPU memory on every test that does not need it.
+
+One counter stays at 0 and should: **`cursor_culled` is defensive only.**
+`wlr_output_cursor.visible` is per-output and wlroots already computes it, so a
+cursor on the other monitor is skipped as not-visible before the cull test is
+ever reached. The check exists so that a cursor which *is* visible but lands
+outside the buffer cannot produce a draw; nothing in normal operation reaches
+it. That is a different thing from untested coverage and is recorded here so it
+is not mistaken for one. `BREAK=identity` is too little — cache on the buffer
 pointer, never re-upload, and a client that reuses a `wl_buffer` freezes on its
 first frame. **Neither break is caught by the other's assertions**, which is why
 both are here.
