@@ -1,0 +1,433 @@
+/* _GNU_SOURCE for asprintf(), which is what keeps the cache-path building
+ * free of fixed-size buffers and the truncation checks they need. */
+#define _GNU_SOURCE
+
+#include "avk_device.h"
+#include "avk_phys.h"
+
+#include <errno.h>
+#include <fcntl.h>
+#include <inttypes.h>
+#include <limits.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+/* ── pipeline cache ─────────────────────────────────────────────────────────
+ *
+ * On disk, keyed by driver, so a driver update does not feed a stale blob to a
+ * new compiler. The cache is an optimisation for first-use hitches only; every
+ * failure here is a warning, never a hard error -- a compositor that refuses to
+ * start because $XDG_CACHE_HOME is read-only would be an absurd trade.
+ */
+static char *pipeline_cache_path(const struct avk_caps *caps) {
+	const char *base = getenv("XDG_CACHE_HOME");
+	char dir[PATH_MAX];
+	if (base != NULL && base[0] == '/') {
+		snprintf(dir, sizeof(dir), "%s/asteroidz", base);
+	} else {
+		const char *home = getenv("HOME");
+		if (home == NULL || home[0] != '/') {
+			return NULL;
+		}
+		snprintf(dir, sizeof(dir), "%s/.cache/asteroidz", home);
+	}
+
+	if (mkdir(dir, 0700) != 0 && errno != EEXIST) {
+		avk_log(AVK_DEBUG, "pipeline cache: cannot create %s: %s", dir,
+			strerror(errno));
+		return NULL;
+	}
+
+	char *path = NULL;
+	if (asprintf(&path, "%s/avk-pipeline-%08x-%08x-%u.bin", dir,
+			caps->vendor_id, caps->device_id, (unsigned)caps->driver_id) < 0) {
+		return NULL;
+	}
+	return path;
+}
+
+static void create_pipeline_cache(struct avk_device *dev) {
+	dev->pipeline_cache_path = pipeline_cache_path(&dev->caps);
+
+	void *data = NULL;
+	size_t size = 0;
+	if (dev->pipeline_cache_path != NULL) {
+		FILE *f = fopen(dev->pipeline_cache_path, "rb");
+		if (f != NULL) {
+			if (fseek(f, 0, SEEK_END) == 0) {
+				long len = ftell(f);
+				if (len > 0 && fseek(f, 0, SEEK_SET) == 0) {
+					data = malloc((size_t)len);
+					if (data != NULL
+							&& fread(data, 1, (size_t)len, f) == (size_t)len) {
+						size = (size_t)len;
+					} else {
+						free(data);
+						data = NULL;
+					}
+				}
+			}
+			fclose(f);
+		}
+	}
+
+	VkPipelineCacheCreateInfo info = {
+		.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO,
+		.initialDataSize = size,
+		.pInitialData = data,
+	};
+	VkResult res = vkCreatePipelineCache(dev->dev, &info, NULL,
+		&dev->pipeline_cache);
+	if (res != VK_SUCCESS) {
+		/* A corrupt or foreign blob is the likely cause; drop it and retry
+		 * empty rather than run with no cache for the rest of the session. */
+		avk_log(AVK_WARN, "pipeline cache rejected (%s); starting empty",
+			avk_strerror(res));
+		info.initialDataSize = 0;
+		info.pInitialData = NULL;
+		res = vkCreatePipelineCache(dev->dev, &info, NULL,
+			&dev->pipeline_cache);
+		if (res != VK_SUCCESS) {
+			avk_check(res, "vkCreatePipelineCache");
+			dev->pipeline_cache = VK_NULL_HANDLE;
+		}
+	} else if (size > 0) {
+		avk_log(AVK_DEBUG, "pipeline cache: loaded %zu bytes from %s", size,
+			dev->pipeline_cache_path);
+	}
+	free(data);
+}
+
+void avk_device_save_pipeline_cache(struct avk_device *dev) {
+	if (dev->pipeline_cache == VK_NULL_HANDLE
+			|| dev->pipeline_cache_path == NULL) {
+		return;
+	}
+
+	size_t size = 0;
+	if (vkGetPipelineCacheData(dev->dev, dev->pipeline_cache, &size, NULL)
+			!= VK_SUCCESS || size == 0) {
+		return;
+	}
+	void *data = malloc(size);
+	if (data == NULL) {
+		return;
+	}
+	if (vkGetPipelineCacheData(dev->dev, dev->pipeline_cache, &size, data)
+			!= VK_SUCCESS) {
+		free(data);
+		return;
+	}
+
+	/* Written to a temporary and renamed: a compositor that is killed
+	 * mid-write would otherwise leave a truncated cache that the next start
+	 * has to detect and discard. */
+	char *tmp = NULL;
+	if (asprintf(&tmp, "%s.tmp", dev->pipeline_cache_path) < 0) {
+		free(data);
+		return;
+	}
+	FILE *f = fopen(tmp, "wb");
+	if (f != NULL) {
+		bool ok = fwrite(data, 1, size, f) == size;
+		ok = (fclose(f) == 0) && ok;
+		if (ok) {
+			if (rename(tmp, dev->pipeline_cache_path) == 0) {
+				avk_log(AVK_DEBUG, "pipeline cache: wrote %zu bytes to %s",
+					size, dev->pipeline_cache_path);
+			} else {
+				unlink(tmp);
+			}
+		} else {
+			unlink(tmp);
+		}
+	}
+	free(tmp);
+	free(data);
+}
+
+/* ── device ─────────────────────────────────────────────────────────────── */
+
+struct avk_device *avk_device_create(struct avk_instance *inst, int drm_fd) {
+	struct avk_phys *list = NULL;
+	uint32_t count = 0;
+	if (!avk_phys_enumerate(inst, &list, &count)) {
+		return NULL;
+	}
+
+	int index = avk_phys_select(list, count, drm_fd);
+	avk_phys_log_all(list, count, index);
+	if (index < 0) {
+		free(list);
+		return NULL;
+	}
+
+	struct avk_device *dev = calloc(1, sizeof(*dev));
+	if (dev == NULL) {
+		free(list);
+		avk_log(AVK_ERROR, "allocation failed");
+		return NULL;
+	}
+	dev->instance = inst;
+	dev->phys = list[index].handle;
+	dev->caps = list[index].caps;
+	dev->drm_fd = -1;
+	free(list);
+
+	if (drm_fd >= 0) {
+		dev->drm_fd = fcntl(drm_fd, F_DUPFD_CLOEXEC, 0);
+		if (dev->drm_fd < 0) {
+			avk_log(AVK_ERROR, "cannot dup the DRM fd: %s", strerror(errno));
+			free(dev);
+			return NULL;
+		}
+	}
+
+	/* ── extensions to enable ──────────────────────────────────────────── */
+	const char *exts[8];
+	uint32_t ext_count = 0;
+	exts[ext_count++] = VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME;
+	exts[ext_count++] = VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME;
+	exts[ext_count++] = VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME;
+	exts[ext_count++] = VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME;
+	exts[ext_count++] = VK_EXT_QUEUE_FAMILY_FOREIGN_EXTENSION_NAME;
+	if (dev->caps.external_fence_fd) {
+		exts[ext_count++] = VK_KHR_EXTERNAL_FENCE_FD_EXTENSION_NAME;
+	}
+	if (dev->caps.memory_budget) {
+		exts[ext_count++] = VK_EXT_MEMORY_BUDGET_EXTENSION_NAME;
+	}
+	if (dev->caps.calibrated_timestamps) {
+		exts[ext_count++] = VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME;
+	}
+
+	/* ── features to enable ────────────────────────────────────────────── */
+	VkPhysicalDeviceVulkan13Features vk13 = {
+		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
+		.synchronization2 = VK_TRUE,
+		.dynamicRendering = dev->caps.dynamic_rendering ? VK_TRUE : VK_FALSE,
+	};
+	VkPhysicalDeviceVulkan12Features vk12 = {
+		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
+		.pNext = &vk13,
+		.timelineSemaphore = VK_TRUE,
+	};
+	VkPhysicalDeviceVulkan11Features vk11 = {
+		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
+		.pNext = &vk12,
+		.samplerYcbcrConversion =
+			dev->caps.sampler_ycbcr_conversion ? VK_TRUE : VK_FALSE,
+	};
+	VkPhysicalDeviceFeatures2 features = {
+		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+		.pNext = &vk11,
+	};
+
+	const float priority = 1.0f;
+	VkDeviceQueueCreateInfo queue_info = {
+		.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+		.queueFamilyIndex = dev->caps.graphics_family,
+		.queueCount = 1,
+		.pQueuePriorities = &priority,
+	};
+
+	VkDeviceCreateInfo device_info = {
+		.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+		.pNext = &features,
+		.queueCreateInfoCount = 1,
+		.pQueueCreateInfos = &queue_info,
+		.enabledExtensionCount = ext_count,
+		.ppEnabledExtensionNames = exts,
+	};
+
+	VkResult res = vkCreateDevice(dev->phys, &device_info, NULL, &dev->dev);
+	if (res != VK_SUCCESS) {
+		avk_check(res, "vkCreateDevice");
+		goto error;
+	}
+
+	vkGetDeviceQueue(dev->dev, dev->caps.graphics_family, 0,
+		&dev->graphics_queue);
+
+	/* ── the device timeline ───────────────────────────────────────────── */
+	VkSemaphoreTypeCreateInfo timeline_type = {
+		.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
+		.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE,
+		.initialValue = 0,
+	};
+	VkSemaphoreCreateInfo sem_info = {
+		.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+		.pNext = &timeline_type,
+	};
+	res = vkCreateSemaphore(dev->dev, &sem_info, NULL, &dev->timeline);
+	if (res != VK_SUCCESS) {
+		avk_check(res, "vkCreateSemaphore (device timeline)");
+		goto error;
+	}
+	/* Starts at 1, not 0: 0 is the value the semaphore already has, so a
+	 * resource retired "at 0" would be freed before its submission was even
+	 * recorded. Every reserved point is therefore strictly in the future. */
+	dev->timeline_next = 1;
+
+	create_pipeline_cache(dev);
+
+	avk_device_name_object(dev, VK_OBJECT_TYPE_SEMAPHORE,
+		(uint64_t)dev->timeline, "avk device timeline");
+	avk_device_name_object(dev, VK_OBJECT_TYPE_QUEUE,
+		(uint64_t)dev->graphics_queue, "avk graphics queue (family %u)",
+		dev->caps.graphics_family);
+
+	return dev;
+
+error:
+	if (dev->timeline != VK_NULL_HANDLE) {
+		vkDestroySemaphore(dev->dev, dev->timeline, NULL);
+	}
+	if (dev->dev != VK_NULL_HANDLE) {
+		vkDestroyDevice(dev->dev, NULL);
+	}
+	if (dev->drm_fd >= 0) {
+		close(dev->drm_fd);
+	}
+	free(dev);
+	return NULL;
+}
+
+void avk_device_destroy(struct avk_device *dev) {
+	if (dev == NULL) {
+		return;
+	}
+
+	avk_device_save_pipeline_cache(dev);
+
+	/* The one legitimate vkDeviceWaitIdle in the codebase. Teardown is not the
+	 * frame path: everything below is about to be destroyed and the GPU has to
+	 * be finished with all of it first. Anywhere else, this call is a bug. */
+	if (dev->dev != VK_NULL_HANDLE) {
+		vkDeviceWaitIdle(dev->dev);
+	}
+
+	if (dev->pipeline_cache != VK_NULL_HANDLE) {
+		vkDestroyPipelineCache(dev->dev, dev->pipeline_cache, NULL);
+	}
+	if (dev->timeline != VK_NULL_HANDLE) {
+		vkDestroySemaphore(dev->dev, dev->timeline, NULL);
+	}
+	if (dev->dev != VK_NULL_HANDLE) {
+		vkDestroyDevice(dev->dev, NULL);
+	}
+	if (dev->drm_fd >= 0) {
+		close(dev->drm_fd);
+	}
+	free(dev->pipeline_cache_path);
+	free(dev);
+}
+
+uint64_t avk_device_timeline_value(struct avk_device *dev) {
+	uint64_t value = 0;
+	VkResult res = vkGetSemaphoreCounterValue(dev->dev, dev->timeline, &value);
+	if (res != VK_SUCCESS) {
+		/* Includes VK_ERROR_DEVICE_LOST. Reporting 0 is the safe direction:
+		 * nothing is considered retired, so nothing in use gets freed while
+		 * device-loss recovery works out what to do. */
+		avk_check(res, "vkGetSemaphoreCounterValue");
+		return 0;
+	}
+	return value;
+}
+
+uint64_t avk_device_timeline_reserve(struct avk_device *dev) {
+	return dev->timeline_next++;
+}
+
+bool avk_device_timeline_wait(struct avk_device *dev, uint64_t value,
+		uint64_t timeout_ns) {
+	VkSemaphoreWaitInfo info = {
+		.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
+		.semaphoreCount = 1,
+		.pSemaphores = &dev->timeline,
+		.pValues = &value,
+	};
+	VkResult res = vkWaitSemaphores(dev->dev, &info, timeout_ns);
+	if (res == VK_TIMEOUT) {
+		return false;
+	}
+	return avk_check(res, "vkWaitSemaphores");
+}
+
+void avk_device_name_object(struct avk_device *dev, VkObjectType type,
+		uint64_t handle, const char *fmt, ...) {
+	if (dev->instance->set_object_name == NULL || handle == 0) {
+		return;
+	}
+
+	char name[128];
+	va_list args;
+	va_start(args, fmt);
+	vsnprintf(name, sizeof(name), fmt, args);
+	va_end(args);
+
+	VkDebugUtilsObjectNameInfoEXT info = {
+		.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT,
+		.objectType = type,
+		.objectHandle = handle,
+		.pObjectName = name,
+	};
+	dev->instance->set_object_name(dev->dev, &info);
+}
+
+void avk_device_log_caps(const struct avk_device *dev) {
+	const struct avk_caps *c = &dev->caps;
+
+	avk_log(AVK_INFO, "avk device: %s", c->device_name);
+	avk_log(AVK_INFO, "avk device: driver %s (%s), API %u.%u.%u, "
+		"vendor 0x%04x device 0x%04x",
+		c->driver_name, c->driver_info,
+		VK_API_VERSION_MAJOR(c->api_version),
+		VK_API_VERSION_MINOR(c->api_version),
+		VK_API_VERSION_PATCH(c->api_version),
+		c->vendor_id, c->device_id);
+
+	if (c->has_drm) {
+		avk_log(AVK_INFO, "avk device: DRM primary %" PRId64 ":%" PRId64
+			", render %" PRId64 ":%" PRId64,
+			c->drm_has_primary ? c->drm_primary_major : -1,
+			c->drm_has_primary ? c->drm_primary_minor : -1,
+			c->drm_has_render ? c->drm_render_major : -1,
+			c->drm_has_render ? c->drm_render_minor : -1);
+	} else {
+		avk_log(AVK_WARN, "avk device: no %s -- this GPU cannot be matched to "
+			"a DRM node, so multi-GPU buffer routing is guesswork",
+			VK_EXT_PHYSICAL_DEVICE_DRM_EXTENSION_NAME);
+	}
+
+	avk_log(AVK_INFO, "avk caps: timeline=%d sync2=%d dynamic_rendering=%d "
+		"ycbcr=%d",
+		c->timeline_semaphore, c->synchronization2, c->dynamic_rendering,
+		c->sampler_ycbcr_conversion);
+	avk_log(AVK_INFO, "avk caps: dmabuf=%d drm_modifiers=%d foreign_queue=%d "
+		"external_mem_fd=%d external_sem_fd=%d external_fence_fd=%d",
+		c->external_memory_dma_buf, c->image_drm_format_modifier,
+		c->queue_family_foreign, c->external_memory_fd,
+		c->external_semaphore_fd, c->external_fence_fd);
+	avk_log(AVK_INFO, "avk caps: sync_file import=%d export=%d, "
+		"timeline opaque-fd export=%d %s",
+		c->semaphore_sync_fd_import, c->semaphore_sync_fd_export,
+		c->timeline_opaque_fd_export,
+		(c->semaphore_sync_fd_import && c->semaphore_sync_fd_export)
+			? "(implicit-sync interop available)"
+			: "(NO implicit-sync interop -- fences may need CPU waits)");
+	avk_log(AVK_INFO, "avk caps: queues graphics+compute=%u transfer=%s "
+		"compute=%s",
+		c->graphics_family,
+		c->has_dedicated_transfer_family ? "yes" : "none",
+		c->has_dedicated_compute_family ? "yes" : "none");
+	avk_log(AVK_INFO, "avk caps: max 2D image %u, max alloc %" PRIu64 " MiB, "
+		"timestamp period %.2f ns, memory_budget=%d",
+		c->max_image_dimension_2d,
+		c->max_memory_allocation_size / (1024 * 1024),
+		(double)c->timestamp_period, c->memory_budget);
+}

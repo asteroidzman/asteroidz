@@ -25,6 +25,22 @@ if sysconfdir.startswith(prefix) and not is_nixos
 endif
 
 cc = meson.get_compiler('c')
+
+# Which rendering architectures to build.
+#
+# During the migration both are built: GLES via SceneFX is the known-good
+# recovery path and stays selectable, while the asteroidz-owned Vulkan engine
+# grows underneath it. The end state is -Drenderer=vulkan with GLES demoted;
+# until then, dropping either one has to be something you asked for.
+build_vulkan = get_option('renderers').contains('vulkan')
+build_gles2 = get_option('renderers').contains('gles2')
+if not build_vulkan and not build_gles2
+  error('-Drenderers needs at least one of gles2, vulkan')
+endif
+if build_vulkan
+  subdir('src/render/vulkan')
+endif
+
 libm = cc.find_library('m')
 libdrm = dependency('libdrm')
 xcb = dependency('xcb', required : get_option('xwayland'))
@@ -232,6 +248,25 @@ test('kdl-edit', test_kdl_edit)
 test_ipc_out = executable('test-ipc-out', 'tests/test-ipc-out.c',
                           build_by_default : false)
 test('ipc-out', test_ipc_out)
+
+# ── the Vulkan engine ───────────────────────────────────────────────────────
+#
+# M1 of the migration in docs/vulkan-native-architecture.md. Built whenever
+# 'vulkan' is in -Drenderers, which it is by default; the compositor does not
+# use it yet (that is M3), so this is a library plus its tests and nothing in
+# asteroidz.c links against it.
+if build_vulkan
+  test('avk-isolation', find_program('tests/check-vulkan-isolation.py'))
+
+  # A real GPU test: it opens a render node, creates a device, drives the
+  # command ring and the retire queue. Exits 77 (skip) where there is no GPU,
+  # so a build machine without DRM reports "skipped" rather than a red X for
+  # hardware it does not have.
+  test_avk_core = executable('test-avk-core', 'tests/test-avk-core.c',
+                             dependencies : [avk_dep],
+                             build_by_default : false)
+  test('avk-core', test_avk_core, timeout : 60)
+endif
 
 # Runs from the source root so the corpus case can open assets/config.kdl --
 # editing the config we actually ship is the closest thing to editing the
