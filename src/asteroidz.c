@@ -1731,6 +1731,19 @@ static struct wl_event_source *sync_keymap;
 static uint64_t az_pointer_enters;
 static uint64_t az_pointer_focus_clears;
 static uint64_t az_pointer_motions;
+/*
+ * The ones nobody asked for: motionnotify(time == 0) is the compositor
+ * re-deciding what is under a pointer that did not move. arrange() ends with
+ * one, and a client that reconfigures itself several times while it starts up
+ * drives several arranges -- each re-running the hit test against geometry
+ * that is still moving.
+ *
+ * Separate from az_pointer_motions because that one cannot tell a synthetic
+ * call from a real mouse: a 1000Hz mouse and a re-notification storm look
+ * identical in it, which is exactly the ambiguity that made the first
+ * measurement unfalsifiable.
+ */
+static uint64_t az_pointer_notify_internal;
 
 #include "action/client.h"
 #include "action/output.h"
@@ -7119,6 +7132,9 @@ void motionnotify(uint32_t time, struct wlr_input_device *device, double dx,
 	bool should_lock = false;
 
 	/* time is 0 in internal calls meant to restore pointer focus. */
+	if (time == 0) {
+		az_pointer_notify_internal++;
+	}
 	if (time) {
 		wlr_relative_pointer_manager_v1_send_relative_motion(
 			relative_pointer_mgr, seat, (uint64_t)time * 1000, dx, dy,

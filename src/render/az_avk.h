@@ -2643,6 +2643,8 @@ static cJSON *az_avk_stats_json(void) {
 	cJSON_AddNumberToObject(o, "pointer_focus_clears",
 		(double)az_pointer_focus_clears);
 	cJSON_AddNumberToObject(o, "pointer_motions", (double)az_pointer_motions);
+	cJSON_AddNumberToObject(o, "pointer_notify_internal",
+		(double)az_pointer_notify_internal);
 	cJSON_AddBoolToObject(o, "cursor_force_software",
 		az_cursor_force_software());
 	/*
