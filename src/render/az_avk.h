@@ -90,6 +90,11 @@ struct az_avk {
 	uint64_t buffer_imports;      /* client buffers resolved to an avk_image */
 	uint64_t buffer_import_fails;
 	uint64_t shm_uploads;         /* re-uploads of CPU buffers */
+	uint64_t commit_imports;      /* buffers taken ownership of at commit */
+	uint64_t late_imports;        /* taken at DRAW time -- must stay 0 for
+	                               * surfaces; see az_avk_walk_node() */
+	uint64_t cache_hits;
+	uint64_t cache_misses;
 
 	/* Each of these is a real limitation, and each is said exactly once so a
 	 * log stays readable while still telling the truth. */
@@ -101,6 +106,7 @@ struct az_avk {
 	bool warned_shm;
 	bool warned_shm_source_gone;
 	bool warned_gradient;
+	bool warned_late_import;
 };
 
 static struct az_avk avk = {0};
@@ -129,6 +135,12 @@ struct az_avk_buffer {
 	/* Set once nothing worked, so the failure is diagnosed once instead of
 	 * once per frame for as long as the window is open. */
 	bool failed;
+
+	/* True when this entry was created from a wl_surface commit rather than
+	 * discovered mid-frame. The distinction is the whole ownership rule: at
+	 * commit the client's content is guaranteed valid, and later it is only
+	 * valid by luck. */
+	bool taken_at_commit;
 };
 
 static void az_avk_buffer_destroy(struct az_avk_buffer *entry) {
@@ -164,6 +176,53 @@ static const struct wlr_addon_interface az_avk_buffer_addon_impl = {
 	.name = "az_avk_buffer",
 	.destroy = az_avk_buffer_addon_destroy,
 };
+
+/*
+ * What a buffer actually IS, decided without asking a renderer.
+ *
+ * The old path answered "can this be drawn?" with "does it have a
+ * wlr_texture?", which is a question about a renderer rather than about the
+ * buffer. This asks the buffer: it is a dma-buf, or it is CPU-readable, or it
+ * is neither and nothing can draw it. A single-pixel buffer is CPU-readable
+ * like any other and needs no special case -- it is called out here only
+ * because it is the one buffer type that is neither client-allocated nor
+ * shared memory, and a reader looking for it should find the answer.
+ */
+enum az_buffer_kind {
+	AZ_BUFFER_NONE,
+	AZ_BUFFER_DMABUF,
+	AZ_BUFFER_DATA_PTR,
+};
+
+struct az_buffer_source {
+	enum az_buffer_kind kind;
+	struct wlr_dmabuf_attributes dmabuf;   /* AZ_BUFFER_DMABUF only */
+};
+
+static bool az_buffer_get_source(struct wlr_buffer *buffer,
+		struct az_buffer_source *out) {
+	*out = (struct az_buffer_source){ .kind = AZ_BUFFER_NONE };
+	if (buffer == NULL) {
+		return false;
+	}
+	if (wlr_buffer_get_dmabuf(buffer, &out->dmabuf)) {
+		out->kind = AZ_BUFFER_DMABUF;
+		return true;
+	}
+	/* Probed by opening and immediately closing the access window. The
+	 * alternative -- inspecting buffer->impl -- is reaching into wlroots
+	 * internals to learn something wlroots will answer if asked. */
+	void *data = NULL;
+	uint32_t format = 0;
+	size_t stride = 0;
+	if (wlr_buffer_begin_data_ptr_access(buffer,
+			WLR_BUFFER_DATA_PTR_ACCESS_READ, &data, &format, &stride)) {
+		wlr_buffer_end_data_ptr_access(buffer);
+		out->kind = AZ_BUFFER_DATA_PTR;
+		return true;
+	}
+	return false;
+}
 
 /* wlroots' dma-buf attributes into AVK's. Two structs saying the same thing,
  * because the engine may not include a wlroots header -- the conversion is the
@@ -296,11 +355,13 @@ static struct avk_image *az_avk_image_for_buffer(struct wlr_buffer *buffer) {
 			 * every refresh. */
 			return NULL;
 		}
+		avk.cache_hits++;
 		if (entry->is_shm) {
 			return az_avk_upload_shm(entry) ? entry->image : NULL;
 		}
 		return entry->image;
 	}
+	avk.cache_misses++;
 
 	entry = calloc(1, sizeof(*entry));
 	if (entry == NULL) {
@@ -311,17 +372,28 @@ static struct avk_image *az_avk_image_for_buffer(struct wlr_buffer *buffer) {
 		&az_avk_buffer_addon_impl);
 	wl_list_insert(&avk.buffers, &entry->link);
 
-	struct wlr_dmabuf_attributes dmabuf;
-	if (wlr_buffer_get_dmabuf(buffer, &dmabuf)) {
+	struct az_buffer_source source;
+	az_buffer_get_source(buffer, &source);
+	switch (source.kind) {
+	case AZ_BUFFER_DMABUF: {
 		struct avk_dmabuf_attributes attribs;
-		az_avk_attribs_from_wlr(&attribs, &dmabuf);
+		az_avk_attribs_from_wlr(&attribs, &source.dmabuf);
+		/* The importer dup()s every fd it keeps, so from here on AVK's copy of
+		 * the content survives the client destroying its wl_buffer. */
 		entry->image = avk_dmabuf_import(&avk.importer, &attribs, false);
-	} else {
-		/* Not a dma-buf: the only other thing a wlr_buffer can be is
-		 * CPU-accessible. */
+		break;
+	}
+	case AZ_BUFFER_DATA_PTR:
 		if (!az_avk_upload_shm(entry)) {
 			entry->image = NULL;
 		}
+		break;
+	case AZ_BUFFER_NONE:
+		wlr_log(WLR_ERROR, "AVK: a %dx%d buffer is neither a dma-buf nor "
+			"CPU-readable; nothing can draw it", buffer->width,
+			buffer->height);
+		entry->image = NULL;
+		break;
 	}
 
 	if (entry->image == NULL) {
@@ -591,10 +663,49 @@ static void az_avk_walk_children(struct az_avk_walk *walk,
 	}
 }
 
+/*
+ * One frame's scene, as AVK sees it, at DEBUG.
+ *
+ * Enabled with AVK_SCENE_DUMP=<n>: dump frame n and stop. This exists because
+ * twice now a rendering fault has been diagnosed by guessing at the scene when
+ * the answer was one print away -- once a border rect covering its own window,
+ * once a surface node that was simply not there. The scene walker is the only
+ * place that knows what AVK was actually asked to draw.
+ */
+static bool az_avk_dumping(void) {
+	static int frame = -2;
+	if (frame == -2) {
+		const char *env = getenv("AVK_SCENE_DUMP");
+		frame = env != NULL ? atoi(env) : -1;
+	}
+	return frame >= 0 && (uint64_t)frame == avk.frames;
+}
+
 static void az_avk_walk_node(struct az_avk_walk *walk,
 		struct wlr_scene_node *node, int lx, int ly) {
 	if (!node->enabled) {
+		if (az_avk_dumping()) {
+			wlr_log(WLR_ERROR, "scene: node=%p type=%d DISABLED at %d,%d",
+				(void *)node, node->type, lx, ly);
+		}
 		return;
+	}
+	if (az_avk_dumping()) {
+		int w = 0, h = 0;
+		if (node->type == WLR_SCENE_NODE_RECT) {
+			w = wlr_scene_rect_from_node(node)->width;
+			h = wlr_scene_rect_from_node(node)->height;
+		} else if (node->type == WLR_SCENE_NODE_BUFFER) {
+			struct wlr_scene_buffer *b = wlr_scene_buffer_from_node(node);
+			w = b->dst_width;
+			h = b->dst_height;
+			wlr_log(WLR_ERROR, "scene: node=%p BUFFER at %d,%d %dx%d buffer=%p",
+				(void *)node, lx, ly, w, h, (void *)b->buffer);
+		}
+		if (node->type != WLR_SCENE_NODE_BUFFER) {
+			wlr_log(WLR_ERROR, "scene: node=%p type=%d at %d,%d %dx%d",
+				(void *)node, node->type, lx, ly, w, h);
+		}
 	}
 
 	switch (node->type) {
@@ -686,6 +797,27 @@ static void az_avk_walk_node(struct az_avk_walk *walk,
 		if (dst.width <= 0 || dst.height <= 0) {
 			return;
 		}
+		/*
+		 * A surface's content must already be ours by now.
+		 *
+		 * If this is the first time AVK has seen a surface's buffer at DRAW
+		 * time, the commit hook did not run, and the only reason it renders
+		 * correctly is that the client has not yet reused or destroyed the
+		 * buffer. That is the bug this milestone removed, so it is worth a
+		 * loud complaint rather than a silent success.
+		 */
+		if (wlr_scene_surface_try_from_buffer(buf) != NULL &&
+				wlr_addon_find(&buf->buffer->addons, &avk,
+					&az_avk_buffer_addon_impl) == NULL) {
+			avk.late_imports++;
+			if (!avk.warned_late_import) {
+				avk.warned_late_import = true;
+				wlr_log(WLR_ERROR, "AVK: a surface's buffer reached the frame "
+					"without having been taken at commit; AVK's ownership of "
+					"client content is not what it should be");
+			}
+		}
+
 		struct avk_image *image = az_avk_image_for_buffer(buf->buffer);
 		if (image == NULL) {
 			/* Already logged, in full, by the importer. Dropping the command
@@ -949,6 +1081,99 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 	return true;
 }
 
+/* ── taking ownership at commit ─────────────────────────────────────────── */
+
+/*
+ * When AVK acquires the content, and why it cannot be later.
+ *
+ * A client may destroy its wl_buffer the moment it has committed it. The old
+ * architecture survived that because wlroots had already copied the pixels
+ * into a renderer-owned wlr_texture; AVK has no such copy, so it has to take
+ * its own ownership at the one moment the content is guaranteed valid -- the
+ * commit itself.
+ *
+ * "Ownership" here does not mean holding the wlr_buffer. It means holding
+ * something that outlives it: a dma-buf import dup()s every file descriptor,
+ * and a CPU buffer is copied into an AVK image. After that the client can do
+ * whatever it likes with the original.
+ *
+ * The pattern this replaces -- wait for a render frame, then hope the buffer
+ * is still readable -- is not merely fragile. It produced exactly one visible
+ * symptom, a missing wallpaper, and it would have produced others at random
+ * for any client that draws once and lets go.
+ */
+struct az_avk_surface {
+	struct wlr_surface *surface;
+	struct wl_listener commit;
+	struct wl_listener destroy;
+};
+
+static void az_avk_surface_commit(struct wl_listener *listener, void *data) {
+	struct az_avk_surface *as = wl_container_of(listener, as, commit);
+	struct wlr_buffer *buffer = as->surface->current.buffer;
+	if (buffer == NULL) {
+		return;
+	}
+	struct wlr_addon *addon = wlr_addon_find(&buffer->addons, &avk,
+		&az_avk_buffer_addon_impl);
+	if (addon != NULL) {
+		/* Already ours. A client re-committing the same buffer is ordinary. */
+		return;
+	}
+	if (az_avk_image_for_buffer(buffer) != NULL) {
+		addon = wlr_addon_find(&buffer->addons, &avk,
+			&az_avk_buffer_addon_impl);
+		if (addon != NULL) {
+			struct az_avk_buffer *entry = wl_container_of(addon, entry, addon);
+			entry->taken_at_commit = true;
+		}
+		avk.commit_imports++;
+	}
+}
+
+static void az_avk_surface_destroy(struct wl_listener *listener, void *data) {
+	struct az_avk_surface *as = wl_container_of(listener, as, destroy);
+	wl_list_remove(&as->commit.link);
+	wl_list_remove(&as->destroy.link);
+	free(as);
+}
+
+static void az_avk_new_surface(struct wl_listener *listener, void *data) {
+	if (!avk.active) {
+		return;
+	}
+	struct wlr_surface *surface = data;
+	struct az_avk_surface *as = calloc(1, sizeof(*as));
+	if (as == NULL) {
+		return;
+	}
+	as->surface = surface;
+	as->commit.notify = az_avk_surface_commit;
+	wl_signal_add(&surface->events.commit, &as->commit);
+	as->destroy.notify = az_avk_surface_destroy;
+	wl_signal_add(&surface->events.destroy, &as->destroy);
+}
+
+static struct wl_listener az_avk_new_surface_listener = {
+	.notify = az_avk_new_surface,
+};
+static bool az_avk_new_surface_attached = false;
+
+/*
+ * Detach from wlroots before the display goes away.
+ *
+ * wlr_compositor asserts that nothing is still listening to new_surface when
+ * the display is destroyed, and it is right to: a listener outliving the
+ * signal is a use-after-free waiting for the next client. This has to run
+ * before wl_display_destroy(), which is earlier than az_avk_finish().
+ */
+static void az_avk_detach(void) {
+	if (az_avk_new_surface_attached) {
+		wl_list_remove(&az_avk_new_surface_listener.link);
+		az_avk_new_surface_attached = false;
+	}
+}
+
 /* ── lifecycle ──────────────────────────────────────────────────────────── */
 
 static void az_avk_log_forward(enum avk_log_level level, const char *fmt,
@@ -1020,6 +1245,10 @@ static void az_avk_log_stats(void) {
 		" avk.buffer_imports=%" PRIu64 " avk.buffer_import_fails=%" PRIu64
 		" avk.shm_uploads=%" PRIu64, avk.frames, avk.fallback_frames,
 		avk.buffer_imports, avk.buffer_import_fails, avk.shm_uploads);
+	wlr_log(WLR_INFO, "avk.commit_imports=%" PRIu64 " avk.late_imports=%" PRIu64
+		" avk.cache_hits=%" PRIu64 " avk.cache_misses=%" PRIu64,
+		avk.commit_imports, avk.late_imports, avk.cache_hits,
+		avk.cache_misses);
 	for (size_t i = 0; i < AZ_AVK_MAX_FORMATS; i++) {
 		if (avk.renderers[i].used) {
 			avk_renderer_log_stats(&avk.renderers[i].renderer);

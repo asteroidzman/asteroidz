@@ -348,7 +348,34 @@ static void surface_reconfigure(struct wlr_scene_surface *scene_surface) {
 
 	scene_buffer_unmark_client_buffer(scene_buffer);
 
-	if (surface->buffer) {
+	// Which buffer the scene draws.
+	//
+	// With a wlr_renderer on the compositor, wlroots wraps every client buffer
+	// in a wlr_client_buffer so it can upload the pixels into a wlr_texture,
+	// and that wrapper is what the scene has always been given.
+	//
+	// A compositor created with a NULL renderer -- which is what asteroidz
+	// does when its own Vulkan engine composites, see
+	// docs/vulkan-native-architecture.md -- uploads nothing, so surface->buffer
+	// stays NULL forever. The client's buffer is still right there in the
+	// committed state, and on that path wlroots leaves it LOCKED until the next
+	// commit replaces it, so handing it straight to the scene is both possible
+	// and correct.
+	//
+	// This is not a fallback for a missing texture. It is the absence of an
+	// upload that never needed to happen: a renderer that imports dma-bufs
+	// itself has no use for a copy made by a different renderer, and going
+	// through the wrapper actively loses information -- once it has uploaded,
+	// the wrapper may release the original, after which it can report neither
+	// a dma-buf nor readable pixels to anyone else.
+	struct wlr_buffer *committed = surface->buffer != NULL
+		? &surface->buffer->base : surface->current.buffer;
+	// The client's own buffer, whichever route it arrived by. Used for the
+	// questions that are about the buffer itself rather than the wrapper.
+	struct wlr_buffer *source = surface->buffer != NULL
+		? surface->buffer->source : surface->current.buffer;
+
+	if (committed) {
 		// If we've cached the buffer's single-pixel buffer color
 		// then any in-place updates to the texture wouldn't be
 		// reflected in rendering. So only allow in-place texture
@@ -356,12 +383,14 @@ static void surface_reconfigure(struct wlr_scene_surface *scene_surface) {
 		// can't use the cached scene_buffer->is_single_pixel_buffer
 		// because that's only set later on.
 		bool is_single_pixel_buffer = false;
-		if (surface->buffer->source != NULL) {
+		if (source != NULL) {
 			struct wlr_single_pixel_buffer_v1 *spb =
-				wlr_single_pixel_buffer_v1_try_from_buffer(surface->buffer->source);
+				wlr_single_pixel_buffer_v1_try_from_buffer(source);
 			is_single_pixel_buffer = spb != NULL;
 		}
-		if (!is_single_pixel_buffer) {
+		// Only meaningful for a wrapper: it marks the wrapper's texture as
+		// updatable in place. With no wrapper there is no texture to update.
+		if (!is_single_pixel_buffer && surface->buffer != NULL) {
 			client_buffer_mark_next_can_damage(surface->buffer);
 		}
 
@@ -375,11 +404,23 @@ static void surface_reconfigure(struct wlr_scene_surface *scene_surface) {
 			options.wait_timeline = syncobj_surface_state->acquire_timeline;
 			options.wait_point = syncobj_surface_state->acquire_point;
 		}
-		wlr_scene_buffer_set_buffer_with_options(scene_buffer,
-			&surface->buffer->base, &options);
-	} else {
+		wlr_scene_buffer_set_buffer_with_options(scene_buffer, committed,
+			&options);
+	} else if (!wlr_surface_has_buffer(surface)) {
+		// Genuinely unmapped: the surface committed a NULL buffer.
 		wlr_scene_buffer_set_buffer(scene_buffer, NULL);
 	}
+	// Otherwise the surface HAS content and we simply cannot see it from here.
+	//
+	// wlr_surface.current.buffer is live only for the duration of the commit
+	// event -- wlroots unlocks it as soon as every listener has run -- but
+	// surface_reconfigure() is also called from scene_surface_create() and
+	// from scene_surface_set_clip(), neither of which is a commit. Clearing
+	// the node in those cases unmaps a window that is perfectly mapped, and
+	// with the raw-buffer path that meant every clip change blanked its
+	// surface. The scene already holds its own lock on the buffer it was
+	// last given; leaving it alone is both correct and what the wrapper
+	// path did implicitly, since surface->buffer persisted between commits.
 
 	pixman_region32_fini(&opaque);
 }

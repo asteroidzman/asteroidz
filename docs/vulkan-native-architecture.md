@@ -539,7 +539,12 @@ them; a render target arrives empty, and its first `UNDEFINED -> ...`
 transition is where the driver initialises the image's compression metadata.
 Claiming `GENERAL` for it skips that.
 
-### SHM surfaces and the wlr_client_buffer problem
+### SHM surfaces and the wlr_client_buffer problem — SOLVED in M3.5A
+
+*What follows described M3. It is kept because the reasoning is the reasoning
+that produced the fix; the fix itself is under "M3.5A" below.*
+
+### The M3 problem
 
 The one class of client AVK cannot draw correctly, and the reason is
 structural rather than a bug to be fixed in this file.
@@ -569,6 +574,58 @@ buffer when there is no client buffer. `scene_buffer_get_texture()` already
 falls back to `wlr_texture_from_buffer()` for a non-client buffer, so the
 SceneFX path keeps working — the open question there is stale-texture
 invalidation when a client re-commits the same buffer pointer with new content.
+
+## 5.4c M3.5A — the client-buffer topology
+
+AVK no longer has any dependency on a renderer-created `wlr_texture`. Three
+changes, and the third is the one that was not obvious.
+
+**1. The `wl_compositor` global gets no renderer in AVK mode.**
+`wlr_compositor_create(dpy, 6, NULL)`, chosen once at startup before any client
+can connect. wlroots then does protocol bookkeeping and no upload: no
+`wlr_client_buffer` wrapper is made, and `wlr_surface.current.buffer` — the
+client's real buffer — stays locked for the duration of the commit event.
+`drw` itself stays, because wlroots still wants a renderer for shm format
+advertisement, the allocator, screencopy and output cursors. None of those are
+composition.
+
+**2. SceneFX hands the scene the raw buffer.** `surface_reconfigure()` uses
+`surface->buffer ? &surface->buffer->base : surface->current.buffer`, and the
+scene locks whatever it is given, so it persists. The subtle half: that
+function is *also* called from `scene_surface_create()` and
+`scene_surface_set_clip()`, neither of which is a commit, and at those moments
+`current.buffer` is NULL. Clearing the node there unmapped perfectly mapped
+windows — every clip change blanked its surface. It now only unmaps when
+`wlr_surface_has_buffer()` says the surface genuinely has no content.
+
+**3. `surface->buffer` was being used as "does this surface have content".**
+Six places in asteroidz — the layer-shell enable test, two overview snapshot
+paths, an animation snapshot — asked `if (surface->buffer)` and meant "does it
+have pixels". With no wrapper that silently became "is wlroots doing the
+rendering", and the layer-shell one disabled every layer surface on the
+desktop. That is why the wallpaper was missing: not an import failure, a
+disabled node.
+
+`src/render/az_surface.h` now answers the question properly. It records the
+committed buffer per surface and holds a lock on it — the persistence the
+`wlr_texture` used to provide by accident — and is installed in **both**
+renderer modes, because "which buffer is this surface showing" should not have
+two answers depending on who is drawing.
+
+### When AVK takes ownership
+
+At the commit that produced the content, never later.
+`az_avk_surface_commit()` runs on `wlr_surface.events.commit`, which is the one
+moment `current.buffer` is guaranteed valid, and imports it: a dma-buf import
+dup()s every file descriptor, a CPU buffer is copied. After that the client may
+destroy its `wl_buffer` immediately and AVK still has the content.
+
+`avk.late_imports` counts surface buffers that reach a frame without having
+been taken at commit. It must be 0, it is asserted by
+`contrib/avk-frame-test.sh`, and `BREAK=wrapper` — which restores the wrapper
+topology — drives it to 43. Note what that break test demonstrates: the pixels
+still come out right. Ownership is not visible in a screenshot, so a counter is
+the only way to test it at all.
 
 ### Two bugs this cost, both worth remembering
 

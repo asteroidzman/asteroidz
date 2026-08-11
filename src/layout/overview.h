@@ -499,8 +499,8 @@ static struct wlr_buffer *overview_wallpaper_buffer(Monitor *m) {
 		LayerSurface *l;
 		wl_list_for_each(l, &m->layers[order[li]], link) {
 			if (l->layer_surface && l->layer_surface->surface &&
-				l->layer_surface->surface->buffer)
-				return &l->layer_surface->surface->buffer->base;
+				az_surface_buffer(l->layer_surface->surface))
+				return az_surface_buffer(l->layer_surface->surface);
 		}
 	}
 	return NULL;
@@ -1471,10 +1471,10 @@ void overview_tags(Monitor *m) {
 			wl_list_for_each(lsurf, &m->layers[li], link) {
 				if (snap_idx >= OV_STRIP_WINS || !lsurf->mapped ||
 					!lsurf->layer_surface || !lsurf->layer_surface->surface ||
-					!lsurf->layer_surface->surface->buffer)
+					!az_surface_buffer(lsurf->layer_surface->surface))
 					continue;
 				struct wlr_buffer *lbuf =
-					&lsurf->layer_surface->surface->buffer->base;
+					az_surface_buffer(lsurf->layer_surface->surface);
 				int32_t lbx =
 					(int32_t)(off_x + (lsurf->geom.x - vl) * scale + 0.5f);
 				int32_t lby =

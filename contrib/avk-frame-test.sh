@@ -17,19 +17,23 @@
 # Vulkan renderer compared against itself. Composited by Vulkan while wlroots
 # holds GLES2 is the whole claim.
 #
-# Two things are deliberately NOT asserted equal, and both are logged by the
-# compositor as AVK-mode limitations rather than hidden:
+# One thing is deliberately NOT asserted equal, and it is logged by the
+# compositor as an AVK-mode limitation rather than hidden:
 #
-#   - the wallpaper. swaybg draws once and lets go of its buffer, and wlroots
-#     has by then uploaded it into a wlr_texture that this renderer may not
-#     touch. See "SHM surfaces and the wlr_client_buffer problem" in
-#     docs/vulkan-native-architecture.md.
 #   - shadows, blur and rounded corners, which are M4. The config below turns
 #     them off so the two paths are comparable at all.
 #
-# Break test: BREAK=border reinstates the bug this test was written for, by
-# telling the compositor to ignore the border's clipped-out interior. That run
-# MUST fail; a pass there means the assertions are measuring nothing.
+# Break tests, each of which MUST fail:
+#
+#   BREAK=border    ignore the border rect's clipped-out interior, so every
+#                   window fills with its border colour.
+#   BREAK=wrapper   give the wl_compositor a renderer in AVK mode, restoring
+#                   the wlr_client_buffer/wlr_texture topology. What catches
+#                   it is avk.late_imports: the scene then hands AVK a wrapper
+#                   it has never seen, so content is discovered at draw time
+#                   instead of owned from commit. The pixels may still come out
+#                   right -- that is the point. Ownership is not visible in a
+#                   screenshot, so it needs a counter to be testable at all.
 #
 # There is a second switch, AVK_NO_FOREIGN_ACQUIRE=1, which disables the
 # queue-family ownership transfer on imported buffers. It is NOT a break test
@@ -65,6 +69,9 @@ run_backend() { # run_backend BACKEND OUTDIR
 	HL_ENV="ASTEROIDZ_RENDERER=$backend"
 	if [ "$BREAK" = border ] && [ "$backend" = avk ]; then
 		HL_ENV="$HL_ENV AVK_NO_BORDER_CLIP=1"
+	fi
+	if [ "$BREAK" = wrapper ] && [ "$backend" = avk ]; then
+		HL_ENV="$HL_ENV AZ_AVK_COMPOSITOR_RENDERER=1"
 	fi
 	export HL_OUTDIR HL_WIDTH HL_HEIGHT HL_ENV
 
@@ -139,6 +146,14 @@ hl_assert "AVK drew client surfaces" \
 # here means the frame path is blocking on the GPU somewhere.
 hl_assert "no CPU sync waits on the frame path" "${WAITS:-x}" "0"
 
+# Ownership: AVK must take a client's content at the commit that produced it,
+# not discover it at some later frame and hope it is still readable.
+COMMITS="$(stat_field 'avk\.commit_imports')"
+LATE="$(stat_field 'avk\.late_imports')"
+hl_assert "AVK took client content at commit" \
+	"$([ "${COMMITS:-0}" -gt 0 ] && echo true || echo false)" "true"
+hl_assert "no surface buffer arrived late at a frame" "${LATE:-x}" "0"
+
 # ── the frame itself ───────────────────────────────────────────────────────
 # Two tiled terminals, spawned in the harness's palette order: red on the left,
 # green on the right. Sampled at the centre of each window, well inside the
@@ -159,6 +174,19 @@ done
 # border colour -- and because the border sits ABOVE the surface in the scene,
 # the window vanishes behind it. Comparing the border colour's pixel COUNT is
 # what catches that: a few thousand pixels of trim versus half the screen.
+# ── the wallpaper ──────────────────────────────────────────────────────────
+# The surface that motivated all of M3.5A. swaybg paints once, commits once and
+# releases its buffer, so it is the sharpest test of whether AVK owns client
+# content or merely borrows it. The harness wallpaper is a flat #808080, and
+# the assertion is on the exact pixel count so a partially-drawn wallpaper
+# fails as loudly as a missing one.
+echo "-- wallpaper --"
+WP_REF="$(count_colour "$WLR_PNG" "#808080")"
+hl_assert "the reference frame has a wallpaper at all" \
+	"$([ "$WP_REF" -gt 10000 ] && echo true || echo false)" "true"
+hl_assert "AVK draws the same wallpaper area as SceneFX ($WP_REF px)" \
+	"$(count_colour "$AVK_PNG" "#808080")" "$WP_REF"
+
 echo "-- borders --"
 for colour in "#2a6fd6" "#c66b25" "#eb441e"; do
 	ref="$(count_colour "$WLR_PNG" "$colour")"

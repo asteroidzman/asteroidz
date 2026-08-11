@@ -18,6 +18,9 @@
 #include <scenefx/types/fx/clipped_region.h>
 #include <scenefx/types/wlr_scene.h>
 #include "common/corner_location.h"
+/* Early, because the animation and overview code below asks what buffer a
+ * surface is showing and must not answer it with a renderer wrapper. */
+#include "render/az_surface.h"
 #include <signal.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -3601,6 +3604,13 @@ void cleanup(void) {
 	dwl_im_relay_finish(dwl_input_method_relay);
 	dwl_input_method_relay = NULL;
 
+#ifdef AZ_HAVE_VULKAN
+	/* Before the display: wlr_compositor asserts that its new_surface signal
+	 * has no listeners left when it is torn down. */
+	az_avk_detach();
+#endif
+	az_surface_detach();
+
 	wl_display_destroy(dpy);
 	/* Destroy after the wayland display (when the monitors are already
 	   destroyed) to avoid destroying them with an invalid scene output. */
@@ -4175,7 +4185,7 @@ void commitlayersurfacenotify(struct wl_listener *listener, void *data) {
 
 	// check whether the surface has a buffer
 	// an empty buffer just means hidden, it doesn't change the mapped state
-	if (l->mapped && !layer_surface->surface->buffer) {
+	if (l->mapped && !wlr_surface_has_buffer(layer_surface->surface)) {
 		wlr_scene_node_set_enabled(&l->scene->node, false);
 		return;
 	} else {
@@ -8897,7 +8907,62 @@ void setup(void) {
 	 * room for you to dig your fingers in and play with their behavior if
 	 * you want. Note that the clients cannot set the selection directly
 	 * without compositor approval, see the setsel() function. */
-	compositor = wlr_compositor_create(dpy, 6, drw);
+	/*
+	 * The renderer the wl_compositor global uploads client buffers with -- and
+	 * in AVK mode, deliberately none.
+	 *
+	 * Passing a renderer here makes wlroots wrap every client buffer in a
+	 * wlr_client_buffer, upload it into a wlr_texture, and then let go of the
+	 * original. That is the right thing when a wlr_renderer draws the frame.
+	 * It is exactly wrong when asteroidz draws the frame: the upload is a copy
+	 * made by a renderer that will not be used, and the wrapper it produces
+	 * can afterwards report neither a dma-buf nor readable pixels, so the
+	 * client's actual content becomes unreachable. That is what made wallpapers
+	 * vanish under AVK.
+	 *
+	 * With NULL, wlroots does its protocol bookkeeping and nothing else: the
+	 * client's buffer stays locked in wlr_surface.current until the next
+	 * commit, SceneFX hands it to the scene as-is (see the raw-buffer path in
+	 * subprojects/asteroidz-scenefx/types/scene/surface.c), and AVK imports it
+	 * directly. No texture is created and none is needed.
+	 *
+	 * `drw` itself stays. wlroots still wants a renderer for shm format
+	 * advertisement, the allocator, screencopy and output cursors -- none of
+	 * which are composition. This is chosen once, at startup, before any client
+	 * can connect: switching it later would leave already-committed surfaces
+	 * split between two ownership models.
+	 */
+	struct wlr_renderer *compositor_renderer = drw;
+#ifdef AZ_HAVE_VULKAN
+	/* AZ_AVK_COMPOSITOR_RENDERER=1 puts the wrapper topology back in AVK mode,
+	 * so the test that proves AVK does not depend on wlroots' texture upload
+	 * can be run against a build where it must fail. Without a break switch
+	 * that assertion is unfalsifiable: the wallpaper renders, and nothing
+	 * shows whether it renders *because* of the topology or in spite of it. */
+	const char *force_wrapper = getenv("AZ_AVK_COMPOSITOR_RENDERER");
+	if (az_renderer == AZ_RENDERER_AVK &&
+			(force_wrapper == NULL || force_wrapper[0] != '1')) {
+		compositor_renderer = NULL;
+		wlr_log(WLR_INFO, "wl_compositor renderer: none -- client buffers are "
+				"imported by AVK, not uploaded by wlroots");
+	}
+#endif
+	compositor = wlr_compositor_create(dpy, 6, compositor_renderer);
+	/* Track what buffer each surface is showing, in BOTH renderer modes --
+	 * see src/render/az_surface.h for why wlr_surface.buffer is not that. */
+	wl_signal_add(&compositor->events.new_surface, &az_new_surface_listener);
+	az_new_surface_attached = true;
+#ifdef AZ_HAVE_VULKAN
+	if (az_renderer == AZ_RENDERER_AVK) {
+		/* AVK takes ownership of a client's content at commit, which is the
+		 * only moment it is guaranteed to be valid -- see the comment above
+		 * az_avk_surface_commit(). Registered immediately after the global is
+		 * created, so no surface can exist without the hook. */
+		wl_signal_add(&compositor->events.new_surface,
+					  &az_avk_new_surface_listener);
+		az_avk_new_surface_attached = true;
+	}
+#endif
 	wlr_export_dmabuf_manager_v1_create(dpy);
 	wlr_screencopy_manager_v1_create(dpy);
 	struct wlr_ext_image_copy_capture_manager_v1 *img_copy_mgr =

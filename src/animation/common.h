@@ -259,9 +259,10 @@ static bool scene_node_snapshot(struct wlr_scene_node *node, int32_t lx,
 		wlr_scene_buffer_set_corner_radii(snapshot_buffer,
 										  scene_buffer->corners);
 
-		if (scene_surface != NULL && scene_surface->surface->buffer != NULL) {
+		if (scene_surface != NULL &&
+				az_surface_buffer(scene_surface->surface) != NULL) {
 			wlr_scene_buffer_set_buffer(snapshot_buffer,
-										&scene_surface->surface->buffer->base);
+										az_surface_buffer(scene_surface->surface));
 		} else {
 			wlr_scene_buffer_set_buffer(snapshot_buffer, scene_buffer->buffer);
 		}
