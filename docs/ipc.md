@@ -413,7 +413,11 @@ Fields worth knowing:
 | `full_redraw_frames` / `partial_redraw_frames` | how many frames redrew the whole output versus part of it |
 | `damage_rects_max` | most rectangles one frame's damage arrived in. Pinned at 20 means the ring is collapsing damage to a bounding box rather than tracking it |
 | `shm_commits` | content generations committed for CPU-backed buffers |
-| `shm_full_uploads` / `shm_upload_skips` | copies actually performed, versus lookups that found the GPU copy already current. On a mostly-static desktop skips should dwarf uploads |
+| `shm_full_uploads` / `shm_partial_uploads` / `shm_upload_skips` | whole-buffer copies, damaged-region copies, and lookups that found the GPU copy already current. On a mostly-static desktop skips should dwarf both |
+| `shm_damage_pixels` | source pixels clients said they changed. `x4` is the minimum bytes a correct implementation could copy |
+| `buffer_resolve_attempts` / `nodes_output_culled_before_resolve` | buffers the walker resolved, versus nodes discarded first because they cannot touch this output. The second reads 0 on a single-output setup by definition |
+| `cpu_frame_us_p50` / `_p95` / `_p99` | the distribution, not the mean. At 144 Hz the budget is 6944us. Reported as a histogram bucket's upper edge, so accurate to within 20us |
+| `shm_sources` | the largest CPU-backed sources by bytes moved, for finding a pathological client. **Lifetime counters — `reset_avk_stats` does not clear them**, unlike everything else here, because they describe a buffer's life rather than an interval |
 | `cpu_sync_waits` | must be 0 — a nonzero value means the frame path blocks on the GPU |
 | `present_sync_timeline` / `present_sync_dmabuf` | frames handed to the display with a fence, by which route |
 | `present_sync_none` | **must be 0.** Frames handed over unsynchronised — only reachable via `AZ_AVK_NO_PRESENT_SYNC=1` |

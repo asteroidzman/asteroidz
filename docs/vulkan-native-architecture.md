@@ -1009,6 +1009,74 @@ with no previous contents would discard everything outside the damage, and
 
 `cpu_sync_waits` stays 0 throughout. Nothing here waits on the host.
 
+### Live results — dual monitor, DP-1 3840x2160 + HDMI-A-1 1920x1080
+
+Baseline is the same session before D.1, over 40530 output frames.
+`avk.frames` counts **output** frames: a two-monitor desktop increments it
+twice per refresh.
+
+| | before | after (idle) |
+|---|---|---|
+| cpu_frame_us avg | **8860** | **83** |
+| cpu_frame_us p50 | — | 80 |
+| cpu_frame_us p95 | — | **160** |
+| cpu_frame_us p99 | — | 180 |
+| cpu_frame_us max | 42300 | **207** |
+| SHM per output frame | **41.5 MB** | **0 B** |
+| SHM total | 1680 GB / 40530 frames | 0 B / 1335 frames |
+| damage_ratio | 1.0 | 0.293 |
+
+**107x less CPU time per frame, and the SHM traffic is gone entirely.**
+
+At 144 Hz the budget is 6944us. Before, the *average* frame was 8860us --
+128% of budget, so the average frame missed. After, p95 is **2.3% of budget**
+and the worst frame in sixty seconds was 207us, **3.0%**.
+
+Three workloads, which together are the architectural proof that source damage
+and scene damage are separate systems:
+
+| | output damage | SHM upload |
+|---|---|---|
+| A: idle, static wallpapers | 0 full redraws, ratio 0.29 | **0 B**, 1335 skips |
+| B: static terminal dragged | **20,125,548,488 px** | **0 B**, 0 commits |
+| C: small damage, 392 generations | ratio ~0.5 | **7.45 MB**, amplification **1.0000** |
+
+Workload C is the only one that exercises the partial path live: 392
+generations of a 64x64 rectangle in a 512x512 buffer copied 7,454,720 bytes,
+which is exactly `shm_damage_pixels * 4`. Uploading whole buffers would have
+been 411 MB -- **55x more**.
+
+Per-source attribution over the whole session, which is the wallpaper invariant
+stated as a measurement:
+
+| buffer | uploads | bytes | lookups |
+|---|---|---|---|
+| 3840x2160 wallpaper | **1** | 33,177,600 = 3840x2160x4 | 13,674 |
+| 1920x1080 wallpaper | **1** | 8,294,400 = 1920x1080x4 | 1,969 |
+
+One upload each for the life of the session, then fifteen thousand lookups
+that cost nothing.
+
+`nodes_output_culled_before_resolve` reads **2970 of 8010 node visits** at idle
+and 11089 of 27205 during the drag. It read 0 in every headless run, because
+one output means nothing is exclusive to another one -- the cull is only
+observable on real hardware with two monitors side by side.
+
+Every correctness counter stayed at zero throughout: `cpu_sync_waits`,
+`target_state_violations`, `present_sync_failures`, `validation_errors`,
+`fallback_frames`, `late_imports`. `present_sync_timeline` equalled `frames`.
+
+Two things worth recording rather than smoothing over:
+
+- The terminal dragged in workload B is **dma-buf** backed, not SHM. What that
+  workload proves is that sweeping a window across the **wallpapers** -- which
+  are SHM -- re-composited them 5190 and 251 times for zero generations and
+  zero bytes. The invariant holds; the subject is the wallpaper, not the
+  terminal.
+- The 3840x2160 wallpaper is looked up roughly three times per DP-1 frame, so
+  that buffer is referenced by more than one scene node. It costs an addon hash
+  lookup and no bytes, but it is unexplained and worth understanding before M4.
+
 ### One break test that could not be made to fail
 
 `BREAK=unsafe-reuse` removes both protections around updating an image a frame
