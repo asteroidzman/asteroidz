@@ -2249,7 +2249,20 @@ void gpureset(struct wl_listener *listener, void *data) {
 	wl_list_remove(&gpu_reset.link);
 	wl_signal_add(&drw->events.lost, &gpu_reset);
 
-	wlr_compositor_set_renderer(compositor, drw);
+	/*
+	 * The wl_compositor's renderer is a choice, not a copy of `drw`. In AVK
+	 * mode it was deliberately set to NULL at startup so that wlroots does its
+	 * protocol bookkeeping and nothing else, and client buffers reach AVK
+	 * intact instead of arriving as a wlr_client_buffer that can report
+	 * neither a dma-buf nor readable pixels -- see the long comment at the
+	 * creation site. Handing `drw` back here would silently reinstate the
+	 * wrapper topology for every commit after a GPU reset, and the failure
+	 * would look like content disappearing rather than like a renderer
+	 * change: exactly the wallpaper bug, resurrected by a code path nobody
+	 * associates with it.
+	 */
+	wlr_compositor_set_renderer(compositor,
+		az_renderer == AZ_RENDERER_AVK ? NULL : drw);
 
 	wl_list_for_each(m, &mons, link) {
 		wlr_output_init_render(m->wlr_output, alloc, drw);
