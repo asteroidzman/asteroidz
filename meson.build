@@ -405,6 +405,15 @@ install_data('assets/asteroidz-avk-debug.desktop',
 	install_dir : desktop_install_dir)
 install_data('assets/asteroidz-avk-swcursor-debug.desktop',
 	install_dir : desktop_install_dir)
+
+# A DELIBERATELY BROKEN session, installed on purpose. The M4A bottom-corner
+# falsifier needs a state the headless fixture cannot build -- a window dragged
+# past a monitor edge, where the cleared corner is off-screen and only its
+# opposite is measurable -- so the break has to be reachable from a real
+# greeter. Its own Comment says it is wrong; leaving it uninstalled would mean
+# the invariant stays untested instead.
+install_data('assets/asteroidz-avk-break-bottomswap.desktop',
+	install_dir : desktop_install_dir)
 install_data('assets/asteroidz-portals.conf', install_dir : portal_install_dir)
 install_data('assets/asteroidz.portal', install_dir : join_paths(prefix, 'share/xdg-desktop-portal/portals'))
 install_data('assets/config.kdl', install_dir : join_paths(sysconfdir, 'asteroidz'))

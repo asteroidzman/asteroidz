@@ -39,11 +39,12 @@ bool avk_renderer_init(struct avk_renderer *renderer, struct avk_device *dev,
 		renderer->break_scale_hint = 1.5f;
 	}
 	if (renderer->break_rounded_off || renderer->break_rounded_single ||
-			renderer->break_rounded_double_scale) {
+			renderer->break_rounded_double_scale || renderer->break_bottom_swap) {
 		avk_log(AVK_ERROR, "M4A break switch active: rounded clipping is "
-			"deliberately wrong (off=%d single=%d double_scale=%d)",
+			"deliberately wrong (off=%d single=%d double_scale=%d "
+			"bottom_swap=%d)",
 			renderer->break_rounded_off, renderer->break_rounded_single,
-			renderer->break_rounded_double_scale);
+			renderer->break_rounded_double_scale, renderer->break_bottom_swap);
 	}
 	return true;
 }
