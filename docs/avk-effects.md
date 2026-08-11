@@ -90,7 +90,48 @@ translucent panel in the overview by exactly its own alpha, which reads as a
 theming choice rather than a bug.
 
 **AVK status.** Geometry correct via clip subtraction; the inner edge is square
-where it should be rounded. M4B.
+where it should be rounded. M4B. **Reproduced in pixels** — see the border mask
+audit below.
+
+#### The border mask, exactly as it stands
+
+Three masks, and the defect is entirely in the second one.
+
+```text
+OUTER    cmd->dst = the rect's box,  rounded by cmd->corners       (SDF)
+INNER    rect->clipped_region.area,  subtracted as a SQUARE        (pixman)
+CLIENT   the surface, rounded by its own corners                   (SDF)
+
+BORDER = OUTER - INNER
+```
+
+`az_avk.h`'s rect case reads `rect->clipped_region.area` and **ignores
+`rect->clipped_region.corners`**, which is a `struct fx_corner_radii` sitting
+right beside it in `struct clipped_region`. `apply_border()` fills it in with
+`border_radius - bw - 1` per corner, deliberately 1px tighter than the content
+arc so the seam between two independently rasterised arcs lands on border paint
+rather than on the wallpaper. AVK never asks.
+
+The visible consequence, on the diagonal of a corner: the square cut removes
+the client's whole interior box, including the part of it the CLIENT's own arc
+has already cut away — so between the border's outer arc and the client's inner
+arc, nobody paints, and whatever is behind the window shows through. It is a
+wedge, it is inside the rounded corner, and it flickers because what is behind
+it is live content.
+
+Measured at `radius 40, borderpx 6` on a 700x500 window, per corner:
+
+```text
+AVK    104 background pixels inside the outer arc
+GLES     0
+```
+
+Unchanged under `AZ_AVK_FULL_DAMAGE=1`, and every one of those pixels shows the
+CURRENT background generation, so it is coverage geometry and not damage. The
+fixture is `contrib/avk-rounded-persist-test.sh BORDER=6`, which fails today by
+design and is the first M4B regression. The shader already has what the fix
+needs: `az_rounded_coverage()`'s `is_cutout` inverts coverage for exactly this
+inner edge.
 
 ### Gradients
 
@@ -196,6 +237,32 @@ M4F  blur                 dual-Kawase, source-region expansion, and every one
 M4G  interactions         ordering, alpha, and the combinations
 ```
 
+## Rejected: the opaque-region mismatch (do not re-chase)
+
+**Hypothesis.** AVK normalises radii (clamping to half the box, CSS-style edge
+scaling) while SceneFX computes the opaque region from the unnormalised ones, so
+a corner pixel could be claimed opaque, skipped by damage, and left stale.
+
+**Rejected at the source.** `create_corner_location_region()`
+(`wlr_scene.c:305`) subtracts a full r-by-r **square** at each corner from the
+opaque region, on both the buffer path (line 384) and the rect path (line 347).
+AVK's visible coverage in that corner is a quarter-disc strictly inside that
+square, and normalisation only ever SHRINKS a radius. So:
+
+```text
+SceneFX's opaque claim  ⊆  AVK's actual coverage
+opaque_but_not_rendered =  0, by construction
+```
+
+The disagreement runs the safe way — the background is repainted more often
+than strictly necessary, never less — and cannot strand a pixel. Confirmed
+empirically afterwards: at `radius 40` with a continuously repainting
+background, zero stale and zero unpainted pixels in any corner, on both
+renderers.
+
+This one was believable enough to survive a day of instrumentation. Written
+down so it does not get rediscovered.
+
 ## M4A test-harness traps (do not repeat)
 
 **`border_radius_location_default` cannot force asymmetric client radii.** It
@@ -213,6 +280,14 @@ in a corner box recovers `r` without having to find the arc. Use the RATIO
 across scales as the invariant: the estimator undercounts by ~14% because the
 antialiased boundary is not background, and that is the estimator being
 approximate rather than the renderer being wrong.
+
+**A test client with no border makes both renderers look broken.** A window
+whose client never binds `xdg-decoration` is CSD, so `check_hit_no_border()`
+gives it no border while `apply_border()` still insets its surface by
+`borderpx` — the window looks bordered and the ring is empty background. The
+first border-isolation run measured that on BOTH engines and was one step from
+being reported as a shared SceneFX border defect. `wlrepaint --ssd`, and the
+fixture now asserts a border is actually painted before judging one.
 
 **Two more, both of which produced believable wrong conclusions:** the window's
 top corners belong to the TITLEBAR node, not the client, so a probe there reads

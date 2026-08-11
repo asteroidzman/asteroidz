@@ -1,0 +1,5 @@
+wlrepaint
+xdg-shell-protocol.c
+xdg-shell-client-protocol.h
+xdg-decoration-unstable-v1-protocol.c
+xdg-decoration-unstable-v1-client-protocol.h

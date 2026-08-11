@@ -287,6 +287,7 @@ struct az_avk {
 	bool warned_gradient;
 	bool warned_late_import;
 	bool warned_no_present_sync;
+	bool warned_damage_hole;
 };
 
 static struct az_avk avk = {0};
@@ -2125,6 +2126,39 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 		 * one is right. */
 		pixman_region32_clear(&damage);
 		pixman_region32_union_rect(&damage, &damage, 0, 0, width, height);
+	}
+	/*
+	 * AZ_AVK_DAMAGE_HOLE=x,y,w,h punches that rectangle OUT of every frame's
+	 * damage, in output pixels. TEST ONLY.
+	 *
+	 * A persistence test needs a build that strands a region on purpose, or it
+	 * cannot show that it would notice one -- and "no stale pixels" from a
+	 * fixture that has never seen a stale pixel is not a result. The hole is
+	 * subtracted AFTER the ring has been rotated, so the region counts as
+	 * acknowledged and is never redrawn: precisely the shape of the bug, which
+	 * is a region wrongly believed to be up to date rather than one that is
+	 * merely skipped this frame.
+	 */
+	const char *hole = getenv("AZ_AVK_DAMAGE_HOLE");
+	if (hole != NULL) {
+		int hx, hy, hw, hh;
+		if (sscanf(hole, "%d,%d,%d,%d", &hx, &hy, &hw, &hh) == 4 && hw > 0 &&
+				hh > 0) {
+			pixman_region32_t cut;
+			pixman_region32_init_rect(&cut, hx, hy, (unsigned)hw, (unsigned)hh);
+			pixman_region32_subtract(&damage, &damage, &cut);
+			pixman_region32_fini(&cut);
+			if (!avk.warned_damage_hole) {
+				avk.warned_damage_hole = true;
+				wlr_log(WLR_ERROR, "AZ_AVK_DAMAGE_HOLE=%s -- %dx%d at %d,%d will "
+					"never be redrawn. This build is deliberately broken.",
+					hole, hw, hh, hx, hy);
+			}
+		} else if (!avk.warned_damage_hole) {
+			avk.warned_damage_hole = true;
+			wlr_log(WLR_ERROR, "AZ_AVK_DAMAGE_HOLE=%s is not x,y,w,h -- ignored",
+				hole);
+		}
 	}
 	pixman_region32_copy(&scene.damage, &damage);
 

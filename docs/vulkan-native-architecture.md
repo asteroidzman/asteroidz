@@ -1917,6 +1917,60 @@ every cycle.
 
 ---
 
+## 5.6 M4A — the large-radius artifact is a border, not a corner
+
+A rounded window at `border_radius 40` on a real desktop showed "the edge of
+the square window flickering through" its corner. Three explanations were
+available and they are not close to each other: AVK's rounded coverage is
+wrong; the corner region stops being damaged; or the border's mask is wrong.
+Two of them are now excluded.
+
+**What was built to tell them apart.** `contrib/wlrepaint`, a client that
+repaints its entire surface every generation, alternating every pixel between
+two four-colour checkers whose generation is recoverable from a single capture.
+Behind a stationary, quiet, rounded foreground window, that turns "is this
+corner stale" into a question about one screenshot rather than a theory about
+frame timing. `contrib/avk-rounded-persist-test.sh` then classifies every pixel
+of each corner box against the geometry: outside the arc it must be background
+of the CURRENT generation, inside it must be window or border.
+
+**The result.**
+
+| | AVK | GLES |
+|---|---|---|
+| `border 0`, radius 40 | clean | clean |
+| `border 6`, radius 40 | **104 background pixels inside the arc, per corner** | clean |
+| `border 6` + `AZ_AVK_FULL_DAMAGE=1` | 104, unchanged | — |
+
+Zero stale and zero unpainted pixels anywhere, on either renderer, at either
+border width. Every bad pixel shows the *current* generation, and forcing a full
+redraw changes nothing — so this is coverage geometry, and damage is exonerated
+by two independent arguments.
+
+**Where it lives.** The rect case in `az_avk.h` subtracts
+`rect->clipped_region.area` as a plain pixman box and never reads
+`rect->clipped_region.corners`, which sits beside it in the same struct and
+which `apply_border()` fills in per corner with `border_radius - bw - 1`. So
+the border's outer edge is a rounded SDF and its inner edge is a square hole.
+On a corner's diagonal the square hole removes the part of the interior the
+CLIENT's own arc has already cut away, and between the two arcs nobody paints.
+Full mask algebra and measurements in `docs/avk-effects.md`.
+
+**What this does NOT excuse.** M4A's rounded client path is clean under a live
+changing background, but that is a statement about the corner, not about the
+window. The visible artifact is real and belongs to M4B, and the fixture that
+demonstrates it (`BORDER=6`) fails today on purpose and stays out of the green
+suite until the inner cut-out is rounded.
+
+**A break switch narrow enough to be honest.** `AZ_AVK_DAMAGE_HOLE=x,y,w,h`
+subtracts a rectangle from every frame's damage after the ring has been
+rotated, so the region is acknowledged and never redrawn. §5.4i noted that the
+only available damage break was `AZ_AVK_FULL_DAMAGE`, which breaks damage
+globally; this one breaks it in one place, which is what a persistence test
+needs to prove it can see a stranded region at all.
+
+---
+
 ## M3b work plan (the compositor half) — DONE, kept for the record
 
 Written down here rather than left in a conversation, because this was the

@@ -230,6 +230,50 @@ The first version of `BREAK=preserve` used `loadOp DONT_CARE` and **the whole
 suite passed with it set**: a driver may leave "undefined" contents alone, and
 RADV does. It clears to magenta now.
 
+`contrib/avk-rounded-persist-test.sh` asks a different question about damage:
+not "did the renderer redraw enough of this frame" but "does a region the
+window does not cover keep being redrawn at all". A rounded corner is
+transparent, the background behind it is live, and a corner excluded from
+damage shows the previous frame forever while everything around it moves on.
+That is what a user reports as flicker.
+
+```bash
+cd contrib/wlrepaint && make          # once
+ASTEROIDZ=build/asteroidz bash contrib/avk-rounded-persist-test.sh
+BREAK=damage-hole ASTEROIDZ=build/asteroidz bash contrib/avk-rounded-persist-test.sh  # must FAIL
+ENGINE=gles       ASTEROIDZ=build/asteroidz bash contrib/avk-rounded-persist-test.sh
+BORDER=6          ASTEROIDZ=build/asteroidz bash contrib/avk-rounded-persist-test.sh  # M4B: FAILS TODAY
+```
+
+Every pixel in a corner box is classified against the geometry rather than
+counted: outside the arc it must be background *of the current generation*,
+inside it must be the window or its border, and the antialiased band between is
+not judged. Counting cannot separate a stale pixel from a correct one, and in
+motion neither can an eye.
+
+Three premises are asserted before any of that, and each of them has already
+caught a run that would otherwise have passed:
+
+- the background client committed new generations while capturing (its own log,
+  which capture timing cannot fake);
+- a generation flip really changed ≥75% of the background around the window
+  (the pixels, which a client that logs without presenting cannot fake);
+- at `BORDER > 0`, a border is actually being painted — see `wlrepaint --ssd`.
+
+`BREAK=damage-hole` sets `AZ_AVK_DAMAGE_HOLE=x,y,w,h`, which subtracts that
+rectangle from every frame's damage *after* the ring has been rotated, so the
+region counts as acknowledged and is never redrawn again. That is the exact
+shape of the bug — a region wrongly believed current — and the fixture must
+fail against it. It reports 271 unpainted pixels in the corner, black, in every
+capture.
+
+**`BORDER=6` fails today and is meant to.** It is the first M4B regression: AVK
+cuts the border's inner edge as a square where SceneFX cuts it rounded, leaving
+a wedge of background inside the corner (104 pixels per corner at radius 40,
+against GLES's 0, unchanged by `AZ_AVK_FULL_DAMAGE=1`). It is not part of the
+green suite — the default `BORDER=0` run is — and it must not be made to pass
+by weakening what it expects. See `docs/avk-effects.md`.
+
 `contrib/avk-shm-cache-test.sh` is the eleventh, and it is the only one with a
 purpose-built client behind it.
 
@@ -988,6 +1032,31 @@ so the harness includes a few small purpose-built Wayland clients:
   lookalike, which is how a test proves it is measuring rotation and not
   something else; `--full-damage` is the wasteful control that is immune to the
   bug by construction.
+- **`contrib/wlrepaint`** — a `wl_shm` client that repaints its **whole**
+  surface every generation, alternating every pixel between two four-colour
+  checkers (`red`/`green`, then `blue`/`yellow`). It exists because a
+  persistence test is only as good as the change it tests against, and nothing
+  else here changes enough: a settled terminal repaints nothing, and
+  `wlrotate` draws its marks and then idles on a one-pixel damage rectangle —
+  164 and then 72 changed pixels across a whole screen, which is not a
+  background a stale region can be stale *against*. Both fixtures built on
+  those failed their own premise check, and would have reported a clean corner
+  otherwise.
+
+  The palette is the measurement. One background surface means one buffer means
+  one generation visible at a time, so parity is recoverable from a **single**
+  capture: a background pixel of the wrong colour pair is showing an older
+  frame, with no pairing of screenshots and no theory about when the flip
+  happened. `--solid RRGGBB` with `--frames N` makes the *foreground* of such a
+  test instead: flat, stationary, and completely quiet once placed — a window
+  that keeps re-committing identical content damages its own box every frame
+  and repaints the very region under test.
+
+  `--ssd` is not optional when borders matter. A client that never binds
+  `xdg-decoration` is CSD by default (`client_wants_ssd`), so asteroidz draws
+  it **no border** while still insetting its surface by `borderpx`: the window
+  looks bordered and the ring is empty. Measured without it, both renderers
+  "failed" a border test with background where the border should be.
 - **`contrib/wlsandbox`** — a `security-context-v1` client: it creates a real
   security context over a listening socket of its own, connects a *second*
   display through it, and reports the globals the compositor is willing to show
