@@ -644,3 +644,53 @@ two further gaps in the result.
 - Verified: full headless regression suite (118 assertions) clean
   throughout; render-matrix harness (GLES2 + Vulkan, effects on/off, SDR +
   HDR) clean.
+
+### 2026-08-11 — M3.5 closed on a real desktop, and the three bugs the tests could not see
+
+M3.5A–E built AVK into the engine that composites this desktop: it owns
+client buffers, uploads only what changed, damages only what moved, hands the
+frame to KMS with a fence, and draws the cursor. The milestone did not close
+on the strength of its suites. It closed after three defects were found — two
+of them by watching a real screen, one by an assertion added because a suite
+had gone quiet.
+
+**P0, `d9cc7bc` — a cursor outliving its theme.** `az_cursor` kept a
+`struct wlr_xcursor *` borrowed from `wlr_xcursor_manager`, which
+`reapply_cursor_style()` destroys on any live config change. The crash was
+never reproduced headlessly in ~110 attempts: freed heap stays mapped and
+usually holds plausible bytes, so the old code read garbage quietly. The fix
+keeps name+scale and resolves at point of use; the test asserts the ownership
+generation rather than waiting for undefined behaviour to fault.
+
+**P1, `2eaec70` — teardown destroying what the GPU still held.** Four of
+sixteen logged exits aborted in glibc. `cleanup()` destroyed the outputs —
+and with them each output's present fence — with no device wait anywhere in
+front of it; the three waits that existed were each buried at the top of a
+`*_finish()`, all of which run afterwards. The abort landed in the frees that
+came later, never at the violation. One `az_avk_quiesce()` before
+`wlr_backend_destroy()`, and `avk_device_wait_idle()` promoted to a function
+callers can invoke. 500-cycle soak plus 10 live exits, all-zero object census.
+
+**P2, `5a1c711` — the cursor had two owners.** M3.5E stage 1 is titled
+"asteroidz owns the cursor image"; seven call sites never got the memo and
+kept calling `wlr_cursor_set_xcursor()`, which picks a per-output image at
+native scale. `az_avk_emit_cursors()` then drew asteroidz's pixels into
+wlroots' box. On a 1.5/1.0 layout: dragging a window showed no grab cursor,
+and resizing on the coarser output made the arrow bigger. Invisible with a
+hardware cursor plane, so the daily driver never showed it. Found by the user,
+dragging a window.
+
+**And three harness bugs, which matter more than any of them.**
+`hl_sync_pointer_extent()` existed and nothing called it, so pointer moves
+past the first output landed elsewhere. `"$HL_WLVPTR" move:X,Y` is not wlvptr
+syntax — fourteen silent no-ops under `>/dev/null`. `monitorrule { scale N }`
+parses as key:value pairs and is discarded, so two tests claiming mixed scales
+ran both outputs at scale 1.
+
+The pattern in all three: a call that looked like it did something, did
+nothing, and said nothing. At equal scales both cursor ownership models
+produce the same size — so a test that silently loses its mixed-scale setup
+does not get weaker, it goes blind, and keeps printing `ok`. Every one of
+these made a green run mean less than it appeared to, and none of them would
+have been found by adding more assertions to the same tests.
+
