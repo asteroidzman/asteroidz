@@ -259,7 +259,34 @@ Changing the *implementation* a switch pokes at can neutralise it without
 touching the switch, the test, or anything that would show up in a diff. Break
 tests need re-running on the schedule the real tests do, and a break run that
 comes back green has to be treated as a failure of the suite rather than a
-curiosity. `BREAK=identity` is too little — cache on the buffer
+curiosity.
+
+### Auditing every break at once
+
+Finding that one prompted running all of them. As of 2026-08-11, on the AVK
+suite:
+
+| break | result |
+| :--- | :--- |
+| `avk-cursor` `cursor-texture` / `cursor-command` / `cursor-damage` / `cursor-upload` | fail correctly |
+| `avk-cursor-content` `cursor-generation` / `cursor-hotspot` | fail correctly |
+| `avk-shm-cache` `lookup` / `identity` | fail correctly *(after the repair above)* |
+| `avk-shm-partial` `source-full` 18/23, `omit-region` 22/23 | fail correctly |
+| `avk-sync` `presentsync` 8/10 | fails correctly |
+| `avk-damage` `preserve` 6/12, `stale` 9/12 | fail correctly |
+| `avk-shm-partial` `unsafe-reuse` | **NOT TESTED** — documented, could not be made observable |
+| `avk-damage-domains` `no-cull` | **NOT A FALSIFIER** — 4/4 either way |
+
+The last one is a different failure from the `lookup` one, and worth
+distinguishing. `lookup` was a working break that an implementation change
+neutralised. `no-cull` never could have failed in this harness: the suite runs
+**one output**, a node is only culled for being entirely on *another* one, and
+`nodes_output_culled_before_resolve` measures 0 with the switch on and off
+alike. The cull is real — 2970 of 8010 nodes on the live dual-monitor desktop —
+but nothing in a single-output run depends on it, so the script now says so in
+its header instead of listing it as a break that must fail. Making it real needs
+a second headless output (`WLR_HEADLESS_OUTPUTS=2`), which is a harness change
+rather than a test change. `BREAK=identity` is too little — cache on the buffer
 pointer, never re-upload, and a client that reuses a `wl_buffer` freezes on its
 first frame. **Neither break is caught by the other's assertions**, which is why
 both are here.

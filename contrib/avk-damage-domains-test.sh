@@ -21,10 +21,30 @@
 # full-screen wallpapers. With two outputs side by side, a node parked entirely
 # on one of them must be culled before its buffer is resolved.
 #
-# Break test, which MUST fail:
+# Break test:
 #
 #   BREAK=no-cull   AZ_AVK_NO_OUTPUT_CULL=1 -- resolve buffers before testing
 #                   whether the node can touch this output at all.
+#
+#                   *** NOT A FALSIFIER. DO NOT READ ITS PASS AS COVERAGE. ***
+#
+#                   This harness runs ONE output, and a node can only be culled
+#                   for being entirely on some other one. Measured with the
+#                   switch on and off, `nodes_output_culled_before_resolve` is
+#                   0 both ways and `shm_upload_bytes` is 0 both ways: there is
+#                   nothing for the switch to stop doing, so the run comes back
+#                   4/4 either way.
+#
+#                   It is left here rather than deleted because the cull is
+#                   real and is measured live -- 2970 of 8010 nodes on the
+#                   dual-monitor desktop. Making it falsifiable needs a second
+#                   headless output (WLR_HEADLESS_OUTPUTS=2) placed beside the
+#                   first, which is a harness change, not a test change.
+#
+#                   The assertions below are about the DAMAGE DOMAINS, and
+#                   those are falsifiable and are what this script is for. The
+#                   cull is described in the commentary because it was found
+#                   here; it is not asserted here.
 set -u
 
 . "$(dirname "$0")/lib/headless.sh"
