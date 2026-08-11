@@ -386,6 +386,35 @@ Subscribes the client to real-time updates. When the state changes, the server p
 * `watch focused-client`
 * `watch client <id>`
 * `watch tags <mon_name>`
+### `get dmabuf-feedback`
+
+What the compositor advertises to clients, and the two sets it is derived
+from, so the subset invariants can be asserted from outside rather than taken
+on trust:
+
+```json
+{ "source": "avk",                 // or "wlr_renderer" in GLES mode
+  "main_device": "226:128",        // AVK's DRM node, not the renderer's
+  "advertised_pairs": 123, "withheld_pairs": 15,
+  "avk_texture_pairs_probed": 138,
+  "advertised_composition": ["XR24 (0x34325258):0x0200000028a01b04", ...],
+  "avk_importable":         [...],  // rebuilt from the table, not a copy
+  "outputs": [{"name":"DP-1","kms_scanout":[...],"advertised_scanout":[...]}] }
+```
+
+The invariants a test should hold it to:
+
+```text
+advertised_composition  ⊆  avk_importable
+advertised_scanout      ⊆  avk_importable ∩ kms_scanout
+advertised + withheld   =  avk_texture_pairs_probed
+DRM_FORMAT_MOD_INVALID  ∉  advertised_composition
+```
+
+`avk_importable` is rebuilt from the format table at query time rather than
+copied from what was advertised — otherwise the subset check would be
+comparing a set with itself.
+
 ### `get avk-stats`
 
 Live counters for the AVK renderer (`ASTEROIDZ_RENDERER=avk`). Returns

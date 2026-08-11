@@ -276,6 +276,20 @@ if build_vulkan
                              build_by_default : false)
   test('avk-core', test_avk_core, timeout : 60)
 
+  # The capability model, driven with SYNTHETIC format sets. The live test
+  # cannot cover the rule this protects: on a machine whose GLES and Vulkan
+  # tables overlap, advertising the wrong one still passes every subset check,
+  # which is exactly how the shipped bug survived M3.5. Here the two sets are
+  # made to disagree on purpose, so "which engine did the answer come from" has
+  # an observable consequence that does not depend on this GPU or this Mesa.
+  test_dmabuf_feedback = executable('test-dmabuf-feedback',
+                                    'tests/test-dmabuf-feedback.c',
+                                    dependencies : [avk_dep, wlroots_dep],
+                                    include_directories : include_directories('src'),
+                                    c_args : ['-DWLR_USE_UNSTABLE', '-DAZ_HAVE_VULKAN'],
+                                    build_by_default : false)
+  test('dmabuf-feedback', test_dmabuf_feedback, timeout : 30)
+
   # The one that reproduces the blank-window class: a real GBM buffer whose
   # modifier is thrown away before import, which is what wl_drm and
   # modifier-less Electron/Chromium hand over.

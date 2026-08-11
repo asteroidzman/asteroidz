@@ -279,6 +279,7 @@ suite:
 | `avk-cursor-lifetime` `cursor-stale-xcursor` | fails correctly |
 | `avk-teardown` `destroy-before-idle` | fails correctly, every cycle |
 | `avk-cursor-owner` `wlroots-move-resize` / `wlroots-xcursor` | fail correctly |
+| `avk-dmabuf-feedback` `dmabuf-feedback-gles` | fails correctly — **on the source only**, see below |
 | `avk-shm-partial` `unsafe-reuse` | **NOT TESTED** — documented, could not be made observable |
 
 `no-cull` failed differently from `lookup`, and the distinction is worth
@@ -557,6 +558,48 @@ The instrumentation is diagnostic and does not change the production model: the
 durable state is the name and scale, and the pointer is resolved at the point
 of use and never stored. Rebuilding that as "cache the pointer plus a
 generation number" would keep the wrong ownership and merely detect it.
+
+### A break that can only protect a label, and the test that protects the rule
+
+`contrib/avk-dmabuf-feedback-test.sh` checks that DMA-BUF feedback describes
+what AVK can import, and `BREAK=dmabuf-feedback-gles` restores the shipped
+behaviour of describing the GLES compatibility renderer instead.
+
+```bash
+ASTEROIDZ=build-vk/asteroidz bash contrib/avk-dmabuf-feedback-test.sh
+BREAK=dmabuf-feedback-gles ASTEROIDZ=build-vk/asteroidz bash contrib/avk-dmabuf-feedback-test.sh  # must FAIL
+meson test -C build-vk dmabuf-feedback
+```
+
+The break fails, but be clear about **why**: it fails because the reported
+`source` changes from `avk` to `wlr_renderer`. It does **not** fail on the
+format set, because on this machine the GLES and Vulkan tables overlap enough
+that the wrong set still passes every subset check — which is precisely how
+the bug survived the whole of M3.5. A break that only moves a label is
+protecting a label.
+
+So the rule itself is tested in `tests/test-dmabuf-feedback.c`, on capabilities
+the test invents:
+
+```text
+AVK can import    A B C
+other renderer    A B D
+must advertise    A B C        C present, D absent
+```
+
+plus MOD_INVALID filtering, render-only modifiers not leaking into a set that
+describes sampling, YCbCr withheld, an all-withheld table refused rather than
+advertised as empty, and — with two real render nodes opened and made to
+disagree — the main device following AVK rather than the other engine. The
+live compositor can never exercise that last one here: both engines select the
+same node, so the disagreement has to be constructed.
+
+Verified against a broken model before being trusted. Changing the builder to
+read `render_mods` instead of `texture_mods` takes it from 12/12 to 8/12,
+including *"a modifier only the other renderer supports is NOT advertised"*.
+
+The general point, which cost a milestone: **a test whose two possible answers
+happen to coincide on your hardware is not coverage, however green it is.**
 
 ### Three harness bugs that made tests pass by doing nothing
 

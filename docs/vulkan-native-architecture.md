@@ -1635,6 +1635,79 @@ thing it claims to describe — which is the exact class of bug D.1 removed.
 
 ---
 
+## 5.5 M3.6 — who decides what a client may allocate
+
+The compositor asked GLES what it could consume and then handed the buffer to
+AVK. Three values came from the wrong place:
+
+```text
+wlr_linux_dmabuf_v1_create_with_renderer(dpy, 5, drw)   default feedback
+SceneFX  .main_renderer = output->renderer              per-surface feedback
+```
+
+`wlr_linux_dmabuf_feedback_v1_init_with_options()` derives the main device,
+the composition tranche, and the set that scanout tranches are intersected
+against — all three from `main_renderer`, which in AVK mode is the GLES2
+compatibility renderer that composites nothing.
+
+### The rule
+
+> wlroots implements the protocol; AVK determines the GPU capabilities.
+
+`avk_format_table` is the source, and had claimed the job in its own header
+since it was written. Every entry is probed with
+`vkGetPhysicalDeviceImageFormatProperties2`, external-memory handle type
+chained in — not inferred from what the driver enumerates.
+
+```text
+AVK import capability  +  output scanout capability  +  device topology
+        ↓
+composition set        123 pairs      main device = AVK's DRM node
+scanout tranche        composition ∩ wlr_output_get_primary_formats
+        ↓
+wlr_linux_dmabuf_v1_create(dpy, 5, feedback)      wlroots: protocol only
+```
+
+No protocol fork. `wlr_linux_dmabuf_v1_create()` already takes a caller-owned
+feedback. Only per-surface feedback needed anything, because
+`init_with_options()` asserts a renderer — hence
+`wlr_scene_set_linux_dmabuf_capabilities()` in SceneFX, phrased as "the
+compositor knows its capabilities" with nothing AVK-specific in it.
+
+### Withheld on purpose
+
+| withheld | why |
+|---|---|
+| `DRM_FORMAT_MOD_INVALID` | a fallback to cope with, not a modifier to ask a client for. The GBM on this driver cannot recover implicit modifiers, so an implicit buffer takes the copy path — advertising it would request that deliberately |
+| render-only modifiers | client content is sampled; `texture_mods` is the right array |
+| NV12, YU12, P010 | importable, but range/matrix/transfer are not implemented (M5). Advertising them would advertise a bug |
+
+Live: 123 advertised + 15 withheld = 138 probed, and the test asserts that
+equation so an unexplained gap fails rather than passing quietly.
+
+### What this did NOT change, measured
+
+Nothing observable on this machine. `copied` was already 0 on every build in
+the log — clients were negotiating explicit modifiers AVK could import all
+along — and live, the GLES renderer sits on the same Navi31 node AVK selects,
+so the main device would have been identical either way.
+
+M3.6 corrected an ownership inversion and produced no measurable behavioural
+difference here. That is the honest result: the value is that the compositor
+can no longer advertise a pair AVK would reject, and that a future
+configuration where the two engines disagree — a different GPU, a Mesa update,
+a multi-GPU layout — is now answered correctly by construction rather than by
+coincidence.
+
+That coincidence is also why the live test cannot protect the rule. On
+overlapping tables, advertising the wrong source still passes every subset
+check; the shipped bug did, for the whole of M3.5. `tests/test-dmabuf-feedback.c`
+therefore drives the model with synthetic sets — AVK `{A,B,C}`, other renderer
+`{A,B,D}`, expect `{A,B,C}` — and with two real render nodes made to disagree,
+neither of which depends on this GPU.
+
+---
+
 ## 5.4m The cursor has one owner, and seven call sites did not know it
 
 M3.5E stage 1 is titled "asteroidz owns the cursor image". It did not, quite.
