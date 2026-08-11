@@ -897,6 +897,47 @@ void wlr_scene_buffer_set_buffer(struct wlr_scene_buffer *scene_buffer,
 	struct wlr_buffer *buffer);
 
 /**
+ * New pixel content became current for a buffer.
+ *
+ * `damage` is in buffer-local coordinates, or NULL when the whole buffer
+ * should be considered changed.
+ */
+struct wlr_scene_buffer_content_event {
+	struct wlr_buffer *buffer;
+	const pixman_region32_t *damage;
+};
+
+/**
+ * Observe scene buffers being given new pixel content.
+ *
+ * This exists for a renderer that keeps its own GPU copy of a buffer's pixels
+ * and needs to know when that copy has gone stale. The question it answers is
+ * specifically "did the CONTENT change", which is not the same question as
+ * "does something need recompositing": a window moving across the desktop
+ * damages a great deal of the output and changes no pixels in the client's
+ * buffer, and re-uploading on the second question costs a full copy of every
+ * visible surface on every frame.
+ *
+ * It is deliberately hung off the one place in this file where a buffer's
+ * contents are declared current -- wlr_scene_buffer_set_buffer_with_options()
+ * -- rather than being a second Wayland listener somewhere else, because that
+ * one call already covers both client surfaces (via surface_reconfigure) and
+ * the compositor's own buffer nodes, and already carries the buffer-local
+ * damage region.
+ *
+ * Note that the same wlr_buffer may be given new content repeatedly: a client
+ * is entitled to reuse a wl_buffer, so buffer identity is NOT a content
+ * version. That is the whole reason this callback exists rather than a
+ * pointer comparison.
+ *
+ * A single observer, set once at startup. Pass NULL to remove it.
+ */
+void wlr_scene_set_buffer_content_observer(
+	void (*notify)(const struct wlr_scene_buffer_content_event *event,
+		void *user_data),
+	void *user_data);
+
+/**
  * Sets the buffer's backing buffer with a custom damage region.
  *
  * The damage region is in buffer-local coordinates. If the region is NULL,

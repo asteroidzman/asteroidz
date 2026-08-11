@@ -412,6 +412,8 @@ Fields worth knowing:
 | `damage_ratio` | `damage_pixels / output_pixels` over the run. 1.0 means every frame is a full redraw |
 | `full_redraw_frames` / `partial_redraw_frames` | how many frames redrew the whole output versus part of it |
 | `damage_rects_max` | most rectangles one frame's damage arrived in. Pinned at 20 means the ring is collapsing damage to a bounding box rather than tracking it |
+| `shm_commits` | content generations committed for CPU-backed buffers |
+| `shm_full_uploads` / `shm_upload_skips` | copies actually performed, versus lookups that found the GPU copy already current. On a mostly-static desktop skips should dwarf uploads |
 | `cpu_sync_waits` | must be 0 — a nonzero value means the frame path blocks on the GPU |
 | `present_sync_timeline` / `present_sync_dmabuf` | frames handed to the display with a fence, by which route |
 | `present_sync_none` | **must be 0.** Frames handed over unsynchronised — only reachable via `AZ_AVK_NO_PRESENT_SYNC=1` |
@@ -419,6 +421,9 @@ Fields worth knowing:
 | `presentation_waits` | GPU-side waits before reusing a target. Not a stall — the CPU returns immediately. Rare on the timeline route; ~1 per frame on the dma-buf route, where the buffer's fence list also holds our own last write |
 | `target_state_violations` | must be 0 — the swapchain handed back a buffer the display had not released |
 | `validation_errors` | Vulkan validation errors seen this run (needs `ASTEROIDZ_VK_DEBUG=1`) |
+
+`frames` counts **output** frames, not compositor-wide ones: a two-monitor
+desktop increments it twice per refresh. Divide byte counters by it accordingly.
 
 `present_sync_timeline + present_sync_dmabuf` should equal `frames`. Which of
 the two is nonzero depends on the backend, not on a setting: a DRM backend with

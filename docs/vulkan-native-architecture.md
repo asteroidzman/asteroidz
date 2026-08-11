@@ -811,6 +811,97 @@ warns about, and it fails six assertions.
 
 ---
 
+## 5.4f M3.5D.1 — a buffer is uploaded because it changed, not because it was looked at
+
+`az_avk_image_for_buffer()` re-uploaded every CPU-backed buffer on every frame
+that drew it. On the live dual-monitor desktop that was measured at **41.5 MB
+per output frame** — exactly `3840x2160x4 + 1920x1080x4`, one full-screen
+wallpaper per output — **924 GB** over one session, and essentially all of a
+6.6 ms CPU frame time. GPU submit over the same run averaged 0.034 ms.
+
+The cause was a conflated question. These are five different things and only
+the first two are about pixels:
+
+```
+BUFFER IDENTITY     which storage object is this?
+CONTENT GENERATION  which committed version of its pixels is this?
+CONTENT DAMAGE      which pixel regions changed in this generation?
+SCENE DAMAGE        which output regions need recompositing?
+PRESENTATION        which output target is being displayed?
+```
+
+A window moving across the desktop produces enormous scene damage and zero new
+client pixels. The cache now keys on a **content generation**, not on traversal
+and not on the buffer pointer.
+
+### Where a generation comes from
+
+Two events, and between them they cover every buffer the scene can hold:
+
+- **`wlr_surface.events.commit` carrying `WLR_SURFACE_STATE_BUFFER`** — every
+  client surface. This is the same condition wlroots itself uses to decide
+  whether to re-upload a `wlr_texture` (`invalid_buffer` in
+  `surface_commit_state()`), and `surface->buffer_damage` is already computed
+  when the signal fires (`wlr_compositor.c:532`, emitted at 565).
+- **`wlr_scene_set_buffer_content_observer()`**, a small addition to the
+  SceneFX fork hung off `wlr_scene_buffer_set_buffer_with_options()` — the one
+  place in the scene where a buffer's contents are declared current, already
+  carrying buffer-local damage, and already covering both surfaces and the
+  compositor's own cairo buffer nodes.
+
+Surfaces are skipped by the observer, because the commit hook already handled
+them and bumping twice would upload twice. That split is ordering-independent
+in both directions, which matters because listener order between AVK and the
+scene is not guaranteed.
+
+**Not** an increment on: position, opacity, output damage, another window
+exposing it, or another frame being scheduled. Those need recompositing and no
+upload.
+
+### Why not a pointer comparison
+
+`buffer == cached_buffer` is not "the contents are unchanged". A client may
+reuse a `wl_buffer` for a later commit — the protocol allows it — and a cache
+that skips on identity renders such a client permanently frozen on its first
+frame. It also *looks* correct against every ordinary toolkit, because they
+rotate through a pool of two or three buffers and each new pointer is a cache
+miss.
+
+`contrib/wlreuse` exists solely to make buffer identity a lie: one
+`wl_shm_pool`, one `wl_buffer`, one mapping, for the life of the process, with
+only the bytes changing between commits. It is the only client in the tree that
+does this, and `BREAK=identity` freezes it on red while every other assertion in
+the suite still passes.
+
+### Why deferring the upload to lookup is safe
+
+The copy happens at the next lookup rather than at the commit, which raises the
+question of whether the client may have scribbled over the buffer in between.
+It may not: `wlr_scene_buffer_set_buffer_with_options()` takes a lock on the
+buffer (`wlr_scene.c:944`) and holds it until the buffer is replaced, so
+`wl_buffer.release` is not sent and the client is protocol-bound not to touch
+it. Release therefore happens when the next commit replaces the buffer — which
+is a consequence of the raw-buffer path from M3.5A, not of this change.
+
+### GPU lifetime
+
+A new generation may arrive while an earlier one is still being sampled by an
+in-flight frame. `az_avk_upload_shm()` already handled this and still does: the
+upload submission waits on the device timeline at `image->last_use`, which is a
+GPU-side ordering edge and costs the CPU nothing. There is no `vkQueueWaitIdle`
+and no `vkDeviceWaitIdle` on this path.
+
+### Measured, headless
+
+| | uploads | bytes |
+|---|---|---|
+| static wallpaper, 7 frames, 21 lookups | **0** | **0** |
+| `BREAK=lookup` (upload on lookup) | 21 | 3,723,720 **per frame** |
+| reused buffer, red then blue | +1 | one buffer |
+| `BREAK=identity` | 0 | frozen on red |
+
+---
+
 ## M3b work plan (the compositor half) — DONE, kept for the record
 
 Written down here rather than left in a conversation, because this was the

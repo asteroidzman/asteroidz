@@ -230,6 +230,36 @@ The first version of `BREAK=preserve` used `loadOp DONT_CARE` and **the whole
 suite passed with it set**: a driver may leave "undefined" contents alone, and
 RADV does. It clears to magenta now.
 
+`contrib/avk-shm-cache-test.sh` is the eleventh, and it is the only one with a
+purpose-built client behind it.
+
+```bash
+cd contrib/wlreuse && make            # once
+ASTEROIDZ=build-vk/asteroidz bash contrib/avk-shm-cache-test.sh
+BREAK=lookup   ASTEROIDZ=build-vk/asteroidz bash contrib/avk-shm-cache-test.sh  # must FAIL
+BREAK=identity ASTEROIDZ=build-vk/asteroidz bash contrib/avk-shm-cache-test.sh  # must FAIL
+```
+
+It asks whether a CPU-backed buffer is uploaded because its pixels changed or
+because something looked at it, and there are two opposite ways to get that
+wrong. `BREAK=lookup` is too much — 3,723,720 bytes per frame, the wallpaper,
+recopied every frame. `BREAK=identity` is too little — cache on the buffer
+pointer, never re-upload, and a client that reuses a `wl_buffer` freezes on its
+first frame. **Neither break is caught by the other's assertions**, which is why
+both are here.
+
+The second needs `contrib/wlreuse`, and nothing else in the tree can stand in
+for it: every ordinary toolkit rotates through a pool of two or three buffers,
+so a pointer-identity cache looks perfectly correct against kitty, against
+swaybg and against every other client in this suite. wlreuse allocates one
+`wl_shm_pool`, one `wl_buffer` and one mapping for the life of the process and
+changes only the bytes — making buffer identity a lie on purpose.
+
+One thing this test had to learn: an idle desktop now produces **zero** frames,
+so "static buffer, thousands of frames, no uploads" needs something animating
+to be measurable at all. A terminal's blinking cursor supplies the frames while
+the wallpaper underneath stays static.
+
 ### The schema, checked from both ends
 
 `src/config/config-schema.h` describes every settable option — type, range, enum

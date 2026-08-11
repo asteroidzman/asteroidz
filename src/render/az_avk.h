@@ -97,6 +97,12 @@ struct az_avk {
 	uint64_t buffer_imports;      /* client buffers resolved to an avk_image */
 	uint64_t buffer_import_fails;
 	uint64_t shm_uploads;         /* re-uploads of CPU buffers */
+	/* Content generations committed, versus uploads actually performed,
+	 * versus lookups that found the GPU copy already current. The third one
+	 * is the whole point: it should dwarf the second on a static desktop. */
+	uint64_t shm_commits;
+	uint64_t shm_full_uploads;
+	uint64_t shm_upload_skips;
 	uint64_t commit_imports;      /* buffers taken ownership of at commit */
 	uint64_t late_imports;        /* taken at DRAW time -- must stay 0 for
 	                               * surfaces; see az_avk_walk_node() */
@@ -160,6 +166,14 @@ struct az_avk {
 
 static struct az_avk avk = {0};
 
+/* A switch is on. Used by the break tests and by the two presentation
+ * fallbacks; read every time rather than cached, because these are set once
+ * before the process starts and never change. */
+static bool az_avk_env_flag(const char *name) {
+	const char *v = getenv(name);
+	return v != NULL && v[0] == '1';
+}
+
 /* ── client buffer cache ────────────────────────────────────────────────── */
 
 /*
@@ -190,6 +204,34 @@ struct az_avk_buffer {
 	 * commit the client's content is guaranteed valid, and later it is only
 	 * valid by luck. */
 	bool taken_at_commit;
+
+	/*
+	 * Which committed version of the pixels this is.
+	 *
+	 * The bug this exists to kill: `az_avk_image_for_buffer()` treated "this
+	 * buffer was encountered while walking the scene" as "this buffer has new
+	 * pixels", and re-uploaded a CPU buffer on every frame that drew it. On a
+	 * two-monitor desktop with a full-screen wallpaper per output that was
+	 * 41.5 MB of CPU->GPU copy per output frame, 924 GB over one session, and
+	 * essentially all of a 6.6 ms CPU frame time -- for pixels that had not
+	 * changed since the wallpaper was drawn once.
+	 *
+	 * The two are simply different questions. A window moving across the
+	 * desktop damages a great deal of the output and changes nothing in the
+	 * client's buffer.
+	 *
+	 * `content` is bumped only by an event that means new pixels became
+	 * current; `uploaded` records which of those the GPU copy holds. Equal
+	 * means there is nothing to do, however many frames look the buffer up.
+	 *
+	 * A counter and not a pointer comparison, deliberately. A client may
+	 * reuse the same wl_buffer for a later commit with different pixels, so
+	 * `buffer == cached_buffer` is not "the contents are unchanged" -- it is
+	 * the naive cache that renders a terminal permanently frozen on its first
+	 * frame.
+	 */
+	uint64_t content_generation;
+	uint64_t uploaded_generation;
 };
 
 static void az_avk_buffer_destroy(struct az_avk_buffer *entry) {
@@ -380,6 +422,7 @@ static bool az_avk_upload_shm(struct az_avk_buffer *entry) {
 		(uint32_t)entry->buffer->height, &wait, wait_count) != 0;
 	if (ok) {
 		avk.shm_uploads++;
+		avk.shm_full_uploads++;
 		avk.shm_upload_bytes += (uint64_t)stride * entry->buffer->height;
 	}
 
@@ -410,7 +453,35 @@ static struct avk_image *az_avk_image_for_buffer(struct wlr_buffer *buffer) {
 		}
 		avk.cache_hits++;
 		if (entry->is_shm) {
-			return az_avk_upload_shm(entry) ? entry->image : NULL;
+			/*
+			 * Lookup, not upload. The copy happens only for a generation the
+			 * GPU does not already hold -- see content_generation.
+			 *
+			 * Two break switches, one for each way this can be wrong:
+			 *
+			 *   AZ_AVK_UPLOAD_ON_LOOKUP=1 restores the unconditional upload.
+			 *   Correct pixels, 924 GB a session.
+			 *
+			 *   AZ_AVK_CACHE_BY_IDENTITY=1 caches on the buffer pointer and
+			 *   never re-uploads. Free, and permanently wrong the moment a
+			 *   client reuses a wl_buffer -- which looks fine against every
+			 *   toolkit that rotates a buffer pool, and is why
+			 *   contrib/wlreuse exists.
+			 */
+			if (az_avk_env_flag("AZ_AVK_CACHE_BY_IDENTITY")) {
+				avk.shm_upload_skips++;
+				return entry->image;
+			}
+			if (entry->uploaded_generation == entry->content_generation
+					&& !az_avk_env_flag("AZ_AVK_UPLOAD_ON_LOOKUP")) {
+				avk.shm_upload_skips++;
+				return entry->image;
+			}
+			if (!az_avk_upload_shm(entry)) {
+				return NULL;
+			}
+			entry->uploaded_generation = entry->content_generation;
+			return entry->image;
 		}
 		return entry->image;
 	}
@@ -438,8 +509,14 @@ static struct avk_image *az_avk_image_for_buffer(struct wlr_buffer *buffer) {
 		break;
 	}
 	case AZ_BUFFER_DATA_PTR:
+		/* Generation 1 is "the contents as they were when we first saw this
+		 * buffer". Uploading it here is the one upload that is caused by a
+		 * lookup, and it has to be: there is nothing on the GPU yet. */
+		entry->content_generation = 1;
 		if (!az_avk_upload_shm(entry)) {
 			entry->image = NULL;
+		} else {
+			entry->uploaded_generation = 1;
 		}
 		break;
 	case AZ_BUFFER_NONE:
@@ -735,10 +812,6 @@ static bool az_avk_pick_format(struct wlr_output *output, uint32_t fourcc,
  * only reachable on hardware nobody here has, and an untested fallback is a
  * fallback that does not work.
  */
-static bool az_avk_env_flag(const char *name) {
-	const char *v = getenv(name);
-	return v != NULL && v[0] == '1';
-}
 
 /*
  * Decide, once per output, how a finished frame will carry its fence.
@@ -1688,7 +1761,25 @@ static void az_avk_surface_commit(struct wl_listener *listener, void *data) {
 	struct wlr_addon *addon = wlr_addon_find(&buffer->addons, &avk,
 		&az_avk_buffer_addon_impl);
 	if (addon != NULL) {
-		/* Already ours. A client re-committing the same buffer is ordinary. */
+		/*
+		 * Already ours -- but NOT necessarily unchanged.
+		 *
+		 * A client is entitled to reuse a wl_buffer: draw into it again,
+		 * attach the same object, commit. wlroots' own test for "the texture
+		 * needs re-uploading" is exactly this commit carrying a buffer
+		 * (`invalid_buffer` in surface_commit_state), so it is the right test
+		 * here too.
+		 *
+		 * This function used to return here and do nothing, and the only
+		 * reason a reused buffer ever showed its new pixels was that the
+		 * frame path re-uploaded unconditionally. Take that away without
+		 * putting this in and a terminal freezes on whatever it drew first.
+		 */
+		struct az_avk_buffer *entry = wl_container_of(addon, entry, addon);
+		if (entry->is_shm) {
+			entry->content_generation++;
+			avk.shm_commits++;
+		}
 		return;
 	}
 	if (az_avk_image_for_buffer(buffer) != NULL) {
@@ -1697,9 +1788,50 @@ static void az_avk_surface_commit(struct wl_listener *listener, void *data) {
 		if (addon != NULL) {
 			struct az_avk_buffer *entry = wl_container_of(addon, entry, addon);
 			entry->taken_at_commit = true;
+			if (entry->is_shm) {
+				avk.shm_commits++;
+			}
 		}
 		avk.commit_imports++;
 	}
+}
+
+/*
+ * The same question, asked for buffers that are not client surfaces.
+ *
+ * asteroidz draws its own titlebar text, icons and animation frames into cairo
+ * buffers and hands them to the scene. Those have no wl_surface and therefore
+ * no commit, so the hook above never sees them -- and without a second source
+ * of generations they would be uploaded once and then frozen.
+ *
+ * Every one of today's producers (text-node.c, ufo-node.c, asteroid-break.h)
+ * happens to allocate a FRESH wlr_buffer per update and drop the old one,
+ * which would make buffer identity a valid content version for them. That was
+ * checked rather than assumed -- and it is still not what this hangs on,
+ * because it is a property of three call sites that a fourth could quietly
+ * break, with the symptom being a frozen visual and no error anywhere.
+ * SceneFX announcing the change is a rule; surveying the producers is a
+ * snapshot.
+ *
+ * Surfaces are skipped here: they are covered by the commit hook, which knows
+ * about ownership as well as about content, and bumping in both places would
+ * upload every client surface twice per commit.
+ */
+static void az_avk_scene_content_notify(
+		const struct wlr_scene_buffer_content_event *event, void *user_data) {
+	(void)user_data;
+	struct wlr_addon *addon = wlr_addon_find(&event->buffer->addons, &avk,
+		&az_avk_buffer_addon_impl);
+	if (addon == NULL) {
+		/* Never seen: the first lookup will import it and upload generation 1,
+		 * which is the current content by definition. */
+		return;
+	}
+	struct az_avk_buffer *entry = wl_container_of(addon, entry, addon);
+	if (!entry->is_shm || entry->taken_at_commit) {
+		return;
+	}
+	entry->content_generation++;
 }
 
 static void az_avk_surface_destroy(struct wl_listener *listener, void *data) {
@@ -1743,6 +1875,7 @@ static void az_avk_detach(void) {
 		wl_list_remove(&az_avk_new_surface_listener.link);
 		az_avk_new_surface_attached = false;
 	}
+	wlr_scene_set_buffer_content_observer(NULL, NULL);
 }
 
 /* ── lifecycle ──────────────────────────────────────────────────────────── */
@@ -1803,6 +1936,10 @@ static bool az_avk_init(int drm_fd) {
 		return false;
 	}
 	avk_format_table_log(&avk.importer.table);
+
+	/* From here on, "this buffer has new pixels" is an event rather than an
+	 * assumption made once per frame. */
+	wlr_scene_set_buffer_content_observer(az_avk_scene_content_notify, NULL);
 
 	avk.active = true;
 	return true;
@@ -1871,6 +2008,11 @@ static cJSON *az_avk_stats_json(void) {
 		(double)imp->imports_failed);
 	cJSON_AddNumberToObject(o, "shm_upload_bytes",
 		(double)avk.shm_upload_bytes);
+	cJSON_AddNumberToObject(o, "shm_commits", (double)avk.shm_commits);
+	cJSON_AddNumberToObject(o, "shm_full_uploads",
+		(double)avk.shm_full_uploads);
+	cJSON_AddNumberToObject(o, "shm_upload_skips",
+		(double)avk.shm_upload_skips);
 	cJSON_AddNumberToObject(o, "implicit_copy_bytes",
 		(double)imp->copied_bytes);
 	cJSON_AddNumberToObject(o, "implicit_copy_us", (double)imp->copied_us);
@@ -1948,6 +2090,9 @@ static void az_avk_stats_reset(void) {
 	avk.buffer_import_fails = 0;
 	avk.shm_uploads = 0;
 	avk.shm_upload_bytes = 0;
+	avk.shm_commits = 0;
+	avk.shm_full_uploads = 0;
+	avk.shm_upload_skips = 0;
 	avk.commit_imports = 0;
 	avk.late_imports = 0;
 	avk.cache_hits = 0;
@@ -1990,6 +2135,10 @@ static void az_avk_log_stats(void) {
 		" avk.buffer_imports=%" PRIu64 " avk.buffer_import_fails=%" PRIu64
 		" avk.shm_uploads=%" PRIu64, avk.frames, avk.fallback_frames,
 		avk.buffer_imports, avk.buffer_import_fails, avk.shm_uploads);
+	wlr_log(WLR_INFO, "avk.shm_commits=%" PRIu64 " avk.shm_full_uploads=%" PRIu64
+		" avk.shm_upload_skips=%" PRIu64 " avk.shm_upload_bytes=%" PRIu64,
+		avk.shm_commits, avk.shm_full_uploads, avk.shm_upload_skips,
+		avk.shm_upload_bytes);
 	wlr_log(WLR_INFO, "avk.commit_imports=%" PRIu64 " avk.late_imports=%" PRIu64
 		" avk.cache_hits=%" PRIu64 " avk.cache_misses=%" PRIu64,
 		avk.commit_imports, avk.late_imports, avk.cache_hits,

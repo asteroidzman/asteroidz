@@ -1498,6 +1498,23 @@ struct wlr_scene_buffer *wlr_scene_buffer_create(struct wlr_scene_tree *parent,
 	return scene_buffer;
 }
 
+// A single observer rather than a wl_signal on wlr_scene: there is exactly one
+// consumer (the compositor's own renderer cache), the notification carries no
+// per-scene state, and a signal would mean adding a member to a public struct,
+// initialising it at scene creation and remembering to tear it down. One
+// function pointer set once at startup is the proportionate answer.
+static void (*scene_buffer_content_notify)(
+	const struct wlr_scene_buffer_content_event *event, void *user_data);
+static void *scene_buffer_content_user_data;
+
+void wlr_scene_set_buffer_content_observer(
+		void (*notify)(const struct wlr_scene_buffer_content_event *event,
+			void *user_data),
+		void *user_data) {
+	scene_buffer_content_notify = notify;
+	scene_buffer_content_user_data = user_data;
+}
+
 void wlr_scene_buffer_set_buffer_with_options(struct wlr_scene_buffer *scene_buffer,
 		struct wlr_buffer *buffer, const struct wlr_scene_buffer_set_buffer_options *options) {
 	const struct wlr_scene_buffer_set_buffer_options default_options = {0};
@@ -1516,6 +1533,17 @@ void wlr_scene_buffer_set_buffer_with_options(struct wlr_scene_buffer *scene_buf
 	if (!mapped && !prev_mapped) {
 		// unmapping already unmapped buffer - noop
 		return;
+	}
+
+	// New pixel content is now current for this buffer. Announced here, before
+	// any of the early returns below, because a size change takes one of those
+	// and is still very much a content change -- with the whole buffer damaged.
+	if (buffer != NULL && scene_buffer_content_notify != NULL) {
+		struct wlr_scene_buffer_content_event event = {
+			.buffer = buffer,
+			.damage = options->damage,
+		};
+		scene_buffer_content_notify(&event, scene_buffer_content_user_data);
 	}
 
 	// if this node used to not be mapped or its previous displayed
