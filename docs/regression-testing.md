@@ -251,13 +251,19 @@ inside it must be the window or its border, and the antialiased band between is
 not judged. Counting cannot separate a stale pixel from a correct one, and in
 motion neither can an eye.
 
-Three premises are asserted before any of that, and each of them has already
+Four premises are asserted before any of that, and each of them has already
 caught a run that would otherwise have passed:
 
 - the background client committed new generations while capturing (its own log,
   which capture timing cannot fake);
 - a generation flip really changed ≥75% of the background around the window
   (the pixels, which a client that logs without presenting cannot fake);
+- the frames were **partial** redraws. The background client started out tiled
+  and full-screen, so its whole-surface damage was whole-*output* damage and
+  every frame counted as a full redraw — under which a corner survives because
+  the scene is redrawn entire, which is the one thing this fixture may not
+  conclude. It is floating and smaller than the output for that reason: 29 full
+  frames to 175 partial;
 - at `BORDER > 0`, a border is actually being painted — see `wlrepaint --ssd`.
 
 `BREAK=damage-hole` sets `AZ_AVK_DAMAGE_HOLE=x,y,w,h`, which subtracts that

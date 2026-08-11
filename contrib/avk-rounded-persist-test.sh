@@ -43,7 +43,8 @@
 #   AVK  border 6    104 px      GLES border 6    clean
 #
 # 104 background pixels per corner INSIDE the outer arc, all of them showing the
-# CURRENT generation, unchanged under forced full redraw. So: not persistence,
+# CURRENT generation, under genuinely partial damage (5 full frames to 191
+# partial) and unchanged under forced full redraw. So: not persistence,
 # not shared with SceneFX, and not the rounded client path. AVK cuts the
 # border's inner edge as a square (ignoring clipped_region.corners, which the
 # compositor fills in per corner) where SceneFX cuts it rounded, and the wedge
@@ -81,6 +82,14 @@ FG_W="${FG_W:-700}"
 FG_H="${FG_H:-500}"
 FG_X="${FG_X:-500}"
 FG_Y="${FG_Y:-260}"
+# The background must strictly contain the foreground plus one radius of margin
+# on every side -- that margin is where the scene's current generation is read
+# from -- and must be strictly smaller than the output, so its damage is
+# partial. 400,200 1000x700 contains 500,260 700x500 with 60px to spare.
+BG_W="${BG_W:-1000}"
+BG_H="${BG_H:-700}"
+BG_X="${BG_X:-400}"
+BG_Y="${BG_Y:-200}"
 
 OUTDIR="${TMPDIR:-/tmp}/asteroidz-persist-$$"
 HL_OUTDIR="$OUTDIR"
@@ -134,13 +143,21 @@ layout {
 }"
 sleep 2
 
-# BACKGROUND: tiled, so it is configured to the whole output and follows that
-# configure. It never stops committing.
-"$REPAINT" --title wlbg --size "$HL_WIDTH"x"$HL_HEIGHT" --cell 16 --hold-ms 100 \
+# BACKGROUND: floating and SMALLER THAN THE OUTPUT, which is not a detail.
+# Tiled, it filled the screen, so its whole-surface damage was whole-OUTPUT
+# damage and every frame counted as a full redraw -- the corner then survives
+# because the scene is redrawn entire, which says nothing about partial damage
+# and is the one thing this fixture is not allowed to conclude. At 1000x700 the
+# per-frame damage is about a third of the output and the frames are genuinely
+# partial, while the whole area under test still sits over live content.
+"$REPAINT" --title wlbg --size "$BG_W"x"$BG_H" --cell 16 --hold-ms 100 \
 	> "$OUTDIR/wlbg.log" 2>&1 &
 HL_SPAWNED_PIDS+=("$!")
 hl_wait_client_count 1 40 >/dev/null 2>&1
 sleep 1.5
+hl_dispatch "toggle_floating" 0.5
+hl_dispatch "resize_window,$BG_W,$BG_H" 0.5
+hl_dispatch "move_window,$BG_X,$BG_Y" 1
 
 # FOREGROUND: flat, stationary, and QUIET once placed. --frames 40 at 100ms
 # gives it four seconds to be floated, resized and moved; after that it stops
@@ -224,11 +241,15 @@ for s in range(1, shots + 1):
     p = im.load()
     W, H = im.size
 
-    # The scene's current parity, read WELL AWAY from the window: a strip down
-    # the left edge of the output that the foreground cannot reach.
+    # The scene's current generation, read from the ring of background around
+    # the window -- inside the background client, outside the foreground. Not
+    # from the screen edge: the background client is deliberately smaller than
+    # the output now, so the edge is wallpaper and would vote for nothing.
     votes = {'A': 0, 'B': 0}
-    for yy in range(0, H, 7):
-        for xx in range(0, min(60, W), 7):
+    for yy in range(max(0, y - radius), min(H, y + h + radius)):
+        for xx in range(max(0, x - radius), min(W, x + w + radius)):
+            if x <= xx < x + w and y <= yy < y + h:
+                continue
             g = classify(p[xx, yy])
             if g:
                 votes[g] += 1
@@ -399,6 +420,24 @@ if [ "$BORDER" -gt 0 ]; then
 		hl_stop
 		hl_summary
 		exit 1
+	fi
+fi
+
+if [ "$ENGINE" != gles ]; then
+	echo
+	echo "-- premise: these frames were PARTIAL redraws --"
+	# Load-bearing for what this fixture is allowed to conclude. A corner that
+	# survives a scene redrawn whole every frame proves nothing about damage,
+	# and "the corner is clean under partial damage" is the entire claim.
+	FULL=$(hl_get "get avk-stats" | jq -r '.full_redraw_frames')
+	PART=$(hl_get "get avk-stats" | jq -r '.partial_redraw_frames')
+	echo "  full $FULL / partial $PART"
+	if [ "$FULLDRAW" = 1 ]; then
+		hl_assert "FULLDRAW=1 really did force whole-frame redraws" \
+			"$([ "$PART" -eq 0 ] && echo true || echo false)" "true"
+	else
+		hl_assert "most frames were partial redraws" \
+			"$([ "$PART" -gt "$FULL" ] && echo true || echo false)" "true"
 	fi
 fi
 
