@@ -2,12 +2,12 @@
  * asteroidz-avk-probe -- run the Vulkan engine on this machine and say what
  * happened.
  *
- * AVK is not yet wired into the compositor (that is M3b), so there is no
- * session to switch into and nothing visible to test by logging in. This tool
- * exists so the engine can still be exercised on real hardware, in a real
- * session, without touching the running compositor at all: it opens a render
- * node, builds a device, imports buffers the way a client's would be imported,
- * composites a frame, and writes it out as a PNG you can look at.
+ * AVK does composite the desktop now (ASTEROIDZ_RENDERER=avk), but switching
+ * a session over is a much bigger thing to do than asking whether the engine
+ * works here at all. This tool answers the smaller question without touching
+ * the running compositor: it opens a render node, builds a device, imports
+ * buffers the way a client's would be imported, composites a frame, and writes
+ * it out as a PNG you can look at.
  *
  * It is deliberately read-only with respect to the desktop. No Wayland
  * connection, no DRM master, no modeset -- so running it while your session is
@@ -660,8 +660,9 @@ int main(int argc, char **argv) {
 	printf("\n");
 	if (failures == 0) {
 		printf("\033[32mAVK works on this machine.\033[0m\n");
-		printf("Note: AVK does not render your desktop yet -- the compositor "
-			"still uses\nthe GLES/fx_vk path. Wiring it in is M3b.\n");
+		printf("To let it render your desktop, start a session with "
+			"ASTEROIDZ_RENDERER=avk.\nThat is independent of WLR_RENDERER, and "
+			"without it nothing changes.\n");
 		return 0;
 	}
 	printf("\033[31m%d check(s) failed.\033[0m\n", failures);
