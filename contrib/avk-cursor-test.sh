@@ -42,6 +42,18 @@
 #                          vanishes and every image assertion fails, with
 #                          wlr_surface_get_texture() returning NULL exactly as
 #                          the audit predicted.
+#   BREAK=cursor-command   AZ_AVK_NO_CURSOR=1 -- AVK emits no cursor draw.
+#                          Nothing else is drawing into this frame, so the
+#                          pointer disappears. This is what separates "AVK
+#                          draws the cursor" from "a cursor appeared and nobody
+#                          asked who put it there" -- which was true of every
+#                          frame before, when the whole output fell back to
+#                          SceneFX the moment a software cursor existed.
+#   BREAK=cursor-damage    AZ_AVK_FULL_DAMAGE=1 -- repaint everything, every
+#                          frame. Honest about its scope: it breaks damage
+#                          globally rather than only for the cursor, and it is
+#                          here because the per-frame damage assertion has to
+#                          be falsifiable by something.
 set -u
 
 . "$(dirname "$0")/lib/headless.sh"
@@ -72,6 +84,8 @@ HL_OUTDIR="$OUTDIR"
 HL_WIDTH=1280 HL_HEIGHT=720
 HL_ENV="ASTEROIDZ_RENDERER=avk"
 [ "$BREAK" = cursor-texture ] && HL_ENV="$HL_ENV AZ_CURSOR_LEGACY_SURFACE=1"
+[ "$BREAK" = cursor-command ] && HL_ENV="$HL_ENV AZ_AVK_NO_CURSOR=1"
+[ "$BREAK" = cursor-damage ] && HL_ENV="$HL_ENV AZ_AVK_FULL_DAMAGE=1"
 export HL_OUTDIR HL_WIDTH HL_HEIGHT HL_ENV
 
 # Where the pointer is put, and therefore where the hotspot must land.
@@ -183,6 +197,63 @@ hl_assert "its hotspot sits exactly on the pointer (${MARKX},${MARKY} vs ${PX},$
 hl_assert "and the image starts hotspot-many pixels before it ($MINX,$MINY)" \
 	"$([ "${MINX:--1}" -eq $(( PX - HOTSPOT_X )) ] \
 		&& [ "${MINY:--1}" -eq $(( PY - HOTSPOT_Y )) ] \
+		&& echo true || echo false)" "true"
+
+# ── who drew it, and how much did it cost ──────────────────────────────────
+# Everything above would pass identically if the frame had fallen back to
+# SceneFX, which is exactly what happened before AVK drew cursors itself. The
+# counters are the only thing that can tell the two apart.
+#
+# The capture above left software cursors on: wlroots does not re-enable the
+# hardware cursor the moment a lock drops. So the pointer can now be moved
+# around with the software path live, which is both the ownership measurement
+# and the damage one.
+echo "-- AVK composites it, and moving it does not repaint the screen --"
+hl_dispatch reset_avk_stats
+for i in 1 2 3 4 5 6 7 8; do
+	"$WLVPTR" $(( 300 + i * 40 )) $(( 200 + i * 30 )) "$HL_WIDTH" "$HL_HEIGHT"
+	sleep 0.2
+done
+sleep 1
+hl_get "get avk-stats" > "$OUTDIR/stats-move.json"
+
+field() { python3 - "$OUTDIR/stats-move.json" "$1" <<'PY'
+import json, sys
+try:
+    print(json.load(open(sys.argv[1])).get(sys.argv[2], "x"))
+except Exception:
+    print("x")
+PY
+}
+FRAMES="$(field frames)"
+FALLBACK="$(field fallback_frames)"
+SW="$(field software_cursor_frames)"
+NOIMG="$(field cursor_no_image)"
+IMPFAIL="$(field cursor_import_failures)"
+DMG="$(field damage_pixels)"
+PERFRAME="$(python3 -c "print(int($DMG/$FRAMES) if '$FRAMES'.isdigit() and $FRAMES else -1)" 2>/dev/null || echo -1)"
+echo "  note: $FRAMES frames ($FALLBACK fallback), $SW with an AVK cursor, "\
+"$NOIMG no-image, $IMPFAIL import failures, ${PERFRAME} damaged px/frame"
+
+# Premise: the pointer really did move and produce frames.
+hl_assert "moving the pointer produced frames" \
+	"$([ "${FRAMES:-0}" -gt 0 ] && echo true || echo false)" "true"
+# Ownership. AVK, not SceneFX, and not a plane.
+hl_assert "AVK composited the cursor on those frames ($SW of $FRAMES)" \
+	"$([ "${SW:-0}" -gt 0 ] && echo true || echo false)" "true"
+hl_assert "without falling back to SceneFX ($FALLBACK)" \
+	"$([ "${FALLBACK:-1}" -eq 0 ] && echo true || echo false)" "true"
+# The regression's fingerprint: wlroots says visible, asteroidz has no picture.
+hl_assert "and never ran out of a cursor image to draw" \
+	"$([ "${NOIMG:-1}" -eq 0 ] && [ "${IMPFAIL:-1}" -eq 0 ] \
+		&& echo true || echo false)" "true"
+# Cost. A moving software cursor damages the rectangle it left and the one it
+# entered -- about two 32x32 boxes. A compositor that repaints the whole output
+# for every pointer motion is correct and unusable, and only this can tell.
+FULL=$(( HL_WIDTH * HL_HEIGHT ))
+hl_assert "repainting a small fraction of the output ($PERFRAME of $FULL px)" \
+	"$([ "${PERFRAME:--1}" -ge 0 ] \
+		&& [ "${PERFRAME:-0}" -lt $(( FULL / 10 )) ] \
 		&& echo true || echo false)" "true"
 
 kill "$WLCURSOR_PID" 2>/dev/null

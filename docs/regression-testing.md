@@ -278,7 +278,18 @@ cd contrib/wlcursor && make           # once
 cd contrib/wlshot   && make           # once
 ASTEROIDZ=build-vk/asteroidz bash contrib/avk-cursor-test.sh
 BREAK=cursor-texture ASTEROIDZ=build-vk/asteroidz bash contrib/avk-cursor-test.sh  # must FAIL
+BREAK=cursor-command ASTEROIDZ=build-vk/asteroidz bash contrib/avk-cursor-test.sh  # must FAIL
+BREAK=cursor-damage  ASTEROIDZ=build-vk/asteroidz bash contrib/avk-cursor-test.sh  # must FAIL
 ```
+
+The three breaks fail on different assertions, which is the point of having
+three. `cursor-texture` loses the image entirely — and produces *no frames at
+all*, because with no cursor there is no cursor damage. `cursor-command` keeps
+the eight frames of cursor damage and draws nothing into them, which is the
+only thing that establishes AVK rather than something else put the pointer
+there. `cursor-damage` fails only the cost assertion, at 921,600 of 921,600
+pixels; it breaks damage globally rather than only for the cursor, and says so,
+because the damage arrives from wlroots and nothing narrower exists to break.
 
 A client that sets its own cursor image had it silently dropped under AVK, and
 **nothing in contrib/ sets one** — every test client leaves the pointer to the

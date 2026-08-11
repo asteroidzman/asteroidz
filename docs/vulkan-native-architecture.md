@@ -1284,6 +1284,90 @@ Verified three independent ways, because one of them alone is not evidence:
 
 ---
 
+## 5.4i M3.5E stage 2 — AVK composites the cursor
+
+`az_avk_emit_cursors()` in `src/render/az_avk.h`. The software-cursor bail in
+`az_avk_output_supported()` is gone: a frame that needs a cursor is no longer a
+frame that falls back.
+
+### The split, in code
+
+Geometry is read from `wlr_output_cursor`, whose fields are all public and
+already in output-buffer pixels — `wlr_output_cursor_move()` scales x/y by the
+output scale and `output_cursor_set_texture()` scales the size and hotspot to
+match. The image comes from `az_cursor`, because `wlr_output_cursor.texture` is
+a `wlr_texture` belonging to the GLES compatibility renderer and AVK may not
+touch it. Reimplementing the position arithmetic would be a second copy of it
+that could disagree with the hardware plane about where the pointer is.
+
+The draw is emitted **after** the scene walk, so the cursor is above
+layer-shell overlays, fullscreen windows, the lock screen and the overview
+alike. At most one is drawn per output: asteroidz has exactly one `wlr_cursor`,
+so drawing every entry in `output->cursors` would mean drawing *our* image at
+someone else's coordinates if another ever appeared.
+
+**The hardware plane is still preferred and still free.** When
+`output->hardware_cursor` names the cursor, AVK emits nothing and counts
+`hardware_cursor_frames`.
+
+### Damage is not done here, and that is deliberate
+
+When a software cursor moves, wlroots emits `wlr_output.events.damage` for the
+rectangle it left and the one it entered, and scenefx feeds that straight into
+`scene_output->damage_ring` (`wlr_scene.c:3008`) — the same ring this frame's
+damage was rotated out of. The old and new cursor rectangles are therefore
+already in the damage AVK is drawing. Adding more here would only enlarge the
+frame.
+
+Measured, on a 1280×720 headless output with the pointer moving: **2048 damaged
+pixels per frame**, which is exactly two 32×32 boxes, against a full output of
+921,600. A compositor that repaints the whole screen per pointer motion is
+correct and unusable, and the counter is the only thing that tells them apart.
+
+### Counters
+
+`software_cursor_frames`, `hardware_cursor_frames`, `cursor_commands`,
+`cursor_no_image`, `cursor_import_failures`, `cursor_culled`, all in
+`amsg get avk-stats`. `cursor_no_image` is the regression's fingerprint:
+wlroots says a cursor is enabled and visible, and asteroidz has no picture for
+it.
+
+### Three break tests, each failing a different set
+
+| break | what it does | what fails |
+|---|---|---|
+| `cursor-texture` | the original `wlr_cursor_set_surface()` | every image assertion; also *no frames at all*, since with no cursor there is no cursor damage |
+| `cursor-command` | `AZ_AVK_NO_CURSOR=1`, emit no draw | the image assertions **and** `software_cursor_frames` 0 of 8 — while 8 frames of cursor damage still occur. This is the ownership discriminator |
+| `cursor-damage` | `AZ_AVK_FULL_DAMAGE=1` | only the damage assertion, at 921,600 of 921,600 |
+
+`cursor-command` is the one that matters. Before this stage the whole output
+fell back to SceneFX the moment a software cursor existed, so a cursor appeared
+in every capture and *nothing established who drew it*. With AVK compositing
+and the emission disabled, nothing else is drawing into the frame, so the
+pointer disappears.
+
+`cursor-damage` is honest about its scope: it breaks damage globally rather
+than only for the cursor. It is here because the per-frame damage assertion has
+to be falsifiable by something, and nothing narrower exists — the damage
+arrives from wlroots, not from AVK.
+
+### Not covered yet, and not claimed
+
+- **Animated and same-buffer cursors.** `az_cursor`'s `forced_reimports` path
+  exists and is reasoned about, but no test drives `wlcursor --reuse-buffer
+  --animate-ms` yet. The claim that a cursor rewriting one `wl_buffer` keeps
+  updating is currently an argument, not a measurement.
+- **Cursor scale and output transform.** `wlcursor --cursor-scale` exists;
+  nothing runs it.
+- **Multi-output.** `cursor_culled` reads 0 headlessly for the same reason
+  `nodes_output_culled_before_resolve` does — one output means nothing is
+  exclusive to another.
+- **Hide/unset damage**, and the hardware↔software transition in both
+  directions.
+- **Live acceptance** on DP-1 + HDMI-A-1.
+
+---
+
 ## M3b work plan (the compositor half) — DONE, kept for the record
 
 Written down here rather than left in a conversation, because this was the

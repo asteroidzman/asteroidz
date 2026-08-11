@@ -197,7 +197,22 @@ struct az_avk {
 	uint64_t shm_upload_bytes;
 	uint64_t client_images_cached;   /* live entries, not a total */
 	uint64_t output_targets;         /* live imported scan-out images */
-	uint64_t software_cursor_frames;
+
+	/*
+	 * The cursor, which is its own composition problem.
+	 *
+	 * A hardware cursor costs AVK nothing and must stay the fast path, so
+	 * these separate "AVK drew it" from "the plane carried it" rather than
+	 * reporting one number for both. `cursor_no_image` is the M3.5E
+	 * regression's fingerprint: wlroots says a cursor is enabled and visible
+	 * and asteroidz has no picture to draw for it.
+	 */
+	uint64_t software_cursor_frames;  /* frames AVK composited a cursor into */
+	uint64_t hardware_cursor_frames;  /* frames the plane carried it instead */
+	uint64_t cursor_commands;         /* cursor draws emitted */
+	uint64_t cursor_no_image;         /* visible cursor, no buffer to draw */
+	uint64_t cursor_import_failures;  /* the image would not go to the GPU */
+	uint64_t cursor_culled;           /* entirely outside this output */
 
 	/* Presentation synchronisation. Every frame AVK composites must leave
 	 * through exactly one of the first two, and `present_sync_none` must stay
@@ -249,7 +264,6 @@ struct az_avk {
 	 * log stays readable while still telling the truth. */
 	bool warned_effect_node;
 	bool warned_color_transform;
-	bool warned_software_cursor;
 	bool warned_zoom;
 	bool warned_shm;
 	bool warned_shm_source_gone;
@@ -1674,28 +1688,129 @@ static bool az_avk_output_supported(Monitor *m,
 		return false;
 	}
 
-	/* A software cursor has to be composited into the frame, and the only
-	 * handle wlroots offers for that is wlr_output_add_software_cursors_to_
-	 * render_pass() -- a wlr_render_pass, which is exactly what must not be on
-	 * this path. Until AVK draws the cursor from asteroidz's own cursor state,
-	 * a frame that needs a software cursor goes back to SceneFX. That is the
-	 * difference between a slower cursor and no cursor. */
-	if (output->hardware_cursor == NULL) {
-		struct wlr_output_cursor *cursor;
-		wl_list_for_each(cursor, &output->cursors, link) {
-			if (cursor->enabled && cursor->visible) {
-				if (!avk.warned_software_cursor) {
-					avk.warned_software_cursor = true;
-					wlr_log(WLR_INFO, "AVK: %s needs a software cursor; those "
-						"frames stay on the SceneFX path until AVK draws the "
-						"cursor itself", output->name);
-				}
-				return false;
-			}
-		}
-	}
+	/* A software cursor used to send the whole frame back to SceneFX, because
+	 * the only handle wlroots offers for compositing one is
+	 * wlr_output_add_software_cursors_to_render_pass() -- a wlr_render_pass,
+	 * which is exactly what must not be on this path. AVK draws it itself now;
+	 * see az_avk_emit_cursors(). */
 
 	return true;
+}
+
+/*
+ * The cursor, composited by AVK.
+ *
+ * WHAT THIS READS, AND WHAT IT DELIBERATELY DOES NOT
+ *
+ * Geometry comes from `wlr_output_cursor`, whose fields are all public and
+ * already in output-buffer pixels: wlr_output_cursor_move() scales x/y by the
+ * output scale, and output_cursor_set_texture() scales the size and hotspot
+ * the same way. Reimplementing that arithmetic here would be a second copy of
+ * it that could disagree with the hardware plane about where the pointer is.
+ *
+ * The IMAGE comes from asteroidz's own cursor state, because
+ * `wlr_output_cursor.texture` is a wlr_texture belonging to the GLES
+ * compatibility renderer and AVK may not touch it. That split -- wlroots owns
+ * position, asteroidz owns the picture -- is the whole of §5.4g's design.
+ *
+ * WHY IT DRAWS AT MOST ONE
+ *
+ * asteroidz has exactly one wlr_cursor, so an output has exactly one cursor
+ * from it. Drawing every entry in output->cursors would mean drawing OUR image
+ * at somebody else's coordinates should another ever appear, which is worse
+ * than drawing nothing and much harder to notice.
+ *
+ * DAMAGE IS NOT DONE HERE, ON PURPOSE
+ *
+ * When a software cursor moves, wlroots emits wlr_output.events.damage for the
+ * region it left and the region it entered, and scenefx feeds that straight
+ * into scene_output->damage_ring (wlr_scene.c:3008) -- the same ring this
+ * frame's damage was rotated out of. So the old and new cursor rectangles are
+ * already in the damage AVK is drawing, and adding more here would only make
+ * the frame bigger. What that does require is that the mechanism keeps
+ * working, which is what contrib/avk-cursor-test.sh's damage assertions check.
+ */
+static void az_avk_emit_cursors(struct az_avk_walk *walk,
+		struct wlr_output *output) {
+	/*
+	 * BREAK SWITCH: emit no cursor at all.
+	 *
+	 * With AVK compositing, nothing else draws the cursor into the frame --
+	 * SceneFX is not running for this output -- so setting this makes the
+	 * pointer vanish. That is what distinguishes "AVK draws the cursor" from
+	 * "a cursor appears and nobody checked who put it there", which was true
+	 * of every frame before this function existed.
+	 */
+	if (az_avk_env_flag("AZ_AVK_NO_CURSOR")) {
+		return;
+	}
+	struct wlr_output_cursor *oc;
+	wl_list_for_each(oc, &output->cursors, link) {
+		if (!oc->enabled || !oc->visible) {
+			continue;
+		}
+		if (output->hardware_cursor == oc) {
+			/* On the plane. Costs this path nothing, which is the point of
+			 * preferring it. */
+			avk.hardware_cursor_frames++;
+			return;
+		}
+
+		if (az_cursor.buffer == NULL) {
+			/* wlroots believes there is a visible cursor and asteroidz has no
+			 * picture for it. That is precisely the M3.5E regression, so it
+			 * gets a counter rather than a silent skip. */
+			avk.cursor_no_image++;
+			return;
+		}
+
+		struct wlr_box box = {
+			.x = (int)oc->x - oc->hotspot_x,
+			.y = (int)oc->y - oc->hotspot_y,
+			.width = (int)oc->width,
+			.height = (int)oc->height,
+		};
+		wlr_box_transform(&box, &box,
+			wlr_output_transform_invert(output->transform),
+			walk->width, walk->height);
+		if (box.width <= 0 || box.height <= 0) {
+			return;
+		}
+		if (box.x >= walk->width || box.y >= walk->height ||
+				box.x + box.width <= 0 || box.y + box.height <= 0) {
+			avk.cursor_culled++;
+			return;
+		}
+
+		struct avk_image *image = az_avk_image_for_buffer(az_cursor.buffer);
+		if (image == NULL) {
+			avk.cursor_import_failures++;
+			return;
+		}
+		struct avk_cmd *cmd = avk_scene_add(walk->scene, AVK_CMD_TEXTURE);
+		if (cmd == NULL) {
+			return;
+		}
+		cmd->dst = (struct avk_box){ box.x, box.y, box.width, box.height };
+		cmd->image = image;
+		if (wlr_fbox_empty(&oc->src_box)) {
+			cmd->src = (struct avk_fbox){ 0, 0, image->extent.width,
+				image->extent.height };
+		} else {
+			cmd->src = (struct avk_fbox){ oc->src_box.x, oc->src_box.y,
+				oc->src_box.width, oc->src_box.height };
+		}
+		cmd->transform = az_avk_transform(wlr_output_transform_compose(
+			wlr_output_transform_invert(oc->transform), walk->transform));
+		/* Nearest at 1:1. A cursor is small, high-contrast and mostly edges,
+		 * and smoothing one that needs no scaling is how a crisp pointer turns
+		 * into a blurry one on a fractional-scale output. */
+		cmd->filter_linear = box.width != (int)cmd->src.width ||
+			box.height != (int)cmd->src.height;
+		avk.cursor_commands++;
+		avk.software_cursor_frames++;
+		return;
+	}
 }
 
 /*
@@ -1879,6 +1994,10 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 		.oy = m->scene_output->y,
 	};
 	az_avk_walk_children(&walk, &m->scene_output->scene->tree, 0, 0);
+	/* Last, so it is above everything: layer-shell overlays, fullscreen
+	 * windows, the lock screen and the overview alike. A cursor drawn under
+	 * any of them is a cursor the user cannot find. */
+	az_avk_emit_cursors(&walk, output);
 
 	/* The extra signal is the frame's completion as something exportable: a
 	 * timeline semaphore cannot become a sync_file, so a binary one rides
@@ -2440,6 +2559,15 @@ static cJSON *az_avk_stats_json(void) {
 
 	cJSON_AddNumberToObject(o, "software_cursor_frames",
 		(double)avk.software_cursor_frames);
+	cJSON_AddNumberToObject(o, "hardware_cursor_frames",
+		(double)avk.hardware_cursor_frames);
+	cJSON_AddNumberToObject(o, "cursor_commands",
+		(double)avk.cursor_commands);
+	cJSON_AddNumberToObject(o, "cursor_no_image",
+		(double)avk.cursor_no_image);
+	cJSON_AddNumberToObject(o, "cursor_import_failures",
+		(double)avk.cursor_import_failures);
+	cJSON_AddNumberToObject(o, "cursor_culled", (double)avk.cursor_culled);
 	cJSON_AddNumberToObject(o, "validation_errors",
 		(double)avk_validation_errors());
 	return o;
@@ -2482,6 +2610,11 @@ static void az_avk_stats_reset(void) {
 	avk.gpu_submit_hist = (struct az_avk_hist){0};
 	avk.damage_permille_hist = (struct az_avk_hist){0};
 	avk.software_cursor_frames = 0;
+	avk.hardware_cursor_frames = 0;
+	avk.cursor_commands = 0;
+	avk.cursor_no_image = 0;
+	avk.cursor_import_failures = 0;
+	avk.cursor_culled = 0;
 	avk.presentation_waits = 0;
 	avk.present_sync_timeline = 0;
 	avk.present_sync_dmabuf = 0;

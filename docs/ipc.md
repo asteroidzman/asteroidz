@@ -418,6 +418,11 @@ Fields worth knowing:
 | `buffer_resolve_attempts` / `nodes_output_culled_before_resolve` | buffers the walker resolved, versus nodes discarded first because they cannot touch this output. The second reads 0 on a single-output setup by definition |
 | `cpu_frame_us_p50` / `_p95` / `_p99` | the distribution, not the mean. At 144 Hz the budget is 6944us. Reported as a histogram bucket's upper edge, so accurate to within 20us |
 | `shm_sources` | the largest CPU-backed sources by bytes moved, for finding a pathological client. **Lifetime counters — `reset_avk_stats` does not clear them**, unlike everything else here, because they describe a buffer's life rather than an interval |
+| `software_cursor_frames` / `hardware_cursor_frames` | frames AVK composited a cursor into, versus frames the hardware plane carried it. The plane is preferred and costs AVK nothing, so on an ordinary desktop the second should dominate |
+| `cursor_commands` | cursor draws emitted. At most one per output frame |
+| `cursor_no_image` | **must be 0.** wlroots says a cursor is enabled and visible and asteroidz has no picture to draw for it — the exact fingerprint of the regression M3.5E fixed, where a client's own cursor image was silently dropped |
+| `cursor_import_failures` | the cursor image would not go to the GPU. Also expected to be 0 |
+| `cursor_culled` | cursors discarded as entirely outside this output. Reads 0 on a single-output setup, like `nodes_output_culled_before_resolve` |
 | `cpu_sync_waits` | must be 0 — a nonzero value means the frame path blocks on the GPU |
 | `present_sync_timeline` / `present_sync_dmabuf` | frames handed to the display with a fence, by which route |
 | `present_sync_none` | **must be 0.** Frames handed over unsynchronised — only reachable via `AZ_AVK_NO_PRESENT_SYNC=1` |
