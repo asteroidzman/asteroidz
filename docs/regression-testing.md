@@ -1554,3 +1554,60 @@ the plugin's own source to reach its pure, GTK-independent logic (icon/text
 mapping, JSON parsing, scheduling math) directly, with no GTK init, no
 Wayland socket, and no live compositor at all. These live in each plugin's
 own repo rather than here, since the code under test does too.
+
+### M4C live acceptance — 2026-08-12, AVK, 433ea52
+
+Installed binary verified against HEAD *before* anything was claimed: the build
+was reporting `3236ce3` because the commit hash is baked at **configure** time,
+so `meson setup --reconfigure` was required first. Without it the installed
+binary would have carried a stale hash and "live-tested at HEAD" would have
+been false.
+
+Gradient borders were enabled with `amsg dispatch set_option,border_gradient,1`
+— **memory only, discarded at the next reload**, so nothing was written to the
+user's config. The script that did it sampled RSS and the frame counter every
+second and would have reverted itself on >50 MB of growth or a runaway frame
+rate, rather than depending on someone noticing.
+
+**The former repaint storm, on the real desktop:**
+
+```text
+                    old build (measured earlier)   433ea52
+RSS over 12 s       +54 MB/s (~650 MB)             flat, +516 kB once
+amsg round trip     20 s timeout                   0.001 s
+frames/s            unbounded                      14 (ON) vs 17 (OFF) vs 16
+```
+
+The ON-vs-OFF comparison is the one that matters: **enabling the gradient does
+not change the frame rate**. The ~15/s is the desktop's own activity — a bar
+clock, the cursor, clients repainting — and had it not been measured both ways,
+"15 frames/s with gradients on" could have been read as a residual storm.
+
+Invariants over the session: `cpu_sync_waits`, `present_sync_failures`,
+`target_state_violations`, `lifecycle_violations`, `fallback_frames`,
+`dmabuf_import_failures` — **all 0**. 961 gradient draws, 1922 colours, **0
+buffer growths**, 60 KB uploaded in total, RSS +628 kB.
+
+Visual acceptance was the user's, on DP-1 @ scale 1.5 and HDMI-A-1 @ scale 1.0.
+Confirmed: **the gradients are visible and rendering, and the behaviour is
+healthy** — no stutter, no lag, nothing that felt like the old storm. That is an
+observation, not a measurement, and is recorded as one.
+
+**Cross-output continuity was confirmed separately**, and asked for separately
+rather than folded into the general "looks good" — reading a specific result
+into a general one is how a claim gets made that nobody actually checked. The
+user performed the seam drag on the real desk, floating a window across the
+DP-1 / HDMI-A-1 boundary with a gradient border, and reported it behaving as
+expected: one unbroken ramp through the seam, no restart, no corner where the
+outputs meet.
+
+That agrees with the headless fixture, which is the numeric half of the same
+claim — `avk-gradient-crossoutput-test.sh`: 939 samples along the border,
+median step 0, max step 2, end-to-end span 510.
+
+**What live acceptance CANNOT cover, and why.** The compositor only ever
+creates two-stop linear interpolated borders and five-stop vignettes. There is
+no configuration that produces a conic gradient, a banded one, or an off-centre
+origin, so those three rest entirely on the CPU oracle in
+`tests/test-avk-gradient.c`. That is a property of the compositor's feature set,
+not a gap in the testing.
