@@ -3513,3 +3513,123 @@ clear's own loop. A struct-inspection test could not have seen it.
 emitted no transition, and validation reported `VUID-vkCmdDraw-None-09600` at
 submit. The image's `layout` field is the cross-frame source of truth and
 nothing may write it except whatever actually transitioned the image.
+
+## M4F.2A.2 — the current-frame scene prefix, wired
+
+### Topology
+
+For each `AVK_CMD_BLUR` at index *k*, in **increasing scene order**:
+
+```text
+acquire transient over the aligned capture region
+PASS  prefix_k      segment [0, k)  ->  prefix transient
+PASS  blur_down_1..N, blur_up_N..1  ->  back into the prefix transient
+```
+
+then **one unchanged output pass** over the whole command range, in which a blur
+command draws its finished result as an ordinary textured quad.
+
+Increasing order is the whole trick. Blur 2's replay of `[0, k₂)` *contains*
+blur 1's command, and by then blur 1's result exists, so it composites there
+exactly as it will in the output. **No recursion**, termination is trivial
+(chains are declared before the pass that reads them), and blur is never
+special-cased out of prefix replay.
+
+**No pixel comes from the output target.** The target holds this frame's prefix
+only inside this frame's damage and the *previous* frame's final composite
+everywhere else. The transient is written fresh, over its whole capture region,
+before anything reads it.
+
+The final upsample writes back into the prefix transient: nothing reads the
+unblurred prefix after the first downsample, so a second full-size image would
+be allocated only to be discarded.
+
+### The four regions
+
+```text
+write        the node's box
+dependency   write dilated by avk_blur_support_of()
+capture      dependency, outward-aligned to an EVEN origin
+allocation   what the pool handed out, >= capture
+```
+
+`avk_blur_regions_of()` derives them and **asserts containment**
+(`write ⊆ dependency ⊆ capture`). Alignment may only *grow*: the origin moves
+down to even and the extent grows by exactly as much, so the far edge stays put.
+Shifting without growing would drop the right and bottom edges — a stale fringe
+that appears only when the dependency happens to start odd.
+
+### Results
+
+| | |
+|---|---|
+| `A · BLUR · B` | **0** blur pixels differ from a no-foreground reference; B sharp on top (247,247,240) |
+| `A · B · BLUR` | blur mean **20.42 → 64.48**, Δ **+44.06** |
+| `sample_exclude` on vs off | **0** pixels differ |
+| remove B | **65.30 → 21.22 immediately**; first frame already equals the settled value |
+| two identical frames | **0** pixels differ |
+| 30 static repeats | **0** frames differed, **0** new transients, **0** CPU waits |
+| two blurs, overlapping | 2 prefix captures; blur2 region mean **21.36 → 243.43** with blur1 + foreground before it |
+
+The reversed-order result is the one that matters: **the same object, the same
+geometry, the same blur — only its scene position changed**, and that alone
+decided whether it was in the source. A renderer keyed on node type, window type
+or a foreground flag would have answered identically both times.
+
+Every expected value comes from an **independently constructed** scene
+containing only what should have contributed, blurred by the same primitive. The
+prefix path is never its own oracle.
+
+### `BREAK=blur-scene-after`
+
+`AZ_BLUR_SCENE_AFTER=1` replays `[0, scene->len)` instead of `[0, k)` — the
+whole scene, including everything after the blur node. **Fails 8 of 24**, with
+precisely the reference's failure class:
+
+```text
+scene order        10306 wrong pixels, worst 109 codes
+sample_exclude     10400 pixels -- no longer neutral, because now the owner
+                   IS in the source and a repair path WOULD be needed
+frame history      101.44 -> 96.63 -> 91.60, still drifting
+two identical frames                19006 pixels differ
+30 static repeats  30 of 30 differed
+its own case       mean +40.89, 10119 wrong pixels, worst 101 codes
+```
+
+The drift and the 30/30 are the important ones: they are **feedback
+accumulation**, the halo that grows rather than appearing at once — because the
+blur's own command is now inside its own source. There is no `sample_exclude`
+repair to rescue it, deliberately: the break exists to show why prefix capture
+is better, and a repair path would hide that.
+
+### Direct path, unchanged
+
+```text
+build    cpu50  cpu95  cpu99   rec_us    gb50    gb95    gb99    gpu_us  tr  pass  barr  creates
+before     120    400   1520     86.0    3500   12000   16000    1488.8   0     1     2        0
+after      120    460   1060     72.5    4250    9500   11250    1492.7   0     1     2        0
+```
+
+With no blur node: **0 transient acquires, 0 creates, 1 pass, 2 barrier calls.**
+
+### Prefix replay cost, recorded not optimised
+
+```text
+two-blur frame: 2 replays, 81 commands replayed, 2 357 946 pixels
+```
+
+Quadratic in blur count by construction — which is exactly the number a cache
+would be bought with, so it is measured now and left alone.
+
+### The bug validation caught
+
+`avk_render_declare_segment()` derived its sampled-image uses from the command
+range, but listed **only texture commands**. A blur command samples its own
+finished result, so a segment containing one depends on that image exactly as it
+does on a client surface — and the chain leaves it in
+`COLOR_ATTACHMENT_OPTIMAL`. Nothing transitioned it, and validation reported
+`VUID-vkCmdDraw-imageLayout-00344` at the draw.
+
+That is precisely what "derive the uses from the range itself" exists to prevent,
+and the first version still got it wrong — because the derivation was a list of
+command types, and a list is a thing you can forget to add to.

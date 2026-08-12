@@ -21,6 +21,9 @@ avk_gbm_dep = dependency('gbm')
 # the whole graphics stack already speaks, and damage handling that invented
 # its own would have to be converted at every boundary.
 avk_pixman_dep = dependency('pixman-1')
+# libm: avk_blur.c derives the blur's support bound and rounds it outward, which
+# is ceil(). Not a renderer abstraction; the C standard library's own maths.
+avk_libm_dep = meson.get_compiler('c').find_library('m', required : false)
 
 # ── shaders ────────────────────────────────────────────────────────────────
 # GLSL -> SPIR-V at build time, then embedded as a C array. Compiling at build
@@ -89,12 +92,14 @@ avk_lib = static_library('avk',
   # Each file declares the feature-test macro it needs at the top, so nothing
   # is set here: avk_device.c wants _GNU_SOURCE for asprintf() and a
   # command-line _POSIX_C_SOURCE would just have to be undefined again.
-  dependencies : [vulkan_dep, avk_libdrm_dep, avk_gbm_dep, avk_pixman_dep],
+  dependencies : [vulkan_dep, avk_libdrm_dep, avk_gbm_dep, avk_pixman_dep,
+                  avk_libm_dep],
   include_directories : include_directories('../..'),
 )
 
 avk_dep = declare_dependency(
   link_with : avk_lib,
-  dependencies : [vulkan_dep, avk_libdrm_dep, avk_gbm_dep, avk_pixman_dep],
+  dependencies : [vulkan_dep, avk_libdrm_dep, avk_gbm_dep, avk_pixman_dep,
+                  avk_libm_dep],
   include_directories : include_directories('../..'),
 )

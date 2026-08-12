@@ -62,6 +62,20 @@ enum avk_cmd_type {
 	 * caster is that box inset by `blur_sigma`; see shadow.frag.
 	 */
 	AVK_CMD_SHADOW,
+	/*
+	 * M4F. A live background blur.
+	 *
+	 * `dst` is the WRITE region -- where the blurred result is composited. What
+	 * it blurs is the current-frame scene prefix behind it: the renderer
+	 * replays commands [0, index-of-this-command) into a regional transient and
+	 * runs the dual-Kawase chain on that.
+	 *
+	 * Its source is therefore decided by SCENE ORDER and nothing else. A
+	 * command later in the list does not contribute however large or bright it
+	 * is; a command earlier in the list does, whatever kind it is -- including
+	 * an earlier blur's own composited result.
+	 */
+	AVK_CMD_BLUR,
 };
 
 /* 1 and 2 are the values SceneFX's `gradient_linear` field carries, kept rather
@@ -196,6 +210,35 @@ struct avk_cmd {
 	 * is `blur_sigma * 0.5`.
 	 */
 	float blur_sigma;
+
+	/*
+	 * AVK_CMD_BLUR only.
+	 *
+	 * `blur_levels` 0 means the command draws nothing, which is how a scene
+	 * disables one blur without removing it. The remaining fields are the
+	 * kernel and the post-effects; see avk_blur.h.
+	 */
+	uint32_t blur_levels;
+	float blur_radius;
+	float blur_brightness, blur_contrast, blur_saturation, blur_noise;
+	bool blur_apply_effects;
+	/*
+	 * Compatibility metadata, in this command's own coordinates.
+	 *
+	 * SceneFX needs it because its live blur samples the previous frame's FINAL
+	 * COMPOSITE, which contains the owning window; it repairs that box by edge
+	 * extension. AVK samples the current-frame scene PREFIX, in which the owner
+	 * has not been drawn yet -- so the invariant the field exists to guarantee
+	 * is already satisfied and no masking is performed.
+	 *
+	 * Carried rather than dropped so the renderer does not silently lose
+	 * awareness of it. If a future producer gives it a different meaning -- a
+	 * box of legitimate background to suppress, say -- that is a renderer
+	 * contract change and must be made explicitly, not inherited from the name.
+	 * See docs/avk-effects.md, "sample_exclude -- the producer table".
+	 */
+	struct avk_box sample_exclude;
+	bool has_sample_exclude;
 
 	/* reserved for M4F */
 	bool has_blur;

@@ -5,6 +5,7 @@
 #include "../command/avk_retire.h"
 #include "../command/avk_timestamp.h"
 #include "../graph/avk_graph.h"
+#include "../effect/avk_blur.h"
 #include "../graph/avk_transient.h"
 #include "../pipeline/avk_gradient.h"
 #include "../pipeline/avk_pipeline.h"
@@ -173,6 +174,21 @@ struct avk_renderer {
 	 * concentric halos on a flat backdrop.
 	 */
 	bool break_shadow_no_dither;
+	/*
+	 * M4F.2A.2 break. Replays [0, scene->len) into the prefix instead of
+	 * [0, k) -- the WHOLE scene, including everything drawn after the blur
+	 * node.
+	 *
+	 * That is precisely the reference's failure class: SceneFX's live blur
+	 * samples the previous frame's FINAL COMPOSITE, so the owning window's own
+	 * pixels land in its source and spread outward as a halo in the window's
+	 * own colour. sample_exclude exists there to repair it by edge extension.
+	 *
+	 * AVK has no such repair, deliberately: the break must expose the defect
+	 * rather than be papered over, because the whole argument for prefix
+	 * capture is that the defect becomes structurally impossible.
+	 */
+	bool break_blur_scene_after;
 	float shadow_dither;
 	bool dither_hash;
 	struct avk_device *dev;
@@ -215,6 +231,31 @@ struct avk_renderer {
 	 * case where that is too slow to wait for.
 	 */
 	struct avk_transient_pool transients;
+	/*
+	 * M4F. Each blur command's finished result for this frame, indexed by
+	 * COMMAND INDEX so any segment that reaches the command can find it. Reset
+	 * per frame; grown, never freed.
+	 *
+	 * The capture box travels with the image because the result covers the
+	 * CAPTURE region, not the write box -- the composite needs both to know
+	 * where the write box sits inside it.
+	 */
+	struct avk_blur_result {
+		struct avk_image *image;
+		struct avk_box capture;
+	} *blur_results;
+	size_t blur_results_cap;
+	struct avk_blur_stats blur_stats;
+	/*
+	 * Cheap counters for what prefix replay costs, before any decision about
+	 * caching is taken. A blur at command index k replays k commands, so N
+	 * blurs are quadratic in the worst case -- which is exactly the number a
+	 * cache would be bought with, and it should be measured rather than
+	 * assumed.
+	 */
+	uint64_t blur_prefix_replays;
+	uint64_t blur_prefix_commands;
+	uint64_t blur_prefix_pixels;
 	VkFormat format;
 
 	struct avk_renderer_stats stats;

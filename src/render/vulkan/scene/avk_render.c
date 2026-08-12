@@ -51,6 +51,13 @@ bool avk_renderer_init(struct avk_renderer *renderer, struct avk_device *dev,
 		getenv("AZ_SHADOW_SYMMETRIC") != NULL;
 	renderer->break_shadow_no_dither =
 		getenv("AZ_SHADOW_NO_DITHER") != NULL;
+	renderer->break_blur_scene_after =
+		getenv("AZ_BLUR_SCENE_AFTER") != NULL;
+	if (renderer->break_blur_scene_after) {
+		avk_log(AVK_ERROR, "M4F break switch active: a blur's source is the "
+			"WHOLE scene, not the prefix behind it -- content drawn after the "
+			"blur node will contaminate it");
+	}
 	/*
 	 * Derived from the ATTACHMENT's precision, once, at init -- so a 10-bit
 	 * output gets a quarter of the amplitude and an FP16 one gets none,
@@ -94,6 +101,8 @@ void avk_renderer_finish(struct avk_renderer *renderer) {
 	/* Before the retire queue is drained: growth pushes old gradient buffers
 	 * onto that queue, and finishing the store destroys only the buffers the
 	 * slots still hold. */
+	free(renderer->blur_results);
+	renderer->blur_results = NULL;
 	avk_gradient_store_finish(&renderer->gradients);
 	/* Before the retire queue is drained, like the gradient store and for the
 	 * same reason: dropping a pool entry pushes its image onto that queue. */
@@ -676,6 +685,57 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 					renderer->stats.asymmetric_shadow_draws++;
 				}
 			}
+		} else if (cmd->type == AVK_CMD_BLUR) {
+			/*
+			 * The blurred result, as an ordinary textured quad.
+			 *
+			 * By the time any segment reaches this command its chain has
+			 * already run -- avk_render_frame declares every prefix capture and
+			 * blur chain, in increasing scene order, before it declares the
+			 * pass that draws them. So a LATER blur's prefix replay, which
+			 * covers this command, finds a finished result here and composites
+			 * it exactly as the output pass does. That is what makes an earlier
+			 * blur legitimately contribute to a later one without any recursion
+			 * and without blur being special-cased out of prefix replay.
+			 */
+			const struct avk_blur_result *br = i < renderer->blur_results_cap
+				? &renderer->blur_results[i] : NULL;
+			struct avk_image *result = br != NULL ? br->image : NULL;
+			if (result == NULL) {
+				/* No chain ran for it -- zero levels, or a region too small.
+				 * Drawing nothing is correct; the backdrop shows through. */
+				pixman_region32_fini(&region);
+				continue;
+			}
+			want = renderer->pipes.texture;
+			/*
+			 * The result transient covers the CAPTURE region and may be larger
+			 * than the write box, so the UV mapping is the write box's position
+			 * within it -- in the transient's own pixels, normalised by the
+			 * ALLOCATION, which is larger again where the pool rounded up.
+			 * Three extents, and using the wrong one shifts the blur.
+			 */
+			float aw = (float)result->extent.width;
+			float ah = (float)result->extent.height;
+			float ox = (float)(cmd->dst.x - br->capture.x);
+			float oy = (float)(cmd->dst.y - br->capture.y);
+			pc.uv_org_dx[0] = ox / aw;
+			pc.uv_org_dx[1] = oy / ah;
+			pc.uv_org_dx[2] = (float)cmd->dst.width / aw;
+			pc.uv_org_dx[3] = 0.0f;
+			pc.uv_dy[0] = 0.0f;
+			pc.uv_dy[1] = (float)cmd->dst.height / ah;
+			pc.params[1] = 1.0f;   /* keep the sampled alpha */
+
+			VkDescriptorSet set = avk_pipelines_texture_set(&renderer->pipes,
+				result, false);
+			if (set == VK_NULL_HANDLE) {
+				pixman_region32_fini(&region);
+				continue;
+			}
+			vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
+				renderer->pipes.layout, 0, 1, &set, 0, NULL);
+			renderer->stats.surfaces++;
 		} else if (cmd->type == AVK_CMD_TEXTURE) {
 			if (cmd->image == NULL) {
 				pixman_region32_fini(&region);
@@ -786,14 +846,36 @@ bool avk_render_declare_segment(struct avk_graph *graph,
 	avk_graph_use(graph, target_resource, AVK_USE_COLOR_WRITE, NULL);
 
 	const struct avk_scene *scene = seg->scene;
+	struct avk_renderer *renderer = seg->renderer;
 	size_t end = seg->end > scene->len ? scene->len : seg->end;
 	for (size_t i = seg->begin; i < end; i++) {
 		const struct avk_cmd *cmd = &scene->cmds[i];
-		if (cmd->type != AVK_CMD_TEXTURE || cmd->image == NULL) {
+		struct avk_image *sampled = NULL;
+		bool foreign = false;
+
+		if (cmd->type == AVK_CMD_TEXTURE && cmd->image != NULL) {
+			sampled = cmd->image;
+			foreign = az_foreign(sampled);
+		} else if (cmd->type == AVK_CMD_BLUR && renderer != NULL
+				&& i < renderer->blur_results_cap) {
+			/*
+			 * A blur command samples its finished result, so the segment
+			 * depends on it exactly as it does on a client surface -- and
+			 * missing this is a missing barrier, not a missing feature. The
+			 * result is left in COLOR_ATTACHMENT_OPTIMAL by the chain's last
+			 * upsample; without a declared use nothing transitions it and
+			 * validation reports VUID-vkCmdDraw-imageLayout-00344 at the draw.
+			 *
+			 * This is what "derive the uses from the range itself" is for: the
+			 * first version listed only texture commands and the bug was a
+			 * command type nobody had added to a list.
+			 */
+			sampled = renderer->blur_results[i].image;
+		}
+		if (sampled == NULL) {
 			continue;
 		}
-		bool foreign = az_foreign(cmd->image);
-		uint32_t r = avk_graph_add_image(graph, cmd->image, foreign,
+		uint32_t r = avk_graph_add_image(graph, sampled, foreign,
 			foreign ? AVK_EXIT_FOREIGN : AVK_EXIT_KEEP);
 		if (r != AVK_GRAPH_INVALID) {
 			avk_graph_use(graph, r, AVK_USE_SAMPLED_READ, NULL);
@@ -882,6 +964,7 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 	 * duplicate check in the batch builder; it is now a property of the model.
 	 */
 	avk_graph_reset(&renderer->graph);
+	avk_blur_frame_reset();
 	struct avk_graph *graph = &renderer->graph;
 
 	bool target_foreign = az_foreign(target);
@@ -919,6 +1002,133 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 	}
 
 	/*
+	 * ── LIVE BLUR: every chain, declared before anything draws ────────────
+	 *
+	 * For each AVK_CMD_BLUR at index k, in INCREASING scene order:
+	 *
+	 *     acquire a transient covering the aligned capture region
+	 *     declare a segment [0, k) into it   <- the current-frame scene prefix
+	 *     declare the dual-Kawase chain on it
+	 *
+	 * Increasing order is what makes an earlier blur available to a later one:
+	 * blur 2's replay of [0, k2) contains blur 1's command, and by then blur 1's
+	 * result exists, so it composites exactly as it will in the output. No
+	 * recursion, and blur is never special-cased out of prefix replay.
+	 *
+	 * NO PIXEL OF THIS COMES FROM THE OUTPUT TARGET. The target holds the
+	 * current frame's prefix only inside this frame's damage and the PREVIOUS
+	 * frame's final composite everywhere else, so borrowing from it would make
+	 * a blur's source depend on what happened to be on screen last frame. The
+	 * transient is written fresh, over its whole capture region, before
+	 * anything reads it.
+	 */
+	size_t blur_count = 0;
+	for (size_t i = 0; i < scene->len; i++) {
+		if (scene->cmds[i].type == AVK_CMD_BLUR) {
+			blur_count++;
+		}
+	}
+	struct avk_render_segment *prefix_segs = NULL;
+	if (blur_count > 0) {
+		if (renderer->blur_results_cap < scene->len) {
+			void *grown = realloc(renderer->blur_results,
+				scene->len * sizeof(*renderer->blur_results));
+			if (grown == NULL) {
+				avk_cmd_ring_abandon(&renderer->ring);
+				return 0;
+			}
+			renderer->blur_results = grown;
+			renderer->blur_results_cap = scene->len;
+		}
+		memset(renderer->blur_results, 0,
+			renderer->blur_results_cap * sizeof(*renderer->blur_results));
+		/* One segment per blur, alive until avk_graph_execute() has recorded
+		 * them -- the graph holds the pointer. */
+		prefix_segs = calloc(blur_count, sizeof(*prefix_segs));
+		if (prefix_segs == NULL) {
+			avk_cmd_ring_abandon(&renderer->ring);
+			return 0;
+		}
+	}
+
+	struct avk_box scene_bounds = { 0, 0, (int32_t)width, (int32_t)height };
+	size_t seg_at = 0;
+	for (size_t i = 0; i < scene->len && blur_count > 0; i++) {
+		const struct avk_cmd *cmd = &scene->cmds[i];
+		if (cmd->type != AVK_CMD_BLUR || cmd->blur_levels == 0) {
+			continue;
+		}
+		struct avk_blur_params params = {
+			.levels = cmd->blur_levels,
+			.radius = cmd->blur_radius,
+			.brightness = cmd->blur_brightness,
+			.contrast = cmd->blur_contrast,
+			.saturation = cmd->blur_saturation,
+			.noise = cmd->blur_noise,
+			.apply_effects = cmd->blur_apply_effects,
+		};
+		struct avk_blur_regions rg;
+		if (!avk_blur_regions_of(&rg, &cmd->dst, &params, &scene_bounds)) {
+			continue;
+		}
+
+		struct avk_image *prefix = avk_transient_acquire(&renderer->transients,
+			renderer->format, (uint32_t)rg.capture.width,
+			(uint32_t)rg.capture.height,
+			VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+		if (prefix == NULL) {
+			continue;
+		}
+		uint32_t r_prefix = avk_graph_add_image(graph, prefix, false,
+			AVK_EXIT_KEEP);
+		if (r_prefix == AVK_GRAPH_INVALID) {
+			continue;
+		}
+
+		struct avk_render_segment *seg = &prefix_segs[seg_at++];
+		*seg = (struct avk_render_segment){
+			.renderer = renderer,
+			.scene = scene,
+			.target = prefix,
+			.width = (uint32_t)rg.capture.width,
+			.height = (uint32_t)rg.capture.height,
+			.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+			.origin_x = rg.capture.x,
+			.origin_y = rg.capture.y,
+			.begin = 0,
+			/* [0, k) -- the blur's own command is NOT in its own source.
+			 * The break makes it [0, len), which is the reference's defect. */
+			.end = renderer->break_blur_scene_after ? scene->len : i,
+			/* The aligned capture region, not the allocation: the pool may have
+			 * handed out a larger image and its padding must stay unwritten and
+			 * unsampled. */
+			.active = NULL,
+			.clear = true,
+			.load = false,
+			.gradient_set = gradient_set,
+		};
+		if (!avk_render_declare_segment(graph, seg, r_prefix)) {
+			continue;
+		}
+		renderer->blur_prefix_replays++;
+		renderer->blur_prefix_commands += i;
+		renderer->blur_prefix_pixels +=
+			(uint64_t)rg.capture.width * (uint64_t)rg.capture.height;
+
+		/* The chain writes its final upsample back into the prefix transient:
+		 * nothing reads the unblurred prefix after the first downsample, so a
+		 * second full-size image would be allocated only to be thrown away. */
+		if (avk_blur_declare(graph, &renderer->transients, &renderer->pipes,
+				&renderer->blur_stats, r_prefix, r_prefix,
+				(uint32_t)rg.capture.width, (uint32_t)rg.capture.height,
+				renderer->format, &params)) {
+			renderer->blur_results[i] = (struct avk_blur_result){
+				.image = prefix, .capture = rg.capture,
+			};
+		}
+	}
+
+	/*
 	 * The output frame, expressed as the general primitive: the whole command
 	 * range, the scan-out target, origin 0,0, clipped to the frame's damage.
 	 * There is no separate "full frame" path to drift away from the regional
@@ -948,6 +1158,8 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 	/* Compile and record: barriers, the pass, then the exit transitions that
 	 * hand every foreign image back to its real owner. */
 	avk_graph_execute(graph, cb, &renderer->timestamps, ts_slot);
+	/* Recorded; the graph no longer holds these. */
+	free(prefix_segs);
 	renderer->stats.barriers += graph->stats.image_transitions
 		+ graph->stats.memory_barriers;
 

@@ -3,6 +3,7 @@
 #include "avk_blur.h"
 
 #include "../avk.h"
+#include "../scene/avk_render.h"
 
 #include <math.h>
 #include <stdlib.h>
@@ -104,6 +105,66 @@ uint32_t avk_blur_support_max(const struct avk_blur_params *params,
 	/* Outward at the physical-pixel boundary, once, at the end -- rounding
 	 * each term would compound the error across the chain. */
 	return (uint32_t)ceil(m);
+}
+
+bool avk_blur_regions_of(struct avk_blur_regions *out,
+		const struct avk_box *write, const struct avk_blur_params *params,
+		const struct avk_box *clamp) {
+	if (out == NULL || write == NULL || params == NULL
+			|| write->width <= 0 || write->height <= 0) {
+		return false;
+	}
+	memset(out, 0, sizeof(*out));
+	out->write = *write;
+
+	struct avk_blur_support s = avk_blur_support_of(params,
+		(uint32_t)write->width, (uint32_t)write->height);
+	/* Outward on every edge, independently: the support type is four numbers so
+	 * an asymmetric kernel needs no new code here. */
+	int32_t l = (int32_t)ceil((double)s.left);
+	int32_t r = (int32_t)ceil((double)s.right);
+	int32_t t = (int32_t)ceil((double)s.top);
+	int32_t b = (int32_t)ceil((double)s.bottom);
+
+	int32_t x0 = write->x - l, y0 = write->y - t;
+	int32_t x1 = write->x + write->width + r;
+	int32_t y1 = write->y + write->height + b;
+	if (clamp != NULL) {
+		if (x0 < clamp->x) { x0 = clamp->x; }
+		if (y0 < clamp->y) { y0 = clamp->y; }
+		if (x1 > clamp->x + clamp->width) { x1 = clamp->x + clamp->width; }
+		if (y1 > clamp->y + clamp->height) { y1 = clamp->y + clamp->height; }
+	}
+	if (x1 <= x0 || y1 <= y0) {
+		return false;
+	}
+	out->dependency = (struct avk_box){ x0, y0, x1 - x0, y1 - y0 };
+
+	/*
+	 * ALIGNMENT GROWS, NEVER SHIFTS. The origin moves down to even and the
+	 * extent grows by exactly as much, so the far edge is where it was.
+	 */
+	int32_t ax = x0, ay = y0;
+	uint32_t aw = (uint32_t)(x1 - x0), ah = (uint32_t)(y1 - y0);
+	avk_render_segment_align_origin(&ax, &ay, &aw, &ah);
+	out->capture = (struct avk_box){ ax, ay, (int32_t)aw, (int32_t)ah };
+
+	/* The invariant, checked rather than trusted. A capture that failed to
+	 * contain its dependency is a stale fringe on the far edge of every
+	 * blurred window, visible only when the dependency starts odd. */
+	if (out->capture.x > out->dependency.x || out->capture.y > out->dependency.y
+			|| out->capture.x + out->capture.width
+				< out->dependency.x + out->dependency.width
+			|| out->capture.y + out->capture.height
+				< out->dependency.y + out->dependency.height) {
+		avk_log(AVK_ERROR, "avk blur: aligned capture %d,%d %dx%d does not "
+			"contain dependency %d,%d %dx%d",
+			out->capture.x, out->capture.y, out->capture.width,
+			out->capture.height, out->dependency.x, out->dependency.y,
+			out->dependency.width, out->dependency.height);
+		return false;
+	}
+	return true;
 }
 
 /*

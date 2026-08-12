@@ -403,6 +403,17 @@ if build_vulkan
                                 build_by_default : false)
   test('avk-segment', test_avk_segment, timeout : 180)
 
+  # M4F.2A.2: a blur's source is the current-frame scene PREFIX. Proved on
+  # pixels against independently constructed references -- scenes containing
+  # only what should have contributed -- so the prefix path is never its own
+  # oracle. The background is dark and high-frequency and the foreground is
+  # near-white, so contamination is tens of codes rather than a subtle shift.
+  test_avk_blur_scene = executable('test-avk-blur-scene',
+                                   'tests/test-avk-blur-scene.c',
+                                   dependencies : [avk_dep],
+                                   build_by_default : false)
+  test('avk-blur-scene', test_avk_blur_scene, timeout : 240)
+
   # M4D: shadows. libm because the fixtures carry an independent CPU
   # transcription of the reference's erf-and-four-samples formula, which is
   # what AVK's readback is compared against -- not GLES, and not AVK's own

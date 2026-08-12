@@ -150,6 +150,43 @@ struct avk_blur_support avk_blur_support_of(
 uint32_t avk_blur_support_max(const struct avk_blur_params *params,
 	uint32_t width, uint32_t height);
 
+/*
+ * THE FOUR REGIONS OF ONE BLUR, kept apart because collapsing any two of them
+ * is a bug that still renders a plausible picture.
+ *
+ *   write        where the blur's result is composited. The node's own box.
+ *   dependency   source pixels that can reach it: write dilated by support.
+ *   capture      dependency, outward-aligned to an EVEN origin so the
+ *                fwidth() derivative quads of a regional target line up with
+ *                the output's (see avk_render_segment_align_origin).
+ *   allocation   what the transient pool actually handed out, >= capture.
+ *
+ * The hard invariant, asserted rather than assumed:
+ *
+ *     write  subset-of  dependency  subset-of  capture  subset-of  allocation
+ *
+ * Alignment may only ever GROW the capture. Shifting the origin down without
+ * growing the extent would drop the far edge, which is a stale fringe on the
+ * right and bottom of every blurred window -- and one that only appears when
+ * the dependency happens to start on an odd coordinate.
+ */
+struct avk_blur_regions {
+	struct avk_box write;
+	struct avk_box dependency;
+	struct avk_box capture;
+};
+
+/*
+ * Derive the three from a blur node's box and its parameters.
+ *
+ * `clamp` bounds every region to the scene (an output's extent, typically);
+ * pass NULL for unbounded. Returns false if the result is empty, in which case
+ * there is nothing to blur.
+ */
+bool avk_blur_regions_of(struct avk_blur_regions *out,
+	const struct avk_box *write, const struct avk_blur_params *params,
+	const struct avk_box *clamp);
+
 /* Drop the frame's blur-pass arena. Called once per frame beside
  * avk_graph_reset(); the passes it holds are referenced by graph callbacks and
  * may not be reused while a graph still names them. */
