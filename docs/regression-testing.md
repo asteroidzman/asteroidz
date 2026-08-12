@@ -1123,6 +1123,73 @@ Set `HL_ALLOW_DESTRUCTIVE=1` to also run
 headless output, including the original one — safe in isolation, but not
 worth risking in a shared run).
 
+### M4E: the render graph, and comparing two builds
+
+Three suites arrived with M4E and one of them is a lesson about the harness.
+
+```text
+tests/test-avk-graph.c        47   topology, derived barriers, allocation
+tests/test-avk-transient.c    33   pooled images, timeline-safe reuse
+tests/test-avk-multipass.c    18   a two-pass frame with deterministic pixels
+contrib/avk-graph-test.sh     20   the compositor's own frame, and pixel equivalence
+contrib/avk-graph-perf.sh     20   four scenes, both binaries, alternating
+```
+
+**Comparing two builds needs `HL_ASTEROIDZ`, not `ASTEROIDZ`.**
+`contrib/lib/headless.sh` resolves the binary once, at source time:
+
+```sh
+HL_ASTEROIDZ="${ASTEROIDZ:-$HL_REPO/build/asteroidz}"
+```
+
+so `ASTEROIDZ=<old> hl_start` sets a variable nothing reads again. Two M4E
+fixtures did exactly that, both ran the current build twice, and both reported
+a clean comparison — a byte-identical framebuffer and a matching cost table,
+neither of which said anything about the other binary.
+
+`hl_start` now records what it launched and `hl_binary()` reports it, so a
+fixture can assert it got the build it asked for:
+
+```sh
+HL_ASTEROIDZ="$PREGRAPH" fixture
+hl_assert "the comparison really used the pre-graph binary" \
+	"$(hl_binary)" "$PREGRAPH"
+```
+
+**A fixture compared against itself is the premise, not a formality.** The
+pixel assertion in `avk-graph-test.sh` is self-calibrating with no tolerance
+written in:
+
+```text
+diff(old, new)  <=  diff(new, new)
+```
+
+When the fixture is reproducible the floor is 0 and it demands exact byte
+equality. Getting the floor to 0 took three harness fixes, each of which
+produced a *failing* test for a correct build:
+
+| cause | cost |
+|---|---|
+| `HL_SPAWN_COLORS` index is process-global, so a second fixture in one script got different window colours | 3 214 556 of 6 220 800 bytes |
+| a terminal's text cursor blinks, so a settled desktop is not a still image | — |
+| IPC dispatch names are not the C function names (`toggle_floating`, not `togglefloating`) so the window never floated | ~1000 scattered pixels |
+
+`hl_reset_spawn_colors()` and `HL_KITTY_EXTRA` exist for the first two.
+
+**A premise that only holds with the validation layers off is not a premise.**
+`test_pressure()` in the multipass suite first asserted `ring.stalls > 0` as
+proof the CPU had outrun the GPU: 224 stalls normally, **0 under validation**,
+because the layers slow the CPU enough that the GPU keeps up. It now asserts
+volume, and the in-flight case is proved by construction elsewhere — two
+acquires in one frame must return different images, and the transient break's
+own case releases against a timeline point that is never signalled.
+
+**Break applicability is stated, not assumed.** `graph-missing-write-read` and
+`transient-early-reuse` are both listed as *not applicable* to
+`avk-graph-test.sh` — the direct path has one pass and no inter-pass edge, and
+nothing in production acquires a transient yet. A break that cannot fail a
+suite must not be counted as coverage for it.
+
 ## Live-session mode (extreme caution)
 
 `HL_LIVE=1` attaches to the *caller's own already-running* compositor instead
