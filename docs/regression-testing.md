@@ -230,6 +230,37 @@ The first version of `BREAK=preserve` used `loadOp DONT_CARE` and **the whole
 suite passed with it set**: a driver may leave "undefined" contents alone, and
 RADV does. It clears to magenta now.
 
+### rounded-bottom-swap: TESTED LIVE — PASS
+
+The one M4A break that no headless fixture can reach, closed on the real
+desktop 2026-08-11. A bottom-corner swap is only visible when `BR != BL`, and
+the only thing that makes them differ is the edge rule squaring one side —
+which needs a floating window overhanging a monitor edge by at least the
+radius. Tiling never produces that state.
+
+```text
+producer   floating window over DP-1's RIGHT edge
+geometry   x=1700  width=900  radius=9   DP-1 logical right edge 2560
+condition  x + width - radius >= right edge
+           1700 + 900 - 9 = 2591 >= 2560          -> RIGHT corners squared
+producer state   TR = 0    BR = 0    TL = r    BL = r
+observable partner   BL
+measured         TL ~8 logical px     BL ~8 logical px
+square control   a fullscreen window's four corners measured 0
+result           BL is rounded, therefore BR/BL are NOT swapped
+```
+
+**Limitation, recorded rather than glossed.** When the edge rule fires, the
+squared BR arc is *necessarily* off-output: the rule only triggers once the
+window overhangs by at least the radius, which puts that arc entirely past the
+screen boundary. So the live proof observes the **rounded partner** and relies
+on the producer's measured geometry and state for what BR must be.
+
+`BREAK=rounded-bottom-swap` was **not itself run live** — no broken-build
+falsifier was executed on the desktop, and none is claimed. The deterministic
+falsifier for bottom-corner ordering remains the renderer-level `0/7/19/37`
+per-corner test, which does run against a broken build.
+
 `contrib/avk-rounded-persist-test.sh` asks a different question about damage:
 not "did the renderer redraw enough of this frame" but "does a region the
 window does not cover keep being redrawn at all". A rounded corner is

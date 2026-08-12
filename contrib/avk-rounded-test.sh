@@ -80,14 +80,34 @@ echo "binary under test: $HL_ASTEROIDZ   scale $SCALE   radius $RADIUS"
 # arrangement in which a bottom-corner swap is visible -- one side must be
 # squared by the edge rule, and that rule is
 #
-#     target_geom.x + config.border_radius <= bnd_x
+#     target_geom.x + config.border_radius <= bnd_x        (and its three peers)
 #
 # i.e. the window must extend PAST the monitor edge by at least the radius, so
 # that the arc would be off-screen entirely. A window merely touching the edge
 # keeps its rounding, which is correct and is why removing the outer gap does
 # nothing. Tiling never produces that state; dragging a floating window off the
-# edge does, so BREAK=rounded-bottom-swap is falsifiable live and is recorded
-# as NOT TESTED headlessly rather than counted as coverage.
+# edge does, so it is not reachable from this headless fixture.
+#
+# rounded-bottom-swap: TESTED LIVE -- PASS.  Measured on the real desktop
+# (2026-08-11) with a floating window over DP-1's RIGHT edge:
+#
+#     x=1700 w=900 radius=9, DP-1 logical right edge 2560
+#     rule:  x + width - radius >= right edge
+#            1700 + 900 - 9 = 2591 >= 2560            -> RIGHT corners squared
+#     producer state:  TR=0  BR=0  TL=r  BL=r
+#     observable partner: BL
+#     measured:        TL ~8 logical px,  BL ~8 logical px
+#     square control:  a fullscreen window's four corners measured 0
+#     result:          BL is rounded, so BR/BL are NOT swapped
+#
+# LIMITATION, recorded rather than glossed: when the edge rule fires, the
+# squared BR arc is NECESSARILY off-output -- the rule only triggers once the
+# window overhangs by at least the radius, which puts that whole arc past the
+# screen boundary. The live proof therefore observes the ROUNDED PARTNER and
+# relies on the producer's measured geometry and state for what BR must be.
+# BREAK=rounded-bottom-swap was NOT itself run live; no broken-build falsifier
+# was executed on the desktop. The deterministic falsifier for bottom ordering
+# remains the renderer-level 0/7/19/37 per-corner test.
 GAPOH=40
 hl_start "border_radius $RADIUS
 borderpx 0
