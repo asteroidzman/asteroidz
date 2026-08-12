@@ -369,6 +369,9 @@ static const DispatchAction dispatch_actions[] = {
 	 "Zero the Vulkan renderer's counters (see amsg get avk-stats)."},
 	{"dump_scene", "",
 	 "Log the next frame's scene nodes and AVK command stream at ERROR."},
+	{"damage_all", "",
+	 "Mark every output fully damaged and repaint (the damage-tracking "
+	 "oracle: a screenshot before and after must be identical)."},
 	{"restart", "", "Restart the compositor in place."},
 	{"quit", "", "Exit."},
 	{"chvt", "int", "Switch virtual terminal."},

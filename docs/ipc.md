@@ -424,6 +424,7 @@ Live counters for the AVK renderer (`ASTEROIDZ_RENDERER=avk`). Returns
 amsg get avk-stats | jq
 amsg dispatch reset_avk_stats     # zero the counters without restarting
 amsg dispatch dump_scene          # log the next frame's scene and commands
+amsg dispatch damage_all          # repaint everything (the damage oracle)
 ```
 
 `dump_scene` writes one line per scene node and one per emitted AVK command,
@@ -437,6 +438,30 @@ dump, which reads exactly like "the renderer was asked to draw nothing".
 The command index matters beyond diagnostics: it is the `k` a blur's source
 prefix is replayed for, so "the blur is at 2 and the window is at 7" is the
 scene-order claim stated as a fact about the stream.
+
+`damage_all` marks every output fully damaged and schedules a frame. It is the
+**damage oracle**:
+
+```text
+settle  →  screenshot  →  damage_all  →  screenshot
+```
+
+The second frame reconstructs every pixel from the clear upward, so anything
+damage tracking wrongly believed was up to date differs between the two — a
+blurred fringe left outside the region its source change was reported in, most
+of all. It compares two **frames of one session**, which is why it is a dispatch
+rather than an environment variable: two runs of a compositor do not place
+windows, lay out text or schedule frames identically, so a run-to-run comparison
+measures the fixture rather than the damage. `contrib/avk-blur-damage-test.sh`
+is its caller, and takes a control pair of screenshots first — a desktop with a
+blinking terminal cursor on it moves 1513 pixels between any two frames, which
+would read as staleness.
+
+The blur damage counters (`blur_source_damage_pixels`,
+`blur_output_damage_pixels`, `blur_prefix_rebuild_pixels`, and the
+`blur_full_*` areas they are reported beside) say how much of a full recompute
+was avoided; `blur_damage_nodes_touched` and `blur_damage_nodes_skipped` say how
+many blur nodes did any work at all, and always sum to the number emitted.
 
 The reset exists because benchmarking a workload should not require restarting
 the compositor, which destroys the workload. It zeroes accumulating counters

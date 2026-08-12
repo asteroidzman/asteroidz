@@ -49,6 +49,15 @@ what order" is answered without a debugger. Armed rather than scheduled: the
 \fBAVK_SCENE_DUMP\fR environment variable names a frame number instead, and
 nothing outside the compositor knows which frame a given window will be on.
 .TP
+\fBdispatch damage_all\fR
+Mark every output entirely damaged and repaint it. This is the DAMAGE ORACLE:
+take a screenshot of a settled desktop, run this, take another, and the two must
+be identical \(em the second frame is reconstructed from the clear upward, so
+any pixel damage tracking wrongly believed was up to date differs. It compares
+two frames of ONE session, which an environment variable cannot: two runs of a
+compositor do not place windows, lay out text or schedule frames identically. It
+costs one full redraw and nothing afterwards.
+.TP
 \fBget idle\fR
 Return whether idling is currently held off, and by whom. \fBinhibited\fR is
 what the idle notifier was told, and answers "will this machine sleep";
@@ -562,6 +571,8 @@ privileges. See \fBdocs/visuals/effects.md\fR.
 \fBreset_avk_stats\fR
 .TP
 \fBdump_scene\fR
+.TP
+\fBdamage_all\fR
 .TP
 \fBrestart\fR
 .TP

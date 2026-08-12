@@ -1650,6 +1650,7 @@ struct Pertag {
  * parse_config.h, which is included first. */
 static int32_t reset_avk_stats(const Arg *arg);
 static int32_t dump_scene(const Arg *arg);
+static int32_t damage_all(const Arg *arg);
 /* Same reason: reapply_cursor_style() lives in parse_config.h and destroys the
  * xcursor manager, which every borrowed cursor pointer depends on. Defined in
  * render/az_cursor.h, included later. */
@@ -1810,6 +1811,39 @@ static int32_t dump_scene(const Arg *arg) {
 	wlr_log(WLR_INFO, "AVK: the next frame's scene and command stream will be "
 		"logged");
 #endif
+	return 0;
+}
+
+/*
+ * `amsg dispatch damage_all` -- mark every output entirely damaged.
+ *
+ * THE DAMAGE ORACLE, and the reason it is a dispatch rather than an environment
+ * variable: a build-time switch can only compare two RUNS, and two runs of a
+ * compositor do not place windows, lay out text or schedule frames identically.
+ * This compares two FRAMES of one run.
+ *
+ *     settle -> screenshot -> damage_all -> screenshot
+ *
+ * The second frame reconstructs every pixel from the clear upward. If damage
+ * tracking left anything stale -- a blur fringe outside the region its source
+ * change was reported in, most of all -- the two screenshots differ, and the
+ * difference is exactly the staleness. Identical screenshots are the strongest
+ * statement available that a partially damaged desktop is the desktop.
+ *
+ * It costs one full redraw and nothing afterwards, so it is safe to leave in a
+ * shipping build; contrib/avk-blur-damage-test.sh is its caller.
+ */
+static int32_t damage_all(const Arg *arg) {
+	(void)arg;
+	Monitor *m;
+	wl_list_for_each(m, &mons, link) {
+		if (m->scene_output == NULL) {
+			continue;
+		}
+		wlr_damage_ring_add_whole(&m->scene_output->damage_ring);
+		wlr_output_schedule_frame(m->wlr_output);
+	}
+	wlr_log(WLR_INFO, "every output marked fully damaged");
 	return 0;
 }
 

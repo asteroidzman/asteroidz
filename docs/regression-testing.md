@@ -1147,6 +1147,38 @@ contrib/avk-blur-walker-test.sh  26   real WLR_SCENE_NODE_BLUR through the walke
 contrib/wlbgeffect/              --   a client that supplies a real blur region
 ```
 
+**`contrib/avk-blur-damage-test.sh`** is the compositor-level damage oracle:
+settle, screenshot, `amsg dispatch damage_all`, screenshot, and the two must be
+identical. It takes a CONTROL pair of screenshots first, because the fixture was
+not static: kitty blinks a cursor, and a two-terminal desktop moved 1513 pixels
+at 197 codes between any two frames — larger than the 1458 the oracle then
+reported, and it would have been read as staleness. `HL_KITTY_EXTRA` turns the
+blink off.
+
+Two more things that phase taught, both of them the same shape:
+
+```text
+counters after a     a settled desktop renders NOTHING, so reading avk-stats two
+reset                seconds after resetting them reports 0 blur nodes for a
+                     desktop full of them. damage_all forces exactly one frame.
+
+`move`, unverified   a `move` dispatch was added to place a floating overlay and
+                     every counter in the phase came back byte-identical with and
+                     without it. It is gone: a dispatch whose effect no
+                     measurement can see makes a fixture look more specific than
+                     it is.
+```
+
+**That script deliberately has no BREAK mode.** `AZ_BLUR_UNDER_DAMAGE=1` passed
+it 12/12 in every geometry tried — a window move, a border toggle behind a
+floating overlay, the overlay inside one terminal and across the seam between
+two. A compositor's real damage is the wrong shape to expose it: a move damages
+the whole node so the demand sweep recomputes the blur anyway, and a small change
+strands a region one support away, where a dual-Kawase kernel's energy is in its
+tail and the error is below one 8-bit code. The break is falsified at the
+RENDERER instead, where a 24×24 block at full brightness on a near-black ground
+leaves 5261 wrong pixels at 71 codes and fails 20 of 65 checks.
+
 **`amsg dispatch dump_scene`** logs one line per emitted AVK command with the
 index it landed at. That index is the `k` a blur's source prefix is replayed
 for, so scene order becomes a fact about the stream rather than something

@@ -333,6 +333,17 @@ struct blur_spec {
 	 * rather than a contrivance built for the test.
 	 */
 	float brightness;
+	/* The material fields a property change moves. Defaults (0) mean "leave the
+	 * command's own default", so every existing fixture is unaffected. */
+	float alpha;
+	bool darken;
+	float edge_softness;
+	int corner;
+	/* A clip, in absolute coordinates, or a zero box for none. Two boxes,
+	 * because a client's region is a REGION and the gap between its rectangles
+	 * is the thing most easily lost. */
+	struct avk_box clip;
+	struct avk_box clip2;
 };
 
 static const struct blur_spec DEFAULT_BLUR = {
@@ -370,6 +381,26 @@ static void add_blur(struct avk_scene *scene, const struct blur_spec *spec) {
 	c->blur_saturation = 1.0f;
 	c->blur_apply_effects = spec->brightness > 0.0f
 		&& spec->brightness != 1.0f;
+	if (spec->alpha > 0.0f) {
+		c->opacity = spec->alpha;
+	}
+	c->blur_darken = spec->darken;
+	c->blur_edge_softness = spec->edge_softness;
+	for (int i = 0; i < 4; i++) {
+		c->corners[i] = (float)spec->corner;
+	}
+	if (spec->clip.width > 0 && spec->clip.height > 0) {
+		pixman_region32_t clip;
+		pixman_region32_init_rect(&clip, spec->clip.x, spec->clip.y,
+			(unsigned)spec->clip.width, (unsigned)spec->clip.height);
+		if (spec->clip2.width > 0 && spec->clip2.height > 0) {
+			pixman_region32_union_rect(&clip, &clip, spec->clip2.x,
+				spec->clip2.y, (unsigned)spec->clip2.width,
+				(unsigned)spec->clip2.height);
+		}
+		avk_cmd_set_clip(c, &clip);
+		pixman_region32_fini(&clip);
+	}
 }
 
 static bool render(struct harness *h, const struct avk_scene *scene,
@@ -1102,6 +1133,280 @@ static void test_forward_support_walk(struct harness *h) {
 		"forward is the reverse support mirrored");
 }
 
+/* ── 9. property and geometry damage ────────────────────────────────────── */
+
+/*
+ * WHAT A PROPERTY CHANGE DAMAGES, AND WHO DECIDES IT.
+ *
+ * Not the renderer. SceneFX already damages a blur node on every setter --
+ * audited one by one in docs/avk-effects.md, and wlr_scene_blur_set_size()
+ * explicitly damages the OLD bounds before shrinking, because
+ * scene_node_update() derives its damage from the node's CURRENT size and would
+ * otherwise strand the area a shrinking node used to cover. scene_node_update()
+ * itself starts from the node's existing visible region and unions the new
+ * bounds, so a move or a resize damages old u new without anything here asking.
+ *
+ * So the renderer's obligation is narrower, and it is what this group tests:
+ * GIVEN the damage a compositor really produces for the change -- the union of
+ * the old and new node boxes -- a partially damaged frame must contain the same
+ * pixels as a completely redrawn one. Every case below supplies exactly that
+ * region and nothing more.
+ *
+ * THE EDGE-SOFTNESS ENVELOPE NEEDS NO EXPANSION, and that is a fact about the
+ * material rather than an assumption. blur_soft.frag computes its coverage on a
+ * box INSET by sigma (`lo = round_box.xy + sigma`) and the draw is the node's
+ * own box, so the fade runs INWARD from the edge and the visible envelope is
+ * exactly the write region. A second, approximate expansion for it would be a
+ * magic number with nothing to check it against.
+ *
+ * DARKEN IS A MATERIAL-ONLY CHANGE and is deliberately not given a wider source
+ * dependency: the same source samples produce a different composite. Its case
+ * below damages the node box and nothing more, which is what that distinction
+ * means in practice.
+ */
+static void property_case(struct harness *h, const char *name,
+		const struct blur_spec *before, const struct blur_spec *after) {
+	/* The damage a compositor produces: old bounds u new bounds, and nothing
+	 * else. The backdrop does not move, so this is the whole change. */
+	pixman_region32_t dmg;
+	pixman_region32_init_rect(&dmg, before->dst.x, before->dst.y,
+		(unsigned)before->dst.width, (unsigned)before->dst.height);
+	pixman_region32_union_rect(&dmg, &dmg, after->dst.x, after->dst.y,
+		(unsigned)after->dst.width, (unsigned)after->dst.height);
+
+	static uint32_t partial[W * H], full[W * H];
+	bool ok = render_frame(h, h->bg_a, before, 1, NULL, NULL)
+		&& render_frame(h, h->bg_a, after, 1, &dmg, partial)
+		&& render_frame(h, h->bg_a, before, 1, NULL, NULL)
+		&& render_frame(h, h->bg_a, after, 1, NULL, full);
+	pixman_region32_fini(&dmg);
+	if (!ok) {
+		CHECK(false, "%s: render failed", name);
+		return;
+	}
+	struct diff d = compare(partial, full);
+	if (d.pixels != 0) {
+		printf("  note: %s worst %d codes at %d,%d\n", name, d.worst, d.wx,
+			d.wy);
+	}
+	CHECK(d.pixels == 0, "%s: partial == full (%ld wrong)", name, d.pixels);
+}
+
+/* The same, for a change that removes the node entirely. */
+static void enable_case(struct harness *h, const char *name,
+		const struct blur_spec *spec, bool on_first) {
+	pixman_region32_t dmg;
+	pixman_region32_init_rect(&dmg, spec->dst.x, spec->dst.y,
+		(unsigned)spec->dst.width, (unsigned)spec->dst.height);
+	size_t n_a = on_first ? 1 : 0, n_b = on_first ? 0 : 1;
+
+	static uint32_t partial[W * H], full[W * H];
+	bool ok = render_frame(h, h->bg_a, spec, n_a, NULL, NULL)
+		&& render_frame(h, h->bg_a, spec, n_b, &dmg, partial)
+		&& render_frame(h, h->bg_a, spec, n_a, NULL, NULL)
+		&& render_frame(h, h->bg_a, spec, n_b, NULL, full);
+	pixman_region32_fini(&dmg);
+	if (!ok) {
+		CHECK(false, "%s: render failed", name);
+		return;
+	}
+	struct diff d = compare(partial, full);
+	CHECK(d.pixels == 0, "%s: partial == full (%ld wrong)", name, d.pixels);
+}
+
+static void test_property_damage(struct harness *h) {
+	printf("\n-- a property change, damaged as a compositor would --\n");
+
+	const struct blur_spec base = DEFAULT_BLUR;
+	struct blur_spec probes[] = {
+		{ .dst = base.dst, .levels = 5, .radius = 4.0f },
+		{ .dst = base.dst, .levels = 1, .radius = 1.0f },
+		{ .dst = base.dst, .levels = base.levels, .radius = base.radius,
+			.alpha = 0.4f },
+		{ .dst = base.dst, .levels = base.levels, .radius = base.radius,
+			.darken = true },
+		{ .dst = base.dst, .levels = base.levels, .radius = base.radius,
+			.edge_softness = 14.0f },
+		{ .dst = base.dst, .levels = base.levels, .radius = base.radius,
+			.corner = 28 },
+		{ .dst = { BX + 40, BY + 30, BW, BH }, .levels = base.levels,
+			.radius = base.radius },
+		{ .dst = { BX, BY, BW + 41, BH + 27 }, .levels = base.levels,
+			.radius = base.radius },
+		{ .dst = { BX, BY, BW - 43, BH - 29 }, .levels = base.levels,
+			.radius = base.radius },
+		{ .dst = base.dst, .levels = base.levels, .radius = base.radius,
+			.clip = { BX + 20, BY + 20, 80, 70 } },
+		{ .dst = base.dst, .levels = base.levels, .radius = base.radius,
+			.clip = { BX + 55, BY + 40, 80, 70 } },
+		{ .dst = base.dst, .levels = base.levels, .radius = base.radius,
+			.clip = { BX + 20, BY + 20, 130, 110 } },
+	};
+	static const char *names[] = {
+		"radius grow", "radius shrink", "alpha", "darken", "edge_softness",
+		"corners", "move", "resize larger", "resize smaller",
+		"clip appears", "clip moves", "clip grows",
+	};
+	const size_t n = sizeof(probes) / sizeof(probes[0]);
+
+	/*
+	 * PREMISE: each change below must actually change the picture. A property
+	 * that renders identically either way would make its case pass for the
+	 * wrong reason, and several of these -- darken over a dark ground, a corner
+	 * radius on a big box -- are exactly the sort that could.
+	 */
+	static uint32_t ref[W * H], probe[W * H];
+	if (!render_frame(h, h->bg_a, &base, 1, NULL, ref)) {
+		CHECK(false, "property: could not render the reference");
+		return;
+	}
+	int silent = 0;
+	for (size_t i = 0; i < n; i++) {
+		if (!render_frame(h, h->bg_a, &probes[i], 1, NULL, probe)) {
+			continue;
+		}
+		struct diff d = compare(ref, probe);
+		if (d.pixels == 0) {
+			printf("  note: %s changes NOTHING\n", names[i]);
+			silent++;
+		}
+	}
+	CHECK(silent == 0,
+		"PREMISE: every property change alters the picture (%d silent)",
+		silent);
+
+	for (size_t i = 0; i < n; i++) {
+		property_case(h, names[i], &base, &probes[i]);
+	}
+	/* And back the other way for the clip, whose OLD extent is larger than its
+	 * new one -- the shape of the stale-region bug. */
+	property_case(h, "clip shrinks", &probes[11], &probes[9]);
+	property_case(h, "clip disappears", &probes[9], &base);
+
+	enable_case(h, "disable", &base, true);
+	enable_case(h, "enable", &base, false);
+}
+
+/* ── 10. realistic workloads, and the multi-rect gap ────────────────────── */
+
+/*
+ * A TEXT CURSOR AND A MOVING WIDGET -- the two shapes of change that damage
+ * tracking exists for, and the ones where a stale pixel is most visible.
+ *
+ * Both are measured as well as checked: the point of M4F.2B is not only that a
+ * partial frame is right but that it is CHEAPER, and a fixture that proves the
+ * first without reporting the second says nothing about whether the complexity
+ * paid for itself.
+ */
+static void test_realistic(struct harness *h) {
+	printf("\n-- realistic workloads --\n");
+
+	/* A terminal-sized cell blinking on and off behind a large blur, over a
+	 * dark high-frequency ground. Support 7 rather than 57, because a real
+	 * blurred window is far larger than the kernel's reach and the 256 px
+	 * fixture cannot be. */
+	struct blur_spec term = { .dst = { 20, 20, 216, 216 }, .levels = 1,
+		.radius = 1.0f };
+	g_block_w = 8;
+	g_block_h = 16;
+
+	case_at(h, "a text cursor behind a blur", 120, 110, &term, 1);
+	/* And the cost of the PARTIAL frame alone. Averaging over case_at's three
+	 * renders would mix in two full-damage frames, whose output damage is the
+	 * whole write region by definition -- a ratio computed that way describes
+	 * the oracle rather than the thing being measured. */
+	measure_saving(h, "a text cursor", &term, 120, 110, 60);
+
+	/*
+	 * A 16x16 WIDGET MOVING 8 PX AT A TIME, several frames in a row, each
+	 * compared against a full redraw. The damage is old u new, exactly as a
+	 * compositor reports a move -- and a frame that inherited a trail from the
+	 * frame before it would show here and nowhere else, because every other
+	 * fixture in this file renders at most two frames.
+	 */
+	g_block_w = 16;
+	g_block_h = 16;
+	struct blur_spec big = { .dst = { 20, 20, 216, 216 }, .levels = 1,
+		.radius = 1.0f };
+	static uint32_t partial[W * H], full[W * H];
+	long worst_wrong = 0;
+	int frames = 0;
+	/* Frame 0 establishes; each later frame moves the widget 8 px. */
+	fill_ground(g_changed);
+	put_block(g_changed, 100, 120);
+	bool ok = stage(h, h->bg_a, g_changed, NULL)
+		&& render_frame(h, h->bg_a, &big, 1, NULL, NULL);
+	for (int step = 1; step <= 5 && ok; step++) {
+		int px = 100 + (step - 1) * 8, nx = 100 + step * 8;
+		fill_ground(g_changed);
+		put_block(g_changed, nx, 120);
+		pixman_region32_t dmg;
+		pixman_region32_init_rect(&dmg, px, 120, 16, 16);
+		pixman_region32_union_rect(&dmg, &dmg, nx, 120, 16, 16);
+		ok = stage(h, h->bg_b, g_changed, NULL)
+			&& render_frame(h, h->bg_b, &big, 1, &dmg, partial)
+			&& render_frame(h, h->bg_b, &big, 1, NULL, full);
+		pixman_region32_fini(&dmg);
+		if (!ok) {
+			break;
+		}
+		struct diff d = compare(partial, full);
+		if (d.pixels > worst_wrong) {
+			worst_wrong = d.pixels;
+		}
+		frames++;
+		/* The next step's "previous frame" is this partial one, so the target
+		 * carries whatever the partial path left behind -- which is the point.
+		 * Re-render the partial frame so the target ends in that state. */
+		ok = render_frame(h, h->bg_b, &big, 1, NULL, NULL)
+			&& stage(h, h->bg_a, g_changed, NULL);
+	}
+	CHECK(frames == 5, "PREMISE: the widget moved five times (%d)", frames);
+	CHECK(worst_wrong == 0,
+		"a widget moving 8 px a frame leaves no trail (%ld wrong)",
+		worst_wrong);
+
+	g_block_w = BLOCK;
+	g_block_h = BLOCK;
+
+	/*
+	 * THE MULTI-RECT GAP, IN DAMAGE THIS TIME.
+	 *
+	 * test-avk-blur-material proves the COMPOSITE keeps the gap between a
+	 * client's two rectangles. This is the other half: the damage machinery must
+	 * not quietly take a bounding box either, so the blur's own output damage
+	 * has to stay out of the 24 px corridor. Measured on the region, not
+	 * inferred from the picture -- a gap that is damaged but happens to be
+	 * repainted with the same pixels is invisible to a pixel test and is still
+	 * wasted work.
+	 */
+	struct avk_box r1 = { BX + 10, BY + 10, 50, 100 };
+	struct avk_box r2 = { BX + 10 + 50 + 24, BY + 10, 50, 100 };
+	struct blur_spec split = { .dst = { BX, BY, BW, BH }, .levels = 1,
+		.radius = 1.0f, .clip = r1, .clip2 = r2 };
+	uint64_t g_out0 = h->renderer.blur_output_damage_pixels;
+	uint64_t g_write0 = h->renderer.blur_full_write_pixels;
+	if (render_frame(h, h->bg_a, &split, 1, NULL, NULL)) {
+		uint64_t out = h->renderer.blur_output_damage_pixels - g_out0;
+		uint64_t write = h->renderer.blur_full_write_pixels - g_write0;
+		uint64_t both = (uint64_t)(r1.width * r1.height)
+			+ (uint64_t)(r2.width * r2.height);
+		uint64_t with_gap = both + (uint64_t)(24 * r1.height);
+		printf("  note: two clip rectangles damage %" PRIu64 " of a %" PRIu64
+			" write region; the two are %" PRIu64 ", with the gap %" PRIu64
+			"\n", out, write, both, with_gap);
+		/* Exactly the two rectangles. A bounding box would be `with_gap` and
+		 * would still repaint the corridor with the same pixels -- invisible to
+		 * a pixel test, and wasted work every frame. */
+		CHECK(out == both,
+			"the damage is the two clip rectangles, gap and all (%" PRIu64
+			" == %" PRIu64 ")", out, both);
+		CHECK(out < with_gap,
+			"and not their bounding box (%" PRIu64 " < %" PRIu64 ")", out,
+			with_gap);
+	}
+}
+
 /* ── main ───────────────────────────────────────────────────────────────── */
 
 int main(void) {
@@ -1143,6 +1448,8 @@ int main(void) {
 	test_influence(&h);
 	test_saving(&h);
 	test_transitive(&h);
+	test_property_damage(&h);
+	test_realistic(&h);
 	test_breaks(&h);
 
 	avk_device_wait_idle(h.dev);
