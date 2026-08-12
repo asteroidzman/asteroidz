@@ -372,6 +372,17 @@ if build_vulkan
                                   build_by_default : false)
   test('avk-multipass', test_avk_multipass, timeout : 180)
 
+  # M4F.3/.5: what vkCmdPipelineBarrier2 actually costs, and why. Isolates one
+  # variable at a time -- barriers per call, queue-family transfer, DCC vs
+  # non-DCC modifier, image size, layout pair -- on the same device in the same
+  # process, because a live compositor varies in all of them at once and can
+  # only ever produce another hypothesis.
+  test_avk_barrier_cost = executable('test-avk-barrier-cost',
+                                     'tests/test-avk-barrier-cost.c',
+                                     dependencies : [avk_dep],
+                                     build_by_default : false)
+  test('avk-barrier-cost', test_avk_barrier_cost, timeout : 180)
+
   # M4D: shadows. libm because the fixtures carry an independent CPU
   # transcription of the reference's erf-and-four-samples formula, which is
   # what AVK's readback is compared against -- not GLES, and not AVK's own

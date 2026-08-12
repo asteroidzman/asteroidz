@@ -164,13 +164,14 @@ void avk_graph_reset(struct avk_graph *graph) {
 	graph->log_len = 0;
 	uint64_t allocs = graph->stats.allocs;
 	uint64_t build_ns = graph->stats.build_ns;
-	uint64_t barrier_ns = graph->stats.barrier_ns;
 	uint64_t frames = graph->stats.frames;
+	uint32_t hist[64];
+	memcpy(hist, graph->stats.build_hist, sizeof(hist));
 	memset(&graph->stats, 0, sizeof(graph->stats));
 	graph->stats.allocs = allocs;
 	graph->stats.build_ns = build_ns;
-	graph->stats.barrier_ns = barrier_ns;
 	graph->stats.frames = frames;
+	memcpy(graph->stats.build_hist, hist, sizeof(hist));
 }
 
 /* ── declaration ──────────────────────────────────────────────────────────── */
@@ -429,16 +430,14 @@ static void az_flush(struct avk_graph *graph, VkCommandBuffer cb,
 		.imageMemoryBarrierCount = count,
 		.pImageMemoryBarriers = graph->barriers,
 	};
-	/* Timed separately from the derivation above. This is a driver call the
-	 * pre-graph renderer also made; attributing it to the graph made the graph
-	 * look ten times more expensive on real hardware than on a headless
-	 * output, when what actually differs is what the barrier does. */
-	struct timespec b0, b1;
-	clock_gettime(CLOCK_MONOTONIC, &b0);
+	/*
+	 * NOT individually timed. A bracketing clock_gettime pair costs ~37 ns
+	 * around a call that costs ~60, so the instrument perturbs the measurement
+	 * by more than half and, on a preemptible thread, its mean measures the
+	 * scheduler. tests/test-avk-barrier-cost.c measures this properly, in a
+	 * tight loop, one variable at a time.
+	 */
 	vkCmdPipelineBarrier2(cb, &dep);
-	clock_gettime(CLOCK_MONOTONIC, &b1);
-	graph->stats.barrier_ns += (uint64_t)(b1.tv_sec - b0.tv_sec) * 1000000000ULL
-		+ (uint64_t)(b1.tv_nsec - b0.tv_nsec);
 	graph->stats.barriers++;
 	for (uint32_t i = 0; i < count; i++) {
 		if (graph->barriers[i].oldLayout != graph->barriers[i].newLayout) {
@@ -454,7 +453,6 @@ void avk_graph_execute(struct avk_graph *graph, VkCommandBuffer cb,
 	struct timespec t0;
 	clock_gettime(CLOCK_MONOTONIC, &t0);
 	uint64_t record_ns = 0;
-	uint64_t barrier_before = graph->stats.barrier_ns;
 
 	/* Worst case for one flush: every resource transitioned at once. Sized
 	 * once, here, rather than per pass. */
@@ -568,11 +566,15 @@ void avk_graph_execute(struct avk_graph *graph, VkCommandBuffer cb,
 
 	struct timespec t1;
 	clock_gettime(CLOCK_MONOTONIC, &t1);
-	uint64_t barrier_ns = graph->stats.barrier_ns - barrier_before;
 	uint64_t total = (uint64_t)(t1.tv_sec - t0.tv_sec) * 1000000000ULL
 		+ (uint64_t)(t1.tv_nsec - t0.tv_nsec);
-	uint64_t not_ours = record_ns + barrier_ns;
-	graph->stats.build_ns += total > not_ours ? total - not_ours : 0;
+	uint64_t ours = total > record_ns ? total - record_ns : 0;
+	graph->stats.build_ns += ours;
+	/* 250 ns buckets, saturating. 64 buckets covers 16 us exactly; anything
+	 * beyond that is a preempted frame and belongs in the top bucket rather
+	 * than in a mean. */
+	uint32_t bucket = (uint32_t)(ours / 250);
+	graph->stats.build_hist[bucket < 64 ? bucket : 63]++;
 }
 
 /* ── inspection ───────────────────────────────────────────────────────────── */

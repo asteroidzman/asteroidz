@@ -242,29 +242,44 @@ struct avk_graph_stats {
 	 *   the pass record callbacks -- that is the draw loop, work the frame was
 	 *   always going to do. Including them read 21.5us a frame.
 	 *
-	 *   vkCmdPipelineBarrier2 itself -- see barrier_ns. Including it read
-	 *   35-42us a frame in a live session against 2-7us headless, which looked
-	 *   like a graph that fell apart on real hardware. It was not: the
-	 *   pre-graph renderer made the same two calls, and their cost simply had
-	 *   nowhere to be attributed before.
+	 *   vkCmdPipelineBarrier2 itself. Separating it read 35-42us a frame live
+	 *   against 2-7us headless, which looked like a graph that fell apart on
+	 *   real hardware -- and was in fact the instrument, not the call. The call
+	 *   costs ~60 ns (tests/test-avk-barrier-cost.c); bracketing it with a
+	 *   clock_gettime pair costs ~37, and a scheduler slice landing in that
+	 *   window is charged entirely to it. The emission is now folded back in
+	 *   here and reported as a DISTRIBUTION rather than a mean.
 	 *
 	 * What is left is the part M4E actually added, and it is the number that
 	 * belongs in a sentence beginning "the graph costs".
 	 */
 	uint64_t build_ns;
 	/*
-	 * Cumulative CPU time inside vkCmdPipelineBarrier2.
+	 * PER-FRAME DISTRIBUTION of build_ns, in 250 ns buckets.
 	 *
-	 * NOT graph overhead. The pre-graph renderer made exactly these calls, in
-	 * exactly these places, with the same contents -- what changed is that they
-	 * are now derived rather than hand-written. It is measured separately
-	 * because it turns out to dominate, and because it varies enormously with
-	 * what the barrier does: a queue-family ownership transfer on a 4K dma-buf
-	 * costs a great deal more than a plain layout transition on a headless
-	 * 1080p one, which is why the same code reads 2us on one machine and 40 on
-	 * another and neither number is wrong.
+	 * A MEAN WAS THE WRONG STATISTIC AND IT PRODUCED A WRONG CONCLUSION. M4E
+	 * timed each vkCmdPipelineBarrier2 call individually and reported the mean:
+	 * 1.9 us headless, 44 us live, which was written up as evidence that
+	 * DCC-compressed scan-out makes barriers expensive.
+	 *
+	 * tests/test-avk-barrier-cost.c then measured the call directly, one
+	 * variable at a time on the same GPU. vkCmdPipelineBarrier2 costs 46-70 ns.
+	 * DCC: 46 ns against 46 ns for the same-size non-DCC modifier. A foreign
+	 * queue-family transfer: 44 ns against 51 ns without. Neither is a factor
+	 * of anything.
+	 *
+	 * The 44 us was the INSTRUMENT. A bracketing clock_gettime pair costs ~37 ns
+	 * around a ~60 ns event, and any scheduler slice landing inside that window
+	 * is attributed entirely to it -- so on a loaded desktop the mean is a
+	 * measure of preemption. In a quiet loop the same per-call timing reads
+	 * p50 60 / p95 70 / mean 61 ns, which is what tells you the technique is
+	 * sound and the environment was not.
+	 *
+	 * So: the per-call barrier timing is gone, and what remains is reported as a
+	 * distribution. A percentile is robust to the outliers a mean is captured
+	 * by.
 	 */
-	uint64_t barrier_ns;
+	uint32_t build_hist[64];
 	uint64_t frames;
 };
 

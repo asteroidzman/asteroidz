@@ -3185,7 +3185,8 @@ static cJSON *az_avk_stats_json(void) {
 	 */
 	uint32_t g_passes = 0, g_resources = 0, g_uses = 0, g_barriers = 0;
 	uint32_t g_transitions = 0, g_buffer_barriers = 0;
-	uint64_t g_allocs = 0, g_build_ns = 0, g_barrier_ns = 0, g_frames = 0;
+	uint64_t g_allocs = 0, g_build_ns = 0, g_frames = 0;
+	uint32_t g_hist[64] = {0};
 	for (size_t i = 0; i < AZ_AVK_MAX_FORMATS; i++) {
 		if (!avk.renderers[i].used) {
 			continue;
@@ -3200,7 +3201,9 @@ static cJSON *az_avk_stats_json(void) {
 		g_buffer_barriers += gs->buffer_barriers;
 		g_allocs += gs->allocs;
 		g_build_ns += gs->build_ns;
-		g_barrier_ns += gs->barrier_ns;
+		for (int h = 0; h < 64; h++) {
+			g_hist[h] += gs->build_hist[h];
+		}
 		g_frames += gs->frames;
 	}
 	cJSON_AddNumberToObject(o, "graph_passes", (double)g_passes);
@@ -3252,15 +3255,31 @@ static cJSON *az_avk_stats_json(void) {
 	if (g_frames > 0) {
 		cJSON_AddNumberToObject(o, "graph_build_ns_avg",
 			(double)g_build_ns / (double)g_frames);
-		/* Reported apart from build, because it is not graph overhead: the
-		 * pre-graph renderer made the same two vkCmdPipelineBarrier2 calls and
-		 * their cost simply had nowhere to be attributed. It dominates, and it
-		 * varies with what the barrier does rather than with the graph. */
-		cJSON_AddNumberToObject(o, "graph_barrier_ns_avg",
-			(double)g_barrier_ns / (double)g_frames);
+		/*
+		 * PERCENTILES, because the mean above is captured by preemption. A
+		 * frame's graph work is a few microseconds; a scheduler slice landing
+		 * inside it is charged to it, and on a loaded desktop the mean ends up
+		 * describing the scheduler. p50 is what the graph costs.
+		 */
+		uint64_t seen = 0, want50 = g_frames / 2, want95 = g_frames * 95 / 100;
+		uint64_t want99 = g_frames * 99 / 100;
+		double p50 = 0, p95 = 0, p99 = 0;
+		for (int h = 0; h < 64; h++) {
+			uint64_t before = seen;
+			seen += g_hist[h];
+			double edge = (double)(h + 1) * 250.0;
+			if (before <= want50 && seen > want50) { p50 = edge; }
+			if (before <= want95 && seen > want95) { p95 = edge; }
+			if (before <= want99 && seen > want99) { p99 = edge; }
+		}
+		cJSON_AddNumberToObject(o, "graph_build_ns_p50", p50);
+		cJSON_AddNumberToObject(o, "graph_build_ns_p95", p95);
+		cJSON_AddNumberToObject(o, "graph_build_ns_p99", p99);
 	} else {
 		cJSON_AddNullToObject(o, "graph_build_ns_avg");
-		cJSON_AddNullToObject(o, "graph_barrier_ns_avg");
+		cJSON_AddNullToObject(o, "graph_build_ns_p50");
+		cJSON_AddNullToObject(o, "graph_build_ns_p95");
+		cJSON_AddNullToObject(o, "graph_build_ns_p99");
 	}
 	cJSON_AddNumberToObject(o, "software_cursor_frames",
 		(double)avk.software_cursor_frames);

@@ -142,11 +142,10 @@ STATS2="$(hl_get 'get avk-stats')"
 A2=$(echo "$STATS2" | jq -r '.graph_allocs // 0')
 F2=$(echo "$STATS2" | jq -r '.graph_frames // 0')
 BUILD=$(echo "$STATS2" | jq -r '.graph_build_ns_avg // 0')
-BARRIER=$(echo "$STATS2" | jq -r '.graph_barrier_ns_avg // 0')
+P50=$(echo "$STATS2" | jq -r '.graph_build_ns_p50 // 0')
 echo "  ---- graph_allocs $A1 -> $A2 over $((F2 - FRAMES)) further frames"
-echo "  ---- graph_build_ns_avg   $BUILD   (the graph's own bookkeeping)"
-echo "  ---- graph_barrier_ns_avg $BARRIER   (vkCmdPipelineBarrier2; the "
-echo "       pre-graph renderer made the same two calls)"
+echo "  ---- graph_build_ns  mean $BUILD   p50 $P50"
+echo "       (p50 is the one to read: a mean is captured by preemption)"
 # The premise. Asserting that a counter did not move across an interval in
 # which nothing happened is not a test of anything.
 hl_assert "frames were actually built between the two readings" \
@@ -154,8 +153,12 @@ hl_assert "frames were actually built between the two readings" \
 hl_assert "graph construction stops allocating once the scene settles" \
 	"$([ "$A1" = "$A2" ] && echo yes || echo "no ($A1 -> $A2)")" "yes"
 # A ceiling, generous, on a machine running a compositor and three terminals.
-hl_assert "graph build is under 50us a frame" \
-	"$(awk -v b="$BUILD" 'BEGIN{print (b < 50000) ? "yes" : "no"}')" "yes"
+# Asserted on the MEDIAN. The mean is captured by whichever frames the
+# scheduler interrupted, which is a property of the machine and not of the
+# graph -- M4E asserted on it and the resulting 44us reading was written up as
+# a driver/DCC finding before tests/test-avk-barrier-cost.c disproved it.
+hl_assert "graph build p50 is under 20us a frame" \
+	"$(awk -v b="$P50" 'BEGIN{print (b > 0 && b < 20000) ? "yes" : "no (" b ")"}')" "yes"
 
 echo "-- invariants --"
 for k in cpu_sync_waits present_sync_failures target_state_violations \

@@ -2762,3 +2762,97 @@ empty `FLOOR`/`FTOTAL` values which awk then compared without complaining — a
 comparison against nothing, reported as a pass. It now returns empty on an
 unreadable file and the caller **skips with a reason** rather than proceeding.
 grim writes a truncated PNG under load often enough that this matters.
+
+## M4F.3/.5 — what `vkCmdPipelineBarrier2` actually costs
+
+`tests/test-avk-barrier-cost.c`. One variable at a time, same GPU, same
+process, back to back — because a live compositor varies in all of them at once
+and can only ever produce another hypothesis.
+
+### The answer
+
+```text
+1 barrier,  1 call                    69 ns
+4 barriers, 1 call                   198 ns      (50 ns per barrier)
+4 barriers, 4 calls                  256 ns      (64 ns per call)
+
+dma-buf, IGNORED queue families       51 ns
+dma-buf, FOREIGN -> graphics          44 ns      <- ownership transfer is FREE
+
+non-DCC  0x0200000028a01f04           46 ns
+DCC      0x0200000028a37f04           46 ns      <- ratio 0.99x
+                                                    (the exact live modifier)
+3840x2160                             61 ns
+256x256                               51 ns
+
+GENERAL -> GENERAL                    47 ns
+GENERAL -> SHADER_READ_ONLY           59 ns
+COLOR_ATTACHMENT -> SHADER_READ_ONLY  58 ns
+UNDEFINED -> COLOR_ATTACHMENT        311 ns      <- the only expensive one
+```
+
+**A barrier costs tens of nanoseconds.** Not microseconds.
+
+### DCC HYPOTHESIS: DISPROVED
+
+M4E reported ~1.9 µs headless and ~44 µs live for the same two calls, and named
+DCC-compressed scan-out as the leading explanation on the strength of the two
+paths using different modifiers.
+
+The exact live modifier — `0x0200000028a37f04`, DCC with `DCC_RETILE`, three
+planes — measures **46 ns against 46 ns** for the same-size non-DCC modifier on
+the same device. Compression makes no difference to barrier recording cost.
+Neither does the foreign queue-family transfer, which was the other candidate.
+
+### So what was the 44 µs?
+
+**The instrument.** A bracketing `clock_gettime` pair costs ~37 ns around a
+~60 ns event, so the measurement perturbs its subject by more than half — and
+any scheduler slice landing inside that window is charged entirely to it. On a
+loaded desktop the *mean* of such a sample is a measure of preemption.
+
+The same per-call technique in a quiet loop reads:
+
+```text
+p50 60 ns   p95 70 ns   p99 71 ns   max 200 ns   mean 61 ns
+```
+
+Mean ≈ median, so the technique is sound and the environment was not.
+`clock_gettime` itself was ruled out first: 18.7 ns via vDSO on a TSC
+clocksource, not a syscall.
+
+### What changed
+
+- Per-call barrier timing is **removed** from production. An instrument that
+  perturbs its subject by 60% and whose mean measures the scheduler is not an
+  instrument.
+- `graph_build_ns` folds barrier emission back in — at this granularity they are
+  inseparable and both are graph work — and is reported as a **distribution**:
+  `graph_build_ns_p50` / `_p95` / `_p99`, in 250 ns buckets.
+- `avk-graph-test.sh` asserts on the **median**, not the mean.
+
+### Consequences for M4F
+
+Barriers are effectively free. A blur adding four barrier flushes costs
+**~250 ns of recording**, not the ~90 µs M4E's figure implied. Synchronisation
+is not a constraint on the blur's design, and the batching question (M4F.4) is
+worth ~58 ns per four barriers — real, measured, and not worth contorting the
+graph for. `UNDEFINED -> COLOR_ATTACHMENT` at 311 ns is the one transition
+worth avoiding, which argues for reusing a transient in a known layout rather
+than letting it come back as `UNDEFINED`.
+
+### Four ways this benchmark measured nothing before it measured something
+
+Each produced a confident "no DCC modifier available on this device" while the
+live compositor was scanning one out.
+
+1. **Filtered on `plane_count == 1`.** Every DCC modifier here carries 2–3
+   planes — the compression metadata — so the filter rejected exactly the case
+   under test.
+2. **Took the first matching modifier and gave up when gbm refused it**, with
+   five more in the list. `gbm_bo_create_with_modifiers2` takes an array
+   because it is meant to choose.
+3. **Asked for `GBM_BO_USE_SCANOUT`**, which needs the KMS primary node; the
+   test opens a render node so it can run with no display.
+4. **Printed the diagnostics before the section header**, so a `sed` window over
+   the results hid them.
