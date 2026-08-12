@@ -520,6 +520,11 @@ PY2
 	full_after=$(hl_get "get avk-stats" | jq -r '.full_redraw_frames')
 	part_after=$(hl_get "get avk-stats" | jq -r '.partial_redraw_frames')
 	echo "  full redraws across the sequence: $((full_after - full_before)); partial total $part_after"
+	hl_get "get avk-stats" | jq -r '"  cpu_frame_us p50=\(.cpu_frame_us_p50) p95=\(.cpu_frame_us_p95) p99=\(.cpu_frame_us_p99) max=\(.cpu_frame_us_max)  border_draws=\(.border_draws) rounded=\(.rounded_border_draws) asym=\(.asymmetric_border_draws)"'
+	hl_assert "damage: no CPU sync wait was introduced" \
+		"$(hl_get "get avk-stats" | jq -r '.cpu_sync_waits')" "0"
+	hl_assert "damage: no fallback frame was introduced" \
+		"$(hl_get "get avk-stats" | jq -r '.fallback_frames')" "0"
 
 	for k in d_moved d_resized d_unfocused; do
 		v=$(awk -v k="vacated_$k" '$1==k{print $2}' "$OUTDIR/damage.txt")
