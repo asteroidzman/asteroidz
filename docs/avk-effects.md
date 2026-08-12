@@ -2980,3 +2980,90 @@ is drawn *below* its own window, so the target does not yet contain the window
 — **except in undamaged regions, which still hold the previous frame, where it
 does.** That is the halo SceneFX's field comment describes, and it is the reason
 the region a blur samples cannot simply be "whatever is in the target".
+
+## M4F.1 — the blur primitive
+
+`src/render/vulkan/effect/avk_blur.{h,c}` plus `blur.glsl`, `blur_down.frag`,
+`blur_up.frag`. Two pipelines, both **replacing** rather than blending.
+
+### Dual-Kawase, and why not a separable Gaussian
+
+A separable Gaussian of radius R is 2 full-resolution passes and ~2(2R+1)
+samples per pixel, growing **linearly in R**. Dual-Kawase buys radius with
+**resolution**: each level halves the image with a fixed 5-tap kernel and each
+upsample doubles it with a fixed 8-tap one, so support doubles per level while
+cost falls geometrically. Four draws total ≈ **1.7×** one full-resolution pass,
+for a support a Gaussian would need ~30 taps to match.
+
+The decisive argument is not performance though — it is that asteroidz's config
+is *already expressed in dual-Kawase terms* (`passes`, `radius`). A Gaussian
+would have to reinterpret both and change every existing desktop.
+
+Stated tradeoff: it is an approximation, slightly boxier, with faint ringing on
+an impulse. **Measured** (0 codes of non-monotonicity at 2 levels) rather than
+asserted away.
+
+### It owns no synchronisation
+
+There is no `vkCmdPipelineBarrier2` in `avk_blur.c`, no layout helper, no wait.
+It declares `avk_graph_use()` and the compiler derives everything — which is why
+a 3-level blur (6 passes, 6 barrier calls) needs no more synchronisation
+knowledge than a 1-level one. Asserted, not grepped:
+
+```text
+six passes (6)   six barrier calls, one per pass (6)   no buffer barriers
+every intermediate came from the transient pool
+60 further blurs allocated ZERO new images (3 -> 3)
+```
+
+### The bug the high-frequency fixtures caught
+
+**The transient pool rounds allocations up to 64 px.** A 32×32 blur level lives
+in a 64×64 image whose other three quarters were never written — and sampling
+the full `[0,1]` UV range averages in unwritten memory.
+
+```text
+                       before          after
+flat 100               19              100
+lines mean (in 31.9)   7.7             32.0
+checkerboard mean      —               128.0  (input 127.5)
+level reach 1/2/3      4 / 0 / 0 px    4 / 7 / 9 px
+```
+
+A factor of four of energy gone, and levels 2 and 3 producing *nothing*.
+`CLAMP_TO_EDGE` does not help — it clamps to the **allocation** edge, which is
+the padding. Three things had to change together:
+
+- the quad spans `logical/allocation` of the UV range, not all of it;
+- a texel is `1/allocation` in UV, so the half-texel step uses that;
+- every tap is clamped to the last valid texel centre, `(logical−0.5)/allocation`.
+
+This is exactly M4F.8's "the shader must know the logical valid extent
+separately from the allocation extent", and it is why that requirement exists.
+
+**The flat-colour fixture passed the broken build at every stage until the
+energy loss became total.** The checkerboard, the impulse and the line fixtures
+caught it immediately. That is the M4E lesson holding.
+
+### Measured behaviour
+
+| fixture | result |
+|---|---|
+| 1 px checkerboard | spread 255 → **0**, mean **128.0** (input 127.5) |
+| impulse | symmetric to **0 codes** in both axes; worst non-monotonic rise **0** |
+| hard edge | **0** drops; 10–90% transition **8 px** |
+| 1 px lines / 8 px | spread **0**, mean **32.0** (input 31.9) |
+| levels 1/2/3 | reach **4 / 7 / 9 px** — radius really does come from levels |
+| flat (secondary) | 100 → **100** |
+| brightness 0.5 | 128 → **64**, and black stays exactly black |
+
+`avk_blur_support()` reports **25 px** where the edge measures 8 — deliberately
+conservative, because it feeds damage expansion and under-covering leaves a
+stale fringe that only appears on a moving window.
+
+### Not yet wired
+
+No scene node produces a blur command yet: `WLR_SCENE_NODE_BLUR` and
+`OPTIMIZED_BLUR` are still dropped by the walker. The primitive is validated
+standalone first, deliberately — the alternative is debugging a kernel bug and a
+scene-integration bug as one.

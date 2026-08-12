@@ -383,6 +383,17 @@ if build_vulkan
                                      build_by_default : false)
   test('avk-barrier-cost', test_avk_barrier_cost, timeout : 180)
 
+  # M4F.1/.10/.11: the dual-Kawase blur. Every PRIMARY fixture has high spatial
+  # frequency -- a 1px checkerboard, an impulse, a hard edge, thin lines --
+  # because blurring a flat field returns the same flat field whatever the
+  # kernel does, so a flat fixture passes for a blur that samples the wrong
+  # level, uses the wrong step, or runs no passes at all. libm for the
+  # statistics.
+  test_avk_blur = executable('test-avk-blur', 'tests/test-avk-blur.c',
+                             dependencies : [avk_dep, libm],
+                             build_by_default : false)
+  test('avk-blur', test_avk_blur, timeout : 180)
+
   # M4D: shadows. libm because the fixtures carry an independent CPU
   # transcription of the reference's erf-and-four-samples formula, which is
   # what AVK's readback is compared against -- not GLES, and not AVK's own

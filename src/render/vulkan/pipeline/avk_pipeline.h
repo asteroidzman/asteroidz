@@ -119,6 +119,18 @@ struct avk_pipelines {
 	 * neither reads a storage buffer nor needs set 1 bound.
 	 */
 	VkPipeline gradient;
+	/*
+	 * M4F. Dual-Kawase: one 5-tap downsample and one 8-tap upsample, used for
+	 * every level of every blur on the desktop. The level count and the kernel
+	 * step are push constants, so a two-pass blur and a five-pass one are the
+	 * same two pipelines with different numbers -- nothing here compiles on the
+	 * frame path, and there is no pipeline per radius or per image size.
+	 *
+	 * REPLACING rather than blending: these resample into a transient whose
+	 * previous contents belong to another window's blur from three frames ago.
+	 */
+	VkPipeline blur_down;
+	VkPipeline blur_up;
 
 	/* One sampler each, because filtering is a per-command choice and a
 	 * sampler is immutable. Nearest for 1:1 blits -- linear at 1:1 is not a

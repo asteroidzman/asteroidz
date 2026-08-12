@@ -10,6 +10,8 @@
 #include "texture_frag.spv.h"
 #include "gradient_frag.spv.h"
 #include "shadow_frag.spv.h"
+#include "blur_down_frag.spv.h"
+#include "blur_up_frag.spv.h"
 
 /* Sets per descriptor pool. Enough that an ordinary desktop -- a few dozen
  * surfaces -- never allocates a second one, small enough that a pool is not a
@@ -34,9 +36,19 @@ static VkShaderModule create_module(struct avk_device *dev,
 	return module;
 }
 
-static bool create_pipeline(struct avk_pipelines *pipes, VkFormat format,
+/*
+ * `blend` false gives a REPLACING pipeline: no blend, straight write.
+ *
+ * Every compositing primitive blends -- that is what compositing is -- but a
+ * blur's down and up passes do not composite, they RESAMPLE. Their destination
+ * is a transient whose previous contents are another window's blur from three
+ * frames ago, and blending against that is not "slightly wrong", it is the
+ * previous frame leaking through. Replacing also means the transient needs no
+ * clear, which is a full-target write per level saved.
+ */
+static bool create_pipeline_ex(struct avk_pipelines *pipes, VkFormat format,
 		VkShaderModule vert, VkShaderModule frag, const char *name,
-		VkPipeline *out) {
+		bool blend_enable, VkPipeline *out) {
 	struct avk_device *dev = pipes->dev;
 
 	VkPipelineShaderStageCreateInfo stages[2] = {
@@ -92,7 +104,7 @@ static bool create_pipeline(struct avk_pipelines *pipes, VkFormat format,
 	 * look like "the edges are too dark".
 	 */
 	VkPipelineColorBlendAttachmentState blend = {
-		.blendEnable = VK_TRUE,
+		.blendEnable = blend_enable ? VK_TRUE : VK_FALSE,
 		.srcColorBlendFactor = VK_BLEND_FACTOR_ONE,
 		.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
 		.colorBlendOp = VK_BLEND_OP_ADD,
@@ -149,6 +161,13 @@ static bool create_pipeline(struct avk_pipelines *pipes, VkFormat format,
 	avk_device_name_object(dev, VK_OBJECT_TYPE_PIPELINE, (uint64_t)*out,
 		"avk pipeline %s", name);
 	return true;
+}
+
+/* The blending form, which is what every compositing primitive wants. */
+static bool create_pipeline(struct avk_pipelines *pipes, VkFormat format,
+		VkShaderModule vert, VkShaderModule frag, const char *name,
+		VkPipeline *out) {
+	return create_pipeline_ex(pipes, format, vert, frag, name, true, out);
 }
 
 static bool create_sampler(struct avk_device *dev, VkFilter filter,
@@ -260,6 +279,10 @@ bool avk_pipelines_init(struct avk_pipelines *pipes, struct avk_device *dev,
 		sizeof(gradient_frag_spv), "gradient.frag");
 	VkShaderModule shadow_frag = create_module(dev, shadow_frag_spv,
 		sizeof(shadow_frag_spv), "shadow.frag");
+	VkShaderModule blur_down_frag = create_module(dev, blur_down_frag_spv,
+		sizeof(blur_down_frag_spv), "blur_down.frag");
+	VkShaderModule blur_up_frag = create_module(dev, blur_up_frag_spv,
+		sizeof(blur_up_frag_spv), "blur_up.frag");
 
 	bool ok = vert != VK_NULL_HANDLE && rect_frag != VK_NULL_HANDLE
 		&& texture_frag != VK_NULL_HANDLE && gradient_frag != VK_NULL_HANDLE
@@ -271,7 +294,13 @@ bool avk_pipelines_init(struct avk_pipelines *pipes, struct avk_device *dev,
 		&& create_pipeline(pipes, format, vert, gradient_frag, "gradient",
 			&pipes->gradient)
 		&& create_pipeline(pipes, format, vert, shadow_frag, "shadow",
-			&pipes->shadow);
+			&pipes->shadow)
+		&& blur_down_frag != VK_NULL_HANDLE && blur_up_frag != VK_NULL_HANDLE
+		/* REPLACING, not blending -- see create_pipeline_ex(). */
+		&& create_pipeline_ex(pipes, format, vert, blur_down_frag, "blur_down",
+			false, &pipes->blur_down)
+		&& create_pipeline_ex(pipes, format, vert, blur_up_frag, "blur_up",
+			false, &pipes->blur_up);
 
 	/* Modules are only needed while the pipelines are being created; the
 	 * driver has compiled what it needs by the time vkCreateGraphicsPipelines
@@ -290,6 +319,12 @@ bool avk_pipelines_init(struct avk_pipelines *pipes, struct avk_device *dev,
 	}
 	if (shadow_frag != VK_NULL_HANDLE) {
 		vkDestroyShaderModule(dev->dev, shadow_frag, NULL);
+	}
+	if (blur_down_frag != VK_NULL_HANDLE) {
+		vkDestroyShaderModule(dev->dev, blur_down_frag, NULL);
+	}
+	if (blur_up_frag != VK_NULL_HANDLE) {
+		vkDestroyShaderModule(dev->dev, blur_up_frag, NULL);
 	}
 
 	if (!ok) {
@@ -314,6 +349,14 @@ void avk_pipelines_finish(struct avk_pipelines *pipes) {
 	}
 	if (pipes->texture != VK_NULL_HANDLE) {
 		vkDestroyPipeline(dev, pipes->texture, NULL);
+		AVK_LIVE_DEC(pipes->dev, pipelines);
+	}
+	if (pipes->blur_down != VK_NULL_HANDLE) {
+		vkDestroyPipeline(dev, pipes->blur_down, NULL);
+		AVK_LIVE_DEC(pipes->dev, pipelines);
+	}
+	if (pipes->blur_up != VK_NULL_HANDLE) {
+		vkDestroyPipeline(dev, pipes->blur_up, NULL);
 		AVK_LIVE_DEC(pipes->dev, pipelines);
 	}
 	if (pipes->shadow != VK_NULL_HANDLE) {
