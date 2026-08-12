@@ -361,6 +361,17 @@ if build_vulkan
                                   build_by_default : false)
   test('avk-transient', test_avk_transient, timeout : 180)
 
+  # M4E.4: a synthetic multipass frame -- render into a transient, then sample
+  # it. The effect has no visual purpose and is deliberately NOT shipped: M4E
+  # is architecture, and a user-visible "M4E effect" would be a feature nobody
+  # asked for that has to be maintained forever. What it proves is the write ->
+  # sample dependency, transient reuse, and deterministic pixels.
+  test_avk_multipass = executable('test-avk-multipass',
+                                  'tests/test-avk-multipass.c',
+                                  dependencies : [avk_dep],
+                                  build_by_default : false)
+  test('avk-multipass', test_avk_multipass, timeout : 180)
+
   # M4D: shadows. libm because the fixtures carry an independent CPU
   # transcription of the reference's erf-and-four-samples formula, which is
   # what AVK's readback is compared against -- not GLES, and not AVK's own

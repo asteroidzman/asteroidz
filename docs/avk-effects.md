@@ -2478,3 +2478,90 @@ ownership transfers. The device has a dedicated transfer family and a dedicated
 compute family, both recorded in `avk_device.caps` and deliberately not turned
 into queues — an unused `VkQueue` is infrastructure claiming to exist before
 anything drives it. M4F is measured on the graphics queue first.
+
+## M4E.4 — a multipass frame, before anything needs one
+
+`tests/test-avk-multipass.c`. **Test infrastructure only.** Nothing here ships:
+M4E is architecture, and a user-visible "M4E effect" would be a feature nobody
+asked for that has to be maintained forever.
+
+### The fixture
+
+```text
+PASS A  "pattern"     fill transient R0 with four known quadrant colours
+BARRIER               R0 color-write -> sampled-read
+PASS B  "composite"   sample R0's TOP-RIGHT quadrant into R1's BOTTOM-LEFT
+```
+
+Source and destination rectangles differ on purpose. A pass that ignored one of
+the two would still produce a plausible picture if they matched, so every wrong
+implementation gets a **nameable** wrong answer:
+
+| what went wrong | what the readback shows |
+|---|---|
+| sampled the wrong quadrant | red, blue or yellow instead of green |
+| ignored the destination rectangle | the whole target covered |
+| ran before pass A | black where green should be |
+| transient handed out early | black — pass A's clear races the sample |
+| region off by a pixel | a hard edge in the wrong place |
+
+Measured: green `(0,255,0)` at the destination, `(0,0,0)` everywhere else,
+corner to corner, stopping exactly at the edge.
+
+### Topology
+
+```text
+BARRIER
+    R0 external -> color-write
+PASS pattern
+    WRITE R0 color-write
+BARRIER
+    R0 color-write -> sampled-read
+BARRIER
+    R1 external -> color-write
+PASS composite
+    READ R0 sampled-read
+    WRITE R1 color-write
+```
+
+Two passes, two resources, three uses, **two barrier calls — one per pass**.
+Not one per resource, and not one up-front batch: pass B's dependency cannot be
+emitted before pass A has been recorded. The `READ` and `WRITE` regions are
+declared separately on the same resource, which is the shape M4F needs and which
+no primitive AVK draws today produces.
+
+### Reuse and pressure
+
+| | |
+|---|---|
+| 120 paced multipass frames | **0** new images, 0 unsafe reuses, pixels still right |
+| 400 unthrottled frames | 521 acquires, 4 creates, 4 live, **0 unsafe reuses** |
+
+### The breaks
+
+| break | fails | how |
+|---|---|---|
+| `graph-missing-write-read` | **2 of 19** | the topology assertion on the barrier's source scope, **and** 10 `SYNC-HAZARD-WRITE-AFTER-WRITE` from synchronization validation |
+| `transient-early-reuse` | **1 of 18** | 399 of 400 acquires counted as unsafe |
+
+Two independent signals for the graph break: one from what the graph *decided*,
+one from what the GPU driver's validation says about the result. Neither depends
+on corruption happening to be visible.
+
+Across the suites: `graph-missing-write-read` fails 1/47 unit + 2/19 multipass;
+`transient-early-reuse` fails 6/33 unit + 1/18 multipass.
+
+### A premise that only held with the layers off
+
+`test_pressure()` first asserted `ring.stalls > 0` — the CPU outrunning the GPU
+— as proof that transients were genuinely in flight when the next frame asked
+for one. It read **224 stalls normally and 0 under validation layers**, because
+validation slows the CPU enough that the GPU keeps up.
+
+A premise that holds only when the layers are off stops holding in exactly the
+run where correctness is checked hardest. It was replaced with a volume premise
+(the loop ran), and the in-flight case is proved deterministically elsewhere
+instead — `test_two_in_one_frame()` acquires twice within one frame and asserts
+the images differ, and the break's own case releases against a timeline point
+that is **never signalled**, so "has the GPU finished" has a definite answer on
+any hardware under any load.
