@@ -1721,3 +1721,94 @@ deterministic test covers.
 idle seconds, which is a bar clock and a cursor rather than a shadow repaint
 storm; the shadow-specific idle convergence is asserted headlessly, where
 nothing else is drawing (delta 0).
+
+## M4E live acceptance (6dfcf66, 2026-08-12)
+
+```text
+HEAD       6dfcf66      tree clean
+installed  /usr/bin/asteroidz 0.24.0(6dfcf66)
+           md5 331eb9f4a411b5c0aaf228b249b05545 == build/asteroidz
+binary installed 12:28:05   session started 12:32:38   -> the session IS the tested build
+```
+
+Two restarts. The first ran `d03cc75`, whose `graph_build_ns` still folded the
+barrier calls into the graph's own cost and read 42.5 µs; `6dfcf66` splits them.
+
+### Topology and invariants
+
+```text
+graph_passes              1        graph_barriers            2
+graph_resources           4        graph_image_transitions   4
+graph_uses                4        graph_buffer_barriers     0
+graph_allocs              5   (stopped rising)
+
+cpu_sync_waits            0        present_sync_failures     0
+target_state_violations   0        lifecycle_violations      0
+fallback_frames           0        dmabuf_import_failures    0
+present_sync_none         0        late_imports              0
+cursor_no_image           0        gpu_dropped               0 of 1371 samples
+
+transient_acquires        0   (nothing acquires until M4F)
+transient_unsafe_reuses   0
+```
+
+### Cost, incremental over 250 frames (startup excluded)
+
+```text
+graph_build_ns        2 820      what M4E added          1.0% of frame recording
+graph_barrier_ns     45 147      vkCmdPipelineBarrier2 x2, pre-existing
+record_ns           268 564      whole frame recording   3.9% of a 6944 us budget
+
+gpu_frame_us_avg      162.6      1371 samples, 0 dropped
+cpu_frame_us          p50 240   p95 500   p99 540
+damage_ratio          0.376      RSS 201 MB
+```
+
+### Validation, live
+
+`ASTEROIDZ_VK_DEBUG=1` is set in this session, so the **validation layers are
+loaded**, and the current session's log contains **0 VUID, 0 SYNC-HAZARD, 0
+ERROR and 0 WARN**. That is stronger than the headless result: validation
+cleanliness on the real KMS path, with real client dma-bufs and real scan-out.
+
+Note that the log **accumulates across sessions** — `~/.local/state/asteroidz/
+asteroidz.log` is where stderr is dup2'd, and its timestamps are per-session
+uptime. Grepping the whole file found 6 VUID hits from an older run and briefly
+looked like a regression. Scope to the last `renderer ready for VkFormat` line:
+
+```sh
+L=~/.local/state/asteroidz/asteroidz.log
+tail -n +"$(grep -an 'renderer ready for VkFormat' "$L" | tail -1 | cut -d: -f1)" "$L" \
+  | grep -acE 'VUID|SYNC-HAZARD'
+```
+
+### 45 µs of barriers, and why it is not M4E's
+
+`vkCmdPipelineBarrier2` costs **45 µs live** against **1.9 µs headless at the
+same 3840x2160**. Three explanations were tested and two were eliminated:
+
+| hypothesis | test | result |
+|---|---|---|
+| debug labels | read `avk_debug.c` | no-ops on a NULL pointer; and they are cheap even when live |
+| validation layer overhead | headless 4K **with** `ASTEROIDZ_VK_DEBUG=1` | 1859 ns — indistinguishable from without. **Eliminated** |
+| DCC-compressed scan-out | compared allocator modifiers | see below — **leading explanation** |
+
+```text
+live scan-out    XR24  GFX11,256KB_R_X,...,DCC,DCC_RETILE,DCC_INDEPENDENT_64B/128B
+headless target  XR24  GFX10_RBPLUS,64KB_R_X,PIPE_XOR_BITS=2,PACKERS=0     no DCC
+```
+
+A queue-family ownership transfer (`FOREIGN` ↔ graphics) on a DCC-compressed
+image makes the driver record decompression and metadata handling; on a
+non-compressed one it is nearly free. Circumstantial rather than proven — it was
+not isolated by forcing a non-DCC live modifier — so it is recorded as the
+leading explanation, not as fact.
+
+**It is not attributable to M4E either way.** The pre-graph renderer made the
+same two calls, in the same places, with the same contents; the headless
+comparison against a `b9d7115` build is byte-identical with no measurable cost
+change. What M4E did was make the cost visible for the first time.
+
+**Relevant to M4F**, which adds passes and therefore barriers: at 45 µs a call
+on this hardware, a blur that adds four barrier flushes costs ~90 µs of
+recording before it draws anything. Worth measuring there rather than assuming.
