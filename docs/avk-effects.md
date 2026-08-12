@@ -3169,3 +3169,129 @@ A blur of pure black must come back pure black.
 Four concepts are now kept distinct and must stay so: **allocation extent**,
 **valid extent**, **sampling extent**, **logical effect extent**. The shader
 never infers the valid bound from the allocation size.
+
+## M4F.2A.0 — blur node semantics, re-audited
+
+Re-read from source at HEAD, not from the M4F.0 notes.
+
+### The node
+
+```c
+struct wlr_scene_blur {
+    struct wlr_scene_node node;
+    int width, height;                    /* node-local extent */
+    struct fx_corner_radii corners;
+    struct clipped_region clipped_region; /* box + radii */
+    float strength;                       /* 1.0 -> 0.0, relative to base */
+    float alpha;
+    bool should_only_blur_bottom_layer;   /* read the cache instead */
+    bool has_sample_exclude;
+    struct wlr_box sample_exclude;        /* NODE-LOCAL */
+    bool darken;
+    struct linked_node transparency_mask_source;
+    pixman_region32_t clip_region;        /* NODE-LOCAL, pixel-accurate */
+    bool has_clip_region;
+    float edge_softness;                  /* 0 = hard SDF edge */
+};
+```
+
+Twelve setters exist. **What asteroidz actually calls**, traced:
+
+| setter | caller | value |
+|---|---|---|
+| `set_size` | every producer | node-local extent |
+| `set_corner_radii` | shadow backdrop | the window's own radii |
+| `set_sample_exclude` | `client.h:569` | the window's box, node-local |
+| `set_edge_softness` | `client.h:581`, `layer.h:331` | the shadow's own `blur_sigma` |
+| `set_darken` | `client.h:700`, `layer.h:233` | `shadows_blur_background_darken` |
+| `set_alpha` / `set_strength` | open animation, unfocused | 0..1 |
+| `set_region` | `asteroidz.c:4066/4138` | the client's ext-background-effect region |
+| `set_should_only_blur_bottom_layer` | `client_update_blur` | `blur_optimized && !isfloating` |
+
+`transparency_mask_source` is set by `layer_update_blur` only. No producer calls
+`set_clipped_region` with anything but the default except `client_update_blur`,
+which derives it from the effect region's **extents**.
+
+### The finding that changes the design
+
+`client.h:552` states it outright, in the producer:
+
+> *"The blur's box is the shadow's, which is the window plus its spread — so the
+> region it samples covers the window itself, and the scene image holds the
+> PREVIOUS frame there (this node draws beneath the window, and an undamaged
+> area is never re-rendered). Without this the blur picks up the window's own
+> pixels and spreads them outward: a halo in the window's own colour."*
+
+So in the reference, **a live blur samples the output framebuffer, and in
+undamaged regions that framebuffer holds the previous frame.** The source is not
+the current scene prefix — it is last frame's *final composite*, window and all.
+
+`sample_exclude` exists to paper over exactly that: it overwrites the window's
+box with an unblurred bottom-layer snapshot before blurring, because the real
+content there is a frame old and wrong.
+
+**This is frame history, and the brief forbids it as AVK's canonical path.**
+
+### What that means for AVK
+
+If AVK captures the **true current-frame scene prefix** — everything below the
+blur node, rendered this frame — then the window is genuinely not in the source,
+because it has not been drawn yet. There is no halo to exclude and no snapshot
+to substitute.
+
+That makes the two implementations differ in a way worth stating precisely:
+
+```text
+SceneFX     source = previous frame's FINAL COMPOSITE
+            sample_exclude = a repair for content that should not be there
+
+AVK         source = this frame's SCENE PREFIX
+            sample_exclude = a genuine semantic: a box whose content must not
+                             contribute even though it IS legitimately behind
+```
+
+`sample_exclude` is therefore still implemented — a producer may legitimately
+want a window below the blur node excluded — but its *primary* job in the
+reference disappears, and the failure it was invented to fix becomes
+structurally impossible rather than repaired.
+
+**That also relocates the falsifier.** A `sample_exclude` test against the AVK
+path cannot fail by producing the reference's halo, because the halo has no
+source. The break that must exist instead is one that captures the **final
+composited output** rather than the prefix — `BREAK=blur-scene-after` — which
+reintroduces exactly the reference's defect and must show the halo on a
+high-frequency dark fixture.
+
+### Coordinate spaces, pinned
+
+```text
+width/height        node-local, logical
+sample_exclude      node-local  (client.h subtracts the node origin explicitly)
+clip_region         node-local, pixel-accurate
+clipped_region      node-local box + radii, the bounding-box form
+corners             node-local
+edge_softness       a SIGMA, matched to the shadow's blur_sigma
+strength, alpha     unitless 0..1
+```
+
+`edge_softness` is set to the shadow's own `blur_sigma`, which M4D established
+is a **logical** value the reference leaves unscaled while scaling the box —
+and which AVK deliberately scales to output pixels (M4D divergence 1). The same
+divergence must apply here or a blur's edge and its shadow's edge will disagree
+on a fractional-scale output.
+
+### The capture architecture this implies
+
+```text
+PASS 0    compose commands [0, k)          the scene prefix
+BARRIER   target -> sampled-read
+PASS      down 1 samples THE TARGET directly   (no separate capture copy)
+          down 2..N, up N..1  -> transient R
+BARRIER   R -> sampled-read
+PASS 1    composite R with corners/clip/alpha/edge_softness,
+          then commands (k, n)
+```
+
+The first downsample reads the target itself rather than a captured copy, which
+removes a full-resolution read *and* write per blur node — the capture is the
+downsample. Only the blur's **dependency region** is read, not the output.
