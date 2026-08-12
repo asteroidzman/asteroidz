@@ -4327,3 +4327,88 @@ here; the first was `focusdir` for `focus_direction`.
 `x = HL_WIDTH`, which is only adjacent to the first while that output is at
 scale 1. At 1.5 its logical width is `HL_WIDTH/1.5` and the default leaves a gap
 — a "seam test" with no seam in it.
+
+## M4F.2C.3 — scale, transforms, and two findings left open
+
+### The reach really is proportional to the radius
+
+Scaling `radius` is only the right lever for a fractional output scale if the
+kernel's reach is proportional to it — otherwise `levels` would have to move,
+and `levels` can only move in factors of two. Measured at the renderer, where
+scale does not exist:
+
+| levels (radius 2) | measured reach | mathematical bound |
+| --- | --- | --- |
+| 1 | 5 px | 9 |
+| 2 | 13 px | 25 |
+| 3 | 26 px | 57 |
+| 4 | 49 px | 121 |
+
+The bound contains the measured reach at every level count — which is the
+property M4F.2B's damage regions rest on — and sits at roughly twice it, which
+is what a conservative footprint against an 8-bit floor should look like.
+
+**A 1.5× radius reaches 1.385× as far** (26 → 36 px). Not exactly 1.5, because
+the measurement stops at the quantisation floor and a wider kernel has a flatter
+tail; proportional, which is what the lever needs to be.
+
+### The instrument measured a kernel ten times over its bound
+
+The first version reported a reach of **96 px against a bound of 9** — which, if
+real, would have meant every damage region in M4F.2B was under-covering. It was
+`test_realistic`'s moving-widget loop, which deliberately leaves its own content
+in `bg_a` so each step starts from the previous frame. The "unchanged" render
+therefore still had a widget in it 140 px along, and the difference between the
+two frames included it.
+
+**Two controls now run before any number about the kernel is believed:** the same
+scene rendered twice must be identical (0 px), and a scene with *no blur node*
+must show no reach at all (−1). The second is what caught it — it measured 91 px
+of "reach" with the effect switched off.
+
+### Multi-output results
+
+| configuration | result |
+| --- | --- |
+| equal scale 1.0/1.0, seam at 800 | **19/19** |
+| mixed 1.5/1.0, seam at 533 | **17/17**, halo 126, 1 024 608 halo source px |
+| fractional 1.25/1.0, seam at 640 | **17/17**, halo 150 |
+| transform 0 | **17/17** |
+| transform 90 | 12/12 — pixels skipped, see below |
+| transform 180 | 16/17 — **open**, 22 stale pixels |
+| transform 270 | 11/12 — **open**, routing did not fire |
+| `BREAK=poison` | **19/19** |
+
+### grim cannot capture a rotated output on this backend
+
+A 90° run left **no HEADLESS-1 png on disk at all** while every HEADLESS-2
+capture was present. That is a screenshot limitation, not a compositor one, so
+the pixel comparisons are skipped **with a stated reason** and every
+counter-based assertion — cross-output routing, retention, halo source area,
+validation — still runs. 180° captures fine and is the transform case that gets
+the full pixel treatment.
+
+### Two findings left OPEN, located but not fixed
+
+**180° leaves 22 stale pixels**, at `x 771..799, y 184..313` — a 29×130 strip at
+the buffer's RIGHT edge. Under a 180° transform that edge is output A's *logical
+left*, which is the outer edge of the whole desktop and the side furthest from
+the seam. The halo rect, the source bounds and the walker's retention are all
+symmetric in ±halo on both axes, so this is not a sign error in any of them; it
+is unexplained and is not claimed as working.
+
+**270° records 2 271 halo damages and consumes 0**, and the same run reports
+**894 blur nodes where every other transform reports 10** — the compositor is
+rendering continuously rather than reaching idle. The node count is the larger
+anomaly and may not be blur-specific at all; both are recorded rather than
+guessed at.
+
+Neither affects `normal`, which is every shipping desktop here and both live
+monitors. **Transform closure is therefore NOT claimed for 180° and 270°.**
+
+### The counter that reported the wrong monitor
+
+`blur_halo_px` was last-writer-wins across outputs, so on a mixed-scale desktop
+it reported whichever monitor happened to render most recently — the wrong one
+half the time, since two outputs at different scales derive different halos from
+the same kernel. It is a maximum now.

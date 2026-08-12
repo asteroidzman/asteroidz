@@ -56,6 +56,8 @@ HL_WIDTH=800 HL_HEIGHT=600
 HL_OUTPUTS=2
 HL_SCALE1="${SEAM_SCALE1:-1}"
 HL_SCALE2="${SEAM_SCALE2:-1}"
+HL_RR1="${SEAM_RR1:-0}"
+HL_RR2="${SEAM_RR2:-0}"
 # The second output starts where the first one ENDS, logically. With scale 1
 # that is HL_WIDTH; the default would leave a gap at any other scale.
 HL_X2="${SEAM_X2:-800}"
@@ -69,7 +71,8 @@ HL_KITTY_EXTRA="-o cursor_blink_interval=0 -o cursor_stop_blinking_after=0"
 OUTDIR="${TMPDIR:-/tmp}/asteroidz-avk-blur-seam-$$"
 HL_OUTDIR="$OUTDIR"
 export HL_OUTDIR HL_WIDTH HL_HEIGHT HL_ENV HL_OUTPUTS HL_SCALE1 HL_SCALE2 \
-	HL_X2 HL_KITTY_EXTRA
+	HL_X2 HL_KITTY_EXTRA HL_RR1 HL_RR2
+echo "  note: scales $HL_SCALE1/$HL_SCALE2, transforms $HL_RR1/$HL_RR2, seam at x=$HL_X2"
 
 # A blur with a WIDE kernel, so its halo is tens of pixels and the seam it would
 # leave is impossible to miss. passes 3 / radius 4 gives a support around 110
@@ -249,7 +252,13 @@ sleep 1
 # 400 px wide, placed so it crosses the seam at logical x=800 with roughly half
 # on each side. `move_window`, not `move`: there is no dispatch called `move`
 # and the IPC layer swallows an unknown name in silence.
-hl_dispatch "move_window,600,150"
+# CENTRED ON THE SEAM, WHEREVER IT IS. The window is 400 logical pixels wide,
+# so this puts 200 on each side. Hardcoding 600 worked only while the seam was
+# at 800: rotating an output changes its LOGICAL width, and at 270 degrees the
+# window landed entirely on B, the fixture stopped spanning anything, and the
+# cross-output routing assertion correctly reported 0 for a scene that had no
+# cross-output dependency in it.
+hl_dispatch "move_window,$(( HL_X2 - 200 )),150"
 sleep 3
 
 hl_dispatch reset_avk_stats
@@ -284,6 +293,17 @@ if [ -s "$OUTDIR/seam-a.png" ] && [ -s "$OUTDIR/seam-b.png" ]; then
 	STEP="$(seam_step "$OUTDIR/seam-a.png" "$OUTDIR/seam-b.png" 150 450)"
 fi
 echo "  note: mean seam step through the blurred window: $STEP codes"
+# THE CONTINUITY METRIC IS ONLY MEANINGFUL AT EQUAL SCALES AND NO TRANSFORM.
+#
+# It compares A's last device column with B's first, which are adjacent LOGICAL
+# positions only while both outputs have the same density and orientation. At
+# 1.5 against 1.0 the two columns are 2/3 of a logical pixel apart horizontally
+# and sample different logical rows vertically; under a 90-degree transform the
+# "last column" is not even the edge nearest the seam. Any threshold there would
+# be measuring the resampling rather than the blur, so those runs skip it and
+# rely on the damage_all oracle and the counters, which need no correspondence
+# between the two images.
+if [ "${SEAM_MODE:-equal}" = "equal" ]; then
 hl_assert "the seam could be measured (premise)" \
 	"$([ "${STEP:-(-1)}" -ge 0 ] && echo true || echo false)" "true"
 # 4 codes, and the threshold is set BY THE TWO MEASUREMENTS rather than chosen:
@@ -305,6 +325,11 @@ hl_assert "and no step across it ($STEP codes)" \
 # bounds, and the break makes it exactly 0.
 hl_assert "source is reconstructed beyond the output's bounds ($HALOPX px)" \
 	"$([ "${HALOPX:-0}" -gt 0 ] && echo true || echo false)" "true"
+else
+	echo "  note: SEAM_MODE=${SEAM_MODE} -- continuity metric skipped (see above)"
+	hl_assert "source is reconstructed beyond the output's bounds ($HALOPX px)" \
+		"$([ "${HALOPX:-0}" -gt 0 ] && echo true || echo false)" "true"
+fi
 
 # ── 3. the damage oracle, on each output ───────────────────────────────────
 
@@ -313,16 +338,37 @@ hl_screenshot_output HEADLESS-2 pre-b >/dev/null 2>&1 || true
 sleep 2
 hl_screenshot_output HEADLESS-1 ctl-a >/dev/null 2>&1 || true
 hl_screenshot_output HEADLESS-2 ctl-b >/dev/null 2>&1 || true
+# CAN THE OUTPUTS BE CAPTURED AT ALL?
+#
+# grim produces NOTHING for a 90- or 270-degree rotated output on this backend:
+# a transform=1 run left no HEADLESS-1 png on disk while HEADLESS-2's captures
+# were all present. That is a screenshot limitation and not a compositor one, so
+# the pixel comparisons below are SKIPPED with a reason rather than reported as
+# failures -- and every counter-based assertion still runs, including the
+# cross-output damage routing and validation. 180 degrees captures fine and is
+# the transform case that gets the full pixel treatment.
+PIXELS=1
+for f in pre-a ctl-a pre-b ctl-b; do
+	[ -s "$OUTDIR/$f.png" ] || PIXELS=0
+done
+if [ "$PIXELS" = "0" ]; then
+	echo "  SKIP: grim captured no image for a rotated output" \
+		"(HL_RR1=$HL_RR1) -- pixel comparisons skipped, counters still asserted"
+fi
+
+if [ "$PIXELS" = "1" ]; then
 read -r CA _ <<<"$(png_diff "$OUTDIR/pre-a.png" "$OUTDIR/ctl-a.png")"
 read -r CB _ <<<"$(png_diff "$OUTDIR/pre-b.png" "$OUTDIR/ctl-b.png")"
 hl_assert "PREMISE: both outputs are static ($CA / $CB px)" \
 	"$([ "${CA:-1}" = "0" ] && [ "${CB:-1}" = "0" ] && echo true || echo false)" \
 	"true"
+fi
 
 hl_dispatch damage_all
 sleep 2
 hl_screenshot_output HEADLESS-1 post-a >/dev/null 2>&1 || true
 hl_screenshot_output HEADLESS-2 post-b >/dev/null 2>&1 || true
+if [ "$PIXELS" = "1" ]; then
 read -r DA WA <<<"$(png_diff "$OUTDIR/ctl-a.png" "$OUTDIR/post-a.png")"
 read -r DB WB <<<"$(png_diff "$OUTDIR/ctl-b.png" "$OUTDIR/post-b.png")"
 echo "  note: forced full repaint changes A $DA px (worst $WA), B $DB px (worst $WB)"
@@ -330,6 +376,7 @@ hl_assert "output A: a full repaint changes nothing ($DA px)" \
 	"$([ "${DA:-1}" = "0" ] && echo true || echo false)" "true"
 hl_assert "output B: a full repaint changes nothing ($DB px)" \
 	"$([ "${DB:-1}" = "0" ] && echo true || echo false)" "true"
+fi
 
 # ── 4. cross-output damage routing ─────────────────────────────────────────
 #
@@ -355,7 +402,8 @@ hl_get "get avk-stats" > "$OUTDIR/stats-cross.json"
 HALOFR="$(field "$OUTDIR/stats-cross.json" blur_halo_damage_frames)"
 INHERIT="$(field "$OUTDIR/stats-cross.json" blur_transitive_damage_pixels)"
 TOUCH="$(field "$OUTDIR/stats-cross.json" blur_damage_nodes_touched)"
-echo "  note: $HALOFR frames took damage from outside their own output; $TOUCH blur recomputes"
+RECS="$(field "$OUTDIR/stats-cross.json" blur_halo_damage_records)"
+echo "  note: $HALOFR frames took damage from outside their own output ($RECS recorded); $TOUCH blur recomputes"
 hl_assert "a near-seam change routes damage across the boundary ($HALOFR)" \
 	"$([ "${HALOFR:-0}" -gt 0 ] && echo true || echo false)" "true"
 
@@ -366,6 +414,7 @@ hl_dispatch damage_all
 sleep 2
 hl_screenshot_output HEADLESS-1 crossfull-a >/dev/null 2>&1 || true
 hl_screenshot_output HEADLESS-2 crossfull-b >/dev/null 2>&1 || true
+if [ "$PIXELS" = "1" ]; then
 read -r XA _ <<<"$(png_diff "$OUTDIR/cross-a.png" "$OUTDIR/crossfull-a.png")"
 read -r XB _ <<<"$(png_diff "$OUTDIR/cross-b.png" "$OUTDIR/crossfull-b.png")"
 echo "  note: after a cross-seam change, full repaint differs A $XA px, B $XB px"
@@ -376,6 +425,7 @@ hl_assert "no stale blur on A after a change routed from B ($XA px)" \
 	"$([ "${XA:-1}" = "0" ] && echo true || echo false)" "true"
 hl_assert "and none on B ($XB px)" \
 	"$([ "${XB:-1}" = "0" ] && echo true || echo false)" "true"
+fi
 
 # ── 5. the direct path is untouched ────────────────────────────────────────
 

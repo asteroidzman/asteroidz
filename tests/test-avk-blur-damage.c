@@ -1407,6 +1407,182 @@ static void test_realistic(struct harness *h) {
 	}
 }
 
+/* ── 11. the kernel's reach scales with the radius ──────────────────────── */
+
+/*
+ * WHY THIS IS A DAMAGE TEST'S BUSINESS.
+ *
+ * M4F.2C makes the walker multiply `radius` by the output scale, so that a blur
+ * covers the same LOGICAL area on a 1.0 and a 1.5 display instead of the same
+ * DEVICE area. That change is only meaningful if the kernel's reach is actually
+ * proportional to the radius -- if it were not, scaling the radius would be the
+ * wrong lever and `levels` would have to move instead, which a fractional scale
+ * cannot do.
+ *
+ * So this measures the reach directly, at the renderer, where scale does not
+ * exist: two blurs over the same box with radii r and 1.5r, and the distance
+ * their influence travels from a bright block.
+ *
+ * REACH IS MEASURED, NOT ASSERTED FROM THE SUPPORT. avk_blur_support_max() is a
+ * conservative mathematical bound with an additive bilinear term per level
+ * (17.5r + 21 at three levels), so it grows by 1.31x when the radius grows by
+ * 1.5x. The visible reach is dominated by the kernel step and grows faster. The
+ * two are different quantities and only one of them is what a user sees.
+ */
+static int measure_reach(struct harness *h, const struct blur_spec *spec,
+		int bx, int by) {
+	/*
+	 * RESTORE THE PRISTINE GROUND FIRST, and this is not defensive tidying.
+	 *
+	 * test_realistic's moving-widget loop uploads its own content into bg_a --
+	 * deliberately, so each step starts from the previous frame. Without this
+	 * line the "unchanged" render still contains that widget at x=140, the
+	 * difference between the two frames includes it, and the measured reach
+	 * comes out at 91 px WITH NO BLUR NODE AT ALL. That was measured, by the
+	 * control below, after the first version of this test reported a kernel
+	 * reaching ten times its mathematical bound.
+	 */
+	if (!stage(h, h->bg_a, g_base, NULL)) {
+		return -1;
+	}
+	fill_ground(g_changed);
+	put_block(g_changed, bx, by);
+	static uint32_t with[W * H], without[W * H];
+	if (!stage(h, h->bg_b, g_changed, NULL)
+			|| !render_frame(h, h->bg_a, spec, 1, NULL, without)
+			|| !render_frame(h, h->bg_b, spec, 1, NULL, with)) {
+		return -1;
+	}
+	/*
+	 * Scan RIGHT from the block's right edge along its middle row and find the
+	 * last column whose value moved by more than one code. One code is the
+	 * quantisation floor: below it the influence is real and unrepresentable,
+	 * and a threshold at zero would measure dither rather than reach.
+	 */
+	int y = by + g_block_h / 2;
+	int last = -1;
+	for (int x = bx + g_block_w; x < spec->dst.x + spec->dst.width && x < W;
+			x++) {
+		int a = (int)((with[y * W + x] >> 16) & 0xff);
+		int b = (int)((without[y * W + x] >> 16) & 0xff);
+		int d = a > b ? a - b : b - a;
+		if (d > 1) {
+			last = x;
+		}
+	}
+	return last < 0 ? -1 : last - (bx + g_block_w);
+}
+
+static void test_radius_reach(struct harness *h) {
+	printf("\n-- the reach scales with the radius --\n");
+
+	/* A big node, so the reach is not cut short by the node's own edge, and a
+	 * block well inside it. */
+	struct blur_spec r1 = { .dst = { 8, 8, 240, 240 }, .levels = 3,
+		.radius = 2.0f };
+	struct blur_spec r15 = r1;
+	r15.radius = 3.0f;   /* 1.5x, which is what scale 1.5 produces */
+
+	g_block_w = 24;
+	g_block_h = 24;
+	int bx = 40, by = 120;
+	int reach1 = measure_reach(h, &r1, bx, by);
+	int reach15 = measure_reach(h, &r15, bx, by);
+	g_block_w = BLOCK;
+	g_block_h = BLOCK;
+
+	struct avk_blur_params p1 = { .levels = 3, .radius = 2.0f,
+		.brightness = 1.0f, .contrast = 1.0f, .saturation = 1.0f };
+	struct avk_blur_params p15 = { .levels = 3, .radius = 3.0f,
+		.brightness = 1.0f, .contrast = 1.0f, .saturation = 1.0f };
+	printf("  note: radius 2 reaches %d px (bound %u), radius 3 reaches %d px "
+		"(bound %u)\n", reach1,
+		avk_blur_support_max(&p1, 240, 240), reach15,
+		avk_blur_support_max(&p15, 240, 240));
+
+	/*
+	 * TWO CONTROLS, AND THEY ARE THE TEST.
+	 *
+	 * The first version of this measured a kernel reaching 96 px where its
+	 * mathematical bound is 9 -- ten times over, which would have meant every
+	 * damage region in M4F.2B was under-covering. It was the instrument:
+	 * test_realistic's moving-widget loop leaves its own content in bg_a, so
+	 * the "unchanged" render still had a widget in it 140 px along and the
+	 * difference between the two frames included it.
+	 *
+	 * So: the same scene twice must differ by nothing, and a scene with NO BLUR
+	 * NODE must show no reach at all. Both are asserted before any number about
+	 * the kernel is believed.
+	 */
+	struct blur_spec ctl = { .dst = { 8, 8, 240, 240 }, .levels = 3,
+		.radius = 2.0f };
+	static uint32_t a[W * H], b[W * H];
+	long twice = -1;
+	if (stage(h, h->bg_a, g_base, NULL)
+			&& render_frame(h, h->bg_a, &ctl, 1, NULL, a)
+			&& render_frame(h, h->bg_a, &ctl, 1, NULL, b)) {
+		twice = compare(a, b).pixels;
+	}
+	CHECK(twice == 0, "PREMISE: the same scene twice is identical (%ld px)",
+		twice);
+
+	struct blur_spec none = { .dst = { 8, 8, 240, 240 }, .levels = 0,
+		.radius = 2.0f };
+	g_block_w = 24; g_block_h = 24;
+	int no_blur = measure_reach(h, &none, 40, 120);
+	g_block_w = BLOCK; g_block_h = BLOCK;
+	CHECK(no_blur < 0,
+		"PREMISE: with no blur node nothing reaches past the block (%d)",
+		no_blur);
+
+	/*
+	 * AND THE BOUND CONTAINS THE MEASURED REACH AT EVERY LEVEL COUNT. This is
+	 * the property M4F.2B's damage regions rest on: the support is a hard
+	 * mathematical footprint, so a region dilated by it cannot under-cover.
+	 * Measured reach is roughly half of it, which is what a conservative bound
+	 * against an 8-bit floor should look like.
+	 */
+	int over = 0;
+	for (uint32_t lv = 1; lv <= 4; lv++) {
+		struct blur_spec sp = { .dst = { 8, 8, 240, 240 }, .levels = lv,
+			.radius = 2.0f };
+		struct avk_blur_params pp = { .levels = lv, .radius = 2.0f,
+			.brightness = 1.0f, .contrast = 1.0f, .saturation = 1.0f };
+		g_block_w = 24; g_block_h = 24;
+		int rr = measure_reach(h, &sp, 40, 120);
+		g_block_w = BLOCK; g_block_h = BLOCK;
+		uint32_t bound = avk_blur_support_max(&pp, 240, 240);
+		printf("  note: levels %u -> reaches %d px, bound %u\n", lv, rr, bound);
+		if (rr > (int)bound) {
+			over++;
+		}
+	}
+	CHECK(over == 0,
+		"the support bound contains the measured reach at every level count");
+
+	CHECK(reach1 > 4 && reach15 > 4,
+		"PREMISE: both radii reach measurably (%d, %d)", reach1, reach15);
+	if (reach1 <= 0) {
+		return;
+	}
+	double ratio = (double)reach15 / (double)reach1;
+	printf("  note: reach ratio %.3f for a 1.5x radius\n", ratio);
+	/*
+	 * 1.2 to 1.9. The reach is proportional to the kernel step, which is
+	 * exactly proportional to the radius -- but it is measured against an 8-bit
+	 * quantisation floor, and the tail of a wider kernel is flatter, so the
+	 * measured edge does not move by precisely 1.5. What matters for M4F.2C is
+	 * that it moves substantially and in proportion, which is what makes
+	 * scaling the RADIUS the right lever for a fractional output scale;
+	 * `levels` could only move it in factors of two.
+	 */
+	CHECK(ratio > 1.2 && ratio < 1.9,
+		"a 1.5x radius reaches about 1.5x as far (%.3f)", ratio);
+	CHECK((uint32_t)reach15 <= avk_blur_support_max(&p15, 240, 240),
+		"and the wider radius stays inside its own bound (%d <= %u)",
+		reach15, avk_blur_support_max(&p15, 240, 240));
+}
+
 /* ── main ───────────────────────────────────────────────────────────────── */
 
 int main(void) {
@@ -1450,6 +1626,7 @@ int main(void) {
 	test_transitive(&h);
 	test_property_damage(&h);
 	test_realistic(&h);
+	test_radius_reach(&h);
 	test_breaks(&h);
 
 	avk_device_wait_idle(h.dev);

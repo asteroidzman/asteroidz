@@ -149,6 +149,13 @@ hl_start() { # hl_start [EXTRA_KDL]
 	local scale1="" scale2=""
 	[ -n "${HL_SCALE1:-}" ] && scale1="scale $HL_SCALE1; "
 	[ -n "${HL_SCALE2:-}" ] && scale2="scale $HL_SCALE2; "
+	# HL_RR1 / HL_RR2 set the outputs' TRANSFORMS (0-7, the wl_output_transform
+	# enumeration). Like scale they belong in the `output` block; a rotated
+	# output swaps the buffer's width and height, which is the cheapest way for
+	# a caller to check the setting took at all.
+	local rr1="" rr2=""
+	[ -n "${HL_RR1:-}" ] && rr1="rr $HL_RR1; "
+	[ -n "${HL_RR2:-}" ] && rr2="rr $HL_RR2; "
 
 	# HL_X2 is the second output's LAYOUT x, which is LOGICAL. The default of
 	# HL_WIDTH is right only while the first output is at scale 1: at scale 1.5
@@ -158,7 +165,7 @@ hl_start() { # hl_start [EXTRA_KDL]
 	local x2="${HL_X2:-$HL_WIDTH}"
 	local secondary_output=""
 	if [ "${HL_OUTPUTS:-1}" -ge 2 ]; then
-		secondary_output="output HEADLESS-2 { ${scale2}x $x2; y 0; width $HL_WIDTH; height $HL_HEIGHT; refresh 60 }"
+		secondary_output="output HEADLESS-2 { ${scale2}${rr2}x $x2; y 0; width $HL_WIDTH; height $HL_HEIGHT; refresh 60 }"
 	fi
 
 	cat > "$HL_CONFIG" <<EOF
@@ -177,7 +184,7 @@ effects {
 }
 theme { bg-color 0x2a6fd6ff; fg-color 0xffffffff; focus-bg-color 0x2a6fd6ff; focus-fg-color 0xffffffff }
 input { keyboard { xkb { layout "us,de" } } }
-output $HL_MON { ${scale1}x 0; y 0; width $HL_WIDTH; height $HL_HEIGHT; refresh 60 }
+output $HL_MON { ${scale1}${rr1}x 0; y 0; width $HL_WIDTH; height $HL_HEIGHT; refresh 60 }
 $secondary_output
 layout {
 	titlebar { enable 1 }

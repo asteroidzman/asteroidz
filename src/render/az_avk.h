@@ -2807,7 +2807,14 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 			-walk.halo, -walk.halo,
 			(int32_t)width + 2 * walk.halo, (int32_t)height + 2 * walk.halo,
 		};
-		avk.blur_halo_px = (uint64_t)walk.halo;
+		/* The LARGEST halo in play, not the last output's. Two outputs at
+		 * different scales compute different halos from the same kernel, and a
+		 * last-writer-wins counter reports whichever monitor happened to render
+		 * most recently -- which on a mixed-scale desktop is the wrong one half
+		 * the time. */
+		if ((uint64_t)walk.halo > avk.blur_halo_px) {
+			avk.blur_halo_px = (uint64_t)walk.halo;
+		}
 	} else {
 		/* No blur in the scene: no halo, and the fork goes back to clipping
 		 * damage to the output exactly as it always did. This is the direct
@@ -4032,6 +4039,7 @@ static void az_avk_stats_reset(void) {
 	avk.blur_nodes_culled = 0;
 	avk.nodes_retained_for_halo = 0;
 	avk.blur_halo_damage_frames = 0;
+	avk.blur_halo_px = 0;
 	avk.blur_nodes_forced_live = 0;
 	avk.blur_nodes_clipped = 0;
 	avk.commit_imports = 0;
