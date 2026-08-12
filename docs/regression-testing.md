@@ -1724,6 +1724,14 @@ nothing else is drawing (delta 0).
 
 ## M4E live acceptance (6dfcf66, 2026-08-12)
 
+**VERDICT: ACCEPTED.** *"nothing looks different, response is good, no issues
+found"* — which is the intended result. M4E moved where barriers are decided and
+added a resource pool nothing acquires from yet; it changes no pixel and no
+timing a person can perceive, and a visible difference would have been a defect
+rather than a feature.
+
+This is an OBSERVATION, not a measurement. The measurements are below.
+
 ```text
 HEAD       6dfcf66      tree clean
 installed  /usr/bin/asteroidz 0.24.0(6dfcf66)
