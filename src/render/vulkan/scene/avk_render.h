@@ -374,6 +374,16 @@ struct avk_renderer {
 	 * differs from this by one pixel has a damage bug.
 	 */
 	bool break_blur_under_damage;
+	/*
+	 * M4F.2C break. Clamps a blur's source reconstruction to the OUTPUT's own
+	 * bounds, which is what a renderer that never thought about a second
+	 * monitor does. On a single output it changes nothing at all -- the source
+	 * bounds and the presentation bounds are the same box -- and on a window
+	 * spanning a seam it replaces the source that lies across the join with the
+	 * capture's edge-clamped colour. The result is a visible discontinuity down
+	 * the seam, which is the defect the halo exists to prevent.
+	 */
+	bool break_blur_source_output_clip;
 	bool blur_full_damage;
 	/* What to divide by under break_blur_edge_logical_sigma. The renderer has no
 	 * scale of its own -- geometry arrives already in output pixels -- so the
@@ -501,6 +511,26 @@ struct avk_renderer {
 	 * built on the assumption. */
 	uint64_t blur_damage_rects_max;
 	uint64_t blur_damage_build_ns;
+	/*
+	 * M4F.2C/.2D accounting, by rectangle arithmetic and never by a per-pixel
+	 * loop.
+	 *
+	 * `blur_halo_pixels`     source area reconstructed OUTSIDE this output's
+	 *                        own bounds -- the price of a seamless seam.
+	 * `blur_capture_pixels`  the capture extents blur chains actually ran on.
+	 * `blur_result_pixels`   the result area anything needed.
+	 * `blur_processed_pixels` fragments the down/up chain will process, summed
+	 *                        over every level. M4F.2B left the chain running on
+	 *                        the full capture while only the prefix replay
+	 *                        became regional, so the difference between this
+	 *                        and the result area is exactly the work a
+	 *                        per-level scissor would save -- which is M4F.2D's
+	 *                        decision to take, on this number.
+	 */
+	uint64_t blur_halo_pixels;
+	uint64_t blur_capture_pixels;
+	uint64_t blur_result_pixels;
+	uint64_t blur_processed_pixels;
 	VkFormat format;
 
 	struct avk_renderer_stats stats;

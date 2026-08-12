@@ -492,8 +492,61 @@ static void scene_output_damage(struct wlr_scene_output *scene_output,
 			&scene_output->pending_commit_damage, &clipped);
 	}
 
+	/*
+	 * THE PART THAT FELL OFF THIS OUTPUT BUT CAN STILL CHANGE ITS PIXELS.
+	 *
+	 * Only a blur reaches past an output's edge for its source, so this is
+	 * empty unless a caller has asked for a halo. It goes into a SECOND ring,
+	 * so it is delivered per-buffer like any damage and so nothing that expects
+	 * in-bounds damage ever sees it. The frame is scheduled because this
+	 * output's blur really may look different next frame.
+	 */
+	if (scene_output->blur_halo > 0) {
+		int h = scene_output->blur_halo;
+		pixman_region32_t halo;
+		pixman_region32_init(&halo);
+		pixman_region32_intersect_rect(&halo, damage, -h, -h,
+			(unsigned)(output->width + 2 * h),
+			(unsigned)(output->height + 2 * h));
+		pixman_region32_subtract(&halo, &halo, &clipped);
+		if (!pixman_region32_empty(&halo)) {
+			/*
+			 * INTO THE MAIN RING, not a second one.
+			 *
+			 * A separate wlr_damage_ring was tried first, so that nothing but
+			 * the AVK path could ever see out-of-bounds damage. It recorded
+			 * 2106 regions and every wlr_damage_ring_rotate_buffer() on it
+			 * returned EMPTY -- the ring's per-buffer accounting does not
+			 * behave like a private accumulator when only one caller ever
+			 * rotates it. The main ring is the one that is known to work, and
+			 * it gives the per-buffer delivery this needs for free: a change
+			 * seen while drawing into buffer 1 still reaches buffer 2.
+			 *
+			 * It does NOT go into pending_commit_damage, which stays in-bounds
+			 * because that is what the backend and wlr_scene_output_commit()
+			 * consume. The frame is scheduled explicitly instead, which is what
+			 * wlr_scene_output_needs_frame() actually tests first.
+			 *
+			 * The SceneFX render path clips what it rotates out (see
+			 * wlr_scene_output_build_state), so a fallback frame cannot be
+			 * handed a scissor outside its framebuffer.
+			 */
+			wlr_output_schedule_frame(scene_output->output);
+			wlr_damage_ring_add(&scene_output->damage_ring, &halo);
+			scene_output->halo_damage_records++;
+		}
+		pixman_region32_fini(&halo);
+	}
+
 	pixman_region32_fini(&clipped);
 }
+
+void wlr_scene_output_set_blur_halo(struct wlr_scene_output *scene_output,
+		int halo) {
+	scene_output->blur_halo = halo > 0 ? halo : 0;
+}
+
+
 
 static void scene_output_damage_whole(struct wlr_scene_output *scene_output) {
 	struct wlr_output *output = scene_output->output;
@@ -4126,6 +4179,15 @@ bool wlr_scene_output_build_state(struct wlr_scene_output *scene_output,
 	pixman_region32_init(&render_data.damage);
 	wlr_damage_ring_rotate_buffer(&scene_output->damage_ring, buffer,
 		&render_data.damage);
+	/*
+	 * IN BOUNDS, ALWAYS, for this path. The ring may now carry damage that
+	 * lies OUTSIDE the output -- a change on the monitor next door that a blur
+	 * on this one can sample; see scene_output_damage(). Only the AVK renderer
+	 * knows what to do with that, and it reads the ring itself. Everything
+	 * below here scissors against a framebuffer.
+	 */
+	pixman_region32_intersect_rect(&render_data.damage, &render_data.damage,
+		0, 0, output->width, output->height);
 
 	// NULL when the active renderer is not scenefx's GLES renderer (e.g.
 	// Vulkan): the GLES-only effect/offscreen machinery below is then skipped.

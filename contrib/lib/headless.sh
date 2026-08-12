@@ -150,9 +150,15 @@ hl_start() { # hl_start [EXTRA_KDL]
 	[ -n "${HL_SCALE1:-}" ] && scale1="scale $HL_SCALE1; "
 	[ -n "${HL_SCALE2:-}" ] && scale2="scale $HL_SCALE2; "
 
+	# HL_X2 is the second output's LAYOUT x, which is LOGICAL. The default of
+	# HL_WIDTH is right only while the first output is at scale 1: at scale 1.5
+	# its logical width is HL_WIDTH/1.5, so the default leaves a GAP between the
+	# two outputs and there is no seam to test. A seam fixture must set this to
+	# the first output's logical width.
+	local x2="${HL_X2:-$HL_WIDTH}"
 	local secondary_output=""
 	if [ "${HL_OUTPUTS:-1}" -ge 2 ]; then
-		secondary_output="output HEADLESS-2 { ${scale2}x $HL_WIDTH; y 0; width $HL_WIDTH; height $HL_HEIGHT; refresh 60 }"
+		secondary_output="output HEADLESS-2 { ${scale2}x $x2; y 0; width $HL_WIDTH; height $HL_HEIGHT; refresh 60 }"
 	fi
 
 	cat > "$HL_CONFIG" <<EOF
@@ -895,6 +901,12 @@ hl_wait_field_eq() {
 }
 
 hl_screenshot() { grim "$HL_OUTDIR/$1.png" 2>/dev/null; }
+# ONE OUTPUT, by name. grim with no -o captures the whole LAYOUT and resamples
+# every output into one image at a single scale -- which silently destroys the
+# thing a mixed-scale fixture is trying to measure, and puts a resampling filter
+# between the test and the pixels the compositor actually presented. A seam test
+# must compare each output's own buffer.
+hl_screenshot_output() { grim -o "$1" "$HL_OUTDIR/$2.png" 2>/dev/null; }
 
 hl_focused_title() { hl_get "get focused-client" | jq -r .title; }
 

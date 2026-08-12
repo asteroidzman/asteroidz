@@ -98,6 +98,11 @@ struct avk_blur_stats {
 	uint64_t passes;        /* down + up passes declared */
 	uint64_t transients;    /* transient acquires made for blur levels */
 	uint64_t skipped;       /* chains declined -- too small, or 0 levels */
+	/* Fragments every declared pass will process, summed over the chain. The
+	 * chain still runs on the whole capture while only the prefix replay is
+	 * regional, so this against the result area is the size of the prize a
+	 * per-level scissor would win -- measured before it is built, in M4F.2D. */
+	uint64_t processed_pixels;
 };
 
 /*
@@ -224,6 +229,32 @@ struct avk_blur_support avk_blur_forward_support_of(
 
 uint32_t avk_blur_forward_support_max(const struct avk_blur_params *params,
 	uint32_t width, uint32_t height);
+
+/*
+ * AN UPPER BOUND ON THE SUPPORT THAT DOES NOT NEED TO KNOW THE EXTENT.
+ *
+ * The compositor has to decide which scene commands to KEEP -- how far outside
+ * an output's own bounds a blur on that output could reach for its source --
+ * before it has walked the scene and therefore before it knows how big any blur
+ * node is. avk_blur_support_of() needs the extent; this does not.
+ *
+ * THE DERIVATION, and it is a bound rather than a guess.
+ *
+ * The only extent-dependent term is the texel span,
+ * `span(base, i) = base / (base >> i)`. Write `base = q*2^i + r` with
+ * `0 <= r < 2^i`, so `base >> i == q` and `span = 2^i + r/q`. A level is only
+ * used while it has at least two texels (see effective_levels), so `q >= 2`,
+ * and therefore
+ *
+ *     span(base, i)  <=  2^i + (2^i - 1)/2
+ *
+ * exactly. Substituting that for every span in support_axis() gives a bound
+ * that holds for every extent at once. It is about 1.5x the support a large
+ * extent actually produces, which is the price of not knowing the extent -- and
+ * it is only ever used to widen a RETENTION region, never to size a capture or
+ * a damage region, both of which use the exact per-node support.
+ */
+uint32_t avk_blur_support_bound(const struct avk_blur_params *params);
 
 /*
  * THE FOUR REGIONS OF ONE BLUR, kept apart because collapsing any two of them

@@ -292,6 +292,33 @@ struct avk_scene {
 	pixman_region32_t damage;
 
 	/*
+	 * ── PRESENTATION IS NOT SOURCE ────────────────────────────────────────
+	 *
+	 * `source_bounds` is the region of the scene this frame is able to
+	 * RECONSTRUCT, in the same coordinates as everything else here: the
+	 * output's own pixels, so it normally starts at a NEGATIVE x or y.
+	 *
+	 * The target's extent is where pixels can be PRESENTED. A blur is the one
+	 * effect for which those are different questions. A blur pixel ten pixels
+	 * inside the left edge of an output samples source up to one support
+	 * FURTHER left -- which on a multi-output desktop is scene content that
+	 * belongs to the monitor next door. Clamping the dependency to the output
+	 * would replace it with the edge-clamped colour and put a seam down the
+	 * join of every window that spans two displays.
+	 *
+	 * So the compositor widens this by the blur halo and retains the commands
+	 * that fall in it; the renderer reconstructs the halo into THIS output's
+	 * device grid, at THIS output's pixel density, from the global scene. It
+	 * never samples the neighbouring output's framebuffer -- that would couple
+	 * format, scale, presentation history and (in M5) the colour domain, and
+	 * the whole current-frame-prefix architecture exists to avoid exactly that.
+	 *
+	 * A zero box means "the target's extent", which is what a single-output
+	 * frame and every renderer test want.
+	 */
+	struct avk_box source_bounds;
+
+	/*
 	 * Every gradient stop in the frame, packed end to end, 4 floats per colour
 	 * and PREMULTIPLIED -- the values wlr_scene_rect stores, copied without
 	 * conversion. A command's gradient names its own run by offset and count.

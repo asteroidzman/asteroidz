@@ -363,6 +363,38 @@ struct wlr_scene_output {
 
 	struct wlr_damage_ring damage_ring;
 
+	/*
+	 * DAMAGE THAT FELL OUTSIDE THIS OUTPUT BUT INSIDE ITS BLUR HALO.
+	 *
+	 * scene_output_damage() clips damage to the output's own bounds, which is
+	 * right for every effect except one. A blur presented near an output's edge
+	 * samples source up to one filter support PAST that edge -- scene content
+	 * belonging to the monitor next door -- so a change over there can alter
+	 * pixels over here, and the clip throws exactly that away.
+	 *
+	 * A second ring rather than a wider clip on the first, for two reasons.
+	 * It is keyed on the BUFFER like any damage ring, so a change seen while
+	 * output A was drawing into buffer 1 is still delivered when it later draws
+	 * into buffer 2 -- which a plain accumulate-and-clear region would lose.
+	 * And nothing but the AVK path reads it, so the SceneFX render path and
+	 * wlr_scene_output_needs_frame() go on seeing only in-bounds damage and
+	 * cannot be handed a scissor outside the framebuffer.
+	 *
+	 * It goes into the MAIN damage ring, whose per-buffer delivery is what
+	 * makes a change seen while drawing buffer 1 still reach buffer 2. The
+	 * SceneFX render path clips what it rotates out, so only AVK ever acts on
+	 * the out-of-bounds part. `blur_halo` is how far past the edge to record,
+	 * in buffer pixels; 0 disables the mechanism entirely and is the
+	 * single-output and no-blur case.
+	 */
+	int blur_halo;
+	/* How many times damage outside this output but inside its halo has been
+	 * RECORDED, as opposed to consumed. The pair says which end of the
+	 * mechanism is at fault when a cross-output blur goes stale: nothing
+	 * recorded is a region-arithmetic bug, recorded but never consumed is a
+	 * buffer/rotation bug, and they are not the same investigation. */
+	uint64_t halo_damage_records;
+
 	int x, y;
 
 	struct {
@@ -1119,6 +1151,17 @@ void wlr_scene_output_destroy(struct wlr_scene_output *scene_output);
  */
 void wlr_scene_output_set_position(struct wlr_scene_output *scene_output,
 	int lx, int ly);
+
+/**
+ * How far outside this output's bounds damage must still be recorded, in output
+ * BUFFER pixels, because a blur presented on this output can sample that far
+ * past its edge. 0 (the default) records nothing outside the output.
+ *
+ * See wlr_scene_output.halo_damage_ring.
+ */
+void wlr_scene_output_set_blur_halo(struct wlr_scene_output *scene_output,
+	int halo);
+
 /**
  * Magnify the output around a focus point given in output-local logical
  * coordinates. The composited frame is blitted so that a 1/zoom sub-rect

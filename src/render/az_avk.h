@@ -201,6 +201,17 @@ struct az_avk {
 	 */
 	uint64_t blur_nodes_seen;
 	uint64_t blur_nodes_emitted;
+	/* M4F.2C. Commands kept ONLY because a blur on this output might sample
+	 * them, and how wide the halo that kept them was. The first says whether a
+	 * narrow halo has quietly become "replay the monitor next door"; the second
+	 * says what the kernel asked for. */
+	uint64_t nodes_retained_for_halo;
+	uint64_t blur_halo_px;
+	/* Frames whose damage arrived from OUTSIDE this output -- a change on the
+	 * monitor next door that this output's blur can see. Zero on a
+	 * single-output desktop, and zero on a multi-output one until something
+	 * actually changes near a seam. */
+	uint64_t blur_halo_damage_frames;
 	uint64_t blur_nodes_culled;
 	uint64_t blur_nodes_forced_live;
 	/* Nodes whose composite was restricted by a clip_region or a
@@ -1445,6 +1456,25 @@ struct az_avk_walk {
 	/* Layout coordinates of the output's top-left corner. */
 	int ox, oy;
 	/*
+	 * ── THE SOURCE HALO, IN OUTPUT PIXELS ─────────────────────────────────
+	 *
+	 * How far outside this output's own bounds a command must still be KEPT,
+	 * because a blur presented ON this output can sample that far past its
+	 * edge. Presentation culling and source-reconstruction culling are
+	 * different questions and this is the difference between them.
+	 *
+	 * An upper bound derived from the scene's kernel alone
+	 * (avk_blur_support_bound), because the walk has to decide whether to keep
+	 * a command before it has seen the blur node that will want it -- the exact
+	 * per-node support needs the node's extent, which is discovered during the
+	 * same traversal. It is used ONLY to widen retention; every capture and
+	 * every damage region still uses the exact support.
+	 *
+	 * Zero when the scene has no blur, which is what keeps the direct path
+	 * exactly as narrow as M4E left it.
+	 */
+	int halo;
+	/*
 	 * The scene's global blur kernel. Copied in rather than reached for through
 	 * the node, because a blur node's own `strength` scales it
 	 * (blur_data_apply_strength) and the walk should read the scene's value
@@ -1925,11 +1955,35 @@ static void az_avk_walk_node(struct az_avk_walk *walk,
 		 * ahead of the resolve rather than after it, so no command that would
 		 * have drawn anything is lost.
 		 */
+		/*
+		 * PRESENTATION CULLING, WIDENED BY THE SOURCE HALO.
+		 *
+		 * A texture entirely off this output cannot be presented here -- but it
+		 * can still be SOURCE for a blur that is presented here, if it lies
+		 * within one support of the edge. Dropping it would replace real scene
+		 * content with the capture's edge-clamped colour and put a seam down
+		 * every window that spans two monitors.
+		 *
+		 * The halo is narrow (tens of pixels), so this keeps the cull's whole
+		 * point: the reason it exists is that resolving a 4K wallpaper
+		 * belonging to a monitor 3840 pixels away costs an import per frame,
+		 * and a wallpaper 3840 pixels away is still culled.
+		 */
 		if (!az_avk_env_flag("AZ_AVK_NO_OUTPUT_CULL") &&
-				(dst.x >= walk->width || dst.y >= walk->height ||
-				dst.x + dst.width <= 0 || dst.y + dst.height <= 0)) {
+				(dst.x >= walk->width + walk->halo
+				|| dst.y >= walk->height + walk->halo
+				|| dst.x + dst.width <= -walk->halo
+				|| dst.y + dst.height <= -walk->halo)) {
 			avk.nodes_output_culled_before_resolve++;
 			return;
+		}
+		if (dst.x >= walk->width || dst.y >= walk->height
+				|| dst.x + dst.width <= 0 || dst.y + dst.height <= 0) {
+			/* Kept only because a blur here might read it. Counted separately:
+			 * this is the price of the halo, and it is the number that says
+			 * whether a narrow halo has quietly become "replay the neighbouring
+			 * monitor". */
+			avk.nodes_retained_for_halo++;
 		}
 		/*
 		 * A surface's content must already be ours by now.
@@ -2094,9 +2148,16 @@ static void az_avk_walk_node(struct az_avk_walk *walk,
 			avk.blur_nodes_culled++;
 			return;
 		}
+		/*
+		 * Same widening, for the same reason one level up: an off-output blur
+		 * node cannot present here, but its RESULT is part of the prefix a blur
+		 * that IS presented here replays. Blur 2's source contains blur 1.
+		 */
 		if (!az_avk_env_flag("AZ_AVK_NO_OUTPUT_CULL") &&
-				(dst.x >= walk->width || dst.y >= walk->height ||
-				dst.x + dst.width <= 0 || dst.y + dst.height <= 0)) {
+				(dst.x >= walk->width + walk->halo
+				|| dst.y >= walk->height + walk->halo
+				|| dst.x + dst.width <= -walk->halo
+				|| dst.y + dst.height <= -walk->halo)) {
 			avk.blur_nodes_culled++;
 			return;
 		}
@@ -2150,7 +2211,29 @@ static void az_avk_walk_node(struct az_avk_walk *walk,
 		cmd->has_blur = true;
 		cmd->opacity = blur->alpha;
 		cmd->blur_levels = bd.num_passes > 0 ? (uint32_t)bd.num_passes : 0;
-		cmd->blur_radius = bd.radius;
+		/*
+		 * THE KERNEL, SCALED TO OUTPUT PIXELS -- once, here, beside the box,
+		 * the radii and the soft edge.
+		 *
+		 * `radius` is a multiplier on a HALF-TEXEL sampling step, and the texel
+		 * is a texel of the capture, which is in OUTPUT PIXELS. So an unscaled
+		 * radius means a blur reaches the same number of DEVICE pixels on every
+		 * output -- and therefore covers 1/1.5 as much of the picture on a
+		 * 1.5x display as on a 1.0x one. The same window, dragged across a
+		 * seam, would visibly sharpen.
+		 *
+		 * The reference does not scale it either (blur_data_calc_size() is
+		 * 2^(passes+1) * radius and is applied to damage in BUFFER coordinates,
+		 * fx_pass.c:1481), so this is a divergence and not a fix to a
+		 * regression. It is the same policy M4D adopted for a shadow's sigma
+		 * and M4F.2A.3 for edge_softness: a logical length is scaled exactly
+		 * once, at the walker, and everything downstream is device pixels.
+		 *
+		 * `levels` is NOT scaled: it is a count of halvings, not a length, and
+		 * there is no such thing as 1.5 of a level. Scaling the radius moves
+		 * the reach continuously, which is what a fractional scale needs.
+		 */
+		cmd->blur_radius = bd.radius * (float)walk->scale;
 		cmd->blur_brightness = bd.brightness;
 		cmd->blur_contrast = bd.contrast;
 		cmd->blur_saturation = bd.saturation;
@@ -2599,6 +2682,20 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 	pixman_region32_init(&damage);
 	wlr_damage_ring_rotate_buffer(&m->scene_output->damage_ring, buffer,
 		&damage);
+	/*
+	 * The damage this returned may reach OUTSIDE the output: a change on the
+	 * monitor next door, within this output's blur halo, recorded in this
+	 * output's own pixel coordinates and therefore negative or past the far
+	 * edge (see wlr_scene_output.blur_halo). It is real SOURCE damage, it feeds
+	 * the blur sweeps exactly like in-bounds damage, and the renderer clips the
+	 * PRESENTATION damage back to the output afterwards.
+	 */
+	{
+		pixman_box32_t *e = pixman_region32_extents(&damage);
+		if (e->x1 < 0 || e->y1 < 0 || e->x2 > width || e->y2 > height) {
+			avk.blur_halo_damage_frames++;
+		}
+	}
 	if (az_avk_env_flag("AZ_AVK_FULL_DAMAGE")) {
 		/* What M3b did on every frame. Kept as a switch because it is the
 		 * reference a damage test compares against: the same scene, redrawn
@@ -2658,8 +2755,66 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 		.oy = m->scene_output->y,
 		.blur = wlr_scene_get_blur_data(m->scene_output->scene),
 	};
-	az_avk_walk_children(&walk, &m->scene_output->scene->tree, 0, 0);
 
+	/*
+	 * ── THE SOURCE HALO ───────────────────────────────────────────────────
+	 *
+	 * How far past this output's edge a blur presented on it can reach for its
+	 * source, in this output's own pixels. Computed ONCE per frame from the
+	 * scene's kernel, because retention has to be decided before the walk finds
+	 * the blur node that will want the pixels.
+	 *
+	 * The radius is scaled here for the same reason it is scaled at the node:
+	 * `radius` is a multiplier on a half-texel step and the texels are output
+	 * pixels. A node's own `strength` can only ever REDUCE the kernel
+	 * (blur_data_apply_strength interpolates towards no blur at all), so the
+	 * scene's value bounds every node's.
+	 *
+	 * Zero when the scene has no blur, and that is the direct path: no halo, no
+	 * retained commands, no widened source bounds, nothing for M4E's frame to
+	 * carry.
+	 */
+	/*
+	 * `config.blur` AS WELL AS THE KERNEL, and it is not redundant.
+	 *
+	 * `effects { blur { enable 0 } }` stops asteroidz creating blur NODES --
+	 * client_update_blur, layer_update_blur and popup_update_blur all consult
+	 * it -- but leaves the SCENE's kernel at whatever `passes` and `radius`
+	 * say, so is_scene_blur_enabled() stays true. Gating on the kernel alone
+	 * measured a 71 px halo and 5 retained commands on a desktop that could not
+	 * contain a single blur node, which is the direct path paying for a feature
+	 * it does not use.
+	 *
+	 * The two together are exactly "can a blur node exist here": no node can be
+	 * created without config.blur, and no node blurs anything without a kernel.
+	 */
+	if (config.blur && is_scene_blur_enabled(&walk.blur)) {
+		struct avk_blur_params kernel = {
+			.levels = walk.blur.num_passes > 0
+				? (uint32_t)walk.blur.num_passes : 0,
+			.radius = walk.blur.radius * (float)output->scale,
+		};
+		walk.halo = (int)avk_blur_support_bound(&kernel);
+		/*
+		 * Told to the SCENE too, so damage landing in the halo is recorded for
+		 * this output instead of being clipped away. Set every frame rather
+		 * than once: the kernel is configurable at runtime and the output's
+		 * scale can change, and a halo that lagged either would silently record
+		 * damage for the wrong distance.
+		 */
+		wlr_scene_output_set_blur_halo(m->scene_output, walk.halo);
+		scene.source_bounds = (struct avk_box){
+			-walk.halo, -walk.halo,
+			(int32_t)width + 2 * walk.halo, (int32_t)height + 2 * walk.halo,
+		};
+		avk.blur_halo_px = (uint64_t)walk.halo;
+	} else {
+		/* No blur in the scene: no halo, and the fork goes back to clipping
+		 * damage to the output exactly as it always did. This is the direct
+		 * path, and it must cost nothing at all. */
+		wlr_scene_output_set_blur_halo(m->scene_output, 0);
+	}
+	az_avk_walk_children(&walk, &m->scene_output->scene->tree, 0, 0);
 	/*
 	 * THE COMMAND STREAM, ONCE, AT DEBUG.
 	 *
@@ -3248,6 +3403,24 @@ static cJSON *az_avk_stats_json(void) {
 		(double)avk.blur_nodes_emitted);
 	cJSON_AddNumberToObject(o, "blur_nodes_culled",
 		(double)avk.blur_nodes_culled);
+	cJSON_AddNumberToObject(o, "nodes_retained_for_halo",
+		(double)avk.nodes_retained_for_halo);
+	cJSON_AddNumberToObject(o, "blur_halo_px", (double)avk.blur_halo_px);
+	cJSON_AddNumberToObject(o, "blur_halo_damage_frames",
+		(double)avk.blur_halo_damage_frames);
+	{
+		/* Recorded, from the scene side -- see halo_damage_records. Summed over
+		 * every monitor, and reported beside the consumed count so the two ends
+		 * of the mechanism can be told apart. */
+		uint64_t recs = 0;
+		Monitor *mm;
+		wl_list_for_each(mm, &mons, link) {
+			if (mm->scene_output != NULL) {
+				recs += mm->scene_output->halo_damage_records;
+			}
+		}
+		cJSON_AddNumberToObject(o, "blur_halo_damage_records", (double)recs);
+	}
 	cJSON_AddNumberToObject(o, "blur_nodes_forced_live",
 		(double)avk.blur_nodes_forced_live);
 	cJSON_AddNumberToObject(o, "blur_nodes_clipped",
@@ -3594,6 +3767,7 @@ static cJSON *az_avk_stats_json(void) {
 	uint64_t d_dep_full = 0, d_write_full = 0, d_cap_full = 0, d_saved = 0;
 	uint64_t d_touched = 0, d_skipped = 0, d_fallbacks = 0, d_rects = 0;
 	uint64_t d_inherited = 0, d_build_ns = 0;
+	uint64_t d_halo = 0, d_cap_px = 0, d_res_px = 0, d_proc_px = 0;
 	for (size_t i = 0; i < AZ_AVK_MAX_FORMATS; i++) {
 		if (!avk.renderers[i].used) {
 			continue;
@@ -3621,6 +3795,10 @@ static cJSON *az_avk_stats_json(void) {
 		d_fallbacks += r->blur_damage_fallbacks;
 		d_inherited += r->blur_transitive_damage_pixels;
 		d_build_ns += r->blur_damage_build_ns;
+		d_halo += r->blur_halo_pixels;
+		d_cap_px += r->blur_capture_pixels;
+		d_res_px += r->blur_result_pixels;
+		d_proc_px += r->blur_stats.processed_pixels;
 		if (r->blur_damage_rects_max > d_rects) {
 			d_rects = r->blur_damage_rects_max;
 		}
@@ -3663,6 +3841,13 @@ static cJSON *az_avk_stats_json(void) {
 	cJSON_AddNumberToObject(o, "blur_transitive_damage_pixels",
 		(double)d_inherited);
 	cJSON_AddNumberToObject(o, "blur_damage_build_ns", (double)d_build_ns);
+	/* M4F.2C/.2D. blur_processed_pixels against blur_result_pixels is the size
+	 * of the prize a per-level scissor would win; it is recorded now and
+	 * decided on in M4F.2D. */
+	cJSON_AddNumberToObject(o, "blur_halo_pixels", (double)d_halo);
+	cJSON_AddNumberToObject(o, "blur_capture_pixels", (double)d_cap_px);
+	cJSON_AddNumberToObject(o, "blur_result_pixels", (double)d_res_px);
+	cJSON_AddNumberToObject(o, "blur_processed_pixels", (double)d_proc_px);
 	cJSON_AddNumberToObject(o, "graph_frames", (double)g_frames);
 	if (g_frames > 0) {
 		cJSON_AddNumberToObject(o, "graph_build_ns_avg",
@@ -3845,6 +4030,8 @@ static void az_avk_stats_reset(void) {
 	avk.blur_nodes_seen = 0;
 	avk.blur_nodes_emitted = 0;
 	avk.blur_nodes_culled = 0;
+	avk.nodes_retained_for_halo = 0;
+	avk.blur_halo_damage_frames = 0;
 	avk.blur_nodes_forced_live = 0;
 	avk.blur_nodes_clipped = 0;
 	avk.commit_imports = 0;
@@ -3918,6 +4105,10 @@ static void az_avk_stats_reset(void) {
 				r->blur_damage_rects_max = 0;
 				r->blur_transitive_damage_pixels = 0;
 				r->blur_damage_build_ns = 0;
+				r->blur_halo_pixels = 0;
+				r->blur_capture_pixels = 0;
+				r->blur_result_pixels = 0;
+				r->blur_processed_pixels = 0;
 				r->blur_stats = (struct avk_blur_stats){0};
 			}
 		}

@@ -263,12 +263,14 @@ hl_spawn_wlbgeffect overlay 300 >/dev/null; hl_wait_client_count 3 60
 sleep 2
 hl_dispatch toggle_floating
 sleep 1
-# NO `move` HERE, DELIBERATELY. One was tried, and every counter in this phase
-# came back byte-identical with and without it -- source damage, output damage,
-# rebuild, touched, skipped. A dispatch whose effect cannot be seen in any
-# measurement the test takes is a line that makes the fixture look more specific
-# than it is, which is the exact shape of a harness trap this suite has been
-# caught by before. The overlay stays where the layout puts it.
+# `move_window`, NOT `move`. An earlier version of this phase called
+# `hl_dispatch "move 470,180"` and every counter came back byte-identical with
+# and without it -- because there is no dispatch called `move`, the IPC layer
+# swallows an unknown name silently, and the line did nothing at all. The
+# dispatch is `move_window,<x>,<y>` (see amsg dispatch --list). This is the
+# second time an invented dispatch name has produced a confident wrong reading
+# in this project; the first was `focusdir` for `focus_direction`.
+hl_dispatch "move_window,300,180"
 sleep 3
 
 hl_dispatch reset_avk_stats

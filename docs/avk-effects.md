@@ -4183,3 +4183,147 @@ fails.
 `BREAK=blur-under-damage` is the opposite case and is kept: it removes the
 forward dilation and leaves **5 261 wrong pixels, worst 71 codes**, failing 18 of
 the 39 checks.
+
+## M4F.2C.0/.1/.2 — the seam is not a blur boundary
+
+### The output-boundary audit
+
+Where AVK clipped scene state to an output, before this milestone:
+
+| stage | space | clipped to the output? |
+| --- | --- | --- |
+| walker traversal | layout | no — it walks the whole global scene tree |
+| `az_avk_box_to_output` | logical → device | no, it only converts |
+| RECT emission | device | no (degenerate check only) |
+| **BUFFER emission** (`az_avk.h`) | device | **YES** — the earliest loss point |
+| SHADOW emission | device | no (degenerate check only) |
+| **BLUR emission** | device | **YES** |
+| cursor emission | device | yes (correctly — a cursor is presentation only) |
+| `avk_blur_regions_of` clamp | device | **YES**, to `{0,0,width,height}` |
+| `command_region()` | device | to the segment's own bounds |
+| `scene_output_damage` (fork) | device | **YES**, to `0,0,w,h` |
+| scissor | attachment | the draw's own region |
+
+Three of those had to change: a texture outside output A can still be *source*
+for a blur presented on A, a blur node outside A can still be part of the prefix
+another blur on A replays, and damage outside A can still change A's pixels.
+
+### Presentation bounds and source bounds
+
+```text
+present_bounds   pixels this output can put on a screen
+source_bounds    scene it can RECONSTRUCT = present_bounds dilated by the halo
+```
+
+`struct avk_scene.source_bounds` carries the second; the renderer clamps a
+blur's dependency to it and clips the *presentation* damage back to the first.
+On a single output they are the same box and nothing changes at all.
+
+**The halo is an extent-independent bound.** Retention has to be decided before
+the walk finds the blur node that will want the pixels, so
+`avk_blur_support_bound()` drops the only extent-dependent term — the texel span
+— for its exact upper bound `span(base, i) ≤ 2^i + (2^i − 1)/2`, which follows
+from a level never running below two texels. About 1.5× the support a large
+extent really produces, and used **only** to widen retention: every capture and
+every damage region still uses the exact per-node support.
+
+**Each output rasterises its own halo.** The same global scene region is
+reconstructed twice at two pixel densities when two outputs both need it, and
+that is correct. Output A never samples output B's framebuffer — that would
+couple format, scale, presentation history and, in M5, the colour domain. This
+is the property that makes the architecture survive an SDR display beside an HDR
+one, and it is why the source is re-rendered rather than copied.
+
+### The kernel is scaled, and it was not before
+
+`radius` multiplies a **half-texel** step, and the texels are the capture's,
+which are output pixels. Left unscaled, a blur reaches the same number of
+*device* pixels on every output and therefore covers 1/1.5 as much of the
+picture on a 1.5× display: the same window dragged across a seam visibly
+sharpens. The reference does not scale it either (`blur_data_calc_size()` is
+`2^(passes+1) * radius`, applied to damage in buffer coordinates,
+`fx_pass.c:1481`), so this is a deliberate divergence and not a regression fix.
+
+It is scaled exactly once, at the walker, beside the box, the corner radii and
+`edge_softness` — the policy M4D adopted for a shadow's sigma. `levels` is *not*
+scaled: it counts halvings, not lengths, and there is no such thing as 1.5 of a
+level; scaling the radius moves the reach continuously, which is what a
+fractional scale needs.
+
+### Coordinate model, pinned
+
+| quantity | space | converted where |
+| --- | --- | --- |
+| blur node box | logical → **device** | `az_avk_box_to_output` |
+| `clip_region` | node-local logical → **device** | `az_avk_blur_keep_region` |
+| corners | logical → **device** | `az_avk_corners_from_scenefx` |
+| `radius` | logical → **device** | the walker, ×scale (M4F.2C) |
+| `levels` | **a count** | never scaled |
+| `edge_softness` | logical → **device** | the walker, ×scale (M4F.2A.3) |
+| support / dependency | **device** | derived from device geometry |
+| capture extent, even origin | **device** | after scaling, never before |
+| damage | **device** | the fork scales it into buffer coords |
+| `source_bounds` | **device** | output pixels, normally negative-origin |
+
+Even-origin alignment happens in device space, after rounding, and
+`avk_render_segment_align_origin` decrements — which is correct for a negative
+origin under two's complement, where `-41 & 1` is 1 and the origin becomes −42.
+
+### Cross-output damage routing
+
+`scene_output_damage()` intersected damage with `0,0,w,h` and dropped the rest,
+so a change wholly on B never reached A and A's near-seam blur went stale. The
+fork now also records the part that falls inside A's halo.
+
+**Measured, and the oracle found it:** with the routing missing, a change on B
+left output A stale over `x 721..799` — the last 79 columns before the seam,
+inside a halo of 126 — and `damage_all` reported 10 860 differing pixels.
+
+**It goes into the MAIN ring.** A separate `wlr_damage_ring` was tried first so
+that nothing but AVK could see out-of-bounds damage. It recorded 2 106 regions
+and every rotate returned **empty**: a damage ring's per-buffer accounting does
+not behave like a private accumulator when only one caller ever rotates it. The
+main ring is the one known to work and gives per-buffer delivery for free — a
+change seen while drawing buffer 1 still reaches buffer 2. `pending_commit_damage`
+stays in bounds, the frame is scheduled explicitly, and
+`wlr_scene_output_build_state` now clips what it rotates out so a fallback frame
+can never be handed a scissor outside its framebuffer.
+
+### Results
+
+```text
+seam step, correct source     0 codes
+seam step, BREAK=source-clip  14 codes      ← threshold 4, set by both numbers
+halo                          126 px at passes 3 / radius 4
+commands retained for it      5
+halo source reconstructed     832 608 px    ← 0 under the break
+cross-output damage frames    7
+damage_all on A and B         0 stale pixels, before and after a cross-seam change
+direct path                   halo 0, retained 0, halo-frames 0, replays 0
+```
+
+`BREAK=blur-source-output-clip` fails **two** assertions, one of which needs no
+threshold at all: the halo source area it reconstructs is exactly 0.
+
+### `blur { enable 0 }` does not disable the kernel
+
+It stops asteroidz *creating* blur nodes (`client_update_blur`,
+`layer_update_blur`, `popup_update_blur` all consult `config.blur`) and leaves
+the scene's `passes`/`radius` alone, so `is_scene_blur_enabled()` stays true.
+Gating the halo on the kernel alone measured a 71 px halo and 5 retained
+commands on a desktop that could not contain one blur node. The halo is gated on
+`config.blur` *and* the kernel — together they are exactly "can a blur node exist
+here".
+
+### `move` is not a dispatch
+
+`hl_dispatch "move 470,180"` changed nothing in any counter, and the reason was
+not the fixture: there is no dispatch called `move`, the IPC layer swallows an
+unknown name silently, and the line did nothing. It is `move_window,<x>,<y>`.
+Second time an invented dispatch name has produced a confident wrong reading
+here; the first was `focusdir` for `focus_direction`.
+
+`HL_X2` was also needed: the harness placed the second output at layout
+`x = HL_WIDTH`, which is only adjacent to the first while that output is at
+scale 1. At 1.5 its logical width is `HL_WIDTH/1.5` and the default leaves a gap
+— a "seam test" with no seam in it.

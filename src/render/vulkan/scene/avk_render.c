@@ -85,6 +85,13 @@ bool avk_renderer_init(struct avk_renderer *renderer, struct avk_device *dev,
 	 * the reference's historical-source path and does not restore it.
 	 */
 	renderer->blur_full_damage = getenv("AZ_BLUR_FULL_DAMAGE") != NULL;
+	renderer->break_blur_source_output_clip =
+		getenv("AZ_BLUR_SOURCE_OUTPUT_CLIP") != NULL;
+	if (renderer->break_blur_source_output_clip) {
+		avk_log(AVK_ERROR, "M4F.2C break switch active: a blur's source is "
+			"clamped to its own output -- expect a seam through every window "
+			"that spans two displays");
+	}
 	if (renderer->break_blur_ignore_darken || renderer->break_blur_ignore_clip
 			|| renderer->break_blur_edge_logical_sigma) {
 		avk_log(AVK_ERROR, "M4F.2A.3 break switch active: blur material is "
@@ -1301,7 +1308,22 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 		}
 	}
 
-	struct avk_box scene_bounds = { 0, 0, (int32_t)width, (int32_t)height };
+	/*
+	 * WHERE PIXELS MAY BE PRESENTED, and -- separately -- where source may be
+	 * RECONSTRUCTED. See struct avk_scene.source_bounds. They differ only on a
+	 * multi-output desktop, and only for blur.
+	 */
+	const struct avk_box present_bounds = {
+		0, 0, (int32_t)width, (int32_t)height,
+	};
+	struct avk_box scene_bounds = present_bounds;
+	if (scene->source_bounds.width > 0 && scene->source_bounds.height > 0
+			&& !renderer->break_blur_source_output_clip) {
+		scene_bounds = scene->source_bounds;
+	}
+	renderer->blur_halo_pixels +=
+		(uint64_t)scene_bounds.width * (uint64_t)scene_bounds.height
+		- (uint64_t)present_bounds.width * (uint64_t)present_bounds.height;
 
 	/*
 	 * ── THE TWO DAMAGE SWEEPS ─────────────────────────────────────────────
@@ -1446,6 +1468,18 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 	 * changed, and telling the backend LESS than was redrawn is how a blurred
 	 * fringe survives on screen for as long as nothing else damages it.
 	 */
+	/*
+	 * CLIPPED TO THE OUTPUT, because this is the PRESENTATION damage: what the
+	 * backend is told and what the output segment is allowed to draw. The
+	 * damage that arrived may reach outside the output -- a change on the
+	 * monitor next door, inside this output's blur halo, is carried here in
+	 * this output's own pixel coordinates and is therefore negative or past the
+	 * far edge. It is real source damage and the sweeps above have already used
+	 * it; it is not a pixel this output can present.
+	 */
+	pixman_region32_intersect_rect(&frame_damage, &frame_damage,
+		present_bounds.x, present_bounds.y, (unsigned)present_bounds.width,
+		(unsigned)present_bounds.height);
 	pixman_region32_copy(&renderer->frame_damage, &frame_damage);
 
 	/*
@@ -1544,6 +1578,10 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 			continue;
 		}
 		renderer->blur_damage_nodes_touched++;
+		renderer->blur_capture_pixels +=
+			(uint64_t)rg.capture.width * (uint64_t)rg.capture.height;
+		renderer->blur_result_pixels += az_region_area(&d->result_region);
+		renderer->blur_processed_pixels = renderer->blur_stats.processed_pixels;
 		if (params.darken) {
 			renderer->stats.blur_darken_passes++;
 		}

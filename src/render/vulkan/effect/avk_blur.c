@@ -129,6 +129,29 @@ uint32_t avk_blur_forward_support_max(const struct avk_blur_params *params,
 	return (uint32_t)ceil(m);
 }
 
+uint32_t avk_blur_support_bound(const struct avk_blur_params *params) {
+	if (params == NULL || params->levels == 0) {
+		return 0;
+	}
+	uint32_t levels = params->levels;
+	if (levels > AVK_BLUR_MAX_LEVELS) {
+		levels = AVK_BLUR_MAX_LEVELS;
+	}
+	double radius = params->radius > 0.0f ? (double)params->radius : 1.0;
+	/* span(base, i) <= 2^i + (2^i - 1)/2, for every extent a level can run
+	 * at -- see the header. Everything else is support_axis() unchanged. */
+	double reach = 0.0;
+	for (uint32_t i = 1; i <= levels; i++) {
+		double two = (double)(1u << (i - 1));
+		reach += (0.5 * radius + 1.0) * (two + (two - 1.0) / 2.0);
+	}
+	for (uint32_t i = levels; i >= 1; i--) {
+		double two = (double)(1u << i);
+		reach += (radius + 1.0) * (two + (two - 1.0) / 2.0);
+	}
+	return (uint32_t)ceil(reach + 1.0);
+}
+
 uint32_t avk_blur_support_max(const struct avk_blur_params *params,
 		uint32_t width, uint32_t height) {
 	struct avk_blur_support s = avk_blur_support_of(params, width, height);
@@ -468,6 +491,10 @@ bool avk_blur_declare(struct avk_graph *graph, struct avk_transient_pool *pool,
 		p->dst_w = dw;
 		p->dst_h = dh;
 		blur_uv(p, src_w, src_h, radius);
+		/* Rectangle arithmetic, not a per-pixel loop: what this pass WILL
+		 * process, so M4F.2D can weigh a per-level scissor against the result
+		 * area it would keep. */
+		stats->processed_pixels += (uint64_t)dw * (uint64_t)dh;
 
 		uint32_t from = i == 1 ? src_resource : level_res[i - 1];
 		avk_graph_pass_begin(graph, i == 1 ? "blur_down_0" : "blur_down",
@@ -519,6 +546,7 @@ bool avk_blur_declare(struct avk_graph *graph, struct avk_transient_pool *pool,
 		p->dst_w = dw;
 		p->dst_h = dh;
 		blur_uv(p, src_w, src_h, radius);
+		stats->processed_pixels += (uint64_t)dw * (uint64_t)dh;
 		p->effects = *params;
 		/* Only the LAST upsample folds the effects in. Applying them at every
 		 * level would compound brightness and contrast once per level, which
