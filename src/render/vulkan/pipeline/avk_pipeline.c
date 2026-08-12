@@ -9,6 +9,7 @@
 #include "quad_frag.spv.h"
 #include "texture_frag.spv.h"
 #include "gradient_frag.spv.h"
+#include "shadow_frag.spv.h"
 
 /* Sets per descriptor pool. Enough that an ordinary desktop -- a few dozen
  * surfaces -- never allocates a second one, small enough that a pool is not a
@@ -257,15 +258,20 @@ bool avk_pipelines_init(struct avk_pipelines *pipes, struct avk_device *dev,
 		sizeof(texture_frag_spv), "texture.frag");
 	VkShaderModule gradient_frag = create_module(dev, gradient_frag_spv,
 		sizeof(gradient_frag_spv), "gradient.frag");
+	VkShaderModule shadow_frag = create_module(dev, shadow_frag_spv,
+		sizeof(shadow_frag_spv), "shadow.frag");
 
 	bool ok = vert != VK_NULL_HANDLE && rect_frag != VK_NULL_HANDLE
 		&& texture_frag != VK_NULL_HANDLE && gradient_frag != VK_NULL_HANDLE
+		&& shadow_frag != VK_NULL_HANDLE
 		&& create_pipeline(pipes, format, vert, rect_frag, "rect",
 			&pipes->rect)
 		&& create_pipeline(pipes, format, vert, texture_frag, "texture",
 			&pipes->texture)
 		&& create_pipeline(pipes, format, vert, gradient_frag, "gradient",
-			&pipes->gradient);
+			&pipes->gradient)
+		&& create_pipeline(pipes, format, vert, shadow_frag, "shadow",
+			&pipes->shadow);
 
 	/* Modules are only needed while the pipelines are being created; the
 	 * driver has compiled what it needs by the time vkCreateGraphicsPipelines
@@ -281,6 +287,9 @@ bool avk_pipelines_init(struct avk_pipelines *pipes, struct avk_device *dev,
 	}
 	if (gradient_frag != VK_NULL_HANDLE) {
 		vkDestroyShaderModule(dev->dev, gradient_frag, NULL);
+	}
+	if (shadow_frag != VK_NULL_HANDLE) {
+		vkDestroyShaderModule(dev->dev, shadow_frag, NULL);
 	}
 
 	if (!ok) {
@@ -305,6 +314,10 @@ void avk_pipelines_finish(struct avk_pipelines *pipes) {
 	}
 	if (pipes->texture != VK_NULL_HANDLE) {
 		vkDestroyPipeline(dev, pipes->texture, NULL);
+		AVK_LIVE_DEC(pipes->dev, pipelines);
+	}
+	if (pipes->shadow != VK_NULL_HANDLE) {
+		vkDestroyPipeline(dev, pipes->shadow, NULL);
 		AVK_LIVE_DEC(pipes->dev, pipelines);
 	}
 	if (pipes->gradient != VK_NULL_HANDLE) {

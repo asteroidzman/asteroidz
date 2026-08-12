@@ -59,6 +59,12 @@ struct avk_fbox {
 enum avk_cmd_type {
 	AVK_CMD_RECT,
 	AVK_CMD_TEXTURE,
+	/*
+	 * M4D. A rounded-rectangle drop shadow, evaluated analytically -- no
+	 * intermediate image, no blur pass. `dst` is the shadow's ENVELOPE and the
+	 * caster is that box inset by `blur_sigma`; see shadow.frag.
+	 */
+	AVK_CMD_SHADOW,
 };
 
 /* 1 and 2 are the values SceneFX's `gradient_linear` field carries, kept rather
@@ -177,8 +183,24 @@ struct avk_cmd {
 	 */
 	struct avk_gradient gradient;
 
-	/* reserved for later M4 stages */
-	bool has_shadow;
+	/*
+	 * AVK_CMD_SHADOW only, in OUTPUT PIXELS.
+	 *
+	 * Output pixels and not logical ones, and that is a divergence from the
+	 * reference worth stating here as well as in the shader. SceneFX scales a
+	 * shadow's BOX and its RADII to output pixels and leaves blur_sigma in
+	 * logical units, so on a fractional-scale output the falloff is measured
+	 * against a box it no longer matches -- the same window shows a different
+	 * softness on a 1.0 and a 1.5 monitor, and drags across the seam changing
+	 * shape. AVK scales all three together.
+	 *
+	 * Two things are derived from it and they are NOT the same number: the
+	 * caster is the envelope inset by `blur_sigma`, and the Gaussian's sigma
+	 * is `blur_sigma * 0.5`.
+	 */
+	float blur_sigma;
+
+	/* reserved for M4F */
 	bool has_blur;
 };
 

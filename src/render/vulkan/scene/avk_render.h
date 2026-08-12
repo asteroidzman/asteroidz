@@ -32,6 +32,12 @@ struct avk_renderer_stats {
 	uint64_t border_draws;
 	uint64_t rounded_border_draws;
 	uint64_t asymmetric_border_draws;
+	/* M4D. Same three questions for shadows, and for the same reason: a
+	 * single-radius shadow renders plausibly and is wrong on exactly the
+	 * windows whose corners differ. */
+	uint64_t shadow_draws;
+	uint64_t rounded_shadow_draws;
+	uint64_t asymmetric_shadow_draws;
 	uint64_t frames;
 	uint64_t surfaces;
 	uint64_t rects;
@@ -40,11 +46,12 @@ struct avk_renderer_stats {
 	uint64_t cpu_sync_waits; /* MUST stay 0 on the steady-state frame path */
 	/*
 	 * CPU wall-clock spent RECORDING and SUBMITTING a frame -- not GPU
-	 * execution time, and named so it cannot be read as such. AVK has no
-	 * timestamp query pool (avk_phys.c reads timestampPeriod and nothing uses
-	 * it), so GPU time is NOT MEASURED. Reporting this number as GPU cost
-	 * would understate a shader-bound frame and overstate a submission-bound
-	 * one, in opposite directions.
+	 * execution time, and named so it cannot be read as such. Reporting this
+	 * number as GPU cost would understate a shader-bound frame and overstate
+	 * a submission-bound one, in opposite directions.
+	 *
+	 * GPU time is a separate measurement and lives in `timestamps` below
+	 * (M4D.P). The two are deliberately not folded into one field.
 	 */
 	uint64_t cpu_record_ns;
 };
@@ -57,6 +64,14 @@ struct avk_renderer {
 	bool break_bottom_swap;
 	bool break_rounded_double_scale;
 	float break_scale_hint;
+	/*
+	 * M4D break. Restores a single-radius shadow -- every corner taking the
+	 * top-left's -- which is what an implementation that carried one scalar
+	 * radius produces. It renders plausibly on any window whose corners
+	 * match, which is most of them, and is wrong on every titlebar-joined
+	 * one.
+	 */
+	bool break_shadow_single_radius;
 	struct avk_device *dev;
 	struct avk_pipelines pipes;
 	struct avk_cmd_ring ring;

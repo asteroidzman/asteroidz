@@ -34,7 +34,8 @@ avk_shader_headers = []
 foreach shader : [['quad.vert', 'quad_vert_spv'],
                   ['quad.frag', 'quad_frag_spv'],
                   ['texture.frag', 'texture_frag_spv'],
-                  ['gradient.frag', 'gradient_frag_spv']]
+                  ['gradient.frag', 'gradient_frag_spv'],
+                  ['shadow.frag', 'shadow_frag_spv']]
   spv = custom_target(shader[0] + '.spv',
     input : 'shader/src' / shader[0],
     output : shader[0] + '.spv',

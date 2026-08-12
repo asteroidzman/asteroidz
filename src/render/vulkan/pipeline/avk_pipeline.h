@@ -100,6 +100,13 @@ struct avk_pipelines {
 	VkPipeline rect;
 	VkPipeline texture;
 	/*
+	 * M4D. ONE shadow pipeline for every shadow on the desktop: the caster's
+	 * geometry and its blur radius are push constants, so a window shadow, a
+	 * titlebar shadow and an overview thumbnail's shadow are the same pipeline
+	 * with different numbers. Nothing here compiles on the frame path.
+	 */
+	VkPipeline shadow;
+	/*
 	 * ONE gradient pipeline. Not one per stop count, not one per gradient type:
 	 * the colours come from a storage buffer whose length the shader never
 	 * names, and linear-versus-conic is a uniform branch on a value in the

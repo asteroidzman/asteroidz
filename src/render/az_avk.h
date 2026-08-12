@@ -1507,6 +1507,121 @@ static void az_avk_corners_from_scenefx(const struct az_avk_walk *walk,
 	}
 }
 
+/*
+ * Cut a rounded region out of a command: the window's own footprint, removed
+ * from the primitive drawn around it.
+ *
+ * ONE function because there are two callers and they must not drift. A
+ * border is a filled rect with the client's interior taken out of it; a
+ * shadow is a filled envelope with the same interior taken out of it. Same
+ * geometry, and the same two halves -- an exact scissor subtraction for the
+ * part a region can express, and the radii carried to the shader for the arcs
+ * it cannot. The M4A wedge is what happens when only one of the two is done,
+ * and it would have been a second, identical bug to fix here.
+ *
+ * `square_inner` restores that defect on demand; see the break switch at the
+ * border call site.
+ */
+static void az_avk_clip_out_region(const struct az_avk_walk *walk,
+		struct avk_cmd *cmd, const struct wlr_box *dst,
+		const struct clipped_region *region, int lx, int ly, bool square_inner,
+		const char *what) {
+		struct wlr_box hole = region->area;
+		struct wlr_box hole_out;
+		az_avk_box_to_output(walk, lx + hole.x, ly + hole.y, hole.width,
+			hole.height, &hole_out);
+		cmd->inner = (struct avk_box){ hole_out.x, hole_out.y,
+			hole_out.width, hole_out.height };
+		cmd->has_inner = true;
+		/* The SAME conversion the outer radii went through, so the two
+		 * edges of the ring are scaled by the same factor and permuted by
+		 * the same table. Rotating the outer corners and not the inner
+		 * ones is a bug that renders perfectly on an unrotated output. */
+		az_avk_corners_from_scenefx(walk, region->corners,
+			cmd->inner_corners);
+		if (square_inner) {
+			cmd->inner_corners[0] = cmd->inner_corners[1] =
+				cmd->inner_corners[2] = cmd->inner_corners[3] = 0.0f;
+		}
+		/*
+		 * Shrink the scissor cut on each edge by 0.3 of the adjoining
+		 * radius, which is SceneFX's rule (apply_clip_region in
+		 * fx_pass.c), and ROUND THAT UP.
+		 *
+		 * The margin here is thinner than it looks. A box inset by k has
+		 * its corner (r - k)*sqrt(2) from the arc's centre, so staying
+		 * inside the hole needs k >= r*(1 - 1/sqrt2) = 0.2929r. The 0.3
+		 * leaves 0.7% of slack -- and truncating the product spends far
+		 * more than that: at r = 5, 0.3r is 1.5, truncation insets by 1,
+		 * and the corner lands at 5.66 from a centre 5 away. OUTSIDE the
+		 * hole, so pixman deletes a pixel the arc wanted, and the ring
+		 * opens at exactly one pixel per corner.
+		 *
+		 * That is a subtractive scissor rounded the WRONG WAY, and it only
+		 * shows where 0.3r is small or lands just above an integer: it
+		 * passed radius 40 at scale 1 and failed radius 9, and failed
+		 * radius 40 again at scale 1.5. Round up, then a further pixel for
+		 * the antialiased band, which extends past the nominal arc and is
+		 * just as much the shader's to paint.
+		 */
+		struct wlr_box cut_box = hole_out;
+		const float *ic = cmd->inner_corners;
+		if (ic[0] > 0.0f || ic[1] > 0.0f || ic[2] > 0.0f || ic[3] > 0.0f) {
+			/* clockwise tl, tr, br, bl -> the edge each pair bounds */
+			float top = ic[0] > ic[1] ? ic[0] : ic[1];
+			float right = ic[1] > ic[2] ? ic[1] : ic[2];
+			float bottom = ic[2] > ic[3] ? ic[2] : ic[3];
+			float left = ic[3] > ic[0] ? ic[3] : ic[0];
+			int in_l = (int)ceilf(left * 0.3f) + 1;
+			int in_r = (int)ceilf(right * 0.3f) + 1;
+			int in_t = (int)ceilf(top * 0.3f) + 1;
+			int in_b = (int)ceilf(bottom * 0.3f) + 1;
+			cut_box.x += in_l;
+			cut_box.y += in_t;
+			cut_box.width -= in_l + in_r;
+			cut_box.height -= in_t + in_b;
+		}
+		/* AZ_AVK_BORDER_DEBUG=1 prints the annulus as the renderer
+		 * actually receives it. Reading a border's geometry back out of a
+		 * screenshot means inferring it through two antialiased edges and
+		 * a classifier, which is how a wrong theory survives; this is the
+		 * numbers themselves. Rate-limited to once a second. */
+		static int border_debug = -1;
+		if (border_debug < 0) {
+			const char *env = getenv("AZ_AVK_BORDER_DEBUG");
+			border_debug = env != NULL && env[0] == '1';
+		}
+		if (border_debug) {
+			static time_t last;
+			time_t now = time(NULL);
+			if (now != last) {
+				last = now;
+				wlr_log(WLR_ERROR, "AVK %s: outer %d,%d %dx%d "
+					"corners %.1f/%.1f/%.1f/%.1f | inner %d,%d %dx%d "
+					"corners %.1f/%.1f/%.1f/%.1f | scale %.3f",
+				what, dst->x, dst->y, dst->width, dst->height,
+					cmd->corners[0], cmd->corners[1], cmd->corners[2],
+					cmd->corners[3], hole_out.x, hole_out.y,
+					hole_out.width, hole_out.height,
+					cmd->inner_corners[0], cmd->inner_corners[1],
+					cmd->inner_corners[2], cmd->inner_corners[3],
+					walk->scale);
+			}
+		}
+		pixman_region32_t clip;
+		pixman_region32_init_rect(&clip, dst->x, dst->y,
+		(unsigned)dst->width, (unsigned)dst->height);
+		if (cut_box.width > 0 && cut_box.height > 0) {
+			pixman_region32_t cut;
+			pixman_region32_init_rect(&cut, cut_box.x, cut_box.y,
+				(unsigned)cut_box.width, (unsigned)cut_box.height);
+			pixman_region32_subtract(&clip, &clip, &cut);
+			pixman_region32_fini(&cut);
+		}
+		avk_cmd_set_clip(cmd, &clip);
+		pixman_region32_fini(&clip);
+}
+
 static void az_avk_walk_node(struct az_avk_walk *walk,
 		struct wlr_scene_node *node, int lx, int ly);
 
@@ -1635,100 +1750,8 @@ static void az_avk_walk_node(struct az_avk_walk *walk,
 			square_inner = env != NULL && env[0] == '1';
 		}
 		if (!no_border_clip && !wlr_box_empty(&rect->clipped_region.area)) {
-			struct wlr_box hole = rect->clipped_region.area;
-			struct wlr_box hole_out;
-			az_avk_box_to_output(walk, lx + hole.x, ly + hole.y, hole.width,
-				hole.height, &hole_out);
-			cmd->inner = (struct avk_box){ hole_out.x, hole_out.y,
-				hole_out.width, hole_out.height };
-			cmd->has_inner = true;
-			/* The SAME conversion the outer radii went through, so the two
-			 * edges of the ring are scaled by the same factor and permuted by
-			 * the same table. Rotating the outer corners and not the inner
-			 * ones is a bug that renders perfectly on an unrotated output. */
-			az_avk_corners_from_scenefx(walk, rect->clipped_region.corners,
-				cmd->inner_corners);
-			if (square_inner) {
-				cmd->inner_corners[0] = cmd->inner_corners[1] =
-					cmd->inner_corners[2] = cmd->inner_corners[3] = 0.0f;
-			}
-			/*
-			 * Shrink the scissor cut on each edge by 0.3 of the adjoining
-			 * radius, which is SceneFX's rule (apply_clip_region in
-			 * fx_pass.c), and ROUND THAT UP.
-			 *
-			 * The margin here is thinner than it looks. A box inset by k has
-			 * its corner (r - k)*sqrt(2) from the arc's centre, so staying
-			 * inside the hole needs k >= r*(1 - 1/sqrt2) = 0.2929r. The 0.3
-			 * leaves 0.7% of slack -- and truncating the product spends far
-			 * more than that: at r = 5, 0.3r is 1.5, truncation insets by 1,
-			 * and the corner lands at 5.66 from a centre 5 away. OUTSIDE the
-			 * hole, so pixman deletes a pixel the arc wanted, and the ring
-			 * opens at exactly one pixel per corner.
-			 *
-			 * That is a subtractive scissor rounded the WRONG WAY, and it only
-			 * shows where 0.3r is small or lands just above an integer: it
-			 * passed radius 40 at scale 1 and failed radius 9, and failed
-			 * radius 40 again at scale 1.5. Round up, then a further pixel for
-			 * the antialiased band, which extends past the nominal arc and is
-			 * just as much the shader's to paint.
-			 */
-			struct wlr_box cut_box = hole_out;
-			const float *ic = cmd->inner_corners;
-			if (ic[0] > 0.0f || ic[1] > 0.0f || ic[2] > 0.0f || ic[3] > 0.0f) {
-				/* clockwise tl, tr, br, bl -> the edge each pair bounds */
-				float top = ic[0] > ic[1] ? ic[0] : ic[1];
-				float right = ic[1] > ic[2] ? ic[1] : ic[2];
-				float bottom = ic[2] > ic[3] ? ic[2] : ic[3];
-				float left = ic[3] > ic[0] ? ic[3] : ic[0];
-				int in_l = (int)ceilf(left * 0.3f) + 1;
-				int in_r = (int)ceilf(right * 0.3f) + 1;
-				int in_t = (int)ceilf(top * 0.3f) + 1;
-				int in_b = (int)ceilf(bottom * 0.3f) + 1;
-				cut_box.x += in_l;
-				cut_box.y += in_t;
-				cut_box.width -= in_l + in_r;
-				cut_box.height -= in_t + in_b;
-			}
-			/* AZ_AVK_BORDER_DEBUG=1 prints the annulus as the renderer
-			 * actually receives it. Reading a border's geometry back out of a
-			 * screenshot means inferring it through two antialiased edges and
-			 * a classifier, which is how a wrong theory survives; this is the
-			 * numbers themselves. Rate-limited to once a second. */
-			static int border_debug = -1;
-			if (border_debug < 0) {
-				const char *env = getenv("AZ_AVK_BORDER_DEBUG");
-				border_debug = env != NULL && env[0] == '1';
-			}
-			if (border_debug) {
-				static time_t last;
-				time_t now = time(NULL);
-				if (now != last) {
-					last = now;
-					wlr_log(WLR_ERROR, "AVK border: outer %d,%d %dx%d "
-						"corners %.1f/%.1f/%.1f/%.1f | inner %d,%d %dx%d "
-						"corners %.1f/%.1f/%.1f/%.1f | scale %.3f",
-						dst.x, dst.y, dst.width, dst.height,
-						cmd->corners[0], cmd->corners[1], cmd->corners[2],
-						cmd->corners[3], hole_out.x, hole_out.y,
-						hole_out.width, hole_out.height,
-						cmd->inner_corners[0], cmd->inner_corners[1],
-						cmd->inner_corners[2], cmd->inner_corners[3],
-						walk->scale);
-				}
-			}
-			pixman_region32_t clip;
-			pixman_region32_init_rect(&clip, dst.x, dst.y,
-				(unsigned)dst.width, (unsigned)dst.height);
-			if (cut_box.width > 0 && cut_box.height > 0) {
-				pixman_region32_t cut;
-				pixman_region32_init_rect(&cut, cut_box.x, cut_box.y,
-					(unsigned)cut_box.width, (unsigned)cut_box.height);
-				pixman_region32_subtract(&clip, &clip, &cut);
-				pixman_region32_fini(&cut);
-			}
-			avk_cmd_set_clip(cmd, &clip);
-			pixman_region32_fini(&clip);
+			az_avk_clip_out_region(walk, cmd, &dst, &rect->clipped_region,
+				lx, ly, square_inner, "border");
 		}
 		/*
 		 * THE GRADIENT, SNAPSHOT AND NOT BORROWED.
@@ -1865,16 +1888,77 @@ static void az_avk_walk_node(struct az_avk_walk *walk,
 		return;
 	}
 
-	case WLR_SCENE_NODE_SHADOW:
+	case WLR_SCENE_NODE_SHADOW: {
+		struct wlr_scene_shadow *shadow = wlr_scene_shadow_from_node(node);
+		struct wlr_box dst;
+		az_avk_box_to_output(walk, lx, ly, shadow->width, shadow->height,
+			&dst);
+		if (dst.width <= 0 || dst.height <= 0) {
+			return;
+		}
+		struct avk_cmd *cmd = avk_scene_add(walk->scene, AVK_CMD_SHADOW);
+		if (cmd == NULL) {
+			return;
+		}
+		cmd->dst = (struct avk_box){ dst.x, dst.y, dst.width, dst.height };
+
+		/*
+		 * THE NODE'S BOX IS THE ENVELOPE, NOT THE CASTER.
+		 *
+		 * client_draw_one_shadow() has already grown the box by
+		 * (shadows_size + border) on every side and then applied the
+		 * position offset, precisely so the falloff has somewhere to live.
+		 * The renderer insets it again by blur_sigma to recover the caster.
+		 * Nothing here computes a second envelope, and nothing should: the
+		 * damage this node reports is its box, and a renderer that drew
+		 * outside it would be drawing outside its own damage.
+		 */
+		az_avk_corners_from_scenefx(walk, shadow->corners, cmd->corners);
+
+		/*
+		 * SIGMA IS SCALED, and the reference does not scale it.
+		 *
+		 * REFERENCE BUG FIXED IN AVK: a shadow's blur sigma is converted to
+		 * output pixels like the box and the radii it is measured against.
+		 * SceneFX scales dst_box (scale_box in transform_output_box) and the
+		 * corner radii (fx_corner_radii_scale) and passes blur_sigma through
+		 * in logical units -- so on a fractional-scale output the falloff is
+		 * measured against a box it no longer matches. It is not a subtle
+		 * difference on this desk: DP-1 runs at 1.5 and HDMI-A-1 at 1.0, so
+		 * the same window has a visibly tighter shadow on one monitor than
+		 * the other, and changes shape as it is dragged across the seam.
+		 *
+		 * Scaled HERE, next to the box and the radii, so all three cannot
+		 * drift apart -- the same argument az_avk_corners_from_scenefx makes
+		 * for the radii.
+		 */
+		cmd->blur_sigma = shadow->blur_sigma * (float)walk->scale;
+
+		/* Straight, not premultiplied: shadow.frag multiplies through by the
+		 * coverage it computes, which is not known until then. */
+		memcpy(cmd->color, shadow->color, sizeof(cmd->color));
+
+		/*
+		 * The interior cut-out -- the window's own footprint kept out of its
+		 * own shadow -- travels exactly the road a border's does, and for the
+		 * same reason: the region can express the box but not the arcs.
+		 */
+		if (!wlr_box_empty(&shadow->clipped_region.area)) {
+			az_avk_clip_out_region(walk, cmd, &dst,
+				&shadow->clipped_region, lx, ly, false, "shadow");
+		}
+		return;
+	}
+
 	case WLR_SCENE_NODE_OPTIMIZED_BLUR:
 	case WLR_SCENE_NODE_BLUR:
-		/* M4. Recognised and skipped, with one warning -- not silently
-		 * dropped, because "my shadows disappeared" should have an answer in
+		/* M4F. Recognised and skipped, with one warning -- not silently
+		 * dropped, because "my blur disappeared" should have an answer in
 		 * the log rather than a bisect. */
 		if (!avk.warned_effect_node) {
 			avk.warned_effect_node = true;
-			wlr_log(WLR_INFO, "AVK: shadow and blur nodes are not implemented "
-				"yet (M4); they are skipped in AVK mode");
+			wlr_log(WLR_INFO, "AVK: blur nodes are not implemented yet "
+				"(M4F); they are skipped in AVK mode");
 		}
 		return;
 	}

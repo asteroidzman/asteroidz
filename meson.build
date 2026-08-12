@@ -341,6 +341,16 @@ if build_vulkan
                                   build_by_default : false)
   test('avk-timestamp', test_avk_timestamp, timeout : 120)
 
+  # M4D: shadows. libm because the fixtures carry an independent CPU
+  # transcription of the reference's erf-and-four-samples formula, which is
+  # what AVK's readback is compared against -- not GLES, and not AVK's own
+  # shader.
+  test_avk_shadow = executable('test-avk-shadow',
+                               'tests/test-avk-shadow.c',
+                               dependencies : [avk_dep, libm],
+                               build_by_default : false)
+  test('avk-shadow', test_avk_shadow, timeout : 120)
+
   # asteroidz-avk-probe: run the engine on real hardware and say what it can
   # do. Installed, because until AVK renders the desktop (M3b) this is the
   # only way to exercise it on the machine it will eventually run on -- and it

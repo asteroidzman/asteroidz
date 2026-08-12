@@ -43,6 +43,8 @@ bool avk_renderer_init(struct avk_renderer *renderer, struct avk_device *dev,
 	renderer->break_rounded_off = getenv("AZ_ROUNDED_OFF") != NULL;
 	renderer->break_rounded_single = getenv("AZ_ROUNDED_SINGLE_RADIUS") != NULL;
 	renderer->break_bottom_swap = getenv("AZ_ROUNDED_BOTTOM_SWAP") != NULL;
+	renderer->break_shadow_single_radius =
+		getenv("AZ_SHADOW_SINGLE_RADIUS") != NULL;
 	const char *dbl = getenv("AZ_ROUNDED_DOUBLE_SCALE");
 	renderer->break_rounded_double_scale = dbl != NULL;
 	renderer->break_scale_hint = dbl != NULL ? (float)atof(dbl) : 1.0f;
@@ -632,15 +634,12 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 	for (size_t i = 0; i < scene->len; i++) {
 		const struct avk_cmd *cmd = &scene->cmds[i];
 
-		if ((cmd->has_shadow || cmd->has_blur)
-				&& !renderer->warned_unimplemented_effect) {
-			/* Loud once, and still loud: rounded corners are implemented
-			 * (M4A) but shadows and blur are not, and a compositor that
-			 * quietly renders an incomplete desktop is worse than one that
-			 * says so. The warning goes when the effect arrives, not before.
-			 */
-			avk_log(AVK_WARN, "avk: this scene asks for shadow or blur, which "
-				"is not implemented yet -- rendering without them (M4D/M4F)");
+		if (cmd->has_blur && !renderer->warned_unimplemented_effect) {
+			/* Loud once, and still loud: a compositor that quietly renders an
+			 * incomplete desktop is worse than one that says so. Shadows came
+			 * off this list in M4D; blur goes when M4F lands. */
+			avk_log(AVK_WARN, "avk: this scene asks for blur, which is not "
+				"implemented yet -- rendering without it (M4F)");
 			renderer->warned_unimplemented_effect = true;
 		}
 
@@ -746,7 +745,42 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 		}
 
 		VkPipeline want;
-		if (cmd->type == AVK_CMD_TEXTURE) {
+		if (cmd->type == AVK_CMD_SHADOW) {
+			want = renderer->pipes.shadow;
+			/*
+			 * STRAIGHT rgb, not premultiplied, and this is the one command
+			 * type that hands the shader an unpremultiplied colour on purpose.
+			 * A shadow's final alpha is not known until the shader has
+			 * evaluated its coverage, so the premultiply has to happen there;
+			 * doing it here as well would apply the caster's alpha twice.
+			 */
+			for (int c = 0; c < 4; c++) {
+				pc.color[c] = cmd->color[c];
+			}
+			/* Same slot the texture pipeline uses for its alpha mask and the
+			 * gradient pipeline for its record index. They never draw the same
+			 * command; see push.glsl. */
+			pc.params[1] = cmd->blur_sigma;
+
+			if (renderer->break_shadow_single_radius) {
+				/* Applied to the push constants and not to the command, so
+				 * the stats below still report what the SCENE asked for --
+				 * a break that also hid its own effect from the counters
+				 * would be much harder to recognise in a failure. */
+				pc.corners[1] = pc.corners[2] = pc.corners[3] =
+					pc.corners[0];
+			}
+			renderer->stats.shadow_draws++;
+			if (cmd->corners[0] > 0.0f || cmd->corners[1] > 0.0f ||
+					cmd->corners[2] > 0.0f || cmd->corners[3] > 0.0f) {
+				renderer->stats.rounded_shadow_draws++;
+				if (cmd->corners[0] != cmd->corners[1] ||
+						cmd->corners[1] != cmd->corners[2] ||
+						cmd->corners[2] != cmd->corners[3]) {
+					renderer->stats.asymmetric_shadow_draws++;
+				}
+			}
+		} else if (cmd->type == AVK_CMD_TEXTURE) {
 			if (cmd->image == NULL) {
 				pixman_region32_fini(&region);
 				continue;
