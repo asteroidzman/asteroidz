@@ -109,6 +109,116 @@ struct avk_blur_result {
 	struct avk_box capture;
 };
 
+/*
+ * ── ONE BLUR'S DAMAGE, AS SIX DISTINCT REGIONS ────────────────────────────
+ *
+ * Collapsing any two of these still renders a picture, and the picture is wrong
+ * in a way that only shows when something moves. They are kept apart, named
+ * apart, and counted apart.
+ *
+ *   write            where the result is composited: the node's box, clipped by
+ *                    its own clip region. Not a bounding box -- a client's
+ *                    two-rectangle region stays two rectangles.
+ *
+ *   dependency       source pixels that can reach `write`: write dilated by the
+ *                    REVERSE support, bounded by the scene. The blur's source
+ *                    domain if everything were being recomputed.
+ *
+ *   source_damage    prefix damage landing inside `dependency`. The only source
+ *                    change that can matter to this blur.
+ *
+ *   output_damage    result pixels that may differ: source_damage dilated by
+ *                    the FORWARD support, intersected with `write`, unioned
+ *                    with any material-only invalidation. This is what gets
+ *                    composited and what later blurs inherit.
+ *
+ *   prefix_rebuild   source pixels that must be reconstructed to compute
+ *                    output_damage: output_damage dilated by the REVERSE
+ *                    support again, bounded by the capture.
+ *
+ *                    NOT the same as source_damage, and bigger than it: the
+ *                    filter needs a neighbourhood around every pixel it
+ *                    recomputes. Rendering only the source-damaged pixels into
+ *                    the transient is the mistake this field exists to name.
+ *
+ *   aligned          prefix_rebuild's extents, grown to the even origin the
+ *                    prefix segment's derivative quads need.
+ *
+ * The invariant, and it is asserted rather than believed:
+ *
+ *     output_damage  subset-of  write
+ *     source_damage  subset-of  dependency
+ *     prefix_rebuild subset-of  capture
+ */
+struct avk_blur_damage {
+	pixman_region32_t write;
+	pixman_region32_t dependency;
+	pixman_region32_t source_damage;
+	pixman_region32_t output_damage;
+	pixman_region32_t result_region;
+	pixman_region32_t prefix_rebuild;
+	struct avk_blur_regions regions;
+	/* False when nobody needs a pixel of this blur's result this frame. Its
+	 * command stays in the stream -- the scene is not rewritten -- but no
+	 * capture, no chain and no composite are declared for it, and its
+	 * blur_results entry stays NULL, which is the same state a chain that
+	 * could not be built leaves behind. */
+	bool active;
+};
+
+/*
+ * ── DAMAGE FORWARD, DEMAND BACKWARD ───────────────────────────────────────
+ *
+ * Two sweeps over the same scene order, in opposite directions, computing two
+ * different things. Conflating them is the bug this comment exists to prevent:
+ * they answer "what CHANGED" and "what must be RECOMPUTED", and neither
+ * contains the other.
+ *
+ * SWEEP 1, INCREASING SCENE ORDER -- DAMAGE.
+ *
+ *     prefix_damage = the frame's damage
+ *     for each blur k in increasing order:
+ *         source_damage(k) = prefix_damage  ∩  dependency(k)
+ *         output_damage(k) = dilate_forward(source_damage(k))  ∩  write(k)
+ *         prefix_damage   ∪= output_damage(k)      <- later blurs see it
+ *         frame_damage    ∪= output_damage(k)      <- the output must show it
+ *
+ * A blur's own output joins the prefix damage only AFTER its own source damage
+ * has been read, which is the code-level reason a blur can never feed itself.
+ * An ordinary command needs no step of its own: it draws only where it is
+ * already damaged, so it cannot enlarge the damage.
+ *
+ * ONE PASS SUFFICES, and this is a property of the architecture rather than
+ * luck. A blur at index k samples exactly [0, k), so every dependency edge runs
+ * from a lower scene index to a higher one: the dependency graph is a DAG whose
+ * topological order IS the scene order. Visiting in increasing index therefore
+ * reaches a fixed point in one sweep, and an iterative solver would be a loop
+ * that always ran exactly once. If a feedback edge ever appears -- a blur
+ * sampling something drawn after it -- this stops being true, which is one more
+ * reason BREAK=blur-scene-after is kept alive.
+ *
+ * SWEEP 2, DECREASING SCENE ORDER -- DEMAND.
+ *
+ *     demand = frame_damage           <- what the OUTPUT still needs composited
+ *     for each blur k in decreasing order:
+ *         result_region(k)  = demand ∩ write(k)
+ *         prefix_rebuild(k) = dilate_reverse(result_region(k)) ∩ capture(k)
+ *         demand           ∪= prefix_rebuild(k)   <- earlier commands owe it
+ *
+ * Demand flows the other way because a blur's PREFIX is a composite of
+ * everything before it: asking for a blur's result over some region asks every
+ * earlier command for its contribution over a LARGER region -- larger by the
+ * filter's support, which is what prefix_rebuild is.
+ *
+ * This is what makes an earlier blur's result available to a later one's
+ * prefix. Skipping a blur because its own source did not change would be wrong
+ * exactly when a later blur is rebuilding prefix pixels that lie inside it; the
+ * demand sweep is what turns that into a region rather than a special case.
+ *
+ * Both sweeps are single-pass and neither iterates. Damage never flows
+ * backwards, and demand never flows forwards.
+ */
+
 struct avk_renderer_stats {
 	/* M4A. Proof the rounded path is being taken at all, and how often it is
 	 * taken with corners that differ -- the case a single-radius
@@ -233,6 +343,38 @@ struct avk_renderer {
 	bool break_blur_ignore_darken;
 	bool break_blur_ignore_clip;
 	bool break_blur_edge_logical_sigma;
+	/*
+	 * M4F.2B breaks.
+	 *
+	 * `blur_under_damage` removes one mathematically required layer of
+	 * expansion: the FORWARD dilation that turns a changed source pixel into
+	 * the wider set of result pixels it can reach. Damage still propagates --
+	 * the blur is still recomputed, the counters still move -- so nothing but
+	 * the picture can catch it, and what it leaves is a ring of stale blur
+	 * around every change, which is the classic under-damage artifact.
+	 *
+	 * THERE IS NO break_blur_no_transitive_damage, AND THAT IS A MEASUREMENT.
+	 * One was written -- it stopped a blur's output damage from joining the
+	 * prefix damage a later blur reads -- and it could not be made to leave
+	 * more than 4 wrong pixels at 1 code in any geometry tried. The reason is
+	 * not the implementation: a dual-Kawase blur PRESERVES THE LOCAL MEAN, so
+	 * blurring an already-blurred field gives very nearly what blurring the raw
+	 * field would. Removing blur 1 from a two-blur scene ENTIRELY, replacing
+	 * 120 of the 136 columns of blur 2's source, moved blur 2's output by ONE
+	 * CODE. The region a missing transitive edge leaves stale is additionally
+	 * at kernel-tail distance in BOTH blurs, so the error is a product of two
+	 * decays. The edge is still mathematically required and is asserted
+	 * STRUCTURALLY instead, through blur_transitive_damage_pixels below. See
+	 * docs/avk-effects.md.
+	 *
+	 * `blur_full_damage_always` is not a break but the ORACLE: it forces the
+	 * complete dependency rebuild and the complete write-region recomposition
+	 * that M4F.2A.3 did unconditionally, WITHOUT changing blur semantics and
+	 * without touching the scene-prefix architecture. A partial frame that
+	 * differs from this by one pixel has a damage bug.
+	 */
+	bool break_blur_under_damage;
+	bool blur_full_damage;
 	/* What to divide by under break_blur_edge_logical_sigma. The renderer has no
 	 * scale of its own -- geometry arrives already in output pixels -- so the
 	 * break is told, exactly as break_rounded_double_scale is. */
@@ -298,9 +440,67 @@ struct avk_renderer {
 	 * cache would be bought with, and it should be measured rather than
 	 * assumed.
 	 */
+	/*
+	 * WHAT THE LAST FRAME ACTUALLY REDREW, in output pixels.
+	 *
+	 * The damage the caller handed in, unioned with every blur's output damage.
+	 * A blur turns a small source change into a wider result change, and the
+	 * compositor has to tell the backend about the wider one -- reporting only
+	 * what the client damaged leaves a blurred fringe on screen until something
+	 * unrelated happens to damage it.
+	 *
+	 * Valid until the next avk_render_frame() on this renderer. That is exactly
+	 * long enough for its one caller, which reads it before rendering anything
+	 * else, and it is a deliberate alternative to writing back through the
+	 * `const struct avk_scene *` the frame was given.
+	 */
+	pixman_region32_t frame_damage;
 	uint64_t blur_prefix_replays;
 	uint64_t blur_prefix_commands;
 	uint64_t blur_prefix_pixels;
+	/*
+	 * M4F.2B. What damage propagation actually bought, as areas rather than as
+	 * a belief. Every one of these is a pixel count summed over the run, and
+	 * they are stated in pairs so a ratio is available without a second
+	 * instrument:
+	 *
+	 *   source_damage / full_dependency   how much of the source moved
+	 *   output_damage / full_write        how much of the result may differ
+	 *   prefix_rebuild / full_capture     how much had to be reconstructed
+	 *
+	 * blur_damage_saved_pixels is the last pair's difference, kept explicitly
+	 * so "we saved 0" is a number rather than the absence of one.
+	 */
+	uint64_t blur_source_damage_pixels;
+	uint64_t blur_output_damage_pixels;
+	uint64_t blur_prefix_rebuild_pixels;
+	uint64_t blur_full_dependency_pixels;
+	uint64_t blur_full_write_pixels;
+	uint64_t blur_full_capture_pixels;
+	uint64_t blur_damage_saved_pixels;
+	uint64_t blur_damage_nodes_touched;
+	uint64_t blur_damage_nodes_skipped;
+	/*
+	 * SOURCE DAMAGE ONE BLUR INHERITED FROM ANOTHER -- the forward sweep's one
+	 * edge, counted, because it cannot be seen in the picture.
+	 *
+	 * Exactly the pixels of a blur's source damage that came from an EARLIER
+	 * blur's output rather than from the frame's own input damage. Zero in
+	 * every single-blur frame and positive whenever one blur's result lies in
+	 * another's dependency, so an omission moves it to zero and a test notices
+	 * -- which is the only way this edge can be falsified. See the note beside
+	 * the breaks above for why a pixel-level falsifier is not available.
+	 */
+	uint64_t blur_transitive_damage_pixels;
+	/* Conservative collapses to a whole region. Explicit and counted, because
+	 * a fallback nobody can see becomes the only path. */
+	uint64_t blur_damage_fallbacks;
+	/* The most rectangles any one blur's rebuild region arrived in this run,
+	 * and the CPU cost of both sweeps. Region complexity is the thing that
+	 * would justify a tile scheme later; it is measured before anything is
+	 * built on the assumption. */
+	uint64_t blur_damage_rects_max;
+	uint64_t blur_damage_build_ns;
 	VkFormat format;
 
 	struct avk_renderer_stats stats;

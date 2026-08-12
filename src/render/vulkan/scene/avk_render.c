@@ -6,12 +6,14 @@
 #include "../debug/avk_debug.h"
 
 #include <inttypes.h>
+#include <math.h>
 #include <string.h>
 #include <time.h>
 
 bool avk_renderer_init(struct avk_renderer *renderer, struct avk_device *dev,
 		VkFormat format) {
 	memset(renderer, 0, sizeof(*renderer));
+	pixman_region32_init(&renderer->frame_damage);
 	renderer->dev = dev;
 	renderer->format = format;
 
@@ -68,6 +70,21 @@ bool avk_renderer_init(struct avk_renderer *renderer, struct avk_device *dev,
 	if (renderer->break_blur_edge_scale <= 0.0f) {
 		renderer->break_blur_edge_scale = 1.5f;
 	}
+	renderer->break_blur_under_damage =
+		getenv("AZ_BLUR_UNDER_DAMAGE") != NULL;
+	if (renderer->break_blur_under_damage) {
+		avk_log(AVK_ERROR, "M4F.2B break switch active: a blur's source damage "
+			"is NOT expanded by the filter support -- expect a stale ring "
+			"around everything that changes");
+	}
+	/*
+	 * THE ORACLE, not a break. Forces the full dependency rebuild and the full
+	 * write-region recomposition, using the same current-frame prefix
+	 * architecture and the same material -- so a partial frame that differs
+	 * from it differs because of damage and for no other reason. This is NOT
+	 * the reference's historical-source path and does not restore it.
+	 */
+	renderer->blur_full_damage = getenv("AZ_BLUR_FULL_DAMAGE") != NULL;
 	if (renderer->break_blur_ignore_darken || renderer->break_blur_ignore_clip
 			|| renderer->break_blur_edge_logical_sigma) {
 		avk_log(AVK_ERROR, "M4F.2A.3 break switch active: blur material is "
@@ -117,6 +134,7 @@ void avk_renderer_finish(struct avk_renderer *renderer) {
 	if (renderer->dev == NULL) {
 		return;
 	}
+	pixman_region32_fini(&renderer->frame_damage);
 	/* Before the retire queue is drained: growth pushes old gradient buffers
 	 * onto that queue, and finishing the store destroys only the buffers the
 	 * slots still hold. */
@@ -344,6 +362,87 @@ static bool az_foreign(const struct avk_image *image) {
 		no_foreign = env != NULL && env[0] == '1';
 	}
 	return !no_foreign && avk_image_is_foreign(image);
+}
+
+/*
+ * ── REGION ARITHMETIC FOR DAMAGE ──────────────────────────────────────────
+ *
+ * Two small helpers rather than a dependency. wlroots has wlr_region_expand()
+ * and it does exactly this, but nothing under src/render/vulkan/ links against
+ * wlroots -- tests/check-vulkan-isolation.py enforces that -- and one function
+ * is a smaller price than the exception would be.
+ */
+
+/* Dilate every rectangle of `src` by a per-edge support, into an already
+ * initialised `dst`, which may not alias `src`. Rounded OUTWARD on every edge:
+ * a damage region rounded inward is a stale pixel. */
+static void az_region_expand(pixman_region32_t *dst,
+		const pixman_region32_t *src, const struct avk_blur_support *by) {
+	int32_t l = (int32_t)ceilf(by->left);
+	int32_t t = (int32_t)ceilf(by->top);
+	int32_t r = (int32_t)ceilf(by->right);
+	int32_t b = (int32_t)ceilf(by->bottom);
+
+	int count = 0;
+	const pixman_box32_t *rects = pixman_region32_rectangles(
+		(pixman_region32_t *)src, &count);
+	pixman_region32_clear(dst);
+	for (int i = 0; i < count; i++) {
+		pixman_region32_union_rect(dst, dst, rects[i].x1 - l, rects[i].y1 - t,
+			(unsigned)(rects[i].x2 - rects[i].x1 + l + r),
+			(unsigned)(rects[i].y2 - rects[i].y1 + t + b));
+	}
+}
+
+static uint64_t az_region_area(const pixman_region32_t *region) {
+	if (region == NULL) {
+		return 0;
+	}
+	int count = 0;
+	const pixman_box32_t *rects = pixman_region32_rectangles(
+		(pixman_region32_t *)region, &count);
+	uint64_t area = 0;
+	for (int i = 0; i < count; i++) {
+		area += (uint64_t)(rects[i].x2 - rects[i].x1)
+			* (uint64_t)(rects[i].y2 - rects[i].y1);
+	}
+	return area;
+}
+
+/*
+ * Past this many rectangles a blur's rebuild region collapses to its extents.
+ * Chosen to match wlroots' own damage-ring limit, which collapses at 20: a
+ * region that has fragmented further than the compositor's own damage tracking
+ * would keep is not one worth walking per level.
+ */
+#define AVK_BLUR_DAMAGE_MAX_RECTS 20
+
+/* One blur's damage regions, plus what the declaration loop needs to build its
+ * chain. Held in a per-frame array so the two sweeps and the declaration can
+ * each see what the others computed. */
+struct az_blur_slot {
+	size_t index;
+	struct avk_blur_params params;
+	struct avk_blur_damage damage;
+};
+
+static void az_blur_damage_init(struct avk_blur_damage *d) {
+	pixman_region32_init(&d->write);
+	pixman_region32_init(&d->dependency);
+	pixman_region32_init(&d->source_damage);
+	pixman_region32_init(&d->output_damage);
+	pixman_region32_init(&d->result_region);
+	pixman_region32_init(&d->prefix_rebuild);
+	d->active = false;
+}
+
+static void az_blur_damage_finish(struct avk_blur_damage *d) {
+	pixman_region32_fini(&d->write);
+	pixman_region32_fini(&d->dependency);
+	pixman_region32_fini(&d->source_damage);
+	pixman_region32_fini(&d->output_damage);
+	pixman_region32_fini(&d->result_region);
+	pixman_region32_fini(&d->prefix_rebuild);
 }
 
 /* The rectangles a command may actually touch: its own clip, intersected with
@@ -1148,11 +1247,39 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 		}
 	}
 	struct avk_render_segment *prefix_segs = NULL;
+	struct az_blur_slot *slots = NULL;
+	/*
+	 * The damage state the two sweeps carry. Initialised even with no blur in
+	 * the frame -- both sweeps then run over zero slots and `frame_damage` goes
+	 * back to `scene->damage` unchanged, which is the direct path costing three
+	 * region operations rather than a branch nobody tests.
+	 */
+	pixman_region32_t prefix_damage, frame_damage, blur_generated;
+	pixman_region32_init(&prefix_damage);
+	pixman_region32_init(&frame_damage);
+	/* Damage this frame's blurs produced, as opposed to damage that arrived
+	 * with it. Only used to count the transitive edge. */
+	pixman_region32_init(&blur_generated);
+	pixman_region32_copy(&prefix_damage, &scene->damage);
+	pixman_region32_copy(&frame_damage, &scene->damage);
 	if (blur_count > 0) {
+		slots = calloc(blur_count, sizeof(*slots));
+		if (slots == NULL) {
+			pixman_region32_fini(&prefix_damage);
+			pixman_region32_fini(&frame_damage);
+   pixman_region32_fini(&blur_generated);
+			avk_cmd_ring_abandon(&renderer->ring);
+			return 0;
+		}
 		if (renderer->blur_results_cap < scene->len) {
 			void *grown = realloc(renderer->blur_results,
 				scene->len * sizeof(*renderer->blur_results));
 			if (grown == NULL) {
+				free(slots);
+	pixman_region32_fini(&frame_damage);
+				pixman_region32_fini(&prefix_damage);
+				pixman_region32_fini(&frame_damage);
+    pixman_region32_fini(&blur_generated);
 				avk_cmd_ring_abandon(&renderer->ring);
 				return 0;
 			}
@@ -1165,19 +1292,36 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 		 * them -- the graph holds the pointer. */
 		prefix_segs = calloc(blur_count, sizeof(*prefix_segs));
 		if (prefix_segs == NULL) {
+			free(slots);
+			pixman_region32_fini(&prefix_damage);
+			pixman_region32_fini(&frame_damage);
+   pixman_region32_fini(&blur_generated);
 			avk_cmd_ring_abandon(&renderer->ring);
 			return 0;
 		}
 	}
 
 	struct avk_box scene_bounds = { 0, 0, (int32_t)width, (int32_t)height };
-	size_t seg_at = 0;
+
+	/*
+	 * ── THE TWO DAMAGE SWEEPS ─────────────────────────────────────────────
+	 *
+	 * Damage forward, demand backward; see the long comment on
+	 * struct avk_blur_damage in avk_render.h for why they are two sweeps and
+	 * why neither of them iterates.
+	 */
+	struct timespec damage_start;
+	clock_gettime(CLOCK_MONOTONIC, &damage_start);
+
+	size_t slot_len = 0;
 	for (size_t i = 0; i < scene->len && blur_count > 0; i++) {
 		const struct avk_cmd *cmd = &scene->cmds[i];
 		if (cmd->type != AVK_CMD_BLUR || cmd->blur_levels == 0) {
 			continue;
 		}
-		struct avk_blur_params params = {
+		struct az_blur_slot *slot = &slots[slot_len];
+		slot->index = i;
+		slot->params = (struct avk_blur_params){
 			.levels = cmd->blur_levels,
 			.radius = cmd->blur_radius,
 			.brightness = cmd->blur_brightness,
@@ -1188,12 +1332,220 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 			.darken = cmd->blur_darken
 				&& !renderer->break_blur_ignore_darken,
 		};
+		struct avk_blur_damage *d = &slot->damage;
+		if (!avk_blur_regions_of(&d->regions, &cmd->dst, &slot->params,
+				&scene_bounds)) {
+			continue;
+		}
+		az_blur_damage_init(d);
+		slot_len++;
+
+		/*
+		 * WRITE: the node's box intersected with its own clip -- the region,
+		 * not its bounding box. This is the same geometry the composite draws,
+		 * computed the same way, because a damage region that disagreed with
+		 * the draw would be right about a rectangle the draw never touches.
+		 */
+		pixman_region32_init_rect(&d->write, d->regions.write.x,
+			d->regions.write.y, (unsigned)d->regions.write.width,
+			(unsigned)d->regions.write.height);
+		if (cmd->has_clip && !renderer->break_blur_ignore_clip) {
+			pixman_region32_intersect(&d->write, &d->write,
+				(pixman_region32_t *)&cmd->clip);
+		}
+
+		/*
+		 * DEPENDENCY: write dilated by the REVERSE support -- what this blur
+		 * could read if everything were recomputed. Bounded by the scene, since
+		 * a source pixel off the output does not exist.
+		 */
+		struct avk_blur_support rev = avk_blur_support_of(&slot->params,
+			(uint32_t)d->regions.write.width,
+			(uint32_t)d->regions.write.height);
+		az_region_expand(&d->dependency, &d->write, &rev);
+		pixman_region32_intersect_rect(&d->dependency, &d->dependency,
+			scene_bounds.x, scene_bounds.y, (unsigned)scene_bounds.width,
+			(unsigned)scene_bounds.height);
+
+		/*
+		 * SOURCE DAMAGE: the prefix damage so far, landing inside the
+		 * dependency.
+		 *
+		 * `prefix_damage` starts as the frame's damage, which over-approximates
+		 * in one direction worth naming: it includes changes caused by commands
+		 * drawn AFTER this blur, which cannot be in its source. Conservative,
+		 * cheap, and a frame in which that matters is one where the window
+		 * above the blur moved -- so the blur is being recomposited anyway.
+		 */
+		pixman_region32_intersect(&d->source_damage, &prefix_damage,
+			&d->dependency);
+		/* How much of it came from an EARLIER BLUR rather than from the frame's
+		 * own input damage. The forward sweep's one edge, and the only way it
+		 * can be falsified -- see blur_transitive_damage_pixels. */
+		if (pixman_region32_not_empty(&blur_generated)) {
+			pixman_region32_t inherited;
+			pixman_region32_init(&inherited);
+			pixman_region32_intersect(&inherited, &d->source_damage,
+				&blur_generated);
+			renderer->blur_transitive_damage_pixels +=
+				az_region_area(&inherited);
+			pixman_region32_fini(&inherited);
+		}
+
+		/*
+		 * OUTPUT DAMAGE: source damage dilated by the FORWARD support, clipped
+		 * to what this blur actually writes.
+		 *
+		 * This also covers a demand that is easy to miss: every pixel inside the
+		 * frame's damage is rebuilt from the clear upward, so a blur whose write
+		 * region is damaged must produce pixels there even if its own source did
+		 * not move. It needs no separate term -- write is a subset of dependency,
+		 * so `frame_damage ∩ write` is already inside source_damage, and
+		 * dilation only grows it.
+		 */
+		if (renderer->break_blur_under_damage) {
+			/* The break: skip the forward dilation entirely. The blur is still
+			 * recomputed, the counters still move, and a ring of stale result
+			 * one support wide is left around every change. */
+			pixman_region32_copy(&d->output_damage, &d->source_damage);
+			pixman_region32_intersect(&d->output_damage, &d->output_damage,
+				&d->write);
+		} else {
+			struct avk_blur_support fwd = avk_blur_forward_support_of(
+				&slot->params, (uint32_t)d->regions.write.width,
+				(uint32_t)d->regions.write.height);
+			az_region_expand(&d->output_damage, &d->source_damage, &fwd);
+			pixman_region32_intersect(&d->output_damage, &d->output_damage,
+				&d->write);
+		}
+		if (renderer->blur_full_damage) {
+			/* The oracle: everything this blur writes, every frame. */
+			pixman_region32_copy(&d->output_damage, &d->write);
+		}
+
+		/*
+		 * FORWARD, and only now. The blur's own output joins the prefix damage
+		 * AFTER its own source damage has been read, which is the line that
+		 * makes a blur feeding itself structurally impossible rather than
+		 * merely avoided.
+		 */
+		pixman_region32_union(&prefix_damage, &prefix_damage,
+			&d->output_damage);
+		pixman_region32_union(&frame_damage, &frame_damage, &d->output_damage);
+		pixman_region32_union(&blur_generated, &blur_generated,
+			&d->output_damage);
+	}
+
+	/*
+	 * THE FRAME'S DAMAGE, GROWN BY EVERY BLUR THAT CHANGED.
+	 *
+	 * Published on the renderer rather than written back through `scene`, which
+	 * is const here and belongs to the caller. Valid until the next
+	 * avk_render_frame() on this renderer, which is exactly long enough: the
+	 * compositor reads it immediately afterwards to tell the backend what
+	 * changed, and telling the backend LESS than was redrawn is how a blurred
+	 * fringe survives on screen for as long as nothing else damages it.
+	 */
+	pixman_region32_copy(&renderer->frame_damage, &frame_damage);
+
+	/*
+	 * ── SWEEP 2: DEMAND, BACKWARD ─────────────────────────────────────────
+	 *
+	 * `demand` is what somebody still needs composited. It starts as the output
+	 * frame's damage and grows as each blur's prefix asks earlier commands for
+	 * a wider region than the output ever wanted.
+	 */
+	pixman_region32_t demand;
+	pixman_region32_init(&demand);
+	pixman_region32_copy(&demand, &frame_damage);
+	for (size_t s = slot_len; s-- > 0; ) {
+		struct az_blur_slot *slot = &slots[s];
+		struct avk_blur_damage *d = &slot->damage;
+
+		pixman_region32_intersect(&d->result_region, &demand, &d->write);
+		if (!pixman_region32_not_empty(&d->result_region)) {
+			renderer->blur_damage_nodes_skipped++;
+			continue;
+		}
+		d->active = true;
+
+		struct avk_blur_support rev = avk_blur_support_of(&slot->params,
+			(uint32_t)d->regions.write.width,
+			(uint32_t)d->regions.write.height);
+		az_region_expand(&d->prefix_rebuild, &d->result_region, &rev);
+		pixman_region32_intersect_rect(&d->prefix_rebuild, &d->prefix_rebuild,
+			d->regions.capture.x, d->regions.capture.y,
+			(unsigned)d->regions.capture.width,
+			(unsigned)d->regions.capture.height);
+
+		/*
+		 * THE FALLBACK, explicit and counted. A region that has fragmented past
+		 * this collapses to its own extents -- still inside the capture, never
+		 * outside it, so the result stays correct and only the work grows.
+		 * Silently collapsing every complex region is how a damage system
+		 * becomes a full redraw nobody notices.
+		 */
+		int rects = 0;
+		pixman_region32_rectangles(&d->prefix_rebuild, &rects);
+		if ((uint64_t)rects > renderer->blur_damage_rects_max) {
+			renderer->blur_damage_rects_max = (uint64_t)rects;
+		}
+		if (rects > AVK_BLUR_DAMAGE_MAX_RECTS) {
+			pixman_box32_t ext = *pixman_region32_extents(&d->prefix_rebuild);
+			pixman_region32_fini(&d->prefix_rebuild);
+			pixman_region32_init_rect(&d->prefix_rebuild, ext.x1, ext.y1,
+				(unsigned)(ext.x2 - ext.x1), (unsigned)(ext.y2 - ext.y1));
+			renderer->blur_damage_fallbacks++;
+		}
+
+		pixman_region32_union(&demand, &demand, &d->prefix_rebuild);
+	}
+	pixman_region32_fini(&demand);
+	pixman_region32_fini(&prefix_damage);
+	pixman_region32_fini(&blur_generated);
+	/* frame_damage outlives this: the output segment points AT it, and a
+	 * segment's active region has to survive until avk_graph_execute() has
+	 * recorded the pass that reads it. */
+
+	struct timespec damage_end;
+	clock_gettime(CLOCK_MONOTONIC, &damage_end);
+	renderer->blur_damage_build_ns +=
+		(uint64_t)(damage_end.tv_sec - damage_start.tv_sec) * 1000000000ULL
+		+ (uint64_t)(damage_end.tv_nsec - damage_start.tv_nsec);
+
+	size_t seg_at = 0;
+	for (size_t s = 0; s < slot_len; s++) {
+		struct az_blur_slot *slot = &slots[s];
+		struct avk_blur_damage *d = &slot->damage;
+		const size_t i = slot->index;
+		const struct avk_blur_regions rg = d->regions;
+		struct avk_blur_params params = slot->params;
+
+		/* Areas, whether or not this blur runs: a skipped blur's saving is only
+		 * meaningful against what it would otherwise have cost. */
+		renderer->blur_full_write_pixels +=
+			(uint64_t)rg.write.width * (uint64_t)rg.write.height;
+		renderer->blur_full_dependency_pixels +=
+			(uint64_t)rg.dependency.width * (uint64_t)rg.dependency.height;
+		renderer->blur_full_capture_pixels +=
+			(uint64_t)rg.capture.width * (uint64_t)rg.capture.height;
+		renderer->blur_source_damage_pixels +=
+			az_region_area(&d->source_damage);
+		renderer->blur_output_damage_pixels +=
+			az_region_area(&d->output_damage);
+		uint64_t rebuild_px = az_region_area(&d->prefix_rebuild);
+		renderer->blur_prefix_rebuild_pixels += rebuild_px;
+		uint64_t full_px = (uint64_t)rg.capture.width
+			* (uint64_t)rg.capture.height;
+		renderer->blur_damage_saved_pixels +=
+			full_px > rebuild_px ? full_px - rebuild_px : 0;
+
+		if (!d->active) {
+			continue;
+		}
+		renderer->blur_damage_nodes_touched++;
 		if (params.darken) {
 			renderer->stats.blur_darken_passes++;
-		}
-		struct avk_blur_regions rg;
-		if (!avk_blur_regions_of(&rg, &cmd->dst, &params, &scene_bounds)) {
-			continue;
 		}
 
 		struct avk_image *prefix = avk_transient_acquire(&renderer->transients,
@@ -1223,10 +1575,22 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 			/* [0, k) -- the blur's own command is NOT in its own source.
 			 * The break makes it [0, len), which is the reference's defect. */
 			.end = renderer->break_blur_scene_after ? scene->len : i,
-			/* The aligned capture region, not the allocation: the pool may have
-			 * handed out a larger image and its padding must stay unwritten and
-			 * unsampled. */
-			.active = NULL,
+			/*
+			 * ONLY THE PIXELS THE CHAIN WILL READ. The transient's EXTENT is
+			 * still the whole capture and deliberately so: a dual-Kawase level
+			 * grid is derived from the image's extent, so a smaller capture
+			 * would sample at different positions and produce a different --
+			 * not wrong, but different -- blur. Pixel-identity with a forced
+			 * full render is the milestone's oracle, so the grid is held fixed
+			 * and the REGION is what shrinks.
+			 *
+			 * Everything outside prefix_rebuild is left undefined (loadOp
+			 * DONT_CARE, and under AZ_TRANSIENT_POISON it is a colour nothing
+			 * produces). Nothing samples it: prefix_rebuild is result_region
+			 * dilated by the full chain support, so every tap taken for a pixel
+			 * of result_region lands inside it.
+			 */
+			.active = &d->prefix_rebuild,
 			.clear = true,
 			.load = false,
 			.gradient_set = gradient_set,
@@ -1249,8 +1613,15 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 		 * renderer did not use.
 		 */
 		renderer->blur_prefix_commands += seg->end - seg->begin;
-		renderer->blur_prefix_pixels +=
-			(uint64_t)rg.capture.width * (uint64_t)rg.capture.height;
+		/*
+		 * AND THE SAME RULE FOR THE AREA. This was the capture's full extent,
+		 * which stopped being what the replay writes the moment the segment
+		 * acquired an active region -- it would have gone on reporting M4F.2A's
+		 * figure while the renderer did a fraction of the work, and the saving
+		 * this milestone exists to produce would have been invisible in the one
+		 * counter named after it. Read from the region the segment was given.
+		 */
+		renderer->blur_prefix_pixels += az_region_area(seg->active);
 
 		/* The chain writes its final upsample back into the prefix transient:
 		 * nothing reads the unblurred prefix after the first downsample, so a
@@ -1282,7 +1653,10 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 		.origin_y = 0,
 		.begin = 0,
 		.end = scene->len,
-		.active = &scene->damage,
+		/* The frame's damage AFTER blur propagation: a blur whose source moved
+		 * changes result pixels over a wider area than the source damage
+		 * covers, and those pixels have to be composited. */
+		.active = &frame_damage,
 		.clear = true,
 		.load = true,
 		.gradient_set = gradient_set,
@@ -1295,8 +1669,13 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 	/* Compile and record: barriers, the pass, then the exit transitions that
 	 * hand every foreign image back to its real owner. */
 	avk_graph_execute(graph, cb, &renderer->timestamps, ts_slot);
-	/* Recorded; the graph no longer holds these. */
+	/* Recorded; the graph no longer holds these -- nor the regions the segments
+	 * pointed at, which live in the slots. */
 	free(prefix_segs);
+	for (size_t s = 0; s < slot_len; s++) {
+		az_blur_damage_finish(&slots[s].damage);
+	}
+	free(slots);
 	renderer->stats.barriers += graph->stats.image_transitions
 		+ graph->stats.memory_barriers;
 

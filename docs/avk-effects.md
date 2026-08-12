@@ -4018,3 +4018,168 @@ all four edges. AVK already derives the real chain support per edge
 (`avk_blur_support_of()`, `M4F support — derived, not fitted` above), and the
 padding-copy hack has no counterpart here at all: a prefix capture is written
 fresh every frame, so there is no seam to paste over.
+
+## M4F.2B.1/.2 — damage forward, demand backward
+
+### The model, in six regions and two sweeps
+
+`struct avk_blur_damage` keeps six regions apart per blur, because collapsing
+any two of them still renders a plausible picture that is wrong only when
+something moves:
+
+| region | is | derived from |
+| --- | --- | --- |
+| `write` | where the result is composited | node box ∩ its own clip region |
+| `dependency` | source that can reach it | `write` dilated by the REVERSE support |
+| `source_damage` | source that actually moved | prefix damage ∩ `dependency` |
+| `output_damage` | result that may differ | `source_damage` dilated FORWARD ∩ `write` |
+| `result_region` | result somebody needs | demand ∩ `write` |
+| `prefix_rebuild` | source to reconstruct | `result_region` dilated REVERSE ∩ `capture` |
+
+**`prefix_rebuild` is not `source_damage`, and is bigger.** The filter needs a
+neighbourhood around every pixel it recomputes. Rendering only the
+source-damaged pixels into the transient is the specific mistake the region set
+exists to name, and the test asserts the inequality rather than trusting it.
+
+**Two sweeps, opposite directions, one pass each.**
+
+```text
+SWEEP 1, increasing scene order — DAMAGE
+    prefix_damage = the frame's damage
+    for each blur k:
+        source_damage(k) = prefix_damage ∩ dependency(k)
+        output_damage(k) = dilate_forward(source_damage(k)) ∩ write(k)
+        prefix_damage   ∪= output_damage(k)     ← later blurs see it
+        frame_damage    ∪= output_damage(k)     ← the output must show it
+
+SWEEP 2, decreasing scene order — DEMAND
+    demand = frame_damage
+    for each blur k:
+        result_region(k)  = demand ∩ write(k)
+        prefix_rebuild(k) = dilate_reverse(result_region(k)) ∩ capture(k)
+        demand           ∪= prefix_rebuild(k)   ← earlier commands owe it
+```
+
+A blur's output joins the prefix damage only *after* its own source damage has
+been read: that single line of ordering is why a blur can never feed itself, and
+it is the same property `BREAK=blur-scene-after` exists to falsify.
+
+**One forward pass is sufficient, and it is an architectural property rather
+than luck.** A blur at index *k* samples exactly `[0, k)`, so every dependency
+edge runs from a lower scene index to a higher one; the dependency graph is a
+DAG whose topological order *is* the scene order. An iterative fixed-point
+solver would be a loop that always ran exactly once. The demand sweep is the
+same argument reversed — asking for a blur's result asks earlier commands for a
+region larger by the support, and that request only ever travels backwards.
+
+**Why a demand sweep is needed at all.** Skipping a blur whose own source did not
+change is wrong exactly when a *later* blur is rebuilding prefix pixels that lie
+inside it. The demand sweep turns that into a region rather than a special case,
+and makes "this blur does nothing this frame" a safe, counted decision.
+
+### Forward support == reverse support, derived
+
+`avk_blur_support_of()` answers *what source can affect this output pixel*;
+damage asks the inverse. They are the same number and that is a derivation, not
+an assumption: the level mapping is affine (`centre(p) = (p + 0.5) · span`) and
+the kernel is symmetric, so dilating an interval through one step costs the same
+constant in source pixels whichever way it is traversed. Summing the chain gives
+the identical total.
+
+What is *not* shared is the rounding — one maps output→source, the other
+source→output — so `avk_blur_forward_support_of()` exists as its own entry point
+and both round outward. `test_forward_support_walk` composes the steps level by
+level instead of summing them, over 24 (extent, radius) pairs including
+63/64/65/127/128/129, and the two routes agree to **0.000003 px** — which is
+float storage, not arithmetic.
+
+### The prefix transient keeps its EXTENT and loses only its REGION
+
+The obvious saving — allocate a transient the size of the damage — is wrong, and
+the reason is worth stating because it looks like an optimisation:
+
+> A dual-Kawase level grid is derived from the image's extent. `level_extent()`
+> floors, so a *smaller capture* has different level extents, different texel
+> spans and different sample positions, and produces a **different** blur. Not a
+> wrong one — a different one.
+
+Pixel-identity with a forced-full render is this milestone's oracle, so the grid
+is held fixed and only the segment's active region shrinks. Everything outside
+`prefix_rebuild` is left `DONT_CARE` and is never sampled, because
+`prefix_rebuild` is `result_region` dilated by the whole chain support: every tap
+taken for a pixel of `result_region` lands inside it. **Under
+`AZ_TRANSIENT_POISON=1` the untouched part of a reused transient is a colour
+nothing produces, and the whole suite passes 39/39** — which is the hard
+invariant ("every sampled source pixel is freshly reconstructed this frame")
+tested rather than argued.
+
+### What it saved, and the number that governs it
+
+The saving is not a property of the damage code. It is the ratio of the
+**support** to the **node**:
+
+```text
+rebuild  ~  (change + 4·support)²  /  (node + 2·support)²
+```
+
+| fixture | support | rebuild / capture |
+| --- | --- | --- |
+| 24×24 change, 160×144 node, radius 2, 3 levels | 57 px | **97 %** |
+| 24×24 change, 160×144 node, radius 1, 1 level | 7 px | **9 %** |
+
+At radius 2 and 3 levels the support is 57 *source pixels*, which on a small
+node is most of it — so reporting the second row alone would be misleading and
+both are measured. On a real desktop the blurred window is much larger than the
+kernel's reach, which is the second row's regime.
+
+At the compositor: an idle three-window desktop emits 18 blur nodes and now
+**recomputes 9 and skips 9** — no capture, no chain, no composite for half of
+them.
+
+### Three things that were measured rather than assumed
+
+**A fixture with no outside left.** The influence test placed its "well outside
+the support" change at x=0 — because the default node's dependency reaches 57 px
+left of x=48, off the target, and is *clamped* to 0. The change was inside the
+clamped dependency and the test measured 202 changed pixels inside the blur: a
+correct measurement of the wrong question. It now uses a support of 7, where the
+target has room for an outside.
+
+**A tolerance that measured the storage format.** The forward-support walk
+asserted agreement to 1e-6 and failed at 0.000003 px. `avk_blur_support_of()`
+returns floats; the walk is in double.
+
+**`blur_prefix_pixels` would have reported M4F.2A's figure forever.** It counted
+the capture's full extent, which stopped being what the replay writes the moment
+the segment acquired an active region. It reads `az_region_area(seg->active)`
+now — the same lesson as `blur_prefix_commands` in M4F.2A.3, and the third time
+in M4F an instrument has been able to describe work the renderer did not do.
+
+### There is no `BREAK=blur-no-transitive-damage`, and that is a measurement
+
+One was written. It stopped a blur's output damage joining the prefix damage a
+later blur reads, and it **could not be made to leave more than 4 wrong pixels at
+1 code** in any geometry tried — disjoint blurs, overlapping blurs, a 24×24
+block, a 114×190 wall, supports from 7 to 94.
+
+The reason is not the implementation:
+
+- **A dual-Kawase blur preserves the local mean**, so blurring an
+  already-blurred field gives very nearly what blurring the raw field would.
+  Removing blur 1 from the two-blur scene *entirely* — replacing 120 of the 136
+  columns of blur 2's source — moved blur 2's output by **one 8-bit code**.
+  Giving blur 1 a brightness of 1.6 (which is what the real compositor does, and
+  what breaks the mean-preserving symmetry) raised that to 16 codes.
+- The region a missing transitive edge strands is at **kernel-tail distance in
+  both blurs**, so the error is the product of two decays.
+
+Per the standing rule that a break switch which does not fail strongly is not a
+break switch, it was deleted. The edge is still mathematically required, and is
+asserted **structurally** on `blur_transitive_damage_pixels` — the source-damage
+pixels one blur inherited from another — which reads **64 600** in the two-blur
+fixture and **0** for a lone blur. An omission moves it to zero and the test
+fails.
+
+`BREAK=blur-under-damage` is the opposite case and is kept: it removes the
+forward dilation and leaves **5 261 wrong pixels, worst 71 codes**, failing 18 of
+the 39 checks.

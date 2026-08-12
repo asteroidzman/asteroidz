@@ -95,6 +95,40 @@ struct avk_blur_support avk_blur_support_of(
 	return s;
 }
 
+/*
+ * The forward reach. Equal to the reverse one by the derivation in the header,
+ * and written as its own function so a caller has to say which direction it
+ * meant. It is deliberately NOT `#define avk_blur_forward_support_of
+ * avk_blur_support_of`: the equality is a derived property of a symmetric
+ * kernel over an affine level mapping, not a definition, and an asymmetric
+ * effect would make this body differ while every call site stayed correct.
+ */
+struct avk_blur_support avk_blur_forward_support_of(
+		const struct avk_blur_params *params, uint32_t width,
+		uint32_t height) {
+	struct avk_blur_support s = avk_blur_support_of(params, width, height);
+	/* Mirrored, because a forward step traverses the same kernel backwards:
+	 * what reaches LEFT to read is reached FROM the right. Identical while the
+	 * kernel is symmetric, which is exactly the assumption worth writing down
+	 * rather than relying on. */
+	struct avk_blur_support f = {
+		.left = s.right, .right = s.left,
+		.top = s.bottom, .bottom = s.top,
+	};
+	return f;
+}
+
+uint32_t avk_blur_forward_support_max(const struct avk_blur_params *params,
+		uint32_t width, uint32_t height) {
+	struct avk_blur_support s = avk_blur_forward_support_of(params, width,
+		height);
+	double m = s.left;
+	if (s.right > m) { m = s.right; }
+	if (s.top > m) { m = s.top; }
+	if (s.bottom > m) { m = s.bottom; }
+	return (uint32_t)ceil(m);
+}
+
 uint32_t avk_blur_support_max(const struct avk_blur_params *params,
 		uint32_t width, uint32_t height) {
 	struct avk_blur_support s = avk_blur_support_of(params, width, height);

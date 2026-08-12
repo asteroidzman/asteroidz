@@ -183,6 +183,49 @@ uint32_t avk_blur_support_max(const struct avk_blur_params *params,
 	uint32_t width, uint32_t height);
 
 /*
+ * THE OTHER DIRECTION: which OUTPUT pixels one changed SOURCE pixel can affect.
+ *
+ * avk_blur_support_of() answers "what source pixels can affect this output
+ * pixel" -- the question a CAPTURE region asks. Damage propagation asks the
+ * inverse, and the two are not the same question even when they turn out to be
+ * the same number. Naming the direction at the call site is the point: a region
+ * dilated by the wrong one is a stale fringe nobody sees until a window moves.
+ *
+ * THE DERIVATION, and it does come out equal.
+ *
+ * Work in SOURCE PIXELS throughout and track the half-width `w` of the affected
+ * interval. One downsample step, level i-1 -> i: a level-i texel reads level
+ * i-1 within `A = 0.5*radius + 1` texels OF LEVEL i-1 of its own centre. So a
+ * level-(i-1) position c is read by exactly those level-i texels whose centres
+ * lie within `A * span(i-1)` source pixels of c -- and that is the same
+ * constant, in the same units, as the reverse step adds. The mapping between
+ * two levels is affine (centre(p) = (p + 0.5) * span, an affine function of the
+ * index) and the kernel is symmetric about its centre, so dilating an interval
+ * through it costs the same whichever way it is traversed. Upsampling is the
+ * same argument with `B = radius + 1`.
+ *
+ * Summing the chain gives the identical total, so:
+ *
+ *     forward reach  ==  reverse reach,  exactly, per axis, in source pixels
+ *
+ * WHAT IS NOT SHARED is the rounding. Reverse maps an output interval to source
+ * pixels; forward maps a source interval to output pixels. Both round OUTWARD,
+ * so both are conservative -- but they round different quantities, which is why
+ * this is a separate entry point rather than a comment telling callers to reuse
+ * the other one.
+ *
+ * tests/test-avk-blur-damage.c checks the equality against a per-level interval
+ * walk that composes the steps explicitly instead of summing them, at odd and
+ * even extents alike. If someone changes one kernel's reach and not the other,
+ * that test fails rather than a window growing a fringe.
+ */
+struct avk_blur_support avk_blur_forward_support_of(
+	const struct avk_blur_params *params, uint32_t width, uint32_t height);
+
+uint32_t avk_blur_forward_support_max(const struct avk_blur_params *params,
+	uint32_t width, uint32_t height);
+
+/*
  * THE FOUR REGIONS OF ONE BLUR, kept apart because collapsing any two of them
  * is a bug that still renders a plausible picture.
  *

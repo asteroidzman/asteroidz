@@ -425,6 +425,18 @@ if build_vulkan
                                       build_by_default : false)
   test('avk-blur-material', test_avk_blur_material, timeout : 240)
 
+  # M4F.2B: a partially damaged frame must contain the same pixels as a
+  # completely redrawn one. The forced-full path borrows nothing from the
+  # partial one -- it is the same scene and the same current-frame prefix
+  # architecture given full damage -- so a difference is a damage bug and can
+  # be nothing else. The two breaks are set on the renderer directly, so one
+  # process renders the same scene correct and broken and diffs the pictures.
+  test_avk_blur_damage = executable('test-avk-blur-damage',
+                                    'tests/test-avk-blur-damage.c',
+                                    dependencies : [avk_dep],
+                                    build_by_default : false)
+  test('avk-blur-damage', test_avk_blur_damage, timeout : 300)
+
   # M4F.2A.3: every command kind states what it samples. No GPU -- the resolver
   # is pure -- and no synchronisation claim: Vulkan validation stays the oracle
   # for barriers. This only has to notice an omission earlier than that would.

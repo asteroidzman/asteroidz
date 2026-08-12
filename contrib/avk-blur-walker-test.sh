@@ -314,8 +314,25 @@ echo "  note: two windows -- seen=$SEEN2 emitted=$EMIT2 over $FR2 frames, $REP2 
 PERFRAME=$(( FR2 > 0 ? EMIT2 / FR2 : 0 ))
 hl_assert "three windows emit several blur nodes per frame ($PERFRAME)" \
 	"$([ "${PERFRAME:-0}" -ge 4 ] && echo true || echo false)" "true"
-hl_assert "and each one replays its own prefix ($REP2 >= $EMIT2)" \
-	"$([ "${REP2:-0}" -ge "${EMIT2:-1}" ] && echo true || echo false)" "true"
+# EVERY BLUR THAT HAD TO BE RECOMPUTED GOT ITS OWN REPLAY -- which is not the
+# same claim as "every blur node got one", and stopped being the same claim in
+# M4F.2B. A blur whose source did not change and whose result nobody needs is
+# SKIPPED: no capture, no chain, no composite. This assertion read
+# "replays >= emitted" and failed at 9 >= 18 the moment damage propagation
+# landed, correctly reporting that half the blur nodes in an idle three-window
+# desktop now do no work at all.
+#
+# touched + skipped == emitted is the identity that says none of them was
+# simply forgotten.
+TOUCH2="$(field "$OUTDIR/stats-two.json" blur_damage_nodes_touched)"
+SKIP2="$(field "$OUTDIR/stats-two.json" blur_damage_nodes_skipped)"
+echo "  note: $TOUCH2 recomputed, $SKIP2 skipped, of $EMIT2 emitted"
+hl_assert "every blur is either recomputed or deliberately skipped" \
+	"$(( TOUCH2 + SKIP2 ))" "$EMIT2"
+hl_assert "and each recomputed one replays its own prefix ($REP2 >= $TOUCH2)" \
+	"$([ "${REP2:-0}" -ge "${TOUCH2:-0}" ] && echo true || echo false)" "true"
+hl_assert "an idle desktop skips some blur work entirely ($SKIP2)" \
+	"$([ "${SKIP2:-0}" -gt 0 ] && echo true || echo false)" "true"
 
 # ── 4. static idle ─────────────────────────────────────────────────────────
 #

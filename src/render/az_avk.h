@@ -2709,6 +2709,22 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 	}};
 	uint64_t timeline = avk_render_frame(&out->slot->renderer, target, &scene,
 		waits, wait_count, signals, 1);
+	/*
+	 * WHAT THE FRAME REDREW, WHICH MAY BE MORE THAN WHAT WAS HANDED IN.
+	 *
+	 * A blur turns a small source change into a wider result change: M4F.2B's
+	 * forward sweep grows the damage by every blur's output damage, and the
+	 * region below is what the backend, the accounting and wlr_scene's own
+	 * pending-damage bookkeeping are all told about. Reading `damage` here
+	 * instead would report the pre-blur figure and leave a stale blurred fringe
+	 * on screen until something unrelated damaged it.
+	 *
+	 * Taken before avk_scene_finish() only because it is convenient to keep the
+	 * two together; the region lives on the renderer, not the scene.
+	 */
+	if (timeline != 0) {
+		pixman_region32_copy(&damage, &out->slot->renderer.frame_damage);
+	}
 	avk_scene_finish(&scene);
 	if (timeline == 0) {
 		/* The ring has already been rotated, so the damage this frame was
@@ -3573,6 +3589,11 @@ static cJSON *az_avk_stats_json(void) {
 	uint64_t b_replays = 0, b_cmds = 0, b_px = 0;
 	uint64_t b_chains = 0, b_passes = 0, b_transients = 0, b_skipped = 0;
 	uint64_t b_draws = 0, b_soft = 0, b_darken = 0;
+	/* M4F.2B. The six regions, as areas, plus what the two sweeps cost. */
+	uint64_t d_src = 0, d_out = 0, d_rebuild = 0;
+	uint64_t d_dep_full = 0, d_write_full = 0, d_cap_full = 0, d_saved = 0;
+	uint64_t d_touched = 0, d_skipped = 0, d_fallbacks = 0, d_rects = 0;
+	uint64_t d_inherited = 0, d_build_ns = 0;
 	for (size_t i = 0; i < AZ_AVK_MAX_FORMATS; i++) {
 		if (!avk.renderers[i].used) {
 			continue;
@@ -3588,6 +3609,21 @@ static cJSON *az_avk_stats_json(void) {
 		b_draws += r->stats.blur_draws;
 		b_soft += r->stats.blur_soft_draws;
 		b_darken += r->stats.blur_darken_passes;
+		d_src += r->blur_source_damage_pixels;
+		d_out += r->blur_output_damage_pixels;
+		d_rebuild += r->blur_prefix_rebuild_pixels;
+		d_dep_full += r->blur_full_dependency_pixels;
+		d_write_full += r->blur_full_write_pixels;
+		d_cap_full += r->blur_full_capture_pixels;
+		d_saved += r->blur_damage_saved_pixels;
+		d_touched += r->blur_damage_nodes_touched;
+		d_skipped += r->blur_damage_nodes_skipped;
+		d_fallbacks += r->blur_damage_fallbacks;
+		d_inherited += r->blur_transitive_damage_pixels;
+		d_build_ns += r->blur_damage_build_ns;
+		if (r->blur_damage_rects_max > d_rects) {
+			d_rects = r->blur_damage_rects_max;
+		}
 	}
 	cJSON_AddNumberToObject(o, "blur_prefix_replays", (double)b_replays);
 	cJSON_AddNumberToObject(o, "blur_prefix_commands", (double)b_cmds);
@@ -3602,6 +3638,31 @@ static cJSON *az_avk_stats_json(void) {
 	cJSON_AddNumberToObject(o, "blur_draws", (double)b_draws);
 	cJSON_AddNumberToObject(o, "blur_soft_edge_draws", (double)b_soft);
 	cJSON_AddNumberToObject(o, "blur_darken_chains", (double)b_darken);
+	/*
+	 * M4F.2B. Each area is reported BESIDE the full-recompute area it replaces,
+	 * so a ratio is available without a second instrument and "we saved
+	 * nothing" is a number rather than the absence of one.
+	 *
+	 * blur_damage_nodes_touched + blur_damage_nodes_skipped is the number of
+	 * blur commands the renderer considered -- so a fixture can tell "the blur
+	 * did no work" from "there was no blur", which are different claims and
+	 * only one of them is about damage.
+	 */
+	cJSON_AddNumberToObject(o, "blur_source_damage_pixels", (double)d_src);
+	cJSON_AddNumberToObject(o, "blur_output_damage_pixels", (double)d_out);
+	cJSON_AddNumberToObject(o, "blur_prefix_rebuild_pixels", (double)d_rebuild);
+	cJSON_AddNumberToObject(o, "blur_full_dependency_pixels",
+		(double)d_dep_full);
+	cJSON_AddNumberToObject(o, "blur_full_write_pixels", (double)d_write_full);
+	cJSON_AddNumberToObject(o, "blur_full_capture_pixels", (double)d_cap_full);
+	cJSON_AddNumberToObject(o, "blur_damage_saved_pixels", (double)d_saved);
+	cJSON_AddNumberToObject(o, "blur_damage_nodes_touched", (double)d_touched);
+	cJSON_AddNumberToObject(o, "blur_damage_nodes_skipped", (double)d_skipped);
+	cJSON_AddNumberToObject(o, "blur_damage_fallbacks", (double)d_fallbacks);
+	cJSON_AddNumberToObject(o, "blur_damage_rects_max", (double)d_rects);
+	cJSON_AddNumberToObject(o, "blur_transitive_damage_pixels",
+		(double)d_inherited);
+	cJSON_AddNumberToObject(o, "blur_damage_build_ns", (double)d_build_ns);
 	cJSON_AddNumberToObject(o, "graph_frames", (double)g_frames);
 	if (g_frames > 0) {
 		cJSON_AddNumberToObject(o, "graph_build_ns_avg",
@@ -3840,6 +3901,23 @@ static void az_avk_stats_reset(void) {
 				r->blur_prefix_replays = 0;
 				r->blur_prefix_commands = 0;
 				r->blur_prefix_pixels = 0;
+				/* M4F.2B's areas too. Every one of these is a running total,
+				 * and a ratio taken across a reset boundary would compare a
+				 * partial numerator with a whole denominator -- which reads as
+				 * a saving that is not there. */
+				r->blur_source_damage_pixels = 0;
+				r->blur_output_damage_pixels = 0;
+				r->blur_prefix_rebuild_pixels = 0;
+				r->blur_full_dependency_pixels = 0;
+				r->blur_full_write_pixels = 0;
+				r->blur_full_capture_pixels = 0;
+				r->blur_damage_saved_pixels = 0;
+				r->blur_damage_nodes_touched = 0;
+				r->blur_damage_nodes_skipped = 0;
+				r->blur_damage_fallbacks = 0;
+				r->blur_damage_rects_max = 0;
+				r->blur_transitive_damage_pixels = 0;
+				r->blur_damage_build_ns = 0;
 				r->blur_stats = (struct avk_blur_stats){0};
 			}
 		}
