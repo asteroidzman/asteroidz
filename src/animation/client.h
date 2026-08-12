@@ -380,6 +380,61 @@ void buffer_set_effect(Client *c, BufferData data) {
 	}
 }
 
+/*
+ * ONE CLIP POLICY, ASKED BY EVERYTHING THAT DECORATES A CLIENT.
+ *
+ * Is this client's SURFACE cropped to its owning monitor? Every decoration --
+ * border ring, shadow, split indicator, blur backdrop -- must answer the same
+ * way, because a decoration is only ever a statement about where its client
+ * is. The conditions below are clip_to_hide()'s, which is the function that
+ * actually crops the surface; if that ever gains a case, this has to gain it
+ * too, and they are deliberately adjacent in this file for that reason.
+ *
+ * WHY THIS EXISTS. It used to be two independent rules. The surface was
+ * cropped only for scroll-tiled windows and tag animations; the decorations
+ * were cropped ALWAYS, with a `c == grabc` escape hatch. For the case the
+ * cropping was written for -- a scroller column scrolled past its own
+ * monitor's edge, which must not paint blur or border onto a physically
+ * adjacent output (de0b5c5) -- the two rules agree and everything is right.
+ *
+ * For an ORDINARY FLOATING WINDOW dragged across a monitor seam they do not.
+ * Its surface is not cropped, so the client is visible on both outputs; its
+ * border is, so the far output showed bare client with no decoration, missing
+ * even the window's real outer edge. Worse, `c == grabc` hid it exactly while
+ * the mouse button was down: the border was whole during the drag and lost its
+ * far half the instant you let go, with no geometry change at all. Decoration
+ * geometry must not depend on whether a button is still held, and that is why
+ * grabc is gone from here rather than merely moved.
+ *
+ * A window may legitimately be OWNED by one monitor and stretch across two.
+ * `c->mon` is a window-management fact; the output boundary is a scissor, not
+ * a reason to stop drawing. Each output renders its own intersection.
+ */
+static inline bool client_clips_to_monitor(Client *c) {
+	if (!c || !c->mon)
+		return false;
+	/* overview places scaled tiles that may overhang; the void-frame masks
+	 * hide the overhang instead, so nothing is cropped here */
+	if (c->mon->isoverview)
+		return false;
+	/*
+	 * BREAK: AZ_BORDER_OWNER_MONITOR_CLIP=1 restores the exact pre-M4B.1
+	 * policy -- decorations cropped to c->mon for every client except the one
+	 * currently under the mouse. It reinstates the defect rather than merely
+	 * disabling decorations, so the cross-output test fails against it for the
+	 * reason the test exists, and the drag/release assertion fails too.
+	 */
+	static int break_owner_clip = -1;
+	if (break_owner_clip < 0) {
+		const char *env = getenv("AZ_BORDER_OWNER_MONITOR_CLIP");
+		break_owner_clip = env != NULL && env[0] == '1';
+	}
+	if (break_owner_clip)
+		return c != grabc;
+	return ISSCROLLTILED(c) || c->animation.tagining || c->animation.tagouted ||
+		   c->animation.tagouting;
+}
+
 static void client_draw_one_shadow(Client *c, struct wlr_scene_shadow *shadow,
 								   struct wlr_scene_blur *blur_backdrop,
 								   float blur_edge_sigma,
@@ -444,7 +499,9 @@ static void client_draw_one_shadow(Client *c, struct wlr_scene_shadow *shadow,
 
 	int32_t right_offset, bottom_offset, left_offset, top_offset;
 
-	if (c == grabc) {
+	/* the shadow follows its client: cropped to the monitor only when the
+	 * surface is (see client_clips_to_monitor) */
+	if (!client_clips_to_monitor(c)) {
 		right_offset = 0;
 		bottom_offset = 0;
 		left_offset = 0;
@@ -1048,7 +1105,7 @@ void apply_split_border(Client *c, bool hit_no_border) {
 
 	int32_t right_offset, bottom_offset, left_offset, top_offset;
 
-	if (c == grabc) {
+	if (!client_clips_to_monitor(c)) {
 		right_offset = 0;
 		bottom_offset = 0;
 		left_offset = 0;
@@ -1145,7 +1202,7 @@ void apply_border(Client *c) {
 
 	int32_t right_offset, bottom_offset, left_offset, top_offset;
 
-	if (c == grabc) {
+	if (!client_clips_to_monitor(c)) {
 		right_offset = 0;
 		bottom_offset = 0;
 		left_offset = 0;

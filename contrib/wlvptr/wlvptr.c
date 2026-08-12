@@ -7,7 +7,7 @@
 // headless test compositor and can leak into a live session), this only
 // ever reaches the one compositor instance named by the environment.
 //
-// Usage: wlvptr <x> <y> <extent_w> <extent_h> [click|rclick|mclick|scroll:<amount>|drag:<x2>,<y2>|rdrag:<x2>,<y2>]
+// Usage: wlvptr <x> <y> <extent_w> <extent_h> [click|rclick|mclick|scroll:<amount>|drag:<x2>,<y2>|draghold:<x2>,<y2>,<ms>|rdrag:<x2>,<y2>]
 //   x,y            starting position (pixels) within a 0..extent_w/h space --
 //                  pass the real output width/height as the extent so x,y
 //                  are plain absolute pixel coordinates.
@@ -18,6 +18,8 @@
 //   wheel:<n>      vertical scroll of n discrete notches, with the matching
 //                  continuous delta (what a real mouse wheel sends)
 //   drag:<x2>,<y2>   left-button press at x,y, move in steps to x2,y2, release
+//   draghold:<x2>,<y2>,<ms>  same, but WAIT ms with the button still down
+//                    before releasing, so a test can capture the held state
 //                    -- for testing a Super+drag-style mouse binding, run
 //                    this via `wlvkbd hold LEFTMETA -- wlvptr ... drag:...`
 //                    so the modifier is actually held during the button
@@ -134,11 +136,21 @@ int main(int argc, char **argv) {
 			}
 			zwlr_virtual_pointer_v1_frame(ptr);
 			wl_display_roundtrip(display);
-		} else if (!strncmp(action, "drag:", 5) || !strncmp(action, "rdrag:", 6)) {
+		} else if (!strncmp(action, "drag:", 5) || !strncmp(action, "rdrag:", 6) ||
+				   !strncmp(action, "draghold:", 9)) {
+			/*
+			 * draghold:<x2>,<y2>,<ms> presses, moves, WAITS with the button
+			 * still down, and only then releases. Plain drag: does all three
+			 * atomically, so there is no moment at which a test can capture
+			 * the screen mid-gesture -- and "does the decoration change when
+			 * the button comes up, with no geometry change" is a question that
+			 * can only be asked while the button is still down.
+			 */
+			bool hold = !strncmp(action, "draghold:", 9);
 			bool right = !strncmp(action, "rdrag:", 6);
-			const char *coords = action + (right ? 6 : 5);
-			int32_t x2 = 0, y2 = 0;
-			if (sscanf(coords, "%d,%d", &x2, &y2) != 2) {
+			const char *coords = action + (hold ? 9 : (right ? 6 : 5));
+			int32_t x2 = 0, y2 = 0, hold_ms = 0;
+			if (sscanf(coords, "%d,%d,%d", &x2, &y2, &hold_ms) < 2) {
 				fprintf(stderr, "wlvptr: bad drag coords: %s\n", coords);
 				return 1;
 			}
@@ -159,6 +171,14 @@ int main(int argc, char **argv) {
 				wl_display_roundtrip(display);
 			}
 
+			if (hold && hold_ms > 0) {
+				/* flush first: the compositor must have seen the motion
+				 * before the test screenshots the held state */
+				wl_display_flush(display);
+				struct timespec ts = { hold_ms / 1000,
+									   (hold_ms % 1000) * 1000000L };
+				nanosleep(&ts, NULL);
+			}
 			zwlr_virtual_pointer_v1_button(ptr, ++t, button,
 											WL_POINTER_BUTTON_STATE_RELEASED);
 			zwlr_virtual_pointer_v1_frame(ptr);

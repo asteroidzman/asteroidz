@@ -230,6 +230,44 @@ The first version of `BREAK=preserve` used `loadOp DONT_CARE` and **the whole
 suite passed with it set**: a driver may leave "undefined" contents alone, and
 RADV does. It clears to magenta now.
 
+### Cross-output decoration (M4B.1)
+
+`contrib/avk-crossoutput-border-test.sh` runs two adjacent headless outputs and
+places a floating window across the seam so its **right outer border lands on
+the second output**. That assertion is the point: everything else about the bug
+is arguable as a clipping preference; a window whose actual outer edge is not
+drawn is not.
+
+```bash
+bash contrib/avk-crossoutput-border-test.sh
+ENGINE=gles bash contrib/avk-crossoutput-border-test.sh
+BREAK=border-owner-monitor-clip bash contrib/avk-crossoutput-border-test.sh  # must FAIL
+```
+
+Eighteen assertions across four groups: both outputs' geometry, cross-output
+damage counters, drag/release invariance, and scroller preservation. Three
+things it learned the hard way:
+
+- **The border palette is fixed, not sampled.** Reading the reference off
+  output 1 made the whole probe abort under the break — which removes the
+  border from exactly that output — so every assertion failed together and none
+  of them said which. With a fixed palette the break's signature is readable:
+  `o1_client_to_seam 412` with `o1_left_border 0`, client present, border gone.
+- **Releasing a drag does not recompute the decoration.** The drag/release pair
+  passed against the broken build until a same-geometry re-layout nudge was
+  added after the release. `apply_border()` has to run again for the policy to
+  bite; the button coming up is not itself an event.
+- **Which output owns the scroller row is not assumed.** It lands wherever
+  focus left it and overflows whichever way the layout scrolls; assuming output
+  1 owned it failed against a *correct* build, with the row on output 2 and
+  output 1 legitimately clean.
+
+`BREAK=border-owner-monitor-clip` restores the old policy and fails four
+assertions — the far output's outer border, seam continuity, seam rounding, and
+drag/release invariance. **GLES fails identically against it**, which is how we
+know the defect was compositor-side and shared rather than an AVK rendering
+fault.
+
 ### rounded-bottom-swap: TESTED LIVE — PASS
 
 The one M4A break that no headless fixture can reach, closed on the real

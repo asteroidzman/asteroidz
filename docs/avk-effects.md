@@ -348,3 +348,47 @@ destination rectangle.
 - **A test whose right and wrong answers coincide on this GPU is not
   coverage.** Mixed scales and high-frequency content are what make effect
   bugs observable; see `docs/regression-testing.md`.
+
+## M4B.1 — a decoration is a statement about where its client is
+
+**Not an AVK defect.** It predates M4B entirely and lives in compositor-side
+clipping policy; both renderers showed it identically.
+
+A client's surface and its decorations were cropped to the owning monitor by
+two independent rules:
+
+```text
+surface       clip_to_hide()   cropped ONLY for scroll-tiled + tag animations
+border        apply_border()   cropped ALWAYS, except when c == grabc
+shadow        client_draw_one_shadow()   same
+split border  apply_split_border()       same
+blur backdrop apply_border()   same (de0b5c5)
+```
+
+For the case the cropping was written for — a scroller column scrolled past
+its own monitor's edge, which must not paint onto a physically adjacent output
+— the two rules agree and everything is correct.
+
+For an **ordinary floating window straddling a monitor seam** they do not. The
+surface is not cropped, so the client is visible on both outputs; the border
+is, so the far output showed bare client with no decoration at all, missing
+even the window's real outer edge. `c->mon` is a window-management fact; an
+output boundary is a scissor, not a reason to stop drawing.
+
+The fix is one predicate, `client_clips_to_monitor()`, placed next to
+`clip_to_hide()` whose conditions it mirrors, and asked by all four decoration
+sites. Scroll-tiled and tag-animating clients crop exactly as before; ordinary
+floating ones do not, and their decoration now spans outputs with them.
+
+**`c == grabc` is gone from the policy, not merely moved.** It is transient
+interaction state, and it was hiding the defect precisely while the button was
+down. Two things worth recording about it:
+
+- A move-drag always calls `setfloating(grabc, 1)` first, so a move-dragged
+  window is floating anyway and the new policy gives it the same zero offsets
+  `grabc` used to.
+- Releasing the button does **not** by itself recompute the decoration —
+  `apply_border()` has to run again. So the border does not visibly change at
+  the instant of release; it changes at the next layout event. A drag/release
+  regression written without forcing a re-layout passes against the broken
+  build, and this one did until the nudge was added.

@@ -668,6 +668,13 @@ hl_drag() { # hl_drag <from-x> <from-y> <to-x> <to-y>
 hl_super_drag() {
 	"$HL_WLVKBD" hold LEFTMETA -- "$HL_WLVPTR" "$1" "$2" "$HL_PTR_EXTENT_W" "$HL_PTR_EXTENT_H" "drag:$3,$4"
 }
+# hl_super_drag_hold X1 Y1 X2 Y2 MS -- drag and WAIT with the button still
+# down. Backgrounded by the caller, which then captures the held state before
+# the release lands. The only way to ask whether a decoration changes when the
+# button comes up while the geometry does not.
+hl_super_drag_hold() {
+	"$HL_WLVKBD" hold LEFTMETA -- "$HL_WLVPTR" "$1" "$2" "$HL_PTR_EXTENT_W" "$HL_PTR_EXTENT_H" "draghold:$3,$4,$5"
+}
 # hl_super_rdrag X1 Y1 X2 Y2 -- same, right button (resize binding).
 hl_super_rdrag() {
 	"$HL_WLVKBD" hold LEFTMETA -- "$HL_WLVPTR" "$1" "$2" "$HL_PTR_EXTENT_W" "$HL_PTR_EXTENT_H" "rdrag:$3,$4"
