@@ -259,24 +259,21 @@ hl_assert "the window (last texture, $LAST_TEX) comes AFTER the blur ($BLUR_AT)"
 # SHADOW's window-shaped hole, which is the standard two-rectangle cross and has
 # nothing whatever to do with a blur's clip. Right answer, wrong command.
 #
-# AND IT IS 1, NOT 2. wlbgeffect supplies two separated rectangles, and the
-# walker preserves a region's shape exactly (test-avk-blur-material proves a
-# two-rectangle clip keeps its gap, at the renderer). The collapse happens
-# UPSTREAM, in asteroidz's own producer: client_update_blur() takes
-# pixman_region32_extents() of the client's region and calls
-# wlr_scene_blur_set_clipped_region() with that box (src/asteroidz.c). asteroidz
-# never calls wlr_scene_blur_set_clip_region() at all, so `has_clip_region` is
-# never true here and the walker's multi-rectangle path is unreachable from this
-# compositor.
+# AND IT IS 2, END TO END. wlbgeffect supplies two separated rectangles with a
+# 24 px gap. This assertion read 1 until M4F.2B.0: client_update_blur() took
+# pixman_region32_extents() of the client's region and handed the bounding box to
+# wlr_scene_blur_set_clipped_region(), while the two OTHER producers of the same
+# protocol data -- layer_update_blur and popup_update_blur -- had always passed
+# the region itself to wlr_scene_blur_set_region(). A toplevel was the only
+# surface kind whose shape was discarded. Now all three agree, so the gap in a
+# client's region is a gap in the command's clip.
 #
-# Asserted as 1 rather than 2 so the assertion states what is true. Raising it to
-# 2 is a PRODUCER change -- ext-background-effect-v1 gives the client an
-# arbitrary region and asteroidz throws its shape away -- and belongs with that
-# decision, not here.
+# 2, not ">= 1". A bounding box is one rectangle and would satisfy ">= 1"
+# forever, which is exactly how the collapse survived the previous milestone.
 MAXRECTS="$(grep -a 'BLUR' "$DUMP" | grep -o 'clip=[0-9]*rects' | grep -o '[0-9]*' | sort -n | tail -1)"
 echo "  note: the most rectangles a BLUR command's clip arrived in: ${MAXRECTS:-0}"
-hl_assert "a client's blur region reaches the command as a clip (${MAXRECTS:-0} rects)" \
-	"$([ "${MAXRECTS:-0}" -ge 1 ] && echo true || echo false)" "true"
+hl_assert "a client's two-rectangle blur region reaches the command with its gap" \
+	"${MAXRECTS:-0}" "2"
 
 # ── 2b. and the RANGE it replays is [0, k), not the whole scene ────────────
 #

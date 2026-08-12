@@ -3888,18 +3888,133 @@ measurement in `docs/regression-testing.md`).
 
 ### A limitation, stated rather than discovered later
 
-**asteroidz throws away the shape of a client's blur region before the walker
+**asteroidz throws away the shape of a *toplevel's* blur region before the walker
 ever sees it.** `client_update_blur()` (`src/asteroidz.c`) takes
 `pixman_region32_extents()` of the client's `ext-background-effect-v1` region and
-hands the bounding box to `wlr_scene_blur_set_clipped_region()`. It never calls
-`wlr_scene_blur_set_clip_region()`, so `has_clip_region` is never true in this
-compositor and the walker's multi-rectangle path — which exists, and which the
-renderer proves preserves a gap exactly — is unreachable from here.
+hands the bounding box to `wlr_scene_blur_set_clipped_region()`.
 
 Measured, not assumed: `contrib/wlbgeffect` supplies two separated rectangles and
 the emitted blur command's clip arrives with **one**.
 
-This is a producer decision that predates M4F and is left alone here. The
+This is a producer decision that predates M4F and is left alone *here*. The
 protocol gives the client an arbitrary region and the renderer can carry one;
 closing the gap is a change to `client_update_blur()`, and belongs with that
 decision rather than with the renderer that was made ready for it.
+
+**M4F.2B.0 made that decision and this paragraph is now history.** Two claims in
+it were also too broad, and are corrected in the section below: the setter is
+`wlr_scene_blur_set_region()`, not `wlr_scene_blur_set_clip_region()`, and the
+multi-rectangle path was never unreachable *from this compositor* — only from a
+toplevel. Layer surfaces and popups have always passed their regions verbatim.
+
+## M4F.2B.0 — the damage pipeline, and a producer that disagreed with itself
+
+### The producer audit, and why the collapse was accidental
+
+The question the milestone put first: is `client_update_blur()`'s
+`pixman_region32_extents()` an intentional semantic policy, a SceneFX
+workaround, or accidental information loss?
+
+**Accidental.** Four pieces of source evidence, none of them an inference from
+naming:
+
+**One — there are three producers of this protocol's data, and two preserve it.**
+`ext-background-effect-v1` regions arrive for toplevels, layer surfaces and
+popups. `layer_update_blur()` (`src/asteroidz.c:4084`) and
+`popup_update_blur()` (`:4156`) both call `wlr_scene_blur_set_region()` with the
+region itself. Only the toplevel path collapsed it. One protocol, one meaning,
+three consumers, and the odd one out is the one with no stated reason.
+
+**Two — the layer path states the harm, and it applies identically to a
+toplevel.** Its comment: *"pass the client's region verbatim: it carries the
+rounded corners, so clipping by its bounding box would leave square blur 'ears'
+poking out at the card corners"*. A toplevel drawing a rounded card has the same
+corners as a layer surface drawing one.
+
+**Three — the blur node's own documentation names this exact producer as
+`clip_region`'s input.** `wlr_scene_blur.clip_region` is documented as
+*"Pixel-accurate clip in node-local coords (e.g. the client's
+ext-background-effect region). When set it takes precedence over
+clipped_region's bounding box."* The field written for this data says so in its
+own comment, and the toplevel path wrote the other field.
+
+**Four — the collapse was forced by the API that was called, not chosen.**
+`struct clipped_region` is `{ struct wlr_box area; struct fx_corner_radii
+corners; }` — one rectangle. It *cannot* hold a region. Taking the extents was
+not a decision about blur semantics; it was the only way to call that function.
+The toplevel passed `corner_radii_none()`, so the field's one added capability
+was unused too.
+
+The history says only that both behaviours arrived together in `44f99ae`
+(asteroidz's initial import), so the inconsistency is inherited rather than
+introduced — which is why nothing in the repository ever argued for it.
+
+**The fix, and why it is safe.** `client_update_blur()` now calls
+`wlr_scene_blur_set_region()` with the region verbatim, and resets
+`clipped_region` to its default in both branches — `clip_region` is the
+higher-precedence field, so a stale box left in the lower one would silently
+decide the clip on every later frame in which the client withdrew its region.
+Nothing else consumes a blur node's `clipped_region` in asteroidz, and
+`scene_node_get_size()` for a blur returns `blur->width/height` regardless of
+either clip field, so the node's size, visibility and damage bookkeeping are
+untouched by the swap.
+
+**Proven end to end**, and in two halves that meet at the command:
+
+    producer -> walker -> snapshot -> command
+        contrib/avk-blur-walker-test.sh, on the real dump:
+        cmd[16] BLUR dst=645,12 623x776 clip=2rects
+        asserted == 2, not >= 1: a bounding box is one rectangle and would
+        have satisfied >= 1 forever, which is how the collapse survived M4F.2A.3
+
+    command -> composite
+        tests/test-avk-blur-material.c test_clip_multi_rect, over the same
+        shape: two rectangles, 24 px gap
+        inside  A and B: changed
+        in the gap:      0 pixels changed
+
+`wlbgeffect`'s gap is now 24 px rather than 60, to match. A wide gap survives a
+sloppy region operation that a narrow one does not, and the whole point of the
+fixture is that the hole is never filled in.
+
+### Where AVK's damage comes from, traced
+
+| stage | source | space | when |
+| --- | --- | --- | --- |
+| surface commit | `wlr_surface.buffer_damage` | buffer px | client commit |
+| scene node damage | SceneFX `scene_node_update()` → `scene_damage_outputs()` | layout | property/geometry change |
+| ring accumulation | `wlr_damage_ring` on `wlr_scene_output` | output px | continuously |
+| this frame's damage | `wlr_damage_ring_rotate_buffer(ring, buffer, &damage)` — `az_avk.h:2600` | output px | once per frame, per target buffer |
+| the scene's damage | `pixman_region32_copy(&scene.damage, &damage)` — `:2643` | output px | immediately after |
+| the output segment | `ctx.active = &scene->damage` — `avk_render.c:1285` | scene px | frame declaration |
+| per command | `command_region()` — `:361` intersects bounds ∩ dst ∩ clip ∩ damage | scene px | per command |
+| scissor | one translation into attachment coords, at the draw | attachment px | recording |
+
+Two properties of this table matter for M4F.2B. It is keyed on the **buffer**,
+not the frame, so a target last used three frames ago comes back with three
+frames of damage and one the ring has never seen comes back whole — which is
+exactly right and is why `AZ_AVK_FULL_DAMAGE` can be a pure superset rather than
+a different code path. And the **only** expansion anywhere in it is none: damage
+is intersected at every stage and never dilated.
+
+### The gap M4F.2B exists to close
+
+`wlr_scene_output_build_state()` — which AVK does not call — contains SceneFX's
+entire blur damage compensation: `should_blur_node_extend_damage()` and
+`apply_blur_region()` (`wlr_scene.c:3590`, `:3623`) expand the frame's damage by
+`blur_data_calc_size()` and union the intersection with each blur node's visible
+region back into both the render damage and the output state, then keep a
+`blur_padding_region` that is copied out and pasted back to hide the seam.
+
+**AVK inherits none of it.** M4F.2A.3 wired real blur nodes into a frame whose
+damage is still the untouched ring output, so today a source pixel changing
+behind a blur damages its own box and the blur composites only inside that box:
+the blurred result outside it is mathematically stale. Nothing has shipped —
+that is what "installed remains `0.24.0(6dfcf66)`" has been protecting — and it
+is precisely M4F.2B's subject.
+
+The reference's expansion is `pow(2, num_passes + 1) * radius`, one number for
+all four edges. AVK already derives the real chain support per edge
+(`avk_blur_support_of()`, `M4F support — derived, not fitted` above), and the
+padding-copy hack has no counterpart here at all: a prefix capture is written
+fresh every frame, so there is no seam to paste over.

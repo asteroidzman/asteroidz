@@ -6687,22 +6687,25 @@ void client_update_blur(Client *c) {
 	wlr_scene_blur_set_size(c->blur_node, GEZERO(c->geom.width - 2 * c->bw),
 							GEZERO(c->geom.height - 2 * c->bw));
 
-	if (effect && effect->has_region) {
-		/* blur region is surface-local, which matches the blur node's
-		 * coordinate space; clip to the region's extents */
-		struct pixman_box32 *extents =
-			pixman_region32_extents(&effect->current_region);
-		wlr_scene_blur_set_clipped_region(
-			c->blur_node,
-			(struct clipped_region){
-				.area = {extents->x1, extents->y1, extents->x2 - extents->x1,
-						 extents->y2 - extents->y1},
-				.corners = corner_radii_none(),
-			});
-	} else {
-		wlr_scene_blur_set_clipped_region(c->blur_node,
-										  clipped_region_get_default());
-	}
+	/* Verbatim, corners and all -- see layer_update_blur.
+	 *
+	 * This used to take pixman_region32_extents() and hand the bounding box to
+	 * wlr_scene_blur_set_clipped_region(). The two other producers of the very
+	 * same protocol data -- layer_update_blur and popup_update_blur -- have
+	 * always passed the region itself, and the blur node documents clip_region
+	 * as "e.g. the client's ext-background-effect region": a toplevel was the
+	 * only surface kind whose region was thrown away, and nothing here ever
+	 * said why. The bounding box is what puts square blur "ears" outside a
+	 * rounded card, and a toplevel has the same corners a layer surface does.
+	 *
+	 * clipped_region is reset either way: it is the LOWER-precedence field, so
+	 * leaving a stale box in it would decide the clip for every later frame in
+	 * which the client withdraws its region. */
+	wlr_scene_blur_set_clipped_region(c->blur_node,
+									  clipped_region_get_default());
+	wlr_scene_blur_set_region(
+		c->blur_node,
+		effect && effect->has_region ? &effect->current_region : NULL);
 }
 
 void init_client_properties(Client *c) {

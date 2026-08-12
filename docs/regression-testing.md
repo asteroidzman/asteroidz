@@ -1203,6 +1203,13 @@ clip=Nrects over the   a SHADOW's window-shaped hole is the standard
 whole dump             two-rectangle cross, so "the most rectangles any clip
                        arrived in" measured 4 and passed the multi-rect
                        assertion. Right answer, wrong command.
+
+>= 1 rectangle         restricted to BLUR lines the number was 1, and the
+                       assertion said ">= 1" -- which a BOUNDING BOX satisfies
+                       forever. It was stating the producer's collapse as
+                       though it were the test's subject. M4F.2B.0 fixed the
+                       producer and the assertion now says == 2, so the gap
+                       between the client's two rectangles is what is checked.
 ```
 
 **A blur-enabled default config changed what other fixtures measure.** The

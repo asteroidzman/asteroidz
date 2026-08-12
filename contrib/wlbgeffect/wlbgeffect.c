@@ -54,7 +54,11 @@ static bool configured = false;
 #define R1_Y 30
 #define R1_W 120
 #define R1_H 200
-#define GAP_W 60
+/* 24, deliberately narrow. A wide gap survives a sloppy region operation that a
+ * narrow one does not: the whole point of the fixture is that the hole between
+ * the two rectangles is never filled in, and the easiest way for that to happen
+ * is a dilation somewhere that a 60 px gap would absorb without complaint. */
+#define GAP_W 24
 #define R2_X (R1_X + R1_W + GAP_W)
 #define R2_Y R1_Y
 #define R2_W 120
