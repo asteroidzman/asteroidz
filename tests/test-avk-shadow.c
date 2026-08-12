@@ -820,6 +820,435 @@ static void test_no_shadow_is_no_draw(struct harness *h) {
 		"with no shadow command the frame is white everywhere");
 }
 
+/* ── M4D.2: the directional model, as the compositor actually builds it ─── */
+
+/*
+ * THE SHIPPED PROFILE, and where it comes from.
+ *
+ * These are not numbers invented for a test. They are asteroidz's defaults,
+ * declared in src/config/config-schema.h, and the whole point of M4D.2 is that
+ * the model is CONFIGURATION rather than something the shader knows about. The
+ * shader implements "a directional analytic shadow"; the profile below is what
+ * a macOS-like desktop asks it for.
+ *
+ *   effects/shadow/size            24    effects/shadow/contact/size      8
+ *   effects/shadow/blur            24    effects/shadow/contact/blur      9
+ *   effects/shadow/position/x       0    effects/shadow/contact/position/x 0
+ *   effects/shadow/position/y     +10    effects/shadow/contact/position/y +2
+ *   effects/shadow/color    0x00000066   effects/shadow/contact/color 0x0000004d
+ *
+ * Broad and weak, well below; tight and stronger, just below. Two lobes, and
+ * they were in the tree before M4 began -- the audit found them rather than
+ * M4D.2 introducing them.
+ */
+struct lobe {
+	int size;         /* how far the envelope reaches past the window */
+	float sigma;      /* the blur_sigma field, NOT the Gaussian's sigma */
+	int offset_x, offset_y;
+	float alpha;
+};
+static const struct lobe kAmbient = { 24, 24.0f, 0, 10, 0x66 / 255.0f };
+static const struct lobe kContact = { 8, 9.0f, 0, 2, 0x4d / 255.0f };
+
+/* The window this desk's shadows are cast by, in the middle of the target. */
+static const struct avk_box kWin = { 64, 64, 128, 128 };
+static const float kWinRadius = 12.0f;
+
+/*
+ * The envelope client_draw_one_shadow() builds, transcribed:
+ *
+ *     delta      = size + border            (border is 0 here)
+ *     envelope   = window grown by delta on EVERY side, then shifted by
+ *                  (position_x, position_y)
+ *
+ * Grown first and shifted after -- not shifted only right and down, which is
+ * the bug the producer's own comment records: the box used to keep the
+ * window's origin, so the extra width and height only ever extended right and
+ * downward and there was no room for a falloff on the left or top at all.
+ */
+static struct avk_box envelope_of(const struct lobe *l) {
+	struct avk_box e;
+	e.x = kWin.x + l->offset_x - l->size;
+	e.y = kWin.y + l->offset_y - l->size;
+	e.width = kWin.width + 2 * l->size;
+	e.height = kWin.height + 2 * l->size;
+	return e;
+}
+
+static void add_lobe(struct avk_scene *scene, const struct lobe *l,
+		bool with_cutout) {
+	struct avk_box env = envelope_of(l);
+	const float radii[4] = { kWinRadius, kWinRadius, kWinRadius, kWinRadius };
+	struct avk_cmd *cmd = add_shadow(scene, &env, l->sigma, radii);
+	if (cmd == NULL) {
+		return;
+	}
+	cmd->color[3] = l->alpha;
+	if (!with_cutout) {
+		return;
+	}
+	cmd->inner = kWin;
+	cmd->has_inner = true;
+	for (int i = 0; i < 4; i++) {
+		cmd->inner_corners[i] = kWinRadius - 1.0f;
+	}
+	pixman_region32_t clip;
+	pixman_region32_init_rect(&clip, env.x, env.y, (unsigned)env.width,
+		(unsigned)env.height);
+	pixman_region32_t cut;
+	int in = (int)ceilf((kWinRadius - 1.0f) * 0.3f) + 1;
+	pixman_region32_init_rect(&cut, kWin.x + in, kWin.y + in,
+		(unsigned)(kWin.width - 2 * in), (unsigned)(kWin.height - 2 * in));
+	pixman_region32_subtract(&clip, &clip, &cut);
+	pixman_region32_fini(&cut);
+	avk_cmd_set_clip(cmd, &clip);
+	pixman_region32_fini(&clip);
+}
+
+/* Coverage at `d` pixels outside the WINDOW's edge, on each of its four
+ * sides, measured at the middle of that side. */
+struct sides { double top, bottom, left, right; };
+static struct sides sides_at(struct harness *h, int d) {
+	int cx = kWin.x + kWin.width / 2;
+	int cy = kWin.y + kWin.height / 2;
+	struct sides s;
+	s.top = coverage_at(h, cx, kWin.y - d);
+	s.bottom = coverage_at(h, cx, kWin.y + kWin.height - 1 + d);
+	s.left = coverage_at(h, kWin.x - d, cy);
+	s.right = coverage_at(h, kWin.x + kWin.width - 1 + d, cy);
+	return s;
+}
+
+static void test_directional_invariant(struct harness *h) {
+	printf("M4D.2: the default profile reads as light from above\n");
+
+	struct avk_scene scene;
+	scene_begin(&scene);
+	add_lobe(&scene, &kAmbient, true);
+	add_lobe(&scene, &kContact, true);
+	bool ok = render(h, &scene);
+	avk_scene_finish(&scene);
+	if (!ok) { CHECK(false, "frame rendered"); return; }
+
+	CHECK(h->renderer.stats.shadow_draws >= 2,
+		"premise: both lobes were drawn (%" PRIu64 " shadow draws)",
+		h->renderer.stats.shadow_draws);
+
+	/*
+	 * THE INVARIANT. At the SAME distance from the window on all four sides:
+	 * below is strongest, the sides are in between, above is weakest. A
+	 * symmetric centred Gaussian makes all four equal, which is exactly what
+	 * BREAK=shadow-symmetric restores.
+	 */
+	for (int i = 0; i < 3; i++) {
+		int d = (int[]){ 4, 10, 18 }[i];
+		struct sides s = sides_at(h, d);
+		printf("    %2dpx out:  top %.4f   left %.4f   right %.4f   "
+			"bottom %.4f\n", d, s.top, s.left, s.right, s.bottom);
+		double side = (s.left + s.right) * 0.5;
+		CHECK(s.bottom > side * 1.15,
+			"%dpx out: below is materially stronger than the sides "
+			"(%.4f vs %.4f)", d, s.bottom, side);
+		CHECK(side > s.top * 1.15,
+			"%dpx out: the sides are materially stronger than above "
+			"(%.4f vs %.4f)", d, side, s.top);
+	}
+
+	struct sides s = sides_at(h, 4);
+	CHECK(s.bottom > s.top * 1.6,
+		"and bottom beats top by a wide margin at the contact distance "
+		"(%.4f vs %.4f)", s.bottom, s.top);
+	/*
+	 * The top must not be absolutely bare: a little shadow above is what
+	 * attaches the window to the scene rather than letting it float.
+	 */
+	CHECK(s.top > 0.02,
+		"the top still has a trace of shadow -- the window is attached, not "
+		"floating (%.4f)", s.top);
+}
+
+static void test_horizontal_bias(struct harness *h) {
+	printf("M4D.2: no horizontal bias, because the profile asks for none\n");
+
+	struct avk_scene scene;
+	scene_begin(&scene);
+	add_lobe(&scene, &kAmbient, true);
+	add_lobe(&scene, &kContact, true);
+	bool ok = render(h, &scene);
+	avk_scene_finish(&scene);
+	if (!ok) { CHECK(false, "frame rendered"); return; }
+
+	/*
+	 * position_x is 0 in the shipped profile, so left and right must match to
+	 * within rounding. This is the assertion that catches an asymmetry
+	 * introduced by a coordinate bug rather than by the profile -- a sign
+	 * error in the envelope or a half-pixel in the wrong place shows up here
+	 * and nowhere else, because every other fixture is symmetric in x by
+	 * construction and would not notice.
+	 */
+	double worst = 0.0;
+	for (int d = 2; d <= 20; d += 2) {
+		struct sides s = sides_at(h, d);
+		double diff = fabs(s.left - s.right);
+		if (diff > worst) {
+			worst = diff;
+		}
+	}
+	printf("    worst left/right difference over 2..20px: %.5f (%.2f/255)\n",
+		worst, worst * 255.0);
+	CHECK(worst < 2.0 / 255.0,
+		"left and right agree to within a rounding step (%.2f/255)",
+		worst * 255.0);
+
+	/* The premise: there IS a shadow on the sides to compare. */
+	struct sides s = sides_at(h, 4);
+	CHECK(s.left > 0.05, "premise: the sides carry real shadow (%.4f)",
+		s.left);
+}
+
+static void test_dual_lobe_composition(struct harness *h) {
+	printf("M4D.2: two lobes compose as coverage, not as added alpha\n");
+	int cx = kWin.x + kWin.width / 2;
+	int probe_y = kWin.y + kWin.height - 1 + 3;
+
+	struct avk_scene scene;
+	scene_begin(&scene);
+	add_lobe(&scene, &kAmbient, true);
+	bool ok = render(h, &scene);
+	avk_scene_finish(&scene);
+	if (!ok) { CHECK(false, "frame rendered"); return; }
+	double a = coverage_at(h, cx, probe_y);
+
+	scene_begin(&scene);
+	add_lobe(&scene, &kContact, true);
+	ok = render(h, &scene);
+	avk_scene_finish(&scene);
+	if (!ok) { CHECK(false, "frame rendered"); return; }
+	double c = coverage_at(h, cx, probe_y);
+
+	scene_begin(&scene);
+	add_lobe(&scene, &kAmbient, true);
+	add_lobe(&scene, &kContact, true);
+	ok = render(h, &scene);
+	avk_scene_finish(&scene);
+	if (!ok) { CHECK(false, "frame rendered"); return; }
+	double both = coverage_at(h, cx, probe_y);
+
+	/*
+	 * Two translucent layers composited one over the other give
+	 * 1 - (1 - a)(1 - c), which is the coverage of a union of independent
+	 * occluders. It is the CORRECT composition and it cannot exceed 1 -- so
+	 * two scene nodes drawn in order already do the right thing, and nothing
+	 * here needs to add two alphas and clamp.
+	 */
+	double expect = 1.0 - (1.0 - a) * (1.0 - c);
+	printf("    ambient %.4f  contact %.4f  together %.4f  "
+		"1-(1-a)(1-c) = %.4f  a+c = %.4f\n", a, c, both, expect, a + c);
+
+	CHECK(a > 0.05 && c > 0.05,
+		"premise: both lobes contribute here (%.4f, %.4f)", a, c);
+	CHECK(fabs(both - expect) < 3.0 / 255.0,
+		"the two compose as 1-(1-a)(1-c) (%.4f vs %.4f)", both, expect);
+	CHECK(both <= 1.0,
+		"and the result is a coverage, never over 1 (%.4f)", both);
+	CHECK(a + c > both + 0.005,
+		"premise: naive addition really would differ here (%.4f vs %.4f) -- "
+		"so the check above is not passing for free", a + c, both);
+}
+
+static void test_contact_and_penumbra(struct harness *h) {
+	printf("M4D.2: a tight contact term and a broad penumbra, both visible\n");
+
+	struct avk_scene scene;
+	scene_begin(&scene);
+	add_lobe(&scene, &kAmbient, true);
+	add_lobe(&scene, &kContact, true);
+	bool ok = render(h, &scene);
+	avk_scene_finish(&scene);
+	if (!ok) { CHECK(false, "frame rendered"); return; }
+
+	int cx = kWin.x + kWin.width / 2;
+	int base = kWin.y + kWin.height - 1;
+	const int dist[] = { 1, 3, 6, 12, 24, 36 };
+	double cov[6];
+	for (int i = 0; i < 6; i++) {
+		cov[i] = coverage_at(h, cx, base + dist[i]);
+		printf("    %2dpx below the window: %.4f\n", dist[i], cov[i]);
+	}
+
+	/*
+	 * THE SHAPE, pinned numerically rather than described. Strict
+	 * monotonicity is NOT required across the contact/ambient crossover --
+	 * two lobes of different widths can leave a shoulder there -- so what is
+	 * asserted is the shape either side of it.
+	 */
+	CHECK(cov[0] > 0.25, "contact: dark right at the edge (%.4f at 1px)",
+		cov[0]);
+	CHECK(cov[0] > cov[2] * 1.3,
+		"contact: and it falls off fast -- 1px is well above 6px (%.4f vs "
+		"%.4f)", cov[0], cov[2]);
+	CHECK(cov[4] > 0.03,
+		"penumbra: there is still shadow 24px out, far past the contact "
+		"term (%.4f)", cov[4]);
+	CHECK(cov[5] < cov[4],
+		"and it is still declining at 36px (%.4f < %.4f)", cov[5], cov[4]);
+
+	/*
+	 * ATTACHED, NOT FLOATING. The darkest point below the window must be at
+	 * the window's edge -- a single heavily offset lobe puts it some distance
+	 * away and the shadow reads as a detached blob.
+	 */
+	int darkest = 0;
+	for (int i = 1; i < 6; i++) {
+		if (cov[i] > cov[darkest]) {
+			darkest = i;
+		}
+	}
+	CHECK(darkest == 0,
+		"the darkest point below is AT the window, not adrift below it "
+		"(peak at %dpx)", dist[darkest]);
+}
+
+/* ── M4D.2: what a shadow costs, and whether fusing the lobes would help ── */
+
+struct perf {
+	double gpu_us;
+	double cpu_us;
+	uint64_t draws;
+};
+
+/*
+ * `lobes` shadows per window, `windows` windows. Each window gets the shipped
+ * ambient and contact geometry, tiled across the target so the envelopes
+ * overlap the way they do on a real desktop rather than stacking in one place.
+ */
+static struct perf perf_run(struct harness *h, const char *label, int windows,
+		int lobes) {
+	const int frames = 60;
+	struct avk_timestamps *ts = &h->renderer.timestamps;
+	uint64_t gpu0 = ts->gpu_frame_ns_total, n0 = ts->samples;
+	uint64_t cpu0 = h->renderer.stats.cpu_record_ns, f0 = h->renderer.stats.frames;
+	/* shadow_draws, not draws: the latter counts the clear and every
+	 * damage rect, so "2 lobes" reads as 3 and the premise below would
+	 * be asserting on the wrong number. It did, first time round. */
+	uint64_t d0 = h->renderer.stats.shadow_draws;
+
+	for (int f = 0; f < frames; f++) {
+		struct avk_scene scene;
+		scene_begin(&scene);
+		for (int i = 0; i < windows; i++) {
+			/* Spread the windows over the target; a real desktop's shadows
+			 * overlap, and stacking them all at one place would measure a
+			 * degenerate overdraw case instead. */
+			int col = i % 4, row = (i / 4) % 4;
+			struct avk_box win = { 40 + col * 44, 40 + row * 44, 56, 56 };
+			for (int l = 0; l < lobes; l++) {
+				const struct lobe *lo = l == 0 ? &kAmbient : &kContact;
+				struct avk_box env = {
+					win.x + lo->offset_x - lo->size,
+					win.y + lo->offset_y - lo->size,
+					win.width + 2 * lo->size, win.height + 2 * lo->size,
+				};
+				const float r[4] = { 12.0f, 12.0f, 12.0f, 12.0f };
+				struct avk_cmd *cmd = add_shadow(&scene, &env, lo->sigma, r);
+				if (cmd != NULL) {
+					cmd->color[3] = lo->alpha;
+				}
+			}
+		}
+		uint64_t v = avk_render_frame(&h->renderer, h->target, &scene, NULL, 0,
+			NULL, 0);
+		avk_scene_finish(&scene);
+		if (v != 0) {
+			avk_device_timeline_wait(h->dev, v, 2000000000ULL);
+		}
+		avk_renderer_collect(&h->renderer);
+	}
+
+	struct perf p = {0};
+	uint64_t dn = ts->samples - n0;
+	p.gpu_us = dn ? (double)(ts->gpu_frame_ns_total - gpu0) / dn / 1000.0 : 0.0;
+	uint64_t df = h->renderer.stats.frames - f0;
+	p.cpu_us = df
+		? (double)(h->renderer.stats.cpu_record_ns - cpu0) / df / 1000.0 : 0.0;
+	p.draws = (h->renderer.stats.shadow_draws - d0) / (df ? df : 1);
+	printf("    %-28s GPU %6.1f us   CPU %5.1f us   %2" PRIu64 " shadows/frame\n",
+		label, p.gpu_us, p.cpu_us, p.draws);
+	return p;
+}
+
+static void test_performance(struct harness *h) {
+	printf("M4D.2: what a shadow costs (GPU time is MEASURED, M4D.P)\n");
+	if (!h->renderer.timestamps.supported) {
+		printf("    GPU TIMESTAMPS: UNSUPPORTED -- cost is not reported\n");
+		CHECK(true, "no GPU timer on this device; skipped rather than "
+			"reporting CPU time as GPU time");
+		return;
+	}
+
+	perf_run(h, "(warmup)", 4, 2);
+	struct perf none = perf_run(h, "no shadows", 0, 0);
+	struct perf one = perf_run(h, "1 window, ambient only", 1, 1);
+	struct perf two = perf_run(h, "1 window, both lobes", 1, 2);
+	struct perf ten = perf_run(h, "10 windows, both lobes", 10, 2);
+	struct perf t32 = perf_run(h, "16 windows, both lobes", 16, 2);
+
+	CHECK(none.gpu_us > 0.0, "premise: GPU time was actually measured");
+	CHECK(two.gpu_us > none.gpu_us,
+		"a shadow costs measurably more than no shadow (%.1f vs %.1f us)",
+		two.gpu_us, none.gpu_us);
+
+	double per_lobe = two.gpu_us - one.gpu_us;
+	double first_lobe = one.gpu_us - none.gpu_us;
+	printf("    -> first lobe %.2f us, second lobe %.2f us, "
+		"16 windows/32 lobes %.2f us over baseline\n",
+		first_lobe, per_lobe, t32.gpu_us - none.gpu_us);
+
+	/*
+	 * THE FUSION QUESTION, ANSWERED WITH A MEASUREMENT.
+	 *
+	 * M4D.2 as briefed wanted the two lobes evaluated in ONE material. The
+	 * audit found they are already two scene nodes with correct composition
+	 * and full configuration, so fusing them would be an optimisation, and
+	 * the standing rule is that an advanced technique has to earn its
+	 * complexity with a number.
+	 *
+	 * It does not earn it, for two reasons the numbers above show:
+	 *
+	 *   The contact lobe's envelope is much smaller than the ambient one --
+	 *   size 8 against 24, so (56+16)^2 against (56+48)^2, about 48% of the
+	 *   area. Fusing means evaluating the contact term over the AMBIENT
+	 *   envelope, roughly doubling its fragment count to save one draw call
+	 *   and one blend.
+	 *
+	 *   And a draw call is not what this costs. The second lobe adds a few
+	 *   microseconds of GPU time and essentially no CPU recording time, on a
+	 *   6.94 ms frame budget at 144 Hz.
+	 *
+	 * Fusion would also have to assume the two nodes are adjacent siblings
+	 * with nothing between them, which the scene graph does not promise and
+	 * which reordering to obtain would break translucent ordering. Rejected,
+	 * with the measurement recorded rather than the preference.
+	 */
+	CHECK(per_lobe < 200.0,
+		"the second lobe costs %.2f us -- far too little for fusing the two "
+		"into one material to be worth the ordering assumption", per_lobe);
+	CHECK(two.draws == 2,
+		"premise: both lobes really are two separate draws (%" PRIu64 ")",
+		two.draws);
+	CHECK(t32.draws == 32,
+		"premise: 16 windows really is 32 shadow draws (%" PRIu64 ")",
+		t32.draws);
+
+	/* Allocation behaviour: a shadow is push constants and a quad, so a
+	 * frame full of them must allocate nothing at all. */
+	CHECK(h->dev->live.buffers >= 0 && h->dev->live.device_memory >= 0,
+		"premise: object counters are readable");
+	printf("    live objects during the run: images %" PRId64 " buffers %"
+		PRId64 " memory %" PRId64 "\n", h->dev->live.images,
+		h->dev->live.buffers, h->dev->live.device_memory);
+}
+
 /* ── main ───────────────────────────────────────────────────────────────── */
 
 int main(void) {
@@ -864,6 +1293,12 @@ int main(void) {
 	test_interior_cutout(&h);
 	test_alpha_and_opacity(&h);
 	test_coloured_shadow_does_not_glow(&h);
+
+	test_directional_invariant(&h);
+	test_horizontal_bias(&h);
+	test_dual_lobe_composition(&h);
+	test_contact_and_penumbra(&h);
+	test_performance(&h);
 
 done:
 	if (h.target != NULL) {

@@ -1299,3 +1299,162 @@ translucent rects: **9.7 µs** mean GPU frame time. `gpu_frame_us_avg` is
 reported through `amsg get avk-stats` as a **mean of completed samples**, and
 is `null` — not 0 — where the device cannot measure, because a test asserting
 on 0 there would be asserting the frame took no time.
+
+## M4D.1 — the analytic shadow
+
+`shadow.frag`, `AVK_CMD_SHADOW`, one pipeline. A shadow is push constants and
+a quad: the envelope in `round_box`, the caster radii in `corners`, the cut-out
+in `inner_box`/`inner_corners`, the colour in `color`, and **`blur_sigma` in
+`params.y`** — the slot the texture pipeline uses for its alpha mask and the
+gradient pipeline for its record index, which never draw the same command.
+
+**Push constants, not a storage buffer**, and the audit of size is the reason
+rather than a preference: the block is exactly 128 bytes and a shadow leaves
+`uv_org_dx` and `uv_dy` — eight floats — entirely unused. M4C needed an SSBO
+because a gradient carries an unbounded colour list; a shadow carries nine
+scalars. Different workloads, different data paths.
+
+### The three geometry facts
+
+1. **The node's box is the envelope**, the caster is that box inset by
+   `blur_sigma`. The producer already grew the window by `size + border` and
+   then offset it.
+2. **The Gaussian's sigma is `blur_sigma * 0.5`.** The field name is not the
+   sigma.
+3. **Corners arrive clockwise** (tl, tr, br, bl) and the reference's helper
+   takes (tl, tr, bl, br).
+
+### Two reference bugs fixed
+
+**REFERENCE BUG FIXED IN AVK: blur sigma is scaled to output pixels** like the
+box and radii it is measured against. SceneFX scales `dst_box` and
+`fx_corner_radii_scale`s the radii, and passes `blur_sigma` through in logical
+units. On this desk — DP-1 at 1.5, HDMI-A-1 at 1.0 — that gives the same window
+a visibly tighter shadow on one monitor than the other, and changes its shape
+as it crosses the seam.
+
+**REFERENCE BUG FIXED IN AVK: the shadow colour is premultiplied by its
+coverage.** `box_shadow.frag` emits `vec4(v_color.rgb, shadow_alpha)` into a
+`PREMULTIPLIED` blend. For the default black shadow `rgb` is 0 and the two
+agree exactly, which is why it has never been seen; a blue shadow at half alpha
+would emit blue at `0.6*255 + 0.5*255`, brighter than the paper it is cast on.
+`test_coloured_shadow_does_not_glow` measures r=128 g=128 **b=204** over white.
+
+### The cut-out is now one function
+
+`az_avk_clip_out_region()`. A border is a filled rect with the client's
+interior taken out; a shadow is a filled envelope with the same interior taken
+out. Same two halves — exact scissor subtraction for what a region can express,
+radii to the shader for the arcs it cannot — and the M4A wedge would have been
+a second identical bug to find.
+
+### The oracle, and four assertions that were wrong
+
+`tests/test-avk-shadow.c` transcribes `box_shadow.frag` in double precision and
+compares **all 43264 pixels** of the envelope: worst **0.6/255**, mean
+**0.002/255**.
+
+Four of the first draft's assertions failed, and in each case the test was
+wrong rather than the renderer:
+
+- **The oracle must model the envelope's truncation.** Its worst disagreement
+  was at `x = 31`, one pixel outside an envelope starting at 32 — a correctly
+  clipped shadow scored as a 5.2/255 rendering error.
+- **The truncation is 2.3%, and that is arithmetic, not slop.** With size and
+  blur both 24 the envelope's edge is 24 px from the caster against an
+  effective sigma of 12, so it cuts at **2 sigma**. The assertion demanded
+  under 2% and measured 0.0235; the erf tail at 2σ is 0.0228.
+- **Corner radii are NOT separable in this approximation.** The obvious test
+  expects coverage to fall as the radius grows; bottom-left at r=37 read
+  *higher* than bottom-right at r=19 while the frame matched the oracle to
+  0.6/255. The x direction is a closed form across a whole **scanline**, so
+  coverage near the bottom-left corner is a function of the bottom-left and
+  bottom-right radii together.
+
+So per-corner correctness is asserted by **discrimination** instead: the frame
+must match the oracle built from its own four radii (0.6/255) while clearly
+failing three that stand for real bugs — bottom corners swapped (**48.3/255**),
+all corners squared (**63.8/255**), all corners rounded to 37 (**63.7/255**).
+
+## M4D.2 — the directional model was already there
+
+### The finding that reshaped the stage
+
+M4D.2 was briefed as "intentionally move beyond SceneFX's generic shadow
+appearance" by introducing two lobes evaluated in one material. The audit found
+both lobes already in the tree, as two `wlr_scene_shadow` nodes with a full
+config surface each and defaults already tuned for light from above. Nothing
+about the look needed inventing. What needed proving is that AVK renders it,
+and what needed deciding is whether to fuse the two.
+
+### Where the directionality lives
+
+**Not in the shader.** `client_draw_one_shadow()` grows the window box by
+`size + border` on every side and *then* shifts it by `position_y`, so after the
+shader insets by sigma the caster is **the window displaced downward**. There is
+more envelope below it than above, and that is the entire mechanism. The shader
+knows nothing about "macOS" or about light; it implements a directional
+analytic shadow and the profile in `config-schema.h` asks for a particular one.
+
+Measured, at equal distance from the window on all four sides:
+
+| distance | top | left | right | bottom |
+|---|---|---|---|---|
+| 4 px | 0.0706 | 0.1922 | 0.1922 | **0.3490** |
+| 10 px | 0.0196 | 0.0863 | 0.0863 | **0.2157** |
+| 18 px | 0.0000 | 0.0275 | 0.0275 | **0.1059** |
+
+Bottom beats the sides by 1.8×, the sides beat the top by 2.7×, and the top is
+**not** bare (0.07 at 4 px) — a trace above is what attaches the window to the
+scene instead of letting it float. Left and right agree to **0.00/255** over
+2–20 px, which is the assertion that would catch an asymmetry introduced by a
+coordinate bug rather than by the profile; every other fixture is symmetric in
+x by construction and would not notice.
+
+The falloff below, pinned rather than described: **0.431** at 1 px, 0.377 at 3,
+0.294 at 6, 0.180 at 12, 0.051 at 24, 0.000 at 36 — and the darkest point is
+**at** the window, not adrift below it, which is the difference between a
+contact shadow and a detached blob.
+
+### Composition needs no clamping
+
+Two translucent nodes drawn in order give `1 - (1-a)(1-c)`, which *is* the
+coverage of a union of independent occluders. Measured: ambient 0.2980, contact
+0.1098, together **0.3765** against a predicted 0.3751 — while naive addition
+would give 0.4078. Nothing needs to add two alphas and clamp; the scene graph
+already does the right thing.
+
+### Fusing the lobes: rejected, with the measurement
+
+| scene | GPU | CPU | shadows |
+|---|---|---|---|
+| no shadows | 3.6 µs | 11.1 µs | 0 |
+| 1 window, ambient only | 5.2 µs | 11.2 µs | 1 |
+| 1 window, both lobes | 5.2 µs | 11.7 µs | 2 |
+| 10 windows, both lobes | 14.6 µs | 14.1 µs | 20 |
+| 16 windows, both lobes | 20.7 µs | 15.4 µs | 32 |
+
+First lobe **1.53 µs**; **second lobe 0.07 µs**; 32 lobes across 16 windows
+**17.0 µs** over baseline. Zero Vulkan allocations throughout.
+
+Fusion would evaluate the contact term over the *ambient* envelope — size 8
+against size 24, so roughly 48% of the area becoming 100% of it — doubling its
+fragment count to save one draw call and one blend that together cost 0.07 µs.
+It would also have to assume the two nodes are adjacent siblings with nothing
+between them, which the scene graph does not promise and which reordering to
+obtain would break translucent ordering. **Rejected on the number, not the
+preference.**
+
+### Breaks
+
+```text
+AZ_SHADOW_SINGLE_RADIUS   56/58 -- matches the all-square oracle to 0.6/255
+                                   while missing the right one by 63.7/255
+AZ_SHADOW_SYMMETRIC       51/58 -- re-centres the envelope on the window;
+                                   top == bottom == sides, exactly
+```
+
+`shadow-owner-monitor-clip` was **not** added. There is no shadow-specific
+cross-output clip path — a shadow goes through the same
+`client_clips_to_monitor()` predicate M4B.1 fixed — so the break would be a
+duplicate of the existing clip-policy one.

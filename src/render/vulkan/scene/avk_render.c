@@ -45,6 +45,8 @@ bool avk_renderer_init(struct avk_renderer *renderer, struct avk_device *dev,
 	renderer->break_bottom_swap = getenv("AZ_ROUNDED_BOTTOM_SWAP") != NULL;
 	renderer->break_shadow_single_radius =
 		getenv("AZ_SHADOW_SINGLE_RADIUS") != NULL;
+	renderer->break_shadow_symmetric =
+		getenv("AZ_SHADOW_SYMMETRIC") != NULL;
 	const char *dbl = getenv("AZ_ROUNDED_DOUBLE_SCALE");
 	renderer->break_rounded_double_scale = dbl != NULL;
 	renderer->break_scale_hint = dbl != NULL ? (float)atof(dbl) : 1.0f;
@@ -762,6 +764,21 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 			 * command; see push.glsl. */
 			pc.params[1] = cmd->blur_sigma;
 
+			if (renderer->break_shadow_symmetric && cmd->has_inner) {
+				/* Slide the envelope until its centre is the window's. The
+				 * size is untouched, so the falloff is the same shape -- only
+				 * its direction is gone. */
+				float win_cx = (float)cmd->inner.x
+					+ (float)cmd->inner.width * 0.5f;
+				float win_cy = (float)cmd->inner.y
+					+ (float)cmd->inner.height * 0.5f;
+				float env_cx = (pc.round_box[0] + pc.round_box[2]) * 0.5f;
+				float env_cy = (pc.round_box[1] + pc.round_box[3]) * 0.5f;
+				pc.round_box[0] += win_cx - env_cx;
+				pc.round_box[2] += win_cx - env_cx;
+				pc.round_box[1] += win_cy - env_cy;
+				pc.round_box[3] += win_cy - env_cy;
+			}
 			if (renderer->break_shadow_single_radius) {
 				/* Applied to the push constants and not to the command, so
 				 * the stats below still report what the SCENE asked for --

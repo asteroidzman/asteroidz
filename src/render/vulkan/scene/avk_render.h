@@ -72,6 +72,23 @@ struct avk_renderer {
 	 * one.
 	 */
 	bool break_shadow_single_radius;
+	/*
+	 * M4D.2 break. Re-centres the shadow's envelope on the window it belongs
+	 * to, which is precisely how a symmetric centred glow differs from a
+	 * directional shadow.
+	 *
+	 * The directionality does NOT live in the shader -- it lives in where the
+	 * compositor puts the envelope. client_draw_one_shadow() grows the window
+	 * box by (size + border) on every side and THEN shifts it by
+	 * shadows_position_y, so after the shader insets by sigma the caster is
+	 * the window displaced downward. There is more room below it than above,
+	 * and that is the whole mechanism.
+	 *
+	 * So the falsifier is to undo the displacement, which the renderer can do
+	 * because `inner` is the window's own footprint. It restores the look
+	 * M4D.2 exists to move away from rather than merely turning shadows off.
+	 */
+	bool break_shadow_symmetric;
 	struct avk_device *dev;
 	struct avk_pipelines pipes;
 	struct avk_cmd_ring ring;
