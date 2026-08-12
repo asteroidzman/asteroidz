@@ -840,7 +840,7 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 
 	struct timespec end;
 	clock_gettime(CLOCK_MONOTONIC, &end);
-	renderer->stats.gpu_submit_ns += (uint64_t)(end.tv_sec - start.tv_sec)
+	renderer->stats.cpu_record_ns += (uint64_t)(end.tv_sec - start.tv_sec)
 		* 1000000000ULL + (uint64_t)(end.tv_nsec - start.tv_nsec);
 
 	/* Backpressure stalls in the command ring are the only CPU waits the
@@ -856,5 +856,5 @@ void avk_renderer_log_stats(const struct avk_renderer *renderer) {
 		s->frames, s->surfaces, s->rects, s->draws, s->barriers);
 	avk_log(AVK_INFO, "avk.cpu_sync_waits=%" PRIu64
 		" avk.record_us_avg=%" PRIu64, s->cpu_sync_waits,
-		s->frames ? s->gpu_submit_ns / s->frames / 1000 : 0);
+		s->frames ? s->cpu_record_ns / s->frames / 1000 : 0);
 }

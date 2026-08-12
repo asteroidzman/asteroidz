@@ -2357,7 +2357,7 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 	/* The submit cost of THIS frame, taken as the delta of the renderer's
 	 * running total, so the distribution can be built without the renderer
 	 * needing to know what a histogram is. */
-	uint64_t submit_ns_now = out->slot->renderer.stats.gpu_submit_ns;
+	uint64_t submit_ns_now = out->slot->renderer.stats.cpu_record_ns;
 	if (submit_ns_now > out->last_submit_ns) {
 		az_avk_hist_add(&avk.gpu_submit_hist,
 			(submit_ns_now - out->last_submit_ns) / 1000, 5);
@@ -2809,7 +2809,7 @@ static cJSON *az_avk_stats_json(void) {
 		const struct avk_renderer_stats *st = &avk.renderers[i].renderer.stats;
 		surfaces += st->surfaces;
 		rects += st->rects;
-		submit_ns += st->gpu_submit_ns;
+		submit_ns += st->cpu_record_ns;
 		sync_waits += st->cpu_sync_waits;
 	}
 	cJSON_AddNumberToObject(o, "frames", (double)avk.frames);

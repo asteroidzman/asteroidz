@@ -1408,6 +1408,434 @@ static void test_conic_rounded(struct harness *h) {
 	}
 }
 
+/* ── M4C.4: damage, and the properties that must reach the pixels ───────── */
+
+/*
+ * Render `g` into `box`, damaging only `dmg`, without clearing.
+ *
+ * No scene.has_clear: the target keeps what the previous frame left, which is
+ * the whole point -- what survives outside the damaged region, and what must
+ * NOT survive inside it.
+ */
+static bool render_damaged(struct harness *h, const struct grad_case *c,
+		const struct avk_box *dmg, bool clear) {
+	struct avk_scene scene;
+	avk_scene_init(&scene);
+	pixman_region32_union_rect(&scene.damage, &scene.damage, dmg->x, dmg->y,
+		(unsigned)dmg->width, (unsigned)dmg->height);
+	/*
+	 * The clear is DAMAGE-CLIPPED, exactly as in the compositor -- it is an
+	 * ordinary scissored command, not a full-screen wipe -- so a partial
+	 * damage region is cleared and redrawn from the bottom up while everything
+	 * outside it survives untouched. That models what really happens to a
+	 * damaged rectangle, and it is what makes NODE OPACITY testable: without
+	 * it, a half-opaque redraw composites over the same gradient it was
+	 * already drawn on (0.5g + g*(1 - 0.5) = g) and the property looks like it
+	 * has no effect at all -- which cost two assertions before this comment
+	 * existed.
+	 */
+	if (clear) {
+		scene.has_clear = true;
+		scene.clear_color[3] = 1.0f;
+	}
+	struct avk_cmd *cmd = avk_scene_add(&scene, AVK_CMD_RECT);
+	cmd->dst = (struct avk_box){ 0, 0, W, H };
+	cmd->color[3] = 1.0f;
+	cmd->opacity = c->bg[0] > 0.0f ? c->bg[0] : 1.0f;   /* bg[0] carries opacity here */
+	avk_cmd_set_gradient(&scene, cmd,
+		c->type == AVK_GRADIENT_NONE ? AVK_GRADIENT_LINEAR : c->type,
+		c->degree, c->blend, c->origin, c->colors, (uint32_t)c->count);
+	bool ok = render(h, &scene);
+	avk_scene_finish(&scene);
+	return ok;
+}
+
+/*
+ * ONE PROPERTY AT A TIME, and each one asserted three ways.
+ *
+ * The matrix exists because a gradient has seven independent inputs and a
+ * renderer can drop any one of them while still drawing a convincing gradient
+ * -- that is exactly what the first-colour, blend-swap, linear-only and
+ * centre-origin breaks each are. So for every property:
+ *
+ *   1. VISIBLE   changing it alone changes the pixels. A property that cannot
+ *                change the picture cannot be damage-correct either, and the
+ *                assertion below it would be vacuous.
+ *   2. REPAINTED inside a damaged region the new value wins completely --
+ *                no pixel of the old gradient survives where it was redrawn.
+ *   3. STABLE    outside that region the old content is untouched, and a
+ *                third frame with the same inputs changes nothing at all.
+ *
+ * (3) is the renderer's half of the M4C.3H invariant: a settled gradient must
+ * not repaint itself, and must not smear when something else does.
+ */
+static const float PALETTE5B[20] = {
+	0, 1, 1, 1,     /* cyan    */
+	1, 0, 1, 1,     /* magenta */
+	1, 1, 0, 1,     /* yellow  */
+	0, 0, 1, 1,     /* blue    */
+	0, 1, 0, 1,     /* green   */
+};
+
+struct prop_case {
+	const char *name;
+	struct grad_case a;
+	struct grad_case b;
+};
+
+static bool frames_differ(struct harness *h, uint32_t *before, int n) {
+	for (int i = 0; i < n; i++) {
+		if (h->pixels[i] != before[i]) {
+			return true;
+		}
+	}
+	return false;
+}
+
+static void test_property_damage(struct harness *h) {
+	printf("M4C.4 test 19: property-change damage matrix\n");
+
+	static const float O1[2] = { 0.5f, 0.5f };
+	static const float O2[2] = { 0.25f, 0.30f };
+	const struct prop_case cases[] = {
+		{ "colour contents",
+		  { NULL, 5, PALETTE5,  true, 0, { 0.5f, 0.5f }, { 1, 0, 0, 0 } },
+		  { NULL, 5, PALETTE5B, true, 0, { 0.5f, 0.5f }, { 1, 0, 0, 0 } } },
+		{ "colour count",
+		  { NULL, 5, PALETTE5,  true, 0, { 0.5f, 0.5f }, { 1, 0, 0, 0 } },
+		  { NULL, 3, PALETTE5,  true, 0, { 0.5f, 0.5f }, { 1, 0, 0, 0 } } },
+		{ "gradient type",
+		  { NULL, 5, PALETTE5,  true, 0, { 0.5f, 0.5f }, { 1, 0, 0, 0 },
+		    AVK_GRADIENT_LINEAR },
+		  { NULL, 5, PALETTE5,  true, 0, { 0.5f, 0.5f }, { 1, 0, 0, 0 },
+		    AVK_GRADIENT_CONIC } },
+		{ "degree",
+		  { NULL, 5, PALETTE5,  true, 0,  { 0.5f, 0.5f }, { 1, 0, 0, 0 } },
+		  { NULL, 5, PALETTE5,  true, 55, { 0.5f, 0.5f }, { 1, 0, 0, 0 } } },
+		{ "origin",
+		  { NULL, 5, PALETTE5,  true, 90, { 0.5f, 0.5f },  { 1, 0, 0, 0 } },
+		  { NULL, 5, PALETTE5,  true, 90, { 0.25f, 0.30f }, { 1, 0, 0, 0 } } },
+		{ "blend mode",
+		  { NULL, 5, PALETTE5,  true,  0, { 0.5f, 0.5f }, { 1, 0, 0, 0 } },
+		  { NULL, 5, PALETTE5,  false, 0, { 0.5f, 0.5f }, { 1, 0, 0, 0 } } },
+		{ "node opacity",
+		  { NULL, 5, PALETTE5,  true, 0, { 0.5f, 0.5f }, { 1.0f, 0, 0, 0 } },
+		  { NULL, 5, PALETTE5,  true, 0, { 0.5f, 0.5f }, { 0.5f, 0, 0, 0 } } },
+	};
+	(void)O1; (void)O2;
+
+	const struct avk_box full = { 0, 0, W, H };
+	/* The damaged strip, and a column well outside it. */
+	const struct avk_box strip = { 0, 0, W / 2, H };
+	const uint32_t inside_x = W / 4, outside_x = 3 * W / 4;
+
+	static uint32_t snapshot[W * H];
+	for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+		const struct prop_case *pc = &cases[i];
+
+		/* Frame A, whole target. */
+		if (!render_damaged(h, &pc->a, &full, true)) {
+			CHECK(false, "%s: rendered A", pc->name);
+			continue;
+		}
+		memcpy(snapshot, h->pixels, sizeof(snapshot));
+		uint32_t a_out = px(h, outside_x, H / 2);
+
+		/* Frame B, whole target, one property changed.
+		 *
+		 * COUNTED OVER THE WHOLE FRAME, not read at one pixel. Two of these
+		 * properties coincide at any given point -- at x = W/4 a five-stop
+		 * gradient is inside band 1 in BOTH blend modes, so a single sample
+		 * there reports that changing the mode changed nothing. The property
+		 * is visible if the picture differs anywhere. */
+		if (!render_damaged(h, &pc->b, &full, true)) {
+			CHECK(false, "%s: rendered B", pc->name);
+			continue;
+		}
+		uint32_t b_in = px(h, inside_x, H / 2);
+		int changed = 0;
+		for (int q = 0; q < W * H; q += 7) {
+			if (h->pixels[q] != snapshot[q]) {
+				changed++;
+			}
+		}
+		CHECK(changed > 0, "%s: changing it alone changes the picture "
+			"(%d of %d sampled pixels)", pc->name, changed, W * H / 7);
+
+		/* Back to A everywhere, then B damaging only the left strip. */
+		render_damaged(h, &pc->a, &full, true);
+		memcpy(snapshot, h->pixels, sizeof(snapshot));
+		if (!render_damaged(h, &pc->b, &strip, true)) {
+			CHECK(false, "%s: rendered B into a partial damage region",
+				pc->name);
+			continue;
+		}
+		CHECK(px(h, inside_x, H / 2) == b_in,
+			"%s: inside the damaged region the NEW gradient won completely "
+			"(%06x)", pc->name, px(h, inside_x, H / 2) & 0xFFFFFF);
+		CHECK(px(h, outside_x, H / 2) == a_out,
+			"%s: outside it the old content is untouched (%06x, was %06x)",
+			pc->name, px(h, outside_x, H / 2) & 0xFFFFFF, a_out & 0xFFFFFF);
+		/* No stale band anywhere in the damaged strip: every pixel there must
+		 * match a full-frame render of B, not a blend of the two. */
+		memcpy(snapshot, h->pixels, sizeof(snapshot));
+		render_damaged(h, &pc->b, &full, true);
+		int stale = 0;
+		for (uint32_t y = 0; y < H; y += 4) {
+			for (uint32_t x = 0; x < (uint32_t)strip.width; x += 4) {
+				if (snapshot[y * W + x] != h->pixels[y * W + x]) {
+					stale++;
+				}
+			}
+		}
+		CHECK(stale == 0, "%s: no pixel of the old gradient survived inside "
+			"the damaged region (%d stale)", pc->name, stale);
+
+		/* STABLE: the same inputs again must change nothing. */
+		memcpy(snapshot, h->pixels, sizeof(snapshot));
+		render_damaged(h, &pc->b, &full, true);
+		CHECK(!frames_differ(h, snapshot, W * H),
+			"%s: re-rendering identical inputs changed no pixel", pc->name);
+	}
+}
+
+/*
+ * Output scale must not rotate a gradient or move its bands.
+ *
+ * The compositor hands AVK a destination box already in output pixels, so
+ * "scale 1.5" is the same gradient in a box 1.5x larger. The semantics live in
+ * the box's own normalised space, so every band boundary must land at the same
+ * FRACTION of the box, and the conic centre at the same fraction -- if any of
+ * that were computed against the output instead, a scaled window's gradient
+ * would drift.
+ */
+static void test_scale_invariance(struct harness *h) {
+	printf("M4C.4 test 20: gradient semantics are invariant to box scale\n");
+
+	const float origin[2] = { 0.5f, 0.5f };
+	/* 80x80 and 120x120: a 1.5x scale, both fitting the target. */
+	const int sizes[2] = { 80, 120 };
+	int band_at[2][4];
+	int conic_q[2][4];
+
+	for (int s = 0; s < 2; s++) {
+		int n = sizes[s];
+		struct avk_scene scene;
+		avk_scene_init(&scene);
+		pixman_region32_union_rect(&scene.damage, &scene.damage, 0, 0, W, H);
+		scene.has_clear = true;
+		scene.clear_color[3] = 1.0f;
+		struct avk_cmd *cmd = avk_scene_add(&scene, AVK_CMD_RECT);
+		cmd->dst = (struct avk_box){ 0, 0, n, n };
+		cmd->color[3] = 1.0f;
+		avk_cmd_set_gradient(&scene, cmd, AVK_GRADIENT_LINEAR, 0.0f, false,
+			origin, PALETTE5, 5);
+		CHECK(render(h, &scene), "rendered linear at %dx%d", n, n);
+		avk_scene_finish(&scene);
+
+		/* Where does each band boundary fall, as a percentage of the box? */
+		int prev = -1, found = 0;
+		for (int x = 0; x < n && found < 4; x++) {
+			uint32_t p = px(h, (uint32_t)x, (uint32_t)(n / 2));
+			int id = (r_of(p) > 128) * 4 + (g_of(p) > 128) * 2 + (b_of(p) > 128);
+			if (prev >= 0 && id != prev) {
+				band_at[s][found++] = (int)lrintf(100.0f * x / n);
+			}
+			prev = id;
+		}
+		for (; found < 4; found++) {
+			band_at[s][found] = -1;
+		}
+
+		/* And the conic quadrants, which pin the centre. */
+		avk_scene_init(&scene);
+		pixman_region32_union_rect(&scene.damage, &scene.damage, 0, 0, W, H);
+		scene.has_clear = true;
+		scene.clear_color[3] = 1.0f;
+		cmd = avk_scene_add(&scene, AVK_CMD_RECT);
+		cmd->dst = (struct avk_box){ 0, 0, n, n };
+		cmd->color[3] = 1.0f;
+		avk_cmd_set_gradient(&scene, cmd, AVK_GRADIENT_CONIC, 0.0f, false,
+			origin, PALETTE4, 4);
+		CHECK(render(h, &scene), "rendered conic at %dx%d", n, n);
+		avk_scene_finish(&scene);
+		const int qx[4] = { 1, 3, 3, 1 }, qy[4] = { 3, 3, 1, 1 };
+		for (int q = 0; q < 4; q++) {
+			uint32_t p = px(h, (uint32_t)(n * qx[q] / 4),
+				(uint32_t)(n * qy[q] / 4));
+			conic_q[s][q] = (r_of(p) > 128) * 4 + (g_of(p) > 128) * 2
+				+ (b_of(p) > 128);
+		}
+	}
+
+	printf("      band boundaries (%% of box): 80px %d/%d/%d/%d   "
+		"120px %d/%d/%d/%d\n", band_at[0][0], band_at[0][1], band_at[0][2],
+		band_at[0][3], band_at[1][0], band_at[1][1], band_at[1][2],
+		band_at[1][3]);
+	int drift = 0;
+	for (int i = 0; i < 4; i++) {
+		if (band_at[0][i] < 0 || abs(band_at[0][i] - band_at[1][i]) > 1) {
+			drift++;
+		}
+	}
+	CHECK(drift == 0, "every band boundary lands at the same fraction of the "
+		"box at both scales (%d drifted)", drift);
+	int qdiff = 0;
+	for (int q = 0; q < 4; q++) {
+		if (conic_q[0][q] != conic_q[1][q]) {
+			qdiff++;
+		}
+	}
+	CHECK(qdiff == 0, "the conic centre and rotation are unchanged by scale "
+		"(%d quadrants differ)", qdiff);
+}
+
+/*
+ * WHICH SPACE DOES `degree` LIVE IN? Output raster space, not node space.
+ *
+ * Traced rather than assumed: SceneFX sets range = dst_box, which is in OUTPUT
+ * coordinates after the output transform, and the shader derives its
+ * coordinate from gl_FragCoord, which is also output. AVK does the same. So a
+ * gradient's direction is fixed relative to the OUTPUT, and rotating an output
+ * rotates the window underneath a ramp that stays put.
+ *
+ * That is worth a fixture because the opposite is the intuitive guess, and a
+ * renderer that "helpfully" rotated the ramp with the node would look correct
+ * on an unrotated output -- which is every output anyone tests on.
+ *
+ * The check: two boxes of the same size at different POSITIONS must show the
+ * same ramp relative to themselves (the gradient belongs to the box, not the
+ * screen), while the direction stays along output +x.
+ */
+static void test_gradient_space(struct harness *h) {
+	printf("M4C.4 test 21: the ramp belongs to the box, its direction to the "
+		"output\n");
+
+	const float origin[2] = { 0.5f, 0.5f };
+	const struct avk_box boxes[2] = { { 0, 0, 64, 64 }, { 64, 64, 64, 64 } };
+	int ids[2][3];
+
+	for (int b = 0; b < 2; b++) {
+		struct avk_scene scene;
+		avk_scene_init(&scene);
+		pixman_region32_union_rect(&scene.damage, &scene.damage, 0, 0, W, H);
+		scene.has_clear = true;
+		scene.clear_color[3] = 1.0f;
+		struct avk_cmd *cmd = avk_scene_add(&scene, AVK_CMD_RECT);
+		cmd->dst = boxes[b];
+		cmd->color[3] = 1.0f;
+		avk_cmd_set_gradient(&scene, cmd, AVK_GRADIENT_LINEAR, 0.0f, false,
+			origin, PALETTE5, 5);
+		CHECK(render(h, &scene), "rendered at %d,%d", boxes[b].x, boxes[b].y);
+		avk_scene_finish(&scene);
+		/* Left, middle and right THIRDS of the box itself. */
+		for (int t = 0; t < 3; t++) {
+			uint32_t x = (uint32_t)(boxes[b].x + boxes[b].width * (2 * t + 1) / 6);
+			uint32_t y = (uint32_t)(boxes[b].y + boxes[b].height / 2);
+			uint32_t p = px(h, x, y);
+			ids[b][t] = (r_of(p) > 128) * 4 + (g_of(p) > 128) * 2
+				+ (b_of(p) > 128);
+		}
+	}
+	CHECK(ids[0][0] == ids[1][0] && ids[0][1] == ids[1][1]
+			&& ids[0][2] == ids[1][2],
+		"moving the box does not move the ramp through it "
+		"(%d/%d/%d vs %d/%d/%d)", ids[0][0], ids[0][1], ids[0][2],
+		ids[1][0], ids[1][1], ids[1][2]);
+	/* And it really is a ramp along +x, not a constant. */
+	CHECK(ids[0][0] != ids[0][2],
+		"premise: the thirds differ, so the comparison above is not three "
+		"readings of one colour");
+}
+
+/* ── M4C.4: performance baseline ────────────────────────────────────────── */
+
+/*
+ * What a gradient costs, measured rather than asserted.
+ *
+ * GPU TIME IS NOT MEASURED, and is not guessed at. AVK has no timestamp query
+ * pool -- avk_phys.c reads timestampPeriod and nothing uses it -- so the only
+ * timing available is CPU wall-clock around recording and submitting, which is
+ * a different quantity in a different place. Reporting it as GPU cost would
+ * understate a shader-bound frame and overstate a submission-bound one, in
+ * opposite directions. It is labelled CPU throughout.
+ *
+ * The numbers that ARE meaningful here: how much data a gradient uploads per
+ * frame, how many draws it costs, and whether any of it allocates.
+ */
+static void perf_scene(struct harness *h, const char *label, int gradients,
+		int count, enum avk_gradient_type type, bool tile) {
+	const int FRAMES = 60;
+	struct avk_renderer_stats s0 = h->renderer.stats;
+	struct avk_gradient_stats g0 = h->renderer.gradients.stats;
+	struct avk_live_objects l0 = h->dev->live;
+
+	float colors[17 * 4];
+	for (int j = 0; j < 17; j++) {
+		stop_color(j % 6, j, colors + j * 4);
+	}
+	const float origin[2] = { 0.5f, 0.5f };
+
+	for (int f = 0; f < FRAMES; f++) {
+		struct avk_scene scene;
+		avk_scene_init(&scene);
+		pixman_region32_union_rect(&scene.damage, &scene.damage, 0, 0, W, H);
+		scene.has_clear = true;
+		scene.clear_color[3] = 1.0f;
+		for (int i = 0; i < gradients; i++) {
+			struct avk_cmd *cmd = avk_scene_add(&scene, AVK_CMD_RECT);
+			if (tile) {
+				int n = 4, side = W / n;
+				cmd->dst = (struct avk_box){ (i % n) * side, (i / n) * side,
+					side, side };
+			} else {
+				cmd->dst = (struct avk_box){ 0, 0, W, H };
+			}
+			cmd->color[0] = 0.2f; cmd->color[1] = 0.4f; cmd->color[2] = 0.8f;
+			cmd->color[3] = 1.0f;
+			if (count > 0) {
+				/* A colour that CHANGES every  frame for the animated case, so the
+				 * upload is real work and not a repeated identical write. */
+				colors[0] = (float)(f % 64) / 64.0f;
+				avk_cmd_set_gradient(&scene, cmd, type, 45.0f, true, origin,
+					colors, (uint32_t)count);
+			}
+		}
+		render(h, &scene);
+		avk_scene_finish(&scene);
+	}
+
+	const struct avk_renderer_stats *s = &h->renderer.stats;
+	const struct avk_gradient_stats *g = &h->renderer.gradients.stats;
+	const struct avk_live_objects *l = &h->dev->live;
+	uint64_t frames = s->frames - s0.frames;
+	printf("      %-26s cpu %5" PRIu64 " us/frame  draws %4" PRIu64
+		"  upload %5" PRIu64 " B/frame  alloc %" PRId64 "\n",
+		label,
+		frames ? (s->cpu_record_ns - s0.cpu_record_ns) / frames / 1000 : 0,
+		(s->draws - s0.draws) / (frames ? frames : 1),
+		frames ? (g->buffer_upload_bytes - g0.buffer_upload_bytes) / frames : 0,
+		(l->buffers - l0.buffers) + (l->device_memory - l0.device_memory)
+			+ (l->pipelines - l0.pipelines));
+	CHECK((l->buffers - l0.buffers) == 0
+			&& (l->device_memory - l0.device_memory) == 0
+			&& (l->pipelines - l0.pipelines) == 0,
+		"%s: allocated no Vulkan objects over %d frames", label, FRAMES);
+}
+
+static void test_performance(struct harness *h) {
+	printf("M4C.4 test 22: performance baseline (GPU time = NOT MEASURED)\n");
+	/* Warm every ring slot first, so first-use work is not charged to the
+	 * first scene measured. */
+	perf_scene(h, "(warmup)", 1, 5, AVK_GRADIENT_LINEAR, false);
+	perf_scene(h, "solid rects, no gradient", 1, 0, AVK_GRADIENT_LINEAR, false);
+	perf_scene(h, "5-colour linear", 1, 5, AVK_GRADIENT_LINEAR, false);
+	perf_scene(h, "17-colour linear", 1, 17, AVK_GRADIENT_LINEAR, false);
+	perf_scene(h, "5-colour conic", 1, 5, AVK_GRADIENT_CONIC, false);
+	perf_scene(h, "16 gradient windows", 16, 5, AVK_GRADIENT_LINEAR, true);
+	perf_scene(h, "animated 2-stop border", 1, 2, AVK_GRADIENT_LINEAR, false);
+}
+
 /* ── main ───────────────────────────────────────────────────────────────── */
 
 int main(void) {
@@ -1462,6 +1890,10 @@ int main(void) {
 	test_conic_origin(&h);
 	test_conic_is_not_linear(&h);
 	test_conic_rounded(&h);
+	test_property_damage(&h);
+	test_scale_invariance(&h);
+	test_gradient_space(&h);
+	test_performance(&h);
 
 done:
 	if (h.target != NULL) {

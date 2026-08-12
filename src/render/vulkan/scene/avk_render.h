@@ -37,7 +37,15 @@ struct avk_renderer_stats {
 	uint64_t draws;          /* commands x damage rects */
 	uint64_t barriers;
 	uint64_t cpu_sync_waits; /* MUST stay 0 on the steady-state frame path */
-	uint64_t gpu_submit_ns;
+	/*
+	 * CPU wall-clock spent RECORDING and SUBMITTING a frame -- not GPU
+	 * execution time, and named so it cannot be read as such. AVK has no
+	 * timestamp query pool (avk_phys.c reads timestampPeriod and nothing uses
+	 * it), so GPU time is NOT MEASURED. Reporting this number as GPU cost
+	 * would understate a shader-bound frame and overstate a submission-bound
+	 * one, in opposite directions.
+	 */
+	uint64_t cpu_record_ns;
 };
 
 struct avk_renderer {

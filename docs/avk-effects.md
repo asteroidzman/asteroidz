@@ -955,3 +955,82 @@ suite first **hung** before reaching an assertion (the library's untimed client
 wait), and then **passed** its two headline assertions against a wedged,
 leaking compositor, because a timed-out `amsg` yields an empty string rather
 than the `TIMEOUT` sentinel and two empty strings subtract to zero.
+
+## M4C.4 — damage, interactions, and what a gradient costs
+
+### Property-change damage matrix
+
+Seven properties — colour contents, colour count, type, degree, origin, blend
+mode, node opacity — each asserted four ways: the change is **visible**, the new
+value **wins completely** inside a damaged region, the old content is
+**untouched** outside it, **no stale pixel** survives where it was redrawn, and
+re-rendering identical inputs **changes nothing**.
+
+Two of them needed the fixture corrected before they meant anything, and both
+are the same shape of trap:
+
+- **blend mode read the same colour in both modes.** At `x = W/4` a five-stop
+  gradient is inside band 1 whether banded (`1/5`) or interpolated (`1/4`), so a
+  single sample there reports that changing the mode changed nothing. The
+  comparison counts differing pixels over the **whole frame** now.
+- **node opacity was invisible by construction.** The partial-damage step
+  originally skipped the clear, so a half-opaque redraw composited over the same
+  gradient it had already drawn: `0.5g + g(1 − 0.5) = g`, exactly the original
+  colour. The clear is damage-clipped — an ordinary scissored command, not a
+  full-screen wipe — so enabling it models what really happens to a damaged
+  rectangle and makes opacity observable.
+
+### Scale, and which space a gradient lives in
+
+Band boundaries land at **20/40/60/80 % of the box** at both 80 px and 120 px,
+and the conic centre does not move. The semantics live in the rect's own
+normalised box, so an output scale change resizes the box and nothing else.
+
+`degree` is in **output raster space**, traced rather than assumed: SceneFX sets
+`range = dst_box`, which is in output coordinates after the output transform,
+and derives its coordinate from `gl_FragCoord`, which is also output. AVK does
+the same. So the ramp belongs to the box — moving a window does not slide the
+gradient through it — while its *direction* is fixed relative to the output.
+
+### Cross-output
+
+A 948-px-wide floating window straddling the seam at `x = 1920`
+(`1470 … 2418`), border gradient at 0°:
+
+```text
+939 samples along the top border   median step 0   max step 2 (at x=2394)
+end-to-end span 510                = two full channels, a complete ramp
+```
+
+No discontinuity at the seam. The end-to-end span is asserted beside the
+continuity check because **a nearly-flat border would pass a continuity test
+precisely by having no discontinuity** — continuity alone cannot tell a ramp
+from a fill.
+
+This fixture only became possible once M4C.3H landed.
+
+### Performance — GPU time NOT MEASURED
+
+AVK has no timestamp query pool; `avk_phys.c` reads `timestampPeriod` and
+nothing uses it. The only timing available is CPU wall-clock around recording
+and submitting, which is a different quantity in a different place — the stat
+is now named `cpu_record_ns` rather than `gpu_submit_ns` so it cannot be
+misread as GPU cost.
+
+60 frames each, 128×128 target:
+
+```text
+                          CPU/frame   draws   upload/frame   Vulkan allocs
+solid rects, no gradient     15 us       2         0 B            0
+5-colour linear              17 us       2       112 B            0
+17-colour linear             16 us       2       304 B            0
+5-colour conic               16 us       2       112 B            0
+16 gradient windows          19 us      17      1792 B            0
+animated 2-stop border       16 us       2        64 B            0
+```
+
+A gradient costs **1–4 µs of CPU and a few hundred bytes** over a solid fill,
+and allocates nothing. Per the standing rule that every advanced Vulkan
+technique must justify its complexity with measurement, this is a measurement
+**against** introducing descriptor indexing, GPU-driven batching or a render
+graph for gradients: there is nothing here for them to save.
