@@ -131,6 +131,23 @@ struct avk_pipelines {
 	 */
 	VkPipeline blur_down;
 	VkPipeline blur_up;
+	/*
+	 * M4F.2A.3. The same blur_up.frag, with the DARKEN clamp as blend state:
+	 * VK_BLEND_OP_MIN on rgb against the attachment, which at the final upsample
+	 * still holds the unblurred source.
+	 *
+	 * A pipeline and not a shader branch because the clamp is not expressible in
+	 * a fragment shader at all -- it needs the destination, which only fixed
+	 * function can read. See create_pipeline_ex()'s AZ_BLEND_DARKEN.
+	 */
+	VkPipeline blur_up_darken;
+	/*
+	 * The blur node's own COMPOSITE when edge_softness > 0: its result drawn with
+	 * the analytic Gaussian coverage a shadow uses, instead of the hard rounded
+	 * SDF. Separate from `texture` because the coverage function differs, and
+	 * separate from `shadow` because it samples an image rather than tinting.
+	 */
+	VkPipeline blur_soft;
 
 	/* One sampler each, because filtering is a per-command choice and a
 	 * sampler is immutable. Nearest for 1:1 blits -- linear at 1:1 is not a

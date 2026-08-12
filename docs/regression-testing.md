@@ -1131,9 +1131,86 @@ Three suites arrived with M4E and one of them is a lesson about the harness.
 tests/test-avk-graph.c        47   topology, derived barriers, allocation
 tests/test-avk-transient.c    33   pooled images, timeline-safe reuse
 tests/test-avk-multipass.c    18   a two-pass frame with deterministic pixels
-contrib/avk-graph-test.sh     20   the compositor's own frame, and pixel equivalence
+contrib/avk-graph-test.sh     16   the compositor's own frame, and pixel equivalence
 contrib/avk-graph-perf.sh     20   four scenes, both binaries, alternating
 ```
+
+### M4F: the blur, its material, and the walker
+
+```text
+tests/test-avk-blur.c            50   the dual-Kawase primitive and its support
+tests/test-avk-blur-scene.c      24   a blur's source is the CURRENT-frame prefix
+tests/test-avk-segment.c         18   any command range, any regional target
+tests/test-avk-blur-material.c   30   darken, edge_softness, clip, alpha, corners
+tests/test-avk-cmd-uses.c        19   every command kind states what it samples
+contrib/avk-blur-walker-test.sh  26   real WLR_SCENE_NODE_BLUR through the walker
+contrib/wlbgeffect/              --   a client that supplies a real blur region
+```
+
+**`amsg dispatch dump_scene`** logs one line per emitted AVK command with the
+index it landed at. That index is the `k` a blur's source prefix is replayed
+for, so scene order becomes a fact about the stream rather than something
+inferred from a picture — and a fixture can tell a blur in the wrong PLACE from
+a blur with the wrong SOURCE, which no screenshot can.
+
+It is armed rather than scheduled, and that was learned: `AVK_SCENE_DUMP` names
+a frame NUMBER, and nothing outside the compositor knows which frame a window
+will be on. 5 fired before the client existed; 200 never arrived on an idle
+desktop. Both produce an empty dump, which reads exactly like "the walker
+emitted nothing".
+
+`test-avk-cmd-uses` needs no GPU: the resolver it exercises is pure. It makes no
+synchronisation claim either — Vulkan's validation layers stay the oracle for
+barriers, because they see the actual ones. Its whole job is to notice an
+omission earlier than a validation run would, and it exists because the first
+version of `avk_render_declare_segment()` listed only texture commands and the
+blur command that samples its own result was a missing barrier that RENDERED.
+
+Breaks, all four confirmed failing:
+
+```text
+AZ_BLUR_SCENE_AFTER=1           blur-scene   16/24   walker 21/23
+AZ_BLUR_IGNORE_DARKEN=1         material     27/30   walker 22/23
+AZ_BLUR_IGNORE_CLIP=1           material     25/30
+AZ_BLUR_EDGE_LOGICAL_SIGMA=1.5  material     29/30
+```
+
+`AZ_BLUR_EDGE_LOGICAL_SIGMA` fails exactly one check, and that is correct rather
+than weak: it divides the soft edge's sigma back out by the output scale, which
+restores the reference's own inconsistency (the reference scales a blur node's
+edge softness to output pixels and does NOT scale the shadow's blur sigma). The
+only thing that can see it is the check that the two fade over the same
+distance — the invariant the feature exists for. It measures 0.3433 of coverage
+disagreement, which is a visible ring.
+
+**Three premises in this fixture were false, and each was measured rather than
+assumed.** Every one of them produced a plausible-looking pass or a
+plausible-looking failure:
+
+```text
+only-floating          defaults to 1, so a TILED window has no shadow, hence no
+                       backdrop blur, hence no blur node. Measured
+                       blur_nodes_seen = 0 and read as a broken walker.
+
+opaque surfaces        client_update_blur() refuses a blur node behind a fully
+                       opaque surface -- it could never show its backdrop. kitty
+                       is opaque, so the window's OWN blur node (the one that
+                       carries a clipped_region) never existed and the clip was
+                       being "tested" against nodes that had none.
+                       avk.blur_nodes_clipped exists to say so, and read 0.
+
+clip=Nrects over the   a SHADOW's window-shaped hole is the standard
+whole dump             two-rectangle cross, so "the most rectangles any clip
+                       arrived in" measured 4 and passed the multi-rect
+                       assertion. Right answer, wrong command.
+```
+
+**A blur-enabled default config changed what other fixtures measure.** The
+harness's default turns the shadow backdrop blur on and the wallpaper is a layer
+surface with a layer shadow, so from the moment the walker honoured blur nodes,
+`avk-graph-test.sh` measured 6 passes and 7 barriers while calling it the direct
+path. Any fixture asserting on pass or barrier counts has to state that it has
+no blur in it, and assert that it has none.
 
 **Comparing two builds needs `HL_ASTEROIDZ`, not `ASTEROIDZ`.**
 `contrib/lib/headless.sh` resolves the binary once, at source time:

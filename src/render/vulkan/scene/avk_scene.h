@@ -78,6 +78,17 @@ enum avk_cmd_type {
 	AVK_CMD_BLUR,
 };
 
+/*
+ * How many command types there are, for exhaustiveness checks.
+ *
+ * Derived from the last enumerator rather than written as a literal, and NOT an
+ * enumerator itself: a sentinel inside the enum would have to be given a `case`
+ * in every switch, which is precisely the silent-fallthrough slot this exists to
+ * close. Adding a type here changes this number, which fails the _Static_assert
+ * in avk_render.c and points at the switch that has to learn about it.
+ */
+#define AVK_CMD_TYPE_COUNT ((int)AVK_CMD_BLUR + 1)
+
 /* 1 and 2 are the values SceneFX's `gradient_linear` field carries, kept rather
  * than renumbered so a mismatch between the two is a compile error rather than
  * a gradient that silently renders as the other kind. */
@@ -222,6 +233,28 @@ struct avk_cmd {
 	float blur_radius;
 	float blur_brightness, blur_contrast, blur_saturation, blur_noise;
 	bool blur_apply_effects;
+	/*
+	 * The result may never come out lighter than the source it replaced. See
+	 * avk_blur.h -- it exists because a blur of dark-with-bright-detail (a
+	 * terminal) raises the mean and reads as a glow.
+	 */
+	bool blur_darken;
+	/*
+	 * 0 -- the node's edge is `corners`: a hard rounded-rect SDF with a ~1px
+	 * antialiasing band, like any other rounded texture.
+	 *
+	 * > 0 -- the edge instead fades over the same wide analytic Gaussian a
+	 * shadow's tint fades over, with this as the sigma, and `corners` becomes
+	 * that falloff's own corner radii rather than a hard radius. The producer
+	 * hands a shadow-backdrop blur the SHADOW'S OWN sigma so the two fade in
+	 * lockstep and read as one halo.
+	 *
+	 * IN OUTPUT PIXELS, scaled at the walker beside the box and the radii. The
+	 * reference scales this field and does NOT scale a shadow's blur_sigma, so
+	 * on a fractional-scale output its two edges disagree; AVK scales both. See
+	 * docs/avk-effects.md.
+	 */
+	float blur_edge_softness;
 	/*
 	 * Compatibility metadata, in this command's own coordinates.
 	 *

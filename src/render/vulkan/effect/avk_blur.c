@@ -196,6 +196,10 @@ struct blur_pass {
 	float uv_x, uv_y, uv_w, uv_h;
 	struct avk_blur_params effects;
 	bool apply_effects;
+	/* LOAD rather than DONT_CARE, because the darken clamp's whole trick is that
+	 * the destination still holds the unblurred source. Only ever true on the
+	 * last upsample of a chain whose params ask for it. */
+	bool load;
 };
 
 /*
@@ -264,8 +268,15 @@ static void record_blur_pass(VkCommandBuffer cb, void *user) {
 		 * there is nothing to preserve and nothing to clear. LOAD would read a
 		 * full level back out of memory for values that are all about to be
 		 * overwritten.
+		 *
+		 * EXCEPT under the darken clamp, where the destination is exactly what
+		 * the pass needs: level 0 still holds the unblurred source, and
+		 * VK_BLEND_OP_MIN reads it. DONT_CARE there would clamp against garbage
+		 * -- which on this driver is usually the right answer by accident,
+		 * because the memory was that same image a moment ago.
 		 */
-		.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+		.loadOp = p->load ? VK_ATTACHMENT_LOAD_OP_LOAD
+			: VK_ATTACHMENT_LOAD_OP_DONT_CARE,
 		.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
 	};
 	VkRenderingInfo info = {
@@ -441,10 +452,33 @@ bool avk_blur_declare(struct avk_graph *graph, struct avk_transient_pool *pool,
 		uint32_t dh = level_extent(height, i - 1);
 		bool last = (i == 1);
 
+		/*
+		 * THE DARKEN CLAMP, and it is only ever the last pass.
+		 *
+		 * `src_resource == dst_resource` on the live path -- the chain writes its
+		 * final upsample back into the prefix transient it read -- so at this
+		 * pass the destination still holds the UNBLURRED prefix. That is the same
+		 * property the reference relies on (blur2.comp's comment: "the chain
+		 * walks away from mip 0 and only returns on this last pass"), and it is
+		 * what makes min() free.
+		 *
+		 * If a caller ever blurs A into a different image B, the destination is
+		 * not the source and there is nothing meaningful to clamp against. Asked
+		 * here rather than assumed, because "usually the same image" is exactly
+		 * the kind of premise that stops holding without anyone noticing.
+		 */
+		bool darken = last && params->darken && src_resource == dst_resource;
+		if (last && params->darken && !darken) {
+			avk_log(AVK_WARN, "avk blur: darken asked for on a chain whose "
+				"destination is not its source; there is no unblurred source to "
+				"clamp against, so the clamp is skipped");
+		}
+
 		struct blur_pass *p = &g_passes[g_pass_len++];
 		memset(p, 0, sizeof(*p));
 		p->pipes = pipes;
-		p->pipeline = pipes->blur_up;
+		p->pipeline = darken ? pipes->blur_up_darken : pipes->blur_up;
+		p->load = darken;
 		p->src = level_img[i];
 		p->dst = last ? graph->resources[dst_resource].image
 			: level_img[i - 1];

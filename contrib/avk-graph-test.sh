@@ -68,7 +68,17 @@ fixture() {
 	# renderer's fault. See the note in docs/avk-effects.md.
 	hl_reset_spawn_colors
 	export HL_KITTY_EXTRA="-o cursor_blink_interval=0"
-	hl_start
+	# BLUR OFF, EXPLICITLY, and it is the premise of the whole file rather than
+	# tidiness. M4E's hard requirement is that a frame with NO multipass effect
+	# stays one pass and two barriers -- and the harness's default config turns
+	# the shadow backdrop blur ON, which since M4F.2A.3 the walker honours. The
+	# wallpaper is a layer surface with a layer shadow, so that default alone
+	# put a real blur node in this fixture: the "direct path" measured 6 passes
+	# and 7 barriers and the file went on calling it the direct path.
+	#
+	# The assertion added below checks that it really is off, so this can never
+	# quietly stop working again.
+	hl_start "effects { shadow { blur-background 0 }; blur { enable 0 } }"
 	hl_spawn_kitty graph-a >/dev/null
 	hl_wait_client_count 1
 	hl_spawn_kitty graph-b >/dev/null
@@ -107,6 +117,13 @@ FRAMES=$(echo "$STATS" | jq -r '.graph_frames // 0')
 # to look impressive would fail on correct behaviour. What this rules out is
 # zero.
 hl_assert "the graph built frames at all" "$([ "${FRAMES:-0}" -gt 10 ] && echo yes || echo "no ($FRAMES)")" "yes"
+
+# THE OTHER HALF OF THE PREMISE. "One pass" is only the direct-path claim if the
+# frame had no multipass effect in it; with a blur node present, one pass would
+# be a BUG rather than the requirement being met. Asserted rather than assumed,
+# because the default config quietly supplies one.
+BLURN=$(echo "$STATS" | jq -r '.blur_nodes_emitted // 0')
+hl_assert "and no blur node was in it (premise, $BLURN)" "$BLURN" "0"
 
 # ONE pass. This is the hard requirement of M4E: a frame with no multipass
 # effect must not have become a pipeline.

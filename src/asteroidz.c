@@ -1649,6 +1649,7 @@ struct Pertag {
 /* Defined after render/az_avk.h is available; named by the dispatch table in
  * parse_config.h, which is included first. */
 static int32_t reset_avk_stats(const Arg *arg);
+static int32_t dump_scene(const Arg *arg);
 /* Same reason: reapply_cursor_style() lives in parse_config.h and destroys the
  * xcursor manager, which every borrowed cursor pointer depends on. Defined in
  * render/az_cursor.h, included later. */
@@ -1795,6 +1796,23 @@ static int32_t reset_avk_stats(const Arg *arg) {
 #endif
 	return 0;
 }
+/*
+ * `amsg dispatch dump_scene` -- log the next frame's AVK command stream.
+ *
+ * Armed rather than scheduled: AVK_SCENE_DUMP names a frame NUMBER, and a
+ * headless test cannot know which frame its window will be on. See
+ * az_avk_dumping().
+ */
+static int32_t dump_scene(const Arg *arg) {
+	(void)arg;
+#ifdef AZ_HAVE_VULKAN
+	az_avk_dump_armed = true;
+	wlr_log(WLR_INFO, "AVK: the next frame's scene and command stream will be "
+		"logged");
+#endif
+	return 0;
+}
+
 #include "ext-protocol/all.h"
 #include "ext-protocol/frog-color-management.h"
 #include "fetch/fetch.h"

@@ -11,16 +11,20 @@ SceneFX / scene graph      decides WHAT effect exists
 AVK                        decides HOW it is rendered
 ```
 
-## Where AVK stands today
+## Where AVK stood when this audit was written, and where it stands now
 
-Four gaps, all in `az_avk_emit_node()` (`src/render/az_avk.h`):
+The four gaps this audit opened with, all in the scene walker
+(`src/render/az_avk.h`), and what closed each one. The middle column is the
+M4A-era state and is kept because the rest of this document argues from it.
 
-| gap | current behaviour | line |
+| gap | state at the audit | now |
 |---|---|---|
-| shadow, blur, optimized blur | node types recognised and **skipped**, one warning per session | ~1687 |
-| gradients | detected, drawn as **the first colour only**, one warning | ~1585 |
-| rounded corners | `corners` never read on any node type | — |
-| border inner edge | cut out as a **square** pixman subtraction, not a rounded one | ~1569 |
+| rounded corners | `corners` never read on any node type | **M4A.** Per-corner, scale-aware, no damage growth |
+| border inner edge | cut out as a **square** pixman subtraction, not a rounded one | **M4B.** The annulus is one primitive; both edges are the same SDF |
+| gradients | detected, drawn as **the first colour only** | **M4C.** Arbitrary stops, linear and conic, one pipeline |
+| shadow | recognised and **skipped** | **M4D.** Analytic, per-corner, sigma in output pixels |
+| blur | recognised and **skipped** | **M4F.2A.3.** Emitted in place by the walker; current-frame scene-prefix source, darken, edge softness, node-local clip |
+| optimized blur | recognised and **skipped** | still skipped, and deliberately: it is the bottom-layer CACHE node, and AVK has no cache for it to populate (M4F.2E) |
 
 `az_avk_output_supported()` does **not** reject a frame for having effects — so
 effects are dropped per node, not per output, and a desktop with shadows
@@ -3633,3 +3637,269 @@ does on a client surface — and the chain leaves it in
 That is precisely what "derive the uses from the range itself" exists to prevent,
 and the first version still got it wrong — because the derivation was a list of
 command types, and a list is a thing you can forget to add to.
+
+---
+
+## M4F.2A.3 — the blur node's material, re-read from source
+
+Before any of this was implemented the four remaining fields were traced to the
+lines that consume them, rather than to their names or to the earlier audit.
+**Where the source disagreed with the M4F.2A.0 audit, the source won**, and the
+one place it did is recorded below.
+
+### `darken` — `min(blurred, unblurred)`, per channel
+
+`render/fx_renderer/vulkan/shaders/blur2.comp:158`, the LAST upsample only:
+
+```glsl
+if (data.clamp_darken > 0.5 && !(
+        all(greaterThanEqual(ivec2(px), data.skip_min)) &&
+        all(lessThan(ivec2(px), data.skip_max)))) {
+    vec4 src = imageLoad(out_img, ivec2(px));
+    color.rgb = min(color.rgb, src.rgb);
+}
+imageStore(out_img, ivec2(px), color);
+```
+
+Four properties, all load-bearing:
+
+| | |
+|---|---|
+| **rgb only** | alpha comes from the blur untouched |
+| **after effects** | `apply_blur_effects()` runs at `:132`, the clamp at `:158` |
+| **last pass only** | `pass.c:1824` — `if (i == 0 && darken_except != NULL)` |
+| **free** | the chain walks away from mip 0 and only returns on that pass, so mip 0 still holds the unblurred source at the moment it is read |
+
+Gated twice at the producer: `pass.c:2943` passes `darken_except` only when
+`options->darken_only`, and `wlr_scene.c:2793` sets `darken_only = blur->darken`
+**inside `if (blur->has_sample_exclude)`**. The comment on
+`wlr_scene.h:237` says why: `has_sample_exclude` is what identifies a shadow's
+backdrop, and the clamp is skipped inside the excluded box itself because there
+the "source" is the substitute fill rather than real backdrop.
+
+**AVK diverges on the skip box, and only on the skip box.** There is no
+substitute fill in AVK — the prefix transient holds real current-frame backdrop
+at every pixel of the capture — so the premise that made a region unclampable
+does not exist and the clamp applies over the whole write region.
+`has_sample_exclude` still gates whether darken is *consulted*, because that is
+what identifies the producer; see "`sample_exclude` — the producer table".
+
+**How AVK evaluates it.** A fragment shader cannot read the attachment it
+writes, and the reference's `imageLoad` is a compute-path affordance. AVK gets
+the identical arithmetic from fixed-function blending instead: the final
+upsample runs a pipeline with `VK_BLEND_OP_MIN` on the colour channels and
+`VK_BLEND_OP_ADD (ONE, ZERO)` on alpha, into an attachment loaded with
+`LOAD_OP_LOAD`. Blending is applied after the fragment shader, so effects are
+folded in first, exactly as at `blur2.comp:132`. Min/max blend ops ignore their
+blend factors, so there is one behaviour and no factor to get wrong. Cost is
+the same as the reference's: one attachment read, no extra memory, no extra
+pass.
+
+### `edge_softness` — the shadow's falloff, on the blur's own alpha
+
+`render/fx_renderer/vulkan/shaders/texture_soft_edge.frag`, and it is
+`box_shadow.frag`'s coverage verbatim:
+
+```glsl
+float coverage = roundedBoxShadow(
+    data.position + data.blur_sigma,
+    data.position + data.size - data.blur_sigma,
+    frag_layout, data.blur_sigma * 0.5,
+    data.radius.x, data.radius.y, data.radius.z, data.radius.w);
+out_color = color * data.alpha * coverage * clip_corner_alpha;
+```
+
+Same caster inset (`+sigma`), same half-sigma Gaussian, same 4-sample
+integration. `edge_softness` **is** a `blur_sigma`; the fields are two names for
+one quantity, and asteroidz's producer says so directly —
+`src/animation/client.h:757` passes `shadow_blur_sigma` as the blur node's
+`blur_edge_sigma`, and `layer.h:331` uses `config.shadows_blur` for both.
+
+`corners` changes meaning when `edge_softness > 0`: it stops being a hard SDF
+radius and becomes the soft box's own corner radii. It is the same number from
+the producer either way.
+
+#### CORRECTION TO THE M4F.2A.0 AUDIT
+
+The audit recorded edge softness as sharing the shadow's *unscaled* sigma. It
+does not. `types/scene/wlr_scene.c:2778`:
+
+```c
+.edge_softness = blur->edge_softness * data->scale,
+```
+
+The reference **scales edge softness to output pixels** and does **not** scale a
+shadow's `blur_sigma` (`avk-effects.md`, "REFERENCE BUG FIXED IN AVK"). So the
+reference is internally inconsistent: on DP-1 at 1.5 the blur's edge fades over
+1.5× the distance the shadow's tint does, from one producer value.
+
+AVK scales both, at the walker, beside the box and the radii. That is not a new
+policy — it is M4D's policy applied to the second field that needed it, and it
+makes the two edges agree. It also means AVK and the reference agree on
+`edge_softness` itself and differ only on the shadow it is meant to match.
+
+### `clip_region` — a KEEP region, not a cutout
+
+`types/scene/wlr_scene.c:2710`:
+
+```c
+if (blur->has_clip_region) {
+    copy, translate by (entry - logical), logical_to_buffer_coords
+    pixman_region32_intersect(&render_region, &render_region, &blur_clip_region);
+} else if (!wlr_box_empty(&blur->clipped_region.area)) {
+    rect from clipped_region.area, same translation
+    pixman_region32_intersect(&render_region, &render_region, &blur_clip_region);
+}
+```
+
+**Both are INTERSECTIONS, and for a blur node only.** A rect's or a shadow's
+`clipped_region` is SUBTRACTED — that is the window-shaped hole M4A/M4D
+implement as `inner_box` + `inner_corners`. A blur's is the opposite: it is the
+region the blur is *allowed* to appear in. `blur_options.tex_options` never sets
+`.clipped_region` at all, so the cutout the soft-edge shader supports is
+inert on this path and AVK carries no `inner` for a blur command.
+
+Getting this backwards is not subtle in a screenshot but is entirely plausible
+in code, because the field name and the C type are shared with the cutout.
+
+Both are **node-local**, both take the same road, and `clip_region` takes
+precedence when present. Being a pixman region, `clip_region` may hold more than
+one rectangle — `ext-background-effect-v1` gives the client an arbitrary region
+— and the reference preserves its shape exactly, because intersecting regions
+is all it does. AVK converts once, in the walker, into the command's own
+`clip`, which the draw loop already walks rectangle by rectangle as scissors. No
+bounding box is taken anywhere, and no shader learns about it.
+
+### `alpha` and `corners`
+
+`.alpha = &blur->alpha` on the base texture options, and
+`.corners = fx_corner_radii_scale(blur_corners, data->scale)` after
+`fx_corner_radii_transform`. Both are the ordinary texture path's fields with
+ordinary meanings; AVK's `opacity` and `corners` already carry them.
+
+### The composite, assembled
+
+```text
+out = blurred_sample
+        * alpha
+        * coverage          rounded SDF        (edge_softness == 0)
+                            gaussian falloff   (edge_softness  > 0)
+      , scissored to  damage  n  clip_region-or-clipped_region
+```
+
+with `darken` having already been folded into `blurred_sample` by the chain that
+produced it. Kernel and material stay apart: the blur passes know nothing about
+corners, alpha or clips, and the composite knows nothing about levels or taps.
+
+### What was measured
+
+`tests/test-avk-blur-material.c`, 30/30. The oracles are separate measurements,
+never the production shader:
+
+```text
+darken
+  premise    the unclamped blur is BRIGHTER than its source on 12975 of 23040
+             pixels, worst +67 codes -- the glow the clamp exists to remove
+  assertion  clamped == min(unclamped, source) on every channel of every pixel,
+             0 samples outside tolerance, worst 0 codes
+  effect     mean 64.76 -> 29.71
+  blindness  on a FLAT backdrop the same test measures 0.00 difference, so a
+             flat fixture would pass with the feature removed
+
+edge_softness
+  hard 0.80 px, sigma 12 -> 15.58 px, sigma 24 -> 31.00 px (10-90% transition)
+  largest single-pixel coverage step inside the fade 0.0333 -- no seam
+  sigma 16 -> 20.67 px, sigma 24 -> 31.00 px, ratio 1.500
+             1.5x, not 2.25x: the scale is applied exactly once
+  blur soft edge vs a real SHADOW at the same sigma: mean 0.0012, worst 0.0050
+             coverage -- the same falloff, which is the whole point of the field
+
+clip_region
+  whole node / offset+smaller / odd origin+odd extent: in each case 0 pixels
+  outside the clip differ from the same scene with no blur node. Bit-identical.
+  two rectangles with a 24 px gap: 8000 px changed inside, 0 outside, 0 IN THE
+  GAP -- no bounding box is taken anywhere
+
+alpha
+  0 leaves the backdrop exactly as it was; 0.5 lands on 140 where the exact
+  midpoint of 80 and 200 is 140.0 -- no dark fringe, no double premultiply
+
+corners
+  radii 0 / 7 / 19 / 37 reach 0 / 2 / 5 / 10 px along their own diagonals,
+  against a predicted 0.293r of 0 / 2 / 5 / 10. Worst error 0 px.
+
+combined (darken + edge_softness + clip + asymmetric corners, dark fixture)
+  0 pixels outside the clip, 3391 inside, worst brightening +0 codes
+```
+
+`contrib/avk-blur-walker-test.sh`, 23/23, on a real compositor with the real
+shadow-backdrop producer. The command stream, dumped from one frame:
+
+```text
+cmd[0]  RECT     0,0 1280x800        the root background
+cmd[1]  TEXTURE  0,0 1280x800        the wallpaper        <- A, IN the source
+cmd[2]  BLUR     1,34 1274x764       k = 2
+cmd[3]  SHADOW   1,34 1274x764
+cmd[4]  SHADOW   6,36 1264x754
+cmd[5]  RECT     10,40 1260x750      the border
+cmd[6]  RECT     1268,52 2x726
+cmd[7]  TEXTURE  12,42 1256x746      the window       <- B, NOT in the source
+cmd[8]  SHADOW   36,18 288x38        the titlebar
+cmd[9]  TEXTURE  40,12 280x30
+cmd[10] SHADOW   6,18 39x38
+cmd[11] TEXTURE  10,12 31x30
+```
+
+That is `A · BLUR · B` and `A · B · BLUR` in one stream: the same window is on
+both sides of a blur -- the one below it and the one above it -- and they land
+on opposite sides, from the real walker rather than from a hand-built list.
+
+The producer's own material arrives with it: 3 darken chains and 6 soft-edge
+composites in the sampled interval, which is the three-link chain (producer
+sets, walker snapshots, renderer honours) that no renderer test can see.
+
+### Two premises that were false, and were measured rather than assumed
+
+**`only-floating` defaults to 1**, so a tiled window has no shadow, hence no
+backdrop blur, hence no blur node. The first run of the walker test measured
+`blur_nodes_seen = 0` and that reads exactly like a walker that emits nothing.
+The fixture sets it to 0 and the premise is now asserted.
+
+**The graph test's "direct path" had a blur in it.** The harness's default config
+turns the shadow backdrop blur on, and the wallpaper is a layer surface with a
+layer shadow -- so from the moment the walker honoured blur nodes,
+`contrib/avk-graph-test.sh` measured **6 passes and 7 barriers** while calling it
+the direct path. M4E's hard requirement was still being met; the fixture had
+simply stopped testing it. The fixture now disables blur explicitly and asserts
+`blur_nodes_emitted == 0` beside the one-pass check.
+
+### An instrument that reported the intention
+
+`blur_prefix_commands` added `i`, the blur's command index -- which is the prefix
+length the design calls for, and is a DIFFERENT number under
+`AZ_BLUR_SCENE_AFTER`, where the range is `[0, len)`. So the break widened the
+replay and the counter went on reporting the narrow figure, and the assertion
+"the source range is a prefix" passed with the break on: 2 of 12 either way. It
+reads `seg->end - seg->begin` now, and the break reports 12 of 12 and fails.
+
+This is the second time in M4F an instrument has been wrong in a way that made a
+test agree with it (the first was `graph_build_ns`; see the invalidated
+measurement in `docs/regression-testing.md`).
+
+### A limitation, stated rather than discovered later
+
+**asteroidz throws away the shape of a client's blur region before the walker
+ever sees it.** `client_update_blur()` (`src/asteroidz.c`) takes
+`pixman_region32_extents()` of the client's `ext-background-effect-v1` region and
+hands the bounding box to `wlr_scene_blur_set_clipped_region()`. It never calls
+`wlr_scene_blur_set_clip_region()`, so `has_clip_region` is never true in this
+compositor and the walker's multi-rectangle path — which exists, and which the
+renderer proves preserves a gap exactly — is unreachable from here.
+
+Measured, not assumed: `contrib/wlbgeffect` supplies two separated rectangles and
+the emitted blur command's clip arrives with **one**.
+
+This is a producer decision that predates M4F and is left alone here. The
+protocol gives the client an arbitrary region and the renderer can carry one;
+closing the gap is a change to `client_update_blur()`, and belongs with that
+decision rather than with the renderer that was made ready for it.

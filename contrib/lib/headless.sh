@@ -72,6 +72,7 @@ HL_WLLAYER="$HL_REPO/contrib/wllayer/wllayer"
 HL_WLKEYS="$HL_REPO/contrib/wlkeys/wlkeys"
 HL_WLSTATES="$HL_REPO/contrib/wlstates/wlstates"
 HL_WLSANDBOX="$HL_REPO/contrib/wlsandbox/wlsandbox"
+HL_WLBGEFFECT="$HL_REPO/contrib/wlbgeffect/wlbgeffect"
 HL_WIDTH="${HL_WIDTH:-1920}"
 # How many headless outputs the backend creates. One unless a test says
 # otherwise; see the HL_OUTPUTS note in the header for why a second one is not
@@ -778,6 +779,22 @@ hl_spawn_wlstates() { # hl_spawn_wlstates APPID HOLD_S [LOGNAME] -> pid
 	# client here that can be sent -- and can therefore observe -- `suspended`.
 	local appid="$1" hold="$2" logname="${3:-wlstates}"
 	"$HL_WLSTATES" "$appid" "$hold" > "$HL_OUTDIR/$logname.log" 2>&1 &
+	local pid=$!
+	HL_SPAWNED_PIDS+=("$pid")
+	echo "$pid"
+}
+
+hl_spawn_wlbgeffect() { # hl_spawn_wlbgeffect APPID HOLD_S [LOGNAME] -> pid
+	# A TRANSLUCENT toplevel that supplies a real ext-background-effect-v1 blur
+	# region: TWO separated rectangles, so a consumer that preserved the region's
+	# shape can be told from one that took its bounding box.
+	#
+	# Nothing else here sets one, and a plain window's blur node carries no clip
+	# at all (`clipped_region_get_default()` is an empty box) -- so without this
+	# client a "clip_region works" assertion is made against nodes that have no
+	# clip. See contrib/wlbgeffect/wlbgeffect.c.
+	local appid="$1" hold="$2" logname="${3:-wlbgeffect}"
+	"$HL_WLBGEFFECT" "$appid" "$hold" > "$HL_OUTDIR/$logname.log" 2>&1 &
 	local pid=$!
 	HL_SPAWNED_PIDS+=("$pid")
 	echo "$pid"

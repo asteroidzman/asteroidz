@@ -1416,6 +1416,8 @@ FuncType parse_func_name(char *func_name, Arg *arg, char *arg_value,
 		(*arg).i = atoi(arg_value);
 	} else if (strcmp(func_name, "reset_avk_stats") == 0) {
 		func = reset_avk_stats;
+	} else if (strcmp(func_name, "dump_scene") == 0) {
+		func = dump_scene;
 	} else if (strcmp(func_name, "reload_config") == 0) {
 		func = reload_config;
 	} else if (strcmp(func_name, "ufo") == 0) {

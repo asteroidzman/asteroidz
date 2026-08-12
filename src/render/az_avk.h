@@ -189,6 +189,26 @@ struct az_avk {
 	 * asking because they cannot touch this output at all. */
 	uint64_t buffer_resolve_attempts;
 	uint64_t nodes_output_culled_before_resolve;
+	/*
+	 * M4F.2A.3. Blur nodes the walk met, emitted as commands, and discarded --
+	 * and how many asked for the cached bottom-layer path and got the live one
+	 * anyway.
+	 *
+	 * Three numbers rather than one because they answer different questions and
+	 * a single "blurs" counter conflates them: seen == 0 says the producer is
+	 * not running, emitted == 0 with seen > 0 says the culling is wrong, and
+	 * forced_live is the size of the M4F.2E decision.
+	 */
+	uint64_t blur_nodes_seen;
+	uint64_t blur_nodes_emitted;
+	uint64_t blur_nodes_culled;
+	uint64_t blur_nodes_forced_live;
+	/* Nodes whose composite was restricted by a clip_region or a
+	 * clipped_region. Its own counter because the walker's node-local clip
+	 * conversion is the only path that touches it, and "is that path exercised
+	 * at all" is a question a fixture must be able to answer -- a clip test that
+	 * ran against nodes that carry no clip proves nothing. */
+	uint64_t blur_nodes_clipped;
 	uint64_t commit_imports;      /* buffers taken ownership of at commit */
 	uint64_t late_imports;        /* taken at DRAW time -- must stay 0 for
 	                               * surfaces; see az_avk_walk_node() */
@@ -280,6 +300,7 @@ struct az_avk {
 	int cursor_last_x, cursor_last_y;
 
 	bool warned_effect_node;
+	bool warned_optimized_blur;
 	bool warned_color_transform;
 	bool warned_zoom;
 	bool warned_shm;
@@ -1423,6 +1444,13 @@ struct az_avk_walk {
 	int width, height;
 	/* Layout coordinates of the output's top-left corner. */
 	int ox, oy;
+	/*
+	 * The scene's global blur kernel. Copied in rather than reached for through
+	 * the node, because a blur node's own `strength` scales it
+	 * (blur_data_apply_strength) and the walk should read the scene's value
+	 * once, not once per node.
+	 */
+	struct blur_data blur;
 };
 
 static enum avk_transform az_avk_transform(enum wl_output_transform t) {
@@ -1622,6 +1650,63 @@ static void az_avk_clip_out_region(const struct az_avk_walk *walk,
 		pixman_region32_fini(&clip);
 }
 
+/*
+ * A blur node's KEEP region: node-local pixman rectangles, in output pixels.
+ *
+ * THE OPPOSITE OF az_avk_clip_out_region ABOVE, and the difference is not a
+ * detail of this function -- it is the semantics of the field. For a rect or a
+ * shadow, `clipped_region` is the window's own footprint SUBTRACTED, which is
+ * how a border becomes an annulus. For a BLUR node the reference INTERSECTS it
+ * (types/scene/wlr_scene.c:2710 and :2727, both pixman_region32_intersect), so
+ * it is the region the blur is ALLOWED to appear in. Same field name, same C
+ * type, opposite operation; getting it backwards renders a plausible picture
+ * with the blur exactly where it should not be.
+ *
+ * `clip_region` -- ext-background-effect-v1's client-supplied region -- is the
+ * same intersection and takes precedence when set. It may hold ARBITRARILY MANY
+ * rectangles and its shape is preserved: every rectangle is converted
+ * independently and the result goes into the command's own clip, which the draw
+ * loop already walks rectangle by rectangle as scissors. Nothing takes a
+ * bounding box, and no shader learns about it.
+ *
+ * Each rectangle goes through az_avk_box_to_output(), the same conversion the
+ * node's own box took -- so at a fractional scale the clip's edges land exactly
+ * where the box's do. Adjacent rectangles share an edge coordinate and it rounds
+ * identically for both, so a multi-rect region gains neither a seam nor an
+ * overlap.
+ *
+ * `out` is always initialised and is always the caller's to fini. Returns false
+ * when nothing survives, which the caller treats as "cull" -- and it decides
+ * that BEFORE adding a command, so there is never a half-built command to
+ * un-emit.
+ */
+static bool az_avk_blur_keep_region(const struct az_avk_walk *walk,
+		const struct wlr_box *dst, const pixman_region32_t *keep, int lx,
+		int ly, pixman_region32_t *out) {
+	pixman_region32_init_rect(out, dst->x, dst->y, (unsigned)dst->width,
+		(unsigned)dst->height);
+
+	pixman_region32_t converted;
+	pixman_region32_init(&converted);
+	int n = 0;
+	const pixman_box32_t *rects =
+		pixman_region32_rectangles((pixman_region32_t *)keep, &n);
+	for (int i = 0; i < n; i++) {
+		struct wlr_box box;
+		az_avk_box_to_output(walk, lx + rects[i].x1, ly + rects[i].y1,
+			rects[i].x2 - rects[i].x1, rects[i].y2 - rects[i].y1, &box);
+		if (box.width <= 0 || box.height <= 0) {
+			continue;
+		}
+		pixman_region32_union_rect(&converted, &converted, box.x, box.y,
+			(unsigned)box.width, (unsigned)box.height);
+	}
+	pixman_region32_intersect(out, out, &converted);
+	pixman_region32_fini(&converted);
+
+	return !pixman_region32_empty(out);
+}
+
 static void az_avk_walk_node(struct az_avk_walk *walk,
 		struct wlr_scene_node *node, int lx, int ly);
 
@@ -1645,13 +1730,26 @@ static void az_avk_walk_children(struct az_avk_walk *walk,
  * once a surface node that was simply not there. The scene walker is the only
  * place that knows what AVK was actually asked to draw.
  */
+/*
+ * Set by `amsg dispatch dump_scene`, cleared by the frame that honours it.
+ *
+ * A FRAME NUMBER IS NOT ENOUGH, and finding that out cost a run. AVK_SCENE_DUMP
+ * names a frame, and a headless test cannot know which frame its window will be
+ * on: too low and the dump fires before the client exists, too high and an idle
+ * compositor never reaches it. Either way the dump is empty, which reads exactly
+ * like "the walker emitted nothing" -- a completely different diagnosis.
+ *
+ * So a test asks for the dump when its scene is ready, and gets the NEXT frame.
+ */
+static bool az_avk_dump_armed = false;
+
 static bool az_avk_dumping(void) {
 	static int frame = -2;
 	if (frame == -2) {
 		const char *env = getenv("AVK_SCENE_DUMP");
 		frame = env != NULL ? atoi(env) : -1;
 	}
-	return frame >= 0 && (uint64_t)frame == avk.frames;
+	return az_avk_dump_armed || (frame >= 0 && (uint64_t)frame == avk.frames);
 }
 
 static void az_avk_walk_node(struct az_avk_walk *walk,
@@ -1950,15 +2048,180 @@ static void az_avk_walk_node(struct az_avk_walk *walk,
 		return;
 	}
 
+	case WLR_SCENE_NODE_BLUR: {
+		/*
+		 * A LIVE BACKGROUND BLUR, EMITTED IN PLACE.
+		 *
+		 * In place is the whole design: what a blur samples is the commands
+		 * BEFORE it in this list, so its position here is its semantics. There
+		 * is deliberately no second traversal collecting blur nodes and no
+		 * effect list ordered separately -- either would be an ordering that can
+		 * drift from the one the picture depends on. The command index this
+		 * emission lands at IS the k the renderer replays [0, k) for; nothing
+		 * derives k from a node count or a blur count.
+		 */
+		struct wlr_scene_blur *blur = wlr_scene_blur_from_node(node);
+		avk.blur_nodes_seen++;
+
+		/*
+		 * The kernel, from the SCENE's global blur_data scaled by this node's
+		 * own strength -- which is what blur_data_apply_strength() is for, and
+		 * is how an opening window's blur ramps without a second code path.
+		 */
+		struct blur_data bd = blur_data_apply_strength(&walk->blur,
+			blur->strength);
+
+		/*
+		 * ── CULLING ─────────────────────────────────────────────────────────
+		 *
+		 * Every test here answers "can this node put a pixel on this output at
+		 * all". None of them is a heuristic and none is a quality trade: a blur
+		 * that cannot contribute costs a prefix capture, a chain of transients
+		 * and 2N draws, which is the most expensive nothing in the renderer.
+		 *
+		 * What is NOT culled: occlusion. A blur under an opaque window still
+		 * runs, because deciding otherwise needs occlusion information the
+		 * walker does not have, and the painter's algorithm is correct without
+		 * it. That is an M4F.2B question.
+		 */
+		if (!is_scene_blur_enabled(&bd) || blur->alpha <= 0.0f) {
+			avk.blur_nodes_culled++;
+			return;
+		}
+		struct wlr_box dst;
+		az_avk_box_to_output(walk, lx, ly, blur->width, blur->height, &dst);
+		if (dst.width <= 0 || dst.height <= 0) {
+			avk.blur_nodes_culled++;
+			return;
+		}
+		if (!az_avk_env_flag("AZ_AVK_NO_OUTPUT_CULL") &&
+				(dst.x >= walk->width || dst.y >= walk->height ||
+				dst.x + dst.width <= 0 || dst.y + dst.height <= 0)) {
+			avk.blur_nodes_culled++;
+			return;
+		}
+
+		/*
+		 * THE KEEP REGION, DECIDED BEFORE THE COMMAND EXISTS. clip_region takes
+		 * precedence over clipped_region, which is the reference's own order,
+		 * and BOTH intersect -- see az_avk_blur_keep_region for why that is
+		 * worth saying twice. An empty result is a cull, and doing it here means
+		 * there is never a command to take back out of the list.
+		 */
+		pixman_region32_t clip;
+		bool has_clip = false;
+		if (blur->has_clip_region) {
+			has_clip = true;
+			if (!az_avk_blur_keep_region(walk, &dst, &blur->clip_region, lx, ly,
+					&clip)) {
+				pixman_region32_fini(&clip);
+				avk.blur_nodes_culled++;
+				return;
+			}
+		} else if (!wlr_box_empty(&blur->clipped_region.area)) {
+			pixman_region32_t keep;
+			pixman_region32_init_rect(&keep, blur->clipped_region.area.x,
+				blur->clipped_region.area.y,
+				(unsigned)blur->clipped_region.area.width,
+				(unsigned)blur->clipped_region.area.height);
+			has_clip = true;
+			bool any = az_avk_blur_keep_region(walk, &dst, &keep, lx, ly, &clip);
+			pixman_region32_fini(&keep);
+			if (!any) {
+				pixman_region32_fini(&clip);
+				avk.blur_nodes_culled++;
+				return;
+			}
+		}
+
+		struct avk_cmd *cmd = avk_scene_add(walk->scene, AVK_CMD_BLUR);
+		if (cmd == NULL) {
+			if (has_clip) {
+				pixman_region32_fini(&clip);
+			}
+			return;
+		}
+		if (has_clip) {
+			avk_cmd_set_clip(cmd, &clip);
+			pixman_region32_fini(&clip);
+			avk.blur_nodes_clipped++;
+		}
+		cmd->dst = (struct avk_box){ dst.x, dst.y, dst.width, dst.height };
+		cmd->has_blur = true;
+		cmd->opacity = blur->alpha;
+		cmd->blur_levels = bd.num_passes > 0 ? (uint32_t)bd.num_passes : 0;
+		cmd->blur_radius = bd.radius;
+		cmd->blur_brightness = bd.brightness;
+		cmd->blur_contrast = bd.contrast;
+		cmd->blur_saturation = bd.saturation;
+		cmd->blur_noise = bd.noise;
+		cmd->blur_apply_effects =
+			blur_data_should_parameters_blur_effects(&bd);
+		az_avk_corners_from_scenefx(walk, blur->corners, cmd->corners);
+
+		/*
+		 * EDGE SOFTNESS, SCALED TO OUTPUT PIXELS -- once, here, beside the box
+		 * and the radii, exactly as a shadow's blur_sigma is.
+		 *
+		 * The reference scales this field (wlr_scene.c:2778) and does NOT scale
+		 * a shadow's blur_sigma, so on a fractional-scale output a window's
+		 * backdrop blur fades over 1.5x the distance the shadow drawn to match
+		 * it does. asteroidz's producer hands both the SAME number
+		 * (client.h:757), which is what makes the mismatch a real seam rather
+		 * than a theoretical one. AVK scales both, so they stay in lockstep.
+		 */
+		cmd->blur_edge_softness = blur->edge_softness * (float)walk->scale;
+
+		/*
+		 * DARKEN, gated exactly as the reference gates it: only where
+		 * has_sample_exclude identifies a shadow's backdrop. The clamp's premise
+		 * is that the blur is replacing real backdrop, and that is the producer
+		 * which guarantees it.
+		 */
+		if (blur->has_sample_exclude) {
+			struct wlr_box ex;
+			az_avk_box_to_output(walk, lx + blur->sample_exclude.x,
+				ly + blur->sample_exclude.y, blur->sample_exclude.width,
+				blur->sample_exclude.height, &ex);
+			cmd->sample_exclude = (struct avk_box){ ex.x, ex.y, ex.width,
+				ex.height };
+			cmd->has_sample_exclude = true;
+			cmd->blur_darken = blur->darken;
+		}
+
+		/*
+		 * `should_only_blur_bottom_layer` is RECORDED AND NOT HONOURED, and the
+		 * decision is the milestone's: the cached bottom-layer blur misses an
+		 * adjacent tiled window's shadow falling into the gap, which shows as a
+		 * bright strip. Every node takes the live path until the uncached
+		 * renderer has been reviewed (M4F.2E). Counted so the cost of that
+		 * decision is a number rather than a belief.
+		 */
+		if (blur->should_only_blur_bottom_layer) {
+			avk.blur_nodes_forced_live++;
+			if (!avk.warned_optimized_blur) {
+				avk.warned_optimized_blur = true;
+				wlr_log(WLR_INFO, "AVK: a blur node asks for the cached "
+					"bottom-layer path; AVK renders every blur live (M4F.2E is "
+					"not implemented)");
+			}
+		}
+		avk.blur_nodes_emitted++;
+		return;
+	}
+
 	case WLR_SCENE_NODE_OPTIMIZED_BLUR:
-	case WLR_SCENE_NODE_BLUR:
-		/* M4F. Recognised and skipped, with one warning -- not silently
-		 * dropped, because "my blur disappeared" should have an answer in
-		 * the log rather than a bisect. */
+		/* The bottom-layer CACHE node, which is a different thing from a blur
+		 * node: it exists to be populated once and sampled by everything above
+		 * it. AVK has no cache, so there is nothing for it to populate.
+		 * Recognised and skipped with one warning -- not silently dropped,
+		 * because "my blur disappeared" should have an answer in the log rather
+		 * than a bisect. */
 		if (!avk.warned_effect_node) {
 			avk.warned_effect_node = true;
-			wlr_log(WLR_INFO, "AVK: blur nodes are not implemented yet "
-				"(M4F); they are skipped in AVK mode");
+			wlr_log(WLR_INFO, "AVK: the optimized-blur cache node is not "
+				"implemented (M4F.2E); it is skipped, and every live blur node "
+				"renders from the current frame's scene prefix instead");
 		}
 		return;
 	}
@@ -2393,8 +2656,44 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 		.height = height,
 		.ox = m->scene_output->x,
 		.oy = m->scene_output->y,
+		.blur = wlr_scene_get_blur_data(m->scene_output->scene),
 	};
 	az_avk_walk_children(&walk, &m->scene_output->scene->tree, 0, 0);
+
+	/*
+	 * THE COMMAND STREAM, ONCE, AT DEBUG.
+	 *
+	 * The node dump above says what the walk SAW; this says what it EMITTED, and
+	 * with the index each command landed at. That index is the k a blur's prefix
+	 * is replayed for -- so "the blur is at 3 and the window's surface is at 5"
+	 * is the scene-order claim stated as a fact about the stream rather than
+	 * inferred from a picture. contrib/avk-blur-walker-test.sh asserts on these
+	 * lines; a test that could only look at pixels could not tell a blur in the
+	 * wrong PLACE from a blur with the wrong SOURCE.
+	 */
+	if (az_avk_dumping()) {
+		for (size_t i = 0; i < scene.len; i++) {
+			const struct avk_cmd *c = &scene.cmds[i];
+			static const char *kind[] = { "RECT", "TEXTURE", "SHADOW", "BLUR" };
+			/* The clip's RECTANGLE COUNT, not just whether it exists. A
+			 * multi-rectangle region that arrived as one rectangle has had its
+			 * bounding box taken somewhere, and that is invisible in every
+			 * other number here. */
+			int nrects = 0;
+			if (c->has_clip) {
+				pixman_region32_rectangles(
+					(pixman_region32_t *)&c->clip, &nrects);
+			}
+			wlr_log(WLR_ERROR, "cmd[%zu] %s dst=%d,%d %dx%d clip=%drects%s", i,
+				(int)c->type < 4 ? kind[c->type] : "?",
+				c->dst.x, c->dst.y, c->dst.width, c->dst.height, nrects,
+				c->type == AVK_CMD_BLUR ? " (blur)" : "");
+		}
+		/* One frame, whichever way it was asked for. Every output renders its
+		 * own frame, so this fires for the first one only -- which is what a
+		 * caller reading "the command stream" wants. */
+		az_avk_dump_armed = false;
+	}
 	/* Last, so it is above everything: layer-shell overlays, fullscreen
 	 * windows, the lock screen and the overview alike. A cursor drawn under
 	 * any of them is a cursor the user cannot find. */
@@ -2928,6 +3227,15 @@ static cJSON *az_avk_stats_json(void) {
 		(double)avk.buffer_resolve_attempts);
 	cJSON_AddNumberToObject(o, "nodes_output_culled_before_resolve",
 		(double)avk.nodes_output_culled_before_resolve);
+	cJSON_AddNumberToObject(o, "blur_nodes_seen", (double)avk.blur_nodes_seen);
+	cJSON_AddNumberToObject(o, "blur_nodes_emitted",
+		(double)avk.blur_nodes_emitted);
+	cJSON_AddNumberToObject(o, "blur_nodes_culled",
+		(double)avk.blur_nodes_culled);
+	cJSON_AddNumberToObject(o, "blur_nodes_forced_live",
+		(double)avk.blur_nodes_forced_live);
+	cJSON_AddNumberToObject(o, "blur_nodes_clipped",
+		(double)avk.blur_nodes_clipped);
 	cJSON_AddNumberToObject(o, "implicit_copy_bytes",
 		(double)imp->copied_bytes);
 	cJSON_AddNumberToObject(o, "implicit_copy_us", (double)imp->copied_us);
@@ -3251,6 +3559,49 @@ static cJSON *az_avk_stats_json(void) {
 	cJSON_AddNumberToObject(o, "transient_live", (double)t_live);
 	cJSON_AddNumberToObject(o, "transient_bytes", (double)t_bytes);
 	cJSON_AddNumberToObject(o, "transient_peak_bytes", (double)t_peak);
+
+	/*
+	 * M4F. What the blur actually cost, RECORDED AND NOT YET OPTIMISED.
+	 *
+	 * `blur_prefix_commands` and `blur_prefix_pixels` are quadratic in the
+	 * number of blur nodes by construction -- a blur at command index k replays
+	 * k commands -- and that is exactly the number a cache would be bought with.
+	 * It is measured before any decision about caching is taken (M4F.2D decides
+	 * what M4F.2E has to optimise), so the decision is made against a
+	 * measurement rather than against an expectation.
+	 */
+	uint64_t b_replays = 0, b_cmds = 0, b_px = 0;
+	uint64_t b_chains = 0, b_passes = 0, b_transients = 0, b_skipped = 0;
+	uint64_t b_draws = 0, b_soft = 0, b_darken = 0;
+	for (size_t i = 0; i < AZ_AVK_MAX_FORMATS; i++) {
+		if (!avk.renderers[i].used) {
+			continue;
+		}
+		const struct avk_renderer *r = &avk.renderers[i].renderer;
+		b_replays += r->blur_prefix_replays;
+		b_cmds += r->blur_prefix_commands;
+		b_px += r->blur_prefix_pixels;
+		b_chains += r->blur_stats.chains;
+		b_passes += r->blur_stats.passes;
+		b_transients += r->blur_stats.transients;
+		b_skipped += r->blur_stats.skipped;
+		b_draws += r->stats.blur_draws;
+		b_soft += r->stats.blur_soft_draws;
+		b_darken += r->stats.blur_darken_passes;
+	}
+	cJSON_AddNumberToObject(o, "blur_prefix_replays", (double)b_replays);
+	cJSON_AddNumberToObject(o, "blur_prefix_commands", (double)b_cmds);
+	cJSON_AddNumberToObject(o, "blur_prefix_pixels", (double)b_px);
+	cJSON_AddNumberToObject(o, "blur_chains", (double)b_chains);
+	cJSON_AddNumberToObject(o, "blur_passes", (double)b_passes);
+	cJSON_AddNumberToObject(o, "blur_transients", (double)b_transients);
+	cJSON_AddNumberToObject(o, "blur_skipped", (double)b_skipped);
+	/* At the DRAW, so these say what the material did rather than what the
+	 * scene asked for -- two different claims, and only one of them is about
+	 * the renderer. */
+	cJSON_AddNumberToObject(o, "blur_draws", (double)b_draws);
+	cJSON_AddNumberToObject(o, "blur_soft_edge_draws", (double)b_soft);
+	cJSON_AddNumberToObject(o, "blur_darken_chains", (double)b_darken);
 	cJSON_AddNumberToObject(o, "graph_frames", (double)g_frames);
 	if (g_frames > 0) {
 		cJSON_AddNumberToObject(o, "graph_build_ns_avg",
@@ -3430,6 +3781,11 @@ static void az_avk_stats_reset(void) {
 	avk.shm_committed_pixels = 0;
 	avk.buffer_resolve_attempts = 0;
 	avk.nodes_output_culled_before_resolve = 0;
+	avk.blur_nodes_seen = 0;
+	avk.blur_nodes_emitted = 0;
+	avk.blur_nodes_culled = 0;
+	avk.blur_nodes_forced_live = 0;
+	avk.blur_nodes_clipped = 0;
 	avk.commit_imports = 0;
 	avk.late_imports = 0;
 	avk.cache_hits = 0;
@@ -3475,8 +3831,16 @@ static void az_avk_stats_reset(void) {
 		avk.importer.copied_us = 0;
 		for (size_t i = 0; i < AZ_AVK_MAX_FORMATS; i++) {
 			if (avk.renderers[i].used) {
-				avk.renderers[i].renderer.stats =
-					(struct avk_renderer_stats){0};
+				struct avk_renderer *r = &avk.renderers[i].renderer;
+				r->stats = (struct avk_renderer_stats){0};
+				/* The blur accounting too. It lives beside the renderer stats
+				 * rather than inside them, and a reset that zeroed one and not
+				 * the other would report a per-frame cost against a frame count
+				 * that had started again. */
+				r->blur_prefix_replays = 0;
+				r->blur_prefix_commands = 0;
+				r->blur_prefix_pixels = 0;
+				r->blur_stats = (struct avk_blur_stats){0};
 			}
 		}
 	}

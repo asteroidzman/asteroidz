@@ -1409,6 +1409,10 @@ void wlr_scene_blur_set_clipped_region(struct wlr_scene_blur *blur,
 	scene_node_update(&blur->node, NULL);
 }
 
+struct blur_data wlr_scene_get_blur_data(struct wlr_scene *scene) {
+	return scene->blur_data;
+}
+
 void wlr_scene_set_blur_data(struct wlr_scene *scene, int num_passes,
 		int radius, float noise, float brightness, float contrast, float saturation,
 		float transparency_threshold) {

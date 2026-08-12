@@ -13,6 +13,11 @@ contrib/wlvptr/wlvptr
 contrib/wlvkbd/wlvkbd
 contrib/wllayer/wllayer
 contrib/wlstates/wlstates
+contrib/wlbgeffect/wlbgeffect
+contrib/wlbgeffect/xdg-shell-protocol.c
+contrib/wlbgeffect/xdg-shell-client-protocol.h
+contrib/wlbgeffect/ext-background-effect-v1-protocol.c
+contrib/wlbgeffect/ext-background-effect-v1-client-protocol.h
 contrib/wlsandbox/wlsandbox
 
 # meson downloads the tracy client into subprojects/tracy (see

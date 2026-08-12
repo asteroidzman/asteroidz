@@ -516,6 +516,16 @@ void wlr_scene_set_blur_data(struct wlr_scene *scene, int num_passes,
 	int radius, float noise, float brightness, float contrast, float saturation,
 		float transparency_threshold);
 
+/**
+ * The global blur parameters, by value.
+ *
+ * A getter because blur_data lives inside the scene's WLR_PRIVATE block: a
+ * renderer that wants to know what kernel the scene is configured with should
+ * not have to reach through a field the header marks private, and copying the
+ * numbers into a second place in the compositor is how the two drift.
+ */
+struct blur_data wlr_scene_get_blur_data(struct wlr_scene *scene);
+
 // Sets the global blur num_passes parameter
 void wlr_scene_set_blur_num_passes(struct wlr_scene *scene, int num_passes);
 

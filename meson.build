@@ -414,6 +414,26 @@ if build_vulkan
                                    build_by_default : false)
   test('avk-blur-scene', test_avk_blur_scene, timeout : 240)
 
+  # M4F.2A.3: the blur node's MATERIAL. darken is checked against a CPU minimum
+  # of two SEPARATELY MEASURED renders (clamp off, and no blur node at all), so
+  # the production shader is never its own oracle; the soft edge is checked
+  # against a real shadow's coverage profile at the same sigma, which is the
+  # invariant the feature exists for rather than a restatement of the shader.
+  test_avk_blur_material = executable('test-avk-blur-material',
+                                      'tests/test-avk-blur-material.c',
+                                      dependencies : [avk_dep],
+                                      build_by_default : false)
+  test('avk-blur-material', test_avk_blur_material, timeout : 240)
+
+  # M4F.2A.3: every command kind states what it samples. No GPU -- the resolver
+  # is pure -- and no synchronisation claim: Vulkan validation stays the oracle
+  # for barriers. This only has to notice an omission earlier than that would.
+  test_avk_cmd_uses = executable('test-avk-cmd-uses',
+                                 'tests/test-avk-cmd-uses.c',
+                                 dependencies : [avk_dep],
+                                 build_by_default : false)
+  test('avk-cmd-uses', test_avk_cmd_uses, timeout : 30)
+
   # M4D: shadows. libm because the fixtures carry an independent CPU
   # transcription of the reference's erf-and-four-samples formula, which is
   # what AVK's readback is compared against -- not GLES, and not AVK's own

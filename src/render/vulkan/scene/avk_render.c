@@ -58,6 +58,25 @@ bool avk_renderer_init(struct avk_renderer *renderer, struct avk_device *dev,
 			"WHOLE scene, not the prefix behind it -- content drawn after the "
 			"blur node will contaminate it");
 	}
+	renderer->break_blur_ignore_darken =
+		getenv("AZ_BLUR_IGNORE_DARKEN") != NULL;
+	renderer->break_blur_ignore_clip = getenv("AZ_BLUR_IGNORE_CLIP") != NULL;
+	const char *edge_logical = getenv("AZ_BLUR_EDGE_LOGICAL_SIGMA");
+	renderer->break_blur_edge_logical_sigma = edge_logical != NULL;
+	renderer->break_blur_edge_scale = edge_logical != NULL
+		? (float)atof(edge_logical) : 1.0f;
+	if (renderer->break_blur_edge_scale <= 0.0f) {
+		renderer->break_blur_edge_scale = 1.5f;
+	}
+	if (renderer->break_blur_ignore_darken || renderer->break_blur_ignore_clip
+			|| renderer->break_blur_edge_logical_sigma) {
+		avk_log(AVK_ERROR, "M4F.2A.3 break switch active: blur material is "
+			"deliberately wrong (no_darken=%d no_clip=%d edge_logical=%d @ %.3f)",
+			renderer->break_blur_ignore_darken,
+			renderer->break_blur_ignore_clip,
+			renderer->break_blur_edge_logical_sigma,
+			renderer->break_blur_edge_scale);
+	}
 	/*
 	 * Derived from the ATTACHMENT's precision, once, at init -- so a 10-bit
 	 * output gets a quarter of the amplitude and an FP16 one gets none,
@@ -340,12 +359,12 @@ static bool az_foreign(const struct avk_image *image) {
  */
 static void command_region(const struct avk_cmd *cmd,
 		const pixman_region32_t *damage, const struct avk_box *bounds,
-		pixman_region32_t *out) {
+		bool ignore_clip, pixman_region32_t *out) {
 	pixman_region32_init_rect(out, bounds->x, bounds->y,
 		(unsigned)bounds->width, (unsigned)bounds->height);
 	pixman_region32_intersect_rect(out, out, cmd->dst.x, cmd->dst.y,
 		(unsigned)cmd->dst.width, (unsigned)cmd->dst.height);
-	if (cmd->has_clip) {
+	if (cmd->has_clip && !ignore_clip) {
 		pixman_region32_intersect(out, out, (pixman_region32_t *)&cmd->clip);
 	}
 	if (damage != NULL) {
@@ -458,7 +477,7 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 		memcpy(clear.color, scene->clear_color, sizeof(clear.color));
 
 		pixman_region32_t region;
-		command_region(&clear, damage, &bounds, &region);
+		command_region(&clear, damage, &bounds, false, &region);
 		int count = 0;
 		const pixman_box32_t *rects =
 			pixman_region32_rectangles(&region, &count);
@@ -517,7 +536,12 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 		}
 
 		pixman_region32_t region;
-		command_region(cmd, damage, &bounds, &region);
+		/* AZ_BLUR_IGNORE_CLIP drops the clip for blur commands only:
+		 * the composite then covers the whole node instead of the region
+		 * the client or the compositor restricted it to. */
+		command_region(cmd, damage, &bounds,
+			cmd->type == AVK_CMD_BLUR && renderer->break_blur_ignore_clip,
+			&region);
 		int count = 0;
 		const pixman_box32_t *rects =
 			pixman_region32_rectangles(&region, &count);
@@ -707,7 +731,21 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 				pixman_region32_fini(&region);
 				continue;
 			}
-			want = renderer->pipes.texture;
+			/*
+			 * TWO EDGES, ONE COMPOSITE. `edge_softness` decides which coverage
+			 * function shades the same quad with the same UVs -- nothing else
+			 * about the draw changes, and the blur passes that produced the
+			 * image know about neither.
+			 */
+			if (cmd->blur_edge_softness > 0.0f) {
+				want = renderer->pipes.blur_soft;
+				/* The same slot a shadow's sigma uses, for the same quantity;
+				 * see push.glsl. Set AFTER the block below, which writes 1.0
+				 * there for the hard-edged case. */
+				renderer->stats.blur_soft_draws++;
+			} else {
+				want = renderer->pipes.texture;
+			}
 			/*
 			 * The result transient covers the CAPTURE region and may be larger
 			 * than the write box, so the UV mapping is the write box's position
@@ -725,7 +763,20 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 			pc.uv_org_dx[3] = 0.0f;
 			pc.uv_dy[0] = 0.0f;
 			pc.uv_dy[1] = (float)cmd->dst.height / ah;
-			pc.params[1] = 1.0f;   /* keep the sampled alpha */
+			/* Hard edge: 1.0 keeps the sampled alpha, exactly as a texture
+			 * command's alpha-mask flag does. Soft edge: the same slot is the
+			 * falloff's sigma, in output pixels. Two pipelines, one field, and
+			 * they never draw the same command. */
+			float edge = cmd->blur_edge_softness;
+			if (renderer->break_blur_edge_logical_sigma && edge > 0.0f) {
+				/* Back to LOGICAL units, which is what the reference passes a
+				 * shadow. The blur node keeps its scaled edge in the reference
+				 * and the shadow does not, so undoing the scale HERE is what
+				 * makes the two disagree by exactly the factor the reference
+				 * disagrees by. */
+				edge /= renderer->break_blur_edge_scale;
+			}
+			pc.params[1] = edge > 0.0f ? edge : 1.0f;
 
 			VkDescriptorSet set = avk_pipelines_texture_set(&renderer->pipes,
 				result, false);
@@ -736,6 +787,7 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 			vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
 				renderer->pipes.layout, 0, 1, &set, 0, NULL);
 			renderer->stats.surfaces++;
+			renderer->stats.blur_draws++;
 		} else if (cmd->type == AVK_CMD_TEXTURE) {
 			if (cmd->image == NULL) {
 				pixman_region32_fini(&region);
@@ -828,6 +880,83 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 }
 
 
+/* Append, or complain. Truncating silently would reintroduce exactly the class
+ * of bug this whole path exists to remove. */
+static void az_add_sampled(struct avk_cmd_uses *out, struct avk_image *image) {
+	if (image == NULL) {
+		return;
+	}
+	if (out->sampled_len >= AVK_CMD_MAX_SAMPLED) {
+		avk_log(AVK_ERROR, "avk: a command samples more than %d images; "
+			"AVK_CMD_MAX_SAMPLED needs raising", AVK_CMD_MAX_SAMPLED);
+		return;
+	}
+	out->sampled[out->sampled_len++] = image;
+}
+
+bool avk_cmd_graph_uses(const struct avk_scene *scene, size_t index,
+		const struct avk_cmd_use_ctx *ctx, struct avk_cmd_uses *out) {
+	if (out == NULL || scene == NULL || index >= scene->len) {
+		return false;
+	}
+	memset(out, 0, sizeof(*out));
+	const struct avk_cmd *cmd = &scene->cmds[index];
+
+	/*
+	 * THE ONE SWITCH. No `default:`, deliberately -- see avk_render.h. `declared`
+	 * is the runtime half of the same guard: a case that forgets to set it is a
+	 * false return and a log line, never a silent "samples nothing".
+	 */
+	bool declared = false;
+	/* Guard 1 of 3: adding a command type changes AVK_CMD_TYPE_COUNT and stops
+	 * the build HERE, at the switch that has to learn about it, rather than at a
+	 * missing barrier six months later. (-Wall's -Wswitch also fires on the
+	 * default-less switch below; the assert is the one that is not a warning.) */
+	_Static_assert(AVK_CMD_TYPE_COUNT == 4,
+		"a new avk_cmd_type needs a case in avk_cmd_graph_uses(): state its "
+		"sampled images, or state explicitly that it has none");
+	switch (cmd->type) {
+	case AVK_CMD_RECT:
+		/* NOTHING, and it is a decision rather than an omission: a rect's whole
+		 * input is its colour or its gradient, and a gradient's colours live in
+		 * a storage buffer the renderer writes once per frame and binds for the
+		 * whole segment -- not a per-command resource. */
+		declared = true;
+		break;
+	case AVK_CMD_SHADOW:
+		/* NOTHING. M4D's shadow is analytic: a signed-distance field evaluated
+		 * in the fragment shader, with no blurred texture to sample. That is the
+		 * entire reason it costs one draw. */
+		declared = true;
+		break;
+	case AVK_CMD_TEXTURE:
+		az_add_sampled(out, cmd->image);
+		declared = true;
+		break;
+	case AVK_CMD_BLUR:
+		/*
+		 * Its own finished result, produced earlier in this frame by the chain
+		 * avk_render_frame() declared for it. NULL where no chain ran -- zero
+		 * levels, a region too small, a transient that could not be had -- and
+		 * the draw loop skips the command for the same reason.
+		 */
+		if (ctx != NULL && ctx->blur_results != NULL
+				&& index < ctx->blur_results_len) {
+			az_add_sampled(out, ctx->blur_results[index].image);
+		}
+		declared = true;
+		break;
+	}
+
+	if (!declared) {
+		avk_log(AVK_ERROR, "avk: command type %d has no declared graph-use "
+			"behaviour; a missing use is a missing barrier, so this frame is "
+			"refused rather than rendered", (int)cmd->type);
+		return false;
+	}
+	return true;
+}
+
 /*
  * A segment, as a graph pass.
  *
@@ -847,38 +976,28 @@ bool avk_render_declare_segment(struct avk_graph *graph,
 
 	const struct avk_scene *scene = seg->scene;
 	struct avk_renderer *renderer = seg->renderer;
+	struct avk_cmd_use_ctx use_ctx = {
+		.blur_results = renderer != NULL ? renderer->blur_results : NULL,
+		.blur_results_len = renderer != NULL ? renderer->blur_results_cap : 0,
+	};
 	size_t end = seg->end > scene->len ? scene->len : seg->end;
 	for (size_t i = seg->begin; i < end; i++) {
-		const struct avk_cmd *cmd = &scene->cmds[i];
-		struct avk_image *sampled = NULL;
-		bool foreign = false;
-
-		if (cmd->type == AVK_CMD_TEXTURE && cmd->image != NULL) {
-			sampled = cmd->image;
-			foreign = az_foreign(sampled);
-		} else if (cmd->type == AVK_CMD_BLUR && renderer != NULL
-				&& i < renderer->blur_results_cap) {
-			/*
-			 * A blur command samples its finished result, so the segment
-			 * depends on it exactly as it does on a client surface -- and
-			 * missing this is a missing barrier, not a missing feature. The
-			 * result is left in COLOR_ATTACHMENT_OPTIMAL by the chain's last
-			 * upsample; without a declared use nothing transitions it and
-			 * validation reports VUID-vkCmdDraw-imageLayout-00344 at the draw.
-			 *
-			 * This is what "derive the uses from the range itself" is for: the
-			 * first version listed only texture commands and the bug was a
-			 * command type nobody had added to a list.
-			 */
-			sampled = renderer->blur_results[i].image;
+		/* ASKED, not decided here. There is one authoritative answer to "what
+		 * does this command sample" and this is a consumer of it, not a second
+		 * copy -- see avk_cmd_graph_uses(). */
+		struct avk_cmd_uses uses;
+		if (!avk_cmd_graph_uses(scene, i, &use_ctx, &uses)) {
+			avk_graph_pass_end(graph);
+			return false;
 		}
-		if (sampled == NULL) {
-			continue;
-		}
-		uint32_t r = avk_graph_add_image(graph, sampled, foreign,
-			foreign ? AVK_EXIT_FOREIGN : AVK_EXIT_KEEP);
-		if (r != AVK_GRAPH_INVALID) {
-			avk_graph_use(graph, r, AVK_USE_SAMPLED_READ, NULL);
+		for (uint8_t u = 0; u < uses.sampled_len; u++) {
+			struct avk_image *sampled = uses.sampled[u];
+			bool foreign = az_foreign(sampled);
+			uint32_t r = avk_graph_add_image(graph, sampled, foreign,
+				foreign ? AVK_EXIT_FOREIGN : AVK_EXIT_KEEP);
+			if (r != AVK_GRAPH_INVALID) {
+				avk_graph_use(graph, r, AVK_USE_SAMPLED_READ, NULL);
+			}
 		}
 	}
 	avk_graph_pass_end(graph);
@@ -1066,7 +1185,12 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 			.saturation = cmd->blur_saturation,
 			.noise = cmd->blur_noise,
 			.apply_effects = cmd->blur_apply_effects,
+			.darken = cmd->blur_darken
+				&& !renderer->break_blur_ignore_darken,
 		};
+		if (params.darken) {
+			renderer->stats.blur_darken_passes++;
+		}
 		struct avk_blur_regions rg;
 		if (!avk_blur_regions_of(&rg, &cmd->dst, &params, &scene_bounds)) {
 			continue;
@@ -1111,7 +1235,20 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 			continue;
 		}
 		renderer->blur_prefix_replays++;
-		renderer->blur_prefix_commands += i;
+		/*
+		 * WHAT WAS REPLAYED, not what was meant to be.
+		 *
+		 * This used to add `i` -- the blur's own command index, which is the
+		 * prefix length the design calls for. It is the same number on the
+		 * shipped path and a DIFFERENT one under AZ_BLUR_SCENE_AFTER, where the
+		 * range is [0, len). So the break widened the replay and the counter
+		 * went on reporting the narrow figure, and a test asserting "the source
+		 * range is a prefix" passed with the break on.
+		 *
+		 * Read from the segment, so the counter cannot describe a range the
+		 * renderer did not use.
+		 */
+		renderer->blur_prefix_commands += seg->end - seg->begin;
 		renderer->blur_prefix_pixels +=
 			(uint64_t)rg.capture.width * (uint64_t)rg.capture.height;
 

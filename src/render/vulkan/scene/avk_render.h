@@ -97,6 +97,18 @@ static inline float avk_dither_amplitude(VkFormat format) {
 	return 1.0f / (max_code * AVK_DITHER_REF_BACKDROP);
 }
 
+/*
+ * One blur command's finished result for this frame.
+ *
+ * The capture box travels with the image because the result covers the CAPTURE
+ * region, not the write box -- the composite needs both to know where the write
+ * box sits inside it.
+ */
+struct avk_blur_result {
+	struct avk_image *image;
+	struct avk_box capture;
+};
+
 struct avk_renderer_stats {
 	/* M4A. Proof the rounded path is being taken at all, and how often it is
 	 * taken with corners that differ -- the case a single-radius
@@ -117,6 +129,15 @@ struct avk_renderer_stats {
 	uint64_t shadow_draws;
 	uint64_t rounded_shadow_draws;
 	uint64_t asymmetric_shadow_draws;
+	/*
+	 * M4F. What the blur node's material actually did, as opposed to what the
+	 * scene asked for. Counted at the DRAW, so a fixture can tell "the soft-edge
+	 * pipeline ran" from "edge_softness was set in the command" -- which are two
+	 * different claims and only one of them is about the renderer.
+	 */
+	uint64_t blur_draws;
+	uint64_t blur_soft_draws;
+	uint64_t blur_darken_passes;
 	uint64_t frames;
 	uint64_t surfaces;
 	uint64_t rects;
@@ -189,6 +210,33 @@ struct avk_renderer {
 	 * capture is that the defect becomes structurally impossible.
 	 */
 	bool break_blur_scene_after;
+	/*
+	 * M4F.2A.3 breaks.
+	 *
+	 * `blur_ignore_darken` drops the clamp, leaving the plain average. On a dark
+	 * surface with bright high-frequency detail -- a terminal -- the average is
+	 * LIGHTER than what it replaced, which is the glow the clamp exists to stop.
+	 * On a flat or a photographic backdrop it changes almost nothing, which is
+	 * why the fixture has to be the difficult one.
+	 *
+	 * `blur_ignore_clip` drops the command's clip for blur commands only, so the
+	 * composite covers the whole node instead of the region the client (or the
+	 * compositor) restricted it to. A blur node is usually larger than its clip,
+	 * so this paints backdrop over pixels that should have been left alone.
+	 *
+	 * `blur_edge_logical_sigma` divides the soft edge's sigma back out by the
+	 * output scale -- restoring the reference's inconsistency, in which a blur
+	 * node's edge is scaled to output pixels and the shadow it is drawn to match
+	 * is not. At scale 1.0 it is a no-op by construction; at 1.5 the two edges
+	 * fade over different distances.
+	 */
+	bool break_blur_ignore_darken;
+	bool break_blur_ignore_clip;
+	bool break_blur_edge_logical_sigma;
+	/* What to divide by under break_blur_edge_logical_sigma. The renderer has no
+	 * scale of its own -- geometry arrives already in output pixels -- so the
+	 * break is told, exactly as break_rounded_double_scale is. */
+	float break_blur_edge_scale;
 	float shadow_dither;
 	bool dither_hash;
 	struct avk_device *dev;
@@ -240,10 +288,7 @@ struct avk_renderer {
 	 * CAPTURE region, not the write box -- the composite needs both to know
 	 * where the write box sits inside it.
 	 */
-	struct avk_blur_result {
-		struct avk_image *image;
-		struct avk_box capture;
-	} *blur_results;
+	struct avk_blur_result *blur_results;
 	size_t blur_results_cap;
 	struct avk_blur_stats blur_stats;
 	/*
@@ -338,6 +383,69 @@ struct avk_render_segment {
 	/* Set by avk_render_frame() before recording. */
 	VkDescriptorSet gradient_set;
 };
+
+/*
+ * ── WHAT ONE COMMAND CONSUMES ───────────────────────────────────────────────
+ *
+ * There is exactly ONE place in AVK that answers "which images does this
+ * command sample", and everything that needs to know asks it: the barrier
+ * declaration for a segment, and any future pass that replays a command range.
+ *
+ * WHY IT IS A FUNCTION AND NOT A LIST AT EACH CALL SITE. The first version of
+ * avk_render_declare_segment() derived its uses inline, and the derivation was
+ * `if (cmd->type == AVK_CMD_TEXTURE)`. When AVK_CMD_BLUR arrived it sampled its
+ * own finished result, nobody added it to that condition, and the missing use
+ * was a missing barrier -- which does not fail, it renders. Validation caught it
+ * (VUID-vkCmdDraw-imageLayout-00344); the driver would not have.
+ *
+ * A second call site would have had to remember the same thing again. So the
+ * knowledge moved here, once, and the callers ask.
+ *
+ * OMISSION IS MADE LOUD, THREE WAYS:
+ *
+ *   1. A _Static_assert on AVK_CMD_TYPE_COUNT sits directly above the switch, so
+ *      adding a command type FAILS THE BUILD at the line that has to learn about
+ *      it. The switch also has no `default:`, which makes -Wall's own -Wswitch
+ *      fire on the same change -- but a warning is not a guard, and the assert
+ *      is there because the warning alone is not enough.
+ *   2. Every case must set `declared`. A case that falls through without
+ *      deciding returns false and logs, rather than reporting "no resources".
+ *   3. NO RESOURCE IS NOT UNKNOWN RESOURCE. A rect and a shadow genuinely
+ *      sample nothing, and they say so explicitly, with a comment saying why.
+ *      They do not share a code path with "we have never thought about this
+ *      command type", because that is the state that must be impossible.
+ */
+
+/* Two, not one: a command sampling a second image (a transparency mask, say) is
+ * a real future case, and the overflow path logs rather than truncating. */
+#define AVK_CMD_MAX_SAMPLED 2
+
+struct avk_cmd_uses {
+	struct avk_image *sampled[AVK_CMD_MAX_SAMPLED];
+	uint8_t sampled_len;
+};
+
+/*
+ * Resources a command consumes that do not live in the command itself.
+ *
+ * A blur's source is its own finished result, which the renderer produced this
+ * frame and holds by command index. Passing it in rather than reaching for a
+ * renderer keeps avk_cmd_graph_uses() testable with no device.
+ */
+struct avk_cmd_use_ctx {
+	const struct avk_blur_result *blur_results;
+	size_t blur_results_len;
+};
+
+/*
+ * Fill `out` with everything command `index` samples.
+ *
+ * Returns false ONLY when the command type has no declared use behaviour, which
+ * is a bug in this file and is logged as one. An empty `out` with a true return
+ * means "this command samples nothing", which is a different statement.
+ */
+bool avk_cmd_graph_uses(const struct avk_scene *scene, size_t index,
+	const struct avk_cmd_use_ctx *ctx, struct avk_cmd_uses *out);
 
 /*
  * Declare `seg` as a graph pass: it writes its target and reads every distinct

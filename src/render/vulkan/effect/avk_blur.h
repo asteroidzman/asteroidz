@@ -59,6 +59,38 @@ struct avk_blur_params {
 	/* Folded into the final upsample; see blur.glsl. */
 	float brightness, contrast, saturation, noise;
 	bool apply_effects;
+
+	/*
+	 * THE DARKEN CLAMP: the result may never come out LIGHTER than the source it
+	 * replaced, per channel.
+	 *
+	 *     out.rgb = min(blurred.rgb, source.rgb)      out.a = blurred.a
+	 *
+	 * WHY IT EXISTS, and it is not polish. A blur is an average, and averaging
+	 * bright detail over a dark ground RAISES the mean wherever the ground is
+	 * dark. A terminal is mostly dark with sparse bright text, so its blur comes
+	 * out lighter than it was and the shadow that shows it reads as a GLOW. A
+	 * photograph is already smooth and barely moves, which is why this only ever
+	 * appeared over windows -- and why a flat-colour fixture cannot see it at
+	 * all: the blur of a flat field is the same flat field.
+	 *
+	 * WHERE IT IS APPLIED. The LAST upsample only, after the post-effects, and
+	 * against the chain's own level 0 -- which still holds the unblurred source
+	 * at that moment, because the chain walks away from it and only returns on
+	 * that pass. So the clamp costs one attachment read and no memory.
+	 *
+	 * HOW. As blend state, not in the shader: a fragment shader cannot read the
+	 * attachment it writes. See AZ_BLEND_DARKEN in avk_pipeline.c.
+	 *
+	 * DIVERGENCE FROM THE REFERENCE, stated once here and argued in
+	 * docs/avk-effects.md. blur2.comp skips the clamp inside the sample_exclude
+	 * box, because there its "source" is a synthetic stretched-and-mirrored fill
+	 * rather than real backdrop and min() against a fabrication preserves the
+	 * fabrication's hard structure. AVK's source is the current-frame scene
+	 * prefix at every pixel of the capture -- there is no fill and no region
+	 * where the premise fails -- so the clamp applies throughout.
+	 */
+	bool darken;
 };
 
 struct avk_blur_stats {

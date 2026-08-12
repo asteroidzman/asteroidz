@@ -423,7 +423,20 @@ Live counters for the AVK renderer (`ASTEROIDZ_RENDERER=avk`). Returns
 ```bash
 amsg get avk-stats | jq
 amsg dispatch reset_avk_stats     # zero the counters without restarting
+amsg dispatch dump_scene          # log the next frame's scene and commands
 ```
+
+`dump_scene` writes one line per scene node and one per emitted AVK command,
+with the index each command landed at, at ERROR level so it survives any log
+filter. It is ARMED rather than scheduled, and that is the point:
+`AVK_SCENE_DUMP` names a frame NUMBER, and nothing outside the compositor knows
+which frame a window will be on — too low and the dump fires before the client
+exists, too high and an idle compositor never gets there. Both produce an empty
+dump, which reads exactly like "the renderer was asked to draw nothing".
+
+The command index matters beyond diagnostics: it is the `k` a blur's source
+prefix is replayed for, so "the blur is at 2 and the window is at 7" is the
+scene-order claim stated as a fact about the stream.
 
 The reset exists because benchmarking a workload should not require restarting
 the compositor, which destroys the workload. It zeroes accumulating counters
@@ -452,6 +465,12 @@ Fields worth knowing:
 | `cursor_no_image` | **must be 0.** wlroots says a cursor is enabled and visible and asteroidz has no picture to draw for it — the exact fingerprint of the regression M3.5E fixed, where a client's own cursor image was silently dropped |
 | `cursor_import_failures` | the cursor image would not go to the GPU. Also expected to be 0 |
 | `cursor_culled` | cursors discarded as entirely outside this output. Defensive only — `wlr_output_cursor.visible` is per-output and wlroots computes it, so a cursor on another monitor is skipped as not-visible before this test is reached. A permanent 0 is correct, not missing coverage |
+| `blur_nodes_seen` / `_emitted` / `_culled` | real `WLR_SCENE_NODE_BLUR` nodes the walk met, turned into commands, and discarded. Three numbers rather than one: `seen == 0` says the producer is not running, `emitted == 0` with `seen > 0` says the culling is wrong |
+| `blur_nodes_clipped` | nodes whose composite a `clip_region` or `clipped_region` restricted. Its own counter because the walker's node-local clip conversion is the only path that touches it, and a clip fixture must be able to show that path ran at all |
+| `blur_nodes_forced_live` | nodes that asked for the cached bottom-layer path and got the live one. AVK has no cache (M4F.2E), so this is the size of that decision rather than a fault |
+| `blur_prefix_replays` / `_commands` / `_pixels` | what live blur costs: one prefix capture per blur, replaying the commands before it. **Quadratic in blur count by construction** — a blur at index k replays k commands — and recorded before any caching decision is taken |
+| `blur_chains` / `blur_passes` / `blur_transients` | dual-Kawase chains built, down+up passes declared, and transients acquired for their levels |
+| `blur_draws` / `blur_soft_edge_draws` / `blur_darken_chains` | counted at the DRAW and at the chain, so they say what the material **did** rather than what the scene asked for — two different claims, and only one of them is about the renderer |
 | `cursor_moves` | frames whose cursor box differs from the previous frame's. **Not** a count of pointer motion events — several can land inside one frame — because what matters here is what drives damage |
 | `record_us_avg` | CPU wall clock `avk_render_frame()` spends recording and submitting, per frame. **Not GPU time** — that is `gpu_frame_us_avg`, and the two are separate fields because one number would understate a shader-bound frame and overstate a submission-bound one |
 | `gpu_frame_us_avg` | mean GPU frame time over completed timestamp samples, or null where the queue family cannot write timestamps. A mean over *every output's* frames, since a renderer is shared by every output using its `VkFormat` |

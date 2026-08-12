@@ -12,6 +12,7 @@
 #include "shadow_frag.spv.h"
 #include "blur_down_frag.spv.h"
 #include "blur_up_frag.spv.h"
+#include "blur_soft_frag.spv.h"
 
 /* Sets per descriptor pool. Enough that an ordinary desktop -- a few dozen
  * surfaces -- never allocates a second one, small enough that a pool is not a
@@ -37,18 +38,44 @@ static VkShaderModule create_module(struct avk_device *dev,
 }
 
 /*
- * `blend` false gives a REPLACING pipeline: no blend, straight write.
+ * THE THREE BLEND MODES, and there are exactly three because each answers a
+ * different question about what the destination already holds.
  *
- * Every compositing primitive blends -- that is what compositing is -- but a
- * blur's down and up passes do not composite, they RESAMPLE. Their destination
- * is a transient whose previous contents are another window's blur from three
- * frames ago, and blending against that is not "slightly wrong", it is the
- * previous frame leaking through. Replacing also means the transient needs no
- * clear, which is a full-target write per level saved.
+ * AZ_BLEND_OVER    premultiplied source-over. Every compositing primitive: the
+ *                  destination is the frame so far and this draw goes on top.
+ *
+ * AZ_BLEND_REPLACE no blend, straight write. A blur's down and up passes do not
+ *                  composite, they RESAMPLE -- their destination is a transient
+ *                  whose previous contents are another window's blur from three
+ *                  frames ago, and blending against that is not "slightly
+ *                  wrong", it is the previous frame leaking through. Replacing
+ *                  also means the transient needs no clear, which is a
+ *                  full-target write per level saved.
+ *
+ * AZ_BLEND_DARKEN  min() on rgb, and the source's own alpha. This is the
+ *                  reference's darken clamp (blur2.comp:158,
+ *                  `color.rgb = min(color.rgb, src.rgb)`) expressed as fixed
+ *                  function, because a fragment shader cannot read the
+ *                  attachment it writes and the reference's imageLoad is a
+ *                  compute-path affordance AVK does not have.
+ *
+ *                  Blending runs AFTER the fragment shader, so the post-effects
+ *                  are folded in first -- exactly the order blur2.comp uses
+ *                  (effects at :132, clamp at :158). Min/max blend ops IGNORE
+ *                  their blend factors per spec, so there is one behaviour here
+ *                  and no factor to get subtly wrong; the alpha op is a real ADD
+ *                  with (ONE, ZERO) so alpha still comes from the blur untouched,
+ *                  which is what `color.rgb = ...` in the reference means.
  */
+enum az_blend_mode {
+	AZ_BLEND_OVER,
+	AZ_BLEND_REPLACE,
+	AZ_BLEND_DARKEN,
+};
+
 static bool create_pipeline_ex(struct avk_pipelines *pipes, VkFormat format,
 		VkShaderModule vert, VkShaderModule frag, const char *name,
-		bool blend_enable, VkPipeline *out) {
+		enum az_blend_mode mode, VkPipeline *out) {
 	struct avk_device *dev = pipes->dev;
 
 	VkPipelineShaderStageCreateInfo stages[2] = {
@@ -104,7 +131,7 @@ static bool create_pipeline_ex(struct avk_pipelines *pipes, VkFormat format,
 	 * look like "the edges are too dark".
 	 */
 	VkPipelineColorBlendAttachmentState blend = {
-		.blendEnable = blend_enable ? VK_TRUE : VK_FALSE,
+		.blendEnable = mode != AZ_BLEND_REPLACE ? VK_TRUE : VK_FALSE,
 		.srcColorBlendFactor = VK_BLEND_FACTOR_ONE,
 		.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
 		.colorBlendOp = VK_BLEND_OP_ADD,
@@ -114,6 +141,16 @@ static bool create_pipeline_ex(struct avk_pipelines *pipes, VkFormat format,
 		.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT
 			| VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
 	};
+	if (mode == AZ_BLEND_DARKEN) {
+		blend.colorBlendOp = VK_BLEND_OP_MIN;
+		/* Written out even though VK_BLEND_OP_MIN ignores them, so nobody has to
+		 * remember that it does when reading this. */
+		blend.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+		blend.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+		blend.alphaBlendOp = VK_BLEND_OP_ADD;
+		blend.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+		blend.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+	}
 	VkPipelineColorBlendStateCreateInfo blend_state = {
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
 		.attachmentCount = 1,
@@ -167,7 +204,8 @@ static bool create_pipeline_ex(struct avk_pipelines *pipes, VkFormat format,
 static bool create_pipeline(struct avk_pipelines *pipes, VkFormat format,
 		VkShaderModule vert, VkShaderModule frag, const char *name,
 		VkPipeline *out) {
-	return create_pipeline_ex(pipes, format, vert, frag, name, true, out);
+	return create_pipeline_ex(pipes, format, vert, frag, name, AZ_BLEND_OVER,
+		out);
 }
 
 static bool create_sampler(struct avk_device *dev, VkFilter filter,
@@ -283,6 +321,8 @@ bool avk_pipelines_init(struct avk_pipelines *pipes, struct avk_device *dev,
 		sizeof(blur_down_frag_spv), "blur_down.frag");
 	VkShaderModule blur_up_frag = create_module(dev, blur_up_frag_spv,
 		sizeof(blur_up_frag_spv), "blur_up.frag");
+	VkShaderModule blur_soft_frag = create_module(dev, blur_soft_frag_spv,
+		sizeof(blur_soft_frag_spv), "blur_soft.frag");
 
 	bool ok = vert != VK_NULL_HANDLE && rect_frag != VK_NULL_HANDLE
 		&& texture_frag != VK_NULL_HANDLE && gradient_frag != VK_NULL_HANDLE
@@ -296,11 +336,18 @@ bool avk_pipelines_init(struct avk_pipelines *pipes, struct avk_device *dev,
 		&& create_pipeline(pipes, format, vert, shadow_frag, "shadow",
 			&pipes->shadow)
 		&& blur_down_frag != VK_NULL_HANDLE && blur_up_frag != VK_NULL_HANDLE
+		&& blur_soft_frag != VK_NULL_HANDLE
 		/* REPLACING, not blending -- see create_pipeline_ex(). */
 		&& create_pipeline_ex(pipes, format, vert, blur_down_frag, "blur_down",
-			false, &pipes->blur_down)
+			AZ_BLEND_REPLACE, &pipes->blur_down)
 		&& create_pipeline_ex(pipes, format, vert, blur_up_frag, "blur_up",
-			false, &pipes->blur_up);
+			AZ_BLEND_REPLACE, &pipes->blur_up)
+		/* The identical shader, clamped against its own destination. */
+		&& create_pipeline_ex(pipes, format, vert, blur_up_frag,
+			"blur_up_darken", AZ_BLEND_DARKEN, &pipes->blur_up_darken)
+		/* A composite, so it blends like every other composite. */
+		&& create_pipeline(pipes, format, vert, blur_soft_frag, "blur_soft",
+			&pipes->blur_soft);
 
 	/* Modules are only needed while the pipelines are being created; the
 	 * driver has compiled what it needs by the time vkCreateGraphicsPipelines
@@ -322,6 +369,9 @@ bool avk_pipelines_init(struct avk_pipelines *pipes, struct avk_device *dev,
 	}
 	if (blur_down_frag != VK_NULL_HANDLE) {
 		vkDestroyShaderModule(dev->dev, blur_down_frag, NULL);
+	}
+	if (blur_soft_frag != VK_NULL_HANDLE) {
+		vkDestroyShaderModule(dev->dev, blur_soft_frag, NULL);
 	}
 	if (blur_up_frag != VK_NULL_HANDLE) {
 		vkDestroyShaderModule(dev->dev, blur_up_frag, NULL);
@@ -353,6 +403,14 @@ void avk_pipelines_finish(struct avk_pipelines *pipes) {
 	}
 	if (pipes->blur_down != VK_NULL_HANDLE) {
 		vkDestroyPipeline(dev, pipes->blur_down, NULL);
+		AVK_LIVE_DEC(pipes->dev, pipelines);
+	}
+	if (pipes->blur_up_darken != VK_NULL_HANDLE) {
+		vkDestroyPipeline(dev, pipes->blur_up_darken, NULL);
+		AVK_LIVE_DEC(pipes->dev, pipelines);
+	}
+	if (pipes->blur_soft != VK_NULL_HANDLE) {
+		vkDestroyPipeline(dev, pipes->blur_soft, NULL);
 		AVK_LIVE_DEC(pipes->dev, pipelines);
 	}
 	if (pipes->blur_up != VK_NULL_HANDLE) {

@@ -367,6 +367,8 @@ static const DispatchAction dispatch_actions[] = {
 	{"reload_config", "", "Re-read the config from disk."},
 	{"reset_avk_stats", "",
 	 "Zero the Vulkan renderer's counters (see amsg get avk-stats)."},
+	{"dump_scene", "",
+	 "Log the next frame's scene nodes and AVK command stream at ERROR."},
 	{"restart", "", "Restart the compositor in place."},
 	{"quit", "", "Exit."},
 	{"chvt", "int", "Switch virtual terminal."},

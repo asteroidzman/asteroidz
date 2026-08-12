@@ -40,6 +40,15 @@ compositor that is running it. Counters this build does not yet collect are
 reported as JSON \fBnull\fR rather than \fB0\fR \(em a zero is a
 measurement, a null is an admission. See \fBdocs/ipc.md\fR for the fields.
 .TP
+\fBdispatch dump_scene\fR
+Log the next frame's scene nodes and the AVK command stream they produced, one
+line each, at ERROR level. Each command line carries the INDEX it landed at,
+which is the position a background blur's source prefix is replayed for \(em so
+this is how "what did the compositor actually ask the renderer to draw, and in
+what order" is answered without a debugger. Armed rather than scheduled: the
+\fBAVK_SCENE_DUMP\fR environment variable names a frame number instead, and
+nothing outside the compositor knows which frame a given window will be on.
+.TP
 \fBget idle\fR
 Return whether idling is currently held off, and by whom. \fBinhibited\fR is
 what the idle notifier was told, and answers "will this machine sleep";
@@ -551,6 +560,8 @@ privileges. See \fBdocs/visuals/effects.md\fR.
 \fBreload_config\fR
 .TP
 \fBreset_avk_stats\fR
+.TP
+\fBdump_scene\fR
 .TP
 \fBrestart\fR
 .TP
