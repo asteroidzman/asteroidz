@@ -19,15 +19,29 @@
 #
 #   BREAK=shadow-symmetric      re-centres the envelope; directionality dies
 #
-# shadow-single-radius is deliberately NOT listed. It gives ZERO coverage here
-# and was measured doing so -- 22 of 22 under the break -- because asteroidz
-# never produces a shadow with four different corner radii:
-# client_apply_border() sets them through corner_radii_from_location(), which
-# is all-or-nothing, and the titlebar shadows take a single scalar. The
-# per-corner path is real and is required by struct fx_corner_radii, but it is
-# exercised by tests/test-avk-shadow.c alone, where a constructed 0/7/19/37
-# case fails the break 56 of 58. Listing it here would claim coverage this
-# suite does not have; a green break run is a suite failure, not a pass.
+# shadow-single-radius is NOT listed: see the per-corner case at the bottom
+# for the measurement showing it has no steady-state effect here, and for
+# where its falsifier actually lives.
+#
+# HOW THE SECOND BREAK GOT ITS COVERAGE. It first scored 22 of 22 here -- a
+# green break run, which is a suite failure -- because every window this
+# fixture floated sat in the middle of the screen with all four corners
+# rounded, and a single-radius shadow is indistinguishable from a correct one
+# when the four radii are equal. The conclusion drawn from that was wrong
+# twice over: the fixture was rewritten to say asteroidz never produces
+# asymmetric shadow corners, on the strength of reading
+# corner_radii_from_location().
+#
+# The live session disproved it in one number: asymmetric_shadow_draws = 258.
+# client_apply_border() starts at CORNER_LOCATION_ALL and masks off whichever
+# edges the window is FLUSH AGAINST -- "a corner is squared off only where the
+# window meets the screen edge" -- and it feeds that mask straight to the two
+# shadow nodes. So a window against the left edge of a monitor has square left
+# corners and round right ones, which is the ordinary case for anything
+# maximised or dragged to an edge, and the case a single-radius shadow gets
+# wrong.
+#
+# The "flush against the screen edge" case below reproduces it.
 set -u
 
 . "$(dirname "$0")/lib/headless.sh"
@@ -72,7 +86,7 @@ wait_clients() { # wait_clients N
 #
 # The shipped shadow profile, stated rather than inherited, so a change to the
 # defaults cannot silently change what this suite measures.
-SHADOW_KDL='border_radius 12
+SHADOW_KDL_TEMPLATE='border_radius ${RADIUS:-12}
 borderpx 0
 animations 0
 effects {
@@ -80,19 +94,23 @@ effects {
     shadow {
         enable 1
         only-floating 1
-        size 24
-        blur 24
+        size ${SHSIZE:-24}
+        blur ${SHBLUR:-24}
         position { x 0; y 10 }
         color 0x000000cc
-        contact { enable 1; size 8; blur 9; position { x 0; y 2 } }
+        contact { enable ${CONTACT:-1}; size 8; blur 9; position { x 0; y 2 } }
     }
 }
 layout {
-    titlebar { enable 0 }
+    titlebar { enable ${TITLEBAR:-0} }
 }'
 
-start_case() { # start_case [EXTRA_KDL]
-	hl_start "$SHADOW_KDL
+start_case() { # start_case [EXTRA_KDL]   (honours $TITLEBAR)
+	local kdl
+	kdl="$(TITLEBAR="${TITLEBAR:-0}" RADIUS="${RADIUS:-12}" SHSIZE="${SHSIZE:-24}" \
+		SHBLUR="${SHBLUR:-24}" CONTACT="${CONTACT:-1}" \
+		envsubst <<<"$SHADOW_KDL_TEMPLATE")"
+	hl_start "$kdl
 ${1:-}"
 	sleep 2
 }
@@ -101,7 +119,7 @@ spawn_floating() { # spawn_floating X Y W H -> geometry on stdout
 	local x="$1" y="$2" w="$3" hgt="$4"
 	hl_dispatch "view,4" 0.5
 	"$REPAINT" --title "wlshadow" --size "${w}x${hgt}" --solid 202020 \
-		--frames 1 --hold-ms 100 > "$OUTDIR/client.log" 2>&1 &
+		--frames 1 ${SSD:+--ssd} --hold-ms 100 > "$OUTDIR/client.log" 2>&1 &
 	HL_SPAWNED_PIDS+=("$!")
 	wait_clients 1 || { echo "  (client never mapped)"; return 1; }
 	sleep 1
@@ -423,6 +441,82 @@ PY
 	# enormous step where the other output takes over.
 	hl_assert "no discontinuity at the seam (max step $MAXSTEP at x=$AT)" \
 		"$(python3 -c "print('true' if $MAXSTEP < 12 else 'false')")" "true"
+fi
+hl_stop
+
+# ── 7. a window flush against the screen edge: asymmetric shadow corners ───
+
+echo "== the per-corner path is really driven: asymmetric shadow corners =="
+HL_OUTPUTS=1
+export HL_OUTPUTS
+# ANIMATIONS ON, and that is the whole point of this case.
+#
+# client_apply_border() squares off whichever corners the window is flush
+# against the screen edge on, and feeds that mask straight to both shadow
+# nodes -- so an asymmetric shadow is an ordinary thing rather than a
+# theoretical one. Every other case in this file runs `animations 0` and never
+# sees one, which led to the fixture briefly claiming the compositor could not
+# produce them at all. The live session said otherwise in one number:
+# asymmetric_shadow_draws = 258.
+#
+# The condition cannot be reached with move_window, which clamps a floating
+# window back inside the usable area, and it does not appear during an open
+# animation either -- both were tried and both measured 0. The mask that fires
+# in ordinary use is the TITLEBAR one: when a window wears a tab, its top
+# corners are squared so the tab and the window read as one shape, while the
+# bottom two stay round. Every other case here runs `titlebar { enable 0 }`
+# and therefore never sees an asymmetric shadow.
+# --ssd as well as the titlebar option: the mask lives behind
+# client_wants_ssd(c), so a client that decorates itself never grows a
+# tab and never squares a corner however the compositor is configured.
+# A BIG radius under a SHARP shadow, and both are required. At the suite's
+# usual blur of 24 the effective Gaussian sigma is 12, and a 12 px corner
+# radius simply does not survive being blurred by 12 -- the break moved this
+# probe by 2/255, which is a correct rendering of a soft shadow and a useless
+# falsifier. Radius 40 against blur 8 puts the corner back where a camera can
+# see it. The contact lobe is off so only one shape is being measured.
+TITLEBAR=1
+SSD=1
+RADIUS=40
+SHSIZE=14
+SHBLUR=8
+CONTACT=0
+export TITLEBAR SSD RADIUS SHSIZE SHBLUR CONTACT
+start_case
+GEOM="$(spawn_floating 500 300 500 350)" || GEOM=""
+if [ -z "$GEOM" ]; then
+	hl_skip "no client; the per-corner case needs a window to open"
+else
+	echo "  window opened at $GEOM"
+	DRAWS="$(stat_of shadow_draws)"
+	ASYM="$(stat_of asymmetric_shadow_draws)"
+	echo "  shadow_draws $DRAWS, of which asymmetric $ASYM"
+	hl_assert "premise: shadows were drawn at all ($DRAWS)" \
+		"$([ "$DRAWS" != TIMEOUT ] && [ "${DRAWS:-0}" -gt 0 ] && echo true || echo false)" "true"
+	# The claim: the four-radius path is not decoration. A shadow really does
+	# arrive at the renderer with corners that differ, which is the only
+	# condition under which a single-radius implementation renders wrongly.
+	hl_assert "the compositor really drives per-corner shadow radii ($ASYM asymmetric)" \
+		"$([ "$ASYM" != TIMEOUT ] && [ "${ASYM:-0}" -gt 0 ] && echo true || echo false)" "true"
+
+	# NO PIXEL ASSERTION HERE, and the reason is worth keeping.
+	#
+	# Those asymmetric draws are TRANSIENT -- 4 of 10, while the tab is being
+	# put together. By the time the compositor has settled and grim can
+	# photograph it, the corners are equal again, so a steady-state capture
+	# has nothing asymmetric in it to measure. Three fixtures were tried
+	# before this was understood: a window moved flush to an edge (move_window
+	# clamps it back inside the usable area), a window opened under an
+	# animation, and this one probed at all four corners -- which read
+	# tl=119.6 tr=122.2 br=99.4 bl=99.4 normally and tl=119.0 tr=122.2 br=98.2
+	# bl=98.2 under BREAK=shadow-single-radius. A 1/255 difference is not a
+	# falsifier.
+	#
+	# So the pixel proof of per-corner shadow radii lives in
+	# tests/test-avk-shadow.c, where a constructed 0/7/19/37 case is compared
+	# against three wrong oracles and fails the break 56 of 58. What this case
+	# contributes is the part the unit suite structurally cannot: that the
+	# COMPOSITOR really does hand the renderer corners that differ.
 fi
 hl_stop
 

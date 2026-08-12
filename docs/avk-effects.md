@@ -1514,19 +1514,45 @@ running both outputs at 1. It was caught only because the case asserts the
 premise (`the output really is at 1.5`) before measuring anything. `HL_SCALE1`
 is the knob that works.
 
-### A break that gives no coverage here, and is not claimed
+### A break that gives no coverage here — and a claim that was wrong
 
-`BREAK=shadow-single-radius` scores **22 of 22** against this suite. That is
-not a pass — it means zero coverage, and it is listed in the fixture as such
-rather than quietly kept. The reason is a real fact about the producer:
+`BREAK=shadow-single-radius` scores **24 of 24** against this suite. That is
+not a pass; it means zero coverage, and it is recorded in the fixture as such.
+But the *reason* first written down was wrong, and the correction matters more
+than the break.
 
-**asteroidz never creates a shadow with four different corner radii.**
-`client_apply_border()` sets them through `corner_radii_from_location()`, which
-is all-or-nothing, and the titlebar shadows take a single scalar. Borders *do*
-vary per corner (`titlebar_apply_corner_rule`); shadows do not. The per-corner
-shadow path is required by `struct fx_corner_radii` and is correct, but it is
-exercised by `tests/test-avk-shadow.c` alone, where a constructed 0/7/19/37
-case fails the break 56 of 58.
+The fixture originally said asteroidz never produces a shadow with four
+different corner radii, reasoning from `corner_radii_from_location()` being
+all-or-nothing. **The live session disproved it in one number:
+`asymmetric_shadow_draws = 258`.** `client_apply_border()` starts at
+`CORNER_LOCATION_ALL` and masks off whichever corners the window is flush
+against a screen edge on, plus the titlebar rule that squares the top-left so
+the tab and the window read as one shape — and it feeds that mask straight to
+both shadow nodes.
 
-`BREAK=shadow-symmetric` fails this suite **19 of 22**, on exactly the two
-directional assertions and the scale one.
+The suite now reproduces it (a window with `--ssd` and `titlebar { enable 1 }`,
+which gives **4 asymmetric draws of 10**) and asserts on the counter, because
+that is the part the unit suite structurally cannot reach: proof that the
+*compositor* really hands the renderer corners that differ.
+
+What it still cannot do is photograph one. Those draws are **transient** —
+they happen while the tab is being assembled, and by the time the compositor
+settles and `grim` can capture, the corners are equal again. Three fixtures
+were tried before this was understood:
+
+- a window moved flush to a screen edge — `move_window` clamps it back inside
+  the usable area, and the counter read 0;
+- a window opened under an animation — also 0;
+- this one, probed at all four corners — `tl=119.6 tr=122.2 br=99.4 bl=99.4`
+  normally against `tl=119.0 tr=122.2 br=98.2 bl=98.2` under the break.
+
+A 1/255 difference is not a falsifier. (A prior attempt at radius 12 under
+blur 24 was worse still and for a physically correct reason: an effective
+Gaussian sigma of 12 does not preserve a 12 px corner.)
+
+So the **pixel** proof of per-corner shadow radii lives in
+`tests/test-avk-shadow.c`, where a constructed 0/7/19/37 case is compared
+against three wrong oracles and fails the break **56 of 58**.
+
+`BREAK=shadow-symmetric` fails this suite **21 of 24**, on the two directional
+assertions and the scale one.
