@@ -2856,3 +2856,127 @@ live compositor was scanning one out.
    test opens a render node so it can run with no display.
 4. **Printed the diagnostics before the section header**, so a `sed` window over
    the results hid them.
+
+## M4F.0 — the production effect boundary
+
+### What M4F is
+
+`docs/avk-effects.md`'s own stage table has said so since M4A:
+
+```text
+M4F  blur   dual-Kawase, source-region expansion, and every one of the
+            per-node fields above
+```
+
+So M4F is **blur**, and nothing else. Not bloom, not local tone mapping, not
+glass — those are named in the M4E brief as *possible future consumers* of the
+graph, and adding one here would be expanding the milestone.
+
+### Every blur producer in the compositor
+
+Seven call sites create a blur node. They are two different things wearing one
+name.
+
+| producer | node type | what it blurs |
+|---|---|---|
+| `ensure_monitor_blur_node()` | `OPTIMIZED_BLUR` | one per monitor: a **cached** full-output blur of the bottom (wallpaper) layer, invalidated by `mark_dirty` |
+| `client_update_blur()` | `BLUR` | a window's backdrop, below its own surface |
+| `client.h:680` | `BLUR` | `c->shadow_blur` — the backdrop inside a shadow's footprint |
+| `layer_update_blur()` | `BLUR` | a layer surface's backdrop |
+| `layer.h:221` | `BLUR` | `l->shadow_blur` |
+| `asteroidz.c:4121` | `BLUR` | an xdg popup's backdrop |
+| `overview.h:1309` | `BLUR` | the overview strip |
+
+`OPTIMIZED_BLUR` is a **cache**, with its own dirty tracking and its own
+lifetime; `BLUR` is a **live** effect that samples the scene as composed *at
+that point in the command stream*. A node with
+`should_only_blur_bottom_layer` reads the cache instead of sampling live, which
+is why the two are entangled rather than independent.
+
+### The live configuration, which decides what is actually visible
+
+```text
+blur { enable 1; layer 0; optimized 1; passes 2; radius 6;
+       unfocused-strength 0.7; transparency-threshold 0.5
+       params { noise 0.02; brightness 0.9; contrast 0.9; saturation 1.2 } }
+shadow { blur-background 1; blur-background-strength 0.55 }
+```
+
+So on this desktop the visible blur is: the **cached** monitor blur, sampled by
+every **non-floating** window (`should_only_blur_bottom_layer = blur_optimized
+&& !isfloating`), plus **live** blur for floating windows, plus a **live**
+shadow-backdrop blur with the darken clamp. Layer-shell blur is off.
+
+> The config's own comment argues for `optimized 0` and then sets `optimized 1`.
+> Worth resolving separately; it does not change what M4F must implement.
+
+### The dependency map
+
+```text
+scene / window
+      |  client_update_blur(), layer_update_blur(), shadow producers
+      v
+wlr_scene_blur / wlr_scene_optimized_blur node
+      |  fields: corners, clipped_region, strength, alpha, sample_exclude,
+      |          darken, clip_region, edge_softness, transparency_mask_source,
+      |          should_only_blur_bottom_layer
+      v
+az_avk_walk_node()                       <-- TODAY: recognised and DROPPED
+      |
+      v
+avk_cmd  (AVK_CMD_BLUR, does not exist yet; `has_blur` is a reserved flag)
+      |
+      v
+avk_graph_add_image / avk_graph_pass_begin / avk_graph_use
+      |
+      v
+avk_transient_pool  (down/up chain)
+      |
+      v
+barrier compiler  -> vkCmdPipelineBarrier2
+      |
+      v
+output
+```
+
+### What bypasses `avk_graph` today
+
+**Nothing inside AVK.** M4E put the whole frame through the graph: there is one
+pass, its barriers are derived, and `batch_add`/`batch_submit` are gone. The
+only Vulkan work outside the graph is the **SHM upload path**
+(`avk_dmabuf_importer.upload_ring`), which is a separate submission on a
+separate command ring, ordered by the semaphores its caller passes. That is an
+audited external boundary, not a parallel synchronisation system, and M4F does
+not touch it.
+
+So M4F adds a consumer; it does not have to reclaim anything first.
+
+### The one hard architectural question
+
+A live blur samples **the target as composed so far**. AVK's frame is a single
+`vkCmdBeginRendering`…`vkCmdEndRendering` instance, and an image cannot be an
+attachment and a sampled source at once. Three shapes are possible:
+
+```text
+A  split the rendering instance at each blur node
+       end rendering, transition target -> sampled, blur into transients,
+       transition back, resume. N blur nodes = N splits.
+
+B  render the background into a transient first, then compose forward
+       one split, but every window below a blur is drawn twice or the
+       composition order changes.
+
+C  cache the bottom layer once per output (what OPTIMIZED_BLUR already is)
+       and have consumers sample it -- no split at all in the common case.
+```
+
+The barrier measurement (M4F.3/.5) matters here: a split costs **~130 ns** of
+recording, so A is not expensive *in synchronisation*. What A does cost is a
+full-target read per blur node. C is what the live config already selects for
+non-floating windows, and it is a cache rather than a pass.
+
+`sample_exclude` exists because of a specific failure in shape A: the blur node
+is drawn *below* its own window, so the target does not yet contain the window
+— **except in undamaged regions, which still hold the previous frame, where it
+does.** That is the halo SceneFX's field comment describes, and it is the reason
+the region a blur samples cannot simply be "whatever is in the target".
