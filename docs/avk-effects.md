@@ -2712,3 +2712,53 @@ coverage for it.
 
 Nothing was adopted on grounds of novelty, and every `DEFER` now has a number
 attached rather than an intention.
+
+## A counter that had to be split twice
+
+`graph_build_ns` said something false twice, and both times the number looked
+like a finding.
+
+**First: it included the pass record callbacks.** 21 450 ns a frame. That is the
+draw loop — work the frame was always going to do. Subtracted, it fell to
+~2500 ns.
+
+**Second: it included `vkCmdPipelineBarrier2`.** Headless it read 2270–7239 ns
+and looked fine. On the live session it read **35 330 ns average, 42 517 ns
+incrementally** — 20% of frame recording, and 6–20× the headless figure. That
+reads exactly like a graph that falls apart on real hardware.
+
+It was not. The pre-graph renderer made **the same two
+`vkCmdPipelineBarrier2` calls, in the same places, with the same contents**;
+what M4E changed is that they are derived rather than hand-written. Their cost
+simply had nowhere to be attributed before, so it had never been looked at.
+
+Split out as `graph_barrier_ns`:
+
+| | graph bookkeeping | `vkCmdPipelineBarrier2` |
+|---|---|---|
+| unit test, 64×64 | **329 ns** | ~2 100 ns |
+| headless, 3840×2160 | **1 334 ns** | 1 796 ns |
+
+So the part M4E actually added is **~0.3–1.3 µs a frame**, and the part that
+dominates is a driver call that predates it.
+
+The debug labels were ruled out first, by reading `avk_debug.c`: they return on
+a NULL function pointer when `ASTEROIDZ_VK_DEBUG` is unset, so they cost a
+branch.
+
+**Why the live figure is so much larger than 4K headless.** 4K headless does not
+reproduce it — combined it reads ~3.1 µs there against ~42 µs live. The live
+session's `record_us_avg` is 180–215 µs against ~48 µs headless, so the whole
+frame path is roughly 4× slower on a loaded desktop; `clock_gettime` measures
+wall time, so scheduler preemption inside the timed region is counted. The
+useful statements are the ratio (graph + barriers ≈ 20% of frame recording) and
+the budget (record time is ~180 µs of 6944 µs, **2.6%**), not the absolute
+nanoseconds.
+
+### And a capture that failed silently
+
+`pngdiff` let a `zlib.error` from a truncated grim capture through, producing
+empty `FLOOR`/`FTOTAL` values which awk then compared without complaining — a
+comparison against nothing, reported as a pass. It now returns empty on an
+unreadable file and the caller **skips with a reason** rather than proceeding.
+grim writes a truncated PNG under load often enough that this matters.

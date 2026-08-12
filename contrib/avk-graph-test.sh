@@ -142,8 +142,11 @@ STATS2="$(hl_get 'get avk-stats')"
 A2=$(echo "$STATS2" | jq -r '.graph_allocs // 0')
 F2=$(echo "$STATS2" | jq -r '.graph_frames // 0')
 BUILD=$(echo "$STATS2" | jq -r '.graph_build_ns_avg // 0')
+BARRIER=$(echo "$STATS2" | jq -r '.graph_barrier_ns_avg // 0')
 echo "  ---- graph_allocs $A1 -> $A2 over $((F2 - FRAMES)) further frames"
-echo "  ---- graph_build_ns_avg $BUILD"
+echo "  ---- graph_build_ns_avg   $BUILD   (the graph's own bookkeeping)"
+echo "  ---- graph_barrier_ns_avg $BARRIER   (vkCmdPipelineBarrier2; the "
+echo "       pre-graph renderer made the same two calls)"
 # The premise. Asserting that a counter did not move across an interval in
 # which nothing happened is not a test of anything.
 hl_assert "frames were actually built between the two readings" \
@@ -192,8 +195,14 @@ hl_stop
 # would have been a number chosen to make the test pass.
 echo "-- pixel equivalence --"
 
-pngdiff() { # pngdiff A B -> "differing_bytes total worst"
-	python3 - "$1" "$2" <<'PY'
+# pngdiff A B -> "differing_bytes total worst", or "" if either capture is
+# unreadable. grim occasionally writes a truncated PNG under load, and an empty
+# result must stay empty: the first version let zlib's error through, produced
+# blank FLOOR/TOTAL values, and fed them to awk -- which compares empty strings
+# without complaining. A capture that failed has to SKIP, not pass.
+pngdiff() {
+	[ -s "$1" ] && [ -s "$2" ] || return 0
+	python3 - "$1" "$2" 2>/dev/null <<'PY'
 import sys, zlib, struct
 
 def read_png(path):
@@ -256,6 +265,11 @@ sleep 3
 grim -o "$HL_MON" "$OUTDIR/new2.png" 2>/dev/null
 hl_stop
 read -r FLOOR FTOTAL FMAX < <(pngdiff "$OUTDIR/new.png" "$OUTDIR/new2.png")
+if [ -z "${FTOTAL:-}" ] || [ "${FTOTAL:-0}" -le 0 ]; then
+	hl_skip "one of the two captures could not be decoded (grim writes a truncated PNG under load); no noise floor, so nothing below can be compared"
+	hl_summary
+	exit $?
+fi
 echo "  ---- noise floor (this binary vs itself): $FLOOR of $FTOTAL bytes, worst $FMAX"
 
 if [ -z "$PREGRAPH" ] || [ ! -x "$PREGRAPH" ]; then
@@ -280,6 +294,11 @@ else
 		hl_skip "one of the captures is missing"
 	else
 		read -r DIFF TOTAL MAXD < <(pngdiff "$OUTDIR/old.png" "$OUTDIR/new.png")
+		if [ -z "${TOTAL:-}" ] || [ "${TOTAL:-0}" -le 0 ]; then
+			hl_skip "the pre-graph capture could not be decoded; no comparison made"
+			hl_summary
+			exit $?
+		fi
 		echo "  ---- pre-graph vs graph: $DIFF of $TOTAL bytes, worst $MAXD"
 		# The premise, asserted rather than assumed: a floor that had come out
 		# at zero would make the comparison below meaningful in a much stronger

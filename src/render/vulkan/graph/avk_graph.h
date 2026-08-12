@@ -233,17 +233,38 @@ struct avk_graph_stats {
 	 */
 	uint64_t allocs;
 	/*
-	 * Cumulative CPU time the GRAPH ITSELF costs: walking the uses, deriving
-	 * the barriers, emitting them. The time each pass spends in its own record
-	 * callback is subtracted, because that is the draw loop -- work the frame
-	 * was always going to do -- and counting it here would report the whole
-	 * renderer as graph overhead.
+	 * Cumulative CPU time the graph's OWN BOOKKEEPING costs: walking the uses,
+	 * comparing state, deriving barrier structs, logging them.
 	 *
-	 * Measured rather than asserted for exactly that reason: the first version
-	 * of this counter included the callbacks and read 21.5us a frame, which
-	 * would have been a real and alarming number if it had meant what it said.
+	 * TWO THINGS ARE SUBTRACTED, and both had to be, because each in turn made
+	 * this counter say something false:
+	 *
+	 *   the pass record callbacks -- that is the draw loop, work the frame was
+	 *   always going to do. Including them read 21.5us a frame.
+	 *
+	 *   vkCmdPipelineBarrier2 itself -- see barrier_ns. Including it read
+	 *   35-42us a frame in a live session against 2-7us headless, which looked
+	 *   like a graph that fell apart on real hardware. It was not: the
+	 *   pre-graph renderer made the same two calls, and their cost simply had
+	 *   nowhere to be attributed before.
+	 *
+	 * What is left is the part M4E actually added, and it is the number that
+	 * belongs in a sentence beginning "the graph costs".
 	 */
 	uint64_t build_ns;
+	/*
+	 * Cumulative CPU time inside vkCmdPipelineBarrier2.
+	 *
+	 * NOT graph overhead. The pre-graph renderer made exactly these calls, in
+	 * exactly these places, with the same contents -- what changed is that they
+	 * are now derived rather than hand-written. It is measured separately
+	 * because it turns out to dominate, and because it varies enormously with
+	 * what the barrier does: a queue-family ownership transfer on a 4K dma-buf
+	 * costs a great deal more than a plain layout transition on a headless
+	 * 1080p one, which is why the same code reads 2us on one machine and 40 on
+	 * another and neither number is wrong.
+	 */
+	uint64_t barrier_ns;
 	uint64_t frames;
 };
 
