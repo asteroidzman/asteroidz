@@ -93,7 +93,12 @@ esac
 # staleness. The control assertion exists because of that measurement; this line
 # is what makes the control pass.
 HL_KITTY_EXTRA="-o cursor_blink_interval=0 -o cursor_stop_blinking_after=0"
-export HL_OUTDIR HL_WIDTH HL_HEIGHT HL_ENV HL_KITTY_EXTRA
+# HL_RR1 lets this whole fixture run on a TRANSFORMED output. It is the
+# minimal reproducer for the 180-degree stale strip: one output, one blur, one
+# small source change, the damage_all oracle -- no seam and no cross-output halo
+# anywhere in it.
+HL_RR1="${DAMAGE_RR:-0}"
+export HL_OUTDIR HL_WIDTH HL_HEIGHT HL_ENV HL_KITTY_EXTRA HL_RR1
 
 LOG="$OUTDIR/state/asteroidz/asteroidz.log"
 

@@ -1157,7 +1157,8 @@ void wlr_scene_output_set_position(struct wlr_scene_output *scene_output,
  * BUFFER pixels, because a blur presented on this output can sample that far
  * past its edge. 0 (the default) records nothing outside the output.
  *
- * See wlr_scene_output.halo_damage_ring.
+ * The out-of-bounds part goes into the output's MAIN damage ring; see
+ * wlr_scene_output.blur_halo.
  */
 void wlr_scene_output_set_blur_halo(struct wlr_scene_output *scene_output,
 	int halo);

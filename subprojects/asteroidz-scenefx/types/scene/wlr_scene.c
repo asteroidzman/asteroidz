@@ -480,9 +480,37 @@ static void scene_output_damage(struct wlr_scene_output *scene_output,
 		const pixman_region32_t *damage) {
 	struct wlr_output *output = scene_output->output;
 
+	/*
+	 * THE BUFFER'S EXTENT, NOT THE MODE'S.
+	 *
+	 * `damage` arrives here already converted into BUFFER coordinates by
+	 * output_to_buffer_coords(), which sizes itself with
+	 * wlr_output_transformed_resolution(). Clipping it against
+	 * output->width/height -- the raw mode size -- therefore clips one space
+	 * against another the moment the output is rotated 90 or 270 degrees, where
+	 * the two differ by a transpose.
+	 *
+	 * The consequence was not a lost rectangle but an IMMORTAL one. On a 90
+	 * degree output with an 800x600 mode the buffer is 600x800, and this clip
+	 * admitted damage out to x=800 -- a region 600,0 200x600, entirely outside
+	 * the buffer. Nothing could ever draw it, so no commit's damage ever
+	 * subtracted it, so wlr_scene_output_needs_frame() stayed true forever and
+	 * the output rendered 65 empty frames a second on a completely static
+	 * scene. Measured: 267 frames in 4 idle seconds at transform 1 and 3, and 0
+	 * at transform 0 and 2, with blur disabled entirely.
+	 *
+	 * It never showed on the SceneFX path because that path commits
+	 * pending_commit_damage itself, so the subtraction always cancels whatever
+	 * it recorded, right or wrong. AVK computes and reports its own damage, and
+	 * an out-of-buffer rectangle is one it will never include.
+	 */
+	int buf_width, buf_height;
+	wlr_output_transformed_resolution(output, &buf_width, &buf_height);
+
 	pixman_region32_t clipped;
 	pixman_region32_init(&clipped);
-	pixman_region32_intersect_rect(&clipped, damage, 0, 0, output->width, output->height);
+	pixman_region32_intersect_rect(&clipped, damage, 0, 0, buf_width,
+		buf_height);
 
 	if (!pixman_region32_empty(&clipped)) {
 		wlr_output_schedule_frame(scene_output->output);
@@ -506,8 +534,8 @@ static void scene_output_damage(struct wlr_scene_output *scene_output,
 		pixman_region32_t halo;
 		pixman_region32_init(&halo);
 		pixman_region32_intersect_rect(&halo, damage, -h, -h,
-			(unsigned)(output->width + 2 * h),
-			(unsigned)(output->height + 2 * h));
+			(unsigned)(buf_width + 2 * h),
+			(unsigned)(buf_height + 2 * h));
 		pixman_region32_subtract(&halo, &halo, &clipped);
 		if (!pixman_region32_empty(&halo)) {
 			/*
