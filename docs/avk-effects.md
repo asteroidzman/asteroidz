@@ -1723,3 +1723,365 @@ shadow-locally only because composition currently targets 8-bit directly.
 is the only thing that goes away, and `avk_dither_amplitude()` already keys off
 format precision rather than any assumption about SDR white — which matters,
 because M5's per-window luminance domains make "SDR white is X" untrue.
+
+## M4E.0 — the current frame, audited from source
+
+M4E builds a render graph. Before deciding what the graph should own, this is
+what actually exists at `b9d7115`, re-read from source rather than taken from
+the milestone summaries. Every path below was traced through the file that
+implements it.
+
+### The frame, in order
+
+`az_avk_build_frame()` (`src/render/az_avk.h`) is the whole entry point, called
+once per output per frame from the commit path.
+
+```text
+ 1  az_avk_output_supported()          declines colour transforms, zoom, ...
+                                       -> fallback_frames, SceneFX renders it
+ 2  resolve width/height/fourcc        from wlr_output_state when it changes them
+ 3  swapchain (re)create               only on size or format change
+ 4  az_avk_renderer_for(vk_format)     -> a renderer slot, PER FORMAT (see below)
+ 5  az_avk_present_sync_prepare()      can this frame be handed over with a fence?
+ 6  wlr_swapchain_acquire()            -> wlr_buffer
+ 7  az_avk_target_for_buffer()         addon-cached az_avk_target -> avk_image
+ 8  az_avk_target_acquire()            -> 0..2 VkSemaphoreSubmitInfo waits
+ 9  avk_scene_init + damage ring       rotate PER BUFFER, not per frame
+10  az_avk_walk_children()             the snapshot: scene tree -> flat avk_cmd[]
+11  az_avk_emit_cursors()              last, so it is above everything
+12  avk_render_frame()                 see below
+13  az_avk_present_handover()          export sync_file -> drm_syncobj or dma-buf
+14  avk_renderer_collect()             retire + timestamps, neither blocks
+15  avk_dmabuf_importer_collect()
+16  wlr_output_state_set_buffer()
+```
+
+Inside `avk_render_frame()` (`scene/avk_render.c`):
+
+```text
+  avk_cmd_ring_begin()                 slot = frame % 3; may stall (counted)
+  avk_timestamps_begin()               reads the OUTGOING result, then resets
+  avk_timestamps_mark(FRAME_BEGIN)     TOP_OF_PIPE
+  count gradient demand                one pass over the commands
+  avk_gradient_store_begin(slot, n)    may grow; old buffer retired by timeline
+  build the acquire batch              target + every sampled image
+  vkCmdPipelineBarrier2                ONE call, before the rendering instance
+  vkCmdBeginRendering                  loadOp LOAD, storeOp STORE, 1 attachment
+  vkCmdSetViewport                     once
+  bind gradient set                    once, only if the frame has gradients
+  clear                                as a normal scissored draw command
+  for each command:
+      region = dst n clip n damage     empty -> skipped entirely
+      push constants (128 B)
+      vkCmdBindPipeline                only when it changes
+      for each damage rect:
+          vkCmdSetScissor
+          vkCmdDraw(4, 1, 0, 0)
+  vkCmdEndRendering
+  vkCmdPipelineBarrier2                the release batch (foreign images)
+  avk_timestamps_mark(FRAME_END)       BOTTOM_OF_PIPE
+  avk_cmd_ring_submit()                vkQueueSubmit2, one graphics queue
+  avk_gradient_store_submitted()
+  avk_timestamps_submitted()
+```
+
+**Two barrier calls per frame, maximum.** Both are `vkCmdPipelineBarrier2` with
+`VkImageMemoryBarrier2`; there are no buffer barriers and no global memory
+barriers anywhere on the frame path. Both batches are capped at
+`AVK_MAX_BARRIERS` (64) and deduplicated by `VkImage`, because two commands
+sampling one surface is ordinary and a second barrier whose `oldLayout` has
+already been consumed is invalid.
+
+**One rendering instance per frame.** There is no point at which AVK stops
+rendering, does something else, and starts again — which is precisely the shape
+M4F needs and precisely the shape this audit exists to establish.
+
+### The renderer is per FORMAT, not per output
+
+This is the finding that most affects M4E's design, and it was not written down
+before.
+
+`az_avk_renderer_for(VkFormat)` returns a slot from a fixed array keyed on
+format, creating one on first use. `struct az_avk_output` (per monitor) holds a
+*pointer* to that slot. So on this machine:
+
+```text
+DP-1        3840x2160@144  XR24 (0x34325258)  ->  VkFormat 44
+HDMI-A-1    1920x1080@60   XR24 (0x34325258)  ->  VkFormat 44
+```
+
+both outputs share **one** `avk_renderer`. The live log confirms it: exactly one
+`AVK: renderer ready for VkFormat 44`, followed by two `now composited at` lines.
+
+What that shares, concretely:
+
+| Shared across outputs | Per output |
+|---|---|
+| `avk_cmd_ring` — 3 slots, 3 pools, 3 command buffers | `avk_sync` (export semaphore + wait slots) |
+| `avk_gradient_store` — 3 buffers, 3 descriptor sets | `wlr_swapchain` and its targets |
+| `avk_timestamps` — one query pool, 3 slots | `az_avk_output` geometry/format state |
+| `avk_retire_queue` | the damage ring (on the scene output) |
+| `avk_pipelines` — pipelines, layouts, samplers, descriptor pools | |
+
+Three consequences that M4E has to respect:
+
+1. **~204 frames/s pass through 3 ring slots** (144 + 60). The ring is not
+   "three frames of one output deep"; it is three submissions deep across the
+   machine. `cpu_sync_waits` has stayed 0 regardless, because a slot is released
+   by GPU completion and not by output identity.
+2. **A transient pool hung off the renderer is shared by both outputs.** Two
+   outputs wanting a 1920x1080 transient in the same period must receive
+   *different* images. Timeline-keyed reuse gives that for free — output B's
+   acquire sees output A's transient still in flight and allocates rather than
+   waits — which is also exactly the "no artificial cross-output waits"
+   requirement. Reuse keyed on frame index would not.
+3. **`gpu_frame_us_avg` is a mean over both outputs' frames.** M4D reported
+   122.6 µs and framed it as "1.8% of DP-1's 6944 µs budget". The number is
+   right as a per-frame mean across the machine; attributing it to DP-1's budget
+   was loose, because a 1920x1080 frame and a 3840x2160 frame are both in that
+   mean. M4E.5 measures per output.
+
+### Resource categories
+
+Every Vulkan resource AVK holds, classified. `TRANSIENT` is listed last because
+the answer is the interesting one.
+
+| Resource | Category | Owner | Freed by |
+|---|---|---|---|
+| scan-out `VkImage` (imported dma-buf) | EXTERNAL, PER-OUTPUT | `az_avk_target` addon on the `wlr_buffer` | addon destroy |
+| client surface `VkImage` (dma-buf import) | EXTERNAL, PER-SURFACE | `az_avk_buffer` addon on the `wlr_buffer` | addon destroy -> retire |
+| SHM-uploaded `VkImage` | PERSISTENT, PER-SURFACE | `az_avk_buffer` | addon destroy -> retire |
+| `avk_upload` staging buffer | PERSISTENT, PER-SURFACE | `az_avk_buffer.upload` | retire by `last_use` |
+| gradient storage buffer + descriptor set | PER-FRAME (ring of 3) | `avk_gradient_store` | grow -> retire by `last_use` |
+| command pool + primary buffer | PER-FRAME (ring of 3) | `avk_cmd_ring` | renderer finish |
+| timestamp `VkQueryPool` | PERSISTENT | `avk_timestamps` | renderer finish |
+| pipelines, layout, set layouts, samplers | PERSISTENT | `avk_pipelines` | renderer finish |
+| sampler descriptor sets (nearest, linear) | PER-SURFACE, cached ON the image | `avk_image.sampler_set[2]` | with the pool |
+| descriptor pools | PERSISTENT, grown in blocks | `avk_pipelines` | renderer finish |
+| device timeline semaphore | PERSISTENT | `avk_device` | device destroy |
+| export binary semaphore, wait slot ring | PER-OUTPUT | `avk_sync` in `az_avk_output` | output finish |
+| target `VkImageView` | lazily created, cached on the image | `avk_image.view` | with the image |
+| **transient anything** | **NONE EXIST** | — | — |
+
+**There is not one transient resource in AVK today.** Every image is either
+external (a client's or KMS's) or cached for a surface's whole lifetime. Nothing
+is created for a frame and thrown away. That is *why* the direct path is cheap,
+and it is exactly the gap M4E fills — so the risk M4E must not realise is
+introducing per-frame allocation into a path that currently has none.
+
+### Layout state, and where it lives
+
+`avk_image.layout` is the single source of truth, updated by `batch_add()` as it
+emits the transition. Nothing infers a layout from context. The rules already
+encoded:
+
+- A **foreign** image (`AVK_IMAGE_DMABUF_EXPLICIT` / `_RECOVERED`) is acquired
+  from `VK_QUEUE_FAMILY_FOREIGN_EXT` and released back, and lives in
+  `VK_IMAGE_LAYOUT_GENERAL` between frames. `batch_add()` sets
+  `image->layout = GENERAL` when it queues the release, so the *next* frame
+  acquires from the right layout.
+- The **scan-out target is foreign too**, so it renders in `GENERAL` rather than
+  `COLOR_ATTACHMENT_OPTIMAL` — the optimal layout would have to be released back
+  to `GENERAL` anyway, and dynamic rendering accepts `GENERAL`.
+- Barriers may not carry a layout transition inside a rendering instance
+  (`VUID-vkCmdPipelineBarrier2-oldLayout-01181`), which is why everything
+  sampled must reach `SHADER_READ_ONLY_OPTIMAL` before `vkCmdBeginRendering`.
+- `loadOp LOAD` is a `COLOR_ATTACHMENT_READ`, not only a write, so the target's
+  acquire carries both access bits or synchronization validation reports a
+  read-after-write hazard at `vkCmdBeginRendering`.
+
+All four are load-bearing and all four were learned from validation rather than
+from reading the spec first. The barrier compiler in M4E.3 must reproduce them,
+not rediscover them.
+
+### Submission and lifetime
+
+One graphics queue. One `VkSemaphore` timeline for the whole device
+(`avk_device.timeline`), `timeline_next` reserved per submission. Every lifetime
+question in AVK is already answered by comparing against it:
+
+```text
+avk_cmd_slot.timeline_value      when the slot's commands can be re-recorded
+avk_gradient_slot.last_use       when the buffer can be replaced
+avk_upload.last_use              when staging can be destroyed
+avk_image.last_use               when the image can be destroyed
+avk_ts_slot.timeline_value       when the queries can be read without waiting
+avk_retire_entry.timeline_value  when the destructor may run
+```
+
+M4E adds exactly one more row to that table (`transient.last_use`) and no new
+mechanism. There is a dedicated transfer family and a dedicated compute family
+on this device, both recorded in `avk_device.caps` and **deliberately not turned
+into queues** — the existing comment says an unused `VkQueue` would be
+infrastructure claiming to exist before anything drives it, and M4E does not
+change that.
+
+Uploads go through a **second** command ring (`avk_dmabuf_importer.upload_ring`),
+not the frame ring, so an SHM re-upload is a separate submission on the same
+queue and is ordered by queue submission order rather than by a barrier.
+
+### Dynamic rendering: already in use
+
+`avk_pipelines_init()` builds every pipeline with
+`VkPipelineRenderingCreateInfo`; the frame uses `vkCmdBeginRendering` /
+`vkCmdEndRendering`. **There is no `VkRenderPass` and no `VkFramebuffer` object
+anywhere in AVK.** The reasoning is recorded in `pipeline/avk_pipeline.h` and is
+the M4F-relevant one: fx_vk spent an entire restructure on the fact that its
+two-subpass render pass could not be split mid-frame to sample what it had
+drawn. Dynamic rendering has no such shape to be trapped by.
+
+So the "should we migrate to dynamic rendering" question is already answered by
+the code: **USE NOW, no migration, no work.** The transient attachments M4F
+needs are `VkImageView` + `VkRenderingAttachmentInfo` and nothing else — no
+framebuffer object per size, no render-pass compatibility rules, no cache to
+invalidate on mode change.
+
+### Descriptors: no frame-path churn today
+
+- **Set 0** (sampled texture) is allocated on first use and cached *on the
+  image*, two sets per image (nearest and linear). A client surface costs one
+  descriptor write for its whole lifetime, not one per frame.
+- **Set 1** (gradient storage) is 3 sets, one per ring slot, written only when
+  the buffer grows.
+- Pools grow in blocks and are never reset.
+
+The frame path therefore performs **zero** descriptor allocations and zero
+descriptor writes in steady state. M4F sampling a transient breaks that unless
+the transient's descriptor is cached with the transient — which is the design
+constraint M4E.2 inherits, and the reason the pool must own views and sets, not
+just images.
+
+### Damage, as it exists
+
+Damage is per **buffer**, not per frame: `wlr_damage_ring_rotate_buffer()` keyed
+on the `wlr_buffer`, so a target that last held frame N−3 gets everything
+changed since N−3. Commands are all present in the scene; the renderer
+intersects each command's `dst` with its `clip` (the node's visible region after
+occlusion) and with the frame's `damage`, and issues **one draw per resulting
+rectangle**.
+
+Three regions therefore already exist in the current design and are already
+distinct — but only two of them are named:
+
+```text
+cmd->dst        where the command lands              WRITE extent
+cmd->clip       what is left after occlusion         WRITE mask
+scene.damage    what must be repainted this frame    WRITE mask
+```
+
+There is **no read/dependency region**, because no current primitive reads
+anything outside its own destination. `avk_scene.h` already says so in the
+comment on `damage`: *"clipping to damage is the renderer's job, because an
+effect in M4 may need to read outside the damaged area to write inside it."*
+That sentence has been true and unexercised since M3. M4E.4 is where it stops
+being unexercised.
+
+### Where the graph already is
+
+The audit's actual conclusion is that `avk_render_frame()` is already a render
+graph, executed once, with a hardcoded topology:
+
+```text
+DECLARE   the loop that walks scene->cmds building the acquire batch
+COMPILE   batch_add(), deriving old->new layout from image->layout
+EXECUTE   vkCmdBeginRendering + the draw loop
+```
+
+M4E.1 is therefore a **refactor into an explicit form**, not a new
+architecture — which is what makes "the direct path must stay essentially the
+current renderer" achievable rather than aspirational. The one-pass frame must
+come out the far side as one pass, one barrier call, one rendering instance, and
+no transient images.
+
+### What the graph must NOT own
+
+Named here because the boundary is easy to erode: window focus, layout
+decisions, Wayland state, animation state, monitor ownership. The graph sees
+`avk_image`, `avk_box`, `pixman_region32_t` and callbacks. It does not include a
+wlroots header — `tests/check-vulkan-isolation.py` fails the build if anything
+under `src/render/vulkan/` does, and M4E does not weaken that.
+
+### M4F semantics, re-read from source
+
+Verified against `subprojects/asteroidz-scenefx/include/scenefx/types/wlr_scene.h`
+and `include/scenefx/render/pass.h` at HEAD, not from the M4D notes.
+
+`struct wlr_scene_blur` carries: `width`, `height`, `corners`,
+`clipped_region`, `strength`, `alpha`, `should_only_blur_bottom_layer`,
+`has_sample_exclude` + `sample_exclude`, `darken`,
+`transparency_mask_source`, `clip_region` + `has_clip_region`, and
+`edge_softness`. `struct blur_data` carries the kernel itself: `num_passes`,
+`radius`, `noise`, `brightness`, `contrast`, `saturation`,
+`transparency_threshold`.
+
+The four that constrain M4E's architecture:
+
+- **`sample_exclude`** — a box, in the node's own space, whose contents must not
+  reach the blur's *source*; the unblurred bottom-layer snapshot is substituted
+  inside it. It exists because a shadow's backdrop blur covers its own window,
+  and the scene image holds the *previous* frame there. This is the requirement
+  that forbids a graph in which blur can only sample the already-composed
+  output: the graph must be able to express *background source* as a resource
+  distinct from *final composition*.
+- **`darken`** — the blurred backdrop is clamped against its own unblurred
+  source so it can never come out lighter. Needs no graph feature, but the
+  material stage must be able to receive the unblurred source as a second
+  input, which is a dependency edge and therefore is the graph's business.
+- **`edge_softness`** — 0 means the node's edge is a hard rounded-rect SDF; > 0
+  means it fades with the same analytic Gaussian falloff `wlr_scene_shadow`
+  uses. So the *visible* region and the *evaluated* region differ, which is the
+  padded-dependency-region case.
+- **`clip_region`** — a pixman region in node-local coordinates (the client's
+  ext-background-effect region), taking precedence over `clipped_region`'s
+  bounding box when set. The graph must not force a blur to produce a whole
+  intermediate and discard most of it.
+
+Together those are the reason M4E declares three regions and refuses to collapse
+them:
+
+```text
+WRITE REGION      the pixels the pass produces        (clip_region n damage)
+READ REGION       the source pixels needed for them   (write dilated by radius)
+RESOURCE EXTENT   the backing image's dimensions      (>= read region)
+```
+
+For a separable Gaussian of radius r at pass count n the read region is the
+write region dilated by roughly `n * r` in one axis per pass. Collapsing these
+into one rectangle is correct for every primitive AVK draws today and wrong for
+every one M4F adds.
+
+### High-frequency fixtures are mandatory for M4F
+
+Recorded here permanently because it is the lesson that cost the most and is
+the easiest to lose.
+
+A flat-colour blur fixture **cannot falsify `sample_exclude` or `darken`.**
+Blurring a flat field returns the same flat field, so a blur that samples its
+own window's pixels, or one that comes out lighter than its source, is
+indistinguishable from a correct one. The same blindness produced the shadow
+glow (`f8be42c`) and the shadow-hole bug — both invisible to every flat-backdrop
+test that existed at the time.
+
+M4F validation must therefore include: checkerboards; bright thin text-like
+blocks on dark grounds; mixed high-frequency content; and sharp luminance
+edges. Not as extra cases — as the *primary* ones.
+
+### Advanced Vulkan, first pass
+
+Positions taken at M4E.0 from the audit, to be re-tested against measurement in
+M4E.5.
+
+| Technique | Position | Reason |
+|---|---|---|
+| dynamic rendering | **USE NOW** | already in use; no `VkRenderPass`/`VkFramebuffer` exists to migrate |
+| synchronization2 | **USE NOW** | already the only barrier API in the codebase |
+| timeline semaphores | **USE NOW** | already the entire lifetime model |
+| descriptor indexing | **DEFER** | frame path already allocates zero descriptors; nothing to fix yet |
+| secondary command buffers | **DEFER** | one rendering instance, single-threaded recording; no reuse to exploit |
+| indirect draws | **REJECT for this workload** | draws are per damage rect with per-command push constants and scissors; there is no uniform batch to indirect |
+| memory aliasing | **DEFER** | requires transients to exist and to be measured large first |
+| async compute | **DEFER** | needs a measured overlap opportunity; M4F is measured on the graphics queue first |
+| pipeline libraries | **DEFER** | 4 pipelines, none compiled on the frame path |
+
+None of these is adopted in M4E on grounds of novelty. Each stays `DEFER` until
+a measurement says otherwise.
