@@ -3295,3 +3295,122 @@ PASS 1    composite R with corners/clip/alpha/edge_softness,
 The first downsample reads the target itself rather than a captured copy, which
 removes a full-resolution read *and* write per blur node — the capture is the
 downsample. Only the blur's **dependency region** is read, not the output.
+
+## `sample_exclude` — the producer table
+
+The brief requires every producer enumerated before the field's treatment is
+finalised. There is exactly **one**.
+
+| | |
+|---|---|
+| **producer** | `src/animation/client.h:569`, in the shadow-backdrop blur setup |
+| **value** | `{ client_box.x − (shadow_box.x + left_offset), client_box.y − (shadow_box.y + top_offset), client_box.width, client_box.height }` |
+| **owning node** | `blur_backdrop`, positioned at `shadow_box + offsets`, sized to the shadow box minus those offsets |
+| **relationship** | the box is **exactly the owning window's own footprint**, expressed in the blur node's local coordinates by subtracting the node origin |
+| **reason** | stated in the producer: the blur's box is the shadow's — window plus spread — so what it samples covers the window, and *"the scene image holds the PREVIOUS frame there (this node draws beneath the window, and an undamaged area is never re-rendered)"* |
+
+No other call site sets it. `layer.h` sets `darken`, `alpha` and
+`edge_softness` on its shadow blur but **never** `sample_exclude`.
+
+### What the reference actually does with it
+
+`fx_pass.c:1500` — and this corrects my own earlier reading:
+
+> *"EDGE EXTENSION, not substitution — see `blur_exclude_from_source()` in
+> vulkan/pass.c for why the wallpaper snapshot that used to go here was its own
+> halo."*
+
+It stages a patched **copy** of the screen and fills the excluded box **from its
+own edges**. An earlier version substituted the wallpaper snapshot and that was
+itself a halo. And it is gated on `current_buffer == pass->buffer` — *"Only for
+the live path — a cache-backed blur never samples the screen in the first
+place."*
+
+So the field is, in every existing use, **a repair for sampling a
+previous-frame final composite**. Nothing uses it to remove legitimate
+background. The audited interpretation holds and generalising from the name
+would have been wrong.
+
+### Decision, per the brief: (b), qualified
+
+```text
+AVK LIVE prefix path:
+
+sample_exclude is compatibility metadata whose intended self-exclusion
+invariant is already guaranteed by scene ordering. No additional
+source-region removal is performed.
+```
+
+It is carried in the snapshot, not discarded. A debug assertion checks that a
+producer's exclude box still corresponds to the owning surface's footprint, so
+that a **future** producer using the field for something else is detected rather
+than silently treated as already-satisfied.
+
+---
+
+## Source validity — the invariant my first architecture did not satisfy
+
+I proposed sampling the output target directly in the first downsample. **That
+is not history-free under partial damage**, and the correction is right.
+
+At scene index `k` the target contains the current-frame prefix **only over the
+damaged region**. Everywhere else it still holds the *previous frame's final
+composite* — window, foreground, last frame's blur. A blur whose dependency
+region extends past the damage would sample exactly that.
+
+### The four regions, named
+
+```text
+OUTPUT DIRTY REGION    blur pixels that must change this frame
+DEPENDENCY REGION      source pixels required to compute them
+                       = dirty region dilated by avk_blur_support_of()
+PREFIX-VALID REGION    where the source really holds current-frame [0, k)
+RESOURCE EXTENT        physical backing dimensions
+```
+
+Hard invariant, checked before the first downsample:
+
+```text
+DEPENDENCY REGION  ⊆  PREFIX-VALID REGION
+```
+
+### Why Option A cannot win, derived rather than measured
+
+**Option A — direct target source.** To satisfy the invariant, the prefix must
+be rebuilt into the target over `dependency ∖ damage`. But those pixels held
+*correct final-composite* content, and rebuilding the prefix destroys it — so
+the suffix `(k, n)` must then be replayed over that area too.
+
+**Option B — regional prefix transient.** Render `[0, k)` into a transient
+covering the dependency region; blur from it; composite the result over the
+blur's write region. The target outside the damage is never touched.
+
+```text
+A  =  prefix replay over (dependency \ damage)
+    + suffix replay over (dependency \ damage)
+    + the transient copy it was supposed to save
+
+B  =  prefix replay over dependency
+```
+
+A's work is a strict superset of B's. It cannot be cheaper, and it is the one
+that amplifies damage — the opposite of what eliminating a copy was meant to
+buy. **Option B is chosen**, on that derivation; the measurement in M4F.2D will
+report what B actually costs rather than being used to choose it.
+
+Option B is also history-free *by construction* rather than by an argument about
+what the target happens to contain: the transient is written fresh, this frame,
+over the whole dependency region, before anything reads it.
+
+### Multiple blur nodes
+
+Scene order stays authoritative. For
+
+```text
+scene A · blur 1 · scene B · blur 2 · scene C
+```
+
+blur 2's prefix is `A · blur1's composited result · B`. Since each blur's prefix
+transient replays commands `[0, k)` **including the earlier blur's composite**,
+an earlier blur legitimately contributes to a later one when the scene says so.
+Nothing globally defines "blur source = the background before all blur".
