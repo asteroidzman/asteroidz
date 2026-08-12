@@ -117,6 +117,6 @@ float az_dither_alpha(float alpha, float amplitude) {
 	float slope = fwidth(alpha);
 	float flatness = clamp(1.0 - slope / amplitude, 0.0, 1.0);
 	float ends = clamp(min(alpha, 1.0 - alpha) / amplitude, 0.0, 1.0);
-	float n = az_dither_sample(gl_FragCoord.xy) - 0.5;
+	float n = az_dither_sample(az_frag_global()) - 0.5;
 	return clamp(alpha + n * amplitude * flatness * ends, 0.0, 1.0);
 }

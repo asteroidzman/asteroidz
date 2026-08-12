@@ -159,7 +159,7 @@ void main() {
 	 * a shadow that grows as the window shrinks. */
 	caster_hi = max(caster_hi, caster_lo);
 
-	float coverage = az_box_shadow(caster_lo, caster_hi, gl_FragCoord.xy,
+	float coverage = az_box_shadow(caster_lo, caster_hi, az_frag_global(),
 		sigma * 0.5, pc.corners);
 	coverage = clamp(coverage, 0.0, 1.0);
 

@@ -102,7 +102,7 @@ layout(std430, set = 1, binding = 0) readonly buffer AzGradientData {
  */
 float az_gradient_step(vec2 box_pos, vec2 box_size, vec2 origin, float rad,
 		int type) {
-	vec2 normal = (gl_FragCoord.xy - box_pos) / box_size;
+	vec2 normal = (az_frag_global() - box_pos) / box_size;
 	vec2 uv = normal - origin;
 
 	if (type == AZ_GRADIENT_CONIC) {

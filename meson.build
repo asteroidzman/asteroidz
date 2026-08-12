@@ -394,6 +394,15 @@ if build_vulkan
                              build_by_default : false)
   test('avk-blur', test_avk_blur, timeout : 180)
 
+  # M4F.2A.1: segmented composition. Proves that any contiguous command range
+  # renders into any regional target with identical pixels -- on PIXELS, because
+  # a struct-inspection test would pass for a renderer that silently restarted
+  # every gradient at the transient's edge.
+  test_avk_segment = executable('test-avk-segment', 'tests/test-avk-segment.c',
+                                dependencies : [avk_dep],
+                                build_by_default : false)
+  test('avk-segment', test_avk_segment, timeout : 180)
+
   # M4D: shadows. libm because the fixtures carry an independent CPU
   # transcription of the reference's erf-and-four-samples formula, which is
   # what AVK's readback is compared against -- not GLES, and not AVK's own

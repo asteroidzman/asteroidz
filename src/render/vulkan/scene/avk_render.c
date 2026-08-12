@@ -323,16 +323,25 @@ static bool az_foreign(const struct avk_image *image) {
  * rectangle, which is what keeps damage meaningful rather than collapsing it
  * to a bounding box that covers the whole screen the moment two corners of the
  * display update. */
+/*
+ * All of this is in SCENE coordinates. The segment's own extent is expressed
+ * there too -- as `bounds` -- so a regional target clips exactly as the output
+ * does, and the only place the two spaces meet is the scissor translation at
+ * the draw.
+ */
 static void command_region(const struct avk_cmd *cmd,
-		const pixman_region32_t *damage, uint32_t width, uint32_t height,
+		const pixman_region32_t *damage, const struct avk_box *bounds,
 		pixman_region32_t *out) {
-	pixman_region32_init_rect(out, 0, 0, width, height);
+	pixman_region32_init_rect(out, bounds->x, bounds->y,
+		(unsigned)bounds->width, (unsigned)bounds->height);
 	pixman_region32_intersect_rect(out, out, cmd->dst.x, cmd->dst.y,
 		(unsigned)cmd->dst.width, (unsigned)cmd->dst.height);
 	if (cmd->has_clip) {
 		pixman_region32_intersect(out, out, (pixman_region32_t *)&cmd->clip);
 	}
-	pixman_region32_intersect(out, out, (pixman_region32_t *)damage);
+	if (damage != NULL) {
+		pixman_region32_intersect(out, out, (pixman_region32_t *)damage);
+	}
 }
 
 /*
@@ -346,24 +355,26 @@ static void command_region(const struct avk_cmd *cmd,
  * batches was correct here for three milestones and would stop being correct
  * the first time a second pass was added above it.
  */
-struct az_compose_ctx {
-	struct avk_renderer *renderer;
-	const struct avk_scene *scene;
-	struct avk_image *target;
-	uint32_t width, height;
-	VkDescriptorSet gradient_set;
-	VkImageLayout target_layout;
-};
-
 static void az_record_compose(VkCommandBuffer cb, void *user) {
-	struct az_compose_ctx *ctx = user;
+	struct avk_render_segment *ctx = user;
 	struct avk_renderer *renderer = ctx->renderer;
 	const struct avk_scene *scene = ctx->scene;
 	struct avk_image *target = ctx->target;
 	const uint32_t width = ctx->width;
 	const uint32_t height = ctx->height;
-	const VkImageLayout target_layout = ctx->target_layout;
+	const VkImageLayout target_layout = ctx->layout;
 	VkDescriptorSet gradient_set = ctx->gradient_set;
+	/*
+	 * The segment's own extent, in SCENE coordinates. Every clip below happens
+	 * there; the single translation into attachment coordinates is the scissor,
+	 * and the matching one for geometry is AZ_TARGET_ORIGIN in quad.vert.
+	 */
+	const struct avk_box bounds = {
+		ctx->origin_x, ctx->origin_y, (int32_t)width, (int32_t)height,
+	};
+	const size_t begin = ctx->begin;
+	const size_t end = ctx->end > scene->len ? scene->len : ctx->end;
+	const pixman_region32_t *damage = ctx->active;
 
 	/*
 	 * loadOp LOAD, always.
@@ -390,9 +401,13 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 		.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
 		.imageView = target->view,
 		.imageLayout = target_layout,
+		/* A REGIONAL target is written whole by the segment that owns it, so
+		 * there is nothing to preserve; the output target must preserve
+		 * everything outside this frame's damage. */
 		.loadOp = break_preserve
 			? VK_ATTACHMENT_LOAD_OP_CLEAR
-			: VK_ATTACHMENT_LOAD_OP_LOAD,
+			: (ctx->load ? VK_ATTACHMENT_LOAD_OP_LOAD
+				: VK_ATTACHMENT_LOAD_OP_DONT_CARE),
 		.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
 		.clearValue = { .color = { .float32 = { 1.0f, 0.0f, 1.0f, 1.0f } } },
 	};
@@ -425,16 +440,16 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 
 	/* The background, as a command like any other, so it is damage-clipped
 	 * rather than clearing the world. */
-	if (scene->has_clear) {
+	if (scene->has_clear && ctx->clear) {
 		struct avk_cmd clear = {
 			.type = AVK_CMD_RECT,
-			.dst = { 0, 0, (int32_t)width, (int32_t)height },
+			.dst = bounds,
 			.opacity = 1.0f,
 		};
 		memcpy(clear.color, scene->clear_color, sizeof(clear.color));
 
 		pixman_region32_t region;
-		command_region(&clear, &scene->damage, width, height, &region);
+		command_region(&clear, damage, &bounds, &region);
 		int count = 0;
 		const pixman_box32_t *rects =
 			pixman_region32_rectangles(&region, &count);
@@ -444,6 +459,8 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 			bound = renderer->pipes.rect;
 
 			struct avk_push_constants pc = {0};
+			pc.uv_dy[2] = (float)ctx->origin_x;
+			pc.uv_dy[3] = (float)ctx->origin_y;
 			box_to_px(&clear.dst, pc.round_box);
 			/* Premultiply: the blend state is (ONE, 1-SRC_ALPHA), so the
 			 * shader must receive colour already scaled by alpha. */
@@ -459,8 +476,14 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 				sizeof(pc), &pc);
 
 			for (int i = 0; i < count; i++) {
+				/* SCENE -> ATTACHMENT. The clear needs this exactly as much as
+				 * a command does: without it the scissor lands at scene
+				 * coordinates inside a regional attachment, so a target at
+				 * origin 37,53 clears only its bottom-right corner and every
+				 * earlier frame's content survives everywhere else. */
 				VkRect2D scissor = {
-					{ rects[i].x1, rects[i].y1 },
+					{ rects[i].x1 - ctx->origin_x,
+						rects[i].y1 - ctx->origin_y },
 					{ (uint32_t)(rects[i].x2 - rects[i].x1),
 						(uint32_t)(rects[i].y2 - rects[i].y1) },
 				};
@@ -472,7 +495,7 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 		pixman_region32_fini(&region);
 	}
 
-	for (size_t i = 0; i < scene->len; i++) {
+	for (size_t i = begin; i < end; i++) {
 		const struct avk_cmd *cmd = &scene->cmds[i];
 
 		if (cmd->has_blur && !renderer->warned_unimplemented_effect) {
@@ -485,7 +508,7 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 		}
 
 		pixman_region32_t region;
-		command_region(cmd, &scene->damage, width, height, &region);
+		command_region(cmd, damage, &bounds, &region);
 		int count = 0;
 		const pixman_box32_t *rects =
 			pixman_region32_rectangles(&region, &count);
@@ -498,6 +521,10 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 		pc.params[0] = cmd->opacity;
 		pc.params[2] = (float)width;
 		pc.params[3] = (float)height;
+		/* The one place a command learns which target it is going to. Its own
+		 * geometry stays in scene coordinates; see AZ_TARGET_ORIGIN. */
+		pc.uv_dy[2] = (float)ctx->origin_x;
+		pc.uv_dy[3] = (float)ctx->origin_y;
 		/*
 		 * The rounding rectangle is the destination, in OUTPUT PIXELS -- the
 		 * same space gl_FragCoord is in. Not NDC: a signed distance is only
@@ -723,8 +750,10 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 			sizeof(pc), &pc);
 
 		for (int r = 0; r < count; r++) {
+			/* SCENE -> ATTACHMENT, and the only such translation in the draw
+			 * loop. Everything above is in scene coordinates. */
 			VkRect2D scissor = {
-				{ rects[r].x1, rects[r].y1 },
+				{ rects[r].x1 - ctx->origin_x, rects[r].y1 - ctx->origin_y },
 				{ (uint32_t)(rects[r].x2 - rects[r].x1),
 					(uint32_t)(rects[r].y2 - rects[r].y1) },
 			};
@@ -738,6 +767,41 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 	vkCmdEndRendering(cb);
 }
 
+
+/*
+ * A segment, as a graph pass.
+ *
+ * The uses are derived from the command range itself rather than passed in, so
+ * a caller cannot declare a range and forget one of the textures it samples --
+ * which would be a missing barrier that renders correctly on this driver.
+ */
+bool avk_render_declare_segment(struct avk_graph *graph,
+		struct avk_render_segment *seg, uint32_t target_resource) {
+	if (graph == NULL || seg == NULL || target_resource == AVK_GRAPH_INVALID) {
+		return false;
+	}
+	if (!avk_graph_pass_begin(graph, "compose_scene", az_record_compose, seg)) {
+		return false;
+	}
+	avk_graph_use(graph, target_resource, AVK_USE_COLOR_WRITE, NULL);
+
+	const struct avk_scene *scene = seg->scene;
+	size_t end = seg->end > scene->len ? scene->len : seg->end;
+	for (size_t i = seg->begin; i < end; i++) {
+		const struct avk_cmd *cmd = &scene->cmds[i];
+		if (cmd->type != AVK_CMD_TEXTURE || cmd->image == NULL) {
+			continue;
+		}
+		bool foreign = az_foreign(cmd->image);
+		uint32_t r = avk_graph_add_image(graph, cmd->image, foreign,
+			foreign ? AVK_EXIT_FOREIGN : AVK_EXIT_KEEP);
+		if (r != AVK_GRAPH_INVALID) {
+			avk_graph_use(graph, r, AVK_USE_SAMPLED_READ, NULL);
+		}
+	}
+	avk_graph_pass_end(graph);
+	return true;
+}
 
 uint64_t avk_render_frame(struct avk_renderer *renderer,
 		struct avk_image *target, const struct avk_scene *scene,
@@ -854,30 +918,32 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 		AVK_LIVE_INC(dev, image_views);
 	}
 
-	struct az_compose_ctx ctx = {
+	/*
+	 * The output frame, expressed as the general primitive: the whole command
+	 * range, the scan-out target, origin 0,0, clipped to the frame's damage.
+	 * There is no separate "full frame" path to drift away from the regional
+	 * one.
+	 */
+	struct avk_render_segment ctx = {
 		.renderer = renderer,
 		.scene = scene,
 		.target = target,
 		.width = width,
 		.height = height,
+		.layout = target_layout,
+		.origin_x = 0,
+		.origin_y = 0,
+		.begin = 0,
+		.end = scene->len,
+		.active = &scene->damage,
+		.clear = true,
+		.load = true,
 		.gradient_set = gradient_set,
-		.target_layout = target_layout,
 	};
-	avk_graph_pass_begin(graph, "compose_scene", az_record_compose, &ctx);
-	avk_graph_use(graph, r_target, AVK_USE_COLOR_WRITE, NULL);
-	for (size_t i = 0; i < scene->len; i++) {
-		const struct avk_cmd *cmd = &scene->cmds[i];
-		if (cmd->type != AVK_CMD_TEXTURE || cmd->image == NULL) {
-			continue;
-		}
-		bool foreign = az_foreign(cmd->image);
-		uint32_t r = avk_graph_add_image(graph, cmd->image, foreign,
-			foreign ? AVK_EXIT_FOREIGN : AVK_EXIT_KEEP);
-		if (r != AVK_GRAPH_INVALID) {
-			avk_graph_use(graph, r, AVK_USE_SAMPLED_READ, NULL);
-		}
+	if (!avk_render_declare_segment(graph, &ctx, r_target)) {
+		avk_cmd_ring_abandon(&renderer->ring);
+		return 0;
 	}
-	avk_graph_pass_end(graph);
 
 	/* Compile and record: barriers, the pass, then the exit transitions that
 	 * hand every foreign image back to its real owner. */

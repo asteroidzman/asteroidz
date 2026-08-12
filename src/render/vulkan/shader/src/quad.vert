@@ -1,5 +1,9 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
+
+/* push.glsl declares az_frag_global(), which reads gl_FragCoord -- an
+ * identifier that does not exist in a vertex stage. */
+#define AZ_VERTEX_STAGE
 #include "push.glsl"
 
 /*
@@ -26,7 +30,12 @@ void main() {
 	 * The fragment shader measures its signed distances against the same
 	 * numbers, so the shape drawn and the shape covered cannot disagree. */
 	vec2 px = mix(pc.round_box.xy, pc.round_box.zw, p);
-	gl_Position = vec4(px / pc.params.zw * 2.0 - 1.0, 0.0, 1.0);
+	/* THE ONE CONVERSION. round_box is in scene/global pixels; the attachment
+	 * starts at AZ_TARGET_ORIGIN and is params.zw across. Subtracting here, and
+	 * only here, is what lets every command be replayed into a regional target
+	 * without any of its own numbers changing. */
+	gl_Position = vec4((px - AZ_TARGET_ORIGIN) / pc.params.zw * 2.0 - 1.0,
+		0.0, 1.0);
 	/* Only the texture pipeline means anything by this. For a rectangle the uv
 	 * fields are zero and for a gradient they are not uv at all, so v_uv is
 	 * computed and then ignored -- see push.glsl. Reading it in quad.frag or

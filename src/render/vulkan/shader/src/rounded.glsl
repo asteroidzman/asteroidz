@@ -111,7 +111,7 @@ float az_rounded_coverage(vec2 pos, vec2 size, vec4 radii, bool is_cutout) {
 	 * every one of the four is a distance from the same rectangle expressed in
 	 * that corner's own frame.
 	 */
-	vec2 p = gl_FragCoord.xy - pos;
+	vec2 p = az_frag_global() - pos;
 	vec2 q_tl = abs(p - size) - size + r_tl;
 	vec2 q_tr = abs(p - vec2(0.0, size.y)) - size + r_tr;
 	vec2 q_bl = abs(p - vec2(size.x, 0.0)) - size + r_bl;

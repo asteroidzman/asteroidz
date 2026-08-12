@@ -224,6 +224,109 @@ struct avk_renderer {
 	bool warned_unimplemented_effect;
 };
 
+/*
+ * ONE CONTIGUOUS COMMAND INTERVAL, RENDERED INTO ONE TARGET.
+ *
+ * This is the primitive the whole renderer draws through, and it is general on
+ * purpose: the output frame is the case where the range is the whole scene, the
+ * target is the scan-out image and the origin is 0,0. A blur's scene prefix is
+ * the case where the range is [0, k), the target is a pooled transient and the
+ * origin is the dependency region's top-left.
+ *
+ * THE COORDINATE CONTRACT. Every command's geometry stays in SCENE coordinates
+ * and is not rewritten -- a command does not know which target it lands in.
+ * Exactly two things translate:
+ *
+ *     the scissor, here, at the draw
+ *     the vertex position, in quad.vert, via AZ_TARGET_ORIGIN
+ *
+ * and fragment shaders convert back with az_frag_global() wherever they measure
+ * against a geometry field. That keeps gradients from restarting and the shadow
+ * dither from shifting phase at a regional target's edge -- both of which still
+ * look plausible when wrong.
+ */
+struct avk_render_segment {
+	struct avk_renderer *renderer;
+	const struct avk_scene *scene;
+
+	struct avk_image *target;
+	/* The ATTACHMENT's extent -- not the scene's, and not the allocation's
+	 * where a pooled transient is larger. */
+	uint32_t width, height;
+	VkImageLayout layout;
+	/*
+	 * Where this target's top-left sits in scene space.
+	 *
+	 *     target_pixel = scene_pixel - origin
+	 *
+	 * MUST BE EVEN IN BOTH AXES for bit-exact equivalence with rendering the
+	 * same commands into the output, and this is measured rather than assumed:
+	 * at origin 37,53 a rounded border and an annulus differ from the reference
+	 * in 82 of 12288 pixels by up to 5 codes; at 36,52 the same scene differs in
+	 * ZERO.
+	 *
+	 * WHY. rounded.glsl antialiases with fwidth(dist), which is a 2x2 QUAD
+	 * derivative, and the quad grid is aligned to the ATTACHMENT's pixel grid.
+	 * An odd origin shifts every derivative quad by one pixel relative to the
+	 * output, so an edge's antialiasing band is computed over a different
+	 * neighbourhood. Nothing else in the renderer is sensitive to it -- a
+	 * gradient, a dithered shadow and a cropped texture all match exactly at an
+	 * odd origin, because they read az_frag_global() and nothing else.
+	 *
+	 * Rounding a capture region's origin down to even costs at most one pixel
+	 * per axis. avk_render_segment_align_origin() does it.
+	 */
+	int32_t origin_x, origin_y;
+
+	/* Half-open, in scene order. Order is SEMANTIC and is never rearranged. */
+	size_t begin, end;
+
+	/* Scene-space region this segment may touch. NULL means the whole target.
+	 * The output frame passes the frame's damage; a prefix capture passes the
+	 * dependency region, or NULL to render all of it. */
+	const pixman_region32_t *active;
+
+	/* Draw the scene's background clear first. False for a regional capture
+	 * whose base comes from the commands themselves. */
+	bool clear;
+	/* loadOp LOAD rather than DONT_CARE. True for the output, whose pixels
+	 * outside the damage must survive; false for a target this segment writes
+	 * whole. */
+	bool load;
+
+	/* Set by avk_render_frame() before recording. */
+	VkDescriptorSet gradient_set;
+};
+
+/*
+ * Declare `seg` as a graph pass: it writes its target and reads every distinct
+ * image the commands in its range sample.
+ *
+ * `target_resource` must already be declared on the graph, because only the
+ * caller knows whether the target arrived from outside (a scan-out buffer) or
+ * was produced by a previous pass (a transient). `seg` must outlive
+ * avk_graph_execute() -- the graph records the pass later and holds the pointer.
+ *
+ * Returns false if the pass could not be declared, having logged why.
+ */
+bool avk_render_declare_segment(struct avk_graph *graph,
+	struct avk_render_segment *seg, uint32_t target_resource);
+
+/*
+ * Round a capture region's origin DOWN to even in both axes, growing the extent
+ * to compensate so the requested area is still covered.
+ *
+ * See the note on `origin_x` for why: an odd origin misaligns the 2x2 derivative
+ * quads that rounded.glsl's antialiasing is computed over. Any caller building a
+ * regional target from a scene rectangle should pass it through here rather than
+ * rediscovering the constraint.
+ */
+static inline void avk_render_segment_align_origin(int32_t *x, int32_t *y,
+		uint32_t *width, uint32_t *height) {
+	if ((*x & 1) != 0) { (*x)--; if (width != NULL) { (*width)++; } }
+	if ((*y & 1) != 0) { (*y)--; if (height != NULL) { (*height)++; } }
+}
+
 bool avk_renderer_init(struct avk_renderer *renderer, struct avk_device *dev,
 	VkFormat format);
 void avk_renderer_finish(struct avk_renderer *renderer);

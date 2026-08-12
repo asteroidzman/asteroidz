@@ -3414,3 +3414,102 @@ blur 2's prefix is `A · blur1's composited result · B`. Since each blur's pref
 transient replays commands `[0, k)` **including the earlier blur's composite**,
 an earlier blur legitimately contributes to a later one when the scene says so.
 Nothing globally defines "blur source = the background before all blur".
+
+## M4F.2A.1 — segmented composition
+
+One statement, proved on pixels:
+
+> `avk_render_frame` can replay any exact scene prefix into an arbitrary
+> regional target without changing the semantics of the commands it renders.
+
+### The audit, before the refactor
+
+Every assumption the draw loop made:
+
+| assumption | where | now |
+|---|---|---|
+| target is the output image | `az_record_compose` | `seg->target` |
+| target origin is 0,0 | scissors, `command_region` | `seg->origin_x/y` |
+| target extent is the output's | `pc.params.zw`, viewport | `seg->width/height` |
+| command range is the whole scene | the draw loop | `seg->begin/end` |
+| damage is the frame's | `command_region` | `seg->active` |
+| `loadOp` is always LOAD | attachment info | `seg->load` |
+| the clear covers the output | clear command | `seg->clear`, `dst = bounds` |
+
+And every `gl_FragCoord` user, classified:
+
+| user | wants | why |
+|---|---|---|
+| `rounded.glsl` | **global** | measures against `round_box`, which is global |
+| `shadow.frag` | **global** | the caster's SDF is a global box |
+| `gradient.glsl` | **global** | normalises within its box — a local origin **restarts** the ramp |
+| `dither.glsl` | **global** | deliberately output-raster anchored — a local origin **shifts the phase** |
+
+All four want the same space, so there is one helper and no per-shader
+arithmetic. The last two are the dangerous ones: both still produce a plausible
+picture when wrong, and both differ *only* where a regional target begins.
+
+### The coordinate contract
+
+```text
+scene/global    round_box, inner_box, corners -- ALWAYS. A command does not
+                know which target it lands in.
+target-local    gl_FragCoord, viewport, scissor, params.zw
+
+target_pixel = scene_pixel - AZ_TARGET_ORIGIN
+```
+
+Exactly **two** translations: the vertex position in `quad.vert`, and the
+scissor at the draw. Fragment shaders convert back with `az_frag_global()`.
+`AZ_TARGET_ORIGIN` lives in `uv_dy.zw`, the only push-constant slot free in all
+five pipelines.
+
+### Results
+
+```text
+gradient (37 deg, 2 stops)                        0 of 12288 pixels differ
+shadow + dither, corners 0/7/19/37                0
+rounded 0/7/19/37 + radius-40/border-6 annulus    0
+cropped, scaled client texture                    0
+all three materials in one scene                  0
+
+[0,2) [2,4) [1,3)      exactly the named commands, nothing else
+draw order             translucent overlap resolves by scene order, both ways
+active region          renders inside, leaves outside untouched
+```
+
+### The origin must be EVEN, and that is measured
+
+```text
+origin 36,52  (even)   0 of 12288 pixels differ
+origin 37,53  (odd)   84 of 12288 differ, worst 5 codes
+```
+
+`rounded.glsl` antialiases with `fwidth(dist)` — a **2×2 quad derivative** whose
+grid is aligned to the *attachment's* pixel grid. An odd origin shifts every
+derivative quad one pixel relative to the output, so an edge's AA band is
+computed over a different neighbourhood.
+
+Nothing else is sensitive: the gradient, the dithered shadow and the cropped
+texture all match **exactly** at an odd origin, because they read
+`az_frag_global()` and nothing else.
+
+`avk_render_segment_align_origin()` rounds a capture region's origin down to
+even, growing the extent to compensate — at most one pixel per axis. The odd
+case is kept as a test that *reports* the difference, so the constraint stays
+measured rather than becoming folklore.
+
+### Two bugs the pixel tests caught
+
+**The clear's scissor was never translated.** A regional target at origin 37,53
+cleared only its bottom-right corner, so every earlier frame's content survived
+everywhere else — which showed up as `[2,4)` rendering quadrants 0 and 1 from
+the *previous* range. My edit had matched the command loop and silently not the
+clear's own loop. A struct-inspection test could not have seen it.
+
+**My fixture lied about an image's layout.** It set
+`tex->layout = SHADER_READ_ONLY_OPTIMAL` after an upload that really left it in
+`TRANSFER_DST_OPTIMAL`; the graph then saw an entry layout that already matched,
+emitted no transition, and validation reported `VUID-vkCmdDraw-None-09600` at
+submit. The image's `layout` field is the cross-frame source of truth and
+nothing may write it except whatever actually transitioned the image.
