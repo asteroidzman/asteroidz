@@ -1812,6 +1812,21 @@ non-compressed one it is nearly free. Circumstantial rather than proven — it w
 not isolated by forcing a non-DCC live modifier — so it is recorded as the
 leading explanation, not as fact.
 
+> **DISPROVED in M4F.3/.5.** `tests/test-avk-barrier-cost.c` measured the exact
+> live modifier `0x0200000028a37f04` (DCC, `DCC_RETILE`, three planes) at
+> **46 ns**, against **46 ns** for the same-size non-DCC modifier — ratio 0.99×.
+> The foreign queue-family transfer is free too (44 ns vs 51 ns without).
+>
+> **The 44 µs was the instrument, not the call.** A bracketing `clock_gettime`
+> pair costs ~37 ns around a ~60 ns event, so any scheduler slice landing inside
+> that window is charged entirely to it; on a loaded desktop the *mean* of such
+> a sample measures preemption. The same technique in a quiet loop reads
+> p50 60 / p95 70 / mean 61 ns.
+>
+> Per-call barrier timing has been removed and `graph_build_ns` is now reported
+> as a distribution. See `docs/avk-effects.md`, "M4F.3/.5 — what
+> `vkCmdPipelineBarrier2` actually costs".
+
 **It is not attributable to M4E either way.** The pre-graph renderer made the
 same two calls, in the same places, with the same contents; the headless
 comparison against a `b9d7115` build is byte-identical with no measurable cost
@@ -1820,6 +1835,10 @@ change. What M4E did was make the cost visible for the first time.
 **Relevant to M4F**, which adds passes and therefore barriers: at 45 µs a call
 on this hardware, a blur that adds four barrier flushes costs ~90 µs of
 recording before it draws anything. Worth measuring there rather than assuming.
+
+> **Measured in M4F, and the concern was unfounded.** Four flushes cost
+> **~250 ns** of recording, not ~90 µs. Barriers are not a constraint on the
+> blur's design.
 
 ### Confirmed over a longer run
 
