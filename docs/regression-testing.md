@@ -268,6 +268,38 @@ drag/release invariance. **GLES fails identically against it**, which is how we
 know the defect was compositor-side and shared rather than an AVK rendering
 fault.
 
+#### M4B.1 live acceptance — PASS, by observation
+
+Super+drag of a **server-decorated** window across the DP-1/HDMI-A-1 seam,
+paused straddling, released straddling, on `e049d1d`. Confirmed by watching
+both screens: the border followed the client onto the far output, nothing
+changed on release, no stretch of client without border, no duplication, no
+rounding at the seam.
+
+**This is a visual acceptance, not a measurement.** No trustworthy automated
+live pixel result was obtained, and four attempts failed for reasons worth
+recording because each would recur:
+
+- **The first run measured a CSD window.** Dolphin — and KDE apps generally —
+  draw their own decorations, so `check_hit_no_border()` gives them *no server
+  border at all*. It reads as "border missing on the far output" everywhere,
+  including fully on the owning monitor. A live decoration test must assert its
+  window has a server border before concluding anything. Corollary worth
+  knowing: this defect was invisible to anyone using mostly CSD applications.
+- **Whole-screen colour scans do not work on a real desktop.** Dark content
+  matches a dark client fill (the fill bbox came back as the entire screen) and
+  light content matches a light border (31,624 false border pixels). The
+  headless fixture gets away with it because it has a flat wallpaper and one
+  window.
+- **Mid-drag IPC geometry lags the render**, so coordinate-derived probes land
+  off the window and report wallpaper as the border reference.
+- **`move_window` and `focus_id` act on the FOCUSED client.** Dispatches meant
+  for the test window went to a terminal instead, and the "border" found at
+  that position belonged to it.
+
+The deterministic evidence is `contrib/avk-crossoutput-border-test.sh`, which
+is unaffected by any of the above.
+
 ### rounded-bottom-swap: TESTED LIVE — PASS
 
 The one M4A break that no headless fixture can reach, closed on the real
