@@ -863,3 +863,95 @@ Until one of those blockers is cleared, reference parity rests on the CPU
 oracle in `tests/test-avk-gradient.c`, which is a transcription of
 `gradient.frag` and is stricter in every dimension except that it is a reading
 of the reference rather than the reference itself.
+
+## M4C.3H — the repaint storm, and the invariant it violated
+
+The `border_gradient` hang recorded above is fixed. It was **not** a gradient
+rendering fault and **not** an animation that failed to terminate — both of
+which are the natural first guesses, and both wrong.
+
+### The loop, traced
+
+```text
+rendermon
+  → client_draw_frame(c)                     every client, every frame
+  → client_apply_focus_opacity(c)
+  → (c == selmon->sel) client_set_border_fill(c, border_color)
+  → wlr_scene_rect_set_gradient(...)         UNCONDITIONAL
+  → free + malloc + scene_node_update()      → damage
+  → the output needs a frame                 → rendermon …
+```
+
+`client_set_border_fill()` runs on **every rendered frame** for the focused
+window, animating or not — that is its job, because `focusclient()` does not
+recompute a titlebar's focus state for tile layouts. Its solid-colour branch
+goes through `wlr_scene_rect_set_color()`, which `memcmp`s and returns early.
+Its gradient branch had no such check.
+
+**35 of the 41 `wlr_scene_*_set_*` setters already held that line**;
+`set_corner_radii` compares through `fx_corner_radii_eq()`, `set_clipped_region`
+through `wlr_box_equal()`, `set_size` compares its ints. The comment above
+`client_apply_focus_opacity`'s caller *already asserted* the invariant —
+"set_focus and set_border_fill are dirty-checked, so this is a no-op when
+unchanged" — and it was true of one branch and false of the other.
+
+### What it was not
+
+**Not an animation-termination bug.** Focus progress is
+`passed_time / duration` on a wall clock with a `>= 1.0` terminal, and there is
+no asymptotic `current += (target - current) * k` anywhere in this path. More
+pointedly, `animation_duration_focus` **defaults to 0**, which completes on the
+first tick. The endless frames came from the *settled* branch that runs forever
+afterwards, not from an animation that never ended.
+
+**Not renderer-specific**, which is what made it diagnosable: identical rates on
+AVK and GLES, and on a build predating the Vulkan gradient work.
+
+### The fix
+
+An exact identical-write check in `wlr_scene_rect_set_gradient()`, matching its
+siblings. **Exact, not epsilon** — the values arrive from the same computation
+every frame, so an unchanged gradient is bit-identical, while an epsilon would
+quantize the focus animation instead. During a real animation the colour differs
+every tick, so the check passes straight through.
+
+### Measured
+
+```text
+                        BREAK (bug restored)      FIXED
+frames, 5 s idle        unanswerable (IPC dead)   0
+RSS over 5 s            1220 → 1917 MB            106 → 106 MB
+CPU                     259% of a core            0.0%
+amsg round trip         8 s timeout               0.001 s
+```
+
+Focus animation, `animation_duration_focus 400`, four alternating switches:
+**+27 frames each while animating, +0 over the following 3 s**, every time. Six
+IPC dispatches during focus churn: 8 ms total. An animated gradient performs
+151 buffer uploads and **0** allocations.
+
+Duration-driven, not frame-driven, measured with quiet clients:
+
+```text
+duration  200 ms → settled after  268 ms, 15 frames
+duration 1000 ms → settled after 1064 ms, 65 frames
+```
+
+Settle time tracks the configured duration; the frame count is an *output*.
+
+### For the future animation milestone — recorded, not implemented
+
+Presentation-aware per-output timing · frame-rate-independent animation ·
+interruptible animations · retargeting with velocity continuity ·
+spring/critically-damped motion · fractional geometry · damage-efficient
+animation · no CPU waits. SceneFX behaviour is a baseline, not the target.
+
+### `AZ_GRADIENT_NOOP_DAMAGE=1`
+
+Removes the check, restoring the storm exactly.
+`contrib/avk-idle-convergence-test.sh` must fail against it — and getting it to
+*fail* took two corrections, both recorded in `docs/regression-testing.md`: the
+suite first **hung** before reaching an assertion (the library's untimed client
+wait), and then **passed** its two headline assertions against a wedged,
+leaking compositor, because a timed-out `amsg` yields an empty string rather
+than the `TIMEOUT` sentinel and two empty strings subtract to zero.

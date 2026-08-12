@@ -1007,9 +1007,77 @@ void wlr_scene_rect_set_clipped_region(struct wlr_scene_rect *rect,
 	scene_node_update(&rect->node, NULL);
 }
 
+/*
+ * AZ_GRADIENT_NOOP_DAMAGE=1 -- the break switch for the repaint storm below.
+ *
+ * It removes the identical-write check, restoring the exact bug: a settled
+ * compositor that never stops repainting itself. Read once.
+ */
+static bool gradient_noop_damage(void) {
+	static int cached = -1;
+	if (cached < 0) {
+		const char *env = getenv("AZ_GRADIENT_NOOP_DAMAGE");
+		cached = env != NULL && env[0] == '1';
+		if (cached) {
+			wlr_log(WLR_ERROR, "AZ_GRADIENT_NOOP_DAMAGE=1 -- identical "
+				"gradient writes damage the node again. A focused window "
+				"with a gradient border will repaint forever. This build is "
+				"deliberately broken.");
+		}
+	}
+	return cached != 0;
+}
+
 void wlr_scene_rect_set_gradient(struct wlr_scene_rect *rect, float degree,
 		int linear, int blend, const float origin[2], int count,
 		const float *colors) {
+	/*
+	 * AN IDENTICAL WRITE MUST NOT DIRTY THE NODE.
+	 *
+	 * Every other setter in this file already holds that line --
+	 * wlr_scene_rect_set_color() memcmp()s and returns, set_corner_radii()
+	 * compares through fx_corner_radii_eq(), set_size() compares its ints. This
+	 * one did not, and it is called from the per-frame path:
+	 *
+	 *     rendermon -> client_draw_frame -> client_apply_focus_opacity
+	 *       -> client_set_border_fill        (every frame, for the focused
+	 *          -> wlr_scene_rect_set_gradient  window, animating or not)
+	 *          -> scene_node_update -> damage -> another frame is needed
+	 *
+	 * so a focused window with a gradient border re-damaged itself forever.
+	 * Measured at ~54 MB/s of heap growth and 100% of a core, on BOTH
+	 * renderers and on builds predating the Vulkan gradient work -- and the
+	 * event loop never got back to its clients, so grim and amsg both timed
+	 * out at 20 s. The comment above client_apply_focus_opacity's caller
+	 * already asserted the invariant this restores.
+	 *
+	 * EXACT comparison, not an epsilon. The values arrive from the same
+	 * computation every frame, so an unchanged gradient is bit-identical; an
+	 * epsilon here would quantize the focus animation instead, which is the
+	 * cure being worse than the disease. During an actual animation the colour
+	 * differs every tick, so this check passes straight through and the
+	 * animation is untouched.
+	 */
+	bool want = count > 0 && colors != NULL;
+	if (!gradient_noop_damage()) {
+		if (!want && !rect->has_gradient) {
+			return;
+		}
+		if (want && rect->has_gradient && rect->gradient_count == count &&
+				rect->gradient_degree == degree &&
+				rect->gradient_linear == linear &&
+				rect->gradient_blend == blend &&
+				rect->gradient_origin[0] ==
+					(origin != NULL ? origin[0] : 0.5f) &&
+				rect->gradient_origin[1] ==
+					(origin != NULL ? origin[1] : 0.5f) &&
+				rect->gradient_colors != NULL &&
+				memcmp(rect->gradient_colors, colors,
+					sizeof(float) * 4 * (size_t)count) == 0) {
+			return;
+		}
+	}
+
 	free(rect->gradient_colors);
 	rect->gradient_colors = NULL;
 	rect->has_gradient = false;

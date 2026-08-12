@@ -355,6 +355,55 @@ BORDER=6          ASTEROIDZ=build/asteroidz bash contrib/avk-rounded-persist-tes
 BREAK=border-square-inner BORDER=6 ASTEROIDZ=build/asteroidz bash contrib/avk-rounded-persist-test.sh  # must FAIL
 ```
 
+`contrib/avk-idle-convergence-test.sh` (M4C.3H) pins one rule:
+
+> A visually stable compositor state must converge to **zero** self-generated
+> repaint work.
+
+Not "less". Zero. Once animations have finished and no client has committed,
+the compositor must generate no further frames of its own.
+
+```bash
+bash contrib/avk-idle-convergence-test.sh
+BREAK=gradient-noop-damage bash contrib/avk-idle-convergence-test.sh   # must FAIL
+```
+
+Every client in it paints **once** and then goes quiet (`--frames 1`), which is
+what makes the number mean anything — a client repainting continuously supplies
+frames of its own and "frames per second" stops being a statement about the
+compositor.
+
+Two premises exist because each already caught a run that would have passed:
+
+- **a window is focused.** The per-frame border path only runs for
+  `selmon->sel`; with nothing focused the scene converges trivially.
+- **focus actually moved, per switch.** The first version always dispatched
+  `left`, so with two windows switches 2–4 moved nothing and reported a
+  perfectly settled compositor that had never been asked to do anything. It
+  alternates left/right now and compares the focused title before and after.
+
+Every query is wrapped in `timeout`. Under the break the compositor's event
+loop never returns to its clients, so an untimed `amsg` blocks forever — the
+difference between a red test and a wedged machine. `hl_wait_client_count()`
+goes through the library's untimed `amsg` and had to be replaced with a bounded
+wait for exactly that reason: the first break run hung before reaching a single
+assertion.
+
+**And then the break run came back green on the two assertions that matter.**
+An `amsg` that times out produces *no output*, and `jq`'s `// "TIMEOUT"`
+fallback never fires because `jq` is handed an empty stream and emits nothing
+too. So the reading was `""`, `"" != "TIMEOUT"` was true, the starvation
+assertion passed — and `$((F2 - F1))` on two empty strings evaluated to `0`, so
+the convergence assertion passed with it. Both headline claims reported success
+against a compositor that was wedged and leaking half a gigabyte. The emptiness
+is caught once, in `frames()`, and the convergence assertion is now evaluated
+unconditionally rather than skipped when the query failed — skipping it is how a
+wedged compositor scores a clean result.
+
+The suite also asserts the gradient is still *drawn* and still a *ramp*: a
+dirty check that suppressed every write into oblivion would also converge to
+zero frames, and would be a worse bug than the one being fixed.
+
 `contrib/avk-gradient-test.sh` (M4C) is written and **currently skips**, and
 that is the honest state rather than a placeholder. It would be the only place
 AVK's gradients meet the GLES reference itself rather than a reading of it —
