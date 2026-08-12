@@ -341,6 +341,16 @@ if build_vulkan
                                   build_by_default : false)
   test('avk-timestamp', test_avk_timestamp, timeout : 120)
 
+  # M4E: the render graph. Asserts on the barriers the graph ACTUALLY EMITTED
+  # -- it records them as it emits them -- rather than on a re-derivation from
+  # the same rules the implementation used, which could not fail. The usage
+  # table is restated independently in the test for the same reason.
+  test_avk_graph = executable('test-avk-graph',
+                              'tests/test-avk-graph.c',
+                              dependencies : [avk_dep],
+                              build_by_default : false)
+  test('avk-graph', test_avk_graph, timeout : 120)
+
   # M4D: shadows. libm because the fixtures carry an independent CPU
   # transcription of the reference's erf-and-four-samples formula, which is
   # what AVK's readback is compared against -- not GLES, and not AVK's own

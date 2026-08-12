@@ -2085,3 +2085,157 @@ M4E.5.
 
 None of these is adopted in M4E on grounds of novelty. Each stays `DEFER` until
 a measurement says otherwise.
+
+## M4E.1 — the graph, and what it cost
+
+`src/render/vulkan/graph/avk_graph.{h,c}`, 4 usage classes, ~470 lines.
+
+### The model
+
+```c
+avk_graph_add_image(graph, image, foreign, exit)   -> resource index
+avk_graph_pass_begin(graph, label, record, user)
+avk_graph_use(graph, resource, usage, region)
+avk_graph_pass_end(graph)
+avk_graph_execute(graph, cb, timestamps, slot)
+```
+
+Four usage classes and no more: `COLOR_WRITE`, `SAMPLED_READ`, `TRANSFER_READ`,
+`TRANSFER_WRITE`. Each maps to exactly one `(stage, access, layout)` triple in
+**one table** in `avk_graph.c`, so a wrong row is wrong everywhere at once and
+a right one is right everywhere at once — which is the entire argument for
+having a graph rather than barriers at call sites. The public API never mentions
+a `VkAccessFlags2`.
+
+Passes run in **declaration order**. There is no dependency solver, no
+reordering, no pass culling, no aliasing. The compositor already knows the order
+it wants; the graph's job is to make the transitions between them correct and
+printable.
+
+### Where the direct path went
+
+`avk_render_frame()` declares one pass, `compose_scene`, writing the target and
+reading each distinct sampled image, and hands the rendering instance over as a
+callback. `batch_add()` / `batch_submit()` are gone. The rules they encoded did
+not change — they moved into `az_barrier_for()` and are now applied to every
+pass rather than to the one that happened to exist.
+
+`avk_graph_add_image()` interns by `VkImage`, so two commands sampling one
+surface produce one resource and one barrier. That used to be an explicit
+duplicate check in the batch builder; it is now a property of the model.
+
+### Cost, measured
+
+| | pre-graph (`b9d7115`) | with the graph |
+|---|---|---|
+| framebuffer | — | **0 of 6220800 bytes differ** |
+| `cpu_frame_us` p50 / p95 | 80–100 / 200 | 100 / 200 |
+| `gpu_frame_us_avg` | 1627 µs | 1462 µs |
+| `graph_build_ns` | — | **2876 ns** |
+| graph allocations after warmup | — | **0** |
+| barrier *calls* per frame | 2 | 2 |
+
+`graph_build_ns` is the graph's own work with each pass's record callback
+**subtracted**. The first version of that counter included the callbacks and
+read 21 450 ns — a real and alarming number, if it had meant what it said. It
+did not; it was the draw loop.
+
+The headless GPU figures are unthrottled and differ run to run by more than the
+gap between them, so the honest reading is "no measurable change", not "faster".
+The assertions in `contrib/avk-graph-test.sh` are order-of-magnitude bounds for
+exactly that reason, and the threshold was not chosen before the data.
+
+### The one deliberate behaviour difference
+
+The pre-graph renderer skipped a barrier entirely for a **non-foreign** image
+already in the layout it wanted (`batch_add`: `if (!foreign && image->layout ==
+new_layout) return;`). The graph re-acquires it each frame.
+
+That skip was an assumption about a producer outside the renderer's knowledge —
+a client commit, an SHM upload landing on the *other* command ring, KMS
+finishing with a buffer. It happened to hold. Not making it costs one extra
+`VkImageMemoryBarrier2` inside a `vkCmdPipelineBarrier2` that was happening
+anyway; the number of barrier **calls**, which is what costs a pipeline flush,
+is unchanged at 2. Every real client surface here is an imported dma-buf and
+therefore foreign, where the old path emitted the barrier too — so on this
+machine the difference is unobservable.
+
+### `avk_box` moved
+
+To `avk.h`, from `avk_scene.h`. It is the vocabulary two subsystems that do not
+know about each other both need: the scene says where a command lands, the graph
+says which part of a resource a pass touches. Neither should include the other
+to say "rectangle".
+
+### Three regions, carried and not collapsed
+
+`struct avk_graph_use` holds a region, and `test_regions()` declares a pass that
+reads a 56 px box and writes a 24 px one out of a 64 px image. Nothing consumes
+those yet — M4E does not implement blur — but the model can **carry** them,
+which is the difference between M4F gaining a field and M4F changing the shape
+of the graph.
+
+### The dump
+
+```text
+BARRIER
+    R0 external -> color-write
+PASS produce
+    WRITE R0 color-write
+BARRIER
+    R0 color-write -> sampled-read
+BARRIER
+    R1 external -> color-write
+PASS consume
+    READ R0 sampled-read
+    WRITE R1 color-write
+```
+
+Barriers are **logged as they are emitted**, not reconstructed afterwards. A
+test that re-derives the answer from the rules the implementation used cannot
+fail.
+
+### The break
+
+`BREAK=graph-missing-write-read` (`AZ_GRAPH_NO_WRITE_READ=1`) fails **1 of 46**
+unit checks, and fails the one it exists for: *"the write→read barrier exists,
+names the colour write as its source"*.
+
+Its first version was **inert**. It skipped the barrier when the layouts already
+matched — which for a write→read pair they never do, so it scored a clean 46/46
+on the case it was supposed to falsify. The fix was to remove the **dependency**
+and keep the **transition**: the barrier is still emitted, the image still
+reaches `SHADER_READ_ONLY_OPTIMAL` so the read stays legal, and what goes is the
+source scope naming the write it must wait for. That is a missing edge, which is
+the bug being modelled; a missing transition is a different one.
+
+It is deliberately **not** listed as a falsifier for `avk-graph-test.sh`: the
+direct path has one pass and therefore no inter-pass edge to remove.
+
+### Four ways this fixture measured itself instead of the renderer
+
+Recorded because all four looked exactly like a renderer regression, and three
+of them produced a *failing* test for a correct build.
+
+1. **The colour palette is process-global.** `hl_spawn_kitty` walks
+   `HL_SPAWN_COLORS` and the index is not reset, so a script running the fixture
+   twice got colours 1,2,3 then 4,5,6. Every window background differed:
+   **3 214 556 of 6 220 800 bytes**. `hl_reset_spawn_colors()` now exists.
+2. **A terminal's text cursor blinks**, so a "settled" desktop is not a still
+   image. `HL_KITTY_EXTRA="-o cursor_blink_interval=0"` now exists.
+3. **The IPC dispatch names were wrong.** `togglefloating` and `moveresize` are
+   *C function* names; the IPC names are `toggle_floating`, `move_window`,
+   `resize_window`. `hl_dispatch` reports nothing for an unknown name, so the
+   window never floated, no shadow was ever drawn, and the window sat wherever
+   the tiling race left it — the residual ~1000 scattered pixels. Same trap as
+   the `focusdir` false alarm.
+4. **The allocation check ran over zero frames.** A settled headless desktop
+   composites nothing, so reading `graph_allocs` twice across an idle gap
+   asserted that an unchanging number had not changed.
+
+The one thing that caught all of them was **comparing the current binary against
+itself in the same run**. That measurement is now part of the suite: the pixel
+assertion is `diff(old, new) <= diff(new, new)`, self-calibrating, with no
+tolerance written into the script. When the fixture is reproducible the floor is
+0 and the assertion demands exact byte equality — which is what it currently
+gets.

@@ -4,6 +4,7 @@
 #include "../command/avk_command.h"
 #include "../command/avk_retire.h"
 #include "../command/avk_timestamp.h"
+#include "../graph/avk_graph.h"
 #include "../pipeline/avk_gradient.h"
 #include "../pipeline/avk_pipeline.h"
 #include "avk_scene.h"
@@ -183,6 +184,20 @@ struct avk_renderer {
 	/* M4D.P. Generic, not shadow-specific: four marks a frame, read back
 	 * without waiting. Disabled and harmless where the device cannot. */
 	struct avk_timestamps timestamps;
+	/*
+	 * M4E. What the frame touches and what that implies, made explicit.
+	 *
+	 * ONE graph on the renderer rather than one per output, because a frame is
+	 * built, executed and finished inside avk_render_frame() before the next
+	 * output's begins -- there is never a second graph outstanding. Its arrays
+	 * are reset, not freed, so a stable scene stops allocating after warmup;
+	 * `graph.stats.allocs` is what proves that rather than asserts it.
+	 *
+	 * Note that a renderer is shared by every output using its VkFormat (see
+	 * az_avk_renderer_for), so this is per FORMAT and the per-output claim is
+	 * about the graph's CONTENT, which describes exactly one output's frame.
+	 */
+	struct avk_graph graph;
 	VkFormat format;
 
 	struct avk_renderer_stats stats;

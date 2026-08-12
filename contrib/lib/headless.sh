@@ -701,6 +701,13 @@ HL_SPAWN_COLORS=(
 )
 HL_SPAWN_COLOR_IDX=0
 
+# Restart the colour cycle. A fixture that runs TWICE in one script process --
+# to compare two binaries, say -- gets colours 1,2,3 then 4,5,6 without this,
+# and every window's background differs between the two captures. That is half
+# a framebuffer's worth of difference caused entirely by the harness, and it
+# reads exactly like a renderer regression.
+hl_reset_spawn_colors() { HL_SPAWN_COLOR_IDX=0; }
+
 hl_spawn_kitty() { # hl_spawn_kitty TITLE -> pid (also tracked for hl_reset/hl_stop)
 	local title="$1"
 	local color="${HL_SPAWN_COLORS[$((HL_SPAWN_COLOR_IDX % ${#HL_SPAWN_COLORS[@]}))]}"
@@ -709,7 +716,15 @@ hl_spawn_kitty() { # hl_spawn_kitty TITLE -> pid (also tracked for hl_reset/hl_s
 	# actually close even on a compositor-issued close request, which stalls
 	# kill_client tests headlessly (no input device to dismiss it with) --
 	# a real long-lived foreground process closes cleanly instead.
+	# HL_KITTY_EXTRA appends further -o options. It exists for fixtures that
+	# have to compare two CAPTURES of the same scene: a terminal's text cursor
+	# blinks, so a screenshot of a settled desktop is not reproducible unless
+	# `-o cursor_blink_interval=0` turns that off. Empty by default, because a
+	# blinking cursor is what a real terminal does and most fixtures should see
+	# it.
+	# shellcheck disable=SC2086
 	kitty --title "$title" -o background_opacity=1.0 -o "background=$color" \
+		${HL_KITTY_EXTRA:-} \
 		sh -c "echo $title; exec sleep 300" > "$HL_OUTDIR/kitty-$title.log" 2>&1 &
 	local pid=$!
 	HL_SPAWNED_PIDS+=("$pid")

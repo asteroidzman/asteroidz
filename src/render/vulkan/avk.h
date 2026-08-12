@@ -21,6 +21,18 @@
 #include <stdint.h>
 #include <vulkan/vulkan.h>
 
+/*
+ * An integer rectangle, in whatever pixel space its holder documents.
+ *
+ * Here rather than in avk_scene.h because it is the vocabulary two subsystems
+ * that do not know about each other both need: the scene describes where a
+ * command lands, and the graph describes which part of a resource a pass
+ * touches. Neither should have to include the other to say "rectangle".
+ */
+struct avk_box {
+	int32_t x, y, width, height;
+};
+
 /* ── logging ────────────────────────────────────────────────────────────────
  *
  * avk has its own log rather than calling wlr_log, so that a) the layer does

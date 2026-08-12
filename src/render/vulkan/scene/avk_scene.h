@@ -1,6 +1,7 @@
 #ifndef AVK_SCENE_H
 #define AVK_SCENE_H
 
+#include "../avk.h"
 #include "../image/avk_image.h"
 
 #include <pixman.h>
@@ -43,10 +44,6 @@ enum avk_transform {
 	AVK_TRANSFORM_FLIPPED_90,
 	AVK_TRANSFORM_FLIPPED_180,
 	AVK_TRANSFORM_FLIPPED_270,
-};
-
-struct avk_box {
-	int32_t x, y, width, height;
 };
 
 /* Sub-pixel source rectangle, in image pixels. Wayland's viewporter gives

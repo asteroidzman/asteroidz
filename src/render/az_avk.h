@@ -2961,8 +2961,29 @@ static cJSON *az_avk_stats_json(void) {
 		az_avk_hist_pct(&avk.damage_permille_hist, 50.0, 2) / 1000.0);
 	cJSON_AddNumberToObject(o, "damage_ratio_p95",
 		az_avk_hist_pct(&avk.damage_permille_hist, 95.0, 2) / 1000.0);
-	/* Not measured: needs GPU timestamp queries around the frame, which this
-	 * build does not record. Null, not zero. */
+	/*
+	 * Renderer CPU time: what avk_render_frame() spends RECORDING and
+	 * SUBMITTING, per frame, averaged. Named record_ so it cannot be read as
+	 * GPU execution -- that is gpu_frame_us_avg further down, and the two are
+	 * deliberately separate fields rather than one number that would understate
+	 * a shader-bound frame and overstate a submission-bound one.
+	 *
+	 * This is the number M4E's direct-path comparison is made against: it is
+	 * the part of the frame the graph could plausibly have made more expensive.
+	 */
+	uint64_t record_ns = az_avk_renderer_stat_sum(
+		offsetof(struct avk_renderer_stats, cpu_record_ns));
+	uint64_t record_frames = az_avk_renderer_stat_sum(
+		offsetof(struct avk_renderer_stats, frames));
+	if (record_frames > 0) {
+		cJSON_AddNumberToObject(o, "record_us_avg",
+			(double)record_ns / (double)record_frames / 1000.0);
+	} else {
+		cJSON_AddNullToObject(o, "record_us_avg");
+	}
+	/* Superseded by gpu_frame_us_avg (M4D.P), which is a mean over completed
+	 * timestamp samples. Kept null rather than removed: it was always null, and
+	 * a consumer reading it has never had a number from it. */
 	cJSON_AddNullToObject(o, "gpu_frame_us");
 
 	/* damage */
@@ -3149,6 +3170,51 @@ static cJSON *az_avk_stats_json(void) {
 	}
 	cJSON_AddNumberToObject(o, "gpu_samples", (double)gpu_samples);
 	cJSON_AddNumberToObject(o, "gpu_dropped", (double)gpu_dropped);
+
+	/*
+	 * M4E. The graph, as of the LAST frame each renderer built -- passes,
+	 * resources, uses and barriers are per-frame counters, reset by
+	 * avk_graph_reset(), so summing them over renderers describes the most
+	 * recent frame of each and not a run.
+	 *
+	 * `graph_allocs` is the exception and the important one: it is cumulative
+	 * and must STOP MOVING once the desktop settles. A number that keeps rising
+	 * on a static scene means graph construction is allocating every frame,
+	 * which is precisely what the flat-array design exists to prevent. Reading
+	 * it twice a few seconds apart is the whole test.
+	 */
+	uint32_t g_passes = 0, g_resources = 0, g_uses = 0, g_barriers = 0;
+	uint32_t g_transitions = 0;
+	uint64_t g_allocs = 0, g_build_ns = 0, g_frames = 0;
+	for (size_t i = 0; i < AZ_AVK_MAX_FORMATS; i++) {
+		if (!avk.renderers[i].used) {
+			continue;
+		}
+		const struct avk_graph_stats *gs =
+			&avk.renderers[i].renderer.graph.stats;
+		g_passes += gs->passes;
+		g_resources += gs->resources;
+		g_uses += gs->uses;
+		g_barriers += gs->barriers;
+		g_transitions += gs->image_transitions;
+		g_allocs += gs->allocs;
+		g_build_ns += gs->build_ns;
+		g_frames += gs->frames;
+	}
+	cJSON_AddNumberToObject(o, "graph_passes", (double)g_passes);
+	cJSON_AddNumberToObject(o, "graph_resources", (double)g_resources);
+	cJSON_AddNumberToObject(o, "graph_uses", (double)g_uses);
+	cJSON_AddNumberToObject(o, "graph_barriers", (double)g_barriers);
+	cJSON_AddNumberToObject(o, "graph_image_transitions",
+		(double)g_transitions);
+	cJSON_AddNumberToObject(o, "graph_allocs", (double)g_allocs);
+	cJSON_AddNumberToObject(o, "graph_frames", (double)g_frames);
+	if (g_frames > 0) {
+		cJSON_AddNumberToObject(o, "graph_build_ns_avg",
+			(double)g_build_ns / (double)g_frames);
+	} else {
+		cJSON_AddNullToObject(o, "graph_build_ns_avg");
+	}
 	cJSON_AddNumberToObject(o, "software_cursor_frames",
 		(double)avk.software_cursor_frames);
 	cJSON_AddNumberToObject(o, "cursor_geometry_mismatch",

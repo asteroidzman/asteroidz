@@ -35,6 +35,7 @@ bool avk_renderer_init(struct avk_renderer *renderer, struct avk_device *dev,
 	/* M4D.P. A device that cannot measure itself must still draw, so a false
 	 * return here is recorded and ignored rather than failing init. */
 	avk_timestamps_init(&renderer->timestamps, dev);
+	avk_graph_init(&renderer->graph, dev);
 
 	/* M4A breaks, read once. Each restores a specific wrong implementation
 	 * rather than merely disabling the feature -- "single radius" and "scaled
@@ -93,6 +94,7 @@ void avk_renderer_finish(struct avk_renderer *renderer) {
 	 * onto that queue, and finishing the store destroys only the buffers the
 	 * slots still hold. */
 	avk_gradient_store_finish(&renderer->gradients);
+	avk_graph_finish(&renderer->graph);
 	avk_timestamps_finish(&renderer->timestamps);
 	avk_retire_finish(&renderer->retire, renderer->dev);
 	avk_cmd_ring_finish(&renderer->ring);
@@ -251,50 +253,35 @@ static void transform_uv(const struct avk_fbox *src, uint32_t image_width,
 /* ── the frame ──────────────────────────────────────────────────────────── */
 
 /*
- * All of a frame's layout transitions, in ONE barrier, BEFORE the rendering
- * instance begins.
+ * WHERE THE BARRIERS WENT (M4E.1).
  *
- * Both halves of that sentence are requirements rather than preferences, and
- * validation is what taught them -- the pixels were already correct with the
- * barriers in the wrong place, which is exactly the class of bug that works on
- * the machine it was written on and corrupts on the next driver:
+ * They used to be built here, by hand, into two batches -- an acquire before
+ * the rendering instance and a release after it. They are now DERIVED, by
+ * graph/avk_graph.c, from the usages this file declares. The rules they encode
+ * did not change and are worth restating because every one of them was learned
+ * from validation rather than from the spec, and the graph now owns them:
  *
  *  - INSIDE a dynamic-rendering instance, vkCmdPipelineBarrier2 may carry only
  *    memory barriers, and a layout transition is forbidden outright
  *    (VUID-vkCmdPipelineBarrier2-oldLayout-01181). Sampled surfaces therefore
- *    have to reach SHADER_READ_ONLY_OPTIMAL before vkCmdBeginRendering, not on
- *    demand when the command that samples them comes up.
- *  - loadOp LOAD is a COLOR_ATTACHMENT_READ of the target, not only a write.
- *    A barrier whose dstAccessMask covers only the write leaves the load
- *    unsynchronised against whatever produced the previous frame's contents,
- *    which synchronization validation reports as a read-after-write hazard at
- *    vkCmdBeginRendering.
+ *    have to reach SHADER_READ_ONLY_OPTIMAL before vkCmdBeginRendering, which
+ *    is why the graph emits a pass's barriers at the pass boundary and not on
+ *    demand.
+ *  - loadOp LOAD is a COLOR_ATTACHMENT_READ of the target, not only a write, so
+ *    AVK_USE_COLOR_WRITE carries both access bits. A barrier covering only the
+ *    write leaves the load unsynchronised against whatever produced the previous
+ *    contents, reported at vkCmdBeginRendering rather than at the draw.
+ *  - A foreign image is ACQUIRED from VK_QUEUE_FAMILY_FOREIGN_EXT and RELEASED
+ *    back. The release is what makes a frame visible: without it a scan-out
+ *    buffer on a compressed AMD modifier is handed to KMS in a state the display
+ *    engine cannot interpret, and the monitor comes up flat white with every
+ *    window rendered correctly inside it. No headless test can catch that,
+ *    because nothing scans a headless buffer out.
  *
- * Batching them is then free: one call, one pipeline flush, however many
- * images the frame touches.
+ * What this file kept is the decision of WHICH images the frame touches and
+ * HOW; what it gave up is deciding what that implies.
  */
-#define AVK_MAX_BARRIERS 64
 
-struct avk_barrier_batch {
-	VkImageMemoryBarrier2 barriers[AVK_MAX_BARRIERS];
-	uint32_t count;
-};
-
-/*
- * Queue an acquire for `image`, and its matching release if the image is
- * foreign.
- *
- * The foreign pair is not optional bookkeeping. A client's dma-buf belongs to
- * the client's device as far as Vulkan is concerned, and it has to be acquired
- * from VK_QUEUE_FAMILY_FOREIGN_EXT before it is read and released back
- * afterwards -- see avk_image_is_foreign(). The acquire is what makes the
- * pixels visible; the release is what leaves the buffer in a state its real
- * owner can use again.
- *
- * The release is not optional and not defensive: without it a real display
- * shows a flat white screen. See avk_image_is_foreign() for how that was
- * learned and why no headless test could have told us.
- */
 /* Read once. Never true in a session anybody is using -- see the loadOp. */
 static bool avk_no_load_preserve(void) {
 	static int cached = -1;
@@ -310,105 +297,18 @@ static bool avk_no_load_preserve(void) {
 	return cached != 0;
 }
 
-static void batch_add(struct avk_barrier_batch *acquire,
-		struct avk_barrier_batch *release, struct avk_device *dev,
-		struct avk_image *image, VkImageLayout new_layout,
-		VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access) {
-	/* AVK_NO_FOREIGN_ACQUIRE=1 turns the whole transfer off -- both halves.
-	 * On a real output that means a white screen, so it is a diagnostic, not
-	 * a tuning knob. */
+/*
+ * AVK_NO_FOREIGN_ACQUIRE=1 turns the foreign transfer off -- both halves. On a
+ * real output that means a white screen, so it is a diagnostic, not a tuning
+ * knob.
+ */
+static bool az_foreign(const struct avk_image *image) {
 	static int no_foreign = -1;
 	if (no_foreign < 0) {
 		const char *env = getenv("AVK_NO_FOREIGN_ACQUIRE");
 		no_foreign = env != NULL && env[0] == '1';
 	}
-	bool foreign = !no_foreign && avk_image_is_foreign(image);
-	if (!foreign && image->layout == new_layout) {
-		return;
-	}
-	if (acquire->count >= AVK_MAX_BARRIERS) {
-		return;
-	}
-	/* Guard against listing the same image twice -- two commands sampling one
-	 * surface is completely ordinary, and a duplicate barrier whose oldLayout
-	 * has already been consumed is invalid. */
-	for (uint32_t i = 0; i < acquire->count; i++) {
-		if (acquire->barriers[i].image == image->image) {
-			return;
-		}
-	}
-
-	acquire->barriers[acquire->count++] = (VkImageMemoryBarrier2){
-		.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-		/* ALL_COMMANDS on the source side: the previous writer might have been
-		 * an upload, a previous frame, or a client's own submission reaching
-		 * us through an imported fence, and this layer does not know which. */
-		.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-		.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
-		.dstStageMask = dst_stage,
-		.dstAccessMask = dst_access,
-		.oldLayout = image->layout,
-		.newLayout = new_layout,
-		.srcQueueFamilyIndex = foreign ? VK_QUEUE_FAMILY_FOREIGN_EXT
-			: VK_QUEUE_FAMILY_IGNORED,
-		.dstQueueFamilyIndex = foreign ? dev->caps.graphics_family
-			: VK_QUEUE_FAMILY_IGNORED,
-		.image = image->image,
-		.subresourceRange = {
-			.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-			.levelCount = 1,
-			.layerCount = 1,
-		},
-	};
-
-	if (foreign && release->count < AVK_MAX_BARRIERS) {
-		release->barriers[release->count++] = (VkImageMemoryBarrier2){
-			.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-			.srcStageMask = dst_stage,
-			.srcAccessMask = dst_access,
-			/* NONE, not BOTTOM_OF_PIPE: the second scope of a release is
-			 * ignored, and synchronization2 wants NONE said explicitly. */
-			.dstStageMask = VK_PIPELINE_STAGE_2_NONE,
-			.dstAccessMask = 0,
-			.oldLayout = new_layout,
-			/* Back to the layout the foreign owner expects. THIS IS WHAT
-			 * MAKES THE FRAME VISIBLE. Without the release, the scan-out
-			 * buffer is never handed back to KMS in a state the display
-			 * engine can read, and on a compressed AMD modifier the monitor
-			 * shows a flat white screen -- windows and all, rendered
-			 * perfectly, into an image nothing can interpret. A headless test
-			 * cannot catch it, because nothing scans a headless buffer out. */
-			.newLayout = VK_IMAGE_LAYOUT_GENERAL,
-			.srcQueueFamilyIndex = dev->caps.graphics_family,
-			.dstQueueFamilyIndex = VK_QUEUE_FAMILY_FOREIGN_EXT,
-			.image = image->image,
-			.subresourceRange = {
-				.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-				.levelCount = 1,
-				.layerCount = 1,
-			},
-		};
-		/* The image ends the frame back in the foreign owner's hands, so that
-		 * is what the next frame must acquire from. */
-		image->layout = VK_IMAGE_LAYOUT_GENERAL;
-	} else {
-		image->layout = new_layout;
-	}
-}
-
-static void batch_submit(struct avk_barrier_batch *batch, VkCommandBuffer cb,
-		struct avk_renderer *renderer) {
-	if (batch->count == 0) {
-		return;
-	}
-	VkDependencyInfo dep = {
-		.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-		.imageMemoryBarrierCount = batch->count,
-		.pImageMemoryBarriers = batch->barriers,
-	};
-	vkCmdPipelineBarrier2(cb, &dep);
-	renderer->stats.barriers += batch->count;
-	batch->count = 0;
+	return !no_foreign && avk_image_is_foreign(image);
 }
 
 /* The rectangles a command may actually touch: its own clip, intersected with
@@ -428,110 +328,49 @@ static void command_region(const struct avk_cmd *cmd,
 	pixman_region32_intersect(out, out, (pixman_region32_t *)damage);
 }
 
-uint64_t avk_render_frame(struct avk_renderer *renderer,
-		struct avk_image *target, const struct avk_scene *scene,
-		const VkSemaphoreSubmitInfo *wait, uint32_t wait_count,
-		const VkSemaphoreSubmitInfo *signal, uint32_t signal_count) {
-	struct avk_device *dev = renderer->dev;
-	const uint32_t width = target->extent.width;
-	const uint32_t height = target->extent.height;
+/*
+ * The one pass the direct path has: the whole scene, composited into the
+ * target.
+ *
+ * A CALLBACK rather than inline code, because the graph emits this pass's
+ * barriers immediately before calling it and the frame's exit barriers
+ * immediately after -- and that ordering is the thing that has to be
+ * structural. A rendering instance opened by hand between two hand-written
+ * batches was correct here for three milestones and would stop being correct
+ * the first time a second pass was added above it.
+ */
+struct az_compose_ctx {
+	struct avk_renderer *renderer;
+	const struct avk_scene *scene;
+	struct avk_image *target;
+	uint32_t width, height;
+	VkDescriptorSet gradient_set;
+	VkImageLayout target_layout;
+};
 
-	struct timespec start;
-	clock_gettime(CLOCK_MONOTONIC, &start);
-
-	VkCommandBuffer cb = avk_cmd_ring_begin(&renderer->ring);
-	if (cb == VK_NULL_HANDLE) {
-		return 0;
-	}
-	avk_debug_label_begin(dev, cb, "avk frame %" PRIu64,
-		renderer->stats.frames);
-
-	/*
-	 * The slot, captured now: ring.recording goes back to -1 at submit, and
-	 * the timestamp bookkeeping needs it afterwards. Query reset must happen
-	 * outside a render pass, which is why it is here and not beside the first
-	 * mark.
-	 */
-	uint32_t ts_slot = (uint32_t)renderer->ring.recording;
-	avk_timestamps_begin(&renderer->timestamps, cb, ts_slot);
-	avk_timestamps_mark(&renderer->timestamps, cb, ts_slot,
-		AVK_TS_FRAME_BEGIN, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT);
-
-	/*
-	 * The frame's gradient data, sized BEFORE anything is recorded.
-	 *
-	 * Sizing up front is what makes the buffer safe to grow: once a draw has
-	 * been recorded referring to an index in it, the buffer behind that index
-	 * may not be replaced. So the demand is counted in one pass over the
-	 * commands, the slot is grown at most once, and the packing that follows
-	 * can only ever fit.
-	 *
-	 * The slot is the COMMAND RING's slot, deliberately. avk_cmd_ring_begin()
-	 * above has already waited for that slot's previous submission to complete,
-	 * which is precisely the condition for overwriting the buffer and for
-	 * updating its descriptor -- so gradient data needs no synchronisation of
-	 * its own, and adds no CPU wait.
-	 */
-	uint32_t gradient_vec4s = 0;
-	for (size_t i = 0; i < scene->len; i++) {
-		const struct avk_gradient *g = &scene->cmds[i].gradient;
-		if (g->type != AVK_GRADIENT_NONE && g->color_count > 0) {
-			gradient_vec4s += 2 + g->color_count;
-		}
-	}
-	VkDescriptorSet gradient_set = VK_NULL_HANDLE;
-	if (gradient_vec4s > 0) {
-		gradient_set = avk_gradient_store_begin(&renderer->gradients,
-			(uint32_t)renderer->ring.recording, gradient_vec4s);
-		if (gradient_set == VK_NULL_HANDLE) {
-			/* Loud, and then draw the frame without them. A gradient rect
-			 * whose record could not be written would sample whatever the
-			 * previous frame left in the buffer, which is worse than a solid
-			 * colour and much harder to recognise. */
-			avk_log(AVK_ERROR, "avk: no room for %u vec4s of gradient data; "
-				"this frame's gradients are drawn as solid colour",
-				gradient_vec4s);
-		}
-	}
-
-	/* Every layout transition this frame needs, decided up front. */
-	struct avk_barrier_batch batch = { .count = 0 };
-	struct avk_barrier_batch release = { .count = 0 };
-	/* A scan-out buffer is foreign too -- KMS is its other owner -- so it is
-	 * rendered in GENERAL rather than COLOR_ATTACHMENT_OPTIMAL. The optimal
-	 * layout would have to be released back to GENERAL anyway, and dynamic
-	 * rendering is perfectly happy with GENERAL. */
-	VkImageLayout target_layout = avk_image_is_foreign(target)
-		? VK_IMAGE_LAYOUT_GENERAL
-		: VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-	batch_add(&batch, &release, dev, target, target_layout,
-		VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-		VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT
-		| VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
-	for (size_t i = 0; i < scene->len; i++) {
-		const struct avk_cmd *cmd = &scene->cmds[i];
-		if (cmd->type == AVK_CMD_TEXTURE && cmd->image != NULL) {
-			batch_add(&batch, &release, dev, cmd->image,
-				VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-				VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-				VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
-		}
-	}
-	batch_submit(&batch, cb, renderer);
+static void az_record_compose(VkCommandBuffer cb, void *user) {
+	struct az_compose_ctx *ctx = user;
+	struct avk_renderer *renderer = ctx->renderer;
+	const struct avk_scene *scene = ctx->scene;
+	struct avk_image *target = ctx->target;
+	const uint32_t width = ctx->width;
+	const uint32_t height = ctx->height;
+	const VkImageLayout target_layout = ctx->target_layout;
+	VkDescriptorSet gradient_set = ctx->gradient_set;
 
 	/*
 	 * loadOp LOAD, always.
 	 *
 	 * A damaged frame redraws only part of the target and the rest must
-	 * survive; CLEAR here would be a full-screen clear masquerading as
-	 * damage tracking, which looks correct on a full-damage frame and
-	 * destroys everything else. The background clear is a normal draw
-	 * command, scissored to the damage like everything else.
+	 * survive; CLEAR here would be a full-screen clear masquerading as damage
+	 * tracking, which looks correct on a full-damage frame and destroys
+	 * everything else. The background clear is a normal draw command,
+	 * scissored to the damage like everything else.
 	 *
 	 * AVK_NO_LOAD_PRESERVE=1 replaces it with CLEAR to magenta, which is the
 	 * break test for partial damage: it is precisely the mistake described
-	 * above, and everything outside the damage becomes a colour nothing else
-	 * on a desktop produces.
+	 * above, and everything outside the damage becomes a colour nothing else on
+	 * a desktop produces.
 	 *
 	 * DONT_CARE was tried first and MEASURED USELESS as a break. It means the
 	 * contents become undefined, and a driver is entitled to leave them alone
@@ -542,7 +381,7 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 	bool break_preserve = avk_no_load_preserve();
 	VkRenderingAttachmentInfo color = {
 		.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-		.imageView = VK_NULL_HANDLE,   /* filled below */
+		.imageView = target->view,
 		.imageLayout = target_layout,
 		.loadOp = break_preserve
 			? VK_ATTACHMENT_LOAD_OP_CLEAR
@@ -550,27 +389,6 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 		.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
 		.clearValue = { .color = { .float32 = { 1.0f, 0.0f, 1.0f, 1.0f } } },
 	};
-
-	if (target->view == VK_NULL_HANDLE) {
-		VkImageViewCreateInfo view_info = {
-			.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-			.image = target->image,
-			.viewType = VK_IMAGE_VIEW_TYPE_2D,
-			.format = target->format,
-			.subresourceRange = {
-				.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-				.levelCount = 1,
-				.layerCount = 1,
-			},
-		};
-		if (!avk_check(vkCreateImageView(dev->dev, &view_info, NULL,
-				&target->view), "vkCreateImageView (target)")) {
-			avk_cmd_ring_abandon(&renderer->ring);
-			return 0;
-		}
-		AVK_LIVE_INC(dev, image_views);
-	}
-	color.imageView = target->view;
 
 	VkRenderingInfo rendering = {
 		.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
@@ -911,11 +729,154 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 	}
 
 	vkCmdEndRendering(cb);
+}
 
-	/* Hand every foreign image back to its real owner: the client that will
-	 * draw into its buffer again, and KMS, which is about to scan this frame
-	 * out. */
-	batch_submit(&release, cb, renderer);
+
+uint64_t avk_render_frame(struct avk_renderer *renderer,
+		struct avk_image *target, const struct avk_scene *scene,
+		const VkSemaphoreSubmitInfo *wait, uint32_t wait_count,
+		const VkSemaphoreSubmitInfo *signal, uint32_t signal_count) {
+	struct avk_device *dev = renderer->dev;
+	const uint32_t width = target->extent.width;
+	const uint32_t height = target->extent.height;
+
+	struct timespec start;
+	clock_gettime(CLOCK_MONOTONIC, &start);
+
+	VkCommandBuffer cb = avk_cmd_ring_begin(&renderer->ring);
+	if (cb == VK_NULL_HANDLE) {
+		return 0;
+	}
+	avk_debug_label_begin(dev, cb, "avk frame %" PRIu64,
+		renderer->stats.frames);
+
+	/*
+	 * The slot, captured now: ring.recording goes back to -1 at submit, and
+	 * the timestamp bookkeeping needs it afterwards. Query reset must happen
+	 * outside a render pass, which is why it is here and not beside the first
+	 * mark.
+	 */
+	uint32_t ts_slot = (uint32_t)renderer->ring.recording;
+	avk_timestamps_begin(&renderer->timestamps, cb, ts_slot);
+	avk_timestamps_mark(&renderer->timestamps, cb, ts_slot,
+		AVK_TS_FRAME_BEGIN, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT);
+
+	/*
+	 * The frame's gradient data, sized BEFORE anything is recorded.
+	 *
+	 * Sizing up front is what makes the buffer safe to grow: once a draw has
+	 * been recorded referring to an index in it, the buffer behind that index
+	 * may not be replaced. So the demand is counted in one pass over the
+	 * commands, the slot is grown at most once, and the packing that follows
+	 * can only ever fit.
+	 *
+	 * The slot is the COMMAND RING's slot, deliberately. avk_cmd_ring_begin()
+	 * above has already waited for that slot's previous submission to complete,
+	 * which is precisely the condition for overwriting the buffer and for
+	 * updating its descriptor -- so gradient data needs no synchronisation of
+	 * its own, and adds no CPU wait.
+	 */
+	uint32_t gradient_vec4s = 0;
+	for (size_t i = 0; i < scene->len; i++) {
+		const struct avk_gradient *g = &scene->cmds[i].gradient;
+		if (g->type != AVK_GRADIENT_NONE && g->color_count > 0) {
+			gradient_vec4s += 2 + g->color_count;
+		}
+	}
+	VkDescriptorSet gradient_set = VK_NULL_HANDLE;
+	if (gradient_vec4s > 0) {
+		gradient_set = avk_gradient_store_begin(&renderer->gradients,
+			(uint32_t)renderer->ring.recording, gradient_vec4s);
+		if (gradient_set == VK_NULL_HANDLE) {
+			/* Loud, and then draw the frame without them. A gradient rect
+			 * whose record could not be written would sample whatever the
+			 * previous frame left in the buffer, which is worse than a solid
+			 * colour and much harder to recognise. */
+			avk_log(AVK_ERROR, "avk: no room for %u vec4s of gradient data; "
+				"this frame's gradients are drawn as solid colour",
+				gradient_vec4s);
+		}
+	}
+
+	/*
+	 * WHAT THE FRAME TOUCHES, DECLARED.
+	 *
+	 * The target is written as a colour attachment; every distinct sampled image
+	 * is read. That is the entire dependency structure of a direct composition,
+	 * and stating it is all this file does -- the barriers, the layouts and the
+	 * foreign acquire/release that follow from it are the graph's to derive.
+	 *
+	 * avk_graph_add_image() interns by VkImage, so two commands sampling one
+	 * surface produce one resource and one barrier. That used to be an explicit
+	 * duplicate check in the batch builder; it is now a property of the model.
+	 */
+	avk_graph_reset(&renderer->graph);
+	struct avk_graph *graph = &renderer->graph;
+
+	bool target_foreign = az_foreign(target);
+	uint32_t r_target = avk_graph_add_image(graph, target, target_foreign,
+		target_foreign ? AVK_EXIT_FOREIGN : AVK_EXIT_KEEP);
+	if (r_target == AVK_GRAPH_INVALID) {
+		avk_cmd_ring_abandon(&renderer->ring);
+		return 0;
+	}
+	/* GENERAL for a scan-out buffer, COLOR_ATTACHMENT_OPTIMAL for one of our
+	 * own -- the graph's rule, asked for here because the rendering instance
+	 * has to name the layout its attachment is in. */
+	VkImageLayout target_layout = target_foreign
+		? VK_IMAGE_LAYOUT_GENERAL
+		: VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+	if (target->view == VK_NULL_HANDLE) {
+		VkImageViewCreateInfo view_info = {
+			.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+			.image = target->image,
+			.viewType = VK_IMAGE_VIEW_TYPE_2D,
+			.format = target->format,
+			.subresourceRange = {
+				.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+				.levelCount = 1,
+				.layerCount = 1,
+			},
+		};
+		if (!avk_check(vkCreateImageView(dev->dev, &view_info, NULL,
+				&target->view), "vkCreateImageView (target)")) {
+			avk_cmd_ring_abandon(&renderer->ring);
+			return 0;
+		}
+		AVK_LIVE_INC(dev, image_views);
+	}
+
+	struct az_compose_ctx ctx = {
+		.renderer = renderer,
+		.scene = scene,
+		.target = target,
+		.width = width,
+		.height = height,
+		.gradient_set = gradient_set,
+		.target_layout = target_layout,
+	};
+	avk_graph_pass_begin(graph, "compose_scene", az_record_compose, &ctx);
+	avk_graph_use(graph, r_target, AVK_USE_COLOR_WRITE, NULL);
+	for (size_t i = 0; i < scene->len; i++) {
+		const struct avk_cmd *cmd = &scene->cmds[i];
+		if (cmd->type != AVK_CMD_TEXTURE || cmd->image == NULL) {
+			continue;
+		}
+		bool foreign = az_foreign(cmd->image);
+		uint32_t r = avk_graph_add_image(graph, cmd->image, foreign,
+			foreign ? AVK_EXIT_FOREIGN : AVK_EXIT_KEEP);
+		if (r != AVK_GRAPH_INVALID) {
+			avk_graph_use(graph, r, AVK_USE_SAMPLED_READ, NULL);
+		}
+	}
+	avk_graph_pass_end(graph);
+
+	/* Compile and record: barriers, the pass, then the exit transitions that
+	 * hand every foreign image back to its real owner. */
+	avk_graph_execute(graph, cb, &renderer->timestamps, ts_slot);
+	renderer->stats.barriers += graph->stats.image_transitions
+		+ graph->stats.memory_barriers;
 
 	/* BOTTOM_OF_PIPE against the frame's TOP_OF_PIPE: the pair brackets
 	 * everything this command buffer does, including the release barriers,
