@@ -1812,3 +1812,24 @@ change. What M4E did was make the cost visible for the first time.
 **Relevant to M4F**, which adds passes and therefore barriers: at 45 µs a call
 on this hardware, a blur that adds four barrier flushes costs ~90 µs of
 recording before it draws anything. Worth measuring there rather than assuming.
+
+### Confirmed over a longer run
+
+Re-read on the same session at **8 349 frames**, six times the sample above:
+
+```text
+graph_build_ns        2 645  (was 2 820)      graph_allocs   6, stable
+graph_barrier_ns     44 439  (was 45 147)     graph_passes   1
+record_ns           263 091  (was 268 564)    graph_barriers 2
+
+gpu_dropped   0 of 8348 samples       cpu_frame_us  p50 240  p95 500
+all six invariants 0                  VUID/SYNC-HAZARD 0     ERROR/WARN 0
+RSS 201 MB -- unchanged from the 1372-frame reading
+```
+
+Every figure reproduces within noise, and **RSS is identical over six times the
+frames**, which is the leak signal that matters for a pool and three arenas that
+are reset rather than freed. `graph_allocs` moved 5 → 6 once, when the scene
+gained a resource it had not seen before, and then stopped — which is the shape
+the flat-array design promises: bounded growth to the scene's demand, not
+per-frame churn.
