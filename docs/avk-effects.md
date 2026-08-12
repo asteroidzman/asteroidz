@@ -1458,3 +1458,75 @@ AZ_SHADOW_SYMMETRIC       51/58 -- re-centres the envelope on the window;
 cross-output clip path — a shadow goes through the same
 `client_clips_to_monitor()` predicate M4B.1 fixed — so the break would be a
 duplicate of the existing clip-policy one.
+
+## M4D.3 — shadows in a running compositor
+
+`contrib/avk-shadow-test.sh`, 22 assertions, 6 cases. What it adds over the
+unit suite is everything the unit suite structurally cannot see: whether the
+compositor ever *asks* for a shadow, whether it asks on the right windows,
+whether the answer survives a fractional output scale, and whether a shadow
+crosses a monitor seam with its window.
+
+### The trap it is built around
+
+**asteroidz shows shadows on FLOATING windows only.** `shadow_only_floating`
+defaults to 1, because a tiled window's shadow lands on its neighbour rather
+than on the wallpaper. A fixture that spawns a client, leaves it tiled and then
+asserts on a shadow is asserting on nothing, and would score identically
+against a renderer that dropped every shadow node — which is exactly what AVK
+did until M4D.1. Every case checks `shadow_draws` as a premise first, and the
+suite opens by asserting the policy in both directions: **0 draws tiled, 2
+after `toggle_floating`.**
+
+### Measured on screen
+
+Luma 6 px out from a real capture, against a background of 128:
+
+| | top | left | right | bottom |
+|---|---|---|---|---|
+| darkening | 0.086 | 0.273 | 0.273 | **0.547** |
+
+Bottom is 2× the sides, the sides 3.2× the top, and left/right agree exactly.
+
+**Scale 1.5 is where the sigma fix shows.** The shadow's reach below the window
+measures **29 device px at scale 1.0 and 44 at scale 1.5** — a ratio of 1.517.
+An unscaled sigma would have left the falloff tight against a box that grew,
+and the reach would have stayed near 29.
+
+**The seam**: a 600 px window straddling x=1920, sampled along the row 6 px
+below it across both outputs — 583 samples, max step **2.00/255**, shadow depth
+70/255. A shadow clipped to its own monitor would stop dead at the seam.
+
+**Idle**: 11 frames, then 11 frames four seconds later. Delta **0**, IPC round
+trip **1 ms**. M4C.3H's invariant holds for shadows, and it holds because all
+six shadow setters were already dirty-checked — `client_apply_focus_effects()`
+calls `wlr_scene_shadow_set_color()` on every focus tick for both lobes, which
+is the exact call pattern that melted the event loop for gradients.
+
+**Move**: worst residual darkening where the shadow used to be, **0.00/255**.
+
+### One trap paid for, again
+
+The scale case first ran with a `monitorrule { scale 1.5 }` block and reported
+**scale 1**. That block parses as key:value pairs and is silently ignored — the
+same mistake the cursor-lifetime suite once made, claiming mixed scales while
+running both outputs at 1. It was caught only because the case asserts the
+premise (`the output really is at 1.5`) before measuring anything. `HL_SCALE1`
+is the knob that works.
+
+### A break that gives no coverage here, and is not claimed
+
+`BREAK=shadow-single-radius` scores **22 of 22** against this suite. That is
+not a pass — it means zero coverage, and it is listed in the fixture as such
+rather than quietly kept. The reason is a real fact about the producer:
+
+**asteroidz never creates a shadow with four different corner radii.**
+`client_apply_border()` sets them through `corner_radii_from_location()`, which
+is all-or-nothing, and the titlebar shadows take a single scalar. Borders *do*
+vary per corner (`titlebar_apply_corner_rule`); shadows do not. The per-corner
+shadow path is required by `struct fx_corner_radii` and is correct, but it is
+exercised by `tests/test-avk-shadow.c` alone, where a constructed 0/7/19/37
+case fails the break 56 of 58.
+
+`BREAK=shadow-symmetric` fails this suite **19 of 22**, on exactly the two
+directional assertions and the scale one.

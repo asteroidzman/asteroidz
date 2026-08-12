@@ -3073,6 +3073,23 @@ static cJSON *az_avk_stats_json(void) {
 		(double)az_avk_renderer_stat_sum(offsetof(struct avk_renderer_stats,
 			asymmetric_border_draws)));
 	/*
+	 * M4D. The same argument as the border counters above, and the trap they
+	 * exist to catch is sharper here: asteroidz shows shadows on FLOATING
+	 * windows only, so a headless fixture that leaves its client tiled and
+	 * then asserts on a shadow is asserting on nothing -- and would score just
+	 * as well against a renderer that dropped every shadow node. Every
+	 * shadow assertion checks this counter as a premise first.
+	 */
+	cJSON_AddNumberToObject(o, "shadow_draws",
+		(double)az_avk_renderer_stat_sum(offsetof(struct avk_renderer_stats,
+			shadow_draws)));
+	cJSON_AddNumberToObject(o, "rounded_shadow_draws",
+		(double)az_avk_renderer_stat_sum(offsetof(struct avk_renderer_stats,
+			rounded_shadow_draws)));
+	cJSON_AddNumberToObject(o, "asymmetric_shadow_draws",
+		(double)az_avk_renderer_stat_sum(offsetof(struct avk_renderer_stats,
+			asymmetric_shadow_draws)));
+	/*
 	 * M4C. Two groups, and the distinction between them is the point:
 	 *
 	 *   *_draws / colors_processed   what the frame ASKED FOR
