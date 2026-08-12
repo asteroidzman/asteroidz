@@ -1611,3 +1611,46 @@ no configuration that produces a conic gradient, a banded one, or an off-centre
 origin, so those three rest entirely on the CPU oracle in
 `tests/test-avk-gradient.c`. That is a property of the compositor's feature set,
 not a gap in the testing.
+
+## M4D live acceptance (e775b26, 2026-08-12)
+
+Installed binary `0.24.0(e775b26)`, matching the tested implementation commit
+exactly; the compositor was restarted into it (process start 10:46:05 against
+an install at 10:45:05).
+
+**Shadows accepted** on the first live run, with `blur-background` skipped —
+that is an M4F feature and the user's judgement was explicitly conditioned on
+it: "the blur part is skipped, in that case the shadows are accepted".
+
+**Anti-banding accepted** on the second. The reported defect was concentric
+rings around every window on a flat grey settings panel, measured from the
+user's own screenshot at 9 output codes across 130 px in runs of
+41,27,15,11,11,9,8,3,2 px. After M4D.4: "very good".
+
+Both are recorded as **observations**, not measurements. The pixel measurements
+are `tests/test-avk-shadow.c` (82 checks) and `contrib/avk-shadow-test.sh`
+(28); what the live session contributes is that the thing on screen is the
+thing the fixtures describe.
+
+Live state at acceptance:
+
+```text
+gpu_frame_us_avg        122.6   over 1729 samples, 0 dropped
+                                = 1.8% of DP-1's 6944us budget (3840x2160@144)
+IPC round trip          1-2 ms
+RSS                     201 MB
+shadow_draws            1677, all rounded, 8 asymmetric
+cpu_sync_waits          0       present_sync_failures   0
+target_state_violations 0       lifecycle_violations    0
+fallback_frames         0       dmabuf_import_failures  0
+```
+
+The user's own profile — `size 72`, `blur 72`, `position y 18`,
+`color 0x00000050`, contact `size 2 / blur 3` — is much broader than the
+shipped default the fixtures use, so the live run exercised a shape no
+deterministic test covers.
+
+**Not claimed**: an idle frame delta. The live desktop shows 82 frames over 5
+idle seconds, which is a bar clock and a cursor rather than a shadow repaint
+storm; the shadow-specific idle convergence is asserted headlessly, where
+nothing else is drawing (delta 0).
