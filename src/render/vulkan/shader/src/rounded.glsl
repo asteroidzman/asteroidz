@@ -35,6 +35,22 @@
  * one convention in AVK.
  */
 
+/*
+ * SHADER INVARIANT, PERMANENT: no fragment derivative may be evaluated in
+ * non-uniform control flow.
+ *
+ * fwidth() below is a 2x2-quad derivative. If any invocation of that quad took
+ * a different branch and never produced `dist`, the value the survivors read is
+ * UNDEFINED -- not wrong-looking, undefined, which means correct output is a
+ * property of the compiler's mood. This shader shipped that way through the
+ * whole of M4A and rendered perfectly; it only broke when M4B called the helper
+ * a second time and the layout changed.
+ *
+ * So: compute dist and aa unconditionally, branch afterwards. A uniform test on
+ * a push constant (the all-zero-radii early-out) is fine, because it cannot
+ * split a quad. A test on gl_FragCoord is not. Vulkan validation does NOT catch
+ * this -- there is no layer for it -- so the structure is the only guard.
+ */
 float az_corner_dist(vec2 q, float radius) {
 	return min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - radius;
 }

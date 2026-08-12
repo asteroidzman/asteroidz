@@ -19,6 +19,7 @@
 //                  continuous delta (what a real mouse wheel sends)
 //   drag:<x2>,<y2>   left-button press at x,y, move in steps to x2,y2, release
 //   draghold:<x2>,<y2>,<ms>  same, but WAIT ms with the button still down
+//   rdraghold:<x2>,<y2>,<ms> same for the right button (resize binding)
 //                    before releasing, so a test can capture the held state
 //                    -- for testing a Super+drag-style mouse binding, run
 //                    this via `wlvkbd hold LEFTMETA -- wlvptr ... drag:...`
@@ -137,7 +138,8 @@ int main(int argc, char **argv) {
 			zwlr_virtual_pointer_v1_frame(ptr);
 			wl_display_roundtrip(display);
 		} else if (!strncmp(action, "drag:", 5) || !strncmp(action, "rdrag:", 6) ||
-				   !strncmp(action, "draghold:", 9)) {
+				   !strncmp(action, "draghold:", 9) ||
+				   !strncmp(action, "rdraghold:", 10)) {
 			/*
 			 * draghold:<x2>,<y2>,<ms> presses, moves, WAITS with the button
 			 * still down, and only then releases. Plain drag: does all three
@@ -146,9 +148,11 @@ int main(int argc, char **argv) {
 			 * the button comes up, with no geometry change" is a question that
 			 * can only be asked while the button is still down.
 			 */
-			bool hold = !strncmp(action, "draghold:", 9);
-			bool right = !strncmp(action, "rdrag:", 6);
-			const char *coords = action + (hold ? 9 : (right ? 6 : 5));
+			bool rhold = !strncmp(action, "rdraghold:", 10);
+			bool hold = rhold || !strncmp(action, "draghold:", 9);
+			bool right = rhold || !strncmp(action, "rdrag:", 6);
+			const char *coords = action +
+				(rhold ? 10 : (hold ? 9 : (right ? 6 : 5)));
 			int32_t x2 = 0, y2 = 0, hold_ms = 0;
 			if (sscanf(coords, "%d,%d,%d", &x2, &y2, &hold_ms) < 2) {
 				fprintf(stderr, "wlvptr: bad drag coords: %s\n", coords);

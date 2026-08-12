@@ -672,6 +672,9 @@ hl_super_drag() {
 # down. Backgrounded by the caller, which then captures the held state before
 # the release lands. The only way to ask whether a decoration changes when the
 # button comes up while the geometry does not.
+hl_super_rdrag_hold() {
+	"$HL_WLVKBD" hold LEFTMETA -- "$HL_WLVPTR" "$1" "$2" "$HL_PTR_EXTENT_W" "$HL_PTR_EXTENT_H" "rdraghold:$3,$4,$5"
+}
 hl_super_drag_hold() {
 	"$HL_WLVKBD" hold LEFTMETA -- "$HL_WLVPTR" "$1" "$2" "$HL_PTR_EXTENT_W" "$HL_PTR_EXTENT_H" "draghold:$3,$4,$5"
 }

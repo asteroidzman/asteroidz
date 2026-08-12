@@ -1703,8 +1703,25 @@ void client_draw_shield(Client *c, struct wlr_box clip_box) {
 	struct wlr_box surface_relative_geom;
 	client_get_clip(c, &surface_relative_geom);
 
-	if (c == grabc || (!ISSCROLLTILED(c) && !c->animation.tagining &&
-					   !c->animation.tagouting)) {
+	/*
+	 * The shield covers the client, so it takes the client's clip -- the SAME
+	 * policy, not a third copy of the conditions. This used to spell them out
+	 * itself, with two differences from clip_to_hide(): it exempted `c ==
+	 * grabc`, and it omitted `tagouted`. Both were audited before being folded
+	 * in, and neither was observable:
+	 *
+	 *  - grabc: a resize grab on a scroll-tiled client sets grabc but changes
+	 *    no geometry (begin_move_or_resize prepares a resize corner only for
+	 *    floating clients), and a move grab floats the client first, which
+	 *    makes it uncropped under either spelling.
+	 *  - tagouted: that state is entered by client_set_scene_enabled(c, false),
+	 *    so the client and its shield are not rendered at all and the clip box
+	 *    is moot.
+	 *
+	 * Unobservable is not the same as harmless: it is a duplicate definition of
+	 * client visibility, and the last one of those cost a cross-output bug.
+	 */
+	if (!client_clips_to_monitor(c)) {
 		clip_box.x = surface_relative_geom.x;
 		clip_box.y = surface_relative_geom.y;
 		clip_box.width = c->animation.current.width - 2 * (int32_t)c->bw;

@@ -392,3 +392,71 @@ down. Two things worth recording about it:
   the instant of release; it changes at the next layout event. A drag/release
   regression written without forcing a re-layout passes against the broken
   build, and this one did until the nudge was added.
+
+## M4B.2 — the clip-policy audit, finished
+
+Every place that decides whether part of a client is cropped to `c->mon`:
+
+| consumer | floating | floating+grab | scroll-tiled | scroll-tiled+grab | tagining | tagouted | tagouting |
+|---|---|---|---|---|---|---|---|
+| surface (`clip_to_hide`) | UNCLIPPED | UNCLIPPED | CLIPPED | CLIPPED | CLIPPED | CLIPPED | CLIPPED |
+| surface (`resize()` grab path) | UNCLIPPED | UNCLIPPED | — | UNCLIPPED¹ | — | — | — |
+| border (`apply_border`) | UNCLIPPED | UNCLIPPED | CLIPPED | CLIPPED | CLIPPED | CLIPPED² | CLIPPED |
+| shadow (`client_draw_one_shadow`) | UNCLIPPED | UNCLIPPED | CLIPPED | CLIPPED | CLIPPED | CLIPPED² | CLIPPED |
+| split indicator (`apply_split_border`) | UNCLIPPED | UNCLIPPED | CLIPPED | CLIPPED | CLIPPED | CLIPPED² | CLIPPED |
+| blur backdrop (`apply_border`, de0b5c5) | UNCLIPPED | UNCLIPPED | CLIPPED | CLIPPED | CLIPPED | CLIPPED² | CLIPPED |
+| shield (`client_draw_shield`) | UNCLIPPED | UNCLIPPED | CLIPPED | CLIPPED | CLIPPED | CLIPPED² | CLIPPED |
+
+All decoration rows are now one predicate, `client_clips_to_monitor()`.
+
+¹ **Unreachable, and that is the finding.** `begin_move_or_resize()` prepares a
+resize corner only when the client is floating; for a scroll-tiled one
+`CurResize` merely sets a cursor. So the grab sets `grabc` and changes no
+geometry, `resize()`'s fast path is never driven into an overflowing state, and
+the two policies cannot visibly diverge. Verified by contrast — the same held
+right-drag resizes a *floating* window from 700x500 to 950x450, so the gesture
+itself works. `contrib/avk-clip-policy-test.sh CASE=resizegrab` records this as
+a **skip with a reason**, not as coverage and not as a failure.
+
+² **Not rendered.** `tagouted` is entered by `client_set_scene_enabled(c,
+false)`, so the client and everything decorating it are disabled. The cell is
+academic, which is why `client_draw_shield()` could omit the condition for so
+long without anyone noticing. It was folded in anyway: unobservable is not the
+same as harmless, and a duplicate definition of client visibility is exactly
+what cost the cross-output bug.
+
+### `c == grabc`
+
+Original purpose: keep decorations from being cropped while a window is dragged
+past a monitor edge, so a drag looks right. It worked, and it hid the defect —
+the border was whole while the button was down and lost its far half at the next
+layout event. It is gone from every clipping decision. Two other `grabc` uses
+are unrelated and stay: `buffer_set_effect()` disables overview scaling during a
+drag, and `resize()` takes a no-animation fast path.
+
+### Border-damage assertions in `avk-border-test.sh`
+
+| assertion | protected invariant | falsifier | status |
+|---|---|---|---|
+| nothing of the old border survives a move | move damages the vacated ring | none that works¹ | DEFENSIVE ONLY |
+| nothing of the old border survives a resize | resize damages the shrunk ring | none that works¹ | DEFENSIVE ONLY |
+| nothing of the old border survives unfocus | focus change damages the ring | none that works¹ | DEFENSIVE ONLY |
+| no active-colour border survives losing focus | the whole ring is recoloured | none that works¹ | DEFENSIVE ONLY |
+| no CPU sync wait / fallback frame introduced | steady-state frame path | counters, always live | VALID |
+
+¹ `AZ_AVK_DAMAGE_HOLE` makes them pass for the wrong reason — it applies from
+compositor start, so the band is frozen before a border is ever painted into it
+and "no stale border survives" is true because none was ever there. No switch
+was written whose only purpose is turning them red. Move-damage correctness is
+carried by `avk-rounded-alpha-test.sh` and `avk-damage-test.sh`, which do have
+working falsifiers.
+
+### The derivative invariant
+
+`contrib/check-shader-derivatives.sh` enforces it structurally: between a
+function's start and its first `fwidth`/`dFdx`/`dFdy` there may be no branch on
+`gl_FragCoord` or a varying. It strips comments first — the first version
+matched the word `fwidth()` in the explanatory comment above the code, latched
+"already seen", and passed against a deliberately reintroduced defect. It now
+fails against that injection and passes on the tree. Vulkan validation does not
+check this and is not claimed to.
