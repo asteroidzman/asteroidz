@@ -52,8 +52,20 @@
 set -u
 
 HL_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# The compositor binary. Resolved HERE, at source time, from $ASTEROIDZ -- so a
+# fixture that wants to run two different builds must set HL_ASTEROIDZ directly
+# before each hl_start, NOT $ASTEROIDZ, which is read once and never again.
+#
+# That is not a style note. Two M4E fixtures set `ASTEROIDZ=<old> hl_start`,
+# both ran the CURRENT build twice, and both reported a clean comparison: a
+# byte-identical framebuffer and a matching cost table, neither of which said
+# anything about the old binary. hl_start now logs the path it starts and
+# hl_binary() reports it, so a fixture can assert it got the build it asked for.
 HL_ASTEROIDZ="${ASTEROIDZ:-$HL_REPO/build/asteroidz}"
 [ -x "$HL_ASTEROIDZ" ] || HL_ASTEROIDZ=/usr/bin/asteroidz
+
+# The binary the most recent hl_start actually launched.
+hl_binary() { echo "${HL_STARTED_BINARY:-}"; }
 HL_WLVPTR="$HL_REPO/contrib/wlvptr/wlvptr"
 HL_WLVKBD="$HL_REPO/contrib/wlvkbd/wlvkbd"
 HL_WLLAYER="$HL_REPO/contrib/wllayer/wllayer"
@@ -107,6 +119,7 @@ hl_start() { # hl_start [EXTRA_KDL]
 		command -v "$t" >/dev/null || { echo "hl_start: missing tool: $t" >&2; exit 1; }
 	done
 	[ -x "$HL_ASTEROIDZ" ] || { echo "hl_start: no asteroidz binary at $HL_ASTEROIDZ" >&2; exit 1; }
+	HL_STARTED_BINARY="$HL_ASTEROIDZ"
 	[ -x "$HL_WLVPTR" ] || { echo "hl_start: wlvptr not built -- run: cd contrib/wlvptr && make" >&2; exit 1; }
 	[ -x "$HL_WLVKBD" ] || { echo "hl_start: wlvkbd not built -- run: cd contrib/wlvkbd && make" >&2; exit 1; }
 	[ -x "$HL_WLLAYER" ] || { echo "hl_start: wllayer not built -- run: cd contrib/wllayer && make" >&2; exit 1; }

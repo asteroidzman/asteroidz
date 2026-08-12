@@ -453,6 +453,18 @@ Fields worth knowing:
 | `cursor_import_failures` | the cursor image would not go to the GPU. Also expected to be 0 |
 | `cursor_culled` | cursors discarded as entirely outside this output. Defensive only — `wlr_output_cursor.visible` is per-output and wlroots computes it, so a cursor on another monitor is skipped as not-visible before this test is reached. A permanent 0 is correct, not missing coverage |
 | `cursor_moves` | frames whose cursor box differs from the previous frame's. **Not** a count of pointer motion events — several can land inside one frame — because what matters here is what drives damage |
+| `record_us_avg` | CPU wall clock `avk_render_frame()` spends recording and submitting, per frame. **Not GPU time** — that is `gpu_frame_us_avg`, and the two are separate fields because one number would understate a shader-bound frame and overstate a submission-bound one |
+| `gpu_frame_us_avg` | mean GPU frame time over completed timestamp samples, or null where the queue family cannot write timestamps. A mean over *every output's* frames, since a renderer is shared by every output using its `VkFormat` |
+| `gpu_samples` / `gpu_dropped` | timestamp pairs read back, and pairs lost because their ring slot came round before anyone collected them. A gap in statistics, not a correctness problem |
+| `graph_passes` / `graph_resources` / `graph_uses` | the render graph of the **last frame each renderer built**, not a run total — these are reset per frame. On the direct path `graph_passes` is 1, however many windows are on screen |
+| `graph_barriers` | `vkCmdPipelineBarrier2` **calls** — the thing that costs a pipeline flush. 2 on a real output: the acquire batch before the pass, and the foreign release after it |
+| `graph_image_transitions` | `VkImageMemoryBarrier2` structures inside those calls that change a layout |
+| `graph_buffer_barriers` | **zero by construction.** The graph declares image resources only; the gradient buffer and the command buffer live in a per-frame slot the command ring has already waited on, so there is no hazard for a barrier to resolve. Reported so the absence is a stated fact rather than an omission |
+| `graph_allocs` | cumulative heap allocations by graph construction. **Must stop rising once the scene settles** — the flat-array design exists to make that true, and reading this twice a few seconds apart is the whole test |
+| `graph_build_ns_avg` | the graph's own per-frame cost, with each pass's record callback **subtracted** — so it is barrier derivation and bookkeeping, not the draw loop. Roughly 110 ns per declared resource plus 1.7us |
+| `transient_acquires` / `_reuses` / `_creates` | the transient image pool. **Zero until M4F**, which is its first consumer; the pool is present and collected every frame so that a lifetime bug and an effect bug cannot arrive together |
+| `transient_unsafe_reuses` | **must be 0.** Images handed out before the GPU finished with them. The only path that can raise it is the `transient-early-reuse` break |
+| `transient_live` / `_bytes` / `_peak_bytes` / `_retires` | pool occupancy, memory held, high-water mark, and entries retired for being idle or over budget |
 | `cursor_damage_pixels` | area AVK drew for the cursor. Two 32x32 boxes per moving frame is the expected shape |
 | `cursor_hw_to_sw` / `cursor_sw_to_hw` | plane handovers in each direction. A recorder starting and stopping produces one of each |
 | `cursor_client_surface_sets` / `cursor_shape_sets` / `cursor_xcursor_sets` | which of the three sources asked for the image. They are three different paths through wlroots and only one was ever broken, so a session with 0 client sets has not exercised what M3.5E fixed |

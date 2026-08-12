@@ -5,6 +5,7 @@
 #include "../command/avk_retire.h"
 #include "../command/avk_timestamp.h"
 #include "../graph/avk_graph.h"
+#include "../graph/avk_transient.h"
 #include "../pipeline/avk_gradient.h"
 #include "../pipeline/avk_pipeline.h"
 #include "avk_scene.h"
@@ -198,6 +199,22 @@ struct avk_renderer {
 	 * about the graph's CONTENT, which describes exactly one output's frame.
 	 */
 	struct avk_graph graph;
+	/*
+	 * M4E.2. Present, collected every frame, and ACQUIRED FROM BY NOTHING YET
+	 * -- M4F's blur is the first consumer.
+	 *
+	 * It lives here rather than waiting for that because the alternative is
+	 * shipping the pool at the same moment as the first thing that stresses it,
+	 * which is how a lifetime bug and an effect bug arrive together and get
+	 * debugged as one. An empty pool costs one branch in
+	 * avk_renderer_collect().
+	 *
+	 * An output resize needs no special handling as a result: entries keyed on
+	 * the old extent are simply never asked for again and retire on the idle
+	 * path like any other size. avk_transient_pool_drop_all() exists for the
+	 * case where that is too slow to wait for.
+	 */
+	struct avk_transient_pool transients;
 	VkFormat format;
 
 	struct avk_renderer_stats stats;

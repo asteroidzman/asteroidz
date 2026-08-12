@@ -36,6 +36,7 @@ bool avk_renderer_init(struct avk_renderer *renderer, struct avk_device *dev,
 	 * return here is recorded and ignored rather than failing init. */
 	avk_timestamps_init(&renderer->timestamps, dev);
 	avk_graph_init(&renderer->graph, dev);
+	avk_transient_pool_init(&renderer->transients, dev, &renderer->retire);
 
 	/* M4A breaks, read once. Each restores a specific wrong implementation
 	 * rather than merely disabling the feature -- "single radius" and "scaled
@@ -94,6 +95,9 @@ void avk_renderer_finish(struct avk_renderer *renderer) {
 	 * onto that queue, and finishing the store destroys only the buffers the
 	 * slots still hold. */
 	avk_gradient_store_finish(&renderer->gradients);
+	/* Before the retire queue is drained, like the gradient store and for the
+	 * same reason: dropping a pool entry pushes its image onto that queue. */
+	avk_transient_pool_finish(&renderer->transients);
 	avk_graph_finish(&renderer->graph);
 	avk_timestamps_finish(&renderer->timestamps);
 	avk_retire_finish(&renderer->retire, renderer->dev);
@@ -103,6 +107,9 @@ void avk_renderer_finish(struct avk_renderer *renderer) {
 }
 
 void avk_renderer_collect(struct avk_renderer *renderer) {
+	/* Before the retire collect, so anything the pool retires this frame is
+	 * eligible on the next one rather than sitting a frame longer. */
+	avk_transient_pool_collect(&renderer->transients);
 	avk_retire_collect(&renderer->retire, renderer->dev);
 	/* Reads back only frames the timeline says are finished, so this adds no
 	 * wait to a path whose whole point is that it has none. */
@@ -894,6 +901,10 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 	/* The submission that reads this frame's gradient buffer, so a later growth
 	 * knows what to retire the old one against. */
 	avk_gradient_store_submitted(&renderer->gradients, value);
+	/* Whatever this frame acquired becomes reusable when the GPU passes this
+	 * point -- and not when recording ended. Harmless with an empty pool, and
+	 * the one line M4F must not have to remember to add. */
+	avk_transient_release_frame(&renderer->transients, value);
 	/* The point whose passing means this frame's marks can be read without
 	 * waiting for anything. */
 	avk_timestamps_submitted(&renderer->timestamps, ts_slot, value);

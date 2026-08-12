@@ -3213,6 +3213,40 @@ static cJSON *az_avk_stats_json(void) {
 	cJSON_AddNumberToObject(o, "graph_buffer_barriers",
 		(double)g_buffer_barriers);
 	cJSON_AddNumberToObject(o, "graph_allocs", (double)g_allocs);
+
+	/*
+	 * M4E.2. Zero across the board until M4F acquires from the pool; reported
+	 * now so that when it stops being zero there is a before to compare with.
+	 * `transient_creates` is the one to watch during a resize: it must stop
+	 * rising once the sizes settle.
+	 */
+	uint64_t t_acquires = 0, t_reuses = 0, t_creates = 0, t_retires = 0;
+	uint64_t t_unsafe = 0, t_bytes = 0, t_peak = 0;
+	uint32_t t_live = 0;
+	for (size_t i = 0; i < AZ_AVK_MAX_FORMATS; i++) {
+		if (!avk.renderers[i].used) {
+			continue;
+		}
+		const struct avk_transient_stats *ts =
+			&avk.renderers[i].renderer.transients.stats;
+		t_acquires += ts->acquires;
+		t_reuses += ts->reuses;
+		t_creates += ts->creates;
+		t_retires += ts->retires;
+		t_unsafe += ts->unsafe_reuses;
+		t_bytes += ts->bytes;
+		t_peak += ts->peak_bytes;
+		t_live += ts->live;
+	}
+	cJSON_AddNumberToObject(o, "transient_acquires", (double)t_acquires);
+	cJSON_AddNumberToObject(o, "transient_reuses", (double)t_reuses);
+	cJSON_AddNumberToObject(o, "transient_creates", (double)t_creates);
+	cJSON_AddNumberToObject(o, "transient_retires", (double)t_retires);
+	/* MUST stay 0. The only path that can raise it is the M4E.4 break. */
+	cJSON_AddNumberToObject(o, "transient_unsafe_reuses", (double)t_unsafe);
+	cJSON_AddNumberToObject(o, "transient_live", (double)t_live);
+	cJSON_AddNumberToObject(o, "transient_bytes", (double)t_bytes);
+	cJSON_AddNumberToObject(o, "transient_peak_bytes", (double)t_peak);
 	cJSON_AddNumberToObject(o, "graph_frames", (double)g_frames);
 	if (g_frames > 0) {
 		cJSON_AddNumberToObject(o, "graph_build_ns_avg",

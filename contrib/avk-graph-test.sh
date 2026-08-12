@@ -261,7 +261,13 @@ echo "  ---- noise floor (this binary vs itself): $FLOOR of $FTOTAL bytes, worst
 if [ -z "$PREGRAPH" ] || [ ! -x "$PREGRAPH" ]; then
 	hl_skip "no ASTEROIDZ_PREGRAPH binary: the pixel and cost comparison need one, and a comparison against nothing is not a result"
 else
-	ASTEROIDZ="$PREGRAPH" fixture
+	HL_ASTEROIDZ="$PREGRAPH" fixture
+	# THE PREMISE. hl_start resolves its binary from $ASTEROIDZ once, at source
+	# time, so `ASTEROIDZ=<old> hl_start` does nothing -- which is what the
+	# first version of this did, running the current build twice and reporting
+	# a byte-identical framebuffer that said nothing about the old one.
+	hl_assert "the comparison really used the pre-graph binary" \
+		"$(hl_binary)" "$PREGRAPH"
 	sleep 3
 	OLD_STATS="$(hl_get 'get avk-stats')"
 	grim -o "$HL_MON" "$OUTDIR/old.png" 2>/dev/null

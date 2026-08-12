@@ -2565,3 +2565,150 @@ instead — `test_two_in_one_frame()` acquires twice within one frame and assert
 the images differ, and the break's own case releases against a timeline point
 that is **never signalled**, so "has the GPU finished" has a definite answer on
 any hardware under any load.
+
+## M4E.5 — what it costs, and a comparison that was not one
+
+### A measurement error, and the correction
+
+M4E.1's commit reported the desktop as byte-identical to the pre-graph binary.
+**That measurement was invalid**, and it is worth recording how.
+
+`contrib/lib/headless.sh` resolves the compositor binary once, at *source* time:
+
+```sh
+HL_ASTEROIDZ="${ASTEROIDZ:-$HL_REPO/build/asteroidz}"
+```
+
+So `ASTEROIDZ=<old> hl_start` — which is what both new fixtures did — sets a
+variable nothing reads again. Both runs launched the **current** build. The
+comparison was the new binary against itself, and it reported a clean result
+that said nothing whatever about the old one.
+
+It was caught by `record_us_avg`: an M4E-only field that the pre-graph binary
+cannot expose, and which was nonetheless present in the "pre" column of the
+perf table. A missing field showing a number is a fact about the fixture, not
+about the code.
+
+Fixed by setting `HL_ASTEROIDZ` directly, by having `hl_start` record what it
+launched (`hl_binary()`), and by **asserting the premise**:
+
+```text
+ok - the comparison really used the pre-graph binary
+```
+
+Re-run with the correct binaries, the answer is the same — but now it is an
+answer:
+
+```text
+noise floor (this binary vs itself):   112 of 6220800 bytes
+pre-graph vs graph:                      0 of 6220800 bytes
+```
+
+The graph differs from the pre-M4E renderer by **less than the current binary
+differs from itself between runs**. `record_us_avg` now reads `n/a` in the pre
+column, which is itself evidence the right binary ran.
+
+### Cost, on four scenes
+
+Each scene run on both binaries in one invocation, alternating, so machine state
+and thermal drift land on both rather than on whichever went second.
+
+| scene | resources | `graph_build_ns` | cpu p50 pre→graph | cpu p95 pre→graph | gpu µs pre→graph |
+|---|---|---|---|---|---|
+| idle (1 window) | 5 | **2270** | 60→80 | 160→140 | 1811→1873 |
+| many (16 windows) | 50 | **7239** | 320→480 | 4300→2020 | 2001→1986 |
+| gradient borders | 26 | **5339** | 120→140 | 880→840 | 1955→1997 |
+| shadows (6 floating) | 8 | **2492** | 100→180 | 180→180 | 1421→1435 |
+
+Every scene: **1 pass, 2 barrier calls.** A frame with no multipass effect has
+not become a pipeline, however many windows it contains.
+
+`graph_build_ns` is linear in declared resources — about **110 ns per resource
+plus 1.7 µs** — and is the only column here that is stable enough to quote. At
+144 Hz the 16-window worst case is 7.2 µs, **0.10% of a 6944 µs budget**.
+
+The `cpu_frame_us` columns move in both directions between runs by more than
+the gap between binaries (an earlier sweep of the same scenes read 540→240 where
+this one reads 320→480), so the honest statement is *no measurable change*, not
+a win or a loss in either direction. That is why the assertions are
+order-of-magnitude bounds and why no threshold was chosen before the data.
+
+The **gradient scene is a stress case, not a calm one**: `border_gradient 1`
+triggers a known repaint storm — `client_set_border_fill()` has no dirty check,
+so it damages the border node every tick — which reproduces on both renderers
+and on pre-M4C builds and is documented in `contrib/avk-gradient-test.sh`. It is
+used anyway because it is the only way to get gradients into the renderer
+headlessly. Both binaries storm identically, so the comparison holds; the
+absolute numbers should be read knowing that.
+
+### Cross-output independence
+
+`avk-graph-test.sh` under `HL_OUTPUTS=2`: **20/20**, with one pass, two barrier
+calls and a byte-identical framebuffer while two outputs share one renderer —
+and therefore one command ring, one graph, one transient pool and one timestamp
+pool. No cross-output waits were added and none was needed: the timeline orders
+the two outputs' submissions and nothing else has to.
+
+### The pool is in the binary, and nothing acquires from it
+
+`avk_renderer` now owns a `struct avk_transient_pool`, initialised at renderer
+init, collected in `avk_renderer_collect()`, and released against the frame's
+timeline point in `avk_render_frame()`. **M4F is its first consumer**; every
+`transient_*` counter reads 0 today.
+
+It ships now rather than with the first effect that needs it because the
+alternative is shipping a lifetime mechanism at the same moment as the thing
+that stresses it, which is how a lifetime bug and an effect bug arrive together
+and get debugged as one. An empty pool costs one branch in `collect()`.
+
+An **output resize or mode change** therefore needs no special handling: entries
+keyed on the old extent are never asked for again and retire on the idle path
+like any other size. `avk_transient_pool_drop_all()` exists for the case where
+waiting 120 frames is too slow, and is tested with a frame still in flight.
+
+### Regression
+
+```text
+UNIT       graph 47   transient 33   multipass 18   shadow 82   gradient 177
+           render 53  core 45   timestamp 21   corner-permute 19   dmabuf   isolation
+
+HEADLESS   border 118   shadow 28   crossoutput 18   frame 17   idle-convergence 14
+           damage 12   teardown 11   rounded 10   sync 10   cursor 10
+           persist(BORDER=6) 9   shm-partial 23   shm-cache 7   dmabuf-feedback 7
+           rounded-alpha 6   gradient-crossoutput 5   damage-domains(x2) 5
+           clip-policy 4   graph 20   graph(x2 outputs) 20   graph-perf 20
+
+VALIDATION 0 VUID   0 SYNC-HAZARD   0 leaked objects
+```
+
+`avk-gradient-test.sh` reports **0/0 and says so**: a headless overview creates
+no vignettes and `border_gradient` storms, so the suite claims no coverage
+rather than manufacturing a pass. Pre-existing, unchanged by M4E.
+
+### Breaks
+
+| break | unit | multipass | headless |
+|---|---|---|---|
+| `graph-missing-write-read` | 1/47 | 2/19 | not listed — the direct path has one pass and no inter-pass edge |
+| `transient-early-reuse` | 6/33 | 1/18 | not listed — nothing in production acquires yet |
+
+Both are listed as *not applicable* to the headless suite rather than quietly
+omitted, because a break that cannot fail a suite must not be claimed as
+coverage for it.
+
+### Advanced Vulkan, re-tested against the measurements
+
+| technique | decision | why |
+|---|---|---|
+| dynamic rendering | **USE NOW** | already in use; no `VkRenderPass`/`VkFramebuffer` exists anywhere in AVK |
+| synchronization2 | **USE NOW** | already the only barrier API |
+| timeline semaphores | **USE NOW** | already the entire lifetime model, and what makes transient reuse cross-output-safe |
+| descriptor indexing | **DEFER** | the frame path allocates and writes **zero** descriptors; a transient's set is cached on its `avk_image` like any other. Nothing to fix |
+| secondary command buffers | **DEFER** | one rendering instance, single-threaded recording. Graph build is 2–7 µs; there is no recording cost to parallelise yet |
+| indirect draws | **REJECT for this workload** | draws are per damage rect with per-command push constants and scissors. There is no uniform batch to indirect |
+| memory aliasing | **DEFER** | peak transient memory in the resize stress test is 14 MB. Aliasing solves a problem that does not exist |
+| async compute | **DEFER** | needs a measured overlap opportunity. M4F is measured on the graphics queue first, and the dedicated compute family stays unqueued |
+| pipeline libraries | **DEFER** | 4 pipelines, none compiled on the frame path |
+
+Nothing was adopted on grounds of novelty, and every `DEFER` now has a number
+attached rather than an intention.
