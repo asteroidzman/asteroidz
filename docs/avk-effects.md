@@ -1034,3 +1034,188 @@ and allocates nothing. Per the standing rule that every advanced Vulkan
 technique must justify its complexity with measurement, this is a measurement
 **against** introducing descriptor indexing, GPU-driven batching or a render
 graph for gradients: there is nothing here for them to save.
+
+## M4D.0 — the shadow audit, traced from source
+
+Traced against HEAD `925bc91`, not from the M4 overview's summary. Two of the
+summary's claims did not survive.
+
+### What the summary got wrong
+
+**"offset/spread are not explicit shadow fields; node geometry expresses
+these effects."** True of `wlr_scene_shadow`, and misleading about asteroidz.
+The compositor has `shadows_position_x/y` and `shadows_size` as first-class
+config, and `client_draw_one_shadow()` turns them into node geometry. Offset
+and spread are explicit *at the producer*; the node is where they have already
+been resolved.
+
+**The bigger one: asteroidz ALREADY renders a directional dual-lobe shadow.**
+`Client` carries two shadow nodes, not one:
+
+```c
+struct wlr_scene_shadow *shadow;          /* ambient */
+struct wlr_scene_shadow *contact_shadow;  /* contact */
+```
+
+with a full config surface for each, and defaults that are already tuned for
+light from above. M4D.2 as briefed — "intentionally move beyond SceneFX's
+generic shadow appearance" by introducing two lobes — describes something the
+compositor shipped before M4 began. What is missing is not the model. It is
+that **AVK throws both nodes away**:
+
+```c
+case WLR_SCENE_NODE_SHADOW:
+case WLR_SCENE_NODE_OPTIMIZED_BLUR:
+case WLR_SCENE_NODE_BLUR:
+	/* M4. Recognised and skipped, with one warning */
+```
+
+So M4D's real content is M4D.1: make AVK render a shadow node analytically and
+correctly. The directional look then follows from the producer that already
+exists. This is the same shape of finding as M4C's "stop positions are
+implicit" — the reference is simpler than the brief assumed, and the honest
+implementation is smaller.
+
+### The default profile, as shipped
+
+| lobe | enable | size | blur (σ field) | offset x | offset y | colour |
+|---|---|---|---|---|---|---|
+| ambient | `shadows` | `shadows_size` **24** | `shadows_blur` **24** | **0** | **+10** | `0x00000066` |
+| contact | `shadows_contact` **1** | `shadows_contact_size` **8** | `shadows_contact_blur` **9** | **0** | **+2** | `0x0000004d` |
+
+Broad + weak, offset well downward; tight + stronger, offset slightly downward.
+Horizontal bias is already zero. `shadows_position_y`'s own schema help text
+reads "A positive value casts downwards, which is what reads as light from
+above." The DoD's directional target is the shipped default, and M4D.2's job is
+to prove it renders that way rather than to invent it.
+
+Two further scalars modulate both lobes: `shadows_tiled_scale` (tiled windows
+get a compact shadow so it does not spill across gaps onto neighbours) and
+`shadows_unfocused_scale` (applied to `color[3]` by
+`client_apply_focus_effects`, so the focused window sits above its siblings).
+
+### Field table
+
+`SOURCE` is where the value is authoritative. `CURRENT AVK STATE` is what AVK
+does with it at `925bc91` — uniformly nothing.
+
+| FIELD | SOURCE | UNITS | COORDINATE SPACE | DEFAULT | REFERENCE USE | CURRENT AVK |
+|---|---|---|---|---|---|---|
+| `node.x/y` | producer | px | parent tree, logical | — | `dst_box` origin | dropped |
+| `width`/`height` | `wlr_scene_shadow` | px | node-local | 0 | `dst_box` extent = **envelope** | dropped |
+| `corners` | `wlr_scene_shadow` | px | node-local, **clockwise tl,tr,br,bl** | `corner_radii_all(border_radius)` | caster arcs | dropped |
+| `corner_radius` | `wlr_scene_shadow` | px | — | `config.border_radius` | legacy scalar; `set_corner_radius` overwrites `corners` | dropped |
+| `blur_sigma` | `wlr_scene_shadow` | px | node-local, **scaled by `data->scale`? NO** | 24 | inset + σ (see below) | dropped |
+| `color[4]` | producer | 0..1 | — | `0x00000066` | `v_color`; `.a` is opacity | dropped |
+| `clipped_region.area` | producer | px | node-local → root | window box | interior cut-out | dropped |
+| `clipped_region.corners` | producer | px | clockwise | `border_radius - 1` | cut-out arcs | dropped |
+
+### The shader's actual geometry — three things that are not obvious
+
+`box_shadow.frag`, at the call site:
+
+```glsl
+roundedBoxShadow(position + blur_sigma,
+                 position + size - blur_sigma,
+                 gl_FragCoord.xy, blur_sigma * 0.5, ...)
+```
+
+1. **The node box is the ENVELOPE, not the caster.** The caster is the node box
+   inset by `blur_sigma` on every side. `client_draw_one_shadow()` is the other
+   half of that contract: it grows the box by `delta = size + bw` on every side
+   and *then* shifts by `pos_x/pos_y`, so the falloff has room on all four
+   sides. Its comment records the bug from getting this wrong — the box used to
+   only grow right and down, and there was no shadow on the left or top
+   whatever the offset said.
+
+   **Consequence for the DoD's damage requirement:** "derive a conservative
+   cutoff `extent = offset + K*sigma`" is already done, by the producer, in
+   `delta`. The shadow's damage envelope *is* its node box, which generic scene
+   damage already handles. AVK must not compute a second envelope; doing so
+   would be the double-scaling bug the DoD warns about elsewhere.
+
+2. **The effective Gaussian σ is `blur_sigma * 0.5`,** not `blur_sigma`. A
+   direct transcription of the field name into a Gaussian is off by 2×.
+
+3. **It is a separable approximation, not a 2D Gaussian.** A closed-form
+   `erf()` integral across x, numerically integrated over y with **4 samples**
+   weighted by a 1D Gaussian, sampling only ±3σ. The per-scanline corner radius
+   is chosen by `sy < 0.0 ? top : bottom` — a real 2D SDF would not do this.
+   AVK reproducing "a Gaussian-blurred rounded rect" from first principles
+   would be *more* correct and would not match. The CPU oracle must transcribe
+   **this** formula, exactly as M4C's oracle transcribed `gradient.frag`.
+
+Also traced: `gl_FragColor = vec4(v_color.rgb, shadow_alpha) * clip_corner_alpha`
+does **not** premultiply `rgb` by `shadow_alpha`, while the blend mode is
+`PREMULTIPLIED`. For the default black shadow `rgb == 0` and the two agree
+exactly; for any non-black `shadowscolor` the reference over-brightens. Same
+class of latent defect as M4C's terminal-index read, and to be handled the same
+way — do the correct thing, document the divergence, do not call the bug parity.
+
+### Enable/disable policy — preserve exactly
+
+`client_draw_shadow()`:
+
+```c
+if (c->iskilling || !client_surface(c)->mapped || c->isnoshadow) return;
+bool active = config.shadows && !c->isfullscreen &&
+              (c->isfloating || !config.shadow_only_floating);
+```
+
+| surface | shadow? | why |
+|---|---|---|
+| floating | **yes** | full-size lobes (`state_scale = 1.0`) |
+| tiled | only if `shadow_only_floating 0` (**default 1 ⇒ no**) | a tiled shadow lands on the neighbour, not the wallpaper |
+| tiled, when enabled | yes, scaled by `shadows_tiled_scale` | compact so it does not spill across gaps |
+| fullscreen | **never** | `!c->isfullscreen` |
+| `isnoshadow` window rule | **never** | early return |
+| unmapped / killing | never | early return |
+| layer-shell | only if `layer_shadows` (**default 0**) | `asteroidz.c:4246` |
+| overview cells/main/strip | yes, own nodes | `overview.h` |
+| titlebar / close button | yes | `asteroidz_tab_bar_node_set_shadow`, tiled scale |
+| tag-animation snapshots | yes, cloned | `common.h:275` |
+
+The default desktop therefore shows shadows on **floating windows only**. A
+headless fixture that tiles its client and then asserts on a shadow is
+asserting on nothing — the M4A trap in a new costume.
+
+### Ordering and clipping
+
+A tiled window's shadow tree is reparented to `LyrTileShadow`, *beneath every
+tiled window*, so one window's shadow cannot land on top of another's content;
+a floating or overview-laid-out window keeps its shadow inside its own tree.
+`client_sync_shadow_tree()` owns this, and also mirrors the client tree's
+`enabled` flag — without which every hidden tag's shadows would stay on screen.
+
+Cross-output clipping goes through the **same** `client_clips_to_monitor()`
+predicate M4B.1 fixed and M4B.2 audited: a floating window's shadow is *not*
+cropped to `c->mon`, so it crosses the seam with its window. There is no
+shadow-specific clip path, which is why the DoD's optional
+`BREAK=shadow-owner-monitor-clip` would duplicate the existing clip-policy
+break — it is the same code. Not adding it.
+
+### Damage and idle convergence
+
+Every one of the six shadow setters is dirty-checked at HEAD
+(`set_size`, `set_corner_radius`, `set_corner_radii`, `set_blur_sigma`,
+`set_color`, `set_clipped_region`), and `set_size` additionally damages its
+**old** bounds before shrinking. So the M4C.3H storm has no shadow equivalent
+— which matters, because `client_apply_focus_effects()` calls
+`wlr_scene_shadow_set_color()` on every focus-animation tick for both lobes,
+the exact call pattern that made `wlr_scene_rect_set_gradient` melt the event
+loop. It is safe *because* of the `memcmp` on line 1185. Worth an assertion, not
+worth a fix.
+
+`scene_node_get_size()` reports the node's `width`/`height` for a shadow, and
+`scene_node_opaque()` returns without claiming any opaque region. Both correct
+for an envelope-sized translucent primitive.
+
+### What this means for the stages
+
+- **M4D.P** stands as briefed: no timestamp infrastructure exists.
+- **M4D.1** is the substance: one analytic shadow material, per-corner radii,
+  interior cut-out, envelope semantics as above.
+- **M4D.2** is *verification and tuning* of a directional model that already
+  exists, plus the question the audit raises on its own: the two lobes are two
+  full-envelope draws, and whether fusing them into one material is worth it is
+  a measurement, not a preference. Deferred to timestamps.
