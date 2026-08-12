@@ -2372,3 +2372,109 @@ Whole AVK battery under validation + synchronization validation, after the fix:
 transient 33/33   graph 46/46   render 53   shadow 82/82   gradient 177   core 45
 0 VUID   0 SYNC-HAZARD   0 leaked objects
 ```
+
+## M4E.3 — the barrier compiler
+
+The compiler shipped inside M4E.1 (`az_barrier_for()`); this records what it
+does and what it deliberately does not.
+
+### Three cases, and the middle one is the requirement
+
+```text
+WRITE after anything     always a barrier -- the hazard is real
+READ after READ          NOTHING, when the layout already matches
+READ after WRITE         a barrier -- the edge M4F cannot do without
+```
+
+Read-after-read within a frame emits nothing at all. Two passes sampling one
+image are not ordered with respect to each other and do not need to be; the
+barrier that made the image visible was emitted before the first of them.
+`test_read_after_read()` draws one surface three times and asserts **one**
+barrier for it, and that the frame still has **one** `vkCmdPipelineBarrier2`
+call. That used to be an explicit duplicate check in the batch builder; it is
+now a property of the model.
+
+### Write-after-read is an execution dependency
+
+```c
+if (is_write && res->read_only_since_write) {
+	src_stage = res->read_stages;   /* every reader since the last write */
+	src_access = 0;                 /* readers need no cache flush */
+}
+```
+
+`srcAccessMask` stays 0 deliberately: a write-after-read hazard requires the
+reads to *finish* before the write starts, and nothing needs flushing out of a
+reader's cache. Reads are accumulated so one barrier names every reader instead
+of one barrier per reader.
+
+### External state is stated, never guessed
+
+- **Entry layout** is read from `avk_image.layout`, which is what the *previous*
+  frame's exit barrier wrote. A graph that guessed `COLOR_ATTACHMENT_OPTIMAL`
+  would be right about an image it had just rendered into and wrong about every
+  one it had not.
+- **Entry scope** is `ALL_COMMANDS` / `MEMORY_WRITE`. The previous writer might
+  have been an upload on the *other* command ring, a previous frame, or a
+  client's own submission arriving through an imported fence. Narrowing it would
+  be a guess about a producer outside the graph.
+- **Exit** is declared per resource: `AVK_EXIT_FOREIGN` releases to
+  `VK_QUEUE_FAMILY_FOREIGN_EXT` in `GENERAL`; `AVK_EXIT_KEEP` leaves it where the
+  last pass put it. The image's own `layout` is written back either way, so the
+  next frame's entry state is the truth.
+
+### One narrow layout exception
+
+A **foreign colour attachment** stays in `GENERAL` — it is a scan-out buffer,
+KMS has to be able to read it, and entering `COLOR_ATTACHMENT_OPTIMAL` would mean
+transitioning in and straight back out. A foreign **sampled** image does go to
+`SHADER_READ_ONLY_OPTIMAL`: the read covers the whole surface every frame the
+window is visible, so the two transitions pay for themselves. This is also
+exactly what the pre-graph renderer did, which is why the direct path's barriers
+are unchanged in kind and in count.
+
+### Counters
+
+```text
+graph_passes  graph_resources  graph_uses  graph_barriers
+graph_image_transitions  graph_buffer_barriers  graph_allocs
+graph_frames  graph_build_ns_avg
+```
+
+all on `amsg get avk-stats`. `graph_barriers` counts `vkCmdPipelineBarrier2`
+**calls** — the thing that costs a pipeline flush — while
+`graph_image_transitions` counts the `VkImageMemoryBarrier2` structures inside
+them.
+
+`graph_buffer_barriers` is **structurally zero**, and is reported anyway. The
+two buffers AVK owns are already ordered without one: the gradient storage
+buffer and the command buffer both live in a per-frame slot that
+`avk_cmd_ring_begin()` has already waited on, so there is no hazard for a
+barrier to resolve, and SHM staging is ordered by the submission that reads it on
+a different ring. A counter reading zero says that on purpose; no counter would
+make the absence something a reader has to notice, and would leave a future
+buffer resource silently unaccounted for.
+
+### No fake barriers
+
+Every barrier corresponds to a hazard or a layout transition. Nothing was added
+to quiet validation — the direct path emits **2** calls per frame on a real
+output (acquire, then the foreign release), the same as before M4E, and the
+topology dump is readable by inspection:
+
+```text
+BARRIER
+    R0 external -> color-write
+PASS produce
+    WRITE R0 color-write
+BARRIER
+    R0 color-write -> sampled-read
+```
+
+### Same queue
+
+Everything stays on the single graphics queue. No async compute, no cross-queue
+ownership transfers. The device has a dedicated transfer family and a dedicated
+compute family, both recorded in `avk_device.caps` and deliberately not turned
+into queues — an unused `VkQueue` is infrastructure claiming to exist before
+anything drives it. M4F is measured on the graphics queue first.

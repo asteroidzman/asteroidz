@@ -316,6 +316,12 @@ static void test_direct_path(struct harness *h) {
 	CHECK(g->log_len == 1 && g->log[0].new_layout
 			== VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
 		"the target ends up a colour attachment");
+	/* Zero, and asserted rather than assumed: the two buffers AVK owns are
+	 * ordered by the command ring's slot reuse, so there is no hazard for a
+	 * buffer barrier to resolve. A nonzero here means the graph grew a buffer
+	 * resource nobody wrote down. */
+	CHECK(g->stats.buffer_barriers == 0,
+		"and no buffer barriers were emitted (%u)", g->stats.buffer_barriers);
 	CHECK(h->target->layout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
 		"and the image's own layout field agrees, so the next frame's entry "
 		"state is the truth");

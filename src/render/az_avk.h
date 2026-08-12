@@ -3184,7 +3184,7 @@ static cJSON *az_avk_stats_json(void) {
 	 * it twice a few seconds apart is the whole test.
 	 */
 	uint32_t g_passes = 0, g_resources = 0, g_uses = 0, g_barriers = 0;
-	uint32_t g_transitions = 0;
+	uint32_t g_transitions = 0, g_buffer_barriers = 0;
 	uint64_t g_allocs = 0, g_build_ns = 0, g_frames = 0;
 	for (size_t i = 0; i < AZ_AVK_MAX_FORMATS; i++) {
 		if (!avk.renderers[i].used) {
@@ -3197,6 +3197,7 @@ static cJSON *az_avk_stats_json(void) {
 		g_uses += gs->uses;
 		g_barriers += gs->barriers;
 		g_transitions += gs->image_transitions;
+		g_buffer_barriers += gs->buffer_barriers;
 		g_allocs += gs->allocs;
 		g_build_ns += gs->build_ns;
 		g_frames += gs->frames;
@@ -3207,6 +3208,10 @@ static cJSON *az_avk_stats_json(void) {
 	cJSON_AddNumberToObject(o, "graph_barriers", (double)g_barriers);
 	cJSON_AddNumberToObject(o, "graph_image_transitions",
 		(double)g_transitions);
+	/* Zero by construction -- see struct avk_graph_stats. Reported so the
+	 * absence is a stated fact rather than an omission. */
+	cJSON_AddNumberToObject(o, "graph_buffer_barriers",
+		(double)g_buffer_barriers);
 	cJSON_AddNumberToObject(o, "graph_allocs", (double)g_allocs);
 	cJSON_AddNumberToObject(o, "graph_frames", (double)g_frames);
 	if (g_frames > 0) {

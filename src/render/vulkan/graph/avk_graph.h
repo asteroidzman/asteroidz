@@ -207,6 +207,21 @@ struct avk_graph_stats {
 	uint32_t barriers;           /* vkCmdPipelineBarrier2 calls */
 	uint32_t image_transitions;  /* VkImageMemoryBarrier2 with a layout change */
 	uint32_t memory_barriers;    /* VkImageMemoryBarrier2 without one */
+	/*
+	 * VkBufferMemoryBarrier2 emitted. STRUCTURALLY ZERO, and reported anyway.
+	 *
+	 * The graph declares image resources only, because the two buffers AVK owns
+	 * are already ordered without one: the gradient storage buffer and the
+	 * command buffer both live in a per-frame slot the command ring has already
+	 * waited on before the frame begins (avk_cmd_ring_begin), so there is no
+	 * hazard for a barrier to resolve. SHM staging is ordered by the submission
+	 * that reads it, on a different ring.
+	 *
+	 * A counter reading zero says that on purpose. The alternative -- no
+	 * counter -- makes the absence something a reader has to notice, and makes
+	 * a future buffer resource silently unaccounted for.
+	 */
+	uint32_t buffer_barriers;
 
 	/*
 	 * Cumulative, NOT reset: heap allocations the graph has ever performed.
