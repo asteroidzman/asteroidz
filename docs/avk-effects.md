@@ -4412,3 +4412,90 @@ monitors. **Transform closure is therefore NOT claimed for 180° and 270°.**
 it reported whichever monitor happened to render most recently — the wrong one
 half the time, since two outputs at different scales derive different halos from
 the same kernel. It is a maximum now.
+
+## M4F.2C.4 — a rotated output rendered 65 empty frames a second
+
+### Classification came first, and moved the bug out of blur
+
+M4F.2C reported "894 blur nodes and no idle" at 270°. Before touching anything,
+`contrib/avk-transform-classify.sh` ran four transforms against three controls —
+no blur at all, blur away from the seam, blur across it — reporting **per-frame**
+figures, because a run total cannot tell a traversal defect from a scheduling
+one.
+
+```text
+rr   control    frames(6s idle)   emitted   per-frame
+0    none             0              0          0
+1    none           390              0          0      ← blur DISABLED
+2    none             0              0          0
+3    none           390              0          0      ← blur DISABLED
+1    seam           390           1560          4
+```
+
+**With blur disabled entirely, 90° and 270° rendered 390 frames in six static
+seconds.** Not a blur bug. And 894 was four nodes per frame over many frames, so
+scene traversal was never involved.
+
+### The root cause: a clip in the wrong coordinate space
+
+`scene_output_damage()` receives damage that `output_to_buffer_coords()` has
+already converted into **buffer** coordinates — sizing itself with
+`wlr_output_transformed_resolution()` — and then clips it against
+`output->width/height`, the **raw mode size**. On a 90° or 270° output those two
+differ by a transpose.
+
+The consequence was not a lost rectangle but an **immortal** one. On a 90°
+output with an 800×600 mode the buffer is 600×800, and the clip admitted damage
+out to x = 800: a region `600,0 200×600`, entirely outside the buffer.
+
+```text
+nothing can draw a rectangle outside the buffer
+    → no commit's damage ever subtracts it
+    → wlr_scene_output_needs_frame() is true forever
+    → 65 empty frames a second on a static scene
+```
+
+**It never showed on the SceneFX path** because that path commits
+`pending_commit_damage` itself, so the subtraction cancels whatever it recorded,
+right or wrong. AVK computes and reports its own damage and would never include
+an out-of-buffer rectangle — so AVK made a latent coordinate-space error
+*observable*, it did not cause it.
+
+Both the clip and M4F.2C's halo widening now use the transformed resolution. At
+0° and 180° the two resolutions are identical, so the shipping path is
+bit-identical. **267 frames in four idle seconds → 0**, and all twelve
+classification cases now idle at 0.
+
+### The 180° strip — narrowed to one path, not closed
+
+It is real and persistent. One run came back clean and it was luck; three
+consecutive runs measured **22 / 13 / 13** stale pixels.
+
+Three bisections, each a single measurement:
+
+| fixture | stale pixels |
+| --- | --- |
+| single output, 180°, blur, small change, `damage_all` | **0** (13/13, same as 0°) |
+| two outputs, 180°, blurred window **far** from the seam | **0** |
+| two outputs, 180°, blurred window **across** the seam | **13** |
+| two outputs, 180°, across the seam, `BREAK=blur-source-output-clip` | **0** |
+
+So it needs two outputs *and* a cross-output halo, and turning off the **source
+halo** — while leaving damage routing fully on — removes it. **The defect is in
+the halo's source reconstruction under a 180° transform, not in damage
+routing.**
+
+The stale strip sits at buffer `x 771..794`, which under 180° is logical
+`x 6..29`: output A's *logical left*, the far edge from the seam, while the halo
+damage from B arrives at buffer `x ∈ [-126, 0)`. That the failure appears
+mirror-opposite to the band that changed is the thread to pull next.
+
+`source_bounds`, the walker's retention window and the halo rect are all
+symmetric in ±halo on both axes, so none of them can be the asymmetry on its
+own. The scene is not symmetric — at 0° the seam-side halo band holds the
+neighbouring monitor's content and the far-side band holds nothing; at 180° they
+swap — so the next place to look is where a capture near the far edge is clamped
+to `source_bounds` and then aligned to an even origin, which is the one
+operation in the chain that grows a region on the low side only.
+
+**180° is therefore NOT closed**, and no fix is claimed for it.

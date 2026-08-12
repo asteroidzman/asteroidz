@@ -258,7 +258,14 @@ sleep 1
 # window landed entirely on B, the fixture stopped spanning anything, and the
 # cross-output routing assertion correctly reported 0 for a scene that had no
 # cross-output dependency in it.
-hl_dispatch "move_window,$(( HL_X2 - 200 )),150"
+# SEAM_PLACE=far puts the window entirely inside output A instead of across the
+# join. It exists to classify the 180-degree stale strip: if that strip survives
+# with no cross-output dependency in the scene, the halo path is innocent.
+if [ "${SEAM_PLACE:-seam}" = "far" ]; then
+	hl_dispatch "move_window,40,150"
+else
+	hl_dispatch "move_window,$(( HL_X2 - 200 )),150"
+fi
 sleep 3
 
 hl_dispatch reset_avk_stats
