@@ -61,7 +61,7 @@ HL_RR2="${SEAM_RR2:-0}"
 # The second output starts where the first one ENDS, logically. With scale 1
 # that is HL_WIDTH; the default would leave a gap at any other scale.
 HL_X2="${SEAM_X2:-800}"
-HL_ENV="ASTEROIDZ_RENDERER=avk ASTEROIDZ_VK_DEBUG=1"
+HL_ENV="ASTEROIDZ_RENDERER=avk ASTEROIDZ_VK_DEBUG=1 ${SEAM_EXTRA_ENV:-}"
 case "$BREAK" in
 source-clip) HL_ENV="$HL_ENV AZ_BLUR_SOURCE_OUTPUT_CLIP=1" ;;
 poison)      HL_ENV="$HL_ENV AZ_TRANSIENT_POISON=1" ;;
@@ -77,6 +77,7 @@ echo "  note: scales $HL_SCALE1/$HL_SCALE2, transforms $HL_RR1/$HL_RR2, seam at 
 # A blur with a WIDE kernel, so its halo is tens of pixels and the seam it would
 # leave is impossible to miss. passes 3 / radius 4 gives a support around 110
 # device pixels at scale 1.
+SHADOW_BG="${SEAM_SHADOW_BG:-1}"
 BLUR_KDL="border_radius 12
 effects {
 	shadow {
@@ -84,7 +85,7 @@ effects {
 		only-floating 0
 		size 24
 		blur 24
-		blur-background 1
+		blur-background $SHADOW_BG
 		blur-background-darken 1
 		blur-background-strength 1.0
 	}
@@ -414,6 +415,23 @@ echo "  note: $HALOFR frames took damage from outside their own output ($RECS re
 hl_assert "a near-seam change routes damage across the boundary ($HALOFR)" \
 	"$([ "${HALOFR:-0}" -gt 0 ] && echo true || echo false)" "true"
 
+# THE POST-INTERACTION CONTROL, which this fixture never had.
+#
+# The oracle below asks whether a forced full repaint changes anything AFTER an
+# interaction. That is only a question about damage if the desktop has finished
+# settling -- and nothing here checked. The earlier "180 degrees leaves 13-22
+# stale pixels" reading came from three consecutive runs of a fixture with no
+# such check; later runs of the identical configuration measured 0. A pair of
+# screenshots with nothing between them says which it is, every run.
+hl_screenshot_output HEADLESS-1 xctl-a >/dev/null 2>&1 || true
+sleep 2
+hl_screenshot_output HEADLESS-1 xctl-b >/dev/null 2>&1 || true
+XCTL=-1
+if [ "$PIXELS" = "1" ] && [ -s "$OUTDIR/xctl-a.png" ]; then
+	read -r XCTL _ <<<"$(png_diff "$OUTDIR/xctl-a.png" "$OUTDIR/xctl-b.png")"
+	echo "  note: POST-INTERACTION CONTROL -- A moves $XCTL px on its own"
+fi
+
 hl_screenshot_output HEADLESS-1 cross-a >/dev/null 2>&1 || true
 hl_screenshot_output HEADLESS-2 cross-b >/dev/null 2>&1 || true
 sleep 1
@@ -428,6 +446,8 @@ echo "  note: after a cross-seam change, full repaint differs A $XA px, B $XB px
 if [ "${XA:-0}" != "0" ]; then
 	echo "  note: A's stale bbox (x0 y0 x1 y1): $(python3 "$PNGPY" bbox "$OUTDIR/cross-a.png" "$OUTDIR/crossfull-a.png")"
 fi
+hl_assert "PREMISE: A is static after the interaction ($XCTL px)" \
+	"$([ "${XCTL:-1}" = "0" ] && echo true || echo false)" "true"
 hl_assert "no stale blur on A after a change routed from B ($XA px)" \
 	"$([ "${XA:-1}" = "0" ] && echo true || echo false)" "true"
 hl_assert "and none on B ($XB px)" \

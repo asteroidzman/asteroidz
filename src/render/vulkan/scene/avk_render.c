@@ -1574,6 +1574,31 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 		renderer->blur_damage_saved_pixels +=
 			full_px > rebuild_px ? full_px - rebuild_px : 0;
 
+		/*
+		 * THE SIX REGIONS, PER BLUR, ON DEMAND.
+		 *
+		 * AZ_BLUR_DUMP_REGIONS=1 logs every blur's geometry for one frame:
+		 * where it writes, what it must produce, and what source it rebuilds to
+		 * produce it. A stale strip on screen can then be matched against the
+		 * blur that owns those pixels and asked whether its result region ever
+		 * covered them -- which rectangle-free logging cannot answer and which
+		 * is the difference between a damage bug and a source bug.
+		 */
+		if (getenv("AZ_BLUR_DUMP_REGIONS") != NULL) {
+			pixman_box32_t we = *pixman_region32_extents(&d->write);
+			pixman_box32_t re = *pixman_region32_extents(&d->result_region);
+			pixman_box32_t pe = *pixman_region32_extents(&d->prefix_rebuild);
+			/* The TARGET's extent identifies which output's frame this is.
+			 * Without it a two-output dump is a list of rectangles with no way
+			 * to tell whose buffer they are in, and the negative write regions
+			 * of the monitor next door look like a defect. */
+			avk_log(AVK_ERROR, "blur[%zu] tgt=%ux%u write=%d,%d..%d,%d "
+				"result=%d,%d..%d,%d rebuild=%d,%d..%d,%d "
+				"cap=%d,%d %dx%d active=%d", i, width, height,
+				we.x1, we.y1, we.x2, we.y2, re.x1, re.y1, re.x2, re.y2,
+				pe.x1, pe.y1, pe.x2, pe.y2, rg.capture.x, rg.capture.y,
+				rg.capture.width, rg.capture.height, (int)d->active);
+		}
 		if (!d->active) {
 			continue;
 		}

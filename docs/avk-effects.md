@@ -4499,3 +4499,92 @@ to `source_bounds` and then aligned to an even origin, which is the one
 operation in the chain that grows a region on the low side only.
 
 **180° is therefore NOT closed**, and no fix is claimed for it.
+
+## M4F.2C.4c — the 180° strip is real, intermittent, and owned
+
+### It was flaky, and the fixture could not tell
+
+M4F.2C.4b recorded "22 / 13 / 13 over three consecutive runs" and called it
+persistent. Later runs of the *identical* configuration measured 0. Six runs with
+a proper control:
+
+```text
+run   post-interaction control   forced full repaint differs
+1              0 px                        0 px
+2              0 px                       22 px
+3              0 px                       22 px
+4              0 px                        0 px
+5              0 px                       13 px
+6              0 px                       22 px
+```
+
+**The defect is real and intermittent — roughly two runs in three.** Three
+consecutive failures were not persistence, and one clean run was not a fix. Both
+readings came from a fixture with no control.
+
+**The control this fixture never had** is a pair of screenshots with nothing
+between them, taken *after* the interaction. The existing control ran before it,
+which says nothing about whether the desktop has finished settling by the time
+the oracle looks. It is 0 px on every run, so the scene really is static and the
+difference a forced repaint reveals really is staleness.
+
+### Localised, in four measurements
+
+| fixture | stale |
+| --- | --- |
+| single output, 180°, blur, small change | **0** — same as 0° |
+| two outputs, blurred window **far** from the seam | **0** |
+| two outputs, blurred window **across** the seam | 13–22 |
+| the same + `BREAK=blur-source-output-clip` | **0** |
+
+So it needs two outputs *and* a cross-output halo, and disabling the **source
+halo** removes it while damage routing stays fully on.
+
+### The per-blur region dump, and what it already shows
+
+`AZ_BLUR_DUMP_REGIONS=1` logs every blur's write, result and prefix-rebuild
+extents with the target's size, for one frame. A stale strip can then be matched
+against the blur that owns those pixels, and asked whether its result region
+ever covered them — which rectangle-free logging cannot answer, and which is the
+difference between a damage bug and a source bug.
+
+From the failing run (stale strip at buffer `x 771..799, y 184..313`):
+
+```text
+blur[6]  tgt=800x600  write=524,34..795,598  result=524,34..795,598  active=1
+blur[36] tgt=800x600  write=-222,138..226,486 result=-93,138..226,486
+blur[39] tgt=800x600  write=-178,182..54,382  result=0,182..54,382
+```
+
+Two things the dump settles immediately.
+
+**The demand sweep is behaving as designed.** `blur[39]`'s result is clipped to
+the presentation bounds at x=0, while `blur[36]`'s reaches **x = −93** — outside
+the output. That is not an inconsistency: sweep 2 runs backwards, so blur[39]'s
+`prefix_rebuild` has already joined `demand` by the time blur[36] is reached, and
+an earlier blur must produce result wherever a later blur's prefix samples it,
+presentation bounds or not.
+
+**The stale strip is owned by `blur[6]`** — a tiled window's shadow-backdrop blur
+at `524..795`, which covers `771..795` of the 771..799 strip. It was `active=1`
+with a result region covering its whole write region *in the frame that was
+dumped*. The frame that actually left the strip stale has not yet been isolated:
+the dumps around the interaction show every blur inactive, so the responsible
+frame is elsewhere in the sequence.
+
+### Not closed
+
+The root cause is **not** found. What is now known, and was not before:
+
+- it is real, not a fixture artefact, with a control that proves the scene static
+- it is intermittent at roughly 2/3, so any single run is worthless as evidence
+- it needs two outputs and a cross-output halo
+- it is in source reconstruction, not damage routing
+- the pixels belong to a specific blur node whose write region is `524..795`
+
+The next step is the prefix-capture oracle the brief specifies — read the
+regional transient back *before* the blur chain runs and compare it against an
+independently rendered full scene prefix, at 0° and 180°. That divides the
+remaining space in half: a wrong prefix is segmented source reconstruction, a
+right one moves the search into the blur's own coordinate mapping. No alignment
+hypothesis should be adopted before that boundary is known.
