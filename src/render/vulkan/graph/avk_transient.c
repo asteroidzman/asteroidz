@@ -47,6 +47,11 @@ void avk_transient_pool_init(struct avk_transient_pool *pool,
 		}
 	}
 
+	pool->poison = getenv("AZ_TRANSIENT_POISON") != NULL;
+	if (pool->poison) {
+		avk_log(AVK_WARN, "AZ_TRANSIENT_POISON=1 -- new transients are filled "
+			"with magenta so that sampling outside a written region shows");
+	}
 	pool->break_early_reuse = getenv("AZ_TRANSIENT_EARLY_REUSE") != NULL;
 	if (pool->break_early_reuse) {
 		avk_log(AVK_ERROR, "M4E break switch active: the transient pool will "
@@ -128,7 +133,15 @@ static struct avk_image *create_image(struct avk_transient_pool *pool,
 		.arrayLayers = 1,
 		.samples = key->samples,
 		.tiling = key->tiling,
-		.usage = key->usage,
+		/*
+		 * TRANSFER_DST is added ONLY under the poison switch, and only to the
+		 * VkImage -- not to the key. vkCmdClearColorImage requires it, and an
+		 * image with MORE usage is still substitutable for one with less, so
+		 * key equality is unaffected and a poisoned run pools exactly as a
+		 * normal one does.
+		 */
+		.usage = pool->poison
+			? (key->usage | VK_IMAGE_USAGE_TRANSFER_DST_BIT) : key->usage,
 		.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
 		.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
 	};
@@ -192,6 +205,53 @@ static struct avk_image *create_image(struct avk_transient_pool *pool,
 	AVK_LIVE_INC(dev, image_views);
 
 	*out_bytes = reqs.size;
+
+	if (pool->poison) {
+		/*
+		 * Magenta, opaque, over the WHOLE allocation -- including the padding a
+		 * caller's logical extent does not cover. Submitted and waited on here
+		 * rather than folded into the frame: this runs once per image, only
+		 * under the test switch, and doing it inline keeps the poison out of
+		 * the frame path entirely.
+		 */
+		struct avk_cmd_ring ring;
+		if (avk_cmd_ring_init(&ring, dev, "transient-poison")) {
+			VkCommandBuffer cb = avk_cmd_ring_begin(&ring);
+			if (cb != VK_NULL_HANDLE) {
+				VkImageMemoryBarrier2 b = {
+					.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+					.srcStageMask = VK_PIPELINE_STAGE_2_NONE,
+					.dstStageMask = VK_PIPELINE_STAGE_2_CLEAR_BIT,
+					.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+					.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+					.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+					.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+					.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+					.image = image->image,
+					.subresourceRange = {
+						VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
+				};
+				VkDependencyInfo dep = {
+					.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+					.imageMemoryBarrierCount = 1,
+					.pImageMemoryBarriers = &b,
+				};
+				vkCmdPipelineBarrier2(cb, &dep);
+				VkClearColorValue magenta = {
+					.float32 = { 1.0f, 0.0f, 1.0f, 1.0f } };
+				VkImageSubresourceRange range = {
+					VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+				vkCmdClearColorImage(cb, image->image,
+					VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &magenta, 1, &range);
+				image->layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+				uint64_t v = avk_cmd_ring_submit(&ring, NULL, 0, NULL, 0);
+				if (v != 0) {
+					avk_device_timeline_wait(dev, v, 2000000000ULL);
+				}
+			}
+			avk_cmd_ring_finish(&ring);
+		}
+	}
 	return image;
 }
 

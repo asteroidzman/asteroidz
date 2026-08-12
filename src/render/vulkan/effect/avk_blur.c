@@ -4,6 +4,7 @@
 
 #include "../avk.h"
 
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -20,31 +21,89 @@ static uint32_t level_extent(uint32_t base, uint32_t level) {
 	return v > 0 ? v : 1;
 }
 
-uint32_t avk_blur_support(const struct avk_blur_params *params) {
-	if (params == NULL || params->levels == 0) {
-		return 0;
-	}
+/*
+ * How many SOURCE pixels one texel of `level` spans.
+ *
+ * Computed from the actual extents rather than as 2^level: level_extent()
+ * floors, so 129 source pixels become 64 texels at level 1 and each of those
+ * texels spans 2.016 source pixels, not 2. Assuming the power of two
+ * under-covers on every odd extent.
+ */
+static double texel_span(uint32_t base, uint32_t level) {
+	uint32_t n = level_extent(base, level);
+	return n > 0 ? (double)base / (double)n : (double)(1u << level);
+}
+
+/* Levels this configuration will actually run at this size -- the same
+ * reduction avk_blur_declare() applies, so support and reality cannot
+ * disagree about how many passes there are. */
+static uint32_t effective_levels(const struct avk_blur_params *params,
+		uint32_t width, uint32_t height) {
 	uint32_t levels = params->levels;
 	if (levels > AVK_BLUR_MAX_LEVELS) {
 		levels = AVK_BLUR_MAX_LEVELS;
 	}
-	/*
-	 * Each level's kernel reaches 2 of ITS OWN texels, and a level-i texel is
-	 * 2^i source pixels across. Summed over the way down and the way back up:
-	 *
-	 *     2 * radius * sum(2^i for i in 1..levels) * 2
-	 *   = 4 * radius * (2^(levels+1) - 2)
-	 *
-	 * Rounded UP, and deliberately generous: this feeds damage expansion, and
-	 * under-expanding leaves a stale fringe that only appears on a moving
-	 * window, while over-expanding costs a few pixels of redraw.
-	 */
-	double reach = 0.0;
-	for (uint32_t i = 1; i <= levels; i++) {
-		reach += (double)(1u << i);
+	while (levels > 0 && (level_extent(width, levels) < 2
+			|| level_extent(height, levels) < 2)) {
+		levels--;
 	}
-	double r = params->radius > 0.0f ? (double)params->radius : 1.0;
-	return (uint32_t)(4.0 * r * reach) + 1;
+	return levels;
+}
+
+static double support_axis(const struct avk_blur_params *params,
+		uint32_t base, uint32_t levels) {
+	double radius = params->radius > 0.0f ? (double)params->radius : 1.0;
+	double reach = 0.0;
+
+	/* Down: level i-1 -> level i, reaching (0.5*radius + 1) texels of i-1. */
+	for (uint32_t i = 1; i <= levels; i++) {
+		reach += (0.5 * radius + 1.0) * texel_span(base, i - 1);
+	}
+	/* Up: level i -> level i-1, reaching (radius + 1) texels of i. */
+	for (uint32_t i = levels; i >= 1; i--) {
+		reach += (radius + 1.0) * texel_span(base, i);
+	}
+	/* One source pixel for a fractional origin: the region being blurred need
+	 * not start on a texel boundary, and the composite that consumes it need
+	 * not either. */
+	return reach + 1.0;
+}
+
+struct avk_blur_support avk_blur_support_of(
+		const struct avk_blur_params *params, uint32_t width,
+		uint32_t height) {
+	struct avk_blur_support s = {0};
+	if (params == NULL || params->levels == 0 || width == 0 || height == 0) {
+		return s;
+	}
+	uint32_t levels = effective_levels(params, width, height);
+	if (levels == 0) {
+		return s;
+	}
+	double x = support_axis(params, width, levels);
+	double y = support_axis(params, height, levels);
+	/*
+	 * Symmetric, because the dual-Kawase kernel is: every tap has a mirror at
+	 * the same offset. Written as four fields anyway so an asymmetric effect
+	 * changes numbers rather than every caller's type.
+	 */
+	s.left = (float)x;
+	s.right = (float)x;
+	s.top = (float)y;
+	s.bottom = (float)y;
+	return s;
+}
+
+uint32_t avk_blur_support_max(const struct avk_blur_params *params,
+		uint32_t width, uint32_t height) {
+	struct avk_blur_support s = avk_blur_support_of(params, width, height);
+	double m = s.left;
+	if (s.right > m) { m = s.right; }
+	if (s.top > m) { m = s.top; }
+	if (s.bottom > m) { m = s.bottom; }
+	/* Outward at the physical-pixel boundary, once, at the end -- rounding
+	 * each term would compound the error across the chain. */
+	return (uint32_t)ceil(m);
 }
 
 /*

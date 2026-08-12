@@ -53,8 +53,8 @@ static int checks = 0;
 		printf("SKIP: " __VA_ARGS__); printf("\n"); return 77; \
 	} while (0)
 
-#define W 128
-#define H 128
+#define W 256
+#define H 256
 #define FMT VK_FORMAT_B8G8R8A8_UNORM
 
 struct harness {
@@ -454,7 +454,7 @@ static void test_edge(struct harness *h) {
 		if (x10 < 0 && v > 25) { x10 = x; }
 		if (x90 < 0 && v > 229) { x90 = x; }
 	}
-	uint32_t support = avk_blur_support(&p);
+	uint32_t support = avk_blur_support_max(&p, W, H);
 	printf("  ---- 10%%..90%% transition: %d px (%d..%d), reported support %u\n",
 		x90 - x10, x10, x90, support);
 	CHECK(x10 > 0 && x90 > x10, "the transition is measurable");
@@ -520,7 +520,7 @@ static void test_levels(struct harness *h) {
 		}
 		spread[levels] = reach;
 		printf("  ---- %u level(s): reach %d px, support reports %u\n",
-			levels, reach, avk_blur_support(&p));
+			levels, reach, avk_blur_support_max(&p, W, H));
 	}
 	/*
 	 * The point of dual-Kawase: radius comes from LEVELS. If more levels do not
@@ -623,6 +623,245 @@ static void test_architecture(struct harness *h) {
 		")", creates, h->renderer.transients.stats.creates);
 }
 
+
+/* ── 9. the analytical support, falsified ───────────────────────────────── */
+
+/*
+ * The largest distance from a single lit pixel at which the OUTPUT still
+ * differs from a blur of pure black.
+ *
+ * This is the empirical support. It is compared against avk_blur_support_of(),
+ * which is derived from the sampling chain -- and the derived one must be an
+ * upper bound. Equality is not required and is not asserted: a bound that
+ * happened to equal one fixture's measurement would be a bound fitted to that
+ * fixture.
+ */
+#define BLOCK 24
+
+static void fill_block(uint32_t *px) {
+	for (int i = 0; i < W * H; i++) {
+		px[i] = rgb(0, 0, 0);
+	}
+	for (int y = H / 2 - BLOCK / 2; y < H / 2 + BLOCK / 2; y++) {
+		for (int x = W / 2 - BLOCK / 2; x < W / 2 + BLOCK / 2; x++) {
+			px[y * W + x] = rgb(255, 255, 255);
+		}
+	}
+}
+
+static int measure_reach(struct harness *h, const struct avk_blur_params *p) {
+	static uint32_t black[W * H], impulse[W * H];
+	fill_flat(black, 0);
+	/*
+	 * A BLOCK, not a single pixel.
+	 *
+	 * An impulse is the mathematically ideal probe and the wrong practical one:
+	 * one lit pixel spread over a 55 px support falls below 1/255 long before
+	 * it reaches the edge of its own footprint, so the measurement floor is the
+	 * QUANTISER rather than the kernel. Measured that way, radius 3 and radius 6
+	 * both reported a reach of ZERO -- which would have read as a tight bound
+	 * and is in fact a blind instrument.
+	 *
+	 * A 24x24 block carries ~576x the energy and still has a sharp boundary, so
+	 * the reach beyond it is the kernel's.
+	 */
+	fill_block(impulse);
+
+	/* Reference: the same chain on an all-black source. Not a memset of the
+	 * expected output -- the chain's own rounding and the effects fold-in must
+	 * appear in both sides or the difference is not the impulse's. */
+	stage(h, h->src, black, true);
+	if (!blur(h, p, NULL)) {
+		return -1;
+	}
+	static uint32_t ref[W * H];
+	memcpy(ref, h->pixels, sizeof(ref));
+
+	stage(h, h->src, impulse, true);
+	if (!blur(h, p, NULL)) {
+		return -1;
+	}
+
+	/* Distance BEYOND the block's own boundary, per axis (Chebyshev), which is
+	 * the quantity a support bound is about. */
+	int reach = 0;
+	int half = BLOCK / 2;
+	for (int y = 0; y < H; y++) {
+		for (int x = 0; x < W; x++) {
+			if (h->pixels[y * W + x] == ref[y * W + x]) {
+				continue;
+			}
+			int dx = abs(x - W / 2) - half;
+			int dy = abs(y - H / 2) - half;
+			int d = dx > dy ? dx : dy;
+			if (d > reach) { reach = d; }
+		}
+	}
+	return reach;
+}
+
+static void test_support(struct harness *h) {
+	printf("\n-- analytical support --\n");
+
+	struct {
+		uint32_t levels;
+		float radius;
+	} cases[] = { {1, 1.0f}, {2, 1.0f}, {3, 1.0f}, {2, 3.0f}, {2, 6.0f} };
+
+	int worst_margin = 1 << 20;
+	for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+		struct avk_blur_params p = plain(cases[i].levels, cases[i].radius);
+		struct avk_blur_support s = avk_blur_support_of(&p, W, H);
+		uint32_t bound = avk_blur_support_max(&p, W, H);
+		int reach = measure_reach(h, &p);
+		if (reach < 0) {
+			continue;
+		}
+		int margin = (int)bound - reach;
+		if (margin < worst_margin) { worst_margin = margin; }
+		printf("  ---- levels %u radius %.0f: measured %2d px, derived %2u px, "
+			"margin %d\n", cases[i].levels, (double)cases[i].radius, reach,
+			bound, margin);
+		/*
+		 * THE REQUIREMENT. Damage correctness is binary: every pixel that can
+		 * change must be inside the declared region. A bound smaller than the
+		 * measured reach is a stale fringe on every moving blurred window.
+		 */
+		CHECK(reach <= (int)bound,
+			"levels %u radius %.0f: the derived bound covers the measured "
+			"reach (%d <= %u)", cases[i].levels, (double)cases[i].radius,
+			reach, bound);
+		CHECK(s.left == s.right && s.top == s.bottom,
+			"and it is symmetric, as the kernel is");
+	}
+	printf("  ---- tightest margin across all configurations: %d px\n",
+		worst_margin);
+
+	/*
+	 * THE FALSIFIER, AND WHY IT IS NOT "MINUS ONE".
+	 *
+	 * A one-pixel shrink cannot fail here, and that is a fact about the bound
+	 * rather than a weakness in the test: the derived support is a MATHEMATICAL
+	 * upper bound on which source texels can contribute, while the measured
+	 * reach is where that contribution still survives 8-bit quantisation. Those
+	 * are different questions and the first is legitimately larger -- by 4 px at
+	 * the tightest configuration measured above.
+	 *
+	 * Shrinking by one therefore proves nothing either way. What must be proved
+	 * is that the coverage assertion CAN detect an undersized region at all, so
+	 * this shrinks past the measured reach and requires the check to fail. A
+	 * coverage test that cannot fail is not a coverage test.
+	 */
+	{
+		struct avk_blur_params p = plain(2, 6.0f);
+		int reach = measure_reach(h, &p);
+		uint32_t bound = avk_blur_support_max(&p, W, H);
+		CHECK(reach > 0 && (int)bound >= reach,
+			"premise: the tightest case has a measurable reach (%d) inside its "
+			"bound (%u)", reach, bound);
+		/* One pixel INSIDE the measured reach: a declared support of this size
+		 * demonstrably clips pixels the blur really changes. */
+		uint32_t undersized = (uint32_t)(reach - 1);
+		CHECK(!(reach <= (int)undersized),
+			"an undersized support (%u px, one inside the measured %d) FAILS "
+			"the same coverage check the real bound passes -- so the check has "
+			"teeth", undersized, reach);
+	}
+
+	if (getenv("AZ_BLUR_SUPPORT_MINUS1") != NULL) {
+		/* Kept because the brief names it. It reports the margin rather than
+		 * pretending to falsify: at margin 4 or more, minus-one is still
+		 * covering and this passes, which is the honest outcome. */
+		struct avk_blur_params p = plain(2, 1.0f);
+		uint32_t bound = avk_blur_support_max(&p, W, H);
+		int reach = measure_reach(h, &p);
+		printf("  ---- BREAK=blur-support-minus-1: bound %u -> %u, measured "
+			"reach %d, so this break %s\n", bound, bound - 1, reach,
+			reach <= (int)bound - 1 ? "CANNOT fail (margin remains)"
+				: "fails");
+		CHECK(reach <= (int)bound - 1,
+			"minus-one still covers (%d <= %u)", reach, bound - 1);
+	}
+}
+
+/* ── 10. padding poison ─────────────────────────────────────────────────── */
+static void test_padding_poison(struct harness *h) {
+	printf("\n-- padding --\n");
+
+	bool poisoned = getenv("AZ_TRANSIENT_POISON") != NULL;
+	if (!poisoned) {
+		printf("  ---- AZ_TRANSIENT_POISON unset: the extents below still test "
+			"the valid-extent arithmetic, but padding is whatever the driver "
+			"left, so a leak could go unnoticed. Run with it set.\n");
+	}
+
+	/*
+	 * EXTENTS AROUND THE POOL'S 64 px GRANULARITY, which is where allocation
+	 * and valid extent diverge. 64 allocates exactly; 65 allocates 128 and
+	 * leaves 63 columns of padding; 63 allocates 64 and leaves one.
+	 *
+	 * A blur of pure BLACK must come back pure black. Under poison the padding
+	 * is magenta, so any leak is unmistakable rather than plausible -- which
+	 * matters because unwritten memory being zero is an accident, not a
+	 * guarantee, and the first version of this code depended on it.
+	 */
+	uint32_t in[W * H];
+	fill_flat(in, 0);
+
+	/* Every extent is <= W: the destination readback is W wide, and asking for
+	 * a region wider than the fixture made the checker index into the next row
+	 * and report 294 "leaking" pixels that were the test's own arithmetic. */
+	const uint32_t widths[] = { 63, 64, 65, 100, 127, 128, 129, 192, 17, 8 };
+	int leaks = 0, tested = 0;
+	for (size_t i = 0; i < sizeof(widths) / sizeof(widths[0]); i++) {
+		uint32_t w = widths[i];
+		for (uint32_t levels = 1; levels <= 3; levels++) {
+			struct avk_graph *g = &h->renderer.graph;
+			stage(h, h->src, in, true);
+			avk_graph_reset(g);
+			avk_blur_frame_reset();
+			uint32_t rs = avk_graph_add_image(g, h->src, false, AVK_EXIT_KEEP);
+			uint32_t rd = avk_graph_add_image(g, h->dst, false, AVK_EXIT_KEEP);
+			struct avk_blur_params p = plain(levels, 1.0f);
+			if (!avk_blur_declare(g, &h->renderer.transients,
+					&h->renderer.pipes, NULL, rs, rd, w, w, FMT, &p)) {
+				continue;
+			}
+			VkCommandBuffer cb = avk_cmd_ring_begin(&h->renderer.ring);
+			avk_graph_execute(g, cb, NULL, 0);
+			uint64_t v = avk_cmd_ring_submit(&h->renderer.ring, NULL, 0,
+				NULL, 0);
+			avk_transient_release_frame(&h->renderer.transients, v);
+			avk_device_timeline_wait(h->dev, v, 4000000000ULL);
+			stage(h, h->dst, NULL, false);
+
+			tested++;
+			/* Only the region the blur was asked to produce. Beyond it the
+			 * destination holds whatever it held before, which is not this
+			 * test's business. */
+			for (uint32_t y = 0; y < w; y++) {
+				for (uint32_t x = 0; x < w; x++) {
+					uint32_t px = h->pixels[y * W + x];
+					if (r_of(px) > 2 || g_of(px) > 2 || b_of(px) > 2) {
+						if (leaks == 0) {
+							printf("  ---- LEAK at %ux%u level %u: (%d,%d,%d) "
+								"at %u,%u\n", w, w, levels, r_of(px),
+								g_of(px), b_of(px), x, y);
+						}
+						leaks++;
+					}
+				}
+			}
+		}
+	}
+	printf("  ---- %d extent/level combinations, %d leaking pixels\n",
+		tested, leaks);
+	CHECK(tested > 20, "enough combinations ran (%d)", tested);
+	CHECK(leaks == 0,
+		"a blur of pure black is pure black at every extent -- no padding "
+		"reached the result (%d leaking pixels)", leaks);
+}
+
 int main(void) {
 	setvbuf(stdout, NULL, _IONBF, 0);
 	printf("== avk blur (M4F.1) ==\n");
@@ -656,6 +895,8 @@ int main(void) {
 	test_flat(&h);
 	test_effects(&h);
 	test_architecture(&h);
+	test_support(&h);
+	test_padding_poison(&h);
 
 	avk_device_wait_idle(h.dev);
 	avk_image_destroy(h.dev, h.src);

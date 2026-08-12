@@ -90,22 +90,65 @@ bool avk_blur_declare(struct avk_graph *graph, struct avk_transient_pool *pool,
 	const struct avk_blur_params *params);
 
 /*
- * How far a blur's influence reaches, in SOURCE pixels, for a given level
- * count and radius.
+ * HOW FAR A BLUR'S INFLUENCE REACHES, in source pixels, per edge.
  *
- * This is the number damage expansion needs and it is a property of the kernel,
- * not a guess. Each downsample doubles the texel size, and the kernel reaches
- * 2 texels at the level it runs on, so level i contributes 2 * 2^i source
- * pixels on the way down and the same on the way up:
- *
- *     support = radius * 2 * sum(2^i, i=0..levels) * 2
- *
- * Exposed rather than kept private because the compositor computes damage
- * before it ever calls avk_blur_declare(), and a second implementation of this
- * arithmetic somewhere else is how a blur ends up with a one-pixel stale edge
- * that only shows on a moving window.
+ * Four numbers rather than one radius. Dual-Kawase is symmetric so all four are
+ * currently equal, and the type exists anyway: an asymmetric effect -- a
+ * directional blur, a drop shadow's own offset kernel -- must be expressible
+ * without redesigning every damage path that consumes this.
  */
-uint32_t avk_blur_support(const struct avk_blur_params *params);
+struct avk_blur_support {
+	float left, right, top, bottom;
+};
+
+/*
+ * The maximum finite support of the actual sampling chain, DERIVED.
+ *
+ * Damage correctness is BINARY: if a source texel can mathematically contribute
+ * to an output texel, it belongs in the region. So this is not a threshold on
+ * where the contribution becomes visually negligible, and it is not fitted to
+ * an observed transition width -- a dual-Kawase chain has a finite footprint
+ * and it can be computed exactly. (A true Gaussian would need a stated cutoff
+ * policy instead; this does not.)
+ *
+ * THE DERIVATION, per axis, in texels of the level being sampled.
+ *
+ *   DOWNSAMPLE, level i-1 -> level i. The 5-tap kernel offsets by
+ *   `step = 0.5/allocation * radius` in UV, which is `0.5 * radius` texels of
+ *   the source level. Each tap is BILINEAR, and a bilinear fetch at position p
+ *   draws on texel centres within [p-1, p+1] -- so one more texel each way:
+ *
+ *       A = 0.5 * radius + 1        texels of level i-1
+ *
+ *   UPSAMPLE, level i -> level i-1. The 8-tap kernel's axis taps offset by
+ *   `2 * step`, i.e. `radius` texels of level i -- twice the downsample's
+ *   reach, because the axis taps are at 2h where the diagonals are at h. Plus
+ *   the same bilinear texel:
+ *
+ *       B = radius + 1              texels of level i
+ *
+ * A level-i texel spans `width / level_extent(width, i)` SOURCE pixels, which
+ * is 2^i exactly when the extent halves cleanly and slightly more when it does
+ * not -- 129 px over 64 texels is 2.016. Computed rather than assumed, because
+ * assuming 2^i under-covers on every odd extent, and an under-covered support
+ * is a stale fringe that only appears on a moving window.
+ *
+ * Summing the chain (down 1..N, then up N..1) and adding one pixel for a
+ * fractional source origin gives the bound. It is an upper bound because offsets
+ * compose additively along the chain and every tap is additionally clamped into
+ * the valid region by the shader.
+ *
+ * Exposed because the compositor computes damage before it ever calls
+ * avk_blur_declare(), and a second implementation of this arithmetic elsewhere
+ * is exactly how the two drift apart.
+ */
+struct avk_blur_support avk_blur_support_of(
+	const struct avk_blur_params *params, uint32_t width, uint32_t height);
+
+/* The largest of the four edges, rounded outward -- for callers that want one
+ * number and can afford the symmetric case. */
+uint32_t avk_blur_support_max(const struct avk_blur_params *params,
+	uint32_t width, uint32_t height);
 
 /* Drop the frame's blur-pass arena. Called once per frame beside
  * avk_graph_reset(); the passes it holds are referenced by graph callbacks and

@@ -3067,3 +3067,105 @@ No scene node produces a blur command yet: `WLR_SCENE_NODE_BLUR` and
 `OPTIMIZED_BLUR` are still dropped by the walker. The primitive is validated
 standalone first, deliberately — the alternative is debugging a kernel bug and a
 scene-integration bug as one.
+
+## M4F support — derived, not fitted
+
+`avk_blur_support_of()` returns four edges (`left/right/top/bottom`). Dual-Kawase
+is symmetric so all four are equal today; the type exists so a directional effect
+changes numbers rather than every caller's signature.
+
+### The derivation
+
+Per axis, in texels of the level being sampled:
+
+```text
+DOWNSAMPLE  level i-1 -> i     A = 0.5 * radius + 1   texels of level i-1
+UPSAMPLE    level i -> i-1     B =       radius + 1   texels of level i
+```
+
+`0.5 * radius` and `radius` because the 5-tap kernel offsets by `step` and the
+8-tap kernel's *axis* taps offset by `2 * step`, where
+`step = 0.5/allocation * radius` — which is `0.5 * radius` texels. The `+1` is
+the **bilinear footprint**: a filtered fetch at position `p` draws on texel
+centres within `[p−1, p+1]`.
+
+A level-`i` texel spans `width / level_extent(width, i)` **source** pixels —
+computed, not assumed to be `2^i`. At 129 px over 64 texels that is 2.016, and
+assuming the power of two under-covers on every odd extent.
+
+Summed along the chain (down 1..N, up N..1), plus one pixel for a fractional
+origin, rounded outward **once** at the end. It is an upper bound because
+offsets compose additively and every tap is additionally clamped into the valid
+region by the shader.
+
+### Old vs new vs measured
+
+| levels | radius | old | **derived** | measured | margin |
+|---|---|---|---|---|---|
+| 1 | 1 | 9 | **7** | 3 | 4 |
+| 2 | 1 | 25 | **18** | 8 | 10 |
+| 3 | 1 | 57 | **40** | 18 | 22 |
+| 2 | 3 | — | **33** | 21 | 12 |
+| 2 | 6 | — | **55** | 40 | 15 |
+
+**28–30% tighter than the old guess**, and now parameter-dependent.
+
+### `BREAK=blur-support-minus-1` cannot fail, and that is the correct answer
+
+The tightest margin is **4 px**, so a one-pixel shrink still covers. That is a
+fact about the bound rather than a weakness in the test:
+
+- the **derived** support is a mathematical upper bound on which source texels
+  can contribute;
+- the **measured** reach is where that contribution still survives 8-bit
+  quantisation.
+
+Those are different questions and the first is legitimately larger. Damage
+correctness is binary — *if a texel can contribute, it belongs in the region* —
+so the bound stays. The brief's own alternative applies: the falsifier is
+insufficient, not the bound.
+
+What replaced it is a check that **can** fail and runs every time: declare a
+support one pixel *inside the measured reach* and require the same coverage
+assertion to reject it. A coverage test that cannot detect an undersized region
+is not a coverage test.
+
+### Measuring reach needs a block, not an impulse
+
+An impulse is the mathematically ideal probe and the wrong practical one. One
+lit pixel spread over a 55 px support falls below 1/255 long before it reaches
+the edge of its own footprint, so the measurement floor is the **quantiser**.
+Measured that way, radius 3 and radius 6 both reported a reach of **zero** —
+which reads as a perfectly tight bound and is in fact a blind instrument. A
+24×24 block carries ~576× the energy with the same sharp boundary.
+
+## M4F padding — poison, and the extents that expose it
+
+`AZ_TRANSIENT_POISON=1` fills every newly created transient with **magenta**
+across the whole allocation, including the padding a caller's logical extent
+never covers. Relying on that memory being zero is relying on an accident: it is
+whatever the driver last left there, which on a reused image is another window's
+blur.
+
+`TRANSFER_DST` is added to the VkImage under poison only, and **not to the pool
+key** — an image with more usage is still substitutable, so a poisoned run pools
+exactly as a normal one does.
+
+Extents tested, at 1, 2 and 3 levels each — **30 combinations**:
+
+```text
+63  64  65  100  127  128  129  192  17  8
+```
+
+63 and 65 straddle the 64 px granularity; 129 allocates 192 and leaves 63
+columns of padding; 17 and 8 are the narrow cases where the level count reduces.
+A blur of pure black must come back pure black.
+
+```text
+30 extent/level combinations, 0 leaking pixels
+0 VUID, 0 SYNC-HAZARD with poison + synchronization validation
+```
+
+Four concepts are now kept distinct and must stay so: **allocation extent**,
+**valid extent**, **sampling extent**, **logical effect extent**. The shader
+never infers the valid bound from the allocation size.

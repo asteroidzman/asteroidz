@@ -1790,7 +1790,33 @@ tail -n +"$(grep -an 'renderer ready for VkFormat' "$L" | tail -1 | cut -d: -f1)
   | grep -acE 'VUID|SYNC-HAZARD'
 ```
 
-### 45 µs of barriers, and why it is not M4E's
+### 45 µs of barriers — INVALIDATED MEASUREMENT
+
+> **This entire subsection records a measurement that was wrong.** It is kept
+> for the reasoning, not for the number. M4F.3/.5 measured
+> `vkCmdPipelineBarrier2` directly, one variable at a time:
+>
+> ```text
+> 1 barrier / 1 call      69 ns        DCC modifier      46 ns
+> 4 barriers / 1 call    198 ns        non-DCC           46 ns
+> 4 barriers / 4 calls   256 ns        ratio           0.99x
+> FOREIGN -> graphics     44 ns        (vs 51 ns without)
+> ```
+>
+> **DCC HYPOTHESIS: DISPROVED.** The modifier tested is the exact one this
+> session scans out.
+>
+> **The 44 µs was measurement contamination**, not Vulkan barrier execution
+> cost: a per-call `clock_gettime` pair costs ~37 ns around a ~60 ns operation,
+> so a scheduler slice landing in that window is charged entirely to it and the
+> *mean* becomes a measure of preemption. Nothing below describes a real driver
+> cost.
+>
+> The only transition with materially higher CPU recording cost in the
+> controlled test is `UNDEFINED -> COLOR_ATTACHMENT` at **~311 ns** — still
+> sub-microsecond, and not a reason to restructure anything.
+
+### The original (invalidated) reasoning
 
 `vkCmdPipelineBarrier2` costs **45 µs live** against **1.9 µs headless at the
 same 3840x2160**. Three explanations were tested and two were eliminated:

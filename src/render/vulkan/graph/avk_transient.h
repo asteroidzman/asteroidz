@@ -154,6 +154,20 @@ struct avk_transient_pool {
 	 * write-after-read hazard as well, which is the second, independent signal.
 	 */
 	bool break_early_reuse;
+
+	/*
+	 * M4F test aid: fill every newly created image with a colour nothing else
+	 * in the system produces, so that any consumer which samples outside the
+	 * region it wrote produces an unmistakable result rather than a plausible
+	 * one.
+	 *
+	 * The pool rounds allocations up to `granularity`, so a 32x32 blur level
+	 * lives in a 64x64 image and three quarters of it is never written. Relying
+	 * on that memory being zero is relying on an accident: it is whatever the
+	 * driver last left there, which on a reused image is another window's blur.
+	 * AZ_TRANSIENT_POISON=1 makes the accident impossible to depend on.
+	 */
+	bool poison;
 };
 
 void avk_transient_pool_init(struct avk_transient_pool *pool,
