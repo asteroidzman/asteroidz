@@ -460,3 +460,52 @@ matched the word `fwidth()` in the explanatory comment above the code, latched
 "already seen", and passed against a deliberately reintroduced defect. It now
 fails against that injection and passes on the tree. Vulkan validation does not
 check this and is not claimed to.
+
+## M4C — gradient reference semantics, traced from source
+
+From `wlr_scene.h` and `render/fx_renderer/shaders/gradient.frag`. **Two of
+these contradict what the earlier M4 brief assumed**, so they are recorded
+before any implementation.
+
+```text
+has_gradient       bool
+gradient_degree    float, DEGREES (shader calls radians())
+gradient_linear    int, 1 = linear, 2 = conic
+gradient_blend     int, see below -- NOT smoothing/premultiply/repeat
+gradient_origin[2] float, NORMALISED 0..1 within the rect's box
+gradient_count     int
+gradient_colors    float*, 4 channels per colour, owned by the node
+```
+
+**Stop positions are IMPLICIT, not explicit.** There is no position array. The
+shader derives spacing from the count alone. The earlier brief assumed explicit
+stop positions; source wins.
+
+**`gradient_blend` selects banded vs interpolated**, and nothing else:
+
+```glsl
+if (!blend) {                       // HARD bands, no interpolation
+    smooth_fac = 1.0/float(count);
+    return colors[int(step/smooth_fac)];
+}
+smooth_fac = 1.0/float(count - 1);  // smoothstep between neighbours
+```
+
+**Step derivation.** `normal = (gl_FragCoord.xy - grad_box)/size`, so the
+gradient parameter lives in the rect's own normalised box, not output space.
+
+- *linear*: `uv = normal - origin`, scaled by `1/(|cos|+|sin|)` so the ramp
+  still spans the box at any angle, rotated by `degree`, origin added back, and
+  `step = rotated.x`.
+- *conic*: `uv` rotated by `degree`, then
+  `step = -atan(uv.y, uv.x)/PI * 0.5 + 0.5`.
+
+**A latent out-of-range read in the reference.** In the blend path,
+`if (ind <= count - 1) color = mix(color, colors[ind + 1], ...)` indexes
+`colors[count]` when `ind == count - 1`. AVK must clamp; matching the read
+exactly is not the goal, and any comparison fixture should avoid the last band's
+final texel until this is settled against SceneFX.
+
+**GLES relinks per stop count** — `link_quad_grad_program(..., count + 1)` when
+`max_len <= count`. AVK must not copy that; a storage buffer avoids both the
+relink and a pipeline per count.
