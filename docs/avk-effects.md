@@ -1219,3 +1219,83 @@ for an envelope-sized translucent primitive.
   exists, plus the question the audit raises on its own: the two lobes are two
   full-envelope draws, and whether fusing them into one material is worth it is
   a measurement, not a preference. Deferred to timestamps.
+
+## M4D.P — GPU timestamps, and the frame that measured itself away
+
+`avk_timestamp.{h,c}`. One `VkQueryPool`, `AVK_TS_MARKS` queries per frame
+slot, indexed by the **command ring's** slot — the same index the gradient
+store uses and for the same reason: `avk_cmd_ring_begin()` has already waited
+for that slot's previous submission, so resetting its queries is safe without
+any synchronisation of the query pool's own.
+
+### Two marks, not four
+
+The briefed design had a content/effects phase split. It is not implementable
+honestly here, and the reason is worth keeping. **A timestamp pair measures a
+contiguous span of the command stream.** AVK draws in scene order and a
+window's shadow is drawn immediately beneath that window, so shadow draws are
+interleaved with content draws throughout the frame rather than gathered into a
+phase. Bracketing the first and last shadow draw would measure "the span of the
+frame containing shadow work", which is very nearly the whole frame — and
+quoting that as shadow cost is the same class of error as calling CPU recording
+time GPU time, which is what this file exists to stop.
+
+Isolating an interleaved primitive's cost honestly means **differencing two
+frames that differ only in whether it is drawn**. That is how M4C measured a
+gradient and how M4D measures a shadow. M4F's blur *is* a separable pass with
+its own barriers, and can add a phase pair then, driven by code that needs it.
+
+### The bug the test found
+
+The first implementation drained slots only from the per-frame
+`avk_timestamps_collect()`. A compositor drawing faster than its GPU retires
+loses that race every time: collect runs, the slot is still in flight so it is
+skipped; the CPU comes round the ring, `avk_cmd_ring_begin()` waits for that
+exact slot, and the result becomes available a microsecond before
+`avk_timestamps_begin()` reset the pool over it. Measured on the first run:
+**23 samples and 37 drops out of 60 frames.**
+
+The fix is to read the outgoing result at `begin()`, before the reset. The
+moment the ring hands a slot back is the moment its results are guaranteed
+complete — that wait *is* the ring's contract — so it is the one place a read
+can never be premature and never has to block. 60 of 60 samples, 0 dropped.
+
+### Not waiting, and proving it
+
+`vkGetQueryPoolResults` is called with `64_BIT | WITH_AVAILABILITY_BIT` and
+**no `WAIT_BIT`**. The timeline argument is the correct one; the availability
+bit is what makes correctness not depend on my reading of the spec.
+
+The stall assertion had to be rewritten, and the first version of it was the
+thing that was wrong. An unthrottled 60-frame loop stalls the ring 44 times
+because it submits faster than the GPU drains — that is the ring's designed
+backpressure and has nothing to do with timestamps. So the unthrottled case
+asserts `cpu_sync_waits == ring.stalls` (every wait is still ring
+backpressure; timestamps added no second category), and a **second, paced**
+loop — what a vblank-throttled compositor actually does — asserts the ring
+never stalls at all and every one of its 12 frames yields a sample.
+
+### Valid bits, and a test that could not have run on this GPU
+
+`timestampPeriod` says the *device* has a counter; `timestampValidBits` says
+the *queue family* can write it, and the two are independent — a family can
+report 0 on a device whose period is fine. Both are checked, and
+`timestamp_valid_bits` is now read in `query_queue_families()` beside the
+family it describes rather than beside the device limit it is not.
+
+The upper bits of a raw query result are **undefined, not zero**, so a
+duration must be computed on masked values. This GPU reports **64 valid bits**
+— masking is the identity here, and at 10 ns/tick the counter wraps in about
+585 years. Every masking and wrap case would therefore pass against real
+queries on this machine whether the code masked or not: coverage by
+coincidence. `avk_ts_ticks_between()` is exported for exactly that reason and
+tested on constructed 36-bit values, each with its premise
+(`premise: unmasked subtraction of those two is NOT 5000`).
+
+### Measured
+
+`10.00 ns/tick, 64 valid bits, 6 queries`. A 128×128 target with 24 full-screen
+translucent rects: **9.7 µs** mean GPU frame time. `gpu_frame_us_avg` is
+reported through `amsg get avk-stats` as a **mean of completed samples**, and
+is `null` — not 0 — where the device cannot measure, because a test asserting
+on 0 there would be asserting the frame took no time.

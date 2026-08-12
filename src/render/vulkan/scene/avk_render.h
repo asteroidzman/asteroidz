@@ -3,6 +3,7 @@
 
 #include "../command/avk_command.h"
 #include "../command/avk_retire.h"
+#include "../command/avk_timestamp.h"
 #include "../pipeline/avk_gradient.h"
 #include "../pipeline/avk_pipeline.h"
 #include "avk_scene.h"
@@ -63,6 +64,9 @@ struct avk_renderer {
 	/* M4C. One per renderer, one buffer per frame in flight; see
 	 * avk_gradient.h for why the lifetime needs no wait. */
 	struct avk_gradient_store gradients;
+	/* M4D.P. Generic, not shadow-specific: four marks a frame, read back
+	 * without waiting. Disabled and harmless where the device cannot. */
+	struct avk_timestamps timestamps;
 	VkFormat format;
 
 	struct avk_renderer_stats stats;

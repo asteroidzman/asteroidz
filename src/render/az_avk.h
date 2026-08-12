@@ -3013,6 +3013,41 @@ static cJSON *az_avk_stats_json(void) {
 	AZ_GRAD_STAT(buffer_reuses);
 	AZ_GRAD_STAT(buffer_grows);
 #undef AZ_GRAD_STAT
+
+	/*
+	 * M4D.P. GPU time, and deliberately reported as a MEAN of completed
+	 * samples rather than as a total: a total would be summed over renderers
+	 * whose frames overlap in time and would mean nothing.
+	 *
+	 * `gpu_frame_us_avg` is null, not zero, where the device cannot write
+	 * timestamps. A test asserting on 0 there would be asserting that the
+	 * frame took no time.
+	 */
+	uint64_t gpu_ns_total = 0, gpu_samples = 0, gpu_dropped = 0;
+	bool gpu_supported = false;
+	for (size_t i = 0; i < AZ_AVK_MAX_FORMATS; i++) {
+		if (!avk.renderers[i].used) {
+			continue;
+		}
+		const struct avk_timestamps *ts =
+			&avk.renderers[i].renderer.timestamps;
+		if (!ts->supported) {
+			continue;
+		}
+		gpu_supported = true;
+		gpu_ns_total += ts->gpu_frame_ns_total;
+		gpu_samples += ts->samples;
+		gpu_dropped += ts->dropped;
+	}
+	cJSON_AddBoolToObject(o, "gpu_timestamps", gpu_supported);
+	if (gpu_supported && gpu_samples > 0) {
+		cJSON_AddNumberToObject(o, "gpu_frame_us_avg",
+			(double)gpu_ns_total / (double)gpu_samples / 1000.0);
+	} else {
+		cJSON_AddNullToObject(o, "gpu_frame_us_avg");
+	}
+	cJSON_AddNumberToObject(o, "gpu_samples", (double)gpu_samples);
+	cJSON_AddNumberToObject(o, "gpu_dropped", (double)gpu_dropped);
 	cJSON_AddNumberToObject(o, "software_cursor_frames",
 		(double)avk.software_cursor_frames);
 	cJSON_AddNumberToObject(o, "cursor_geometry_mismatch",

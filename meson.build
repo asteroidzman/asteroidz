@@ -331,6 +331,16 @@ if build_vulkan
                                  build_by_default : false)
   test('avk-gradient', test_avk_gradient, timeout : 120)
 
+  # M4D.P: GPU timestamps. Half of this runs with no GPU at all -- the wrap
+  # and masking arithmetic is tested on constructed values, because this
+  # machine's 64 valid bits make masking the identity and a real wrap would
+  # take centuries.
+  test_avk_timestamp = executable('test-avk-timestamp',
+                                  'tests/test-avk-timestamp.c',
+                                  dependencies : [avk_dep],
+                                  build_by_default : false)
+  test('avk-timestamp', test_avk_timestamp, timeout : 120)
+
   # asteroidz-avk-probe: run the engine on real hardware and say what it can
   # do. Installed, because until AVK renders the desktop (M3b) this is the
   # only way to exercise it on the machine it will eventually run on -- and it

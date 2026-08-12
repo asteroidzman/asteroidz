@@ -84,6 +84,10 @@ static void query_queue_families(VkPhysicalDevice phys, struct avk_caps *caps) {
 		if (!found_graphics && (flags & VK_QUEUE_GRAPHICS_BIT)
 				&& (flags & VK_QUEUE_COMPUTE_BIT)) {
 			caps->graphics_family = i;
+			/* Read here rather than beside timestampPeriod, because it is a
+			 * property of THIS family and not of the device: a family can
+			 * report 0 on a device whose period is perfectly good. */
+			caps->timestamp_valid_bits = families[i].timestampValidBits;
 			found_graphics = true;
 		}
 

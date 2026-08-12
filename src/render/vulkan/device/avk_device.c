@@ -352,6 +352,7 @@ int avk_device_log_live_objects(const struct avk_device *dev, const char *when) 
 		{ "descriptor_pools", l->descriptor_pools },
 		{ "command_pools", l->command_pools },
 		{ "semaphores", l->semaphores },
+		{ "query_pools", l->query_pools },
 		{ "avk_images", l->avk_images },
 		{ "avk_uploads", l->avk_uploads },
 		{ "retire_entries", l->retire_entries },

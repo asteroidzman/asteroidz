@@ -85,6 +85,12 @@ struct avk_caps {
 	uint32_t max_image_dimension_2d;
 	uint64_t max_memory_allocation_size;
 	float timestamp_period;
+	/* How many bits of a timestamp the GRAPHICS QUEUE FAMILY actually writes.
+	 * A device-wide timestampPeriod says nothing about this, and the upper
+	 * bits of a query result are undefined rather than zero -- so a duration
+	 * computed without masking to these bits is meaningless. 0 means this
+	 * family cannot write timestamps at all. */
+	uint32_t timestamp_valid_bits;
 	VkDeviceSize non_coherent_atom_size;
 	VkDeviceSize optimal_buffer_copy_offset_alignment;
 	VkDeviceSize optimal_buffer_copy_row_pitch_alignment;
@@ -129,6 +135,7 @@ struct avk_live_objects {
 	int64_t descriptor_pools;
 	int64_t command_pools;
 	int64_t semaphores;
+	int64_t query_pools;
 
 	/* AVK-level wrappers, which are host allocations rather than device
 	 * children but have exactly the same ownership question. */

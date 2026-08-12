@@ -56,6 +56,7 @@ avk_sources = files(
   'avk_log.c',
   'command/avk_command.c',
   'command/avk_retire.c',
+  'command/avk_timestamp.c',
   'debug/avk_debug.c',
   'dmabuf/avk_dmabuf.c',
   'dmabuf/avk_drm_format.c',

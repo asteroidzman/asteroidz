@@ -32,6 +32,10 @@ bool avk_renderer_init(struct avk_renderer *renderer, struct avk_device *dev,
 		return false;
 	}
 
+	/* M4D.P. A device that cannot measure itself must still draw, so a false
+	 * return here is recorded and ignored rather than failing init. */
+	avk_timestamps_init(&renderer->timestamps, dev);
+
 	/* M4A breaks, read once. Each restores a specific wrong implementation
 	 * rather than merely disabling the feature -- "single radius" and "scaled
 	 * twice" are the two mistakes that render plausibly and are therefore the
@@ -71,6 +75,7 @@ void avk_renderer_finish(struct avk_renderer *renderer) {
 	 * onto that queue, and finishing the store destroys only the buffers the
 	 * slots still hold. */
 	avk_gradient_store_finish(&renderer->gradients);
+	avk_timestamps_finish(&renderer->timestamps);
 	avk_retire_finish(&renderer->retire, renderer->dev);
 	avk_cmd_ring_finish(&renderer->ring);
 	avk_pipelines_finish(&renderer->pipes);
@@ -79,6 +84,9 @@ void avk_renderer_finish(struct avk_renderer *renderer) {
 
 void avk_renderer_collect(struct avk_renderer *renderer) {
 	avk_retire_collect(&renderer->retire, renderer->dev);
+	/* Reads back only frames the timeline says are finished, so this adds no
+	 * wait to a path whose whole point is that it has none. */
+	avk_timestamps_collect(&renderer->timestamps);
 }
 
 /* ── geometry ───────────────────────────────────────────────────────────────
@@ -419,6 +427,17 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 	}
 	avk_debug_label_begin(dev, cb, "avk frame %" PRIu64,
 		renderer->stats.frames);
+
+	/*
+	 * The slot, captured now: ring.recording goes back to -1 at submit, and
+	 * the timestamp bookkeeping needs it afterwards. Query reset must happen
+	 * outside a render pass, which is why it is here and not beside the first
+	 * mark.
+	 */
+	uint32_t ts_slot = (uint32_t)renderer->ring.recording;
+	avk_timestamps_begin(&renderer->timestamps, cb, ts_slot);
+	avk_timestamps_mark(&renderer->timestamps, cb, ts_slot,
+		AVK_TS_FRAME_BEGIN, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT);
 
 	/*
 	 * The frame's gradient data, sized BEFORE anything is recorded.
@@ -820,6 +839,12 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 	 * out. */
 	batch_submit(&release, cb, renderer);
 
+	/* BOTTOM_OF_PIPE against the frame's TOP_OF_PIPE: the pair brackets
+	 * everything this command buffer does, including the release barriers,
+	 * which is what "GPU frame time" should mean. */
+	avk_timestamps_mark(&renderer->timestamps, cb, ts_slot,
+		AVK_TS_FRAME_END, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT);
+
 	avk_debug_label_end(dev, cb);
 
 	uint64_t value = avk_cmd_ring_submit(&renderer->ring, wait, wait_count,
@@ -830,6 +855,9 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 	/* The submission that reads this frame's gradient buffer, so a later growth
 	 * knows what to retire the old one against. */
 	avk_gradient_store_submitted(&renderer->gradients, value);
+	/* The point whose passing means this frame's marks can be read without
+	 * waiting for anything. */
+	avk_timestamps_submitted(&renderer->timestamps, ts_slot, value);
 
 	/* The barriers above have already recorded where the target ended up --
 	 * GENERAL for a scan-out buffer, COLOR_ATTACHMENT_OPTIMAL for one of our
@@ -857,4 +885,15 @@ void avk_renderer_log_stats(const struct avk_renderer *renderer) {
 	avk_log(AVK_INFO, "avk.cpu_sync_waits=%" PRIu64
 		" avk.record_us_avg=%" PRIu64, s->cpu_sync_waits,
 		s->frames ? s->cpu_record_ns / s->frames / 1000 : 0);
+	/* Kept on a separate line from record_us_avg, and named gpu_, so the two
+	 * cannot be read as the same measurement. */
+	const struct avk_timestamps *ts = &renderer->timestamps;
+	if (ts->supported) {
+		avk_log(AVK_INFO, "avk.gpu_frame_us_avg=%" PRIu64
+			" avk.gpu_samples=%" PRIu64 " avk.gpu_dropped=%" PRIu64,
+			ts->samples ? ts->gpu_frame_ns_total / ts->samples / 1000 : 0,
+			ts->samples, ts->dropped);
+	} else {
+		avk_log(AVK_INFO, "avk.gpu_frame_us_avg=UNSUPPORTED");
+	}
 }
