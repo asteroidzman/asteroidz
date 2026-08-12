@@ -509,3 +509,103 @@ final texel until this is settled against SceneFX.
 **GLES relinks per stop count** — `link_quad_grad_program(..., count + 1)` when
 `max_len <= count`. AVK must not copy that; a storage buffer avoids both the
 relink and a pipeline per count.
+
+### Two corrections the implementation forced, and one thing the audit missed
+
+Tracing `quad_grad_round.frag` while wiring M4C.1 turned up a third fact worth
+recording, because it decides which box a gradient is normalised against.
+
+**Every gradient rect goes through the ROUNDED path.** `wlr_scene.c:2398`
+dispatches `scene_pass_add_rounded_rect_grad()` whenever `has_gradient` is set,
+whether or not the rect has any corner radii. There is no plain gradient path
+in the scene at all — `fx_render_pass_add_rect_grad()` exists and the scene
+never calls it. So a gradient is composed with rounded coverage *and* with the
+interior cut-out, which is what makes a gradient BORDER the same draw as a
+gradient rect.
+
+**`grad_size` is uploaded and never read.** The rounded gradient shader takes
+the `size` uniform — the rect's own box — where the plain one would have taken
+`grad_size`. Since the scene sets `range = dst_box`, the two agree and nothing
+observable turns on it. It matters only in that AVK normalises against the
+command's destination box, which is the value both of them hold.
+
+**`gl_FragCoord` is top-down in BOTH renderers.** SceneFX projects with
+`WL_OUTPUT_TRANSFORM_FLIPPED_180` (`fx_pass.c:1864`), which works out to
+`ndc = 2p/size - 1` for `p` in top-left output pixels — so `gl_FragCoord.y`
+equals output `y` measured from the top, exactly as it does in Vulkan. A
+gradient therefore needs no y-flip on the way across. asteroidz's own overview
+vignette hedges against one ("a symmetric ramp is invariant to the renderer's
+y-flip"), and that hedge is what made this worth checking rather than assuming;
+the fixtures pin the direction either way.
+
+## M4C.1 — the gradient snapshot, and where it lives on the GPU
+
+### The snapshot
+
+`struct avk_gradient` (`scene/avk_scene.h`) carries type, degree **in
+degrees**, blend, origin, and an offset/count into the scene's packed colour
+array. It holds no pointer into SceneFX: `gradient_colors` belongs to the scene
+node and is `free()`d by the next `wlr_scene_rect_set_gradient()`, which for a
+window border happens on **every focus change** — the first stop is the
+animated border colour. The walk copies.
+
+There are no stop positions in it, because there are none in the source.
+
+### One buffer, one binding, one pipeline
+
+```text
+set 1, binding 0   readonly buffer AzGradientData { vec4 data[]; }
+
+data[r + 0]   origin.x, origin.y, degree in RADIANS, blend
+data[r + 1]   type, colour offset, colour count, --
+data[off ..]  the colours, premultiplied
+```
+
+A draw carries only `r`, in `params[1]` of the push block — the field the
+texture pipeline uses for its alpha mask, which is free here because the two
+pipelines never draw the same command. The block is exactly 128 bytes, the
+guaranteed minimum `maxPushConstantsSize`, so there was no room to add
+anything; `shader/src/push.glsl` is now the single declaration all four shaders
+include, so the dual reading cannot drift.
+
+Records and colours share one array so that there is one capacity, one growth
+path and one upload. Several gradients in a frame cost one buffer write and one
+descriptor bind between them.
+
+**One pipeline, for every gradient.** Not one per stop count: the shader never
+names the array's length. That is the whole reason for a storage buffer rather
+than a uniform array, and `test-avk-gradient` asserts `pipelines` does not move
+across thirty frames.
+
+### Lifetime, without a wait
+
+One buffer per frame in flight, indexed by the **command ring's** slot.
+`avk_cmd_ring_begin()` has already waited for that slot's previous submission
+before the frame is recorded, so overwriting the buffer is safe by
+construction — and so is rewriting its descriptor on growth, which is why there
+is a descriptor set per slot rather than one shared set that would be updated
+under frames still in flight.
+
+Growth is geometric and hands the old buffer to the retire queue against the
+timeline point of the submission that last read it. `cpu_sync_waits` stays 0;
+nothing here waits on a fence, a queue or the device.
+
+### Counters
+
+`gradient_draws`, `gradient_linear_draws`, `gradient_conic_draws`,
+`gradient_colors_processed` say what the frame **asked for**;
+`gradient_buffer_uploads`, `gradient_buffer_upload_bytes`,
+`gradient_buffer_reuses`, `gradient_buffer_grows` say what the renderer had to
+**allocate**. Keeping them apart is the point: a steady gradient scene is
+*expected* to upload every frame (the data goes into a per-frame slot) while
+allocating nothing at all, and one merged number would make a growing buffer
+indistinguishable from a busy one.
+
+### `AZ_GRADIENT_COLOR_OFFSET=1`
+
+Shifts every record's colour offset by one vec4, so each gradient reads the
+next one's colours. Nothing else changes — the buffer is the right size, the
+records are all present, and only the indexing is wrong. It fails 12 of
+`test-avk-gradient`'s assertions, including the one-stop gradient, which comes
+back reading a *record* as a colour. A single-gradient fixture would not
+notice, which is why the packing test draws six.

@@ -1,4 +1,6 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
+#include "push.glsl"
 
 /*
  * One vertex shader for every command AVK draws.
@@ -16,17 +18,6 @@
  * branches and eight chances to get a corner wrong.
  */
 
-layout(push_constant) uniform Push {
-	vec4 uv_org_dx;     // uv origin (xy), du/dx (zw)
-	vec4 uv_dy;         // du/dy (xy), unused (zw)
-	vec4 color;         // premultiplied solid colour
-	vec4 params;        // opacity, alpha_mask, viewport w, viewport h
-	vec4 round_box;     // OUTER x0, y0, x1, y1 in output pixels
-	vec4 corners;       // CLOCKWISE: tl, tr, br, bl, in output pixels
-	vec4 inner_box;     // INNER x0, y0, x1, y1 in output pixels
-	vec4 inner_corners; // CLOCKWISE, in output pixels
-} pc;
-
 layout(location = 0) out vec2 v_uv;
 
 void main() {
@@ -36,5 +27,9 @@ void main() {
 	 * numbers, so the shape drawn and the shape covered cannot disagree. */
 	vec2 px = mix(pc.round_box.xy, pc.round_box.zw, p);
 	gl_Position = vec4(px / pc.params.zw * 2.0 - 1.0, 0.0, 1.0);
+	/* Only the texture pipeline means anything by this. For a rectangle the uv
+	 * fields are zero and for a gradient they are not uv at all, so v_uv is
+	 * computed and then ignored -- see push.glsl. Reading it in quad.frag or
+	 * gradient.frag would be reading another pipeline's parameters. */
 	v_uv = pc.uv_org_dx.xy + p.x * pc.uv_org_dx.zw + p.y * pc.uv_dy.xy;
 }

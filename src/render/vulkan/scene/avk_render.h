@@ -3,6 +3,7 @@
 
 #include "../command/avk_command.h"
 #include "../command/avk_retire.h"
+#include "../pipeline/avk_gradient.h"
 #include "../pipeline/avk_pipeline.h"
 #include "avk_scene.h"
 
@@ -51,6 +52,9 @@ struct avk_renderer {
 	struct avk_pipelines pipes;
 	struct avk_cmd_ring ring;
 	struct avk_retire_queue retire;
+	/* M4C. One per renderer, one buffer per frame in flight; see
+	 * avk_gradient.h for why the lifetime needs no wait. */
+	struct avk_gradient_store gradients;
 	VkFormat format;
 
 	struct avk_renderer_stats stats;

@@ -1,22 +1,15 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
+#include "push.glsl"
 #include "rounded.glsl"
 
 /* A solid rectangle. The colour arrives PREMULTIPLIED, matching the blend
  * state (ONE, ONE_MINUS_SRC_ALPHA) and matching what every client buffer is,
  * so there is exactly one alpha convention in the renderer. */
 
-layout(push_constant) uniform Push {
-	vec4 uv_org_dx;
-	vec4 uv_dy;
-	vec4 color;
-	vec4 params;
-	vec4 round_box;     // OUTER x0, y0, x1, y1 in output pixels
-	vec4 corners;       // CLOCKWISE: tl, tr, br, bl, in output pixels
-	vec4 inner_box;     // INNER x0, y0, x1, y1 in output pixels
-	vec4 inner_corners; // CLOCKWISE, in output pixels
-} pc;
-
+/* Declared because the vertex shader writes it, NOT read here -- and it must
+ * stay unread. The vertex shader derives v_uv from the first two push
+ * constants, which a gradient command uses for something else entirely. */
 layout(location = 0) in vec2 v_uv;
 layout(location = 0) out vec4 out_color;
 

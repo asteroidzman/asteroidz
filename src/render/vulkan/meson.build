@@ -33,11 +33,16 @@ avk_embed = find_program('shader/embed.py')
 avk_shader_headers = []
 foreach shader : [['quad.vert', 'quad_vert_spv'],
                   ['quad.frag', 'quad_frag_spv'],
-                  ['texture.frag', 'texture_frag_spv']]
+                  ['texture.frag', 'texture_frag_spv'],
+                  ['gradient.frag', 'gradient_frag_spv']]
   spv = custom_target(shader[0] + '.spv',
     input : 'shader/src' / shader[0],
     output : shader[0] + '.spv',
-    depend_files : files('shader/src/rounded.glsl'),
+    # Every include, listed: push.glsl in particular is the single declaration
+    # of the push-constant block, so a change to it must rebuild all four.
+    depend_files : files('shader/src/rounded.glsl',
+                         'shader/src/push.glsl',
+                         'shader/src/gradient.glsl'),
     command : [glslang, '-V', '--target-env', 'vulkan1.3',
                '-I' + meson.current_source_dir() / 'shader/src',
                '@INPUT@', '-o', '@OUTPUT@'])
@@ -60,6 +65,7 @@ avk_sources = files(
   'device/avk_phys.c',
   'image/avk_image.c',
   'image/avk_upload.c',
+  'pipeline/avk_gradient.c',
   'pipeline/avk_pipeline.c',
   'scene/avk_render.c',
   'scene/avk_scene.c',

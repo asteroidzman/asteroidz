@@ -24,6 +24,13 @@ bool avk_renderer_init(struct avk_renderer *renderer, struct avk_device *dev,
 	}
 	avk_retire_init(&renderer->retire, "renderer");
 	renderer->ring.retire = &renderer->retire;
+	if (!avk_gradient_store_init(&renderer->gradients, dev,
+			renderer->pipes.gradient_set_layout, &renderer->retire)) {
+		avk_retire_finish(&renderer->retire, dev);
+		avk_cmd_ring_finish(&renderer->ring);
+		avk_pipelines_finish(&renderer->pipes);
+		return false;
+	}
 
 	/* M4A breaks, read once. Each restores a specific wrong implementation
 	 * rather than merely disabling the feature -- "single radius" and "scaled
@@ -60,6 +67,10 @@ void avk_renderer_finish(struct avk_renderer *renderer) {
 	if (renderer->dev == NULL) {
 		return;
 	}
+	/* Before the retire queue is drained: growth pushes old gradient buffers
+	 * onto that queue, and finishing the store destroys only the buffers the
+	 * slots still hold. */
+	avk_gradient_store_finish(&renderer->gradients);
 	avk_retire_finish(&renderer->retire, renderer->dev);
 	avk_cmd_ring_finish(&renderer->ring);
 	avk_pipelines_finish(&renderer->pipes);
@@ -409,6 +420,43 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 	avk_debug_label_begin(dev, cb, "avk frame %" PRIu64,
 		renderer->stats.frames);
 
+	/*
+	 * The frame's gradient data, sized BEFORE anything is recorded.
+	 *
+	 * Sizing up front is what makes the buffer safe to grow: once a draw has
+	 * been recorded referring to an index in it, the buffer behind that index
+	 * may not be replaced. So the demand is counted in one pass over the
+	 * commands, the slot is grown at most once, and the packing that follows
+	 * can only ever fit.
+	 *
+	 * The slot is the COMMAND RING's slot, deliberately. avk_cmd_ring_begin()
+	 * above has already waited for that slot's previous submission to complete,
+	 * which is precisely the condition for overwriting the buffer and for
+	 * updating its descriptor -- so gradient data needs no synchronisation of
+	 * its own, and adds no CPU wait.
+	 */
+	uint32_t gradient_vec4s = 0;
+	for (size_t i = 0; i < scene->len; i++) {
+		const struct avk_gradient *g = &scene->cmds[i].gradient;
+		if (g->type != AVK_GRADIENT_NONE && g->color_count > 0) {
+			gradient_vec4s += 2 + g->color_count;
+		}
+	}
+	VkDescriptorSet gradient_set = VK_NULL_HANDLE;
+	if (gradient_vec4s > 0) {
+		gradient_set = avk_gradient_store_begin(&renderer->gradients,
+			(uint32_t)renderer->ring.recording, gradient_vec4s);
+		if (gradient_set == VK_NULL_HANDLE) {
+			/* Loud, and then draw the frame without them. A gradient rect
+			 * whose record could not be written would sample whatever the
+			 * previous frame left in the buffer, which is worse than a solid
+			 * colour and much harder to recognise. */
+			avk_log(AVK_ERROR, "avk: no room for %u vec4s of gradient data; "
+				"this frame's gradients are drawn as solid colour",
+				gradient_vec4s);
+		}
+	}
+
 	/* Every layout transition this frame needs, decided up front. */
 	struct avk_barrier_batch batch = { .count = 0 };
 	struct avk_barrier_batch release = { .count = 0 };
@@ -502,6 +550,14 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 		.minDepth = 0.0f, .maxDepth = 1.0f,
 	};
 	vkCmdSetViewport(cb, 0, 1, &viewport);
+
+	/* Once, for the whole frame. Every gradient in it reads the same buffer at
+	 * a different offset, so there is one descriptor bind however many
+	 * gradients are drawn -- and none at all in a frame that draws none. */
+	if (gradient_set != VK_NULL_HANDLE) {
+		vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
+			renderer->pipes.layout, 1, 1, &gradient_set, 0, NULL);
+	}
 
 	VkPipeline bound = VK_NULL_HANDLE;
 
@@ -708,6 +764,32 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 			}
 			pc.color[3] = cmd->color[3];
 			renderer->stats.rects++;
+
+			/*
+			 * GRADIENT IS A MATERIAL, NOT A GEOMETRY.
+			 *
+			 * Everything above -- the destination, the outer arcs, the inner
+			 * cut-out that makes a border an annulus -- has already been filled
+			 * in and is untouched by this. All that changes is which pipeline
+			 * shades the same quad, and which colour it uses. That is what lets
+			 * a gradient BORDER be M4B's annulus with a different fill instead
+			 * of a second border path, and it is why the reference's gradient
+			 * rects and gradient borders are the same draw call there too.
+			 *
+			 * `color` stays exactly as computed: the gradient replaces the rgb,
+			 * and the alpha still gates the shape, which is what
+			 * quad_grad_round.frag does with v_color.a.
+			 */
+			const struct avk_gradient *g = &cmd->gradient;
+			if (g->type != AVK_GRADIENT_NONE && g->color_count > 0 &&
+					gradient_set != VK_NULL_HANDLE) {
+				uint32_t rec = avk_gradient_store_push(&renderer->gradients, g,
+					scene->gradient_colors + (size_t)g->color_offset * 4);
+				if (rec != UINT32_MAX) {
+					want = renderer->pipes.gradient;
+					pc.params[1] = (float)rec;
+				}
+			}
 		}
 
 		if (bound != want) {
@@ -745,6 +827,9 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 	if (value == 0) {
 		return 0;
 	}
+	/* The submission that reads this frame's gradient buffer, so a later growth
+	 * knows what to retire the old one against. */
+	avk_gradient_store_submitted(&renderer->gradients, value);
 
 	/* The barriers above have already recorded where the target ended up --
 	 * GENERAL for a scan-out buffer, COLOR_ATTACHMENT_OPTIMAL for one of our

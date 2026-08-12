@@ -33,6 +33,14 @@ invisible at the sizes and shapes a running compositor produces:
 | `shipped-config` | `assets/config.kdl` parses. It becomes `/etc/asteroidz/config.kdl` and is what every new user copies; nothing was checking it, and it had drifted to the point where `asteroidz -p` exited 1 |
 | `bar-icons` | every vendored SVG parses and rasterises to non-empty ink |
 
+Three of them are not "pure helper" tests at all — `avk-core`, `avk-render` and
+`avk-gradient` drive a real GPU, render into an image and read the pixels back.
+They live here because what they assert is **numerical**. A headless compositor
+screenshot can say a window has a ramp across it; only a readback can say the
+ramp has five bands and not four segments, that band three begins at 0.4 rather
+than 0.375, or that a seventeen-stop gradient did not silently truncate at
+eight. Each skips (exit 77) with no DRM render node.
+
 Run both before pushing. Neither subsumes the other.
 
 There is a third, one-purpose script beside them: `contrib/signal-exit-test.sh`

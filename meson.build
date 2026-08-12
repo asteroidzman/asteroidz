@@ -319,6 +319,15 @@ if build_vulkan
                                build_by_default : false)
   test('avk-render', test_avk_render, timeout : 60)
 
+  # M4C: gradients. Separate from avk-render because a gradient is a NUMERICAL
+  # claim -- which band, starting where, out of how many -- and the fixtures
+  # need a bigger target and their own colour scheme to say so exactly.
+  test_avk_gradient = executable('test-avk-gradient',
+                                 'tests/test-avk-gradient.c',
+                                 dependencies : [avk_dep],
+                                 build_by_default : false)
+  test('avk-gradient', test_avk_gradient, timeout : 120)
+
   # asteroidz-avk-probe: run the engine on real hardware and say what it can
   # do. Installed, because until AVK renders the desktop (M3b) this is the
   # only way to exercise it on the machine it will eventually run on -- and it

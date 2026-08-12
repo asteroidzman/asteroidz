@@ -27,7 +27,13 @@ struct avk_push_constants {
 	float uv_org_dx[4];   /* uv origin xy, du/dx zw */
 	float uv_dy[4];       /* du/dy xy, unused zw */
 	float color[4];       /* premultiplied */
-	/* opacity, alpha_mask, viewport width, viewport height (output pixels) */
+	/*
+	 * opacity, alpha_mask, viewport width, viewport height (output pixels).
+	 *
+	 * params[1] is read as the alpha mask by the texture pipeline and as the
+	 * GRADIENT RECORD INDEX by the gradient pipeline. The two never draw the
+	 * same command, and push.glsl names both readings.
+	 */
 	float params[4];
 	/*
 	 * OUTER geometry: the rounded rectangle this command fills, in OUTPUT
@@ -64,10 +70,16 @@ struct avk_push_constants {
 	float inner_box[4];
 	float inner_corners[4];
 };
-/* Exactly 128, the minimum maxPushConstantsSize every Vulkan implementation
- * must support, so this needs no capability check -- and no room to grow.
- * M4C's gradients carry a variable number of colour stops and want a buffer
- * rather than another push constant, so this is the right ceiling to sit at. */
+/*
+ * Exactly 128, the minimum maxPushConstantsSize every Vulkan implementation
+ * must support, so this needs no capability check -- and NO ROOM TO GROW.
+ *
+ * That ceiling is why the block is dual-purpose from M4C onward: a gradient
+ * rect puts its record index in params[1], which only a texture command
+ * otherwise uses, and its colours in a storage buffer. shader/src/push.glsl
+ * carries the field-by-field table and is the one declaration all four shaders
+ * include, so the two readings cannot drift apart.
+ */
 _Static_assert(sizeof(struct avk_push_constants) == 128,
 	"push constants must match the shader block");
 
@@ -76,9 +88,30 @@ struct avk_pipelines {
 
 	VkPipelineLayout layout;
 	VkDescriptorSetLayout texture_set_layout;
+	/*
+	 * Set 1: the frame's packed gradient data (avk_gradient.h). A SECOND SET
+	 * rather than a second binding in set 0, because set 0's sets are cached
+	 * per image for the image's whole lifetime -- putting the gradient buffer
+	 * in there would mean rewriting every cached surface descriptor whenever
+	 * the buffer grew, under frames still in flight.
+	 */
+	VkDescriptorSetLayout gradient_set_layout;
 
 	VkPipeline rect;
 	VkPipeline texture;
+	/*
+	 * ONE gradient pipeline. Not one per stop count, not one per gradient type:
+	 * the colours come from a storage buffer whose length the shader never
+	 * names, and linear-versus-conic is a uniform branch on a value in the
+	 * record. The GLES reference relinks its program when a scene wants more
+	 * stops than the current build allows; that behaviour has no Vulkan
+	 * translation that is not a pipeline compile on the frame path.
+	 *
+	 * Separate from `rect` rather than a branch inside quad.frag so that a
+	 * plain rectangle -- every window background, every panel, the clear --
+	 * neither reads a storage buffer nor needs set 1 bound.
+	 */
+	VkPipeline gradient;
 
 	/* One sampler each, because filtering is a per-command choice and a
 	 * sampler is immutable. Nearest for 1:1 blits -- linear at 1:1 is not a

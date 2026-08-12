@@ -17,6 +17,7 @@ void avk_scene_finish(struct avk_scene *scene) {
 		}
 	}
 	free(scene->cmds);
+	free(scene->gradient_colors);
 	pixman_region32_fini(&scene->damage);
 	memset(scene, 0, sizeof(*scene));
 }
@@ -50,4 +51,48 @@ bool avk_cmd_set_clip(struct avk_cmd *cmd, const pixman_region32_t *region) {
 		cmd->has_clip = true;
 	}
 	return pixman_region32_copy(&cmd->clip, (pixman_region32_t *)region);
+}
+
+bool avk_cmd_set_gradient(struct avk_scene *scene, struct avk_cmd *cmd,
+		enum avk_gradient_type type, float degree, bool blend,
+		const float origin[2], const float *colors, uint32_t count) {
+	if (type == AVK_GRADIENT_NONE || colors == NULL || count == 0) {
+		return false;
+	}
+
+	if (scene->gradient_color_len + count > scene->gradient_color_cap) {
+		/* Geometric, and starting at a size a real frame usually fits inside:
+		 * asteroidz draws at most a focused window's two-stop border and the
+		 * overview's two five-stop vignettes, so 64 colours covers an ordinary
+		 * desktop without ever growing. */
+		uint32_t cap = scene->gradient_color_cap == 0 ? 64
+			: scene->gradient_color_cap * 2;
+		while (cap < scene->gradient_color_len + count) {
+			cap *= 2;
+		}
+		float *grown = realloc(scene->gradient_colors,
+			(size_t)cap * 4 * sizeof(float));
+		if (grown == NULL) {
+			avk_log(AVK_ERROR, "scene: out of memory packing %u gradient "
+				"colours", count);
+			return false;
+		}
+		scene->gradient_colors = grown;
+		scene->gradient_color_cap = cap;
+	}
+
+	memcpy(scene->gradient_colors + (size_t)scene->gradient_color_len * 4,
+		colors, (size_t)count * 4 * sizeof(float));
+
+	cmd->gradient = (struct avk_gradient){
+		.type = type,
+		.degree = degree,
+		.blend = blend,
+		.origin = { origin != NULL ? origin[0] : 0.5f,
+			origin != NULL ? origin[1] : 0.5f },
+		.color_offset = scene->gradient_color_len,
+		.color_count = count,
+	};
+	scene->gradient_color_len += count;
+	return true;
 }

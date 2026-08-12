@@ -61,6 +61,44 @@ enum avk_cmd_type {
 	AVK_CMD_TEXTURE,
 };
 
+/* 1 and 2 are the values SceneFX's `gradient_linear` field carries, kept rather
+ * than renumbered so a mismatch between the two is a compile error rather than
+ * a gradient that silently renders as the other kind. */
+enum avk_gradient_type {
+	AVK_GRADIENT_NONE = 0,
+	AVK_GRADIENT_LINEAR = 1,
+	AVK_GRADIENT_CONIC = 2,
+};
+
+/*
+ * A gradient, as the renderer receives it: immutable, self-contained, and
+ * holding no pointer into anything the compositor might free or mutate.
+ *
+ * WHAT IS NOT IN HERE, and must not be added: stop positions. SceneFX's
+ * gradient is a colour COUNT and nothing else -- spacing is derived from the
+ * count, and `blend` decides whether that means `count` hard bands or
+ * `count - 1` interpolated segments. There is no position array in the source
+ * to carry, and adding one would be a different feature.
+ *
+ * `degree` is in DEGREES because that is the source semantic (the reference
+ * shader calls radians() on it). The conversion happens once, on the way to the
+ * GPU, rather than being baked in here where it would quietly diverge from the
+ * field it was copied from.
+ *
+ * The colours live in the scene's packed array, not here: several gradients in
+ * one frame share one array and one upload, and a per-gradient allocation on
+ * the frame path is exactly what this renderer does not do. `color_offset` is
+ * an index in COLOURS into avk_scene.gradient_colors.
+ */
+struct avk_gradient {
+	enum avk_gradient_type type;
+	float degree;
+	bool blend;
+	float origin[2];   /* normalised 0..1 within the command's dst box */
+	uint32_t color_offset;
+	uint32_t color_count;
+};
+
 struct avk_cmd {
 	enum avk_cmd_type type;
 
@@ -127,6 +165,18 @@ struct avk_cmd {
 	float inner_corners[4];
 	bool has_inner;
 
+	/*
+	 * The fill. `type == AVK_GRADIENT_NONE` means `color` above is the whole
+	 * answer; anything else means the gradient replaces the colour and only
+	 * `color[3]` still applies, which is what the reference does
+	 * (quad_grad_round.frag gates the gradient by v_color.a).
+	 *
+	 * Geometry above, material here, and the two do not know about each other:
+	 * that is what lets a gradient BORDER be M4B's annulus with a different
+	 * fill rather than a second border path.
+	 */
+	struct avk_gradient gradient;
+
 	/* reserved for later M4 stages */
 	bool has_shadow;
 	bool has_blur;
@@ -146,6 +196,19 @@ struct avk_scene {
 
 	pixman_region32_t damage;
 
+	/*
+	 * Every gradient stop in the frame, packed end to end, 4 floats per colour
+	 * and PREMULTIPLIED -- the values wlr_scene_rect stores, copied without
+	 * conversion. A command's gradient names its own run by offset and count.
+	 *
+	 * One array for the whole frame rather than one per gradient: the renderer
+	 * turns this into a single buffer write, so three gradients cost one upload
+	 * and no allocation of any kind on the GPU side.
+	 */
+	float *gradient_colors;
+	uint32_t gradient_color_len;   /* in COLOURS, not floats */
+	uint32_t gradient_color_cap;
+
 	/* Cleared before anything is drawn, in the damaged region only. */
 	float clear_color[4];
 	bool has_clear;
@@ -160,5 +223,22 @@ struct avk_cmd *avk_scene_add(struct avk_scene *scene, enum avk_cmd_type type);
 
 /* Set a command's clip region. Copies, so the caller's region can go away. */
 bool avk_cmd_set_clip(struct avk_cmd *cmd, const pixman_region32_t *region);
+
+/*
+ * Give `cmd` a gradient fill, copying `count` colours (4 floats each,
+ * PREMULTIPLIED) into the scene's packed array.
+ *
+ * Copies rather than borrows, and that is the point: `colors` belongs to a
+ * wlr_scene_rect that a client commit or a config reload may free between the
+ * walk and the submission. A snapshot that holds a pointer into the scene graph
+ * is not a snapshot.
+ *
+ * `count == 0` is refused -- a gradient with no colours has no defined colour
+ * anywhere, and the reference reads out of range rather than saying so.
+ * Returns false and leaves the command's fill alone.
+ */
+bool avk_cmd_set_gradient(struct avk_scene *scene, struct avk_cmd *cmd,
+	enum avk_gradient_type type, float degree, bool blend,
+	const float origin[2], const float *colors, uint32_t count);
 
 #endif /* AVK_SCENE_H */

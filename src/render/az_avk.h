@@ -284,7 +284,6 @@ struct az_avk {
 	bool warned_zoom;
 	bool warned_shm;
 	bool warned_shm_source_gone;
-	bool warned_gradient;
 	bool warned_late_import;
 	bool warned_no_present_sync;
 	bool warned_damage_hole;
@@ -1731,11 +1730,40 @@ static void az_avk_walk_node(struct az_avk_walk *walk,
 			avk_cmd_set_clip(cmd, &clip);
 			pixman_region32_fini(&clip);
 		}
+		/*
+		 * THE GRADIENT, SNAPSHOT AND NOT BORROWED.
+		 *
+		 * `gradient_colors` is owned by the scene node and freed the moment
+		 * anything calls wlr_scene_rect_set_gradient() again -- which happens
+		 * on every focus change, because the border's first stop is the
+		 * (animated) border colour. The renderer runs after this walk, so a
+		 * pointer into that array is a pointer into memory the compositor is
+		 * free to release. avk_cmd_set_gradient() copies.
+		 *
+		 * WHAT THE FIELDS MEAN, traced rather than inferred (they are a fork
+		 * extension and several read the opposite way to their names):
+		 *
+		 *   gradient_linear   1 = linear, 2 = conic. Not a boolean.
+		 *   gradient_blend    banded (0) vs interpolated (1), and NOTHING
+		 *                     else -- not smoothing, not premultiply.
+		 *   gradient_degree   DEGREES; the reference shader calls radians().
+		 *   gradient_origin   normalised 0..1 inside the rect's own box.
+		 *   gradient_colors   4 floats per colour, PREMULTIPLIED, like every
+		 *                     other wlr_scene_rect colour. Copied through
+		 *                     unchanged: unlike cmd->color there is nothing to
+		 *                     undo, because the shader writes them straight
+		 *                     out under the same (ONE, 1-SRC_ALPHA) blend.
+		 *
+		 * There are no stop POSITIONS anywhere in the source. Spacing comes
+		 * from the count alone.
+		 */
 		if (rect->has_gradient && rect->gradient_count > 0 &&
-				!avk.warned_gradient) {
-			avk.warned_gradient = true;
-			wlr_log(WLR_INFO, "AVK: gradient-filled rects are drawn as their "
-				"first colour; gradients are M4");
+				rect->gradient_colors != NULL) {
+			enum avk_gradient_type type = rect->gradient_linear == 2
+				? AVK_GRADIENT_CONIC : AVK_GRADIENT_LINEAR;
+			avk_cmd_set_gradient(walk->scene, cmd, type, rect->gradient_degree,
+				rect->gradient_blend != 0, rect->gradient_origin,
+				rect->gradient_colors, (uint32_t)rect->gradient_count);
 		}
 		/* wlr_scene rect colours are PREMULTIPLIED -- scenefx writes them
 		 * straight to the framebuffer under source-over blending. AVK's
@@ -2736,6 +2764,20 @@ static uint64_t az_avk_renderer_stat_sum(size_t off) {
 	return total;
 }
 
+/* The same, for the gradient store's own counters. A separate function rather
+ * than a second offset base because the two structs are different types and
+ * folding them together would mean passing which one as well as where. */
+static uint64_t az_avk_gradient_stat_sum(size_t off) {
+	uint64_t total = 0;
+	for (size_t i = 0; i < AZ_AVK_MAX_FORMATS; i++) {
+		if (avk.renderers[i].used) {
+			total += *(const uint64_t *)((const char *)
+				&avk.renderers[i].renderer.gradients.stats + off);
+		}
+	}
+	return total;
+}
+
 static cJSON *az_avk_stats_json(void) {
 	cJSON *o = cJSON_CreateObject();
 	if (o == NULL) {
@@ -2946,6 +2988,31 @@ static cJSON *az_avk_stats_json(void) {
 	cJSON_AddNumberToObject(o, "asymmetric_border_draws",
 		(double)az_avk_renderer_stat_sum(offsetof(struct avk_renderer_stats,
 			asymmetric_border_draws)));
+	/*
+	 * M4C. Two groups, and the distinction between them is the point:
+	 *
+	 *   *_draws / colors_processed   what the frame ASKED FOR
+	 *   buffer_*                     what the renderer had to ALLOCATE
+	 *
+	 * A steady gradient scene is expected to keep uploading -- the data is
+	 * written into a per-frame slot -- while allocating nothing at all. Rolling
+	 * "uploads" and "allocations" into one number would make a growing buffer
+	 * indistinguishable from a busy one, which is the exact question these
+	 * exist to answer.
+	 */
+#define AZ_GRAD_STAT(name) \
+	cJSON_AddNumberToObject(o, "gradient_" #name, \
+		(double)az_avk_gradient_stat_sum( \
+			offsetof(struct avk_gradient_stats, name)))
+	AZ_GRAD_STAT(draws);
+	AZ_GRAD_STAT(linear_draws);
+	AZ_GRAD_STAT(conic_draws);
+	AZ_GRAD_STAT(colors_processed);
+	AZ_GRAD_STAT(buffer_uploads);
+	AZ_GRAD_STAT(buffer_upload_bytes);
+	AZ_GRAD_STAT(buffer_reuses);
+	AZ_GRAD_STAT(buffer_grows);
+#undef AZ_GRAD_STAT
 	cJSON_AddNumberToObject(o, "software_cursor_frames",
 		(double)avk.software_cursor_frames);
 	cJSON_AddNumberToObject(o, "cursor_geometry_mismatch",

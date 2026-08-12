@@ -1,5 +1,6 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
+#include "push.glsl"
 #include "rounded.glsl"
 
 /*
@@ -19,17 +20,6 @@
  */
 
 layout(set = 0, binding = 0) uniform sampler2D tex;
-
-layout(push_constant) uniform Push {
-	vec4 uv_org_dx;
-	vec4 uv_dy;
-	vec4 color;
-	vec4 params;
-	vec4 round_box;     // OUTER x0, y0, x1, y1 in output pixels
-	vec4 corners;       // CLOCKWISE: tl, tr, br, bl, in output pixels
-	vec4 inner_box;     // INNER x0, y0, x1, y1 in output pixels
-	vec4 inner_corners; // CLOCKWISE, in output pixels
-} pc;
 
 layout(location = 0) in vec2 v_uv;
 layout(location = 0) out vec4 out_color;

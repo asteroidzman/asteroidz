@@ -8,6 +8,7 @@
 #include "quad_vert.spv.h"
 #include "quad_frag.spv.h"
 #include "texture_frag.spv.h"
+#include "gradient_frag.spv.h"
 
 /* Sets per descriptor pool. Enough that an ordinary desktop -- a few dozen
  * surfaces -- never allocates a second one, small enough that a pool is not a
@@ -198,16 +199,39 @@ bool avk_pipelines_init(struct avk_pipelines *pipes, struct avk_device *dev,
 	}
 	AVK_LIVE_INC(dev, descriptor_set_layouts);
 
+	VkDescriptorSetLayoutBinding grad_binding = {
+		.binding = 0,
+		.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+		.descriptorCount = 1,
+		.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+	};
+	VkDescriptorSetLayoutCreateInfo grad_layout_info = {
+		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+		.bindingCount = 1,
+		.pBindings = &grad_binding,
+	};
+	res = vkCreateDescriptorSetLayout(dev->dev, &grad_layout_info, NULL,
+		&pipes->gradient_set_layout);
+	if (res != VK_SUCCESS) {
+		avk_check(res, "vkCreateDescriptorSetLayout (gradient)");
+		goto error;
+	}
+	AVK_LIVE_INC(dev, descriptor_set_layouts);
+
 	VkPushConstantRange range = {
 		.stageFlags = VK_SHADER_STAGE_VERTEX_BIT
 			| VK_SHADER_STAGE_FRAGMENT_BIT,
 		.offset = 0,
 		.size = sizeof(struct avk_push_constants),
 	};
+	VkDescriptorSetLayout set_layouts[2] = {
+		pipes->texture_set_layout,     /* set 0 -- the sampled surface */
+		pipes->gradient_set_layout,    /* set 1 -- the frame's gradient data */
+	};
 	VkPipelineLayoutCreateInfo layout_info = {
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-		.setLayoutCount = 1,
-		.pSetLayouts = &pipes->texture_set_layout,
+		.setLayoutCount = 2,
+		.pSetLayouts = set_layouts,
 		.pushConstantRangeCount = 1,
 		.pPushConstantRanges = &range,
 	};
@@ -231,13 +255,17 @@ bool avk_pipelines_init(struct avk_pipelines *pipes, struct avk_device *dev,
 		sizeof(quad_frag_spv), "quad.frag");
 	VkShaderModule texture_frag = create_module(dev, texture_frag_spv,
 		sizeof(texture_frag_spv), "texture.frag");
+	VkShaderModule gradient_frag = create_module(dev, gradient_frag_spv,
+		sizeof(gradient_frag_spv), "gradient.frag");
 
 	bool ok = vert != VK_NULL_HANDLE && rect_frag != VK_NULL_HANDLE
-		&& texture_frag != VK_NULL_HANDLE
+		&& texture_frag != VK_NULL_HANDLE && gradient_frag != VK_NULL_HANDLE
 		&& create_pipeline(pipes, format, vert, rect_frag, "rect",
 			&pipes->rect)
 		&& create_pipeline(pipes, format, vert, texture_frag, "texture",
-			&pipes->texture);
+			&pipes->texture)
+		&& create_pipeline(pipes, format, vert, gradient_frag, "gradient",
+			&pipes->gradient);
 
 	/* Modules are only needed while the pipelines are being created; the
 	 * driver has compiled what it needs by the time vkCreateGraphicsPipelines
@@ -250,6 +278,9 @@ bool avk_pipelines_init(struct avk_pipelines *pipes, struct avk_device *dev,
 	}
 	if (texture_frag != VK_NULL_HANDLE) {
 		vkDestroyShaderModule(dev->dev, texture_frag, NULL);
+	}
+	if (gradient_frag != VK_NULL_HANDLE) {
+		vkDestroyShaderModule(dev->dev, gradient_frag, NULL);
 	}
 
 	if (!ok) {
@@ -276,12 +307,20 @@ void avk_pipelines_finish(struct avk_pipelines *pipes) {
 		vkDestroyPipeline(dev, pipes->texture, NULL);
 		AVK_LIVE_DEC(pipes->dev, pipelines);
 	}
+	if (pipes->gradient != VK_NULL_HANDLE) {
+		vkDestroyPipeline(dev, pipes->gradient, NULL);
+		AVK_LIVE_DEC(pipes->dev, pipelines);
+	}
 	if (pipes->layout != VK_NULL_HANDLE) {
 		vkDestroyPipelineLayout(dev, pipes->layout, NULL);
 		AVK_LIVE_DEC(pipes->dev, pipeline_layouts);
 	}
 	if (pipes->texture_set_layout != VK_NULL_HANDLE) {
 		vkDestroyDescriptorSetLayout(dev, pipes->texture_set_layout, NULL);
+		AVK_LIVE_DEC(pipes->dev, descriptor_set_layouts);
+	}
+	if (pipes->gradient_set_layout != VK_NULL_HANDLE) {
+		vkDestroyDescriptorSetLayout(dev, pipes->gradient_set_layout, NULL);
 		AVK_LIVE_DEC(pipes->dev, descriptor_set_layouts);
 	}
 	if (pipes->nearest != VK_NULL_HANDLE) {
