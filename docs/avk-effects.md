@@ -724,3 +724,142 @@ Recorded because each looked exactly like a renderer defect:
 - **the packing fixture sampled the middle** of each band row, which was right
   while the lookup returned the first stop and wrong the moment it returned a
   ramp. It samples `x = 2` now: inside band 0 for every count in the spread.
+
+## M4C.3 — conic gradients
+
+### A different coordinate, not the linear one rescaled
+
+```text
+uv   = rotate(normal - origin, rad)
+step = -atan(uv.y, uv.x)/PI * 0.5 + 0.5
+```
+
+No `1/(|cos| + |sin|)` scale and no origin add-back — both are linear-only, and
+putting either in the conic branch is how conic quietly becomes
+linear-with-extra-steps. There is also no aspect correction: the angle is
+measured in the box's own unit square, so a conic gradient on a wide rectangle
+covers an ellipse's worth of angle. That is the reference's shape, kept.
+
+### Which way it goes, measured
+
+With a centred origin the coordinate increases **left → down → right → up**,
+which on a screen (y downward) is counter-clockwise. With four banded colours
+the quadrants *are* the bands, so the mapping is a table rather than an average:
+
+| degree | lower-left | lower-right | upper-right | upper-left |
+|---:|:---|:---|:---|:---|
+| 0 | 0 | 1 | 2 | 3 |
+| 90 | 3 | 0 | 1 | 2 |
+| 180 | 2 | 3 | 0 | 1 |
+| 270 | 1 | 2 | 3 | 0 |
+
+Each 90 degrees moves every band one quadrant counter-clockwise. The table
+catches all four mistakes worth a fixture: a sign error and a direction error
+(the sequence reverses), a missing degree offset (nothing moves between rows),
+and π where 2π belongs (the pattern repeats twice round and no quadrant is one
+colour).
+
+### The seam
+
+`atan2` flips between +π and −π along the **−x ray from the origin**, so the
+coordinate jumps from ~1 to ~0 across it. **Neither mode interpolates over it.**
+Banded steps from the last band to the first; interpolated does too, because
+its last segment *ends* at the last colour and nothing wraps back to the first.
+
+A conic gradient whose first and last stops differ therefore has a hard edge in
+it by construction. That is reference behaviour, not an artifact, and it is
+asserted in both modes so that "smooth mode is smooth everywhere" — the natural
+assumption, and wrong — cannot creep in later.
+
+With origin (0.25, 0.70) the seam moves to row `0.70·128 − 0.5 = 89.1` and to
+the left of `x = 31.5`. A shader hard-coded to {0.5, 0.5} puts it at 63/64
+instead, and since **every gradient asteroidz itself creates passes
+{0.5, 0.5}**, such a shader would render the whole desktop correctly.
+
+### Measured against the oracle
+
+```text
+conic 4, banded     max 0  mean 0.000      conic 5, degree 180  max 1  mean 0.036
+conic 4, smooth     max 1  mean 0.023      conic 5, degree 270  max 1  mean 0.042
+conic 5, smooth     max 1  mean 0.036      conic 5, off-centre  max 1  mean 0.032
+conic 5, degree 90  max 1  mean 0.042      conic 17, banded     max 0  mean 0.000
+```
+
+### Breaks, and where each one lands
+
+| switch | fails | and correctly does **not** fail |
+| :--- | :--- | :--- |
+| `AZ_GRADIENT_LINEAR_ONLY=1` | 29/125 — every conic fixture | any linear fixture |
+| `AZ_GRADIENT_CENTER_ORIGIN=1` | 7/125 — the linear origin pair, the terminal clamp, the conic origin and seam | everything with a centred origin |
+| `AZ_GRADIENT_FIRST_COLOR=1` | 63/125 | the packing and churn tests, which do not depend on the ramp |
+| `AZ_GRADIENT_BLEND_SWAP=1` | 61/125 — banded **and** interpolated | — |
+| `AZ_GRADIENT_COLOR_OFFSET=1` | 87/125 | — |
+
+`LINEAR_ONLY` is worth its own switch precisely because **nothing on a running
+desktop would show it**: both of the compositor's gradient consumers are
+linear, so conic support can regress without a single visible symptom.
+
+## A pre-existing bug found while building the GLES comparison
+
+**`border_gradient 1` makes the compositor unresponsive.** Not a rendering
+fault and not M4C's: it reproduces on **both renderers** and on a **pre-M4C
+build** (`f6d3a61`), at the same rate.
+
+```text
+AVK,  border_gradient 1   251 MB -> 1436 MB in 22 s     53.7 MB/s
+GLES, border_gradient 1   251 MB -> 1443 MB in 22 s     54.2 MB/s
+AVK,  border_gradient 0   114 MB -> 114 MB              flat
+pre-M4C f6d3a61, AVK, on  251 MB -> 1416 MB in 22 s     52.9 MB/s
+
+grim   times out at 20 s
+amsg   times out at 20 s
+```
+
+`/proc/PID/maps` shows a growing `[heap]` with a constant mapping count, so it
+is plain `malloc` growth, not leaked buffers.
+
+**Source.** `client_set_border_fill()` (`src/animation/client.h`) calls
+`wlr_scene_rect_set_gradient()` **unconditionally** whenever the focused window
+has a gradient border. That function frees and re-allocates the colour array
+and then calls `scene_node_update()`, which damages the node — so every tick
+damages the border, which schedules a frame, which ticks again. The loop never
+yields, which is why the event loop never gets back to its clients.
+
+The comment three lines above its caller already states the invariant it
+breaks:
+
+> set_focus and set_border_fill are dirty-checked, so this is a no-op when
+> unchanged.
+
+The non-gradient branch delegates to `client_set_border_color()`, which *is*
+dirty-checked. The gradient branch is not. `border_gradient` defaults to 0,
+which is why this has not been hit.
+
+**Not fixed here.** It is in the focus-animation path, not the renderer, and it
+predates this milestone. The likely fix is a dirty check on the gradient
+branch, matching what the comment already claims.
+
+**Consequence for M4C: the GLES comparison is NOT DELIVERED.** Both routes to a
+gradient the compositor can actually draw are closed:
+
+- the **border gradient** hangs the compositor, as above — `grim` and `amsg`
+  both time out, so nothing can be captured;
+- the **overview vignette** is never created headlessly. It is guarded by
+  `m->ov_main_wp && ...->node.enabled` (`overview.h`), the overview wallpaper
+  node, which the headless fixture does not produce. Instrumented and
+  confirmed: with the overview open, rects go 41 → 153 and **not one of them
+  carries `has_gradient`**.
+
+`contrib/avk-gradient-test.sh` is written and skips with that reason rather
+than scoring anything. It claims no coverage.
+
+**And it nearly reported a pass.** The fixture's edge-darkening premise
+measured 21.0 on both engines with no gradient anywhere on screen — the
+overview dims its own background, that dimming is a plain rect, and both
+renderers agree about it exactly. Only `gradient_draws == 0` caught it. A
+premise a non-gradient satisfies is not a premise.
+
+Until one of those blockers is cleared, reference parity rests on the CPU
+oracle in `tests/test-avk-gradient.c`, which is a transcription of
+`gradient.frag` and is stricter in every dimension except that it is a reading
+of the reference rather than the reference itself.

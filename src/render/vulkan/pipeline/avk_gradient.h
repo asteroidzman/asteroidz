@@ -90,6 +90,8 @@ struct avk_gradient_store {
 	bool break_color_offset;
 	bool break_first_color;
 	bool break_blend_swap;
+	bool break_linear_only;
+	bool break_center_origin;
 };
 
 bool avk_gradient_store_init(struct avk_gradient_store *store,

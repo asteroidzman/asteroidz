@@ -235,6 +235,36 @@ bool avk_gradient_store_init(struct avk_gradient_store *store,
 			"interpolated gradients are swapped. This build is deliberately "
 			"broken.");
 	}
+	/*
+	 * AZ_GRADIENT_LINEAR_ONLY=1 -- conic evaluated through the linear path.
+	 *
+	 * `gradient_linear` is 1 for linear and 2 for conic, and the field's NAME
+	 * reads like a boolean. Treating it as one -- or simply never implementing
+	 * the second kind, which is what AVK did through M4C.2 -- turns every conic
+	 * gradient into a linear ramp at the same angle. It is a plausible
+	 * regression precisely because the compositor's own two gradient consumers
+	 * are both linear, so nothing on a running desktop would show it.
+	 */
+	store->break_linear_only = getenv("AZ_GRADIENT_LINEAR_ONLY") != NULL;
+	if (store->break_linear_only) {
+		avk_log(AVK_ERROR, "AZ_GRADIENT_LINEAR_ONLY=1 -- conic gradients are "
+			"drawn through the linear path. This build is deliberately "
+			"broken.");
+	}
+	/*
+	 * AZ_GRADIENT_CENTER_ORIGIN=1 -- the origin forced to the middle.
+	 *
+	 * {0.5, 0.5} is the value every caller in asteroidz passes, so a shader
+	 * that hard-coded it would render the whole desktop correctly. This is what
+	 * that build looks like: conic patterns turn about the middle wherever the
+	 * origin says, and linear ramps lose their offset at every angle but zero.
+	 */
+	store->break_center_origin = getenv("AZ_GRADIENT_CENTER_ORIGIN") != NULL;
+	if (store->break_center_origin) {
+		avk_log(AVK_ERROR, "AZ_GRADIENT_CENTER_ORIGIN=1 -- every gradient's "
+			"origin is forced to the centre. This build is deliberately "
+			"broken.");
+	}
 
 	VkDescriptorPoolSize size = {
 		.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
@@ -343,8 +373,8 @@ uint32_t avk_gradient_store_push(struct avk_gradient_store *store,
 	uint32_t color_at = rec + AVK_GRADIENT_RECORD_VEC4S;
 
 	float *r0 = data + (size_t)rec * 4;
-	r0[0] = gradient->origin[0];
-	r0[1] = gradient->origin[1];
+	r0[0] = store->break_center_origin ? 0.5f : gradient->origin[0];
+	r0[1] = store->break_center_origin ? 0.5f : gradient->origin[1];
 	/* DEGREES on the snapshot, radians on the GPU. The conversion happens here,
 	 * once per command, rather than once per fragment. */
 	r0[2] = gradient->degree * (3.14159265358979323846f / 180.0f);
@@ -352,7 +382,8 @@ uint32_t avk_gradient_store_push(struct avk_gradient_store *store,
 	r0[3] = blend ? 1.0f : 0.0f;
 
 	float *r1 = data + ((size_t)rec + 1) * 4;
-	r1[0] = (float)gradient->type;
+	r1[0] = (float)(store->break_linear_only ? AVK_GRADIENT_LINEAR
+		: gradient->type);
 	r1[1] = (float)(store->break_color_offset ? color_at + 1 : color_at);
 	r1[2] = (float)(store->break_first_color ? 1 : gradient->color_count);
 	r1[3] = 0.0f;

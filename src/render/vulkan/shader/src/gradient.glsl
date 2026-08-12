@@ -73,10 +73,43 @@ layout(std430, set = 1, binding = 0) readonly buffer AzGradientData {
  * That offset is also why `step` genuinely leaves 0..1: with an off-centre
  * origin part of the rectangle sits past the end of the ramp. The reference
  * indexes out of range there. See az_gradient_color().
+ *
+ * CONIC IS A DIFFERENT COORDINATE, not the linear one rescaled:
+ *
+ *     uv = rotate(normal - origin, rad)
+ *     step = -atan(uv.y, uv.x)/PI * 0.5 + 0.5
+ *
+ * and the three ways it differs are all observable:
+ *
+ *   - the origin is the CENTRE the ramp turns about, so moving it moves the
+ *     whole pattern rather than sliding it along an axis;
+ *   - the ramp WRAPS, and meets itself at a seam;
+ *   - there is no 1/(|cos| + |sin|) scale, and there should not be. The angle
+ *     is measured in the box's own unit square, so a conic gradient on a wide
+ *     rectangle covers an ellipse's worth of angle rather than a circle's.
+ *     That is the reference's shape.
+ *
+ * THE SEAM RUNS IN -X FROM THE ORIGIN, where atan2 flips between +PI and -PI:
+ * step approaches 0 just below that ray and 1 just above it. NEITHER MODE
+ * INTERPOLATES ACROSS IT. Banded jumps from the last band to the first;
+ * interpolated does too, because the last segment ends AT the last colour and
+ * nothing wraps round to the first. A conic gradient whose first and last
+ * stops differ therefore has a hard edge in it by construction, and that is
+ * the reference's behaviour rather than an artifact.
+ *
+ * The branch is on `type`, which comes from the record and is uniform across
+ * the draw.
  */
-float az_gradient_step(vec2 box_pos, vec2 box_size, vec2 origin, float rad) {
+float az_gradient_step(vec2 box_pos, vec2 box_size, vec2 origin, float rad,
+		int type) {
 	vec2 normal = (gl_FragCoord.xy - box_pos) / box_size;
 	vec2 uv = normal - origin;
+
+	if (type == AZ_GRADIENT_CONIC) {
+		uv = vec2(uv.x * cos(rad) - uv.y * sin(rad),
+			uv.x * sin(rad) + uv.y * cos(rad));
+		return -atan(uv.y, uv.x) / 3.14159265 * 0.5 + 0.5;
+	}
 
 	uv *= vec2(1.0) / vec2(abs(cos(rad)) + abs(sin(rad)));
 	return uv.x * cos(rad) - uv.y * sin(rad) + origin.x;
@@ -160,9 +193,10 @@ vec4 az_gradient(int rec, vec2 box_pos, vec2 box_size) {
 	vec2 origin = az_grad.data[rec + 0].xy;
 	float rad = az_grad.data[rec + 0].z;
 	bool blend = az_grad.data[rec + 0].w > 0.5;
+	int type = int(az_grad.data[rec + 1].x);
 	int offset = int(az_grad.data[rec + 1].y);
 	int count = int(az_grad.data[rec + 1].z);
 
 	return az_gradient_color(offset, count, blend,
-		az_gradient_step(box_pos, box_size, origin, rad));
+		az_gradient_step(box_pos, box_size, origin, rad, type));
 }

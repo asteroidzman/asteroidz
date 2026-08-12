@@ -589,6 +589,24 @@ static void ref_color(const float *colors, int count, bool blend, float step_,
  */
 #define GRAD_TOL 2
 
+/* The conic coordinate, from the same reference shader:
+ *     uv = rotate(normal - origin, rad)
+ *     step = -atan(uv.y, uv.x)/PI * 0.5 + 0.5
+ * No 1/(|cos| + |sin|) scale and no origin add-back -- both are linear-only,
+ * and putting either one here is how conic quietly becomes linear-with-extra-
+ * steps. */
+static float ref_step_conic(float fx, float fy, const struct avk_box *box,
+		const float origin[2], float degree) {
+	float nx = (fx - (float)box->x) / (float)box->width;
+	float ny = (fy - (float)box->y) / (float)box->height;
+	float ux = nx - origin[0];
+	float uy = ny - origin[1];
+	float rad = degree * (float)(3.14159265358979323846 / 180.0);
+	float rx = ux * cosf(rad) - uy * sinf(rad);
+	float ry = ux * sinf(rad) + uy * cosf(rad);
+	return -atan2f(ry, rx) / 3.14159265f * 0.5f + 0.5f;
+}
+
 struct grad_case {
 	const char *name;
 	int count;
@@ -598,10 +616,15 @@ struct grad_case {
 	float origin[2];
 	/* Opaque background the gradient composites over, premultiplied. */
 	float bg[4];
+	/* AVK_GRADIENT_LINEAR when left zero -- the enum's 0 is NONE, which no
+	 * case here means, so the zero-initialised majority read as linear. */
+	enum avk_gradient_type type;
 };
 
 static void run_case(struct harness *h, const struct grad_case *c) {
 	struct avk_box box = { 0, 0, W, H };
+	enum avk_gradient_type type = c->type == AVK_GRADIENT_NONE
+		? AVK_GRADIENT_LINEAR : c->type;
 
 	struct avk_scene scene;
 	avk_scene_init(&scene);
@@ -612,7 +635,7 @@ static void run_case(struct harness *h, const struct grad_case *c) {
 	struct avk_cmd *cmd = avk_scene_add(&scene, AVK_CMD_RECT);
 	cmd->dst = box;
 	cmd->color[3] = 1.0f;
-	avk_cmd_set_gradient(&scene, cmd, AVK_GRADIENT_LINEAR, c->degree, c->blend,
+	avk_cmd_set_gradient(&scene, cmd, type, c->degree, c->blend,
 		c->origin, c->colors, (uint32_t)c->count);
 
 	if (!render(h, &scene)) {
@@ -627,8 +650,11 @@ static void run_case(struct harness *h, const struct grad_case *c) {
 	int worst_x = 0, worst_y = 0;
 	for (uint32_t y = 0; y < H; y += 4) {
 		for (uint32_t x = 0; x < W; x += 4) {
-			float step_ = ref_step_linear((float)x + 0.5f, (float)y + 0.5f,
-				&box, c->origin, c->degree);
+			float step_ = type == AVK_GRADIENT_CONIC
+				? ref_step_conic((float)x + 0.5f, (float)y + 0.5f, &box,
+					c->origin, c->degree)
+				: ref_step_linear((float)x + 0.5f, (float)y + 0.5f, &box,
+					c->origin, c->degree);
 			float want[4];
 			ref_color(c->colors, c->count, c->blend, step_, want);
 			/* Premultiplied source-over onto the clear colour, which is what
@@ -1100,6 +1126,288 @@ static void test_rounded(struct harness *h) {
 		r_of(centre), g_of(centre), b_of(centre));
 }
 
+/* ── M4C.3: conic ───────────────────────────────────────────────────────── */
+
+/* Four colours so the quadrants of a centred conic gradient are exactly the
+ * four bands, which makes the angular mapping something to read off rather
+ * than to average. */
+static const float PALETTE4[16] = {
+	1, 0, 0, 1,     /* red     */
+	0, 1, 0, 1,     /* green   */
+	0, 0, 1, 1,     /* blue    */
+	1, 1, 0, 1,     /* yellow  */
+};
+static const int WANT4[4][3] = {
+	{ 255, 0, 0 }, { 0, 255, 0 }, { 0, 0, 255 }, { 255, 255, 0 },
+};
+
+static void render_conic(struct harness *h, int count, const float *colors,
+		bool blend, float degree, const float origin[2]) {
+	struct avk_scene scene;
+	avk_scene_init(&scene);
+	pixman_region32_union_rect(&scene.damage, &scene.damage, 0, 0, W, H);
+	scene.has_clear = true;
+	scene.clear_color[3] = 1.0f;
+	struct avk_cmd *cmd = avk_scene_add(&scene, AVK_CMD_RECT);
+	cmd->dst = (struct avk_box){ 0, 0, W, H };
+	cmd->color[3] = 1.0f;
+	avk_cmd_set_gradient(&scene, cmd, AVK_GRADIENT_CONIC, degree, blend,
+		origin, colors, (uint32_t)count);
+	if (!render(h, &scene)) {
+		CHECK(false, "rendered conic degree %.0f", (double)degree);
+	}
+	avk_scene_finish(&scene);
+}
+
+static void test_conic_oracle(struct harness *h) {
+	printf("M4C.3 test 13: conic gradients against the reference formula\n");
+
+	const struct grad_case cases[] = {
+		{ "conic 4, banded",       4, PALETTE4, false, 0,   { 0.5f, 0.5f },
+			{ 0, 0, 0, 1 }, AVK_GRADIENT_CONIC },
+		{ "conic 4, smooth",       4, PALETTE4, true,  0,   { 0.5f, 0.5f },
+			{ 0, 0, 0, 1 }, AVK_GRADIENT_CONIC },
+		{ "conic 5, smooth",       5, PALETTE5, true,  0,   { 0.5f, 0.5f },
+			{ 0, 0, 0, 1 }, AVK_GRADIENT_CONIC },
+		{ "conic 5, degree 90",    5, PALETTE5, true,  90,  { 0.5f, 0.5f },
+			{ 0, 0, 0, 1 }, AVK_GRADIENT_CONIC },
+		{ "conic 5, degree 180",   5, PALETTE5, true,  180, { 0.5f, 0.5f },
+			{ 0, 0, 0, 1 }, AVK_GRADIENT_CONIC },
+		{ "conic 5, degree 270",   5, PALETTE5, true,  270, { 0.5f, 0.5f },
+			{ 0, 0, 0, 1 }, AVK_GRADIENT_CONIC },
+		{ "conic 5, off-centre",   5, PALETTE5, true,  0,   { 0.25f, 0.70f },
+			{ 0, 0, 0, 1 }, AVK_GRADIENT_CONIC },
+		{ "conic 17, banded",      0, NULL,     false, 0,   { 0.5f, 0.5f },
+			{ 0, 0, 0, 1 }, AVK_GRADIENT_CONIC },
+	};
+	float many[17 * 4];
+	for (int j = 0; j < 17; j++) {
+		many[j * 4 + 0] = (float)(j * 15) / 255.0f;
+		many[j * 4 + 1] = (float)(255 - j * 15) / 255.0f;
+		many[j * 4 + 2] = (float)((j % 2) * 255) / 255.0f;
+		many[j * 4 + 3] = 1.0f;
+	}
+	for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+		struct grad_case c = cases[i];
+		if (c.colors == NULL) {
+			c.colors = many;
+			c.count = 17;
+		}
+		run_case(h, &c);
+	}
+}
+
+/*
+ * Which way round a conic gradient goes, at four angles.
+ *
+ * With a centred origin and four banded colours the quadrants ARE the bands, so
+ * the mapping can be stated as a table instead of averaged. At degree 0 the
+ * coordinate increases left -> down -> right -> up, which on a screen (y
+ * downward) is counter-clockwise, so:
+ *
+ *     lower-left = 0, lower-right = 1, upper-right = 2, upper-left = 3
+ *
+ * and each 90 degrees moves every band one quadrant counter-clockwise. The
+ * table catches all four of the mistakes worth having a test for: a sign error
+ * (the sequence reverses), a direction error (the same), a missing degree
+ * offset (nothing moves between rows), and PI where 2*PI belongs (the pattern
+ * repeats twice round and no quadrant is a single colour).
+ */
+static void test_conic_degrees(struct harness *h) {
+	printf("M4C.3 test 14: the angular mapping, at 0/90/180/270\n");
+
+	/* [degree index][quadrant] -> colour index.
+	 * quadrant order: lower-left, lower-right, upper-right, upper-left. */
+	static const int expect[4][4] = {
+		{ 0, 1, 2, 3 },   /*   0 deg */
+		{ 3, 0, 1, 2 },   /*  90 deg */
+		{ 2, 3, 0, 1 },   /* 180 deg */
+		{ 1, 2, 3, 0 },   /* 270 deg */
+	};
+	static const uint32_t qx[4] = { 32, 96, 96, 32 };
+	static const uint32_t qy[4] = { 96, 96, 32, 32 };
+	static const char *qname[4] = { "lower-left", "lower-right",
+		"upper-right", "upper-left" };
+	const float origin[2] = { 0.5f, 0.5f };
+
+	for (int d = 0; d < 4; d++) {
+		float degree = (float)(d * 90);
+		render_conic(h, 4, PALETTE4, false, degree, origin);
+		for (int q = 0; q < 4; q++) {
+			int want = expect[d][q];
+			uint32_t p = px(h, qx[q], qy[q]);
+			CHECK(r_of(p) == WANT4[want][0] && g_of(p) == WANT4[want][1]
+					&& b_of(p) == WANT4[want][2],
+				"degree %3.0f: %s is colour %d (%d,%d,%d), got (%d,%d,%d)",
+				(double)degree, qname[q], want, WANT4[want][0],
+				WANT4[want][1], WANT4[want][2], r_of(p), g_of(p), b_of(p));
+		}
+	}
+}
+
+/*
+ * The seam.
+ *
+ * atan2 flips between +PI and -PI along the -x ray from the origin, so the
+ * coordinate jumps from ~1 to ~0 across it and the ramp meets its own
+ * beginning. Neither mode interpolates over that: banded steps from the last
+ * band to the first, and interpolated does too, because its last segment ENDS
+ * at the last colour rather than wrapping.
+ *
+ * Both are checked, because "smooth mode is smooth everywhere" is the natural
+ * assumption and it is wrong. The rows either side of the ray must be the last
+ * and first colours exactly, in both modes.
+ */
+static void test_conic_seam(struct harness *h) {
+	printf("M4C.3 test 15: the wrap seam is a step, in both modes\n");
+
+	const float origin[2] = { 0.5f, 0.5f };
+	/* uv.y = 0 at y + 0.5 = 64, so rows 63 and 64 straddle the ray, and it
+	 * runs leftward from the centre -- sample well to the left of it. */
+	for (int blend = 0; blend < 2; blend++) {
+		render_conic(h, 4, PALETTE4, blend != 0, 0.0f, origin);
+		uint32_t above = px(h, 8, 63);
+		uint32_t below = px(h, 8, 64);
+		CHECK(r_of(above) == WANT4[3][0] && g_of(above) == WANT4[3][1]
+				&& b_of(above) == WANT4[3][2],
+			"blend=%d: just above the seam is the LAST colour (%d,%d,%d), got "
+			"(%d,%d,%d)", blend, WANT4[3][0], WANT4[3][1], WANT4[3][2],
+			r_of(above), g_of(above), b_of(above));
+		CHECK(r_of(below) == WANT4[0][0] && g_of(below) == WANT4[0][1]
+				&& b_of(below) == WANT4[0][2],
+			"blend=%d: just below it is the FIRST colour (%d,%d,%d), got "
+			"(%d,%d,%d)", blend, WANT4[0][0], WANT4[0][1], WANT4[0][2],
+			r_of(below), g_of(below), b_of(below));
+	}
+}
+
+/*
+ * An off-centre origin moves the CENTRE of rotation, and the seam with it.
+ *
+ * This is the fixture a shader hard-coded to {0.5, 0.5} must fail, and it is
+ * worth being precise about why the obvious version would not: every gradient
+ * asteroidz itself creates passes {0.5, 0.5}, so a centred shader renders the
+ * whole desktop correctly and only a synthetic origin can show it.
+ *
+ * With origin (0.25, 0.70) the seam runs leftward from y = 0.70*128 - 0.5 =
+ * 89.1, so it falls between rows 89 and 90 rather than 63 and 64 -- and to the
+ * left of x = 0.25*128 - 0.5 = 31.5.
+ */
+static void test_conic_origin(struct harness *h) {
+	printf("M4C.3 test 16: an off-centre origin moves the pattern's centre\n");
+
+	const float origin[2] = { 0.25f, 0.70f };
+	render_conic(h, 4, PALETTE4, false, 0.0f, origin);
+
+	uint32_t above = px(h, 8, 89);
+	uint32_t below = px(h, 8, 90);
+	CHECK(r_of(above) == WANT4[3][0] && g_of(above) == WANT4[3][1]
+			&& b_of(above) == WANT4[3][2],
+		"the seam sits at the origin's row: y=89 is the last colour "
+		"(%d,%d,%d)", r_of(above), g_of(above), b_of(above));
+	CHECK(r_of(below) == WANT4[0][0] && g_of(below) == WANT4[0][1]
+			&& b_of(below) == WANT4[0][2],
+		"y=90 is the first colour (%d,%d,%d)", r_of(below), g_of(below),
+		b_of(below));
+	/* And NOT at the centre, which is where a hard-coded origin would put it.
+	 * Rows 63 and 64 must be the same colour as each other there. */
+	uint32_t c63 = px(h, 8, 63), c64 = px(h, 8, 64);
+	CHECK(r_of(c63) == r_of(c64) && g_of(c63) == g_of(c64)
+			&& b_of(c63) == b_of(c64),
+		"there is no seam at the rectangle's centre: y=63 (%d,%d,%d) equals "
+		"y=64 (%d,%d,%d)", r_of(c63), g_of(c63), b_of(c63),
+		r_of(c64), g_of(c64), b_of(c64));
+}
+
+/*
+ * Conic and linear are DIFFERENT PICTURES from the same inputs.
+ *
+ * Stated as a test because "do not collapse conic into linear" is the kind of
+ * requirement that is met by accident and lost by accident. The same four
+ * colours, the same count, the same angle, the same origin, the same box: a
+ * linear ramp has no variation along y at degree 0 and a conic one is nothing
+ * but variation along y.
+ */
+static void test_conic_is_not_linear(struct harness *h) {
+	printf("M4C.3 test 17: conic is not linear with a different scale\n");
+
+	const float origin[2] = { 0.5f, 0.5f };
+	render_conic(h, 4, PALETTE4, false, 0.0f, origin);
+	uint32_t conic_top = px(h, 100, 8);
+	uint32_t conic_bottom = px(h, 100, 120);
+
+	struct avk_scene scene;
+	avk_scene_init(&scene);
+	pixman_region32_union_rect(&scene.damage, &scene.damage, 0, 0, W, H);
+	scene.has_clear = true;
+	scene.clear_color[3] = 1.0f;
+	struct avk_cmd *cmd = avk_scene_add(&scene, AVK_CMD_RECT);
+	cmd->dst = (struct avk_box){ 0, 0, W, H };
+	cmd->color[3] = 1.0f;
+	avk_cmd_set_gradient(&scene, cmd, AVK_GRADIENT_LINEAR, 0.0f, false, origin,
+		PALETTE4, 4);
+	CHECK(render(h, &scene), "rendered the linear comparison");
+	avk_scene_finish(&scene);
+	uint32_t linear_top = px(h, 100, 8);
+	uint32_t linear_bottom = px(h, 100, 120);
+
+	CHECK(linear_top == linear_bottom,
+		"the linear ramp does not vary down the column at degree 0");
+	CHECK(conic_top != conic_bottom,
+		"the conic one does (%d,%d,%d) vs (%d,%d,%d)", r_of(conic_top),
+		g_of(conic_top), b_of(conic_top), r_of(conic_bottom),
+		g_of(conic_bottom), b_of(conic_bottom));
+	CHECK(h->renderer.gradients.stats.conic_draws > 0,
+		"premise: conic draws were counted as conic (%" PRIu64 ")",
+		h->renderer.gradients.stats.conic_draws);
+}
+
+/* Conic composed with asymmetric rounded corners, so the material/geometry
+ * split is checked for the second gradient kind too rather than assumed to
+ * carry over. */
+static void test_conic_rounded(struct harness *h) {
+	printf("M4C.3 test 18: conic composed with asymmetric rounded corners\n");
+
+	struct avk_scene scene;
+	avk_scene_init(&scene);
+	pixman_region32_union_rect(&scene.damage, &scene.damage, 0, 0, W, H);
+	scene.has_clear = true;
+	scene.clear_color[0] = 1.0f;   /* white background, premultiplied */
+	scene.clear_color[1] = 1.0f;
+	scene.clear_color[2] = 1.0f;
+	scene.clear_color[3] = 1.0f;
+
+	struct avk_cmd *cmd = avk_scene_add(&scene, AVK_CMD_RECT);
+	cmd->dst = (struct avk_box){ 0, 0, W, H };
+	cmd->color[3] = 1.0f;
+	cmd->corners[0] = 40.0f;   /* tl */
+	cmd->corners[1] = 8.0f;    /* tr */
+	cmd->corners[2] = 40.0f;   /* br */
+	cmd->corners[3] = 8.0f;    /* bl */
+	const float origin[2] = { 0.5f, 0.5f };
+	avk_cmd_set_gradient(&scene, cmd, AVK_GRADIENT_CONIC, 0.0f, false, origin,
+		PALETTE4, 4);
+	CHECK(render(h, &scene), "rendered");
+	avk_scene_finish(&scene);
+
+	uint32_t tl = px(h, 1, 1), tr = px(h, W - 2, 1);
+	CHECK(r_of(tl) == 255 && g_of(tl) == 255 && b_of(tl) == 255,
+		"the 40px corner is cut away (%d,%d,%d)", r_of(tl), g_of(tl),
+		b_of(tl));
+	CHECK(!(r_of(tr) == 255 && g_of(tr) == 255 && b_of(tr) == 255),
+		"the 8px corner is not (%d,%d,%d)", r_of(tr), g_of(tr), b_of(tr));
+	/* The quadrants are still the quadrants inside the shape. */
+	for (int q = 0; q < 4; q++) {
+		static const uint32_t qx[4] = { 32, 96, 96, 32 };
+		static const uint32_t qy[4] = { 96, 96, 32, 32 };
+		uint32_t p = px(h, qx[q], qy[q]);
+		CHECK(r_of(p) == WANT4[q][0] && g_of(p) == WANT4[q][1]
+				&& b_of(p) == WANT4[q][2],
+			"quadrant %d is still colour %d inside the rounded shape "
+			"(%d,%d,%d)", q, q, r_of(p), g_of(p), b_of(p));
+	}
+}
+
 /* ── main ───────────────────────────────────────────────────────────────── */
 
 int main(void) {
@@ -1148,6 +1456,12 @@ int main(void) {
 	test_terminal_clamp(&h);
 	test_alpha(&h);
 	test_rounded(&h);
+	test_conic_oracle(&h);
+	test_conic_degrees(&h);
+	test_conic_seam(&h);
+	test_conic_origin(&h);
+	test_conic_is_not_linear(&h);
+	test_conic_rounded(&h);
 
 done:
 	if (h.target != NULL) {

@@ -355,6 +355,32 @@ BORDER=6          ASTEROIDZ=build/asteroidz bash contrib/avk-rounded-persist-tes
 BREAK=border-square-inner BORDER=6 ASTEROIDZ=build/asteroidz bash contrib/avk-rounded-persist-test.sh  # must FAIL
 ```
 
+`contrib/avk-gradient-test.sh` (M4C) is written and **currently skips**, and
+that is the honest state rather than a placeholder. It would be the only place
+AVK's gradients meet the GLES reference itself rather than a reading of it —
+`tests/test-avk-gradient.c` is far stricter, but it compares AVK to a C
+transcription of `gradient.frag`, and a transcription can be wrong the same way
+twice.
+
+```bash
+bash contrib/avk-gradient-test.sh      # skips, with the reason
+```
+
+Both routes to a gradient the compositor can actually draw are closed. Setting
+`border_gradient 1` makes the compositor unresponsive within seconds — a
+pre-existing bug, on both renderers and on a pre-M4C build, so `grim` and
+`amsg` both time out and nothing can be captured. The overview vignette is
+never created headlessly: it is guarded by the overview wallpaper node, and
+with the overview open, rects go 41 → 153 with **not one** carrying
+`has_gradient`. Both are traced in `docs/avk-effects.md`.
+
+The fixture nearly reported a pass anyway. Its edge-darkening premise measured
+21.0 on **both** engines with no gradient on screen at all — the overview dims
+its own background, that dimming is a plain rect, and the two renderers agree
+about it exactly. Only the `gradient_draws == 0` counter caught it. A premise
+that a non-gradient satisfies is not a premise, which is why the script now
+stops at that counter instead of scoring the comparison below it.
+
 `contrib/avk-border-test.sh` (M4B) is the border's own suite: seventeen
 configurations of radius, border width, output scale, transform, opacity and
 focus colour, each asserting that the ring between the border's outer arc and
