@@ -84,8 +84,12 @@ struct avk_gradient_store {
 
 	struct avk_gradient_stats stats;
 
-	/* AZ_GRADIENT_COLOR_OFFSET=1 -- see avk_gradient.c. */
+	/* Break switches, read once at init; see avk_gradient_store_init(). Each
+	 * restores a specific WRONG implementation rather than turning gradients
+	 * off, because a break that removes the feature proves nothing about it. */
 	bool break_color_offset;
+	bool break_first_color;
+	bool break_blend_swap;
 };
 
 bool avk_gradient_store_init(struct avk_gradient_store *store,

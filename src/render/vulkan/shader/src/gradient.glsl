@@ -2,11 +2,6 @@
  * Gradient material: where a gradient's parameters and colours live on the GPU,
  * and how a draw finds its own.
  *
- * M4C.1 is the DATA ARCHITECTURE only. The colour lookup here resolves to the
- * first stop, which is what AVK has shipped since M3 -- the point of this stage
- * is that the record and every one of its colours have arrived correctly, not
- * that the ramp is evaluated. M4C.2 replaces the lookup; M4C.3 adds conic.
- *
  * Two facts about the reference are worth stating before any of the layout,
  * because they are what the layout is shaped by:
  *
@@ -48,28 +43,126 @@ layout(std430, set = 1, binding = 0) readonly buffer AzGradientData {
 #define AZ_GRADIENT_CONIC  2
 
 /*
- * The colour this fragment takes.
+ * The scalar coordinate, in the rectangle's OWN normalised box.
+ *
+ * `box_pos`/`box_size` are the rect in output pixels, the space gl_FragCoord is
+ * in, so a gradient is a property of the rectangle and not of the screen: the
+ * same window renders the same ramp wherever it is moved to.
+ *
+ * LINEAR, exactly as the reference derives it:
+ *
+ *     uv = normal - origin
+ *     uv *= 1 / (|cos| + |sin|)
+ *     step = uv.x*cos - uv.y*sin + origin.x
+ *
+ * The 1/(|cos| + |sin|) scale is what keeps the ramp spanning the box at every
+ * angle; without it a 45-degree gradient runs out before the far corner.
+ *
+ * THE ORIGIN IS NOT DECORATIVE, and it is not conic-only. Expanding the last
+ * line gives
+ *
+ *     step = k*cos*normal.x - k*sin*normal.y
+ *          + origin.x*(1 - k*cos) + origin.y*(k*sin)
+ *
+ * so the origin contributes a CONSTANT OFFSET along the ramp, which vanishes
+ * only at degree 0 (where k = 1, cos = 1, sin = 0). At 90 degrees the offset is
+ * origin.x + origin.y, which is why a fixture that moves the origin along the
+ * anti-diagonal -- (0.2, 0.8) against (0.5, 0.5) -- sees no change at all and
+ * proves nothing.
+ *
+ * That offset is also why `step` genuinely leaves 0..1: with an off-centre
+ * origin part of the rectangle sits past the end of the ramp. The reference
+ * indexes out of range there. See az_gradient_color().
+ */
+float az_gradient_step(vec2 box_pos, vec2 box_size, vec2 origin, float rad) {
+	vec2 normal = (gl_FragCoord.xy - box_pos) / box_size;
+	vec2 uv = normal - origin;
+
+	uv *= vec2(1.0) / vec2(abs(cos(rad)) + abs(sin(rad)));
+	return uv.x * cos(rad) - uv.y * sin(rad) + origin.x;
+}
+
+/*
+ * The colour at `step`.
  *
  * PREMULTIPLIED, and not converted on the way in or out: wlr_scene_rect stores
  * its colours premultiplied, the gradient stops are the same values from the
  * same producers, and AVK's blend state is (ONE, ONE_MINUS_SRC_ALPHA). One
  * convention the whole way through.
  *
+ * THE TWO MODES PUT THE SAME COLOURS IN DIFFERENT PLACES, which is the single
+ * most confusable thing about this feature:
+ *
+ *   blend off   count bands, each 1/count wide.       Colour k fills
+ *               [k/count, (k+1)/count). No interpolation anywhere, including
+ *               at the boundaries.
+ *   blend on    count-1 segments, each 1/(count-1) wide, smoothstepped between
+ *               neighbours. Colour k sits AT k/(count-1) -- an endpoint, not a
+ *               band centre.
+ *
+ * REFERENCE BUG FIXED IN AVK: terminal gradient interpolation clamps to the
+ * last valid colour.
+ *
+ * The reference's blend path reads `colors[ind + 1]` guarded by
+ * `if (ind <= count - 1)`, which is true on the LAST segment -- so at the final
+ * endpoint it indexes colors[count], one past the array. The value is whatever
+ * the driver leaves there, and reproducing it byte for byte would not be parity
+ * with anything. Every index here is clamped instead: for every coordinate the
+ * reference defines this gives the identical colour, and at the endpoint it
+ * gives the last colour, which is what the guard was plainly written to
+ * produce.
+ *
+ * The same clamp covers coordinates outside 0..1, which the origin offset
+ * above genuinely produces and which the reference also indexes out of range
+ * for -- in the banded path as well as the blended one.
+ *
+ * floor() rather than the reference's int(), which truncates toward zero. They
+ * differ only for negative coordinates, where truncation gives 0 and floor
+ * gives -1, and the clamp then puts both at 0. Same answer, no special case.
+ *
  * NO DERIVATIVE IS TAKEN HERE, and none should be added. A gradient is a point
- * function -- it needs no fwidth() -- and the count/type tests below are
- * branches, so a derivative underneath one of them would be evaluated in
- * non-uniform control flow the moment anything made them per-fragment. See
- * rounded.glsl for what that costs.
+ * function -- it needs no fwidth() -- and the branches below would then be
+ * non-uniform control flow around one. See rounded.glsl for what that costs.
  */
-vec4 az_gradient(int rec, vec2 box_pos, vec2 box_size) {
-	int offset = int(az_grad.data[rec + 1].y);
-	int count = int(az_grad.data[rec + 1].z);
-
+vec4 az_gradient_color(int offset, int count, bool blend, float step_) {
 	if (count <= 0) {
 		return vec4(0.0);
 	}
-	/* M4C.1: the first stop, unconditionally. Every other field of the record
-	 * is uploaded and is asserted by the packing test, but nothing reads it
-	 * yet. */
-	return az_grad.data[offset];
+	/* Uniform across the draw: count comes from the record, which is per
+	 * command. One colour has no ramp and no count-1 to divide by. */
+	if (count == 1) {
+		return az_grad.data[offset];
+	}
+
+	if (!blend) {
+		float sf = 1.0 / float(count);
+		int ind = clamp(int(floor(step_ / sf)), 0, count - 1);
+		return az_grad.data[offset + ind];
+	}
+
+	float sf = 1.0 / float(count - 1);
+	int ind = clamp(int(floor(step_ / sf)), 0, count - 1);
+	float at = float(ind) * sf;
+
+	vec4 c = az_grad.data[offset + ind];
+	if (ind > 0) {
+		c = mix(az_grad.data[offset + ind - 1], c,
+			smoothstep(at - sf, at, step_));
+	}
+	/* min(): the clamp described above. The reference has ind + 1 here with no
+	 * upper bound, and on the last segment that is colors[count]. */
+	int next = min(ind + 1, count - 1);
+	return mix(c, az_grad.data[offset + next], smoothstep(at, at + sf, step_));
+}
+
+/* The whole material, given a record and the rectangle it covers. */
+vec4 az_gradient(int rec, vec2 box_pos, vec2 box_size) {
+	vec2 origin = az_grad.data[rec + 0].xy;
+	float rad = az_grad.data[rec + 0].z;
+	bool blend = az_grad.data[rec + 0].w > 0.5;
+	int offset = int(az_grad.data[rec + 1].y);
+	int count = int(az_grad.data[rec + 1].z);
+
+	return az_gradient_color(offset, count, blend,
+		az_gradient_step(box_pos, box_size, origin, rad));
 }

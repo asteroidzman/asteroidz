@@ -322,9 +322,12 @@ if build_vulkan
   # M4C: gradients. Separate from avk-render because a gradient is a NUMERICAL
   # claim -- which band, starting where, out of how many -- and the fixtures
   # need a bigger target and their own colour scheme to say so exactly.
+  # libm: the fixtures carry an independent CPU implementation of the
+  # reference gradient formula, trigonometry and all, as the oracle AVK's
+  # output is compared against.
   test_avk_gradient = executable('test-avk-gradient',
                                  'tests/test-avk-gradient.c',
-                                 dependencies : [avk_dep],
+                                 dependencies : [avk_dep, libm],
                                  build_by_default : false)
   test('avk-gradient', test_avk_gradient, timeout : 120)
 

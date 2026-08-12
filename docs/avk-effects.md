@@ -609,3 +609,118 @@ records are all present, and only the indexing is wrong. It fails 12 of
 `test-avk-gradient`'s assertions, including the one-stop gradient, which comes
 back reading a *record* as a colour. A single-gradient fixture would not
 notice, which is why the packing test draws six.
+
+## M4C.2 — linear gradients
+
+### The formula, and what turns on each term
+
+```text
+normal = (gl_FragCoord.xy - box_pos) / box_size
+uv     = normal - origin
+uv    *= 1 / (|cos(rad)| + |sin(rad)|)
+step   = uv.x*cos(rad) - uv.y*sin(rad) + origin.x
+```
+
+The `1/(|cos| + |sin|)` scale is what keeps the ramp spanning the box at every
+angle; without it a 45-degree gradient runs out before the far corner. The box
+is the rect's **own** destination box, so a gradient is a property of the
+rectangle and moving the window does not move the ramp through it.
+
+**The origin is not conic-only, and it is not a no-op for linear.** Expanding
+the last line:
+
+```text
+step = k*cos*normal.x - k*sin*normal.y
+     + origin.x*(1 - k*cos) + origin.y*(k*sin)
+```
+
+so the origin contributes a **constant offset along the ramp**, which vanishes
+only at degree 0 (`k = 1`, `cos = 1`, `sin = 0`). At 90 degrees the offset is
+`origin.x + origin.y` — which means **(0.2, 0.8) and (0.5, 0.5) are identical
+there**, both summing to 1. A fixture built on that pair proves nothing; the
+suite uses (0.25, 0.25) against (0.5, 0.5), half a ramp apart.
+
+That offset is also what makes `step` genuinely leave 0..1.
+
+### Orientation, measured rather than assumed
+
+At degree 0 the ramp runs **left to right**: `step = normal.x`, first colour at
+the left edge. At 90 degrees `step = origin.x + origin.y - normal.y`, so with a
+centred origin it runs **bottom to top** — the last colour at the top. At 45
+the ramp runs from the bottom-left corner to the top-right. Increasing degree
+rotates the sampling vector, so the picture turns the other way.
+
+### The two modes put the same colours in different places
+
+| | `blend = 0` | `blend = 1` |
+|---|---|---|
+| segments | `count` bands of `1/count` | `count - 1` of `1/(count-1)` |
+| colour *k* sits | filling `[k/count, (k+1)/count)` | **at** `k/(count-1)` |
+| between | nothing — a step | `smoothstep` |
+
+With five colours, colour 2 is at 0.5 in interpolated mode and fills
+`[0.4, 0.6)` in banded mode. Deriving the interpolated spacing from `count`
+instead of `count - 1` is therefore a mistake that still produces a plausible
+ramp, and the suite pins the endpoints for exactly that reason.
+
+`smoothstep` rather than a linear mix is worth a fixture of its own: a quarter
+of the way into a segment `smoothstep(0.25) = 0.15625`, so on the red-to-green
+segment red reads 220 instead of 195. Twenty-five levels, which no rounding
+explains.
+
+### `count = 1`, and division by zero
+
+The interpolated path divides by `count - 1`. One colour is special-cased
+before that, in the shader and in the oracle alike. It matters because a NaN
+reaching a UNORM target is a *colour*, not a crash — it would render as
+something and never be noticed.
+
+### The oracle
+
+`tests/test-avk-gradient.c` carries an independent C implementation of the
+reference formula and compares every fourth pixel against it, reporting max and
+mean channel error. It is written from `gradient.frag`, not from AVK's shader,
+or it would agree with whatever AVK does.
+
+Measured, tolerance 2/255:
+
+```text
+2 colours, banded      max 0   mean 0.000    5 smooth, degree 45    max 1  mean 0.006
+2 colours, smooth      max 1   mean 0.031    5 smooth, degree 90    max 1  mean 0.042
+3 colours, banded      max 0   mean 0.000    5 smooth, degree 135   max 1  mean 0.021
+3 colours, smooth      max 1   mean 0.021    5 smooth, degree 180   max 1  mean 0.042
+5 colours, banded      max 0   mean 0.000    5 smooth, degree 270   max 1  mean 0.052
+5 colours, smooth      max 1   mean 0.052    5 banded, degree 45    max 0  mean 0.000
+alpha ramp over white  max 1   mean 0.031
+```
+
+Banded modes are **exact**; interpolated ones differ by at most one level, which
+is fp32 evaluated twice plus UNORM rounding.
+
+### Breaks
+
+| switch | restores | result |
+| :--- | :--- | :--- |
+| `AZ_GRADIENT_FIRST_COLOR=1` | the shipped AVK behaviour — count forced to 1, every gradient a flat first stop | 36/83 fail |
+| `AZ_GRADIENT_BLEND_SWAP=1` | `gradient_blend` read with the wrong polarity | 32/83 fail |
+| `AZ_GRADIENT_COLOR_OFFSET=1` | every record pointed at the next gradient's colours | 53/83 fail |
+
+`BLEND_SWAP` was chosen over "ignore the flag" deliberately: swapping fails the
+banded **and** the interpolated fixtures, where ignoring it would leave whichever
+mode it defaulted to untested.
+
+### Three fixtures that were wrong before the renderer was
+
+Recorded because each looked exactly like a renderer defect:
+
+- **the half pixel.** `gl_FragCoord.x` is `x + 0.5`, so band *k+1* begins at
+  `ceil(128(k+1)/5 - 0.5)`. Without the `- 0.5` two of the four boundary probes
+  landed one pixel late, both readings fell inside the same band, and the
+  failure read as a renderer smearing its boundaries.
+- **the terminal-clamp fixture used degree 0**, where the origin offset is
+  identically zero — proven three paragraphs above, and then walked into
+  anyway. The ramp ran edge to edge, nothing was ever past its end, and the
+  test reported a clamp failure that was entirely its own.
+- **the packing fixture sampled the middle** of each band row, which was right
+  while the lookup returned the first stop and wrong the moment it returned a
+  ramp. It samples `x = 2` now: inside band 0 for every count in the spread.

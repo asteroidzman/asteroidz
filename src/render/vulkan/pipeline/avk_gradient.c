@@ -206,6 +206,35 @@ bool avk_gradient_store_init(struct avk_gradient_store *store,
 			"reading the wrong run of colours. This build is deliberately "
 			"broken.");
 	}
+	/*
+	 * AZ_GRADIENT_FIRST_COLOR=1 -- the shipped-AVK break.
+	 *
+	 * It writes a colour count of one, which is exactly what the renderer did
+	 * before M4C.2: every gradient collapses to its first stop, a flat fill.
+	 * The colours are still all uploaded and the record is otherwise intact,
+	 * so what fails is the RAMP and nothing else.
+	 */
+	store->break_first_color = getenv("AZ_GRADIENT_FIRST_COLOR") != NULL;
+	if (store->break_first_color) {
+		avk_log(AVK_ERROR, "AZ_GRADIENT_FIRST_COLOR=1 -- every gradient is "
+			"drawn as its first colour. This build is deliberately broken.");
+	}
+	/*
+	 * AZ_GRADIENT_BLEND_SWAP=1 -- the blend-polarity break.
+	 *
+	 * `gradient_blend` is an int, and 1 means INTERPOLATED. Reading it the
+	 * other way round is the plausible mistake -- the field's name suggests
+	 * "blend the colours", which is what an implementer assumes is the default
+	 * rather than the flag. This inverts it, so banded gradients come back
+	 * smooth and smooth ones come back banded, and BOTH fixtures fail: a break
+	 * that only ignores the flag would leave one of the two modes untested.
+	 */
+	store->break_blend_swap = getenv("AZ_GRADIENT_BLEND_SWAP") != NULL;
+	if (store->break_blend_swap) {
+		avk_log(AVK_ERROR, "AZ_GRADIENT_BLEND_SWAP=1 -- banded and "
+			"interpolated gradients are swapped. This build is deliberately "
+			"broken.");
+	}
 
 	VkDescriptorPoolSize size = {
 		.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
@@ -319,12 +348,13 @@ uint32_t avk_gradient_store_push(struct avk_gradient_store *store,
 	/* DEGREES on the snapshot, radians on the GPU. The conversion happens here,
 	 * once per command, rather than once per fragment. */
 	r0[2] = gradient->degree * (3.14159265358979323846f / 180.0f);
-	r0[3] = gradient->blend ? 1.0f : 0.0f;
+	bool blend = gradient->blend != store->break_blend_swap;
+	r0[3] = blend ? 1.0f : 0.0f;
 
 	float *r1 = data + ((size_t)rec + 1) * 4;
 	r1[0] = (float)gradient->type;
 	r1[1] = (float)(store->break_color_offset ? color_at + 1 : color_at);
-	r1[2] = (float)gradient->color_count;
+	r1[2] = (float)(store->break_first_color ? 1 : gradient->color_count);
 	r1[3] = 0.0f;
 
 	memcpy(data + (size_t)color_at * 4, colors,
