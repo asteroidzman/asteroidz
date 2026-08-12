@@ -242,8 +242,52 @@ cd contrib/wlrepaint && make          # once
 ASTEROIDZ=build/asteroidz bash contrib/avk-rounded-persist-test.sh
 BREAK=damage-hole ASTEROIDZ=build/asteroidz bash contrib/avk-rounded-persist-test.sh  # must FAIL
 ENGINE=gles       ASTEROIDZ=build/asteroidz bash contrib/avk-rounded-persist-test.sh
-BORDER=6          ASTEROIDZ=build/asteroidz bash contrib/avk-rounded-persist-test.sh  # M4B: FAILS TODAY
+BORDER=6          ASTEROIDZ=build/asteroidz bash contrib/avk-rounded-persist-test.sh
+BREAK=border-square-inner BORDER=6 ASTEROIDZ=build/asteroidz bash contrib/avk-rounded-persist-test.sh  # must FAIL
 ```
+
+`contrib/avk-border-test.sh` (M4B) is the border's own suite: seventeen
+configurations of radius, border width, output scale, transform, opacity and
+focus colour, each asserting that the ring between the border's outer arc and
+the client's edge is CONTINUOUS.
+
+```bash
+bash contrib/avk-border-test.sh                              # all cases
+CASES="base scale15 titlebar" bash contrib/avk-border-test.sh
+ENGINE=gles  bash contrib/avk-border-test.sh                 # the reference
+BREAK=border-square-inner bash contrib/avk-border-test.sh    # must FAIL
+VKDEBUG=1    bash contrib/avk-border-test.sh                 # + sync validation
+BORDER_DEBUG=1 CASES=base bash contrib/avk-border-test.sh    # log the geometry
+```
+
+The probe is deliberately **coordinate-free**: it detects the window in the
+capture and measures the radii off the diagonal instead of mapping logical
+geometry through the output transform. Reimplementing `wlr_box_transform()` in
+a test is a second chance to get the permutation wrong, and it would agree with
+the renderer whenever both were wrong. The invariant it checks needs no arc
+centre at all — any ray outward from inside the window must run client, then
+border, then wallpaper, and must never come back.
+
+Three of its premises exist because each one caught a wrong conclusion:
+
+- the client **settled** before the capture. wlrepaint reallocates on every
+  configure, so between the resize and the client catching up the border is
+  drawn at the new size over a surface still at the old one and the ring really
+  is open — for a frame. Captured mid-flight this reads as a renderer bug, and
+  as a *different* one each run: measured corner radii swung between 30 and 57
+  on identical input before this wait existed.
+- the **rounded-border path was taken**, read from `get avk-stats`
+  (`rounded_border_draws`, and `asymmetric_border_draws` for the titlebar
+  case). A build that quietly stopped rounding the inner edge scores a perfect
+  zero wedge, because a square ring on a square hole has no seam to open.
+- the window is clear of every screen edge, at **every scale**. At scale 1.5 a
+  1920x1080 output is 1280x720 logical; the first geometry hung 80px off the
+  bottom, the edge rule squared those corners, and the fixture reported a
+  correct compositor as a broken renderer.
+
+Two cases are honestly **skipped**, not passed: transforms 90 and 270, where
+grim returns no capture from a rotated headless output. Transform 180 does
+capture and carries the asymmetric-corner coverage.
 
 Every pixel in a corner box is classified against the geometry rather than
 counted: outside the arc it must be background *of the current generation*,

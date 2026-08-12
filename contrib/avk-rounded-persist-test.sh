@@ -54,10 +54,11 @@
 # WHAT THE KNOBS ARE FOR
 #
 #   BORDER=0    rounded CLIENT coverage alone -- M4A's own responsibility.
-#               This is the default and it passes.
-#   BORDER=6    adds the border. FAILS TODAY, deliberately: it is the first M4B
-#               regression and is not part of the green suite. Do not make it
-#               pass by weakening what it expects.
+#               This is the default.
+#   BORDER=6    adds the border, and is the M4B annulus regression: it failed
+#               with 104 coverage-gap pixels per corner until AVK started
+#               reading clipped_region.corners. Part of the green suite now.
+#               Do not make it pass by weakening what it expects.
 #   FULLDRAW=1  redraw every frame whole. A DIAGNOSTIC, never a fix: it
 #               separates "the geometry is wrong" from "the damage is wrong".
 #   ENGINE=gles the SceneFX/GLES path, to decide whether any of this predates
@@ -67,6 +68,9 @@
 #               against it, and a green run of it is a suite failure.
 #   BREAK=rounded-clip  AZ_ROUNDED_OFF: no rounding at all, so the corner boxes
 #               hold no background and the arc premise must fail.
+#   BREAK=border-square-inner  the M4B defect itself, restored: rounded outer
+#               edge, SQUARE inner cut. Only means anything with BORDER > 0,
+#               where it must bring the ~104-pixel wedge back.
 set -u
 
 . "$(dirname "$0")/lib/headless.sh"
@@ -108,6 +112,16 @@ case "$BREAK" in
 	# against this, "0 stale pixels" only says the detector never fired.
 	damage-hole)
 		HL_ENV="$HL_ENV AZ_AVK_DAMAGE_HOLE=$FG_X,$FG_Y,$RADIUS,$RADIUS" ;;
+	# The M4B defect, restored exactly: the border keeps its rounded OUTER edge
+	# and goes back to a square inner cut, so the wedge between the two arcs
+	# reappears. Deliberately not "borders off" -- a break that deletes the
+	# feature proves nothing about the bug in it.
+	border-square-inner)
+		HL_ENV="$HL_ENV AZ_AVK_BORDER_SQUARE_INNER=1" ;;
+esac
+case "$BREAK" in
+	border-*)
+		[ "$BORDER" -gt 0 ] || { echo "BREAK=$BREAK needs BORDER > 0 to mean anything" >&2; exit 1; } ;;
 esac
 [ "$FULLDRAW" = 1 ] && HL_ENV="$HL_ENV AZ_AVK_FULL_DAMAGE=1"
 export HL_OUTDIR HL_ENV

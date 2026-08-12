@@ -2050,3 +2050,83 @@ E: reuse an output target before presentation release → assertion fires.
 F: remove damage expansion for a moved surface → damage test fails. **(F is
 already done and passing at the engine level; it needs redoing at the
 compositor level once damage is real.)**
+
+## 5.7 M4B — the border becomes one primitive, and a derivative stops lying
+
+M4A handed over a defect with an address: `az_avk.h` carried the border's inner
+box and threw away `clipped_region.corners`. The fix is small and the second
+bug it uncovered is not.
+
+**The border is now an annulus, not a rect with a hole punched by pixman.**
+`struct avk_cmd` carries `inner` and `inner_corners` beside `dst` and
+`corners`; the push constants carry both rectangles and both sets of radii in
+output pixels, clockwise TL/TR/BR/BL; and the fragment shader evaluates
+
+```text
+border_coverage = outer_coverage * (1 - inner_coverage)
+```
+
+with the same SDF and the same derivative-scaled antialiasing on both edges, so
+the two arcs of a ring cannot drift apart. The scissor region keeps the part it
+can express exactly and nothing else. Geometry and material are deliberately
+separate: M4C replaces the solid colour without touching any of this.
+
+**Push constants are now exactly 128 bytes**, the guaranteed minimum, which
+took removing the NDC copy of the destination rectangle. The vertex shader
+derives NDC from `round_box` and the viewport, so the rectangle a command
+covers and the rectangle its distance field measures are the same four numbers
+by construction. There is no room left, and that is the right ceiling: M4C's
+gradients carry a variable number of stops and want a buffer.
+
+**The inner radius rule is the compositor's, not the renderer's.**
+`apply_border()` computes `max(border_radius - bw - 1, 0)` per corner and AVK
+consumes it. The `-1` is deliberate. It was tested rather than trusted: undoing
+it changed the seam without opening it, so no break switch was added for it —
+the brief's own condition. The inner rectangle is likewise taken from
+`clipped_region.area` and never re-derived as a symmetric inset, because
+`apply_border()` compensates it against the monitor edge.
+
+**The second bug.** `az_rounded_coverage()` computed `fwidth(dist)` after a
+per-pixel early return. A quad derivative read across a branch that some
+invocations of the quad took is undefined, and it had been undefined for the
+whole of M4A while rendering correctly. Calling the function a second time for
+the inner edge was enough of a change to make it produce a one-pixel column of
+border down the outside of a corner — at radius 9, and at radius 40 on a
+scale-1.5 output, but not at radius 40 on a scale-1 one, and differently on
+each run of identical input.
+
+That last property is what identified it. A geometry bug does not move between
+runs; two consecutive captures of the same scene disagreeing is a statement
+about undefined behaviour, not about arcs. Chasing it as geometry cost two
+falsified hypotheses first — the scissor's rounding direction, and the `-1`
+underlap — both of which were tested and rejected on measurement rather than
+argued away.
+
+**Results**, `contrib/avk-border-test.sh`, wallpaper visible inside the ring:
+
+| case | AVK | GLES |
+|---|---|---|
+| radius 40 / border 6 | 0 | 0 |
+| radius 0 (square frame) | 0 | — |
+| border width 1, 2, 4 | 0 | — |
+| width 18 ≈ radius 20 | 0 | — |
+| width 20 > radius 12 | 0 | — |
+| radius 9 / border 3 | 0 | 0 |
+| radius 120 / border 8 | 0 | — |
+| titlebar (TL squared, three rounded) | 0 | — |
+| scale 1.5, and scale 1.5 + titlebar | 0 | 0 |
+| transform 180 + titlebar | 0 | — |
+| opacity 0.75 | 0 | — |
+| inactive border colour | 0 | — |
+
+`BREAK=border-square-inner` restores the defect and every rounded case fails
+against it — except `width 18 ≈ radius 20`, where the inner radius is 1 and
+square and round are the same shape to within a pixel. That case is recorded as
+giving no coverage against this break rather than counted as if it did.
+
+Transforms 90 and 270 are **not covered**: grim returns no capture from a
+rotated headless output. 180 does capture, and carries titlebar-asymmetric
+corners, so a build that permuted the outer radii and not the inner ones would
+open its ring there. Outer and inner go through one call to
+`az_avk_corners_from_scenefx()`, so they cannot be permuted differently without
+editing the line that does both.

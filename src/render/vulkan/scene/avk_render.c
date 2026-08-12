@@ -132,12 +132,17 @@ static void az_corner_normalise(const float in[4], float w, float h,
 	}
 }
 
-static void box_to_ndc(const struct avk_box *box, uint32_t width,
-		uint32_t height, float out[4]) {
-	out[0] = (float)box->x / (float)width * 2.0f - 1.0f;
-	out[1] = (float)box->y / (float)height * 2.0f - 1.0f;
-	out[2] = (float)(box->x + box->width) / (float)width * 2.0f - 1.0f;
-	out[3] = (float)(box->y + box->height) / (float)height * 2.0f - 1.0f;
+/*
+ * A box as x0, y0, x1, y1 in OUTPUT PIXELS -- the one space AVK's geometry
+ * lives in. The vertex shader turns it into NDC using the viewport it is
+ * handed in params.zw, so the rectangle a command covers and the rectangle its
+ * signed distance field measures are the same four numbers by construction.
+ */
+static void box_to_px(const struct avk_box *box, float out[4]) {
+	out[0] = (float)box->x;
+	out[1] = (float)box->y;
+	out[2] = (float)(box->x + box->width);
+	out[3] = (float)(box->y + box->height);
 }
 
 /*
@@ -521,7 +526,7 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 			bound = renderer->pipes.rect;
 
 			struct avk_push_constants pc = {0};
-			box_to_ndc(&clear.dst, width, height, pc.dst);
+			box_to_px(&clear.dst, pc.round_box);
 			/* Premultiply: the blend state is (ONE, 1-SRC_ALPHA), so the
 			 * shader must receive colour already scaled by alpha. */
 			for (int i = 0; i < 3; i++) {
@@ -529,6 +534,8 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 			}
 			pc.color[3] = clear.color[3];
 			pc.params[0] = 1.0f;
+			pc.params[2] = (float)width;
+			pc.params[3] = (float)height;
 			vkCmdPushConstants(cb, renderer->pipes.layout,
 				VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
 				sizeof(pc), &pc);
@@ -573,8 +580,9 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 		}
 
 		struct avk_push_constants pc = {0};
-		box_to_ndc(&cmd->dst, width, height, pc.dst);
 		pc.params[0] = cmd->opacity;
+		pc.params[2] = (float)width;
+		pc.params[3] = (float)height;
 		/*
 		 * The rounding rectangle is the destination, in OUTPUT PIXELS -- the
 		 * same space gl_FragCoord is in. Not NDC: a signed distance is only
@@ -584,10 +592,7 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 		 * them where it scales the box, so the two cannot disagree), and are
 		 * CLOCKWISE: tl, tr, br, bl.
 		 */
-		pc.round_box[0] = (float)cmd->dst.x;
-		pc.round_box[1] = (float)cmd->dst.y;
-		pc.round_box[2] = (float)(cmd->dst.x + cmd->dst.width);
-		pc.round_box[3] = (float)(cmd->dst.y + cmd->dst.height);
+		box_to_px(&cmd->dst, pc.round_box);
 		/*
 		 * BREAK SWITCHES, all three at the point the radii become shader
 		 * input, because that is the narrowest place that can express them.
@@ -631,6 +636,37 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 					pc.corners[1] != pc.corners[2] ||
 					pc.corners[2] != pc.corners[3]) {
 				renderer->stats.rounded_asymmetric_draws++;
+			}
+		}
+
+		/*
+		 * The INNER edge of the annulus. Every break above is deliberately
+		 * NOT reapplied here: those describe how a single rounded rectangle
+		 * can be got wrong, and the inner edge is a rounded rectangle in its
+		 * own right whose radii the compositor computed separately (outer
+		 * radius minus border width minus one). Re-deriving them from the
+		 * outer ones would put a rule in the renderer that already lives in
+		 * apply_border(), and the two would drift.
+		 *
+		 * Normalised against the INNER box, not the outer one -- a hole is
+		 * clamped by its own size, and using the outer dimensions lets a
+		 * radius exceed half the hole on a narrow window.
+		 */
+		if (cmd->has_inner) {
+			box_to_px(&cmd->inner, pc.inner_box);
+			float inner[4] = { cmd->inner_corners[0], cmd->inner_corners[1],
+				cmd->inner_corners[2], cmd->inner_corners[3] };
+			az_corner_normalise(inner, (float)cmd->inner.width,
+				(float)cmd->inner.height, pc.inner_corners);
+			renderer->stats.border_draws++;
+			if (pc.inner_corners[0] > 0.0f || pc.inner_corners[1] > 0.0f ||
+					pc.inner_corners[2] > 0.0f || pc.inner_corners[3] > 0.0f) {
+				renderer->stats.rounded_border_draws++;
+				if (pc.inner_corners[0] != pc.inner_corners[1] ||
+						pc.inner_corners[1] != pc.inner_corners[2] ||
+						pc.inner_corners[2] != pc.inner_corners[3]) {
+					renderer->stats.asymmetric_border_draws++;
+				}
 			}
 		}
 

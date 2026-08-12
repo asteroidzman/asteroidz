@@ -24,28 +24,51 @@
 /* Must match the layout in shader/src/quad.vert exactly. Checked at compile
  * time below, because a silent mismatch here reads as a geometry bug. */
 struct avk_push_constants {
-	float dst[4];         /* x0, y0, x1, y1 in NDC */
 	float uv_org_dx[4];   /* uv origin xy, du/dx zw */
 	float uv_dy[4];       /* du/dy xy, unused zw */
 	float color[4];       /* premultiplied */
-	float params[4];      /* opacity, alpha_mask, unused, unused */
+	/* opacity, alpha_mask, viewport width, viewport height (output pixels) */
+	float params[4];
 	/*
-	 * The rounded-corner rectangle, in OUTPUT PIXELS: x0, y0, x1, y1.
+	 * OUTER geometry: the rounded rectangle this command fills, in OUTPUT
+	 * PIXELS as x0, y0, x1, y1.
 	 *
 	 * Pixels rather than NDC because the shader evaluates a signed distance
 	 * field against gl_FragCoord, and a distance is only meaningful in a space
 	 * with uniform units. It is also why a window hanging off the edge of an
 	 * output still rounds correctly: both the fragment position and the box are
 	 * absolute, so a clipped draw is not a different shape.
+	 *
+	 * The vertex shader DERIVES its NDC position from this box and the
+	 * viewport in params.zw, so the destination rectangle exists exactly once.
+	 * It used to be stored twice, once here and once pre-converted to NDC, and
+	 * two copies of one rectangle is how M4A's radii nearly ended up scaled in
+	 * one place and not the other.
 	 */
 	float round_box[4];
 	/* top-left, top-right, bottom-right, bottom-left, in output pixels.
 	 * All zero means no rounding. */
 	float corners[4];
+	/*
+	 * INNER geometry: the rounded rectangle cut OUT of the outer one, same
+	 * space and same clockwise corner order. A window border is exactly this
+	 * -- a rounded rect minus a rounded rect -- and carrying both as first
+	 * class geometry is what makes the border a single analytic primitive
+	 * instead of an outline approximated by pieces.
+	 *
+	 * All-zero inner corners mean "no arcs to subtract"; the square part of
+	 * the cut is done by the scissor region, which is exact. Both are needed:
+	 * the region cannot express an arc and the shader should not be asked to
+	 * shade pixels the scissor could have dropped.
+	 */
+	float inner_box[4];
+	float inner_corners[4];
 };
-/* 112 <= 128, the minimum maxPushConstantsSize every Vulkan implementation
- * must support, so this needs no capability check. */
-_Static_assert(sizeof(struct avk_push_constants) == 112,
+/* Exactly 128, the minimum maxPushConstantsSize every Vulkan implementation
+ * must support, so this needs no capability check -- and no room to grow.
+ * M4C's gradients carry a variable number of colour stops and want a buffer
+ * rather than another push constant, so this is the right ceiling to sit at. */
+_Static_assert(sizeof(struct avk_push_constants) == 128,
 	"push constants must match the shader block");
 
 struct avk_pipelines {

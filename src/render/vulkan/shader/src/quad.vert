@@ -17,19 +17,24 @@
  */
 
 layout(push_constant) uniform Push {
-	vec4 dst;        // x0, y0, x1, y1 in normalised device coordinates
-	vec4 uv_org_dx;  // uv origin (xy), du/dx (zw)
-	vec4 uv_dy;      // du/dy (xy), unused (zw)
-	vec4 color;      // premultiplied solid colour
-	vec4 params;     // opacity, alpha_mask, unused, unused
-	vec4 round_box;  // x0, y0, x1, y1 in output pixels
-	vec4 corners;    // CLOCKWISE: tl, tr, br, bl, in output pixels
+	vec4 uv_org_dx;     // uv origin (xy), du/dx (zw)
+	vec4 uv_dy;         // du/dy (xy), unused (zw)
+	vec4 color;         // premultiplied solid colour
+	vec4 params;        // opacity, alpha_mask, viewport w, viewport h
+	vec4 round_box;     // OUTER x0, y0, x1, y1 in output pixels
+	vec4 corners;       // CLOCKWISE: tl, tr, br, bl, in output pixels
+	vec4 inner_box;     // INNER x0, y0, x1, y1 in output pixels
+	vec4 inner_corners; // CLOCKWISE, in output pixels
 } pc;
 
 layout(location = 0) out vec2 v_uv;
 
 void main() {
 	vec2 p = vec2(float(gl_VertexIndex & 1), float((gl_VertexIndex >> 1) & 1));
-	gl_Position = vec4(mix(pc.dst.xy, pc.dst.zw, p), 0.0, 1.0);
+	/* The destination is stored ONCE, in output pixels, and converted here.
+	 * The fragment shader measures its signed distances against the same
+	 * numbers, so the shape drawn and the shape covered cannot disagree. */
+	vec2 px = mix(pc.round_box.xy, pc.round_box.zw, p);
+	gl_Position = vec4(px / pc.params.zw * 2.0 - 1.0, 0.0, 1.0);
 	v_uv = pc.uv_org_dx.xy + p.x * pc.uv_org_dx.zw + p.y * pc.uv_dy.xy;
 }

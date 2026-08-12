@@ -103,6 +103,30 @@ struct avk_cmd {
 	 */
 	float corners[4];
 
+	/*
+	 * The INTERIOR CUT-OUT, in the same space and the same clockwise order as
+	 * `dst`/`corners` above. `dst` minus `inner` is the shape actually drawn.
+	 *
+	 * This is how a window border exists: SceneFX draws one filled rect with
+	 * the window's interior removed, and BOTH edges of that ring are rounded
+	 * -- the outer one at the window's radius, the inner one at the radius the
+	 * compositor computed for the client underneath. Carrying the inner box
+	 * without its radii was the M4A artifact: the ring's outside was an arc,
+	 * its inside was a square, and on each corner's diagonal the square cut
+	 * away border the arc never covered, leaving the wallpaper showing through
+	 * a wedge 104 pixels across.
+	 *
+	 * Both halves are needed and neither is redundant. `inner` is an exact
+	 * scissor subtraction, which is free and is the whole answer when the
+	 * radii are zero; `inner_corners` are the arcs, which a region cannot
+	 * express at all.
+	 *
+	 * has_inner false means the command fills `dst` solid.
+	 */
+	struct avk_box inner;
+	float inner_corners[4];
+	bool has_inner;
+
 	/* reserved for later M4 stages */
 	bool has_shadow;
 	bool has_blur;

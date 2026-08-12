@@ -93,17 +93,38 @@ theming choice rather than a bug.
 where it should be rounded. M4B. **Reproduced in pixels** — see the border mask
 audit below.
 
-#### The border mask, exactly as it stands
+#### The border mask (M4B: fixed)
 
-Three masks, and the defect is entirely in the second one.
+Three masks, and the defect was entirely in the second one.
 
 ```text
-OUTER    cmd->dst = the rect's box,  rounded by cmd->corners       (SDF)
-INNER    rect->clipped_region.area,  subtracted as a SQUARE        (pixman)
-CLIENT   the surface, rounded by its own corners                   (SDF)
+        BEFORE (M4A, defective)                    NOW (M4B)
+OUTER   cmd->dst, rounded by cmd->corners   (SDF)  unchanged
+INNER   clipped_region.area, a SQUARE    (pixman)  .area  (pixman, shrunk)
+                                                 + .corners        (SDF)
+CLIENT  the surface, rounded by its own corners (SDF)  unchanged
 
 BORDER = OUTER - INNER
 ```
+
+The fix is that AVK now reads `clipped_region.corners`, carries them on the
+command as `inner`/`inner_corners`, and the fragment shader evaluates
+
+```text
+border_coverage = outer_coverage * (1 - inner_coverage)
+```
+
+as one primitive — `az_rounded_coverage(..., is_cutout = true)` being that
+complement. The scissor region keeps only the part it can express exactly: a
+box shrunk on each edge by `ceil(0.3 * radius) + 1`, SceneFX's own rule from
+`apply_clip_region()`, rounded up. Rounding it down is not a rounding
+preference — a box inset by `k` has its corner `(r-k)*sqrt(2)` from the arc
+centre, so staying inside the hole needs `k >= 0.2929r`; truncating `0.3*5` to
+`1` puts that corner at 5.66 from a centre 5 away and pixman deletes a pixel
+the arc wanted.
+
+The whole of the old text below is kept because it is the record of what the
+artifact was, and the fixture that failed by design now passes.
 
 `az_avk.h`'s rect case reads `rect->clipped_region.area` and **ignores
 `rect->clipped_region.corners`**, which is a `struct fx_corner_radii` sitting
@@ -126,12 +147,34 @@ AVK    104 background pixels inside the outer arc
 GLES     0
 ```
 
-Unchanged under `AZ_AVK_FULL_DAMAGE=1`, and every one of those pixels shows the
-CURRENT background generation, so it is coverage geometry and not damage. The
-fixture is `contrib/avk-rounded-persist-test.sh BORDER=6`, which fails today by
-design and is the first M4B regression. The shader already has what the fix
-needs: `az_rounded_coverage()`'s `is_cutout` inverts coverage for exactly this
-inner edge.
+Unchanged under `AZ_AVK_FULL_DAMAGE=1`, and every one of those pixels showed the
+CURRENT background generation, so it was coverage geometry and not damage. The
+fixture is `contrib/avk-rounded-persist-test.sh BORDER=6`; it now passes, and
+`BREAK=border-square-inner` restores exactly the 104-pixel signature.
+
+#### The undefined derivative M4B uncovered
+
+`az_rounded_coverage()` computed `fwidth(dist)` **after** a per-pixel early
+return for fragments outside the rectangle. `fwidth` is a 2x2-quad derivative
+and is undefined if any invocation in that quad skipped the value, so along the
+edge of every primitive some invocations took the branch and the survivors read
+a derivative their neighbours never produced.
+
+It rendered correctly for the whole of M4A. Calling the same function a SECOND
+time for the inner edge changed the shader's layout enough to turn the garbage
+derivative into a real `aa`, which fed `smoothstep()` and painted a one-pixel
+column of border down the OUTSIDE of a corner, where the arc had long since
+curved away — visible at `radius 9` and at `radius 40, scale 1.5`, absent at
+`radius 40, scale 1`, and varying run to run on identical input. That variance
+is the signature; a geometry bug does not move.
+
+The early return was only an optimisation, and a redundant one: the expression
+is a true signed distance, so it already reports "outside" for every point
+outside. It is gone. The all-radii-zero test stays, because a push constant is
+uniform across the draw and that branch cannot split a quad.
+
+Anything added to this shader later must keep every path to `fwidth()` free of
+per-pixel branching.
 
 ### Gradients
 

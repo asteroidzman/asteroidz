@@ -21,13 +21,14 @@
 layout(set = 0, binding = 0) uniform sampler2D tex;
 
 layout(push_constant) uniform Push {
-	vec4 dst;
 	vec4 uv_org_dx;
 	vec4 uv_dy;
 	vec4 color;
 	vec4 params;
-	vec4 round_box;   // x0, y0, x1, y1 in output pixels
-	vec4 corners;     // CLOCKWISE: tl, tr, br, bl, in output pixels
+	vec4 round_box;     // OUTER x0, y0, x1, y1 in output pixels
+	vec4 corners;       // CLOCKWISE: tl, tr, br, bl, in output pixels
+	vec4 inner_box;     // INNER x0, y0, x1, y1 in output pixels
+	vec4 inner_corners; // CLOCKWISE, in output pixels
 } pc;
 
 layout(location = 0) in vec2 v_uv;
@@ -41,5 +42,12 @@ void main() {
 	 * light fringe along every rounded edge. */
 	float cov = az_rounded_coverage(pc.round_box.xy,
 		pc.round_box.zw - pc.round_box.xy, pc.corners, false);
+	/* Inert today -- no texture command carries an interior cut-out yet. It is
+	 * applied anyway so the annulus is a property of the PRIMITIVE and not of
+	 * the rect pipeline, which is what M4D's shadows and M4F's blur need when
+	 * they start carrying a clipped_region of their own. Zero inner corners
+	 * cost one uniform branch. */
+	cov *= az_rounded_coverage(pc.inner_box.xy,
+		pc.inner_box.zw - pc.inner_box.xy, pc.inner_corners, true);
 	out_color = c * pc.params.x * cov;
 }

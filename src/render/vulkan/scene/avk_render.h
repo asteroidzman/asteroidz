@@ -22,6 +22,14 @@ struct avk_renderer_stats {
 	 * implementation renders wrong while looking almost right. */
 	uint64_t rounded_clip_draws;
 	uint64_t rounded_asymmetric_draws;
+	/* M4B. A border is a command carrying an interior cut-out, so these count
+	 * annuli: how many were drawn, how many had rounded inner arcs rather than
+	 * a plain square hole, and how many of those had inner arcs that differ
+	 * per corner -- the titlebar case a single-radius inner edge renders
+	 * wrong while looking almost right. */
+	uint64_t border_draws;
+	uint64_t rounded_border_draws;
+	uint64_t asymmetric_border_draws;
 	uint64_t frames;
 	uint64_t surfaces;
 	uint64_t rects;
