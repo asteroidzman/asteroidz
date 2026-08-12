@@ -15,7 +15,9 @@
  *
  *   field          TEXTURE                    RECT              GRADIENT RECT
  *   -------------  -------------------------  ----------------  --------------
- *   uv_org_dx.xy   uv origin                  --                --
+ *   uv_org_dx.x    uv origin x                --                --
+ *                  (SHADOW: dither amplitude -- see shadow.frag)
+ *   uv_org_dx.y    uv origin y                --                --
  *   uv_org_dx.zw   du/dx                      --                --
  *   uv_dy.xy       du/dy                      --                --
  *   uv_dy.zw       --                         --                --
@@ -28,10 +30,11 @@
  *   inner_box      INNER cut-out box (all)
  *   inner_corners  INNER radii, CLOCKWISE (all)
  *
- * `params.y` is the only field two pipelines both write, and they are the
- * texture pipeline and the gradient pipeline -- which never draw the same
- * command. AZ_GRAD_RECORD names the gradient reading so the overlay is spelled
- * out at the point of use rather than inferred from a comment.
+ * `params.y` is written by three pipelines now -- texture's alpha mask,
+ * gradient's record index, shadow's blur sigma -- and `uv_org_dx.x` by two.
+ * None of them ever draws the same command as another. AZ_GRAD_RECORD,
+ * AZ_SHADOW_SIGMA and AZ_SHADOW_DITHER name each reading so the overlay is
+ * spelled out at the point of use rather than inferred from this comment.
  */
 
 layout(push_constant) uniform Push {

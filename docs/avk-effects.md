@@ -1556,3 +1556,170 @@ against three wrong oracles and fails the break **56 of 58**.
 
 `BREAK=shadow-symmetric` fails this suite **21 of 24**, on the two directional
 assertions and the scale one.
+
+## M4D.4 — quantisation, and a dither that is derived rather than guessed
+
+Live acceptance produced a real defect: concentric rings around every window
+on a flat backdrop. The shadow was correct — this is what a correct shadow
+looks like when it is quantised into eight bits.
+
+### The path, traced rather than assumed
+
+```text
+analytic coverage                      fp32 in the shader
+  -> premultiplied source              fp32
+  -> blend  src*1 + dst*(1 - srcAlpha) VK_BLEND_OP_ADD
+  -> attachment                        VK_FORMAT_B8G8R8A8_UNORM
+  -> scanout                           DRM XR24 (XRGB8888) -- the SAME buffer
+  -> display                           bitdepth 8, 10-bit not enabled
+```
+
+Two facts matter and neither is visible from `bitdepth=8` alone. The attachment
+is **UNORM, not SRGB** — quantisation is uniform in encoded space. And there is
+**no intermediate higher-precision target**: AVK composites directly into the
+scanout buffer, so every blend result is rounded to 8 bits immediately.
+
+### Why ±1/255 of coverage would have done nothing
+
+A black shadow's premultiplied source colour is zero, so the framebuffer value
+is exactly `out = dst * (1 - alpha)` and
+
+```text
+d(out)/d(alpha) = -dst
+```
+
+The perturbation a viewer sees is the perturbation of **alpha times the
+backdrop**. On the mid-grey where the rings were reported, `dst = 45/255`, so a
+whole 1/255 of coverage moves the output by **0.18 of one code** — under a
+fifth of a step. The naive `coverage += noise/255.0` would have changed
+nothing at all.
+
+Inverting for one code peak-to-peak:
+
+```text
+amplitude = 1 / (max_code * dst_ref) = 1 / (255 * 45/255) = 1/45 = 5.67/255
+```
+
+`avk_dither_amplitude()` computes exactly that, from the **attachment format**:
+8-bit gets 0.02222, 10-bit gets 0.00554 (a quarter, asserted), and
+`R16G16B16A16_SFLOAT` gets **zero** — M5's scene-linear intermediate must not
+have noise injected into it.
+
+**The honest limitation**: a shadow shader cannot read its destination, so
+`dst_ref` is a constant. A fixed alpha-domain dither produces an output
+excursion *proportional* to the backdrop, which is backwards — dark backdrops
+band worst and receive least. So it is calibrated for the dark end and the
+price at the bright end is measured, not assumed: **1.21 codes rms** of grain
+on white, where there was no banding to fix.
+
+### Before and after
+
+Both frames from one process, by driving `renderer->shadow_dither` — two
+processes would compare two GPU states rather than two frames.
+
+| | codes | max run | mean run |
+|---|---|---|---|
+| undithered | 12 | **17 px** | 8.00 px |
+| dithered | 12 | **7 px** | 2.09 px |
+
+The live defect was a 41 px run. A 7-px-wide constant run does not draw a line.
+
+**The mean is untouched**: a 7-px low-pass of the dithered line against the
+M4D.1 oracle gives mean |err| **0.072 codes**, max **0.219**, and average
+density 40.225 against a predicted 40.196. Zero-mean noise, confirmed on the
+pixels rather than asserted from the formula.
+
+### Choosing the noise, by measurement
+
+| | max run | mean run | grain on white | worst long-range |
+|---|---|---|---|---|
+| interleaved gradient noise | **7 px** | **2.09** | **1.21** | 0.088 codes |
+| integer hash (white noise) | 10 px | 3.00 | 1.52 | 0.015 codes |
+
+IGN wins on both numbers that matter and ships. Neither needs a texture, a
+binding or a table.
+
+**And the analysis that nearly went the other way.** The first structure test
+asserted on the *correlation coefficient* and IGN failed it: +0.489 at the
+diagonal lag, against −0.061 for the hash. A control run proved that was real
+structure and not an artefact of the test's own high-pass filter. But a
+correlation coefficient is relative to the variance it sits in. The residual
+here has a standard deviation of about a third of a code, so IGN's structured
+component is `0.245 × 0.36 = 0.088 codes` — **a eleventh of the smallest step
+the display can show**. Rejecting IGN on the coefficient would have traded an
+invisible correlation for a visible 10-px run. The assertion is therefore in
+**codes**, not in correlation.
+
+(The first version of that test was wrong in a second way too: it correlated
+the raw patch, which is dominated by the shadow's own ramp, and reported +0.95
+at every lag.)
+
+### The two modulations
+
+`az_dither_alpha()` tapers to zero at both ends — unconditional noise would
+speckle the transparent margin of every envelope and the caster's own cut-out,
+a far more obvious artefact than the banding — and tapers off wherever
+`fwidth(alpha)` exceeds the amplitude. That second one is the contact-edge
+protection: where the ramp already moves further than the dither in one pixel
+there is no band to break, and noise would only roughen a clean edge. Measured
+roughness across a sharp contact edge: **0.000 codes rms**. It is also why the
+headless fixture had to sample the *flat tail* to find any dither at all.
+
+### Everything else it must not break
+
+- **Deterministic**: four renders of the same scene are byte-identical. No
+  frame counter, no clock — an idle desktop stays bit-stable, and a partially
+  damaged frame cannot fall out of step with the pixels beside it.
+- **Screen-space**: at scale 1.5 the penumbra's lag-1 correlation is
+  **−0.851**. The sign is the measurement — noise anchored in *logical* space
+  would be stretched over 1.5 device pixels and correlate strongly *positive*.
+- **Cross-output**: the column residual at the seam is **0.014** against a
+  worst-elsewhere of 0.139. The seam is less anomalous than a typical column.
+- **Directional model intact**: bottom 0.348, sides 0.194, top 0.072.
+- **Idle convergence**: 14/14, unchanged.
+
+The directional and horizontal-bias fixtures had to start **averaging along
+each side** rather than sampling one pixel: zero-mean noise only cancels over
+an area, and two analytically identical sides read 4/255 apart on single
+samples. That is the dither working, and it is also what the eye does.
+
+### Cost
+
+| scene | dither off | dither on | delta |
+|---|---|---|---|
+| 1 window, both lobes | 5.3 µs | 5.4 µs | +0.1 |
+| 16 windows, 32 lobes | 20.7 µs | 21.8 µs | **+1.05 µs** |
+
+Repeated three times; the undithered figure sat at 20.7–20.8 throughout, so
+the delta is outside run variance and is reported as real rather than as
+"no measurable cost". It is **0.015% of a 6944 µs frame** at 144 Hz. Zero
+images, buffers, memory, descriptors, passes or submissions added.
+
+### Break
+
+`BREAK=shadow-no-dither` fails **4 of 82**, and fails them by restoring the
+defect: max run back to 17 px, mean run back to 8.00, and the high-passed
+patch's variance collapsing to 0.035 because there is no longer a dither to
+correlate.
+
+### M5 migration note
+
+`dither.glsl` is a standalone helper with no shadow in it, and that is
+deliberate. The architecturally correct home for display-quantisation dither
+is the final output-encoding stage:
+
+```text
+scene-linear FP16 composition
+  -> tone / gamut mapping
+  -> output transfer function
+  -> FINAL quantisation      <- dither belongs HERE
+```
+
+There the value being quantised is the composed colour, `dst` is known so the
+amplitude needs no reference constant, and one implementation fixes gradients,
+blur, wallpaper, transparency and HDR→SDR mapping at once. M4D dithers
+shadow-locally only because composition currently targets 8-bit directly.
+`az_dither_alpha()` moves to that stage unchanged; `AVK_DITHER_REF_BACKDROP`
+is the only thing that goes away, and `avk_dither_amplitude()` already keys off
+format precision rather than any assumption about SDR white — which matters,
+because M5's per-window luminance domains make "SDR white is X" untrue.

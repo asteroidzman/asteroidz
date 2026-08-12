@@ -43,6 +43,7 @@
 
 #include "push.glsl"
 #include "rounded.glsl"
+#include "dither.glsl"
 
 layout(location = 0) out vec4 out_color;
 
@@ -50,6 +51,16 @@ layout(location = 0) out vec4 out_color;
  * is otherwise the texture pipeline's alpha-mask flag and the gradient
  * pipeline's record index; see push.glsl for the full overlay. */
 #define AZ_SHADOW_SIGMA pc.params.y
+
+/*
+ * Peak-to-peak dither amplitude, as a fraction of full alpha. A PUSH CONSTANT
+ * and not a compile-time constant, because the break switch would otherwise
+ * need a second SPIR-V module and a second pipeline for a value that is one
+ * multiply -- and a shadow leaves uv_org_dx completely unused (it is the
+ * texture pipeline's UV origin), so there is a free slot sitting right there.
+ * See push.glsl for the full overlay.
+ */
+#define AZ_SHADOW_DITHER pc.uv_org_dx.x
 
 const float AZ_PI = 3.141592653589793;
 
@@ -169,6 +180,13 @@ void main() {
 		pc.inner_corners, true);
 
 	float alpha = pc.color.a * pc.params.x * coverage * clip;
+
+	/*
+	 * ANTI-BANDING. See dither.glsl -- the amplitude arrives already derived
+	 * from the attachment's precision, so this shader neither knows nor
+	 * assumes that the target is 8-bit.
+	 */
+	alpha = az_dither_alpha(alpha, AZ_SHADOW_DITHER);
 
 	/*
 	 * PREMULTIPLIED, which is a divergence and a deliberate one.

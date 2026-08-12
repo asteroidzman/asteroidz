@@ -43,7 +43,8 @@ foreach shader : [['quad.vert', 'quad_vert_spv'],
     # of the push-constant block, so a change to it must rebuild all four.
     depend_files : files('shader/src/rounded.glsl',
                          'shader/src/push.glsl',
-                         'shader/src/gradient.glsl'),
+                         'shader/src/gradient.glsl',
+                         'shader/src/dither.glsl'),
     command : [glslang, '-V', '--target-env', 'vulkan1.3',
                '-I' + meson.current_source_dir() / 'shader/src',
                '@INPUT@', '-o', '@OUTPUT@'])

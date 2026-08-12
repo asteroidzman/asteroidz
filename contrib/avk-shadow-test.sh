@@ -371,6 +371,53 @@ PY
 		"$([ "${REACH:-0}" -gt 38 ] && echo true || echo false)" "true"
 	hl_assert "and it stays inside the envelope the producer sized (reach $REACH)" \
 		"$([ "${REACH:-0}" -lt 70 ] && echo true || echo false)" "true"
+
+	# M4D.4 §17: the dither is quantisation treatment, so it must be ONE
+	# SAMPLE PER PHYSICAL OUTPUT PIXEL. gl_FragCoord is in device pixels by
+	# construction, but "by construction" is what this suite exists to doubt:
+	# a noise anchored in logical space would be stretched 1.5x here and
+	# adjacent device pixels would come in pairs.
+	read -r ADJ ALT < <(python3 - "$OUTDIR/scale.png" "$GX" "$GY" "$GW" "$GH" "$SC" <<'PY2'
+import sys
+from PIL import Image
+im = Image.open(sys.argv[1]).convert('RGB'); p = im.load()
+gx, gy, gw, gh, sc = (float(v) for v in sys.argv[2:7])
+Wi, Hi = im.size
+dx, dy = int(gx * sc), int(gy * sc)
+dw, dh = int(gw * sc), int(gh * sc)
+cx = dx + dw // 2
+# THE FLAT TAIL, not the steep part next to the window. az_dither_alpha()
+# tapers itself off wherever the ramp is already moving faster than the
+# dither -- that is the contact-edge protection -- so close to the window
+# there is deliberately almost no noise to find. The banding, and therefore
+# the dither, lives further out where the slope is shallow.
+res, n = [], 0
+for y in range(dy + dh + 20, dy + dh + 40):
+    if y >= Hi:
+        continue
+    vals = [sum(p[x, y]) / 3.0 for x in range(cx - 60, cx + 60)]
+    res += [vals[i] - (vals[i-1] + vals[i] + vals[i+1]) / 3.0
+            for i in range(1, len(vals) - 1)]
+n = len(res)
+var = sum(v * v for v in res) / n if n else 0.0
+def corr(lag):
+    if var <= 0:
+        return 0.0
+    return sum(res[i] * res[i + lag] for i in range(n - lag)) / (n - lag) / var
+# Noise stretched to 1.5 device px would correlate strongly at lag 1.
+print(f"{corr(1):.3f} {var:.4f}")
+PY2
+)
+	echo "  penumbra residual at scale 1.5: lag-1 correlation $ADJ, variance $ALT"
+	hl_assert "premise: there is dither in the penumbra to measure (var $ALT)" \
+		"$(python3 -c "print('true' if $ALT > 0.02 else 'false')")" "true"
+	# THE SIGN IS THE MEASUREMENT. Noise anchored in LOGICAL space would be
+	# stretched over 1.5 device pixels, so neighbours would tend to share a
+	# sample and the lag-1 correlation would be strongly POSITIVE. Noise at
+	# one sample per DEVICE pixel alternates as fast as the grid allows, which
+	# is a strongly NEGATIVE lag-1 correlation. Measured: -0.85.
+	hl_assert "the dither alternates at the device-pixel grid, so it was not stretched by the 1.5 scale (lag-1 $ADJ, must not be positive)" \
+		"$(python3 -c "print('true' if $ADJ < 0.1 else 'false')")" "true"
 fi
 hl_stop
 
@@ -441,6 +488,49 @@ PY
 	# enormous step where the other output takes over.
 	hl_assert "no discontinuity at the seam (max step $MAXSTEP at x=$AT)" \
 		"$(python3 -c "print('true' if $MAXSTEP < 12 else 'false')")" "true"
+
+	# M4D.4 §18: the two outputs render independently, so their dither could
+	# in principle meet at a straight line. A stochastic phase change is fine;
+	# a seam is not. Measured on the RESIDUAL, so the shadow's own ramp does
+	# not count as a discontinuity.
+	read -r SEAMCOL OTHERMAX < <(python3 - "$OUTDIR/s1.png" "$OUTDIR/s2.png" \
+		"$GX" "$GY" "$GW" "$GH" "$W1" <<'PY2'
+import sys
+from PIL import Image
+a = Image.open(sys.argv[1]).convert('RGB'); pa = a.load()
+b = Image.open(sys.argv[2]).convert('RGB'); pb = b.load()
+gx, gy, gw, gh, seam = (int(v) for v in sys.argv[3:8])
+AW, AH = a.size; BW, BH = b.size
+
+def at(x, y):
+    if x < seam:
+        return sum(pa[x, y]) / 3.0 if 0 <= x < AW and 0 <= y < AH else None
+    xb = x - seam
+    return sum(pb[xb, y]) / 3.0 if 0 <= xb < BW and 0 <= y < BH else None
+
+# Mean residual of each COLUMN through the shadow band below the window: a
+# dither phase line would make one column stand out from its neighbours.
+def col_residual(x):
+    tot, n = 0.0, 0
+    for y in range(gy + gh + 2, gy + gh + 26):
+        c, l, r = at(x, y), at(x - 1, y), at(x + 1, y)
+        if None in (c, l, r):
+            continue
+        tot += c - (l + c + r) / 3.0
+        n += 1
+    return tot / n if n else 0.0
+
+cols = {x: col_residual(x) for x in range(gx + 10, gx + gw - 10)}
+seam_val = abs(cols.get(seam, 0.0))
+others = sorted(abs(v) for x, v in cols.items() if abs(x - seam) > 2)
+print(f"{seam_val:.3f} {others[-1] if others else 0:.3f}")
+PY2
+)
+	echo "  column residual at the seam $SEAMCOL, worst elsewhere $OTHERMAX"
+	hl_assert "premise: columns really were measured (worst $OTHERMAX)" \
+		"$(python3 -c "print('true' if $OTHERMAX > 0 else 'false')")" "true"
+	hl_assert "the seam column is no more anomalous than any other -- no dither phase line ($SEAMCOL vs $OTHERMAX)" \
+		"$(python3 -c "print('true' if $SEAMCOL <= $OTHERMAX else 'false')")" "true"
 fi
 hl_stop
 

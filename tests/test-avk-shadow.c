@@ -905,17 +905,40 @@ static void add_lobe(struct avk_scene *scene, const struct lobe *l,
 	pixman_region32_fini(&clip);
 }
 
-/* Coverage at `d` pixels outside the WINDOW's edge, on each of its four
- * sides, measured at the middle of that side. */
+/*
+ * Coverage at `d` pixels outside the WINDOW's edge on each of its four sides,
+ * AVERAGED along that side.
+ *
+ * Averaged and not sampled, since M4D.4: the dither is zero-mean noise, so a
+ * single pixel now carries up to half an output code of it and two sides that
+ * are analytically identical can read 4/255 apart. That is the dither working
+ * as designed, and it broke the horizontal-bias assertion the first time this
+ * ran. Averaging over 41 pixels cancels it -- which is exactly what the eye
+ * does, and is the reason a zero-mean dither is invisible at all.
+ */
 struct sides { double top, bottom, left, right; };
+#define SIDE_SPAN 20
+static double avg_run(struct harness *h, int x0, int y0, int dx, int dy) {
+	double sum = 0.0;
+	int n = 0;
+	for (int i = -SIDE_SPAN; i <= SIDE_SPAN; i++) {
+		int x = x0 + dx * i, y = y0 + dy * i;
+		if (x < 0 || y < 0 || x >= W || y >= H) {
+			continue;
+		}
+		sum += coverage_at(h, x, y);
+		n++;
+	}
+	return n ? sum / n : 0.0;
+}
 static struct sides sides_at(struct harness *h, int d) {
 	int cx = kWin.x + kWin.width / 2;
 	int cy = kWin.y + kWin.height / 2;
 	struct sides s;
-	s.top = coverage_at(h, cx, kWin.y - d);
-	s.bottom = coverage_at(h, cx, kWin.y + kWin.height - 1 + d);
-	s.left = coverage_at(h, kWin.x - d, cy);
-	s.right = coverage_at(h, kWin.x + kWin.width - 1 + d, cy);
+	s.top = avg_run(h, cx, kWin.y - d, 1, 0);
+	s.bottom = avg_run(h, cx, kWin.y + kWin.height - 1 + d, 1, 0);
+	s.left = avg_run(h, kWin.x - d, cy, 0, 1);
+	s.right = avg_run(h, kWin.x + kWin.width - 1 + d, cy, 0, 1);
 	return s;
 }
 
@@ -1249,6 +1272,477 @@ static void test_performance(struct harness *h) {
 		h->dev->live.buffers, h->dev->live.device_memory);
 }
 
+
+/* ── M4D.4: quantisation, and the dither that decorrelates it ───────────── */
+
+/*
+ * THE DEFECT, REPRODUCED. The clear is the MID-GREY a real desktop panel sits
+ * on rather than the white the rest of this file uses, because that is the
+ * whole phenomenon: AVK composites with dst*(1-alpha) into an 8-bit UNORM
+ * attachment, so the shadow's visible step is d(alpha) TIMES THE BACKDROP, and
+ * a dark backdrop leaves the falloff almost no output codes to be drawn in.
+ *
+ * Measured on the user's live screen: green 45,44,43,42,41,40,39,38,37 in runs
+ * of 41,27,15,11,11,9,8,3,2 px. Those run boundaries are the contour rings.
+ */
+#define BAND_BG 45
+
+static void scene_begin_grey(struct avk_scene *scene) {
+	avk_scene_init(scene);
+	pixman_region32_union_rect(&scene->damage, &scene->damage, 0, 0, W, H);
+	scene->has_clear = true;
+	float g = (float)BAND_BG / 255.0f;
+	scene->clear_color[0] = g;
+	scene->clear_color[1] = g;
+	scene->clear_color[2] = g;
+	scene->clear_color[3] = 1.0f;
+}
+
+/* The user's profile shape: broad, weak, low-gradient -- the case that bands. */
+static const struct avk_box kBandEnv = { 20, 20, 216, 216 };
+static const float kBandSigma = 60.0f;
+static const float kBandAlpha = 0x50 / 255.0f;
+
+static bool render_band_scene(struct harness *h, bool grey) {
+	const float radii[4] = { 20.0f, 20.0f, 20.0f, 20.0f };
+	struct avk_scene scene;
+	if (grey) {
+		scene_begin_grey(&scene);
+	} else {
+		scene_begin(&scene);
+	}
+	struct avk_cmd *cmd = add_shadow(&scene, &kBandEnv, kBandSigma, radii);
+	if (cmd != NULL) {
+		cmd->color[3] = kBandAlpha;
+	}
+	bool ok = render(h, &scene);
+	avk_scene_finish(&scene);
+	return ok;
+}
+
+struct runs { int levels; int max_run; double mean_run; };
+
+/* Distinct output codes along a row, and the length of the constant-code runs
+ * they occupy -- which is the thing that was actually visible. */
+static struct runs run_profile(struct harness *h, int y, int x0, int x1) {
+	struct runs r = { 0, 0, 0.0 };
+	int seen[256] = {0};
+	int run = 0, prev = -1, nruns = 0, total = 0;
+	for (int x = x0; x < x1; x++) {
+		int v = chan(h, x, y);
+		if (!seen[v]) { seen[v] = 1; r.levels++; }
+		if (v == prev) {
+			run++;
+		} else {
+			if (run > 0) { nruns++; total += run; }
+			if (run > r.max_run) { r.max_run = run; }
+			run = 1;
+			prev = v;
+		}
+	}
+	if (run > 0) { nruns++; total += run; }
+	if (run > r.max_run) { r.max_run = run; }
+	r.mean_run = nruns ? (double)total / nruns : 0.0;
+	return r;
+}
+
+static void test_dither_breaks_banding(struct harness *h) {
+	printf("M4D.4: an 8-bit shadow over mid-grey, banded and dithered\n");
+	const int row = H / 2;
+	const int x0 = kBandEnv.x, x1 = kBandEnv.x + 96;
+
+	/*
+	 * THE AMPLITUDE, DERIVED. out = dst*(1-alpha), so d(out) = d(alpha)*dst
+	 * and one output code peak-to-peak needs
+	 *
+	 *     amplitude = 1 / (max_code * dst) = 1 / (255 * 45/255) = 1/45
+	 *
+	 * which is 5.67/255 of ALPHA -- not the 1/255 a naive coverage dither
+	 * would use, and the difference is a factor of nearly six.
+	 */
+	double derived = 1.0 / (255.0 * (BAND_BG / 255.0));
+	printf("    derived amplitude 1/(255 * %d/255) = %.5f = %.2f/255 of alpha\n",
+		BAND_BG, derived, derived * 255.0);
+	CHECK(fabs((double)avk_dither_amplitude(TARGET_FORMAT) - derived) < 1e-6,
+		"the shipped amplitude is that derivation, not a tuned constant "
+		"(%.5f)", (double)avk_dither_amplitude(TARGET_FORMAT));
+	/* And the naive value really is far too small to matter -- the premise
+	 * that makes the derivation worth doing. */
+	double naive_codes = (1.0 / 255.0) * (BAND_BG / 255.0) * 255.0;
+	printf("    a naive 1/255 coverage dither would move the output by "
+		"%.2f codes\n", naive_codes);
+	CHECK(naive_codes < 0.25,
+		"premise: +-1/255 of coverage is under a quarter of an output code "
+		"here (%.2f)", naive_codes);
+
+	/*
+	 * BEFORE and AFTER in one run, by driving the renderer's own amplitude.
+	 * Two processes would compare two GPU states; this compares two frames.
+	 */
+	float saved = h->renderer.shadow_dither;
+	h->renderer.shadow_dither = 0.0f;
+	if (!render_band_scene(h, true)) { CHECK(false, "frame rendered"); return; }
+	struct runs before = run_profile(h, row, x0, x1);
+	int bg = chan(h, 4, 4);
+	int deep = chan(h, kBandEnv.x + kBandEnv.width / 2, row);
+
+	h->renderer.shadow_dither = saved;
+	if (!render_band_scene(h, true)) { CHECK(false, "frame rendered"); return; }
+	struct runs after = run_profile(h, row, x0, x1);
+
+	printf("    BEFORE (undithered): %2d codes, max run %2d px, mean run "
+		"%.2f px\n", before.levels, before.max_run, before.mean_run);
+	printf("    AFTER  (dithered):   %2d codes, max run %2d px, mean run "
+		"%.2f px\n", after.levels, after.max_run, after.mean_run);
+
+	CHECK(bg == BAND_BG, "premise: the backdrop really is mid-grey (%d)", bg);
+	CHECK(deep < bg - 4, "premise: there is a real shadow here (%d vs %d)",
+		deep, bg);
+	/*
+	 * THE PREMISE THE FIX CANNOT SUPPLY. If the undithered frame did not band
+	 * there would be nothing to fix, and every assertion below would pass
+	 * against a renderer that did nothing at all.
+	 */
+	CHECK(before.max_run >= 12,
+		"premise: the undithered shadow really does band (max run %d px)",
+		before.max_run);
+
+	/*
+	 * Thresholds set from the measured data, not chosen in advance. The
+	 * visible defect was a 41 px run on screen and reproduces here at %d px;
+	 * what matters is that no run survives long enough to draw a line.
+	 */
+	CHECK(after.max_run * 2 < before.max_run,
+		"the longest constant-code run is at least halved (%d -> %d px)",
+		before.max_run, after.max_run);
+	CHECK(after.max_run <= 8,
+		"and no run is long enough to read as a contour (max %d px)",
+		after.max_run);
+	CHECK(after.mean_run < before.mean_run * 0.4,
+		"mean run collapses too (%.2f -> %.2f px)",
+		before.mean_run, after.mean_run);
+}
+
+static void test_dither_mean_is_preserved(struct harness *h) {
+	printf("M4D.4: the dither changes structure, not shadow density\n");
+	const int row = H / 2;
+	const int x0 = kBandEnv.x, x1 = kBandEnv.x + 96;
+
+	if (!render_band_scene(h, true)) { CHECK(false, "frame rendered"); return; }
+	/* A low-pass of the dithered line, against the analytic curve it should
+	 * still be tracking. The oracle is the same one M4D.1 uses. */
+	const double radii[4] = { 20.0, 20.0, 20.0, 20.0 };
+	double sum_err = 0.0, max_err = 0.0, sum_got = 0.0, sum_want = 0.0;
+	int n = 0;
+	for (int x = x0 + 3; x < x1 - 3; x++) {
+		double got = 0.0;
+		for (int k = -3; k <= 3; k++) {
+			got += chan(h, x + k, row);
+		}
+		got /= 7.0;
+		double cov = oracle_coverage(&kBandEnv, kBandSigma, radii, x, row);
+		double want = (double)BAND_BG * (1.0 - cov * kBandAlpha);
+		double e = fabs(got - want);
+		if (e > max_err) { max_err = e; }
+		sum_err += e;
+		sum_got += got;
+		sum_want += want;
+		n++;
+	}
+	printf("    7px low-pass vs oracle: mean |err| %.3f, max %.3f codes; "
+		"means %.3f vs %.3f\n", sum_err / n, max_err, sum_got / n,
+		sum_want / n);
+	CHECK(n > 80, "premise: the falloff was sampled (%d px)", n);
+	CHECK(fabs(sum_got / n - sum_want / n) < 0.25,
+		"the average shadow density is unchanged (%.3f vs %.3f codes)",
+		sum_got / n, sum_want / n);
+	CHECK(max_err < 1.5,
+		"and the smoothed curve still tracks the oracle everywhere "
+		"(max %.3f codes)", max_err);
+}
+
+static void test_dither_is_deterministic(struct harness *h) {
+	printf("M4D.4: the same scene renders bit-identically\n");
+	static uint32_t first[W * H];
+	if (!render_band_scene(h, true)) { CHECK(false, "frame rendered"); return; }
+	memcpy(first, h->pixels, sizeof(first));
+	bool same = true;
+	for (int i = 0; i < 3 && same; i++) {
+		if (!render_band_scene(h, true)) { CHECK(false, "re-render"); return; }
+		if (memcmp(first, h->pixels, sizeof(first)) != 0) { same = false; }
+	}
+	/* A dither seeded from a frame counter or a clock would fail this, and
+	 * would also shimmer on an idle desktop and leave partially damaged
+	 * frames out of step with the pixels beside them. */
+	CHECK(same, "four renders of the same scene are byte-for-byte identical");
+}
+
+static void test_dither_has_no_structure(struct harness *h) {
+	printf("M4D.4: 2D -- rings replaced by noise, not by a pattern\n");
+	if (!render_band_scene(h, true)) { CHECK(false, "frame rendered"); return; }
+
+	/*
+	 * A 2D patch of the broad penumbra. Two things are asked of it: that the
+	 * horizontal contours are gone, and that nothing periodic has replaced
+	 * them -- a small Bayer matrix or a bad hash shows up as a checkerboard,
+	 * vertical streaks or a repeating tile, all of which are worse to look at
+	 * than the banding.
+	 */
+	const int px0 = kBandEnv.x + 4, py0 = kBandEnv.y + 40;
+	const int pw = 64, ph = 64;
+
+	/*
+	 * HIGH-PASS FIRST, and the first version of this test did not -- which is
+	 * why it reported +0.95 correlation at every lag and called a perfectly
+	 * structureless dither a checkerboard. The patch sits in the penumbra, so
+	 * its raw values are dominated by the SHADOW RAMP: neighbouring pixels
+	 * are strongly correlated because the shadow is genuinely darker on one
+	 * side, which says nothing about the noise on top of it.
+	 *
+	 * Subtracting a 5x5 local mean removes the ramp and leaves the dither,
+	 * which is the only thing this test is about.
+	 */
+	static double resid[64][64];
+	double var = 0.0;
+	for (int y = 0; y < ph; y++) {
+		for (int x = 0; x < pw; x++) {
+			double local = 0.0;
+			for (int dy = -2; dy <= 2; dy++) {
+				for (int dx = -2; dx <= 2; dx++) {
+					local += chan(h, px0 + x + dx, py0 + y + dy);
+				}
+			}
+			resid[y][x] = chan(h, px0 + x, py0 + y) - local / 25.0;
+			var += resid[y][x] * resid[y][x];
+		}
+	}
+	var /= (double)(pw * ph);
+	double mean = 0.0;
+
+	/*
+	 * FINE lags say what the noise looks like at the pixel level; LONG-RANGE
+	 * lags say whether it has a pattern. Only the second is asserted, and the
+	 * distinction is the whole point of this test.
+	 *
+	 * Interleaved gradient noise is built around a fine diagonal texture with
+	 * a period of about two pixels, so it correlates at lag (1,1) by
+	 * construction -- that is not a defect, it is the property that makes it
+	 * look smoother than white noise, and at two pixels it is at the display's
+	 * Nyquist limit. What would be a defect is structure the eye can resolve:
+	 * a repeating tile, a grid, a streak. Those live at lag 4 and beyond.
+	 */
+	struct { int dx, dy; const char *name; bool longrange; } lags[] = {
+		{ 1, 0, "horizontal", false }, { 0, 1, "vertical", false },
+		{ 1, 1, "diagonal", false },
+		{ 4, 0, "4px h", true }, { 0, 4, "4px v", true },
+		{ 8, 8, "8px tile", true }, { 16, 0, "16px h", true },
+	};
+	double worst = 0.0;
+	const char *worst_name = "";
+	for (size_t i = 0; i < sizeof(lags) / sizeof(lags[0]); i++) {
+		double c = 0.0;
+		int n = 0;
+		for (int y = 0; y + lags[i].dy < ph; y++) {
+			for (int x = 0; x + lags[i].dx < pw; x++) {
+				c += resid[y][x] * resid[y + lags[i].dy][x + lags[i].dx];
+				n++;
+			}
+		}
+		c = (n && var > 0.0) ? c / n / var : 0.0;
+		printf("    autocorrelation at %-11s lag: %+.3f%s\n", lags[i].name,
+			c, lags[i].longrange ? "   (asserted)" : "");
+		if (lags[i].longrange && fabs(c) > fabs(worst)) {
+			worst = c;
+			worst_name = lags[i].name;
+		}
+	}
+
+	(void)mean;
+	CHECK(var > 0.05,
+		"premise: the high-passed patch actually varies, so there is a "
+		"dither to correlate (variance %.3f)", var);
+	/*
+	 * Note the sign matters as much as the size. A residual dominated by the
+	 * remaining smooth ramp correlates POSITIVELY; a checkerboard correlates
+	 * strongly NEGATIVELY at lag 1. Either at high magnitude is structure.
+	 */
+	/*
+	 * ASSERTED IN CODES, NOT IN CORRELATION, and the difference decided which
+	 * noise ships.
+	 *
+	 * A correlation coefficient is relative to the variance it sits in, so it
+	 * says how much of the noise is structured and nothing at all about how
+	 * VISIBLE that structure is. Measured here: interleaved gradient noise
+	 * correlates +0.175 at a 16 px lag where a plain integer hash gives
+	 * -0.022, so IGN genuinely has long-range content and the hash does not.
+	 * But the residual it sits in has a standard deviation of about a third
+	 * of one output code, so IGN's structured component is
+	 *
+	 *     0.175 * 0.36  =  0.06 codes
+	 *
+	 * -- a fifteenth of the smallest step the display can show, and therefore
+	 * not a pattern anyone can see. The hash's alternative is a real 1-code
+	 * contour 10 px long instead of 7. Rejecting IGN on the coefficient alone
+	 * would have traded an invisible correlation for a visible run.
+	 *
+	 * So the threshold is an absolute one, in the units the defect was
+	 * reported in.
+	 */
+	double structured = fabs(worst) * sqrt(var);
+	printf("    worst long-range structure: %+.3f correlation at %s, "
+		"= %.3f codes\n", worst, worst_name, structured);
+	CHECK(structured < 0.15,
+		"no long-range structure big enough to see: %.3f codes, against a "
+		"quantisation step of 1", structured);
+}
+
+static void test_dither_noise_choice(struct harness *h) {
+	printf("M4D.4: which noise, decided by measurement\n");
+	const int row = H / 2;
+	const int x0 = kBandEnv.x, x1 = kBandEnv.x + 96;
+
+	struct runs r[2];
+	double grain[2];
+	for (int mode = 0; mode < 2; mode++) {
+		h->renderer.dither_hash = mode == 1;
+		if (!render_band_scene(h, true)) { CHECK(false, "render"); return; }
+		r[mode] = run_profile(h, row, x0, x1);
+		if (!render_band_scene(h, false)) { CHECK(false, "render"); return; }
+		double sum = 0.0;
+		int n = 0;
+		for (int x = x0 + 8; x < x0 + 92; x++) {
+			double local = (chan(h, x - 2, row) + chan(h, x - 1, row)
+				+ chan(h, x, row) + chan(h, x + 1, row)
+				+ chan(h, x + 2, row)) / 5.0;
+			double d = chan(h, x, row) - local;
+			sum += d * d;
+			n++;
+		}
+		grain[mode] = n ? sqrt(sum / n) : 0.0;
+	}
+	h->renderer.dither_hash = false;
+
+	printf("    interleaved gradient noise: max run %2d px, mean %.2f, "
+		"grain %.2f\n", r[0].max_run, r[0].mean_run, grain[0]);
+	printf("    integer hash (white noise): max run %2d px, mean %.2f, "
+		"grain %.2f\n", r[1].max_run, r[1].mean_run, grain[1]);
+
+	/*
+	 * IGN WINS ON BOTH NUMBERS THAT MATTER, and that is why it ships.
+	 *
+	 * It breaks the constant-code runs shorter -- which is the defect being
+	 * fixed -- AND it does so with less grain on backdrops that never banded,
+	 * which is the price being paid. White noise is structureless, and that
+	 * is its only advantage; IGN's correlation is a two-pixel diagonal
+	 * texture at the display's Nyquist limit, which is what makes it look
+	 * smoother rather than what makes it look wrong. See
+	 * test_dither_has_no_structure() for the lags that would matter.
+	 *
+	 * Neither needs a texture, a binding or a table, so the comparison is
+	 * purely about output quality.
+	 */
+	CHECK(r[0].max_run <= r[1].max_run,
+		"IGN breaks runs at least as short as white noise (%d vs %d px)",
+		r[0].max_run, r[1].max_run);
+	CHECK(grain[0] <= grain[1] + 0.01,
+		"and does it with no more grain (%.2f vs %.2f codes rms)",
+		grain[0], grain[1]);
+	CHECK(r[1].max_run > 0 && grain[1] > 0.0,
+		"premise: the alternative really was exercised (%d px, %.2f)",
+		r[1].max_run, grain[1]);
+}
+
+static void test_dither_spares_the_contact_edge(struct harness *h) {
+	printf("M4D.4: the sharp contact edge is left alone\n");
+	/* A tight, strong lobe: exactly the geometry the broad-penumbra dither
+	 * must not roughen. */
+	const struct avk_box env = { 60, 60, 136, 136 };
+	const float sigma = 6.0f;
+	const float radii[4] = { 16.0f, 16.0f, 16.0f, 16.0f };
+
+	struct avk_scene scene;
+	scene_begin_grey(&scene);
+	struct avk_cmd *cmd = add_shadow(&scene, &env, sigma, radii);
+	if (cmd != NULL) { cmd->color[3] = 0.8f; }
+	bool ok = render(h, &scene);
+	avk_scene_finish(&scene);
+	if (!ok) { CHECK(false, "frame rendered"); return; }
+
+	/*
+	 * Roughness along the steep edge, measured as the deviation of each pixel
+	 * from its neighbours down a column that crosses it. The gradient
+	 * modulation in az_dither_alpha() is what should keep this near zero: the
+	 * ramp here moves by far more than the dither in a single pixel, so there
+	 * is no band to break and the noise switches itself off.
+	 */
+	int ex = env.x + env.width / 2;
+	int ey0 = env.y + (int)sigma - 3;
+	double rough = 0.0;
+	int n = 0;
+	for (int y = ey0; y < ey0 + 6; y++) {
+		for (int x = ex - 20; x < ex + 20; x++) {
+			double local = (chan(h, x - 1, y) + chan(h, x, y)
+				+ chan(h, x + 1, y)) / 3.0;
+			double d = chan(h, x, y) - local;
+			rough += d * d;
+			n++;
+		}
+	}
+	rough = n ? sqrt(rough / n) : 0.0;
+	printf("    roughness across the contact edge: %.3f codes rms\n", rough);
+	CHECK(n > 100, "premise: the edge was sampled (%d px)", n);
+	CHECK(rough < 1.0,
+		"the steep edge is not roughened by the dither (%.3f codes rms)",
+		rough);
+}
+
+static void test_dither_grain_on_light_backdrops(struct harness *h) {
+	printf("M4D.4: the cost -- grain where there was no banding to fix\n");
+	const int row = H / 2;
+	if (!render_band_scene(h, false)) { CHECK(false, "frame rendered"); return; }
+	/*
+	 * A fixed alpha-domain dither produces an output excursion PROPORTIONAL
+	 * to the backdrop, which is backwards: dark backdrops band worst and get
+	 * the least. Calibrating for the dark end therefore over-dithers the
+	 * bright end, where there was no banding because a white backdrop gives
+	 * the same falloff five times as many codes. This is the price, measured
+	 * rather than assumed, and it is the limitation that goes away when M5
+	 * moves the dither to the output-encoding stage where dst is known.
+	 */
+	double sum = 0.0;
+	int n = 0;
+	for (int x = kBandEnv.x + 8; x < kBandEnv.x + 92; x++) {
+		double local = (chan(h, x - 2, row) + chan(h, x - 1, row)
+			+ chan(h, x, row) + chan(h, x + 1, row)
+			+ chan(h, x + 2, row)) / 5.0;
+		double d = chan(h, x, row) - local;
+		sum += d * d;
+		n++;
+	}
+	double rms = n ? sqrt(sum / n) : 0.0;
+	printf("    on WHITE: %.2f codes rms of grain\n", rms);
+	CHECK(n > 50, "premise: sampled (%d px)", n);
+	CHECK(rms < 2.0,
+		"under two codes rms -- below what is visible at a normal viewing "
+		"distance (%.2f)", rms);
+}
+
+static void test_dither_format_awareness(void) {
+	printf("M4D.4: amplitude follows the attachment, not a hardcoded 8\n");
+	float a8 = avk_dither_amplitude(VK_FORMAT_B8G8R8A8_UNORM);
+	float a10 = avk_dither_amplitude(VK_FORMAT_A2R10G10B10_UNORM_PACK32);
+	float a16 = avk_dither_amplitude(VK_FORMAT_R16G16B16A16_SFLOAT);
+	printf("    8-bit %.5f   10-bit %.5f   fp16 %.5f\n",
+		(double)a8, (double)a10, (double)a16);
+	CHECK(a8 > 0.0f, "8-bit gets a dither (%.5f)", (double)a8);
+	CHECK(fabs((double)(a8 / a10) - 1023.0 / 255.0) < 0.01,
+		"10-bit gets exactly a quarter of it (ratio %.3f)",
+		(double)(a8 / a10));
+	CHECK(a16 == 0.0f,
+		"and a floating-point target gets none -- M5's scene-linear "
+		"intermediate must not have noise injected into it");
+}
+
 /* ── main ───────────────────────────────────────────────────────────────── */
 
 int main(void) {
@@ -1298,6 +1792,14 @@ int main(void) {
 	test_horizontal_bias(&h);
 	test_dual_lobe_composition(&h);
 	test_contact_and_penumbra(&h);
+	test_dither_breaks_banding(&h);
+	test_dither_mean_is_preserved(&h);
+	test_dither_is_deterministic(&h);
+	test_dither_has_no_structure(&h);
+	test_dither_noise_choice(&h);
+	test_dither_spares_the_contact_edge(&h);
+	test_dither_grain_on_light_backdrops(&h);
+	test_dither_format_awareness();
 	test_performance(&h);
 
 done:

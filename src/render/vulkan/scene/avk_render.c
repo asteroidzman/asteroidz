@@ -47,6 +47,20 @@ bool avk_renderer_init(struct avk_renderer *renderer, struct avk_device *dev,
 		getenv("AZ_SHADOW_SINGLE_RADIUS") != NULL;
 	renderer->break_shadow_symmetric =
 		getenv("AZ_SHADOW_SYMMETRIC") != NULL;
+	renderer->break_shadow_no_dither =
+		getenv("AZ_SHADOW_NO_DITHER") != NULL;
+	/*
+	 * Derived from the ATTACHMENT's precision, once, at init -- so a 10-bit
+	 * output gets a quarter of the amplitude and an FP16 one gets none,
+	 * without the shader knowing what it is drawing into.
+	 *
+	 * AZ_SHADOW_DITHER_AMP overrides it in 1/255 units, which is what the
+	 * amplitude sweep in test_dither_breaks_banding() drives.
+	 */
+	renderer->dither_hash = getenv("AZ_DITHER_HASH") != NULL;
+	const char *amp = getenv("AZ_SHADOW_DITHER_AMP");
+	renderer->shadow_dither = amp != NULL
+		? (float)atof(amp) / 255.0f : avk_dither_amplitude(format);
 	const char *dbl = getenv("AZ_ROUNDED_DOUBLE_SCALE");
 	renderer->break_rounded_double_scale = dbl != NULL;
 	renderer->break_scale_hint = dbl != NULL ? (float)atof(dbl) : 1.0f;
@@ -763,6 +777,19 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 			 * gradient pipeline for its record index. They never draw the same
 			 * command; see push.glsl. */
 			pc.params[1] = cmd->blur_sigma;
+			/*
+			 * M4D.4. Peak-to-peak dither, in the slot a shadow does not use
+			 * for anything else. Tuned by measurement, not derived: the step
+			 * a viewer sees is in the FRAMEBUFFER, and a black shadow
+			 * composites as dst*(1-alpha), so the amplitude that hides a band
+			 * scales with the backdrop -- which the shader cannot read. Dark
+			 * backdrops both show shadows best and have fewest levels to draw
+			 * them in, so the constant is chosen there and checked not to be
+			 * visible as noise on light ones.
+			 */
+			pc.uv_org_dx[0] = renderer->break_shadow_no_dither
+				? 0.0f : renderer->shadow_dither;
+			pc.uv_dy[0] = renderer->dither_hash ? 1.0f : 0.0f;
 
 			if (renderer->break_shadow_symmetric && cmd->has_inner) {
 				/* Slide the envelope until its centre is the window's. The
