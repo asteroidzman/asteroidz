@@ -404,8 +404,135 @@ PY
 	hl_stop
 }
 
+# ── border damage ───────────────────────────────────────────────────────────
+#
+# A border extends the visible geometry of a window, so moving, resizing or
+# recolouring one has to remove the OLD ring as well as paint the new one. The
+# question is not "is the new border right" -- every case above answers that --
+# but "is anything left where the old one was", and it must be answered without
+# a full-output redraw.
+run_damage() {
+	OUTDIR="${TMPDIR:-/tmp}/asteroidz-border-damage-$$"
+	HL_OUTDIR="$OUTDIR"
+	HL_SCALE1=1
+	HL_ENV="ASTEROIDZ_RENDERER=avk"
+	[ "$BREAK" = border-square-inner ] && HL_ENV="$HL_ENV AZ_AVK_BORDER_SQUARE_INNER=1"
+	# THESE FOUR ASSERTIONS ARE NOT FALSIFIED, and that is recorded rather than
+	# glossed. The obvious break -- AZ_AVK_DAMAGE_HOLE over the band the window
+	# vacates -- does NOT make them fail, and the reason is instructive: the
+	# hole is applied from compositor start, so the region is frozen before the
+	# window ever paints a border into it. "No stale border survives" then comes
+	# out true because no border was ever there. A break that makes a test pass
+	# for the wrong reason is worse than no break, so it is not wired up.
+	#
+	# A real falsifier has to withhold damage only AFTER the move. Until one
+	# exists these four claim no coverage of their own; move-damage correctness
+	# is carried by avk-rounded-alpha-test.sh ("movement leaves no square
+	# ghost") and avk-damage-test.sh, which do have proven falsifiers.
+	export HL_OUTDIR HL_ENV HL_SCALE1
+
+	echo
+	echo "--- damage: move, resize and focus colour, all under partial redraw ---"
+	hl_start "border_radius 40
+borderpx 6
+focuscolor $FOCUS_COLOR
+bordercolor $UNFOCUS_COLOR
+shadows 0
+layer_shadows 0
+gappih 0
+gappiv 0
+gappoh 0
+gappov 0
+animations 0
+smartgaps 0
+effects { blur { enable 0 } }
+layout {
+    titlebar { enable 0 }
+}"
+	sleep 2
+	"$REPAINT" --title wlborder --size "$WIN_W"x"$WIN_H" --solid "$CLIENT_HEX" \
+		--frames 200 --ssd --hold-ms 100 > "$OUTDIR/wl.log" 2>&1 &
+	HL_SPAWNED_PIDS+=("$!")
+	hl_wait_client_count 1 40 >/dev/null 2>&1
+	sleep 1
+	hl_dispatch "toggle_floating" 0.5
+	hl_dispatch "resize_window,$WIN_W,$WIN_H" 0.5
+	hl_dispatch "move_window,$WIN_X,$WIN_Y" 2
+	sleep 2
+	hl_screenshot "d_before"
+
+	full_before=$(hl_get "get avk-stats" | jq -r '.full_redraw_frames')
+	hl_dispatch "move_window,$((WIN_X + 220)),$((WIN_Y + 140))" 2
+	sleep 2
+	hl_screenshot "d_moved"
+	hl_dispatch "resize_window,$((WIN_W - 140)),$((WIN_H - 100))" 2
+	sleep 2
+	hl_screenshot "d_resized"
+
+	# A second window steals focus: the first must repaint its ring in the
+	# INACTIVE colour, everywhere, including the corners.
+	"$REPAINT" --title wlother --size 200x160 --solid 505050 --frames 60 \
+		--ssd --hold-ms 100 > "$OUTDIR/wl2.log" 2>&1 &
+	HL_SPAWNED_PIDS+=("$!")
+	hl_wait_client_count 2 40 >/dev/null 2>&1
+	hl_dispatch "toggle_floating" 0.5
+	# Clear of BOTH the original box and the moved one: this window is the
+	# FOCUSED one, so it wears the active colour, and parked over the vacated
+	# band its perfectly correct border reads as 70 pixels of stale paint.
+	hl_dispatch "move_window,$((WIN_X + WIN_W + 460)),$((WIN_Y + WIN_H + 260))" 2
+	sleep 2
+	hl_screenshot "d_unfocused"
+
+	python3 - "$OUTDIR" "$WIN_X" "$WIN_Y" "$WIN_W" "$WIN_H" \
+		> "$OUTDIR/damage.txt" 2>&1 <<'PY2'
+import sys
+from PIL import Image
+out, x, y, w, h = sys.argv[1], *(int(v) for v in sys.argv[2:6])
+WALL = (128, 128, 128)
+FOCUS = (198, 107, 37)
+def load(n): return Image.open(f"{out}/{n}.png").convert('RGB').load()
+def near(p, q, t=30):
+    return sum((p[i] - q[i]) ** 2 for i in range(3)) ** 0.5 < t
+
+# The box the window VACATED must be back to wallpaper -- no ring left behind.
+for shot in ("d_moved", "d_resized", "d_unfocused"):
+    px = load(shot)
+    stale = 0
+    for yy in range(y - 2, y + 12):
+        for xx in range(x - 2, x + w + 2):
+            if near(px[xx, yy], FOCUS):
+                stale += 1
+    print(f"vacated_{shot} {stale}")
+
+# The window that lost focus must carry no active-colour pixel ANYWHERE ON
+# ITSELF. Scanned over its own box only -- the window that TOOK focus is
+# correctly wearing the active colour, and a screen-wide scan counts that as
+# 870 pixels of stale border.
+px = load("d_unfocused")
+mx, my = x + 220, y + 140            # after the move
+mw, mh = w - 140, h - 100            # after the resize
+active = sum(1 for yy in range(my - 2, my + mh + 2)
+             for xx in range(mx - 2, mx + mw + 2)
+             if near(px[xx, yy], FOCUS))
+print(f"active_after_unfocus {active}")
+PY2
+	sed 's/^/  /' "$OUTDIR/damage.txt"
+	full_after=$(hl_get "get avk-stats" | jq -r '.full_redraw_frames')
+	part_after=$(hl_get "get avk-stats" | jq -r '.partial_redraw_frames')
+	echo "  full redraws across the sequence: $((full_after - full_before)); partial total $part_after"
+
+	for k in d_moved d_resized d_unfocused; do
+		v=$(awk -v k="vacated_$k" '$1==k{print $2}' "$OUTDIR/damage.txt")
+		hl_assert "damage: nothing of the old border survives $k" "${v:-x}" "0"
+	done
+	a=$(awk '$1=="active_after_unfocus"{print $2}' "$OUTDIR/damage.txt")
+	hl_assert "damage: no active-colour border survives losing focus" "${a:-x}" "0"
+	hl_stop
+}
+
 for c in $CASES; do
 	run_case "$c"
 done
+[ "${DAMAGE:-1}" = 1 ] && run_damage
 
 hl_summary

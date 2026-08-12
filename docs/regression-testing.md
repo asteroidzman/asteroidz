@@ -289,6 +289,18 @@ Two cases are honestly **skipped**, not passed: transforms 90 and 270, where
 grim returns no capture from a rotated headless output. Transform 180 does
 capture and carries the asymmetric-corner coverage.
 
+The final section moves, resizes and unfocuses the window and asserts nothing
+of the old ring survives, with the real `full_redraw_frames` /
+`partial_redraw_frames` counters showing it happened under partial damage (1
+full frame in 249). Those four assertions are **not falsified** and claim no
+coverage of their own. `AZ_AVK_DAMAGE_HOLE` over the vacated band does not
+break them: the hole applies from compositor start, so the region is frozen
+before the window ever paints a border into it, and "no stale border survives"
+comes out true because no border was ever there. A break that makes a test pass
+for the wrong reason is worse than none, so it is not wired up. Move-damage
+correctness is carried by `avk-rounded-alpha-test.sh` and `avk-damage-test.sh`,
+which do have proven falsifiers.
+
 Every pixel in a corner box is classified against the geometry rather than
 counted: outside the arc it must be background *of the current generation*,
 inside it must be the window or its border, and the antialiased band between is
