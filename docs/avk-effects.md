@@ -2239,3 +2239,136 @@ assertion is `diff(old, new) <= diff(new, new)`, self-calibrating, with no
 tolerance written into the script. When the fixture is reproducible the floor is
 0 and the assertion demands exact byte equality — which is what it currently
 gets.
+
+## M4E.2 — the transient pool
+
+`src/render/vulkan/graph/avk_transient.{h,c}`.
+
+### The lifetime rule
+
+```c
+reusable  <=>  entry->last_use <= avk_device_timeline_value(dev)
+```
+
+And when nothing reusable is available, the pool **allocates**. It never waits.
+A pool that blocked to save memory would put a CPU wait on the frame path — the
+one invariant AVK has kept since M3.5 — and would convert a memory problem into
+a latency problem, which is much harder to find afterwards.
+
+The two-outputs case falls out of this for free. A renderer is shared by every
+output using its `VkFormat` (M4E.0), so both monitors draw from one pool; when
+output B acquires while output A's frame is in flight, A's transient is not yet
+past its timeline point and B gets a different image. **A pool keyed on a frame
+index would have handed out the same one.**
+
+### It hands out `struct avk_image`
+
+Because everything else already works on one: `avk_pipelines_texture_set()`
+caches a sampler descriptor **on the image**, so a reused transient keeps its
+descriptor set and the frame path still allocates zero descriptors;
+`avk_image_destroy()` is already retire-queue shaped; and the graph takes an
+`avk_image` and does not care where it came from. The view is created once with
+the image and cached on it, for the same reason the image is: a `vkCreateImageView`
+per frame is a per-frame driver allocation, smaller than a `VkImage` and just as
+much on the deadline path.
+
+### The key
+
+`format`, `width`, `height`, `usage`, `samples`, `type`, `tiling` — the
+properties Vulkan checks when an image is used, and nothing else. Not what it
+was last used for, not which output asked, not its current layout (the graph
+transitions from whatever it finds).
+
+`usage` is the one an extent check cannot substitute for: an image created
+without `SAMPLED_BIT` has the right dimensions and the right format and still
+cannot be sampled, and reusing it that way is a validation error rather than a
+slow path. `test_key()` asserts exactly that.
+
+### Extent granularity: measured, not assumed
+
+A resize animation asks for 800×500, 810×505, 820×510… With exact extents each
+is a different key and therefore a new `VkImage`. The pool rounds the **backing**
+extent up to a multiple of 64 and the pass renders into the top-left of a
+possibly-larger image using its own viewport and scissor.
+
+Both were run in one process over the same 80-frame resize sweep
+(`test_resize_storm`), because arguing about it without the numbers is what the
+brief asks not to do:
+
+| | exact extents | granularity 64 |
+|---|---|---|
+| `VkImage` creates over 80 resize frames | **41** | **6** |
+| peak memory | 96 976 KiB | **14 048 KiB** |
+
+Nearly 7× fewer allocations *and* 6.9× less peak memory. The intuition that
+rounding up wastes memory is wrong here for a specific reason: the whole sweep
+collapses onto a handful of buckets, where exact extents accumulate 80 distinct
+images none of which is ever asked for twice. Per-image waste at 1920×1080 is
+1920×1088 = **0.7%**.
+
+`AZ_TRANSIENT_GRANULARITY=1` restores exact extents.
+
+### Retirement and budget
+
+Idle entries retire after `AVK_TRANSIENT_IDLE_FRAMES` (120 ≈ 2 s at 60 Hz) —
+long enough that a window which stops and restarts an animation does not
+reallocate, short enough that a size nothing wants any more does not sit there
+for the session. Over budget (256 MB default, `AZ_TRANSIENT_BUDGET_MB`), idle
+entries go **oldest-first**, not largest-first: the least recently wanted is the
+least likely to be wanted again, whereas the largest is very often the
+full-screen intermediate every frame needs.
+
+Everything retires **through the retire queue against its own `last_use`**,
+never destroyed in place. `test_drop_in_flight()` drops the whole pool with a
+frame still in flight — the output-mode-change case — and asserts the entries
+landed on the queue, which is the M3.5 staging lesson applied to a third
+resource.
+
+Measured under a deliberately tight 4 MiB budget with 10 distinct sizes: 1 live,
+2336 KiB held, peak 5936 KiB, **0 unsafe reuses** — it stayed inside its budget
+by retiring, not by refusing to allocate.
+
+### Pressure
+
+500 frames × 4 transients, unthrottled, no waits:
+
+```text
+2000 acquires   1981 reuses   19 creates   16 live   peak 4096 KiB
+unsafe_reuses = 0
+```
+
+19 creates for 2000 acquires: the pool grew to the CPU's lead over the GPU and
+stopped. That growth is the allocate-rather-than-wait rule working, not churn —
+and the fact that it happened is what makes `unsafe_reuses == 0` worth
+something, because the CPU really was running ahead.
+
+### How "never reused early" is checked
+
+**Not by looking for corruption.** The pool increments `unsafe_reuses` as it
+commits the violation, and the tests assert on that counter — the same remedy as
+the cursor-lifetime invariant: assert the ownership rule directly rather than
+waiting for undefined behaviour to become visible.
+
+`BREAK=transient-early-reuse` (`AZ_TRANSIENT_EARLY_REUSE=1`) fails **6 of 33**,
+including its own dedicated case. That case is deterministic by construction and
+not by racing: the first acquire is released against a timeline point one
+million past the device's next, which is **never signalled**, so "has the GPU
+finished with it" has a definite answer on any hardware under any load.
+
+### A pre-existing leak this surfaced
+
+`tests/test-avk-render.c` allocated its images with `calloc`, leaving `life` at
+0 — and `avk_image_destroy()` correctly **refuses** to destroy an image that
+does not read as `AVK_IMAGE_LIVE`. So every image that fixture made leaked, and
+`vkDestroyDevice` reported 21 objects still alive. The suite passed throughout,
+because nothing it asserted was about teardown. Confirmed present on the
+pre-graph build at `b9d7115` with the identical count, so it is not an M4E
+regression; fixed here because M4E is the milestone that made validation
+cleanliness a stated result.
+
+Whole AVK battery under validation + synchronization validation, after the fix:
+
+```text
+transient 33/33   graph 46/46   render 53   shadow 82/82   gradient 177   core 45
+0 VUID   0 SYNC-HAZARD   0 leaked objects
+```

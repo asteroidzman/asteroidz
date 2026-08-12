@@ -67,6 +67,7 @@ avk_sources = files(
   'device/avk_instance.c',
   'device/avk_phys.c',
   'graph/avk_graph.c',
+  'graph/avk_transient.c',
   'image/avk_image.c',
   'image/avk_upload.c',
   'pipeline/avk_gradient.c',

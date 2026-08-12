@@ -152,8 +152,14 @@ static bool harness_up(struct harness *h) {
 	}
 	h->target = make_image(h->dev, W, H,
 		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
+	/* COLOR_ATTACHMENT as well as SAMPLED: test_write_then_read() uses this
+	 * one as a pass's render target and then samples it, which is the whole
+	 * shape M4F needs -- and a layout transition to COLOR_ATTACHMENT_OPTIMAL on
+	 * an image created without that usage is VUID-VkImageMemoryBarrier2-
+	 * oldLayout-01208, not a slow path. */
 	h->tex_a = make_image(h->dev, W, H,
-		VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+		VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT
+		| VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
 	h->tex_b = make_image(h->dev, W, H,
 		VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
 	return h->target != NULL && h->tex_a != NULL && h->tex_b != NULL;

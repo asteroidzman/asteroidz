@@ -76,11 +76,17 @@ static uint32_t find_memory(struct avk_device *dev, uint32_t bits,
 
 static struct avk_image *make_image(struct avk_device *dev, uint32_t width,
 		uint32_t height, VkImageUsageFlags usage, bool has_alpha) {
-	struct avk_image *image = calloc(1, sizeof(*image));
+	/*
+	 * avk_image_alloc(), not calloc(). A bare calloc leaves `life` at 0, and
+	 * avk_image_destroy() correctly REFUSES to destroy an image that does not
+	 * read as AVK_IMAGE_LIVE -- so every image this fixture made used to leak,
+	 * and vkDestroyDevice reported 21 objects still alive. The suite passed
+	 * throughout, because nothing it asserted was about teardown.
+	 */
+	struct avk_image *image = avk_image_alloc(dev);
 	if (image == NULL) {
 		return NULL;
 	}
-	image->dev = dev;
 	image->format = TARGET_FORMAT;
 	image->extent = (VkExtent2D){ width, height };
 	image->has_alpha = has_alpha;
@@ -103,6 +109,7 @@ static struct avk_image *make_image(struct avk_device *dev, uint32_t width,
 		free(image);
 		return NULL;
 	}
+	AVK_LIVE_INC(dev, images);
 	VkMemoryRequirements reqs;
 	vkGetImageMemoryRequirements(dev->dev, image->image, &reqs);
 	uint32_t type = find_memory(dev, reqs.memoryTypeBits,
@@ -120,6 +127,7 @@ static struct avk_image *make_image(struct avk_device *dev, uint32_t width,
 		avk_image_destroy(dev, image);
 		return NULL;
 	}
+	AVK_LIVE_INC(dev, device_memory);
 	image->memory_count = 1;
 	return image;
 }

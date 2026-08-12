@@ -351,6 +351,16 @@ if build_vulkan
                               build_by_default : false)
   test('avk-graph', test_avk_graph, timeout : 120)
 
+  # M4E.2: the transient pool. Asserts on `unsafe_reuses` -- a counter the
+  # pool increments as it commits the violation -- rather than on whether
+  # corruption happened to appear, which is the only way a lifetime rule can
+  # be checked deterministically.
+  test_avk_transient = executable('test-avk-transient',
+                                  'tests/test-avk-transient.c',
+                                  dependencies : [avk_dep],
+                                  build_by_default : false)
+  test('avk-transient', test_avk_transient, timeout : 180)
+
   # M4D: shadows. libm because the fixtures carry an independent CPU
   # transcription of the reference's erf-and-four-samples formula, which is
   # what AVK's readback is compared against -- not GLES, and not AVK's own
