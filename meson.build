@@ -217,6 +217,15 @@ test_lum_domain = executable('test-lum-domain', 'tests/test-lum-domain.c',
                              build_by_default : false)
 test('lum-domain', test_lum_domain, timeout : 30)
 
+# The output-colour-state decision table (M5, contract C3). Five outcomes, four
+# of which render a plausible picture when chosen wrongly -- which is why the
+# table asserts the WHOLE state per row rather than the field it is about.
+test_output_color = executable('test-output-color',
+                               'tests/test-output-color.c',
+                               dependencies : [az_color_dep],
+                               build_by_default : false)
+test('output-color', test_output_color, timeout : 30)
+
 # The native Vulkan engine is compiled into the compositor when it is built.
 # A separate flag from -Drenderers so the guard in the source says what it
 # means: "this build has AVK", not "this build was configured a certain way".
