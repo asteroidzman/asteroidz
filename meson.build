@@ -177,10 +177,41 @@ if get_option('asan')
   link_args += '-fsanitize=address'
 endif
 
+# ── colour maths (M5, contract C1) ──────────────────────────────────────────
+#
+# Its own static library rather than a file in the asteroidz source list, for
+# one reason: the unit tests and the CPU pipeline reference must be able to
+# link it WITHOUT the compositor, without wlroots and without Vulkan. A colour
+# primitive that can only be exercised inside a running compositor is a
+# primitive nobody can pin to a published constant, and M5's whole method is
+# that every number in it is checkable against a standard.
+#
+# Dependencies: libm. That is the complete list and it should stay that way --
+# see the header's opening comment.
+az_color_lib = static_library('az-color',
+                              'src/render/color/az_color.c',
+                              dependencies : [libm],
+                              include_directories : include_directories('src'))
+az_color_dep = declare_dependency(link_with : az_color_lib,
+                                  dependencies : [libm],
+                                  include_directories : include_directories('src'))
+
+# The primitives, pinned to ST 2084 / IEC 61966-2-1 / BT.2087 / BT.2408. No
+# GPU, no compositor: it runs on a build machine with no DRM node at all. The
+# source root is passed because the GLSL-twin parity check reads both sources
+# and compares their shared constants -- the numerical GPU parity fixture C1
+# also specifies needs a device and is deferred.
+test_color_math = executable('test-color-math', 'tests/test-color-math.c',
+                             dependencies : [az_color_dep],
+                             build_by_default : false)
+test('color-math', test_color_math, args : [meson.project_source_root()],
+     timeout : 30)
+
 # The native Vulkan engine is compiled into the compositor when it is built.
 # A separate flag from -Drenderers so the guard in the source says what it
 # means: "this build has AVK", not "this build was configured a certain way".
 asteroidz_deps = [
+    az_color_dep,
     libm,
     libdrm,
     xcb,
