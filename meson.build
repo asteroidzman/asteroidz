@@ -226,6 +226,22 @@ test_output_color = executable('test-output-color',
                                build_by_default : false)
 test('output-color', test_output_color, timeout : 30)
 
+# THE M5 GATE (contract C4). The CPU reference pipeline and every gate it
+# supports, including the breaks -- which run in the ordinary test binary
+# rather than behind an #ifdef, so a break that has stopped breaking shows up
+# as a failure here rather than as nothing at all.
+#
+# az_color_ref.c is compiled into the test and NOT into asteroidz: it
+# allocates, it keeps every intermediate image alive at once, and it is written
+# to be read against the ADRs. The compositor has no use for it.
+test_color_pipeline = executable('test-color-pipeline',
+                                 ['tests/test-color-pipeline.c',
+                                  'src/render/color/az_color_ref.c'],
+                                 dependencies : [az_color_dep],
+                                 build_by_default : false)
+test('color-pipeline', test_color_pipeline,
+     args : [meson.project_source_root()], timeout : 60)
+
 # The native Vulkan engine is compiled into the compositor when it is built.
 # A separate flag from -Drenderers so the guard in the source says what it
 # means: "this build has AVK", not "this build was configured a certain way".

@@ -37,6 +37,7 @@
 #define AZ_LUM_H
 
 #include <stdbool.h>
+#include <stddef.h>
 
 /* The electrical encoding of a source. M5's set; HLG is one more value when
  * ADR-000's scope moves, which is the reason this is an enum and not a bool
