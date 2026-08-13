@@ -476,6 +476,28 @@ static void transform_output_box(struct wlr_box *box, const struct render_data *
 	wlr_box_transform(box, box, transform, data->trans_width, data->trans_height);
 }
 
+/*
+ * AZ_SCENE_HALO_DAMAGE_RAW=1 -- the break for M4F.2C.4c. TEST ONLY.
+ *
+ * Records the source halo's damage as the raw out-of-bounds region, exactly as
+ * this file did before the fix. wlr_damage_ring_rotate_buffer() intersects what
+ * it returns with the buffer rectangle, so every one of those rectangles is
+ * discarded and the output renders a frame with no damage in it.
+ */
+static bool scene_output_halo_damage_raw(void) {
+	static int cached = -1;
+	if (cached < 0) {
+		const char *env = getenv("AZ_SCENE_HALO_DAMAGE_RAW");
+		cached = env != NULL && env[0] == '1';
+		if (cached) {
+			wlr_log(WLR_ERROR, "AZ_SCENE_HALO_DAMAGE_RAW=1 -- cross-output "
+				"blur source damage is recorded out of bounds, where the "
+				"damage ring discards it. This build is deliberately broken.");
+		}
+	}
+	return cached != 0;
+}
+
 static void scene_output_damage(struct wlr_scene_output *scene_output,
 		const pixman_region32_t *damage) {
 	struct wlr_output *output = scene_output->output;
@@ -524,10 +546,45 @@ static void scene_output_damage(struct wlr_scene_output *scene_output,
 	 * THE PART THAT FELL OFF THIS OUTPUT BUT CAN STILL CHANGE ITS PIXELS.
 	 *
 	 * Only a blur reaches past an output's edge for its source, so this is
-	 * empty unless a caller has asked for a halo. It goes into a SECOND ring,
-	 * so it is delivered per-buffer like any damage and so nothing that expects
-	 * in-bounds damage ever sees it. The frame is scheduled because this
-	 * output's blur really may look different next frame.
+	 * empty unless a caller has asked for a halo.
+	 *
+	 * ── WHY THIS IS RECORDED AS AN IN-BOUNDS REGION ────────────────────────
+	 *
+	 * A wlr_damage_ring CANNOT CARRY AN OUT-OF-BOUNDS RECTANGLE. Its
+	 * wlr_damage_ring_rotate_buffer() ends with
+	 *
+	 *     pixman_region32_intersect_rect(damage, damage, 0, 0,
+	 *         buffer->width, buffer->height);
+	 *
+	 * so everything outside the buffer is discarded on the way out, whatever
+	 * was put in. Two versions of this code recorded the raw out-of-bounds
+	 * region -- first into a private second ring, then into the main one -- and
+	 * both were silently emptied by that line. The second-ring attempt was
+	 * abandoned with the wrong diagnosis ("the ring's per-buffer accounting
+	 * does not behave like a private accumulator"); the accounting was fine and
+	 * the clip was the whole story, which is why moving to the main ring
+	 * changed nothing. Measured on a 180-degree output: 26 halo records added
+	 * for one frame and 0 rectangles returned, over and over, while a 222-pixel
+	 * strip stayed stale for the rest of the run.
+	 *
+	 * So record the CONSEQUENCE rather than the CAUSE. A source pixel `h` or
+	 * less outside the edge can only change output pixels within `h` of it --
+	 * `h` is avk_blur_support_bound() for the scene's kernel, the same bound
+	 * that decides which commands are retained -- so the out-of-bounds region
+	 * dilated by `h` and intersected with the buffer is exactly the set of this
+	 * output's own pixels whose blur result can differ. That is in bounds, so
+	 * it survives the ring, it gets the ring's per-buffer history for free (a
+	 * change seen while drawing buffer 1 still reaches buffer 2), and it can go
+	 * into pending_commit_damage like any other damage -- which additionally
+	 * repairs the SceneFX fallback path, where the strip was never repainted at
+	 * all.
+	 *
+	 * It needs no new state and no second ring. AVK reconstructs the source
+	 * itself: prefix_rebuild is result_region dilated by the reverse support,
+	 * and source_bounds still reaches past the output, so telling it WHICH of
+	 * its own pixels changed is enough to make it re-read the neighbour's
+	 * content. Presentation and source stay separate; only the damage that
+	 * announces the change is expressed in the presenting output's own space.
 	 */
 	if (scene_output->blur_halo > 0) {
 		int h = scene_output->blur_halo;
@@ -538,30 +595,30 @@ static void scene_output_damage(struct wlr_scene_output *scene_output,
 			(unsigned)(buf_height + 2 * h));
 		pixman_region32_subtract(&halo, &halo, &clipped);
 		if (!pixman_region32_empty(&halo)) {
-			/*
-			 * INTO THE MAIN RING, not a second one.
-			 *
-			 * A separate wlr_damage_ring was tried first, so that nothing but
-			 * the AVK path could ever see out-of-bounds damage. It recorded
-			 * 2106 regions and every wlr_damage_ring_rotate_buffer() on it
-			 * returned EMPTY -- the ring's per-buffer accounting does not
-			 * behave like a private accumulator when only one caller ever
-			 * rotates it. The main ring is the one that is known to work, and
-			 * it gives the per-buffer delivery this needs for free: a change
-			 * seen while drawing into buffer 1 still reaches buffer 2.
-			 *
-			 * It does NOT go into pending_commit_damage, which stays in-bounds
-			 * because that is what the backend and wlr_scene_output_commit()
-			 * consume. The frame is scheduled explicitly instead, which is what
-			 * wlr_scene_output_needs_frame() actually tests first.
-			 *
-			 * The SceneFX render path clips what it rotates out (see
-			 * wlr_scene_output_build_state), so a fallback frame cannot be
-			 * handed a scissor outside its framebuffer.
-			 */
-			wlr_output_schedule_frame(scene_output->output);
-			wlr_damage_ring_add(&scene_output->damage_ring, &halo);
-			scene_output->halo_damage_records++;
+			pixman_region32_t reach;
+			pixman_region32_init(&reach);
+			if (scene_output_halo_damage_raw()) {
+				/*
+				 * THE BREAK. Records the raw out-of-bounds region, which is
+				 * what both earlier versions did and what the ring throws
+				 * away -- so the output is scheduled, renders with no damage
+				 * at all, and leaves the blur fringe along the shared edge
+				 * stale until something unrelated happens to redraw it.
+				 */
+				pixman_region32_copy(&reach, &halo);
+			} else {
+				wlr_region_expand(&reach, &halo, h);
+				pixman_region32_intersect_rect(&reach, &reach, 0, 0,
+					buf_width, buf_height);
+			}
+			if (!pixman_region32_empty(&reach)) {
+				wlr_output_schedule_frame(scene_output->output);
+				wlr_damage_ring_add(&scene_output->damage_ring, &reach);
+				pixman_region32_union(&scene_output->pending_commit_damage,
+					&scene_output->pending_commit_damage, &reach);
+				scene_output->halo_damage_records++;
+			}
+			pixman_region32_fini(&reach);
 		}
 		pixman_region32_fini(&halo);
 	}

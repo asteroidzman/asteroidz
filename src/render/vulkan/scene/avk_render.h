@@ -9,6 +9,7 @@
 #include "../graph/avk_transient.h"
 #include "../pipeline/avk_gradient.h"
 #include "../pipeline/avk_pipeline.h"
+#include "avk_oracle.h"
 #include "avk_scene.h"
 
 /*
@@ -465,6 +466,12 @@ struct avk_renderer {
 	 * `const struct avk_scene *` the frame was given.
 	 */
 	pixman_region32_t frame_damage;
+	/*
+	 * M4F.2C.4c. Off unless AZ_FRAME_ORACLE=1; see avk_oracle.h. Lives on the
+	 * renderer because its taps are graph passes in this renderer's frame and
+	 * its reference target must match this renderer's format.
+	 */
+	struct avk_oracle oracle;
 	uint64_t blur_prefix_replays;
 	uint64_t blur_prefix_commands;
 	uint64_t blur_prefix_pixels;

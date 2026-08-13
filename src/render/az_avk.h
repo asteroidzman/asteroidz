@@ -212,6 +212,9 @@ struct az_avk {
 	 * single-output desktop, and zero on a multi-output one until something
 	 * actually changes near a seam. */
 	uint64_t blur_halo_damage_frames;
+	/* Frames whose halo damage was recorded and then returned empty. Zero is
+	 * the invariant; see where it is incremented. */
+	uint64_t blur_halo_damage_lost;
 	uint64_t blur_nodes_culled;
 	uint64_t blur_nodes_forced_live;
 	/* Nodes whose composite was restricted by a clip_region or a
@@ -995,6 +998,24 @@ struct az_avk_output {
 	/* The renderer's running submit total as of this output's last frame,
 	 * so a per-frame delta can be taken from it. */
 	uint64_t last_submit_ns;
+
+	/*
+	 * M4F.2C.4c forensics. Per OUTPUT, because "frame 41" has to mean the same
+	 * thing in the log and in the fixture, and the renderer's own frame counter
+	 * is shared by every output using its VkFormat.
+	 *
+	 * `oracle_bufs` gives each scan-out buffer a stable index in first-seen
+	 * order. There is no exposed slot number: wlr_damage_ring keys its history
+	 * on the wlr_buffer itself, so buffer identity IS damage-history identity
+	 * and one table serves for both.
+	 */
+	uint64_t frame_seq;
+	/* The scene output's halo-damage record count as of this output's last
+	 * frame, so "this frame took damage from the halo" is a delta rather than
+	 * a guess about a region's extents. */
+	uint64_t last_halo_records;
+	struct wlr_buffer *oracle_bufs[8];
+	size_t oracle_buf_len;
 };
 
 static struct az_avk_target *az_avk_target_for_buffer(
@@ -2528,6 +2549,227 @@ static void az_avk_emit_cursors(struct az_avk_walk *walk,
 }
 
 /*
+ * ── THE FIRST-DIVERGENCE ORACLE, DRIVEN ───────────────────────────────────
+ *
+ * TEST ONLY, AZ_FRAME_ORACLE=1. Runs after the production frame has been
+ * submitted and before the compositor has done anything else with the snapshot.
+ *
+ * The reference is the SAME scene, rendered whole. "Whole" means the whole
+ * SOURCE bounds, not the whole output: a blur's dependency reaches into the
+ * halo, so a reference damaged only over the presentation rectangle would leave
+ * the halo's source damage empty and reconstruct less than the production frame
+ * did. That reference would be the weaker of the two and would hide exactly the
+ * class of defect being hunted.
+ *
+ * Nothing here consumes damage, rotates a ring, touches buffer age, mutates the
+ * scene or schedules a frame. It renders a finished snapshot a second time into
+ * an image nothing presents.
+ */
+static void az_avk_oracle_frame(struct az_avk_output *out, Monitor *m,
+		struct avk_image *target, const struct avk_scene *scene,
+		struct wlr_buffer *buffer, const pixman_region32_t *ring_damage,
+		const pixman_region32_t *in_damage, uint64_t timeline) {
+	struct avk_renderer *r = &out->slot->renderer;
+	if (!r->oracle.enabled || timeline == 0) {
+		return;
+	}
+	struct wlr_output *output = m->wlr_output;
+
+	/* Buffer identity, in first-seen order. Also the damage-history identity:
+	 * wlr_damage_ring keys on the wlr_buffer. */
+	int slot_index = -1;
+	for (size_t i = 0; i < out->oracle_buf_len; i++) {
+		if (out->oracle_bufs[i] == buffer) {
+			slot_index = (int)i;
+			break;
+		}
+	}
+	if (slot_index < 0
+			&& out->oracle_buf_len < sizeof(out->oracle_bufs)
+				/ sizeof(out->oracle_bufs[0])) {
+		slot_index = (int)out->oracle_buf_len;
+		out->oracle_bufs[out->oracle_buf_len++] = buffer;
+	}
+
+	/* The production submission must have landed before its taps are read, and
+	 * before the reference render re-acquires the same client dma-bufs. A wait
+	 * here is legal precisely because this path is not the frame path. */
+	if (!avk_device_timeline_wait(r->dev, timeline, 2000000000ULL)) {
+		wlr_log(WLR_ERROR, "oracle: production frame %" PRIu64 " did not "
+			"complete", out->frame_seq);
+		return;
+	}
+
+	struct avk_image *ref = avk_oracle_ref_target(&r->oracle, target->format,
+		target->extent.width, target->extent.height);
+	if (ref == NULL) {
+		return;
+	}
+
+	/*
+	 * The reference scene: the same commands, the same source bounds, damaged
+	 * everywhere source can be reconstructed.
+	 *
+	 * A shallow copy is correct and the region is the only field that must not
+	 * be shared -- pixman_region32_init() over the copied header leaves the
+	 * original's data owned by `scene`, which is finished by its own caller.
+	 */
+	struct avk_scene full = *scene;
+	pixman_region32_init(&full.damage);
+	struct avk_box sb = scene->source_bounds;
+	if (sb.width <= 0 || sb.height <= 0) {
+		sb = (struct avk_box){ 0, 0, (int32_t)target->extent.width,
+			(int32_t)target->extent.height };
+	}
+	pixman_region32_union_rect(&full.damage, &full.damage, sb.x, sb.y,
+		(unsigned)sb.width, (unsigned)sb.height);
+
+	/* Saved across the reference render: the caller has already taken its copy,
+	 * but a renderer whose published damage described the reference frame would
+	 * be a trap for the next reader of it. */
+	pixman_region32_t saved_damage;
+	pixman_region32_init(&saved_damage);
+	pixman_region32_copy(&saved_damage, &r->frame_damage);
+
+	avk_oracle_begin(&r->oracle, AVK_ORACLE_REFERENCE);
+	uint64_t ref_timeline = avk_render_frame(r, ref, &full, NULL, 0, NULL, 0);
+	pixman_region32_fini(&full.damage);
+	pixman_region32_copy(&r->frame_damage, &saved_damage);
+	pixman_region32_fini(&saved_damage);
+	if (ref_timeline == 0
+			|| !avk_device_timeline_wait(r->dev, ref_timeline, 2000000000ULL)) {
+		wlr_log(WLR_ERROR, "oracle: reference frame %" PRIu64 " did not "
+			"complete", out->frame_seq);
+		return;
+	}
+
+	struct avk_box bbox = { 0, 0, 0, 0 };
+	int worst = 0;
+	struct avk_oracle_sample sample;
+	int64_t wrong = avk_oracle_compare(&r->oracle, AVK_TAP_OUTPUT, 0, &bbox,
+		&worst, &sample);
+	if (wrong < 0) {
+		wlr_log(WLR_ERROR, "oracle: frame %" PRIu64 " on %s has no comparable "
+			"output tap (%" PRId64 "); dropped=%" PRIu64, out->frame_seq,
+			output->name, wrong, r->oracle.dropped);
+		return;
+	}
+
+	/*
+	 * THE FORENSIC RECORD, and only around the first divergence.
+	 *
+	 * One line per frame would bury the answer in a hundred thousand lines of
+	 * agreement. The frame BEFORE is kept by logging every frame's one-line
+	 * summary at DEBUG and the divergent frame's full record at ERROR, and the
+	 * two frames after by `tail`.
+	 */
+	bool first = wrong > 0 && r->oracle.divergent_frame < 0;
+	if (first) {
+		r->oracle.divergent_frame = (int64_t)out->frame_seq;
+		r->oracle.tail = 2;
+	}
+	bool loud = first || r->oracle.tail > 0;
+	if (!first && r->oracle.tail > 0) {
+		r->oracle.tail--;
+	}
+
+	int ring_rects = 0;
+	pixman_region32_rectangles((pixman_region32_t *)ring_damage, &ring_rects);
+	pixman_box32_t ring_ext = *pixman_region32_extents(
+		(pixman_region32_t *)ring_damage);
+	int in_rects = 0;
+	pixman_region32_rectangles((pixman_region32_t *)in_damage, &in_rects);
+	pixman_box32_t in_ext = *pixman_region32_extents(
+		(pixman_region32_t *)in_damage);
+	int fd_rects = 0;
+	pixman_region32_rectangles(&r->frame_damage, &fd_rects);
+	pixman_box32_t fd_ext = *pixman_region32_extents(&r->frame_damage);
+
+	wlr_log(loud ? WLR_ERROR : WLR_DEBUG,
+		"oracle %s frame=%" PRIu64 " tf=%d raster=%ux%u buf=%d/%zu "
+		"ring=%d,%d..%d,%d(%drects) in_damage=%d,%d..%d,%d(%drects) "
+		"frame_damage=%d,%d..%d,%d(%drects) "
+		"cmds=%zu halo_rec=%" PRIu64 " dropped=%" PRIu64 " invalidated=%" PRIu64
+		" WRONG=%" PRId64 " bbox=%d,%d..%d,%d worst=%d%s",
+		output->name, out->frame_seq, (int)output->transform,
+		target->extent.width, target->extent.height, slot_index,
+		out->oracle_buf_len, ring_ext.x1, ring_ext.y1, ring_ext.x2, ring_ext.y2,
+		ring_rects, in_ext.x1, in_ext.y1, in_ext.x2, in_ext.y2,
+		in_rects, fd_ext.x1, fd_ext.y1, fd_ext.x2, fd_ext.y2, fd_rects,
+		scene->len, m->scene_output->halo_damage_records, r->oracle.dropped,
+		r->oracle.invalidated, wrong,
+		bbox.x, bbox.y, bbox.x + bbox.width,
+		bbox.y + bbox.height, worst,
+		first ? "  <== FIRST DIVERGENCE" : "");
+
+	if (!loud) {
+		return;
+	}
+
+	/*
+	 * BOUNDARY 1 AND 2, PER BLUR, on the frames that matter.
+	 *
+	 * The prefix comparison is the one that decides the class. If a blur's
+	 * reconstructed scene prefix already differs from the reference's, the
+	 * defect is in segmented source reconstruction and nothing downstream needs
+	 * looking at; if it matches and the blur result does not, the chain's own
+	 * mapping owns it; if both match, the output tap's difference is damage,
+	 * scissor or buffer history.
+	 */
+	if (sample.found) {
+		/* ONE PIXEL, WITH BOTH VALUES. The bbox says where; this says what,
+		 * which is what a trace of a single stale pixel needs. */
+		wlr_log(WLR_ERROR, "oracle   px %d,%d production=%u,%u,%u,%u "
+			"reference=%u,%u,%u,%u", sample.x, sample.y,
+			sample.production[0], sample.production[1], sample.production[2],
+			sample.production[3], sample.reference[0], sample.reference[1],
+			sample.reference[2], sample.reference[3]);
+	}
+
+	for (size_t i = 0; i < scene->len; i++) {
+		if (scene->cmds[i].type != AVK_CMD_BLUR) {
+			continue;
+		}
+		bool prod = avk_oracle_has_tap(&r->oracle, AVK_ORACLE_PRODUCTION,
+			AVK_TAP_PREFIX, i);
+		bool ref = avk_oracle_has_tap(&r->oracle, AVK_ORACLE_REFERENCE,
+			AVK_TAP_PREFIX, i);
+		const struct avk_cmd *c = &scene->cmds[i];
+		if (!prod || !ref) {
+			/*
+			 * SAID OUT LOUD, because the silence was the answer once.
+			 *
+			 * On the first divergent frame of the 180-degree defect, EVERY blur
+			 * was absent from the production render -- the frame arrived with
+			 * no damage, so no blur had a result region and none ran -- and the
+			 * loop skipped all of them. A dump that prints nothing for that
+			 * frame reads like "all boundaries agree", which is the opposite of
+			 * what happened.
+			 */
+			wlr_log(WLR_ERROR, "oracle   blur[%zu] dst=%d,%d %dx%d "
+				"ABSENT from %s render (it produced no result region)",
+				i, c->dst.x, c->dst.y, c->dst.width, c->dst.height,
+				!prod ? "the PRODUCTION" : "the REFERENCE");
+			continue;
+		}
+		struct avk_box pbox = { 0, 0, 0, 0 }, bbox2 = { 0, 0, 0, 0 };
+		int pworst = 0, bworst = 0;
+		int64_t pwrong = avk_oracle_compare(&r->oracle, AVK_TAP_PREFIX, i,
+			&pbox, &pworst, NULL);
+		int64_t bwrong = avk_oracle_compare(&r->oracle, AVK_TAP_BLUR, i,
+			&bbox2, &bworst, NULL);
+		wlr_log(WLR_ERROR, "oracle   blur[%zu] dst=%d,%d %dx%d "
+			"PREFIX wrong=%" PRId64 " bbox=%d,%d..%d,%d worst=%d | "
+			"BLUR wrong=%" PRId64 " bbox=%d,%d..%d,%d worst=%d",
+			i, c->dst.x, c->dst.y, c->dst.width, c->dst.height,
+			pwrong, pbox.x, pbox.y, pbox.x + pbox.width,
+			pbox.y + pbox.height, pworst,
+			bwrong, bbox2.x, bbox2.y, bbox2.x + bbox2.width,
+			bbox2.y + bbox2.height, bworst);
+	}
+}
+
+/*
  * Build a frame with AVK, or return false and let the caller fall back.
  *
  * This is the function that replaces wlr_scene_output_build_state() in AVK
@@ -2678,24 +2920,74 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 	 * drawn, which shows up as a stale rectangle that survives until something
 	 * else happens to damage it.
 	 */
+	/*
+	 * Taken BEFORE the rotate, so it names damage this rotate is responsible
+	 * for delivering. Read afterwards it would also catch records added between
+	 * the rotate and here, which belong to the NEXT frame -- and a lost-damage
+	 * check built on that would report a loss every time the scene was busy.
+	 */
+	uint64_t halo_recs_before = m->scene_output->halo_damage_records;
+
 	pixman_region32_t damage;
 	pixman_region32_init(&damage);
 	wlr_damage_ring_rotate_buffer(&m->scene_output->damage_ring, buffer,
 		&damage);
 	/*
-	 * The damage this returned may reach OUTSIDE the output: a change on the
-	 * monitor next door, within this output's blur halo, recorded in this
-	 * output's own pixel coordinates and therefore negative or past the far
-	 * edge (see wlr_scene_output.blur_halo). It is real SOURCE damage, it feeds
-	 * the blur sweeps exactly like in-bounds damage, and the renderer clips the
-	 * PRESENTATION damage back to the output afterwards.
+	 * WHAT THE RING HANDED OVER, kept apart from what is rendered.
+	 *
+	 * `damage` is about to be replaced by the renderer's own post-blur figure,
+	 * and AZ_AVK_FULL_DAMAGE / AZ_AVK_DAMAGE_HOLE may rewrite it before that.
+	 * A forensic line that printed the variable at the end would be reporting
+	 * three different quantities under one name -- which it did, and the
+	 * resulting "no frame ever received out-of-bounds damage" was true of the
+	 * post-clip figure and said nothing at all about the ring.
 	 */
-	{
-		pixman_box32_t *e = pixman_region32_extents(&damage);
-		if (e->x1 < 0 || e->y1 < 0 || e->x2 > width || e->y2 > height) {
-			avk.blur_halo_damage_frames++;
+	pixman_region32_t ring_damage;
+	pixman_region32_init(&ring_damage);
+	pixman_region32_copy(&ring_damage, &damage);
+	/*
+	 * FRAMES THAT TOOK DAMAGE FROM OUTSIDE THEIR OWN OUTPUT, counted from the
+	 * scene's own record of having routed some.
+	 *
+	 * This used to test the returned region's EXTENTS for a coordinate outside
+	 * the output, and it was the fourth instrument in M4F able to describe work
+	 * that was never done. It counted 4 frames on a run where the answer was
+	 * zero: a wlr_damage_ring cannot return an out-of-bounds rectangle at all
+	 * (rotate_buffer intersects with the buffer), so the condition could only
+	 * ever fire on an EMPTY region, whose pixman extents are a degenerate box
+	 * left over from the last intersect -- literally `-126,2..-126,2`, with a
+	 * rectangle count of zero. The assertion that cross-output damage routing
+	 * worked was passing on that.
+	 *
+	 * halo_damage_records is incremented by scene_output_damage() when it
+	 * actually records some, so a delta across this frame is the real thing.
+	 */
+	if (halo_recs_before != out->last_halo_records) {
+		avk.blur_halo_damage_frames++;
+		/*
+		 * ── HALO DAMAGE THAT WENT IN AND DID NOT COME OUT ─────────────────
+		 *
+		 * THE INVARIANT: if the scene recorded damage for this output on
+		 * behalf of a neighbour since this output last drew, this rotate must
+		 * return something. It is the whole point of recording it.
+		 *
+		 * It was violated on EVERY record until M4F.2C.4c, and silently: a
+		 * wlr_damage_ring intersects what it returns with the buffer
+		 * rectangle, so the out-of-bounds rectangles the halo path used to
+		 * record could not survive the trip. 26 records in, 0 rectangles out,
+		 * and the output rendered a frame with nothing in it while a strip of
+		 * its blur stayed stale.
+		 *
+		 * This is the counter that says so directly, rather than leaving it to
+		 * a screenshot taken after the fact -- which only catches the loss when
+		 * no later damage happens to cover the same pixels, about two runs in
+		 * three. See AZ_SCENE_HALO_DAMAGE_RAW.
+		 */
+		if (!pixman_region32_not_empty(&damage)) {
+			avk.blur_halo_damage_lost++;
 		}
 	}
+	out->last_halo_records = halo_recs_before;
 	if (az_avk_env_flag("AZ_AVK_FULL_DAMAGE")) {
 		/* What M3b did on every frame. Kept as a switch because it is the
 		 * reference a damage test compares against: the same scene, redrawn
@@ -2869,6 +3161,7 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 		.semaphore = avk_sync_signal_semaphore(&out->sync),
 		.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
 	}};
+	avk_oracle_begin(&out->slot->renderer.oracle, AVK_ORACLE_PRODUCTION);
 	uint64_t timeline = avk_render_frame(&out->slot->renderer, target, &scene,
 		waits, wait_count, signals, 1);
 	/*
@@ -2887,6 +3180,11 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 	if (timeline != 0) {
 		pixman_region32_copy(&damage, &out->slot->renderer.frame_damage);
 	}
+	/* After the frame's own damage has been taken, and before the snapshot is
+	 * released -- the reference render needs the same immutable scene. */
+	az_avk_oracle_frame(out, m, target, &scene, buffer, &ring_damage,
+		&scene.damage, timeline);
+	out->frame_seq++;
 	avk_scene_finish(&scene);
 	if (timeline == 0) {
 		/* The ring has already been rotated, so the damage this frame was
@@ -2894,6 +3192,7 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 		 * honest recovery: the next frame redraws everything rather than
 		 * inheriting a region nobody ever painted. */
 		wlr_damage_ring_add_whole(&m->scene_output->damage_ring);
+		pixman_region32_fini(&ring_damage);
 		pixman_region32_fini(&damage);
 		wlr_buffer_unlock(buffer);
 		avk.fallback_frames++;
@@ -2907,6 +3206,7 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 		 * never becomes a frame. SceneFX renders this one into a different
 		 * buffer, so nothing is torn and nothing is lost but the effort. */
 		wlr_damage_ring_add_whole(&m->scene_output->damage_ring);
+		pixman_region32_fini(&ring_damage);
 		pixman_region32_fini(&damage);
 		wlr_buffer_unlock(buffer);
 		avk.fallback_frames++;
@@ -2980,6 +3280,7 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 	if (rect_count > (int)avk.damage_rects_max) {
 		avk.damage_rects_max = (uint64_t)rect_count;
 	}
+	pixman_region32_fini(&ring_damage);
 	pixman_region32_fini(&damage);
 
 	struct timespec frame_t1;
@@ -3415,6 +3716,8 @@ static cJSON *az_avk_stats_json(void) {
 	cJSON_AddNumberToObject(o, "blur_halo_px", (double)avk.blur_halo_px);
 	cJSON_AddNumberToObject(o, "blur_halo_damage_frames",
 		(double)avk.blur_halo_damage_frames);
+	cJSON_AddNumberToObject(o, "blur_halo_damage_lost",
+		(double)avk.blur_halo_damage_lost);
 	{
 		/* Recorded, from the scene side -- see halo_damage_records. Summed over
 		 * every monitor, and reported beside the consumed count so the two ends
@@ -4039,6 +4342,7 @@ static void az_avk_stats_reset(void) {
 	avk.blur_nodes_culled = 0;
 	avk.nodes_retained_for_halo = 0;
 	avk.blur_halo_damage_frames = 0;
+	avk.blur_halo_damage_lost = 0;
 	avk.blur_halo_px = 0;
 	avk.blur_nodes_forced_live = 0;
 	avk.blur_nodes_clipped = 0;

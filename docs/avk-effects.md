@@ -4572,19 +4572,211 @@ dumped*. The frame that actually left the strip stale has not yet been isolated:
 the dumps around the interaction show every blur inactive, so the responsible
 frame is elsewhere in the sequence.
 
-### Not closed
+### One of those five conclusions was wrong
 
-The root cause is **not** found. What is now known, and was not before:
+"It is in source reconstruction, not damage routing" came from a bisection that
+was sound about its variables and wrong about what they meant: turning the
+source halo off removes the cross-output *dependency*, so it removes the
+cross-output *damage* too, and both readings are consistent with either cause.
+The oracle below put the defect squarely in damage routing.
 
-- it is real, not a fixture artefact, with a control that proves the scene static
-- it is intermittent at roughly 2/3, so any single run is worthless as evidence
-- it needs two outputs and a cross-output halo
-- it is in source reconstruction, not damage routing
-- the pixels belong to a specific blur node whose write region is `524..795`
+The prefix-capture oracle the brief asked for was built, and it answered on the
+first failing frame — by finding no prefix to compare.
 
-The next step is the prefix-capture oracle the brief specifies — read the
-regional transient back *before* the blur chain runs and compare it against an
-independently rendered full scene prefix, at 0° and 180°. That divides the
-remaining space in half: a wrong prefix is segmented source reconstruction, a
-right one moves the search into the blur's own coordinate mapping. No alignment
-hypothesis should be adopted before that boundary is known.
+## M4F.2C.4c — the first-divergence oracle, and the root cause
+
+### What was missing was a boundary, not another hypothesis
+
+Everything known about the 180° strip was a *postmortem*: run the interaction,
+force a repaint, count what changed. That says some frame was wrong. It cannot
+say which, and by the time the count is taken the frame that stranded the pixels
+is gone.
+
+`AZ_FRAME_ORACLE=1` renders **every frame twice** against the same immutable
+snapshot — the production partial render into the real scan-out buffer, and an
+independent full render into an image nothing presents — reads both back on the
+GPU and reports the first frame where they differ. Three boundaries are tapped
+through one mechanism, a graph pass declaring `AVK_USE_TRANSFER_READ`, which is
+also what makes reading the *foreign* scan-out target possible at all: the
+acquire from and release back to `VK_QUEUE_FAMILY_FOREIGN_EXT` are already the
+graph's job.
+
+| tap | what | answers |
+|---|---|---|
+| `PREFIX` | the regional transient after the segment, before the chain | segmented source reconstruction |
+| `BLUR` | the same image after the dual-Kawase chain | the chain's own coordinate mapping |
+| `OUTPUT` | the target after compositing, before presentation | damage, scissor, buffer history |
+
+The reference is damaged over the whole **source** bounds, not the whole output:
+a reference damaged only over the presentation rectangle would leave the halo's
+source damage empty and reconstruct *less* than production did, which is the
+weaker of the two and would hide the very class of defect being hunted.
+
+### Two oracle defects, found before any conclusion was drawn
+
+Both would have produced confident wrong readings.
+
+The readback buffer started at 4 MB and grew when a frame needed more. Growth
+destroys the allocation the slots already recorded into, and it happened during
+the *reference* render — so the production taps pointed at freed memory and
+every pixel of two frames "differed" at full amplitude. That is indistinguishable
+from a catastrophic renderer bug. It now allocates 128 MB up front, and a growth
+with live slots invalidates the frame's comparison and is counted.
+
+The prefix and blur taps compared the **whole capture**. A production prefix is
+written only inside `prefix_rebuild`; everything else in it is `DONT_CARE` by
+design and magenta under `AZ_TRANSIENT_POISON`. A reference rendered whole writes
+all of it. So the comparison reported a difference for every pixel the design
+says nothing about. Each tap now carries the region production *claims* —
+`prefix_rebuild` for the source, `result_region` for the blur, the whole target
+for the output — and compares only there.
+
+### The oracle can fail
+
+`contrib/avk-oracle-test.sh` asserts the premise before it asserts anything else.
+A build with `AZ_AVK_DAMAGE_HOLE=300,200,120,90` — a rectangle subtracted from
+every frame's damage *after* the ring has rotated, so it is never redrawn and
+never re-damaged — is caught on frame 0, with the mismatch bounding box
+`300,200..420,290` and a worst channel error of 255. That is the hole, exactly.
+The clean single-output control diverges on no frame, with no tap dropped.
+
+### The first divergent frame
+
+```
+oracle HEADLESS-1 frame=23 tf=2 raster=800x600 buf=0/1
+  ring=(0rects) in_damage=(0rects) frame_damage=(0rects)
+  cmds=31 halo_rec=337 dropped=0 invalidated=0
+  WRONG=222 bbox=0,218..34,418 worst=1   <== FIRST DIVERGENCE
+```
+
+Read it in order:
+
+- `cmds` went from **25 to 31**. A window had just appeared on output B, at the
+  join, and output A retained six of its commands *for its halo* — so A's blur
+  source had changed.
+- `ring=(0rects)`. The damage ring handed A **nothing**.
+- `halo_rec` went from 311 to 337. Twenty-six halo damage records had been
+  **added** for that frame.
+- Every blur was `ABSENT from the PRODUCTION render`: with no damage, no blur
+  had a result region and none ran. The reference ran all of them.
+
+So the classification is **C — prefix and blur are not implicated at all**,
+because production computed neither. It rendered a frame with nothing in it.
+
+Twenty-six records in, zero rectangles out. That is the whole defect.
+
+### Root cause
+
+`wlr_damage_ring_rotate_buffer()` ends with
+
+```c
+pixman_region32_intersect_rect(damage, damage, 0, 0,
+    buffer->width, buffer->height);
+```
+
+**A `wlr_damage_ring` cannot carry an out-of-bounds rectangle.** Halo damage is
+out-of-bounds by construction — that is what makes it halo damage — so every
+rectangle recorded by the halo path was discarded on the way out, whatever ring
+it was put in.
+
+This also retires a wrong diagnosis. M4F.2C.2 first used a private second ring,
+saw every rotate return empty, and concluded that "the ring's per-buffer
+accounting does not behave like a private accumulator when only one caller ever
+rotates it." The accounting was fine. The clip was the whole story, which is
+exactly why moving to the main ring changed nothing.
+
+### Why it looked like everything it was not
+
+| observation | explanation |
+|---|---|
+| intermittent, ~2 in 3 | `wlr_output_schedule_frame()` still fired, so A rendered — with empty damage. The strip survives until some unrelated in-bounds damage happens to cover it. Whether that happens is the coin flip. |
+| needs two outputs | halo damage only exists when a neighbour's content lies in this output's halo |
+| needs the cross-output halo | `BREAK=blur-source-output-clip` removes the halo, so nothing is recorded and nothing can be lost |
+| 180° exposed it | under 180° the neighbour to the right maps to **negative** buffer x. At 0° it maps past the far edge. Both are clipped; the 180° fixture simply had the blurred window on the side that produced a visible fringe. |
+| "in source reconstruction" | the bisection removed the dependency and the damage together |
+
+### The fourth instrument that described work never done
+
+`blur_halo_damage_frames` tested the returned region's **extents** for a
+coordinate outside the output. It reported 4 on a run whose true answer was 0:
+the condition can only fire on an **empty** region, whose pixman extents are a
+degenerate box left over from the last intersect — literally `-126,2..-126,2`
+with a rectangle count of zero. M4F.2C.2's "cross-output damage routing works"
+assertion was passing on that.
+
+It now counts a delta of the scene's own `halo_damage_records`.
+
+### The fix: record the consequence, not the cause
+
+A source pixel `h` or less outside the edge can only change output pixels within
+`h` of it — `h` is `avk_blur_support_bound()` for the scene's kernel, the same
+bound that decides which commands are retained. So `scene_output_damage()` now
+dilates the out-of-bounds region by `h` and intersects it with the buffer. That
+region is *in bounds*, so it survives the ring, it inherits the ring's per-buffer
+history for free, and it can join `pending_commit_damage` like any other damage —
+which additionally repairs the SceneFX fallback path, where the strip was never
+repainted at all.
+
+No new state. No second ring. Presentation and source stay separate: AVK still
+reconstructs across the boundary from `source_bounds`, and `prefix_rebuild` is
+still `result_region` dilated by the reverse support. Only the damage that
+*announces* the change is expressed in the presenting output's own space, which
+is the only space the ring is able to carry.
+
+### The break, and why the screenshot was not good enough
+
+`AZ_SCENE_HALO_DAMAGE_RAW=1` restores the raw out-of-bounds recording. Under it
+the stale strip appears in about two runs in three — which is too weak to assert
+on. The deterministic falsifier is the invariant itself:
+
+> if the scene recorded halo damage for this output since it last drew, this
+> rotate must return something
+
+counted as `blur_halo_damage_lost`. Zero on every run of the fixed build,
+positive on every run of the break.
+
+### Results
+
+| | |
+|---|---|
+| first divergent frame | 23, output A, transform 180 |
+| classification | **C** — production rendered no blur at all |
+| wrong pixels | 222, worst channel error 1 |
+| bounding box | buffer `0,218..34,418` = logical x 766–800, the strip at the seam |
+| buffer slot | `0/1` on every run — the headless backend hands back one buffer, so buffer age and damage-history slot are **eliminated by observation** |
+| halo records lost | 26 on the divergent frame, 0 after the fix |
+
+### The one-pixel trace
+
+```
+oracle   px 0,218  production=103,88,95,255  reference=103,88,94,255
+```
+
+| stage | value |
+|---|---|
+| final pixel, buffer xy | `0,218` |
+| output-local (untransformed raster) xy, 180° | `799,381` |
+| global logical xy (A at origin, scale 1) | `799,381` |
+| distance from the seam at x=800 | 1 px |
+| owning commands | `blur[26]` dst `-226,114 448x348` and `blur[29]` dst `-54,-128 252x576` |
+| in `blur[3]` / `blur[11]` | no — both write only at negative x |
+| production value | `103,88,95,255` |
+| reference value | `103,88,94,255` |
+| where it was lost | the frame had no damage, so neither blur produced a result region and neither ran |
+
+**All 222 wrong pixels have the same owner set.** The mismatch box
+`0,218..34,418` lies entirely inside `blur[26]`'s and `blur[29]`'s write regions
+and entirely outside the other two, so there is one explanation rather than two
+being counted together — which was worth checking, because the previous
+milestone's strip was attributed to a single blur on the strength of one dump.
+
+### It was never a 180° defect
+
+`BREAK=halo-damage-raw` at transform **0** reports `blur_halo_damage_lost = 7`
+and *passes* the stale-pixel assertion. The loss is identical at both transforms;
+only its visibility differs. Under 180° the blurred window sat on the side of the
+seam where the missing fringe showed, so a screenshot caught it about two runs in
+three. At 0° the same damage was thrown away every time and nothing looked wrong.
+
+That is the strongest argument for the counter over the picture: a screenshot
+assertion at 0° would have certified this defect as absent.

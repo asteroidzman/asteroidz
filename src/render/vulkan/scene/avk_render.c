@@ -16,6 +16,7 @@ bool avk_renderer_init(struct avk_renderer *renderer, struct avk_device *dev,
 	pixman_region32_init(&renderer->frame_damage);
 	renderer->dev = dev;
 	renderer->format = format;
+	avk_oracle_init(&renderer->oracle, dev);
 
 	if (!avk_pipelines_init(&renderer->pipes, dev, format)) {
 		return false;
@@ -142,6 +143,7 @@ void avk_renderer_finish(struct avk_renderer *renderer) {
 		return;
 	}
 	pixman_region32_fini(&renderer->frame_damage);
+	avk_oracle_finish(&renderer->oracle);
 	/* Before the retire queue is drained: growth pushes old gradient buffers
 	 * onto that queue, and finishing the store destroys only the buffers the
 	 * slots still hold. */
@@ -1611,10 +1613,17 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 			renderer->stats.blur_darken_passes++;
 		}
 
+		/* TRANSFER_SRC only under the oracle: the pool keys on usage, so
+		 * adding it unconditionally would give every normal run a differently
+		 * keyed pool from the one the milestone measured. */
+		VkImageUsageFlags prefix_usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
+			| VK_IMAGE_USAGE_SAMPLED_BIT;
+		if (renderer->oracle.enabled) {
+			prefix_usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+		}
 		struct avk_image *prefix = avk_transient_acquire(&renderer->transients,
 			renderer->format, (uint32_t)rg.capture.width,
-			(uint32_t)rg.capture.height,
-			VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+			(uint32_t)rg.capture.height, prefix_usage);
 		if (prefix == NULL) {
 			continue;
 		}
@@ -1686,6 +1695,32 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 		 */
 		renderer->blur_prefix_pixels += az_region_area(seg->active);
 
+		/*
+		 * BOUNDARY 1: the reconstructed scene prefix, before anything blurs it.
+		 * The tap is a graph pass, so the barrier from colour-write to
+		 * transfer-read and back to sampled-read is the graph's to emit and the
+		 * chain that follows is unaffected.
+		 */
+		const struct avk_box tap_box = {
+			0, 0, rg.capture.width, rg.capture.height,
+		};
+		if (renderer->oracle.enabled) {
+			/*
+			 * The mask is what production CLAIMS: prefix_rebuild for the source
+			 * and result_region for the blur, both translated out of output
+			 * pixels into the transient's own. Outside them the transient is
+			 * loadOp DONT_CARE and nothing samples it -- comparing there would
+			 * report undefined memory as a defect.
+			 */
+			pixman_region32_t m;
+			pixman_region32_init(&m);
+			pixman_region32_copy(&m, &d->prefix_rebuild);
+			pixman_region32_translate(&m, -rg.capture.x, -rg.capture.y);
+			avk_oracle_tap(&renderer->oracle, graph, r_prefix, prefix, tap_box,
+				AVK_TAP_PREFIX, i, &m);
+			pixman_region32_fini(&m);
+		}
+
 		/* The chain writes its final upsample back into the prefix transient:
 		 * nothing reads the unblurred prefix after the first downsample, so a
 		 * second full-size image would be allocated only to be thrown away. */
@@ -1696,6 +1731,18 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 			renderer->blur_results[i] = (struct avk_blur_result){
 				.image = prefix, .capture = rg.capture,
 			};
+			/* BOUNDARY 2: the same image, after the chain has written its
+			 * result back into it -- compared only where the composite will
+			 * read it. */
+			if (renderer->oracle.enabled) {
+				pixman_region32_t m;
+				pixman_region32_init(&m);
+				pixman_region32_copy(&m, &d->result_region);
+				pixman_region32_translate(&m, -rg.capture.x, -rg.capture.y);
+				avk_oracle_tap(&renderer->oracle, graph, r_prefix, prefix,
+					tap_box, AVK_TAP_BLUR, i, &m);
+				pixman_region32_fini(&m);
+			}
 		}
 	}
 
@@ -1727,6 +1774,19 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 	if (!avk_render_declare_segment(graph, &ctx, r_target)) {
 		avk_cmd_ring_abandon(&renderer->ring);
 		return 0;
+	}
+
+	/*
+	 * BOUNDARY 3: the frame's target, after the output segment and before
+	 * presentation -- so this is the GPU's own result, not what a screenshot
+	 * saw later. Declared as a graph use, which is what makes reading a foreign
+	 * scan-out buffer possible at all: the acquire from and release back to
+	 * VK_QUEUE_FAMILY_FOREIGN_EXT are already the graph's job.
+	 */
+	{
+		const struct avk_box out_box = { 0, 0, (int32_t)width, (int32_t)height };
+		avk_oracle_tap(&renderer->oracle, graph, r_target, target, out_box,
+			AVK_TAP_OUTPUT, 0, NULL);
 	}
 
 	/* Compile and record: barriers, the pass, then the exit transitions that

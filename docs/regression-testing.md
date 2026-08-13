@@ -1179,6 +1179,73 @@ tail and the error is below one 8-bit code. The break is falsified at the
 RENDERER instead, where a 24×24 block at full brightness on a near-black ground
 leaves 5261 wrong pixels at 71 codes and fails 20 of 65 checks.
 
+### The first-divergence oracle
+
+`AZ_FRAME_ORACLE=1` renders every frame **twice** — the production partial render
+into the real scan-out buffer, and an independent full render of the same
+immutable snapshot into an image nothing presents — reads both back on the GPU
+and reports the first frame where they differ. Three boundaries are tapped:
+
+```text
+PREFIX   the regional scene-prefix transient, after the segment and before the
+         blur chain samples it        -> segmented source reconstruction
+BLUR     the same image after the chain
+                                      -> the chain's own coordinate mapping
+OUTPUT   the target after compositing, before presentation
+                                      -> damage, scissor, buffer history
+```
+
+A tap is a graph pass declaring `AVK_USE_TRANSFER_READ`, which is what makes
+reading the *foreign* scan-out target possible without hand-rolling a
+queue-family transfer — the graph already owns the acquire and release.
+
+```text
+contrib/avk-oracle-test.sh   10   premise + control; MODE=fixture adds 180 deg
+contrib/avk-oracle-runs.sh   --   the same trigger N times, one row per run
+```
+
+```sh
+bash contrib/avk-oracle-test.sh
+MODE=fixture bash contrib/avk-oracle-test.sh
+RUNS=30 bash contrib/avk-oracle-runs.sh
+RUNS=4 ORACLE_EXTRA_ENV=AZ_SCENE_HALO_DAMAGE_RAW=1 \
+	bash contrib/avk-oracle-runs.sh                    # must find divergences
+SEAM_RR1=2 BREAK=halo-damage-raw bash contrib/avk-blur-seam-test.sh  # must FAIL
+```
+
+`avk-oracle-test.sh` **asserts the premise first**: a build with
+`AZ_AVK_DAMAGE_HOLE=300,200,120,90` must be caught, and it is, on frame 0 with
+the mismatch bounding box equal to the hole and a worst channel error of 255. An
+oracle that has never reported a divergence is not evidence.
+
+Two things this mode is not:
+
+```text
+counters are DOUBLED   every frame goes through avk_render_frame() twice, so
+                       renderer counters include the reference render. The mode
+                       says so, loudly, once. Never assert on avk-stats in an
+                       oracle run.
+
+it must compare        `dropped` and `invalidated` are printed on every line and
+                       asserted at zero. The readback buffer used to grow
+                       mid-frame, which frees the memory the production taps
+                       recorded into -- reading back as every pixel differing at
+                       full amplitude, indistinguishable from a catastrophic
+                       renderer bug.
+```
+
+The prefix and blur taps compare only the region production **claims**:
+`prefix_rebuild` and `result_region`. Comparing the whole capture reports a
+difference for every pixel the design leaves undefined, which is most of it.
+
+`avk-oracle-runs.sh` runs the minimal trigger repeatedly — two adjacent outputs,
+the first rotated 180°, a blurred window straddling the seam, and a new window
+appearing on the *second* output at the join — and prints per run: stale pixels
+after the interaction, the static control, the first divergent frame, the buffer
+slot, the halo-record count and the boundary classification. Three consecutive
+runs cannot tell determinism from luck at a 2-in-3 failure rate; that mistake was
+already made once and had to be retracted.
+
 **`amsg dispatch dump_scene`** logs one line per emitted AVK command with the
 index it landed at. That index is the `k` a blur's source prefix is replayed
 for, so scene order becomes a fact about the stream rather than something

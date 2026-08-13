@@ -37,6 +37,16 @@
 #   BREAK=source-clip   AZ_BLUR_SOURCE_OUTPUT_CLIP=1 -- the source is clamped
 #                       to the presenting output. The seam step must exceed the
 #                       tolerance the good build meets.
+#
+#   BREAK=halo-damage-raw
+#                       AZ_SCENE_HALO_DAMAGE_RAW=1 -- cross-output source
+#                       damage is recorded as the raw out-of-bounds region,
+#                       which is where M4F.2C.2 put it and where a
+#                       wlr_damage_ring discards it (rotate_buffer intersects
+#                       what it returns with the buffer). blur_halo_damage_lost
+#                       must then be positive on every run; the stale strip it
+#                       leaves is only visible about two runs in three, which is
+#                       why the counter and not the screenshot is the assertion.
 set -u
 
 . "$(dirname "$0")/lib/headless.sh"
@@ -63,8 +73,9 @@ HL_RR2="${SEAM_RR2:-0}"
 HL_X2="${SEAM_X2:-800}"
 HL_ENV="ASTEROIDZ_RENDERER=avk ASTEROIDZ_VK_DEBUG=1 ${SEAM_EXTRA_ENV:-}"
 case "$BREAK" in
-source-clip) HL_ENV="$HL_ENV AZ_BLUR_SOURCE_OUTPUT_CLIP=1" ;;
-poison)      HL_ENV="$HL_ENV AZ_TRANSIENT_POISON=1" ;;
+source-clip)     HL_ENV="$HL_ENV AZ_BLUR_SOURCE_OUTPUT_CLIP=1" ;;
+halo-damage-raw) HL_ENV="$HL_ENV AZ_SCENE_HALO_DAMAGE_RAW=1" ;;
+poison)          HL_ENV="$HL_ENV AZ_TRANSIENT_POISON=1" ;;
 esac
 HL_KITTY_EXTRA="-o cursor_blink_interval=0 -o cursor_stop_blinking_after=0"
 
@@ -411,9 +422,17 @@ HALOFR="$(field "$OUTDIR/stats-cross.json" blur_halo_damage_frames)"
 INHERIT="$(field "$OUTDIR/stats-cross.json" blur_transitive_damage_pixels)"
 TOUCH="$(field "$OUTDIR/stats-cross.json" blur_damage_nodes_touched)"
 RECS="$(field "$OUTDIR/stats-cross.json" blur_halo_damage_records)"
-echo "  note: $HALOFR frames took damage from outside their own output ($RECS recorded); $TOUCH blur recomputes"
+LOST="$(field "$OUTDIR/stats-cross.json" blur_halo_damage_lost)"
+echo "  note: $HALOFR frames took damage from outside their own output ($RECS recorded, $LOST lost); $TOUCH blur recomputes"
 hl_assert "a near-seam change routes damage across the boundary ($HALOFR)" \
 	"$([ "${HALOFR:-0}" -gt 0 ] && echo true || echo false)" "true"
+# THE INVARIANT, and the reason the previous assertion was not enough. Until
+# M4F.2C.4c the halo path recorded out-of-bounds rectangles that the damage ring
+# discarded on the way out, and the counter above passed anyway -- it tested the
+# EXTENTS of the returned region, which for an empty region are a degenerate box
+# left over from the last intersect and read as out-of-bounds.
+hl_assert "and none of it is lost on the way back out ($LOST)" \
+	"${LOST:-x}" "0"
 
 # THE POST-INTERACTION CONTROL, which this fixture never had.
 #
