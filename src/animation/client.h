@@ -1153,6 +1153,96 @@ void apply_split_border(Client *c, bool hit_no_border) {
 								border_right_y);
 }
 
+/*
+ * ── M4G: THE BLUR NODE FOLLOWS THE WINDOW ─────────────────────────────────
+ *
+ * This block used to live in apply_border(), under a comment claiming it ran
+ * "on every animation tick". It did not. apply_border() runs on LAYOUT, and
+ * the only other place a client's blur node was ever sized -- client_update_blur()
+ * -- runs on map, on config reload, and when the client redeclares its
+ * ext-background-effect region. None of those is a geometry change.
+ *
+ * So a window that mapped maximised kept a 1896x1056 blur node after it became
+ * a 404x304 float, forever. Measured: 761 of 761 samples, node size unchanged
+ * while the buffer tracked the animation correctly. And because the node lives
+ * in the client's tree, scene_node_update() damages old-visible UNION
+ * new-visible of the WHOLE subtree on every move -- 2.0 Mpx per frame to move a
+ * 400x300 window, which is the entire 6.7x/10.2x motion damage amplification
+ * M4G exists to remove. Nothing in the blur reach, the prefix path, the damage
+ * fallbacks or AVK was involved.
+ *
+ * Called from apply_border() (layout) AND client_apply_clip() (every tick), on
+ * the ANIMATED box, so the claim the old comment made is now true.
+ */
+static void client_sync_blur_geometry(Client *c) {
+	if (!c || !c->blur_node || !c->mon) {
+		return;
+	}
+
+	enum corner_location current_corner_location =
+		set_client_corner_location(c);
+	int32_t bw = (int32_t)c->bw;
+
+	/* overview: the dim scrim sits on LyrDecorate (not the bottom layer),
+	 * so cached bottom-layer-only blur would sample the UNDIMMED wallpaper
+	 * -- keep sampling all layers below while the overview is up (this
+	 * runs per-frame and would otherwise stomp the arrange-time setting) */
+	bool blur_cached = config.blur_optimized && !c->isfloating &&
+					   !(c->mon && c->mon->isoverview);
+	if (c->blur_node->should_only_blur_bottom_layer != blur_cached)
+		wlr_scene_blur_set_should_only_blur_bottom_layer(c->blur_node,
+														 blur_cached);
+
+	/* clip to the client's own monitor bounds exactly like the border
+	 * ring does (left/right/top/bottom_offset): a scroller column
+	 * scrolled off-screen can sit far past its own monitor's edge, and
+	 * without this the blur -- unlike the already-clipped border --
+	 * rendered at full size, bleeding into whatever's physically next
+	 * in the global output layout (a real neighboring monitor, if one
+	 * happens to sit there). */
+	int32_t right_offset = 0, bottom_offset = 0, left_offset = 0,
+			top_offset = 0;
+	if (client_clips_to_monitor(c)) {
+		right_offset =
+			GEZERO(c->animation.current.x + c->animation.current.width -
+				   c->mon->m.x - c->mon->m.width);
+		bottom_offset =
+			GEZERO(c->animation.current.y + c->animation.current.height -
+				   c->mon->m.y - c->mon->m.height);
+		left_offset = GEZERO(c->mon->m.x - c->animation.current.x);
+		top_offset = GEZERO(c->mon->m.y - c->animation.current.y);
+	}
+
+	/* THE ANIMATED BOX, not c->geom. c->geom is where the window will END UP;
+	 * during a move the two differ by the whole distance being travelled, and
+	 * sizing the node from the destination is what left it stale. */
+	int32_t blur_width = GEZERO(c->animation.current.width - 2 * bw
+		- left_offset - right_offset);
+	int32_t blur_height = GEZERO(c->animation.current.height - 2 * bw
+		- top_offset - bottom_offset);
+
+	/* The blur node backs the TRANSLUCENT content and is fully covered
+	 * by content + border ring above it, so its corners must round LESS
+	 * than the content arc (r - bw): rounding at the same radius let the
+	 * blur's one-sided edge AA undercover the content corner, and the
+	 * translucent content then composited over RAW wallpaper -- sharp
+	 * unblurred detail (wallpaper sparkles) surfacing as bright dots
+	 * just inside some corners. 2px tighter keeps the blur strictly
+	 * inside the ring's interior paint (cutout is r - bw - 1). */
+	struct fx_corner_radii blur_radii = corner_radii_from_location(
+		GEZERO(config.border_radius - bw - 2), current_corner_location);
+
+	/* only touch the scene when something changed: this runs on
+	 * every animation tick, and every setter here damages. */
+	wlr_scene_node_set_position(&c->blur_node->node, bw + left_offset,
+								bw + top_offset);
+	if (c->blur_node->width != blur_width ||
+		c->blur_node->height != blur_height)
+		wlr_scene_blur_set_size(c->blur_node, blur_width, blur_height);
+	if (!fx_corner_radii_eq(c->blur_node->corners, blur_radii))
+		wlr_scene_blur_set_corner_radii(c->blur_node, blur_radii);
+}
+
 void apply_border(Client *c) {
 	if (!c || c->iskilling || !client_surface(c)->mapped)
 		return;
@@ -1292,48 +1382,7 @@ void apply_border(Client *c) {
 			corner_radii_from_location(config.border_radius,
 									   current_corner_location));
 
-	if (c->blur_node) {
-		/* overview: the dim scrim sits on LyrDecorate (not the bottom layer),
-		 * so cached bottom-layer-only blur would sample the UNDIMMED wallpaper
-		 * -- keep sampling all layers below while the overview is up (this
-		 * runs per-frame and would otherwise stomp the arrange-time setting) */
-		bool blur_cached = config.blur_optimized && !c->isfloating &&
-						   !(c->mon && c->mon->isoverview);
-		if (c->blur_node->should_only_blur_bottom_layer != blur_cached)
-			wlr_scene_blur_set_should_only_blur_bottom_layer(c->blur_node,
-															 blur_cached);
-		/* clip to the client's own monitor bounds exactly like the border
-		 * ring above does (left/right/top/bottom_offset): a scroller column
-		 * scrolled off-screen can sit far past its own monitor's edge, and
-		 * without this the blur -- unlike the already-clipped border --
-		 * rendered at full size, bleeding into whatever's physically next
-		 * in the global output layout (a real neighboring monitor, if one
-		 * happens to sit there). */
-		int32_t blur_width =
-			GEZERO(clip_box.width - 2 * bw - left_offset - right_offset);
-		int32_t blur_height =
-			GEZERO(clip_box.height - 2 * bw - top_offset - bottom_offset);
-		/* The blur node backs the TRANSLUCENT content and is fully covered
-		 * by content + border ring above it, so its corners must round LESS
-		 * than the content arc (r - bw): rounding at the same radius let the
-		 * blur's one-sided edge AA undercover the content corner, and the
-		 * translucent content then composited over RAW wallpaper -- sharp
-		 * unblurred detail (wallpaper sparkles) surfacing as bright dots
-		 * just inside some corners. 2px tighter keeps the blur strictly
-		 * inside the ring's interior paint (cutout is r - bw - 1). */
-		struct fx_corner_radii blur_radii = corner_radii_from_location(
-			GEZERO(config.border_radius - bw - 2), current_corner_location);
-
-		/* only touch the scene when something changed: this runs on
-		 * every animation tick */
-		wlr_scene_node_set_position(&c->blur_node->node, bw + left_offset,
-									bw + top_offset);
-		if (c->blur_node->width != blur_width ||
-			c->blur_node->height != blur_height)
-			wlr_scene_blur_set_size(c->blur_node, blur_width, blur_height);
-		if (!fx_corner_radii_eq(c->blur_node->corners, blur_radii))
-			wlr_scene_blur_set_corner_radii(c->blur_node, blur_radii);
-	}
+	client_sync_blur_geometry(c);
 }
 
 struct ivec2 clip_to_hide(Client *c, struct wlr_box *clip_box) {
@@ -1638,6 +1687,11 @@ void client_apply_clip(Client *c, float factor) {
 		}
 	}
 	client_draw_shield(c, clip_box);
+
+	/* The blur node is part of the window and has to move and resize with it.
+	 * Sizing it only on layout left it holding whatever box the window had
+	 * when it mapped -- see client_sync_blur_geometry(). */
+	client_sync_blur_geometry(c);
 
 	// Get the actual size of the clipped surface, used to compute the scale
 	int32_t acutal_surface_width = geometry.width - offset.x - offset.width;
@@ -2190,6 +2244,50 @@ static void fallout_client_next_tick(Client *c, double t) {
 	}
 }
 
+/*
+ * ── M4G: ROUND, DO NOT TRUNCATE ───────────────────────────────────────────
+ *
+ * The interpolator works in doubles and the scene node holds int32, so a
+ * conversion is unavoidable. Truncation is not.
+ *
+ * The spring overshoots and settles, and it settles by approaching 1.0 from
+ * ABOVE: measured, `factor` sat at 1.000003 for ~115ms at the end of a
+ * 500ms move, which is
+ *
+ *     1198 + (200 - 1198) * 1.000003 = 199.997  ->  (int32_t) 199
+ *
+ * so a window that had visibly arrived at x=200 flipped to 199 and back for a
+ * sixth of the animation, once per tick, each flip a damage event and -- on a
+ * blurred window -- a full blur re-render. Rounding to nearest makes 199.997
+ * the 200 it visually is. Half-away-from-zero, so a window moving left of the
+ * origin quantises the same way as one moving right; truncation does not, and
+ * a negative coordinate is exactly where an asymmetric rule stops being a
+ * rounding policy and starts being a drift.
+ *
+ * AZ_ANIM_TRUNCATE=1 restores truncation, which is the break: the jitter
+ * regression must fail with it set, or it is not testing anything.
+ */
+static bool anim_truncate_break(void) {
+	static int cached = -1;
+	if (cached < 0) {
+		const char *e = getenv("AZ_ANIM_TRUNCATE");
+		cached = e != NULL && e[0] == '1';
+		if (cached)
+			wlr_log(WLR_ERROR, "AZ_ANIM_TRUNCATE=1 -- animated geometry is "
+				"truncated instead of rounded. TEST ONLY: this reintroduces "
+				"the post-arrival 1px jitter M4G removed.");
+	}
+	return cached != 0;
+}
+
+static inline int32_t anim_lerp(int32_t from, int32_t to, double factor) {
+	double v = (double)from + ((double)to - (double)from) * factor;
+	if (anim_truncate_break()) {
+		return (int32_t)v;
+	}
+	return (int32_t)llround(v);
+}
+
 void fadeout_client_animation_next_tick(Client *c) {
 	if (!c)
 		return;
@@ -2234,15 +2332,13 @@ void fadeout_client_animation_next_tick(Client *c) {
 	int32_t type = c->animation.action = c->animation.action;
 	double factor = find_animation_curve_at(animation_passed, type);
 
-	int32_t width = c->animation.initial.width +
-					(c->current.width - c->animation.initial.width) * factor;
-	int32_t height = c->animation.initial.height +
-					 (c->current.height - c->animation.initial.height) * factor;
+	int32_t width = anim_lerp(c->animation.initial.width,
+		c->current.width, factor);
+	int32_t height = anim_lerp(c->animation.initial.height,
+		c->current.height, factor);
 
-	int32_t x = c->animation.initial.x +
-				(c->current.x - c->animation.initial.x) * factor;
-	int32_t y = c->animation.initial.y +
-				(c->current.y - c->animation.initial.y) * factor;
+	int32_t x = anim_lerp(c->animation.initial.x, c->current.x, factor);
+	int32_t y = anim_lerp(c->animation.initial.y, c->current.y, factor);
 
 	wlr_scene_node_set_position(&c->scene->node, x, y);
 
@@ -2287,6 +2383,99 @@ void fadeout_client_animation_next_tick(Client *c) {
 	}
 }
 
+/*
+ * ── M4G: A SPRING IS DONE WHEN IT STOPS MOVING, NOT WHEN THE CLOCK RUNS OUT ─
+ *
+ * `duration_ms` under spring easing is a HORIZON, not a schedule. The spring
+ * is evaluated over normalised time, so at damping 0.8 / frequency 22 it
+ * reaches its target at t ~= 0.20 and has settled by t ~= 0.43 -- and then the
+ * compositor went on ticking it, holding need_output_flush, holding
+ * prevent_scanout, and asking every output for a fresh frame, for the
+ * remaining ~285ms of a 500ms move. Measured: 26-27 consecutive ticks with the
+ * position unchanged, and 43-100% of the committed frames during an animation
+ * carrying no damage at all.
+ *
+ * CONVERGENCE NEEDS BOTH HALVES. Position alone is wrong: a spring crossing
+ * its target has zero error and maximum velocity, and terminating there would
+ * cut the overshoot off mid-flight -- a visible snap. Velocity alone is wrong
+ * at t=0. So: converged when the remaining error is under half a DEVICE pixel
+ * AND the curve cannot move it half a device pixel within one 60Hz frame.
+ *
+ * BOTH THRESHOLDS ARE IN OUTPUT-VISIBLE UNITS AND NEITHER COUNTS FRAMES.
+ * Distances are multiplied by the output scale, so a fractional-scale display
+ * gets the same sub-pixel guarantee rather than a looser one. The lookahead is
+ * a fixed 16.67ms of WALL CLOCK -- the slowest refresh we would ever have to
+ * survive -- not "the next tick", so a 144Hz output and a 60Hz output agree on
+ * when the animation ended. A frame-count criterion would make the very
+ * property this milestone must not regress -- refresh independence -- depend
+ * on the refresh rate.
+ *
+ * Springs only. Bezier easings keep strict duration semantics: they are
+ * defined to arrive exactly at t=1 and users configure them expecting that.
+ *
+ * AZ_ANIM_NO_CONVERGE=1 is the break -- it restores the dead tail.
+ */
+static bool anim_no_converge_break(void) {
+	static int cached = -1;
+	if (cached < 0) {
+		const char *e = getenv("AZ_ANIM_NO_CONVERGE");
+		cached = e != NULL && e[0] == '1';
+		if (cached)
+			wlr_log(WLR_ERROR, "AZ_ANIM_NO_CONVERGE=1 -- a converged spring "
+				"keeps running to duration_ms. TEST ONLY: this reintroduces "
+				"the dead tail M4G removed.");
+	}
+	return cached != 0;
+}
+
+/* Half a device pixel: below this a change cannot survive the round to
+ * integer scene coordinates, so it cannot be seen. */
+#define ANIM_CONVERGE_PX 0.5
+/* One frame at the slowest refresh worth surviving. Wall clock, deliberately. */
+#define ANIM_CONVERGE_LOOKAHEAD_MS 16.667
+
+static bool anim_spring_converged(Client *c, int32_t type, double t,
+		double factor) {
+	if (!config.animation_curve_spring || anim_no_converge_break()) {
+		return false;
+	}
+	/* The curve types that actually take the spring branch in
+	 * calculate_animation_curve_at(). Anything else is a bezier and keeps
+	 * strict duration semantics. */
+	if (type != MOVE && type != OPEN && type != TAG) {
+		return false;
+	}
+	if (c->animation.duration <= 0) {
+		return false;
+	}
+
+	double travel = 0.0;
+	double d;
+	d = fabs((double)c->current.x - (double)c->animation.initial.x);
+	travel = d > travel ? d : travel;
+	d = fabs((double)c->current.y - (double)c->animation.initial.y);
+	travel = d > travel ? d : travel;
+	d = fabs((double)c->current.width - (double)c->animation.initial.width);
+	travel = d > travel ? d : travel;
+	d = fabs((double)c->current.height - (double)c->animation.initial.height);
+	travel = d > travel ? d : travel;
+
+	double scale = 1.0;
+	if (c->mon && c->mon->wlr_output && c->mon->wlr_output->scale > 0.0f) {
+		scale = (double)c->mon->wlr_output->scale;
+	}
+
+	double err_px = fabs(1.0 - factor) * travel * scale;
+	if (err_px >= ANIM_CONVERGE_PX) {
+		return false;
+	}
+
+	double dt = ANIM_CONVERGE_LOOKAHEAD_MS / (double)c->animation.duration;
+	double ahead = find_animation_curve_at(t + dt, type);
+	double step_px = fabs(ahead - factor) * travel * scale;
+	return step_px < ANIM_CONVERGE_PX;
+}
+
 void client_animation_next_tick(Client *c) {
 	struct timespec now;
 	clock_gettime(CLOCK_MONOTONIC, &now);
@@ -2299,6 +2488,18 @@ void client_animation_next_tick(Client *c) {
 
 	int32_t type = c->animation.action == NONE ? MOVE : c->animation.action;
 	double factor = find_animation_curve_at(animation_passed, type);
+
+	/* A converged spring finishes HERE, on the exact target, rather than
+	 * being ticked to nowhere until duration_ms expires. Snapping factor to
+	 * 1.0 rather than leaving it at 1.000003 is what stops the last frame
+	 * being a 1px flip; the completion block below then runs unchanged, so
+	 * scanout, pointer re-entry and need_output_flush all settle exactly as
+	 * they do on the timed path. */
+	bool converged = anim_spring_converged(c, type, animation_passed, factor);
+	if (converged) {
+		factor = 1.0;
+		animation_passed = 1.0;
+	}
 
 	/* Fade the backdrop blur in with the open animation instead of popping to
 	 * full on the first frame. Fade only the ALPHA and keep strength at 1: a
@@ -2320,20 +2521,27 @@ void client_animation_next_tick(Client *c) {
 	double sx = 0, sy = 0;
 	struct wlr_surface *surface = NULL;
 
-	int32_t width = c->animation.initial.width +
-					(c->current.width - c->animation.initial.width) * factor;
-	int32_t height = c->animation.initial.height +
-					 (c->current.height - c->animation.initial.height) * factor;
+	int32_t width = anim_lerp(c->animation.initial.width,
+		c->current.width, factor);
+	int32_t height = anim_lerp(c->animation.initial.height,
+		c->current.height, factor);
 
-	int32_t x = c->animation.initial.x +
-				(c->current.x - c->animation.initial.x) * factor;
-	int32_t y = c->animation.initial.y +
-				(c->current.y - c->animation.initial.y) * factor;
+	int32_t x = anim_lerp(c->animation.initial.x, c->current.x, factor);
+	int32_t y = anim_lerp(c->animation.initial.y, c->current.y, factor);
 
 	/* Both the real-valued position the curve asked for and the integer one
 	 * the scene node can hold. A trace that logged only the second could not
 	 * distinguish "the curve is uneven" from "the curve is smooth and int
 	 * truncation made it uneven", which are opposite defects. */
+	/* Which outputs this motion can reach: where the window is, unioned with
+	 * where it is going. A frame scheduled from here will be rendered from a
+	 * sample somewhere between the two, so both ends have to be in the box. */
+	{
+		struct wlr_box reach;
+		anim_client_reach(c, &reach);
+		az_frame_reach_add(&reach);
+	}
+
 	AZ_PACE("anim tick c=%p mon=%s action=%d dur=%u t_ms=%d lin=%.6f "
 		"factor=%.6f ideal=%.3f,%.3f,%.3fx%.3f geom=%d,%d,%dx%d t_ns=%llu",
 		(void *)c, az_pace_mon, type, c->animation.duration, passed_time,
@@ -2369,9 +2577,9 @@ void client_animation_next_tick(Client *c) {
 	client_apply_clip(c, factor);
 
 	if (animation_passed >= 1.0) {
-		AZ_PACE("anim end c=%p action=%d dur=%u t_ms=%d t_ns=%llu",
+		AZ_PACE("anim end c=%p action=%d dur=%u t_ms=%d converged=%d t_ns=%llu",
 			(void *)c, type, c->animation.duration, passed_time,
-			(unsigned long long)az_pace_now_ns());
+			converged ? 1 : 0, (unsigned long long)az_pace_now_ns());
 
 		// clear the open action state
 		// To prevent him from being mistaken that
