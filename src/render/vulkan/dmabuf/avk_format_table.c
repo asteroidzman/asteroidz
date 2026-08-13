@@ -2,6 +2,8 @@
 
 #include "avk_format_table.h"
 
+#include "../device/avk_color_caps.h"
+
 #include <drm_fourcc.h>
 #include <inttypes.h>
 #include <stdio.h>
@@ -101,6 +103,51 @@ static bool probe_modifier(struct avk_device *dev,
 	return true;
 }
 
+/*
+ * The per-modifier feature set of the _SRGB twin of this format.
+ *
+ * A second VkFormatProperties2 query, on a DIFFERENT VkFormat, because that is
+ * where the answer lives: VkDrmFormatModifierPropertiesEXT is enumerated per
+ * format, and the UNORM format's entry says nothing about what the _SRGB view
+ * may be used for. Returns 0 -- no features, therefore no Path A -- when the
+ * format has no sRGB twin or the modifier is not enumerated for it, which is
+ * the safe direction.
+ */
+static VkFormatFeatureFlags srgb_modifier_features(struct avk_device *dev,
+		const struct avk_drm_format *fmt, uint64_t modifier) {
+	if (fmt->vk_srgb == VK_FORMAT_UNDEFINED) {
+		return 0;
+	}
+	VkDrmFormatModifierPropertiesListEXT list = {
+		.sType = VK_STRUCTURE_TYPE_DRM_FORMAT_MODIFIER_PROPERTIES_LIST_EXT,
+	};
+	VkFormatProperties2 props = {
+		.sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2,
+		.pNext = &list,
+	};
+	vkGetPhysicalDeviceFormatProperties2(dev->phys, fmt->vk_srgb, &props);
+	if (list.drmFormatModifierCount == 0) {
+		return 0;
+	}
+	VkDrmFormatModifierPropertiesEXT *mods =
+		calloc(list.drmFormatModifierCount, sizeof(*mods));
+	if (mods == NULL) {
+		return 0;
+	}
+	list.pDrmFormatModifierProperties = mods;
+	vkGetPhysicalDeviceFormatProperties2(dev->phys, fmt->vk_srgb, &props);
+
+	VkFormatFeatureFlags features = 0;
+	for (uint32_t i = 0; i < list.drmFormatModifierCount; i++) {
+		if (mods[i].drmFormatModifier == modifier) {
+			features = mods[i].drmFormatModifierTilingFeatures;
+			break;
+		}
+	}
+	free(mods);
+	return features;
+}
+
 static bool query_format(struct avk_device *dev,
 		const struct avk_drm_format *fmt, struct avk_format_caps *out) {
 	memset(out, 0, sizeof(*out));
@@ -176,6 +223,10 @@ static bool query_format(struct avk_device *dev,
 			bool srgb_mutable = fmt->vk_srgb != VK_FORMAT_UNDEFINED
 				&& probe_modifier(dev, fmt, m->drmFormatModifier,
 					render_usage, true, NULL);
+			/* M5/C5: the attachment question, which the mutable probe
+			 * above does NOT answer -- see avk_color_caps.h. */
+			bool srgb_attachment = avk_scanout_srgb_attach_ok(srgb_mutable,
+				srgb_modifier_features(dev, fmt, m->drmFormatModifier));
 			out->render_mods[out->render_mod_count++] =
 				(struct avk_modifier_caps){
 					.modifier = m->drmFormatModifier,
@@ -183,6 +234,7 @@ static bool query_format(struct avk_device *dev,
 					.max_extent = extent,
 					.supports_disjoint = disjoint,
 					.srgb_mutable = srgb_mutable,
+					.srgb_attachment = srgb_attachment,
 				};
 		}
 	}
@@ -273,10 +325,45 @@ const struct avk_modifier_caps *avk_format_caps_find_modifier(
 	return NULL;
 }
 
+bool avk_format_table_scanout_srgb_ok(const struct avk_format_table *table,
+		uint32_t fourcc, uint64_t modifier) {
+	if (table == NULL) {
+		return false;
+	}
+	const struct avk_format_caps *caps = avk_format_table_find(table, fourcc);
+	if (caps == NULL) {
+		return false;
+	}
+	const struct avk_modifier_caps *mod =
+		avk_format_caps_find_modifier(caps, modifier, true);
+	return mod != NULL && mod->srgb_attachment;
+}
+
 void avk_format_table_log(const struct avk_format_table *table) {
+	/* M5/C5: how many render modifiers could carry Path A. Counted rather
+	 * than listed, because the number is the headline -- a zero here means
+	 * Path A does not exist on this GPU and every output takes Path B
+	 * (ADR-001's falsifier (i)). Which modifier KMS actually picks for a
+	 * scanout buffer is a per-output question answered later by
+	 * avk_format_table_scanout_srgb_ok(). */
+	uint32_t srgb_attach_pairs = 0;
+	for (uint32_t i = 0; i < table->count; i++) {
+		for (uint32_t j = 0; j < table->formats[i].render_mod_count; j++) {
+			if (table->formats[i].render_mods[j].srgb_attachment) {
+				srgb_attach_pairs++;
+			}
+		}
+	}
+
 	avk_log(AVK_INFO, "avk formats: %u importable format(s), %u texture and "
 		"%u render format/modifier pairs",
 		table->count, table->texture_pair_count, table->render_pair_count);
+	avk_log(AVK_INFO, "avk formats: color scanout_srgb_attachment=%u of %u "
+		"render pairs%s",
+		srgb_attach_pairs, table->render_pair_count,
+		srgb_attach_pairs == 0
+			? " -- Path A is unavailable on this device"
+			: "");
 
 	if (avk_log_get_level() < AVK_DEBUG) {
 		return;
@@ -297,6 +384,22 @@ void avk_format_table_log(const struct avk_format_table *table) {
 				"    tex %s planes=%u max=%ux%u disjoint=%d srgb=%d",
 				mod_name, m->plane_count, m->max_extent.width,
 				m->max_extent.height, m->supports_disjoint, m->srgb_mutable);
+		}
+
+		/* The render modifiers were not listed at all before M5. They are now,
+		 * because srgb_attach is the per-modifier answer to "can this output
+		 * take Path A", and the only way to find out about the modifier KMS
+		 * actually chose is to be able to read the line beside it. */
+		for (uint32_t j = 0; j < caps->render_mod_count; j++) {
+			const struct avk_modifier_caps *m = &caps->render_mods[j];
+			char mod_name[80];
+			avk_drm_modifier_name(m->modifier, mod_name, sizeof(mod_name));
+			avk_log(AVK_DEBUG,
+				"    rnd %s planes=%u max=%ux%u disjoint=%d srgb=%d "
+				"srgb_attach=%d",
+				mod_name, m->plane_count, m->max_extent.width,
+				m->max_extent.height, m->supports_disjoint, m->srgb_mutable,
+				m->srgb_attachment);
 		}
 	}
 }

@@ -70,6 +70,28 @@ struct avk_caps {
 	 * handoff to DRM syncobj timelines. */
 	bool timeline_opaque_fd_export;
 
+	/*
+	 * M5 colour capabilities (contract C5). Probed at init, logged in one
+	 * line, and consumed by nothing yet -- C5 is deliberately pure
+	 * information, so that the day the working intermediate is wired up,
+	 * "does this device support the working format" is a fact recorded at
+	 * startup rather than a question asked for the first time inside a frame.
+	 *
+	 * fp16_attach_blend_sample  R16G16B16A16_SFLOAT can be a blendable colour
+	 *                           attachment AND a linearly-filtered sampled
+	 *                           image on optimal tiling: ADR-001's criterion
+	 *                           (a) for the Path-B working intermediate.
+	 * rgb10a2_attach            A2B10G10R10_UNORM_PACK32 can be a blendable
+	 *                           colour attachment: the 10-bit scanout target.
+	 *
+	 * The raw feature masks are kept beside the verdicts so a log line can say
+	 * WHICH bit is missing rather than just "no".
+	 */
+	bool fp16_attach_blend_sample;
+	bool rgb10a2_attach;
+	VkFormatFeatureFlags fp16_optimal_features;
+	VkFormatFeatureFlags rgb10a2_optimal_features;
+
 	/* queues */
 	uint32_t graphics_family;
 	/* A transfer-only family, if the device has one. Recorded here because

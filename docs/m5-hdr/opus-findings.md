@@ -265,3 +265,58 @@ the same identity (values already encoded, blurred as though they were light,
 so the result came out *lighter*). Which way the error runs depends on which
 side of the curve the blur is standing; that it is large depends only on the
 content having contrast.
+
+---
+
+## F9 — C5's scanout answer is DEFERRED; the predicate is not
+
+C5 says the scanout `_SRGB`-view answer on the live GPU is the audit's biggest
+UNKNOWN and asks for it to be recorded when first run. **It has not been run.**
+This phase was instructed not to start a compositor or a headless device
+fixture, and the answer is a property of the modifier KMS actually selects for
+a scanout buffer — which only the compositor knows.
+
+What shipped instead, so that the answer is one log line away:
+
+- **`avk_color_caps.h`** — the three questions as pure predicates over
+  `VkFormatFeatureFlags`, with the bit sets and the reason for each bit written
+  at the definition.
+- **The live probes** — `query_color_formats()` in `avk_phys.c` for
+  `fp16_attach_blend_sample` and `rgb10a2_attach`, and a second
+  `VkFormatProperties2` query in `avk_format_table.c` for the `_SRGB` twin's
+  **own** per-modifier features, ANDed with the existing mutable probe.
+- **Two log lines**, emitted at startup with no HDR work enabled:
+
+```
+avk caps: color fp16=1 (features 0x…) rgb10a2=1 (features 0x…)
+avk formats: color scanout_srgb_attachment=N of M render pairs
+```
+
+  and, at `AVK_DEBUG`, a per-render-modifier line carrying `srgb_attach=`.
+  A zero on the second line means **Path A does not exist on this device** and
+  ADR-001's falsifier (i) has fired.
+- **`avk_format_table_scanout_srgb_ok(table, fourcc, modifier)`** — the
+  per-output form, which is exactly C3's `scanout_srgb_view_ok` input.
+
+**The distinction the probe exists to make**, because it is easy to miss: the
+table already recorded `srgb_mutable`, which says the mutable image can be
+*created* with an `_SRGB` view in its format list. It says nothing about what
+that view may be *used for*. Format features are per (format, modifier) and the
+`_SRGB` format has its own set — a driver may allow the mutable image and allow
+sampling the `_SRGB` view while refusing to attach it. Asking only the first
+question produces a Path A that passes every startup probe and fails at the
+first frame on the live desktop. `avk_scanout_srgb_attach_ok()` requires both,
+and the test asserts that exactly one of the eight
+(mutable × attach × blend) combinations is a yes.
+
+**What is untested until a device is allowed**: that the live probe passes the
+*right* flags to the predicate — specifically that it queries the `_SRGB`
+twin's modifier list and not the UNORM one. The predicates are covered by
+synthetic feature sets (19 checks, 6 breaks, all failing as required); the
+wiring is not.
+
+**To get the answer**, with no HDR behaviour enabled and nothing consuming the
+result: the two `AVK_INFO` lines appear at the default log level, so a single
+ordinary start prints them; the per-modifier `srgb_attach=` breakdown needs
+`ASTEROIDZ_VK_DEBUG=1` (already set in the live GDM line). C5 changes no
+behaviour by construction.

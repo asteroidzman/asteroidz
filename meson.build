@@ -551,6 +551,18 @@ if build_vulkan
   # transcription of the reference's erf-and-four-samples formula, which is
   # what AVK's readback is compared against -- not GLES, and not AVK's own
   # shader.
+  # M5/C5: the colour capability predicates, driven with SYNTHETIC feature
+  # sets. No device: this machine's RADV answers yes to every question these
+  # ask, so a live test would pass for a predicate that returned true
+  # unconditionally -- and the interesting answers are the PARTIAL ones no
+  # single GPU can be made to produce on demand.
+  test_avk_color_caps = executable('test-avk-color-caps',
+                                   'tests/test-avk-color-caps.c',
+                                   dependencies : [vulkan_dep],
+                                   include_directories : include_directories('src'),
+                                   build_by_default : false)
+  test('avk-color-caps', test_avk_color_caps, timeout : 30)
+
   test_avk_shadow = executable('test-avk-shadow',
                                'tests/test-avk-shadow.c',
                                dependencies : [avk_dep, libm],
