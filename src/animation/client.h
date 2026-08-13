@@ -21,10 +21,36 @@ enum corner_location set_client_corner_location(Client *c) {
 	 * still runs, so the top-left is squared to blend with the tab when one is
 	 * shown (that's the only corner a titlebar should square). */
 	if (!ov) {
-		/* a corner is squared off only where the window meets the screen edge */
-		int32_t bnd_x = c->mon->m.x, bnd_y = c->mon->m.y;
-		int32_t bnd_r = c->mon->m.x + c->mon->m.width;
-		int32_t bnd_b = c->mon->m.y + c->mon->m.height;
+		/*
+		 * A corner is squared off only where the window meets the edge of the
+		 * DESKTOP -- the union of every output -- and not the edge of the
+		 * monitor that happens to own the window.
+		 *
+		 * THE SEAM IS NOT A SCREEN EDGE. A window straddling two outputs
+		 * overhangs its owner, and against the owner's box the overhanging
+		 * side looks exactly like a window running off the screen: the test
+		 * below fires and squares that side's TRUE EXTERIOR corners, which are
+		 * fully visible on the neighbouring output. Reproduced at mixed scales
+		 * with the window owned by the right-hand output: TL and BL came back
+		 * 55 of 55 border pixels in the wedge outside the arc -- a solid
+		 * block, no arc at all -- while TR and BR on the other output were
+		 * perfectly round. Live, with the owner on the left, it is the
+		 * right-hand corners that square.
+		 *
+		 * It is the same one logical window either way, and it must read as
+		 * one rounded shape across the seam. sgeom is the output layout's
+		 * bounding box, so a real screen edge still squares (which is what
+		 * this rule exists for) and an interior seam no longer does.
+		 */
+		struct wlr_box bnd = sgeom;
+		if (getenv("AZ_CORNER_OWNER_MONITOR_BOUND")) {
+			/* THE BREAK: the pre-fix rule. The straddling window's
+			 * overhanging side must go square against it. */
+			bnd = c->mon->m;
+		}
+		int32_t bnd_x = bnd.x, bnd_y = bnd.y;
+		int32_t bnd_r = bnd.x + bnd.width;
+		int32_t bnd_b = bnd.y + bnd.height;
 		if (target_geom.x + config.border_radius <= bnd_x) {
 			current_corner_location &= ~CORNER_LOCATION_LEFT;
 		}
