@@ -4520,6 +4520,7 @@ static cJSON *az_avk_stats_json(void) {
 	uint64_t b_draws = 0, b_soft = 0, b_darken = 0;
 	/* M4F.2B. The six regions, as areas, plus what the two sweeps cost. */
 	uint64_t d_src = 0, d_out = 0, d_rebuild = 0;
+	uint64_t f_rects = 0, f_before = 0, f_after = 0;
 	uint64_t d_dep_full = 0, d_write_full = 0, d_cap_full = 0, d_saved = 0;
 	uint64_t d_touched = 0, d_skipped = 0, d_fallbacks = 0, d_rects = 0;
 	uint64_t d_inherited = 0, d_build_ns = 0;
@@ -4544,6 +4545,9 @@ static cJSON *az_avk_stats_json(void) {
 		d_src += r->blur_source_damage_pixels;
 		d_out += r->blur_output_damage_pixels;
 		d_rebuild += r->blur_prefix_rebuild_pixels;
+		f_rects += r->blur_fallback_rects;
+		f_before += r->blur_fallback_area_before;
+		f_after += r->blur_fallback_area_after;
 		d_dep_full += r->blur_full_dependency_pixels;
 		d_write_full += r->blur_full_write_pixels;
 		d_cap_full += r->blur_full_capture_pixels;
@@ -4597,6 +4601,13 @@ static cJSON *az_avk_stats_json(void) {
 	cJSON_AddNumberToObject(o, "blur_damage_nodes_touched", (double)d_touched);
 	cJSON_AddNumberToObject(o, "blur_damage_nodes_skipped", (double)d_skipped);
 	cJSON_AddNumberToObject(o, "blur_damage_fallbacks", (double)d_fallbacks);
+	/* And what those fallbacks cost. area_after/area_before is the fill the
+	 * bounding-box collapse invented; rects is how fragmented the region was
+	 * when it gave up. A fallback count on its own cannot distinguish a
+	 * collapse that added 10% from one that added 20x. */
+	cJSON_AddNumberToObject(o, "blur_fallback_rects", (double)f_rects);
+	cJSON_AddNumberToObject(o, "blur_fallback_area_before", (double)f_before);
+	cJSON_AddNumberToObject(o, "blur_fallback_area_after", (double)f_after);
 	cJSON_AddNumberToObject(o, "blur_damage_rects_max", (double)d_rects);
 	cJSON_AddNumberToObject(o, "blur_transitive_damage_pixels",
 		(double)d_inherited);
@@ -4947,6 +4958,9 @@ static void az_avk_stats_reset(void) {
 				r->blur_source_damage_pixels = 0;
 				r->blur_output_damage_pixels = 0;
 				r->blur_prefix_rebuild_pixels = 0;
+				r->blur_fallback_rects = 0;
+				r->blur_fallback_area_before = 0;
+				r->blur_fallback_area_after = 0;
 				r->blur_full_dependency_pixels = 0;
 				r->blur_full_write_pixels = 0;
 				r->blur_full_capture_pixels = 0;

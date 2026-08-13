@@ -511,6 +511,12 @@ struct avk_renderer {
 	uint64_t blur_source_damage_pixels;
 	uint64_t blur_output_damage_pixels;
 	uint64_t blur_prefix_rebuild_pixels;
+	/* The bounding-box collapse, priced. rects is the fragment count at the
+	 * moment of collapse; before/after are the region's area and its bounding
+	 * box's, so after-before is the fill the collapse invented. */
+	uint64_t blur_fallback_rects;
+	uint64_t blur_fallback_area_before;
+	uint64_t blur_fallback_area_after;
 	uint64_t blur_full_dependency_pixels;
 	uint64_t blur_full_write_pixels;
 	uint64_t blur_full_capture_pixels;

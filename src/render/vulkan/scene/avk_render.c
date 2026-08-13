@@ -1621,11 +1621,28 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 			renderer->blur_damage_rects_max = (uint64_t)rects;
 		}
 		if (rects > AVK_BLUR_DAMAGE_MAX_RECTS) {
+			/*
+			 * WHAT THE COLLAPSE COSTS, not just that it happened.
+			 *
+			 * There is one fallback site and one reason -- the region
+			 * fragmented past AVK_BLUR_DAMAGE_MAX_RECTS -- so a taxonomy of
+			 * reasons would have one entry. The question worth asking is how
+			 * much AREA the bounding box adds, because that is the extra fill
+			 * every pass downstream inherits: a collapse that turns 100k
+			 * sparse pixels into 2M is an optimisation target and one that
+			 * turns 100k into 110k is not, and the counter that only says
+			 * "16% of chains fell back" cannot tell those apart.
+			 */
+			uint64_t before = az_region_area(&d->prefix_rebuild);
 			pixman_box32_t ext = *pixman_region32_extents(&d->prefix_rebuild);
 			pixman_region32_fini(&d->prefix_rebuild);
 			pixman_region32_init_rect(&d->prefix_rebuild, ext.x1, ext.y1,
 				(unsigned)(ext.x2 - ext.x1), (unsigned)(ext.y2 - ext.y1));
 			renderer->blur_damage_fallbacks++;
+			renderer->blur_fallback_rects += (uint64_t)rects;
+			renderer->blur_fallback_area_before += before;
+			renderer->blur_fallback_area_after +=
+				(uint64_t)(ext.x2 - ext.x1) * (uint64_t)(ext.y2 - ext.y1);
 		}
 
 		pixman_region32_union(&demand, &demand, &d->prefix_rebuild);
