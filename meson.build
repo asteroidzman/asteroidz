@@ -419,6 +419,16 @@ if build_vulkan
                              build_by_default : false)
   test('avk-blur', test_avk_blur, timeout : 180)
 
+  # M4F.2D: actual vs REQUIRED blur-pass work, the denominator of the per-level
+  # scissor decision. Needs no GPU -- it is rectangle arithmetic over the same
+  # level_extent()/texel_span() the passes use, and the point is that a wrong
+  # denominator fails HERE rather than becoming a performance conclusion.
+  test_avk_blur_work = executable('test-avk-blur-work',
+                                  'tests/test-avk-blur-work.c',
+                                  dependencies : [avk_dep, libm],
+                                  build_by_default : false)
+  test('avk-blur-work', test_avk_blur_work, timeout : 30)
+
   # M4F.2A.1: segmented composition. Proves that any contiguous command range
   # renders into any regional target with identical pixels -- on PIXELS, because
   # a struct-inspection test would pass for a renderer that silently restarted

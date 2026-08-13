@@ -6,6 +6,7 @@
 #include "../scene/avk_render.h"
 
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -253,6 +254,22 @@ struct blur_pass {
 	float uv_x, uv_y, uv_w, uv_h;
 	struct avk_blur_params effects;
 	bool apply_effects;
+	/*
+	 * ── TEST-ONLY: RENDER ONLY THIS RECTANGLE ─────────────────────────────
+	 *
+	 * Zero width means "the whole level", which is what production always
+	 * does: M4F.2D has NOT implemented regional filter execution. This exists
+	 * for one purpose -- proving that the derived required region is
+	 * NECESSARY and not merely sufficient.
+	 *
+	 * With AZ_TRANSIENT_POISON=1 every transient starts as garbage, so
+	 * scissoring a pass to region R leaves poison everywhere else at that
+	 * level. Render the DERIVED region and the final image must be unchanged
+	 * (the region is sufficient); render one strip LESS and the final image
+	 * must change (the region is necessary). Either half alone proves nothing.
+	 */
+	int32_t scissor_x, scissor_y;
+	uint32_t scissor_w, scissor_h;
 	/* LOAD rather than DONT_CARE, because the darken clamp's whole trick is that
 	 * the destination still holds the unblurred source. Only ever true on the
 	 * last upsample of a chain whose params ask for it. */
@@ -348,6 +365,12 @@ static void record_blur_pass(VkCommandBuffer cb, void *user) {
 	VkViewport vp = { 0, 0, (float)p->dst_w, (float)p->dst_h, 0.0f, 1.0f };
 	vkCmdSetViewport(cb, 0, 1, &vp);
 	VkRect2D scissor = { { 0, 0 }, { p->dst_w, p->dst_h } };
+	if (p->scissor_w > 0 && p->scissor_h > 0) {
+		scissor = (VkRect2D){
+			{ p->scissor_x, p->scissor_y },
+			{ p->scissor_w, p->scissor_h },
+		};
+	}
 	vkCmdSetScissor(cb, 0, 1, &scissor);
 	vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, p->pipeline);
 
@@ -397,11 +420,115 @@ static void record_blur_pass(VkCommandBuffer cb, void *user) {
 	vkCmdEndRendering(cb);
 }
 
+/*
+ * ── THE REQUIRED-REGION FALSIFIER ─────────────────────────────────────────
+ *
+ * AZ_BLUR_REQ_SCISSOR=<what>[,<shrink>]   TEST ONLY.
+ *
+ *   what    "down1".."down6", "up0".."up5", or "all"
+ *   shrink  pixels to remove from each edge of the derived region, default 0
+ *
+ * Scissors the named pass(es) to the region avk_blur_work_of() says they must
+ * render. Combined with AZ_TRANSIENT_POISON=1 -- which fills every transient
+ * with garbage before use -- this turns the derivation into an experiment with
+ * two halves:
+ *
+ *   shrink=0   everything outside the derived region is poison, and the final
+ *              image must be UNCHANGED. The region is SUFFICIENT.
+ *   shrink=1   one strip of the derived region is poison instead, and the
+ *              final image must CHANGE. The region is NECESSARY there.
+ *
+ * A derivation that only ever passes the first half is a region that is big
+ * enough, which is not the same claim as the one the denominator makes.
+ *
+ * Production is unaffected: with the variable unset every pass renders its
+ * whole level, exactly as M4E left it. M4F.2D has NOT implemented regional
+ * filter execution and this is not a step towards doing so behind the
+ * milestone's back -- it is how the number in the report is checked.
+ */
+struct blur_req_break {
+	bool on;
+	bool all;
+	bool down;          /* true: down pass, false: up pass */
+	uint32_t level;
+	int32_t shrink;
+};
+
+static struct blur_req_break blur_req_break(void) {
+	static struct blur_req_break cached;
+	static bool read;
+	if (read) {
+		return cached;
+	}
+	read = true;
+	const char *env = getenv("AZ_BLUR_REQ_SCISSOR");
+	if (env == NULL || env[0] == '\0') {
+		return cached;
+	}
+	char what[32] = {0};
+	int shrink = 0;
+	if (sscanf(env, "%31[^,],%d", what, &shrink) < 1) {
+		avk_log(AVK_ERROR, "AZ_BLUR_REQ_SCISSOR=%s is not <what>[,<shrink>]",
+			env);
+		return cached;
+	}
+	cached.shrink = shrink;
+	if (strcmp(what, "all") == 0) {
+		cached.on = true;
+		cached.all = true;
+	} else if (strncmp(what, "down", 4) == 0) {
+		cached.on = true;
+		cached.down = true;
+		cached.level = (uint32_t)atoi(what + 4);
+	} else if (strncmp(what, "up", 2) == 0) {
+		cached.on = true;
+		cached.down = false;
+		cached.level = (uint32_t)atoi(what + 2);
+	} else {
+		avk_log(AVK_ERROR, "AZ_BLUR_REQ_SCISSOR: %s is not down<N>/up<N>/all",
+			what);
+		return cached;
+	}
+	avk_log(AVK_ERROR, "AZ_BLUR_REQ_SCISSOR=%s -- blur passes render only their "
+		"DERIVED REQUIRED region, shrunk by %d. This build is a measurement "
+		"instrument, not a renderer.", env, shrink);
+	return cached;
+}
+
+/* The derived region for one pass, with the break's shrink applied. Returns
+ * false when this pass is not the one being scissored. */
+static bool blur_req_scissor(const struct avk_blur_work *work, bool down,
+		uint32_t level, int32_t *x, int32_t *y, uint32_t *w, uint32_t *h) {
+	struct blur_req_break b = blur_req_break();
+	if (!b.on || work == NULL) {
+		return false;
+	}
+	if (!b.all && (b.down != down || b.level != level)) {
+		return false;
+	}
+	const struct avk_blur_level_work *lw = down ? &work->down[level]
+		: &work->up[level];
+	int32_t rx = (int32_t)lw->req_x + b.shrink;
+	int32_t ry = (int32_t)lw->req_y + b.shrink;
+	int32_t rw = (int32_t)lw->req_w - 2 * b.shrink;
+	int32_t rh = (int32_t)lw->req_h - 2 * b.shrink;
+	if (rw <= 0 || rh <= 0) {
+		return false;
+	}
+	*x = rx;
+	*y = ry;
+	*w = (uint32_t)rw;
+	*h = (uint32_t)rh;
+	return true;
+}
+
 bool avk_blur_declare(struct avk_graph *graph, struct avk_transient_pool *pool,
 		struct avk_pipelines *pipes, struct avk_blur_stats *stats,
 		uint32_t src_resource, uint32_t dst_resource,
 		uint32_t width, uint32_t height, VkFormat format,
-		const struct avk_blur_params *params) {
+		const struct avk_blur_params *params,
+		const struct avk_blur_marks *marks,
+		const struct avk_blur_work *work) {
 	if (graph == NULL || pool == NULL || pipes == NULL || params == NULL) {
 		return false;
 	}
@@ -491,6 +618,8 @@ bool avk_blur_declare(struct avk_graph *graph, struct avk_transient_pool *pool,
 		p->dst_w = dw;
 		p->dst_h = dh;
 		blur_uv(p, src_w, src_h, radius);
+		blur_req_scissor(work, true, i, &p->scissor_x, &p->scissor_y,
+			&p->scissor_w, &p->scissor_h);
 		/* Rectangle arithmetic, not a per-pixel loop: what this pass WILL
 		 * process, so M4F.2D can weigh a per-level scissor against the result
 		 * area it would keep. */
@@ -501,6 +630,11 @@ bool avk_blur_declare(struct avk_graph *graph, struct avk_transient_pool *pool,
 			record_blur_pass, p);
 		avk_graph_use(graph, from, AVK_USE_SAMPLED_READ, NULL);
 		avk_graph_use(graph, level_res[i], AVK_USE_COLOR_WRITE, NULL);
+		/* The LAST downsample carries the phase mark, so the pair measures the
+		 * whole downsample chain rather than one level of it. */
+		if (marks != NULL && i == levels) {
+			avk_graph_pass_time(graph, AVK_TS_NONE, marks->down_end);
+		}
 		avk_graph_pass_end(graph);
 		if (stats) { stats->passes++; }
 	}
@@ -547,6 +681,8 @@ bool avk_blur_declare(struct avk_graph *graph, struct avk_transient_pool *pool,
 		p->dst_h = dh;
 		blur_uv(p, src_w, src_h, radius);
 		stats->processed_pixels += (uint64_t)dw * (uint64_t)dh;
+		blur_req_scissor(work, false, i - 1, &p->scissor_x, &p->scissor_y,
+			&p->scissor_w, &p->scissor_h);
 		p->effects = *params;
 		/* Only the LAST upsample folds the effects in. Applying them at every
 		 * level would compound brightness and contrast once per level, which
@@ -558,10 +694,199 @@ bool avk_blur_declare(struct avk_graph *graph, struct avk_transient_pool *pool,
 			record_blur_pass, p);
 		avk_graph_use(graph, level_res[i], AVK_USE_SAMPLED_READ, NULL);
 		avk_graph_use(graph, to, AVK_USE_COLOR_WRITE, NULL);
+		/* The final upsample is the last blur work in the frame for THIS
+		 * chain; the caller decides whether it is the last one overall. */
+		if (marks != NULL && last) {
+			avk_graph_pass_time(graph, AVK_TS_NONE, marks->up_end);
+		} else if (marks != NULL && i == 2) {
+			/* The pass writing level 1: the last one before the final,
+			 * full-resolution upsample. */
+			avk_graph_pass_time(graph, AVK_TS_NONE, marks->up_penult_end);
+		}
 		avk_graph_pass_end(graph);
 		if (stats) { stats->passes++; }
 	}
 
 	if (stats) { stats->chains++; }
+	return true;
+}
+
+/*
+ * ── ACTUAL VS REQUIRED, PER PASS ──────────────────────────────────────────
+ *
+ * See the header for the derivation. The only thing worth repeating here is
+ * which constants are used, because using a second set would make this a
+ * different filter's arithmetic and the ratio meaningless:
+ *
+ *     down: (0.5 * radius + 1) texels of the level being READ
+ *     up:   (radius + 1)       texels of the level being READ
+ *
+ * -- exactly the two terms support_axis() sums, and level_extent()/texel_span()
+ * for the mapping between levels.
+ */
+
+/* A box in one level's texels, clamped to that level's extent. Half-open. */
+struct az_lvl_box {
+	double x0, y0, x1, y1;
+};
+
+static struct az_lvl_box lvl_clamp(struct az_lvl_box b, uint32_t w, uint32_t h)
+{
+	if (b.x0 < 0.0) { b.x0 = 0.0; }
+	if (b.y0 < 0.0) { b.y0 = 0.0; }
+	if (b.x1 > (double)w) { b.x1 = (double)w; }
+	if (b.y1 > (double)h) { b.y1 = (double)h; }
+	if (b.x1 < b.x0) { b.x1 = b.x0; }
+	if (b.y1 < b.y0) { b.y1 = b.y0; }
+	return b;
+}
+
+/* level `from` texels -> level `to` texels, through source pixels. Exact for
+ * odd extents because both directions go through texel_span(). */
+static struct az_lvl_box lvl_map(struct az_lvl_box b, uint32_t base_w,
+		uint32_t base_h, uint32_t from, uint32_t to)
+{
+	double sx_from = texel_span(base_w, from), sy_from = texel_span(base_h, from);
+	double sx_to = texel_span(base_w, to), sy_to = texel_span(base_h, to);
+	struct az_lvl_box r = {
+		.x0 = b.x0 * sx_from / sx_to,
+		.y0 = b.y0 * sy_from / sy_to,
+		.x1 = b.x1 * sx_from / sx_to,
+		.y1 = b.y1 * sy_from / sy_to,
+	};
+	return r;
+}
+
+static struct az_lvl_box lvl_dilate(struct az_lvl_box b, double t)
+{
+	b.x0 -= t; b.y0 -= t; b.x1 += t; b.y1 += t;
+	return b;
+}
+
+static struct az_lvl_box lvl_union(struct az_lvl_box a, struct az_lvl_box b)
+{
+	if (a.x1 <= a.x0 || a.y1 <= a.y0) { return b; }
+	if (b.x1 <= b.x0 || b.y1 <= b.y0) { return a; }
+	struct az_lvl_box r = {
+		.x0 = a.x0 < b.x0 ? a.x0 : b.x0,
+		.y0 = a.y0 < b.y0 ? a.y0 : b.y0,
+		.x1 = a.x1 > b.x1 ? a.x1 : b.x1,
+		.y1 = a.y1 > b.y1 ? a.y1 : b.y1,
+	};
+	return r;
+}
+
+/* Whole texels: a fractional edge means that texel is partly needed, and a
+ * partly needed texel is needed. Floor the near edge, ceil the far one. */
+static void lvl_snap(struct az_lvl_box b, uint32_t w, uint32_t h,
+		uint32_t *x, uint32_t *y, uint32_t *ow, uint32_t *oh)
+{
+	b = lvl_clamp(b, w, h);
+	double x0 = floor(b.x0), y0 = floor(b.y0);
+	double x1 = ceil(b.x1), y1 = ceil(b.y1);
+	if (x0 < 0.0) { x0 = 0.0; }
+	if (y0 < 0.0) { y0 = 0.0; }
+	if (x1 > (double)w) { x1 = (double)w; }
+	if (y1 > (double)h) { y1 = (double)h; }
+	*x = (uint32_t)x0;
+	*y = (uint32_t)y0;
+	*ow = x1 > x0 ? (uint32_t)(x1 - x0) : 0;
+	*oh = y1 > y0 ? (uint32_t)(y1 - y0) : 0;
+}
+
+bool avk_blur_work_of(const struct avk_blur_params *params, uint32_t width,
+		uint32_t height, const struct avk_box *result,
+		struct avk_blur_work *out)
+{
+	if (out == NULL) {
+		return false;
+	}
+	memset(out, 0, sizeof(*out));
+	if (params == NULL || width == 0 || height == 0 || result == NULL) {
+		return false;
+	}
+	uint32_t levels = effective_levels(params, width, height);
+	if (levels == 0) {
+		return false;
+	}
+	out->levels = levels;
+	double radius = params->radius > 0.0f ? (double)params->radius : 1.0;
+	const double down_reach = 0.5 * radius + 1.0;   /* texels of the level read */
+	const double up_reach = radius + 1.0;
+
+	/* O(0): the demanded result, in level-0 texels. */
+	struct az_lvl_box O[AVK_BLUR_MAX_LEVELS + 1];
+	struct az_lvl_box U[AVK_BLUR_MAX_LEVELS + 1];
+	struct az_lvl_box D[AVK_BLUR_MAX_LEVELS + 1];
+	O[0] = (struct az_lvl_box){
+		.x0 = (double)result->x, .y0 = (double)result->y,
+		.x1 = (double)result->x + (double)result->width,
+		.y1 = (double)result->y + (double)result->height,
+	};
+	O[0] = lvl_clamp(O[0], width, height);
+
+	/* Up chain, walked from the top down: what each level must supply. */
+	for (uint32_t i = 1; i <= levels; i++) {
+		struct az_lvl_box m = lvl_map(O[i - 1], width, height, i - 1, i);
+		U[i] = lvl_clamp(lvl_dilate(m, up_reach),
+			level_extent(width, i), level_extent(height, i));
+		O[i] = U[i];
+	}
+
+	/* Down chain, from the deepest level back: each level must ALSO supply
+	 * what the next down pass reads from it. */
+	D[levels] = U[levels];
+	for (uint32_t i = levels; i >= 2; i--) {
+		struct az_lvl_box m = lvl_map(D[i], width, height, i, i - 1);
+		struct az_lvl_box need = lvl_dilate(m, down_reach);
+		D[i - 1] = lvl_clamp(lvl_union(U[i - 1], need),
+			level_extent(width, i - 1), level_extent(height, i - 1));
+	}
+	/* And level 0 -- the capture -- must supply the first down pass. */
+	{
+		struct az_lvl_box m = lvl_map(D[1], width, height, 1, 0);
+		struct az_lvl_box need = lvl_clamp(lvl_dilate(m, down_reach),
+			width, height);
+		lvl_snap(need, width, height, &out->capture_req_x, &out->capture_req_y,
+			&out->capture_req_w, &out->capture_req_h);
+	}
+
+	for (uint32_t i = 1; i <= levels; i++) {
+		uint32_t ew = level_extent(width, i), eh = level_extent(height, i);
+		struct avk_blur_level_work *w = &out->down[i];
+		w->level = i;
+		w->extent_w = ew;
+		w->extent_h = eh;
+		w->actual_px = (uint64_t)ew * (uint64_t)eh;
+		lvl_snap(D[i], ew, eh, &w->req_x, &w->req_y, &w->req_w, &w->req_h);
+		w->required_px = (uint64_t)w->req_w * (uint64_t)w->req_h;
+		/* What it reads from level i-1 to render that. */
+		{
+			struct az_lvl_box m = lvl_map(D[i], width, height, i, i - 1);
+			struct az_lvl_box in = lvl_dilate(m, down_reach);
+			w->in_level = i - 1;
+			lvl_snap(in, level_extent(width, i - 1), level_extent(height, i - 1),
+				&w->in_x, &w->in_y, &w->in_w, &w->in_h);
+		}
+		out->actual_px += w->actual_px;
+		out->required_px += w->required_px;
+	}
+	for (uint32_t i = levels; i >= 1; i--) {
+		uint32_t ew = level_extent(width, i - 1), eh = level_extent(height, i - 1);
+		struct avk_blur_level_work *w = &out->up[i - 1];
+		w->level = i - 1;
+		w->extent_w = ew;
+		w->extent_h = eh;
+		w->actual_px = (uint64_t)ew * (uint64_t)eh;
+		lvl_snap(O[i - 1], ew, eh, &w->req_x, &w->req_y, &w->req_w, &w->req_h);
+		w->required_px = (uint64_t)w->req_w * (uint64_t)w->req_h;
+		/* What it reads from level i -- U(i), the dilated mapping. This is the
+		 * one that is wider than the demand; the rendered region is not. */
+		w->in_level = i;
+		lvl_snap(U[i], level_extent(width, i), level_extent(height, i),
+			&w->in_x, &w->in_y, &w->in_w, &w->in_h);
+		out->actual_px += w->actual_px;
+		out->required_px += w->required_px;
+	}
 	return true;
 }

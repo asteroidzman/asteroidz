@@ -3995,6 +3995,72 @@ static cJSON *az_avk_stats_json(void) {
 	} else {
 		cJSON_AddNullToObject(o, "record_us_avg");
 	}
+	/* And its distribution (M4F.2D), summed bucket-wise over renderers so the
+	 * percentile is a percentile of the frames rather than an average of
+	 * percentiles, which would be a percentile of nothing. */
+	{
+		struct avk_hist rec = {0};
+		for (size_t i = 0; i < AZ_AVK_MAX_FORMATS; i++) {
+			if (!avk.renderers[i].used) {
+				continue;
+			}
+			const struct avk_hist *h =
+				&avk.renderers[i].renderer.stats.record_hist;
+			rec.count += h->count;
+			rec.total += h->total;
+			rec.overflow += h->overflow;
+			rec.underflow += h->underflow;
+			if (h->max > rec.max) {
+				rec.max = h->max;
+			}
+			for (uint32_t b = 0; b < AVK_HIST_BUCKETS; b++) {
+				rec.bucket[b] += h->bucket[b];
+			}
+		}
+		cJSON_AddNumberToObject(o, "record_samples", (double)rec.count);
+		/* And the backpressure wait, which used to be inside record_ns. Two
+		 * fields because they answer different questions: how expensive is a
+		 * frame to build, and how often is the CPU ahead of the GPU. */
+		{
+			struct avk_hist rw = {0};
+			for (size_t i = 0; i < AZ_AVK_MAX_FORMATS; i++) {
+				if (!avk.renderers[i].used) {
+					continue;
+				}
+				const struct avk_hist *h =
+					&avk.renderers[i].renderer.stats.ring_wait_hist;
+				rw.count += h->count;
+				rw.total += h->total;
+				rw.overflow += h->overflow;
+				if (h->max > rw.max) { rw.max = h->max; }
+				for (uint32_t b = 0; b < AVK_HIST_BUCKETS; b++) {
+					rw.bucket[b] += h->bucket[b];
+				}
+			}
+			cJSON_AddNumberToObject(o, "ring_wait_ns_avg",
+				(double)avk_hist_mean(&rw));
+			cJSON_AddNumberToObject(o, "ring_wait_ns_p95",
+				(double)avk_hist_pct(&rw, 95.0));
+			cJSON_AddNumberToObject(o, "ring_wait_ns_max", (double)rw.max);
+			cJSON_AddNumberToObject(o, "ring_wait_overflow",
+				(double)rw.overflow);
+		}
+		if (rec.count > 0) {
+			cJSON_AddNumberToObject(o, "record_ns_p50",
+				(double)avk_hist_pct(&rec, 50.0));
+			cJSON_AddNumberToObject(o, "record_ns_p95",
+				(double)avk_hist_pct(&rec, 95.0));
+			cJSON_AddNumberToObject(o, "record_ns_p99",
+				(double)avk_hist_pct(&rec, 99.0));
+			cJSON_AddNumberToObject(o, "record_ns_max", (double)rec.max);
+			cJSON_AddBoolToObject(o, "record_censored", avk_hist_censored(&rec));
+			cJSON_AddNumberToObject(o, "record_overflow", (double)rec.overflow);
+			cJSON_AddNumberToObject(o, "record_underflow",
+				(double)rec.underflow);
+		} else {
+			cJSON_AddNullToObject(o, "record_ns_p50");
+		}
+	}
 	/* Superseded by gpu_frame_us_avg (M4D.P), which is a mean over completed
 	 * timestamp samples. Kept null rather than removed: it was always null, and
 	 * a consumer reading it has never had a number from it. */
@@ -4186,6 +4252,104 @@ static cJSON *az_avk_stats_json(void) {
 	cJSON_AddNumberToObject(o, "gpu_dropped", (double)gpu_dropped);
 
 	/*
+	 * ── GPU DISTRIBUTIONS, AND WHAT EACH SPAN ACTUALLY CONTAINS (M4F.2D) ──
+	 *
+	 * A mean is the wrong statistic for a deadline, so every one of these
+	 * carries p50/p95/p99 from a 20us-bucket histogram, quoted as the UPPER
+	 * EDGE of the bucket the percentile falls in -- an over-estimate by at
+	 * most one bucket, stated rather than hidden.
+	 *
+	 *   gpu_frame        FRAME_BEGIN -> FRAME_END: the whole frame on the GPU.
+	 *   gpu_blur_total   BLUR_BEGIN -> BLUR_END: every prefix replay and every
+	 *                    down/up chain. EXCLUDES the composite draws.
+	 *   gpu_blur_prefix  the FIRST chain's prefix replay.
+	 *   gpu_blur_down    the FIRST chain's downsample passes.
+	 *   gpu_blur_up      the upsample passes, sampled ONLY on frames with
+	 *                    exactly one chain, where that span is nothing else.
+	 *
+	 * gpu_blur_composite_ns DOES NOT EXIST and is not reported as zero. A
+	 * blur's result is drawn by one call sitting at that blur's index inside
+	 * the output segment, interleaved with ordinary content; a timestamp pair
+	 * around it would measure the span of the segment that happens to contain
+	 * it. Its cost is obtained by differencing two frames that differ only in
+	 * whether the composite runs. See avk_timestamp.h.
+	 */
+	{
+		struct avk_hist frame = {0}, total = {0}, prefix = {0}, down = {0},
+			up = {0}, up0 = {0};
+		for (size_t i = 0; i < AZ_AVK_MAX_FORMATS; i++) {
+			if (!avk.renderers[i].used) {
+				continue;
+			}
+			const struct avk_timestamps *ts =
+				&avk.renderers[i].renderer.timestamps;
+			if (!ts->supported) {
+				continue;
+			}
+			/* Bucket-wise addition: two renderers' histograms are over the
+			 * same buckets, so this is exact rather than an average of
+			 * percentiles, which would not be a percentile of anything. */
+			const struct avk_hist *src[6] = { &ts->gpu_frame_hist,
+				&ts->blur_total_hist, &ts->blur_prefix_hist,
+				&ts->blur_down_hist, &ts->blur_up_hist, &ts->blur_up0_hist };
+			struct avk_hist *dst[6] = { &frame, &total, &prefix, &down, &up,
+				&up0 };
+			for (int k = 0; k < 6; k++) {
+				dst[k]->count += src[k]->count;
+				dst[k]->total += src[k]->total;
+				dst[k]->overflow += src[k]->overflow;
+				dst[k]->underflow += src[k]->underflow;
+				if (src[k]->max > dst[k]->max) {
+					dst[k]->max = src[k]->max;
+				}
+				for (uint32_t b = 0; b < AVK_HIST_BUCKETS; b++) {
+					dst[k]->bucket[b] += src[k]->bucket[b];
+				}
+			}
+		}
+		static const char *names[6] = { "gpu_frame", "gpu_blur_total",
+			"gpu_blur_prefix", "gpu_blur_down", "gpu_blur_up",
+			"gpu_blur_up0" };
+		const struct avk_hist *hs[6] = { &frame, &total, &prefix, &down, &up,
+			&up0 };
+		for (int k = 0; k < 6; k++) {
+			char key[64];
+			snprintf(key, sizeof(key), "%s_samples", names[k]);
+			cJSON_AddNumberToObject(o, key, (double)hs[k]->count);
+			/* ALWAYS EMITTED, even with no samples. A consumer that checks
+			 * "overflow == 0" must be able to tell "no overflow" from "the
+			 * key is missing": a missing key reads as non-zero in every shell
+			 * comparison, and a benchmark row was rejected for blur_OVERFLOW
+			 * when what had actually happened was that no blur span was
+			 * collected at all. Absence and saturation are different facts. */
+			snprintf(key, sizeof(key), "%s_censored", names[k]);
+			cJSON_AddBoolToObject(o, key, avk_hist_censored(hs[k]));
+			snprintf(key, sizeof(key), "%s_overflow", names[k]);
+			cJSON_AddNumberToObject(o, key, (double)hs[k]->overflow);
+			snprintf(key, sizeof(key), "%s_underflow", names[k]);
+			cJSON_AddNumberToObject(o, key, (double)hs[k]->underflow);
+			if (hs[k]->count == 0) {
+				/* Null, not zero: zero would assert that the work took no
+				 * time, which is a different claim from "not measured". */
+				snprintf(key, sizeof(key), "%s_ns_avg", names[k]);
+				cJSON_AddNullToObject(o, key);
+				continue;
+			}
+			snprintf(key, sizeof(key), "%s_ns_avg", names[k]);
+			cJSON_AddNumberToObject(o, key, (double)avk_hist_mean(hs[k]));
+			snprintf(key, sizeof(key), "%s_ns_p50", names[k]);
+			cJSON_AddNumberToObject(o, key, (double)avk_hist_pct(hs[k], 50.0));
+			snprintf(key, sizeof(key), "%s_ns_p95", names[k]);
+			cJSON_AddNumberToObject(o, key, (double)avk_hist_pct(hs[k], 95.0));
+			snprintf(key, sizeof(key), "%s_ns_p99", names[k]);
+			cJSON_AddNumberToObject(o, key, (double)avk_hist_pct(hs[k], 99.0));
+			snprintf(key, sizeof(key), "%s_ns_max", names[k]);
+			cJSON_AddNumberToObject(o, key, (double)hs[k]->max);
+		}
+		cJSON_AddNullToObject(o, "gpu_blur_composite_ns");
+	}
+
+	/*
 	 * M4E. The graph, as of the LAST frame each renderer built -- passes,
 	 * resources, uses and barriers are per-frame counters, reset by
 	 * avk_graph_reset(), so summing them over renderers describes the most
@@ -4285,6 +4449,7 @@ static cJSON *az_avk_stats_json(void) {
 	uint64_t d_touched = 0, d_skipped = 0, d_fallbacks = 0, d_rects = 0;
 	uint64_t d_inherited = 0, d_build_ns = 0;
 	uint64_t d_halo = 0, d_cap_px = 0, d_res_px = 0, d_proc_px = 0;
+	uint64_t d_req_px = 0;
 	for (size_t i = 0; i < AZ_AVK_MAX_FORMATS; i++) {
 		if (!avk.renderers[i].used) {
 			continue;
@@ -4307,6 +4472,7 @@ static cJSON *az_avk_stats_json(void) {
 		d_write_full += r->blur_full_write_pixels;
 		d_cap_full += r->blur_full_capture_pixels;
 		d_saved += r->blur_damage_saved_pixels;
+		d_req_px += r->blur_required_work_pixels;
 		d_touched += r->blur_damage_nodes_touched;
 		d_skipped += r->blur_damage_nodes_skipped;
 		d_fallbacks += r->blur_damage_fallbacks;
@@ -4365,6 +4531,78 @@ static cJSON *az_avk_stats_json(void) {
 	cJSON_AddNumberToObject(o, "blur_capture_pixels", (double)d_cap_px);
 	cJSON_AddNumberToObject(o, "blur_result_pixels", (double)d_res_px);
 	cJSON_AddNumberToObject(o, "blur_processed_pixels", (double)d_proc_px);
+	/* AND WHAT IT WOULD HAVE HAD TO PROCESS. The pair is the per-level scissor
+	 * question stated as two numbers over the same frames; see
+	 * blur_required_work_pixels. processed/required is a PIXEL-WORK upper
+	 * bound on what regional execution could remove, not a GPU speedup. */
+	cJSON_AddNumberToObject(o, "blur_required_work_pixels", (double)d_req_px);
+	/*
+	 * WHAT EACH CANDIDATE STRATEGY WOULD REMOVE, in pixel work, from the same
+	 * derivation and the same frames. The question M4F.2D asks is not "how
+	 * much could regional execution save" but "how much of that does the
+	 * SIMPLEST implementation capture", and these are the numerators of that.
+	 */
+	{
+		uint64_t up0 = 0, up01 = 0, upc = 0;
+		struct avk_hist rb = {0};
+		for (size_t i = 0; i < AZ_AVK_MAX_FORMATS; i++) {
+			if (!avk.renderers[i].used) {
+				continue;
+			}
+			const struct avk_renderer *r = &avk.renderers[i].renderer;
+			up0 += r->blur_removable_up0_pixels;
+			up01 += r->blur_removable_up01_pixels;
+			upc += r->blur_removable_up_pixels;
+			const struct avk_hist *h = &r->blur_region_build_hist;
+			rb.count += h->count;
+			rb.total += h->total;
+			rb.overflow += h->overflow;
+			rb.underflow += h->underflow;
+			if (h->max > rb.max) { rb.max = h->max; }
+			for (uint32_t b = 0; b < AVK_HIST_BUCKETS; b++) {
+				rb.bucket[b] += h->bucket[b];
+			}
+		}
+		{
+			/* THE FRAME TOPOLOGY, so a reader can tell whether the up-phase
+			 * and final-upsample timings were attributable at all: those
+			 * spans are only meaningful on a frame with exactly one chain. */
+			uint64_t maxslots = 0;
+			for (size_t i = 0; i < AZ_AVK_MAX_FORMATS; i++) {
+				if (avk.renderers[i].used
+						&& avk.renderers[i].renderer.blur_max_slots > maxslots) {
+					maxslots = avk.renderers[i].renderer.blur_max_slots;
+				}
+			}
+			cJSON_AddNumberToObject(o, "blur_max_chains_per_frame",
+				(double)maxslots);
+		}
+		cJSON_AddNumberToObject(o, "blur_removable_up0_pixels", (double)up0);
+		cJSON_AddNumberToObject(o, "blur_removable_up01_pixels", (double)up01);
+		cJSON_AddNumberToObject(o, "blur_removable_up_pixels", (double)upc);
+		/* All levels: processed minus required, the full-regionalisation
+		 * upper bound, printed here so a reader does not have to subtract. */
+		cJSON_AddNumberToObject(o, "blur_removable_all_pixels",
+			(double)(d_proc_px > d_req_px ? d_proc_px - d_req_px : 0));
+		cJSON_AddNumberToObject(o, "blur_region_build_samples",
+			(double)rb.count);
+		if (rb.count > 0) {
+			cJSON_AddNumberToObject(o, "blur_region_build_ns_avg",
+				(double)avk_hist_mean(&rb));
+			cJSON_AddNumberToObject(o, "blur_region_build_ns_p50",
+				(double)avk_hist_pct(&rb, 50.0));
+			cJSON_AddNumberToObject(o, "blur_region_build_ns_p95",
+				(double)avk_hist_pct(&rb, 95.0));
+			cJSON_AddNumberToObject(o, "blur_region_build_ns_p99",
+				(double)avk_hist_pct(&rb, 99.0));
+			cJSON_AddNumberToObject(o, "blur_region_build_ns_max",
+				(double)rb.max);
+			cJSON_AddNumberToObject(o, "blur_region_build_underflow",
+				(double)rb.underflow);
+		} else {
+			cJSON_AddNullToObject(o, "blur_region_build_ns_p50");
+		}
+	}
 	cJSON_AddNumberToObject(o, "graph_frames", (double)g_frames);
 	if (g_frames > 0) {
 		cJSON_AddNumberToObject(o, "graph_build_ns_avg",
@@ -4629,6 +4867,36 @@ static void az_avk_stats_reset(void) {
 				r->blur_capture_pixels = 0;
 				r->blur_result_pixels = 0;
 				r->blur_processed_pixels = 0;
+				r->blur_required_work_pixels = 0;
+				r->blur_max_slots = 0;
+				r->blur_removable_up0_pixels = 0;
+				r->blur_removable_up01_pixels = 0;
+				r->blur_removable_up_pixels = 0;
+				r->blur_region_build_hist = (struct avk_hist){0};
+				/*
+				 * ── AND THE GPU HISTOGRAMS, WHICH SURVIVED A RESET ────────
+				 *
+				 * These live in `timestamps`, not in `stats`, so zeroing the
+				 * renderer stats left them alone: a benchmark that reset and
+				 * then measured 21 frames reported 31 blur_total samples,
+				 * eleven of them from before the reset. Every GPU percentile
+				 * in that window was a mixture of two workloads.
+				 *
+				 * The SLOTS are deliberately left alone: a frame submitted
+				 * before the reset will still land in one, and dropping it
+				 * would only trade contamination for a lost sample. What the
+				 * reset owns is the accumulated distribution.
+				 */
+				struct avk_timestamps *ts = &r->timestamps;
+				ts->gpu_frame_hist = (struct avk_hist){0};
+				ts->blur_total_hist = (struct avk_hist){0};
+				ts->blur_prefix_hist = (struct avk_hist){0};
+				ts->blur_down_hist = (struct avk_hist){0};
+				ts->blur_up_hist = (struct avk_hist){0};
+				ts->blur_up0_hist = (struct avk_hist){0};
+				ts->gpu_frame_ns_total = 0;
+				ts->samples = 0;
+				ts->dropped = 0;
 				r->blur_stats = (struct avk_blur_stats){0};
 			}
 		}

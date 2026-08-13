@@ -1178,7 +1178,27 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 	struct timespec start;
 	clock_gettime(CLOCK_MONOTONIC, &start);
 
+	/*
+	 * ── THE RING WAIT IS NOT RECORDING TIME ───────────────────────────────
+	 *
+	 * avk_cmd_ring_begin() BLOCKS when the slot it is about to hand out is
+	 * still in flight: three frames deep, so it only happens when the CPU has
+	 * run ahead of the GPU. That wait was inside record_ns, and it is not CPU
+	 * work -- it is the CPU standing still. It is what produced record samples
+	 * past the 40.96 ms histogram ceiling on a fixture doing almost nothing,
+	 * and widening the histogram would have preserved the lie in more buckets.
+	 *
+	 * Timed separately and subtracted. `cpu_sync_waits` already counted these
+	 * stalls; now their DURATION is reported too, because a counter that says
+	 * "it happened" cannot say "it cost 40 ms".
+	 */
+	struct timespec ring0;
+	clock_gettime(CLOCK_MONOTONIC, &ring0);
 	VkCommandBuffer cb = avk_cmd_ring_begin(&renderer->ring);
+	struct timespec ring1;
+	clock_gettime(CLOCK_MONOTONIC, &ring1);
+	uint64_t ring_wait_ns = (uint64_t)(ring1.tv_sec - ring0.tv_sec)
+		* 1000000000ULL + (uint64_t)(ring1.tv_nsec - ring0.tv_nsec);
 	if (cb == VK_NULL_HANDLE) {
 		return 0;
 	}
@@ -1725,6 +1745,17 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 		if (!avk_render_declare_segment(graph, seg, r_prefix)) {
 			continue;
 		}
+		/*
+		 * BLUR_BEGIN goes on the FIRST prefix replay, which is the first blur
+		 * work in the frame: every chain is declared before the output
+		 * segment, so BLUR_BEGIN..BLUR_END is one contiguous range of the
+		 * command stream containing all the blur work and nothing else.
+		 * PREFIX_END closes the first chain's replay phase.
+		 */
+		if (s == 0) {
+			avk_graph_pass_time(graph, AVK_TS_BLUR_BEGIN,
+				AVK_TS_BLUR_PREFIX_END);
+		}
 		renderer->blur_prefix_replays++;
 		/*
 		 * WHAT WAS REPLAYED, not what was meant to be.
@@ -1779,13 +1810,81 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 		/* The chain writes its final upsample back into the prefix transient:
 		 * nothing reads the unblurred prefix after the first downsample, so a
 		 * second full-size image would be allocated only to be thrown away. */
+		/*
+		 * PHASE MARKS FOR THE FIRST CHAIN ONLY. With N chains the command
+		 * stream is prefix0, chain0, prefix1, chain1..., so "all the
+		 * downsamples" is not a contiguous range and a pair around it would
+		 * measure everything in between. The first chain is contiguous by
+		 * construction and is the one that gets them.
+		 */
+		const struct avk_blur_marks chain_marks = {
+			.down_end = (s == 0) ? AVK_TS_BLUR_DOWN_END : AVK_TS_NONE,
+			/* NOT bound to the last SLOT: a slot whose chain is declined never
+			 * becomes a pass, so the mark would be lost. Moved onto whichever
+			 * chain actually declared last, below. */
+			.up_end = AVK_TS_NONE,
+			.up_penult_end = (slot_len == 1)
+				? AVK_TS_BLUR_UP_PENULT_END : AVK_TS_NONE,
+		};
+		/*
+		 * WHAT THIS CHAIN WOULD HAVE HAD TO PROCESS, derived BEFORE it is
+		 * declared -- because the falsifier needs the regions in hand to
+		 * scissor a pass to them, and because accumulating the pair here keeps
+		 * actual and required over the same frames and the same chains. A
+		 * ratio taken across different denominators is the mistake this
+		 * pairing exists to prevent.
+		 *
+		 * The demanded region is the composite's own read region, in
+		 * capture-local pixels, as a bounding box. See
+		 * blur_required_work_pixels for why that bias is the safe one.
+		 */
+		struct avk_blur_work work;
+		bool have_work = false;
+		if (pixman_region32_not_empty(&d->result_region)) {
+			struct timespec rb0, rb1;
+			clock_gettime(CLOCK_MONOTONIC, &rb0);
+			pixman_box32_t rb = *pixman_region32_extents(&d->result_region);
+			struct avk_box res_local = {
+				rb.x1 - rg.capture.x, rb.y1 - rg.capture.y,
+				rb.x2 - rb.x1, rb.y2 - rb.y1,
+			};
+			have_work = avk_blur_work_of(&params, (uint32_t)rg.capture.width,
+				(uint32_t)rg.capture.height, &res_local, &work);
+			clock_gettime(CLOCK_MONOTONIC, &rb1);
+			/* ONE bracket around the whole derivation for this chain, not one
+			 * per rectangle: a timer per operation would cost more than the
+			 * arithmetic it measures and would be measuring itself. */
+			avk_hist_add(&renderer->blur_region_build_hist,
+				(uint64_t)(rb1.tv_sec - rb0.tv_sec) * 1000000000ULL
+				+ (uint64_t)(rb1.tv_nsec - rb0.tv_nsec));
+		}
 		if (avk_blur_declare(graph, &renderer->transients, &renderer->pipes,
 				&renderer->blur_stats, r_prefix, r_prefix,
 				(uint32_t)rg.capture.width, (uint32_t)rg.capture.height,
-				renderer->format, &params)) {
+				renderer->format, &params, &chain_marks,
+				have_work ? &work : NULL)) {
 			renderer->blur_results[i] = (struct avk_blur_result){
 				.image = prefix, .capture = rg.capture,
 			};
+			/* THIS chain declared, so it is the last one so far. */
+			avk_graph_pass_time_move_end(graph, AVK_TS_BLUR_END);
+			if (have_work) {
+				renderer->blur_required_work_pixels += work.required_px;
+				/* And what each candidate strategy would remove, from the same
+				 * derivation and over the same frames. */
+				uint64_t up0 = work.up[0].actual_px - work.up[0].required_px;
+				renderer->blur_removable_up0_pixels += up0;
+				uint64_t up01 = up0;
+				if (work.levels >= 2) {
+					up01 += work.up[1].actual_px - work.up[1].required_px;
+				}
+				renderer->blur_removable_up01_pixels += up01;
+				uint64_t upc = 0;
+				for (uint32_t lv = 0; lv < work.levels; lv++) {
+					upc += work.up[lv].actual_px - work.up[lv].required_px;
+				}
+				renderer->blur_removable_up_pixels += upc;
+			}
 			/* BOUNDARY 2: the same image, after the chain has written its
 			 * result back into it -- compared only where the composite will
 			 * read it. */
@@ -1826,6 +1925,16 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 		.load = true,
 		.gradient_set = gradient_set,
 	};
+	/*
+	 * The up phase is only separable when the frame had exactly ONE chain:
+	 * with two, BLUR_DOWN_END..BLUR_END is "up0 + prefix1 + chain1", which is
+	 * not an upsample cost and must not be recorded as one.
+	 */
+	avk_timestamps_single_chain(&renderer->timestamps, ts_slot, slot_len == 1);
+	if ((uint64_t)slot_len > renderer->blur_max_slots) {
+		renderer->blur_max_slots = (uint64_t)slot_len;
+	}
+
 	if (!avk_render_declare_segment(graph, &ctx, r_target)) {
 		avk_cmd_ring_abandon(&renderer->ring);
 		return 0;
@@ -1927,8 +2036,18 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 
 	struct timespec end;
 	clock_gettime(CLOCK_MONOTONIC, &end);
-	renderer->stats.cpu_record_ns += (uint64_t)(end.tv_sec - start.tv_sec)
+	uint64_t frame_record_ns = (uint64_t)(end.tv_sec - start.tv_sec)
 		* 1000000000ULL + (uint64_t)(end.tv_nsec - start.tv_nsec);
+	/* MINUS the backpressure wait: record_ns describes work, not waiting. */
+	frame_record_ns = frame_record_ns > ring_wait_ns
+		? frame_record_ns - ring_wait_ns : 0;
+	renderer->stats.cpu_ring_wait_ns += ring_wait_ns;
+	avk_hist_add(&renderer->stats.ring_wait_hist, ring_wait_ns);
+	renderer->stats.cpu_record_ns += frame_record_ns;
+	/* And the same frame's own value into the distribution, because a mean
+	 * over a run hides the frames that miss a vblank -- which are the only
+	 * ones a frame budget is about. */
+	avk_hist_add(&renderer->stats.record_hist, frame_record_ns);
 
 	/* Backpressure stalls in the command ring are the only CPU waits the
 	 * frame path can incur, so they are reported as exactly that. */

@@ -262,6 +262,30 @@ bool avk_graph_use(struct avk_graph *graph, uint32_t resource,
 	return true;
 }
 
+void avk_graph_pass_time_move_end(struct avk_graph *graph,
+		enum avk_ts_mark end) {
+	if (graph->pass_len == 0 || end >= AVK_TS_MARKS) {
+		return;
+	}
+	for (uint32_t p = 0; p < graph->pass_len; p++) {
+		if (graph->passes[p].timed && graph->passes[p].mark_end == end) {
+			graph->passes[p].mark_end = AVK_TS_NONE;
+			if (graph->passes[p].mark_begin == AVK_TS_NONE) {
+				graph->passes[p].timed = false;
+			}
+		}
+	}
+	struct avk_graph_pass *pass = &graph->passes[graph->pass_len - 1];
+	/* A pass that was not timed has no begin mark of its own; give it the
+	 * sentinel rather than leaving the zero-initialised FRAME_BEGIN, which
+	 * would write that query a second time. */
+	if (!pass->timed) {
+		pass->mark_begin = AVK_TS_NONE;
+	}
+	pass->timed = true;
+	pass->mark_end = end;
+}
+
 void avk_graph_pass_time(struct avk_graph *graph, enum avk_ts_mark begin,
 		enum avk_ts_mark end) {
 	if (graph->pass_len == 0) {

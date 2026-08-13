@@ -3,6 +3,7 @@
 
 #include "../command/avk_command.h"
 #include "../command/avk_retire.h"
+#include "../command/avk_stat.h"
 #include "../command/avk_timestamp.h"
 #include "../graph/avk_graph.h"
 #include "../effect/avk_blur.h"
@@ -265,6 +266,25 @@ struct avk_renderer_stats {
 	 * (M4D.P). The two are deliberately not folded into one field.
 	 */
 	uint64_t cpu_record_ns;
+	/*
+	 * The same quantity as a DISTRIBUTION. A mean over a run hides exactly the
+	 * frames that miss a vblank, and M4F.2D asks what a blur costs at p95 and
+	 * p99, not on average. Fed once per frame with that frame's own record
+	 * time; see avk_stat.h for the bucketing and what a percentile off it does
+	 * and does not claim.
+	 */
+	struct avk_hist record_hist;
+	/*
+	 * WAITING, kept apart from working.
+	 *
+	 * avk_cmd_ring_begin() blocks when the CPU has run three frames ahead of
+	 * the GPU. That is backpressure, not recording cost, and it used to be
+	 * inside cpu_record_ns -- where it produced samples past a 40 ms ceiling
+	 * on an almost idle fixture. cpu_sync_waits counts the stalls; these
+	 * measure them.
+	 */
+	uint64_t cpu_ring_wait_ns;
+	struct avk_hist ring_wait_hist;
 };
 
 struct avk_renderer {
@@ -538,6 +558,50 @@ struct avk_renderer {
 	uint64_t blur_capture_pixels;
 	uint64_t blur_result_pixels;
 	uint64_t blur_processed_pixels;
+	/*
+	 * WHAT THE CHAIN WOULD HAVE TO PROCESS, summed per pass, with every
+	 * filter footprint included -- avk_blur_work_of(). The denominator of the
+	 * per-level scissor question, and deliberately NOT the composite's read
+	 * region: a texel shaded at level 0 and a texel shaded at level 1 are
+	 * separate GPU work, and every level must produce enough for the next
+	 * pass to sample.
+	 *
+	 * Rectangle arithmetic, so a multi-rectangle result region is treated as
+	 * its bounding box: `required` comes out too LARGE and the amplification
+	 * therefore too SMALL, which is the safe direction for a decision about
+	 * whether to optimise.
+	 */
+	uint64_t blur_required_work_pixels;
+	/*
+	 * ── WHAT EACH CANDIDATE STRATEGY WOULD REMOVE ─────────────────────────
+	 *
+	 * M4F.2D asks which is the SIMPLEST implementation that captures most of
+	 * the opportunity, so the opportunity is accumulated per candidate rather
+	 * than as one global figure. Each is (actual - required) summed over the
+	 * passes that strategy would scissor:
+	 *
+	 *   up0        the final full-resolution upsample only
+	 *   up01       that plus the one below it
+	 *   up_chain   every upsample
+	 *   (all)      every pass = processed - required, already derivable
+	 *
+	 * Pixel work only. None of these is a GPU time estimate; pass overhead,
+	 * raster setup, barriers and bandwidth are not proportional to shaded
+	 * texels.
+	 */
+	/* The most chains any single frame declared. The up-phase and final-
+	 * upsample timestamp spans are only attributable when this is 1. */
+	uint64_t blur_max_slots;
+	uint64_t blur_removable_up0_pixels;
+	uint64_t blur_removable_up01_pixels;
+	uint64_t blur_removable_up_pixels;
+	/*
+	 * WHAT DERIVING ALL OF THAT COSTS ON THE CPU, per frame, as one batch --
+	 * not per rectangle operation. Even a simple scissor is not free, and an
+	 * estimator that costs more than the GPU work it removes is not an
+	 * optimisation.
+	 */
+	struct avk_hist blur_region_build_hist;
 	VkFormat format;
 
 	struct avk_renderer_stats stats;

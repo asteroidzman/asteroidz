@@ -257,7 +257,7 @@ static bool blur(struct harness *h, const struct avk_blur_params *params,
 		return false;
 	}
 	if (!avk_blur_declare(g, &h->renderer.transients, &h->renderer.pipes,
-			stats, rs, rd, W, H, FMT, params)) {
+			stats, rs, rd, W, H, FMT, params, NULL, NULL)) {
 		return false;
 	}
 
@@ -824,7 +824,8 @@ static void test_padding_poison(struct harness *h) {
 			uint32_t rd = avk_graph_add_image(g, h->dst, false, AVK_EXIT_KEEP);
 			struct avk_blur_params p = plain(levels, 1.0f);
 			if (!avk_blur_declare(g, &h->renderer.transients,
-					&h->renderer.pipes, NULL, rs, rd, w, w, FMT, &p)) {
+					&h->renderer.pipes, NULL, rs, rd, w, w, FMT, &p,
+					NULL, NULL)) {
 				continue;
 			}
 			VkCommandBuffer cb = avk_cmd_ring_begin(&h->renderer.ring);

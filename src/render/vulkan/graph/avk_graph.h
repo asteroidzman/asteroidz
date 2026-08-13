@@ -346,6 +346,22 @@ bool avk_graph_use(struct avk_graph *graph, uint32_t resource,
 	enum avk_graph_usage usage, const struct avk_box *region);
 
 /* Ask for the pass in progress to be bracketed by a timestamp pair. */
+/*
+ * Move an END mark onto the pass just declared, taking it off whichever pass
+ * currently holds it.
+ *
+ * For "the last one of N", where N is not known until the loop ends and some
+ * candidates may drop out. BLUR_END was bound to the last blur SLOT, but a
+ * slot whose chain is declined never becomes a pass -- so on a two-slot frame
+ * where the second was skipped the mark was never written, BLUR_BEGIN had no
+ * partner, and gpu_blur_total collected ZERO samples while ten chains ran.
+ *
+ * Writing the same query twice is invalid usage, so this clears before it
+ * sets. Linear over the frame's passes, which number in the tens.
+ */
+void avk_graph_pass_time_move_end(struct avk_graph *graph,
+	enum avk_ts_mark end);
+
 void avk_graph_pass_time(struct avk_graph *graph, enum avk_ts_mark begin,
 	enum avk_ts_mark end);
 

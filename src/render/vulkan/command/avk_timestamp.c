@@ -97,6 +97,7 @@ void avk_timestamps_begin(struct avk_timestamps *ts, VkCommandBuffer cb,
 		ts->slots[slot].timeline_value = 0;
 	}
 	ts->slots[slot].written = 0;
+	ts->slots[slot].single_chain = false;
 
 	vkCmdResetQueryPool(cb, ts->pool, slot * AVK_TS_MARKS, AVK_TS_MARKS);
 }
@@ -109,6 +110,14 @@ void avk_timestamps_mark(struct avk_timestamps *ts, VkCommandBuffer cb,
 	}
 	vkCmdWriteTimestamp2(cb, stage, ts->pool, slot * AVK_TS_MARKS + mark);
 	ts->slots[slot].written |= 1u << mark;
+}
+
+void avk_timestamps_single_chain(struct avk_timestamps *ts, uint32_t slot,
+		bool single) {
+	if (!ts->supported || slot >= AVK_FRAMES_IN_FLIGHT) {
+		return;
+	}
+	ts->slots[slot].single_chain = single;
 }
 
 void avk_timestamps_submitted(struct avk_timestamps *ts, uint32_t slot,
@@ -163,10 +172,23 @@ static bool read_slot(struct avk_timestamps *ts, uint32_t slot,
 		slot * AVK_TS_MARKS, AVK_TS_MARKS, sizeof(raw), raw,
 		2 * sizeof(uint64_t),
 		VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
-	if (res == VK_NOT_READY) {
-		return false;
-	}
-	if (res != VK_SUCCESS) {
+	/*
+	 * VK_NOT_READY DOES NOT MEAN "COME BACK LATER" HERE.
+	 *
+	 * vkGetQueryPoolResults returns VK_NOT_READY when ANY query in the range
+	 * is unavailable -- and once marks became optional (M4F.2D), a frame that
+	 * writes only some of them leaves the rest reset-but-never-written, which
+	 * is unavailable FOREVER. The range read then returned VK_NOT_READY on
+	 * every frame, every slot was retried until it came round again, and the
+	 * collector lost 100% of its samples: measured, 0 collected and 35
+	 * dropped over 38 frames, with the frame marks written every time.
+	 *
+	 * The availability words are still written for the queries that ARE
+	 * available, so the per-mark check below is the one that decides. It was
+	 * always the real gate; this return code was a second, wrong one that
+	 * happened to agree while every frame wrote every mark.
+	 */
+	if (res != VK_SUCCESS && res != VK_NOT_READY) {
 		/* Give the slot back rather than retrying a failing read every frame
 		 * for the life of the compositor. */
 		s->timeline_value = 0;
@@ -182,6 +204,10 @@ static bool read_slot(struct avk_timestamps *ts, uint32_t slot,
 		}
 	}
 
+	/* A span is only computed when BOTH of its marks were written. A mark
+	 * that was not written has no result, and reading its query returns a
+	 * stale value from three frames ago -- indistinguishable from a plausible
+	 * one, which is how a "measurement" becomes a number nobody can defend. */
 	uint32_t need = (1u << AVK_TS_FRAME_BEGIN) | (1u << AVK_TS_FRAME_END);
 	if ((s->written & need) == need) {
 		uint64_t frame = avk_ts_ticks_between(ts->valid_mask,
@@ -189,7 +215,58 @@ static bool read_slot(struct avk_timestamps *ts, uint32_t slot,
 		ts->gpu_frame_ns = (uint64_t)((double)frame * ts->period_ns);
 		ts->gpu_frame_ns_total += ts->gpu_frame_ns;
 		ts->samples++;
+		if (ts->gpu_frame_ns >= (uint64_t)AVK_HIST_BUCKETS * AVK_HIST_SCALE_NS) {
+			avk_log(AVK_ERROR, "avk timing: gpu_frame span %.3f ms exceeds the "
+				"histogram ceiling (slot %u, written=0x%x)",
+				(double)ts->gpu_frame_ns / 1e6, slot, s->written);
+		}
+		avk_hist_add(&ts->gpu_frame_hist, ts->gpu_frame_ns);
 	}
+
+	/*
+	 * ── OVERFLOW FORENSICS ────────────────────────────────────────────────
+	 *
+	 * A span past the histogram ceiling is either a real outlier worth
+	 * explaining or a mark being paired with the wrong one, and a bucket
+	 * counter cannot tell those apart. So an overflowing span says so once,
+	 * with its exact value and the slot's topology -- and NOTHING is logged
+	 * for the ordinary frames, which are the overwhelming majority.
+	 */
+	uint64_t span;
+#define AVK_TS_REPORT(name, v) do { \
+		if ((v) >= (uint64_t)AVK_HIST_BUCKETS * AVK_HIST_SCALE_NS) { \
+			avk_log(AVK_ERROR, "avk timing: %s span %.3f ms exceeds the " \
+				"histogram ceiling (slot %u, single_chain=%d, written=0x%x)", \
+				name, (double)(v) / 1e6, slot, s->single_chain ? 1 : 0, \
+				s->written); \
+		} \
+	} while (0)
+#define AVK_TS_SPAN(a, b) \
+	((((s->written >> (a)) & 1u) && (((s->written >> (b)) & 1u))) \
+		? (span = (uint64_t)((double)avk_ts_ticks_between(ts->valid_mask, \
+			raw[(a) * 2], raw[(b) * 2]) * ts->period_ns), true) : false)
+
+	if (AVK_TS_SPAN(AVK_TS_BLUR_BEGIN, AVK_TS_BLUR_END)) {
+		AVK_TS_REPORT("blur_total", span);
+		avk_hist_add(&ts->blur_total_hist, span);
+	}
+	if (AVK_TS_SPAN(AVK_TS_BLUR_BEGIN, AVK_TS_BLUR_PREFIX_END)) {
+		avk_hist_add(&ts->blur_prefix_hist, span);
+	}
+	if (AVK_TS_SPAN(AVK_TS_BLUR_PREFIX_END, AVK_TS_BLUR_DOWN_END)) {
+		avk_hist_add(&ts->blur_down_hist, span);
+	}
+	/* ONLY on a single-chain frame: with two chains this range is
+	 * "up0 + prefix1 + chain1", which is not an upsample cost. */
+	if (s->single_chain && AVK_TS_SPAN(AVK_TS_BLUR_DOWN_END, AVK_TS_BLUR_END)) {
+		avk_hist_add(&ts->blur_up_hist, span);
+	}
+	if (s->single_chain
+			&& AVK_TS_SPAN(AVK_TS_BLUR_UP_PENULT_END, AVK_TS_BLUR_END)) {
+		avk_hist_add(&ts->blur_up0_hist, span);
+	}
+#undef AVK_TS_SPAN
+#undef AVK_TS_REPORT
 
 	s->timeline_value = 0;
 	return true;

@@ -2,6 +2,7 @@
 #define AVK_TIMESTAMP_H
 
 #include "../device/avk_device.h"
+#include "avk_stat.h"
 
 /*
  * GPU timestamps, measured without ever making the CPU wait for them.
@@ -65,16 +66,71 @@
  * separable pass with its own barriers, and a phase pair can be added then,
  * driven by the code that needs it rather than waiting speculatively for it.
  */
+/*
+ * ── AND M4F DID ADD ONE, SO HERE IT IS ────────────────────────────────────
+ *
+ * Blur IS separable, which is exactly the condition the paragraph above set.
+ * Every blur pass -- each blur's prefix replay and its whole down/up chain --
+ * is declared BEFORE the output segment, so the span from the first prefix
+ * replay to the last upsample is ONE CONTIGUOUS RANGE of the command stream
+ * containing nothing else. That is what makes a pair honest here and dishonest
+ * for shadows.
+ *
+ * WHAT IS NOT MEASURABLE THIS WAY, and is therefore not offered: the blur
+ * COMPOSITE. A blur's result is drawn into the output by one draw call sitting
+ * at that blur's index in the output segment, interleaved with ordinary
+ * content draws. Bracketing it would measure "the span of the output segment
+ * that happens to contain the composite", which is very nearly the whole
+ * segment. gpu_blur_composite_ns does not exist; the cost is obtained by
+ * differencing two frames that differ only in whether the composite runs.
+ *
+ * THE PHASE MARKS DESCRIBE THE FIRST CHAIN ONLY. With N blurs the stream is
+ * prefix0, chain0, prefix1, chain1, ... so "all the prefix replays" is not a
+ * contiguous range and cannot be one pair. PREFIX_END and DOWN_END are written
+ * for the first chain; the up phase is only separable when there is exactly
+ * one chain, and the slot records whether that was so.
+ */
 enum avk_ts_mark {
 	AVK_TS_FRAME_BEGIN = 0,
 	AVK_TS_FRAME_END,
+	/* Before the first blur pass of the frame (TOP_OF_PIPE) and after the
+	 * last one (BOTTOM_OF_PIPE). */
+	AVK_TS_BLUR_BEGIN,
+	AVK_TS_BLUR_END,
+	/* After the FIRST chain's prefix replay, and after its last downsample. */
+	AVK_TS_BLUR_PREFIX_END,
+	AVK_TS_BLUR_DOWN_END,
+	/*
+	 * After the PENULTIMATE upsample -- so BLUR_UP_PENULT_END -> BLUR_END is
+	 * the FINAL, full-resolution upsample alone.
+	 *
+	 * That pass is the one the M4F.2D decision is about: it rasterises at the
+	 * full capture extent, it applies the effects, and its required region is
+	 * the one the falsifier proved tight. It is a real graph pass boundary --
+	 * `blur_up` and `blur_up_final` are separate passes already -- so this
+	 * costs one more query and no restructuring. Only meaningful on a
+	 * single-chain frame with at least two levels.
+	 */
+	AVK_TS_BLUR_UP_PENULT_END,
 	AVK_TS_MARKS,
+	/*
+	 * "No mark." Deliberately equal to AVK_TS_MARKS, so the bounds check
+	 * avk_timestamps_mark() already performs skips it and no call site needs a
+	 * second kind of guard. A pass that wants only a begin or only an end
+	 * passes this for the other.
+	 */
+	AVK_TS_NONE = AVK_TS_MARKS,
 };
 
 struct avk_ts_slot {
 	/* The timeline point the submission carrying these marks will signal.
 	 * 0 means nothing is outstanding in this slot. */
 	uint64_t timeline_value;
+	/* Whether this frame had EXACTLY ONE blur chain, which is the condition
+	 * under which DOWN_END -> BLUR_END is the first chain's upsample phase
+	 * rather than "everything after the first chain's downsamples". Recorded
+	 * per slot because it is a property of the frame, not of the renderer. */
+	bool single_chain;
 	/* Which marks were actually written this frame. A mark that was not
 	 * written has no result, and reading its query would return a stale value
 	 * from three frames ago -- indistinguishable from a plausible one. */
@@ -108,7 +164,33 @@ struct avk_timestamps {
 	uint64_t gpu_frame_ns_total;
 	uint64_t samples;
 	uint64_t dropped;
+
+	/*
+	 * ── THE BLUR SPANS ────────────────────────────────────────────────────
+	 *
+	 * total    BLUR_BEGIN -> BLUR_END. Every prefix replay and every down/up
+	 *          chain in the frame. EXCLUDES the composite draws, which are
+	 *          interleaved with content in the output segment.
+	 * prefix   BLUR_BEGIN -> BLUR_PREFIX_END, the FIRST chain's prefix replay.
+	 * down     BLUR_PREFIX_END -> BLUR_DOWN_END, the FIRST chain's downsamples.
+	 * up       BLUR_DOWN_END -> BLUR_END, and only sampled on frames with
+	 *          exactly one chain, where that range is the upsamples and
+	 *          nothing else.
+	 */
+	struct avk_hist gpu_frame_hist;
+	struct avk_hist blur_total_hist;
+	struct avk_hist blur_prefix_hist;
+	struct avk_hist blur_down_hist;
+	struct avk_hist blur_up_hist;
+	/* The final upsample alone: PENULT_END -> BLUR_END, single-chain frames
+	 * with levels >= 2. */
+	struct avk_hist blur_up0_hist;
 };
+
+/* Whether this frame's blur work was a single chain, so the up phase can be
+ * attributed. Called by the renderer before submission. */
+void avk_timestamps_single_chain(struct avk_timestamps *ts, uint32_t slot,
+	bool single);
 
 /*
  * Returns true if timestamps are available and false if they are not. A false
