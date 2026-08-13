@@ -44,7 +44,8 @@ START = re.compile(
     r"from=(-?\d+),(-?\d+),(-?\d+)x(-?\d+) to=(-?\d+),(-?\d+),(-?\d+)x(-?\d+) "
     r"cur=(-?\d+),(-?\d+),(-?\d+)x(-?\d+) t_ns=(\d+)")
 END = re.compile(
-    r"azpace anim end c=(\S+) action=(\d+) dur=(\d+) t_ms=(-?\d+) t_ns=(\d+)")
+    r"azpace anim end c=(\S+) action=(\d+) dur=(\d+) t_ms=(-?\d+) "
+    r"converged=(\d) t_ns=(\d+)")
 PRESENT = re.compile(
     r"azpace present mon=(\S+) seq=(\d+) t_ns=(\d+) delta_us=(-?\d+)")
 RENDER = re.compile(
@@ -104,7 +105,8 @@ def parse(path, since_ns=0):
             g = m.groups()
             events.append(("end", dict(c=g[0], action=int(g[1]),
                                        dur=int(g[2]), t_ms=int(g[3]),
-                                       t_ns=int(g[4]))))
+                                       converged=int(g[4]),
+                                       t_ns=int(g[5]))))
             continue
         m = PRESENT.search(line)
         if m:
@@ -156,6 +158,7 @@ def build_animations(events):
             if r is not None:
                 r["end_t_ms"] = e["t_ms"]
                 r["end_ns"] = e["t_ns"]
+                r["converged"] = e["converged"]
                 close(e["c"], "completed")
     for c in list(open_run):
         close(c, "truncated")
@@ -174,6 +177,7 @@ def summarise_run(r):
     if not t:
         return out
     out["measured_ms"] = round((t[-1]["t_ns"] - r["start_ns"]) / 1e6, 2)
+    out["converged"] = r.get("converged")
     if "end_ns" in r:
         out["measured_ms"] = round((r["end_ns"] - r["start_ns"]) / 1e6, 2)
         out["completion_error_ms"] = round(out["measured_ms"] - r["dur"], 2)
@@ -329,7 +333,8 @@ def main():
               f"measured={a.get('measured_ms')}ms "
               f"err={a.get('completion_error_ms')}ms "
               f"ticks={a['ticks']} [{mons}] "
-              f"closed={a['closed_by']} retarget={a['retarget']}")
+              f"closed={a['closed_by']} retarget={a['retarget']} "
+              f"converged={a.get('converged')}")
         if a["ticks"]:
             print(f"      moved={a.get('moved_ticks')} "
                   f"zero_steps={a.get('zero_steps')} "

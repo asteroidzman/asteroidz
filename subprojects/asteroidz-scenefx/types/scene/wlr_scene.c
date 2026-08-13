@@ -565,6 +565,41 @@ static void scene_ring_add_checked(struct wlr_scene_output *scene_output,
 	wlr_damage_ring_add(&scene_output->damage_ring, region);
 }
 
+/*
+ * ── AZ_DAMAGE_TRACE: WHICH RULE ADDED THESE PIXELS ────────────────────────
+ *
+ * Every path that damages an output funnels through scene_output_damage(),
+ * and by the time it does, the region is a shape with no story. "A moving
+ * blurred window damages 6.7x what the motion requires" is not actionable
+ * until the addition can be attributed to the rule that made it, so each
+ * entry point names itself and the addition is logged with what it did to
+ * the pending region -- raw area AND the unique contribution, which differ
+ * whenever two rules damage the same pixels and only one of them is at fault.
+ *
+ * Off unless AZ_DAMAGE_TRACE=1.
+ */
+static const char *az_dmg_reason = "OTHER";
+
+static bool az_dmg_trace(void) {
+	static int cached = -1;
+	if (cached < 0) {
+		const char *e = getenv("AZ_DAMAGE_TRACE");
+		cached = e != NULL && e[0] == '1';
+	}
+	return cached != 0;
+}
+
+static uint64_t az_dmg_area(const pixman_region32_t *r) {
+	int n = 0;
+	const pixman_box32_t *b = pixman_region32_rectangles(
+		(pixman_region32_t *)r, &n);
+	uint64_t a = 0;
+	for (int i = 0; i < n; i++) {
+		a += (uint64_t)(b[i].x2 - b[i].x1) * (uint64_t)(b[i].y2 - b[i].y1);
+	}
+	return a;
+}
+
 static void scene_output_damage(struct wlr_scene_output *scene_output,
 		const pixman_region32_t *damage) {
 	struct wlr_output *output = scene_output->output;
@@ -599,6 +634,24 @@ static void scene_output_damage(struct wlr_scene_output *scene_output,
 	clip_damage_to_attachment_extent(&clipped, damage, att_width, att_height);
 
 	if (!pixman_region32_empty(&clipped)) {
+		if (az_dmg_trace()) {
+			pixman_region32_t uniq;
+			pixman_region32_init(&uniq);
+			pixman_region32_subtract(&uniq, &clipped,
+				&scene_output->pending_commit_damage);
+			pixman_box32_t e = *pixman_region32_extents(&clipped);
+			int nr = 0;
+			pixman_region32_rectangles(&clipped, &nr);
+			wlr_log(WLR_ERROR, "azdmg add mon=%s reason=%s px=%llu uniq=%llu "
+				"rects=%d bbox=%d,%d,%dx%d pending_before=%llu",
+				output->name, az_dmg_reason,
+				(unsigned long long)az_dmg_area(&clipped),
+				(unsigned long long)az_dmg_area(&uniq), nr,
+				e.x1, e.y1, e.x2 - e.x1, e.y2 - e.y1,
+				(unsigned long long)az_dmg_area(
+					&scene_output->pending_commit_damage));
+			pixman_region32_fini(&uniq);
+		}
 		wlr_output_schedule_frame(scene_output->output);
 		scene_ring_add_checked(scene_output, &clipped, att_width, att_height);
 
@@ -700,6 +753,7 @@ void wlr_scene_output_set_blur_halo(struct wlr_scene_output *scene_output,
 
 static void scene_output_damage_whole(struct wlr_scene_output *scene_output) {
 	struct wlr_output *output = scene_output->output;
+	az_dmg_reason = "OUTPUT_FULL";
 
 	pixman_region32_t damage;
 	pixman_region32_init_rect(&damage, 0, 0, output->width, output->height);
@@ -943,6 +997,78 @@ static void scene_node_visibility(struct wlr_scene_node *node,
 	pixman_region32_union(visible, visible, &node->visible);
 }
 
+static const char *az_dmg_node_type(enum wlr_scene_node_type t) {
+	switch (t) {
+	case WLR_SCENE_NODE_TREE: return "TREE";
+	case WLR_SCENE_NODE_RECT: return "RECT";
+	case WLR_SCENE_NODE_BUFFER: return "BUFFER";
+	case WLR_SCENE_NODE_SHADOW: return "SHADOW";
+	case WLR_SCENE_NODE_BLUR: return "BLUR";
+	case WLR_SCENE_NODE_OPTIMIZED_BLUR: return "OPTIMIZED_BLUR";
+	}
+	return "?";
+}
+
+/*
+ * Every LEAF under this node with the area of its own visible region.
+ *
+ * scene_node_visibility() unions a whole subtree into one region, and a
+ * client subtree is a buffer, two or three rects, a shadow and a blur node.
+ * Which of them is 6.7x too big is not a question the union can answer, and
+ * "the window's damage" is not a thing that exists -- only the union of its
+ * parts is. So the parts are printed.
+ */
+static void az_dmg_dump_leaves(struct wlr_scene_node *node, const char *tag) {
+	if (!node->enabled) {
+		return;
+	}
+	if (node->type == WLR_SCENE_NODE_TREE) {
+		struct wlr_scene_tree *tree = wlr_scene_tree_from_node(node);
+		struct wlr_scene_node *child;
+		wl_list_for_each(child, &tree->children, link) {
+			az_dmg_dump_leaves(child, tag);
+		}
+		return;
+	}
+	if (pixman_region32_empty(&node->visible)) {
+		return;
+	}
+	pixman_box32_t e = *pixman_region32_extents(&node->visible);
+	/* The node's DECLARED size beside its VISIBLE region. They disagree
+	 * whenever a node is partially occluded -- and, which is the point here,
+	 * whenever one of them is stale. A dump of only the visible region cannot
+	 * tell "this node really is output-sized" from "this node shrank and its
+	 * visibility was never recomputed", and those are different bugs. */
+	int nw = -1, nh = -1;
+	switch (node->type) {
+	case WLR_SCENE_NODE_BLUR: {
+		struct wlr_scene_blur *b = wlr_scene_blur_from_node(node);
+		nw = b->width; nh = b->height;
+		break;
+	}
+	case WLR_SCENE_NODE_RECT: {
+		struct wlr_scene_rect *r = wlr_scene_rect_from_node(node);
+		nw = r->width; nh = r->height;
+		break;
+	}
+	case WLR_SCENE_NODE_BUFFER: {
+		struct wlr_scene_buffer *b = wlr_scene_buffer_from_node(node);
+		nw = b->dst_width; nh = b->dst_height;
+		break;
+	}
+	case WLR_SCENE_NODE_SHADOW: {
+		struct wlr_scene_shadow *sh = wlr_scene_shadow_from_node(node);
+		nw = sh->width; nh = sh->height;
+		break;
+	}
+	default: break;
+	}
+	wlr_log(WLR_ERROR, "azdmg leaf %s type=%s node=%p size=%dx%d px=%llu "
+		"bbox=%d,%d,%dx%d", tag, az_dmg_node_type(node->type), (void *)node,
+		nw, nh, (unsigned long long)az_dmg_area(&node->visible),
+		e.x1, e.y1, e.x2 - e.x1, e.y2 - e.y1);
+}
+
 static void scene_node_bounds(struct wlr_scene_node *node,
 		int x, int y, pixman_region32_t *visible) {
 	if (!node->enabled) {
@@ -1061,6 +1187,16 @@ static void scene_node_update(struct wlr_scene_node *node,
 		damage = &visible;
 	}
 
+	/* The OLD visibility, before scene_update_region() recomputes it. The
+	 * union below overwrites nothing -- it adds -- so without a copy taken
+	 * here the two halves of "old union new" can never be separated again,
+	 * and "which half is too big" is the whole question. */
+	uint64_t old_px = 0;
+	if (az_dmg_trace()) {
+		old_px = az_dmg_area(damage);
+		az_dmg_dump_leaves(node, "old");
+	}
+
 	pixman_region32_t update_region;
 	pixman_region32_init(&update_region);
 	pixman_region32_copy(&update_region, damage);
@@ -1070,6 +1206,16 @@ static void scene_node_update(struct wlr_scene_node *node,
 	pixman_region32_fini(&update_region);
 
 	scene_node_visibility(node, damage);
+	if (az_dmg_trace()) {
+		pixman_box32_t e = *pixman_region32_extents(damage);
+		wlr_log(WLR_ERROR, "azdmg node type=%s old_px=%llu union_px=%llu "
+			"bbox=%d,%d,%dx%d", az_dmg_node_type(node->type),
+			(unsigned long long)old_px,
+			(unsigned long long)az_dmg_area(damage),
+			e.x1, e.y1, e.x2 - e.x1, e.y2 - e.y1);
+		az_dmg_dump_leaves(node, "new");
+	}
+	az_dmg_reason = "NODE_GEOMETRY";
 	scene_damage_outputs(scene, damage);
 	pixman_region32_fini(damage);
 }
@@ -1446,6 +1592,11 @@ struct wlr_scene_blur *wlr_scene_blur_create(struct wlr_scene_tree *parent,
 }
 
 void wlr_scene_blur_set_size(struct wlr_scene_blur *blur, int width, int height) {
+	if (az_dmg_trace()) {
+		wlr_log(WLR_ERROR, "azdmg blur_set_size node=%p %dx%d -> %dx%d%s",
+			(void *)&blur->node, blur->width, blur->height, width, height,
+			(blur->width == width && blur->height == height) ? " (no-op)" : "");
+	}
 	if (blur->width == width && blur->height == height) {
 		return;
 	}
@@ -1947,6 +2098,7 @@ void wlr_scene_buffer_set_buffer_with_options(struct wlr_scene_buffer *scene_buf
 			(int)round((lx - scene_output->x) * output_scale),
 			(int)round((ly - scene_output->y) * output_scale));
 		output_to_buffer_coords(&output_damage, scene_output->output);
+		az_dmg_reason = "CLIENT_CONTENT";
 		scene_output_damage(scene_output, &output_damage);
 		pixman_region32_fini(&output_damage);
 	}
@@ -2725,6 +2877,7 @@ static void scene_entry_render(struct render_list_entry *entry, const struct ren
 		struct wlr_texture *texture = scene_buffer_get_texture(scene_buffer,
 			data->output->output->renderer);
 		if (texture == NULL) {
+			az_dmg_reason = "NO_TEXTURE";
 			scene_output_damage(data->output, &render_region);
 			break;
 		}
@@ -3248,6 +3401,7 @@ static void scene_output_handle_damage(struct wl_listener *listener, void *data)
 	pixman_region32_copy(&damage, event->damage);
 	wlr_region_transform(&damage, &damage,
 		wlr_output_transform_invert(output->transform), width, height);
+	az_dmg_reason = "OUTPUT_HISTORY";
 	scene_output_damage(scene_output, &damage);
 	pixman_region32_fini(&damage);
 }
@@ -4193,6 +4347,7 @@ bool wlr_scene_output_build_state(struct wlr_scene_output *scene_output,
 			}
 		}
 
+		az_dmg_reason = "HIGHLIGHT";
 		scene_output_damage(scene_output, &acc_damage);
 		pixman_region32_fini(&acc_damage);
 	}
