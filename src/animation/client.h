@@ -2297,10 +2297,13 @@ void fadeout_client_animation_next_tick(Client *c) {
 	struct timespec now;
 	clock_gettime(CLOCK_MONOTONIC, &now);
 
-	int32_t passed_time = timespec_to_ms(&now) - c->animation.time_started;
+	uint64_t now_ns = (uint64_t)now.tv_sec * 1000000000ull + (uint64_t)now.tv_nsec;
+	double passed_ms = c->animation.time_started_ns
+		? (double)(now_ns - c->animation.time_started_ns) / 1.0e6
+		: 0.0;
 	double animation_passed =
 		c->animation.duration
-			? (double)passed_time / (double)c->animation.duration
+			? passed_ms / (double)c->animation.duration
 			: 1.0;
 
 	/* The vector break-up owns a tree of its own nodes, each re-rendered per
@@ -2480,10 +2483,14 @@ void client_animation_next_tick(Client *c) {
 	struct timespec now;
 	clock_gettime(CLOCK_MONOTONIC, &now);
 
-	int32_t passed_time = timespec_to_ms(&now) - c->animation.time_started;
+	uint64_t now_ns = (uint64_t)now.tv_sec * 1000000000ull + (uint64_t)now.tv_nsec;
+	double passed_ms = c->animation.time_started_ns
+		? (double)(now_ns - c->animation.time_started_ns) / 1.0e6
+		: 0.0;
+	int32_t passed_time = (int32_t)passed_ms;   /* the trace's units only */
 	double animation_passed =
 		c->animation.duration
-			? (double)passed_time / (double)c->animation.duration
+			? passed_ms / (double)c->animation.duration
 			: 1.0;
 
 	int32_t type = c->animation.action == NONE ? MOVE : c->animation.action;
@@ -2742,6 +2749,7 @@ void init_fadeout_client(Client *c) {
 	}
 
 	fadeout_client->animation.time_started = get_now_in_ms();
+	fadeout_client->animation.time_started_ns = az_pace_now_ns();
 	wlr_scene_node_set_enabled(&fadeout_client->scene->node, true);
 	wl_list_insert(&fadeout_clients, &fadeout_client->fadeout_link);
 
@@ -2774,6 +2782,7 @@ void client_commit(Client *c) {
 
 		c->animation.initial = c->animainit_geom;
 		c->animation.time_started = get_now_in_ms();
+		c->animation.time_started_ns = az_pace_now_ns();
 
 		// Mark the animation as started
 		c->animation.running = true;

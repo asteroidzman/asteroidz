@@ -425,6 +425,18 @@ struct dwl_animation {
 	bool tag_from_rule;
 	bool overining;
 	uint32_t time_started;
+	/*
+	 * The same instant in NANOSECONDS, and the one the interpolator reads.
+	 *
+	 * time_started is milliseconds, so at 165Hz two ticks land in the same
+	 * millisecond often enough to matter and at 240Hz a millisecond is a
+	 * quarter of a frame. Both read the same progress, compute the same
+	 * position, and produce a committed frame with no damage at all -- the
+	 * same class of defect as truncating the geometry, one level up. The ms
+	 * field stays because other code reads it; nothing that decides where a
+	 * window is does.
+	 */
+	uint64_t time_started_ns;
 	uint32_t duration;
 	struct wlr_box initial;
 	struct wlr_box current;
