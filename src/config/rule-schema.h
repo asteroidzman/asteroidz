@@ -101,7 +101,8 @@ static const RuleGroup rule_groups[] = {
 	 "How the window opens and how it answers the requests it makes."},
 	{"geometry", "Geometry", "Where it goes and how big it is."},
 	{"visuals", "Appearance",
-	 "Per-window overrides of the border, shadow, blur and opacity."},
+	 "Per-window overrides of the border, shadow, blur, opacity and "
+	 "luminance."},
 	{"animation", "Animation", "How this window opens and closes."},
 	{"layout", "Layout", "Scroller proportions for this window."},
 	{"swallow", "Swallowing",
@@ -266,6 +267,21 @@ static const RuleField rule_schema[] = {
 {"unfocused_opacity", "unfocused-opacity", "visuals", "Unfocused opacity",
  "Opacity while unfocused, 0 to 1. 0 leaves the global setting alone.",
  RULE_FLOAT, offsetof(ConfigWinRule, unfocused_opacity), 0, 1, NULL, 0},
+/* The two per-window LUMINANCE levers (M5, ADR-006). They are not opacity and
+ * not a global brightness slider -- there deliberately is no global one. Each
+ * multiplies one class of source on its way into the scene, so raising one
+ * window's SDR white touches that window and nothing else on the screen,
+ * including the same window's own shadow and the wallpaper behind it. */
+{"sdr_white_scale", "sdr-white-scale", "visuals", "SDR white scale",
+ "Multiply this window's SDR white. 1.0 is unchanged; 1.5 makes an SDR "
+ "application 50% brighter on an HDR output without touching anything else. "
+ "0 leaves it alone. Has no effect on HDR (PQ or scRGB) content.",
+ RULE_FLOAT, offsetof(ConfigWinRule, sdr_white_scale), 0, 10, NULL, 0},
+{"hdr_gain", "hdr-gain", "visuals", "HDR gain",
+ "Multiply this window's HDR content. 1.0 is unchanged; 0.5 halves the "
+ "absolute luminance of a PQ video. 0 leaves it alone. Has no effect on SDR "
+ "content.",
+ RULE_FLOAT, offsetof(ConfigWinRule, hdr_gain), 0, 10, NULL, 0},
 {"allow_csd", "allow-csd", "visuals", "Allow client decorations",
  "Let the window draw its own titlebar instead of being given one.",
  RULE_TRISTATE, offsetof(ConfigWinRule, allow_csd), 0, 1, NULL, 0},

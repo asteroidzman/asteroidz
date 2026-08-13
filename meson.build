@@ -207,6 +207,16 @@ test_color_math = executable('test-color-math', 'tests/test-color-math.c',
 test('color-math', test_color_math, args : [meson.project_source_root()],
      timeout : 30)
 
+# The luminance-domain resolver (M5, contract C2). Header-only, so this links
+# nothing but libc -- which is the point: the resolver is the piece most worth
+# exercising, and a signature mentioning wlroots types would drag a wayland
+# display into the test binary and the test would stop being written.
+test_lum_domain = executable('test-lum-domain', 'tests/test-lum-domain.c',
+                             include_directories : include_directories('src'),
+                             dependencies : [libm],
+                             build_by_default : false)
+test('lum-domain', test_lum_domain, timeout : 30)
+
 # The native Vulkan engine is compiled into the compositor when it is built.
 # A separate flag from -Drenderers so the guard in the source says what it
 # means: "this build has AVK", not "this build was configured a certain way".

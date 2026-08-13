@@ -658,6 +658,13 @@ struct Client {
 	int32_t isunglobal;
 	float focused_opacity;
 	float unfocused_opacity;
+	/* M5, ADR-006: the per-window luminance levers. 1.0 is "unchanged", not
+	 * 0 -- these are multipliers into the scene, and a zero would make the
+	 * window black rather than leave it alone. The rule spells unset as 0 and
+	 * APPLY_FLOAT_PROP only overwrites above zero, so the two conventions meet
+	 * without either having to know about the other. */
+	float sdr_white_scale;
+	float hdr_gain;
 	char oldmonname[128];
 	uint32_t oldmontags; /* tagset oldmonname's monitor had active when this
 						  * client landed there; used to restore the client
@@ -2640,6 +2647,8 @@ static void apply_rule_properties(Client *c, const ConfigWinRule *r) {
 	APPLY_FLOAT_PROP(c, r, scroller_proportion_single);
 	APPLY_FLOAT_PROP(c, r, focused_opacity);
 	APPLY_FLOAT_PROP(c, r, unfocused_opacity);
+	APPLY_FLOAT_PROP(c, r, sdr_white_scale);
+	APPLY_FLOAT_PROP(c, r, hdr_gain);
 
 	APPLY_STRING_PROP(c, r, animation_type_open);
 	APPLY_STRING_PROP(c, r, animation_type_close);
@@ -6926,6 +6935,10 @@ void init_client_properties(Client *c) {
 	c->fake_no_border = false;
 	c->focused_opacity = config.focused_opacity;
 	c->unfocused_opacity = config.unfocused_opacity;
+	/* No global setting to read: ADR-006 forbids one. A window's luminance is
+	 * either 1.0 or something a rule said about that window. */
+	c->sdr_white_scale = 1.0f;
+	c->hdr_gain = 1.0f;
 	c->nofocus = 0;
 	c->nofadein = 0;
 	c->nofadeout = 0;
