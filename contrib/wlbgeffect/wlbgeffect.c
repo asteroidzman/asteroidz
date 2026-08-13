@@ -149,6 +149,22 @@ static const struct xdg_toplevel_listener toplevel_listener = {
 	.wm_capabilities = toplevel_wm_capabilities,
 };
 
+/*
+ * QUADRANTS, for the transform pixel oracle.
+ *
+ * A FLAT surface cannot detect a texture-orientation error at all: a solid
+ * colour rotated by any amount is the same solid colour, so a fixture built
+ * entirely out of flat windows reports 0 differing pixels whether the sampler
+ * is oriented correctly or not. That is precisely how a wrong texture
+ * transform at 90 and 270 degrees survived a pixel-exact eight-transform
+ * oracle -- every window in it was one colour.
+ *
+ * Four distinct quadrants are the smallest fixture that is deterministic
+ * between runs (no text, no layout, no client-side rounding) and still tells
+ * every rotation and every mirror apart.
+ */
+static int quad_mode;
+
 static struct wl_buffer *make_buffer(int w, int h, uint32_t argb) {
 	int stride = w * 4;
 	int size = stride * h;
@@ -159,7 +175,25 @@ static struct wl_buffer *make_buffer(int w, int h, uint32_t argb) {
 	if (ftruncate(fd, size) < 0) { perror("ftruncate"); exit(1); }
 	uint32_t *pixels = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
 	if (pixels == MAP_FAILED) { perror("mmap"); exit(1); }
-	for (int i = 0; i < w * h; i++) pixels[i] = argb;
+	if (quad_mode) {
+		/* Derived from the requested colour so that two windows asked for
+		 * different colours still differ, and so that no two quadrants of one
+		 * window are the same. */
+		const uint32_t q[4] = {
+			argb,
+			(argb & 0xff000000u) | ((argb & 0x00ffffffu) ^ 0x00f00000u),
+			(argb & 0xff000000u) | ((argb & 0x00ffffffu) ^ 0x0000f000u),
+			(argb & 0xff000000u) | ((argb & 0x00ffffffu) ^ 0x000000f0u),
+		};
+		for (int y = 0; y < h; y++) {
+			for (int x = 0; x < w; x++) {
+				int i = (y >= h / 2 ? 2 : 0) + (x >= w / 2 ? 1 : 0);
+				pixels[y * w + x] = q[i];
+			}
+		}
+	} else {
+		for (int i = 0; i < w * h; i++) pixels[i] = argb;
+	}
 	munmap(pixels, size);
 
 	struct wl_shm_pool *pool = wl_shm_create_pool(shm, fd, size);
@@ -172,11 +206,29 @@ static struct wl_buffer *make_buffer(int w, int h, uint32_t argb) {
 
 int main(int argc, char **argv) {
 	if (argc < 3) {
-		fprintf(stderr, "usage: %s <app_id> <hold_seconds>\n", argv[0]);
+		fprintf(stderr, "usage: %s <app_id> <hold_seconds> [argb_hex]\n",
+				argv[0]);
 		return 1;
 	}
 	const char *app_id = argv[1];
 	double hold = atof(argv[2]);
+	/*
+	 * An optional colour, for the transform pixel oracle.
+	 *
+	 * That oracle compares the same logical desktop rendered at two output
+	 * rotations, so every pixel of the fixture has to be reproducible between
+	 * two RUNS of the compositor. A terminal is not: comparing a 600x800
+	 * output at 0 degrees against an 800x600 output at 90 degrees -- the same
+	 * logical desktop -- left 7183 differing pixels, all of them inside the
+	 * TEXT rows, because the client lays its glyphs out for the output it was
+	 * told about. Flat surfaces of distinct colours have nothing to lay out.
+	 */
+	uint32_t argb = 0x80203040;
+	/* WLBGEFFECT_QUAD=1 paints four quadrants instead of one flat colour. */
+	quad_mode = getenv("WLBGEFFECT_QUAD") != NULL;
+	if (argc >= 4) {
+		argb = (uint32_t)strtoul(argv[3], NULL, 16);
+	}
 
 	struct wl_display *display = wl_display_connect(NULL);
 	if (!display) {
@@ -211,7 +263,7 @@ int main(int argc, char **argv) {
 	 * (client_update_blur) -- and then there would be nothing for the region to
 	 * clip. 0x80 alpha, and no wl_surface_set_opaque_region call.
 	 */
-	struct wl_buffer *buf = make_buffer(SURF_W, SURF_H, 0x80203040);
+	struct wl_buffer *buf = make_buffer(SURF_W, SURF_H, argb);
 	wl_surface_attach(surface, buf, 0, 0);
 	wl_surface_damage(surface, 0, 0, SURF_W, SURF_H);
 

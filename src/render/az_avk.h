@@ -32,6 +32,10 @@
  * position that can be shipped while the rest is built.
  */
 
+/* The renderer's two raster extents, as two types that cannot be assigned to
+ * one another. Everything below that says `att` or `pres` means one of these,
+ * and nothing below is allowed to mean both. */
+#include "az_extent.h"
 #include "vulkan/avk.h"
 #include "vulkan/device/avk_device.h"
 #include "vulkan/device/avk_instance.h"
@@ -215,6 +219,11 @@ struct az_avk {
 	/* Frames whose halo damage was recorded and then returned empty. Zero is
 	 * the invariant; see where it is incremented. */
 	uint64_t blur_halo_damage_lost;
+	/* Summed over every output: rectangles inserted into a damage ring that lay
+	 * outside the attachment. The ring accepts them and discards them at
+	 * rotate, so this is the generic form of the M4F.2C.4c defect and must stay
+	 * zero for every caller, not only for blur. */
+	uint64_t damage_ring_out_of_bounds;
 	uint64_t blur_nodes_culled;
 	uint64_t blur_nodes_forced_live;
 	/* Nodes whose composite was restricted by a clip_region or a
@@ -975,7 +984,11 @@ enum az_avk_present_sync {
 
 struct az_avk_output {
 	struct wlr_swapchain *swapchain;
-	int width, height;
+	/* WHAT THE SWAPCHAIN WAS ALLOCATED AT -- an attachment extent, and typed
+	 * so that a presentation extent cannot be stored here by accident. This
+	 * is the field a reallocation is decided against, so getting the space
+	 * wrong here reallocates on every frame at best. */
+	struct az_attachment_extent att;
 	uint32_t drm_format;
 	VkFormat vk_format;
 	struct az_avk_renderer_slot *slot;
@@ -1010,6 +1023,9 @@ struct az_avk_output {
 	 * and one table serves for both.
 	 */
 	uint64_t frame_seq;
+	/* Armed by `amsg dispatch capture_output`: write this output's next
+	 * finished attachment to disk, then disarm. */
+	bool capture_pending;
 	/* The scene output's halo-damage record count as of this output's last
 	 * frame, so "this frame took damage from the halo" is a delta rather than
 	 * a guess about a region's extents. */
@@ -1473,7 +1489,32 @@ struct az_avk_walk {
 	 * every command is emitted in the pixels AVK will actually write. */
 	float scale;
 	enum wl_output_transform transform;
-	int width, height;
+	/*
+	 * THE PRESENTATION EXTENT, and it is typed so that the attachment extent
+	 * cannot be assigned to it. This is the SOURCE space of the
+	 * wlr_box_transform() below -- a node's geometry is in the orientation the
+	 * user sees right up until that call -- and it is the pair that 90 and 270
+	 * swap. Handing the attachment extent to a rotated output here is
+	 * M4F.2C.4d: see src/render/az_extent.h.
+	 */
+	struct az_presentation_extent pres;
+	/*
+	 * THE ATTACHMENT EXTENT, and it is a different question from `pres`.
+	 *
+	 * Every `dst` box below has already been through wlr_box_transform(), so it
+	 * is in ATTACHMENT coordinates -- and every cull that asks "is this box off
+	 * the output" has to ask it against the attachment. Asking it against
+	 * `pres` was wrong at 90, 270, flipped-90 and flipped-270, where the two
+	 * extents are transposed: on an 800x600 output at 90 degrees a box at
+	 * attachment x = 760 was compared against a 600-pixel limit and culled.
+	 *
+	 * It survived a pixel-exact eight-transform oracle because the cull only
+	 * drops a box that STARTS past the limit, and every window in that fixture
+	 * starts at the near edge. The cursor does not: parked in the bottom third
+	 * of a 90-degree desktop it vanished completely, and that is how this was
+	 * found.
+	 */
+	struct az_attachment_extent att;
 	/* Layout coordinates of the output's top-left corner. */
 	int ox, oy;
 	/*
@@ -1509,7 +1550,16 @@ static enum avk_transform az_avk_transform(enum wl_output_transform t) {
 	 * group of the square in the same order -- but AVK deliberately does not
 	 * include a Wayland header, so the mapping is written out rather than
 	 * cast. If wl_output_transform ever gains a member this becomes a compile
-	 * error instead of a silently rotated desktop. */
+	 * error instead of a silently rotated desktop.
+	 *
+	 * They agree in MEANING as well, which until M4F.2C.4e they did not:
+	 * transform_uv() resolved AVK_TRANSFORM_90 the way wl_output_transform
+	 * defines 270 and vice versa, so this one-to-one mapping was handing the
+	 * renderer a value it interpreted backwards. Every texture on a 90 or 270
+	 * degree output came out rotated 180 degrees inside its own box. A
+	 * value-for-value mapping between two enumerations is only safe while both
+	 * sides mean the same thing by the value, and nothing here could check
+	 * that -- the fixture that finally did is WLBGEFFECT_QUAD=1. */
 	switch (t) {
 	case WL_OUTPUT_TRANSFORM_NORMAL:      return AVK_TRANSFORM_NORMAL;
 	case WL_OUTPUT_TRANSFORM_90:          return AVK_TRANSFORM_90;
@@ -1541,7 +1591,7 @@ static void az_avk_box_to_output(const struct az_avk_walk *walk,
 	out->x = (int)round(x * walk->scale);
 	out->y = (int)round(y * walk->scale);
 	wlr_box_transform(out, out, wlr_output_transform_invert(walk->transform),
-		walk->width, walk->height);
+		walk->pres.width, walk->pres.height);
 }
 
 #include "az_corner_permute.h"
@@ -1991,14 +2041,14 @@ static void az_avk_walk_node(struct az_avk_walk *walk,
 		 * and a wallpaper 3840 pixels away is still culled.
 		 */
 		if (!az_avk_env_flag("AZ_AVK_NO_OUTPUT_CULL") &&
-				(dst.x >= walk->width + walk->halo
-				|| dst.y >= walk->height + walk->halo
+				(dst.x >= walk->att.width + walk->halo
+				|| dst.y >= walk->att.height + walk->halo
 				|| dst.x + dst.width <= -walk->halo
 				|| dst.y + dst.height <= -walk->halo)) {
 			avk.nodes_output_culled_before_resolve++;
 			return;
 		}
-		if (dst.x >= walk->width || dst.y >= walk->height
+		if (dst.x >= walk->att.width || dst.y >= walk->att.height
 				|| dst.x + dst.width <= 0 || dst.y + dst.height <= 0) {
 			/* Kept only because a blur here might read it. Counted separately:
 			 * this is the price of the halo, and it is the number that says
@@ -2175,8 +2225,8 @@ static void az_avk_walk_node(struct az_avk_walk *walk,
 		 * that IS presented here replays. Blur 2's source contains blur 1.
 		 */
 		if (!az_avk_env_flag("AZ_AVK_NO_OUTPUT_CULL") &&
-				(dst.x >= walk->width + walk->halo
-				|| dst.y >= walk->height + walk->halo
+				(dst.x >= walk->att.width + walk->halo
+				|| dst.y >= walk->att.height + walk->halo
 				|| dst.x + dst.width <= -walk->halo
 				|| dst.y + dst.height <= -walk->halo)) {
 			avk.blur_nodes_culled++;
@@ -2471,13 +2521,23 @@ static void az_avk_emit_cursors(struct az_avk_walk *walk,
 			.width = (int)oc->width,
 			.height = (int)oc->height,
 		};
+		/*
+		 * `walk->transform`, NOT `output->transform`, and the difference is a
+		 * frame wide: on a modeset frame the walk is drawn for the PENDING
+		 * transform and this was the one call site still reading the committed
+		 * one. It would have mapped the cursor through the transform the output
+		 * is leaving into the attachment it is arriving at -- a cursor in the
+		 * wrong corner for exactly one frame, which is the hardest kind of
+		 * artefact to catch and the easiest to dismiss. Found by the M4F.2C.4e
+		 * variable-reuse audit; the pair is now the walk's own, once.
+		 */
 		wlr_box_transform(&box, &box,
-			wlr_output_transform_invert(output->transform),
-			walk->width, walk->height);
+			wlr_output_transform_invert(walk->transform),
+			walk->pres.width, walk->pres.height);
 		if (box.width <= 0 || box.height <= 0) {
 			return;
 		}
-		if (box.x >= walk->width || box.y >= walk->height ||
+		if (box.x >= walk->att.width || box.y >= walk->att.height ||
 				box.x + box.width <= 0 || box.y + box.height <= 0) {
 			avk.cursor_culled++;
 			return;
@@ -2531,11 +2591,34 @@ static void az_avk_emit_cursors(struct az_avk_walk *walk,
 		}
 		cmd->transform = az_avk_transform(wlr_output_transform_compose(
 			wlr_output_transform_invert(oc->transform), walk->transform));
-		/* Nearest at 1:1. A cursor is small, high-contrast and mostly edges,
+		/*
+		 * Nearest at 1:1. A cursor is small, high-contrast and mostly edges,
 		 * and smoothing one that needs no scaling is how a crisp pointer turns
-		 * into a blurry one on a fractional-scale output. */
-		cmd->filter_linear = box.width != (int)cmd->src.width ||
-			box.height != (int)cmd->src.height;
+		 * into a blurry one on a fractional-scale output.
+		 *
+		 * ── AND THE COMPARISON HAS TO BE IN ONE SPACE ─────────────────────
+		 *
+		 * `box` has been through wlr_box_transform(), which SWAPS width and
+		 * height at 90, 270, flipped-90 and flipped-270. `cmd->src` is the
+		 * cursor image and never rotates. Comparing the two directly asked
+		 * "is a 24x22 destination the same size as a 22x24 source" -- which is
+		 * false for every non-square cursor, so every rotated output silently
+		 * switched the pointer to bilinear filtering. The default arrow here
+		 * is 22x24, and the resulting blur was 464 differing pixels against
+		 * the same desktop on an unrotated output: the cursor in exactly the
+		 * right place, drawn slightly wrong.
+		 *
+		 * Nothing could see it before M4F.2C.4e, because no test had ever
+		 * looked at a cursor on a rotated output -- the transform oracle
+		 * parked the pointer deliberately, and the headless backend puts every
+		 * cursor on a plane that does not exist unless something forces
+		 * software cursors.
+		 *
+		 * So compare the PRESENTATION-space size, which is what oc->width and
+		 * oc->height already are, against the source. Both are unrotated.
+		 */
+		cmd->filter_linear = (int)oc->width != (int)cmd->src.width ||
+			(int)oc->height != (int)cmd->src.height;
 		avk.cursor_commands++;
 		avk.software_cursor_frames++;
 		avk.cursor_damage_pixels += (uint64_t)box.width * (uint64_t)box.height;
@@ -2545,6 +2628,79 @@ static void az_avk_emit_cursors(struct az_avk_walk *walk,
 			avk.cursor_last_y = box.y;
 		}
 		return;
+	}
+}
+
+/*
+ * ── DETERMINISTIC ATTACHMENT CAPTURE ──────────────────────────────────────
+ *
+ * TEST ONLY. Armed per output by `amsg dispatch capture_output`.
+ *
+ * grim captures NOTHING from a 90 or 270 degree output on this backend, so
+ * every pixel assertion at those transforms was skipped -- which is how a
+ * rotated frame can be wrong for an entire milestone with nobody able to look
+ * at it. This writes the image AVK ACTUALLY RENDERED, read back off the GPU
+ * from the same scan-out target that is about to be presented, in the
+ * attachment's own orientation and extent, at any transform.
+ *
+ * The wait here is a TEST-ONLY wait on a frame that has already been submitted.
+ * It is not on the render path: `capture_pending` is false in every normal
+ * frame and the tap is not even declared.
+ */
+static void az_avk_capture_frame(struct az_avk_output *out, Monitor *m,
+		struct avk_image *target, uint64_t timeline) {
+	struct avk_renderer *r = &out->slot->renderer;
+	if (!out->capture_pending || timeline == 0) {
+		return;
+	}
+	out->capture_pending = false;
+	if (!avk_device_timeline_wait(r->dev, timeline, 2000000000ULL)) {
+		wlr_log(WLR_ERROR, "capture: %s's frame did not complete",
+			m->wlr_output->name);
+		return;
+	}
+	const char *dir = getenv("AZ_AVK_CAPTURE_DIR");
+	char path[512];
+	snprintf(path, sizeof(path), "%s/%s.ppm",
+		dir != NULL ? dir : "/tmp", m->wlr_output->name);
+	/*
+	 * BOTH EXTENTS, NAMED, beside the file: a capture whose orientation is
+	 * inferred by the reader is a capture that can be compared against the
+	 * wrong reference. `att` is what the swapchain was allocated from and what
+	 * the copy must cover; `pres` is the shape the reader has to canonicalise
+	 * into before comparing it with anything.
+	 *
+	 * `img` is the image that was actually copied. It is printed rather than
+	 * assumed because the whole of M4F.2C.4d was an attachment whose extent did
+	 * not match the frame it was drawn for, and the first instrument that could
+	 * have said so in one line was this one.
+	 */
+	const struct az_attachment_extent att =
+		az_output_attachment_extent(m->wlr_output, NULL);
+	const struct az_presentation_extent pres =
+		az_presentation_of(att, m->wlr_output->transform);
+	const bool extent_ok = (uint32_t)att.width == target->extent.width &&
+		(uint32_t)att.height == target->extent.height;
+	wlr_log(WLR_ERROR, "capture: %s transform=%d attachment=%dx%d "
+		"presentation=%dx%d image=%ux%u row_bytes=%u %s -> %s",
+		m->wlr_output->name, (int)m->wlr_output->transform,
+		att.width, att.height, pres.width, pres.height,
+		target->extent.width, target->extent.height,
+		target->extent.width * 4u,
+		extent_ok ? "extent=OK" : "extent=MISMATCH", path);
+	avk_oracle_write_ppm(&r->oracle, path, target->format);
+	/* Disarmed on the renderer only once no output still wants a capture; the
+	 * flag is per output and the oracle is per FORMAT, so two outputs sharing a
+	 * renderer must both have written before the tap goes away. */
+	bool any = false;
+	Monitor *om;
+	wl_list_for_each(om, &mons, link) {
+		if (om->avk != NULL && om->avk->capture_pending) {
+			any = true;
+		}
+	}
+	if (!any) {
+		avk_oracle_disarm_capture(&r->oracle);
 	}
 }
 
@@ -2800,47 +2956,76 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 		m->avk = out;
 	}
 
-	/* Size and format of the buffer we are about to allocate. Both are read
-	 * from the state being built when it changes them, so a modeset frame
-	 * renders at the new size rather than the old one. */
-	int width, height;
-	wlr_output_transformed_resolution(output, &width, &height);
-	if (state->committed & WLR_OUTPUT_STATE_MODE) {
-		if (state->mode_type == WLR_OUTPUT_STATE_MODE_FIXED) {
-			width = state->mode->width;
-			height = state->mode->height;
-		} else {
-			width = state->custom_mode.width;
-			height = state->custom_mode.height;
-		}
-	}
+	/*
+	 * ── TWO RASTERS, AND THEY ARE NOT THE SAME ONE ────────────────────────
+	 *
+	 * `att`   the ATTACHMENT: the buffer this frame is drawn into and the size
+	 *         the backend scans out. It is the MODE, never the transformed
+	 *         resolution. wlr_scene asserts exactly this (`buffer->width ==
+	 *         resolution_width` in wlr_scene_output_build_state), and on a real
+	 *         KMS output a framebuffer of the other shape is not a rotated
+	 *         picture, it is a rejected commit.
+	 *
+	 * `pres`  the same raster in the orientation the user sees, and the space
+	 *         every node's geometry is in immediately before
+	 *         wlr_box_transform() maps it into the attachment. This is
+	 *         wlr_scene's `trans_width/trans_height`, and the logical size of
+	 *         the output is exactly this over the scale.
+	 *
+	 * They differ by a transpose at 90 and 270 degrees, and ONE PAIR OF `int
+	 * width, height` USED TO HOLD BOTH. wlr_output_transformed_resolution()
+	 * gave the transformed pair, the modeset branch gave the untransformed
+	 * pair, and the result was used for the swapchain AND for the walker's
+	 * transform. So a 90-degree output allocated a 600x800 attachment and then
+	 * mapped its geometry into an 800x600 space: the right-hand 200 columns of
+	 * every node were clipped away and the bottom 200 rows of the attachment
+	 * were never written at all. Measured on an 800x600 output at 90 degrees:
+	 * the two bottom corners of the capture are black and 455417 of 480000
+	 * pixels differ from the same desktop at 0 degrees.
+	 *
+	 * Nothing caught it because nothing could LOOK at it -- grim captures
+	 * nothing from a rotated output on this backend, so every pixel assertion
+	 * at 90 and 270 degrees had been skipped with a stated reason since M4F.2C.3.
+	 * `amsg dispatch capture_output` is what finally made the frame visible.
+	 *
+	 * The two are now DISTINCT TYPES (src/render/az_extent.h) rather than a
+	 * naming convention, so `att = pres` does not compile and the conversion
+	 * has to be named at every boundary it crosses.
+	 */
+	const struct az_attachment_extent att =
+		az_output_attachment_extent(output, state);
+	const enum wl_output_transform tr = az_output_pending_transform(output, state);
+	const struct az_presentation_extent pres = az_presentation_of(att, tr);
+
 	uint32_t fourcc = (state->committed & WLR_OUTPUT_STATE_RENDER_FORMAT)
 		? state->render_format : output->render_format;
-	if (width <= 0 || height <= 0) {
+	if (!az_attachment_extent_valid(att)) {
 		avk.fallback_frames++;
 		return false;
 	}
 
-	if (out->swapchain == NULL || out->width != width || out->height != height
+	if (out->swapchain == NULL || !az_attachment_extent_eq(out->att, att)
 			|| out->drm_format != fourcc) {
 		struct wlr_drm_format format;
-		if (!az_avk_pick_format(output, fourcc, width, height, &format)) {
+		if (!az_avk_pick_format(output, fourcc, att.width, att.height, &format)) {
 			avk.fallback_frames++;
 			return false;
 		}
 		if (out->swapchain != NULL) {
 			wlr_swapchain_destroy(out->swapchain);
 		}
-		out->swapchain = wlr_swapchain_create(alloc, width, height, &format);
+		/* THE ATTACHMENT EXTENT, and there is no other candidate: a swapchain
+		 * allocated from the presentation extent is the M4F.2C.4d defect. */
+		out->swapchain = wlr_swapchain_create(alloc, att.width, att.height,
+			&format);
 		wlr_drm_format_finish(&format);
 		if (out->swapchain == NULL) {
 			wlr_log(WLR_ERROR, "AVK: could not create a %dx%d swapchain for %s",
-				width, height, output->name);
+				att.width, att.height, output->name);
 			avk.fallback_frames++;
 			return false;
 		}
-		out->width = width;
-		out->height = height;
+		out->att = att;
 		out->drm_format = fourcc;
 
 		const struct avk_drm_format *vk_fmt =
@@ -2852,7 +3037,7 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 			return false;
 		}
 		wlr_log(WLR_INFO, "AVK: %s now composited at %dx%d, format 0x%08x",
-			output->name, width, height, fourcc);
+			output->name, att.width, att.height, fourcc);
 	}
 	if (out->slot == NULL) {
 		avk.fallback_frames++;
@@ -2962,6 +3147,13 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 	 * halo_damage_records is incremented by scene_output_damage() when it
 	 * actually records some, so a delta across this frame is the real thing.
 	 */
+	/* THE LARGEST any output has recorded, not the last one's -- a
+	 * last-writer-wins counter on a two-output desktop reports whichever
+	 * monitor rendered most recently, which is the wrong one half the time.
+	 * The invariant is zero, so a maximum states it exactly. */
+	if (m->scene_output->ring_out_of_bounds > avk.damage_ring_out_of_bounds) {
+		avk.damage_ring_out_of_bounds = m->scene_output->ring_out_of_bounds;
+	}
 	if (halo_recs_before != out->last_halo_records) {
 		avk.blur_halo_damage_frames++;
 		/*
@@ -2994,7 +3186,11 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 		 * whole, is the only thing that can say whether the partially redrawn
 		 * one is right. */
 		pixman_region32_clear(&damage);
-		pixman_region32_union_rect(&damage, &damage, 0, 0, width, height);
+		/* THE ATTACHMENT, because damage is an attachment-space quantity all
+		 * the way to KMS. Full damage expressed in the presentation extent
+		 * would cover a transposed rectangle on a rotated output. */
+		pixman_region32_union_rect(&damage, &damage, 0, 0,
+			att.width, att.height);
 	}
 	/*
 	 * AZ_AVK_DAMAGE_HOLE=x,y,w,h punches that rectangle OUT of every frame's
@@ -3040,9 +3236,13 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 	struct az_avk_walk walk = {
 		.scene = &scene,
 		.scale = output->scale,
-		.transform = output->transform,
-		.width = width,
-		.height = height,
+		/* The PENDING transform and the LOGICAL-orientation raster: these two
+		 * are what wlr_box_transform() needs as its source space, and a
+		 * modeset frame must use the state's transform rather than the
+		 * committed one for the same reason it uses the state's mode. */
+		.transform = tr,
+		.pres = pres,
+		.att = att,
 		.ox = m->scene_output->x,
 		.oy = m->scene_output->y,
 		.blur = wlr_scene_get_blur_data(m->scene_output->scene),
@@ -3095,9 +3295,13 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 		 * damage for the wrong distance.
 		 */
 		wlr_scene_output_set_blur_halo(m->scene_output, walk.halo);
+		/* IN ATTACHMENT PIXELS, because every blur write region it is
+		 * compared against is a transformed node box. Using the logical
+		 * orientation here would widen the wrong axis on a rotated output. */
 		scene.source_bounds = (struct avk_box){
 			-walk.halo, -walk.halo,
-			(int32_t)width + 2 * walk.halo, (int32_t)height + 2 * walk.halo,
+			(int32_t)att.width + 2 * walk.halo,
+			(int32_t)att.height + 2 * walk.halo,
 		};
 		/* The LARGEST halo in play, not the last output's. Two outputs at
 		 * different scales compute different halos from the same kernel, and a
@@ -3182,6 +3386,7 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 	}
 	/* After the frame's own damage has been taken, and before the snapshot is
 	 * released -- the reference render needs the same immutable scene. */
+	az_avk_capture_frame(out, m, target, timeline);
 	az_avk_oracle_frame(out, m, target, &scene, buffer, &ring_damage,
 		&scene.damage, timeline);
 	out->frame_seq++;
@@ -3269,7 +3474,7 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 		damage_px += (uint64_t)(rects[i].x2 - rects[i].x1)
 			* (uint64_t)(rects[i].y2 - rects[i].y1);
 	}
-	uint64_t output_px = (uint64_t)width * (uint64_t)height;
+	uint64_t output_px = (uint64_t)att.width * (uint64_t)att.height;
 	avk.damage_pixels += damage_px;
 	avk.output_pixels += output_px;
 	if (damage_px >= output_px) {
@@ -3718,6 +3923,8 @@ static cJSON *az_avk_stats_json(void) {
 		(double)avk.blur_halo_damage_frames);
 	cJSON_AddNumberToObject(o, "blur_halo_damage_lost",
 		(double)avk.blur_halo_damage_lost);
+	cJSON_AddNumberToObject(o, "damage_ring_out_of_bounds",
+		(double)avk.damage_ring_out_of_bounds);
 	{
 		/* Recorded, from the scene side -- see halo_damage_records. Summed over
 		 * every monitor, and reported beside the consumed count so the two ends
@@ -4343,6 +4550,7 @@ static void az_avk_stats_reset(void) {
 	avk.nodes_retained_for_halo = 0;
 	avk.blur_halo_damage_frames = 0;
 	avk.blur_halo_damage_lost = 0;
+	avk.damage_ring_out_of_bounds = 0;
 	avk.blur_halo_px = 0;
 	avk.blur_nodes_forced_live = 0;
 	avk.blur_nodes_clipped = 0;

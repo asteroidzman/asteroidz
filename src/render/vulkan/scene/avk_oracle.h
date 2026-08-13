@@ -152,6 +152,8 @@ struct avk_oracle {
 	uint64_t invalidated;
 
 	enum avk_oracle_pass pass;
+	/* Capture the next frame's OUTPUT tap without the reference render. */
+	bool capture_armed;
 
 	/* The reference target, one per extent+format actually seen. */
 	struct avk_image *ref_image;
@@ -165,6 +167,36 @@ struct avk_oracle {
 };
 
 bool avk_oracle_enabled(void);
+
+/*
+ * ── CAPTURE, WITHOUT THE ORACLE ───────────────────────────────────────────
+ *
+ * The same OUTPUT tap, armed on its own so a test can read the FINAL
+ * ATTACHMENT of one frame and write it out. No reference render, no double
+ * cost, and no dependency on AZ_FRAME_ORACLE.
+ *
+ * It exists because grim captures NOTHING on a 90 or 270 degree output on this
+ * backend, so every pixel assertion at those transforms was being skipped --
+ * which is how a rotated frame can be wrong for a whole milestone without
+ * anybody seeing it. This reads the image AVK actually rendered, in the
+ * attachment's own orientation and extent, at any transform.
+ */
+bool avk_oracle_capture_armed(const struct avk_oracle *o);
+void avk_oracle_arm_capture(struct avk_oracle *o);
+void avk_oracle_disarm_capture(struct avk_oracle *o);
+
+/*
+ * Write the OUTPUT tap of the last frame to `path` as a binary PPM.
+ *
+ * PPM because a test has to PARSE it: a three-line ASCII header and raw RGB
+ * needs no decoder, no zlib and no filter reconstruction, and the harness has
+ * already had one hand-written PNG reader produce an IndexError that read
+ * exactly like "the two outputs are different sizes".
+ *
+ * The caller must have waited for the submission that recorded the tap.
+ */
+bool avk_oracle_write_ppm(const struct avk_oracle *o, const char *path,
+	VkFormat format);
 void avk_oracle_init(struct avk_oracle *o, struct avk_device *dev);
 void avk_oracle_finish(struct avk_oracle *o);
 

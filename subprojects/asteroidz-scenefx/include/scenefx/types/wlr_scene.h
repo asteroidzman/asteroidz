@@ -394,6 +394,10 @@ struct wlr_scene_output {
 	 * recorded is a region-arithmetic bug, recorded but never consumed is a
 	 * buffer/rotation bug, and they are not the same investigation. */
 	uint64_t halo_damage_records;
+	/* Rectangles handed to the damage ring that lie outside the attachment,
+	 * which the ring accepts and then discards. Zero is the invariant; see
+	 * scene_ring_add_checked(). */
+	uint64_t ring_out_of_bounds;
 
 	int x, y;
 

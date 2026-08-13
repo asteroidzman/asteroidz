@@ -27,6 +27,18 @@ bool avk_oracle_enabled(void) {
 	return cached != 0;
 }
 
+bool avk_oracle_capture_armed(const struct avk_oracle *o) {
+	return o->capture_armed;
+}
+
+void avk_oracle_arm_capture(struct avk_oracle *o) {
+	o->capture_armed = true;
+}
+
+void avk_oracle_disarm_capture(struct avk_oracle *o) {
+	o->capture_armed = false;
+}
+
 void avk_oracle_init(struct avk_oracle *o, struct avk_device *dev) {
 	memset(o, 0, sizeof(*o));
 	o->dev = dev;
@@ -229,7 +241,11 @@ bool avk_oracle_tap(struct avk_oracle *o, struct avk_graph *graph,
 		uint32_t resource, struct avk_image *image, struct avk_box box,
 		enum avk_oracle_tap_kind kind, size_t cmd_index,
 		const pixman_region32_t *mask) {
-	if (!o->enabled || box.width <= 0 || box.height <= 0) {
+	/* PREFIX and BLUR belong to the oracle; OUTPUT is also what a bare capture
+	 * needs, and arming that must not drag in the reference render. */
+	bool want = kind == AVK_TAP_OUTPUT
+		? (o->enabled || o->capture_armed) : o->enabled;
+	if (!want || box.width <= 0 || box.height <= 0) {
 		return false;
 	}
 	if (o->slot_len >= AVK_ORACLE_MAX_SLOTS) {
@@ -437,6 +453,84 @@ int64_t avk_oracle_compare(const struct avk_oracle *o,
 		*worst_out = worst;
 	}
 	return wrong;
+}
+
+bool avk_oracle_write_ppm(const struct avk_oracle *o, const char *path,
+		VkFormat format) {
+	struct avk_box box;
+	uint32_t stride;
+	const uint8_t *px = avk_oracle_pixels(o, AVK_ORACLE_PRODUCTION,
+		AVK_TAP_OUTPUT, 0, &box, &stride);
+	if (px == NULL) {
+		avk_log(AVK_ERROR, "avk oracle: no output tap to write to %s", path);
+		return false;
+	}
+	/*
+	 * CHANNEL ORDER FROM THE FORMAT, not from a guess. XR24 imports as
+	 * B8G8R8A8, and a capture written as if it were R8G8B8A8 swaps red and
+	 * blue -- which on a grey desktop is invisible and on the asymmetric
+	 * colour markers a transform fixture needs is a wrong answer that looks
+	 * like a mirror.
+	 */
+	int r = 2, g = 1, b = 0;
+	switch (format) {
+	case VK_FORMAT_R8G8B8A8_UNORM:
+	case VK_FORMAT_R8G8B8A8_SRGB:
+		r = 0; g = 1; b = 2;
+		break;
+	default:
+		break;
+	}
+
+	FILE *f = fopen(path, "wb");
+	if (f == NULL) {
+		avk_log(AVK_ERROR, "avk oracle: cannot write %s", path);
+		return false;
+	}
+	fprintf(f, "P6\n%d %d\n255\n", box.width, box.height);
+	uint8_t *row = malloc((size_t)box.width * 3);
+	if (row == NULL) {
+		fclose(f);
+		return false;
+	}
+	/*
+	 * BREAK SWITCH: read each row one pixel further along than the last.
+	 *
+	 * A readback whose row pitch is wrong by a constant produces a picture
+	 * that is SHEARED rather than corrupt: every pixel is a real pixel, the
+	 * colours are right, and at a glance it looks like a rendering artefact
+	 * somewhere else entirely. That is why the capture-layout test measures a
+	 * straight edge rather than trusting the extents, and this is what proves
+	 * that measurement can fail. Test only; see contrib/avk-capture-layout-test.sh.
+	 */
+	static int skew = -1;
+	if (skew < 0) {
+		const char *env = getenv("AZ_AVK_CAPTURE_ROW_SKEW");
+		skew = env != NULL ? atoi(env) : 0;
+		if (skew != 0) {
+			avk_log(AVK_ERROR, "AZ_AVK_CAPTURE_ROW_SKEW=%d -- every capture is "
+				"read back with a deliberately wrong row pitch", skew);
+		}
+	}
+	for (int y = 0; y < box.height; y++) {
+		const uint8_t *src = px + (size_t)y * stride
+			+ (size_t)((VkDeviceSize)y * (VkDeviceSize)skew * 4);
+		if (skew != 0 && (size_t)((char *)src - (char *)px)
+				+ (size_t)box.width * 4 > (size_t)(stride * box.height)) {
+			src = px + (size_t)y * stride;   /* stay inside the mapping */
+		}
+		for (int x = 0; x < box.width; x++) {
+			row[x * 3 + 0] = src[x * 4 + r];
+			row[x * 3 + 1] = src[x * 4 + g];
+			row[x * 3 + 2] = src[x * 4 + b];
+		}
+		fwrite(row, 1, (size_t)box.width * 3, f);
+	}
+	free(row);
+	fclose(f);
+	avk_log(AVK_ERROR, "avk capture: wrote %dx%d to %s", box.width,
+		box.height, path);
+	return true;
 }
 
 struct avk_image *avk_oracle_ref_target(struct avk_oracle *o, VkFormat format,

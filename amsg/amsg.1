@@ -58,6 +58,20 @@ two frames of ONE session, which an environment variable cannot: two runs of a
 compositor do not place windows, lay out text or schedule frames identically. It
 costs one full redraw and nothing afterwards.
 .TP
+\fBdispatch capture_output\fR
+Write every output's next finished frame to \fBAZ_AVK_CAPTURE_DIR\fR as a binary
+PPM, read back from the Vulkan attachment itself after compositing and before
+presentation. This is the DETERMINISTIC TRANSFORM ORACLE: a screen-capture
+client gets nothing at all from a 90 or 270 degree output on the headless
+backend, so every pixel assertion at those rotations had to be skipped \(em and
+a rotation nobody can look at is a rotation nothing can test. The capture is in
+the attachment's own orientation and extent, and the log line beside it states
+the transform, the mode size, the transformed resolution and the attachment
+size, so a reader never has to infer the orientation it is comparing. It damages
+the output as well as arming the capture, because a settled desktop renders no
+frame and an armed capture would simply never fire. TEST TOOL: the capture path
+waits for the GPU.
+.TP
 \fBget idle\fR
 Return whether idling is currently held off, and by whom. \fBinhibited\fR is
 what the idle notifier was told, and answers "will this machine sleep";
@@ -360,6 +374,16 @@ not advertised is refused.
 \fBset_output_scale\fR,<output>,<scale>
 Set the scale, fractional included.
 .TP
+\fBset_output_transform\fR,<output>,<0-7>
+Rotate or flip the output, live: 0 normal, 1 90, 2 180, 3 270, 4 flipped,
+5 flipped-90, 6 flipped-180, 7 flipped-270. The attachment keeps the mode's
+extents at every transform; only the presentation extents swap.
+.TP
+\fBset_output_mode_transform\fR,<output>,<WxH[@Hz]>,<0-7>
+Set the resolution and the transform in ONE commit, so that the frame drawn
+for them has both pending at once. A custom mode is accepted for outputs that
+advertise no mode list.
+.TP
 \fBset_output_position\fR,<output>,<x>,<y>
 Move the output within the layout.
 .TP
@@ -524,6 +548,10 @@ privileges. See \fBdocs/visuals/effects.md\fR.
 .TP
 \fBset_output_scale\fR,<string>,<float>
 .TP
+\fBset_output_transform\fR,<string>,<int>
+.TP
+\fBset_output_mode_transform\fR,<string>,<string>,<int>
+.TP
 \fBset_output_position\fR,<string>,<int>,<int>
 .TP
 \fBset_output_vrr\fR,<string>,<bool>
@@ -573,6 +601,8 @@ privileges. See \fBdocs/visuals/effects.md\fR.
 \fBdump_scene\fR
 .TP
 \fBdamage_all\fR
+.TP
+\fBcapture_output\fR
 .TP
 \fBrestart\fR
 .TP

@@ -48,6 +48,8 @@ int32_t toggle_hdr(const Arg *arg);
 /* output configuration (action/output.h), formerly the bar's display popover */
 int32_t set_output_mode(const Arg *arg);
 int32_t set_output_scale(const Arg *arg);
+int32_t set_output_transform(const Arg *arg);
+int32_t set_output_mode_transform(const Arg *arg);
 int32_t set_output_position(const Arg *arg);
 int32_t set_output_vrr(const Arg *arg);
 int32_t set_output_hdr(const Arg *arg);

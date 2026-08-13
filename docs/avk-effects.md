@@ -4780,3 +4780,529 @@ three. At 0° the same damage was thrown away every time and nothing looked wron
 
 That is the strongest argument for the counter over the picture: a screenshot
 assertion at 0° would have certified this defect as absent.
+
+## M4F.2C.4d — the transform contract, and a rotated output that had never been seen
+
+### grim was hiding a broken renderer
+
+Since M4F.2C.3 every pixel assertion at 90° and 270° had been skipped with a
+stated reason: grim captures *nothing* from a rotated output on the headless
+backend. A rotation nobody can look at is a rotation nothing can test, and what
+was behind that curtain was not subtle.
+
+`amsg dispatch capture_output` writes the Vulkan attachment itself — after
+compositing, before presentation — as a binary PPM, at any transform. The first
+capture of a 90° output:
+
+```text
+capture: HEADLESS-1 transform=1 mode=800x600
+         transformed_resolution=600x800 attachment=600x800
+TL 128 128 128    TR 128 128 128
+BL 0   0   0      BR 0   0   0        <- the bottom of the frame is black
+455417 of 480000 pixels differ from the same desktop at 0 degrees
+```
+
+### One variable holding two rasters
+
+```c
+int width, height;
+wlr_output_transformed_resolution(output, &width, &height);   /* 600x800 */
+if (state->committed & WLR_OUTPUT_STATE_MODE) {
+    width  = state->mode->width;                              /* 800x600 */
+    height = state->mode->height;
+}
+```
+
+The two branches produce **different spaces**, and the result was used both to
+allocate the attachment *and* as the source space of the walker's
+`wlr_box_transform()`. So a 90° output allocated a 600×800 attachment for an
+800×600 mode and then mapped its geometry into an 800×600 space: the right 200
+columns of every node were clipped away and the bottom 200 rows of the
+attachment were never written at all.
+
+`wlr_scene` asserts the correct answer — `buffer->width == resolution_width`,
+from `output_pending_resolution()` — and on real KMS a framebuffer of the other
+shape is a rejected commit rather than a rotated picture.
+
+**And M4F.2C.4a was a symptom, not the cause.** That checkpoint stopped a
+rotated output rendering 65 empty frames a second by changing
+`scene_output_damage()`'s clip from the mode size to the transformed
+resolution. The immortal out-of-buffer rectangle was real; it existed *because*
+the attachment was the wrong shape, so damage legitimately reaching x=800 could
+never be drawn. Making the clip agree with the wrong attachment hid the empty
+frames and left the real defect in place. The clip is back to the attachment's
+own extent, which is the mode.
+
+### The five coordinate spaces
+
+Every quantity, named with the space that owns it. "Output coordinates" is not a
+space and does not appear.
+
+| space | what it is | extent at 800×600 mode, 90°, scale 1.5 |
+|---|---|---|
+| **global logical** | the desktop; where outputs are placed relative to each other | unbounded |
+| **output-local logical** | global logical minus the output's origin | 400 × 533 |
+| **untransformed output raster** (`trans_w × trans_h`) | output-local logical × scale, still in *logical orientation* | 600 × 800 |
+| **transformed attachment raster** | the buffer AVK renders into and the backend scans out | 800 × 600 |
+| **presentation damage space** | what a `wlr_damage_ring` and `wlr_output_state_set_damage` carry | 800 × 600 |
+
+The last two are the same space. That is not a coincidence and it is the whole
+point: damage is a statement about the buffer.
+
+| quantity | space |
+|---|---|
+| `Monitor` / `wlr_scene_output` x, y | global logical |
+| output logical box | output-local logical |
+| scene node geometry, before `az_avk_box_to_output` | global logical |
+| `walk.width` / `walk.height` | untransformed output raster |
+| `avk_cmd.dst`, `.inner`, `.clip` | transformed attachment |
+| `avk_scene.source_bounds` | transformed attachment (negative origin) |
+| blur write / dependency / capture | transformed attachment |
+| source damage, blur output damage, prefix rebuild | transformed attachment |
+| segment `origin_x/y`, `active` | transformed attachment |
+| `renderer.frame_damage` | transformed attachment = presentation damage |
+| damage-ring contents | presentation damage |
+| attachment scissor | transformed attachment |
+
+### The canonical blur-math space
+
+**All of it is the transformed attachment raster.** The chain is
+
+```text
+global logical
+    -> minus output origin          output-local logical
+    -> x scale                      untransformed output raster
+    -> wlr_box_transform(inv(T))    TRANSFORMED ATTACHMENT
+    -> everything blur does
+```
+
+and the conversion boundary is exactly one function, `az_avk_box_to_output()`.
+AVK never sees an output transform: by the time a command exists, the rotation
+has already been applied. Support, dependency, damage, capture and alignment are
+therefore all computed in one space and cannot drift between callers.
+
+That also answers the question M4F.2C.4c left open — **in which space must a
+capture origin be even?** In the attachment's, because the constraint comes from
+`fwidth()`'s 2×2 derivative quads and the quad grid is a property of the
+framebuffer. There is no "pre-transform" alternative, because there is no
+pre-transform capture region. `tests/test-avk-segment.c` asserts it for all four
+requested parities: the aligned region is bit-identical to the matching window
+of a full render, and still contains everything that was asked for.
+
+### Half-open, and anchored
+
+A box is `[x, x+w) × [y, y+h)`. The far edge is `width - x - w`, never
+`width - x`. `tests/test-transform-math.c` pins it with cases a
+round-trip-only test would pass anyway:
+
+```text
+180: the top-left pixel becomes the bottom-right one     (799, 599)
+180: and the bottom-right pixel becomes the top-left one (0, 0)
+ 90: the top-left pixel becomes the top-right one        (599, 0)
+ 90: a 1-pixel top strip becomes a 1-pixel side strip    (1 x 800)
+```
+
+plus round trips and area preservation for 18 rectangles × 4 rotations, and a
+deliberate wrong return leg that must *fail* to round-trip — otherwise the
+round-trip cases are testing nothing.
+
+### Source rectangles are not damage rectangles
+
+Six of those 18 cases live outside the presentation rectangle: `x = -126`,
+`x = W`, `y = -126`, `y = H`, and a corner beyond both. A blur's source halo is
+exactly that, and the transform carries it correctly — at 0° it is left of zero,
+at 90° it is above zero, at 180° past the right edge, at 270° below the bottom.
+
+The damage ring may never carry one, and that is now checked generically at the
+point of insertion rather than assumed: `scene_ring_add_checked()` subtracts the
+attachment from every region handed to the ring and counts anything left over,
+for every caller and not just for blur.
+
+### The pixel oracle
+
+A rotated output has a different *logical shape*, so it cannot be compared
+against the same mode at 0° — that is two different desktops. It is compared
+against an **unrotated output of the same logical shape**:
+
+| under test | reference | result |
+|---|---|---|
+| mode 800×600 rr 180 | mode 800×600 rr 0 | **0 px differ** |
+| mode 800×600 rr 90 | mode 600×800 rr 0 | **0 px differ** |
+| mode 800×600 rr 270 | mode 600×800 rr 0 | **0 px differ** |
+
+Three things had to leave the fixture first, each measured rather than assumed:
+
+| removed | why | cost of leaving it in |
+|---|---|---|
+| text | a terminal lays glyphs out for the output it was told about | 7 183 px, every one in a text row |
+| the cursor | its position is a property of the pointer, not the transform | ~150 px |
+| dither | a hash of the **device** pixel position, so it legitimately differs when the device grid rotates | 134 389 px at 180° |
+
+With effects on and dither off the residual is 1 247 px — 1 163 of them
+differing by exactly one code, and the four largest single samples on a corner
+arc. That is analytic antialiasing rounding at mirrored sample positions, which
+is raster semantics; mixing it into a geometric oracle would mean choosing a
+tolerance instead of asserting equality. The flat fixture asserts equality.
+
+### The oracle can fail, at every rotation
+
+`AZ_AVK_DAMAGE_HOLE=240,180,200,160` — a rectangle subtracted from every frame's
+damage *after* the ring has rotated — changes exactly **32 000 px = 200 × 160**
+at 0°, 90°, 180°, 270° and on the tall reference. The oracle detects precisely
+the injected defect, at every rotation, and nothing else.
+
+One thing that took a wrong turn first: a 140×110 hole changed *nothing* with
+blur enabled. Blur damage propagation dilates source damage by the kernel's
+126-pixel support, which closes a hole smaller than the support entirely. That
+is correct behaviour, and it is why the falsification fixture has no blur in it.
+
+## M4F.2C.4e — the coordinate-space contract, and the rest of the transform surface
+
+M4F.2C.4d found the defect and fixed it. This section is about making the class
+of defect hard to express, and about the parts of the transform surface that had
+still never been looked at: the mirror transforms, the cursor, a transform
+changed while the compositor runs, and the dither.
+
+### M4F.2C.4a, reclassified
+
+It is worth stating plainly, because the history should not be rewritten:
+
+| | |
+|---|---|
+| **Previous interpretation** | a damage-clipping defect |
+| **Correct interpretation** | symptom mitigation for an incorrect attachment/source-space extent |
+
+The change M4F.2C.4a made — clipping `scene_output_damage()` to
+`wlr_output_transformed_resolution()` instead of `output->width/height` — stopped
+a rotated output rendering 65 empty frames a second. The observation was real.
+The culprit was not. AVK was allocating its **attachment** from the transformed
+resolution, so on an 800×600 output at 90° the buffer was 600×800 and damage
+legitimately reaching x = 800 could never be drawn. Making the clip agree with
+the wrongly-shaped attachment hid the empty frames and left the real defect in
+place, where it went on never writing the bottom 200 rows of every frame.
+
+```
+ROOT CAUSE       attachment allocation and the transform walker used
+                 inconsistent raster spaces
+SYMPTOM          empty / clipped transformed regions
+MASKING CHANGE   the damage clip was changed to agree with the incorrect raster
+```
+
+The clip is back to `output->width/height`, under the name
+`clip_damage_to_attachment_extent()`.
+
+### Two extents, two types
+
+`int width, height` cannot hold two coordinate spaces if the two spaces are two
+types. `src/render/az_extent.h`:
+
+```c
+struct az_attachment_extent   { int width, height; };  /* the mode, the buffer */
+struct az_presentation_extent { int width, height; };  /* what the user sees   */
+```
+
+Identical layouts, and still not assignable to one another — C compares struct
+types by identity, not by shape — so the only route between them is
+`az_presentation_of()` / `az_attachment_of()`, which is where a reviewer can
+check the direction against the consumer. `az_output_attachment_extent()` and
+`az_output_pending_transform()` answer the two questions a frame actually asks,
+and both take the `wlr_output_state`, because a modeset frame must be drawn for
+the mode and transform it is *arriving at*.
+
+Naming, not just typing. In SceneFX the clip is
+`clip_damage_to_attachment_extent()` and the accessor is
+`scene_output_attachment_extent()`; a generic `clip_to_output()` would accept
+either extent without comment, which is exactly how the defect survived review.
+
+`tests/test-extent-space.c` (34 checks) states the contract and — the part that
+makes it a test rather than a restatement — runs the **old conflated
+implementation** through the same predicate and requires it to fail:
+
+```
+ok   mode 800x600 at 90: attachment is 800x600
+ok   mode 800x600 at 90: presentation is 600x800
+ok   the OLD code hands the swapchain 600x800 for an 800x600 mode
+ok   and hands the walker 800x600 on a modeset frame
+```
+
+### The call-site audit
+
+Every producer of an extent in the renderer and the scene, classified.
+
+| site | value | space | consumer wants | verdict |
+|---|---|---|---|---|
+| `az_avk_build_frame` swapchain | `az_output_attachment_extent()` | attachment | attachment | ✅ typed |
+| `az_avk_build_frame` walker | `az_presentation_of(att, tr)` | presentation | presentation | ✅ typed |
+| `az_avk_build_frame` full damage | `att.width/height` | attachment | attachment | ✅ |
+| `scene.source_bounds` | `att` ± halo | attachment | attachment | ✅ |
+| `az_avk_box_to_output` | `walk->pres` | presentation | `wlr_box_transform` source | ✅ |
+| `az_avk_emit_cursors` | `walk->pres`, `walk->transform` | presentation | same | ✅ **fixed** |
+| `az_avk_capture_frame` | `att` vs `target->extent` | attachment | attachment | ✅ asserted in the log |
+| `scene_output_damage` | `scene_output_attachment_extent()` | attachment | ring + `pending_commit_damage` | ✅ renamed |
+| `scene_output_damage_whole` | `output->width/height` | attachment | attachment | ✅ |
+| `output_to_buffer_coords` | `wlr_output_transformed_resolution()` | presentation | `wlr_region_transform` source | ✅ correct use |
+| `scene_output_handle_damage` | `wlr_output_transformed_resolution()` | presentation | same | ✅ correct use |
+| SceneFX render damage clips (×4) | `output->width/height` | attachment | framebuffer scissor | ✅ |
+| AVK `renderArea`, viewport, scissor | `target->extent`, segment `bounds` | attachment | attachment | ✅ |
+| AVK blur levels, prefix transients | derived from attachment boxes | attachment | attachment | ✅ |
+
+The two remaining `wlr_output_transformed_resolution()` calls are both correct:
+they are the *source space* of a `wlr_region_transform()` that converts a
+presentation-space region into buffer space, which is the one question that
+function answers.
+
+**AVK itself never sees an output transform.** The only transform inside the
+renderer is per-command *texture* orientation, applied in UV space
+(`transform_uv`). Every intermediate raster — blur levels, prefix transients,
+regional segments — is derived from attachment-space boxes, so there is no
+effect pass with an extent of its own to get wrong.
+
+### The variable-reuse audit
+
+A mechanical scan for a variable assigned twice from different spaces within one
+function, over the renderer, the cursor path and the scene:
+
+| finding | verdict |
+|---|---|
+| `az_avk_emit_cursors` used `output->transform` while the walk used `walk->transform` | **real**, fixed — a modeset frame would have placed the cursor by the transform it was leaving |
+| `az_avk_build_frame` `width/height` | the M4F.2C.4d defect, fixed by the types |
+| `scene_entry_render` composes `invert(buffer->transform)` with `data->transform` | correct: two different transforms |
+| SceneFX optimized-blur pass composes `invert(data->transform)` with `data->transform` | always `NORMAL`; correct for a source that is already the framebuffer, but written as though it were the buffer case above. GLES-only, unreachable under AVK. Reported, not changed |
+| `az_cursor_target_scale`, `avk_renderer_collect` | running maxima, not space conversions |
+
+### All eight transforms
+
+The four rotations do not cover the mirrors: `flipped-90` and `90` have the same
+extents and different anchors, so a sign error in one is invisible in the other.
+`contrib/avk-transform-test.sh` now runs all eight (38 assertions):
+
+| transform | reference | wrong pixels | damage hole |
+|---|---|---|---|
+| 90 | 600×800 @ 0 | **0** | 32 000 |
+| 180 | 800×600 @ 0 | **0** | 32 000 |
+| 270 | 600×800 @ 0 | **0** | 32 000 |
+| flipped | 800×600 @ 0 | **0** | 32 000 |
+| flipped-90 | 600×800 @ 0 | **0** | 32 000 |
+| flipped-180 | 800×600 @ 0 | **0** | 32 000 |
+| flipped-270 | 600×800 @ 0 | **0** | 32 000 |
+
+The attachment is 800×600 at every one of them; only the presentation raster
+transposes.
+
+### The oracle is independent, and elected
+
+Two independences, because one is not enough:
+
+1. **The reference is a different render.** `rr90` is compared against a
+   separately rendered 600×800 desktop at transform 0, not against a rotation of
+   its own output. No transform bug can make both agree by being wrong twice.
+2. **The canonicalisation is chosen by data.** `contrib/lib/ppm.py` implements
+   `wl_output_transform` from its definition in Python, sharing no code with
+   wlroots or AVK — and `ppm.py verify` then canonicalises each capture through
+   *all eight* candidates and requires the expected one to be the unique zero:
+
+```
+    0 diff 153600
+    2 diff 418416
+    4 diff 0 EXPECTED
+    6 diff 430704
+    (1, 3, 5, 7 differ in shape)
+```
+
+That also proves the fixture is asymmetric enough to tell the eight apart, which
+no amount of "0 px" on its own can say.
+
+### A transform changed while the compositor runs
+
+New: `set_output_transform` and `set_output_mode_transform` (the second so that
+a mode and a transform arrive in **one commit**, which is the only way to
+produce a frame whose state carries both). `contrib/avk-transform-live-test.sh`:
+
+| phase | result |
+|---|---|
+| 12 transitions — rotations, mirrors, and between families — under `AZ_FRAME_ORACLE=1` | 50 frames compared, **0 divergent**, 12 commits applied |
+| arriving at transform *T* by rotating vs starting at *T* | 0 px at all seven |
+| `1024x768@90 → 2560x1440@0 → 600x800@270 → 800x600@flipped-90 → 1024x768@flipped-270 → 800x600@0` | attachment = mode and presentation = its transposition on every one |
+
+### The dither's domain
+
+The 134 389-pixel difference at 180° that the 4d fixture subtracted out is now
+asserted rather than excused. `az_dither_alpha()` samples at `az_frag_global()`
+— `gl_FragCoord` plus the target origin — so the field is anchored to the
+**attachment pixel grid**, with the regional-target offset applied so a
+transient cannot phase-shift it, and with no frame counter in it.
+`contrib/avk-dither-domain-test.sh` turns that into a discriminator: with no
+dither the two transforms are pixel-identical, and with dither they must *not*
+be, because 180° maps every logical pixel onto a different device pixel. A
+presentation-anchored field would give zero in both. Partial repaint equals
+forced-full repaint, dither included, at 0° and 180°.
+
+### Three defects the new instruments found
+
+None of these was the transform work's target. All three were found because
+something could finally look at a frame that nothing had looked at before.
+
+**A cursor on a rotated output was bilinearly filtered.** `cmd->filter_linear`
+asked "is the destination the same size as the source" by comparing a box that
+had already been through `wlr_box_transform()` — which swaps width and height at
+90, 270, flipped-90 and flipped-270 — against a source extent that never
+rotates. The default arrow is 22×24, so on every odd transform the comparison
+was `24 != 22` and the pointer was silently smoothed. 464 differing pixels
+against the same desktop on an unrotated output: the cursor in exactly the right
+place, drawn slightly wrong. Fixed by comparing `oc->width/height`, which is
+already presentation-space, against the source.
+
+**A client texture could be destroyed while a frame was still sampling it.**
+`avk_retire_push()` defers a destruction against `image->last_use`, and only the
+upload path and the transient pool ever advanced it. A DMA-BUF import that was
+only ever *sampled* kept `last_use = 0`, so `az_avk_buffer_destroy()` pushed it
+with a timeline point the GPU had already passed and `vkDestroyImage` ran under a
+submitted command buffer. The validation layers said so in one line:
+
+```text
+VUID-vkDestroyImage-image-01000: vkDestroyImage(): can't be called on VkImage
+[client buffer 776x546] that is currently in use by VkCommandBuffer
+[avk frame cb 0]
+```
+
+It is a race — it appeared on one seam run out of many, when a client happened
+to release a buffer inside the first frame's lifetime — which is exactly why the
+validation layers are the oracle for it and a pixel assertion never could be.
+Every image a frame reads now takes that frame's timeline point.
+`AVK_NO_SAMPLED_LAST_USE=1` restores the old behaviour.
+
+**The cursor was mapped by the committed transform on a modeset frame.**
+`az_avk_emit_cursors()` used `output->transform` while the rest of the walk used
+the frame's pending one, so a frame that changed transform would have placed the
+cursor by the transform it was leaving. Found by the variable-reuse audit before
+a test could reach it; `set_output_transform` now makes that frame reachable.
+
+### Two tests that passed by doing nothing
+
+Both were caught here, and both are the same species as the ones M4F has been
+collecting:
+
+**The headless backend believes it has a cursor plane.** Its `set_cursor()` is
+`return true;` and does nothing, so no cursor reaches the frame at all. Seven
+captures with the pointer in seven different places were seven identical files —
+and the cross-transform half of the cursor matrix reported **0 px at every
+position and every transform**, on frames with no cursor in them.
+`ASTEROIDZ_AVK_FORCE_SOFTWARE_CURSOR=1` takes the lock screencopy's
+`overlay_cursor` takes, and the same comparison then found a real defect.
+
+**`local a="$1" b="x$a"` declares every name before assigning any of them**, so
+under `set -u` the second initialiser reads an unset variable. A matrix run died
+in its first function and reported nothing at all.
+
+### Performance
+
+The oracle and the capture are off unless asked for: the prefix transient only
+gains `TRANSFER_SRC` when `AZ_FRAME_ORACLE=1`, the taps are graph passes that are
+not declared otherwise, and `capture_output` arms a flag that one frame clears.
+The only unconditional addition this milestone makes to the frame path is one
+pass over the command list to stamp `last_use`, which is O(commands) with no
+allocation and no synchronisation.
+
+`ASTEROIDZ_PREGRAPH=<baseline> contrib/avk-graph-perf.sh` runs both binaries
+alternately over four scenes. Results: see the qualification table below.
+
+### The one a flat fixture could never see: 90° and 270° sampled backwards
+
+This is the largest defect M4F.2C.4e found, and the eight-transform pixel oracle
+reported **0 differing pixels at all eight transforms** while it was happening.
+
+`transform_uv()` resolved `AVK_TRANSFORM_90` by putting the source's
+**bottom-left** quadrant at the destination's top-left. That is the *270*
+answer. `wl_output_transform` names the transform from the buffer to the screen,
+and wlroots resolves `WL_OUTPUT_TRANSFORM_90` by putting the source's
+**top-right** quadrant there (`wlr_matrix_project_box` with `[[0,1],[-1,0]]`).
+The two enumerations were being treated as identical — the comment on
+`az_avk_transform()` says as much — and for 90 and 270 they were not.
+
+So every texture on a 90° or 270° output was drawn **rotated 180° inside its own
+box**. The window was in the right place, the right size, with the right corners
+and the right border: only its contents were upside down.
+
+The six other transforms are involutions (`invert(T) == T`), so they could not be
+wrong in this way, and were not.
+
+```text
+fixture                      rr1 (90)     rr3 (270)    the other six
+three FLAT windows              0 px          0 px          0 px
+four-quadrant windows      167 400 px    167 400 px          0 px
+```
+
+**A solid colour rotated by any amount is the same solid colour.** The fixture
+had been made flat on purpose in M4F.2C.4d — text was 7 183 px of between-run
+noise, and removing it was right — but flat surfaces are blind to sampling
+orientation, and nothing else in the suite ever compared a non-uniform texture on
+a rotated output. `WLBGEFFECT_QUAD=1` paints four quadrants instead: still
+deterministic between runs, still no text and no client-side layout, and able to
+tell all eight orientations apart. It is now the default for the oracle.
+
+It surfaced through the **cursor** — the first non-uniform texture anything had
+ever looked at on a rotated output. The cursor matrix found it at 90° while
+flipped-90 and 180° were exact, and that pattern (only the non-involutive
+transforms wrong) is what identified the cause before any pixel was inspected.
+
+`tests/test-avk-render.c` asserted the old mapping and passed. Its expectations
+had been read off the implementation, so it agreed with the defect instead of
+catching it; its table now states the wlroots answer and the old values are
+recorded beside it.
+
+### And one cull that measured the wrong extent
+
+`az_avk_walk` compared post-transform `dst` boxes — attachment space — against
+`walk->pres`, the presentation extent. At 90°, 270°, flipped-90 and flipped-270
+those are transposed, so on an 800×600 output at 90° a box at attachment x = 760
+was tested against a 600-pixel limit and culled.
+
+It survived the pixel oracle because the cull only drops a box that *starts*
+past the limit, and every window in the fixture starts at the near edge. The
+cursor does not: parked in the bottom third of a 90° desktop it **vanished
+completely**. Fixed by giving the walk a typed `att` alongside `pres` and culling
+against the attachment.
+
+### The audit that found the cull, and the fixture that found the sampling
+
+Worth separating, because they were found in opposite ways.
+
+The **cull** was found by *reasoning from the model*: once the two extents were
+two types, every comparison between a post-transform box and an extent became a
+question with a checkable answer, and one of them was answered wrong. No pixel
+was needed to see it.
+
+The **sampling** was found by *pixels*, and could not have been found any other
+way — the geometry was right, every extent was right, every damage region was
+right, and the picture was wrong. It took a fixture that a rotation can change.
+
+Both are the same lesson from opposite ends: a model is what makes wrongness
+*expressible*, and a fixture is what makes it *visible*. M4F.2C.4d had the
+second and not the first; M4F.2C.4e needed both.
+
+### Qualification status
+
+From measurements. Anything not measured says so.
+
+| item | status | evidence |
+|---|---|---|
+| `ROTATION_ATTACHMENT_ROOT_CAUSE` | **FIXED** | typed extents; `test-extent-space` 34/34, including the old conflated implementation run through the same predicate and required to fail |
+| `TEXTURE_SAMPLING_90_270` | **FIXED** | 167 400 px → **0 px**, patterned fixture, all eight transforms |
+| `PIXEL_ORACLE_ALL_8` | **PASS** | `avk-transform-test` 38/38, 0 px against independently rendered references |
+| `DAMAGE_HOLE_FALSIFIER_ALL_8` | **PASS** | exactly 32 000 px = 200×160 at every transform and on the tall reference |
+| `ORACLE_CANONICALISATION_ELECTED` | **PASS** | unique zero among eight candidates, per transform |
+| `DAMAGE_PARTIAL_FULL_EQUIVALENCE` | **PASS** | 9 positions × 8 transforms, 38/38: 411 frames compared, **0 divergent**, 0 dropped, 0 invalidated |
+| `TRANSFORM_MATH` | **PASS** | 33/33, incl. out-of-presentation halos and a deliberately wrong return leg |
+| `EVEN_ORIGIN_ALIGNMENT` | **PASS** | 4/4 parities bit-identical, post-transform |
+| `LIVE_TRANSFORM_RECONFIGURATION` | **PASS** | 12 transitions, 50 frames, 0 divergent; rotated-into == started-in, 0 px ×7 |
+| `MODE_PLUS_TRANSFORM_RECONFIGURATION` | **PASS** | six combinations, one commit each; attachment = mode, presentation = its transposition |
+| `CURSOR_TRANSFORM` | **PASS** | 104/104: 7 positions × 5 transforms, positions exact, clips clipped, 28 cross-transform comparisons at 0 px |
+| `FRACTIONAL_SCALE_TRANSFORM` | **PASS** | 1 / 1.25 / 1.5 / 1.75 / 2 × 90 / 270 / flipped-90, **0 px** each; partial == full 12/12 |
+| `CROSS_OUTPUT_MIXED_TRANSFORM_SEAMS` | **PASS** | 0°+90°, 90°+flipped, flipped-90°+270°: 23/23 each |
+| `CAPTURE_READBACK_LAYOUT` | **PASS** | 799×601 and 1365×769 at rr0 and rr1: extent, tight row pitch, straight edge over 300+ rows; shear break caught (12..12 vs 84..383) |
+| `DITHER_DOMAIN` | **PASS** | attachment-anchored, 20 075 px beyond the geometry floor, sub-step; partial == full at 0° and 180° |
+| `VULKAN_VALIDATION` | **PASS** | 0 VUID and 0 SYNC-HAZARD lines across every seam run after the `last_use` fix, including `BREAK=poison` at 90° and 270° |
+| `PERFORMANCE` | **PASS** | 20/20 against `2e13a9a`: one pass, two barrier calls, no attachment recreation, p50 unchanged on three scenes |
+| `REGRESSION_MATRIX` | **PASS** | 22 unit suites, 20 headless suites; one documented no-coverage skip (`avk-gradient-test`) |
+| `LIVE_ACCEPTANCE` | **NOT RUN** | headless only, by instruction |
+| `NO_INSTALL` | **HELD** | `/usr/bin/asteroidz` is still M4E |

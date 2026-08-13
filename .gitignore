@@ -36,3 +36,4 @@ contrib/wlsandbox/wlsandbox
 *.pkg.tar.zst
 *.pkg.tar.xz
 /pkg/
+__pycache__/

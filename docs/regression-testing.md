@@ -1207,6 +1207,9 @@ contrib/avk-oracle-runs.sh   --   the same trigger N times, one row per run
 ```sh
 bash contrib/avk-oracle-test.sh
 MODE=fixture bash contrib/avk-oracle-test.sh
+MODE=transforms bash contrib/avk-oracle-test.sh
+bash contrib/avk-transform-test.sh
+./build/test-transform-math
 RUNS=30 bash contrib/avk-oracle-runs.sh
 RUNS=4 ORACLE_EXTRA_ENV=AZ_SCENE_HALO_DAMAGE_RAW=1 \
 	bash contrib/avk-oracle-runs.sh                    # must find divergences
@@ -1245,6 +1248,117 @@ after the interaction, the static control, the first divergent frame, the buffer
 slot, the halo-record count and the boundary classification. Three consecutive
 runs cannot tell determinism from luck at a 2-in-3 failure rate; that mistake was
 already made once and had to be retracted.
+
+### The transform pixel oracle
+
+`amsg dispatch capture_output` writes the Vulkan **attachment** to a binary PPM
+— after compositing, before presentation — at any output transform. It replaces
+grim as the correctness oracle, because grim captures *nothing* from a 90° or
+270° output on this backend, and a rotation nobody can look at is a rotation
+nothing can test. The first capture of a 90° frame found the bottom 200 rows had
+never been written.
+
+```text
+contrib/avk-transform-test.sh   38   the pixel oracle at every TRANSFORM
+tests/test-transform-math.c     33   round trip, area, extent swap, half-open
+tests/test-extent-space.c       34   the two extents, as two types
+contrib/lib/ppm.py              --   read / diff / bbox / canon / verify / grid
+```
+
+A rotated output has a different **logical shape**, so it is compared against an
+unrotated output of the *same logical shape*, each capture inverse-transformed
+into logical orientation first:
+
+```text
+mode 800x600 rr 180  vs  mode 800x600 rr 0     0 px differ
+mode 800x600 rr  90  vs  mode 600x800 rr 0     0 px differ
+mode 800x600 rr 270  vs  mode 600x800 rr 0     0 px differ
+```
+
+Three things had to leave the fixture before that was exact, and each was
+measured rather than assumed:
+
+```text
+text        a terminal lays its glyphs out for the output it was told about
+            -- 7183 differing pixels, every one inside a text row
+the cursor  a property of the pointer, not the transform; parked at a fixed
+            LAYOUT coordinate instead
+dither      a hash of the DEVICE pixel position, so it legitimately differs
+            when the device grid rotates -- 134389 px at 180 degrees
+```
+
+`AZ_SHADOW_DITHER_AMP=0` for the last. Rounded corners, shadows and blur are
+kept out of the geometric fixture for the same reason: their analytic
+antialiasing samples at mirrored positions and rounds a code differently (1247
+px with effects on, 1163 of them differing by exactly 1). Asserting equality on
+a fixture with no sub-pixel content is stronger than choosing a tolerance on one
+that has.
+
+The falsifier runs at every rotation: `AZ_AVK_DAMAGE_HOLE=240,180,200,160`
+changes exactly **32 000 px = 200×160** at 0°, 90°, 180°, 270° and on the tall
+reference. One wrong turn worth keeping: a 140×110 hole changed *nothing* with
+blur on, because blur damage propagation dilates by the kernel's 126-pixel
+support and closes any hole smaller than it. That is correct behaviour, and it
+is why the falsification fixture has no blur.
+
+`MODE=transforms bash contrib/avk-oracle-test.sh` runs the damage matrix — nine
+positions, from the interior to a one-pixel column — at **all eight**
+`wl_output_transform`s and requires partial == forced-full on every frame of
+every one.
+
+### M4F.2C.4e: the rest of the transform surface
+
+The four rotations are not the transform surface. `flipped-90` and `90` have the
+same extents and different anchors, so a sign error in one is invisible in the
+other; the cursor is drawn through its own `wlr_box_transform()` call; and a
+transform set in a config file never produces the frame where the pending and
+committed transforms disagree.
+
+```text
+contrib/avk-transform-test.sh          38   all eight, pixel-exact + hole
+contrib/avk-transform-live-test.sh     --   MODE=oracle|pixel|modeset
+contrib/avk-cursor-transform-test.sh   --   seven pointer positions x eight
+contrib/avk-scale-transform-test.sh    --   1 / 1.25 / 1.5 / 1.75 / 2 x transform
+contrib/avk-dither-domain-test.sh      --   which raster the noise is anchored to
+contrib/avk-capture-layout-test.sh     --   the readback, at awkward extents
+tests/test-extent-space.c              34   attachment vs presentation extent
+```
+
+**The oracle elects its own canonicalisation.** `ppm.py verify` maps a capture
+back through all eight candidate transforms and requires the expected one to be
+the unique zero against the reference. A transcription error in either direction
+loses that election — and a fixture too symmetric to tell two candidates apart
+fails it as well, which no amount of "0 px" can say on its own.
+
+**Two tests that passed by doing nothing**, both caught here:
+
+```text
+the headless backend believes it has a cursor plane. set_cursor() is
+`return true;` and does nothing, so no cursor reaches the frame at all --
+seven captures with the pointer in seven places were seven identical files,
+and every position assertion built on them measured nothing. The whole
+cross-transform half of the cursor matrix passed 0 px on frames with no
+cursor in them. ASTEROIDZ_AVK_FORCE_SOFTWARE_CURSOR=1 is the fix.
+
+`local a="$1" b="x$a"` declares every name before assigning any of them, so
+under `set -u` the second initialiser reads an unset variable. A whole
+matrix run died in its first function and reported nothing.
+```
+
+**A flat fixture cannot test sampling.** The eight-transform oracle was three
+windows of three solid colours, and it reported 0 differing pixels at every
+transform while every texture on a 90° or 270° output was being drawn rotated
+180° inside its own box. A solid colour rotated by any amount is the same solid
+colour. `WLBGEFFECT_QUAD=1` paints four quadrants — still deterministic between
+runs, no text and no client-side layout — and the same defect measures 167 400 of
+480 000 pixels at 90° and 270° and exactly 0 at the other six transforms, which
+are all involutions. It is now the oracle's default; `QUAD=0` restores the flat
+fixture, and exists only to reproduce that result.
+
+**A row-pitch bug shears rather than corrupts**, so
+`contrib/avk-capture-layout-test.sh` measures a straight vertical edge at the
+top, middle and bottom of the frame at 799, 801, 1023 and 1365 pixels wide
+rather than trusting the extents. `AZ_AVK_CAPTURE_ROW_SKEW=1` is its falsifier.
 
 **`amsg dispatch dump_scene`** logs one line per emitted AVK command with the
 index it landed at. That index is the `k` a blur's source prefix is replayed

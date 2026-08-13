@@ -773,6 +773,118 @@ static void test_odd_origin(struct harness *h) {
 	avk_scene_finish(&scene);
 }
 
+/* ── 8. the alignment contract, at every origin parity ──────────────────── */
+static void test_alignment_matrix(struct harness *h) {
+	printf("\n-- alignment parity matrix --\n");
+
+	/*
+	 * ── IN WHICH SPACE MUST THE ORIGIN BE EVEN? ───────────────────────────
+	 *
+	 * In the ATTACHMENT's, and that answer is forced rather than chosen. The
+	 * constraint exists because rounded.glsl antialiases with fwidth(), a 2x2
+	 * QUAD derivative, and the quad grid is a property of the framebuffer being
+	 * rendered into. Nothing upstream of the attachment has derivative quads to
+	 * misalign.
+	 *
+	 * That also settles the question of whether alignment happens before or
+	 * after the output transform, which M4F.2C.4c left open. There is no
+	 * "before": AVK never sees an output transform. The compositor applies it in
+	 * az_avk_box_to_output() while emitting commands, so every box the renderer
+	 * is handed -- and therefore every capture region derived from one -- is
+	 * already in attachment pixels. A capture origin has exactly one space to
+	 * be even in, and a rotation cannot move it to another one.
+	 *
+	 * What is asserted here is the property that makes that safe: whatever
+	 * parity a caller asks for, the ALIGNED region renders bit-identically to
+	 * the matching window of a full render, and still covers everything that
+	 * was asked for.
+	 */
+	struct avk_scene scene;
+	scene_start(&scene);
+	struct avk_cmd *b = avk_scene_add(&scene, AVK_CMD_RECT);
+	b->dst = (struct avk_box){ 60, 90, 160, 140 };
+	b->opacity = 1.0f;
+	b->color[0] = 1.0f; b->color[3] = 1.0f;
+	/* Asymmetric radii, so a permutation is visible as well as a phase shift. */
+	b->corners[0] = 0.0f;  b->corners[1] = 7.0f;
+	b->corners[2] = 19.0f; b->corners[3] = 37.0f;
+	b->inner = (struct avk_box){ 66, 96, 148, 128 };
+	for (int i = 0; i < 4; i++) { b->inner_corners[i] = 33.0f; }
+	b->has_inner = true;
+
+	if (!render_segment(h, &scene, h->full, W, H, 0, 0, 0, scene.len, true)
+			|| !stage(h, h->full, W, H, NULL, h->reference)) {
+		avk_scene_finish(&scene);
+		return;
+	}
+
+	static const struct { int dx, dy; const char *what; } PARITY[] = {
+		{ 0, 0, "even/even" },
+		{ 0, 1, "even/odd"  },
+		{ 1, 0, "odd/even"  },
+		{ 1, 1, "odd/odd"   },
+	};
+	for (size_t i = 0; i < sizeof(PARITY) / sizeof(PARITY[0]); i++) {
+		int32_t want_x = RX + PARITY[i].dx, want_y = RY + PARITY[i].dy;
+		/* ONE PIXEL SHORT OF THE REGIONAL TARGET, deliberately: aligning an odd
+		 * origin GROWS the extent by one per axis, and asking for the full
+		 * RWxRH would make the aligned request exceed both the regional image
+		 * and the staging array. The first version of this test did exactly
+		 * that and reported 128 differing pixels at worst 255 -- which was its
+		 * own buffer overflow, and glibc said so. */
+		uint32_t want_w = RW - 1, want_h = RH - 1;
+		int32_t ox = want_x, oy = want_y;
+		uint32_t ow = want_w, oh = want_h;
+		avk_render_segment_align_origin(&ox, &oy, &ow, &oh);
+
+		CHECK((ox & 1) == 0 && (oy & 1) == 0,
+			"%s: the aligned origin is even in both axes (%d,%d)",
+			PARITY[i].what, ox, oy);
+		/* CONTAINMENT. Alignment may enlarge the backing capture; it may never
+		 * lose a pixel the caller asked for, which is the same requirement the
+		 * blur's dependency has of its capture. */
+		CHECK(ox <= want_x && oy <= want_y
+				&& (int64_t)ox + ow >= (int64_t)want_x + want_w
+				&& (int64_t)oy + oh >= (int64_t)want_y + want_h,
+			"%s: and still covers the requested window (%d,%d %ux%u contains "
+			"%d,%d %ux%u)", PARITY[i].what, ox, oy, ow, oh, want_x, want_y,
+			want_w, want_h);
+
+		if (ow > RW + 1 || oh > RH + 1) {
+			/* The regional image is allocated at RW+1 x RH+1; a larger request
+			 * would be a test bug rather than a finding. */
+			CHECK(false, "%s: aligned extent %ux%u exceeds the test target",
+				PARITY[i].what, ow, oh);
+			continue;
+		}
+		if (!render_segment(h, &scene, h->region, ow, oh, ox, oy, 0, scene.len,
+				true) || !stage(h, h->region, ow, oh, NULL, h->regional)) {
+			continue;
+		}
+		int diff = 0, worst = 0;
+		for (uint32_t y = 0; y < oh; y++) {
+			for (uint32_t x = 0; x < ow; x++) {
+				if ((int32_t)x + ox >= (int32_t)W
+						|| (int32_t)y + oy >= (int32_t)H) {
+					continue;
+				}
+				uint32_t a = h->regional[y * ow + x];
+				uint32_t c = h->reference[(y + oy) * W + (x + ox)];
+				if (a == c) {
+					continue;
+				}
+				int d = abs(r_of(a) - r_of(c));
+				if (d > worst) { worst = d; }
+				diff++;
+			}
+		}
+		CHECK(diff == 0,
+			"%s: the aligned regional render is bit-identical to the full one "
+			"(%d differing, worst %d)", PARITY[i].what, diff, worst);
+	}
+	avk_scene_finish(&scene);
+}
+
 int main(void) {
 	setvbuf(stdout, NULL, _IONBF, 0);
 	printf("== avk segmented compose (M4F.2A.1) ==\n");
@@ -811,6 +923,7 @@ int main(void) {
 	test_active_region(&h);
 	test_mixed(&h);
 	test_odd_origin(&h);
+	test_alignment_matrix(&h);
 
 	avk_device_wait_idle(h.dev);
 	avk_image_destroy(h.dev, h.full);

@@ -322,7 +322,21 @@ echo "  note: mean seam step through the blurred window: $STEP codes"
 # be measuring the resampling rather than the blur, so those runs skip it and
 # rely on the damage_all oracle and the counters, which need no correspondence
 # between the two images.
-if [ "${SEAM_MODE:-equal}" = "equal" ]; then
+# DERIVED FROM THE CONFIGURATION, not from a mode the caller has to remember.
+# `SEAM_MODE` was that mode, and a mixed-scale rotated run left it at its
+# default and reported "no step across it (11 codes)" as a FAILURE -- the
+# resampling this comment describes, measured and then asserted on. The scales
+# are right here; the fixture can read them itself.
+#
+# Rotation alone turned out to be fine: 0 codes at every transform with equal
+# scales, measured. It is the DENSITY that breaks the correspondence.
+SEAM_COMPARABLE=1
+if [ "$HL_SCALE1" != "$HL_SCALE2" ]; then
+	SEAM_COMPARABLE=0
+	hl_skip "the seam-continuity metric needs equal scales (have $HL_SCALE1 vs $HL_SCALE2); the damage_all oracle and the counters cover this run"
+fi
+[ "${SEAM_MODE:-equal}" = "equal" ] || SEAM_COMPARABLE=0
+if [ "$SEAM_COMPARABLE" = "1" ]; then
 hl_assert "the seam could be measured (premise)" \
 	"$([ "${STEP:-(-1)}" -ge 0 ] && echo true || echo false)" "true"
 # 4 codes, and the threshold is set BY THE TWO MEASUREMENTS rather than chosen:
@@ -345,7 +359,6 @@ hl_assert "and no step across it ($STEP codes)" \
 hl_assert "source is reconstructed beyond the output's bounds ($HALOPX px)" \
 	"$([ "${HALOPX:-0}" -gt 0 ] && echo true || echo false)" "true"
 else
-	echo "  note: SEAM_MODE=${SEAM_MODE} -- continuity metric skipped (see above)"
 	hl_assert "source is reconstructed beyond the output's bounds ($HALOPX px)" \
 		"$([ "${HALOPX:-0}" -gt 0 ] && echo true || echo false)" "true"
 fi
@@ -423,6 +436,7 @@ INHERIT="$(field "$OUTDIR/stats-cross.json" blur_transitive_damage_pixels)"
 TOUCH="$(field "$OUTDIR/stats-cross.json" blur_damage_nodes_touched)"
 RECS="$(field "$OUTDIR/stats-cross.json" blur_halo_damage_records)"
 LOST="$(field "$OUTDIR/stats-cross.json" blur_halo_damage_lost)"
+OOB="$(field "$OUTDIR/stats-cross.json" damage_ring_out_of_bounds)"
 echo "  note: $HALOFR frames took damage from outside their own output ($RECS recorded, $LOST lost); $TOUCH blur recomputes"
 hl_assert "a near-seam change routes damage across the boundary ($HALOFR)" \
 	"$([ "${HALOFR:-0}" -gt 0 ] && echo true || echo false)" "true"
@@ -433,6 +447,20 @@ hl_assert "a near-seam change routes damage across the boundary ($HALOFR)" \
 # left over from the last intersect and read as out-of-bounds.
 hl_assert "and none of it is lost on the way back out ($LOST)" \
 	"${LOST:-x}" "0"
+# THE GENERIC FORM OF THE SAME INVARIANT, counted at the point of insertion for
+# every caller rather than for blur alone: a rectangle handed to a damage ring
+# must lie inside the attachment, because rotate_buffer intersects what it
+# returns with the buffer and anything outside is accepted and then discarded.
+hl_assert "no out-of-bounds rectangle ever reaches the damage ring ($OOB)" \
+	"${OOB:-x}" "0"
+# TRANSITIVE DAMAGE, UNDER WHATEVER TRANSFORM THIS RUN USES. One blur's output
+# lands inside another's dependency here (the floating window's backdrop sits
+# over the tiled windows' own blurs), so the forward sweep's one edge is
+# exercised. It cannot be seen in the picture -- a blur preserves the local mean
+# -- so it is asserted structurally. Partial-vs-full for the same frames is the
+# damage_all oracle above.
+hl_assert "one blur's damage reaches another's source ($INHERIT px)" \
+	"$([ "${INHERIT:-0}" -gt 0 ] 2>/dev/null && echo true || echo false)" "true"
 
 # THE POST-INTERACTION CONTROL, which this fixture never had.
 #

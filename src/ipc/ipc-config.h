@@ -341,6 +341,10 @@ static const DispatchAction dispatch_actions[] = {
 	/* monitors */
 	{"set_output_mode", "string string", "Set an output's resolution, WxH@Hz."},
 	{"set_output_scale", "string float", "Set an output's scale."},
+	{"set_output_transform", "string int",
+	 "Rotate or flip an output: 0-7, the wl_output_transform values."},
+	{"set_output_mode_transform", "string string int",
+	 "Set an output's resolution and transform in ONE commit."},
 	{"set_output_position", "string int int", "Move an output in the layout."},
 	{"set_output_vrr", "string bool", "Enable adaptive sync on an output."},
 	{"set_output_hdr", "string bool", "Set an output's HDR baseline."},
@@ -372,6 +376,10 @@ static const DispatchAction dispatch_actions[] = {
 	{"damage_all", "",
 	 "Mark every output fully damaged and repaint (the damage-tracking "
 	 "oracle: a screenshot before and after must be identical)."},
+	{"capture_output", "",
+	 "Write every output's next frame to AZ_AVK_CAPTURE_DIR as a PPM, read "
+	 "back from the actual Vulkan attachment (works at every output "
+	 "transform, unlike a screen-capture client)."},
 	{"restart", "", "Restart the compositor in place."},
 	{"quit", "", "Exit."},
 	{"chvt", "int", "Switch virtual terminal."},

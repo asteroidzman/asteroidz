@@ -1371,6 +1371,17 @@ FuncType parse_func_name(char *func_name, Arg *arg, char *arg_value,
 		func = set_output_mode;
 		(*arg).v = strdup(arg_value);
 		(*arg).v2 = strdup(arg_value2);
+	} else if (strcmp(func_name, "set_output_transform") == 0) {
+		/* set_output_transform,<output>,<0-7> */
+		func = set_output_transform;
+		(*arg).v = strdup(arg_value);
+		(*arg).i = atoi(arg_value2);
+	} else if (strcmp(func_name, "set_output_mode_transform") == 0) {
+		/* set_output_mode_transform,<output>,<WxH[@Hz]>,<0-7> */
+		func = set_output_mode_transform;
+		(*arg).v = strdup(arg_value);
+		(*arg).v2 = strdup(arg_value2);
+		(*arg).i = atoi(arg_value3);
 	} else if (strcmp(func_name, "set_output_scale") == 0) {
 		func = set_output_scale;
 		(*arg).v = strdup(arg_value);
@@ -1420,6 +1431,8 @@ FuncType parse_func_name(char *func_name, Arg *arg, char *arg_value,
 		func = dump_scene;
 	} else if (strcmp(func_name, "damage_all") == 0) {
 		func = damage_all;
+	} else if (strcmp(func_name, "capture_output") == 0) {
+		func = capture_output;
 	} else if (strcmp(func_name, "reload_config") == 0) {
 		func = reload_config;
 	} else if (strcmp(func_name, "ufo") == 0) {

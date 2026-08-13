@@ -32,8 +32,12 @@
 #                compared frames is above zero.
 #
 # MODE=fixture runs the 180-degree cross-seam interaction under the oracle and
-# prints the first divergence rather than asserting on it; that is the
-# investigation, and it is not a pass/fail gate.
+# asserts it never diverges.
+#
+# MODE=transforms runs the damage matrix -- nine positions, from the interior
+# to a one-pixel column -- at all eight wl_output_transforms, and requires
+# partial == forced-full on every frame of every one. A damage bug that only
+# shows at one edge is exactly what a transform permutes into a different edge.
 set -u
 
 . "$(dirname "$0")/lib/headless.sh"
@@ -166,6 +170,75 @@ if [ "$MODE" = "fixture" ]; then
 		"$(oracle_invalid "$FIX_LOG")" 0
 	hl_assert "a 180-degree cross-seam frame never diverges from a full render" \
 		"${FIX_WRONG:-1}" 0
+fi
+
+if [ "$MODE" = "transforms" ]; then
+	echo
+	echo "── partial == forced-full at every transform ─────────────────────────"
+	# THE DAMAGE MATRIX, at all EIGHT wl_output_transforms and nine positions.
+	#
+	# Nine because this is where half-open rectangle errors live: a bug that
+	# only shows along one edge is exactly what a transform permutes into a
+	# different edge, and a centre-only fixture would find it at one transform
+	# and miss it at seven. The positions are interior, each of the four edges,
+	# a corner, a box straddling the corner the transform maps FROM, a box
+	# almost entirely off the output, and a one-pixel column.
+	#
+	# Eight because the four rotations do not exercise the mirror transforms:
+	# flipped-90 and 90 have the same extents and different anchors, and a sign
+	# error in one of them is invisible in the other.
+	#
+	# The oracle compares EVERY frame of the sequence against a full render of
+	# the same snapshot, so this asserts the whole interaction rather than its
+	# final state.
+	HL_OUTPUTS=1
+	for RR in 0 1 2 3 4 5 6 7; do
+		# The PRESENTATION extent transposes on transform parity -- 1, 3, 5 and
+		# 7 -- so the positions are computed from it rather than from the mode.
+		case "$RR" in
+		1|3|5|7) LW=600; LH=800 ;;
+		*)       LW=800; LH=600 ;;
+		esac
+		HL_RR1=$RR
+		HL_ENV="ASTEROIDZ_RENDERER=avk AZ_FRAME_ORACLE=1 ${ORACLE_EXTRA_ENV:-}"
+		export HL_OUTPUTS HL_RR1 HL_ENV
+		hl_start "$BLUR_CFG"
+		hl_reset_spawn_colors
+		hl_spawn_kitty a >/dev/null; hl_wait_client_count 1 60
+		sleep 2
+		hl_spawn_wlbgeffect w 300 >/dev/null; hl_wait_client_count 2 60
+		sleep 2
+		hl_dispatch toggle_floating
+		sleep 1
+		for POS in "$(( LW / 2 - 150 )),$(( LH / 2 - 150 ))" \
+				"0,$(( LH / 2 - 150 ))" "$(( LW - 300 )),$(( LH / 2 - 150 ))" \
+				"$(( LW / 2 - 150 )),0" "$(( LW / 2 - 150 )),$(( LH - 300 ))" \
+				"0,0" "$(( LW - 150 )),$(( LH - 150 ))" \
+				"$(( LW - 60 )),$(( LH / 2 - 150 ))" \
+				"$(( LW - 1 )),$(( LH / 2 - 150 ))"; do
+			hl_dispatch "move_window,$POS"
+			sleep 2
+		done
+		hl_dispatch damage_all
+		sleep 2
+		TLOG=$(log_of)
+		TF=$(oracle_frames "$TLOG")
+		TW=$(oracle_wrong "$TLOG")
+		TD=$(oracle_dropped "$TLOG")
+		TI=$(oracle_invalid "$TLOG")
+		cp -f "$TLOG" "$HL_OUTDIR/rr$RR.log" 2>/dev/null || true
+		hl_stop
+		echo "  transform $RR: $TF frames compared, $TW divergent, " \
+			"dropped=${TD:-?} invalidated=${TI:-?}"
+		grep -m1 "FIRST DIVERGENCE" "$HL_OUTDIR/rr$RR.log" 2>/dev/null |
+			sed 's/.*\] /    /'
+		hl_assert "transform $RR compares frames at all" \
+			"$([ "${TF:-0}" -gt 0 ] && echo true || echo false)" true
+		hl_assert "transform $RR drops no tap" "${TD:-x}" 0
+		hl_assert "transform $RR invalidates no comparison" "${TI:-x}" 0
+		hl_assert "transform $RR: partial == forced-full on every frame" \
+			"${TW:-1}" 0
+	done
 fi
 
 echo

@@ -806,8 +806,28 @@ hl_spawn_wlbgeffect() { # hl_spawn_wlbgeffect APPID HOLD_S [LOGNAME] -> pid
 	# at all (`clipped_region_get_default()` is an empty box) -- so without this
 	# client a "clip_region works" assertion is made against nodes that have no
 	# clip. See contrib/wlbgeffect/wlbgeffect.c.
-	local appid="$1" hold="$2" logname="${3:-wlbgeffect}"
-	"$HL_WLBGEFFECT" "$appid" "$hold" > "$HL_OUTDIR/$logname.log" 2>&1 &
+	#
+	# A fourth argument is an ARGB hex colour. The transform pixel oracle needs
+	# fixtures that are reproducible between two RUNS of the compositor, and a
+	# terminal is not one: the same logical desktop at 0 and at 90 degrees left
+	# 7183 differing pixels, every one of them inside a TEXT row, because the
+	# client lays its glyphs out for the output it was told about. Flat
+	# surfaces of distinct colours have nothing to lay out.
+	#
+	# BUT A FLAT SURFACE IS BLIND TO ORIENTATION. A solid colour rotated by any
+	# amount is the same solid colour, so a fixture built out of flat windows
+	# reports 0 differing pixels whether the sampler is oriented correctly or
+	# not -- and that is exactly how a texture transform that was wrong at 90
+	# and 270 degrees survived a pixel-exact eight-transform oracle, with a
+	# third of the screen drawn upside down inside its own windows.
+	#
+	# WLBGEFFECT_QUAD=1 paints four quadrants instead: still no text, still no
+	# client-side layout, still reproducible between runs, and able to tell all
+	# eight orientations apart. contrib/avk-transform-test.sh sets it by
+	# default. Anything comparing a rotated output should.
+	local appid="$1" hold="$2" logname="${3:-wlbgeffect}" argb="${4:-}"
+	# shellcheck disable=SC2086
+	"$HL_WLBGEFFECT" "$appid" "$hold" $argb > "$HL_OUTDIR/$logname.log" 2>&1 &
 	local pid=$!
 	HL_SPAWNED_PIDS+=("$pid")
 	echo "$pid"

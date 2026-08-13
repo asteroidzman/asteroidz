@@ -705,10 +705,11 @@ static void test_rounded_with_transform(struct harness *h) {
 		t_tl, t_tr, t_br, t_bl);
 	CHECK(t_tl == 0 && t_bl > t_br && t_br > t_tr,
 		"the arcs stay on the physical corners they were given");
-	/* 90 degrees puts the source's BLUE (bottom-left) quadrant top-left --
-	 * the existing transform test asserts the same mapping. */
-	CHECK(b_of(px(h, 4, 4)) > 200 && r_of(px(h, 4, 4)) < 60,
-		"the transformed content is in place too (blue at top-left)");
+	/* 90 degrees puts the source's GREEN (top-right) quadrant top-left -- the
+	 * mapping wl_output_transform defines, and the one test 3 asserts. It was
+	 * blue until M4F.2C.4e; see the table there. */
+	CHECK(g_of(px(h, 4, 4)) > 200 && r_of(px(h, 4, 4)) < 60,
+		"the transformed content is in place too (green at top-left)");
 
 	avk_scene_finish(&scene);
 	avk_image_destroy(h->dev, surface);
@@ -746,10 +747,24 @@ static void test_transforms(struct harness *h) {
 		const char *name;
 		int expect_tl;
 	} cases[] = {
+		/*
+		 * 90 AND 270 CHANGED IN M4F.2C.4e, and the old values are worth
+		 * recording: this table said 90 -> 2 (blue, the source's BOTTOM-LEFT)
+		 * and 270 -> 1, which is the mapping the implementation had rather than
+		 * the one wl_output_transform defines. wlroots resolves
+		 * WL_OUTPUT_TRANSFORM_90 by putting the source's TOP-RIGHT quadrant at
+		 * the destination's top-left. Every texture on a 90 or 270 degree
+		 * output was therefore rotated 180 degrees inside its own box --
+		 * 167400 of 480000 pixels of a real desktop -- and this test agreed
+		 * with the defect instead of catching it, because its expectations had
+		 * been read off the implementation.
+		 *
+		 * The six other transforms are involutions and were right.
+		 */
 		{ AVK_TRANSFORM_NORMAL,      "normal",      0 },
-		{ AVK_TRANSFORM_90,          "90",          2 },
+		{ AVK_TRANSFORM_90,          "90",          1 },
 		{ AVK_TRANSFORM_180,         "180",         3 },
-		{ AVK_TRANSFORM_270,         "270",         1 },
+		{ AVK_TRANSFORM_270,         "270",         2 },
 		{ AVK_TRANSFORM_FLIPPED,     "flipped",     1 },
 		{ AVK_TRANSFORM_FLIPPED_90,  "flipped-90",  0 },
 		{ AVK_TRANSFORM_FLIPPED_180, "flipped-180", 2 },

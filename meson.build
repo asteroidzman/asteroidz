@@ -302,6 +302,31 @@ if build_vulkan
                                    build_by_default : false)
   test('corner-permute', test_corner_permute, timeout : 30)
 
+  # The rectangle/region contract every rotated-output quantity depends on.
+  # Needs no GPU: the mapping is pure integer arithmetic, and the point is that
+  # a change to it fails HERE rather than as a rotated desktop nobody can
+  # capture.
+  test_transform_math = executable('test-transform-math',
+                                   'tests/test-transform-math.c',
+                                   dependencies : [wlroots_dep, wayland_server_dep,
+                                                   pixman_dep],
+                                   include_directories : include_directories('src'),
+                                   c_args : ['-DWLR_USE_UNSTABLE'],
+                                   build_by_default : false)
+  test('transform-math', test_transform_math, timeout : 30)
+
+  # The attachment/presentation extent contract, and the old conflated
+  # implementation run through the same predicate so that the contract is shown
+  # to reject it. This is where M4F.2C.4d's defect becomes a failing test
+  # instead of a rotated desktop nobody can capture.
+  test_extent_space = executable('test-extent-space',
+                                 'tests/test-extent-space.c',
+                                 dependencies : [wlroots_dep, wayland_server_dep],
+                                 include_directories : include_directories('src'),
+                                 c_args : ['-DWLR_USE_UNSTABLE'],
+                                 build_by_default : false)
+  test('extent-space', test_extent_space, timeout : 30)
+
   # The one that reproduces the blank-window class: a real GBM buffer whose
   # modifier is thrown away before import, which is what wl_drm and
   # modifier-less Electron/Chromium hand over.

@@ -1651,6 +1651,7 @@ struct Pertag {
 static int32_t reset_avk_stats(const Arg *arg);
 static int32_t dump_scene(const Arg *arg);
 static int32_t damage_all(const Arg *arg);
+static int32_t capture_output(const Arg *arg);
 /* Same reason: reapply_cursor_style() lives in parse_config.h and destroys the
  * xcursor manager, which every borrowed cursor pointer depends on. Defined in
  * render/az_cursor.h, included later. */
@@ -1844,6 +1845,43 @@ static int32_t damage_all(const Arg *arg) {
 		wlr_output_schedule_frame(m->wlr_output);
 	}
 	wlr_log(WLR_INFO, "every output marked fully damaged");
+	return 0;
+}
+
+/*
+ * `amsg dispatch capture_output` -- write every output's next finished frame to
+ * AZ_AVK_CAPTURE_DIR as a binary PPM.
+ *
+ * THE ONLY WAY TO SEE A ROTATED FRAME. grim captures nothing at all from a 90
+ * or 270 degree output on the headless backend, so every pixel assertion at
+ * those transforms had to be skipped with a stated reason -- and a rotation
+ * nobody can look at is a rotation nothing can test. This reads back the actual
+ * scan-out attachment AVK rendered, after compositing and before presentation,
+ * at any transform.
+ *
+ * It damages the output as well as arming the capture. An output with nothing
+ * to redraw renders no frame, so an armed capture on a settled desktop would
+ * simply never fire -- the same trap `damage_all` exists for.
+ *
+ * TEST TOOL. The capture path waits for the GPU, so it must never be armed on a
+ * frame anybody is waiting to see.
+ */
+static int32_t capture_output(const Arg *arg) {
+	(void)arg;
+	Monitor *m;
+	int armed = 0;
+	wl_list_for_each(m, &mons, link) {
+		if (m->scene_output == NULL || m->avk == NULL
+				|| m->avk->slot == NULL) {
+			continue;
+		}
+		m->avk->capture_pending = true;
+		avk_oracle_arm_capture(&m->avk->slot->renderer.oracle);
+		wlr_damage_ring_add_whole(&m->scene_output->damage_ring);
+		wlr_output_schedule_frame(m->wlr_output);
+		armed++;
+	}
+	wlr_log(WLR_INFO, "capture armed on %d output(s)", armed);
 	return 0;
 }
 

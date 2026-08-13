@@ -498,45 +498,109 @@ static bool scene_output_halo_damage_raw(void) {
 	return cached != 0;
 }
 
+/*
+ * ── THE ATTACHMENT EXTENT, UNDER ITS OWN NAME ─────────────────────────────
+ *
+ * "The output's size" has two answers and they differ by a transpose at 90 and
+ * 270 degrees. This one is the ATTACHMENT: the mode, the buffer
+ * wlr_scene_output_build_state() renders into, the space output damage lives
+ * in, and the extent every rectangle handed to the damage ring must fit inside.
+ * The other -- wlr_output_transformed_resolution(), the PRESENTATION extent --
+ * is the space a node's geometry is in before the output transform, and using
+ * it here is the change M4F.2C.4a made while mistaking a wrongly sized
+ * attachment for a damage-clipping bug.
+ *
+ * A generic clip_to_output() would take either without comment. These two names
+ * are deliberately specific, so that a wrong-space call reads wrong.
+ */
+static void scene_output_attachment_extent(const struct wlr_output *output,
+		int *width, int *height) {
+	*width = output->width;
+	*height = output->height;
+}
+
+/* Damage clipped to the extent of the buffer it will be rendered into. */
+static void clip_damage_to_attachment_extent(pixman_region32_t *dst,
+		const pixman_region32_t *src, int att_width, int att_height) {
+	pixman_region32_intersect_rect(dst, src, 0, 0, att_width, att_height);
+}
+
+/*
+ * ── THE DAMAGE RING'S ONE INVARIANT ───────────────────────────────────────
+ *
+ * Every rectangle handed to a wlr_damage_ring must lie inside the buffer:
+ *
+ *     rect INTERSECT attachment == rect
+ *
+ * Not a style rule. wlr_damage_ring_rotate_buffer() intersects what it RETURNS
+ * with the buffer, so anything outside is accepted, stored, and silently
+ * discarded on the way out -- which is precisely how M4F.2C.2's cross-output
+ * blur damage was lost for two milestones. This counts violations at the point
+ * of insertion, generically, for every caller and not just for blur.
+ *
+ * Source-domain regions outside the output remain perfectly legal; they simply
+ * do not belong in a presentation-history structure. See avk_scene.source_bounds.
+ */
+static void scene_ring_add_checked(struct wlr_scene_output *scene_output,
+		const pixman_region32_t *region, int att_width, int att_height) {
+	pixman_region32_t outside;
+	pixman_region32_init(&outside);
+	pixman_region32_copy(&outside, (pixman_region32_t *)region);
+	pixman_region32_intersect_rect(&outside, &outside, 0, 0,
+		att_width, att_height);
+	pixman_region32_subtract(&outside, (pixman_region32_t *)region, &outside);
+	/* EMPTINESS BY RECTANGLE COUNT, never by extents: an empty pixman region
+	 * keeps a degenerate extents box left over from the last intersect, and an
+	 * extents test on one reads as out-of-bounds for a region with nothing in
+	 * it. That mistake made a cross-output routing assertion pass on nothing at
+	 * all -- see blur_halo_damage_frames. */
+	if (pixman_region32_not_empty(&outside)) {
+		pixman_box32_t e = *pixman_region32_extents(&outside);
+		scene_output->ring_out_of_bounds++;
+		wlr_log(WLR_ERROR, "damage ring: %d,%d..%d,%d lies outside the %dx%d "
+			"attachment and will be discarded by rotate_buffer",
+			e.x1, e.y1, e.x2, e.y2, att_width, att_height);
+	}
+	pixman_region32_fini(&outside);
+	wlr_damage_ring_add(&scene_output->damage_ring, region);
+}
+
 static void scene_output_damage(struct wlr_scene_output *scene_output,
 		const pixman_region32_t *damage) {
 	struct wlr_output *output = scene_output->output;
 
 	/*
-	 * THE BUFFER'S EXTENT, NOT THE MODE'S.
+	 * THE ATTACHMENT'S EXTENT, WHICH IS THE MODE.
 	 *
-	 * `damage` arrives here already converted into BUFFER coordinates by
-	 * output_to_buffer_coords(), which sizes itself with
-	 * wlr_output_transformed_resolution(). Clipping it against
-	 * output->width/height -- the raw mode size -- therefore clips one space
-	 * against another the moment the output is rotated 90 or 270 degrees, where
-	 * the two differ by a transpose.
+	 * `damage` arrives here in BUFFER coordinates -- output_to_buffer_coords()
+	 * has already applied the inverse output transform -- so the space it lives
+	 * in is the buffer wlr_scene_output_build_state() renders into, and that
+	 * buffer is the MODE size at every transform. wlr_scene asserts it:
+	 * `buffer->width == resolution_width`, with resolution_width from
+	 * output_pending_resolution(). output->width/height is that size.
 	 *
-	 * The consequence was not a lost rectangle but an IMMORTAL one. On a 90
-	 * degree output with an 800x600 mode the buffer is 600x800, and this clip
-	 * admitted damage out to x=800 -- a region 600,0 200x600, entirely outside
-	 * the buffer. Nothing could ever draw it, so no commit's damage ever
-	 * subtracted it, so wlr_scene_output_needs_frame() stayed true forever and
-	 * the output rendered 65 empty frames a second on a completely static
-	 * scene. Measured: 267 frames in 4 idle seconds at transform 1 and 3, and 0
-	 * at transform 0 and 2, with blur disabled entirely.
-	 *
-	 * It never showed on the SceneFX path because that path commits
-	 * pending_commit_damage itself, so the subtraction always cancels whatever
-	 * it recorded, right or wrong. AVK computes and reports its own damage, and
-	 * an out-of-buffer rectangle is one it will never include.
+	 * M4F.2C.4a changed this to wlr_output_transformed_resolution() to stop a
+	 * rotated output rendering 65 empty frames a second, and that was a correct
+	 * observation with the wrong culprit. The immortal out-of-buffer rectangle
+	 * was real, but it existed because AVK was allocating its ATTACHMENT from
+	 * the transformed resolution -- a 600x800 buffer for an 800x600 mode -- so
+	 * damage legitimately reaching x=800 could never be drawn. Making this clip
+	 * agree with the wrong attachment hid the empty frames and left the real
+	 * defect in place: at 90 degrees the bottom 200 rows of every frame were
+	 * never written at all, which no test could see because nothing could
+	 * capture a rotated output. Fixed in az_avk_build_frame(); this goes back
+	 * to the space the damage is actually in.
 	 */
-	int buf_width, buf_height;
-	wlr_output_transformed_resolution(output, &buf_width, &buf_height);
+	int att_width, att_height;
+	scene_output_attachment_extent(output, &att_width, &att_height);
 
 	pixman_region32_t clipped;
 	pixman_region32_init(&clipped);
-	pixman_region32_intersect_rect(&clipped, damage, 0, 0, buf_width,
-		buf_height);
+	clip_damage_to_attachment_extent(&clipped, damage, att_width, att_height);
 
 	if (!pixman_region32_empty(&clipped)) {
 		wlr_output_schedule_frame(scene_output->output);
-		wlr_damage_ring_add(&scene_output->damage_ring, &clipped);
+		scene_ring_add_checked(scene_output, &clipped, att_width, att_height);
 
 		pixman_region32_union(&scene_output->pending_commit_damage,
 			&scene_output->pending_commit_damage, &clipped);
@@ -591,8 +655,8 @@ static void scene_output_damage(struct wlr_scene_output *scene_output,
 		pixman_region32_t halo;
 		pixman_region32_init(&halo);
 		pixman_region32_intersect_rect(&halo, damage, -h, -h,
-			(unsigned)(buf_width + 2 * h),
-			(unsigned)(buf_height + 2 * h));
+			(unsigned)(att_width + 2 * h),
+			(unsigned)(att_height + 2 * h));
 		pixman_region32_subtract(&halo, &halo, &clipped);
 		if (!pixman_region32_empty(&halo)) {
 			pixman_region32_t reach;
@@ -609,11 +673,12 @@ static void scene_output_damage(struct wlr_scene_output *scene_output,
 			} else {
 				wlr_region_expand(&reach, &halo, h);
 				pixman_region32_intersect_rect(&reach, &reach, 0, 0,
-					buf_width, buf_height);
+					att_width, att_height);
 			}
 			if (!pixman_region32_empty(&reach)) {
 				wlr_output_schedule_frame(scene_output->output);
-				wlr_damage_ring_add(&scene_output->damage_ring, &reach);
+				scene_ring_add_checked(scene_output, &reach, att_width,
+					att_height);
 				pixman_region32_union(&scene_output->pending_commit_damage,
 					&scene_output->pending_commit_damage, &reach);
 				scene_output->halo_damage_records++;

@@ -3,6 +3,7 @@
 
 #include "../common/kdl-edit.h"
 #include "../common/kdl-file.h"
+#include <wlr/util/transform.h>
 
 /* Output configuration as dispatches.
  *
@@ -305,10 +306,30 @@ bool output_resolve_overlaps(void) {
 	return moved;
 }
 
-static bool output_apply(Monitor *m, struct wlr_output_mode *mode,
-						 float scale) {
-	if (!m || !m->wlr_output || (!mode && scale <= 0.0f))
+/* WHAT ONE COMMIT MAY CARRY.
+ *
+ * A struct rather than four parameters because M4F.2C.4e needs the mode and the
+ * transform to change TOGETHER: a frame whose pending state carries both is the
+ * one where the attachment extent and the presentation extent come from
+ * different fields of the same wlr_output_state, and that is precisely the
+ * combination M4F.2C.4d got wrong. Applying them as two commits never produces
+ * that frame. */
+struct output_change {
+	struct wlr_output_mode *mode; /* NULL: leave the mode alone */
+	int32_t custom_w, custom_h;	  /* >0: a custom mode, for outputs with no
+								   * mode list (the headless backend) */
+	float scale;				  /* <=0: leave the scale alone */
+	int32_t transform;			  /* <0: leave the transform alone */
+};
+
+static bool output_apply_change(Monitor *m, const struct output_change *ch) {
+	if (!m || !m->wlr_output || !ch)
 		return false;
+	if (!ch->mode && ch->custom_w <= 0 && ch->scale <= 0.0f &&
+		ch->transform < 0)
+		return false;
+	struct wlr_output_mode *mode = ch->mode;
+	float scale = ch->scale;
 
 	/* Where it sat before, so the reflow below can tell what its edges moved
 	 * by. Read from the LAYOUT rather than m->m, which updatemons() rewrites
@@ -320,8 +341,13 @@ static bool output_apply(Monitor *m, struct wlr_output_mode *mode,
 	wlr_output_state_init(&state);
 	if (mode)
 		wlr_output_state_set_mode(&state, mode);
+	else if (ch->custom_w > 0 && ch->custom_h > 0)
+		wlr_output_state_set_custom_mode(&state, ch->custom_w, ch->custom_h, 0);
 	if (scale > 0.0f)
 		wlr_output_state_set_scale(&state, scale);
+	if (ch->transform >= 0)
+		wlr_output_state_set_transform(&state,
+									   (enum wl_output_transform)ch->transform);
 
 	bool ok = wlr_output_test_state(m->wlr_output, &state);
 	if (ok)
@@ -340,10 +366,17 @@ static bool output_apply(Monitor *m, struct wlr_output_mode *mode,
 		monitor_start_retrain(m, 50);
 		return false;
 	}
-	wlr_log(WLR_INFO, "output: %s -> %dx%d@%d scale %.2f", m->wlr_output->name,
-			m->wlr_output->width, m->wlr_output->height,
-			(int32_t)((m->wlr_output->refresh + 500) / 1000),
-			(double)m->wlr_output->scale);
+	/* BOTH EXTENTS, because "the output is now 800x600" is only half an answer
+	 * on a rotated output and the half that is missing is the one the renderer
+	 * walks the scene through. */
+	int32_t tw = m->wlr_output->width, th = m->wlr_output->height;
+	wlr_output_transform_coords(m->wlr_output->transform, &tw, &th);
+	wlr_log(WLR_INFO,
+			"output: %s -> attachment %dx%d presentation %dx%d @%d scale %.2f "
+			"transform %d",
+			m->wlr_output->name, m->wlr_output->width, m->wlr_output->height,
+			tw, th, (int32_t)((m->wlr_output->refresh + 500) / 1000),
+			(double)m->wlr_output->scale, (int32_t)m->wlr_output->transform);
 
 	/* The commit changed this output's logical size, so every output placed
 	 * relative to it is now measured against a number that no longer holds. */
@@ -352,6 +385,14 @@ static bool output_apply(Monitor *m, struct wlr_output_mode *mode,
 
 	printstatus(IPC_WATCH_ARRANGGE);
 	return true;
+}
+
+static bool output_apply(Monitor *m, struct wlr_output_mode *mode,
+						 float scale) {
+	struct output_change ch = {
+		.mode = mode, .scale = scale, .transform = -1,
+	};
+	return output_apply_change(m, &ch);
 }
 
 /* "2560x1440@144" or "2560x1440". Matched against the modes the output
@@ -405,6 +446,84 @@ int32_t set_output_mode(const Arg *arg) {
 	snprintf(hz, sizeof(hz), "%d", (mode->refresh + 500) / 1000);
 	const char *keys[] = {"width", "height", "refresh"};
 	const char *vals[] = {w, h, hz};
+	output_persist(m, keys, vals, 3);
+	return 1;
+}
+
+/*
+ * ── OUTPUT TRANSFORM, LIVE ────────────────────────────────────────────────
+ *
+ * `dispatch set_output_transform,DP-1,1` -- 0..7, the wl_output_transform
+ * values: normal, 90, 180, 270, flipped, flipped-90, flipped-180,
+ * flipped-270.
+ *
+ * It exists because a transform set at startup and a transform CHANGED while
+ * a desktop is running are different code paths, and only the second one
+ * produces the frame where the pending transform and the committed one
+ * disagree. That frame is where M4F.2C.4d's defect lived; nothing could
+ * reach it from the config file alone.
+ */
+int32_t set_output_transform(const Arg *arg) {
+	if (!arg || !arg->v)
+		return 0;
+	Monitor *m = output_by_name_or_focus((const char *)arg->v);
+	if (!m || arg->i < 0 || arg->i > 7) {
+		wlr_log(WLR_ERROR, "set_output_transform: %d is not a "
+				"wl_output_transform (0-7)", arg->i);
+		return 0;
+	}
+	struct output_change ch = { .transform = arg->i, .scale = 0.0f };
+	if (!output_apply_change(m, &ch))
+		return 0;
+
+	char tr[8];
+	snprintf(tr, sizeof(tr), "%d", arg->i);
+	const char *keys[] = {"rr"};
+	const char *vals[] = {tr};
+	output_persist(m, keys, vals, 1);
+	return 1;
+}
+
+/*
+ * MODE AND TRANSFORM IN ONE COMMIT.
+ *
+ * `dispatch set_output_mode_transform,HEADLESS-1,1024x768,1`
+ *
+ * Two separate dispatches produce two frames, each with one field pending.
+ * This produces the ONE frame whose state carries both -- where the attachment
+ * extent must come from state->mode and the presentation extent from
+ * state->transform, and reading either from the committed output is a frame
+ * drawn half in the configuration it is leaving. A custom mode is accepted for
+ * outputs that advertise no mode list, which is every headless output.
+ */
+int32_t set_output_mode_transform(const Arg *arg) {
+	if (!arg || !arg->v || !arg->v2)
+		return 0;
+	Monitor *m = output_by_name_or_focus((const char *)arg->v);
+	if (!m || arg->i < 0 || arg->i > 7)
+		return 0;
+	struct output_change ch = { .transform = arg->i, .scale = 0.0f };
+	ch.mode = output_find_mode(m, (const char *)arg->v2);
+	if (!ch.mode) {
+		int32_t w = 0, h = 0;
+		if (sscanf((const char *)arg->v2, "%dx%d", &w, &h) != 2 || w <= 0 ||
+			h <= 0) {
+			wlr_log(WLR_ERROR, "set_output_mode_transform: %s is not WxH",
+					(const char *)arg->v2);
+			return 0;
+		}
+		ch.custom_w = w;
+		ch.custom_h = h;
+	}
+	if (!output_apply_change(m, &ch))
+		return 0;
+
+	char ws[16], hs[16], tr[8];
+	snprintf(ws, sizeof(ws), "%d", m->wlr_output->width);
+	snprintf(hs, sizeof(hs), "%d", m->wlr_output->height);
+	snprintf(tr, sizeof(tr), "%d", arg->i);
+	const char *keys[] = {"width", "height", "rr"};
+	const char *vals[] = {ws, hs, tr};
 	output_persist(m, keys, vals, 3);
 	return 1;
 }

@@ -425,6 +425,7 @@ amsg get avk-stats | jq
 amsg dispatch reset_avk_stats     # zero the counters without restarting
 amsg dispatch dump_scene          # log the next frame's scene and commands
 amsg dispatch damage_all          # repaint everything (the damage oracle)
+amsg dispatch capture_output      # write each output's next frame to a PPM
 ```
 
 `dump_scene` writes one line per scene node and one per emitted AVK command,
@@ -456,6 +457,28 @@ measures the fixture rather than the damage. `contrib/avk-blur-damage-test.sh`
 is its caller, and takes a control pair of screenshots first — a desktop with a
 blinking terminal cursor on it moves 1513 pixels between any two frames, which
 would read as staleness.
+
+`capture_output` writes every output's next finished frame to
+`$AZ_AVK_CAPTURE_DIR/<output-name>.ppm`, read back from the Vulkan attachment
+after compositing and before presentation. It is the **deterministic transform
+oracle**, and it exists because a screen-capture client gets *nothing* from a 90°
+or 270° output on the headless backend — so every pixel assertion at those
+rotations was being skipped, and a rotation nobody can look at is a rotation
+nothing can test.
+
+```text
+capture: HEADLESS-1 transform=1 mode=800x600 transformed_resolution=600x800
+         attachment=600x800 -> /tmp/.../HEADLESS-1.ppm
+```
+
+The log line states the transform, the mode size, the transformed resolution and
+the attachment extent, so a reader never infers the orientation it is comparing
+against. The capture is in the **attachment's own** orientation; a test that
+wants a canonical comparison inverse-transforms it first.
+
+Like `damage_all` it damages the output, because a settled desktop renders no
+frame and an armed capture would never fire. It is a test tool: the capture path
+waits for the GPU, which the render path never does.
 
 The blur damage counters (`blur_source_damage_pixels`,
 `blur_output_damage_pixels`, `blur_prefix_rebuild_pixels`, and the
@@ -628,10 +651,20 @@ something else to wake it.
 | :--- | :--- |
 | `set_output_mode,<output>,<WxH[@Hz]>` | Pick a mode the output actually reports. |
 | `set_output_scale,<output>,<scale>` | Fractional scales included. |
+| `set_output_transform,<output>,<0-7>` | Rotate or flip, live: 0 normal, 1 90, 2 180, 3 270, 4 flipped, 5 flipped-90, 6 flipped-180, 7 flipped-270. |
+| `set_output_mode_transform,<output>,<WxH[@Hz]>,<0-7>` | Resolution **and** transform in one commit. A custom mode is accepted for outputs with no mode list. |
 | `set_output_position,<output>,<x>,<y>` | Move it in the layout, live. |
 | `set_output_vrr,<output>,<0\|1>` | Adaptive sync. |
 | `set_output_hdr,<output>,<0\|1>` | This display's HDR **baseline** — see below. |
 | `set_output_icc,<output>,<path>` | ICC profile for SDR output; empty clears it. |
+
+`set_output_mode_transform` exists as a separate dispatch rather than as an
+optional third argument to `set_output_mode` because the point of it is the
+single commit. Two dispatches produce two frames, each with one field pending;
+one dispatch produces the frame whose `wlr_output_state` carries both, where the
+attachment extent has to come from `state->mode` and the presentation extent
+from `state->transform`. That is the frame M4F.2C.4d's defect lived in, and
+nothing reachable from a config file ever draws it.
 
 Every one names its output rather than acting on the focused one: a dispatch
 has no pointer context, and guessing would make the same command do different

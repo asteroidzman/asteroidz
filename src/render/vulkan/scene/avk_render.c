@@ -276,15 +276,49 @@ static void transform_uv(const struct avk_fbox *src, uint32_t image_width,
 	 * the destination's x and y axes run in source space? */
 	float ox, oy, ax, ay, bx, by;
 	switch (transform) {
+	/*
+	 * ── 90 AND 270 WERE THE WRONG WAY ROUND ───────────────────────────────
+	 *
+	 * wl_output_transform names the transform from the BUFFER to the SCREEN,
+	 * and wlroots' own renderer resolves WL_OUTPUT_TRANSFORM_90 by putting the
+	 * source's TOP-RIGHT quadrant at the destination's top-left
+	 * (wlr_matrix_project_box + the [[0,1],[-1,0]] matrix). This table had 90
+	 * putting the source's BOTTOM-LEFT there, which is the 270 answer -- so
+	 * every texture drawn on a 90 or 270 degree output was rotated 180 degrees
+	 * inside its own box.
+	 *
+	 * The six other transforms are their own inverses, so they were unaffected;
+	 * only the two that are not could be wrong, and both were.
+	 *
+	 * WHY NOTHING SAW IT. Every window in the eight-transform pixel oracle's
+	 * fixture was a single FLAT COLOUR, and a solid colour rotated by any
+	 * amount is the same solid colour. The oracle reported 0 differing pixels
+	 * at all eight transforms while a third of the screen was upside down. The
+	 * same fixture with four-quadrant windows (WLBGEFFECT_QUAD=1) reports
+	 * 167400 of 480000 pixels wrong at 90 and 270, and nothing at all at the
+	 * other six. It surfaced through the CURSOR, the first non-uniform texture
+	 * anything had ever compared on a rotated output.
+	 *
+	 * tests/test-avk-render.c asserted the old mapping, agreed with it, and
+	 * therefore could not fail on it. Its table now states the wlroots answer.
+	 *
+	 * The CALLERS were right all along and are unchanged: a command's transform
+	 * is compose(invert(buffer transform), output transform), which is exactly
+	 * what SceneFX's scene_entry_render() hands its render pass and what
+	 * wlroots' own software-cursor path hands its. Only this table disagreed
+	 * with them, and only for the two transforms that are not their own
+	 * inverse.
+	 */
 	case AVK_TRANSFORM_90:
-		/* dst +x runs along src -y, dst +y along src +x */
-		ox = x0; oy = y1; ax = 0; ay = -h; bx = w; by = 0;
+		/* dst +x runs along src +y, dst +y along src -x */
+		ox = x1; oy = y0; ax = 0; ay = h; bx = -w; by = 0;
 		break;
 	case AVK_TRANSFORM_180:
 		ox = x1; oy = y1; ax = -w; ay = 0; bx = 0; by = -h;
 		break;
 	case AVK_TRANSFORM_270:
-		ox = x1; oy = y0; ax = 0; ay = h; bx = -w; by = 0;
+		/* dst +x runs along src -y, dst +y along src +x */
+		ox = x0; oy = y1; ax = 0; ay = -h; bx = w; by = 0;
 		break;
 	case AVK_TRANSFORM_FLIPPED:
 		ox = x1; oy = y0; ax = -w; ay = 0; bx = 0; by = h;
@@ -343,6 +377,27 @@ static void transform_uv(const struct avk_fbox *src, uint32_t image_width,
  * What this file kept is the decision of WHICH images the frame touches and
  * HOW; what it gave up is deciding what that implies.
  */
+
+/*
+ * BREAK SWITCH: stop stamping last_use on the images a frame SAMPLES, which is
+ * what the renderer did until M4F.2C.4e. A client that releases a buffer while
+ * the frame reading it is still in flight then has its VkImage destroyed under
+ * the GPU. It is a race, so it does not fail every run -- which is exactly why
+ * it needs the validation layers rather than a pixel assertion.
+ */
+static bool avk_no_sampled_last_use(void) {
+	static int cached = -1;
+	if (cached < 0) {
+		const char *env = getenv("AVK_NO_SAMPLED_LAST_USE");
+		cached = env != NULL && env[0] == '1';
+		if (cached) {
+			avk_log(AVK_ERROR, "AVK_NO_SAMPLED_LAST_USE=1 -- images this frame "
+				"only READ keep their old last_use, so one destroyed now may "
+				"still be in flight. This build is deliberately broken.");
+		}
+	}
+	return cached != 0;
+}
 
 /* Read once. Never true in a session anybody is using -- see the loadOp. */
 static bool avk_no_load_preserve(void) {
@@ -1825,6 +1880,43 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 	/* The point whose passing means this frame's marks can be read without
 	 * waiting for anything. */
 	avk_timestamps_submitted(&renderer->timestamps, ts_slot, value);
+
+	/*
+	 * ── EVERY IMAGE THIS FRAME READ, NOT JUST THE ONE IT WROTE ────────────
+	 *
+	 * `last_use` is what avk_retire_push() defers a destruction against, so an
+	 * image whose last_use is never advanced is an image that can be destroyed
+	 * the instant its owner lets go -- while a submitted command buffer is
+	 * still sampling it.
+	 *
+	 * That was true of every client texture. The upload path stamps last_use
+	 * (avk_upload.c) and so does the transient pool, but a DMA-BUF import that
+	 * is only ever SAMPLED had nothing to advance it: az_avk_buffer_destroy()
+	 * would push it with last_use = 0, the collector would find 0 <= completed
+	 * immediately, and vkDestroyImage would run on an image the GPU was
+	 * reading. Vulkan validation says so directly:
+	 *
+	 *     VUID-vkDestroyImage-image-01000: vkDestroyImage(): can't be called
+	 *     on VkImage [client buffer 776x546] that is currently in use by
+	 *     VkCommandBuffer [avk frame cb 0]
+	 *
+	 * Caught by the M4F.2C.4e validation-layer qualification run, on a
+	 * fixture where a client resized early enough to release a buffer inside
+	 * the first frame's lifetime. Every other run had simply not raced.
+	 *
+	 * MAX, not assignment: submissions complete in order on one queue, but an
+	 * image sampled by an earlier frame that is still in flight must keep the
+	 * later point, and taking the maximum makes that true without depending on
+	 * the ordering.
+	 */
+	if (!avk_no_sampled_last_use()) {
+		for (size_t i = 0; i < scene->len; i++) {
+			struct avk_image *img = scene->cmds[i].image;
+			if (img != NULL && img->last_use < value) {
+				img->last_use = value;
+			}
+		}
+	}
 
 	/* The barriers above have already recorded where the target ended up --
 	 * GENERAL for a scan-out buffer, COLOR_ATTACHMENT_OPTIMAL for one of our
