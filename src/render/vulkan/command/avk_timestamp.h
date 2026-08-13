@@ -220,6 +220,18 @@ struct avk_timestamps {
 	/* gpu_frame, restricted to frames that actually ran blur. Same samples,
 	 * same boundaries, different cohort. */
 	struct avk_hist gpu_frame_blur_hist;
+	/*
+	 * THE REST OF THE FRAME, which nothing measured.
+	 *
+	 * FRAME_BEGIN -> BLUR_BEGIN is everything drawn before the first blur
+	 * pass; BLUR_END -> FRAME_END is the final composite and everything after
+	 * it. Together with blur_total they partition a blur-bearing frame with no
+	 * overlap and no gap, and until they existed the answer to "where does the
+	 * frame go" was 44% blur and 56% unattributed -- which is not an answer.
+	 * No new queries: both spans come from marks already written.
+	 */
+	struct avk_hist blur_pre_hist;
+	struct avk_hist blur_post_hist;
 
 	/*
 	 * ── COHORT ACCOUNTING ─────────────────────────────────────────────────

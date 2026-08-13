@@ -4294,7 +4294,7 @@ static cJSON *az_avk_stats_json(void) {
 	 */
 	{
 		struct avk_hist frame = {0}, total = {0}, prefix = {0}, down = {0},
-			up = {0}, up0 = {0}, frameblur = {0};
+			up = {0}, up0 = {0}, frameblur = {0}, pre = {0}, post = {0};
 		for (size_t i = 0; i < AZ_AVK_MAX_FORMATS; i++) {
 			if (!avk.renderers[i].used) {
 				continue;
@@ -4307,13 +4307,14 @@ static cJSON *az_avk_stats_json(void) {
 			/* Bucket-wise addition: two renderers' histograms are over the
 			 * same buckets, so this is exact rather than an average of
 			 * percentiles, which would not be a percentile of anything. */
-			const struct avk_hist *src[7] = { &ts->gpu_frame_hist,
+			const struct avk_hist *src[9] = { &ts->gpu_frame_hist,
 				&ts->blur_total_hist, &ts->blur_prefix_hist,
 				&ts->blur_down_hist, &ts->blur_up_hist, &ts->blur_up0_hist,
-				&ts->gpu_frame_blur_hist };
-			struct avk_hist *dst[7] = { &frame, &total, &prefix, &down, &up,
-				&up0, &frameblur };
-			for (int k = 0; k < 7; k++) {
+				&ts->gpu_frame_blur_hist, &ts->blur_pre_hist,
+				&ts->blur_post_hist };
+			struct avk_hist *dst[9] = { &frame, &total, &prefix, &down, &up,
+				&up0, &frameblur, &pre, &post };
+			for (int k = 0; k < 9; k++) {
 				dst[k]->count += src[k]->count;
 				dst[k]->total += src[k]->total;
 				dst[k]->overflow += src[k]->overflow;
@@ -4366,12 +4367,13 @@ static cJSON *az_avk_stats_json(void) {
 				cJSON_AddNumberToObject(o, "gpu_results_straddled", (double)st);
 			}
 		}
-		static const char *names[7] = { "gpu_frame", "gpu_blur_total",
+		static const char *names[9] = { "gpu_frame", "gpu_blur_total",
 			"gpu_blur_prefix", "gpu_blur_down", "gpu_blur_up",
-			"gpu_blur_up0", "gpu_frame_blur" };
-		const struct avk_hist *hs[7] = { &frame, &total, &prefix, &down, &up,
-			&up0, &frameblur };
-		for (int k = 0; k < 7; k++) {
+			"gpu_blur_up0", "gpu_frame_blur", "gpu_frame_preblur",
+			"gpu_frame_postblur" };
+		const struct avk_hist *hs[9] = { &frame, &total, &prefix, &down, &up,
+			&up0, &frameblur, &pre, &post };
+		for (int k = 0; k < 9; k++) {
 			char key[64];
 			snprintf(key, sizeof(key), "%s_samples", names[k]);
 			cJSON_AddNumberToObject(o, key, (double)hs[k]->count);
@@ -4987,6 +4989,8 @@ static void az_avk_stats_reset(void) {
 				ts->blur_up_hist = (struct avk_hist){0};
 				ts->blur_up0_hist = (struct avk_hist){0};
 				ts->gpu_frame_blur_hist = (struct avk_hist){0};
+				ts->blur_pre_hist = (struct avk_hist){0};
+				ts->blur_post_hist = (struct avk_hist){0};
 				ts->cohort_blur_frames = 0;
 				ts->cohort_idle_frames = 0;
 				ts->straddled = 0;

@@ -339,6 +339,16 @@ static bool read_slot(struct avk_timestamps *ts, uint32_t slot,
 		avk_hist_add(&ts->blur_down_hist, span);
 		tr_down = span;
 	}
+	/* The two ends of the frame that are not blur. */
+	uint64_t tr_pre = 0, tr_post = 0;
+	if (AVK_TS_SPAN(AVK_TS_FRAME_BEGIN, AVK_TS_BLUR_BEGIN)) {
+		avk_hist_add(&ts->blur_pre_hist, span);
+		tr_pre = span;
+	}
+	if (AVK_TS_SPAN(AVK_TS_BLUR_END, AVK_TS_FRAME_END)) {
+		avk_hist_add(&ts->blur_post_hist, span);
+		tr_post = span;
+	}
 	/* ONLY on a single-chain frame: with two chains this range is
 	 * "up0 + prefix1 + chain1", which is not an upsample cost. */
 	if (s->single_chain && AVK_TS_SPAN(AVK_TS_BLUR_DOWN_END, AVK_TS_BLUR_END)) {
@@ -376,7 +386,7 @@ static bool read_slot(struct avk_timestamps *ts, uint32_t slot,
 			"slot.blur_active=%d cur.blur_active=%d -> cohort=%d "
 			"(built %" PRIu64 " frames ago) gpu_frame=%.1f us "
 			"chains=%u single=%d blur_total_us=%.1f prefix_us=%.1f "
-			"down_us=%.1f remainder_us=%.1f",
+			"down_us=%.1f remainder_us=%.1f pre_us=%.1f post_us=%.1f",
 			ts->trace_frame_id, ts->trace_slot, ts->trace_slot_active ? 1 : 0,
 			ts->trace_cur_active ? 1 : 0, ts->trace_cohort ? 1 : 0,
 			ts->frames_built - ts->trace_frame_id,
@@ -384,7 +394,8 @@ static bool read_slot(struct avk_timestamps *ts, uint32_t slot,
 			s->chains, s->single_chain ? 1 : 0, (double)tr_total / 1e3,
 			(double)tr_prefix / 1e3, (double)tr_down / 1e3,
 			tr_total > tr_prefix + tr_down
-				? (double)(tr_total - tr_prefix - tr_down) / 1e3 : 0.0);
+				? (double)(tr_total - tr_prefix - tr_down) / 1e3 : 0.0,
+			(double)tr_pre / 1e3, (double)tr_post / 1e3);
 	}
 	ts->trace_pending = false;
 
