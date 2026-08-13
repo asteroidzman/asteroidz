@@ -2330,6 +2330,22 @@ void client_animation_next_tick(Client *c) {
 	int32_t y = c->animation.initial.y +
 				(c->current.y - c->animation.initial.y) * factor;
 
+	/* Both the real-valued position the curve asked for and the integer one
+	 * the scene node can hold. A trace that logged only the second could not
+	 * distinguish "the curve is uneven" from "the curve is smooth and int
+	 * truncation made it uneven", which are opposite defects. */
+	AZ_PACE("anim tick c=%p mon=%s action=%d dur=%u t_ms=%d lin=%.6f "
+		"factor=%.6f ideal=%.3f,%.3f,%.3fx%.3f geom=%d,%d,%dx%d t_ns=%llu",
+		(void *)c, az_pace_mon, type, c->animation.duration, passed_time,
+		animation_passed, factor,
+		c->animation.initial.x + (c->current.x - c->animation.initial.x) * factor,
+		c->animation.initial.y + (c->current.y - c->animation.initial.y) * factor,
+		c->animation.initial.width +
+			(c->current.width - c->animation.initial.width) * factor,
+		c->animation.initial.height +
+			(c->current.height - c->animation.initial.height) * factor,
+		x, y, width, height, (unsigned long long)az_pace_now_ns());
+
 	wlr_scene_node_set_position(&c->scene->node, x, y);
 	c->animation.current = (struct wlr_box){
 		.x = x,
@@ -2353,6 +2369,9 @@ void client_animation_next_tick(Client *c) {
 	client_apply_clip(c, factor);
 
 	if (animation_passed >= 1.0) {
+		AZ_PACE("anim end c=%p action=%d dur=%u t_ms=%d t_ns=%llu",
+			(void *)c, type, c->animation.duration, passed_time,
+			(unsigned long long)az_pace_now_ns());
 
 		// clear the open action state
 		// To prevent him from being mistaken that
@@ -2529,6 +2548,21 @@ void client_commit(Client *c) {
 		if (!c->animation.running) {
 			c->animation.current = c->animainit_geom;
 		}
+
+		/* retarget=1 says a target arrived while the previous one was still
+		 * in flight. Everything a retarget can get wrong is in this one line:
+		 * whether `initial` is the interpolated position or the original one,
+		 * and that the clock restarts at zero either way. */
+		AZ_PACE("anim start c=%p action=%d dur=%u retarget=%d "
+			"from=%d,%d,%dx%d to=%d,%d,%dx%d cur=%d,%d,%dx%d t_ns=%llu",
+			(void *)c, c->animation.action, c->animation.duration,
+			c->animation.running ? 1 : 0,
+			c->animainit_geom.x, c->animainit_geom.y,
+			c->animainit_geom.width, c->animainit_geom.height,
+			c->current.x, c->current.y, c->current.width, c->current.height,
+			c->animation.current.x, c->animation.current.y,
+			c->animation.current.width, c->animation.current.height,
+			(unsigned long long)az_pace_now_ns());
 
 		c->animation.initial = c->animainit_geom;
 		c->animation.time_started = get_now_in_ms();

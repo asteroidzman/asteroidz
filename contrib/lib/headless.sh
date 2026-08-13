@@ -182,9 +182,17 @@ hl_start() { # hl_start [EXTRA_KDL]
 	# two outputs and there is no seam to test. A seam fixture must set this to
 	# the first output's logical width.
 	local x2="${HL_X2:-$HL_WIDTH}"
+	# HL_HZ1 / HL_HZ2 are the outputs' REFRESH RATES in Hz. They default to 60
+	# because every fixture before the pacing work assumed one rate and would
+	# quietly change meaning if the default moved. A pacing fixture must set
+	# them: an animation's wall-clock duration is only refresh-independent if
+	# there are two refresh rates to compare, and at equal rates the frame
+	# budget, the present interval and the tick interval all coincide -- so a
+	# duration that secretly counted frames would pass.
+	local hz1="${HL_HZ1:-60}" hz2="${HL_HZ2:-60}"
 	local secondary_output=""
 	if [ "${HL_OUTPUTS:-1}" -ge 2 ]; then
-		secondary_output="output HEADLESS-2 { ${scale2}${rr2}x $x2; y 0; width $HL_WIDTH; height $HL_HEIGHT; refresh 60 }"
+		secondary_output="output HEADLESS-2 { ${scale2}${rr2}x $x2; y 0; width $HL_WIDTH; height $HL_HEIGHT; refresh $hz2 }"
 	fi
 
 	cat > "$HL_CONFIG" <<EOF
@@ -203,7 +211,7 @@ effects {
 }
 theme { bg-color 0x2a6fd6ff; fg-color 0xffffffff; focus-bg-color 0x2a6fd6ff; focus-fg-color 0xffffffff }
 input { keyboard { xkb { layout "us,de" } } }
-output $HL_MON { ${scale1}${rr1}x 0; y 0; width $HL_WIDTH; height $HL_HEIGHT; refresh 60 }
+output $HL_MON { ${scale1}${rr1}x 0; y 0; width $HL_WIDTH; height $HL_HEIGHT; refresh $hz1 }
 $secondary_output
 layout {
 	titlebar { enable 1 }

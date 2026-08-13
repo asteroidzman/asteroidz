@@ -136,11 +136,12 @@ void avk_timestamps_single_chain(struct avk_timestamps *ts, uint32_t slot,
 }
 
 void avk_timestamps_blur_active(struct avk_timestamps *ts, uint32_t slot,
-		bool active) {
+		bool active, uint32_t chains) {
 	if (!ts->supported || slot >= AVK_FRAMES_IN_FLIGHT) {
 		return;
 	}
 	ts->slots[slot].blur_active = active;
+	ts->slots[slot].chains = chains;
 	ts->slots[slot].frame_id = ++ts->frames_built;
 	ts->slots[slot].generation = ts->generation;
 	/* What the CPU is doing NOW. Read by nothing except the break. */
@@ -152,7 +153,8 @@ void avk_timestamps_blur_active(struct avk_timestamps *ts, uint32_t slot,
 	}
 	if (ts->trace) {
 		avk_log(AVK_INFO, "avk cohort: BUILD frame=%" PRIu64 " slot=%u "
-			"blur_active=%d", ts->slots[slot].frame_id, slot, active ? 1 : 0);
+			"blur_active=%d chains=%u", ts->slots[slot].frame_id, slot,
+			active ? 1 : 0, chains);
 	}
 }
 
@@ -291,15 +293,13 @@ static bool read_slot(struct avk_timestamps *ts, uint32_t slot,
 		if (cohort) {
 			avk_hist_add(&ts->gpu_frame_blur_hist, ts->gpu_frame_ns);
 		}
-		if (ts->trace) {
-			avk_log(AVK_INFO, "avk cohort: READ  frame=%" PRIu64 " slot=%u "
-				"slot.blur_active=%d cur.blur_active=%d -> cohort=%d "
-				"(built %" PRIu64 " frames ago) gpu_frame=%.1f us",
-				s->frame_id, slot, s->blur_active ? 1 : 0,
-				ts->cur_blur_active ? 1 : 0, cohort ? 1 : 0,
-				ts->frames_built - s->frame_id,
-				(double)ts->gpu_frame_ns / 1e3);
-		}
+		ts->trace_gpu_frame_ns = ts->gpu_frame_ns;
+		ts->trace_cohort = cohort;
+		ts->trace_slot_active = s->blur_active;
+		ts->trace_cur_active = ts->cur_blur_active;
+		ts->trace_frame_id = s->frame_id;
+		ts->trace_slot = slot;
+		ts->trace_pending = true;
 	}
 
 	/*
@@ -325,15 +325,19 @@ static bool read_slot(struct avk_timestamps *ts, uint32_t slot,
 		? (span = (uint64_t)((double)avk_ts_ticks_between(ts->valid_mask, \
 			raw[(a) * 2], raw[(b) * 2]) * ts->period_ns), true) : false)
 
+	uint64_t tr_total = 0, tr_prefix = 0, tr_down = 0;
 	if (AVK_TS_SPAN(AVK_TS_BLUR_BEGIN, AVK_TS_BLUR_END)) {
 		AVK_TS_REPORT("blur_total", span);
 		avk_hist_add(&ts->blur_total_hist, span);
+		tr_total = span;
 	}
 	if (AVK_TS_SPAN(AVK_TS_BLUR_BEGIN, AVK_TS_BLUR_PREFIX_END)) {
 		avk_hist_add(&ts->blur_prefix_hist, span);
+		tr_prefix = span;
 	}
 	if (AVK_TS_SPAN(AVK_TS_BLUR_PREFIX_END, AVK_TS_BLUR_DOWN_END)) {
 		avk_hist_add(&ts->blur_down_hist, span);
+		tr_down = span;
 	}
 	/* ONLY on a single-chain frame: with two chains this range is
 	 * "up0 + prefix1 + chain1", which is not an upsample cost. */
@@ -346,6 +350,43 @@ static bool read_slot(struct avk_timestamps *ts, uint32_t slot,
 	}
 #undef AVK_TS_SPAN
 #undef AVK_TS_REPORT
+
+	/*
+	 * ONE LINE PER FRAME, WITH ITS PHASES ALONGSIDE ITS TOTAL.
+	 *
+	 * A bimodal histogram says a population has two modes; it cannot say what
+	 * separates them, because a percentile has thrown the frame identity away.
+	 * This keeps the identity: frame id, whether it was blur-bearing, its
+	 * whole-frame span, and the phases inside it.
+	 *
+	 * `remainder` is DOWN_END -> BLUR_END, and on a MULTI-CHAIN frame it is
+	 * not "the upsample". The PREFIX_END and DOWN_END marks are written by the
+	 * first chain only, so on N chains the remainder is chain 1's upsample
+	 * plus every one of chains 2..N entire. Named for what it is rather than
+	 * what it would be at N=1, because that is precisely the reading that
+	 * would turn a prefix-replay cost into an "upsample" cost.
+	 */
+	if (ts->trace && ts->trace_pending) {
+		/* The first five fields are the cohort provenance the cohort test
+		 * asserts on -- which slot the result came from, what THAT slot was
+		 * classified as, what the CPU happens to be doing now, and which of
+		 * the two decided. They are matched by a regex, so their order and
+		 * spelling are load-bearing; the phase fields are appended after. */
+		avk_log(AVK_INFO, "avk cohort: READ  frame=%" PRIu64 " slot=%u "
+			"slot.blur_active=%d cur.blur_active=%d -> cohort=%d "
+			"(built %" PRIu64 " frames ago) gpu_frame=%.1f us "
+			"chains=%u single=%d blur_total_us=%.1f prefix_us=%.1f "
+			"down_us=%.1f remainder_us=%.1f",
+			ts->trace_frame_id, ts->trace_slot, ts->trace_slot_active ? 1 : 0,
+			ts->trace_cur_active ? 1 : 0, ts->trace_cohort ? 1 : 0,
+			ts->frames_built - ts->trace_frame_id,
+			(double)ts->trace_gpu_frame_ns / 1e3,
+			s->chains, s->single_chain ? 1 : 0, (double)tr_total / 1e3,
+			(double)tr_prefix / 1e3, (double)tr_down / 1e3,
+			tr_total > tr_prefix + tr_down
+				? (double)(tr_total - tr_prefix - tr_down) / 1e3 : 0.0);
+	}
+	ts->trace_pending = false;
 
 	s->timeline_value = 0;
 	return true;

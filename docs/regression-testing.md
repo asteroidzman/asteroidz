@@ -1306,6 +1306,68 @@ positions, from the interior to a one-pixel column — at **all eight**
 `wl_output_transform`s and requires partial == forced-full on every frame of
 every one.
 
+### The pacing trace: AZ_PACE
+
+"Animations feel laggy" is at least four claims — the motion takes too long, it
+starts too late, it advances unevenly, or it advances evenly and is not
+*presented* evenly — and none of them can be told apart from a frame-rate
+counter. `AZ_PACE=1` records the timeline itself as raw events on one monotonic
+clock, and leaves every conclusion to `contrib/pace-analyse.py`.
+
+```text
+anim start   a semantic change gave a client a new target, and whether the
+             previous one was still in flight (retarget=1)
+anim tick    one interpolation step: the clock it read, the eased factor, the
+             real-valued position the curve asked for, and the INTEGER one the
+             scene node stored
+present      per output, from the backend's own presentation feedback
+render       one render_monitor pass: its cost, whether it committed anything,
+             and the damage area and extents it committed
+```
+
+The tick line carries the ideal position *and* the stored one on purpose: the
+gap between "the curve says 240.6" and "the node says 240" is the whole
+quantisation question, and a trace that logged only one of them could not tell
+"the curve is uneven" from "the curve is smooth and truncation made it uneven".
+
+The present listener is **not wired at all** unless `AZ_PACE=1`; nothing else in
+the compositor needs presentation feedback.
+
+```text
+contrib/anim-pace-test.sh    --   six workloads x refresh/blur/scene/scheduler
+contrib/pace-analyse.py      --   PRESENT / RENDER / ANIM sections, --since=NS
+contrib/avk-blur-count-matrix.sh  --  cost per blur chain at N = 1,2,4,5,8
+```
+
+```sh
+WORKLOADS=move BLUR=1 WINDOWS=5 bash contrib/anim-pace-test.sh
+HZ1=144 HZ2=60 OUTS=2 WORKLOADS=tag bash contrib/anim-pace-test.sh
+COUNTS="1 2 4 5 8" bash contrib/avk-blur-count-matrix.sh
+python3 contrib/pace-analyse.py TRACE --since=$(...)   # monotonic ns
+```
+
+**Three traps this fixture had to be built around.**
+
+`ASTEROIDZ_RENDERER=avk` is not optional. Without it the compositor composites
+through scenefx/GLES, whose blur damage path (`apply_blur_region` and the
+saved-pixels compensation) is not the one the live session runs. The first pass
+of the pacing work ran on the wrong renderer and its damage figures were
+discarded.
+
+**The nominal refresh is not the observed refresh.** The headless backend's
+frame timer is whole milliseconds, so `HL_HZ1=144` free-runs at 1000/6 =
+166.7 Hz and `HL_HZ2=60` at 1000/16 = 62.5 Hz. The analyser classifies intervals
+against each output's *observed* period for exactly this reason; against the
+nominal one it would report a permanent 15% surplus that is an artefact of the
+fixture. The two rates still differ by 2.7x, which is all the
+refresh-independence question needs.
+
+**Headless present timestamps are not vblank timestamps.** The backend sends
+presentation feedback at commit — measured end-of-render to present is 4 µs at
+p50 — so effective-refresh collapse (§ the 6.9/13.9/6.9 cadence) is a question
+only the live DRM backend can answer. Headless can prove the animation engine is
+refresh-independent; it cannot prove the display kept up.
+
 ### M4F.2C.4e: the rest of the transform surface
 
 The four rotations are not the transform surface. `flipped-90` and `90` have the

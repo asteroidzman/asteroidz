@@ -1987,7 +1987,7 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 	 * cohort was added to prevent, reintroduced one level up.
 	 */
 	avk_timestamps_blur_active(&renderer->timestamps, ts_slot,
-		declared_chains > 0);
+		declared_chains > 0, (uint32_t)declared_chains);
 	if ((uint64_t)slot_len > renderer->blur_max_slots) {
 		renderer->blur_max_slots = (uint64_t)slot_len;
 	}

@@ -120,6 +120,7 @@
 #include <wlr/xwayland.h>
 #include <xcb/xcb_icccm.h>
 #endif
+#include "common/pace.h"
 #include "common/tracy.h"
 #include "common/util.h"
 #include "draw/text-node.h"
@@ -827,6 +828,9 @@ struct Monitor {
 	 * silently threw the staged resize away every frame. */
 	struct wlr_output_state pending;
 	struct wl_listener frame;
+	/* AZ_PACE=1 only (see common/pace.h) -- not wired otherwise. */
+	struct wl_listener pace_present;
+	uint64_t pace_last_present_ns;
 	struct wl_listener destroy;
 	struct wl_listener request_state;
 	struct wl_listener destroy_lock_surface;
@@ -1049,6 +1053,7 @@ static void hold_end(struct wl_listener *listener, void *data);
 static void checkidleinhibitor(struct wlr_surface *exclude);
 static void cleanup(void);										  // exit cleanup
 static void cleanupmon(struct wl_listener *listener, void *data); // exit cleanup
+static void pacepresent(struct wl_listener *listener, void *data); // AZ_PACE=1
 static void closemon(Monitor *m);
 static void cleanuplisteners(void);
 static void toggle_hotarea(int32_t x_root, int32_t y_root); // trigger hot corner
@@ -3863,6 +3868,8 @@ void cleanupmon(struct wl_listener *listener, void *data) {
 
 	wl_list_remove(&m->destroy.link);
 	wl_list_remove(&m->frame.link);
+	if (az_pace_on())
+		wl_list_remove(&m->pace_present.link);
 	wl_list_remove(&m->link);
 	wl_list_remove(&m->request_state.link);
 	if (m->lock_surface)
@@ -5403,6 +5410,11 @@ void createmon(struct wl_listener *listener, void *data) {
 
 	/* Set up event listeners */
 	LISTEN(&wlr_output->events.frame, &m->frame, rendermon);
+	/* Only wired when the operator asked for the trace: nothing else in the
+	 * compositor needs presentation feedback, and a listener that exists only
+	 * to be a no-op is still a listener on a hot signal. */
+	if (az_pace_on())
+		LISTEN(&wlr_output->events.present, &m->pace_present, pacepresent);
 	LISTEN(&wlr_output->events.destroy, &m->destroy, cleanupmon);
 	LISTEN(&wlr_output->events.request_state, &m->request_state,
 		   requestmonstate);
@@ -7828,6 +7840,10 @@ static void render_monitor(Monitor *m) {
 	int32_t i;
 	struct wl_list *layer_list;
 	bool frame_allow_tearing = false;
+	bool pace_needed_frame = false, pace_committed = false;
+	uint64_t pace_damage_px = 0;
+	int pace_damage_rects = 0;
+	pixman_box32_t pace_damage_ext = {0, 0, 0, 0};
 	struct timespec now;
 	bool need_more_frames = false;
 	struct timespec render_t0;
@@ -7853,6 +7869,7 @@ static void render_monitor(Monitor *m) {
 	 * render_dur_ms lumps it in with the commit, so a frame that misses its
 	 * deadline gives no clue which half was responsible. */
 	AZ_ZONE(az_animate, "animate");
+	az_pace_mon = m->wlr_output->name;
 
 	// draw layers and fade-out effects
 	for (i = 0; i < LENGTH(m->layers); i++) {
@@ -7991,6 +8008,7 @@ static void render_monitor(Monitor *m) {
 		wlr_output_state_finish(&state);
 		m->hdr_pending_change = false;
 	} else if (wlr_scene_output_needs_frame(m->scene_output)) {
+		pace_needed_frame = true;
 		/* What wlr_scene_output_commit() does, written out, because the
 		 * build step in the middle has to be az_output_build_frame(). The
 		 * needs-frame check stays: scene_output clears its own pending damage
@@ -8002,10 +8020,36 @@ static void render_monitor(Monitor *m) {
 			.color_transform = az_output_color_transform(m),
 		};
 		if (az_output_build_frame(m, &state, &frame_options)) {
+			/* The damage this frame actually committed, in output-buffer
+			 * pixels, before wlr_output_state_finish() frees the region.
+			 * "Damage amplification" is a ratio and the denominator is the
+			 * geometry that moved -- so the numerator has to be the region
+			 * the compositor really asked the GPU to redraw, not the one the
+			 * scene graph was asked to accumulate. */
+			if (az_pace_on() && (state.committed & WLR_OUTPUT_STATE_DAMAGE)) {
+				int nrects = 0;
+				const pixman_box32_t *rects =
+					pixman_region32_rectangles(&state.damage, &nrects);
+				uint64_t px = 0;
+				for (int r = 0; r < nrects; r++)
+					px += (uint64_t)(rects[r].x2 - rects[r].x1) *
+						(uint64_t)(rects[r].y2 - rects[r].y1);
+				pace_damage_px = px;
+				pace_damage_rects = nrects;
+				/* The union's bounding box, alongside the area. 1.7Mpx in
+				 * three rects is a different defect depending on whether they
+				 * span the output or sit on top of each other, and area alone
+				 * cannot tell the two apart. */
+				const pixman_box32_t *ext =
+					pixman_region32_extents(&state.damage);
+				pace_damage_ext = *ext;
+			}
 			if (!wlr_output_commit_state(m->wlr_output, &state)) {
 				wlr_log(WLR_ERROR, "Failed to commit frame on %s",
 						m->wlr_output->name);
 				az_output_commit_failed(m);
+			} else {
+				pace_committed = true;
 			}
 		} else {
 			wlr_log(WLR_ERROR, "Failed to build frame for %s",
@@ -8041,7 +8085,39 @@ skip:
 	 * plotting the real value is how you find out whether that peak is one
 	 * pathological frame or the shape of the whole run. */
 	AZ_PLOT(AZ_PLOT_RENDER_MS, dur_ms);
+	/* needed=0 committed=0 is the frame that cost a wakeup and produced
+	 * nothing -- the shape of a scheduler that keeps asking for frames after
+	 * the motion has stopped. It is invisible in every present-side metric,
+	 * because there is no present. */
+	AZ_PACE("render mon=%s dur_us=%lld needed=%d committed=%d more=%d "
+		"damage_px=%llu damage_rects=%d damage_ext=%d,%d,%dx%d t_ns=%llu",
+		m->wlr_output->name,
+		(long long)(dur_ms * 1000.0), pace_needed_frame ? 1 : 0,
+		pace_committed ? 1 : 0, need_more_frames ? 1 : 0,
+		(unsigned long long)pace_damage_px, pace_damage_rects,
+		pace_damage_ext.x1, pace_damage_ext.y1,
+		pace_damage_ext.x2 - pace_damage_ext.x1,
+		pace_damage_ext.y2 - pace_damage_ext.y1,
+		(unsigned long long)az_pace_now_ns());
 	AZ_ZONE_END(az_render);
+}
+
+/* Presentation feedback, recorded per output. Wired only under AZ_PACE=1. */
+static void pacepresent(struct wl_listener *listener, void *data) {
+	Monitor *m = wl_container_of(listener, m, pace_present);
+	struct wlr_output_event_present *ev = data;
+	/* `when` is the moment the content turned into light, and it is only
+	 * meaningful when the frame was actually presented -- a dropped update
+	 * still fires this signal, and folding one into the interval series would
+	 * invent a refresh that never happened. Fall back to now only when the
+	 * backend gave no timestamp at all. */
+	if (!ev->presented)
+		return;
+	uint64_t when_ns = (ev->when.tv_sec || ev->when.tv_nsec)
+		? (uint64_t)ev->when.tv_sec * 1000000000ull + (uint64_t)ev->when.tv_nsec
+		: az_pace_now_ns();
+	az_pace_present(m->wlr_output->name, &m->pace_last_present_ns, ev->seq,
+		when_ns);
 }
 
 // Frame (vblank) event. By default render immediately. With config.render_late

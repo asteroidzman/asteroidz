@@ -146,6 +146,11 @@ struct avk_ts_slot {
 	 * off whatever the CPU is doing when the result finally comes back.
 	 */
 	bool blur_active;
+	/* How many blur chains this frame declared. The count, not the bool: at
+	 * N > 1 the PREFIX_END and DOWN_END marks belong to the FIRST chain only,
+	 * so a phase decomposition read without it silently attributes chains
+	 * 2..N to chain 1's upsample. */
+	uint32_t chains;
 	/* Monotonic id of the frame that wrote this slot, so a trace can follow
 	 * one frame from build to a readback several frames later. Diagnostic
 	 * only -- nothing about the measurement depends on it. */
@@ -246,6 +251,12 @@ struct avk_timestamps {
 	bool cohort_wrong;
 	bool cur_blur_active;
 	bool trace;
+	/* Carried from the gpu_frame block down to the trace line at the end of
+	 * read_slot(), so one frame prints as ONE line with its phases beside its
+	 * total instead of two lines that have to be joined by frame id. */
+	bool trace_pending, trace_cohort, trace_slot_active, trace_cur_active;
+	uint64_t trace_gpu_frame_ns, trace_frame_id;
+	uint32_t trace_slot;
 };
 
 /* Whether this frame's blur work was a single chain, so the up phase can be
@@ -256,7 +267,7 @@ void avk_timestamps_single_chain(struct avk_timestamps *ts, uint32_t slot,
 /* Whether this frame ran blur work, so its gpu_frame sample joins the
  * blur-active cohort as well as the all-frames one. */
 void avk_timestamps_blur_active(struct avk_timestamps *ts, uint32_t slot,
-	bool active);
+	bool active, uint32_t chains);
 
 /* Start a new measurement window. Results still in flight from the previous
  * one are dropped when they arrive. */
