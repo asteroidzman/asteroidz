@@ -88,6 +88,11 @@ struct avk_transient_stats {
 	uint64_t acquires;
 	uint64_t reuses;         /* served from an existing image */
 	uint64_t creates;        /* a new VkImage was allocated */
+	/* WHY a create was needed. Exactly one is incremented per create, so
+	 * miss_no_key + miss_in_use + miss_in_flight == creates. */
+	uint64_t miss_no_key;    /* nothing of that key existed at all */
+	uint64_t miss_in_use;    /* one existed, held by this same frame */
+	uint64_t miss_in_flight; /* one existed and was idle, but still on the GPU */
 	uint64_t retires;        /* entries handed to the retire queue */
 	/*
 	 * Acquires served by an image the GPU had NOT finished with.
@@ -135,6 +140,10 @@ struct avk_transient_pool {
 	 * one run rather than argued about.
 	 */
 	uint32_t granularity;
+	/* AZ_TRANSIENT_TRACE=1: one line per CREATE, with the reason no existing
+	 * entry could serve it. Off by default; creates are rare in steady state
+	 * and a flood of them is exactly the thing being diagnosed. */
+	bool trace;
 
 	/* Cache ceiling. Idle entries are retired oldest-first once the pool holds
 	 * more than this. Not a per-frame purge: an effect whose intermediate is

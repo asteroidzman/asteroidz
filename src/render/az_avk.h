@@ -4478,6 +4478,7 @@ static cJSON *az_avk_stats_json(void) {
 	 * warm-up frames, on runs whose per-frame graph uses were identical.
 	 */
 	uint64_t t_acquires = 0, t_reuses = 0, t_creates = 0, t_retires = 0;
+	uint64_t t_no_key = 0, t_in_use = 0, t_in_flight = 0;
 	uint64_t t_unsafe = 0, t_bytes = 0, t_peak = 0;
 	uint32_t t_live = 0;
 	for (size_t i = 0; i < AZ_AVK_MAX_FORMATS; i++) {
@@ -4489,6 +4490,9 @@ static cJSON *az_avk_stats_json(void) {
 		t_acquires += ts->acquires;
 		t_reuses += ts->reuses;
 		t_creates += ts->creates;
+		t_no_key += ts->miss_no_key;
+		t_in_use += ts->miss_in_use;
+		t_in_flight += ts->miss_in_flight;
 		t_retires += ts->retires;
 		t_unsafe += ts->unsafe_reuses;
 		t_bytes += ts->bytes;
@@ -4498,6 +4502,9 @@ static cJSON *az_avk_stats_json(void) {
 	cJSON_AddNumberToObject(o, "transient_acquires", (double)t_acquires);
 	cJSON_AddNumberToObject(o, "transient_reuses", (double)t_reuses);
 	cJSON_AddNumberToObject(o, "transient_creates", (double)t_creates);
+	cJSON_AddNumberToObject(o, "transient_miss_no_key", (double)t_no_key);
+	cJSON_AddNumberToObject(o, "transient_miss_in_use", (double)t_in_use);
+	cJSON_AddNumberToObject(o, "transient_miss_in_flight", (double)t_in_flight);
 	cJSON_AddNumberToObject(o, "transient_retires", (double)t_retires);
 	/* MUST stay 0. The only path that can raise it is the M4E.4 break. */
 	cJSON_AddNumberToObject(o, "transient_unsafe_reuses", (double)t_unsafe);
