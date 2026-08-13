@@ -2,6 +2,8 @@
 
 #include "avk_timestamp.h"
 
+#include <inttypes.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "../avk.h"
@@ -50,6 +52,18 @@ bool avk_timestamps_init(struct avk_timestamps *ts, struct avk_device *dev) {
 	AVK_LIVE_INC(dev, query_pools);
 
 	ts->supported = true;
+	{
+		const char *e = getenv("AZ_TS_COHORT_WRONG");
+		ts->cohort_wrong = e != NULL && e[0] == '1';
+		if (ts->cohort_wrong) {
+			avk_log(AVK_ERROR, "avk timing: AZ_TS_COHORT_WRONG=1 -- the "
+				"blur-active cohort is deliberately classified by the CURRENT "
+				"frame instead of the originating slot. TEST ONLY; every "
+				"gpu_frame_blur number from this process is wrong on purpose");
+		}
+		e = getenv("AZ_TS_TRACE");
+		ts->trace = e != NULL && e[0] == '1';
+	}
 	avk_log(AVK_INFO, "avk: GPU timestamps on, %.2f ns/tick, %u valid bits, "
 		"%u queries", (double)ts->period_ns, valid_bits,
 		info.queryCount);
@@ -98,6 +112,7 @@ void avk_timestamps_begin(struct avk_timestamps *ts, VkCommandBuffer cb,
 	}
 	ts->slots[slot].written = 0;
 	ts->slots[slot].single_chain = false;
+	ts->slots[slot].blur_active = false;
 
 	vkCmdResetQueryPool(cb, ts->pool, slot * AVK_TS_MARKS, AVK_TS_MARKS);
 }
@@ -118,6 +133,31 @@ void avk_timestamps_single_chain(struct avk_timestamps *ts, uint32_t slot,
 		return;
 	}
 	ts->slots[slot].single_chain = single;
+}
+
+void avk_timestamps_blur_active(struct avk_timestamps *ts, uint32_t slot,
+		bool active) {
+	if (!ts->supported || slot >= AVK_FRAMES_IN_FLIGHT) {
+		return;
+	}
+	ts->slots[slot].blur_active = active;
+	ts->slots[slot].frame_id = ++ts->frames_built;
+	ts->slots[slot].generation = ts->generation;
+	/* What the CPU is doing NOW. Read by nothing except the break. */
+	ts->cur_blur_active = active;
+	if (active) {
+		ts->cohort_blur_frames++;
+	} else {
+		ts->cohort_idle_frames++;
+	}
+	if (ts->trace) {
+		avk_log(AVK_INFO, "avk cohort: BUILD frame=%" PRIu64 " slot=%u "
+			"blur_active=%d", ts->slots[slot].frame_id, slot, active ? 1 : 0);
+	}
+}
+
+void avk_timestamps_new_generation(struct avk_timestamps *ts) {
+	ts->generation++;
 }
 
 void avk_timestamps_submitted(struct avk_timestamps *ts, uint32_t slot,
@@ -208,6 +248,23 @@ static bool read_slot(struct avk_timestamps *ts, uint32_t slot,
 	 * that was not written has no result, and reading its query returns a
 	 * stale value from three frames ago -- indistinguishable from a plausible
 	 * one, which is how a "measurement" becomes a number nobody can defend. */
+	/*
+	 * A RESULT FROM THE PREVIOUS MEASUREMENT WINDOW IS NOT A RESULT.
+	 *
+	 * The slot is still consumed -- it has to be, or it would be retried
+	 * forever -- but nothing it carries is accumulated. Without this, up to
+	 * AVK_FRAMES_IN_FLIGHT frames built before a reset land in the window
+	 * after it, which on a 25-sample run is 12% of the population and is
+	 * exactly what made the control's cohort count disagree with its frame
+	 * count by one.
+	 */
+	if (s->generation != ts->generation) {
+		s->timeline_value = 0;
+		s->written = 0;
+		ts->straddled++;
+		return true;
+	}
+
 	uint32_t need = (1u << AVK_TS_FRAME_BEGIN) | (1u << AVK_TS_FRAME_END);
 	if ((s->written & need) == need) {
 		uint64_t frame = avk_ts_ticks_between(ts->valid_mask,
@@ -221,6 +278,28 @@ static bool read_slot(struct avk_timestamps *ts, uint32_t slot,
 				(double)ts->gpu_frame_ns / 1e6, slot, s->written);
 		}
 		avk_hist_add(&ts->gpu_frame_hist, ts->gpu_frame_ns);
+		/* The same sample, in the cohort that can be compared against
+		 * gpu_blur_total: `s->blur_active` was recorded for THIS frame when it
+		 * was built, so a result arriving three frames later is still
+		 * classified by its own frame. */
+		bool cohort = s->blur_active;
+		if (ts->cohort_wrong) {
+			/* THE BREAK: classify by the current CPU frame instead of the
+			 * originating one. See avk_timestamps.cohort_wrong. */
+			cohort = ts->cur_blur_active;
+		}
+		if (cohort) {
+			avk_hist_add(&ts->gpu_frame_blur_hist, ts->gpu_frame_ns);
+		}
+		if (ts->trace) {
+			avk_log(AVK_INFO, "avk cohort: READ  frame=%" PRIu64 " slot=%u "
+				"slot.blur_active=%d cur.blur_active=%d -> cohort=%d "
+				"(built %" PRIu64 " frames ago) gpu_frame=%.1f us",
+				s->frame_id, slot, s->blur_active ? 1 : 0,
+				ts->cur_blur_active ? 1 : 0, cohort ? 1 : 0,
+				ts->frames_built - s->frame_id,
+				(double)ts->gpu_frame_ns / 1e3);
+		}
 	}
 
 	/*

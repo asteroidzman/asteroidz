@@ -131,6 +131,33 @@ struct avk_ts_slot {
 	 * rather than "everything after the first chain's downsamples". Recorded
 	 * per slot because it is a property of the frame, not of the renderer. */
 	bool single_chain;
+	/*
+	 * Whether this frame ran any blur work at all.
+	 *
+	 * A POPULATION FILTER, not a new measurement: the same FRAME_BEGIN ->
+	 * FRAME_END pair is recorded, and this only decides which histogram it
+	 * joins. gpu_frame over ALL frames answers a different question from
+	 * gpu_frame over blur-bearing frames, and on a sparse-pulse fixture the
+	 * two medians differ by more than the optimisation being measured -- 3840
+	 * vs 6580 us, where the "frame" median was mostly idle frames.
+	 *
+	 * It lives in the SLOT because timestamp results are consumed later: the
+	 * classification has to travel with the frame it describes, not be read
+	 * off whatever the CPU is doing when the result finally comes back.
+	 */
+	bool blur_active;
+	/* Monotonic id of the frame that wrote this slot, so a trace can follow
+	 * one frame from build to a readback several frames later. Diagnostic
+	 * only -- nothing about the measurement depends on it. */
+	uint64_t frame_id;
+	/* The stats generation this frame was BUILT in. Results outlive a stats
+	 * reset -- up to AVK_FRAMES_IN_FLIGHT of them are in the queue when it
+	 * happens -- and accumulating those into the fresh window mixes frames
+	 * from before the measurement started into it. Caught by the cohort test:
+	 * the single-chain control classified 30 frames blur-active and collected
+	 * 30 frame samples, but only 29 of the samples carried the flag, because
+	 * one straddling frame was built idle before the reset and read after it. */
+	uint64_t generation;
 	/* Which marks were actually written this frame. A mark that was not
 	 * written has no result, and reading its query would return a stale value
 	 * from three frames ago -- indistinguishable from a plausible one. */
@@ -185,12 +212,55 @@ struct avk_timestamps {
 	/* The final upsample alone: PENULT_END -> BLUR_END, single-chain frames
 	 * with levels >= 2. */
 	struct avk_hist blur_up0_hist;
+	/* gpu_frame, restricted to frames that actually ran blur. Same samples,
+	 * same boundaries, different cohort. */
+	struct avk_hist gpu_frame_blur_hist;
+
+	/*
+	 * ── COHORT ACCOUNTING ─────────────────────────────────────────────────
+	 *
+	 * How many frames were CLASSIFIED each way when they were built. These
+	 * are what the cohort falsifier checks the histogram against: if
+	 * gpu_frame_blur_hist.count does not track cohort_blur_frames (minus the
+	 * ones whose results were dropped), the classification is not surviving
+	 * to readback.
+	 */
+	uint64_t cohort_blur_frames;
+	uint64_t cohort_idle_frames;
+	uint64_t frames_built;
+	/* Bumped by a stats reset. A result whose slot generation does not match
+	 * is discarded rather than counted: it belongs to the previous window. */
+	uint64_t generation;
+	uint64_t straddled;
+
+	/*
+	 * ── THE BREAK ─────────────────────────────────────────────────────────
+	 *
+	 * AZ_TS_COHORT_WRONG=1 classifies a returned result by what the CPU is
+	 * doing NOW instead of by the slot it came from -- the exact defect this
+	 * design exists to avoid. It is here because a delayed-readback bug is
+	 * invisible in any fixture where every frame is blur-active, which is
+	 * most of them; the sparse-pulse cohort test asserts that turning this on
+	 * CHANGES the answer, so the test is proven able to fail.
+	 */
+	bool cohort_wrong;
+	bool cur_blur_active;
+	bool trace;
 };
 
 /* Whether this frame's blur work was a single chain, so the up phase can be
  * attributed. Called by the renderer before submission. */
 void avk_timestamps_single_chain(struct avk_timestamps *ts, uint32_t slot,
 	bool single);
+
+/* Whether this frame ran blur work, so its gpu_frame sample joins the
+ * blur-active cohort as well as the all-frames one. */
+void avk_timestamps_blur_active(struct avk_timestamps *ts, uint32_t slot,
+	bool active);
+
+/* Start a new measurement window. Results still in flight from the previous
+ * one are dropped when they arrive. */
+void avk_timestamps_new_generation(struct avk_timestamps *ts);
 
 /*
  * Returns true if timestamps are available and false if they are not. A false

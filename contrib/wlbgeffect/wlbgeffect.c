@@ -182,7 +182,7 @@ static int quad_mode;
  * buffer the compositor may still be reading is a race that shows up as a
  * torn or stale rectangle exactly where the measurement is looking.
  */
-static struct { int w, h, x, y, period_ms; int on; } pulse;
+static struct { int w, h, x, y, period_ms, count; int on; int fired; } pulse;
 static struct wl_buffer *pulse_buf[2];
 static uint32_t *pulse_px[2];
 static int pulse_free[2] = { 1, 1 };
@@ -204,18 +204,32 @@ static void pulse_parse(void) {
 	if (env == NULL || env[0] == '\0') {
 		return;
 	}
-	if (sscanf(env, "%dx%d@%d,%d:%d", &pulse.w, &pulse.h, &pulse.x, &pulse.y,
-			&pulse.period_ms) != 5 || pulse.w <= 0 || pulse.h <= 0) {
-		fprintf(stderr, "wlbgeffect: WLBGEFFECT_PULSE=%s is not WxH@X,Y:MS\n",
-			env);
+	/*
+	 * WxH@X,Y:MS[:COUNT]. COUNT stops the mutation after that many pulses and
+	 * leaves the window where it is.
+	 *
+	 * Without it the surface keeps changing THROUGH the forced-full oracle
+	 * comparison, so the two captures are of different desktops and the
+	 * baseline "differs from a full redraw" by exactly one pulse rectangle --
+	 * measured, 256 px for a 16x16 pulse. A settled scene is a precondition
+	 * for that oracle, not a detail.
+	 */
+	int n = sscanf(env, "%dx%d@%d,%d:%d:%d", &pulse.w, &pulse.h, &pulse.x,
+		&pulse.y, &pulse.period_ms, &pulse.count);
+	if (n < 5 || pulse.w <= 0 || pulse.h <= 0) {
+		fprintf(stderr, "wlbgeffect: WLBGEFFECT_PULSE=%s is not "
+			"WxH@X,Y:MS[:COUNT]\n", env);
 		return;
+	}
+	if (n < 6) {
+		pulse.count = 0;   /* 0 = forever */
 	}
 	pulse.on = 1;
 	/* An explicit, greppable startup line: the fixture must be able to ASSERT
 	 * that pulse mode was enabled rather than infer it from a timing shape. */
 	fprintf(stderr, "wlbgeffect: pulse enabled geometry=%dx%d@%d,%d "
-		"period_ms=%d\n", pulse.w, pulse.h, pulse.x, pulse.y,
-		pulse.period_ms);
+		"period_ms=%d count=%d\n", pulse.w, pulse.h, pulse.x, pulse.y,
+		pulse.period_ms, pulse.count);
 	fflush(stderr);
 }
 
@@ -419,7 +433,7 @@ int main(int argc, char **argv) {
 		if (elapsed >= hold)
 			break;
 
-		if (pulse.on) {
+		if (pulse.on && (pulse.count == 0 || pulse.fired < pulse.count)) {
 			static double last;
 			if (elapsed - last >= (double)pulse.period_ms / 1000.0) {
 				int next = pulse_phase ^ 1;
@@ -435,8 +449,13 @@ int main(int argc, char **argv) {
 					wl_surface_commit(surface);
 					/* One line per mutation, so "did the intended change
 					 * happen" is a count and not an inference. */
+					pulse.fired++;
 					fprintf(stderr, "wlbgeffect: pulse %d %dx%d@%d,%d\n",
 							next, pulse.w, pulse.h, pulse.x, pulse.y);
+					if (pulse.count > 0 && pulse.fired >= pulse.count) {
+						fprintf(stderr, "wlbgeffect: pulse done after %d\n",
+								pulse.fired);
+					}
 					fflush(stderr);
 				}
 			}

@@ -505,7 +505,7 @@ fi
 
 keep_log seam
 hl_stop
-HL_ENV="ASTEROIDZ_RENDERER=avk ASTEROIDZ_VK_DEBUG=1"
+HL_ENV="ASTEROIDZ_RENDERER=avk ASTEROIDZ_VK_DEBUG=1 ${SEAM_EXTRA_ENV:-}"
 export HL_ENV
 hl_start "effects { shadow { blur-background 0 }; blur { enable 0 } }"
 hl_spawn_kitty plain >/dev/null; hl_wait_client_count 1 60

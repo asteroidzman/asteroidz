@@ -4018,6 +4018,14 @@ static cJSON *az_avk_stats_json(void) {
 			}
 		}
 		cJSON_AddNumberToObject(o, "record_samples", (double)rec.count);
+		/* THE MEAN IS NOT QUANTIZED. Percentiles are read out of 20us buckets,
+		 * which is coarser than the whole quantity for a CPU record path that
+		 * costs ~100us: every percentile difference between two builds comes
+		 * out as +/- one bucket, i.e. +/-20us, whatever the real difference
+		 * was. The mean is accumulated from raw nanoseconds and is exact, so
+		 * it is the only field here that can resolve a small CPU delta. */
+		cJSON_AddNumberToObject(o, "record_ns_avg",
+			(double)avk_hist_mean(&rec));
 		/* And the backpressure wait, which used to be inside record_ns. Two
 		 * fields because they answer different questions: how expensive is a
 		 * frame to build, and how often is the CPU ahead of the GPU. */
@@ -4037,13 +4045,23 @@ static cJSON *az_avk_stats_json(void) {
 					rw.bucket[b] += h->bucket[b];
 				}
 			}
+			cJSON_AddNumberToObject(o, "ring_wait_samples", (double)rw.count);
 			cJSON_AddNumberToObject(o, "ring_wait_ns_avg",
 				(double)avk_hist_mean(&rw));
+			/* p50/p99 alongside p95: backpressure is bimodal -- most frames
+			 * do not wait at all and the ones that do wait a whole frame --
+			 * so a single percentile describes neither mode. */
+			cJSON_AddNumberToObject(o, "ring_wait_ns_p50",
+				(double)avk_hist_pct(&rw, 50.0));
 			cJSON_AddNumberToObject(o, "ring_wait_ns_p95",
 				(double)avk_hist_pct(&rw, 95.0));
+			cJSON_AddNumberToObject(o, "ring_wait_ns_p99",
+				(double)avk_hist_pct(&rw, 99.0));
 			cJSON_AddNumberToObject(o, "ring_wait_ns_max", (double)rw.max);
 			cJSON_AddNumberToObject(o, "ring_wait_overflow",
 				(double)rw.overflow);
+			cJSON_AddBoolToObject(o, "ring_wait_censored",
+				avk_hist_censored(&rw));
 		}
 		if (rec.count > 0) {
 			cJSON_AddNumberToObject(o, "record_ns_p50",
@@ -4276,7 +4294,7 @@ static cJSON *az_avk_stats_json(void) {
 	 */
 	{
 		struct avk_hist frame = {0}, total = {0}, prefix = {0}, down = {0},
-			up = {0}, up0 = {0};
+			up = {0}, up0 = {0}, frameblur = {0};
 		for (size_t i = 0; i < AZ_AVK_MAX_FORMATS; i++) {
 			if (!avk.renderers[i].used) {
 				continue;
@@ -4289,12 +4307,13 @@ static cJSON *az_avk_stats_json(void) {
 			/* Bucket-wise addition: two renderers' histograms are over the
 			 * same buckets, so this is exact rather than an average of
 			 * percentiles, which would not be a percentile of anything. */
-			const struct avk_hist *src[6] = { &ts->gpu_frame_hist,
+			const struct avk_hist *src[7] = { &ts->gpu_frame_hist,
 				&ts->blur_total_hist, &ts->blur_prefix_hist,
-				&ts->blur_down_hist, &ts->blur_up_hist, &ts->blur_up0_hist };
-			struct avk_hist *dst[6] = { &frame, &total, &prefix, &down, &up,
-				&up0 };
-			for (int k = 0; k < 6; k++) {
+				&ts->blur_down_hist, &ts->blur_up_hist, &ts->blur_up0_hist,
+				&ts->gpu_frame_blur_hist };
+			struct avk_hist *dst[7] = { &frame, &total, &prefix, &down, &up,
+				&up0, &frameblur };
+			for (int k = 0; k < 7; k++) {
 				dst[k]->count += src[k]->count;
 				dst[k]->total += src[k]->total;
 				dst[k]->overflow += src[k]->overflow;
@@ -4307,12 +4326,52 @@ static cJSON *az_avk_stats_json(void) {
 				}
 			}
 		}
-		static const char *names[6] = { "gpu_frame", "gpu_blur_total",
+		/* gpu_frame is over ALL frames; gpu_frame_blur is the same samples
+		 * restricted to frames that ran blur. On a sparse workload those are
+		 * very different populations and only the second is comparable with
+		 * gpu_blur_total. */
+		/* WHAT THE CLASSIFIER DECIDED, counted at frame-build time. The
+		 * histogram counts are what SURVIVED to readback; these are what was
+		 * classified. A cohort test compares the two, and any gap is either a
+		 * dropped result or a classification that did not travel with its
+		 * frame. */
+		{
+			uint64_t cb = 0, ci = 0, cf = 0;
+			bool wrong = false;
+			for (size_t i = 0; i < AZ_AVK_MAX_FORMATS; i++) {
+				if (!avk.renderers[i].used) {
+					continue;
+				}
+				const struct avk_timestamps *t =
+					&avk.renderers[i].renderer.timestamps;
+				cb += t->cohort_blur_frames;
+				ci += t->cohort_idle_frames;
+				cf += t->frames_built;
+				wrong = wrong || t->cohort_wrong;
+			}
+			cJSON_AddNumberToObject(o, "cohort_blur_frames", (double)cb);
+			cJSON_AddNumberToObject(o, "cohort_idle_frames", (double)ci);
+			cJSON_AddNumberToObject(o, "cohort_frames_built", (double)cf);
+			cJSON_AddBoolToObject(o, "cohort_classifier_broken", wrong);
+			{
+				uint64_t st = 0;
+				for (size_t i = 0; i < AZ_AVK_MAX_FORMATS; i++) {
+					if (avk.renderers[i].used) {
+						st += avk.renderers[i].renderer.timestamps.straddled;
+					}
+				}
+				/* Results that arrived after the window they belong to ended.
+				 * Expected to be small and non-zero -- it is the pipeline
+				 * depth at the moment of the reset, not a fault. */
+				cJSON_AddNumberToObject(o, "gpu_results_straddled", (double)st);
+			}
+		}
+		static const char *names[7] = { "gpu_frame", "gpu_blur_total",
 			"gpu_blur_prefix", "gpu_blur_down", "gpu_blur_up",
-			"gpu_blur_up0" };
-		const struct avk_hist *hs[6] = { &frame, &total, &prefix, &down, &up,
-			&up0 };
-		for (int k = 0; k < 6; k++) {
+			"gpu_blur_up0", "gpu_frame_blur" };
+		const struct avk_hist *hs[7] = { &frame, &total, &prefix, &down, &up,
+			&up0, &frameblur };
+		for (int k = 0; k < 7; k++) {
 			char key[64];
 			snprintf(key, sizeof(key), "%s_samples", names[k]);
 			cJSON_AddNumberToObject(o, key, (double)hs[k]->count);
@@ -4401,6 +4460,20 @@ static cJSON *az_avk_stats_json(void) {
 	 * now so that when it stops being zero there is a before to compare with.
 	 * `transient_creates` is the one to watch during a resize: it must stop
 	 * rising once the sizes settle.
+	 *
+	 * TWO DIFFERENT TIME BASES, DELIBERATELY.
+	 *
+	 * acquires/reuses/retires are per-frame events and are cleared by
+	 * az_avk_stats_reset(), so they describe the measurement window.
+	 * creates/live/bytes/peak describe the POOL, which outlives any window --
+	 * an allocation made before the reset is still allocated after it, and
+	 * zeroing that would claim the compositor had allocated nothing.
+	 *
+	 * The distinction is not cosmetic. Comparing lifetime acquires between two
+	 * separately launched compositors compares how many frames each happened
+	 * to render before the window opened, not what the change under test did:
+	 * an A/B asserting acquire equality read 264 against 256 for eight extra
+	 * warm-up frames, on runs whose per-frame graph uses were identical.
 	 */
 	uint64_t t_acquires = 0, t_reuses = 0, t_creates = 0, t_retires = 0;
 	uint64_t t_unsafe = 0, t_bytes = 0, t_peak = 0;
@@ -4768,6 +4841,19 @@ static cJSON *az_avk_stats_json(void) {
  * zeroing them would make the next reading a lie until the caches turned over.
  */
 static void az_avk_stats_reset(void) {
+	for (size_t i = 0; i < AZ_AVK_MAX_FORMATS; i++) {
+		if (!avk.renderers[i].used) {
+			continue;
+		}
+		/* The per-frame half of the transient counters. See the two-time-bases
+		 * note where these are reported: `creates` and the live/bytes/peak
+		 * gauges are pool state and deliberately survive. */
+		struct avk_transient_stats *ts =
+			&avk.renderers[i].renderer.transients.stats;
+		ts->acquires = 0;
+		ts->reuses = 0;
+		ts->retires = 0;
+	}
 	avk.frames = 0;
 	avk.fallback_frames = 0;
 	avk.buffer_imports = 0;
@@ -4894,6 +4980,13 @@ static void az_avk_stats_reset(void) {
 				ts->blur_down_hist = (struct avk_hist){0};
 				ts->blur_up_hist = (struct avk_hist){0};
 				ts->blur_up0_hist = (struct avk_hist){0};
+				ts->gpu_frame_blur_hist = (struct avk_hist){0};
+				ts->cohort_blur_frames = 0;
+				ts->cohort_idle_frames = 0;
+				ts->straddled = 0;
+				/* Anything already in flight belongs to the window that just
+				 * ended, and is dropped when it comes back. */
+				avk_timestamps_new_generation(ts);
 				ts->gpu_frame_ns_total = 0;
 				ts->samples = 0;
 				ts->dropped = 0;

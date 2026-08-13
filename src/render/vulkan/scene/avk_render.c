@@ -1413,6 +1413,10 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 	clock_gettime(CLOCK_MONOTONIC, &damage_start);
 
 	size_t slot_len = 0;
+	/* How many of those slots produced actual blur passes. See the cohort
+	 * comment at avk_timestamps_blur_active() below: slots are candidates,
+	 * chains are GPU work, and only chains write timestamp marks. */
+	size_t declared_chains = 0;
 	for (size_t i = 0; i < scene->len && blur_count > 0; i++) {
 		const struct avk_cmd *cmd = &scene->cmds[i];
 		if (cmd->type != AVK_CMD_BLUR || cmd->blur_levels == 0) {
@@ -1866,6 +1870,7 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 			renderer->blur_results[i] = (struct avk_blur_result){
 				.image = prefix, .capture = rg.capture,
 			};
+			declared_chains++;
 			/* THIS chain declared, so it is the last one so far. */
 			avk_graph_pass_time_move_end(graph, AVK_TS_BLUR_END);
 			if (have_work) {
@@ -1931,6 +1936,25 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 	 * not an upsample cost and must not be recorded as one.
 	 */
 	avk_timestamps_single_chain(&renderer->timestamps, ts_slot, slot_len == 1);
+	/*
+	 * The cohort this frame's gpu_frame sample belongs to. Recorded here, with
+	 * the frame, because the sample is read back later.
+	 *
+	 * DECLARED CHAINS, NOT BLUR SLOTS. A slot is a blur node the walker found;
+	 * a chain is one avk_blur_declare() that actually built passes, and
+	 * avk_blur_declare declines -- too small a capture, zero levels. The marks
+	 * this cohort exists to pair with are written by those passes, so a frame
+	 * with slots but no successful declare runs no blur on the GPU and belongs
+	 * in the idle population.
+	 *
+	 * Measured, on the sparse-pulse fixture: 75 frames all had slots, but only
+	 * 53 declared. Classifying on slot_len put all 75 in the blur cohort,
+	 * cohort_idle_frames read 0 on a fixture built to contain idle frames, and
+	 * the cohort was indistinguishable from gpu_frame -- the exact failure the
+	 * cohort was added to prevent, reintroduced one level up.
+	 */
+	avk_timestamps_blur_active(&renderer->timestamps, ts_slot,
+		declared_chains > 0);
 	if ((uint64_t)slot_len > renderer->blur_max_slots) {
 		renderer->blur_max_slots = (uint64_t)slot_len;
 	}

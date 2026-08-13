@@ -62,7 +62,26 @@ HL_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # anything about the old binary. hl_start now logs the path it starts and
 # hl_binary() reports it, so a fixture can assert it got the build it asked for.
 HL_ASTEROIDZ="${ASTEROIDZ:-$HL_REPO/build/asteroidz}"
-[ -x "$HL_ASTEROIDZ" ] || HL_ASTEROIDZ=/usr/bin/asteroidz
+if [ ! -x "$HL_ASTEROIDZ" ]; then
+	# ── DO NOT SILENTLY SUBSTITUTE THE INSTALLED BINARY IN A BUILD TREE ────
+	#
+	# The fallback exists for a machine with no build directory. In a checkout
+	# that HAS one, a missing build/asteroidz means the build is broken or
+	# mid-link -- and running the installed binary instead tests whatever was
+	# last released, silently, while the log shows a normal green run.
+	#
+	# That happened: a rebuild during a suite replaced build/asteroidz for a
+	# moment, the -x test lost the race, and a compositor came up from
+	# /usr/bin/asteroidz with none of the code under test in it.
+	if [ -d "$HL_REPO/build" ] && [ -z "${ASTEROIDZ:-}" ]; then
+		echo "headless: $HL_ASTEROIDZ is missing or not executable, and this" >&2
+		echo "  is a build tree -- refusing to fall back to /usr/bin/asteroidz." >&2
+		echo "  Build first, do not rebuild while a suite is running, or set" >&2
+		echo "  ASTEROIDZ=/usr/bin/asteroidz to say you meant the installed one." >&2
+		exit 1
+	fi
+	HL_ASTEROIDZ=/usr/bin/asteroidz
+fi
 
 # The binary the most recent hl_start actually launched.
 hl_binary() { echo "${HL_STARTED_BINARY:-}"; }
