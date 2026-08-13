@@ -489,19 +489,20 @@ static struct blur_req_break blur_req_break(void) {
 			what);
 		return cached;
 	}
-	avk_log(AVK_ERROR, "AZ_BLUR_REQ_SCISSOR=%s -- blur passes render only their "
+	avk_log(AVK_WARN, "AZ_BLUR_REQ_SCISSOR=%s -- blur passes render only their "
 		"DERIVED REQUIRED region, shrunk by %d. This build is a measurement "
 		"instrument, not a renderer.", env, shrink);
 	return cached;
 }
 
 /*
- * ── M4F.2D.2: THE UP0-ONLY SCISSOR PROTOTYPE ──────────────────────────────
+ * ── M4F.2D.2: THE UP0-ONLY SCISSOR ────────────────────────────────────────
  *
- * AZ_BLUR_UP0_SCISSOR=1 restricts the FINAL, full-resolution upsample to the
- * region avk_blur_work_of() derived for it -- and nothing else in the chain
- * changes. Default OFF: the baseline renders every pass whole, exactly as it
- * always has, so OFF and ON are the same binary and differ in one scissor.
+ * The FINAL, full-resolution upsample renders only the region
+ * avk_blur_work_of() derived for it -- and nothing else in the chain changes.
+ * ON BY DEFAULT; AZ_BLUR_UP0_SCISSOR=0 restores the baseline, which renders
+ * every pass whole exactly as it always has. Both sides are the same binary
+ * and differ in one scissor, because an A/B needs both in one build.
  *
  * WHY THIS PASS AND ONLY THIS PASS. Measured on this hardware at levels=3
  * r=5: the up chain is 71% of blur GPU time and the final upsample alone is
@@ -523,16 +524,10 @@ static struct blur_req_break blur_req_break(void) {
  * the reason this pass was the cheap one to try.
  */
 /*
- * ON BY DEFAULT. AZ_BLUR_UP0_SCISSOR=0 restores the full-pass baseline.
- *
- * The final upsample renders only the region the composite will read, which
- * M4F.2D.2 qualified: the derived region is sufficient (rendering exactly it
- * is pixel-identical) and necessary (shrinking it by one pixel per edge breaks
+ * QUALIFIED. The derived region is sufficient (rendering exactly it is
+ * pixel-identical) and necessary (shrinking it by one pixel per edge breaks
  * the frame), and every measured workload removed exactly the predicted number
  * of fragments with the graph and resource topology unchanged.
- *
- * The env var stays as the falsifier's control -- an A/B needs both sides in
- * one binary, and the diagnostic is worth more than the line it costs.
  */
 static bool blur_up0_scissor_enabled(void) {
 	static int cached = -1;
@@ -802,7 +797,7 @@ bool avk_blur_declare(struct avk_graph *graph, struct avk_transient_pool *pool,
 			static bool said;
 			if (!said && last) {
 				said = true;
-				avk_log(AVK_ERROR, "avk blur: up0 scissor: target %ux%u, "
+				avk_log(AVK_INFO, "avk blur: up0 scissor: target %ux%u, "
 					"req %ux%u at %u,%u -> VkRect2D %dx%d at %d,%d",
 					dw, dh, work->up[0].req_w, work->up[0].req_h,
 					work->up[0].req_x, work->up[0].req_y,
