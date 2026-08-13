@@ -178,6 +178,17 @@ wl_retarget() {
 	done
 }
 
+# The overview open/close chrome fade, which is driven from render_monitor
+# (m->ov_anim_running) rather than from a client animation, so it exercises a
+# second scheduler path entirely.
+wl_overview() {
+	local n
+	for n in 1 2 3 4 5; do
+		hl_dispatch toggle_overview 1
+		hl_dispatch toggle_overview 1
+	done
+}
+
 # Cross-output: the window is dragged from output 1 into output 2's half of
 # the layout and back. Only meaningful with OUTS=2.
 wl_cross() {
@@ -189,7 +200,7 @@ wl_cross() {
 	done
 }
 
-WORKLOADS="${WORKLOADS:-move resize tag focus retarget cross}"
+WORKLOADS="${WORKLOADS:-move resize tag focus retarget cross overview}"
 
 for w in $WORKLOADS; do
 	case "$w" in
@@ -199,6 +210,7 @@ for w in $WORKLOADS; do
 	focus) run_case "focus" wl_focus ;;
 	retarget) run_case "retarget" wl_retarget ;;
 	cross) run_case "cross" wl_cross ;;
+	overview) run_case "overview" wl_overview ;;
 	*) echo "unknown workload: $w" >&2; exit 1 ;;
 	esac
 done
