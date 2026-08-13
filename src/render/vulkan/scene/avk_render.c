@@ -385,6 +385,21 @@ static void transform_uv(const struct avk_fbox *src, uint32_t image_width,
  * the GPU. It is a race, so it does not fail every run -- which is exactly why
  * it needs the validation layers rather than a pixel assertion.
  */
+/* AZ_BLUR_SKIP_WORK_DERIVATION=1 -- see the call site. Test only. */
+static bool az_avk_blur_skip_derivation(void) {
+	static int cached = -1;
+	if (cached < 0) {
+		const char *env = getenv("AZ_BLUR_SKIP_WORK_DERIVATION");
+		cached = env != NULL && env[0] == '1';
+		if (cached) {
+			avk_log(AVK_INFO, "avk blur: AZ_BLUR_SKIP_WORK_DERIVATION=1 -- the "
+				"required-region derivation is skipped, reconstructing what a "
+				"production frame would cost without the up0 optimisation");
+		}
+	}
+	return cached != 0;
+}
+
 static bool avk_no_sampled_last_use(void) {
 	static int cached = -1;
 	if (cached < 0) {
@@ -1842,9 +1857,27 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 		 * capture-local pixels, as a bounding box. See
 		 * blur_required_work_pixels for why that bias is the safe one.
 		 */
+		/*
+		 * ── THE PRODUCTION-BASELINE CONTROL ───────────────────────────────
+		 *
+		 * AZ_BLUR_SKIP_WORK_DERIVATION=1 skips avk_blur_work_of() entirely.
+		 * TEST ONLY, and it exists to answer one question honestly: a baseline
+		 * production frame with the scissor OFF would not need this derivation
+		 * at all -- it runs today only because M4F.2D.1 wired it for
+		 * accounting. Comparing instrumented OFF against instrumented ON would
+		 * therefore hide most of the CPU cost of KEEPING the optimisation.
+		 *
+		 * The switch is refused when the scissor is on, because a scissor
+		 * without its region would render an arbitrary rectangle -- an invalid
+		 * premise rather than a baseline.
+		 */
 		struct avk_blur_work work;
 		bool have_work = false;
-		if (pixman_region32_not_empty(&d->result_region)) {
+		bool skip_derive = az_avk_blur_skip_derivation();
+		if (skip_derive && blur_up0_scissor_on()) {
+			skip_derive = false;
+		}
+		if (!skip_derive && pixman_region32_not_empty(&d->result_region)) {
 			struct timespec rb0, rb1;
 			clock_gettime(CLOCK_MONOTONIC, &rb0);
 			pixman_box32_t rb = *pixman_region32_extents(&d->result_region);

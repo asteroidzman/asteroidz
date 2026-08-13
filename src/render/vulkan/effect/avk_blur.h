@@ -104,6 +104,10 @@ struct avk_blur_stats {
 	 * regional, so this against the result area is the size of the prize a
 	 * per-level scissor would win -- measured before it is built, in M4F.2D. */
 	uint64_t processed_pixels;
+	/* Of those, the ones shaded by the FINAL full-resolution upsample. The
+	 * up0 scissor prototype can only change this one, so it is the numerator
+	 * the gpu_blur_up0 span has to be read against. */
+	uint64_t up0_pixels;
 };
 
 /*
@@ -130,6 +134,11 @@ struct avk_blur_stats {
  * chain1... so "all the downsamples" is not a contiguous range and cannot be
  * one timestamp pair. See avk_timestamp.h.
  */
+/* Whether the up0-only scissor prototype is enabled (AZ_BLUR_UP0_SCISSOR=1).
+ * Exposed so the renderer can refuse the production-baseline switch while it
+ * is on: a scissor without its derived region is not a baseline. */
+bool blur_up0_scissor_on(void);
+
 struct avk_blur_marks {
 	enum avk_ts_mark down_end;
 	enum avk_ts_mark up_end;

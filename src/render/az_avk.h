@@ -4522,6 +4522,7 @@ static cJSON *az_avk_stats_json(void) {
 	uint64_t d_touched = 0, d_skipped = 0, d_fallbacks = 0, d_rects = 0;
 	uint64_t d_inherited = 0, d_build_ns = 0;
 	uint64_t d_halo = 0, d_cap_px = 0, d_res_px = 0, d_proc_px = 0;
+	uint64_t d_up0_px = 0;
 	uint64_t d_req_px = 0;
 	for (size_t i = 0; i < AZ_AVK_MAX_FORMATS; i++) {
 		if (!avk.renderers[i].used) {
@@ -4555,6 +4556,7 @@ static cJSON *az_avk_stats_json(void) {
 		d_cap_px += r->blur_capture_pixels;
 		d_res_px += r->blur_result_pixels;
 		d_proc_px += r->blur_stats.processed_pixels;
+		d_up0_px += r->blur_stats.up0_pixels;
 		if (r->blur_damage_rects_max > d_rects) {
 			d_rects = r->blur_damage_rects_max;
 		}
@@ -4604,6 +4606,10 @@ static cJSON *az_avk_stats_json(void) {
 	cJSON_AddNumberToObject(o, "blur_capture_pixels", (double)d_cap_px);
 	cJSON_AddNumberToObject(o, "blur_result_pixels", (double)d_res_px);
 	cJSON_AddNumberToObject(o, "blur_processed_pixels", (double)d_proc_px);
+	/* MEASURED, not inferred. The up0 reduction was previously only available
+	 * by differencing whole-chain totals, which mixes in four passes the
+	 * prototype never touches. */
+	cJSON_AddNumberToObject(o, "blur_up0_pixels", (double)d_up0_px);
 	/* AND WHAT IT WOULD HAVE HAD TO PROCESS. The pair is the per-level scissor
 	 * question stated as two numbers over the same frames; see
 	 * blur_required_work_pixels. processed/required is a PIXEL-WORK upper

@@ -495,6 +495,62 @@ static struct blur_req_break blur_req_break(void) {
 	return cached;
 }
 
+/*
+ * ── M4F.2D.2: THE UP0-ONLY SCISSOR PROTOTYPE ──────────────────────────────
+ *
+ * AZ_BLUR_UP0_SCISSOR=1 restricts the FINAL, full-resolution upsample to the
+ * region avk_blur_work_of() derived for it -- and nothing else in the chain
+ * changes. Default OFF: the baseline renders every pass whole, exactly as it
+ * always has, so OFF and ON are the same binary and differ in one scissor.
+ *
+ * WHY THIS PASS AND ONLY THIS PASS. Measured on this hardware at levels=3
+ * r=5: the up chain is 71% of blur GPU time and the final upsample alone is
+ * 58-60% of the whole chain -- it rasterises at the full capture extent while
+ * every other pass is a quarter of it or less. Its required region is also the
+ * one the falsifier proved TIGHT (shrink 1 px/edge -> 851 wrong pixels); the
+ * down-chain regions are conservative by at least 8 px/edge, so scissoring
+ * them would be acting on a bound that cannot be defended.
+ *
+ * WHAT IS NOT CHANGED: the target image, its extent, the UV basis, the filter
+ * grid, the level extents, the tap count, the pass topology, the barriers.
+ * Same image, same coordinates, fewer fragments.
+ *
+ * COORDINATE SPACE. work.up[0] is in CAPTURE-LOCAL pixels, because
+ * avk_blur_work_of() was handed the result region already translated by the
+ * capture origin and level 0 is the capture. The final upsample's destination
+ * IS the capture-sized transient, and vkCmdSetScissor takes that image's own
+ * pixels. The two are the same space, so there is no conversion -- which is
+ * the reason this pass was the cheap one to try.
+ */
+/*
+ * ON BY DEFAULT. AZ_BLUR_UP0_SCISSOR=0 restores the full-pass baseline.
+ *
+ * The final upsample renders only the region the composite will read, which
+ * M4F.2D.2 qualified: the derived region is sufficient (rendering exactly it
+ * is pixel-identical) and necessary (shrinking it by one pixel per edge breaks
+ * the frame), and every measured workload removed exactly the predicted number
+ * of fragments with the graph and resource topology unchanged.
+ *
+ * The env var stays as the falsifier's control -- an A/B needs both sides in
+ * one binary, and the diagnostic is worth more than the line it costs.
+ */
+static bool blur_up0_scissor_enabled(void) {
+	static int cached = -1;
+	if (cached < 0) {
+		const char *env = getenv("AZ_BLUR_UP0_SCISSOR");
+		cached = !(env != NULL && env[0] == '0');
+		if (!cached) {
+			avk_log(AVK_INFO, "avk blur: AZ_BLUR_UP0_SCISSOR=0 -- the final "
+				"upsample renders its whole level, as it did before M4F.2D.2");
+		}
+	}
+	return cached != 0;
+}
+
+bool blur_up0_scissor_on(void) {
+	return blur_up0_scissor_enabled();
+}
+
 /* The derived region for one pass, with the break's shrink applied. Returns
  * false when this pass is not the one being scissored. */
 static bool blur_req_scissor(const struct avk_blur_work *work, bool down,
@@ -599,6 +655,22 @@ bool avk_blur_declare(struct avk_graph *graph, struct avk_transient_pool *pool,
 
 	float radius = params->radius > 0.0f ? params->radius : 1.0f;
 
+	/*
+	 * A CALLER THAT DOES NOT WANT THE ACCOUNTING PASSES NULL.
+	 *
+	 * Every other use in this file guards with `if (stats)`, and two of them
+	 * -- the processed_pixels lines added in 61fb98e -- did not. The unit test
+	 * passes NULL because it is testing the filter, not the counters, so
+	 * avk_blur_declare segfaulted on the second call. A per-use guard is the
+	 * fragile pattern: it has to be remembered at every new counter, and it
+	 * was not. Pointing `stats` at a scratch removes the class instead.
+	 */
+	struct avk_blur_stats scratch;
+	if (stats == NULL) {
+		memset(&scratch, 0, sizeof(scratch));
+		stats = &scratch;
+	}
+
 	/* ── down ───────────────────────────────────────────────────────────── */
 	for (uint32_t i = 1; i <= levels; i++) {
 		uint32_t src_w = level_extent(width, i - 1);
@@ -680,9 +752,73 @@ bool avk_blur_declare(struct avk_graph *graph, struct avk_transient_pool *pool,
 		p->dst_w = dw;
 		p->dst_h = dh;
 		blur_uv(p, src_w, src_h, radius);
-		stats->processed_pixels += (uint64_t)dw * (uint64_t)dh;
-		blur_req_scissor(work, false, i - 1, &p->scissor_x, &p->scissor_y,
-			&p->scissor_w, &p->scissor_h);
+		/*
+		 * THE ONE OPTIMISATION UNDER EVALUATION. The falsifier's own switch
+		 * takes precedence when set, because it is the diagnostic that proved
+		 * this region and must be able to override the thing it validates.
+		 */
+		uint32_t rendered_w = dw, rendered_h = dh;
+		if (!blur_req_scissor(work, false, i - 1, &p->scissor_x, &p->scissor_y,
+					&p->scissor_w, &p->scissor_h)
+				&& last && work != NULL && blur_up0_scissor_enabled()
+				&& work->up[0].req_w > 0 && work->up[0].req_h > 0) {
+			p->scissor_x = (int32_t)work->up[0].req_x;
+			p->scissor_y = (int32_t)work->up[0].req_y;
+			p->scissor_w = work->up[0].req_w;
+			p->scissor_h = work->up[0].req_h;
+		}
+		if (p->scissor_w > 0 && p->scissor_h > 0) {
+			/* WHAT WILL ACTUALLY BE SHADED. Counting the full extent here
+			 * while a scissor removes most of it would make the accounting
+			 * describe a frame that did not happen. */
+			rendered_w = p->scissor_w;
+			rendered_h = p->scissor_h;
+			/*
+			 * THE COORDINATE MAPPING, SAID OUT LOUD ONCE.
+			 *
+			 * up0's derived region is CAPTURE-LOCAL and vkCmdSetScissor takes
+			 * TARGET-LOCAL pixels; for this pass the destination is the
+			 * capture-sized transient, so the two are the same space and the
+			 * numbers below must be identical. A fixture whose capture happens
+			 * to start at 0,0 cannot tell a correct mapping from one that
+			 * forgot to subtract the origin -- so the origin is printed with
+			 * them and a test asserts on a non-zero one.
+			 */
+			/*
+			 * BOUNDS, ASSERTED RATHER THAN CLAMPED. A required region outside
+			 * the target means the derivation or the coordinate conversion is
+			 * wrong, and silently clamping it would render a correct-looking
+			 * frame from a broken premise -- which is the failure mode this
+			 * whole milestone exists to stop.
+			 */
+			if (p->scissor_x < 0 || p->scissor_y < 0
+					|| (uint32_t)p->scissor_x + p->scissor_w > dw
+					|| (uint32_t)p->scissor_y + p->scissor_h > dh) {
+				avk_log(AVK_ERROR, "avk blur: up0 scissor %ux%u at %d,%d is "
+					"outside its %ux%u target -- DERIVATION OR CONVERSION IS "
+					"WRONG", p->scissor_w, p->scissor_h, p->scissor_x,
+					p->scissor_y, dw, dh);
+			}
+			static bool said;
+			if (!said && last) {
+				said = true;
+				avk_log(AVK_ERROR, "avk blur: up0 scissor: target %ux%u, "
+					"req %ux%u at %u,%u -> VkRect2D %dx%d at %d,%d",
+					dw, dh, work->up[0].req_w, work->up[0].req_h,
+					work->up[0].req_x, work->up[0].req_y,
+					p->scissor_w, p->scissor_h, p->scissor_x, p->scissor_y);
+			}
+		}
+		stats->processed_pixels += (uint64_t)rendered_w * (uint64_t)rendered_h;
+		if (last) {
+			/* The final full-resolution upsample, on its own. The scissor only
+			 * ever touches this pass, so this is the ONLY quantity that can be
+			 * compared against gpu_blur_up0 -- reporting the reduction as a
+			 * share of the whole chain would understate it by the amount of
+			 * work the prototype never claimed to remove. */
+			stats->up0_pixels +=
+				(uint64_t)rendered_w * (uint64_t)rendered_h;
+		}
 		p->effects = *params;
 		/* Only the LAST upsample folds the effects in. Applying them at every
 		 * level would compound brightness and contrast once per level, which
