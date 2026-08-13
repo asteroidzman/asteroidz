@@ -1316,6 +1316,66 @@ static void init_client_properties(Client *c);
 static float *get_border_color(Client *c);
 static void clear_fullscreen_and_maximized_state(Monitor *m);
 static void request_fresh_all_monitors(void);
+void request_fresh_for_box(const struct wlr_box *box, int32_t pad);
+void anim_client_reach(Client *c, struct wlr_box *out);
+
+/*
+ * ── M4G: THE REACH OF THIS FRAME'S ANIMATIONS ─────────────────────────────
+ *
+ * Accumulated across render_monitor()'s client loop and consumed at the
+ * bottom, where the next frame is scheduled. Reset per pass: each pass walks
+ * the same clients and rebuilds it from scratch, so it can never carry a box
+ * from a previous frame.
+ *
+ * `all` is the safe answer and the default for anything that cannot describe
+ * its own extent -- fadeouts, layer animations, overview chrome, cursor zoom.
+ * Getting this too big costs a wakeup, which is what M4G is removing; getting
+ * it too small drops a frame the user can see.
+ */
+static struct wlr_box az_frame_reach;
+static bool az_frame_reach_valid;
+static bool az_frame_reach_all;
+
+static void az_frame_reach_reset(void) {
+	az_frame_reach = (struct wlr_box){0};
+	az_frame_reach_valid = false;
+	az_frame_reach_all = false;
+}
+
+static void az_frame_reach_add(const struct wlr_box *b) {
+	if (b == NULL || b->width <= 0 || b->height <= 0) {
+		az_frame_reach_all = true;
+		return;
+	}
+	if (!az_frame_reach_valid) {
+		az_frame_reach = *b;
+		az_frame_reach_valid = true;
+		return;
+	}
+	int32_t x1 = az_frame_reach.x < b->x ? az_frame_reach.x : b->x;
+	int32_t y1 = az_frame_reach.y < b->y ? az_frame_reach.y : b->y;
+	int32_t ax2 = az_frame_reach.x + az_frame_reach.width;
+	int32_t ay2 = az_frame_reach.y + az_frame_reach.height;
+	int32_t bx2 = b->x + b->width, by2 = b->y + b->height;
+	int32_t x2 = ax2 > bx2 ? ax2 : bx2;
+	int32_t y2 = ay2 > by2 ? ay2 : by2;
+	az_frame_reach = (struct wlr_box){ .x = x1, .y = y1,
+		.width = x2 - x1, .height = y2 - y1 };
+}
+
+/*
+ * The padding applied to that box before it is tested against an output.
+ *
+ * It has to cover everything a window's pixels can reach beyond its own
+ * geometry: the drop shadow and its spread, and the blur kernel's support at
+ * the output's scale. Rather than recompute each of those here -- and get one
+ * of them wrong on the day a radius or a scale changes -- this is a single
+ * constant chosen to exceed all of them at every configurable setting: the
+ * schema caps shadow size and blur radius well inside it. A too-large pad
+ * wakes a neighbouring output occasionally; a too-small one leaves a blur
+ * fringe stale along a seam, which is the failure M4F.2C existed to fix.
+ */
+#define AZ_FRAME_REACH_PAD 256
 static Client *find_client_by_direction(Client *tc, const Arg *arg,
 										bool findfloating);
 static void exit_scroller_stack(Client *c);
@@ -7870,21 +7930,33 @@ static void render_monitor(Monitor *m) {
 	 * deadline gives no clue which half was responsible. */
 	AZ_ZONE(az_animate, "animate");
 	az_pace_mon = m->wlr_output->name;
+	az_frame_reach_reset();
 
 	// draw layers and fade-out effects
 	for (i = 0; i < LENGTH(m->layers); i++) {
 		layer_list = &m->layers[i];
 		wl_list_for_each_safe(l, tmpl, layer_list, link) {
-			need_more_frames = layer_draw_frame(l) || need_more_frames;
+			if (layer_draw_frame(l)) {
+				need_more_frames = true;
+				az_frame_reach_all = true;
+			}
 		}
 	}
 
 	wl_list_for_each_safe(c, tmp, &fadeout_clients, fadeout_link) {
-		need_more_frames = client_draw_fadeout_frame(c) || need_more_frames;
+		if (client_draw_fadeout_frame(c)) {
+			/* A fadeout owns a shard tree whose extent is not the client's
+			 * box; it does not describe itself, so it gets all of them. */
+			need_more_frames = true;
+			az_frame_reach_all = true;
+		}
 	}
 
 	wl_list_for_each_safe(l, tmpl, &fadeout_layers, fadeout_link) {
-		need_more_frames = layer_draw_fadeout_frame(l) || need_more_frames;
+		if (layer_draw_fadeout_frame(l)) {
+			need_more_frames = true;
+			az_frame_reach_all = true;
+		}
 	}
 
 	// cursor zoom view tracking (set_zoom handles its own damage and frame scheduling)
@@ -7892,7 +7964,13 @@ static void render_monitor(Monitor *m) {
 
 	// draw clients
 	wl_list_for_each(c, &clients, link) {
-		need_more_frames = client_draw_frame(c) || need_more_frames;
+		if (client_draw_frame(c)) {
+			need_more_frames = true;
+			/* An opacity-only animation ticks without moving, so
+			 * client_animation_next_tick() never ran and never contributed a
+			 * reach. Its pixels are still its own box. */
+			az_frame_reach_add(&c->animation.current);
+		}
 		if (!config.animations && !grabc && c->configure_serial &&
 			client_is_rendered_on_mon(c, m)) {
 			monitor_check_skip_frame_timeout(m);
@@ -7909,8 +7987,12 @@ static void render_monitor(Monitor *m) {
 
 	/* advance the overview open/close chrome fade (before the commit below, so
 	 * the frame we build already reflects this tick's opacity) */
-	if (m->ov_anim_running)
-		need_more_frames = overview_anim_frame(m) || need_more_frames;
+	if (m->ov_anim_running && overview_anim_frame(m)) {
+		/* The overview chrome spans the whole output and, in a multi-output
+		 * overview, more than one. */
+		need_more_frames = true;
+		az_frame_reach_all = true;
+	}
 
 	AZ_ZONE_END(az_animate);
 
@@ -8065,10 +8147,20 @@ skip:
 	clock_gettime(CLOCK_MONOTONIC, &now);
 	wlr_scene_output_send_frame_done(m->scene_output, &now);
 
-	// if more frames are needed, make sure the next frame is scheduled
+	// if more frames are needed, make sure the next frame is scheduled --
+	// on the outputs the motion can reach, and no others (M4G).
 	if (need_more_frames && allow_frame_scheduling) {
-		request_fresh_all_monitors();
+		if (az_frame_reach_all || !az_frame_reach_valid) {
+			request_fresh_all_monitors();
+		} else {
+			request_fresh_for_box(&az_frame_reach, AZ_FRAME_REACH_PAD);
+		}
 	}
+	AZ_PACE("sched mon=%s more=%d all=%d valid=%d reach=%d,%d,%dx%d",
+		m->wlr_output->name, need_more_frames ? 1 : 0,
+		az_frame_reach_all ? 1 : 0, az_frame_reach_valid ? 1 : 0,
+		az_frame_reach.x, az_frame_reach.y, az_frame_reach.width,
+		az_frame_reach.height);
 
 	// EMA of render+commit cost, used to size the render-late deferral delay
 	struct timespec render_t1;

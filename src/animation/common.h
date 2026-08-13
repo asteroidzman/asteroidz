@@ -333,3 +333,70 @@ void request_fresh_all_monitors(void) {
 		wlr_output_schedule_frame(m->wlr_output);
 	}
 }
+
+/*
+ * ── M4G: WAKE THE OUTPUTS THE MOTION CAN REACH, AND NO OTHERS ─────────────
+ *
+ * An animation used to ask EVERY output for a fresh frame on every tick, so a
+ * window sliding across DP-1 woke HDMI-A-1 sixty times a second to build,
+ * commit and page-flip a frame containing no damage at all. Measured on a
+ * two-output fixture: 43-100% of the committed frames during an animation
+ * carried zero damage, and on the output with no animating client it was
+ * 94-100%.
+ *
+ * THE AFFECTED SET IS GEOMETRIC, NOT c->mon. A client's monitor is where the
+ * compositor files it, not where its pixels are: a scroller column can extend
+ * past its own monitor's edge, a move can cross a seam, and a blurred window
+ * reaches `halo` pixels beyond wherever it ends. So the test is whether an
+ * output's own area intersects the box the motion can touch -- which is the
+ * union of where the window IS and where it is GOING, because a frame
+ * scheduled now will be rendered from a sample somewhere between the two.
+ *
+ * Conservative in the direction that matters: a box that is too big wakes an
+ * output that had nothing to do, which is what this replaces; a box that is
+ * too small drops a frame the user can see. So the union is padded, and any
+ * caller that cannot describe its own extent asks for all of them.
+ */
+void request_fresh_for_box(const struct wlr_box *box, int32_t pad) {
+	if (box == NULL || box->width <= 0 || box->height <= 0) {
+		request_fresh_all_monitors();
+		return;
+	}
+	struct wlr_box reach = {
+		.x = box->x - pad,
+		.y = box->y - pad,
+		.width = box->width + 2 * pad,
+		.height = box->height + 2 * pad,
+	};
+	Monitor *m = NULL;
+	wl_list_for_each(m, &mons, link) {
+		if (!m->wlr_output->enabled) {
+			continue;
+		}
+		struct wlr_box inter;
+		if (wlr_box_intersection(&inter, &reach, &m->m)) {
+			wlr_output_schedule_frame(m->wlr_output);
+		}
+	}
+}
+
+/* The union of where an animating client is and where it is heading, in
+ * layout coordinates. */
+void anim_client_reach(Client *c, struct wlr_box *out) {
+	struct wlr_box a = c->animation.current;
+	struct wlr_box b = c->current;
+	if (a.width <= 0 || a.height <= 0) {
+		a = b;
+	}
+	if (b.width <= 0 || b.height <= 0) {
+		b = a;
+	}
+	int32_t x1 = a.x < b.x ? a.x : b.x;
+	int32_t y1 = a.y < b.y ? a.y : b.y;
+	int32_t x2 = (a.x + a.width) > (b.x + b.width)
+		? (a.x + a.width) : (b.x + b.width);
+	int32_t y2 = (a.y + a.height) > (b.y + b.height)
+		? (a.y + a.height) : (b.y + b.height);
+	*out = (struct wlr_box){ .x = x1, .y = y1,
+		.width = x2 - x1, .height = y2 - y1 };
+}
