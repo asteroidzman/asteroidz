@@ -27,6 +27,10 @@ layout(location = 0) out vec4 out_color;
 void main() {
 	vec4 c = texture(tex, v_uv);
 	c.a = mix(1.0, c.a, pc.params.y);
+	/* M5/C2: the source's luminance scale. RGB only -- see AZ_TEX_LUM_SCALE.
+	 * Every source resolves to 1.0 until C7's decode variants land, so this is
+	 * an identity today and the M5 SDR gate asserts that it stays one. */
+	c.rgb *= AZ_TEX_LUM_SCALE;
 	/* Coverage multiplies the whole premultiplied vec4, exactly as opacity
 	 * does. Scaling only .a would leave the colour too bright and show as a
 	 * light fringe along every rounded edge. */

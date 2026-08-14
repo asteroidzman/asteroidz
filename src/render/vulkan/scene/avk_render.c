@@ -1460,6 +1460,15 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 			/* 1.0 keeps the sampled alpha, 0.0 forces opaque -- the DRM X
 			 * formats have a fourth channel that means nothing. */
 			pc.params[1] = cmd->image->has_alpha ? 1.0f : 0.0f;
+			/*
+			 * M5/C2. The source's luminance scale (AZ_TEX_LUM_SCALE).
+			 *
+			 * Stored as scale MINUS ONE so that a zeroed push block -- which
+			 * is what every other draw that reaches texture.frag has -- is the
+			 * identity. See AZ_TEX_LUM_SCALE for the four call sites that
+			 * proved the obvious encoding wrong.
+			 */
+			pc.color[0] = cmd->lum.scale - 1.0f;
 
 			VkDescriptorSet set = avk_pipelines_texture_set(&renderer->pipes,
 				cmd->image, cmd->filter_linear);
