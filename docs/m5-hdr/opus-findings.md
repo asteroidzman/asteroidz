@@ -320,3 +320,84 @@ result: the two `AVK_INFO` lines appear at the default log level, so a single
 ordinary start prints them; the per-modifier `srgb_attach=` breakdown needs
 `ASTEROIDZ_VK_DEBUG=1` (already set in the live GDM line). C5 changes no
 behaviour by construction.
+
+---
+
+## F10 — C6: the shader landed, the pipeline object did not
+
+`output_encode.frag` and `output_encode.vert` exist, compile to SPIR-V in the
+ordinary build, and pass `spirv-val`. The **pipeline object**
+(`avk_output_encode.{c,h}`) is DEFERRED.
+
+**Why the split.** The shader is the part with the decisions in it — ADR-008's
+step order, where the luminance anchor sits relative to the matrix, which
+transfer function is a specialisation constant rather than a branch — and the
+build type-checks it. The pipeline object is descriptor layouts and
+`VkGraphicsPipelineCreateInfo` filling: mechanical, untestable without a device
+this phase was told not to create, and its only caller (`avk_render.c`) is
+performance-owned and deferred regardless. Writing several hundred lines of
+pipeline construction that nobody can execute, against a call site that does
+not exist yet, is how an integration lands with three bugs in it at once.
+
+**What the shader commits to**, so the pipeline object has no decisions left:
+
+- **Its own vertex stage and its own push-constant block.** `push.glsl` is
+  exactly 128 bytes — the guaranteed minimum `maxPushConstantsSize` — and is
+  already dual-purpose across four pipelines; a 3×3 matrix plus four scalars
+  does not fit, and overlaying them onto fields that mean something else in a
+  texture command is how an overlay table stops being maintainable. This pass
+  shares nothing with the commands before it, so it takes a separate 64-byte
+  block: three matrix rows with a scalar in each `w`, plus one `vec4` of dither
+  quantum and target origin.
+- **A fullscreen triangle**, not a quad: a quad's diagonal seam is rasterised
+  by both primitives, which is a real cost on a pass covering every damaged
+  pixel of a 4K output. No vertex buffers; `vkCmdDraw(cb, 3, 1, 0, 0)`.
+- **Damage is a scissor, not geometry**, and the attachment is LOADed — exactly
+  the existing blur-pass pattern.
+- **`AZ_ENCODE_TF` is `layout(constant_id = 0)`**, so each output's pipeline has
+  the other curve compiled out. "The PQ code is not present in an SDR
+  pipeline" is a stronger statement than "the branch is not taken".
+- Matrix rows are taken as three `vec3`s, never a `mat3`: GLSL's `mat3`
+  constructor is column-major, and nine row-major floats read as a `mat3` are
+  transposed — which still renders a plausible picture.
+
+**Cost, measured without a GPU** (`spirv-dis` on the unoptimised module, both
+encode branches present before specialisation):
+
+| metric | value |
+|---|---|
+| arithmetic + ExtInst ops | 59 |
+| `Pow` | 3 (2 for PQ, 1 for sRGB — one branch is folded out per pipeline) |
+| `Fract` | 2 (the dither) |
+| `FClamp` / `FMax` / `Step` / `FMix` | 4 / 6 / 2 / 1 |
+| SPIR-V module | 6212 bytes frag, 1160 bytes vert |
+| `spirv-val` | clean, both stages |
+
+C6's budget is ≈40 ALU/px (matrix 9 MAD + tonemap 8 + PQ pow×2 + dither 4).
+The 59 unoptimised ops cover both encode branches and every clamp glslang
+emits without folding; the shape is right and the real number needs a driver.
+
+**One thing the compile caught that review would not have**: `active` is a
+reserved word in GLSL, and `az_tonemap`'s branchless selector was using it. The
+CPU twin compiled fine. This is the argument for wiring a shader into the build
+the day it is written rather than the day it is called.
+
+**Also landed with C6**: gate 7 now **scans** the shader directory instead of
+checking a hardcoded list, and asserts that exactly two files are exempt
+(`output_encode.frag`, which calls the PQ encode, and `color.glsl`, which
+defines it). A hardcoded list is a gate that stops covering the next shader
+somebody adds — and adding a shader is exactly when a PQ encode appears
+somewhere it should not. The gate also asserts that `output_encode.frag` *does*
+call `az_pq_ieotf`, so it cannot pass by scanning nothing.
+
+---
+
+## C7 — not started
+
+Not attempted this phase. It is the highest-conflict contract (MEDIUM in the
+manifest: `avk_pipeline.{c,h}`, `avk_image.h`, `texture.frag`, all interlocking
+with per-draw variant selection in the performance-owned `avk_render.c`), its
+variants cannot be exercised without a device, and C1–C6's isolated work is
+what the rest of M5 is built on. The decode ordering it must implement is
+already pinned by the CPU reference and by gate 2, so when it is written there
+is an oracle waiting for it.

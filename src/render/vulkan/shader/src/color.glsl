@@ -151,8 +151,8 @@ vec3 az_tonemap(vec3 v, float knee, float peak) {
 	/* step(a, b) is b >= a. peak > 1 AND m > knee, spelled as the complement
 	 * of each <= so the boundary cases land on "identity", which is the side
 	 * the ADR specifies. */
-	float active = (1.0 - step(peak, 1.0)) * (1.0 - step(m, knee));
-	return v * mix(1.0, f / max(m, 1e-6), active);
+	float engaged = (1.0 - step(peak, 1.0)) * (1.0 - step(m, knee));
+	return v * mix(1.0, f / max(m, 1e-6), engaged);
 }
 
 /* ── gamut (ADR-010) ────────────────────────────────────────────────────── */

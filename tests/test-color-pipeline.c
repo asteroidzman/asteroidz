@@ -24,6 +24,7 @@
 
 #define _POSIX_C_SOURCE 200809L
 
+#include <dirent.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -664,33 +665,80 @@ static char *slurp(const char *path) {
 	return buf;
 }
 
-static const char *SHADERS[] = {"blur_down.frag", "blur_up.frag",
-	"blur_soft.frag", "gradient.frag", "quad.frag", "shadow.frag",
-	"texture.frag", "blur.glsl", "dither.glsl", "gradient.glsl",
-	"push.glsl", "rounded.glsl", "shadow.glsl"};
+/*
+ * The permitted files, and ONLY these two:
+ *   output_encode.frag  the output pass itself (ADR-008)
+ *   color.glsl          which DEFINES az_pq_ieotf; defining is not calling,
+ *                       and every shader that includes it is checked for a
+ *                       call rather than for the include
+ */
+static bool pq_exempt(const char *name) {
+	return strcmp(name, "output_encode.frag") == 0 ||
+		strcmp(name, "color.glsl") == 0;
+}
 
+/*
+ * The directory is SCANNED, not listed. A hardcoded list is a gate that stops
+ * covering the next shader somebody adds, which is precisely the shape of a
+ * test that quietly stops testing -- and the file being added is exactly when
+ * a PQ encode would appear in the wrong place.
+ */
 static void gate7_pq_never_internal(const char *root) {
 	printf("gate 7: PQ appears in no shader but the output pass\n");
-	int offenders = 0, seen = 0;
-	for (size_t i = 0; i < sizeof(SHADERS) / sizeof(SHADERS[0]); i++) {
-		char path[1024];
-		snprintf(path, sizeof(path),
-			"%s/src/render/vulkan/shader/src/%s", root, SHADERS[i]);
+	char dirpath[1024];
+	snprintf(dirpath, sizeof(dirpath), "%s/src/render/vulkan/shader/src",
+		root);
+	DIR *d = opendir(dirpath);
+	if (d == NULL) {
+		CHECK(0, "  cannot open %s", dirpath);
+		return;
+	}
+	int offenders = 0, seen = 0, exempt = 0;
+	struct dirent *ent;
+	while ((ent = readdir(d)) != NULL) {
+		const char *dot = strrchr(ent->d_name, '.');
+		if (dot == NULL || (strcmp(dot, ".frag") != 0 &&
+							   strcmp(dot, ".vert") != 0 &&
+							   strcmp(dot, ".glsl") != 0)) {
+			continue;
+		}
+		if (pq_exempt(ent->d_name)) {
+			exempt++;
+			continue;
+		}
+		char path[2048];
+		snprintf(path, sizeof(path), "%s/%s", dirpath, ent->d_name);
 		char *s = slurp(path);
 		if (s == NULL) {
 			continue;
 		}
 		seen++;
+		/* The call, and the constant. A shader that open-codes ST 2084's m2
+		 * rather than calling the shared function is the same violation with
+		 * the grep filed off. */
 		if (strstr(s, "az_pq_ieotf") != NULL || strstr(s, "78.84375") != NULL) {
-			printf("    %s contains a PQ encode\n", SHADERS[i]);
+			printf("    %s contains a PQ encode\n", ent->d_name);
 			offenders++;
 		}
 		free(s);
 	}
-	CHECK(seen >= 10, "  premise: found %d shader sources to scan", seen);
+	closedir(d);
+	CHECK(seen >= 10, "  premise: scanned %d shader sources (%d exempt)", seen,
+		exempt);
+	CHECK(exempt == 2,
+		"  premise: exactly the two permitted files exist (%d)", exempt);
 	CHECK(offenders == 0,
 		"no PQ inverse EOTF outside the output pass (%d offenders)",
 		offenders);
+
+	/* And the premise that the gate can fail at all: the exempt file really
+	 * does contain what everything else is forbidden. */
+	char enc[2048];
+	snprintf(enc, sizeof(enc), "%s/output_encode.frag", dirpath);
+	char *e = slurp(enc);
+	CHECK(e != NULL && strstr(e, "az_pq_ieotf") != NULL,
+		"  premise: output_encode.frag DOES call az_pq_ieotf");
+	free(e);
 }
 
 /* ── the breaks ─────────────────────────────────────────────────────────── */
