@@ -3020,3 +3020,48 @@ correct primaries"), and it is what was measured to within one code.
 preferred image description per surface, derived from the output the surface is
 on. That is a wlroots/scenefx protocol feature, not a renderer one, and nothing
 in M5's contracts covers it. C7's decode is ready for the day it exists.
+
+## 5.22 The whole chain, on a real HDR display, with a real HDR client
+
+Every earlier HDR result was SDR content on an HDR output, because no client
+could send anything else (§5.21). With the capability list coming from AVK
+instead of the wlroots renderer, mpv hands over a genuine PQ/BT.2020 surface and
+`m5_decode_pq` moves for the first time.
+
+Source: an HDR10 clip generated for the purpose — yuv420p10le, smpte2084,
+bt2020nc, max-cll 400 — with neutral patches at known nits and BT.2020 primary
+patches at 200 nits. Captured with `screenshot_ui,rawhdr` off the scan-out
+buffer and compared against C4's CPU reference driven with DP-1's own state
+(ref 280, peak_scene 1.429, saturation 1.25).
+
+| patch | reference | measured |
+|---|---|---|
+| 50 nit | 450 | 451 451 452 |
+| 100 nit | 520 | 521 521 522 |
+| 200 nit | 592 | 593 594 594 |
+| 280 nit | 629 | 629 629 630 |
+| **400 nit** | **650** | **650 650 650** |
+| BT.2020 red | 605 0 0 | 606 0 0 |
+| BT.2020 green | 0 601 0 | 0 602 0 |
+| BT.2020 blue | 0 0 615 | **0 0 615** |
+
+**Worst 2 codes across all eight.** The 1-2 code offsets on the neutrals are the
+clip's own 4:2:0 limited-range YUV quantisation, not the renderer — the pure
+BT.2020 blue patch, which the chroma subsampling leaves alone, is exact.
+
+Two rows are doing specific work and are worth naming:
+
+- **400 nit went in at code 668 and came out at 650.** That is the tone map
+  engaging on a value above the knee and compressing it onto the panel's
+  ceiling, rather than clipping. A build without ADR-009's curve would have
+  returned 668 or 1023, not 650.
+- **The saturated BT.2020 patches** cross C7's 2020→709 source conversion and
+  C6's 709→2020 output conversion in series. If either were missing, transposed,
+  or applied in the wrong space, they would be nowhere near — and the neutral
+  patches could not tell, because every row of those matrices sums to 1.
+
+What that measurement covers, in order: HDR10 file → mpv → PQ decode (C7) →
+source gamut conversion (C7) → premultiplied linear FP16 composite (ADR-005) →
+tone map on the composited value (ADR-009) → saturation → 709→2020 (ADR-010) →
+luminance anchor → PQ encode (C6/ADR-008) → 10-bit scan-out. Against a reference
+implementation written from the ADRs rather than from the shaders.
