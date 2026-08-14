@@ -222,16 +222,54 @@ if [ "$FILTER" = live ]; then
 	exit 2
 fi
 
+# ── /tmp IS A 24GB tmpfs AND THE SUITES FILL IT ──────────────────────────
+#
+# Every fixture writes captures to /tmp/asteroidz-<name>-<pid>/ and nothing ever
+# removed them. A 4K PPM is 24MB and a rawhdr frame is 33MB, so a full required
+# run exhausts the tmpfs partway through -- and what that looks like is NOT a
+# disk error. Screenshots come back zero bytes so PIL reports "cannot identify
+# image file", premises fail for no visible reason, and eventually every command
+# that writes anything exits 1. The run that hit this reported four failures in
+# avk-cursor-scale that were nothing but an unwritable /tmp.
+#
+# So each suite's output is reclaimed WHEN IT PASSES. A failure keeps its
+# directory, because that is the evidence -- which is also why this cannot just
+# rm the lot at the end.
+free_mb() { df -Pm /tmp | awk 'NR==2 {print $4}'; }
+
+SPACE_START="$(free_mb)"
+if [ "$SPACE_START" -lt 4096 ]; then
+	echo "  /tmp has only ${SPACE_START}MB free; a full run needs several GB." >&2
+	echo "  Clear /tmp/asteroidz-* first." >&2
+	exit 1
+fi
+echo "  /tmp: ${SPACE_START}MB free"
+
 echo
 PASS=0; FAILED=""
 for n in $(reg_names); do
 	[ "$(reg_disp "$n")" = "$FILTER" ] || continue
 	echo "── $n ──"
+	before="$(ls -d /tmp/asteroidz-* 2>/dev/null | sort)"
 	if ./"$n"; then
 		PASS=$(( PASS + 1 ))
+		# Reclaim only what THIS suite created, and only because it passed.
+		after="$(ls -d /tmp/asteroidz-* 2>/dev/null | sort)"
+		comm -13 <(printf '%s\n' "$before") <(printf '%s\n' "$after") \
+			| while read -r d; do
+				[ -n "$d" ] && rm -rf -- "$d"
+			done
 	else
 		FAILED="$FAILED $n"
+		echo "  (output kept in /tmp for diagnosis)"
 	fi
+	# A suite that leaves a compositor behind starves every one after it, and
+	# the symptom is the NEXT suite failing. Reported rather than killed: this
+	# runner does not own those processes and a pattern kill here would be one
+	# typo away from the user's own session.
+	stray="$(pgrep -c -f 'build/asteroidz -c /tmp/asteroidz-' 2>/dev/null || echo 0)"
+	[ "${stray:-0}" -gt 0 ] && echo "  WARNING: $stray headless compositor(s) still running"
+	echo "  /tmp: $(free_mb)MB free"
 	echo
 done
 echo "══ $PASS passed ══"
