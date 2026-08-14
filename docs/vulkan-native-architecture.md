@@ -2484,6 +2484,27 @@ layer is not loaded, so the counter reads 0 no matter what the frame did — and
 that could not move. It is not alone: of the fixtures asserting
 `validation_errors`, most never set the variable.
 
+**And the live session does not set it either — CORRECTION.** An earlier draft
+of this section said the live desktop had validation on and that its 0-VUID
+columns were therefore real. That is true of `asteroidz-avk-debug.desktop` and
+false of `asteroidz-avk.desktop`, which is the session actually running:
+
+```
+asteroidz-avk.desktop        env WLR_RENDERER=gles2 ASTEROIDZ_RENDERER=avk asteroidz
+asteroidz-avk-debug.desktop  env WLR_RENDERER=gles2 ASTEROIDZ_RENDERER=avk ASTEROIDZ_VK_DEBUG=1 asteroidz
+```
+
+Verified after the restart: `GDMSESSION=asteroidz-avk`, no `ASTEROIDZ_VK_DEBUG`
+in `/proc/<pid>/environ`, `validation_enabled=false`. **So the P3 live matrix's
+"0 VUID" columns were as vacuous as the headless ones** — nothing was watching
+there either, and Path A's twenty-a-run VUID went unseen on the real desktop as
+well. The live CPU figures from that matrix are, by the same token, *not*
+inflated by validation, which is the one thing the mistake was working in favour
+of.
+
+The fix is the same in both places and it is why `validation_enabled` exists:
+read it, never assume it.
+
 So the premise is a field now. `avk-stats` reports **`validation_enabled`**, and
 a fixture that asserts the count asserts that first. Both M5 fixtures now run
 both arms under the layer:
