@@ -56,10 +56,11 @@ bool avk_output_encode_init(struct avk_output_encode *enc,
 	/*
 	 * ── SET 1 IS THE MEASURED CURVE, AND IT IS THE SAME LAYOUT AS SET 0 ───
 	 *
-	 * Declared for every variant, sampled by one: the specialisation constant
-	 * eliminates the branch in the analytic variants, so the descriptor is not
-	 * statically used there and needs no binding. Declaring it uniformly keeps
-	 * ONE pipeline layout rather than two that must be kept in step.
+	 * Declared for every variant and sampled by one, and every variant BINDS it
+	 * -- see the record function for why "the spec constant eliminates the
+	 * sample, so it needs no binding" is wrong and what validation said about it.
+	 * Declaring it uniformly keeps ONE pipeline layout rather than two that must
+	 * be kept in step.
 	 *
 	 * The renderer's texture set layout again, rather than a layout this pass
 	 * declares -- one binding of a combined image sampler is exactly what a LUT
@@ -350,8 +351,30 @@ void avk_output_encode_record(VkCommandBuffer cb, void *user) {
 	 * set ON the image, where it is written exactly once, and this is one more
 	 * sampled image.
 	 */
+	/*
+	 * SET 1 IS BOUND FOR EVERY VARIANT, INCLUDING THE ONES THAT NEVER SAMPLE IT.
+	 *
+	 * The first version bound it only for LUT1D, on the reasoning that the
+	 * specialisation constant eliminates the sample in the analytic variants so
+	 * the descriptor is not statically used there. THAT REASONING IS WRONG, and
+	 * validation says so directly:
+	 *
+	 *   VUID-vkCmdDraw-None-08600: the VkPipeline [output_encode srgb]
+	 *   statically uses descriptor set 1, but ... not compatible with the
+	 *   VkPipelineLayout bound with vkCmdBindDescriptorSets
+	 *
+	 * "Statically uses" is a property of the SPIR-V, not of what the driver
+	 * folds away: the module declares the sampler and references it inside a
+	 * branch, and that is a static use whether or not the branch survives
+	 * specialisation. So every Path-B frame -- every HDR frame on DP-1 included,
+	 * with no profile anywhere in sight -- was drawing with set 1 unbound.
+	 *
+	 * The fixture was green throughout. It rendered correct pixels because the
+	 * driver does eliminate the branch; the pass was illegal regardless.
+	 */
+	VkDescriptorSet lut_set = set;
 	if (p->params.tf == AVK_ENCODE_TF_LUT1D) {
-		VkDescriptorSet lut_set = p->params.lut != NULL
+		lut_set = p->params.lut != NULL
 			? avk_pipelines_texture_set(p->pipes, p->params.lut, true)
 			: VK_NULL_HANDLE;
 		if (lut_set == VK_NULL_HANDLE) {
@@ -362,9 +385,14 @@ void avk_output_encode_record(VkCommandBuffer cb, void *user) {
 			vkCmdEndRendering(cb);
 			return;
 		}
-		vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
-			p->enc->layout, 1, 1, &lut_set, 0, NULL);
 	}
+	/* For the analytic variants this is set 0's own set again -- layout
+	 * compatible, never sampled, and one vkCmdBindDescriptorSets per pass. A
+	 * second pipeline layout would avoid the bind and would have to be kept in
+	 * step with this one for the life of the pass; the bind is cheaper in both
+	 * senses. */
+	vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
+		p->enc->layout, 1, 1, &lut_set, 0, NULL);
 
 	struct avk_encode_push pc = {0};
 	for (int r = 0; r < 3; r++) {

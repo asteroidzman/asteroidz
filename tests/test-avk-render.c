@@ -2488,6 +2488,20 @@ static void test_opacity(struct harness *h) {
 int main(void) {
 	printf("== avk composition (M3) ==\n");
 
+	/*
+	 * ── VALIDATION ON, ALWAYS, AND ASSERTED AT THE END ────────────────────
+	 *
+	 * Not an option the runner may forget to pass. This binary renders through
+	 * every pipeline the compositor has, and a pass can produce exactly the
+	 * right pixels while being illegal -- which is not a hypothetical: the
+	 * output-encode pass drew with descriptor set 1 unbound on EVERY Path-B
+	 * frame, HDR included, and 100 green checks said nothing. The driver
+	 * eliminated the branch that would have read it; the spec does not care.
+	 *
+	 * Set before the instance is created, because that is when it is read.
+	 */
+	setenv("ASTEROIDZ_VK_DEBUG", "1", 1);
+
 	int drm_fd = -1;
 	for (int i = 128; i < 192 && drm_fd < 0; i++) {
 		char path[32];
@@ -2541,6 +2555,23 @@ int main(void) {
 	test_rounded_with_transform(&h);
 	test_clip(&h);
 	test_opacity(&h);
+
+	/*
+	 * ── THE VALIDATION VERDICT ────────────────────────────────────────────
+	 *
+	 * THE PREMISE FIRST (F14): a zero here means nothing unless the layer was
+	 * actually loaded. Without it this assertion is vacuous and would pass on
+	 * any machine, forever, which is worse than not having it.
+	 */
+	printf("validation\n");
+	CHECK(h.inst->validation_enabled,
+		"PREMISE: the validation layer is loaded (without it the count below "
+		"is vacuous -- install vulkan-validation-layers)");
+	if (h.inst->validation_enabled) {
+		CHECK(avk_validation_errors() == 0,
+			"no validation errors across every pipeline this file renders "
+			"(%" PRIu64 ")", avk_validation_errors());
+	}
 
 	/* The claim the whole architecture rests on, stated as a number. */
 	printf("instrumentation\n");
