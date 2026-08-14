@@ -20,6 +20,17 @@
  * here -- with the command buffer in the recording state and nothing submitted,
  * so no GPU behaviour can contaminate the number.
  *
+ * IT PRODUCES VALIDATION ERRORS BY DESIGN, and they are not a renderer defect.
+ * Under ASTEROIDZ_VK_DEBUG this reports VUID-VkImageMemoryBarrier2-oldLayout-01197
+ * and -newLayout-01198, twenty of each: the loop records the same barrier
+ * repeatedly with the layouts alternating and NEVER SUBMITS, so the layout the
+ * validator tracks and the layout each recording claims cannot agree after the
+ * first iteration. Submitting between iterations would put GPU behaviour into a
+ * measurement of CPU recording cost, which is the one thing this file exists to
+ * keep out. Recorded here because a validation sweep across the avk tests finds
+ * these, and they are the only ones it finds -- every other GPU fixture is at
+ * zero.
+ *
  * Exits 77 (skip) with no GPU or no render node.
  */
 
