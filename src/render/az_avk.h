@@ -349,12 +349,37 @@ static struct az_avk avk = {0};
  * scene-linear values into a PQ buffer.
  */
 static bool az_avk_encode_pass_enabled(bool *forced_out) {
+	/*
+	 * ── ON BY DEFAULT, WHEREVER C3 CHOSE IT ───────────────────────────────
+	 *
+	 * Path B is not an experiment to opt into: an HDR or 10-bit output CANNOT
+	 * be driven without it. Vulkan has no sRGB variant of a 10-bit or
+	 * half-float format, so Path A's attachment trick cannot exist there
+	 * (F11), and the M5.6 interlock therefore REFUSES such an output when the
+	 * pass is off -- handing it to SceneFX rather than writing scene-linear
+	 * values into a PQ buffer. Leaving this opt-in meant HDR silently fell
+	 * back on a compositor that can now drive it correctly.
+	 *
+	 * It changes nothing for an ordinary 8-bit SDR output: C3 puts those on
+	 * Path A, which is separately gated and still off, so this only reaches
+	 * the outputs that have no alternative.
+	 *
+	 *   unset     enabled where C3 chose Path B (HDR, 10-bit)
+	 *   =0        disabled -- the bisect handle, and what restores the
+	 *             pre-M5 fallback behaviour exactly
+	 *   =force    additionally put a Path-A output on it. THE TEST INSTRUMENT
+	 *             and not a setting: Path A is strictly cheaper where it is
+	 *             available.
+	 */
 	const char *v = getenv("AZ_M5_PATH_B");
 	const bool forced = v != NULL && strcmp(v, "force") == 0;
 	if (forced_out != NULL) {
 		*forced_out = forced;
 	}
-	return forced || (v != NULL && v[0] == '1');
+	if (forced) {
+		return true;
+	}
+	return v == NULL || v[0] != '0';
 }
 
 static bool az_avk_env_flag(const char *name) {
