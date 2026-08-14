@@ -41,7 +41,19 @@
 # in about 80us and the fixture completed 66 frames, so ~5ms of CPU is the
 # expected total. The work is on the GPU, which is where CPU time cannot look.
 #
-# So the floor is NOT ESTABLISHED, and the honest statement of why is:
+# ── ACCEPTED AS UNVERIFIED (user decision, 2026-08-14) ───────────────────
+#
+# The floor is NOT ESTABLISHED and will not be pursued. Establishing it needs
+# the SceneFX path instrumented, and that cost was weighed against what it would
+# buy -- a comparison against a renderer asteroidz no longer uses -- and
+# declined. AVK's own budget qualification stands on its own instruments.
+#
+# This fixture is kept, and kept FAILING its premise, as the record of WHY
+# rather than as a gate. Do not "fix" it by relaxing the premise: every
+# instrument below was tried and each one produced a confident, well-formatted
+# number that turned out to be describing itself.
+#
+# The honest statement of why is:
 #
 #   1. GPU timestamps are an AVK instrument; GLES emits no frame trace.
 #   2. Client frame callbacks are scheduled against vblank rather than render
