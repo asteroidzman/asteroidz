@@ -96,10 +96,11 @@ the control arm was spelled `run off` with no environment at all, so after the
 inversion both arms ran the same configuration. It failed on its premises
 rather than silently comparing a thing to itself. 12/12 with the arm fixed.
 
-**The live quality pass D5 asks for is OUTSTANDING and is the operator's.** What
-Path A changes is where the encode happens, not whether; blended pixels do
-change, and that is ADR-005 rather than a regression — but it is also the one
-thing no fixture can call correct on its own.
+**D5's live quality pass: PASSED 2026-08-14.** The operator ran the promoted
+default on HDMI-A-1 and accepted it. That is the whole of the gate — what Path A
+changes is blended pixels (transparency, shadows, antialiased text edges), and
+no fixture can call that correct or incorrect on its own. Opaque pixels are
+bit-identical by the on-GPU round trip, so there was nothing else to judge.
 
 ### D6 + G4 — the preferred image description (`contrib/m6b-preferred-desc-test.sh`)
 
@@ -135,8 +136,29 @@ and are unrelated defects.
    enums, map outward with `_from_wlr()`); I reached for the obvious constant
    instead.
 
-**The HDR arm is not covered headlessly and is not faked**: a headless output
-cannot present an HDR image description. Live-only, on DP-1.
+**The HDR arm: PASSED LIVE on DP-1, 2026-08-14** — `contrib/wlcm` against the
+running session read
+
+    preferred: set tf=11 primaries=6 ... have=11100
+
+which is ST2084_PQ / BT.2020. A wp-cm client now learns the display is HDR
+instead of being told the SDR default, which is the defect D6 exists for.
+
+**BUT THE MASTERING VALUES DO NOT REACH THE CLIENT, AND THAT IS UPSTREAM.** The
+same reading shows `minlum=50 maxlum=10000 reflum=203, maxcll=0 maxfall=0` --
+wlroots' *default* luminances for PQ, not DP-1's rule (`max-luminance 400`,
+`min 0.4`, `max-fall 250`). The compositor supplies them; wlroots 0.20.2 never
+sends them:
+
+    types/wlr_color_management_v1.c:162  // TODO: send mastering display
+                                         //       primaries and luminances ...
+    types/wlr_color_management_v1.c:171  // TODO: send target_max_cll and
+                                         //       target_max_fall
+
+So D6 is delivered in the half that was broken -- the client knows it is HDR --
+and blocked in the half that needs upstream. The data is already correct on our
+side of the call and is discarded inside wlroots; nothing in this tree can close
+it.
 
 ### G6 — transitions (`contrib/m6b-transition-test.sh`)
 
@@ -222,17 +244,20 @@ perfectly. Only saturated colour moves visibly (`255,0,0 → 241,56,25`).
 Every gate that a machine can settle is settled. What remains needs a display
 that can present HDR and a person who can look at it.
 
-- **D5's live quality pass.** Path A is now the default; what it changes is
-  blended pixels, and no fixture can call that correct. One watched session.
-- **G4's HDR arm.** A headless output cannot present an HDR image description,
-  so `preferred: set tf=PQ primaries=BT2020` with DP-1's mastering values can
-  only be read on DP-1. `contrib/wlcm` is the instrument and takes seconds.
-- **G6's HDR↔SDR half.** Same reason: twenty toggles on DP-1, with
-  `validation_enabled` asserted first. The profile-toggle half is green and
-  exercises the same lifecycle.
+- **G6's HDR↔SDR half.** A headless output cannot enter HDR, so twenty toggles
+  on DP-1 is the only place this runs — and the gate requires
+  `validation_enabled` asserted first, which means the `asteroidz-avk-debug`
+  session and therefore a logout, not a restart. Each toggle is a retrain (two
+  modesets and a visible flash; see `project_hdr_pending_commit_fails`), so
+  twenty cycles is forty of them.
 
-All three fit in **one** live session, which is what D5 asked for in the first
-place. Nothing about them is blocked on further work.
+  The profile-toggle half **is** green and exercises the same lifecycle:
+  intermediate allocated and returned, blur cache invalidated across the domain
+  change, no per-cycle recompile, zero refused frames, zero VUIDs. What the HDR
+  half adds is the KMS modeset and image-description commit path. Worth doing;
+  not worth doing without the operator choosing the moment.
+
+- **D6's mastering values** are blocked upstream (above), not by this tree.
 
 - **The blend-domain residual, newly sharpened.** On the live A/B, ~2–3% of
   pixels sit beyond 1 code from the model, concentrated on translucent UI.
