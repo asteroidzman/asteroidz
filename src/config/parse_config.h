@@ -588,6 +588,10 @@ bool monitor_matches_rule(Monitor *m, const ConfigMonitorRule *rule);
 bool monitor_merge_rules(Monitor *m, ConfigMonitorRule *out);
 void mon_state_apply_color(Monitor *m, struct wlr_output_state *state);
 void mon_load_icc_profile(Monitor *m, const char *path);
+/* C3's derivation. Declared here because the config-reload path builds an
+ * output state of its own and must re-derive from it -- see the call site. */
+static void mon_derive_color_state(Monitor *m,
+	const struct wlr_output_state *state);
 void client_update_blur(Client *c);
 void layer_update_blur(LayerSurface *l);
 
@@ -5354,6 +5358,22 @@ void reapply_monitor_rules(void) {
 				m->asleep = 0;
 			}
 			mon_state_apply_color(m, &state);
+			/*
+			 * AND DERIVE, which this path did not do.
+			 *
+			 * Every other place that builds an output state pairs these two
+			 * (createmon, the output-rule apply, the HDR pending-change
+			 * commit); this one applied the colour and left `m->color_state`
+			 * holding whatever the last derivation decided. Nothing depended
+			 * on it while a reload could not change the answer -- bit depth
+			 * and HDR both go through their own paths -- but M6B/G2 made
+			 * `icc-profile` a reload-changeable input to the derivation, so a
+			 * profile added to a monitor rule would load its shaper and never
+			 * reach the encode pass. Derived here for the same reason as at
+			 * createmon: it cannot fail, and skipping it leaves a stale struct
+			 * that reads as a valid one.
+			 */
+			mon_derive_color_state(m, &state);
 			wlr_output_layout_add(output_layout, m->wlr_output, mx, my);
 			wlr_output_commit_state(m->wlr_output, &state);
 		}
