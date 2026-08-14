@@ -515,6 +515,17 @@ if build_vulkan
                                    build_by_default : false)
   test('avk-blur-scene', test_avk_blur_scene, timeout : 240)
 
+  # M5/C2: every command carries a VALID luminance domain. avk_scene_add()
+  # memsets, so a field nobody fills defaults to zero -- and a scale of zero is
+  # a black surface, not a neutral default. Four command sites would each have
+  # had to remember; the default lives in one place and this asserts it for
+  # every type, including ones added after it was written.
+  test_lum_command = executable('test-lum-command',
+                                'tests/test-lum-command.c',
+                                dependencies : [avk_dep],
+                                build_by_default : false)
+  test('lum-command', test_lum_command)
+
   # M4F.2A.3: the blur node's MATERIAL. darken is checked against a CPU minimum
   # of two SEPARATELY MEASURED renders (clamp off, and no blur node at all), so
   # the production shader is never its own oracle; the soft edge is checked

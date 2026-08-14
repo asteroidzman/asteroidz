@@ -175,6 +175,25 @@ static inline float az_lum_ref_nits(float scene_ref_nits) {
 static inline float az_lum_rule_or(float v) { return v > 0.0f ? v : 1.0f; }
 
 /*
+ * The ADR-004 default, as a value.
+ *
+ * Exists so a consumer that has no source description at all -- an output
+ * cursor, a solid rect, a blur result -- can hold a VALID domain rather than a
+ * zeroed one. `scale > 0` is the resolver's contract and a consumer is
+ * entitled to multiply by it; a zeroed struct's scale of 0 is not a neutral
+ * default, it is black.
+ */
+static inline struct az_lum_domain az_lum_domain_untagged(void) {
+	struct az_lum_domain d = {
+		.tf = AZ_TF_SRGB,
+		.primaries = AZ_PRIM_BT709,
+		.scale = 1.0f,
+		.content_peak = 0.0f,
+	};
+	return d;
+}
+
+/*
  * THE RESOLVER. Pure: same inputs, same domain, no state, no logging, no
  * allocation. Runs at surface commit and rule application, never per frame.
  *

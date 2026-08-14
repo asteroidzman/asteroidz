@@ -1620,7 +1620,75 @@ struct az_avk_walk {
 	 * same-model pair produces.
 	 */
 	const struct wlr_scene_optimized_blur *mon_blur_node;
+	/*
+	 * M5/C2/ADR-003. The SCENE's reference luminance, cd/m2.
+	 *
+	 * Read once per frame rather than per surface, and carried here rather
+	 * than read from `config` inside the adapter, because it is a SCENE
+	 * property that must not vary between two surfaces of one frame: two
+	 * windows resolved against different references would disagree about what
+	 * scene 1.0 means, and a window straddling two outputs would split.
+	 */
+	float scene_ref_nits;
 };
+
+/*
+ * ── M5/C2: SCENEFX'S COLOUR FIELDS -> A LUMINANCE DOMAIN ──────────────────
+ *
+ * The adapter C2 said would be "three switch statements and belongs with the
+ * scene walk". It is the only place in AVK that mentions a wlroots colour
+ * enum; az_lum.h itself takes plain values so the resolver stays unit-testable
+ * without a display.
+ *
+ * UNKNOWN VALUES COLLAPSE TO UNTAGGED rather than being rejected. A client
+ * sending a transfer function from a protocol version this build predates must
+ * still get pixels on the screen -- ADR-004 -- and az_lum_resolve() implements
+ * what untagged means in one place.
+ *
+ * RULES ARE THE DEFAULTS HERE, and that is a KNOWN GAP rather than a decision:
+ * C2's per-window `sdr-white-scale` and `hdr-gain` are resolved onto the
+ * Client, and this walk has no way to reach one -- it reads scenefx structs
+ * only, deliberately, which is what keeps a renderer header free of compositor
+ * types. Threading them needs either a resolved domain stored on the scene
+ * buffer (a scenefx change) or a client lookup in the walk (a layering
+ * change); the first is the better shape and neither is needed until C7 makes
+ * the domain load-bearing. Until then every source resolves as though no rule
+ * were set, which is exactly what happens today.
+ */
+static struct az_lum_domain az_avk_lum_of(
+		const struct wlr_scene_buffer *buf, float scene_ref_nits) {
+	struct az_lum_source_desc src = { .tagged = false };
+	if (buf != NULL) {
+		switch (buf->transfer_function) {
+		case WLR_COLOR_TRANSFER_FUNCTION_SRGB:
+			src.tagged = true; src.tf = AZ_TF_SRGB; break;
+		case WLR_COLOR_TRANSFER_FUNCTION_GAMMA22:
+			src.tagged = true; src.tf = AZ_TF_GAMMA22; break;
+		case WLR_COLOR_TRANSFER_FUNCTION_BT1886:
+			src.tagged = true; src.tf = AZ_TF_BT1886; break;
+		case WLR_COLOR_TRANSFER_FUNCTION_ST2084_PQ:
+			src.tagged = true; src.tf = AZ_TF_PQ; break;
+		case WLR_COLOR_TRANSFER_FUNCTION_EXT_LINEAR:
+			src.tagged = true; src.tf = AZ_TF_LINEAR_EXT; break;
+		default:
+			/* Includes 0, which is what an untagged surface carries. */
+			break;
+		}
+		if (src.tagged) {
+			src.primaries =
+				buf->primaries == WLR_COLOR_NAMED_PRIMARIES_BT2020
+					? AZ_PRIM_BT2020 : AZ_PRIM_BT709;
+			/* max_cll is cd/m2 and 0 means absent, which is the same
+			 * convention az_lum_source_desc uses -- no translation. */
+			src.max_cll = (float)buf->max_cll;
+		}
+	}
+	if (!az_lum_source_valid(&src)) {
+		src = (struct az_lum_source_desc){ .tagged = false };
+	}
+	struct az_lum_rules rules = az_lum_rules_default();
+	return az_lum_resolve(&src, &rules, scene_ref_nits);
+}
 
 static enum avk_transform az_avk_transform(enum wl_output_transform t) {
 	/* The two enumerations agree value for value -- both are the dihedral
@@ -2169,6 +2237,8 @@ static void az_avk_walk_node(struct az_avk_walk *walk,
 		cmd->dst = (struct avk_box){ dst.x, dst.y, dst.width, dst.height };
 		cmd->image = image;
 		cmd->opacity = buf->opacity;
+		/* M5/C2. Carried, not yet consumed -- see avk_cmd.lum. */
+		cmd->lum = az_avk_lum_of(buf, walk->scene_ref_nits);
 		/* Rounding belongs to the DESTINATION geometry, not the source: a
 		 * cropped or scaled client is still rounded at the window's corners,
 		 * not at its texture's. */
@@ -3401,6 +3471,8 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 		.blur = wlr_scene_get_blur_data(m->scene_output->scene),
 		.mon_blur_generation = &out->blur_cache_generation,
 		.mon_blur_node = m->blur,
+		/* ADR-003: one reference for the whole scene, read once per frame. */
+		.scene_ref_nits = config.sdr_reference_luminance,
 	};
 
 	/*
