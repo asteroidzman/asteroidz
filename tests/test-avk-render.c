@@ -335,6 +335,147 @@ static bool render(struct harness *h, struct avk_scene *scene) {
 		&& readback(h);
 }
 
+/* ── THE M5 SDR GATE, ON THE GPU ────────────────────────────────────────── */
+
+/*
+ * C4 gate 1: an opaque sRGB source drawn 1:1 at full opacity comes back
+ * UNCHANGED.
+ *
+ * ── WHY THIS EXISTS BEFORE THE THING IT JUDGES ───────────────────────────
+ *
+ * C4 says "HDR10 output work may not be enabled in the compositor until this
+ * gate is green on-GPU". The CPU half of it already passes
+ * (tests/test-color-pipeline.c). This is the on-GPU half, and it is written
+ * BEFORE C7's decode variants exist on purpose: run against today's renderer it
+ * establishes the baseline, so that a divergence after C7 lands is C7's and not
+ * an open question about which of two changes moved the pixels.
+ *
+ * ── BIT-EXACT, NOT A TOLERANCE ───────────────────────────────────────────
+ *
+ * Today AVK composites in the surfaces' own encoding and performs no decode at
+ * all, so an opaque texture blitted 1:1 must be the identity -- not "within a
+ * code", exactly equal. C4 allows <= 1 8-bit code once a decode and re-encode
+ * round trip exists; until then a tolerance would hide the very first frame in
+ * which a variant starts firing when it should not.
+ *
+ * ── THE VALUES ARE CHOSEN TO BE HARD ─────────────────────────────────────
+ *
+ * 0 and 255 are the endpoints an encode/decode pair must be exact at -- F2
+ * records that two encode endpoints are not algebraically zero, so they are the
+ * first thing to move. 1 and 254 are one step in from those, where a rounding
+ * rule that is off by half a code shows. 127/128 straddle the midpoint. A flat
+ * grey would pass with almost any wrong curve.
+ */
+static void test_sdr_roundtrip_gate(struct harness *h) {
+	printf("M5 GATE: opaque sRGB round-trip on the GPU\n");
+
+	static const uint8_t hard[] = { 0, 1, 16, 64, 127, 128, 192, 254, 255 };
+	const size_t n = sizeof(hard) / sizeof(hard[0]);
+
+	uint32_t src[16 * 16];
+	for (size_t y = 0; y < 16; y++) {
+		for (size_t x = 0; x < 16; x++) {
+			/* Opaque, and every channel independent: a shader that mixed up
+			 * two channels would survive a grey ramp. */
+			uint8_t r = hard[(x + 0) % n];
+			uint8_t g = hard[(y + 3) % n];
+			uint8_t b = hard[(x + y + 6) % n];
+			src[y * 16 + x] = 0xFF000000u | ((uint32_t)r << 16)
+				| ((uint32_t)g << 8) | b;
+		}
+	}
+
+	struct avk_image *surface = make_image(h->dev, 16, 16,
+		VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, false);
+	if (surface == NULL || !upload(h, surface, src, 16, 16)) {
+		CHECK(false, "gate: source uploads");
+		if (surface != NULL) {
+			avk_image_destroy(h->dev, surface);
+		}
+		return;
+	}
+
+	struct avk_scene scene;
+	avk_scene_init(&scene);
+	/* DAMAGE, or nothing is drawn at all. A `= {0}` scene leaves the pixman
+	 * region uninitialised and the frame renders an empty command list into an
+	 * undefined attachment -- which reads back as garbage and looks exactly
+	 * like a catastrophic colour bug. */
+	pixman_region32_union_rect(&scene.damage, &scene.damage, 0, 0, W, H);
+	/* And a clear, so the 16x16 result sits on a known background rather than
+	 * on whatever the attachment happened to contain. */
+	scene.has_clear = true;
+	scene.clear_color[0] = 0.0f;
+	scene.clear_color[1] = 0.0f;
+	scene.clear_color[2] = 0.0f;
+	scene.clear_color[3] = 1.0f;
+
+	struct avk_cmd *tex = avk_scene_add(&scene, AVK_CMD_TEXTURE);
+	tex->dst = (struct avk_box){ 0, 0, 16, 16 };
+	tex->image = surface;
+	tex->src = (struct avk_fbox){ 0, 0, 16, 16 };
+	tex->opacity = 1.0f;
+	/* NEAREST. A linear filter at 1:1 is the identity in theory and a source
+	 * of half-code drift in practice; this gate is about the colour pipeline,
+	 * not about sampling. */
+	tex->filter_linear = false;
+
+	/* THE DOMAIN THE COMMAND CARRIES, asserted before the pixels. An untagged
+	 * source is what almost every client is (ADR-004) and it is what this gate
+	 * is about; if the walk or the default ever resolved it to something else,
+	 * the pixel result below would be right for the wrong reason. */
+	CHECK(tex->lum.tf == AZ_TF_SRGB && tex->lum.primaries == AZ_PRIM_BT709
+		&& tex->lum.scale == 1.0f,
+		"gate: the source resolves to the untagged sRGB domain (tf=%d prim=%d scale=%.3f)",
+		(int)tex->lum.tf, (int)tex->lum.primaries, (double)tex->lum.scale);
+
+	if (!render(h, &scene)) {
+		CHECK(false, "gate: frame renders");
+		avk_scene_finish(&scene);
+		avk_image_destroy(h->dev, surface);
+		return;
+	}
+	avk_scene_finish(&scene);
+
+	int worst = 0, worst_x = -1, worst_y = -1;
+	for (uint32_t y = 0; y < 16; y++) {
+		for (uint32_t x = 0; x < 16; x++) {
+			uint32_t want = src[y * 16 + x];
+			uint32_t got = px(h, x, y);
+			int d = 0;
+			int dr = r_of(got) - r_of(want); if (dr < 0) dr = -dr;
+			int dg = g_of(got) - g_of(want); if (dg < 0) dg = -dg;
+			int db = b_of(got) - b_of(want); if (db < 0) db = -db;
+			d = dr > dg ? dr : dg;
+			d = d > db ? d : db;
+			if (d > worst) { worst = d; worst_x = (int)x; worst_y = (int)y; }
+		}
+	}
+	CHECK(worst == 0,
+		"THE M5 SDR GATE: opaque sRGB round-trips bit-exactly "
+		"(worst channel %d at %d,%d)", worst, worst_x, worst_y);
+
+	/*
+	 * THE PREMISE: the gate can see a difference of one code.
+	 *
+	 * Without this, "worst == 0" is also what a comparison against the wrong
+	 * buffer, or against itself, would report. One deliberate corruption of a
+	 * single channel must move `worst` to exactly 1.
+	 */
+	uint32_t saved = h->pixels[0];
+	uint32_t bumped = (saved & 0xFFFF00FFu)
+		| ((uint32_t)((g_of(saved) + 1) & 0xFF) << 8);
+	/* Against the READBACK, not against the source. Comparing the corrupted
+	 * pixel to src[0] measures whatever mismatch already existed plus one --
+	 * which on a broken run reported 63 and said nothing about sensitivity. */
+	int probe = g_of(bumped) - g_of(saved);
+	if (probe < 0) { probe = -probe; }
+	CHECK(probe == 1,
+		"PREMISE: the comparison detects a one-code change (saw %d)", probe);
+
+	avk_image_destroy(h->dev, surface);
+}
+
 /* ── test 1: overlapping surfaces and alpha ─────────────────────────────── */
 
 static void test_overlap_alpha(struct harness *h) {
@@ -975,6 +1116,7 @@ int main(void) {
 		goto done;
 	}
 
+	test_sdr_roundtrip_gate(&h);
 	test_overlap_alpha(&h);
 	test_crop_scale(&h);
 	test_transforms(&h);
