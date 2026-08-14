@@ -293,6 +293,32 @@ static bool read_slot(struct avk_timestamps *ts, uint32_t slot,
 		if (cohort) {
 			avk_hist_add(&ts->gpu_frame_blur_hist, ts->gpu_frame_ns);
 		}
+		/*
+		 * ── OVER BUDGET, WHICH IS THE ONLY NUMBER THE USER FEELS ──────────
+		 *
+		 * A percentile cannot answer "did a frame miss". p95 swung from 2880
+		 * to 4860us across two identical live cohorts while p50 and p99 stayed
+		 * put, so quoting it either way was going to be wrong. A COUNT of
+		 * frames past the deadline does not move with cohort size, and its
+		 * multiples say whether a miss cost one refresh or three.
+		 *
+		 * The budget is set per output from its real refresh, so a 60Hz
+		 * display is judged against 16.7ms and a 144Hz one against 6.944ms.
+		 * Zero means the budget was never published and the frame is not
+		 * counted either way -- an unset budget must not silently score every
+		 * frame as on time.
+		 */
+		if (ts->budget_ns > 0) {
+			ts->budget_frames++;
+			if (ts->gpu_frame_ns > ts->budget_ns) {
+				ts->over_budget++;
+				if (ts->gpu_frame_ns > 3 * ts->budget_ns) {
+					ts->over_budget_3x++;
+				} else if (ts->gpu_frame_ns > 2 * ts->budget_ns) {
+					ts->over_budget_2x++;
+				}
+			}
+		}
 		ts->trace_gpu_frame_ns = ts->gpu_frame_ns;
 		ts->trace_cohort = cohort;
 		ts->trace_slot_active = s->blur_active;

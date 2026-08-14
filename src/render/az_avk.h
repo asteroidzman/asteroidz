@@ -3365,6 +3365,18 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 		.semaphore = avk_sync_signal_semaphore(&out->sync),
 		.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
 	}};
+	/*
+	 * M4H.7. This output's deadline, refreshed every frame rather than cached:
+	 * a mode set changes the refresh, and a budget captured once would go on
+	 * scoring frames against a rate the display no longer runs at. refresh is
+	 * in mHz. A zero or absent refresh leaves the budget at 0, which DISABLES
+	 * the accounting rather than defaulting to a number -- an invented budget
+	 * scores silently and is worse than no score.
+	 */
+	int32_t refresh_mhz = output != NULL && output->current_mode != NULL
+		? output->current_mode->refresh : 0;
+	avk_timestamps_set_budget(&out->slot->renderer.timestamps,
+		refresh_mhz > 0 ? (uint64_t)(1000000000000.0 / (double)refresh_mhz) : 0);
 	avk_oracle_begin(&out->slot->renderer.oracle, AVK_ORACLE_PRODUCTION);
 	uint64_t timeline = avk_render_frame(&out->slot->renderer, target, &scene,
 		waits, wait_count, signals, 1);
@@ -4634,6 +4646,28 @@ static cJSON *az_avk_stats_json(void) {
 	cJSON_AddNumberToObject(o, "blur_output_damage_pixels", (double)d_out);
 	cJSON_AddNumberToObject(o, "blur_prefix_rebuild_pixels", (double)d_rebuild);
 	cJSON_AddNumberToObject(o, "blur_prefix_copyable_pixels", (double)d_copyable);
+	/*
+	 * M4H.7. Frames that missed their output's deadline, and by how many
+	 * refreshes. This is the closure metric: a percentile cannot say whether a
+	 * frame missed, and gpu_frame_blur p95 moved from 2880 to 4860us across two
+	 * identical live cohorts while p50 and p99 did not move at all. A count
+	 * does not depend on how many animations happened to be in the sample.
+	 */
+	uint64_t ob_frames = 0, ob = 0, ob2 = 0, ob3 = 0;
+	for (size_t i = 0; i < AZ_AVK_MAX_FORMATS; i++) {
+		if (!avk.renderers[i].used) {
+			continue;
+		}
+		const struct avk_timestamps *t = &avk.renderers[i].renderer.timestamps;
+		ob_frames += t->budget_frames;
+		ob += t->over_budget;
+		ob2 += t->over_budget_2x;
+		ob3 += t->over_budget_3x;
+	}
+	cJSON_AddNumberToObject(o, "budget_frames", (double)ob_frames);
+	cJSON_AddNumberToObject(o, "over_budget", (double)ob);
+	cJSON_AddNumberToObject(o, "over_budget_2x", (double)ob2);
+	cJSON_AddNumberToObject(o, "over_budget_3x", (double)ob3);
 	cJSON_AddNumberToObject(o, "blur_full_dependency_pixels",
 		(double)d_dep_full);
 	cJSON_AddNumberToObject(o, "blur_full_write_pixels", (double)d_write_full);
@@ -5007,6 +5041,14 @@ static void az_avk_stats_reset(void) {
 				r->blur_output_damage_pixels = 0;
 				r->blur_prefix_rebuild_pixels = 0;
 				r->blur_prefix_copyable_pixels = 0;
+				/* The deadline itself survives -- it describes the output, not
+				 * the measurement window -- but every count against it starts
+				 * again, or "frames over budget" would be read against a frame
+				 * total that had been reset underneath it. */
+				r->timestamps.budget_frames = 0;
+				r->timestamps.over_budget = 0;
+				r->timestamps.over_budget_2x = 0;
+				r->timestamps.over_budget_3x = 0;
 				r->blur_fallback_rects = 0;
 				r->blur_fallback_area_before = 0;
 				r->blur_fallback_area_after = 0;

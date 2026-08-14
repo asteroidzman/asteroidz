@@ -195,6 +195,17 @@ struct avk_timestamps {
 	 * every sample. */
 	uint64_t gpu_frame_ns_total;
 	uint64_t samples;
+	/*
+	 * M4H.7. The deadline this output actually has, in nanoseconds, and how
+	 * often the GPU missed it. Set by avk_timestamps_set_budget() from the
+	 * output's refresh; 0 disables the accounting rather than defaulting to a
+	 * number, because a wrong budget scores silently.
+	 */
+	uint64_t budget_ns;
+	uint64_t budget_frames;
+	uint64_t over_budget;
+	uint64_t over_budget_2x;
+	uint64_t over_budget_3x;
 	uint64_t dropped;
 
 	/*
@@ -278,6 +289,15 @@ void avk_timestamps_single_chain(struct avk_timestamps *ts, uint32_t slot,
 
 /* Whether this frame ran blur work, so its gpu_frame sample joins the
  * blur-active cohort as well as the all-frames one. */
+/* The frame deadline for the output this renderer is serving, in nanoseconds.
+ * Called once per frame from the render path, because an output's refresh can
+ * change under a mode set and a budget captured at init would then be judging
+ * against a rate the display no longer runs at. */
+static inline void avk_timestamps_set_budget(struct avk_timestamps *ts,
+		uint64_t budget_ns) {
+	ts->budget_ns = budget_ns;
+}
+
 void avk_timestamps_blur_active(struct avk_timestamps *ts, uint32_t slot,
 	bool active, uint32_t chains);
 
