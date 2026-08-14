@@ -499,6 +499,95 @@ static bool add_pool(struct avk_pipelines *pipes) {
 	return true;
 }
 
+/*
+ * Allocate and write one combined-image-sampler set for `view`.
+ *
+ * Shared by the plain and _SRGB accessors: the only difference between them is
+ * WHICH view is written, and duplicating a pool-growth path so that two callers
+ * can each get it subtly wrong is how descriptor bugs are made.
+ */
+static VkDescriptorSet az_texture_set_for_view(struct avk_pipelines *pipes,
+		VkImageView view, bool linear) {
+	if (pipes->sets_left_in_current_pool == 0 && !add_pool(pipes)) {
+		return VK_NULL_HANDLE;
+	}
+	VkDescriptorSetAllocateInfo alloc = {
+		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+		.descriptorPool = pipes->pools[pipes->pool_count - 1],
+		.descriptorSetCount = 1,
+		.pSetLayouts = &pipes->texture_set_layout,
+	};
+	VkDescriptorSet set = VK_NULL_HANDLE;
+	VkResult res = vkAllocateDescriptorSets(pipes->dev->dev, &alloc, &set);
+	if (res != VK_SUCCESS) {
+		avk_check(res, "vkAllocateDescriptorSets");
+		return VK_NULL_HANDLE;
+	}
+	pipes->sets_left_in_current_pool--;
+
+	VkDescriptorImageInfo image_info = {
+		.sampler = linear ? pipes->linear : pipes->nearest,
+		.imageView = view,
+		.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+	};
+	VkWriteDescriptorSet write = {
+		.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+		.dstSet = set,
+		.dstBinding = 0,
+		.descriptorCount = 1,
+		.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		.pImageInfo = &image_info,
+	};
+	vkUpdateDescriptorSets(pipes->dev->dev, 1, &write, 0, NULL);
+	return set;
+}
+
+VkDescriptorSet avk_pipelines_texture_set_srgb(struct avk_pipelines *pipes,
+		struct avk_image *image, bool linear) {
+	/*
+	 * M5/C7. Sampling through the _SRGB view: the hardware performs the sRGB
+	 * EOTF on every fetch, so a source in that encoding arrives linear with no
+	 * shader work at all. ADR-005's fast path.
+	 *
+	 * REFUSES RATHER THAN GUESSES. An image not created MUTABLE with this
+	 * format in its view list cannot legally have such a view -- that is
+	 * undefined behaviour, not a failed call, and validation will not
+	 * necessarily say so. Returning NULL costs the caller the fast path and
+	 * nothing else; it falls back to decoding in the shader.
+	 */
+	if (!image->srgb_mutable || image->format_srgb == VK_FORMAT_UNDEFINED) {
+		return VK_NULL_HANDLE;
+	}
+	uint32_t slot = linear ? 1 : 0;
+	if (image->sampler_set_srgb[slot] != VK_NULL_HANDLE) {
+		return image->sampler_set_srgb[slot];
+	}
+	if (image->view_srgb == VK_NULL_HANDLE) {
+		VkImageViewCreateInfo vi = {
+			.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+			.image = image->image,
+			.viewType = VK_IMAGE_VIEW_TYPE_2D,
+			.format = image->format_srgb,
+			.subresourceRange = {
+				.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+				.levelCount = 1,
+				.layerCount = 1,
+			},
+		};
+		VkResult res = vkCreateImageView(pipes->dev->dev, &vi, NULL,
+			&image->view_srgb);
+		if (res != VK_SUCCESS) {
+			avk_check(res, "vkCreateImageView (_SRGB)");
+			return VK_NULL_HANDLE;
+		}
+		AVK_LIVE_INC(pipes->dev, image_views);
+	}
+	VkDescriptorSet set = az_texture_set_for_view(pipes, image->view_srgb,
+		linear);
+	image->sampler_set_srgb[slot] = set;
+	return set;
+}
+
 VkDescriptorSet avk_pipelines_texture_set(struct avk_pipelines *pipes,
 		struct avk_image *image, bool linear) {
 	uint32_t slot = linear ? 1 : 0;
@@ -527,39 +616,7 @@ VkDescriptorSet avk_pipelines_texture_set(struct avk_pipelines *pipes,
 		AVK_LIVE_INC(pipes->dev, image_views);
 	}
 
-	if (pipes->sets_left_in_current_pool == 0 && !add_pool(pipes)) {
-		return VK_NULL_HANDLE;
-	}
-
-	VkDescriptorSetAllocateInfo alloc = {
-		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-		.descriptorPool = pipes->pools[pipes->pool_count - 1],
-		.descriptorSetCount = 1,
-		.pSetLayouts = &pipes->texture_set_layout,
-	};
-	VkDescriptorSet set = VK_NULL_HANDLE;
-	VkResult res = vkAllocateDescriptorSets(pipes->dev->dev, &alloc, &set);
-	if (res != VK_SUCCESS) {
-		avk_check(res, "vkAllocateDescriptorSets");
-		return VK_NULL_HANDLE;
-	}
-	pipes->sets_left_in_current_pool--;
-
-	VkDescriptorImageInfo image_info = {
-		.sampler = linear ? pipes->linear : pipes->nearest,
-		.imageView = image->view,
-		.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-	};
-	VkWriteDescriptorSet write = {
-		.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-		.dstSet = set,
-		.dstBinding = 0,
-		.descriptorCount = 1,
-		.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-		.pImageInfo = &image_info,
-	};
-	vkUpdateDescriptorSets(pipes->dev->dev, 1, &write, 0, NULL);
-
+	VkDescriptorSet set = az_texture_set_for_view(pipes, image->view, linear);
 	image->sampler_set[slot] = set;
 	return set;
 }

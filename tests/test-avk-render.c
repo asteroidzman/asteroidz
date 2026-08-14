@@ -476,6 +476,48 @@ static void test_sdr_roundtrip_gate(struct harness *h) {
 	avk_image_destroy(h->dev, surface);
 }
 
+/*
+ * M5/C7: the _SRGB sampling path REFUSES an image that cannot legally have one.
+ *
+ * A view in a format the image was not created for is undefined behaviour, not
+ * a failed call, and validation does not reliably catch it. Every image this
+ * fixture makes is a plain non-mutable one -- exactly like the transients the
+ * renderer allocates for itself -- so the accessor must return NULL for all of
+ * them and the fast path must simply not be taken.
+ *
+ * The interesting case, an imported dmabuf whose modifier IS srgb_mutable,
+ * needs a real client buffer and belongs to the headless suites; what is
+ * asserted here is the half that must never produce a VUID.
+ */
+static void test_srgb_view_refusal(struct harness *h) {
+	printf("M5/C7: the _SRGB sampling path refuses a non-mutable image\n");
+
+	struct avk_image *plain = make_image(h->dev, 16, 16,
+		VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, true);
+	if (plain == NULL) {
+		CHECK(false, "srgb: image allocates");
+		return;
+	}
+
+	CHECK(!plain->srgb_mutable,
+		"an image allocated by the renderer is not srgb_mutable");
+	CHECK(avk_pipelines_texture_set_srgb(&h->renderer.pipes, plain, false)
+			== VK_NULL_HANDLE
+		&& avk_pipelines_texture_set_srgb(&h->renderer.pipes, plain, true)
+			== VK_NULL_HANDLE,
+		"and the _SRGB descriptor is refused for both filters");
+	CHECK(plain->view_srgb == VK_NULL_HANDLE,
+		"no illegal view was created on the way to refusing");
+
+	/* THE PREMISE: the PLAIN accessor still works on the same image, so the
+	 * refusal above is about the sRGB path and not about a broken fixture. */
+	CHECK(avk_pipelines_texture_set(&h->renderer.pipes, plain, false)
+			!= VK_NULL_HANDLE,
+		"PREMISE: the ordinary descriptor is still produced");
+
+	avk_image_destroy(h->dev, plain);
+}
+
 /* ── test 1: overlapping surfaces and alpha ─────────────────────────────── */
 
 static void test_overlap_alpha(struct harness *h) {
@@ -1117,6 +1159,7 @@ int main(void) {
 	}
 
 	test_sdr_roundtrip_gate(&h);
+	test_srgb_view_refusal(&h);
 	test_overlap_alpha(&h);
 	test_crop_scale(&h);
 	test_transforms(&h);

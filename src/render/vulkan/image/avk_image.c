@@ -41,6 +41,10 @@ void avk_image_destroy(struct avk_device *dev, void *data) {
 		vkDestroyImageView(dev->dev, image->view, NULL);
 		AVK_LIVE_DEC(dev, image_views);
 	}
+	if (image->view_srgb != VK_NULL_HANDLE) {
+		vkDestroyImageView(dev->dev, image->view_srgb, NULL);
+		AVK_LIVE_DEC(dev, image_views);
+	}
 	if (image->image != VK_NULL_HANDLE) {
 		vkDestroyImage(dev->dev, image->image, NULL);
 		AVK_LIVE_DEC(dev, images);

@@ -201,6 +201,17 @@ void avk_pipelines_finish(struct avk_pipelines *pipes);
  * costs one descriptor write for its whole lifetime rather than one per frame.
  * Returns VK_NULL_HANDLE if a set could not be allocated.
  */
+/*
+ * M5/C7. A descriptor for sampling this image through its _SRGB view, so the
+ * hardware performs the sRGB EOTF on every fetch and the shader does none.
+ *
+ * VK_NULL_HANDLE when the image was not created MUTABLE with that format in
+ * its view list -- which is not a failure, it is the answer. The caller falls
+ * back to decoding in the shader.
+ */
+VkDescriptorSet avk_pipelines_texture_set_srgb(struct avk_pipelines *pipes,
+	struct avk_image *image, bool linear);
+
 VkDescriptorSet avk_pipelines_texture_set(struct avk_pipelines *pipes,
 	struct avk_image *image, bool linear);
 

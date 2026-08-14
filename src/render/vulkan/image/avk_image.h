@@ -60,6 +60,27 @@ struct avk_image {
 	VkImageLayout layout;
 	uint64_t last_use;
 
+	/*
+	 * M5/C7. THE _SRGB VIEW, and whether one is legal at all.
+	 *
+	 * `format_srgb` is the sRGB twin of `format` -- VK_FORMAT_UNDEFINED when
+	 * the format has no twin, which is every 10-bit and half-float format
+	 * (Vulkan defines sRGB variants only at 8 bits per channel; see F11).
+	 *
+	 * `srgb_mutable` is whether the IMAGE was created with
+	 * VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT and both formats in its view list.
+	 * A view in a format the image was not created for is undefined behaviour,
+	 * not a soft failure, so a consumer must ask rather than assume: an
+	 * imported client buffer usually can (avk_dmabuf.c does it per modifier),
+	 * and an image this renderer allocated for itself usually cannot.
+	 *
+	 * The view itself is created lazily, on the same principle as `view`: a
+	 * surface that is never sampled through the sRGB path never pays for one.
+	 */
+	VkFormat format_srgb;
+	bool srgb_mutable;
+	VkImageView view_srgb;
+
 	/* Descriptor sets for sampling this image, [0] nearest and [1] linear,
 	 * allocated lazily and cached HERE rather than per frame. A client
 	 * surface is sampled every frame for as long as its window is open, so
@@ -67,6 +88,10 @@ struct avk_image {
 	 * difference between descriptor work being invisible and being a
 	 * profile entry. Owned by the image; freed with the pool. */
 	VkDescriptorSet sampler_set[2];
+	/* The same pair for the _SRGB view. Separate rather than a wider array so
+	 * that a lookup cannot silently return an sRGB set to a caller that asked
+	 * for the plain one. */
+	VkDescriptorSet sampler_set_srgb[2];
 
 	/* Ownership state and identity. See avk_image_destroy(). The enum values
 	 * are deliberately not 0 and 1: a freed chunk that happens to be zeroed

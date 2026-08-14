@@ -361,6 +361,16 @@ static struct avk_image *import_with_modifier(
 	image->plane_count = (uint32_t)attribs->n_planes;
 	image->disjoint = disjoint;
 	image->has_alpha = fmt->has_alpha;
+	/*
+	 * M5/C7. Whether an _SRGB view of this image is LEGAL, recorded where the
+	 * decision is made rather than re-derived by whoever wants one. The image
+	 * below is created MUTABLE with both formats in its view list exactly when
+	 * mod->srgb_mutable, and a view in a format an image was not created for is
+	 * undefined behaviour rather than a failed call.
+	 */
+	image->format_srgb = fmt->vk_srgb;
+	image->srgb_mutable = mod->srgb_mutable
+		&& fmt->vk_srgb != VK_FORMAT_UNDEFINED;
 	image->layout = VK_IMAGE_LAYOUT_UNDEFINED;
 
 	VkSubresourceLayout plane_layouts[AVK_MAX_PLANES] = {0};
