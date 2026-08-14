@@ -154,11 +154,11 @@ awk -v a="$(v wb_cap "$S2")" -v fa="$(v frames "$S2")" \
     -v ca="$(v wb_c "$S2")" -v cb="$(v wb_c "$S6")" 'BEGIN{
 	if (fa+0==0 || fb+0==0) { print "  no frames"; exit }
 	x=a/fa/1e6; y=b/fb/1e6;
-	printf "  WINDOW_BACKDROP capture: %.2f Mpx/frame at 2 windows,"
-	       " %.2f at 6  (%.2fx)\n", x, y, (x>0 ? y/x : 0);
+	printf "  WINDOW_BACKDROP capture: %.2f Mpx/frame at 2 windows, %.2f at 6  (%.2fx)\n",
+		x, y, (x>0 ? y/x : 0);
 	printf "  chains/frame: %.2f -> %.2f\n", ca/fa, cb/fb;
-	printf "  the output is 8.29 Mpx; at 6 windows the renderer captures"
-	       " %.2f screenfuls per frame\n", y/8.294;
+	printf "  the output is 8.29 Mpx; at 6 windows the renderer captures %.2f screenfuls per frame\n",
+		y/8.294;
 }'
 
 echo
@@ -171,8 +171,8 @@ for L in "2:$S2" "6:$S6"; do
 	awk -v f="$(v frames "$S")" -v spx="$(v ch_spx "$S")" \
 	    -v sbl="$(v ch_sbl "$S")" -v sch="$(v ch_sch "$S")" 'BEGIN{
 		if (f+0==0) exit;
-		printf "             avoided per frame: %.2f Mpx replay, %.2f Mpx capture,"
-		       " %.2f chains\n", spx/f/1e6, sbl/f/1e6, sch/f;
+		printf "             avoided per frame: %.2f Mpx replay, %.2f Mpx capture, %.2f chains\n",
+			spx/f/1e6, sbl/f/1e6, sch/f;
 	}'
 done
 

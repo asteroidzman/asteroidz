@@ -1582,6 +1582,29 @@ struct az_avk_walk {
 	 * cost of the one frame this whole mechanism exists to avoid.
 	 */
 	uint64_t *mon_blur_generation;
+	/*
+	 * M4I. THE ONE OPTIMIZED-BLUR NODE THAT BELONGS TO THIS OUTPUT.
+	 *
+	 * layers[LyrBlur] is a single global scene layer holding EVERY monitor's
+	 * background node, and the walk is over the whole scene -- so without this,
+	 * each output accepted whichever node it happened to walk last. On a two
+	 * monitor layout that was the other display's: HEADLESS-2 built its cache
+	 * at bounds (-1280,0), which is monitor 1's area expressed in monitor 2's
+	 * pixels, and every backdrop on that output sampled the wrong background.
+	 *
+	 * Worse, and quieter: `ob->dirty` is an edge, cleared by the first walk that
+	 * observes it. With both outputs reading both nodes, whichever rendered
+	 * first consumed the flag and the other never incremented its generation --
+	 * a wallpaper change that updates one display and leaves the other showing
+	 * a stale blur indefinitely.
+	 *
+	 * Matched BY IDENTITY, not by geometry. A monitor's node is created at that
+	 * monitor's position and size, so a box comparison would usually agree --
+	 * and would silently pick the wrong node the moment two outputs shared an
+	 * origin or a size, which is exactly the arrangement a mirrored or
+	 * same-model pair produces.
+	 */
+	const struct wlr_scene_optimized_blur *mon_blur_node;
 };
 
 static enum avk_transform az_avk_transform(enum wl_output_transform t) {
@@ -2419,6 +2442,30 @@ static void az_avk_walk_node(struct az_avk_walk *walk,
 		 */
 		struct wlr_scene_optimized_blur *ob =
 			wlr_scene_optimized_blur_from_node(node);
+		/* NOT THIS OUTPUT'S NODE -- see az_avk_walk.mon_blur_node. Every
+		 * monitor's node lives in one global layer, so this is reached once per
+		 * monitor per frame and only one of them describes the background this
+		 * output is rendering. Nothing is done with the others: not the bounds,
+		 * and above all not the dirty edge, which belongs to whoever owns it. */
+		/* AZ_BLUR_CACHE_WRONG_OUTPUT is the falsifier: it restores the
+		 * last-node-wins behaviour, so an output builds its cache from whichever
+		 * monitor's node the walk happened to reach last. A multi-output oracle
+		 * that stays green with this on is an oracle that is not looking. */
+		static int wrong_output = -1;
+		if (wrong_output < 0) {
+			wrong_output = az_avk_env_flag("AZ_BLUR_CACHE_WRONG_OUTPUT") ? 1 : 0;
+			if (wrong_output) {
+				wlr_log(WLR_ERROR, "M4I break: AZ_BLUR_CACHE_WRONG_OUTPUT -- an "
+					"output may build its background cache from ANOTHER "
+					"monitor's node; this renders a WRONG desktop");
+			}
+		}
+		/* A NULL mon_blur_node rejects everything, deliberately: it means this
+		 * monitor has no background node, and the only thing a foreign node
+		 * could offer such an output is a neighbour's wallpaper. */
+		if (!wrong_output && ob != walk->mon_blur_node) {
+			return;
+		}
 		struct blur_data bd = walk->blur;
 		if (!is_scene_blur_enabled(&bd)) {
 			return;
@@ -3338,6 +3385,7 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 		.oy = m->scene_output->y,
 		.blur = wlr_scene_get_blur_data(m->scene_output->scene),
 		.mon_blur_generation = &out->blur_cache_generation,
+		.mon_blur_node = m->blur,
 	};
 
 	/*
