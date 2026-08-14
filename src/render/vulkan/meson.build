@@ -75,6 +75,7 @@ avk_sources = files(
   'device/avk_instance.c',
   'device/avk_phys.c',
   'effect/avk_blur.c',
+  'effect/avk_blur_cache.c',
   'graph/avk_graph.c',
   'graph/avk_transient.c',
   'image/avk_image.c',

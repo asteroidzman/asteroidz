@@ -1748,6 +1748,7 @@ struct Pertag {
  * parse_config.h, which is included first. */
 static int32_t reset_avk_stats(const Arg *arg);
 static int32_t set_blur_rect_cap(const Arg *arg);
+static int32_t set_blur_chain_trace(const Arg *arg);
 static int32_t set_frame_trace(const Arg *arg);
 static int32_t dump_scene(const Arg *arg);
 static int32_t damage_all(const Arg *arg);
@@ -1931,6 +1932,28 @@ static int32_t set_frame_trace(const Arg *arg) {
 	az_avk_set_frame_trace(on);
 #endif
 	wlr_log(WLR_INFO, "frame trace %s", on ? "ON" : "off");
+	return 0;
+}
+/*
+ * `amsg dispatch set_blur_chain_trace,<0|1>` -- one log line per blur chain.
+ *
+ * A chain's cost is not a property of the frame it is in; it is a property of
+ * WHAT THE CHAIN IS FOR. Aggregating a tooltip's backdrop with a maximised
+ * window's produced the "chains=3 is slower than chains=4" reading, which is
+ * true of the aggregate and says nothing about the renderer. This prints the
+ * role and the geometry, so a slow frame can be decomposed into the chains that
+ * made it slow rather than into a chain COUNT.
+ *
+ * DIAGNOSTIC: several lines per frame on a populated desktop.
+ */
+static int32_t set_blur_chain_trace(const Arg *arg) {
+#ifdef AZ_HAVE_VULKAN
+	bool on = arg != NULL && arg->i != 0;
+	az_avk_set_blur_chain_trace(on);
+	wlr_log(WLR_INFO, "AVK: blur chain trace %s", on ? "ON" : "off");
+#else
+	(void)arg;
+#endif
 	return 0;
 }
 static int32_t set_blur_rect_cap(const Arg *arg) {

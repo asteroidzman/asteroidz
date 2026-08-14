@@ -378,6 +378,9 @@ static const DispatchAction dispatch_actions[] = {
 	 "Diagnostic: the rectangle count past which a blur's rebuild region "
 	 "collapses to its bounding box (0 restores the default). The collapse "
 	 "is conservative, so this changes cost and never pixels."},
+	{"set_blur_chain_trace", "int",
+	 "Diagnostic: log every blur chain's role, geometry and rebuilt area at "
+	 "ERROR (1 on, 0 off). One line per chain, several per frame."},
 	{"dump_scene", "",
 	 "Log the next frame's scene nodes and AVK command stream at ERROR."},
 	{"damage_all", "",

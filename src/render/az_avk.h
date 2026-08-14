@@ -40,6 +40,7 @@
 #include "vulkan/device/avk_device.h"
 #include "vulkan/device/avk_instance.h"
 #include "vulkan/dmabuf/avk_dmabuf.h"
+#include "vulkan/effect/avk_blur_cache.h"
 #include "vulkan/image/avk_upload.h"
 #include "vulkan/scene/avk_render.h"
 #include "vulkan/scene/avk_scene.h"
@@ -1013,6 +1014,23 @@ struct az_avk_output {
 	uint64_t last_submit_ns;
 
 	/*
+	 * M4I. THE MONITOR BACKGROUND BLUR RESULT CACHE, per output.
+	 *
+	 * Per output and never shared: two displays differ in resolution, scale,
+	 * transform, format and -- under M5 -- colour domain, and every one of those
+	 * is part of this image's identity. A cache keyed on anything less would
+	 * hand a 1080p monitor the 4K monitor's blurred wallpaper.
+	 *
+	 * `generation` is the compositor's side: incremented whenever the scene
+	 * marks the node dirty, never decremented, never cleared. The renderer
+	 * holds its own copy of the number it last built at, and the cache is valid
+	 * exactly while the two agree. See avk_blur_cache in avk_render.h for the
+	 * rest of the validity contract -- geometry, parameters and format.
+	 */
+	uint64_t blur_cache_generation;
+	struct avk_blur_cache blur_cache;
+
+	/*
 	 * M4F.2C.4c forensics. Per OUTPUT, because "frame 41" has to mean the same
 	 * thing in the log and in the fixture, and the renderer's own frame counter
 	 * is shared by every output using its VkFormat.
@@ -1478,6 +1496,17 @@ static void az_avk_output_finish(struct az_avk_output *out) {
 		avk_sync_finish(&out->sync);
 		out->sync_ready = false;
 	}
+	/*
+	 * M4I. The cached background blur, handed to the renderer's retire queue so
+	 * that a frame still sampling it when the monitor was unplugged keeps it
+	 * alive. Destroying it here would be freeing an image a submitted command
+	 * buffer is reading -- the exact VUID-vkDestroyImage-image-01000 that
+	 * M4F.2C.4e's validation run caught on client textures.
+	 */
+	if (out->slot != NULL) {
+		avk_blur_cache_finish(&out->blur_cache, out->slot->renderer.dev,
+			&out->slot->renderer.retire);
+	}
 	free(out);
 }
 
@@ -1543,6 +1572,16 @@ struct az_avk_walk {
 	 * once, not once per node.
 	 */
 	struct blur_data blur;
+	/*
+	 * M4I. The OUTPUT's monitor-background-blur generation, by pointer, because
+	 * the walk observes the dirty edge and the counter has to outlive the walk.
+	 *
+	 * Per output and not per scene: two monitors have two wallpapers, two
+	 * extents and two caches, and one shared counter would have a wallpaper
+	 * change on one display rebuild the other's cache -- correct, but at the
+	 * cost of the one frame this whole mechanism exists to avoid.
+	 */
+	uint64_t *mon_blur_generation;
 };
 
 static enum avk_transform az_avk_transform(enum wl_output_transform t) {
@@ -2351,6 +2390,7 @@ static void az_avk_walk_node(struct az_avk_walk *walk,
 		 * renderer has been reviewed (M4F.2E). Counted so the cost of that
 		 * decision is a number rather than a belief.
 		 */
+		cmd->blur_bottom_only = blur->should_only_blur_bottom_layer;
 		if (blur->should_only_blur_bottom_layer) {
 			avk.blur_nodes_forced_live++;
 			if (!avk.warned_optimized_blur) {
@@ -2364,20 +2404,71 @@ static void az_avk_walk_node(struct az_avk_walk *walk,
 		return;
 	}
 
-	case WLR_SCENE_NODE_OPTIMIZED_BLUR:
-		/* The bottom-layer CACHE node, which is a different thing from a blur
-		 * node: it exists to be populated once and sampled by everything above
-		 * it. AVK has no cache, so there is nothing for it to populate.
-		 * Recognised and skipped with one warning -- not silently dropped,
-		 * because "my blur disappeared" should have an answer in the log rather
-		 * than a bisect. */
-		if (!avk.warned_effect_node) {
-			avk.warned_effect_node = true;
-			wlr_log(WLR_INFO, "AVK: the optimized-blur cache node is not "
-				"implemented (M4F.2E); it is skipped, and every live blur node "
-				"renders from the current frame's scene prefix instead");
+	case WLR_SCENE_NODE_OPTIMIZED_BLUR: {
+		/*
+		 * ── THE MONITOR BACKGROUND BLUR PRODUCER (M4I) ────────────────────
+		 *
+		 * Not a thing drawn on the screen: a declaration that everything below
+		 * this point in the scene should be blurred ONCE and kept, so the nodes
+		 * above can sample it instead of each reconstructing it.
+		 *
+		 * It emits no command. What it emits is a request, recorded beside the
+		 * command list, whose only geometric content is WHERE THE SOURCE RANGE
+		 * ENDS -- and that is simply how many commands exist right now, because
+		 * the walk is in scene order.
+		 */
+		struct wlr_scene_optimized_blur *ob =
+			wlr_scene_optimized_blur_from_node(node);
+		struct blur_data bd = walk->blur;
+		if (!is_scene_blur_enabled(&bd)) {
+			return;
 		}
+		struct wlr_box dst;
+		az_avk_box_to_output(walk, lx, ly, ob->width, ob->height, &dst);
+		if (dst.width <= 0 || dst.height <= 0) {
+			return;
+		}
+		/*
+		 * DIRTY EDGE -> GENERATION INCREMENT, and the flag is cleared here.
+		 *
+		 * Every producer of the signal funnels through wlr_scene_optimized_blur
+		 * _mark_dirty(): a background layer commit, a blur-parameter change, a
+		 * resize. Converting the edge to a counter at the single point where
+		 * the node is observed means the renderer never has to know which of
+		 * them fired, and a second change arriving while a rebuild is in flight
+		 * increments again rather than being swallowed by an already-set bit.
+		 *
+		 * Cleared at OBSERVATION rather than on successful render, which is the
+		 * opposite of what SceneFX does and is deliberate: the increment has
+		 * already been recorded in the snapshot, so a frame that fails to build
+		 * the cache leaves the renderer's cached generation behind the scene's
+		 * and it rebuilds next frame anyway. Latching on success would need the
+		 * renderer to reach back into the scene graph after submission, which
+		 * is precisely the mutable-state-after-snapshot the design forbids.
+		 */
+		if (ob->dirty) {
+			ob->dirty = false;
+			(*walk->mon_blur_generation)++;
+		}
+		walk->scene->blur_cache.present = true;
+		walk->scene->blur_cache.prefix_end = walk->scene->len;
+		walk->scene->blur_cache.bounds = (struct avk_box){
+			dst.x, dst.y, dst.width, dst.height };
+		walk->scene->blur_cache.levels =
+			bd.num_passes > 0 ? (uint32_t)bd.num_passes : 0;
+		/* Scaled exactly as a live blur node's radius is, and for the same
+		 * reason: a radius is a length in output pixels. Diverging here would
+		 * make a cached backdrop and a live one disagree on a 1.5x display. */
+		walk->scene->blur_cache.radius = bd.radius * (float)walk->scale;
+		walk->scene->blur_cache.brightness = bd.brightness;
+		walk->scene->blur_cache.contrast = bd.contrast;
+		walk->scene->blur_cache.saturation = bd.saturation;
+		walk->scene->blur_cache.noise = bd.noise;
+		walk->scene->blur_cache.apply_effects =
+			blur_data_should_parameters_blur_effects(&bd);
+		walk->scene->blur_cache.generation = *walk->mon_blur_generation;
 		return;
+	}
 	}
 }
 
@@ -3246,6 +3337,7 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 		.ox = m->scene_output->x,
 		.oy = m->scene_output->y,
 		.blur = wlr_scene_get_blur_data(m->scene_output->scene),
+		.mon_blur_generation = &out->blur_cache_generation,
 	};
 
 	/*
@@ -3380,8 +3472,21 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 	avk_timestamps_set_budget(&out->slot->renderer.timestamps,
 		refresh_mhz > 0 ? (uint64_t)(1000000000000.0 / (double)refresh_mhz) : 0);
 	avk_oracle_begin(&out->slot->renderer.oracle, AVK_ORACLE_PRODUCTION);
+	/*
+	 * M4I. THIS OUTPUT'S background blur cache, lent to the renderer for the
+	 * frame and taken back at the end of it.
+	 *
+	 * Lent rather than owned because a renderer is shared by every output with
+	 * the same VkFormat, and this resource is per output -- leaving it attached
+	 * would let DP-1's frame sample HDMI-A-1's blurred wallpaper, at the wrong
+	 * resolution, on whichever output happened to render second. Cleared
+	 * afterwards so that a code path which forgets to set it gets a NULL and
+	 * takes the live path, rather than silently inheriting the last output's.
+	 */
+	out->slot->renderer.blur_cache = &out->blur_cache;
 	uint64_t timeline = avk_render_frame(&out->slot->renderer, target, &scene,
 		waits, wait_count, signals, 1);
+	out->slot->renderer.blur_cache = NULL;
 	/*
 	 * WHAT THE FRAME REDREW, WHICH MAY BE MORE THAN WHAT WAS HANDED IN.
 	 *
@@ -3954,6 +4059,56 @@ static cJSON *az_avk_stats_json(void) {
 	}
 	cJSON_AddNumberToObject(o, "blur_nodes_forced_live",
 		(double)avk.blur_nodes_forced_live);
+	/*
+	 * M4I. THE CACHE, SUMMED OVER OUTPUTS -- and the work avoided, not just the
+	 * hit rate.
+	 *
+	 * A hit rate is unfalsifiable on its own: a cache serving a hundred cheap
+	 * chains reports 100% and has saved nothing. The saved_* figures are in the
+	 * same units the uncached path reports its cost in, so the claim "the cache
+	 * removed this much work" is a subtraction rather than an inference.
+	 */
+	{
+		uint64_t req = 0, hit = 0, reb = 0, inval = 0, bytes = 0;
+		uint64_t s_draws = 0, s_px = 0, s_chains = 0, s_blur = 0;
+		uint64_t i_gen = 0, i_geo = 0, i_par = 0, i_fmt = 0, i_new = 0,
+		         i_forced = 0;
+		uint64_t gen_max = 0;
+		Monitor *mm;
+		wl_list_for_each(mm, &mons, link) {
+			if (mm->avk == NULL) {
+				continue;
+			}
+			const struct avk_blur_cache *c = &mm->avk->blur_cache;
+			req += c->requests; hit += c->hits; reb += c->rebuilds;
+			inval += c->invalidations; bytes += c->bytes;
+			s_draws += c->saved_prefix_draws; s_px += c->saved_prefix_px;
+			s_chains += c->saved_chains; s_blur += c->saved_blur_px;
+			i_gen += c->inv_generation; i_geo += c->inv_geometry;
+			i_par += c->inv_params; i_fmt += c->inv_format;
+			i_new += c->inv_never_built; i_forced += c->inv_forced;
+			if (mm->avk->blur_cache_generation > gen_max) {
+				gen_max = mm->avk->blur_cache_generation;
+			}
+		}
+		cJSON_AddNumberToObject(o, "blur_cache_requests", (double)req);
+		cJSON_AddNumberToObject(o, "blur_cache_hits", (double)hit);
+		cJSON_AddNumberToObject(o, "blur_cache_rebuilds", (double)reb);
+		cJSON_AddNumberToObject(o, "blur_cache_invalidations", (double)inval);
+		cJSON_AddNumberToObject(o, "blur_cache_bytes", (double)bytes);
+		cJSON_AddNumberToObject(o, "blur_cache_generation", (double)gen_max);
+		cJSON_AddNumberToObject(o, "blur_cache_saved_prefix_draws",
+			(double)s_draws);
+		cJSON_AddNumberToObject(o, "blur_cache_saved_prefix_px", (double)s_px);
+		cJSON_AddNumberToObject(o, "blur_cache_saved_chains", (double)s_chains);
+		cJSON_AddNumberToObject(o, "blur_cache_saved_blur_px", (double)s_blur);
+		cJSON_AddNumberToObject(o, "blur_cache_inv_generation", (double)i_gen);
+		cJSON_AddNumberToObject(o, "blur_cache_inv_geometry", (double)i_geo);
+		cJSON_AddNumberToObject(o, "blur_cache_inv_params", (double)i_par);
+		cJSON_AddNumberToObject(o, "blur_cache_inv_format", (double)i_fmt);
+		cJSON_AddNumberToObject(o, "blur_cache_inv_never_built", (double)i_new);
+		cJSON_AddNumberToObject(o, "blur_cache_inv_forced", (double)i_forced);
+	}
 	cJSON_AddNumberToObject(o, "blur_nodes_clipped",
 		(double)avk.blur_nodes_clipped);
 	cJSON_AddNumberToObject(o, "implicit_copy_bytes",
@@ -4578,6 +4733,11 @@ static cJSON *az_avk_stats_json(void) {
 	uint64_t d_touched = 0, d_skipped = 0, d_fallbacks = 0, d_rects = 0;
 	uint64_t d_inherited = 0, d_build_ns = 0;
 	uint64_t d_halo = 0, d_cap_px = 0, d_res_px = 0, d_proc_px = 0;
+	uint64_t role_chains[AVK_BLUR_ROLE_COUNT] = {0};
+	uint64_t role_cap[AVK_BLUR_ROLE_COUNT] = {0};
+	uint64_t role_rebuild[AVK_BLUR_ROLE_COUNT] = {0};
+	uint64_t role_result[AVK_BLUR_ROLE_COUNT] = {0};
+	uint64_t role_cmds[AVK_BLUR_ROLE_COUNT] = {0};
 	uint64_t d_up0_px = 0;
 	uint64_t d_req_px = 0;
 	for (size_t i = 0; i < AZ_AVK_MAX_FORMATS; i++) {
@@ -4620,6 +4780,37 @@ static cJSON *az_avk_stats_json(void) {
 		if (r->blur_damage_rects_max > d_rects) {
 			d_rects = r->blur_damage_rects_max;
 		}
+		for (int k = 0; k < AVK_BLUR_ROLE_COUNT; k++) {
+			role_chains[k] += r->blur_role_chains[k];
+			role_cap[k] += r->blur_role_capture_px[k];
+			role_rebuild[k] += r->blur_role_rebuild_px[k];
+			role_result[k] += r->blur_role_result_px[k];
+			role_cmds[k] += r->blur_role_prefix_cmds[k];
+		}
+	}
+	/*
+	 * M4I. THE SAME NUMBERS, PER ROLE, so "how much of this is the background
+	 * blur being recomputed per window" is a reading rather than an inference.
+	 *
+	 * WINDOW_BACKDROP is the set that DECLARED its source to be the monitor
+	 * background and got a private live chain anyway. Its share of the capture
+	 * and rebuild totals is exactly the redundancy a monitor-wide result cache
+	 * would remove, and it is stated here so the claim can be checked before any
+	 * cache exists and again after.
+	 */
+	for (int k = 0; k < AVK_BLUR_ROLE_COUNT; k++) {
+		char key[64];
+		const char *nm = avk_blur_role_name((enum avk_blur_role)k);
+		snprintf(key, sizeof(key), "blur_role_%s_chains", nm);
+		cJSON_AddNumberToObject(o, key, (double)role_chains[k]);
+		snprintf(key, sizeof(key), "blur_role_%s_capture_px", nm);
+		cJSON_AddNumberToObject(o, key, (double)role_cap[k]);
+		snprintf(key, sizeof(key), "blur_role_%s_rebuild_px", nm);
+		cJSON_AddNumberToObject(o, key, (double)role_rebuild[k]);
+		snprintf(key, sizeof(key), "blur_role_%s_result_px", nm);
+		cJSON_AddNumberToObject(o, key, (double)role_result[k]);
+		snprintf(key, sizeof(key), "blur_role_%s_prefix_cmds", nm);
+		cJSON_AddNumberToObject(o, key, (double)role_cmds[k]);
 	}
 	cJSON_AddNumberToObject(o, "blur_prefix_replays", (double)b_replays);
 	cJSON_AddNumberToObject(o, "blur_prefix_commands", (double)b_cmds);
@@ -4946,7 +5137,49 @@ static void az_avk_set_frame_trace(bool on) {
 	}
 }
 
+/*
+ * M4I. Per-CHAIN tracing: one line per blur chain, with its role and geometry.
+ *
+ * Separate from the frame trace because they answer different questions and
+ * cost different amounts. The frame trace is one line per frame; this is one
+ * line per chain, and a busy desktop runs several per frame -- so it is armed
+ * for a specific experiment and turned off again, never left on.
+ */
+static void az_avk_set_blur_chain_trace(bool on) {
+	for (size_t i = 0; i < AZ_AVK_MAX_FORMATS; i++) {
+		if (avk.renderers[i].used) {
+			avk.renderers[i].renderer.blur_chain_trace = on ? 1 : 0;
+		}
+	}
+}
+
 static void az_avk_stats_reset(void) {
+	/*
+	 * M4I. The cache's INTERVAL counters, zeroed with everything else.
+	 *
+	 * They live on the output rather than the renderer, so they were missed by
+	 * the loop below -- and the first run of the role fixture reported
+	 * `rebuilds=1` beside `MONITOR_BACKGROUND chains 0.00/frame`, because one
+	 * number covered the whole session and the other only the interval since
+	 * the reset. Two counters describing two different windows of time is the
+	 * exact shape of the cold/warm error this milestone has already made twice.
+	 *
+	 * `bytes`, `generation`, `valid` and the slots are NOT touched: they
+	 * describe the present, not an interval, and zeroing them would make the
+	 * next reading a lie until the cache happened to turn over.
+	 */
+	Monitor *rm;
+	wl_list_for_each(rm, &mons, link) {
+		if (rm->avk == NULL) {
+			continue;
+		}
+		struct avk_blur_cache *c = &rm->avk->blur_cache;
+		c->requests = c->hits = c->rebuilds = c->invalidations = 0;
+		c->saved_prefix_draws = c->saved_prefix_px = 0;
+		c->saved_chains = c->saved_blur_px = 0;
+		c->inv_generation = c->inv_geometry = c->inv_params = 0;
+		c->inv_format = c->inv_never_built = c->inv_forced = 0;
+	}
 	for (size_t i = 0; i < AZ_AVK_MAX_FORMATS; i++) {
 		if (!avk.renderers[i].used) {
 			continue;
@@ -5078,6 +5311,16 @@ static void az_avk_stats_reset(void) {
 				r->blur_result_pixels = 0;
 				r->blur_processed_pixels = 0;
 				r->blur_required_work_pixels = 0;
+				memset(r->blur_role_chains, 0,
+					sizeof(r->blur_role_chains));
+				memset(r->blur_role_capture_px, 0,
+					sizeof(r->blur_role_capture_px));
+				memset(r->blur_role_rebuild_px, 0,
+					sizeof(r->blur_role_rebuild_px));
+				memset(r->blur_role_result_px, 0,
+					sizeof(r->blur_role_result_px));
+				memset(r->blur_role_prefix_cmds, 0,
+					sizeof(r->blur_role_prefix_cmds));
 				r->blur_max_slots = 0;
 				r->blur_removable_up0_pixels = 0;
 				r->blur_removable_up01_pixels = 0;

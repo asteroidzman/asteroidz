@@ -112,6 +112,97 @@ struct avk_blur_result {
 };
 
 /*
+ * ── THE MONITOR BACKGROUND BLUR RESULT CACHE (M4I) ────────────────────────
+ *
+ * One finished, output-sized, already-blurred picture of everything below the
+ * scene's optimized-blur node -- in asteroidz, the wallpaper and nothing else.
+ * It is built when its source changes and reused until its source changes
+ * again, and the whole point is that FRAME DAMAGE IS NOT A SOURCE CHANGE. A
+ * tag transition damages every pixel of the output while the wallpaper behind
+ * it is the same wallpaper, and every version of this renderer before M4I
+ * rebuilt the background blur anyway -- once per consuming node, per frame.
+ *
+ * ── VALIDITY IS AN EQUALITY, NOT A JUDGEMENT ──────────────────────────────
+ *
+ * The cache is usable exactly when every field below still describes the frame
+ * asking for it. There is no "probably unchanged" anywhere in this contract:
+ * if the renderer cannot prove validity it rebuilds, because a stale backdrop
+ * is a wrong picture that persists until something unrelated disturbs it, and
+ * that is the worst failure mode a cache can have.
+ *
+ *   generation  the compositor's dirty counter at the time this was built.
+ *               Monotonic; a boolean cannot survive mark/render/mark/clear.
+ *   width/height, origin  the extent it was built at. An output resize, a
+ *               scale change and a transform change all land here.
+ *   params      the kernel it was built with. A radius or level-count change
+ *               produces a different picture from the same source.
+ *   format      the VkFormat, which is also (M5) the colour domain. A cache
+ *               built in one working space may not be sampled in another.
+ *
+ * ── LIFETIME ──────────────────────────────────────────────────────────────
+ *
+ * The image is cross-frame, so it cannot come from the transient pool: a
+ * transient is recycled the moment its frame retires, which is precisely the
+ * property this must not have. It is owned here and handed to the retire queue
+ * on replacement, so a frame still sampling the old image keeps it alive
+ * without a CPU wait. `slot` alternates so a rebuild never writes the image an
+ * in-flight frame is reading.
+ */
+struct avk_blur_cache {
+	/* Two slots, and two is derived rather than chosen: a rebuild must not
+	 * write the image the previous frame is sampling, and the previous frame is
+	 * the only one that can still be reading, because a rebuild is ordered
+	 * after every prior submission on the same queue. A third slot would be
+	 * dead memory at output resolution. */
+	struct avk_image *slots[2];
+	uint64_t slot_bytes[2];
+	uint32_t slot;
+	bool valid;
+
+	uint64_t generation;
+	int32_t origin_x, origin_y;
+	uint32_t width, height;
+	VkFormat format;
+	struct avk_blur_params params;
+
+	/* Telemetry. Requests are consumer asks; hits are asks served from here;
+	 * rebuilds are producer runs. saved_* is the work a hit avoided, priced in
+	 * the same units the uncached path reports, so the two are comparable. */
+	uint64_t requests, hits, rebuilds, invalidations;
+	uint64_t saved_prefix_draws, saved_prefix_px;
+	uint64_t saved_chains, saved_blur_px;
+	uint64_t bytes;
+	/* Why the last rebuild happened, and how many of each kind there have
+	 * been. A cache that rebuilds unexpectedly must say why in one reading. */
+	uint64_t inv_generation, inv_geometry, inv_params, inv_format,
+	         inv_never_built, inv_forced;
+};
+
+enum avk_blur_cache_reason {
+	AVK_BLUR_CACHE_OK = 0,
+	AVK_BLUR_CACHE_NEVER_BUILT,
+	AVK_BLUR_CACHE_GENERATION,
+	AVK_BLUR_CACHE_GEOMETRY,
+	AVK_BLUR_CACHE_PARAMS,
+	AVK_BLUR_CACHE_FORMAT,
+	AVK_BLUR_CACHE_FORCED,
+};
+
+static inline const char *avk_blur_cache_reason_name(
+		enum avk_blur_cache_reason r) {
+	switch (r) {
+	case AVK_BLUR_CACHE_OK:          return "OK";
+	case AVK_BLUR_CACHE_NEVER_BUILT: return "NEVER_BUILT";
+	case AVK_BLUR_CACHE_GENERATION:  return "GENERATION";
+	case AVK_BLUR_CACHE_GEOMETRY:    return "GEOMETRY";
+	case AVK_BLUR_CACHE_PARAMS:      return "PARAMS";
+	case AVK_BLUR_CACHE_FORMAT:      return "FORMAT";
+	case AVK_BLUR_CACHE_FORCED:      return "FORCED";
+	}
+	return "?";
+}
+
+/*
  * ── ONE BLUR'S DAMAGE, AS SIX DISTINCT REGIONS ────────────────────────────
  *
  * Collapsing any two of these still renders a picture, and the picture is wrong
@@ -676,6 +767,65 @@ struct avk_renderer {
 	uint64_t blur_capture_pixels;
 	uint64_t blur_result_pixels;
 	uint64_t blur_processed_pixels;
+	/*
+	 * M4I. THE SAME QUANTITIES, SPLIT BY ROLE (enum avk_blur_role).
+	 *
+	 * Every aggregate above sums a tooltip's backdrop and a maximised window's
+	 * into one mean, and that mean is what produced "chains=3 costs more than
+	 * chains=4" -- a true statement about the aggregate and a useless one about
+	 * the renderer. Cost belongs to a KIND of chain, so it is counted per kind.
+	 *
+	 * Indexed by enum avk_blur_role. A role's entry moving while the total does
+	 * not is the shape of every attribution question left in this milestone.
+	 */
+	uint64_t blur_role_chains[AVK_BLUR_ROLE_COUNT];
+	uint64_t blur_role_capture_px[AVK_BLUR_ROLE_COUNT];
+	uint64_t blur_role_rebuild_px[AVK_BLUR_ROLE_COUNT];
+	uint64_t blur_role_prefix_cmds[AVK_BLUR_ROLE_COUNT];
+	uint64_t blur_role_result_px[AVK_BLUR_ROLE_COUNT];
+	/* Per-chain geometry + role, one log line each, under
+	 * AZ_BLUR_CHAIN_TRACE=1 or `amsg dispatch set_blur_chain_trace,1`. Runtime
+	 * toggle because the interesting frames are live ones and a restart to
+	 * enable a trace changes the workload being traced. */
+	uint32_t blur_chain_trace;
+	/*
+	 * M4I. The OUTPUT's monitor background blur cache, borrowed for the frame.
+	 *
+	 * A pointer and not a member: a renderer is shared by every output using
+	 * the same VkFormat, and this resource is per output. The caller sets it
+	 * before recording and it is read only during recording, so it never
+	 * becomes mutable state consulted after the snapshot.
+	 */
+	struct avk_blur_cache *blur_cache;
+	/* The producer segment's active region, owned for the frame. */
+	pixman_region32_t blur_cache_region;
+	/*
+	 * ── FALSIFIERS ────────────────────────────────────────────────────────
+	 *
+	 * Each one must make a specific oracle FAIL. A break that leaves every
+	 * assertion green is a break that proves the assertion tests nothing, and
+	 * two of those were found doing exactly that in M4H.
+	 *
+	 * off            AZ_BLUR_CACHE=0. The A/B arm: same binary, no cache, the
+	 *                pre-M4I path in full.
+	 * always_dirty   rebuild every frame. Hit rate must go to zero and the
+	 *                frame cost must return to the uncached baseline. If the
+	 *                cache still claims a win with this on, the attribution is
+	 *                wrong, not the cache.
+	 * ignore_dirty   never invalidate on generation. Changing the wallpaper
+	 *                must then leave stale pixels and fail the dirty oracle.
+	 * stale_geometry ignore an extent change. A resize must fail the oracle.
+	 * stale_params   ignore a kernel change. A radius change must fail it.
+	 * unsafe_reuse   rebuild into the slot the previous frame is sampling,
+	 *                which is the cross-frame read-after-write this design
+	 *                exists to avoid.
+	 */
+	bool break_blur_cache_off;
+	bool break_blur_cache_always_dirty;
+	bool break_blur_cache_ignore_dirty;
+	bool break_blur_cache_stale_geometry;
+	bool break_blur_cache_stale_params;
+	bool break_blur_cache_unsafe_reuse;
 	/*
 	 * WHAT THE CHAIN WOULD HAVE TO PROCESS, summed per pass, with every
 	 * filter footprint included -- avk_blur_work_of(). The denominator of the
