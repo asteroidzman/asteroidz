@@ -2738,3 +2738,75 @@ What caught it was the disagreement with `avk-stats`' `validation_enabled=true`:
 two independent readings of one fact, which is the only reason the wrong one did
 not get written down as a result. Find the boot boundary first
 (`grep -n "avk instance:"`, take the last) and read forward from there.
+
+## 5.18 Both colour paths, live, under validation
+
+M5's two paths had been qualified headless only. Everything below ran on the
+real desktop with `validation=on sync_validation=on`, on two outputs at
+different scales (DP-1 3840x2160 raster at scale 1.5, HDMI-A-1 1920x1080 at
+1.0), against real clients, with dma-buf scanout and drm_syncobj handover.
+
+Each path got a temporary GDM session carrying its environment variable, since
+`restart` re-execs with the same environ and cannot add one.
+
+### Path A — `AZ_M5_PATH_A=1`
+
+| reading | value |
+|---|---|
+| `srgb_attach_segments` / `frames` | **634 / 634** — every frame through the scan-out buffer's `_SRGB` view |
+| `decode` by variant | **srgb 41364, gamma22 0, bt1886 0** |
+| VUID / SYNC-HAZARD, whole boot | **0** |
+| waits / lifecycle / fallback | 0 / 0 / 0 |
+| teardown census | **all zero**, every object class |
+
+Two things this settles that headless could not. **The VUID fixed in §5.13 does
+not fire on the real path** — that fix was proved against an image the fixture
+created itself, while the live path attaches an `_SRGB` view to an *imported
+dma-buf* with the modifier KMS chose, which is a different object and exactly
+what F11's probe was about. And the teardown census now covers `pipes_srgb`,
+which is created lazily on the first Path-A frame and had never been destroyed
+under a validation layer.
+
+**F12 on real traffic:** every decode took the sRGB curve and none took 2.2. The
+adapter's rule was derived from scenefx handing untagged surfaces over as
+GAMMA22; on this desktop no client declares anything else, so the rule is doing
+exactly what it was written for and nothing is being silently reinterpreted.
+
+### Path B — `AZ_M5_PATH_B=force`
+
+| reading | value |
+|---|---|
+| `encode` draws / `srgb_attach_segments` | 2363 / **0** — correct, Path B does not use the `_SRGB` attachment |
+| `encode_compiles` | **1, and it stayed at 1** across the whole exercise |
+| intermediates | **2**, one per output |
+| VUID / SYNC-HAZARD, whole boot | **0** |
+| waits / lifecycle / fallback | 0 / 0 / 0 |
+
+`compiles` staying at 1 is the one that mattered: a pipeline compile on the
+frame path is a millisecond-scale stall that no timing percentile can tell from
+a slow frame, and this is the only instrument that separates them. One variant
+serves both outputs because they share a format — the (format, curve) key is
+doing its job.
+
+**What Path B costs, measured rather than estimated:**
+
+```
+intermediates   texel 82,944,000   req 83,984,384    (2 images)
+blur cache      req 167,968,768                      (4 images)
+```
+
+The texel figure checks by hand: 3840x2160x8 = 66,355,200 for DP-1 plus
+1920x1080x8 = 16,588,800 for HDMI-A-1 is exactly 82,944,000, and the 1.25% gap
+to the requirement figure is the driver's tiling. The blur cache is 168 MB
+because on Path B it is FP16 too (ADR-012) — twice what it costs on Path A.
+
+So **Path B costs roughly 168 MB more than Path A** on this two-monitor desktop,
+for the same picture. That is the price of the paths being separate, and it is
+why Path A exists at all rather than being folded into Path B for simplicity.
+
+### What none of this measures
+
+Timing. Validation intercepts CPU-side at roughly 100x, so neither session
+paces like the real one and no percentile from either run is comparable to
+§5.10b. These runs answer correctness questions only, which is what the
+validation layer is for.
