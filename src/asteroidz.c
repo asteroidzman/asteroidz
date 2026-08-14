@@ -1749,6 +1749,7 @@ struct Pertag {
 static int32_t reset_avk_stats(const Arg *arg);
 static int32_t set_blur_rect_cap(const Arg *arg);
 static int32_t set_blur_chain_trace(const Arg *arg);
+static int32_t set_blur_cache(const Arg *arg);
 static int32_t set_frame_trace(const Arg *arg);
 static int32_t dump_scene(const Arg *arg);
 static int32_t damage_all(const Arg *arg);
@@ -1951,6 +1952,26 @@ static int32_t set_blur_chain_trace(const Arg *arg) {
 	bool on = arg != NULL && arg->i != 0;
 	az_avk_set_blur_chain_trace(on);
 	wlr_log(WLR_INFO, "AVK: blur chain trace %s", on ? "ON" : "off");
+#else
+	(void)arg;
+#endif
+	return 0;
+}
+/*
+ * `amsg dispatch set_blur_cache,<0|1>` -- the monitor background blur cache.
+ *
+ * The A/B arm, live. With it off every backdrop blur reconstructs the
+ * background for itself, which is what AVK did before M4I; with it on the
+ * background is built when its source changes and reused until it changes
+ * again. Same binary, same session, same windows -- which is the only way to
+ * compare two arms without also comparing two GPU thermal states and two
+ * different sets of animations.
+ */
+static int32_t set_blur_cache(const Arg *arg) {
+#ifdef AZ_HAVE_VULKAN
+	bool on = arg != NULL && arg->i != 0;
+	az_avk_set_blur_cache(on);
+	wlr_log(WLR_INFO, "AVK: monitor background blur cache %s", on ? "ON" : "off");
 #else
 	(void)arg;
 #endif

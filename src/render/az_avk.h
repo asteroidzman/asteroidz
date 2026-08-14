@@ -5145,6 +5145,14 @@ static void az_avk_set_frame_trace(bool on) {
  * line per chain, and a busy desktop runs several per frame -- so it is armed
  * for a specific experiment and turned off again, never left on.
  */
+static void az_avk_set_blur_cache(bool on) {
+	for (size_t i = 0; i < AZ_AVK_MAX_FORMATS; i++) {
+		if (avk.renderers[i].used) {
+			avk_render_set_blur_cache_enabled(&avk.renderers[i].renderer, on);
+		}
+	}
+}
+
 static void az_avk_set_blur_chain_trace(bool on) {
 	for (size_t i = 0; i < AZ_AVK_MAX_FORMATS; i++) {
 		if (avk.renderers[i].used) {

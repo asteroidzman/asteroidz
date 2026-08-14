@@ -1070,6 +1070,9 @@ void avk_renderer_finish(struct avk_renderer *renderer);
  * Runtime rather than env because the A/B has to run without restarting the
  * session that produces the workload. */
 void avk_render_set_damage_rect_cap(int cap);
+/* M4I. Enable or disable the monitor background blur cache at runtime, on one
+ * renderer. See the note at the definition for why this is not env-only. */
+void avk_render_set_blur_cache_enabled(struct avk_renderer *renderer, bool on);
 
 uint64_t avk_render_frame(struct avk_renderer *renderer,
 	struct avk_image *target, const struct avk_scene *scene,

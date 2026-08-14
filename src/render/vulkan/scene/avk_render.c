@@ -635,6 +635,26 @@ static uint64_t az_region_area(const pixman_region32_t *region) {
  */
 static int az_blur_rect_cap = 0;
 
+/*
+ * M4I. The cache, on or off, without a restart.
+ *
+ * A dispatch and not only an environment variable, for the reason the rectangle
+ * cap needed one: `restart` re-execs with the same environ, so an env-only knob
+ * cannot be A/B'd against a RUNNING session -- and restarting into the other
+ * value destroys the workload being measured and starts a cold GPU, which is
+ * how this milestone produced a 2.6x result that was nothing but unequal
+ * animation counts.
+ *
+ * Turning it off leaves the cached image allocated and simply stops consuming
+ * it; turning it back on resumes only if the generation still matches, so a
+ * wallpaper change during the OFF arm is not silently reinstated.
+ */
+void avk_render_set_blur_cache_enabled(struct avk_renderer *renderer, bool on) {
+	if (renderer != NULL) {
+		renderer->break_blur_cache_off = !on;
+	}
+}
+
 void avk_render_set_damage_rect_cap(int cap) {
 	az_blur_rect_cap = cap >= 1 ? cap : 0;
 }
