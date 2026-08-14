@@ -661,6 +661,29 @@ int32_t set_output_icc(const Arg *arg) {
 		return 0;
 	const char *path = arg->v2 ? (const char *)arg->v2 : "";
 	mon_load_icc_profile(m, *path ? path : NULL);
+	/*
+	 * ── AND RE-DERIVE, AND REPAINT ────────────────────────────────────────
+	 *
+	 * Loading the profile is half of it. Since M6B/G2 a profile that reduces to
+	 * a matrix-shaper changes the output's PATH and its encode curve, so the
+	 * colour state has to be derived again or the profile sits loaded and
+	 * unapplied -- logged, reported by `amsg get all-monitors`, and doing
+	 * nothing. NULL state: nothing about the output's format or mode is
+	 * changing here, only what happens to the pixels on their way out.
+	 *
+	 * Then the whole output, because NOTHING ELSE WILL DAMAGE IT. Every pixel's
+	 * encoding just changed and not one of them is in anybody's damage region;
+	 * without this the new state applies to whatever happens to be redrawn next
+	 * and the rest of the screen keeps the old encoding until something moves
+	 * over it. Also the A<->B transition: Path B composites into an
+	 * intermediate that holds nothing yet, and the first frame into a fresh one
+	 * is forced full anyway.
+	 */
+	mon_derive_color_state(m, NULL);
+	if (m->scene_output != NULL) {
+		wlr_damage_ring_add_whole(&m->scene_output->damage_ring);
+		wlr_output_schedule_frame(m->wlr_output);
+	}
 	printstatus(IPC_WATCH_ARRANGGE);
 
 	/* An empty path REMOVES the entry rather than writing `icc-profile ""`:
