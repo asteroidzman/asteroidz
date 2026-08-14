@@ -1,8 +1,47 @@
-# M6A — what is built, what is not
+# M6A — PRESENTATION OWNERSHIP — **CLOSED**
+
+Closed by operator decision on the evidence below. Not to be reopened without a
+regression or a new measured requirement.
+
+**Decisions taken at closure:**
+
+- **ADR-611** — per-output presentation evaluation ENFORCED. Cross-output
+  temporal skew is legitimate by design; never restore a global animation tick
+  to hide it.
+- **ADR-612** — Model A retained. GPU evaluation of animation progress
+  REJECTED ON EVIDENCE, not deferred as unfinished work. Reopen only if
+  profiling shows CPU evaluation, state upload or geometry mutation becoming
+  meaningful.
+- **Velocity continuity** — enabled as the production default.
+  `AZ_BREAK_ANIM_RETARGET_ZERO_VELOCITY` is a diagnostic falsifier, never the
+  default.
+- **`VK_EXT_calibrated_timestamps`** — optional observability enhancement, not
+  a blocker. `UNKNOWN` remains the correct verdict without it.
+- **Burst-from-idle (~2.7 ms on DP-1)** — observed, within the 6.944 ms budget,
+  NO ACTION. Do not resurrect DPM prewarm, clock pinning, fake GPU activity or
+  idle keepalive on account of it.
+- **Spring tuning** — user validation pending. Do not adjust constants without
+  live evidence.
+
+## The standing rule this milestone earned
+
+**A green oracle is not trustworthy until its falsifier has been observed red.**
+
+Ten instruments in this milestone looked convincing and were wrong. What makes
+the results below trustworthy is not that they went green — it is that premise
+assertions, working falsifiers and independent derivations caught the broken
+measurements. For an important new invariant: prove the fixture exercises the
+mechanism, break the mechanism deliberately, observe the expected failure,
+restore it, observe green, and where possible confirm with an independent
+measurement.
+
+This is not a mandate to run large suites constantly. It is a mandate to make
+the tests that do run informative.
+
+## What is built
 
 Companion to `adr.md` (the design) and `audit.md` (the ground truth it was
-designed against). This file says only which parts exist, so that "M6A is in
-progress" is a readable state rather than an impression.
+designed against).
 
 ## Built and verified
 
@@ -79,15 +118,37 @@ sustained load. That is the first frame of an animation started from a
 stretched panel. Whether it is *visible* is a question for the live quality
 pass, not for a tighter constant.
 
-## ADR-611's enforcement half: the evidence, and why it is a product call
+## ADR-611 — ENFORCED, and it already was
 
-The derivation half landed (`anim_eval_at`). The enforcement half — each output
-evaluating the trajectory at its *own* instant instead of sharing one box —
-was measured before being built, and the measurement says it is a trade rather
-than a fix.
+**Operator decision (accepted):** per-output presentation evaluation is
+REQUIRED; cross-output temporal skew is legitimate by design. A window spanning
+independently refreshed outputs is ONE semantic object that may have DIFFERENT
+presentation samples on each output. That is temporal presentation skew — not
+geometry corruption, not animation divergence, not state divergence. It must
+not be "fixed" later by restoring a global animation tick.
 
-**The skew is bounded and real.** Per-output target instants during an
-animation, both outputs driven:
+**And the enforcement was already in force.** This document previously listed
+it as not built; that was wrong. `rendermon` ticks every client with THAT
+output's sample instant and then composites THAT output, so each output has
+always composited its own evaluation. Measured directly from the `anim tick`
+trace, two outputs animating one window:
+
+```
+  257 ticks across 2 outputs (HEADLESS-1=165, HEADLESS-2=92)
+  same window, same animation, geometry difference between outputs:
+    median 43px   p95 179px   max 218px
+```
+
+(That pairing used a 20 ms tolerance, wider than the true per-frame skew, so
+the magnitude is inflated. The target-instant measurement below — median
+19.4 px, max 60.8 px — is the accurate figure.)
+
+What was never per-output is the SHARED scene-node position read outside a
+render pass: input hit-testing and protocol-visible geometry take whichever
+pass ran last. ADR-611 anticipated exactly that and rules it acceptable, both
+already tolerating one-period-bounded staleness.
+
+**Skew magnitude, from the target instants:**
 
 ```
   skew between targets   median 4.80ms   p95 13.17ms   max 15.05ms
@@ -97,27 +158,10 @@ animation, both outputs driven:
 
 The max sits just under HDMI-A-1's 16.67 ms period, which is the theoretical
 bound — a measurement agreeing with its own bound is what says it is measuring
-the right thing. The first attempt reported 72 ms median and 362 ms max, which
-is impossible; it was measuring the *staleness* of an output that M4G had
-correctly declined to wake, not a skew.
+the right thing. An earlier attempt reported 72 ms median and 362 ms max, which
+is impossible; it was measuring the staleness of an output M4G had correctly
+declined to wake.
 
-**It affects straddling windows only.** The worry that a single-output window
-is ticked with the other output's instant — `rendermon` walks every client on
-every output's pass with no monitor filter — does not materialise: M4G's frame
-reach means the other output is never woken by motion it cannot see, so it
-never ticks the client at all. Measured: **0 backward steps** across 105 moves
-on one output and 121 on two. A monotone trajectory sampled at monotone
-instants cannot go backwards, so a non-monotonic step would have been the
-defect showing itself. There is none.
-
-**And the error does not disappear either way.** Today both screens draw the
-same box and one of them is up to ~61 px stale for its own presentation
-instant. Enforced, each screen is correct for itself and they disagree by that
-much at the seam. Same magnitude; lag traded for disagreement.
-
-So the decision is: *is up to 61 px of seam disagreement during a fast tag
-switch preferable to up to 61 px of temporal lag on one of the two screens?*
-ADR-607 rules the disagreement legitimate. It is still a visible change on
-adjacent monitors, and "no new cross-output artifacts" is an operator
-judgement rather than a measurement — so it is left un-enforced with the
-evidence recorded, not deferred for lack of effort.
+**Single-output windows are unaffected.** M4G's frame reach means an output
+never woken by motion it cannot see never ticks the client: 0 backward steps
+across 105 moves on one output and 121 on two.
