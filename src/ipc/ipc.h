@@ -862,6 +862,24 @@ static void handle_command(int client_fd, const char *cmd_raw) {
 			 * predictor that is early half the time and late half the time has
 			 * a mean near zero and is not thereby good.
 			 */
+			/*
+			 * ADR-609. Misses by what the timestamps could PROVE, and an
+			 * UNKNOWN that is used honestly rather than as a shrug.
+			 *
+			 * gpu_ts_available is false until VK_EXT_calibrated_timestamps is
+			 * wired, and while it is false GPU_LATE and PRESENTATION_SCHEDULING
+			 * are structurally unreachable -- so a series that is entirely
+			 * UNKNOWN is a stated limitation and not a mystery. Reporting the
+			 * flag beside the counters is what makes the difference readable.
+			 */
+			cJSON *ms = cJSON_AddObjectToObject(pr, "misses");
+			cJSON_AddNumberToObject(ms, "total", (double)ps->misses);
+			cJSON_AddBoolToObject(ms, "gpu_ts_available", false);
+			for (int v = AZ_MISS_CPU_LATE; v < AZ_MISS_COUNT; v++) {
+				cJSON_AddNumberToObject(ms,
+					az_present_verdict_name((enum az_present_verdict)v),
+					(double)ps->verdicts[v]);
+			}
 			cJSON *er = cJSON_AddObjectToObject(pr, "error");
 			cJSON_AddNumberToObject(er, "count", (double)ps->err_count);
 			if (ps->err_count) {

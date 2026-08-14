@@ -105,8 +105,34 @@ struct az_present_inflight {
 	uint32_t commit_seq;
 	uint64_t target_ns;      /* what was predicted when this frame was armed */
 	uint64_t arm_ns;
-	uint64_t commit_ret_ns;
+	uint64_t commit_call_ns; /* just before wlr_output_commit_state */
+	uint64_t commit_ret_ns;  /* just after it returned */
 	bool used;
+};
+
+/*
+ * ── WHY A FRAME MISSED, WHEN THE TIMESTAMPS CAN PROVE IT ──────────────────
+ *
+ * ADR-609. A miss today is inferred from frame-event spacing, which cannot
+ * separate a late CPU from a late flip -- and every unexplained miss defaults,
+ * culturally, to "the GPU is too slow". Each verdict below names the evidence
+ * that establishes it, and anything the available timestamps cannot prove is
+ * UNKNOWN rather than guessed.
+ *
+ * Expect UNKNOWN to dominate at first. GPU_LATE and PRESENTATION_SCHEDULING
+ * both need a real GPU completion instant, which requires
+ * VK_EXT_calibrated_timestamps; until that is wired they are unreachable and
+ * `gpu_ts_available` says so, so an all-UNKNOWN series reads as a stated
+ * limitation rather than a mystery.
+ */
+enum az_present_verdict {
+	AZ_MISS_NONE = 0,
+	AZ_MISS_CPU_LATE,
+	AZ_MISS_KMS_COMMIT_LATE,
+	AZ_MISS_GPU_LATE,
+	AZ_MISS_PRESENTATION_SCHEDULING,
+	AZ_MISS_UNKNOWN,
+	AZ_MISS_COUNT,
 };
 
 struct az_presenter {
@@ -173,6 +199,9 @@ struct az_presenter {
 	uint64_t err_abs_sum_ns;
 
 	uint64_t presents_accepted, presents_discarded_epoch;
+	/* Misses, by what the timestamps could prove. See az_present_verdict. */
+	uint64_t misses;
+	uint64_t verdicts[AZ_MISS_COUNT];
 	uint64_t resets[AZ_PRESENT_RESET_COUNT];
 };
 
@@ -186,6 +215,19 @@ struct az_presenter {
 
 static inline const char *az_present_regime_name(enum az_present_regime r) {
 	return r == AZ_PRESENT_VRR ? "vrr" : "fixed";
+}
+
+static inline const char *az_present_verdict_name(enum az_present_verdict v) {
+	switch (v) {
+	case AZ_MISS_NONE:                    return "none";
+	case AZ_MISS_CPU_LATE:                return "cpu_late";
+	case AZ_MISS_KMS_COMMIT_LATE:         return "kms_commit_late";
+	case AZ_MISS_GPU_LATE:                return "gpu_late";
+	case AZ_MISS_PRESENTATION_SCHEDULING: return "presentation_scheduling";
+	case AZ_MISS_UNKNOWN:                 return "unknown";
+	case AZ_MISS_COUNT:                   break;
+	}
+	return "?";
 }
 
 static inline const char *az_present_reset_reason_name(

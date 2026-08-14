@@ -183,7 +183,7 @@ static uint64_t az_presenter_arm(Monitor *m, uint64_t now_ns) {
 }
 
 static void az_presenter_committed(Monitor *m, uint32_t commit_seq,
-		uint64_t commit_ret_ns) {
+		uint64_t commit_call_ns, uint64_t commit_ret_ns) {
 	if (m == NULL) {
 		return;
 	}
@@ -207,6 +207,7 @@ static void az_presenter_committed(Monitor *m, uint32_t commit_seq,
 		.commit_seq = commit_seq,
 		.target_ns = p->armed_target_ns,
 		.arm_ns = p->armed_at_ns,
+		.commit_call_ns = commit_call_ns,
 		.commit_ret_ns = commit_ret_ns,
 		.used = true,
 	};
@@ -296,6 +297,42 @@ static void az_presenter_present(Monitor *m,
 			p->err_count++;
 			p->err_sum_ns += err;
 			p->err_abs_sum_ns += (uint64_t)(err < 0 ? -err : err);
+
+			/*
+			 * ADR-609. A miss is a frame that lit up more than half a period
+			 * after the instant it was aiming at. Each one gets exactly ONE
+			 * verdict, from the first rule its evidence PROVES -- and the
+			 * default is UNKNOWN, not a guess.
+			 */
+			uint64_t tol = p->nominal_period_ns / 2;
+			if (tol > 0 && err > (int64_t)tol) {
+				enum az_present_verdict v;
+				const int64_t delta = 500000; /* 500us margin */
+				if (s->commit_ret_ns >= s->target_ns) {
+					/* The commit completed after the intended flip instant. No
+					 * GPU or display fact is needed: it provably could not
+					 * have made it. */
+					v = (int64_t)s->commit_call_ns
+							< (int64_t)s->target_ns - delta
+						? AZ_MISS_KMS_COMMIT_LATE  /* ready in time; the
+						                            * commit call itself ate
+						                            * the margin */
+						: AZ_MISS_CPU_LATE;
+				} else {
+					/*
+					 * Committed with margin to spare and still missed. That is
+					 * either the GPU signalling late or the display flipping
+					 * late, and CPU timestamps cannot tell those apart --
+					 * both need a real GPU completion instant. Until
+					 * VK_EXT_calibrated_timestamps is wired this is UNKNOWN,
+					 * deliberately: naming it GPU_LATE here would be the
+					 * reflex this whole table exists to stop.
+					 */
+					v = AZ_MISS_UNKNOWN;
+				}
+				p->misses++;
+				p->verdicts[v]++;
+			}
 		}
 		s->used = false;
 		break;

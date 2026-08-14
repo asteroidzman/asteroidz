@@ -8772,6 +8772,15 @@ static void render_monitor(Monitor *m) {
 					pixman_region32_extents(&state.damage);
 				pace_damage_ext = *ext;
 			}
+			/* ADR-609 needs the commit CALL instant as well as its return:
+			 * together they separate "the pass was not ready in time" from
+			 * "the atomic commit itself consumed the margin", and a verdict
+			 * that cannot tell those apart is the reflex this table exists to
+			 * stop. */
+			struct timespec cc;
+			clock_gettime(CLOCK_MONOTONIC, &cc);
+			uint64_t commit_call_ns =
+				(uint64_t)cc.tv_sec * 1000000000ull + (uint64_t)cc.tv_nsec;
 			if (!wlr_output_commit_state(m->wlr_output, &state)) {
 				wlr_log(WLR_ERROR, "Failed to commit frame on %s",
 						m->wlr_output->name);
@@ -8789,7 +8798,7 @@ static void render_monitor(Monitor *m) {
 				m->m8_commit_seq = m->wlr_output->commit_seq;
 				m->m8_armed = true;
 				az_presenter_committed(m, m->wlr_output->commit_seq,
-					m->m8_commit_ns);
+					commit_call_ns, m->m8_commit_ns);
 			}
 		} else {
 			wlr_log(WLR_ERROR, "Failed to build frame for %s",
