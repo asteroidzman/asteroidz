@@ -208,6 +208,26 @@ hl_start() { # hl_start [EXTRA_KDL]
 		secondary_output="output HEADLESS-2 { ${scale2}${rr2}x $x2; y 0; width ${HL_WIDTH2:-$HL_WIDTH}; height ${HL_HEIGHT2:-$HL_HEIGHT}; refresh $hz2 }"
 	fi
 
+	# ── THE TITLEBAR IS ON, AND A PIXEL ORACLE MUST TURN IT OFF ──────────
+	#
+	# The titlebar's TEXT does not render identically from one run to the next.
+	# Two runs of one fixture with byte-identical environments differed by 2,574
+	# pixels in a 429x6 strip -- the title present in one capture and absent
+	# from the other, leaving the theme colour underneath. That is enough to
+	# fail a zero-pixel oracle, and it did: an A/B reported "this change is not
+	# bit-exact" over a difference that had nothing to do with the change.
+	#
+	# It stays ON because most fixtures want a realistic desktop. Any fixture
+	# that COMPARES CAPTURES must append its own titlebar override, and should
+	# run one arm twice as a control and assert the noise floor is zero first.
+	#
+	# THIS COMMENT LIVES HERE, NOT IN THE HEREDOC BELOW. It was written inside
+	# it once, and every line went verbatim into the generated KDL: the parser
+	# hit `# "this change is not bit-exact"` and rejected THE WHOLE FILE with
+	# "line 27: expected argument". Every fixture run after that had no shadows,
+	# no blur and defaults everywhere -- rendering fine and asserting nothing.
+	# The heredoc is unquoted, so the backticks in it were command-substituted
+	# away too, which is why the text had a hole in it.
 	cat > "$HL_CONFIG" <<EOF
 border_radius 8
 borderpx 2
@@ -228,22 +248,6 @@ output $HL_MON { ${scale1}${rr1}x 0; y 0; width $HL_WIDTH; height $HL_HEIGHT; re
 $secondary_output
 layout {
 	titlebar { enable 1 }
-	# ── A PIXEL ORACLE MUST TURN THIS OFF ────────────────────────────────
-	#
-	# The titlebar's TEXT does not render identically from one run to the
-	# next. Two runs of the same fixture with byte-identical environments
-	# differed by 2,574 pixels in a 429x6 strip -- the title present in one
-	# capture and absent from the other, leaving the theme colour underneath.
-	#
-	# That is enough to fail a zero-pixel oracle, and it did: an A/B reported
-	# "this change is not bit-exact" over a difference that had nothing to do
-	# with the change. With `layout { titlebar { enable 0 } }` appended, two
-	# identical runs differ by 0 px.
-	#
-	# It stays ON here because most fixtures want a realistic desktop and a
-	# titlebar is part of one. Any fixture that COMPARES CAPTURES must append
-	# the override -- and should run one arm twice as a control and assert the
-	# noise floor is zero before trusting a cross-arm diff.
 	scroller { preset 0.3,0.5,0.8 }
 }
 dwindle_manual_split 1
@@ -343,6 +347,38 @@ EOF
 	# which is worse than not having it: `hl_move 2880 555` looked like it
 	# aimed at the second monitor and silently did not, so a test could drive
 	# a window that was never under the pointer and report a pass.
+	# ── A REJECTED CONFIG MUST NOT BE A QUIET ONE ────────────────────────
+	#
+	# The compositor logs "KDL parse error" and carries on with DEFAULTS. That
+	# is right for a user with a typo -- a desktop that boots beats one that
+	# does not -- and it is silent ruin for a fixture: everything renders,
+	# nothing throws, and every assertion about shadows or blur is testing a
+	# desktop that has neither.
+	#
+	# It happened. A comment written inside the config heredoc went verbatim
+	# into the KDL, the parser rejected the whole file, and several suites ran
+	# green-shaped for hours over a scene with no effects in it at all. The
+	# premise assertions in the blur fixtures are what eventually caught it;
+	# this makes it the FIRST thing that fails instead of the last.
+	if [ -f "$HL_STATE/asteroidz/asteroidz.log" ] &&
+			grep -qaF "KDL parse error" "$HL_STATE/asteroidz/asteroidz.log"; then
+		# TO THE TERMINAL, NOT JUST TO STDERR. Nearly every fixture calls
+		# `hl_start "$CFG" >/dev/null 2>&1`, which would swallow this and leave
+		# only a bare non-zero exit to explain itself.
+		{
+			echo "hl_start: THE TEST CONFIG WAS REJECTED -- the compositor is"
+			echo "  running on DEFAULTS and every assertion below is vacuous:"
+			grep -aF -m 3 "KDL parse error" "$HL_STATE/asteroidz/asteroidz.log"
+			echo "  config: $HL_CONFIG"
+		} > "$HL_OUTDIR/REJECTED-CONFIG" 2>&1
+		# The file first, unconditionally, THEN try to show it. Writing and
+		# displaying in one pipeline meant a redirection to /dev/tty that could
+		# not be opened took the file down with it.
+		cat "$HL_OUTDIR/REJECTED-CONFIG" >&2
+		cat "$HL_OUTDIR/REJECTED-CONFIG" > /dev/tty 2>/dev/null || true
+		hl_stop >/dev/null 2>&1
+		exit 1
+	fi
 	hl_sync_pointer_extent || echo "hl_start: could not read the layout extent; pointer coordinates will be wrong on a multi-output layout" >&2
 }
 
