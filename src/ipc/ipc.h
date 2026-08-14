@@ -206,6 +206,21 @@ static cJSON *build_client_json(Client *c) {
 	 */
 	cJSON_AddBoolToObject(obj, "animating",
 		c->animation.running || c->opacity_animation.running);
+	/*
+	 * PRESENTATION geometry -- where the window actually is on screen right
+	 * now, evaluated at the last pass's sample instant (ADR-611).
+	 *
+	 * Distinct from x/y/width/height above, and the distinction is the whole
+	 * point: `x` jumps to the target the moment a move is dispatched, so a
+	 * fixture polling it during an animation sees a step function and learns
+	 * nothing about motion. Any oracle asking "where was the window while it
+	 * moved" -- retarget continuity, fractional placement, damage bounds --
+	 * needs this one.
+	 */
+	cJSON_AddNumberToObject(obj, "anim_x", c->animation.current.x);
+	cJSON_AddNumberToObject(obj, "anim_y", c->animation.current.y);
+	cJSON_AddNumberToObject(obj, "anim_width", c->animation.current.width);
+	cJSON_AddNumberToObject(obj, "anim_height", c->animation.current.height);
 	cJSON_AddStringToObject(obj, "icon", c->icon_name ? c->icon_name : "");
 	cJSON_AddStringToObject(obj, "monitor",
 							c->mon ? c->mon->wlr_output->name : "");
@@ -244,6 +259,11 @@ static cJSON *build_client_json(Client *c) {
 	cJSON_AddStringToObject(obj, "special_workspace",
 							c->special_name ? c->special_name : "");
 	cJSON_AddBoolToObject(obj, "pinned", c->ispinned);
+	/*
+	 * SEMANTIC geometry -- where the compositor has decided this window
+	 * belongs. During an animation it is the TARGET and it jumps there the
+	 * instant the decision is made; it is not where the window is drawn.
+	 */
 	cJSON_AddNumberToObject(obj, "x", c->geom.x);
 	cJSON_AddNumberToObject(obj, "y", c->geom.y);
 	cJSON_AddNumberToObject(obj, "width", c->geom.width);

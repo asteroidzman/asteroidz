@@ -2535,6 +2535,20 @@ static bool anim_spring_converged(Client *c, int32_t type, double t,
  * rates -- and the wall time to reach a given progress therefore scales with
  * that sum, which is exactly the dependency ADR-607 statement 3 forbids.
  */
+static inline bool anim_retarget_reset_break(void) {
+	static int on = -1;
+	if (on < 0) {
+		on = getenv("AZ_BREAK_ANIM_RETARGET_POSITION_RESET") != NULL;
+		if (on) {
+			wlr_log(WLR_ERROR, "M6A break: "
+				"AZ_BREAK_ANIM_RETARGET_POSITION_RESET -- a retarget restarts "
+				"from the previous animation's origin; the window will jump "
+				"backwards mid-motion");
+		}
+	}
+	return on != 0;
+}
+
 static inline bool anim_frame_step_break(void) {
 	static int on = -1;
 	if (on < 0) {
@@ -3012,6 +3026,13 @@ void resize(Client *c, struct wlr_box geo, int32_t interact) {
 		c->animainit_geom.width = c->animation.current.width;
 	} else if (c->is_pending_open_animation) {
 		set_client_open_animation(c, c->geom);
+	} else if (anim_retarget_reset_break()) {
+		/* AZ_BREAK_ANIM_RETARGET_POSITION_RESET (falsifier I12): leave
+		 * animainit_geom holding the PREVIOUS animation's start, so a target
+		 * arriving mid-flight restarts the curve from where the window set off
+		 * rather than from where it is. The window jumps backwards and sets
+		 * off again -- the most visible animation defect there is, and the one
+		 * the comment at the retarget site names as the thing to get wrong. */
 	} else {
 		c->animainit_geom = c->animation.current;
 	}
