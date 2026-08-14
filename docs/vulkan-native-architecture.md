@@ -2645,12 +2645,39 @@ defect in either, and the consequence worth caring about is a STEP: a consumer
 that switches between cached and live — on an invalidation, or a node falling
 back — moves by up to 26 codes in one frame.
 
-**What would settle it:** a consumer whose blur node covers the whole output at
-origin 0,0, which shares the cache's extent AND its phase, must then agree. The
-obvious attempt failed and is recorded so it is not repeated: `wlbgeffect` does
-not honour a fullscreen configure — its buffer stays 264x200 — so
-`toggle_fullscreen` moved the decorations and left the node alone, and both
-probes returned byte-identical numbers, which was the tell.
+**SETTLED — it is the phase, and it is not a defect.** The geometry route was a
+dead end (`wlbgeffect` does not honour a fullscreen configure, so
+`toggle_fullscreen` moved the decorations and left the node alone). The
+hypothesis had a sharper prediction available: phase error scales with the
+downsample factor, so it must grow with the number of blur passes. Measured,
+cache-on against cache-off on the same scene:
+
+| passes | px differing | worst channel |
+|---|---|---|
+| 1 | 21,048 | **1** |
+| 2 | 21,161 | **1** |
+| 3 | 25,467 | **11** |
+| 4 | 36,785 | **27** |
+
+1, 1, 11, 27 — flat while the grid offset is sub-pixel, then growing sharply
+once it is not. A cause that was arithmetic rather than geometric would not do
+that.
+
+So the cached and the live picture are **two different valid blurs of the same
+background**, computed on downsample grids anchored at different origins: the
+cache's at the output's 0,0, the live path's at the node's own capture origin. A
+blur of a crop is not the crop of a blur once there is a downsample in it, and
+the halo cannot help — it makes the interior's INPUT complete, and phase is not
+about input.
+
+**On this desktop it is one code.** `passes 2` is the configured value, which is
+the flat part of that table. The 26- and 47-code figures that opened this
+investigation both came from fixtures running three passes or more.
+
+What remains true and worth keeping in mind is the STEP: a consumer that
+switches between cached and live — on an invalidation, or a node falling back —
+moves by whatever that table says for the configured pass count. At 2 that is
+invisible. At 4 it would not be.
 
 ## 5.16 A suite that prints its own failures and exits 0
 
