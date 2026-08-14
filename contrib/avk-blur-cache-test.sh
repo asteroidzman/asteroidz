@@ -144,8 +144,23 @@ run() { # run NAME [EXTRA_ENV...]
 	STATS="$(hl_get "get avk-stats" | jq -r "$JQ | to_entries |
 		map(\"\(.key)=\(.value)\") | join(\" \")" 2>/dev/null)"
 	hl_dispatch capture_output 1
-	sleep 1
+	# WAIT FOR THE FILE, DO NOT SLEEP AT IT. The compositor is still writing a
+	# multi-megabyte PPM a second after the dispatch returns, and a copy taken
+	# on a fixed sleep is a race that only loses when the machine is busy --
+	# which is when a suite is most likely to be running. The expected size is
+	# arithmetic, so wait for it.
+	local want=$(( W * H * 3 ))
+	local t=0
+	while [ "$t" -lt 60 ]; do
+		[ "$(stat -c %s "$cdir/HEADLESS-1.ppm" 2>/dev/null || echo 0)" -ge "$want" ] \
+			&& break
+		sleep 0.5
+		t=$(( t + 1 ))
+	done
 	cp -f "$cdir/HEADLESS-1.ppm" "$OUTDIR/$name.ppm" 2>/dev/null || true
+	if [ "$(stat -c %s "$OUTDIR/$name.ppm" 2>/dev/null || echo 0)" -lt "$want" ]; then
+		echo "  CAPTURE INCOMPLETE for $name -- the oracle below is not valid" >&2
+	fi
 	hl_stop >/dev/null 2>&1
 }
 v() { echo "$2" | tr ' ' '\n' | sed -n "s/^$1=//p" | head -1; }

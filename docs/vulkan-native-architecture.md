@@ -2297,3 +2297,71 @@ and nobody noticed: nothing enumerated these suites, and a suite that cannot
 execute is indistinguishable from a suite that was not run. The first audit
 found **three** non-executable suites, not one. Both halves were falsified
 before being trusted.
+
+### 5.10a The matrix, re-measured on a config that parses
+
+The table in `05b7b74` was withdrawn: it ran while the harness config was being
+rejected wholesale, so it measured a desktop with no blur and no shadows. With
+the config fixed and `hl_start` guarding against a rejected one:
+
+| scenario | n | p50 | p95 | p99 | max | VUID | sync | waits |
+|---|---|---|---|---|---|---|---|---|
+| idle | 15 | 15309 | 15371 | 15371 | 15371 | 0 | 0 | 0 |
+| move | 527 | 4905 | 5333 | 5394 | 5440 | 0 | 0 | 4 |
+| resize | 527 | 10765 | 13855 | 14978 | 15344 | 0 | 0 | 5 |
+| tag | 335 | 13548 | 14872 | 14936 | 15327 | 0 | 0 | 0 |
+| multiblur | 15 | 17638 | 17762 | 17762 | 17762 | 0 | 0 | 0 |
+
+Twenty to thirty times the withdrawn figures, which is the measure of how much
+of that scene was missing.
+
+**These are not budget numbers and the fixture says so on every run.** This GPU
+idles near 50MHz; the same work on a clocked display is a fraction of it, and
+the `>budget` columns are printed only so that a live run has the same shape to
+fill in. What transfers is the ORDERING and the correctness columns:
+
+- `move` is the cheapest scenario, not the most expensive — a floating window
+  moving damages a small region, and the damage model is what makes that true.
+- `idle` is expensive because it is damage-driven by construction: every cycle
+  forces a full-output redraw with every effect on. A genuinely idle compositor
+  renders nothing, and a percentile over zero frames is not a measurement.
+- `multiblur` is the ceiling, as it should be.
+- 0 VUID and 0 sync hazards in every scenario. The 4-5 CPU waits under `move`
+  and `resize` are the ring legitimately blocking on a 50MHz GPU doing real
+  blur work; the withdrawn run reported 0 because it was doing none.
+
+### 5.10b The live matrix — the only place the budget exists
+
+`contrib/avk-live-matrix.sh`, on the real DP-1 at 143.999Hz, with a genuine
+two-population desktop: Firefox on tag 1, two terminals on tag 2.
+
+| scenario | n | p50 | p95 | p99 | max | >6944 | 1x | 2x | 3x | VUID | waits |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| idle | 85 | 1148 | 3289 | 3402 | 3402 | 0 | 0 | 0 | 0 | 0 | 0 |
+| tag | 544 | 960 | 4588 | 6022 | 6100 | 0 | 0 | 0 | 0 | 0 | 0 |
+| move | 552 | 1665 | 2753 | 3941 | 4716 | 0 | 0 | 0 | 0 | 0 | 0 |
+| resize | 960 | 1051 | 1596 | 1858 | 3610 | 0 | 0 | 0 | 0 | 0 | 0 |
+
+**Zero frames over budget in every scenario**, and zero consecutive misses at
+any multiple. The worst frame the compositor produced across all four was
+6100us — 88% of the interval — and it was a tag transition, which is the
+scenario this whole milestone existed to fix.
+
+The p99 on `tag` is 6022us, 87% of budget. That is inside, and it is stated as
+a number rather than as "comfortably": a 13% margin on the worst percentile of
+the worst scenario is a real result and not a large one, and the next thing to
+make a frame more expensive will show up there first.
+
+**What this is NOT comparable to.** The cache A/B earlier in M4I reported
+p95 3252 and max 4817 on the same output. Those were measured over a different
+window set on a different day, and the honest reading is that the two are
+separate measurements of a passing desktop rather than a before/after: this
+milestone has already produced two retracted results by comparing populations
+that were not the same population.
+
+The fixture spawns its OWN terminal for `move` and `resize` rather than
+floating one of the user's, and returns the session to the tag it started on.
+The first run left that terminal behind: `kitty ... &` gives the shell job's
+pid and the process the compositor has a surface for is a different one, so the
+cleanup now asks the compositor which pid owns the window -- a recorded pid,
+never a pattern, so it cannot reach a terminal the user opened themselves.
