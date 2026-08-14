@@ -141,6 +141,12 @@ static inline bool avk_image_is_foreign(const struct avk_image *image) {
  * callback to avk_retire_push() -- its signature matches avk_retire_fn on
  * purpose -- or call it directly only when the GPU is known to be idle.
  */
+/* The image's _SRGB view, created on demand; NULL when the image was not
+ * created MUTABLE with that format. Sampled it decodes, as an attachment it
+ * encodes -- Path A is both, in fixed function. */
+VkImageView avk_image_srgb_view(struct avk_device *dev,
+	struct avk_image *image);
+
 void avk_image_destroy(struct avk_device *dev, void *image);
 
 /* Allocate a zeroed avk_image with its identity and ownership state set. Every

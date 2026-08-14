@@ -6,6 +6,48 @@
 #include <inttypes.h>
 #include <stdlib.h>
 
+/*
+ * M5/C7 (Path A). The image's _SRGB view, created on demand.
+ *
+ * Used two ways and the guard is the same for both: as a SAMPLED view the
+ * hardware applies the sRGB EOTF on every fetch, and as a COLOUR ATTACHMENT it
+ * applies the inverse on every write. Path A is exactly those two together --
+ * decode and encode in fixed function, no shader and no extra pass.
+ *
+ * NULL when the image was not created MUTABLE with that format in its view
+ * list. That is not a soft failure to paper over: a view in a format an image
+ * was not created for is undefined behaviour, and validation will not reliably
+ * catch it. The caller falls back and renders the pre-M5 picture.
+ */
+VkImageView avk_image_srgb_view(struct avk_device *dev,
+		struct avk_image *image) {
+	if (image == NULL || !image->srgb_mutable
+			|| image->format_srgb == VK_FORMAT_UNDEFINED) {
+		return VK_NULL_HANDLE;
+	}
+	if (image->view_srgb != VK_NULL_HANDLE) {
+		return image->view_srgb;
+	}
+	VkImageViewCreateInfo vi = {
+		.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+		.image = image->image,
+		.viewType = VK_IMAGE_VIEW_TYPE_2D,
+		.format = image->format_srgb,
+		.subresourceRange = {
+			.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+			.levelCount = 1,
+			.layerCount = 1,
+		},
+	};
+	if (!avk_check(vkCreateImageView(dev->dev, &vi, NULL, &image->view_srgb),
+			"vkCreateImageView (_SRGB)")) {
+		image->view_srgb = VK_NULL_HANDLE;
+		return VK_NULL_HANDLE;
+	}
+	AVK_LIVE_INC(dev, image_views);
+	return image->view_srgb;
+}
+
 void avk_image_destroy(struct avk_device *dev, void *data) {
 	struct avk_image *image = data;
 	if (image == NULL) {

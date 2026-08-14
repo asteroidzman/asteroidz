@@ -616,6 +616,22 @@ struct avk_renderer {
 	 * on, and must return to within a code once the encode lands.
 	 */
 	bool decode_enabled;
+	/*
+	 * M5/C7 (Path A). Render into the target's _SRGB view, so the hardware
+	 * applies the inverse sRGB EOTF on every write.
+	 *
+	 * The other half of decode_enabled, and the two are only correct together:
+	 * decode alone composites in linear and writes it as though it were
+	 * electrical (everything washes out), encode alone applies an inverse curve
+	 * to values that were never decoded (everything darkens). The M5 SDR gate
+	 * is bit-exact with both off and must be within a code with both on.
+	 *
+	 * Silently inert when the target has no _SRGB view -- see
+	 * avk_image_srgb_view(). That is the honest fallback: an output whose
+	 * scanout buffer is 10-bit has no such view on any conformant device (F11)
+	 * and belongs on Path B.
+	 */
+	bool encode_srgb;
 	/* M4H break -- AZ_AVK_OCCLUDE_ALL=1: every command occludes, whatever its
 	 * alpha or shape. The over-culling failure the oracle must be able to
 	 * catch; see az_cmd_opaque_region(). */

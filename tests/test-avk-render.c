@@ -75,8 +75,9 @@ static uint32_t find_memory(struct avk_device *dev, uint32_t bits,
 	return UINT32_MAX;
 }
 
-static struct avk_image *make_image(struct avk_device *dev, uint32_t width,
-		uint32_t height, VkImageUsageFlags usage, bool has_alpha) {
+static struct avk_image *make_image_ex(struct avk_device *dev, uint32_t width,
+		uint32_t height, VkImageUsageFlags usage, bool has_alpha,
+		bool srgb_mutable) {
 	/*
 	 * avk_image_alloc(), not calloc(). A bare calloc leaves `life` at 0, and
 	 * avk_image_destroy() correctly REFUSES to destroy an image that does not
@@ -93,9 +94,23 @@ static struct avk_image *make_image(struct avk_device *dev, uint32_t width,
 	image->has_alpha = has_alpha;
 	image->layout = VK_IMAGE_LAYOUT_UNDEFINED;
 	image->plane_count = 1;
+	image->format_srgb = srgb_mutable
+		? VK_FORMAT_B8G8R8A8_SRGB : VK_FORMAT_UNDEFINED;
+	image->srgb_mutable = srgb_mutable;
 
+	/* M5/C7: the caller may ask for an image that can carry an _SRGB view.
+	 * Opt-in, because the flag is not free and every pre-M5 image here wants
+	 * exactly what it always had. */
+	VkFormat view_formats[2] = { TARGET_FORMAT, VK_FORMAT_B8G8R8A8_SRGB };
+	VkImageFormatListCreateInfo format_list = {
+		.sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO,
+		.viewFormatCount = 2,
+		.pViewFormats = view_formats,
+	};
 	VkImageCreateInfo info = {
 		.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+		.pNext = srgb_mutable ? (const void *)&format_list : NULL,
+		.flags = srgb_mutable ? VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT : 0,
 		.imageType = VK_IMAGE_TYPE_2D,
 		.format = TARGET_FORMAT,
 		.extent = { width, height, 1 },
@@ -131,6 +146,11 @@ static struct avk_image *make_image(struct avk_device *dev, uint32_t width,
 	AVK_LIVE_INC(dev, device_memory);
 	image->memory_count = 1;
 	return image;
+}
+
+static struct avk_image *make_image(struct avk_device *dev, uint32_t width,
+		uint32_t height, VkImageUsageFlags usage, bool has_alpha) {
+	return make_image_ex(dev, width, height, usage, has_alpha, false);
 }
 
 /* Fill an image from host pixels via a staging buffer -- the same route a SHM
@@ -624,6 +644,114 @@ static void test_decode_variant(struct harness *h) {
 		e_mid, decoded_mid);
 
 	avk_image_destroy(h->dev, surface);
+}
+
+/*
+ * M5 PATH A, END TO END: decode on sample, encode on write, and the picture
+ * comes back.
+ *
+ * ── WHY THIS IS THE ONE THAT MATTERS ─────────────────────────────────────
+ *
+ * The two halves are only correct together. Decode alone composites in linear
+ * light and writes it as though it were still electrical -- everything washes
+ * out. Encode alone applies an inverse curve to values that were never decoded
+ * -- everything darkens. Either half on its own is a wrong picture that a test
+ * of that half in isolation would happily call correct.
+ *
+ * So this asserts all three states from one fixture: neither (bit-exact, the
+ * pre-M5 path), decode only (must be WRONG, and by a lot), and both (within a
+ * code). The middle one is the falsifier -- without it, "both halves round-trip"
+ * is also what two no-ops would report.
+ *
+ * ── AND IT USES ITS OWN TARGET ───────────────────────────────────────────
+ *
+ * A mutable one, because the shared target is not. That is deliberate: it keeps
+ * every other test in this file rendering into exactly the image it always did,
+ * so a regression here cannot be a regression there.
+ */
+static void test_path_a_roundtrip(struct harness *h) {
+	printf("M5 PATH A: decode on sample + encode on write\n");
+
+	struct avk_image *target = make_image_ex(h->dev, W, H,
+		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT
+		| VK_IMAGE_USAGE_SAMPLED_BIT, true, true);
+	if (target == NULL) {
+		CHECK(false, "path A: mutable target allocates");
+		return;
+	}
+	CHECK(avk_image_srgb_view(h->dev, target) != VK_NULL_HANDLE,
+		"PREMISE: the mutable target really can carry an _SRGB view");
+
+	static const uint8_t vals[] = { 16, 48, 96, 128, 176, 208, 240 };
+	uint32_t src[16 * 16];
+	for (size_t i = 0; i < 16 * 16; i++) {
+		uint8_t v = vals[i % (sizeof(vals) / sizeof(vals[0]))];
+		src[i] = 0xFF000000u | ((uint32_t)v << 16) | ((uint32_t)v << 8) | v;
+	}
+	struct avk_image *surface = make_image_ex(h->dev, 16, 16,
+		VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+		false, true);
+	if (surface == NULL || !upload(h, surface, src, 16, 16)) {
+		CHECK(false, "path A: source uploads");
+		avk_image_destroy(h->dev, target);
+		if (surface != NULL) { avk_image_destroy(h->dev, surface); }
+		return;
+	}
+
+	struct avk_image *saved_target = h->target;
+	h->target = target;
+
+	int worst[3] = { -1, -1, -1 };
+	for (int arm = 0; arm < 3; arm++) {
+		struct avk_scene scene;
+		avk_scene_init(&scene);
+		pixman_region32_union_rect(&scene.damage, &scene.damage, 0, 0, W, H);
+		scene.has_clear = true;
+		scene.clear_color[3] = 1.0f;
+		struct avk_cmd *tex = avk_scene_add(&scene, AVK_CMD_TEXTURE);
+		tex->dst = (struct avk_box){ 0, 0, 16, 16 };
+		tex->image = surface;
+		tex->src = (struct avk_fbox){ 0, 0, 16, 16 };
+		tex->opacity = 1.0f;
+		tex->filter_linear = false;
+
+		h->renderer.decode_enabled = (arm >= 1);
+		h->renderer.encode_srgb = (arm == 2);
+		bool ok = render(h, &scene);
+		h->renderer.decode_enabled = false;
+		h->renderer.encode_srgb = false;
+		avk_scene_finish(&scene);
+		if (!ok) {
+			CHECK(false, "path A: arm %d renders", arm);
+			continue;
+		}
+		int w = 0;
+		for (uint32_t i = 0; i < 16 * 16; i++) {
+			int want = (int)(src[i] & 0xFF);
+			int got = b_of(px(h, i % 16, i / 16));
+			int d = got - want; if (d < 0) { d = -d; }
+			if (d > w) { w = d; }
+		}
+		worst[arm] = w;
+	}
+
+	h->target = saved_target;
+
+	printf("  ---- worst channel: neither %d, decode-only %d, both %d\n",
+		worst[0], worst[1], worst[2]);
+	CHECK(worst[0] == 0,
+		"neither half: bit-exact, the pre-M5 path (worst %d)", worst[0]);
+	/* THE FALSIFIER. Decode without encode must be visibly wrong, or "both
+	 * halves round-trip" is also what two no-ops would report. */
+	CHECK(worst[1] > 20,
+		"FALSIFIER: decode without encode is badly wrong (worst %d)",
+		worst[1]);
+	CHECK(worst[2] >= 0 && worst[2] <= 1,
+		"BOTH HALVES: the round trip closes within a code (worst %d)",
+		worst[2]);
+
+	avk_image_destroy(h->dev, surface);
+	avk_image_destroy(h->dev, target);
 }
 
 /* ── test 1: overlapping surfaces and alpha ─────────────────────────────── */
@@ -1269,6 +1397,7 @@ int main(void) {
 	test_sdr_roundtrip_gate(&h);
 	test_srgb_view_refusal(&h);
 	test_decode_variant(&h);
+	test_path_a_roundtrip(&h);
 	test_overlap_alpha(&h);
 	test_crop_scale(&h);
 	test_transforms(&h);

@@ -962,9 +962,18 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 	 * switch the hardware is allowed to ignore is not a break switch.
 	 */
 	bool break_preserve = avk_no_load_preserve();
+	VkImageView attach_view = target->view;
+	if (renderer->encode_srgb) {
+		VkImageView srgb = avk_image_srgb_view(renderer->dev, target);
+		if (srgb != VK_NULL_HANDLE) {
+			attach_view = srgb;
+		}
+	}
 	VkRenderingAttachmentInfo color = {
 		.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-		.imageView = target->view,
+		/* M5/C7 (Path A): the _SRGB attachment view encodes on write. Falls
+		 * back to the plain view when the target cannot have one. */
+		.imageView = attach_view,
 		.imageLayout = target_layout,
 		/* A REGIONAL target is written whole by the segment that owns it, so
 		 * there is nothing to preserve; the output target must preserve
