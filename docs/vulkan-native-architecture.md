@@ -2818,11 +2818,20 @@ paces like the real one and no percentile from either run is comparable to
 §5.10b. These runs answer correctness questions only, which is what the
 validation layer is for.
 
-## 5.19 AVK drives a real HDR display
+## 5.19 AVK produces correct HDR10 output (panel-side unconfirmed)
 
-The last M5 claim that had only ever been derived. DP-1 flipped into HDR by the
-existing `force_hdr` rule on mpv, with `AZ_M5_PATH_B=1` and the validation layer
-loaded.
+DP-1 put into HDR by the existing `force_hdr` rule on mpv, with
+`AZ_M5_PATH_B=1` and the validation layer loaded.
+
+**SCOPE OF THE CLAIM, CORRECTED.** An earlier version of this section was headed
+"AVK drives a real HDR display". It should not have been. `screenshot_ui,rawhdr`
+reads the SCAN-OUT BUFFER, not the panel — so everything below proves that AVK
+produced correct PQ/BT.2020 pixels, and none of it proves the display was told
+to interpret them as PQ. The compositor logged `HDR enabled on DP-1`, reported
+`hdr_enabled=true`, and none of the three `hdr_capability_failed` paths fired;
+but the user watching the panel did not see it change mode, and there is an
+`Atomic commit failed: Invalid argument` on DP-1 in the same log. Buffer-side is
+measured; panel-side is not, and the two were conflated.
 
 C3 re-derived on the transition exactly as predicted:
 
@@ -2972,3 +2981,42 @@ separate function so nothing weakens the invariant C1 asserts over 101 samples.
 path. The view machinery exists and Path A uses it for the ATTACHMENT, but no
 texture draw samples through one. That is an optimisation with no measurement
 behind it yet, not a correctness gap.
+
+
+## 5.21 C7's HDR decode is correct and currently unreachable
+
+C7's PQ decode and BT.2020->BT.709 conversion match C1 and the CPU reference on
+a GPU. Neither has ever run on a real client buffer, and on this compositor
+neither can.
+
+**Why.** A client chooses what to send from what the compositor advertises for
+its surface. asteroidz sets the OUTPUT's image description
+(`wlr_output_state_set_image_description`, asteroidz.c) and has no surface-side
+counterpart — there is no code path that tells a client "this surface is on an
+HDR output". So a client is always told SDR and always sends SDR.
+
+Measured, three ways, with a genuine HDR10 clip (yuv420p10le, smpte2084,
+bt2020nc, max-cll 400, patches at known nits):
+
+| attempt | what mpv tagged | `m5_decode_pq` |
+|---|---|---|
+| `force_hdr` flips the output | `gamma2.2 / bt.709`, `max_luma=80` | 0 |
+| + `--target-colorspace-hint=yes` | unchanged | 0 |
+| + DP-1 configured `hdr 1` outright | unchanged | 0 |
+
+mpv is behaving correctly in all three: it tone-maps the HDR10 down to the SDR
+surface it was offered, and the compositor then re-encodes that to PQ. That is
+what `force_hdr` is FOR — your config says so in as many words: "with HDR
+disabled globally, this is the one client that flips its output into HDR while
+it is visible". It is a display-side switch, not a colour negotiation.
+
+**What this makes the live HDR result.** It is SDR content on an HDR output, and
+that is not a limitation of the test — it is the only case this compositor can
+currently produce. ADR-008 names it as a correctness consequence in its own
+right ("SDR content on the HDR output renders at scene_reference_luminance with
+correct primaries"), and it is what was measured to within one code.
+
+**What would unblock it** is compositor-side colour-management plumbing: a
+preferred image description per surface, derived from the output the surface is
+on. That is a wlroots/scenefx protocol feature, not a renderer one, and nothing
+in M5's contracts covers it. C7's decode is ready for the day it exists.
