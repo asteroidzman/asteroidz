@@ -1663,7 +1663,36 @@ static struct az_lum_domain az_avk_lum_of(
 		case WLR_COLOR_TRANSFER_FUNCTION_SRGB:
 			src.tagged = true; src.tf = AZ_TF_SRGB; break;
 		case WLR_COLOR_TRANSFER_FUNCTION_GAMMA22:
-			src.tagged = true; src.tf = AZ_TF_GAMMA22; break;
+			/*
+			 * ── GAMMA22 IS WHAT UNTAGGED LOOKS LIKE FROM HERE ─────────────
+			 *
+			 * scenefx's surface adapter, copying wlroots 0.20.2, initialises
+			 * `tf` to GAMMA22 and only overwrites it when the surface carries
+			 * an image description (surface.c:304). So a surface that has said
+			 * NOTHING about its colour arrives here indistinguishable from one
+			 * that explicitly declared a 2.2 power curve -- and on a real
+			 * desktop essentially every surface is the former.
+			 *
+			 * ADR-004 decides that untagged is piecewise-sRGB BT.709, so that
+			 * is what this returns. It is not a guess about the client: it is
+			 * the ADR's answer applied to the only information available.
+			 *
+			 * IT IS ALSO WHAT MAKES PATH A EXIST. Path A's encode is the
+			 * hardware's _SRGB attachment conversion and cannot be selected --
+			 * so a source decoded with 2.2 and encoded with sRGB cannot round
+			 * trip through it. Measured: a flat grey wallpaper at 128 came back
+			 * as 129 on every pixel of the display, which is exactly
+			 * srgb_ieotf(gamma22_eotf(128/255)) = 128.95. Treating untagged as
+			 * sRGB makes the pair exact; leaving it as 2.2 makes Path A wrong
+			 * for the entire desktop.
+			 *
+			 * The cost of being wrong the other way -- a client that genuinely
+			 * meant 2.2 and is decoded as sRGB -- is bounded by the difference
+			 * between the two curves, about one code in the midtones, and it
+			 * applies only to a client that declared 2.2 through a protocol
+			 * that this cannot see it used. See F12.
+			 */
+			break;
 		case WLR_COLOR_TRANSFER_FUNCTION_BT1886:
 			src.tagged = true; src.tf = AZ_TF_BT1886; break;
 		case WLR_COLOR_TRANSFER_FUNCTION_ST2084_PQ:
@@ -4145,7 +4174,7 @@ static cJSON *az_avk_stats_json(void) {
 
 	/* composition */
 	uint64_t surfaces = 0, rects = 0, submit_ns = 0, sync_waits = 0;
-	uint64_t opaque_noblend = 0;
+	uint64_t opaque_noblend = 0, decode_draws = 0, srgb_segs = 0;
 	for (size_t i = 0; i < AZ_AVK_MAX_FORMATS; i++) {
 		if (!avk.renderers[i].used) {
 			continue;
@@ -4154,6 +4183,8 @@ static cJSON *az_avk_stats_json(void) {
 		surfaces += st->surfaces;
 		rects += st->rects;
 		opaque_noblend += st->opaque_noblend_draws;
+		decode_draws += st->decode_draws;
+		srgb_segs += st->srgb_attach_segments;
 		submit_ns += st->cpu_record_ns;
 		sync_waits += st->cpu_sync_waits;
 	}
@@ -4165,6 +4196,24 @@ static cJSON *az_avk_stats_json(void) {
 	 * experiment off, and zero WITH it on would mean the predicate matched
 	 * nothing -- two different readings that a timing delta alone conflates. */
 	cJSON_AddNumberToObject(o, "opaque_noblend_draws", (double)opaque_noblend);
+	/* M5/C7. The two halves of Path A, counted separately -- because "both are
+	 * on" has been an inference from a pixel error and needs to be a reading. */
+	cJSON_AddNumberToObject(o, "m5_decode_draws", (double)decode_draws);
+	cJSON_AddNumberToObject(o, "m5_srgb_attach_segments", (double)srgb_segs);
+	{
+		static const char *dv[] = { "none", "srgb", "gamma22", "bt1886" };
+		for (int i = 0; i < AVK_DECODE_COUNT; i++) {
+			uint64_t n = 0;
+			for (size_t k = 0; k < AZ_AVK_MAX_FORMATS; k++) {
+				if (avk.renderers[k].used) {
+					n += avk.renderers[k].renderer.stats.decode_by_variant[i];
+				}
+			}
+			char key[48];
+			snprintf(key, sizeof(key), "m5_decode_%s", dv[i]);
+			cJSON_AddNumberToObject(o, key, (double)n);
+		}
+	}
 
 	/* import */
 	const struct avk_dmabuf_importer *imp = &avk.importer;

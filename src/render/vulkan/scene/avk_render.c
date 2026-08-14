@@ -967,6 +967,7 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 		VkImageView srgb = avk_image_srgb_view(renderer->dev, target);
 		if (srgb != VK_NULL_HANDLE) {
 			attach_view = srgb;
+			renderer->stats.srgb_attach_segments++;
 		}
 	}
 	VkRenderingAttachmentInfo color = {
@@ -1482,6 +1483,7 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 							!= VK_NULL_HANDLE) {
 					want = renderer->pipes.texture_decode[v];
 					renderer->stats.decode_draws++;
+					renderer->stats.decode_by_variant[v]++;
 				}
 			}
 

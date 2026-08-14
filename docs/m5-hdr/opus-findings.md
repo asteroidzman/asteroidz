@@ -512,3 +512,65 @@ should know that turning on 10-bit SDR doubles it.
 
 Measured headlessly on the same physical GPU the session uses; no live install
 required, which is why this closed without one.
+
+---
+
+## F12 — untagged arrives as GAMMA22, and that alone made Path A wrong (C2/C7)
+
+Path A on a real output was **one code high on every pixel of the display**: a
+flat grey wallpaper at 128 came back as 129, while the GPU fixture round-tripped
+all 256 codes at zero. Same GPU, same shaders, same formats.
+
+**Ruled out by experiment, in this order:** blending (still 1 with blur, shadows
+and layer shadows disabled), output scale (still 1 at scale 1.0, so not linear
+filtering of a scaled layer), dither (still 1 at `AZ_SHADOW_DITHER_AMP=0`), and
+a full-screen background rect under the wallpaper (added to the fixture from an
+`AZ_AVK_CMD_DUMP` reading of a live frame — still 0 there).
+
+Two of my hypotheses died on the way: that the shader's `pow()` EOTF and the
+hardware's sRGB table are not exact inverses, and that linear filtering was
+responsible. Both were tested rather than argued, and both were wrong.
+
+**A counter found it in one reading.** Splitting decode draws by variant:
+
+    m5_decode_srgb=0  m5_decode_gamma22=2  m5_decode_bt1886=0
+
+Every source on the desktop was being decoded with the 2.2 power curve.
+
+**Why.** scenefx's surface adapter — an otherwise exact copy of wlroots 0.20.2's
+`surface_reconfigure` — initialises the transfer function to
+`WLR_COLOR_TRANSFER_FUNCTION_GAMMA22` and overwrites it only when the surface
+carries an image description (`types/scene/surface.c:304`). So a surface that
+has said NOTHING about its colour is indistinguishable, downstream, from one
+that explicitly declared 2.2 — and on a real desktop essentially every surface
+is the former.
+
+The arithmetic is exact:
+
+    srgb_ieotf(gamma22_eotf(128/255)) * 255 = 128.95  ->  129
+    srgb_ieotf(srgb_eotf   (128/255)) * 255 = 128.00  ->  128
+
+**Why it matters more on Path A than anywhere else.** Path A's encode is the
+hardware's `_SRGB` attachment conversion. It cannot be selected. So a source
+decoded with 2.2 and encoded with sRGB has no way to round-trip through Path A
+at all — the mismatch is structural, not a rounding artefact, and it applied to
+the entire desktop.
+
+**Resolution: the adapter treats GAMMA22 as untagged**, which is ADR-004's
+answer applied to the only information available. Measured after: a wallpaper-
+only frame is **0 differing pixels**, and a full desktop with blur, shadows and
+a client window is **94.21% of pixels identical**, with the remainder confined
+to blended regions at 5-12 codes — which is exactly what ADR-005 says moving
+composition into linear light should change, and nothing else.
+
+**What this costs, stated rather than hidden.** A client that genuinely means
+2.2 and declared it through a protocol path this cannot distinguish will be
+decoded as sRGB, an error bounded by the difference between the two curves --
+about one code in the midtones. That is the trade ADR-004 already chose, and it
+is strictly better than the alternative, which was being wrong for everything.
+
+**The better fix belongs upstream and is not made here:** scenefx could carry a
+distinct "untagged" value so the two cases stop being the same value. That is a
+subproject change with an ABI surface, it is not needed for Path A to be
+correct, and the decision is the ADR owner's. Until then this adapter is the one
+place the ambiguity is resolved, and it says so.

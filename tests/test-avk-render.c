@@ -718,6 +718,18 @@ static void test_path_a_roundtrip(struct harness *h) {
 		pixman_region32_union_rect(&scene.damage, &scene.damage, 0, 0, W, H);
 		scene.has_clear = true;
 		scene.clear_color[3] = 1.0f;
+		/*
+		 * A FULL-COVER RECT UNDER THE TEXTURE, because that is what a real
+		 * frame draws: the compositor lays down a background rect and the
+		 * wallpaper covers it. AZ_AVK_CMD_DUMP on a live frame showed exactly
+		 * this pair, and it is the only structural difference between what
+		 * this fixture rendered and what the display did.
+		 */
+		struct avk_cmd *bg = avk_scene_add(&scene, AVK_CMD_RECT);
+		bg->dst = (struct avk_box){ 0, 0, 16, 16 };
+		bg->color[0] = 0.15f; bg->color[1] = 0.15f; bg->color[2] = 0.15f;
+		bg->color[3] = 1.0f;
+
 		struct avk_cmd *tex = avk_scene_add(&scene, AVK_CMD_TEXTURE);
 		tex->dst = (struct avk_box){ 0, 0, 16, 16 };
 		tex->image = surface;

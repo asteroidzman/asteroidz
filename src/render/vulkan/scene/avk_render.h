@@ -442,6 +442,15 @@ struct avk_renderer_stats {
 	 * WITH it on would mean no source asked for one -- two different readings
 	 * that a pixel comparison alone conflates. */
 	uint64_t decode_draws;
+	/* M5/C7. Segments that rendered into an _SRGB attachment view. Counted
+	 * because "the encode is on" has so far been INFERRED from the size of a
+	 * pixel error, and an inference is what a counter is for. */
+	uint64_t srgb_attach_segments;
+	/* M5/C7. Decode draws BY VARIANT. A total says the decode ran; only the
+	 * breakdown says WHICH curve a source was decoded with, and a source
+	 * decoded with the wrong one of two similar curves is off by about a code
+	 * -- which is indistinguishable from rounding until it is counted. */
+	uint64_t decode_by_variant[AVK_DECODE_COUNT];
 	uint64_t draws;          /* commands x damage rects */
 	/*
 	 * M4H. FRAGMENT AREA, BY PRIMITIVE CLASS, IN TWO BUCKETS.
