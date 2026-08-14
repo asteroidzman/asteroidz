@@ -474,10 +474,22 @@ rest landed here. Three things came out differently from the contract:
   peak pinned at 1.0 and the guard removed, kept SEPARATE so ADR-009's
   invariant stays literally true for everything that uses `az_tonemap`.
 
-`OPAQUE_SRGB` (the `_SRGB`-view sampling fast path) is **not** implemented: the
-`_SRGB` view machinery exists and is used for Path A's ATTACHMENT, but no
-texture draw samples through one. It is an optimisation, not a correctness gap,
-and nothing measures it yet.
+`OPAQUE_SRGB` (the `_SRGB`-view sampling fast path) is **DECLINED, not
+deferred.** The `_SRGB` view machinery exists and Path A uses it for the
+ATTACHMENT, but no texture draw samples through one and none will.
+
+It is an optimisation whose entire benefit is replacing a shader `pow()` with
+the sampler's own sRGB conversion, on draws that are additionally opaque over
+their whole footprint. Nothing has measured a need for it: the decode is roughly
+twelve ALU on a path that is not ALU-bound, the live qualification found zero
+frames over budget with the shader decode in place, and the standing rule here
+is to qualify winners rather than every candidate. `AZ_AVK_OPAQUE_NOBLEND` was
+deleted un-run for the same reason and on the same evidence — a bandwidth
+argument with a -0.25% measurement behind it.
+
+What would revive it is a measurement showing texture decode is a material share
+of a real frame. Until then it is a second sampling path, a second descriptor
+per image, and an opaque-region predicate to keep correct, bought with nothing.
 
 **CONFLICT STATUS.** MEDIUM — the files are unowned but `avk_render.c`
 constructs pipelines via `avk_pipelines_*`; additive API only (new

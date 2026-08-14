@@ -1,11 +1,20 @@
 # M5 — scene-linear HDR: architecture package
 
-**Status (2026-08-14): C1-C8 implemented; both output paths qualified on a
-GPU.** Path A (8-bit direct `_SRGB`) and Path B (FP16 intermediate + encode
-pass) both close the SDR round trip at **0 codes**, and PQ matches the CPU
-reference to 0-1 codes at 10 bits. HDR is **not** enabled on a real display:
-step 7 of the integration order -- removing the `image_description` refusal --
-is a live step, not a consequence of C6 compiling. See `opus-findings.md`.
+**Status (2026-08-14): COMPLETE.** C1-C8 implemented, both output paths and the
+full decode path qualified on a GPU against a CPU reference written from these
+ADRs, and the whole chain measured end to end on a real HDR display with a real
+HDR client: **worst 2 codes** from HDR10 file through PQ decode, source gamut
+conversion, linear FP16 composition, tone mapping, gamut conversion, luminance
+anchor and PQ encode to a 10-bit scan-out.
+
+HDR is on by default wherever C3 chooses Path B, with no environment variable.
+Path A (8-bit SDR linear compositing) remains opt-in behind `AZ_M5_PATH_A=1`:
+it is correct and qualified, but it changes how every SDR pixel on the desktop
+blends and nobody has asked for that.
+
+See `opus-findings.md` for what implementation found that the architecture did
+not -- F1 through F16 -- and section 5.12 onward of
+`docs/vulkan-native-architecture.md` for the measurements.
 
 This directory is the Phase-1 architecture deliverable for milestone M5
 (scene-linear HDR). It was produced by reading the code at `2c1c015`, not from

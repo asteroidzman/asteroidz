@@ -2850,15 +2850,27 @@ validation layer is for.
 DP-1 put into HDR by the existing `force_hdr` rule on mpv, with
 `AZ_M5_PATH_B=1` and the validation layer loaded.
 
-**SCOPE OF THE CLAIM, CORRECTED.** An earlier version of this section was headed
-"AVK drives a real HDR display". It should not have been. `screenshot_ui,rawhdr`
-reads the SCAN-OUT BUFFER, not the panel — so everything below proves that AVK
-produced correct PQ/BT.2020 pixels, and none of it proves the display was told
-to interpret them as PQ. The compositor logged `HDR enabled on DP-1`, reported
-`hdr_enabled=true`, and none of the three `hdr_capability_failed` paths fired;
-but the user watching the panel did not see it change mode, and there is an
-`Atomic commit failed: Invalid argument` on DP-1 in the same log. Buffer-side is
-measured; panel-side is not, and the two were conflated.
+**SCOPE OF THE CLAIM.** `screenshot_ui,rawhdr` reads the SCAN-OUT BUFFER, not
+the panel, so on its own everything below proves only that AVK produced correct
+PQ/BT.2020 pixels. An earlier draft headed this section "AVK drives a real HDR
+display" on that evidence alone, which was more than it supported.
+
+The panel-side half is now separately evidenced, from the boot where
+`hdr-mode on` puts DP-1 into HDR at startup:
+
+- **HDMI-A-1 is REFUSED** — `output HDMI-A-1 does not support HDR (BT.2020 +
+  PQ)` — because its connector does not advertise them, and
+  `hdr_capability_failed` is set. The check works.
+- **DP-1 logs no such refusal**, so its connector does advertise BT.2020 and
+  ST 2084, `wlr_output_state_set_image_description()` returned true, and it
+  re-modeset (the retrain that every HDR transition on this output falls back
+  to). No `Atomic commit failed` anywhere in that boot.
+
+A KMS commit carrying HDR metadata that succeeds on a connector advertising HDR,
+while the connector that does not advertise it is refused by name, is panel-side
+evidence rather than buffer-side. What is still not evidence is a photograph of
+the monitor's OSD; the inference chain stops at "the kernel accepted the
+metadata".
 
 C3 re-derived on the transition exactly as predicted:
 
@@ -3092,3 +3104,82 @@ source gamut conversion (C7) → premultiplied linear FP16 composite (ADR-005) �
 tone map on the composited value (ADR-009) → saturation → 709→2020 (ADR-010) →
 luminance anchor → PQ encode (C6/ADR-008) → 10-bit scan-out. Against a reference
 implementation written from the ADRs rather than from the shaders.
+
+## 5.23 M5 — what shipped, and what it cost to find out
+
+### The shape of it
+
+    source (any of 4 curves, 2 primaries)
+        -> decode                     C7   per-draw pipeline variant
+        -> source gamut               C7   BT.2020 -> scene BT.709
+        -> premultiplied linear       ADR-005
+        -> [Path A] _SRGB attachment  C7   hardware encodes on write, 8-bit only
+        -> [Path B] FP16 intermediate C6   then one damage-scissored encode pass:
+                                           tone map -> gamut -> anchor -> PQ ->
+                                           dither -> 10-bit scan-out
+
+Path A exists because it costs nothing: no extra pass, no extra bytes. Path B
+exists because Path A cannot exist above 8 bits — Vulkan has no sRGB variant of
+a 10-bit or half-float format, on any conformant device (F11). That is the whole
+of the two-path design, and it is why the 168 MB Path B costs on a two-monitor
+desktop is not a thing to optimise away: it buys the outputs that have no
+alternative.
+
+### What is measured, and against what
+
+Every number below is against `az_color_ref.c` — a CPU implementation written
+from the ADRs rather than from the shaders, so agreement is evidence rather than
+a tautology.
+
+| claim | result |
+|---|---|
+| SDR round trip, Path A | **0 codes** |
+| SDR round trip, Path B, same 8-bit output | **0 codes** |
+| PQ encode vs the reference, 10-bit | 0 at five of six values, 1 at the panel ceiling |
+| gamut matrix on saturated colour | worst 1 code |
+| PQ decode vs C1's `az_pq_eotf` | **0 codes** |
+| BT.2020 source conversion | worst 0 codes, and declaring BT.2020 moves the picture 49 codes |
+| HDR10 file → panel, end to end | **worst 2 codes** across 8 patches |
+| VUID / SYNC-HAZARD, live, layer confirmed on | **0** |
+| teardown census, every path | all zero |
+
+### Six things the tests as written could not have caught
+
+1. **Path A was invalid usage** — an `_SRGB` view on pipelines declaring the
+   UNORM twin, twenty VUIDs a run, shipped and green everywhere.
+2. **`validation_errors` was a counter that could not move** without the layer,
+   so every "0 VUID" claim in the suite — and in the live matrix — was empty.
+3. **Config colours were never decoded**, putting every border, background and
+   shadow tint 60 codes out on both linear paths, invisible because every
+   fixture drew textures.
+4. **Source primaries were carried and never read**, so a BT.2020 surface was
+   composited as BT.709 and then converted again.
+5. **The client capability list came from a renderer that composites nothing**,
+   so no client could tag a surface at all and C7's decode was unreachable.
+6. **Three fixtures asserted the absence of the M4I cache**, failing because it
+   started working.
+
+Five of the six were found by building an instrument, not by reading code. The
+sixth was found by a user watching his own screen.
+
+### The recurring shape
+
+Three separate times a colour test was blind because its inputs were **neutral**
+— the Path-B falsifier read 0 codes on a grey ramp, the PQ test had no colour in
+it, and a live capture's greys agreed while its saturated patches were wildly
+wrong. Every row of BT.709↔BT.2020 sums to 1, so grey is invariant under the
+gamut matrix: an absent matrix, a transposed one and the correct one all produce
+identical output for r=g=b.
+
+A colour-pipeline test whose inputs are all grey is testing the transfer
+function and nothing else.
+
+### What M5 does not do
+
+- **HLG decode.** ADR-000 scope; no source has asked.
+- **ICC / 3D-LUT outputs.** M6. C3 derives `FALLBACK` and the interlock refuses
+  them by name.
+- **`OPAQUE_SRGB`**, C7's `_SRGB`-view sampling fast path — declined, not
+  deferred: an optimisation with no measurement behind it.
+- **Path A by default.** Correct and qualified, still opt-in, because it changes
+  how every SDR pixel blends.
