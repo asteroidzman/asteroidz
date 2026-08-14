@@ -463,6 +463,29 @@ struct dwl_animation {
 	 * changes retarget arithmetic.
 	 */
 	uint64_t last_sample_ns;
+	/*
+	 * The spring's initial velocity, in normalised curve units (dy/dt at
+	 * t == 0). Zero for a fresh animation -- the window is at rest.
+	 *
+	 * Non-zero only after a RETARGET, where it carries the speed the outgoing
+	 * motion had reached so the new segment does not stop dead and set off
+	 * again (ADR-608). Beziers ignore it: that curve family has no state to
+	 * inject, and substituting a spring under a configured bezier would change
+	 * motion the operator chose.
+	 */
+	double spring_v0;
+	/*
+	 * Where this segment was heading. `initial` is where it began; the target
+	 * lives in Client.current, which is overwritten with the NEW target before
+	 * a retarget gets a chance to read it -- so the outgoing segment's
+	 * direction is unrecoverable without keeping it here.
+	 *
+	 * That is not hypothetical: the first version of the velocity-continuity
+	 * code computed the outgoing velocity from `current - initial` at retarget
+	 * time and got the NEW segment's direction, producing a v0 of the wrong
+	 * sign that accelerated into the turn instead of carrying through it.
+	 */
+	struct wlr_box target;
 };
 
 struct dwl_opacity_animation {
@@ -1464,6 +1487,10 @@ static void get_layer_target_geometry(LayerSurface *l,
 static void scene_buffer_apply_effect(struct wlr_scene_buffer *buffer,
 									  int32_t sx, int32_t sy, void *data);
 static double find_animation_curve_at(double t, int32_t type);
+/* animation/common.h is included AFTER animation/client.h, which uses these --
+ * the same reason find_animation_curve_at is declared here. */
+static struct dvec2 calculate_spring_curve_at_v(double t, double v0);
+static double spring_curve_velocity_at(double t);
 
 static void apply_opacity_to_rect_nodes(Client *c, struct wlr_scene_node *node,
 										double animation_passed);

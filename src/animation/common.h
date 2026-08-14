@@ -1,6 +1,23 @@
-/* Damped spring step response: natural motion with optional overshoot.
- * zeta >= 1 is critically damped (no overshoot), lower values bounce. */
-static struct dvec2 calculate_spring_curve_at(double t, int32_t type) {
+/*
+ * Damped spring step response, with an optional initial velocity.
+ * zeta >= 1 is critically damped (no overshoot), lower values bounce.
+ *
+ * `v0` is dy/dt at t = 0, in the same normalised time as t. Zero gives the
+ * ordinary step response a fresh animation wants -- the window is at rest and
+ * starts moving. Non-zero is what makes a RETARGET continuous in velocity
+ * (M6A/ADR-608): a target arriving mid-flight starts a new spring that is
+ * already moving at the speed the old one had reached, instead of stopping
+ * dead and setting off again.
+ *
+ * Both closed forms below reduce EXACTLY to the previous ones at v0 == 0 --
+ * that is the property to preserve when touching this, because every existing
+ * animation on the desktop is the v0 == 0 case.
+ *
+ *   critically damped   y = 1 - e^-wt (1 + (w - v0) t)
+ *   underdamped         y = 1 - e^-zwt (cos wd t + C sin wd t),
+ *                       C = (zw - v0) / wd
+ */
+static struct dvec2 calculate_spring_curve_at_v(double t, double v0) {
 	struct dvec2 point = {.x = t, .y = 1.0};
 	double zeta = config.spring_damping;
 	double omega = config.spring_frequency;
@@ -8,13 +25,37 @@ static struct dvec2 calculate_spring_curve_at(double t, int32_t type) {
 	if (t >= 1.0)
 		return point;
 	if (zeta >= 1.0) {
-		point.y = 1.0 - exp(-omega * t) * (1.0 + omega * t);
+		point.y = 1.0 - exp(-omega * t) * (1.0 + (omega - v0) * t);
 	} else {
 		double wd = omega * sqrt(1.0 - zeta * zeta);
 		point.y = 1.0 - exp(-zeta * omega * t) *
-			(cos(wd * t) + (zeta * omega / wd) * sin(wd * t));
+			(cos(wd * t) + ((zeta * omega - v0) / wd) * sin(wd * t));
 	}
 	return point;
+}
+
+/*
+ * dy/dt of the SAME curve at v0 == 0, which is what a retarget must sample to
+ * know how fast the outgoing motion was going.
+ *
+ * Analytic rather than a finite difference of stored integers: the geometry it
+ * would difference is rounded to whole pixels, so at a 144Hz sample spacing the
+ * quotient is dominated by the rounding rather than the motion.
+ */
+static double spring_curve_velocity_at(double t) {
+	double zeta = config.spring_damping;
+	double omega = config.spring_frequency;
+	if (t >= 1.0 || t < 0.0)
+		return 0.0;
+	if (zeta >= 1.0)
+		return omega * omega * t * exp(-omega * t);
+	double wd = omega * sqrt(1.0 - zeta * zeta);
+	return (omega * omega / wd) * exp(-zeta * omega * t) * sin(wd * t);
+}
+
+static struct dvec2 calculate_spring_curve_at(double t, int32_t type) {
+	(void)type;
+	return calculate_spring_curve_at_v(t, 0.0);
 }
 
 struct dvec2 calculate_animation_curve_at(double t, int32_t type) {

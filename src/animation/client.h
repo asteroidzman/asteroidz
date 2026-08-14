@@ -2477,6 +2477,23 @@ static bool anim_no_converge_break(void) {
 /* One frame at the slowest refresh worth surviving. Wall clock, deliberately. */
 #define ANIM_CONVERGE_LOOKAHEAD_MS 16.667
 
+/*
+ * The curve this animation is actually on, evaluated at t.
+ *
+ * Springs are evaluated DIRECTLY rather than through the baked table. The table
+ * exists to invert a bezier, whose x is not t; a spring's x IS t, so the binary
+ * search only ever returns a quantised copy of a function we can call exactly
+ * -- and the table has no way to carry a per-animation initial velocity, which
+ * is what a continuous retarget needs.
+ */
+static inline double anim_curve_at(const Client *c, double t, int32_t type) {
+	if (config.animation_curve_spring
+			&& (type == MOVE || type == OPEN || type == TAG)) {
+		return calculate_spring_curve_at_v(t, c->animation.spring_v0).y;
+	}
+	return find_animation_curve_at(t, type);
+}
+
 static bool anim_spring_converged(Client *c, int32_t type, double t,
 		double factor) {
 	if (!config.animation_curve_spring || anim_no_converge_break()) {
@@ -2514,7 +2531,7 @@ static bool anim_spring_converged(Client *c, int32_t type, double t,
 	}
 
 	double dt = ANIM_CONVERGE_LOOKAHEAD_MS / (double)c->animation.duration;
-	double ahead = find_animation_curve_at(t + dt, type);
+	double ahead = anim_curve_at(c, t + dt, type);
 	double step_px = fabs(ahead - factor) * travel * scale;
 	return step_px < ANIM_CONVERGE_PX;
 }
@@ -2562,6 +2579,7 @@ struct anim_eval {
 	int32_t type;
 };
 
+
 static inline void anim_eval_at(const Client *c, uint64_t sample_ns,
 		struct anim_eval *out) {
 	double passed_ms = c->animation.time_started_ns
@@ -2571,7 +2589,7 @@ static inline void anim_eval_at(const Client *c, uint64_t sample_ns,
 		? passed_ms / (double)c->animation.duration
 		: 1.0;
 	out->type = c->animation.action == NONE ? MOVE : c->animation.action;
-	out->factor = find_animation_curve_at(out->linear, out->type);
+	out->factor = anim_curve_at(c, out->linear, out->type);
 	/* A converged spring finishes HERE, on the exact target, rather than being
 	 * ticked to nowhere until the duration expires. Snapping to 1.0 rather
 	 * than leaving 1.000003 is what stops the last frame being a 1px flip. */
@@ -2915,7 +2933,87 @@ void client_commit(Client *c) {
 			c->animation.current.width, c->animation.current.height,
 			(unsigned long long)az_pace_now_ns());
 
+		bool retargeting = c->animation.running && c->animation.last_sample_ns;
+		/*
+		 * ── VELOCITY CONTINUITY, AND WHAT ONE SCALAR CAN CARRY ────────────
+		 *
+		 * ADR-608's preferred half. The outgoing motion had a speed; the new
+		 * segment starts at it rather than from rest, or a redirected window
+		 * visibly stalls at the moment it changes course.
+		 *
+		 * COMPUTED FROM THE OLD SEGMENT'S OWN ENDPOINTS, which is the whole
+		 * difficulty: `c->current` already holds the NEW target by the time
+		 * this runs, and `animation.initial` is about to be replaced. Reading
+		 * either of them here describes the segment being STARTED, not the one
+		 * being left -- the first version did exactly that and produced a v0
+		 * of the wrong sign.
+		 *
+		 * THE CURVE IS ONE SCALAR for x, y, width and height together, so
+		 * per-axis velocity cannot all be preserved; that needs a factor per
+		 * axis. The meaningful reduction is the PROJECTION of the current
+		 * velocity onto the new direction of travel: a redirect that reverses
+		 * gets a negative v0 and decelerates through the turn, as a real
+		 * object does. The component across the new direction is
+		 * unrepresentable and is dropped, deliberately.
+		 *
+		 * Springs only. A bezier has no state to inject, and substituting one
+		 * would change motion the operator configured.
+		 */
+		double v0 = 0.0;
+		if (retargeting && config.animation_curve_spring
+				&& c->animation.duration > 0) {
+			int32_t t_old = c->animation.action == NONE
+				? MOVE : c->animation.action;
+			if (t_old == MOVE || t_old == OPEN || t_old == TAG) {
+				double u = (double)(c->animation.last_sample_ns
+					- c->animation.time_started_ns) / 1.0e6
+					/ (double)c->animation.duration;
+				double dfdu = spring_curve_velocity_at(u);
+				/* The segment being LEFT: its own start and its own target. */
+				double ox = (double)(c->animation.target.x
+					- c->animation.initial.x) * dfdu
+					/ (double)c->animation.duration;
+				double oy = (double)(c->animation.target.y
+					- c->animation.initial.y) * dfdu
+					/ (double)c->animation.duration;
+				/* The segment being STARTED. */
+				double nx = (double)(c->geom.x - c->animainit_geom.x);
+				double ny = (double)(c->geom.y - c->animainit_geom.y);
+				double len = sqrt(nx * nx + ny * ny);
+				if (len > 0.5) {
+					double along = (ox * nx + oy * ny) / len; /* px per ms */
+					v0 = along * (double)c->animation.duration / len;
+				}
+			}
+		}
+		{
+			static int drop_v = -1;
+			if (drop_v < 0) {
+				drop_v = getenv("AZ_BREAK_ANIM_RETARGET_ZERO_VELOCITY") != NULL;
+				if (drop_v) {
+					wlr_log(WLR_ERROR, "M6A break: "
+						"AZ_BREAK_ANIM_RETARGET_ZERO_VELOCITY -- a retarget "
+						"starts from rest; redirected motion will stall at "
+						"the turn");
+				}
+			}
+			if (drop_v) {
+				v0 = 0.0;
+			}
+		}
+		if (getenv("AZ_ANIM_V0_TRACE") != NULL) {
+			wlr_log(WLR_ERROR, "M6A v0trace: retarget=%d v0=%.4f "
+				"oldinit=%d,%d oldtgt=%d,%d newinit=%d,%d newtgt=%d,%d",
+				retargeting ? 1 : 0, v0,
+				c->animation.initial.x, c->animation.initial.y,
+				c->animation.target.x, c->animation.target.y,
+				c->animainit_geom.x, c->animainit_geom.y,
+				c->geom.x, c->geom.y);
+		}
+		c->animation.spring_v0 = v0;
+
 		c->animation.initial = c->animainit_geom;
+		c->animation.target = c->geom;
 		/*
 		 * A RETARGET ANCHORS AT THE INSTANT THE OLD SEGMENT WAS LAST
 		 * EVALUATED; a fresh animation anchors at now (ADR-608, ADR-611).
@@ -2928,7 +3026,6 @@ void client_commit(Client *c) {
 		 * has no such history -- the decision genuinely happens at CPU time,
 		 * which is why semantic start times are CPU-now by design.
 		 */
-		bool retargeting = c->animation.running && c->animation.last_sample_ns;
 		c->animation.time_started_ns = retargeting
 			? c->animation.last_sample_ns : az_pace_now_ns();
 		c->animation.time_started =

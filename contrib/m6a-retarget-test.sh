@@ -23,9 +23,16 @@ OUTDIR="${TMPDIR:-/tmp}/asteroidz-m6a-retarget-$$"
 mkdir -p "$OUTDIR"
 
 DUR="${DUR:-1200}"     # long, so there is plenty of flight to interrupt
+# SPRINGS ON, and the fixture is worthless without them. Velocity continuity is
+# spring-only by decision -- a bezier has no state to inject -- so a fixture
+# running the default curve exercises none of it and reports zero overshoot on
+# both arms, which is exactly what the first run did.
 CFG="borderpx 4
 border_radius 8
 animations 1
+animation_curve_type spring
+spring_damping 0.8
+spring_frequency 22
 animation_duration_move $DUR
 animation_duration_tag $DUR
 animation_duration_open $DUR"
@@ -62,10 +69,17 @@ run() { # run TAG [env...]
 	hl_dispatch "move_window,100,100" 1 >/dev/null 2>&1
 	sleep 1
 
-	# Send it a long way, let it get properly under way, then change the target
-	# while it is still flying.
+	# Send it a long way, then redirect it WHILE IT IS STILL MOVING FAST.
+	#
+	# 120ms, not 400. At spring_frequency 22 the curve settles in roughly the
+	# first quarter of its duration -- a recorded property of this desktop --
+	# so by 400ms into a 1200ms move the window has arrived and dy/dt is about
+	# -0.098: there is no velocity left to carry, and a velocity-continuity
+	# test interrupting there measures nothing. At 120ms dy/dt is about 7.5.
 	hl_dispatch "move_window,1400,100" 0 >/dev/null 2>&1
-	sample_x 400 > "$dir/leg1.txt"
+	sample_x 120 > "$dir/leg1.txt"
+	# Where it was at the moment of redirection: the last leg-1 sample.
+	tail -1 "$dir/leg1.txt" > "$dir/turn.txt"
 	hl_dispatch "move_window,200,100" 0 >/dev/null 2>&1
 	sample_x 700 > "$dir/leg2.txt"
 	hl_stop >/dev/null 2>&1
@@ -125,6 +139,38 @@ hl_assert_true "PREMISE: the broken arm moved too (${BTOTAL}px > 500)" \
 	"$([ "${BTOTAL:-0}" -gt 500 ] && echo true || echo false)"
 hl_assert_true "BREAK: the discontinuity is DETECTED (${BJUMP}px >= 200)" \
 	"$([ "${BJUMP:-0}" -ge 200 ] && echo true || echo false)"
+
+
+# ── VELOCITY CONTINUITY (ADR-608, falsifier I6) ──────────────────────────
+#
+# The retarget REVERSES direction: 100 -> 1400, redirected to 200. A window
+# that carries its velocity through the turn must continue rightwards for a
+# moment and decelerate, exactly as a thrown object does. One that restarts
+# from rest turns instantly.
+#
+# So the discriminator is overshoot: how far past the redirection point the
+# window still travelled in the OLD direction. It needs no velocity estimate
+# from noisy samples -- just a maximum.
+overshoot() { # overshoot DIR -> px past the turn point
+	python3 - "$1/turn.txt" "$1/leg2.txt" <<'PY'
+import sys
+turn = [int(l) for l in open(sys.argv[1]) if l.strip().lstrip('-').isdigit()]
+xs = [int(l) for l in open(sys.argv[2]) if l.strip().lstrip('-').isdigit()]
+print(max(0, max(xs) - turn[0]) if turn and xs else 0)
+PY
+}
+echo
+echo "── velocity continuity: does the window carry through the turn?"
+OV=$(overshoot "$OUTDIR/correct")
+echo "  correct build: ${OV}px past the redirection point"
+hl_assert_true "the window carries its velocity through the turn (${OV}px > 5)" \
+	"$([ "${OV:-0}" -gt 5 ] && echo true || echo false)"
+
+read -r _ _ _ <<<"$(run zerovel AZ_BREAK_ANIM_RETARGET_ZERO_VELOCITY=1)"
+ZV=$(overshoot "$OUTDIR/zerovel")
+echo "  broken build:  ${ZV}px past the redirection point"
+hl_assert_true "BREAK: dropping v0 stalls the turn (${ZV}px < ${OV}px)" \
+	"$([ "${ZV:-0}" -lt "${OV:-0}" ] && echo true || echo false)"
 
 echo
 echo "logs: $OUTDIR"
