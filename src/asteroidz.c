@@ -2040,9 +2040,50 @@ static uint64_t az_pointer_notify_internal;
  * semantic/presentation state split (ADR-611) first; this threading is the
  * plumbing for it and is deliberately behaviour-neutral until then.
  */
+static uint64_t az_sample_not_target;   /* I1: must stay 0 */
+static uint64_t az_sample_total;
+
 static inline uint64_t az_frame_sample_ns(const Monitor *m) {
 	uint64_t t = az_presenter_sample_ns(m);
-	return t != 0 ? t : (m != NULL ? m->m8_arm_ns : 0);
+	if (t == 0) {
+		/* No armed target -- a pass outside the presenter's knowledge. Fall
+		 * back to the arm instant rather than to a clock read, so there is
+		 * still exactly one time source for the pass. */
+		t = m != NULL ? m->m8_arm_ns : 0;
+	}
+	/*
+	 * ── AZ_BREAK_PRESENT_SAMPLE_NOW (falsifier I1) ────────────────────────
+	 *
+	 * Substitutes the CPU's "now" for the predicted presentation time -- the
+	 * pre-M6A behaviour, and the defect ADR-606 exists to remove. A frame then
+	 * shows the state it had when the CPU walked it rather than the state it
+	 * should have when it lights up.
+	 *
+	 * The invariant this breaks is checkable without inferring anything from
+	 * pixels: `sample_ns == target_ns` for every pass. az_sample_not_target
+	 * counts violations and must be zero, so the break makes a counter move
+	 * rather than making a picture subtly wrong.
+	 */
+	static int break_now = -1;
+	if (break_now < 0) {
+		break_now = getenv("AZ_BREAK_PRESENT_SAMPLE_NOW") != NULL;
+		if (break_now) {
+			wlr_log(WLR_ERROR, "M6A break: AZ_BREAK_PRESENT_SAMPLE_NOW -- "
+				"animations sample CPU-now instead of the predicted "
+				"presentation time; this is the pre-M6A staleness, restored");
+		}
+	}
+	az_sample_total++;
+	if (break_now) {
+		struct timespec bn;
+		clock_gettime(CLOCK_MONOTONIC, &bn);
+		uint64_t now = (uint64_t)bn.tv_sec * 1000000000ull + (uint64_t)bn.tv_nsec;
+		if (now != t) {
+			az_sample_not_target++;
+		}
+		return now;
+	}
+	return t;
 }
 #include "render/az_avk.h"
 #include "render/az_dmabuf_caps.h"
@@ -8241,6 +8282,10 @@ void wake_monitor(Monitor *m) {
 				m->wlr_output->name);
 
 	m->asleep = 0;
+	/* ADR-604 trigger 4: the panel was not scanning out, so every phase fact
+	 * about it is void -- last present, sequence, observed period. Nothing
+	 * derived from before the sleep may survive it. */
+	az_presenter_reset(m, AZ_PRESENT_RESET_DPMS);
 	updatemons(NULL, NULL);
 
 	/* some sinks (DSC panels) come back with a corrupted decoder after
@@ -8280,6 +8325,10 @@ void powermgrsetmode(struct wl_listener *listener, void *data) {
 				m->wlr_output->name);
 
 	m->asleep = 1;
+	/* Reset on the way DOWN as well as up: an output that is about to stop
+	 * scanning out must not leave a last_present behind that a wake would
+	 * project a lattice from. */
+	az_presenter_reset(m, AZ_PRESENT_RESET_DPMS);
 	updatemons(NULL, NULL);
 }
 

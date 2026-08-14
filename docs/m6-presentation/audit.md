@@ -100,6 +100,28 @@ before a predictor subtracts one from the other; the backend may report
 fires the signal too, and folding one into an interval series invents a refresh
 that never happened.
 
+## G6 — the session guards are dead code, and one reset trigger rests on them
+
+`static struct wlr_session *session;` (`asteroidz.c:1690`) is declared and
+**never assigned** — nothing in the tree calls `wlr_backend_get_session()`. So
+it is permanently NULL, and every guard spelled `session && !session->active`
+(rendermon's early return, the render-late eligibility test) is unreachable:
+the condition is always false and the permissive branch always taken.
+
+That is harmless today — the defaults are the permissive ones — but ADR-604's
+reset trigger 4 includes "session active transitions (VT switch back)", and
+that half **cannot be wired**: there is no session object to listen to. It is
+recorded here rather than implemented, because adding session tracking is a
+compositor-lifecycle change and not presentation work.
+
+The DPMS half of trigger 4 *is* wired, in both directions.
+
+Consequence to keep in mind: after a VT switch back, an output's presenter may
+still hold a `last_present_ns` from before the switch. The FIXED lattice
+re-anchors on the first accepted present, so the damage is bounded to one
+frame's prediction; it is not a wedged state. Worth fixing when session
+tracking exists, not worth inventing a session for.
+
 ## What already holds and must not regress
 
 - **No CPU waits.** M3.5's explicit GPU→KMS sync via syncobj timelines. The

@@ -681,6 +681,12 @@ static void handle_command(int client_fd, const char *cmd_raw) {
 		 * questions. Observed only -- nothing here is a prediction yet.
 		 */
 		resp = cJSON_CreateObject();
+		/* I1: the sampled instant must BE the armed target, every pass. A
+		 * non-zero count means something handed animation a different clock --
+		 * which is what AZ_BREAK_PRESENT_SAMPLE_NOW does on purpose. */
+		cJSON_AddNumberToObject(resp, "sample_passes", (double)az_sample_total);
+		cJSON_AddNumberToObject(resp, "sample_not_target",
+			(double)az_sample_not_target);
 		cJSON *arr = cJSON_AddArrayToObject(resp, "outputs");
 		Monitor *pm;
 		wl_list_for_each(pm, &mons, link) {
