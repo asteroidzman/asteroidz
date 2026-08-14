@@ -21,6 +21,7 @@
 #include <drm_fourcc.h>
 #include <fcntl.h>
 #include <inttypes.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -516,6 +517,113 @@ static void test_srgb_view_refusal(struct harness *h) {
 		"PREMISE: the ordinary descriptor is still produced");
 
 	avk_image_destroy(h->dev, plain);
+}
+
+/*
+ * M5/C7: a decode variant actually decodes, and agrees with the CPU twin.
+ *
+ * ── WHAT WOULD OTHERWISE GO UNNOTICED ────────────────────────────────────
+ *
+ * A specialisation constant that never reaches the pipeline, a variant that
+ * failed to compile, or a selector that matched nothing all produce EXACTLY the
+ * pre-M5 picture -- which is the picture every other test in this file asserts
+ * is correct. So the decode is checked against an independent computation of
+ * what it should be, not against "it still looks fine".
+ *
+ * The reference is the sRGB EOTF evaluated here in double precision from the
+ * published constants. It is deliberately not az_color_ref's version: this
+ * fixture links the renderer, not the reference library, and a second reading
+ * of the same standard is a better oracle than the same reading twice.
+ *
+ * ── WHY THE TOLERANCE IS ONE CODE AND NOT ZERO ───────────────────────────
+ *
+ * The result lands in an 8-bit UNORM attachment, so the linear value is
+ * quantised on the way out. One code is quantisation; two is a different curve.
+ */
+static double srgb_eotf_ref(double e) {
+	if (e <= 0.04045) {
+		return e / 12.92;
+	}
+	return pow((e + 0.055) / 1.055, 2.4);
+}
+
+static void test_decode_variant(struct harness *h) {
+	printf("M5/C7: the sRGB decode variant, against an independent EOTF\n");
+
+	/* Mid-tones, where the curve is steepest and a wrong exponent shows most.
+	 * 0 and 255 are excluded on purpose: both are fixed points of every
+	 * candidate curve and would pass against a shader that did nothing. */
+	static const uint8_t vals[] = { 32, 64, 96, 128, 160, 192, 224 };
+	const size_t n = sizeof(vals) / sizeof(vals[0]);
+
+	uint32_t src[16 * 16];
+	for (size_t i = 0; i < 16 * 16; i++) {
+		uint8_t v = vals[i % n];
+		src[i] = 0xFF000000u | ((uint32_t)v << 16) | ((uint32_t)v << 8) | v;
+	}
+	struct avk_image *surface = make_image(h->dev, 16, 16,
+		VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, false);
+	if (surface == NULL || !upload(h, surface, src, 16, 16)) {
+		CHECK(false, "decode: source uploads");
+		if (surface != NULL) { avk_image_destroy(h->dev, surface); }
+		return;
+	}
+
+	struct avk_scene scene;
+	avk_scene_init(&scene);
+	pixman_region32_union_rect(&scene.damage, &scene.damage, 0, 0, W, H);
+	scene.has_clear = true;
+	scene.clear_color[3] = 1.0f;
+
+	struct avk_cmd *tex = avk_scene_add(&scene, AVK_CMD_TEXTURE);
+	tex->dst = (struct avk_box){ 0, 0, 16, 16 };
+	tex->image = surface;
+	tex->src = (struct avk_fbox){ 0, 0, 16, 16 };
+	tex->opacity = 1.0f;
+	tex->filter_linear = false;
+
+	uint64_t before = h->renderer.stats.decode_draws;
+	h->renderer.decode_enabled = true;
+	bool ok = render(h, &scene);
+	h->renderer.decode_enabled = false;
+	uint64_t took = h->renderer.stats.decode_draws - before;
+	avk_scene_finish(&scene);
+	if (!ok) {
+		CHECK(false, "decode: frame renders");
+		avk_image_destroy(h->dev, surface);
+		return;
+	}
+
+	/* THE PREMISE, FIRST. A pixel comparison that passes because no variant
+	 * ran is the failure this whole test exists to prevent. */
+	CHECK(took == 1, "PREMISE: exactly one draw took a decode variant (%llu)",
+		(unsigned long long)took);
+
+	int worst = 0; int at = -1;
+	for (uint32_t i = 0; i < 16 * 16; i++) {
+		int e = (int)(src[i] & 0xFF);
+		int want = (int)(srgb_eotf_ref((double)e / 255.0) * 255.0 + 0.5);
+		int got = b_of(px(h, i % 16, i / 16));
+		int d = got - want; if (d < 0) { d = -d; }
+		if (d > worst) { worst = d; at = (int)i; }
+	}
+	CHECK(worst <= 1,
+		"the sRGB variant matches an independent EOTF (worst %d codes at %d)",
+		worst, at);
+
+	/*
+	 * AND IT IS NOT THE IDENTITY. Every value above is decoded to something
+	 * much darker; if the shader passed the texel through, `worst` would be
+	 * enormous. Asserting that explicitly means the tolerance above cannot be
+	 * satisfied by a curve that does nothing.
+	 */
+	int e_mid = 128;
+	int decoded_mid = (int)(srgb_eotf_ref(128.0 / 255.0) * 255.0 + 0.5);
+	CHECK(decoded_mid < e_mid - 30,
+		"PREMISE: the reference curve is far from the identity (%d -> %d)",
+		e_mid, decoded_mid);
+
+	avk_image_destroy(h->dev, surface);
 }
 
 /* ── test 1: overlapping surfaces and alpha ─────────────────────────────── */
@@ -1160,6 +1268,7 @@ int main(void) {
 
 	test_sdr_roundtrip_gate(&h);
 	test_srgb_view_refusal(&h);
+	test_decode_variant(&h);
 	test_overlap_alpha(&h);
 	test_crop_scale(&h);
 	test_transforms(&h);

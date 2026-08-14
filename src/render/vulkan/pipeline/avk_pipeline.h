@@ -83,6 +83,17 @@ struct avk_push_constants {
 _Static_assert(sizeof(struct avk_push_constants) == 128,
 	"push constants must match the shader block");
 
+/* Mirrors the AZ_DECODE_* constants in texture.frag. A mismatch between the
+ * two is a wrong picture rather than an error, so they are declared beside each
+ * other in spirit and the shader names them in the same order. */
+enum avk_decode_variant {
+	AVK_DECODE_NONE = 0,
+	AVK_DECODE_SRGB,
+	AVK_DECODE_GAMMA22,
+	AVK_DECODE_BT1886,
+	AVK_DECODE_COUNT,
+};
+
 struct avk_pipelines {
 	struct avk_device *dev;
 
@@ -120,6 +131,17 @@ struct avk_pipelines {
 	 */
 	VkPipeline rect_opaque;
 	VkPipeline texture_opaque;
+	/*
+	 * M5/C7. One texture pipeline per source decode, compiled from the one
+	 * texture.frag through a specialisation constant.
+	 *
+	 * Indexed by AZ_DECODE_*: [0] is the no-decode variant and is the SAME
+	 * behaviour as `texture` above, kept as a separate object only so the
+	 * selection code has no special case. A variant that fails to compile
+	 * leaves VK_NULL_HANDLE here and the selector falls back to `texture`,
+	 * which renders the pre-M5 picture rather than nothing.
+	 */
+	VkPipeline texture_decode[AVK_DECODE_COUNT];
 	/*
 	 * M4D. ONE shadow pipeline for every shadow on the desktop: the caster's
 	 * geometry and its blur radius are push constants, so a window shadow, a

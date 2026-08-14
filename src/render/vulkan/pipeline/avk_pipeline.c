@@ -73,9 +73,20 @@ enum az_blend_mode {
 	AZ_BLEND_DARKEN,
 };
 
+/*
+ * `spec` is the FRAGMENT stage's specialisation info, or NULL.
+ *
+ * M5/C7 uses it to compile one decode variant per source domain from a single
+ * shader: a specialisation constant is folded at pipeline-compile time, so the
+ * branch it controls costs nothing at runtime and the unused decode paths are
+ * not even present in the compiled variant. A uniform branch would cost a
+ * register and a test per texel on every draw in the frame, for a value that is
+ * constant across the whole draw.
+ */
 static bool create_pipeline_ex(struct avk_pipelines *pipes, VkFormat format,
 		VkShaderModule vert, VkShaderModule frag, const char *name,
-		enum az_blend_mode mode, VkPipeline *out) {
+		enum az_blend_mode mode, const VkSpecializationInfo *spec,
+		VkPipeline *out) {
 	struct avk_device *dev = pipes->dev;
 
 	VkPipelineShaderStageCreateInfo stages[2] = {
@@ -90,6 +101,7 @@ static bool create_pipeline_ex(struct avk_pipelines *pipes, VkFormat format,
 			.stage = VK_SHADER_STAGE_FRAGMENT_BIT,
 			.module = frag,
 			.pName = "main",
+			.pSpecializationInfo = spec,
 		},
 	};
 
@@ -201,11 +213,49 @@ static bool create_pipeline_ex(struct avk_pipelines *pipes, VkFormat format,
 }
 
 /* The blending form, which is what every compositing primitive wants. */
+/*
+ * M5/C7. One texture pipeline per source decode, from the one texture.frag.
+ *
+ * NOT FATAL IF A VARIANT FAILS. A missing variant leaves VK_NULL_HANDLE and the
+ * selector falls back to the plain texture pipeline -- the pre-M5 picture,
+ * which is wrong for a tagged source and right for everything else. Failing
+ * device creation instead would take a whole desktop down over a colour path
+ * almost nothing on it uses yet.
+ */
+static bool create_decode_variants(struct avk_pipelines *pipes,
+		VkFormat format, VkShaderModule vert, VkShaderModule frag) {
+	static const char *names[AVK_DECODE_COUNT] = {
+		"texture_decode_none", "texture_decode_srgb",
+		"texture_decode_gamma22", "texture_decode_bt1886",
+	};
+	for (int i = 0; i < AVK_DECODE_COUNT; i++) {
+		int32_t value = i;
+		VkSpecializationMapEntry entry = {
+			.constantID = 0,
+			.offset = 0,
+			.size = sizeof(value),
+		};
+		VkSpecializationInfo spec = {
+			.mapEntryCount = 1,
+			.pMapEntries = &entry,
+			.dataSize = sizeof(value),
+			.pData = &value,
+		};
+		if (!create_pipeline_ex(pipes, format, vert, frag, names[i],
+				AZ_BLEND_OVER, &spec, &pipes->texture_decode[i])) {
+			avk_log(AVK_ERROR, "avk: decode variant %s did not compile; "
+				"sources in that domain will render undecoded", names[i]);
+			pipes->texture_decode[i] = VK_NULL_HANDLE;
+		}
+	}
+	return true;
+}
+
 static bool create_pipeline(struct avk_pipelines *pipes, VkFormat format,
 		VkShaderModule vert, VkShaderModule frag, const char *name,
 		VkPipeline *out) {
 	return create_pipeline_ex(pipes, format, vert, frag, name, AZ_BLEND_OVER,
-		out);
+		NULL, out);
 }
 
 static bool create_sampler(struct avk_device *dev, VkFilter filter,
@@ -331,13 +381,14 @@ bool avk_pipelines_init(struct avk_pipelines *pipes, struct avk_device *dev,
 			&pipes->rect)
 		&& create_pipeline(pipes, format, vert, texture_frag, "texture",
 			&pipes->texture)
+		&& create_decode_variants(pipes, format, vert, texture_frag)
 		/* The same two shaders, blending off. Bit-exact for alpha-1 fragments
 		 * because AZ_BLEND_OVER's destination factor is (1 - srcAlpha) = 0
 		 * there; see the note on rect_opaque. */
 		&& create_pipeline_ex(pipes, format, vert, rect_frag, "rect_opaque",
-			AZ_BLEND_REPLACE, &pipes->rect_opaque)
+			AZ_BLEND_REPLACE, NULL, &pipes->rect_opaque)
 		&& create_pipeline_ex(pipes, format, vert, texture_frag,
-			"texture_opaque", AZ_BLEND_REPLACE, &pipes->texture_opaque)
+			"texture_opaque", AZ_BLEND_REPLACE, NULL, &pipes->texture_opaque)
 		&& create_pipeline(pipes, format, vert, gradient_frag, "gradient",
 			&pipes->gradient)
 		&& create_pipeline(pipes, format, vert, shadow_frag, "shadow",
@@ -346,12 +397,12 @@ bool avk_pipelines_init(struct avk_pipelines *pipes, struct avk_device *dev,
 		&& blur_soft_frag != VK_NULL_HANDLE
 		/* REPLACING, not blending -- see create_pipeline_ex(). */
 		&& create_pipeline_ex(pipes, format, vert, blur_down_frag, "blur_down",
-			AZ_BLEND_REPLACE, &pipes->blur_down)
+			AZ_BLEND_REPLACE, NULL, &pipes->blur_down)
 		&& create_pipeline_ex(pipes, format, vert, blur_up_frag, "blur_up",
-			AZ_BLEND_REPLACE, &pipes->blur_up)
+			AZ_BLEND_REPLACE, NULL, &pipes->blur_up)
 		/* The identical shader, clamped against its own destination. */
 		&& create_pipeline_ex(pipes, format, vert, blur_up_frag,
-			"blur_up_darken", AZ_BLEND_DARKEN, &pipes->blur_up_darken)
+			"blur_up_darken", AZ_BLEND_DARKEN, NULL, &pipes->blur_up_darken)
 		/* A composite, so it blends like every other composite. */
 		&& create_pipeline(pipes, format, vert, blur_soft_frag, "blur_soft",
 			&pipes->blur_soft);
@@ -415,6 +466,12 @@ void avk_pipelines_finish(struct avk_pipelines *pipes) {
 	if (pipes->texture_opaque != VK_NULL_HANDLE) {
 		vkDestroyPipeline(dev, pipes->texture_opaque, NULL);
 		AVK_LIVE_DEC(pipes->dev, pipelines);
+	}
+	for (int i = 0; i < AVK_DECODE_COUNT; i++) {
+		if (pipes->texture_decode[i] != VK_NULL_HANDLE) {
+			vkDestroyPipeline(dev, pipes->texture_decode[i], NULL);
+			AVK_LIVE_DEC(pipes->dev, pipelines);
+		}
 	}
 	if (pipes->blur_down != VK_NULL_HANDLE) {
 		vkDestroyPipeline(dev, pipes->blur_down, NULL);

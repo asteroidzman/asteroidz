@@ -1447,6 +1447,34 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 			if (want == renderer->pipes.texture_opaque) {
 				renderer->stats.opaque_noblend_draws++;
 			}
+			/*
+			 * M5/C7. The decode variant this source's domain asks for.
+			 *
+			 * PER DRAW, AT RECORD TIME, from a domain resolved at commit --
+			 * never per pixel. A variant that did not compile leaves
+			 * VK_NULL_HANDLE and the plain pipeline stands, which renders the
+			 * pre-M5 picture rather than nothing.
+			 *
+			 * PQ and scRGB have no variant yet: HDR_SHADER needs the gamut
+			 * matrix and the tone map, and an HDR source decoded as if it were
+			 * SDR would be a confidently wrong picture. They fall through to
+			 * no decode, which is exactly what happens today.
+			 */
+			if (renderer->decode_enabled) {
+				enum avk_decode_variant v = AVK_DECODE_NONE;
+				switch (cmd->lum.tf) {
+				case AZ_TF_SRGB:    v = AVK_DECODE_SRGB;    break;
+				case AZ_TF_GAMMA22: v = AVK_DECODE_GAMMA22; break;
+				case AZ_TF_BT1886:  v = AVK_DECODE_BT1886;  break;
+				default: break;
+				}
+				if (v != AVK_DECODE_NONE
+						&& renderer->pipes.texture_decode[v]
+							!= VK_NULL_HANDLE) {
+					want = renderer->pipes.texture_decode[v];
+					renderer->stats.decode_draws++;
+				}
+			}
 
 			float origin[2], dx[2], dy[2];
 			transform_uv(&cmd->src, cmd->image->extent.width,

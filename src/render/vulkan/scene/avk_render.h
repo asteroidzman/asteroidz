@@ -438,6 +438,10 @@ struct avk_renderer_stats {
 	 * fragment was alpha 1. Reported so "the experiment did nothing" and "the
 	 * experiment did nothing useful" are different readings. */
 	uint64_t opaque_noblend_draws;
+	/* M5/C7. Draws that took a decode variant. Zero with decode off, and zero
+	 * WITH it on would mean no source asked for one -- two different readings
+	 * that a pixel comparison alone conflates. */
+	uint64_t decode_draws;
 	uint64_t draws;          /* commands x damage rects */
 	/*
 	 * M4H. FRAGMENT AREA, BY PRIMITIVE CLASS, IN TWO BUCKETS.
@@ -601,6 +605,17 @@ struct avk_renderer {
 	 * worth anything on this hardware.
 	 */
 	bool opaque_noblend;
+	/*
+	 * M5/C7. Select a decode variant from each source's luminance domain.
+	 *
+	 * OFF BY DEFAULT, and it must stay off until the ENCODE side exists.
+	 * Decoding without encoding moves composition into linear light and then
+	 * writes those values as though they were still electrical -- every window
+	 * on screen washes out. The two halves are one change and the M5 SDR gate
+	 * is what says so: it is bit-exact with both off, must FAIL with only this
+	 * on, and must return to within a code once the encode lands.
+	 */
+	bool decode_enabled;
 	/* M4H break -- AZ_AVK_OCCLUDE_ALL=1: every command occludes, whatever its
 	 * alpha or shape. The over-culling failure the oracle must be able to
 	 * catch; see az_cmd_opaque_region(). */
