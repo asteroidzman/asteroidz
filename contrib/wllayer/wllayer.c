@@ -83,8 +83,24 @@ static const struct zwlr_layer_surface_v1_listener layer_surface_listener = {
 	.closed = layer_surface_closed,
 };
 
-// Minimal wl_shm ARGB8888 buffer, solid opaque colour -- content doesn't
-// matter for what these tests check (geometry/exclusive-zone/stacking).
+// Minimal wl_shm ARGB8888 buffer.
+//
+// Solid opaque colour by default: content does not matter for what most of
+// these tests check (geometry, exclusive zone, stacking).
+//
+// WLLAYER_PATTERN=1 fills a fine checkerboard instead, and that is not a
+// cosmetic option. A FLAT SURFACE IS BLIND TO A BLUR. Blurring one colour
+// produces the same colour at every radius and every level count, so a fixture
+// whose background is flat cannot tell a correct blur from a stale one, or a
+// radius-6 blur from a radius-12 one -- the AZ_BLUR_CACHE_STALE_PARAMS break
+// rendered a pixel-identical desktop to the correct build on a flat background,
+// which reads as "the break does nothing" when it in fact means "the fixture
+// cannot see". The same blindness cost this project a milestone once already
+// (the shadow-blur glow, found only after the flat test backdrop was replaced
+// with high-frequency content).
+//
+// The checker's cell is deliberately small relative to a blur's reach, so the
+// blur has something to average and the result depends on the kernel.
 static struct wl_buffer *make_buffer(int w, int h, uint32_t argb) {
 	int stride = w * 4;
 	int size = stride * h;
@@ -95,7 +111,22 @@ static struct wl_buffer *make_buffer(int w, int h, uint32_t argb) {
 	if (ftruncate(fd, size) < 0) { perror("ftruncate"); exit(1); }
 	uint32_t *pixels = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
 	if (pixels == MAP_FAILED) { perror("mmap"); exit(1); }
-	for (int i = 0; i < w * h; i++) pixels[i] = argb;
+	const char *pat = getenv("WLLAYER_PATTERN");
+	if (pat != NULL && atoi(pat) != 0) {
+		/* The second colour is the first with its channels rotated, so the
+		 * checker is high-contrast whatever colour it is asked for and the two
+		 * buffers of a resize stay distinguishable from each other. */
+		uint32_t a = argb;
+		uint32_t b = 0xff000000u | ((argb & 0x00ffffffu) >> 8)
+			| ((argb & 0x000000ffu) << 16);
+		for (int y = 0; y < h; y++) {
+			for (int x = 0; x < w; x++) {
+				pixels[y * w + x] = (((x >> 3) ^ (y >> 3)) & 1) ? a : b;
+			}
+		}
+	} else {
+		for (int i = 0; i < w * h; i++) pixels[i] = argb;
+	}
 	munmap(pixels, size);
 
 	struct wl_shm_pool *pool = wl_shm_create_pool(shm, fd, size);
