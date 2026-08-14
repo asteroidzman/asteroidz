@@ -1438,6 +1438,11 @@ FuncType parse_func_name(char *func_name, Arg *arg, char *arg_value,
 		func = reset_presentation;
 	} else if (strcmp(func_name, "set_t_pipe") == 0) {
 		func = set_t_pipe;
+		/* Each int dispatch parses its own argument in its own branch; there
+		 * is no shared conversion. Omitting this is silent -- the handler runs
+		 * with arg->i == 0 and the knob reads back unchanged, which is
+		 * indistinguishable from "the setting has no effect". */
+		(*arg).i = atoi(arg_value);
 	} else if (strcmp(func_name, "set_frame_trace") == 0) {
 		func = set_frame_trace;
 		(*arg).i = atoi(arg_value);

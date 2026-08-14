@@ -2022,6 +2022,28 @@ static uint64_t az_pointer_notify_internal;
  * tearing path is one of az_output_build_frame()'s four callers. */
 #ifdef AZ_HAVE_VULKAN
 #include "present/az_presenter_impl.h"
+
+/*
+ * The instant this pass's frame is meant to represent, for the animation code
+ * to sample against (ADR-606).
+ *
+ * Currently the presenter's armed target where one exists. It falls back to
+ * the arm instant rather than reading a clock, so there is exactly one time
+ * source per pass either way -- the fallback changes WHICH instant, never how
+ * many.
+ *
+ * NOTE, and it is the reason the value is not yet the target everywhere:
+ * rendermon walks EVERY client on EVERY output's pass and mutates the client's
+ * one shared animation state. Handing each pass its own output's target would
+ * therefore make a window straddling two outputs alternate between two
+ * instants up to ~10ms apart, frame by frame. Per-output sampling needs the
+ * semantic/presentation state split (ADR-611) first; this threading is the
+ * plumbing for it and is deliberately behaviour-neutral until then.
+ */
+static inline uint64_t az_frame_sample_ns(const Monitor *m) {
+	uint64_t t = az_presenter_sample_ns(m);
+	return t != 0 ? t : (m != NULL ? m->m8_arm_ns : 0);
+}
 #include "render/az_avk.h"
 #include "render/az_dmabuf_caps.h"
 #endif
@@ -8379,7 +8401,7 @@ static void render_monitor(Monitor *m) {
 	for (i = 0; i < LENGTH(m->layers); i++) {
 		layer_list = &m->layers[i];
 		wl_list_for_each_safe(l, tmpl, layer_list, link) {
-			if (layer_draw_frame(l)) {
+			if (layer_draw_frame(l, az_frame_sample_ns(m))) {
 				need_more_frames = true;
 				az_frame_reach_all = true;
 			}
@@ -8387,7 +8409,7 @@ static void render_monitor(Monitor *m) {
 	}
 
 	wl_list_for_each_safe(c, tmp, &fadeout_clients, fadeout_link) {
-		if (client_draw_fadeout_frame(c)) {
+		if (client_draw_fadeout_frame(c, az_frame_sample_ns(m))) {
 			/* A fadeout owns a shard tree whose extent is not the client's
 			 * box; it does not describe itself, so it gets all of them. */
 			need_more_frames = true;
@@ -8396,7 +8418,7 @@ static void render_monitor(Monitor *m) {
 	}
 
 	wl_list_for_each_safe(l, tmpl, &fadeout_layers, fadeout_link) {
-		if (layer_draw_fadeout_frame(l)) {
+		if (layer_draw_fadeout_frame(l, az_frame_sample_ns(m))) {
 			need_more_frames = true;
 			az_frame_reach_all = true;
 		}
@@ -8449,7 +8471,7 @@ static void render_monitor(Monitor *m) {
 				tag_n_in++;
 			}
 		}
-		if (client_draw_frame(c)) {
+		if (client_draw_frame(c, az_frame_sample_ns(m))) {
 			need_more_frames = true;
 			/* An opacity-only animation ticks without moving, so
 			 * client_animation_next_tick() never ran and never contributed a

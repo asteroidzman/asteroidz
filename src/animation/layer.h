@@ -362,14 +362,29 @@ void layer_fadeout_scene_buffer_apply_effect(struct wlr_scene_buffer *buffer,
 								   buffer_data->height);
 }
 
-void fadeout_layer_animation_next_tick(LayerSurface *l) {
+/*
+ * ── ONE INSTANT PER PASS, HANDED DOWN ─────────────────────────────────────
+ *
+ * M6A/ADR-606. `sample_ns` is the moment this frame is meant to REPRESENT,
+ * decided once per output pass by the presenter and threaded from there.
+ *
+ * It replaces a clock_gettime() that used to sit inside each of these
+ * functions. Five of them, each reading the clock for itself, so two windows
+ * animating in the same frame sampled at different instants separated by
+ * however long the walk between them took. That is invisible on a still
+ * desktop and it is not a rounding detail: it is two objects disagreeing about
+ * what time the frame is.
+ *
+ * Threaded explicitly rather than read from a frame-scoped global, because the
+ * whole defect being removed is animation code helping itself to a time source
+ * nobody handed it.
+ */
+void fadeout_layer_animation_next_tick(LayerSurface *l, uint64_t sample_ns) {
 	if (!l)
 		return;
 
-	struct timespec now;
-	clock_gettime(CLOCK_MONOTONIC, &now);
-
-	int32_t passed_time = timespec_to_ms(&now) - l->animation.time_started;
+	int32_t passed_time =
+		(int32_t)(sample_ns / 1000000ull) - l->animation.time_started;
 	double animation_passed =
 		l->animation.duration
 			? (double)passed_time / (double)l->animation.duration
@@ -429,15 +444,13 @@ void fadeout_layer_animation_next_tick(LayerSurface *l) {
 	}
 }
 
-void layer_animation_next_tick(LayerSurface *l) {
+void layer_animation_next_tick(LayerSurface *l, uint64_t sample_ns) {
 
 	if (!l || !l->mapped)
 		return;
 
-	struct timespec now;
-	clock_gettime(CLOCK_MONOTONIC, &now);
-
-	int32_t passed_time = timespec_to_ms(&now) - l->animation.time_started;
+	int32_t passed_time =
+		(int32_t)(sample_ns / 1000000ull) - l->animation.time_started;
 	double animation_passed =
 		l->animation.duration
 			? (double)passed_time / (double)l->animation.duration
@@ -698,7 +711,7 @@ void layer_commit(LayerSurface *l) {
 		wlr_output_schedule_frame(l->mon->wlr_output);
 }
 
-bool layer_draw_frame(LayerSurface *l) {
+bool layer_draw_frame(LayerSurface *l, uint64_t sample_ns) {
 
 	if (!l || !l->mapped)
 		return false;
@@ -713,7 +726,7 @@ bool layer_draw_frame(LayerSurface *l) {
 
 	if (config.animations && config.layer_animations && l->animation.running &&
 		!l->noanim) {
-		layer_animation_next_tick(l);
+		layer_animation_next_tick(l, sample_ns);
 		layer_draw_shadow(l);
 		layer_draw_shield(l);
 	} else {
@@ -724,10 +737,10 @@ bool layer_draw_frame(LayerSurface *l) {
 	return true;
 }
 
-bool layer_draw_fadeout_frame(LayerSurface *l) {
+bool layer_draw_fadeout_frame(LayerSurface *l, uint64_t sample_ns) {
 	if (!l)
 		return false;
 
-	fadeout_layer_animation_next_tick(l);
+	fadeout_layer_animation_next_tick(l, sample_ns);
 	return true;
 }

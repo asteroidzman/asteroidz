@@ -65,6 +65,35 @@ static void az_presenter_reset(Monitor *m, enum az_present_reset_reason why) {
 		? AZ_PRESENT_VRR : AZ_PRESENT_FIXED;
 	p->reset_commit_seq =
 		m->wlr_output != NULL ? m->wlr_output->commit_seq : 0;
+	/*
+	 * ── t_pipe, CHOSEN BY SWEEP RATHER THAN BY DERIVATION ─────────────────
+	 *
+	 * Measured on DP-1, 25s per cell, error in us (abs is the honest column --
+	 * a mean can cancel a predictor that is early half the time):
+	 *
+	 *     t_pipe      idle mean / abs      continuous mean / abs
+	 *          0        5745 / 5745                 31 / 31
+	 *       3000        1612 / 2509                 19 / 25
+	 *       6000        1763 / 3812                 14 / 17
+	 *       9050        -910 / 3939              -2025 / 2072
+	 *
+	 * 9050 is the idle arm-to-photons mean and is exactly the wrong answer:
+	 * under load the frame event fires close enough to the previous present
+	 * that `now + t_pipe` overtakes `last_present + P_min`, the max() picks the
+	 * term that does not apply, and the loaded case -- the only one animation
+	 * lives in -- degrades by two orders of magnitude.
+	 *
+	 * 3000 costs nothing under load and takes the idle bias from 5.7ms to
+	 * 1.6ms. It does not narrow the idle SPREAD, and no constant can: an idle
+	 * VRR panel's readiness is genuinely variable (commit-to-photons p10 2400us
+	 * against p95 12900us). Making this adaptive to chase that spread is
+	 * explicitly out of scope for M6A -- the error series is the evidence a
+	 * later milestone would have to argue from.
+	 *
+	 * Zero on FIXED outputs: there is a lattice to project onto there, and it
+	 * predicts to single-digit microseconds without help.
+	 */
+	p->t_pipe_ns = p->regime == AZ_PRESENT_VRR ? 3000000ull : 0;
 
 	wlr_log(WLR_DEBUG,
 		"M6A presenter reset: %s epoch=%u reason=%s regime=%s period=%.3fms",

@@ -2314,16 +2314,30 @@ static inline int32_t anim_lerp(int32_t from, int32_t to, double factor) {
 	return (int32_t)llround(v);
 }
 
-void fadeout_client_animation_next_tick(Client *c) {
+/*
+ * ── ONE INSTANT PER PASS, HANDED DOWN ─────────────────────────────────────
+ *
+ * M6A/ADR-606. `sample_ns` is the moment this frame is meant to REPRESENT,
+ * decided once per output pass by the presenter and threaded from there.
+ *
+ * It replaces a clock_gettime() that used to sit inside each of these
+ * functions. Five of them, each reading the clock for itself, so two windows
+ * animating in the same frame sampled at different instants separated by
+ * however long the walk between them took. That is invisible on a still
+ * desktop and it is not a rounding detail: it is two objects disagreeing about
+ * what time the frame is.
+ *
+ * Threaded explicitly rather than read from a frame-scoped global, because the
+ * whole defect being removed is animation code helping itself to a time source
+ * nobody handed it.
+ */
+void fadeout_client_animation_next_tick(Client *c, uint64_t sample_ns) {
 	if (!c)
 		return;
 
 	BufferData buffer_data;
 
-	struct timespec now;
-	clock_gettime(CLOCK_MONOTONIC, &now);
-
-	uint64_t now_ns = (uint64_t)now.tv_sec * 1000000000ull + (uint64_t)now.tv_nsec;
+	uint64_t now_ns = sample_ns;
 	double passed_ms = c->animation.time_started_ns
 		? (double)(now_ns - c->animation.time_started_ns) / 1.0e6
 		: 0.0;
@@ -2505,11 +2519,8 @@ static bool anim_spring_converged(Client *c, int32_t type, double t,
 	return step_px < ANIM_CONVERGE_PX;
 }
 
-void client_animation_next_tick(Client *c) {
-	struct timespec now;
-	clock_gettime(CLOCK_MONOTONIC, &now);
-
-	uint64_t now_ns = (uint64_t)now.tv_sec * 1000000000ull + (uint64_t)now.tv_nsec;
+void client_animation_next_tick(Client *c, uint64_t sample_ns) {
+	uint64_t now_ns = sample_ns;
 	double passed_ms = c->animation.time_started_ns
 		? (double)(now_ns - c->animation.time_started_ns) / 1.0e6
 		: 0.0;
@@ -2638,7 +2649,10 @@ void client_animation_next_tick(Client *c) {
 		 * grace for anything that wasn't going to be scanout-eligible
 		 * anyway (non-fullscreen, or noscanout already set). */
 		if (c->isfullscreen && !c->noscanout)
-			c->scanout_grace_until_ms = get_now_in_ms() + 250;
+			/* Dated from THIS FRAME's instant, not from "now": the question is
+		 * whether the grace has expired for the frame being built, and the
+		 * frame's own time is the one that answers it. */
+		c->scanout_grace_until_ms = (int64_t)(sample_ns / 1000000ull) + 250;
 		else
 			client_set_prevent_scanout(c, c->noscanout);
 
@@ -3039,11 +3053,11 @@ void resize(Client *c, struct wlr_box geo, int32_t interact) {
 	setborder_color(c);
 }
 
-bool client_draw_fadeout_frame(Client *c) {
+bool client_draw_fadeout_frame(Client *c, uint64_t sample_ns) {
 	if (!c)
 		return false;
 
-	fadeout_client_animation_next_tick(c);
+	fadeout_client_animation_next_tick(c, sample_ns);
 	return true;
 }
 
@@ -3146,7 +3160,7 @@ void client_set_unfocused_opacity_animation(Client *c) {
 	c->opacity_animation.running = true;
 }
 
-bool client_apply_focus_opacity(Client *c) {
+bool client_apply_focus_opacity(Client *c, uint64_t sample_ns) {
 	/* Keep the titlebar's (and, in the steady-state branches below, the
 	 * border's) focus color in sync with the actually-focused client on
 	 * every render. focusclient() doesn't recompute titlebar geometry for
@@ -3171,10 +3185,8 @@ bool client_apply_focus_opacity(Client *c) {
 		client_set_opacity(c, 1);
 	} else if (c->animation.running && c->animation.action == OPEN) {
 		c->opacity_animation.running = false;
-		struct timespec now;
-		clock_gettime(CLOCK_MONOTONIC, &now);
-
-		int32_t passed_time = timespec_to_ms(&now) - c->animation.time_started;
+		int32_t passed_time =
+			(int32_t)(sample_ns / 1000000ull) - c->animation.time_started;
 		double linear_progress =
 			c->animation.duration
 				? (double)passed_time / (double)c->animation.duration
@@ -3202,11 +3214,8 @@ bool client_apply_focus_opacity(Client *c) {
 		client_set_border_fill(c, c->opacity_animation.target_border_color);
 	} else if (config.animations && c->opacity_animation.running) {
 
-		struct timespec now;
-		clock_gettime(CLOCK_MONOTONIC, &now);
-
 		int32_t passed_time =
-			timespec_to_ms(&now) - c->opacity_animation.time_started;
+			(int32_t)(sample_ns / 1000000ull) - c->opacity_animation.time_started;
 		double linear_progress =
 			c->opacity_animation.duration
 				? (double)passed_time / (double)c->opacity_animation.duration
@@ -3261,7 +3270,7 @@ bool client_apply_focus_opacity(Client *c) {
 	return false;
 }
 
-bool client_draw_frame(Client *c) {
+bool client_draw_frame(Client *c, uint64_t sample_ns) {
 
 	if (!c || !client_surface(c)->mapped)
 		return false;
@@ -3279,17 +3288,17 @@ bool client_draw_frame(Client *c) {
 	 * since a settled client with nothing left to animate stops going
 	 * through that path entirely -- nothing else would ever clear this. */
 	if (c->scanout_grace_until_ms &&
-		get_now_in_ms() >= c->scanout_grace_until_ms) {
+		(int64_t)(sample_ns / 1000000ull) >= c->scanout_grace_until_ms) {
 		c->scanout_grace_until_ms = 0;
 		client_set_prevent_scanout(c, c->noscanout);
 	}
 
 	if (!c->need_output_flush) {
-		return client_apply_focus_opacity(c);
+		return client_apply_focus_opacity(c, sample_ns);
 	}
 
 	if (config.animations && c->animation.running) {
-		client_animation_next_tick(c);
+		client_animation_next_tick(c, sample_ns);
 	} else {
 		wlr_scene_node_set_position(&c->scene->node, c->pending.x,
 									c->pending.y);
@@ -3298,6 +3307,6 @@ bool client_draw_frame(Client *c) {
 		client_apply_clip(c, 1.0);
 		c->need_output_flush = false;
 	}
-	client_apply_focus_opacity(c);
+	client_apply_focus_opacity(c, sample_ns);
 	return true;
 }

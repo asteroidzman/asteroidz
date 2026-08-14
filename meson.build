@@ -611,6 +611,8 @@ test('kdl-write', test_kdl_write, workdir : meson.project_source_root())
 # MISSING from the table, because there is no entry to check -- that is the other
 # script's job, and it is the direction that matters as the parser grows.
 test('config-schema', asteroidz_exe, args : ['-S'])
+test('animation-clocks', find_program('tests/check-animation-clocks.py'),
+     workdir: meson.project_source_root())
 test('config-schema-coverage', find_program('tests/check-config-schema.py'),
      args : [asteroidz_exe])
 test('dispatch-actions-coverage',
