@@ -2817,3 +2817,103 @@ Timing. Validation intercepts CPU-side at roughly 100x, so neither session
 paces like the real one and no percentile from either run is comparable to
 §5.10b. These runs answer correctness questions only, which is what the
 validation layer is for.
+
+## 5.19 AVK drives a real HDR display
+
+The last M5 claim that had only ever been derived. DP-1 flipped into HDR by the
+existing `force_hdr` rule on mpv, with `AZ_M5_PATH_B=1` and the validation layer
+loaded.
+
+C3 re-derived on the transition exactly as predicted:
+
+```
+M5 color: DP-1 path=B-encode tf=pq 10bpc ref=280 peak_scene=1.429 dither_q=0.00098
+```
+
+| reading | value |
+|---|---|
+| frames / fallback | **8939 / 1** — one frame at the transition, then AVK drove every one |
+| encode draws | 65,236 |
+| `encode_compiles` | 2, stable |
+| intermediate | 1, `req_bytes` 67,174,400 (DP-1's 3840x2160 FP16) |
+| VUID / SYNC-HAZARD, whole boot | **0** |
+| waits / lifecycle | 0 / 0 |
+| teardown census | **all zero** |
+
+HDR switched off cleanly when mpv closed, with `fallback` reaching 2 — one frame
+per transition, which is the interlock declining while the output state and the
+image description are momentarily out of step. Declining there is the designed
+behaviour: it costs one SceneFX frame instead of a PQ buffer full of scene
+values.
+
+### The numeric check: ADR-008's falsifier, met
+
+A test card of known sRGB patches, captured with `screenshot_ui,rawhdr` (raw
+`XBGR2101010` off the real scan-out buffer) and compared against C4's CPU
+reference driven with the same output state:
+
+| patch | reference | measured |
+|---|---|---|
+| grey 0 / 32 / 64 / 128 / 192 / 255 | 0 238 337 469 560 **629** | 0 238 336 468 559 **628** |
+| red | 595 301 0 | 594 300 0 |
+| green | 476 625 0 | 477 625 0 |
+| blue | 307 0 639 | **307 0 639** |
+| yellow | 625 629 0 | **625 629 0** |
+| cyan | 491 625 632 | 491 624 631 |
+| magenta | 600 291 636 | 599 290 635 |
+
+**Within one code everywhere**, neutral and saturated. ADR-008's falsifier is
+"the PQ signal for the reference-white patch must equal PQ⁻¹(ref/10000) ±
+1/1023": predicted 629, measured 628.
+
+The zeros are correct rather than a clamp defect. `saturation 1.25` pushes the
+BT.709 primaries outside the BT.2020 container, the minor channel goes negative,
+and ADR-010's clamp takes it to zero — which is what that clamp is specified to
+do.
+
+### Two predictions that were wrong, and only one of them said so
+
+The first prediction assumed the 203-nit ADR default; the live reference is
+**280**, set in the config. The compositor prints that on every colour-state
+change, so it was caught immediately.
+
+The second assumed neutral saturation; the config sets **1.25**. Nothing prints
+it, so the prediction silently disagreed with the display on every saturated
+patch — and the disagreement had exactly the shape of a real defect: minor
+channels crushed to zero, majors too high. Inverting the measured codes back
+through PQ and the matrix gave BT.709 **(1.184, −0.053, −0.017)**, a colour
+*outside* the gamut, which is a saturation matrix's signature and nothing else's.
+
+Before that was understood, the intermediate hypotheses were: a double gamut
+conversion (disproved — mpv logs `primaries: bt.709`), and AVK ignoring source
+primaries (a real gap, see below, but not this). What settled it was isolating
+the encode from every live variable: the PQ unit test's values were all NEUTRAL,
+and **neutral cannot see a gamut matrix** — every row of BT.709→BT.2020 sums to
+1. Saturated values were added to that test, run against the CPU reference, and
+came back within 1 code. The encode was correct; the prediction was not.
+
+That is the third time in this milestone the neutral-value blind spot has hidden
+something: the Path-B SDR falsifier read 0 codes on a grey ramp, the PQ test had
+no colour in it, and this. A colour-pipeline test whose inputs are all grey is
+testing the transfer function and nothing else.
+
+### A real gap found on the way: source primaries are never used
+
+`az_lum_domain` carries `primaries`, and the scene walk fills it — but nothing
+in the renderer ever reads it. There is no source gamut conversion at any point:
+a surface tagged BT.2020 is composited as though it were BT.709, and then the
+output pass converts 709→2020 on top.
+
+This did not affect the run above, because mpv tagged BT.709 and there was
+nothing to convert. It is the other half of C7's `HDR_SHADER` — the transfer
+half was implemented and the primaries half was not — and it is recorded rather
+than fixed here.
+
+### What this does NOT show
+
+**AVK still cannot decode HDR sources.** C7's PQ decode variant does not exist;
+`avk_render.c` says so in a comment and falls through to no decode. Everything
+above is SDR content on an HDR *output*, which is ADR-008's stated case ("SDR
+content on the HDR output renders at scene_reference_luminance with correct
+primaries") and is the whole of what C6 delivers. Genuine HDR video would be
+decoded as though it were SDR and then PQ-encoded a second time.

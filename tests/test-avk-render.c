@@ -1285,6 +1285,75 @@ static void test_path_b_pq_encode(struct harness *h) {
 			worst_i >= 0 ? (double)vals[worst_i] : 0.0);
 	}
 
+	/*
+	 * ── AND THE SAME THING IN COLOUR, WHICH IS A DIFFERENT TEST ────────────
+	 *
+	 * Every value above is NEUTRAL, and neutral CANNOT SEE THE GAMUT MATRIX:
+	 * every row of BT.709->BT.2020 sums to 1, so grey is invariant under it.
+	 * An absent matrix, a transposed one and the correct one all produce
+	 * identical output for r=g=b -- the same blind spot that made the Path-B
+	 * SDR falsifier read 0 codes until its ramp was given colour. Worth
+	 * catching once rather than twice.
+	 *
+	 * Saturated values make the matrix the dominant term: BT.709 primary red
+	 * lands at BT.2020 (0.6274, 0.0691, 0.0164), and the minor channels are
+	 * where a wrong matrix shows first.
+	 */
+	if (ok) {
+		static const float sats[][3] = {
+			{1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 1.0f},
+			{1.0f, 1.0f, 0.0f}, {0.5f, 0.25f, 0.125f},
+		};
+		const int ns = (int)(sizeof(sats) / sizeof(sats[0]));
+		struct avk_scene sc;
+		avk_scene_init(&sc);
+		pixman_region32_union_rect(&sc.damage, &sc.damage, 0, 0, W, H);
+		sc.has_clear = true;
+		sc.clear_color[3] = 1.0f;
+		for (int i = 0; i < ns; i++) {
+			struct avk_cmd *c = avk_scene_add(&sc, AVK_CMD_RECT);
+			c->dst = (struct avk_box){ i * 12, 0, 12, 12 };
+			for (int ch = 0; ch < 3; ch++) {
+				c->color[ch] = sats[i][ch];
+			}
+			c->color[3] = 1.0f;
+		}
+		struct avk_image *keep = h->target;
+		h->target = target;
+		fp->encode_intermediate = inter;
+		fp->encode_params = params;
+		fp->encode_full_frame = true;
+		bool ok2 = render_with(h, fp, &sc);
+		fp->encode_intermediate = NULL;
+		fp->encode_full_frame = false;
+		avk_scene_finish(&sc);
+		h->target = keep;
+
+		struct az_ref_output ref2 = { .state = state, .knee = 1.0,
+			.dither = false };
+		int worst2 = 0;
+		for (int i = 0; i < ns && ok2; i++) {
+			double rgb[3] = { sats[i][0], sats[i][1], sats[i][2] };
+			double e[3];
+			az_ref_encode_scene(&ref2, rgb, e);
+			uint32_t p = px(h, (uint32_t)(i * 12 + 6), 6);
+			int got[3] = { r10_of(p), g10_of(p), b10_of(p) };
+			int wnt[3];
+			for (int c = 0; c < 3; c++) {
+				wnt[c] = (int)(e[c] * 1023.0 + 0.5);
+				int d = got[c] - wnt[c];
+				if (d < 0) { d = -d; }
+				if (d > worst2) { worst2 = d; }
+			}
+			printf("  ---- scene %.2f,%.2f,%.2f -> want %4d %4d %4d  "
+				"got %4d %4d %4d\n", (double)sats[i][0], (double)sats[i][1],
+				(double)sats[i][2], wnt[0], wnt[1], wnt[2],
+				got[0], got[1], got[2]);
+		}
+		CHECK(ok2 && worst2 <= 2,
+			"ADR-008: the GAMUT MATRIX matches the reference on SATURATED "
+			"colour (worst %d codes)", worst2);
+	}
 	avk_encode_intermediate_finish(&work, h->dev, &fp->retire);
 	avk_image_destroy(h->dev, target);
 }
