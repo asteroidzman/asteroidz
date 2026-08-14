@@ -199,7 +199,7 @@ addressed — if the intent was narrower, F5 is the item to re-open.
 
 ---
 
-## F6 — ADR-003's falsifier is not satisfiable together with ADR-009 (C4) **needs Fable**
+## F6 — ADR-003's falsifier is not satisfiable together with ADR-009 (C4) — **RESOLVED 2026-08-14**
 
 **ADR-003's falsifier** says: sweep `set_sdr_luminance` 80 → 400 with a PQ
 pattern on screen; "the 1000-nit patch must hold constant … the UI white must
@@ -234,6 +234,35 @@ SDR white tracks the sweep; a patch above it must move monotonically with the
 reference and never exceed its own mastered luminance." That is what gate 6
 asserts now, and it still catches every break — including the two that
 previously only gate 6 caught.
+
+**RESOLUTION (Fable, 2026-08-14): the repair is accepted, with one
+tightening.** "Below the reference" is ambiguous *during a sweep*: a 203-nit
+patch is below the reference at ref 300 and above it at ref 80, so across
+80→400 it holds in one half of the sweep and moves in the other — pick it as
+the invariant patch and you have rebuilt a falsifier that fails on correct
+code, which is the exact defect being repaired. The rewritten ADR-003
+falsifier therefore pins the invariant patch **below the lowest reference in
+the sweep** (50 cd/m² for 80→400, the same patch the table above uses), and
+keeps a diagnosis for each direction of failure: an invariant patch that
+moves means the anchor is applied on the wrong side of the split; an
+above-reference patch that holds constant means tone mapping is not being
+driven by the reference-relative scene value. The old 1000-nit form is
+retained in the ADR as a parenthetical *anti*-example, so nobody
+reintroduces it as an "obvious" strengthening.
+
+The invariance is claimed at the reference boundary, not at "the knee"
+in the abstract, and that is deliberate given F5: F5's sub-1.0 knee lives in
+the Path-A >1-capable *decode* variant only, and F11 puts every HDR output on
+Path B, where ADR-009's output-encode knee stays at scene 1.0 — so on the HDR
+output this falsifier measures, knee and reference coincide. If the F5 knee
+ever migrated to Path B, the invariance region would shrink to
+knee × reference and the falsifier's patch bound must move with it; whoever
+chooses the knee value owns that one-line consequence.
+
+Gate 6 needs no change: it already asserts the repaired statement — 50 cd/m²
+invariant within 1 cd/m² at every reference, SDR white tracking within
+2 cd/m², the 400 cd/m² patch monotone non-decreasing and never above
+400 — and its own header comment already states the finding.
 
 ---
 

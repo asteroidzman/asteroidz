@@ -276,11 +276,21 @@ one into the encode pass; zero on SDR paths.
 decode to the same relative space. `set_luminances`, if wlroots ever ships
 it, refines per-surface decode constants (ADR-006 fields already hold them).
 
-**FALSIFIER.** Play a PQ test pattern with a 203-nit patch and a 1000-nit
-patch on the HDR output while sweeping `set_sdr_luminance` 80→400: the
-1000-nit patch must hold constant on a external meter (or in the rawhdr
-capture), the UI white must track the sweep. If both move, the anchor is
-applied on the wrong side of the split.
+**FALSIFIER.** Play a PQ test pattern on the HDR output while sweeping
+`set_sdr_luminance` 80→400: a patch mastered below the *lowest* reference
+in the sweep (50 cd/m²) must hold its absolute luminance on an external
+meter (or in the rawhdr capture) while UI white tracks the sweep — the
+decode's 10000/ref and the encode's ref/10000 cancel exactly where the
+tone curve is identity, and ADR-009's knee is at scene 1.0, which *is*
+the reference. A patch above the reference (400 cd/m² at ref 80) must
+NOT hold: it must rise monotonically with the reference and never exceed
+its own mastered luminance, because raising the reference raises the knee
+in absolute terms and compresses it less. If the below-reference patch
+moves, the anchor is applied on the wrong side of the split; if the
+above-reference patch holds constant, tone mapping is not being driven by
+the reference-relative scene value. (An earlier form demanded a 1000-nit
+patch hold constant across the whole sweep; that is unsatisfiable with
+ADR-009's knee and fails on correct code — findings F6, gate 6.)
 
 ---
 
