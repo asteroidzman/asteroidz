@@ -21,6 +21,11 @@ progress" is a readable state rather than an impression.
 | 608 | retarget **position** continuity | 42 px largest step across the seam, against 1027 px broken |
 | 610 | idle stays idle | 0 presents / 0 frames over 12 s with a window mapped |
 | 611 | the semantic/presentation boundary, **observable** | `x` vs `anim_x` on the client IPC |
+| 611 | the trajectory is a **pure function** | `anim_eval_at`; ADR-607 statement 1 holds by construction |
+| 608 | retarget anchors at the last **sampled** instant | the defect G2 introduced, caught by the ADR before the code |
+| 608 | retarget **velocity** continuity, spring-only | 60 px overshoot through the turn, against 0 px broken |
+| 609 | misses that name their evidence | 46 misses, all UNKNOWN with commit margin: "compositor too slow" disproven |
+| 609 | miss ≠ prediction spread | DP-1 38 phantom misses → 1; spread named `prediction_exceeded` |
 
 ## Falsifiers, each shown red and green
 
@@ -31,6 +36,7 @@ progress" is a readable state rather than an impression.
 | I5 | `AZ_BREAK_PRESENT_IDLE_WAKE` | 0 presents | 12 presents |
 | I10 | static, no switch | passes | red on a reintroduced `clock_gettime` |
 | I12 | `AZ_BREAK_ANIM_RETARGET_POSITION_RESET` | 42 px | 1027 px |
+| I6 | `AZ_BREAK_ANIM_RETARGET_ZERO_VELOCITY` | 60 px overshoot | 0 px |
 
 ## Not built
 
@@ -43,12 +49,11 @@ progress" is a readable state rather than an impression.
 - **ADR-612's GPU half.** Model A was chosen (CPU evaluates, GPU applies) and
   the CPU half is what exists today; no presentation transform has moved into
   the vertex path, and no measurement yet says it should.
-- **ADR-608's velocity continuity.** The clock restarts at zero on retarget, so
-  velocity resets. Spring-only by decision; beziers excluded because the curve
-  family has no state to inject.
-- **ADR-609 miss classification.** No verdicts yet. `GPU_LATE` is unreachable
-  without `VK_EXT_calibrated_timestamps`, and the ADR is explicit that the
-  honest early output is mostly `UNKNOWN`.
+- **`VK_EXT_calibrated_timestamps`.** Without a real GPU completion instant,
+  `GPU_LATE` and `PRESENTATION_SCHEDULING` are unreachable and every miss that
+  committed with margin lands `UNKNOWN`. Wiring it is what would turn those
+  into verdicts. `gpu_ts_available` reports the limitation rather than hiding
+  it.
 - **ADR-613/614's damage and coherence oracles.** Untested.
 - **The VT-switch reset** (audit G6) — unwireable; there is no session object.
 
