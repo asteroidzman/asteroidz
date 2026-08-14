@@ -88,11 +88,15 @@ def band(lo, hi, label):
     s = f[int(n*lo):max(int(n*hi), int(n*lo)+1)]
     if not s: return
     m = len(s)
+    # MEAN against MEAN. The first version divided a SUM of prefix by a MEAN
+    # frame and printed shares of 352% and 219%, which is the sort of number
+    # that gets read past rather than questioned.
     tot = sum(r[0] for r in s)/m
-    print("  %-14s n=%-5d frame=%8.0f  blur=%8.0f  prefix=%8.0f (%5.1f%% of frame)"
+    pfx = sum(r[3] for r in s)/m
+    print("  %-14s n=%-5d frame=%8.0f  blur=%8.0f  prefix=%8.0f (%4.1f%% of frame)"
           "  post=%8.0f  chains=%.2f"
-          % (label, m, tot, sum(r[2] for r in s)/m, sum(r[3] for r in s)/m,
-             100*sum(r[3] for r in s)/tot if tot else 0,
+          % (label, m, tot, sum(r[2] for r in s)/m, pfx,
+             100*pfx/tot if tot else 0,
              sum(r[7] for r in s)/m, sum(r[1] for r in s)/m))
 print("  frames with a timestamp read: %d" % n)
 print()
