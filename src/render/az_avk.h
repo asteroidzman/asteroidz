@@ -1090,6 +1090,15 @@ struct az_avk_output {
 	struct avk_encode_intermediate encode_work;
 
 	/*
+	 * M6B/G2. THE OUTPUT'S MEASURED ENCODE CURVE, as a texture.
+	 *
+	 * Per output for the plainest possible reason: a display profile describes
+	 * one display. Uploaded when the profile's serial moves and never on a
+	 * frame path -- see avk_encode_lut.
+	 */
+	struct avk_encode_lut encode_lut;
+
+	/*
 	 * M4F.2C.4c forensics. Per OUTPUT, because "frame 41" has to mean the same
 	 * thing in the log and in the fixture, and the renderer's own frame counter
 	 * is shared by every output using its VkFormat.
@@ -1197,6 +1206,12 @@ static struct az_avk_renderer_slot *az_avk_renderer_for(VkFormat format) {
  * a missing one: Path A is an AVK path, so an output on the SceneFX renderer
  * does not have one to take.
  */
+/* Is AVK the renderer this session? The C3 inputs that are only meaningful for
+ * an AVK-driven output ask this rather than each finding their own way to it. */
+static bool az_avk_is_active(void) {
+	return avk.active;
+}
+
 static bool az_avk_scanout_srgb_format_ok(uint32_t fourcc) {
 	if (!avk.active) {
 		return false;
@@ -1584,6 +1599,10 @@ static void az_avk_output_finish(struct az_avk_output *out) {
 		 * the same reason. */
 		avk_encode_intermediate_finish(&out->encode_work,
 			out->slot->renderer.dev, &out->slot->renderer.retire);
+		/* M6B/G2. And the measured curve, which a frame in flight is sampling
+		 * for exactly as long as it is sampling the intermediate. */
+		avk_encode_lut_finish(&out->encode_lut, out->slot->renderer.dev,
+			&out->slot->renderer.retire);
 	}
 	free(out);
 }
@@ -1851,7 +1870,8 @@ static struct az_lum_domain az_avk_lum_of(
  * against an SDR ceiling of 1.0 -- is answerable by changing one number rather
  * than by arguing about a struct.
  */
-static struct avk_encode_params az_avk_encode_params(const Monitor *m) {
+static struct avk_encode_params az_avk_encode_params(const Monitor *m,
+		struct avk_image *lut) {
 	struct avk_encode_params p = {0};
 	const struct az_output_color_state *s = &m->color_state;
 	for (int i = 0; i < 9; i++) {
@@ -1880,6 +1900,10 @@ static struct avk_encode_params az_avk_encode_params(const Monitor *m) {
 	p.tf = s->encode_tf == AZ_TF_PQ ? AVK_ENCODE_TF_PQ
 		: s->encode_tf == AZ_TF_LUT1D ? AVK_ENCODE_TF_LUT1D
 		: AVK_ENCODE_TF_SRGB;
+	/* Only for the variant that samples it. Left NULL for the analytic curves
+	 * so that a caller passing one by mistake cannot leave a stale image
+	 * descriptor bound to a pass that was never going to read it. */
+	p.lut = p.tf == AVK_ENCODE_TF_LUT1D ? lut : NULL;
 	return p;
 }
 
@@ -4018,7 +4042,31 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 			target->extent.width, target->extent.height);
 		out->slot->renderer.encode_intermediate = inter;
 		out->slot->renderer.encode_full_frame = inter != NULL && inter != had;
-		out->slot->renderer.encode_params = az_avk_encode_params(m);
+		/*
+		 * M6B/G2. The measured curve, uploaded only when the profile's serial
+		 * has moved -- so on every frame but the first after a profile change
+		 * this is a comparison of two integers.
+		 */
+		struct avk_image *lut = NULL;
+		if (m->color_state.encode_tf == AZ_TF_LUT1D) {
+			lut = avk_encode_lut_get(&out->encode_lut,
+				out->slot->renderer.dev, &avk.importer.upload_ring,
+				&out->slot->renderer.retire, m->icc_shaper.curve,
+				m->icc_serial);
+			if (lut == NULL) {
+				/*
+				 * REFUSE THE FRAME rather than encode without the curve. C3 put
+				 * this output on LUT1D, which took the profile away from
+				 * SceneFX; encoding with the sRGB analytic instead would show
+				 * uncharacterised colour on a calibrated display and look
+				 * entirely plausible. Falling back hands the frame -- and the
+				 * profile -- back to the renderer that still has it.
+				 */
+				avk.fallback_frames++;
+				return false;
+			}
+		}
+		out->slot->renderer.encode_params = az_avk_encode_params(m, lut);
 	}
 	/*
 	 * DECODE IS ON FOR BOTH PATHS, and it has to be: the two paths differ only

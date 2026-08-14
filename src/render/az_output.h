@@ -83,8 +83,21 @@ static inline void az_output_commit_failed(Monitor *m) {
  * is already colour-managed by the connector, so applying the ICC transform on
  * top would apply it twice.
  */
+/*
+ * M6B/G2 adds the second half of the same rule. When C3 derived AZ_TF_LUT1D
+ * the AVK encode pass is applying the profile itself, from the same file, so
+ * handing wlroots the transform as well would apply it twice -- once as a
+ * matrix and curve in the encode pass and once as a 3D LUT in SceneFX. Exactly
+ * one owner, and the colour state names which.
+ */
 static inline struct wlr_color_transform *az_output_color_transform(Monitor *m) {
-	return m->wlr_output->image_description == NULL ? m->icc_transform : NULL;
+	if (m->wlr_output->image_description != NULL) {
+		return NULL;
+	}
+	if (m->color_state.encode_tf == AZ_TF_LUT1D) {
+		return NULL;
+	}
+	return m->icc_transform;
 }
 
 #endif /* AZ_OUTPUT_H */

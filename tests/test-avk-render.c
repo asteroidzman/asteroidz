@@ -33,6 +33,8 @@
 #include "render/az_output_color.h"
 #include "render/color/az_color.h"
 #include "render/color/az_color_ref.h"
+/* M6B/G2: the profile reduction the encode pass is checked against. */
+#include "render/color/az_icc.h"
 
 static int failures = 0;
 static int checks = 0;
@@ -1253,6 +1255,295 @@ static void test_path_b_sdr_gate(struct harness *h) {
  * has a walk in it. Splitting them is deliberate: with one test spanning both,
  * a fix in either place makes it pass and neither is pinned.
  */
+
+/*
+ * ── M6B GATE G2: THE MEASURED CURVE, ON THE GPU ───────────────────────────
+ *
+ * G1 established that az_icc_apply() reproduces lcms2's own transform to 1.92
+ * codes. THIS asserts that the AZ_TF_LUT1D encode variant reproduces
+ * az_icc_apply() -- so the chain from the .icm file to a pixel is closed by two
+ * links, each checked against an implementation that is not the other one.
+ *
+ * az_icc_apply IS the reference here rather than a fresh C4 extension, and
+ * deliberately: a second CPU implementation of the same table lookup would
+ * agree with the first for the same reasons and disagree with the GPU for the
+ * same reasons, which is a second copy of the arithmetic rather than a second
+ * opinion. What differs between the two sides is what is worth measuring --
+ * a CPU lerp against a hardware LINEAR filter with quantised subtexel weights.
+ *
+ * NON-NEUTRAL, and that is not decoration. A profile's matrix is near-identity
+ * on the neutral axis for the same reason every plausible wrong matrix is: the
+ * rows very nearly sum to 1. G1 measured 100 codes over a 16^3 grid and 9 codes
+ * on greys alone -- an elevenfold understatement -- so a grey ramp here would be
+ * a gate that agrees with almost anything.
+ *
+ * Display-specific: skips loudly without the profile, because a machine without
+ * it cannot run this gate and passing silently would be worse than not having
+ * it.
+ */
+#define G2_PROFILE "/home/ralf/FI32U.icm"
+
+static bool g2_slurp(const char *path, void **data, size_t *size) {
+	FILE *f = fopen(path, "rb");
+	if (f == NULL) {
+		return false;
+	}
+	fseek(f, 0, SEEK_END);
+	long n = ftell(f);
+	fseek(f, 0, SEEK_SET);
+	if (n <= 0) {
+		fclose(f);
+		return false;
+	}
+	*data = malloc((size_t)n);
+	*size = fread(*data, 1, (size_t)n, f);
+	fclose(f);
+	return *size == (size_t)n;
+}
+
+static void test_path_b_lut_encode(struct harness *h) {
+	printf("M6B/G2: the measured-curve encode against az_icc_apply\n");
+
+	void *data = NULL;
+	size_t size = 0;
+	if (!g2_slurp(G2_PROFILE, &data, &size)) {
+		printf("  SKIP %s not present -- this gate is display-specific\n",
+			G2_PROFILE);
+		return;
+	}
+	struct az_icc_shaper shaper;
+	enum az_icc_reject rc = az_icc_load_shaper(data, size, true, &shaper);
+	free(data);
+	CHECK(rc == AZ_ICC_OK, "G2: the profile reduces to a matrix-shaper (%s)",
+		az_icc_reject_name(rc));
+	if (rc != AZ_ICC_OK) {
+		return;
+	}
+
+	/*
+	 * THE DERIVE TABLE IS PART OF THE GATE. Building the params by hand would
+	 * pass on a C3 that never chooses LUT1D at all -- which is precisely the
+	 * state this milestone is changing.
+	 */
+	struct az_output_desc desc = {
+		.bits_per_channel = 8,
+		.hdr = false,
+		.has_icc = true,
+		.scene_ref_nits = 203.0f,
+		.scanout_srgb_view_ok = true,
+		.icc_shaper = &shaper,
+	};
+	struct az_output_color_state state = az_output_color_derive(&desc);
+	CHECK(state.path == AZ_OUTPUT_PATH_B_ENCODE
+			&& state.encode_tf == AZ_TF_LUT1D,
+		"PREMISE: C3 puts a profiled SDR output on Path B with LUT1D "
+		"(path=%d tf=%d)", (int)state.path, (int)state.encode_tf);
+	if (state.encode_tf != AZ_TF_LUT1D) {
+		return;
+	}
+
+	struct avk_renderer *fp = fp16_renderer(h);
+	if (fp == NULL) {
+		CHECK(false, "G2: FP16 renderer initialises");
+		return;
+	}
+
+	struct avk_encode_intermediate work = {0};
+	struct avk_image *inter = avk_encode_intermediate_get(&work, h->dev,
+		&fp->retire, VK_FORMAT_R16G16B16A16_SFLOAT, W, H);
+	if (inter == NULL) {
+		CHECK(false, "G2: intermediate allocates");
+		return;
+	}
+
+	/*
+	 * The LUT, through the same call the compositor makes -- not a bespoke
+	 * upload written for the test. A gate on an upload path the product does
+	 * not use is a gate on nothing.
+	 */
+	struct avk_encode_lut lut = {0};
+	struct avk_image *lut_img = avk_encode_lut_get(&lut, h->dev, &fp->ring,
+		&fp->retire, shaper.curve, 1);
+	CHECK(lut_img != NULL, "G2: the curve uploads as a 256-tap texture");
+	if (lut_img == NULL) {
+		avk_encode_intermediate_finish(&work, h->dev, &fp->retire);
+		return;
+	}
+	/* Idempotent on an unchanged serial: this is what keeps a display
+	 * characterisation off the frame path, and it is one line to assert. */
+	CHECK(avk_encode_lut_get(&lut, h->dev, &fp->ring, &fp->retire,
+			shaper.curve, 1) == lut_img,
+		"G2: an unchanged serial re-uses the image rather than re-uploading");
+
+	struct avk_encode_params params = {0};
+	for (int i = 0; i < 9; i++) {
+		params.matrix[i] = state.matrix[i];
+	}
+	params.knee = 1.0f;
+	params.peak = state.peak_scene;
+	params.anchor = state.ref_nits / 10000.0f;
+	/* Dither OFF. ADR-011's noise is +-half a code by design and this gate's
+	 * whole tolerance is one code. */
+	params.dither_q = 0.0f;
+	params.tf = AVK_ENCODE_TF_LUT1D;
+	params.lut = lut_img;
+
+	/*
+	 * SCENE VALUES WITH THE CHANNELS APART. Saturated primaries put the
+	 * matrix's off-diagonal terms in charge; the mixed triples cover the range
+	 * where the curve is steepest. A neutral is included LAST and only so the
+	 * printout shows how little it would have told us on its own.
+	 */
+	static const float vals[][3] = {
+		{ 0.90f, 0.10f, 0.05f },
+		{ 0.10f, 0.80f, 0.20f },
+		{ 0.05f, 0.15f, 0.85f },
+		{ 0.60f, 0.35f, 0.10f },
+		{ 0.20f, 0.05f, 0.40f },
+		{ 0.02f, 0.03f, 0.01f },
+		{ 0.50f, 0.50f, 0.50f },
+	};
+	const int nv = (int)(sizeof(vals) / sizeof(vals[0]));
+
+	struct avk_scene scene;
+	avk_scene_init(&scene);
+	pixman_region32_union_rect(&scene.damage, &scene.damage, 0, 0, W, H);
+	scene.has_clear = true;
+	scene.clear_color[3] = 1.0f;
+	for (int i = 0; i < nv; i++) {
+		struct avk_cmd *c = avk_scene_add(&scene, AVK_CMD_RECT);
+		c->dst = (struct avk_box){ i * 8, 0, 8, 8 };
+		for (int ch = 0; ch < 3; ch++) {
+			c->color[ch] = vals[i][ch];
+		}
+		c->color[3] = 1.0f;
+	}
+
+	fp->encode_intermediate = inter;
+	fp->encode_params = params;
+	fp->encode_full_frame = true;
+	bool ok = render_with(h, fp, &scene);
+	fp->encode_intermediate = NULL;
+	fp->encode_full_frame = false;
+	avk_scene_finish(&scene);
+
+	if (!ok) {
+		CHECK(false, "G2: frame renders");
+	} else {
+		int worst = 0, worst_i = -1;
+		/* THE PREMISE, measured on THESE patches rather than quoted from G1:
+		 * how far the profile moves them away from a plain sRGB encode. A gate
+		 * whose subject barely moves cannot fail for the right reason. */
+		int premise = 0;
+		for (int i = 0; i < nv; i++) {
+			float lin[3] = { vals[i][0], vals[i][1], vals[i][2] };
+			float want_f[3];
+			az_icc_apply(&shaper, lin, want_f);
+			uint32_t p = px(h, (uint32_t)(i * 8 + 4), 4);
+			int got[3] = { r_of(p), g_of(p), b_of(p) };
+			for (int ch = 0; ch < 3; ch++) {
+				int want = (int)(want_f[ch] * 255.0f + 0.5f);
+				int d = got[ch] - want;
+				if (d < 0) { d = -d; }
+				if (d > worst) { worst = d; worst_i = i; }
+				/* sRGB encode of the same scene value: what this pixel would
+				 * have been on an unprofiled output. */
+				double v = (double)lin[ch];
+				double srgb = v <= 0.0031308 ? v * 12.92
+					: 1.055 * pow(v, 1.0 / 2.4) - 0.055;
+				int plain = (int)(srgb * 255.0 + 0.5);
+				int e = want - plain;
+				if (e < 0) { e = -e; }
+				if (e > premise) { premise = e; }
+			}
+			printf("  ---- scene %.2f/%.2f/%.2f -> want %3d/%3d/%3d  "
+				"got %3d/%3d/%3d\n", (double)vals[i][0], (double)vals[i][1],
+				(double)vals[i][2],
+				(int)(want_f[0] * 255.0f + 0.5f),
+				(int)(want_f[1] * 255.0f + 0.5f),
+				(int)(want_f[2] * 255.0f + 0.5f),
+				got[0], got[1], got[2]);
+		}
+		printf("  the profile moves these patches by up to %d codes away from "
+			"a plain sRGB encode\n", premise);
+		CHECK(premise > 10,
+			"PREMISE: the profile is measurably non-identity ON THIS FIXTURE "
+			"(%d codes)", premise);
+		CHECK(worst <= 1,
+			"G2: the LUT1D encode matches az_icc_apply (worst %d codes at "
+			"patch %d)", worst, worst_i);
+	}
+
+	/*
+	 * ── THE FALSIFIER: AZ_BREAK_ICC_LUT_IDENTITY ──────────────────────────
+	 *
+	 * Run in-process by re-uploading under the break, because that is the only
+	 * way this file can observe its own falsifier rather than merely document
+	 * one. Every stage still runs -- variant, descriptor, sample -- and only
+	 * the table's contents are the identity, which is exactly the failure this
+	 * gate exists to catch: the wiring intact and the characterisation gone.
+	 *
+	 * The delta must be LARGE. An identity table encodes a linear value to
+	 * itself, so mid-grey leaves at 0.5 where the display's curve would have
+	 * sent it past 0.7 -- tens of codes, not a tolerance.
+	 */
+	if (ok) {
+		setenv("AZ_BREAK_ICC_LUT_IDENTITY", "1", 1);
+		struct avk_encode_lut broke = {0};
+		struct avk_image *broke_img = avk_encode_lut_get(&broke, h->dev,
+			&fp->ring, &fp->retire, shaper.curve, 1);
+		unsetenv("AZ_BREAK_ICC_LUT_IDENTITY");
+		CHECK(broke_img != NULL, "BREAK: the identity table uploads");
+		if (broke_img != NULL) {
+			struct avk_scene sc;
+			avk_scene_init(&sc);
+			pixman_region32_union_rect(&sc.damage, &sc.damage, 0, 0, W, H);
+			sc.has_clear = true;
+			sc.clear_color[3] = 1.0f;
+			for (int i = 0; i < nv; i++) {
+				struct avk_cmd *c = avk_scene_add(&sc, AVK_CMD_RECT);
+				c->dst = (struct avk_box){ i * 8, 0, 8, 8 };
+				for (int ch = 0; ch < 3; ch++) {
+					c->color[ch] = vals[i][ch];
+				}
+				c->color[3] = 1.0f;
+			}
+			params.lut = broke_img;
+			fp->encode_intermediate = inter;
+			fp->encode_params = params;
+			fp->encode_full_frame = true;
+			bool ok2 = render_with(h, fp, &sc);
+			fp->encode_intermediate = NULL;
+			fp->encode_full_frame = false;
+			avk_scene_finish(&sc);
+
+			int worst = 0;
+			if (ok2) {
+				for (int i = 0; i < nv; i++) {
+					float lin[3] = { vals[i][0], vals[i][1], vals[i][2] };
+					float want_f[3];
+					az_icc_apply(&shaper, lin, want_f);
+					uint32_t p = px(h, (uint32_t)(i * 8 + 4), 4);
+					int got[3] = { r_of(p), g_of(p), b_of(p) };
+					for (int ch = 0; ch < 3; ch++) {
+						int d = got[ch] - (int)(want_f[ch] * 255.0f + 0.5f);
+						if (d < 0) { d = -d; }
+						if (d > worst) { worst = d; }
+					}
+				}
+			}
+			printf("  ---- identity table: worst %d codes from the measured "
+				"curve\n", worst);
+			CHECK(ok2 && worst > 20,
+				"BREAK: an identity curve is DETECTED (%d codes)", worst);
+			avk_encode_lut_finish(&broke, h->dev, &fp->retire);
+		}
+	}
+
+	avk_encode_lut_finish(&lut, h->dev, &fp->retire);
+	avk_encode_intermediate_finish(&work, h->dev, &fp->retire);
+}
+
 static void test_solid_colour_domain(struct harness *h) {
 	printf("M5: what a solid rect's colour means on a linear path\n");
 
@@ -2238,6 +2529,7 @@ int main(void) {
 	test_path_a_roundtrip(&h);
 	test_path_b_sdr_gate(&h);
 	test_path_b_pq_encode(&h);
+	test_path_b_lut_encode(&h);
 	test_solid_colour_domain(&h);
 	test_c7_decode_path(&h);
 	test_overlap_alpha(&h);

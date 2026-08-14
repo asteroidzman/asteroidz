@@ -6,6 +6,10 @@
 #include "avk_pipeline.h"
 #include "../command/avk_retire.h"
 
+/* The LUT upload rides the renderer's shared upload ring; only the pointer is
+ * needed here, so the definition stays where it belongs. */
+struct avk_cmd_ring;
+
 /*
  * THE OUTPUT-ENCODE PASS. Contract C6, ADR-008.
  *
@@ -125,22 +129,17 @@ struct avk_output_encode {
 	VkShaderModule vert, frag;
 
 	/*
-	 * The LUT's own descriptor set (set 1). The renderer's shared texture
-	 * layout carries exactly one binding and every pipeline in the tree is
-	 * built from it, so a second binding there would be a change to all of
-	 * them for the benefit of one variant. A set the encode pass owns is the
-	 * contained alternative.
+	 * SET 1 -- THE MEASURED CURVE -- OWNS NOTHING HERE, deliberately.
 	 *
-	 * One set, not one per frame: the curve changes when a profile is loaded,
-	 * which is an output-state event and never a frame event. Nothing here is
-	 * allocated on the frame path.
+	 * Its layout is the renderer's texture set layout, the same one set 0
+	 * borrows: one binding of a combined image sampler is exactly a LUT, so its
+	 * descriptor comes from avk_pipelines_texture_set() and is cached on the
+	 * LUT image like every other sampled image in the renderer.
+	 *
+	 * A set OWNED BY THE PASS was the first design and it is wrong: with two
+	 * profiled outputs it has to be re-pointed between frames, and that is a
+	 * descriptor update on a set a pending command buffer still holds.
 	 */
-	VkDescriptorSetLayout lut_set_layout;
-	VkDescriptorPool lut_pool;
-	VkDescriptorSet lut_set;
-	VkSampler lut_sampler;
-	struct avk_image *lut_bound; /* what lut_set currently points at */
-
 	struct avk_encode_variant variants[AVK_ENCODE_MAX_VARIANTS];
 	uint32_t variant_len;
 	/*
@@ -230,6 +229,48 @@ struct avk_encode_intermediate {
 struct avk_image *avk_encode_intermediate_get(struct avk_encode_intermediate *w,
 	struct avk_device *dev, struct avk_retire_queue *retire, VkFormat format,
 	uint32_t width, uint32_t height);
+
+/*
+ * ── THE MEASURED CURVE, AS A TEXTURE ──────────────────────────────────────
+ *
+ * M6B/G2. One 256x1 RGBA16-UNORM image per output holding az_icc_shaper's
+ * curve: R, G and B carry the three channels' taps, which is why the shader
+ * samples one texture three times taking a different component each time
+ * rather than sampling three textures.
+ *
+ * PER OUTPUT, because a display profile is, and written ONLY when the profile
+ * changes. `serial` is the compositor's revision of the shaper and the whole
+ * of the validity test: a curve is not a picture, it has no damage and no
+ * geometry, and re-uploading one per frame would be 2KB of pure waste on the
+ * path M5 spent a milestone keeping clear.
+ *
+ * SIXTEEN BITS, not the output's eight. The pass dithers against ONE output
+ * code, so a curve quantised to the output's own depth would put the table's
+ * resolution at the dither's amplitude -- noise around a staircase, rather
+ * than noise that resolves a staircase.
+ */
+struct avk_encode_lut {
+	struct avk_image *image;
+	uint64_t serial; /* the shaper revision `image` holds; 0 = empty */
+};
+
+/*
+ * The LUT image for `curve`, uploaded if `serial` differs from what is held.
+ *
+ * NULL if it could not be built or uploaded, and a caller must read that as
+ * "do not encode with LUT1D this frame" rather than "encode without a curve":
+ * the LUT1D variant samples a descriptor that would then be unwritten, which
+ * is undefined behaviour and not a missing correction.
+ */
+struct avk_image *avk_encode_lut_get(struct avk_encode_lut *l,
+	struct avk_device *dev, struct avk_cmd_ring *ring,
+	struct avk_retire_queue *retire,
+	const uint16_t curve[3][AVK_ENCODE_LUT_TAPS], uint64_t serial);
+
+/* Same retire contract as the intermediate: NULL `retire` only from teardown,
+ * with the device idle. */
+void avk_encode_lut_finish(struct avk_encode_lut *l, struct avk_device *dev,
+	struct avk_retire_queue *retire);
 
 /* With `retire` non-NULL the image is destroyed once the GPU passes its own
  * last use; with it NULL, immediately -- which is only correct from teardown,

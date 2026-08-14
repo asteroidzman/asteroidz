@@ -39,6 +39,17 @@ outputs (ADR-008), static tone mapping (ADR-009), matrix gamut mapping
   refusal predicate merely stops refusing `image_description != NULL` once
   ADR-008 ships. ICC-in-AVK is M6, as the code comment already says
   (`src/render/az_avk.h:2408-2410`).
+
+  > **AMENDED 2026-08-14 (M6B/D2+G2).** Half of this is now delivered and the
+  > half matters. A **matrix-shaper** profile is absorbed by AVK: C3 derives
+  > `B-encode` + `AZ_TF_LUT1D`, the encode pass applies the profile's matrix
+  > and its measured curve, and `az_output_color_transform()` withholds the
+  > wlroots transform so the profile is applied exactly once. A **cLUT**
+  > profile is still refused, still by `color_transform != NULL`, and still to
+  > fx_vk — D2's revival condition (a real cLUT profile for a connected
+  > display existing on this machine) is unchanged. The predicate above is
+  > therefore no longer the whole story: the refusal is now decided by whether
+  > the profile reduces, not by whether one is present.
 - **HLG.** No source on this machine emits it (gamescope emits PQ; wp-cm
   advertises what we choose). The colour-math library (C1) includes HLG
   decode functions for completeness of the library's test surface, but no

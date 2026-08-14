@@ -334,6 +334,19 @@ static cJSON *build_monitor_json(Monitor *m) {
 	cJSON_AddNumberToObject(resp, "hdr_min_luminance", m->hdr_min_luminance);
 	cJSON_AddNumberToObject(resp, "hdr_max_fall", m->hdr_max_fall);
 	cJSON_AddStringToObject(resp, "icc_profile", m->icc_path);
+	/*
+	 * M6B/G2. WHICH RENDERER IS APPLYING THE PROFILE, and how the output is
+	 * leaving the scene. `icc_profile` alone answers "was one configured",
+	 * which is the question that was already answerable from the config file;
+	 * these two answer the one that is not, and that a headless fixture has no
+	 * other way to ask. `color_encode_tf` reading "lut1d" is AVK carrying the
+	 * profile itself; "srgb" with a path of "fallback" is SceneFX carrying it.
+	 */
+	cJSON_AddStringToObject(resp, "color_path",
+							az_output_path_name(m->color_state.path));
+	cJSON_AddStringToObject(resp, "color_encode_tf",
+							az_tf_name(m->color_state.encode_tf));
+	cJSON_AddBoolToObject(resp, "icc_shaper", m->icc_shaper_ok);
 	cJSON_AddNumberToObject(resp, "sdr_luminance",
 							config.sdr_reference_luminance > 0
 								? config.sdr_reference_luminance

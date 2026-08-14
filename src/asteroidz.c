@@ -21,6 +21,7 @@
 /* Early, because the animation and overview code below asks what buffer a
  * surface is showing and must not answer it with a renderer wrapper. */
 #include "render/az_output_color.h"
+#include "render/color/az_icc.h"
 #include "render/az_surface.h"
 #include <signal.h>
 #include <stdbool.h>
@@ -1154,6 +1155,25 @@ struct Monitor {
 	struct az_output_color_state color_state;
 	struct wlr_color_transform *icc_transform;
 	char icc_path[256];
+	/*
+	 * ── M6B/G2. THE SAME PROFILE, REDUCED TO WHAT AVK CAN APPLY ───────────
+	 *
+	 * `icc_transform` is wlroots' object and belongs to the SceneFX path; this
+	 * is the matrix-shaper reduction the AVK encode pass applies itself. Both
+	 * are loaded from the same file and exactly one of them may be in force --
+	 * az_output_color_transform() is the interlock, and applying both would be
+	 * the profile twice.
+	 *
+	 * `icc_serial` is bumped on every load and every clear, and it is what the
+	 * renderer's LUT upload is keyed on. A counter rather than the path,
+	 * because re-loading the same path after the file changed on disk is a new
+	 * curve with an identical name -- the same identity-versus-content
+	 * distinction avk_image.content_seq exists for.
+	 */
+	struct az_icc_shaper icc_shaper;
+	bool icc_shaper_ok;
+	enum az_icc_reject icc_reject;
+	uint64_t icc_serial;
 	struct wlr_scene_optimized_blur *blur;
 	float cursor_zoom;		 /* output magnification, 1.0 = off */
 	double zoom_cx, zoom_cy; /* zoom view center, output-local coords */
@@ -5635,6 +5655,12 @@ void mon_load_icc_profile(Monitor *m, const char *path) {
 			wlr_color_transform_unref(m->icc_transform);
 			m->icc_transform = NULL;
 			m->icc_path[0] = '\0';
+			/* The shaper goes with it, and the serial moves so the renderer
+			 * cannot keep encoding through a curve for a profile that is no
+			 * longer configured. */
+			m->icc_shaper_ok = false;
+			m->icc_reject = AZ_ICC_OK;
+			m->icc_serial++;
 		}
 		return;
 	}
@@ -5662,17 +5688,37 @@ void mon_load_icc_profile(Monitor *m, const char *path) {
 	fclose(f);
 
 	transform = wlr_color_transform_init_linear_to_icc(data, size);
-	free(data);
 	if (!transform) {
 		wlr_log(WLR_ERROR, "failed to parse ICC profile %s", path);
+		free(data);
 		return;
 	}
+	/*
+	 * ── M6B/G2: THE SAME BYTES, REDUCED FOR AVK ───────────────────────────
+	 *
+	 * Read here rather than at derive time because this is the only place the
+	 * file's CONTENTS exist -- the wlroots transform is opaque and cannot be
+	 * asked what matrix it holds. A rejection is not a failure of the load:
+	 * the wlroots transform stays, C3 keeps FALLBACK for the output, and
+	 * SceneFX applies the profile exactly as it does today. What is refused is
+	 * AVK's shortcut, not the operator's calibration.
+	 */
+	struct az_icc_shaper shaper;
+	enum az_icc_reject rc = az_icc_load_shaper(data, (size_t)size, true,
+		&shaper);
+	free(data);
 	if (m->icc_transform)
 		wlr_color_transform_unref(m->icc_transform);
 	m->icc_transform = transform;
+	m->icc_reject = rc;
+	m->icc_shaper_ok = rc == AZ_ICC_OK;
+	if (m->icc_shaper_ok)
+		m->icc_shaper = shaper;
+	m->icc_serial++;
 	snprintf(m->icc_path, sizeof(m->icc_path), "%s", path);
-	wlr_log(WLR_INFO, "loaded ICC profile %s for output %s", path,
-			m->wlr_output->name);
+	wlr_log(WLR_INFO, "loaded ICC profile %s for output %s (AVK shaper: %s)",
+			path, m->wlr_output->name,
+			m->icc_shaper_ok ? "matrix+curve" : az_icc_reject_name(rc));
 }
 
 /* The sole fullscreen client visible on m, if there's exactly one -- used to
@@ -5745,6 +5791,23 @@ static void mon_derive_color_state(Monitor *m,
 		 * not vary by modifier. False whenever AVK is not the renderer, which
 		 * is correct -- Path A is an AVK path. */
 		.scanout_srgb_view_ok = az_avk_scanout_srgb_format_ok(fmt),
+		/*
+		 * ── M6B/G2: OFFERED ONLY WHEN AVK CAN ACTUALLY APPLY IT ───────────
+		 *
+		 * A shaper here makes C3 choose LUT1D, which takes the profile away
+		 * from SceneFX (az_output_color_transform) on the promise that the AVK
+		 * encode pass will apply it instead. Offer it to an output AVK is not
+		 * driving and the profile is applied by nobody -- an uncalibrated
+		 * picture on a display the operator measured, arrived at by a change
+		 * meant to honour the measurement.
+		 *
+		 * So both halves of the promise are checked HERE, where the answer is
+		 * known, rather than assumed by the pure table: AVK is the renderer,
+		 * and the encode pass it needs is enabled in this session.
+		 */
+		.icc_shaper = (m->icc_shaper_ok && az_avk_is_active()
+				&& az_avk_encode_pass_enabled(NULL))
+			? &m->icc_shaper : NULL,
 	};
 	struct az_output_color_state prev = m->color_state;
 	m->color_state = az_output_color_derive(&desc);
@@ -8741,7 +8804,10 @@ static void render_monitor(Monitor *m) {
 		mon_state_apply_color(m, &state);
 		mon_derive_color_state(m, &state);
 		struct az_frame_options frame_options = {
-			.color_transform = m->hdr ? NULL : m->icc_transform,
+			/* The state being committed may not have reached
+			 * wlr_output->image_description yet, so `m->hdr` stands in for
+			 * that half; the rest of the ownership rule is the shared one. */
+			.color_transform = m->hdr ? NULL : az_output_color_transform(m),
 		};
 		if (az_output_build_frame(m, &state, &frame_options)) {
 			if (!wlr_output_commit_state(m->wlr_output, &state)) {

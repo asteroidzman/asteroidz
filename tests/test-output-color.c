@@ -144,6 +144,88 @@ int main(void) {
 			"%s: matrix", r->what);
 	}
 
+	/* ── M6B/G2: A PROFILE AVK CAN CARRY ────────────────────────────────── */
+	printf("a matrix-shaper profile puts an SDR output on Path B with LUT1D\n");
+	{
+		/*
+		 * A SYNTHETIC shaper, built here rather than read from a file. The
+		 * decision table's question is "what does C3 do when it is handed
+		 * one", and a real profile would tie this test to one desk while
+		 * answering the same question. G1 and G2 check the real one.
+		 *
+		 * The matrix is deliberately NOT the identity and its rows deliberately
+		 * do NOT sum to 1: a shaper whose matrix is near-identity would let
+		 * this pass against a derivation that ignored the shaper's matrix and
+		 * kept its own -- the neutral blind spot again, one level up.
+		 */
+		struct az_icc_shaper shaper = {0};
+		const float M[9] = {
+			1.10f, -0.06f, -0.02f,
+			-0.03f, 1.04f, -0.01f,
+			0.00f, -0.07f, 1.20f,
+		};
+		for (int i = 0; i < 9; i++) {
+			shaper.matrix[i] = M[i];
+		}
+		shaper.has_vcgt = true;
+
+		struct az_output_desc o = {8, false, true, 0.0f, 0.0f, 1.0f, true,
+			&shaper};
+		struct az_output_color_state s = az_output_color_derive(&o);
+		CHECK(s.path == AZ_OUTPUT_PATH_B_ENCODE,
+			"profiled SDR output takes Path B (got %s)", path_name(s.path));
+		CHECK(s.encode_tf == AZ_TF_LUT1D,
+			"and encodes with the measured curve");
+		CHECK(matrix_is(s.matrix, M, 1e-6),
+			"the profile's OWN matrix reaches the encode pass");
+		/* Neither of these is a colour-management question, and both would be
+		 * easy to change by accident while wiring one. */
+		CHECK(s.peak_scene == 1.0f,
+			"an SDR ceiling is still exactly 1.0 with a profile attached");
+		NEAR(s.dither_q, 1.0 / 255.0, 1e-9, "and still one output code");
+
+		/*
+		 * THE SAME OUTPUT WITHOUT THE SHAPER. Two rows differing in one
+		 * pointer, because the whole of D2's refusal is that difference: a
+		 * cLUT profile sets has_icc and leaves this NULL.
+		 */
+		struct az_output_desc no = {8, false, true, 0.0f, 0.0f, 1.0f, true,
+			NULL};
+		struct az_output_color_state ns = az_output_color_derive(&no);
+		CHECK(ns.path == AZ_OUTPUT_PATH_FALLBACK
+				&& ns.encode_tf == AZ_TF_SRGB,
+			"a profile AVK cannot reduce still means FALLBACK");
+
+		/*
+		 * AND ON AN HDR OUTPUT THE SHAPER CHANGES NOTHING. D3 decided hdr
+		 * first; G2 must not have quietly reopened that by adding a branch
+		 * above it. An HDR output's connector is already colour-managing, and
+		 * a profile's SDR characterisation on top would be two transforms.
+		 */
+		struct az_output_desc hdr = {10, true, true, 1000.0f, 0.0f, 1.0f, true,
+			&shaper};
+		struct az_output_color_state hs = az_output_color_derive(&hdr);
+		CHECK(hs.path == AZ_OUTPUT_PATH_B_ENCODE && hs.encode_tf == AZ_TF_PQ,
+			"HDR + a reducible profile is still PQ, profile inert");
+		CHECK(matrix_is(hs.matrix, AZ_MAT_709_TO_2020, 1e-6),
+			"and the gamut matrix is BT.709->BT.2020, not the profile's");
+
+		/*
+		 * ── THE INTERLOCK ────────────────────────────────────────────────
+		 *
+		 * LUT1D says the picture is defined by a table only the encode pass can
+		 * sample, and C3 took the output off FALLBACK to say AVK would apply
+		 * it -- which strips the profile from SceneFX. Accepting the output
+		 * with the pass switched off would leave the profile applied by
+		 * nobody: uncharacterised colour on a calibrated display, arrived at by
+		 * honouring the calibration.
+		 */
+		CHECK(az_output_may_drive(&s, false, false, true),
+			"LUT1D + encode pass enabled: DRIVEN");
+		CHECK(!az_output_may_drive(&s, false, false, false),
+			"LUT1D + encode pass DISABLED: refused (the M6B/G2 interlock)");
+	}
+
 	/* ── the SDR guarantee ──────────────────────────────────────────────── */
 	printf("SDR output => peak_scene is EXACTLY 1.0\n");
 	{

@@ -258,6 +258,9 @@ test('color-pipeline', test_color_pipeline,
 # means: "this build has AVK", not "this build was configured a certain way".
 asteroidz_deps = [
     az_color_dep,
+    # M6B/G2: az_icc.c reads the profile with lcms2 rather than reimplementing
+    # an ICC parser, which is the one part of this nobody should write twice.
+    lcms2_dep,
     libm,
     libdrm,
     xcb,
@@ -282,6 +285,9 @@ endif
 
 asteroidz_exe = executable('asteroidz',
   'src/asteroidz.c',
+  # M6B/G2. The ICC matrix-shaper ingest, now that the compositor applies the
+  # reduction itself rather than only handing the file to wlroots.
+  'src/render/color/az_icc.c',
   'src/common/util.c',
   'src/draw/text-node.c',
   'src/draw/ufo-node.c',
@@ -422,8 +428,13 @@ if build_vulkan
   # a tautology.
   test_avk_render = executable('test-avk-render',
                                ['tests/test-avk-render.c',
-                                'src/render/color/az_color_ref.c'],
-                               dependencies : [avk_dep, az_color_dep, libm],
+                                'src/render/color/az_color_ref.c',
+                                # M6B/G2: the gate compares the LUT1D encode
+                                # against az_icc_apply, the same reduction G1
+                                # checked against lcms2.
+                                'src/render/color/az_icc.c'],
+                               dependencies : [avk_dep, az_color_dep, lcms2_dep,
+                                               libm],
                                build_by_default : false)
   test('avk-render', test_avk_render, timeout : 60)
 

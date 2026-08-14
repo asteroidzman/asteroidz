@@ -172,6 +172,17 @@ saturation matrix for HDR — saturation composed exactly as
 `peak_scene = hdr_max_luminance / ref_nits` (1.0 for SDR), `dither_q`.
 ICC outputs return `path = FALLBACK` (AVK keeps refusing, ADR-000).
 
+> **AMENDED 2026-08-14 (M6B/G2).** The inputs gain `icc_shaper` — the profile
+> reduced to a 3×3 and a 256-tap curve, or NULL — and it is the caller's job to
+> pass NULL whenever AVK is not going to drive the output, because deriving
+> `LUT1D` for an output SceneFX renders would take the profile away from the
+> only renderer still applying it. SDR + shaper now returns `path = B-encode`,
+> `encode_tf = AZ_TF_LUT1D`, and **the profile's own matrix** rather than the
+> identity; `peak_scene` stays exactly 1.0 and `dither_q` stays one output
+> code, neither being a colour-management question. SDR + a profile that does
+> not reduce (cLUT) keeps `FALLBACK`. HDR + profile is unaffected — D3 decides
+> `hdr` first and the profile is inert there.
+
 **FORMAT.** `src/render/az_output_color.h` (header, pure function +
 struct), no Vulkan objects in it — the Path-B intermediate image handle
 lives renderer-side (C6), keyed by output, NOT in this struct (keeps the
@@ -394,6 +405,37 @@ the contract and are recorded here rather than left to be rediscovered:
   OUTPUT tap is unaffected (still the scan-out buffer) and still names a
   divergent frame; the prefix and blur taps log once and stand down. A second
   notion of difference is real work and is not part of this contract.
+
+**AMENDED 2026-08-14 (M6B/G2) — a third curve, and a second descriptor set.**
+
+- **`bool pq` became `enum avk_encode_tf`** (`SRGB` / `PQ` / `LUT1D`), which is
+  also the specialisation constant's value. The pass is still branch-free per
+  output: the analytic variants do not contain the texture sample and the LUT
+  variant does not contain a PQ inverse EOTF, so C6's "the only shader with a
+  PQ inverse EOTF" invariant is unchanged.
+- **The measured curve is a 256×1 `R16G16B16A16_UNORM` image, per output**,
+  holding the three channels in R/G/B and sampled on a **squared index** —
+  tap *i* is the curve at `(i/(N-1))²`, read with `sqrt` — because γ⁻¹ has
+  infinite slope at zero and a uniform grid cannot track it (5.81 codes at 256
+  uniform taps, 2.51 at 1024, 0.01 warped). Sixteen bits, not the output's
+  eight: the pass dithers against one output code and a curve quantised to the
+  output's own depth would sit at the dither's own amplitude.
+- **Uploaded on profile change only**, keyed on a serial the compositor bumps
+  per load — never a frame event. C6's "no allocation, no descriptor-set
+  creation per frame" holds unchanged.
+- **Set 1 uses the renderer's own texture set layout**, so the LUT's descriptor
+  comes from `avk_pipelines_texture_set()` and is cached on the image like
+  every other sampled image. A set owned by the *pass* was the first design and
+  was wrong: with two profiled outputs it must be re-pointed between frames,
+  which is a descriptor update on a set a pending command buffer still holds.
+- **Filtering differs by set.** Set 0 (the intermediate) is NEAREST — it is a
+  1:1 blit and interpolating it is a soft desktop. Set 1 is LINEAR — the curve
+  is sampled between taps by construction, and nearest would quantise the
+  encode to 256 steps, coarser than the output it feeds.
+- **A missing LUT refuses the frame** rather than encoding without it. C3 took
+  the output off FALLBACK on the promise that the pass would apply the profile;
+  encoding with the sRGB analytic instead would show uncharacterised colour on
+  a calibrated display and look entirely plausible.
 
 ---
 

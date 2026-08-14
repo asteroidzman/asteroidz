@@ -2,6 +2,8 @@
 
 #include "avk_output_encode.h"
 
+#include <drm_fourcc.h>
+#include <inttypes.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -52,73 +54,22 @@ bool avk_output_encode_init(struct avk_output_encode *enc,
 		.size = sizeof(struct avk_encode_push),
 	};
 	/*
-	 * SET 1 IS THE MEASURED CURVE. Declared for every variant, sampled by one:
-	 * the specialisation constant eliminates the branch in the analytic
-	 * variants, so the descriptor is not statically used there and needs no
-	 * binding. Declaring it uniformly keeps ONE pipeline layout rather than
-	 * two that must be kept in step.
+	 * ── SET 1 IS THE MEASURED CURVE, AND IT IS THE SAME LAYOUT AS SET 0 ───
+	 *
+	 * Declared for every variant, sampled by one: the specialisation constant
+	 * eliminates the branch in the analytic variants, so the descriptor is not
+	 * statically used there and needs no binding. Declaring it uniformly keeps
+	 * ONE pipeline layout rather than two that must be kept in step.
+	 *
+	 * The renderer's texture set layout again, rather than a layout this pass
+	 * declares -- one binding of a combined image sampler is exactly what a LUT
+	 * needs, and reusing it means the LUT's descriptor comes from
+	 * avk_pipelines_texture_set() like every other sampled image: allocated
+	 * once, cached on the image, written once, never rewritten. A set this pass
+	 * owned and re-pointed per output would be a descriptor update on a set a
+	 * pending command buffer still holds. See the record function.
 	 */
-	VkDescriptorSetLayoutBinding lut_binding = {
-		.binding = 0,
-		.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-		.descriptorCount = 1,
-		.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
-	};
-	VkDescriptorSetLayoutCreateInfo lut_li = {
-		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-		.bindingCount = 1,
-		.pBindings = &lut_binding,
-	};
-	if (!avk_check(vkCreateDescriptorSetLayout(dev->dev, &lut_li, NULL,
-			&enc->lut_set_layout), "vkCreateDescriptorSetLayout (encode lut)")) {
-		return false;
-	}
-	/*
-	 * CLAMP_TO_EDGE and LINEAR. The clamp matters: a scene value at exactly
-	 * 1.0 lands on the last tap's centre plus half a texel, and REPEAT would
-	 * wrap it to black -- a white that encodes as a black pixel, which is the
-	 * kind of failure that looks like a renderer bug and is a sampler state.
-	 */
-	VkSamplerCreateInfo si = {
-		.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
-		.magFilter = VK_FILTER_LINEAR,
-		.minFilter = VK_FILTER_LINEAR,
-		.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
-		.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-		.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-		.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-		.maxLod = 0.0f,
-	};
-	if (!avk_check(vkCreateSampler(dev->dev, &si, NULL, &enc->lut_sampler),
-			"vkCreateSampler (encode lut)")) {
-		return false;
-	}
-	VkDescriptorPoolSize psz = {
-		.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-		.descriptorCount = 1,
-	};
-	VkDescriptorPoolCreateInfo pi = {
-		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-		.maxSets = 1,
-		.poolSizeCount = 1,
-		.pPoolSizes = &psz,
-	};
-	if (!avk_check(vkCreateDescriptorPool(dev->dev, &pi, NULL, &enc->lut_pool),
-			"vkCreateDescriptorPool (encode lut)")) {
-		return false;
-	}
-	VkDescriptorSetAllocateInfo ai = {
-		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-		.descriptorPool = enc->lut_pool,
-		.descriptorSetCount = 1,
-		.pSetLayouts = &enc->lut_set_layout,
-	};
-	if (!avk_check(vkAllocateDescriptorSets(dev->dev, &ai, &enc->lut_set),
-			"vkAllocateDescriptorSets (encode lut)")) {
-		return false;
-	}
-
-	VkDescriptorSetLayout sets[2] = { set_layout, enc->lut_set_layout };
+	VkDescriptorSetLayout sets[2] = { set_layout, set_layout };
 	VkPipelineLayoutCreateInfo li = {
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
 		.setLayoutCount = 2,
@@ -153,23 +104,9 @@ void avk_output_encode_finish(struct avk_output_encode *enc) {
 		}
 	}
 	enc->variant_len = 0;
-	if (enc->lut_pool != VK_NULL_HANDLE) {
-		/* The set is freed with its pool; freeing it separately would need the
-		 * pool created with FREE_DESCRIPTOR_SET, which this one is not. */
-		vkDestroyDescriptorPool(dev->dev, enc->lut_pool, NULL);
-		enc->lut_pool = VK_NULL_HANDLE;
-		enc->lut_set = VK_NULL_HANDLE;
-	}
-	if (enc->lut_set_layout != VK_NULL_HANDLE) {
-		vkDestroyDescriptorSetLayout(dev->dev, enc->lut_set_layout, NULL);
-		enc->lut_set_layout = VK_NULL_HANDLE;
-	}
-	if (enc->lut_sampler != VK_NULL_HANDLE) {
-		vkDestroySampler(dev->dev, enc->lut_sampler, NULL);
-		enc->lut_sampler = VK_NULL_HANDLE;
-	}
-	/* Borrowed, never owned: the image belongs to whoever built the curve. */
-	enc->lut_bound = NULL;
+	/* Nothing to tear down for set 1: its layout is the renderer's, its
+	 * sampler is the renderer's, and its descriptors live on the LUT images
+	 * and die with them (avk_encode_lut_finish). */
 	if (enc->vert != VK_NULL_HANDLE) {
 		vkDestroyShaderModule(dev->dev, enc->vert, NULL);
 		enc->vert = VK_NULL_HANDLE;
@@ -390,35 +327,43 @@ void avk_output_encode_record(VkCommandBuffer cb, void *user) {
 	vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, p->enc->layout,
 		0, 1, &set, 0, NULL);
 	/*
-	 * SET 1, only for the variant that samples it. The analytic variants
+	 * ── SET 1, THE MEASURED CURVE, FROM THE SHARED PER-IMAGE CACHE ────────
+	 *
+	 * Bound only for the variant that samples it: the analytic variants
 	 * eliminate the sample at specialisation, so the descriptor is not
 	 * statically used there and binding it would be work with no reader.
 	 *
-	 * The write happens here rather than per frame because the curve changes
-	 * when a PROFILE is loaded -- an output-state event -- and `lut_bound`
-	 * makes that explicit: re-pointing the set at an image it already holds is
-	 * skipped, so the steady state costs one pointer comparison.
+	 * LINEAR, unlike set 0 above, and for the opposite reason. The intermediate
+	 * is blitted 1:1 and interpolating it is a soft desktop; the curve is
+	 * sampled BETWEEN taps by construction -- that is what a 256-tap table for
+	 * a continuous function means -- and taking the nearest tap would quantise
+	 * the encode to 256 steps, which is coarser than the output it feeds.
+	 *
+	 * A SET PER IMAGE, NOT A SET PER PASS, and the difference is a real hazard
+	 * rather than a style. The first version of this owned one descriptor set
+	 * and rewrote it whenever the LUT differed from the last one bound. With
+	 * two profiled outputs that rewrite lands while the other output's frame is
+	 * still pending -- vkUpdateDescriptorSets on a set bound to a command
+	 * buffer in the pending state, which is undefined behaviour and which
+	 * validation reports only when it happens to catch the overlap. The
+	 * renderer already solves this for every other sampled image by caching the
+	 * set ON the image, where it is written exactly once, and this is one more
+	 * sampled image.
 	 */
-	if (p->params.tf == AVK_ENCODE_TF_LUT1D && p->params.lut != NULL) {
-		if (p->enc->lut_bound != p->params.lut) {
-			VkDescriptorImageInfo ii = {
-				.sampler = p->enc->lut_sampler,
-				.imageView = p->params.lut->view,
-				.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-			};
-			VkWriteDescriptorSet w = {
-				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-				.dstSet = p->enc->lut_set,
-				.dstBinding = 0,
-				.descriptorCount = 1,
-				.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-				.pImageInfo = &ii,
-			};
-			vkUpdateDescriptorSets(p->enc->dev->dev, 1, &w, 0, NULL);
-			p->enc->lut_bound = p->params.lut;
+	if (p->params.tf == AVK_ENCODE_TF_LUT1D) {
+		VkDescriptorSet lut_set = p->params.lut != NULL
+			? avk_pipelines_texture_set(p->pipes, p->params.lut, true)
+			: VK_NULL_HANDLE;
+		if (lut_set == VK_NULL_HANDLE) {
+			/* REFUSE THE PASS. The variant's sample would read an unwritten
+			 * descriptor; skipping the draw leaves the previous frame on the
+			 * screen, which is what every other failure in this pass does and
+			 * is the only outcome that is not undefined. */
+			vkCmdEndRendering(cb);
+			return;
 		}
 		vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
-			p->enc->layout, 1, 1, &p->enc->lut_set, 0, NULL);
+			p->enc->layout, 1, 1, &lut_set, 0, NULL);
 	}
 
 	struct avk_encode_push pc = {0};
@@ -611,6 +556,136 @@ void avk_encode_intermediate_finish(struct avk_encode_intermediate *w,
 	struct avk_image *img = w->image;
 	w->image = NULL;
 	w->image_bytes = 0;
+	if (img == NULL) {
+		return;
+	}
+	if (retire != NULL) {
+		avk_retire_push(retire, dev, img->last_use, avk_image_destroy, img);
+	} else {
+		avk_image_destroy(dev, img);
+	}
+}
+
+struct avk_image *avk_encode_lut_get(struct avk_encode_lut *l,
+		struct avk_device *dev, struct avk_cmd_ring *ring,
+		struct avk_retire_queue *retire,
+		const uint16_t curve[3][AVK_ENCODE_LUT_TAPS], uint64_t serial) {
+	if (l == NULL || dev == NULL || ring == NULL || curve == NULL) {
+		return NULL;
+	}
+	/*
+	 * Serial 0 means "no profile", and it is refused rather than treated as a
+	 * curve to upload: an all-zero table encodes every scene value to black,
+	 * which is a picture and would therefore not look like a missing profile.
+	 */
+	if (serial == 0) {
+		return NULL;
+	}
+	if (l->image != NULL && l->serial == serial) {
+		return l->image;
+	}
+
+	if (l->image == NULL) {
+		/* ABGR16161616 is VK_FORMAT_R16G16B16A16_UNORM, and the DRM name's
+		 * component order is memory order ascending -- so R is written first
+		 * and lands in the shader's .r. The one place this file has an opinion
+		 * about channel order, stated because getting it backwards produces a
+		 * picture with the red and blue curves swapped, which on a
+		 * near-neutral profile is almost invisible. */
+		l->image = avk_upload_image_create(dev, DRM_FORMAT_ABGR16161616,
+			AVK_ENCODE_LUT_TAPS, 1, AVK_IMAGE_OWNED);
+		if (l->image == NULL) {
+			return NULL;
+		}
+		avk_device_name_object(dev, VK_OBJECT_TYPE_IMAGE,
+			(uint64_t)l->image->image, "avk encode lut");
+	}
+
+	/*
+	 * ── BREAK: AZ_BREAK_ICC_LUT_IDENTITY ──────────────────────────────────
+	 *
+	 * Upload the IDENTITY instead of the measurement -- the table that encodes
+	 * a linear value to itself -- so every stage of the LUT path still runs and
+	 * only the curve's content is wrong. That is the shape of the failure worth
+	 * being able to detect: the descriptor bound, the variant compiled, the
+	 * sample taken, and the display characterisation absent.
+	 *
+	 * The taps are on the squared index, so the identity at tap i is (i/(N-1))^2
+	 * and NOT i/(N-1). Writing the linear ramp here would be a break that also
+	 * silently tests the index warp, which is a different question with its own
+	 * measurement (5.81 codes at a uniform 256, recorded in az_icc.h).
+	 */
+	const bool break_identity = getenv("AZ_BREAK_ICC_LUT_IDENTITY") != NULL;
+
+	/* Interleaved on the stack: 2KB, once per profile change. */
+	uint16_t texels[AVK_ENCODE_LUT_TAPS * 4];
+	for (uint32_t i = 0; i < AVK_ENCODE_LUT_TAPS; i++) {
+		if (break_identity) {
+			float x = (float)i / (float)(AVK_ENCODE_LUT_TAPS - 1);
+			uint16_t v = (uint16_t)(x * x * 65535.0f + 0.5f);
+			texels[i * 4 + 0] = v;
+			texels[i * 4 + 1] = v;
+			texels[i * 4 + 2] = v;
+			texels[i * 4 + 3] = 65535;
+			continue;
+		}
+		texels[i * 4 + 0] = curve[0][i];
+		texels[i * 4 + 1] = curve[1][i];
+		texels[i * 4 + 2] = curve[2][i];
+		/* Opaque. Nothing reads it -- the shader takes .r/.g/.b -- but a
+		 * zero alpha in a sampled image is the kind of thing a later reader
+		 * would have to go and check. */
+		texels[i * 4 + 3] = 65535;
+	}
+
+	struct avk_upload *staging = calloc(1, sizeof(*staging));
+	if (staging == NULL) {
+		return NULL;
+	}
+	AVK_LIVE_INC(dev, avk_uploads);
+	/*
+	 * ORDERED BEHIND WHATEVER LAST SAMPLED IT. A profile change on a running
+	 * desktop overwrites a texture that frames still in flight are reading, and
+	 * the copy would otherwise race the fragment shader -- a write-after-read
+	 * hazard that shows up as one torn frame at the moment the profile changes
+	 * and is therefore nearly unobservable. One timeline wait, no CPU wait.
+	 */
+	VkSemaphoreSubmitInfo wait = {
+		.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+		.semaphore = dev->timeline,
+		.value = l->image->last_use,
+		.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+	};
+	uint32_t wait_count = l->image->last_use > 0 ? 1 : 0;
+	uint64_t timeline = avk_upload_image_write(dev, ring, staging, l->image,
+		texels, (uint32_t)sizeof(texels), 1, &wait, wait_count);
+	if (timeline == 0) {
+		avk_upload_retire(dev, staging);
+		/* The image is kept but its serial is NOT advanced, so the next frame
+		 * tries again rather than encoding through a table that was never
+		 * written. */
+		return NULL;
+	}
+	if (retire != NULL) {
+		avk_retire_push(retire, dev, timeline, avk_upload_retire, staging);
+	} else {
+		avk_upload_retire(dev, staging);
+	}
+	l->image->content_seq++;
+	l->serial = serial;
+	avk_log(AVK_DEBUG, "avk encode: uploaded a %d-tap measured curve (serial "
+		"%" PRIu64 ")", AVK_ENCODE_LUT_TAPS, serial);
+	return l->image;
+}
+
+void avk_encode_lut_finish(struct avk_encode_lut *l, struct avk_device *dev,
+		struct avk_retire_queue *retire) {
+	if (l == NULL) {
+		return;
+	}
+	struct avk_image *img = l->image;
+	l->image = NULL;
+	l->serial = 0;
 	if (img == NULL) {
 		return;
 	}

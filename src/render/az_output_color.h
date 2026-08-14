@@ -28,6 +28,7 @@
 
 #include "render/az_lum.h"
 #include "render/color/az_color.h"
+#include "render/color/az_icc.h"
 
 /*
  * ADR-001's two paths, plus the refusal.
@@ -78,7 +79,11 @@ static inline const char *az_output_path_name(enum az_output_path p) {
  * bits_per_channel  8 or 10. The quantum the encode pass dithers against, and
  *                   half of the path decision.
  * hdr               the output is presenting an HDR image description.
- * has_icc           an ICC transform is attached (M5 refuses; M6 absorbs it).
+ * has_icc           an ICC profile is configured for this output. M5 refused
+ *                   every such output; M6B/G2 absorbs the matrix-shaper ones
+ *                   through the encode pass and still refuses the rest, which
+ *                   is why `icc_shaper` below is a separate field rather than
+ *                   this one carrying both answers.
  * hdr_max_nits      the panel's peak, cd/m2. 0 = unstated -> 1000.
  * scene_ref_nits    the SCENE's reference (ADR-003), cached here because the
  *                   encode pass needs it on the push constants. It is a scene
@@ -99,6 +104,21 @@ struct az_output_desc {
 	float scene_ref_nits;
 	float sdr_saturation;
 	bool scanout_srgb_view_ok;
+	/*
+	 * M6B/G2. The profile REDUCED TO A FORM THE ENCODE PASS CAN APPLY, or NULL.
+	 *
+	 * Separate from `has_icc` because the two answer different questions and
+	 * their disagreement is the whole of D2's refusal: `has_icc` is "the
+	 * operator configured a profile", this is "and AVK can carry it". A cLUT
+	 * profile sets the first and not the second, and the output keeps FALLBACK.
+	 *
+	 * NULL WHENEVER AVK IS NOT GOING TO DRIVE THE OUTPUT, which the caller
+	 * enforces. That is not a redundancy with az_output_may_drive() below: this
+	 * struct decides what the picture IS, and choosing a curve only AVK can
+	 * apply for an output SceneFX is about to render would strip the profile
+	 * from the one renderer that was still applying it.
+	 */
+	const struct az_icc_shaper *icc_shaper;
 };
 
 /*
@@ -140,11 +160,13 @@ static inline void az_output_color_set_identity(float m[9]) {
  * The order of the tests is the decision table of ADR-001, and it is written
  * most-restrictive-first so that no combination falls through two of them:
  *
- *   ICC            -> FALLBACK        AVK does not drive it in M5
- *   HDR            -> B, PQ           always B; PQ is an output encoding only
- *   10-bit SDR     -> B, sRGB         no hardware encode at 10 bits
- *   8-bit, probed  -> A, sRGB         hardware decode and encode, free
- *   8-bit, no view -> B, sRGB         the probe's only consequence
+ *   HDR             -> B, PQ       always B; PQ is an output encoding only, and
+ *                                  a profile on an HDR output is inert (D3)
+ *   ICC + shaper    -> B, LUT1D    the display's own measured curve (G2)
+ *   ICC, no shaper  -> FALLBACK    cLUT: AVK cannot carry it, SceneFX can
+ *   10-bit SDR      -> B, sRGB     no hardware encode at 10 bits
+ *   8-bit, probed   -> A, sRGB     hardware decode and encode, free
+ *   8-bit, no view  -> B, sRGB     the probe's only consequence
  */
 static inline struct az_output_color_state
 az_output_color_derive(const struct az_output_desc *o) {
@@ -220,12 +242,43 @@ az_output_color_derive(const struct az_output_desc *o) {
 
 	if (o->has_icc) {
 		/*
-		 * SDR + profile: still FALLBACK, and still SceneFX's output -- but now
-		 * for a stated reason rather than as a side effect of test order. The
-		 * encode pass cannot yet apply a profile TRC (D2/D4), and rendering a
-		 * calibrated display's colour UNMANAGED would be worse than declining
-		 * it: the operator asked for characterised output and would get
-		 * uncharacterised output that looks plausible.
+		 * ── M6B/G2: SDR + A PROFILE AVK CAN CARRY IS PATH B ───────────────
+		 *
+		 * The encode pass already applies a 3x3 and a transfer function per
+		 * output -- that is what it does for HDR -- so a matrix-shaper profile
+		 * costs it nothing it was not already doing. The matrix becomes the
+		 * profile's (scene BT.709 linear -> device linear, chromatically
+		 * adapted) and the curve becomes the display's measured one instead of
+		 * the sRGB analytic.
+		 *
+		 * peak_scene stays exactly 1.0 and dither_q stays one output code:
+		 * neither is a colour-management question. An SDR display cannot show
+		 * anything above SDR white whether or not it is characterised.
+		 */
+		if (o->icc_shaper != NULL) {
+			s.path = AZ_OUTPUT_PATH_B_ENCODE;
+			s.encode_tf = AZ_TF_LUT1D;
+			for (int i = 0; i < 9; i++) {
+				s.matrix[i] = o->icc_shaper->matrix[i];
+			}
+			s.peak_scene = 1.0f;
+			s.dither_q = quantum;
+			/*
+			 * sdr_saturation is NOT composed in here, and the omission is the
+			 * decision. On the HDR path it exists because scene BT.709 is being
+			 * stretched to BT.2020 and the operator may want that pulled back;
+			 * here the operator has supplied a MEASUREMENT of their display,
+			 * and multiplying a measurement by a taste control produces output
+			 * that is neither characterised nor honestly uncharacterised.
+			 */
+			return s;
+		}
+		/*
+		 * A profile AVK cannot reduce -- cLUT, or unreadable. FALLBACK, and
+		 * still SceneFX's output: rendering a calibrated display's colour
+		 * UNMANAGED would be worse than declining it, because the operator
+		 * asked for characterised output and would get uncharacterised output
+		 * that looks plausible.
 		 */
 		s.path = AZ_OUTPUT_PATH_FALLBACK;
 		s.encode_tf = AZ_TF_SRGB;
@@ -298,6 +351,19 @@ static inline bool az_output_may_drive(const struct az_output_color_state *s,
 			return false;
 		}
 		return encode_pass_enabled;
+	}
+	/*
+	 * ── M6B/G2: A MEASURED CURVE NEEDS THE PASS THAT APPLIES IT ───────────
+	 *
+	 * The same interlock as HDR above and for the same reason. LUT1D says the
+	 * output's picture is defined by a table only the encode pass can sample;
+	 * accepting the output with the pass switched off would composite straight
+	 * into the scan-out buffer with no profile applied AND no profile left for
+	 * SceneFX to apply, because C3 took the output off FALLBACK to say AVK
+	 * would handle it. Refusing hands it back, profile intact.
+	 */
+	if (s->encode_tf == AZ_TF_LUT1D) {
+		return s->path == AZ_OUTPUT_PATH_B_ENCODE && encode_pass_enabled;
 	}
 	/*
 	 * SDR. Path A and Path B are both fine, and so is neither: an SDR output
