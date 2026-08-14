@@ -915,6 +915,12 @@ void avk_renderer_finish(struct avk_renderer *renderer);
  * client's acquire fence gets waited on by the GPU rather than the CPU, and
  * how the render-completion semaphore gets exported for KMS.
  */
+/* M4H diagnostic: override the blur damage rectangle cap for every renderer,
+ * from now on. 0 restores AZ_BLUR_DAMAGE_MAX_RECTS or the built-in default.
+ * Runtime rather than env because the A/B has to run without restarting the
+ * session that produces the workload. */
+void avk_render_set_damage_rect_cap(int cap);
+
 uint64_t avk_render_frame(struct avk_renderer *renderer,
 	struct avk_image *target, const struct avk_scene *scene,
 	const VkSemaphoreSubmitInfo *wait, uint32_t wait_count,

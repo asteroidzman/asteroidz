@@ -1726,6 +1726,7 @@ struct Pertag {
 /* Defined after render/az_avk.h is available; named by the dispatch table in
  * parse_config.h, which is included first. */
 static int32_t reset_avk_stats(const Arg *arg);
+static int32_t set_blur_rect_cap(const Arg *arg);
 static int32_t dump_scene(const Arg *arg);
 static int32_t damage_all(const Arg *arg);
 static int32_t capture_output(const Arg *arg);
@@ -1872,6 +1873,31 @@ static int32_t reset_avk_stats(const Arg *arg) {
 #ifdef AZ_HAVE_VULKAN
 	az_avk_stats_reset();
 	wlr_log(WLR_INFO, "AVK: statistics reset");
+#endif
+	return 0;
+}
+/*
+ * `amsg dispatch set_blur_rect_cap,<n>` -- the blur damage rectangle cap.
+ *
+ * DIAGNOSTIC. Past this many rectangles a blur's rebuild region collapses to
+ * its bounding box, which is conservative --- the box contains the region, so
+ * the result is identical and only the work grows. Live, on a tag transition,
+ * that fires on a fifth of all blur chains at 1.74x inflation, and it has never
+ * fired on any headless fixture.
+ *
+ * A dispatch rather than the environment because `restart` re-execs with the
+ * same environ, so an env-only knob cannot be A/B'd against a running session
+ * --- and restarting into a new value destroys the workload that fragments the
+ * region in the first place.
+ */
+static int32_t set_blur_rect_cap(const Arg *arg) {
+#ifdef AZ_HAVE_VULKAN
+	int cap = arg != NULL ? arg->i : 0;
+	avk_render_set_damage_rect_cap(cap);
+	wlr_log(WLR_INFO, "AVK: blur damage rectangle cap -> %d%s", cap,
+		cap >= 1 ? "" : " (default)");
+#else
+	(void)arg;
 #endif
 	return 0;
 }

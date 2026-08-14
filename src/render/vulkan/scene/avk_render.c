@@ -582,17 +582,33 @@ static uint64_t az_region_area(const pixman_region32_t *region) {
  */
 #define AVK_BLUR_DAMAGE_MAX_RECTS 20
 
+/*
+ * Settable at RUNTIME, not just from the environment, and that is the whole
+ * reason this is not a `static int cached`.
+ *
+ * `amsg dispatch restart` re-execs with the same environ, so an env-only knob
+ * cannot be changed on a running session at all --- which made the A/B this
+ * constant exists for impossible to run against the live desktop, where it is
+ * the only place the collapse has ever been observed. Restarting into a
+ * different value is not an alternative: it destroys the workload, and the
+ * workload is what fragments the region.
+ */
+static int az_blur_rect_cap = 0;
+
+void avk_render_set_damage_rect_cap(int cap) {
+	az_blur_rect_cap = cap >= 1 ? cap : 0;
+}
+
 static int az_blur_damage_max_rects(void) {
-	static int cached = -1;
-	if (cached < 0) {
-		const char *env = getenv("AZ_BLUR_DAMAGE_MAX_RECTS");
-		int v = env != NULL ? atoi(env) : 0;
-		/* A cap below 1 would collapse every region including a single
-		 * rectangle, which is not a setting anyone wants and would look like
-		 * the damage system had been switched off. */
-		cached = v >= 1 ? v : AVK_BLUR_DAMAGE_MAX_RECTS;
+	if (az_blur_rect_cap >= 1) {
+		return az_blur_rect_cap;
 	}
-	return cached;
+	const char *env = getenv("AZ_BLUR_DAMAGE_MAX_RECTS");
+	int v = env != NULL ? atoi(env) : 0;
+	/* A cap below 1 would collapse every region including a single rectangle,
+	 * which is not a setting anyone wants and would look like the damage
+	 * system had been switched off. */
+	return v >= 1 ? v : AVK_BLUR_DAMAGE_MAX_RECTS;
 }
 
 /* One blur's damage regions, plus what the declaration loop needs to build its

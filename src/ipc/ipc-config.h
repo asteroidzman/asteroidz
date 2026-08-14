@@ -371,6 +371,10 @@ static const DispatchAction dispatch_actions[] = {
 	{"reload_config", "", "Re-read the config from disk."},
 	{"reset_avk_stats", "",
 	 "Zero the Vulkan renderer's counters (see amsg get avk-stats)."},
+	{"set_blur_rect_cap", "int",
+	 "Diagnostic: the rectangle count past which a blur's rebuild region "
+	 "collapses to its bounding box (0 restores the default). The collapse "
+	 "is conservative, so this changes cost and never pixels."},
 	{"dump_scene", "",
 	 "Log the next frame's scene nodes and AVK command stream at ERROR."},
 	{"damage_all", "",
