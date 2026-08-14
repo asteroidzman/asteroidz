@@ -146,6 +146,17 @@ struct avk_ts_slot {
 	 * off whatever the CPU is doing when the result finally comes back.
 	 */
 	bool blur_active;
+	/*
+	 * WHICH OUTPUT THIS FRAME WAS FOR, carried in the SLOT for the same
+	 * reason blur_active is: a timestamp result arrives several frames later,
+	 * and reading the name off whatever the CPU is doing when it lands
+	 * attributes a 4K frame to whichever display happened to be rendering
+	 * next. Every percentile in this milestone has been mixed across a
+	 * 4K/144Hz output and a 1080p/60Hz one, and a 1080p frame is a quarter of
+	 * the fill --- so the aggregate is bimodal and was being read as one
+	 * population. A short fixed buffer, because this must not own memory.
+	 */
+	char output[16];
 	/* How many blur chains this frame declared. The count, not the bool: at
 	 * N > 1 the PREFIX_END and DOWN_END marks belong to the FIRST chain only,
 	 * so a phase decomposition read without it silently attributes chains
@@ -274,10 +285,13 @@ struct avk_timestamps {
 	bool cohort_wrong;
 	bool cur_blur_active;
 	bool trace;
+	/* Set per frame before recording; copied into the slot at begin. */
+	char pending_output[16];
 	/* Carried from the gpu_frame block down to the trace line at the end of
 	 * read_slot(), so one frame prints as ONE line with its phases beside its
 	 * total instead of two lines that have to be joined by frame id. */
 	bool trace_pending, trace_cohort, trace_slot_active, trace_cur_active;
+	char trace_output[16];
 	uint64_t trace_gpu_frame_ns, trace_frame_id;
 	uint32_t trace_slot;
 };
@@ -297,6 +311,21 @@ static inline void avk_timestamps_set_budget(struct avk_timestamps *ts,
 		uint64_t budget_ns) {
 	ts->budget_ns = budget_ns;
 }
+
+/* Turn the per-frame READ trace on or off while running. AZ_TS_TRACE is read
+ * once at init and `restart` re-execs with the same environ, so on a live
+ * session there is otherwise no way to get per-frame data at all --- and every
+ * aggregate percentile this milestone has produced has been mixed across two
+ * outputs of different size and refresh, which is exactly what per-frame data
+ * exists to replace. */
+static inline void avk_timestamps_set_trace(struct avk_timestamps *ts,
+		bool on) {
+	ts->trace = on;
+}
+
+/* The output name this frame is being recorded for. Copied, not borrowed, and
+ * truncated rather than allocated. */
+void avk_timestamps_set_output(struct avk_timestamps *ts, const char *name);
 
 void avk_timestamps_blur_active(struct avk_timestamps *ts, uint32_t slot,
 	bool active, uint32_t chains);

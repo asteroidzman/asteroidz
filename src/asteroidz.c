@@ -1389,9 +1389,19 @@ static void az_frame_reach_add(const struct wlr_box *b) {
  */
 #define AZ_FRAME_REACH_PAD 256
 
-/* M4I. One line per frame of a tag transition; see the trace in render_monitor.
- * Read once, because this is on the per-client path of every frame. */
+/*
+ * M4I. One line per frame of a tag transition; see the trace in render_monitor.
+ *
+ * Runtime-settable as well as env-settable. AZ_TAGTRACE is fine for a headless
+ * fixture, but `restart` re-execs with the same environ, so on the live session
+ * an env-only switch can never be turned on --- and the live session is the
+ * only place the interesting distribution exists.
+ */
+static int az_tagtrace_runtime = -1;
 static inline bool az_tagtrace_on(void) {
+	if (az_tagtrace_runtime >= 0) {
+		return az_tagtrace_runtime != 0;
+	}
 	static int cached = -1;
 	if (cached < 0) {
 		const char *env = getenv("AZ_TAGTRACE");
@@ -1738,6 +1748,7 @@ struct Pertag {
  * parse_config.h, which is included first. */
 static int32_t reset_avk_stats(const Arg *arg);
 static int32_t set_blur_rect_cap(const Arg *arg);
+static int32_t set_frame_trace(const Arg *arg);
 static int32_t dump_scene(const Arg *arg);
 static int32_t damage_all(const Arg *arg);
 static int32_t capture_output(const Arg *arg);
@@ -1901,6 +1912,27 @@ static int32_t reset_avk_stats(const Arg *arg) {
  * --- and restarting into a new value destroys the workload that fragments the
  * region in the first place.
  */
+/*
+ * `amsg dispatch set_frame_trace,<0|1>` -- per-frame tracing, live.
+ *
+ * Turns on both the AVK timestamp READ line and the tag-transition trace, which
+ * together give one frame's GPU cost beside that frame's transition progress
+ * and visible areas. That pairing is the only thing that can answer "what does
+ * a transition frame cost" without going through a percentile --- and the
+ * percentiles are aggregated across outputs of different size and refresh, so
+ * they have now sent this investigation the wrong way three times.
+ *
+ * DIAGNOSTIC: it logs several lines per frame at ERROR.
+ */
+static int32_t set_frame_trace(const Arg *arg) {
+	bool on = arg != NULL && arg->i != 0;
+	az_tagtrace_runtime = on ? 1 : 0;
+#ifdef AZ_HAVE_VULKAN
+	az_avk_set_frame_trace(on);
+#endif
+	wlr_log(WLR_INFO, "frame trace %s", on ? "ON" : "off");
+	return 0;
+}
 static int32_t set_blur_rect_cap(const Arg *arg) {
 #ifdef AZ_HAVE_VULKAN
 	int cap = arg != NULL ? arg->i : 0;

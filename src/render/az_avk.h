@@ -3375,6 +3375,8 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 	 */
 	int32_t refresh_mhz = output != NULL && output->current_mode != NULL
 		? output->current_mode->refresh : 0;
+	avk_timestamps_set_output(&out->slot->renderer.timestamps,
+		output != NULL ? output->name : NULL);
 	avk_timestamps_set_budget(&out->slot->renderer.timestamps,
 		refresh_mhz > 0 ? (uint64_t)(1000000000000.0 / (double)refresh_mhz) : 0);
 	avk_oracle_begin(&out->slot->renderer.oracle, AVK_ORACLE_PRODUCTION);
@@ -4935,6 +4937,15 @@ static cJSON *az_avk_stats_json(void) {
  * deliberately NOT reset: they describe the present, not an interval, and
  * zeroing them would make the next reading a lie until the caches turned over.
  */
+/* M4I. Per-frame GPU tracing on every renderer that exists, at runtime. */
+static void az_avk_set_frame_trace(bool on) {
+	for (size_t i = 0; i < AZ_AVK_MAX_FORMATS; i++) {
+		if (avk.renderers[i].used) {
+			avk_timestamps_set_trace(&avk.renderers[i].renderer.timestamps, on);
+		}
+	}
+}
+
 static void az_avk_stats_reset(void) {
 	for (size_t i = 0; i < AZ_AVK_MAX_FORMATS; i++) {
 		if (!avk.renderers[i].used) {

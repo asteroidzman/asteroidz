@@ -141,6 +141,14 @@ void avk_timestamps_blur_active(struct avk_timestamps *ts, uint32_t slot,
 		return;
 	}
 	ts->slots[slot].blur_active = active;
+	/* Travels with the frame, not with the CPU: see avk_ts_slot.output. */
+	size_t n = 0;
+	while (ts->pending_output[n] != '\0'
+			&& n + 1 < sizeof(ts->slots[slot].output)) {
+		ts->slots[slot].output[n] = ts->pending_output[n];
+		n++;
+	}
+	ts->slots[slot].output[n] = '\0';
 	ts->slots[slot].chains = chains;
 	ts->slots[slot].frame_id = ++ts->frames_built;
 	ts->slots[slot].generation = ts->generation;
@@ -323,6 +331,12 @@ static bool read_slot(struct avk_timestamps *ts, uint32_t slot,
 		ts->trace_cohort = cohort;
 		ts->trace_slot_active = s->blur_active;
 		ts->trace_cur_active = ts->cur_blur_active;
+		size_t on = 0;
+		while (s->output[on] != '\0' && on + 1 < sizeof(ts->trace_output)) {
+			ts->trace_output[on] = s->output[on];
+			on++;
+		}
+		ts->trace_output[on] = '\0';
 		ts->trace_frame_id = s->frame_id;
 		ts->trace_slot = slot;
 		ts->trace_pending = true;
@@ -408,12 +422,13 @@ static bool read_slot(struct avk_timestamps *ts, uint32_t slot,
 		 * classified as, what the CPU happens to be doing now, and which of
 		 * the two decided. They are matched by a regex, so their order and
 		 * spelling are load-bearing; the phase fields are appended after. */
-		avk_log(AVK_INFO, "avk cohort: READ  frame=%" PRIu64 " slot=%u "
+		avk_log(AVK_INFO, "avk cohort: READ  out=%s frame=%" PRIu64 " slot=%u "
 			"slot.blur_active=%d cur.blur_active=%d -> cohort=%d "
 			"(built %" PRIu64 " frames ago) gpu_frame=%.1f us "
 			"chains=%u single=%d blur_total_us=%.1f prefix_us=%.1f "
 			"down_us=%.1f remainder_us=%.1f pre_us=%.1f post_us=%.1f",
-			ts->trace_frame_id, ts->trace_slot, ts->trace_slot_active ? 1 : 0,
+			ts->trace_output, ts->trace_frame_id, ts->trace_slot,
+			ts->trace_slot_active ? 1 : 0,
 			ts->trace_cur_active ? 1 : 0, ts->trace_cohort ? 1 : 0,
 			ts->frames_built - ts->trace_frame_id,
 			(double)ts->trace_gpu_frame_ns / 1e3,
@@ -427,6 +442,19 @@ static bool read_slot(struct avk_timestamps *ts, uint32_t slot,
 
 	s->timeline_value = 0;
 	return true;
+}
+
+void avk_timestamps_set_output(struct avk_timestamps *ts, const char *name) {
+	if (name == NULL) {
+		ts->pending_output[0] = '\0';
+		return;
+	}
+	size_t n = 0;
+	while (name[n] != '\0' && n + 1 < sizeof(ts->pending_output)) {
+		ts->pending_output[n] = name[n];
+		n++;
+	}
+	ts->pending_output[n] = '\0';
 }
 
 size_t avk_timestamps_collect(struct avk_timestamps *ts) {
