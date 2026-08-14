@@ -921,6 +921,10 @@ struct Monitor {
 	 * wall-clock timing run headless.
 	 */
 	bool present_seq_available;
+	/* AZ_BREAK_PRESENT_IDLE_WAKE only (falsifier I5). Null in every normal
+	 * build, which is the point: the guarantee is that no such object
+	 * exists. */
+	struct wl_event_source *break_idle_wake_timer;
 
 	/*
 	 * ── M-8. ARM-TO-PHOTONS AND COMMIT-TO-PHOTONS ─────────────────────────
@@ -2066,6 +2070,31 @@ static uint64_t az_pointer_notify_internal;
  */
 static uint64_t az_sample_not_target;   /* I1: must stay 0 */
 static uint64_t az_sample_total;
+
+/*
+ * ── AZ_BREAK_PRESENT_IDLE_WAKE (falsifier I5) ─────────────────────────────
+ *
+ * ADR-610's guarantee is STRUCTURAL: the presenter owns no wl_event_source, so
+ * there is no object through which it could wake the loop, and a settled
+ * desktop therefore executes none of it. A structural guarantee is worth
+ * exactly as much as the test that tries to violate it -- so this break adds
+ * the thing the design says does not exist: a 1s timer that schedules a frame,
+ * the "just one refresh tick" every predictor invites.
+ *
+ * A healthy build presents nothing across a settled window. This one presents
+ * about once a second, which is the difference between an idle laptop and a
+ * warm one.
+ */
+static int32_t az_break_idle_wake_cb(void *data) {
+	Monitor *m = data;
+	if (m != NULL && m->wlr_output != NULL) {
+		wlr_output_schedule_frame(m->wlr_output);
+	}
+	if (m != NULL && m->break_idle_wake_timer != NULL) {
+		wl_event_source_timer_update(m->break_idle_wake_timer, 1000);
+	}
+	return 0;
+}
 
 static inline uint64_t az_frame_sample_ns(Monitor *m) {
 	uint64_t t = az_presenter_sample_ns(m);
@@ -6020,6 +6049,14 @@ void createmon(struct wl_listener *listener, void *data) {
 	 * error. One wrong field at construction, and nothing after it was right.
 	 */
 	az_presenter_reset(m, AZ_PRESENT_RESET_CREATE);
+	if (getenv("AZ_BREAK_PRESENT_IDLE_WAKE") != NULL) {
+		wlr_log(WLR_ERROR, "M6A break: AZ_BREAK_PRESENT_IDLE_WAKE -- a 1s "
+			"timer now schedules frames on %s; idle is no longer idle",
+			wlr_output->name);
+		m->break_idle_wake_timer = wl_event_loop_add_timer(
+			wl_display_get_event_loop(dpy), az_break_idle_wake_cb, m);
+		wl_event_source_timer_update(m->break_idle_wake_timer, 1000);
+	}
 
 	wl_list_insert(&mons, &m->link);
 
