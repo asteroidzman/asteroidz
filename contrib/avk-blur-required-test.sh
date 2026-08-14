@@ -77,7 +77,18 @@ shot() {
 	local extra="${2:-}"
 	local cdir="$OUTDIR/cap-$name"
 	mkdir -p "$cdir"
-	HL_ENV="ASTEROIDZ_RENDERER=avk AZ_TRANSIENT_POISON=1 \
+	# ── AZ_BLUR_CACHE=0, AND IT IS THE POINT OF THIS FIXTURE ───────────────
+	#
+	# What is being falsified here is the region a LIVE blur chain derives. M4I's
+	# monitor background cache serves a settled desktop's blur from a stored
+	# image, so with it on no chain runs, no required region is derived, and
+	# every measurement below is taken over zero passes -- `chains=0 proc=0
+	# req=0`, which the premise assertions correctly refuse.
+	#
+	# So the cache is off, not because it is wrong but because it is not what
+	# this fixture measures. The premises stay: if the chain still does not run
+	# with the cache off, that is a real failure and not a configuration.
+	HL_ENV="ASTEROIDZ_RENDERER=avk AZ_TRANSIENT_POISON=1 AZ_BLUR_CACHE=0 \
 AZ_AVK_CAPTURE_DIR=$cdir $extra"
 	export HL_ENV
 	hl_start "$CFG"

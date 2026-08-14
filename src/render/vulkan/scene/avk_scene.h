@@ -1,6 +1,11 @@
 #ifndef AVK_SCENE_H
 #define AVK_SCENE_H
 
+/* M5/C2: the source luminance domain carried on a texture command. A plain
+ * POD header with no wlroots and no Vulkan in it, which is why a renderer
+ * header may include it. */
+#include "render/az_lum.h"
+
 #include "../avk.h"
 #include "../image/avk_image.h"
 
@@ -291,6 +296,24 @@ struct avk_cmd {
 	 * a separate decision made in avk_render.c.
 	 */
 	bool blur_bottom_only;
+
+	/*
+	 * M5/C2. HOW THIS SOURCE'S ELECTRICAL PIXELS BECOME SCENE VALUES.
+	 *
+	 * Only meaningful on AVK_CMD_TEXTURE -- a rect, a shadow and a blur result
+	 * are already scene values by construction, so they have no source domain
+	 * to declare and this stays at its zero value for them.
+	 *
+	 * Carried BY VALUE, 16 bytes, for the same reason blur_bottom_only is: the
+	 * renderer must be able to pick a decode variant at record time with no
+	 * scene-graph lookup, and a pointer here would be a lifetime question about
+	 * a client that can be destroyed between snapshot and submit.
+	 *
+	 * NOTHING READS IT YET. C7 selects the decode variant from it; until then a
+	 * command carries its domain and every draw takes the same path it always
+	 * did, which is what makes the field checkable before it is load-bearing.
+	 */
+	struct az_lum_domain lum;
 
 	/* reserved for M4F */
 	bool has_blur;

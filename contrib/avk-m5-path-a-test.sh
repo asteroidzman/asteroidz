@@ -58,7 +58,8 @@ layout { titlebar { enable 0 } }"
 
 JQ='{frames:.frames, srgb:.m5_decode_srgb, g22:.m5_decode_gamma22,
      bt1886:.m5_decode_bt1886, dec:.m5_decode_draws,
-     segs:.m5_srgb_attach_segments, verr:.validation_errors}'
+     segs:.m5_srgb_attach_segments, verr:.validation_errors,
+     von:.validation_enabled}'
 v() { echo "$2" | tr ' ' '\n' | sed -n "s/^$1=//p" | head -1; }
 STATS=""
 
@@ -67,9 +68,18 @@ run() { # run NAME [EXTRA_ENV...]
 	local dir="$OUTDIR/$name" cdir="$OUTDIR/$name-cap"
 	mkdir -p "$dir" "$cdir"
 	HL_OUTDIR="$dir"; HL_WIDTH="$W"; HL_HEIGHT="$H"; HL_SCALE1=1
-	HL_ENV="ASTEROIDZ_RENDERER=avk AZ_SHADOW_DITHER_AMP=0 AZ_AVK_CAPTURE_DIR=$cdir $*"
+	# ASTEROIDZ_VK_DEBUG=1, WITHOUT WHICH THE LAST TWO ASSERTIONS ARE EMPTY.
+	# `validation_errors` only increments from the validation layer's callback,
+	# so with no layer loaded it reads 0 whatever the frame did -- and this
+	# fixture asserted it that way for a whole milestone while Path A attached
+	# an _SRGB view to pipelines declaring the UNORM twin, twenty VUIDs a run.
+	HL_ENV="ASTEROIDZ_RENDERER=avk ASTEROIDZ_VK_DEBUG=1 AZ_SHADOW_DITHER_AMP=0 AZ_AVK_CAPTURE_DIR=$cdir $*"
 	export HL_OUTDIR HL_ENV HL_WIDTH HL_HEIGHT HL_SCALE1
-	hl_start "$CFG" >/dev/null 2>&1
+	# TO A FILE, not to /dev/null. hl_start refuses to continue on a rejected
+	# config or a missing helper and says which -- and sending that to
+	# /dev/null turns every one of those into a fixture that prints its
+	# banner and exits with no reason given.
+	hl_start "$CFG" >"$dir/hl_start.log" 2>&1
 	sleep 3
 	STATS="$(hl_get "get avk-stats" | jq -r "$JQ | to_entries |
 		map(\"\(.key)=\(.value)\") | join(\" \")" 2>/dev/null)"
@@ -129,6 +139,10 @@ echo "  Path A off vs on: $D px differ (worst channel $M)"
 hl_assert "A WALLPAPER-ONLY FRAME IS IDENTICAL THROUGH PATH A" "$D" 0
 
 echo
+# THE PREMISE FIRST. A count of zero from a counter nothing can increment is
+# not a result; see the note beside HL_ENV above for what it cost.
+hl_assert "PREMISE: the validation layer is on (off arm)" "$(v von "$OFF")" true
+hl_assert "PREMISE: the validation layer is on (on arm)" "$(v von "$ON")" true
 hl_assert "off: validation errors" "$(v verr "$OFF")" 0
 hl_assert "on:  validation errors" "$(v verr "$ON")" 0
 

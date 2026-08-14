@@ -41,7 +41,14 @@ foreach shader : [['quad.vert', 'quad_vert_spv'],
                   ['shadow.frag', 'shadow_frag_spv'],
                   ['blur_down.frag', 'blur_down_frag_spv'],
                   ['blur_up.frag', 'blur_up_frag_spv'],
-                  ['blur_soft.frag', 'blur_soft_frag_spv']]
+                  ['blur_soft.frag', 'blur_soft_frag_spv'],
+                  # M5/C6: the output-encode pass. Its own vertex stage because
+                  # it is the one pipeline with a different push-constant
+                  # layout -- push.glsl's block is exactly the 128-byte
+                  # guaranteed minimum and is already dual-purpose across four
+                  # pipelines.
+                  ['output_encode.vert', 'output_encode_vert_spv'],
+                  ['output_encode.frag', 'output_encode_frag_spv']]
   spv = custom_target(shader[0] + '.spv',
     input : 'shader/src' / shader[0],
     output : shader[0] + '.spv',
@@ -52,7 +59,13 @@ foreach shader : [['quad.vert', 'quad_vert_spv'],
                          'shader/src/gradient.glsl',
                          'shader/src/dither.glsl',
                          'shader/src/shadow.glsl',
-                         'shader/src/blur.glsl'),
+                         'shader/src/blur.glsl',
+                         # C1's GLSL twin. Listed for the same reason as
+                         # push.glsl: it is a shared declaration, and a change
+                         # to a transfer-function constant must rebuild every
+                         # shader that includes it rather than leaving a stale
+                         # SPIR-V with the old curve embedded.
+                         'shader/src/color.glsl'),
     command : [glslang, '-V', '--target-env', 'vulkan1.3',
                '-I' + meson.current_source_dir() / 'shader/src',
                '@INPUT@', '-o', '@OUTPUT@'])
@@ -81,6 +94,7 @@ avk_sources = files(
   'image/avk_image.c',
   'image/avk_upload.c',
   'pipeline/avk_gradient.c',
+  'pipeline/avk_output_encode.c',
   'pipeline/avk_pipeline.c',
   'scene/avk_oracle.c',
   'scene/avk_render.c',

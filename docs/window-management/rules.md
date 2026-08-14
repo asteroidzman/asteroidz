@@ -105,6 +105,29 @@ global setting is off.
 | `allow_csd` | integer | `0` / `1` | Allow client side decoration |
 | `force_ssd` | integer | `0` / `1` | Force server-side decorations (titlebar/border) for apps that support neither xdg-decoration nor client-side decorations (e.g. SDL/GLFW games) |
 | `isnotitlebar` / `no-titlebar` | integer | `0` / `1` | Draw no titlebar for this window, whatever the global titlebar setting is |
+| `sdr_white_scale` / `sdr-white-scale` | float | `0` – `10` | Multiply this window's SDR white. `1.0` is unchanged, `1.5` makes an SDR application 50% brighter on an HDR output. `0` leaves it alone. No effect on HDR (PQ or scRGB) content |
+| `hdr_gain` / `hdr-gain` | float | `0` – `10` | Multiply this window's HDR content. `1.0` is unchanged, `0.5` halves the absolute luminance of a PQ video. `0` leaves it alone. No effect on SDR content |
+
+`sdr_white_scale` and `hdr_gain` are **per window on purpose, and there is no
+global equivalent of either**. On an HDR output every SDR application is
+rendered at the desktop's reference white (`sdr_reference_luminance`, 203 cd/m²
+by default); a global "HDR brightness" slider moves all of them at once, along
+with the wallpaper and the panel, which is how an HDR desktop ends up looking
+washed out. These move one window.
+
+They apply to different classes of source and never to each other's:
+`sdr_white_scale` multiplies content encoded as sRGB, gamma 2.2 or BT.1886 —
+which is nearly everything — while `hdr_gain` multiplies content a client has
+tagged as PQ or scRGB through `wp-color-management` (or frog). Setting
+`hdr_gain` on a terminal does nothing; setting `sdr_white_scale` on an mpv
+window playing HDR video does nothing.
+
+```kdl
+// a chat client that disappears against HDR video beside it
+window-rule { match app-id=discord; sdr-white-scale 1.6 }
+// a PQ video mastered brighter than this room wants
+window-rule { match app-id=mpv; hdr-gain 0.7 }
+```
 
 `isnoanimation` also changes how the window LEAVES a tag, not only how it
 moves. The tag-out slide parks a window past its monitor's edge and it is the

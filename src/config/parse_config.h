@@ -110,6 +110,13 @@ typedef struct {
 	int32_t noscanout;
 	float focused_opacity;
 	float unfocused_opacity;
+	/* M5, ADR-006: the per-window luminance domain's two levers. 0 = unset,
+	 * the same convention every other float rule here uses. sdr_white_scale
+	 * multiplies SDR sources, hdr_gain multiplies PQ/scRGB ones; neither
+	 * touches the other's class, and there is deliberately no global
+	 * equivalent of either. */
+	float sdr_white_scale;
+	float hdr_gain;
 	float scroller_proportion_single;
 	uint32_t passmod;
 	xkb_keysym_t keysym;
@@ -2817,6 +2824,11 @@ bool parse_option(Config *config, char *key, char *value) {
 		// float rule value, relay to a client property
 		rule->focused_opacity = 0;
 		rule->unfocused_opacity = 0;
+		/* 0 = unset, NOT "scale by zero". The client's own default is 1.0 and
+		 * APPLY_FLOAT_PROP only overwrites it for a rule above zero, so a rule
+		 * that says nothing about luminance stays invisible. */
+		rule->sdr_white_scale = 0.0f;
+		rule->hdr_gain = 0.0f;
 		rule->scroller_proportion_single = 0.0f;
 		rule->scroller_proportion = 0;
 
@@ -2914,6 +2926,10 @@ bool parse_option(Config *config, char *key, char *value) {
 					rule->unfocused_opacity = atof(val);
 				} else if (strcmp(key, "focused_opacity") == 0) {
 					rule->focused_opacity = atof(val);
+				} else if (strcmp(key, "sdr_white_scale") == 0) {
+					rule->sdr_white_scale = atof(val);
+				} else if (strcmp(key, "hdr_gain") == 0) {
+					rule->hdr_gain = atof(val);
 				} else if (strcmp(key, "isoverlay") == 0) {
 					rule->isoverlay = atoi(val);
 				} else if (strcmp(key, "allow_shortcuts_inhibit") == 0) {

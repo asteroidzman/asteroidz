@@ -2,6 +2,8 @@
 
 #include "avk_phys.h"
 
+#include "avk_color_caps.h"
+
 #include <inttypes.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -158,6 +160,41 @@ static void query_external_sync(VkPhysicalDevice phys, struct avk_caps *caps) {
 		& VK_EXTERNAL_SEMAPHORE_FEATURE_EXPORTABLE_BIT) != 0;
 }
 
+/*
+ * M5 (contract C5): the two device-level colour questions, asked once.
+ *
+ * These are FORMAT questions, not extension questions, which is why they are
+ * probed rather than inferred from a driver name: R16G16B16A16_SFLOAT is core
+ * Vulkan and every driver supports it for something, and the something differs.
+ * ADR-001 picks the working format by CRITERIA, and this is criterion (a).
+ *
+ * Nothing branches on the answers yet -- C5 is pure information, by design.
+ * What it buys is that the day the intermediate is wired up, "does this device
+ * support the working format" is a recorded fact from startup rather than a
+ * question asked for the first time inside a frame.
+ */
+static void query_color_formats(VkPhysicalDevice phys, struct avk_caps *caps) {
+	VkFormatProperties2 props = {
+		.sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2,
+	};
+	vkGetPhysicalDeviceFormatProperties2(phys, VK_FORMAT_R16G16B16A16_SFLOAT,
+		&props);
+	caps->fp16_optimal_features =
+		props.formatProperties.optimalTilingFeatures;
+	caps->fp16_attach_blend_sample =
+		avk_fp16_working_format_ok(caps->fp16_optimal_features);
+
+	props = (VkFormatProperties2){
+		.sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2,
+	};
+	vkGetPhysicalDeviceFormatProperties2(phys,
+		VK_FORMAT_A2B10G10R10_UNORM_PACK32, &props);
+	caps->rgb10a2_optimal_features =
+		props.formatProperties.optimalTilingFeatures;
+	caps->rgb10a2_attach =
+		avk_rgb10a2_attach_ok(caps->rgb10a2_optimal_features);
+}
+
 static void query_caps(VkPhysicalDevice phys, struct avk_caps *caps) {
 	memset(caps, 0, sizeof(*caps));
 
@@ -263,6 +300,7 @@ static void query_caps(VkPhysicalDevice phys, struct avk_caps *caps) {
 
 	query_queue_families(phys, caps);
 	query_external_sync(phys, caps);
+	query_color_formats(phys, caps);
 }
 
 static const char *find_reject_reason(const struct avk_caps *caps) {

@@ -177,10 +177,76 @@ if get_option('asan')
   link_args += '-fsanitize=address'
 endif
 
+# ── colour maths (M5, contract C1) ──────────────────────────────────────────
+#
+# Its own static library rather than a file in the asteroidz source list, for
+# one reason: the unit tests and the CPU pipeline reference must be able to
+# link it WITHOUT the compositor, without wlroots and without Vulkan. A colour
+# primitive that can only be exercised inside a running compositor is a
+# primitive nobody can pin to a published constant, and M5's whole method is
+# that every number in it is checkable against a standard.
+#
+# Dependencies: libm. That is the complete list and it should stay that way --
+# see the header's opening comment.
+az_color_lib = static_library('az-color',
+                              'src/render/color/az_color.c',
+                              dependencies : [libm],
+                              include_directories : include_directories('src'))
+az_color_dep = declare_dependency(link_with : az_color_lib,
+                                  dependencies : [libm],
+                                  include_directories : include_directories('src'))
+
+# The primitives, pinned to ST 2084 / IEC 61966-2-1 / BT.2087 / BT.2408. No
+# GPU, no compositor: it runs on a build machine with no DRM node at all. The
+# source root is passed because the GLSL-twin parity check reads both sources
+# and compares their shared constants -- the numerical GPU parity fixture C1
+# also specifies needs a device and is deferred.
+test_color_math = executable('test-color-math', 'tests/test-color-math.c',
+                             dependencies : [az_color_dep],
+                             build_by_default : false)
+test('color-math', test_color_math, args : [meson.project_source_root()],
+     timeout : 30)
+
+# The luminance-domain resolver (M5, contract C2). Header-only, so this links
+# nothing but libc -- which is the point: the resolver is the piece most worth
+# exercising, and a signature mentioning wlroots types would drag a wayland
+# display into the test binary and the test would stop being written.
+test_lum_domain = executable('test-lum-domain', 'tests/test-lum-domain.c',
+                             include_directories : include_directories('src'),
+                             dependencies : [libm],
+                             build_by_default : false)
+test('lum-domain', test_lum_domain, timeout : 30)
+
+# The output-colour-state decision table (M5, contract C3). Five outcomes, four
+# of which render a plausible picture when chosen wrongly -- which is why the
+# table asserts the WHOLE state per row rather than the field it is about.
+test_output_color = executable('test-output-color',
+                               'tests/test-output-color.c',
+                               dependencies : [az_color_dep],
+                               build_by_default : false)
+test('output-color', test_output_color, timeout : 30)
+
+# THE M5 GATE (contract C4). The CPU reference pipeline and every gate it
+# supports, including the breaks -- which run in the ordinary test binary
+# rather than behind an #ifdef, so a break that has stopped breaking shows up
+# as a failure here rather than as nothing at all.
+#
+# az_color_ref.c is compiled into the test and NOT into asteroidz: it
+# allocates, it keeps every intermediate image alive at once, and it is written
+# to be read against the ADRs. The compositor has no use for it.
+test_color_pipeline = executable('test-color-pipeline',
+                                 ['tests/test-color-pipeline.c',
+                                  'src/render/color/az_color_ref.c'],
+                                 dependencies : [az_color_dep],
+                                 build_by_default : false)
+test('color-pipeline', test_color_pipeline,
+     args : [meson.project_source_root()], timeout : 60)
+
 # The native Vulkan engine is compiled into the compositor when it is built.
 # A separate flag from -Drenderers so the guard in the source says what it
 # means: "this build has AVK", not "this build was configured a certain way".
 asteroidz_deps = [
+    az_color_dep,
     libm,
     libdrm,
     xcb,
@@ -339,8 +405,14 @@ if build_vulkan
   # compared. These assert on the framebuffer, not on functions returning
   # true -- a renderer with the wrong blend state or a mis-folded transform
   # succeeds at every call it makes and draws the wrong picture.
-  test_avk_render = executable('test-avk-render', 'tests/test-avk-render.c',
-                               dependencies : [avk_dep],
+  # az_color_ref.c is linked in for M5's Path-B tests: the PQ encode is
+  # compared against C4's CPU reference, which was written from the ADRs rather
+  # than from the shader. A second copy of the shader's own arithmetic would be
+  # a tautology.
+  test_avk_render = executable('test-avk-render',
+                               ['tests/test-avk-render.c',
+                                'src/render/color/az_color_ref.c'],
+                               dependencies : [avk_dep, az_color_dep, libm],
                                build_by_default : false)
   test('avk-render', test_avk_render, timeout : 60)
 
@@ -449,6 +521,17 @@ if build_vulkan
                                    build_by_default : false)
   test('avk-blur-scene', test_avk_blur_scene, timeout : 240)
 
+  # M5/C2: every command carries a VALID luminance domain. avk_scene_add()
+  # memsets, so a field nobody fills defaults to zero -- and a scale of zero is
+  # a black surface, not a neutral default. Four command sites would each have
+  # had to remember; the default lives in one place and this asserts it for
+  # every type, including ones added after it was written.
+  test_lum_command = executable('test-lum-command',
+                                'tests/test-lum-command.c',
+                                dependencies : [avk_dep],
+                                build_by_default : false)
+  test('lum-command', test_lum_command)
+
   # M4F.2A.3: the blur node's MATERIAL. darken is checked against a CPU minimum
   # of two SEPARATELY MEASURED renders (clamp off, and no blur node at all), so
   # the production shader is never its own oracle; the soft edge is checked
@@ -485,6 +568,18 @@ if build_vulkan
   # transcription of the reference's erf-and-four-samples formula, which is
   # what AVK's readback is compared against -- not GLES, and not AVK's own
   # shader.
+  # M5/C5: the colour capability predicates, driven with SYNTHETIC feature
+  # sets. No device: this machine's RADV answers yes to every question these
+  # ask, so a live test would pass for a predicate that returned true
+  # unconditionally -- and the interesting answers are the PARTIAL ones no
+  # single GPU can be made to produce on demand.
+  test_avk_color_caps = executable('test-avk-color-caps',
+                                   'tests/test-avk-color-caps.c',
+                                   dependencies : [vulkan_dep],
+                                   include_directories : include_directories('src'),
+                                   build_by_default : false)
+  test('avk-color-caps', test_avk_color_caps, timeout : 30)
+
   test_avk_shadow = executable('test-avk-shadow',
                                'tests/test-avk-shadow.c',
                                dependencies : [avk_dep, libm],

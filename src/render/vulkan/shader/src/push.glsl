@@ -21,7 +21,9 @@
  *   uv_org_dx.zw   du/dx                      --                --
  *   uv_dy.xy       du/dy                      --                --
  *   uv_dy.zw       --                         --                --
- *   color          --                         premultiplied     .a gates only
+ *   color.x        LUMINANCE SCALE MINUS ONE  --                --
+ *                  (M5/C2 -- zero is the identity, see AZ_TEX_LUM_SCALE)
+ *   color.yzw      --                         premultiplied     .a gates only
  *   params.x       opacity                    opacity           opacity
  *   params.y       alpha mask (1 keep, 0 opaque)  --            RECORD INDEX
  *   params.zw      viewport, in output pixels (all)
@@ -110,3 +112,34 @@ vec2 az_frag_global(void) {
  * units. Written by the CPU as a float and exact for every count a scene can
  * hold: floats represent integers exactly below 2^24. */
 #define AZ_GRAD_RECORD int(pc.params.y)
+
+/*
+ * M5/C2. The source's luminance scale, on the TEXTURE pipeline only.
+ *
+ * `color` is unused by a texture draw -- a texture's colour comes from its
+ * sampler -- so the scale rides in .x rather than growing a block that is
+ * already exactly 128 bytes, the guaranteed minimum maxPushConstantsSize.
+ *
+ * STORED AS scale MINUS ONE, SO THAT ZERO IS THE IDENTITY.
+ *
+ * The obvious encoding is the scale itself, and it is a trap: every
+ * `struct avk_push_constants pc = {0}` in the tree then renders BLACK unless
+ * its author knew to set this field. That is not hypothetical -- it was tried.
+ * The blur composite draws through pipes.texture, the blur chain's own passes
+ * share this block, and tests/test-avk-multipass.c binds pipes.texture
+ * directly: four call sites, three of them nowhere near anything called
+ * "colour", and every blurred region on screen went black. Fixing it meant
+ * four defensive assignments and a comment at each, all of which stay correct
+ * only until the fifth caller.
+ *
+ * With the offset, a zeroed block is neutral and no caller has to know. The
+ * cost is one add per texel.
+ *
+ * IT MULTIPLIES RGB AND NOT ALPHA. The texel is premultiplied, and a luminance
+ * scale changes how bright the surface is, not how opaque: scaling the whole
+ * vec4 would make a half-transparent window more opaque as it got brighter.
+ * Above 1.0 this deliberately produces rgb > a, which is what an HDR source
+ * above SDR white IS -- an 8-bit attachment clamps it, and ADR-007's claim that
+ * it does not is what F5 struck.
+ */
+#define AZ_TEX_LUM_SCALE (1.0 + pc.color.x)

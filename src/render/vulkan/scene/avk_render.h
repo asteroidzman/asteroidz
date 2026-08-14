@@ -9,6 +9,7 @@
 #include "../effect/avk_blur.h"
 #include "../graph/avk_transient.h"
 #include "../pipeline/avk_gradient.h"
+#include "../pipeline/avk_output_encode.h"
 #include "../pipeline/avk_pipeline.h"
 #include "avk_oracle.h"
 #include "avk_scene.h"
@@ -438,6 +439,29 @@ struct avk_renderer_stats {
 	 * fragment was alpha 1. Reported so "the experiment did nothing" and "the
 	 * experiment did nothing useful" are different readings. */
 	uint64_t opaque_noblend_draws;
+	/* M5/C7. Draws that took a decode variant. Zero with decode off, and zero
+	 * WITH it on would mean no source asked for one -- two different readings
+	 * that a pixel comparison alone conflates. */
+	uint64_t decode_draws;
+	/* M5/C7. Segments that rendered into an _SRGB attachment view. Counted
+	 * because "the encode is on" has so far been INFERRED from the size of a
+	 * pixel error, and an inference is what a counter is for. */
+	uint64_t srgb_attach_segments;
+	/* M5/C7. Decode draws BY VARIANT. A total says the decode ran; only the
+	 * breakdown says WHICH curve a source was decoded with, and a source
+	 * decoded with the wrong one of two similar curves is off by about a code
+	 * -- which is indistinguishable from rounding until it is counted. */
+	uint64_t decode_by_variant[AVK_DECODE_COUNT];
+	/*
+	 * M5/C6 (Path B). The encode pass, counted at the draw and in fragments.
+	 *
+	 * `encode_draws` is damage rectangles, `encode_px` their area. Both zero on
+	 * Path A, which is the point: "Path B ran" and "Path B ran and encoded
+	 * nothing" are different statements, and a pixel comparison alone conflates
+	 * them with "Path B produced the same picture".
+	 */
+	uint64_t encode_draws;
+	uint64_t encode_px;
 	uint64_t draws;          /* commands x damage rects */
 	/*
 	 * M4H. FRAGMENT AREA, BY PRIMITIVE CLASS, IN TWO BUCKETS.
@@ -601,6 +625,95 @@ struct avk_renderer {
 	 * worth anything on this hardware.
 	 */
 	bool opaque_noblend;
+	/*
+	 * M5/C7. Select a decode variant from each source's luminance domain.
+	 *
+	 * OFF BY DEFAULT, and it must stay off until the ENCODE side exists.
+	 * Decoding without encoding moves composition into linear light and then
+	 * writes those values as though they were still electrical -- every window
+	 * on screen washes out. The two halves are one change and the M5 SDR gate
+	 * is what says so: it is bit-exact with both off, must FAIL with only this
+	 * on, and must return to within a code once the encode lands.
+	 */
+	bool decode_enabled;
+	/*
+	 * M5/C7 (Path A). Render into the target's _SRGB view, so the hardware
+	 * applies the inverse sRGB EOTF on every write.
+	 *
+	 * The other half of decode_enabled, and the two are only correct together:
+	 * decode alone composites in linear and writes it as though it were
+	 * electrical (everything washes out), encode alone applies an inverse curve
+	 * to values that were never decoded (everything darkens). The M5 SDR gate
+	 * is bit-exact with both off and must be within a code with both on.
+	 *
+	 * Silently inert when the target has no _SRGB view -- see
+	 * avk_image_srgb_view(). That is the honest fallback: an output whose
+	 * scanout buffer is 10-bit has no such view on any conformant device (F11)
+	 * and belongs on Path B.
+	 */
+	bool encode_srgb;
+	/*
+	 * ── PATH A NEEDS ITS OWN PIPELINES, AND THAT IS NOT AN OPTIMISATION ───
+	 *
+	 * Dynamic rendering bakes the colour-attachment format into the pipeline,
+	 * and the spec requires the format the pipeline declares to MATCH the view
+	 * the render-pass instance attaches:
+	 *
+	 *   VUID-vkCmdDraw-dynamicRenderingUnusedAttachments-08910
+	 *
+	 * Path A attaches the target's _SRGB view to pipelines built for the UNORM
+	 * twin, which violates exactly that -- undefined behaviour that RADV
+	 * happens to execute correctly, so it produced a right picture and a clean
+	 * A/B while being invalid. It went unnoticed because the compositor
+	 * fixtures assert `validation_errors == 0` WITHOUT loading the validation
+	 * layer, which is a counter that cannot move; the on-GPU unit fixture under
+	 * ASTEROIDZ_VK_DEBUG reported it 20 times on the first run.
+	 *
+	 * So Path A's output segment draws with a second pipeline set declaring the
+	 * _SRGB format. Built lazily, on the first frame that takes the fast path:
+	 * a desktop with no Path-A output never pays for it.
+	 *
+	 * ONLY THE PIPELINES DIFFER. The descriptor sets, samplers and pools still
+	 * come from this set through the same per-image cache, because the two
+	 * pipeline layouts are created from identically defined set layouts and
+	 * identical push-constant ranges -- which is precisely the spec's
+	 * definition of layout compatibility. Duplicating the descriptor cache to
+	 * avoid using it would double every surface's descriptors for nothing.
+	 */
+	struct avk_pipelines pipes_srgb;
+	bool pipes_srgb_ok;
+	VkFormat pipes_srgb_format;
+	/*
+	 * ── M5/C6 (PATH B). THE OUTPUT-ENCODE PASS ────────────────────────────
+	 *
+	 * Lent per frame by the caller, exactly like `blur_cache` above and for
+	 * exactly the same reason: a renderer is shared by every output using its
+	 * VkFormat, and both the intermediate and the encode constants belong to ONE
+	 * output. Leaving them attached would encode DP-1's frame with HDMI-A-1's
+	 * curve on whichever rendered second.
+	 *
+	 * When `encode_intermediate` is set, the scene composites into IT and this
+	 * pass writes the frame's `target`. The renderer's own `format` is then the
+	 * INTERMEDIATE's format (scene-linear FP16), which is what makes the blur
+	 * transients and the M4I cache follow the path without a line of their own
+	 * -- ADR-012 falls out of the existing per-format renderer selection.
+	 *
+	 * `encode_full_frame` forces a whole-output frame. Required exactly once
+	 * per intermediate: a freshly created image holds nothing, and the frame
+	 * damage handed in describes the age of the SCANOUT buffer, which rotates
+	 * through several while the intermediate does not.
+	 */
+	struct avk_image *encode_intermediate;
+	struct avk_encode_params encode_params;
+	bool encode_full_frame;
+	/*
+	 * The encode pipelines, per (target format, curve). On the RENDERER because
+	 * that is where the pipeline layout's descriptor set layout lives -- the
+	 * intermediate is sampled through avk_pipelines' texture set, so its
+	 * descriptor is cached on the image like every other sampled image and the
+	 * frame path allocates none.
+	 */
+	struct avk_output_encode encode;
 	/* M4H break -- AZ_AVK_OCCLUDE_ALL=1: every command occludes, whatever its
 	 * alpha or shape. The over-culling failure the oracle must be able to
 	 * catch; see az_cmd_opaque_region(). */

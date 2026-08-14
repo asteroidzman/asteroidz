@@ -42,6 +42,20 @@ struct avk_cmd *avk_scene_add(struct avk_scene *scene, enum avk_cmd_type type) {
 	cmd->type = type;
 	cmd->opacity = 1.0f;
 	cmd->color[3] = 1.0f;
+	/*
+	 * M5/C2. THE UNTAGGED DOMAIN, not a zeroed one.
+	 *
+	 * memset above leaves scale = 0, and the resolver's contract is that
+	 * `scale > 0` ALWAYS -- a consumer is entitled to multiply by it. Zero is
+	 * not a neutral default here, it is a black surface, and it would be the
+	 * value carried by every command whose site does not fill this in: rects,
+	 * shadows, blur results, and the output cursor, which has no colour
+	 * description to resolve from.
+	 *
+	 * Defaulting HERE rather than at each site means a command type added
+	 * later cannot forget. Sites with a real source description overwrite it.
+	 */
+	cmd->lum = az_lum_domain_untagged();
 	return cmd;
 }
 

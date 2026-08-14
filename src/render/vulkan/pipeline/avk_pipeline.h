@@ -83,6 +83,17 @@ struct avk_push_constants {
 _Static_assert(sizeof(struct avk_push_constants) == 128,
 	"push constants must match the shader block");
 
+/* Mirrors the AZ_DECODE_* constants in texture.frag. A mismatch between the
+ * two is a wrong picture rather than an error, so they are declared beside each
+ * other in spirit and the shader names them in the same order. */
+enum avk_decode_variant {
+	AVK_DECODE_NONE = 0,
+	AVK_DECODE_SRGB,
+	AVK_DECODE_GAMMA22,
+	AVK_DECODE_BT1886,
+	AVK_DECODE_COUNT,
+};
+
 struct avk_pipelines {
 	struct avk_device *dev;
 
@@ -120,6 +131,17 @@ struct avk_pipelines {
 	 */
 	VkPipeline rect_opaque;
 	VkPipeline texture_opaque;
+	/*
+	 * M5/C7. One texture pipeline per source decode, compiled from the one
+	 * texture.frag through a specialisation constant.
+	 *
+	 * Indexed by AZ_DECODE_*: [0] is the no-decode variant and is the SAME
+	 * behaviour as `texture` above, kept as a separate object only so the
+	 * selection code has no special case. A variant that fails to compile
+	 * leaves VK_NULL_HANDLE here and the selector falls back to `texture`,
+	 * which renders the pre-M5 picture rather than nothing.
+	 */
+	VkPipeline texture_decode[AVK_DECODE_COUNT];
 	/*
 	 * M4D. ONE shadow pipeline for every shadow on the desktop: the caster's
 	 * geometry and its blur radius are push constants, so a window shadow, a
@@ -201,6 +223,17 @@ void avk_pipelines_finish(struct avk_pipelines *pipes);
  * costs one descriptor write for its whole lifetime rather than one per frame.
  * Returns VK_NULL_HANDLE if a set could not be allocated.
  */
+/*
+ * M5/C7. A descriptor for sampling this image through its _SRGB view, so the
+ * hardware performs the sRGB EOTF on every fetch and the shader does none.
+ *
+ * VK_NULL_HANDLE when the image was not created MUTABLE with that format in
+ * its view list -- which is not a failure, it is the answer. The caller falls
+ * back to decoding in the shader.
+ */
+VkDescriptorSet avk_pipelines_texture_set_srgb(struct avk_pipelines *pipes,
+	struct avk_image *image, bool linear);
+
 VkDescriptorSet avk_pipelines_texture_set(struct avk_pipelines *pipes,
 	struct avk_image *image, bool linear);
 

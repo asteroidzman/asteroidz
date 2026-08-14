@@ -526,6 +526,14 @@ void avk_device_log_caps(const struct avk_device *dev) {
 		c->graphics_family,
 		c->has_dedicated_transfer_family ? "yes" : "none",
 		c->has_dedicated_compute_family ? "yes" : "none");
+	/* M5/C5. One line, and it names the missing bit rather than just saying
+	 * no -- "fp16=0" on a device that supports the format for sampling but
+	 * not for blending is a completely different conversation from "fp16=0"
+	 * on a device that does not have the format. */
+	avk_log(AVK_INFO, "avk caps: color fp16=%d (features 0x%08x) "
+		"rgb10a2=%d (features 0x%08x)",
+		c->fp16_attach_blend_sample, (unsigned)c->fp16_optimal_features,
+		c->rgb10a2_attach, (unsigned)c->rgb10a2_optimal_features);
 	avk_log(AVK_INFO, "avk caps: max 2D image %u, max alloc %" PRIu64 " MiB, "
 		"timestamp period %.2f ns, memory_budget=%d",
 		c->max_image_dimension_2d,

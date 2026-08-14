@@ -73,9 +73,20 @@ enum az_blend_mode {
 	AZ_BLEND_DARKEN,
 };
 
+/*
+ * `spec` is the FRAGMENT stage's specialisation info, or NULL.
+ *
+ * M5/C7 uses it to compile one decode variant per source domain from a single
+ * shader: a specialisation constant is folded at pipeline-compile time, so the
+ * branch it controls costs nothing at runtime and the unused decode paths are
+ * not even present in the compiled variant. A uniform branch would cost a
+ * register and a test per texel on every draw in the frame, for a value that is
+ * constant across the whole draw.
+ */
 static bool create_pipeline_ex(struct avk_pipelines *pipes, VkFormat format,
 		VkShaderModule vert, VkShaderModule frag, const char *name,
-		enum az_blend_mode mode, VkPipeline *out) {
+		enum az_blend_mode mode, const VkSpecializationInfo *spec,
+		VkPipeline *out) {
 	struct avk_device *dev = pipes->dev;
 
 	VkPipelineShaderStageCreateInfo stages[2] = {
@@ -90,6 +101,7 @@ static bool create_pipeline_ex(struct avk_pipelines *pipes, VkFormat format,
 			.stage = VK_SHADER_STAGE_FRAGMENT_BIT,
 			.module = frag,
 			.pName = "main",
+			.pSpecializationInfo = spec,
 		},
 	};
 
@@ -201,11 +213,49 @@ static bool create_pipeline_ex(struct avk_pipelines *pipes, VkFormat format,
 }
 
 /* The blending form, which is what every compositing primitive wants. */
+/*
+ * M5/C7. One texture pipeline per source decode, from the one texture.frag.
+ *
+ * NOT FATAL IF A VARIANT FAILS. A missing variant leaves VK_NULL_HANDLE and the
+ * selector falls back to the plain texture pipeline -- the pre-M5 picture,
+ * which is wrong for a tagged source and right for everything else. Failing
+ * device creation instead would take a whole desktop down over a colour path
+ * almost nothing on it uses yet.
+ */
+static bool create_decode_variants(struct avk_pipelines *pipes,
+		VkFormat format, VkShaderModule vert, VkShaderModule frag) {
+	static const char *names[AVK_DECODE_COUNT] = {
+		"texture_decode_none", "texture_decode_srgb",
+		"texture_decode_gamma22", "texture_decode_bt1886",
+	};
+	for (int i = 0; i < AVK_DECODE_COUNT; i++) {
+		int32_t value = i;
+		VkSpecializationMapEntry entry = {
+			.constantID = 0,
+			.offset = 0,
+			.size = sizeof(value),
+		};
+		VkSpecializationInfo spec = {
+			.mapEntryCount = 1,
+			.pMapEntries = &entry,
+			.dataSize = sizeof(value),
+			.pData = &value,
+		};
+		if (!create_pipeline_ex(pipes, format, vert, frag, names[i],
+				AZ_BLEND_OVER, &spec, &pipes->texture_decode[i])) {
+			avk_log(AVK_ERROR, "avk: decode variant %s did not compile; "
+				"sources in that domain will render undecoded", names[i]);
+			pipes->texture_decode[i] = VK_NULL_HANDLE;
+		}
+	}
+	return true;
+}
+
 static bool create_pipeline(struct avk_pipelines *pipes, VkFormat format,
 		VkShaderModule vert, VkShaderModule frag, const char *name,
 		VkPipeline *out) {
 	return create_pipeline_ex(pipes, format, vert, frag, name, AZ_BLEND_OVER,
-		out);
+		NULL, out);
 }
 
 static bool create_sampler(struct avk_device *dev, VkFilter filter,
@@ -331,13 +381,14 @@ bool avk_pipelines_init(struct avk_pipelines *pipes, struct avk_device *dev,
 			&pipes->rect)
 		&& create_pipeline(pipes, format, vert, texture_frag, "texture",
 			&pipes->texture)
+		&& create_decode_variants(pipes, format, vert, texture_frag)
 		/* The same two shaders, blending off. Bit-exact for alpha-1 fragments
 		 * because AZ_BLEND_OVER's destination factor is (1 - srcAlpha) = 0
 		 * there; see the note on rect_opaque. */
 		&& create_pipeline_ex(pipes, format, vert, rect_frag, "rect_opaque",
-			AZ_BLEND_REPLACE, &pipes->rect_opaque)
+			AZ_BLEND_REPLACE, NULL, &pipes->rect_opaque)
 		&& create_pipeline_ex(pipes, format, vert, texture_frag,
-			"texture_opaque", AZ_BLEND_REPLACE, &pipes->texture_opaque)
+			"texture_opaque", AZ_BLEND_REPLACE, NULL, &pipes->texture_opaque)
 		&& create_pipeline(pipes, format, vert, gradient_frag, "gradient",
 			&pipes->gradient)
 		&& create_pipeline(pipes, format, vert, shadow_frag, "shadow",
@@ -346,12 +397,12 @@ bool avk_pipelines_init(struct avk_pipelines *pipes, struct avk_device *dev,
 		&& blur_soft_frag != VK_NULL_HANDLE
 		/* REPLACING, not blending -- see create_pipeline_ex(). */
 		&& create_pipeline_ex(pipes, format, vert, blur_down_frag, "blur_down",
-			AZ_BLEND_REPLACE, &pipes->blur_down)
+			AZ_BLEND_REPLACE, NULL, &pipes->blur_down)
 		&& create_pipeline_ex(pipes, format, vert, blur_up_frag, "blur_up",
-			AZ_BLEND_REPLACE, &pipes->blur_up)
+			AZ_BLEND_REPLACE, NULL, &pipes->blur_up)
 		/* The identical shader, clamped against its own destination. */
 		&& create_pipeline_ex(pipes, format, vert, blur_up_frag,
-			"blur_up_darken", AZ_BLEND_DARKEN, &pipes->blur_up_darken)
+			"blur_up_darken", AZ_BLEND_DARKEN, NULL, &pipes->blur_up_darken)
 		/* A composite, so it blends like every other composite. */
 		&& create_pipeline(pipes, format, vert, blur_soft_frag, "blur_soft",
 			&pipes->blur_soft);
@@ -415,6 +466,12 @@ void avk_pipelines_finish(struct avk_pipelines *pipes) {
 	if (pipes->texture_opaque != VK_NULL_HANDLE) {
 		vkDestroyPipeline(dev, pipes->texture_opaque, NULL);
 		AVK_LIVE_DEC(pipes->dev, pipelines);
+	}
+	for (int i = 0; i < AVK_DECODE_COUNT; i++) {
+		if (pipes->texture_decode[i] != VK_NULL_HANDLE) {
+			vkDestroyPipeline(dev, pipes->texture_decode[i], NULL);
+			AVK_LIVE_DEC(pipes->dev, pipelines);
+		}
 	}
 	if (pipes->blur_down != VK_NULL_HANDLE) {
 		vkDestroyPipeline(dev, pipes->blur_down, NULL);
@@ -499,6 +556,95 @@ static bool add_pool(struct avk_pipelines *pipes) {
 	return true;
 }
 
+/*
+ * Allocate and write one combined-image-sampler set for `view`.
+ *
+ * Shared by the plain and _SRGB accessors: the only difference between them is
+ * WHICH view is written, and duplicating a pool-growth path so that two callers
+ * can each get it subtly wrong is how descriptor bugs are made.
+ */
+static VkDescriptorSet az_texture_set_for_view(struct avk_pipelines *pipes,
+		VkImageView view, bool linear) {
+	if (pipes->sets_left_in_current_pool == 0 && !add_pool(pipes)) {
+		return VK_NULL_HANDLE;
+	}
+	VkDescriptorSetAllocateInfo alloc = {
+		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+		.descriptorPool = pipes->pools[pipes->pool_count - 1],
+		.descriptorSetCount = 1,
+		.pSetLayouts = &pipes->texture_set_layout,
+	};
+	VkDescriptorSet set = VK_NULL_HANDLE;
+	VkResult res = vkAllocateDescriptorSets(pipes->dev->dev, &alloc, &set);
+	if (res != VK_SUCCESS) {
+		avk_check(res, "vkAllocateDescriptorSets");
+		return VK_NULL_HANDLE;
+	}
+	pipes->sets_left_in_current_pool--;
+
+	VkDescriptorImageInfo image_info = {
+		.sampler = linear ? pipes->linear : pipes->nearest,
+		.imageView = view,
+		.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+	};
+	VkWriteDescriptorSet write = {
+		.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+		.dstSet = set,
+		.dstBinding = 0,
+		.descriptorCount = 1,
+		.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		.pImageInfo = &image_info,
+	};
+	vkUpdateDescriptorSets(pipes->dev->dev, 1, &write, 0, NULL);
+	return set;
+}
+
+VkDescriptorSet avk_pipelines_texture_set_srgb(struct avk_pipelines *pipes,
+		struct avk_image *image, bool linear) {
+	/*
+	 * M5/C7. Sampling through the _SRGB view: the hardware performs the sRGB
+	 * EOTF on every fetch, so a source in that encoding arrives linear with no
+	 * shader work at all. ADR-005's fast path.
+	 *
+	 * REFUSES RATHER THAN GUESSES. An image not created MUTABLE with this
+	 * format in its view list cannot legally have such a view -- that is
+	 * undefined behaviour, not a failed call, and validation will not
+	 * necessarily say so. Returning NULL costs the caller the fast path and
+	 * nothing else; it falls back to decoding in the shader.
+	 */
+	if (!image->srgb_mutable || image->format_srgb == VK_FORMAT_UNDEFINED) {
+		return VK_NULL_HANDLE;
+	}
+	uint32_t slot = linear ? 1 : 0;
+	if (image->sampler_set_srgb[slot] != VK_NULL_HANDLE) {
+		return image->sampler_set_srgb[slot];
+	}
+	if (image->view_srgb == VK_NULL_HANDLE) {
+		VkImageViewCreateInfo vi = {
+			.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+			.image = image->image,
+			.viewType = VK_IMAGE_VIEW_TYPE_2D,
+			.format = image->format_srgb,
+			.subresourceRange = {
+				.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+				.levelCount = 1,
+				.layerCount = 1,
+			},
+		};
+		VkResult res = vkCreateImageView(pipes->dev->dev, &vi, NULL,
+			&image->view_srgb);
+		if (res != VK_SUCCESS) {
+			avk_check(res, "vkCreateImageView (_SRGB)");
+			return VK_NULL_HANDLE;
+		}
+		AVK_LIVE_INC(pipes->dev, image_views);
+	}
+	VkDescriptorSet set = az_texture_set_for_view(pipes, image->view_srgb,
+		linear);
+	image->sampler_set_srgb[slot] = set;
+	return set;
+}
+
 VkDescriptorSet avk_pipelines_texture_set(struct avk_pipelines *pipes,
 		struct avk_image *image, bool linear) {
 	uint32_t slot = linear ? 1 : 0;
@@ -527,39 +673,7 @@ VkDescriptorSet avk_pipelines_texture_set(struct avk_pipelines *pipes,
 		AVK_LIVE_INC(pipes->dev, image_views);
 	}
 
-	if (pipes->sets_left_in_current_pool == 0 && !add_pool(pipes)) {
-		return VK_NULL_HANDLE;
-	}
-
-	VkDescriptorSetAllocateInfo alloc = {
-		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-		.descriptorPool = pipes->pools[pipes->pool_count - 1],
-		.descriptorSetCount = 1,
-		.pSetLayouts = &pipes->texture_set_layout,
-	};
-	VkDescriptorSet set = VK_NULL_HANDLE;
-	VkResult res = vkAllocateDescriptorSets(pipes->dev->dev, &alloc, &set);
-	if (res != VK_SUCCESS) {
-		avk_check(res, "vkAllocateDescriptorSets");
-		return VK_NULL_HANDLE;
-	}
-	pipes->sets_left_in_current_pool--;
-
-	VkDescriptorImageInfo image_info = {
-		.sampler = linear ? pipes->linear : pipes->nearest,
-		.imageView = image->view,
-		.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-	};
-	VkWriteDescriptorSet write = {
-		.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-		.dstSet = set,
-		.dstBinding = 0,
-		.descriptorCount = 1,
-		.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-		.pImageInfo = &image_info,
-	};
-	vkUpdateDescriptorSets(pipes->dev->dev, 1, &write, 0, NULL);
-
+	VkDescriptorSet set = az_texture_set_for_view(pipes, image->view, linear);
 	image->sampler_set[slot] = set;
 	return set;
 }
