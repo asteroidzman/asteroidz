@@ -18,14 +18,18 @@
 #   overview vignettes         5 stops, linear, blend, origin {0.5, 0.5},
 #                              degrees 90 and 0, corner radii 18
 #
-# This uses the VIGNETTE. The border cannot be captured at all: setting
-# `border_gradient 1` makes the compositor unresponsive within seconds --
-# client_set_border_fill() calls wlr_scene_rect_set_gradient() with no dirty
-# check, which damages the border node every tick, which schedules another
-# frame, which ticks again. The event loop never returns to its clients: grim
-# and amsg both time out, and the heap grows about 54 MB/s. It reproduces on
-# BOTH renderers and on a pre-M4C build, so it is not a gradient-rendering bug
-# and it is not fixed here -- see docs/avk-effects.md.
+# This uses the VIGNETTE, and the border is covered SEPARATELY by
+# contrib/avk-gradient-border-test.sh.
+#
+# It used to say the border could not be captured at all, and that was true when
+# it was written: `border_gradient 1` made the compositor unresponsive within
+# seconds, because client_set_border_fill() called wlr_scene_rect_set_gradient()
+# with no dirty check from the per-frame path, so the border node re-damaged
+# itself forever -- ~54 MB/s of heap, and grim and amsg both timing out. That is
+# fixed in subprojects/asteroidz-scenefx (an identical write no longer damages
+# the node) and the border became testable; the note stayed behind and this
+# suite went on reporting 0/0 with no coverage claimed. See the border fixture
+# for what is asserted now, including a falsifier that restores the storm.
 #
 # The vignette is the better fixture anyway: five stops rather than two, two
 # angles, and rounded corners composed on top.

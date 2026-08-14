@@ -62,6 +62,7 @@ avk-damage-test.sh                 required
 avk-dither-domain-test.sh          required
 avk-dmabuf-feedback-test.sh        required
 avk-frame-test.sh                  required
+avk-gradient-border-test.sh        required
 avk-gradient-crossoutput-test.sh   required
 avk-gradient-test.sh               required
 avk-graph-test.sh                  required

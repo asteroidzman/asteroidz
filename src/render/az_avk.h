@@ -5298,6 +5298,28 @@ static void az_avk_stats_reset(void) {
 		ts->acquires = 0;
 		ts->reuses = 0;
 		ts->retires = 0;
+		/*
+		 * THE GRADIENT DRAW COUNTERS, which were not being reset and are
+		 * per-interval in every way that matters.
+		 *
+		 * `gradient_draws` beside `frames` is precisely the two-time-bases
+		 * error the note above warns about: the border fixture read
+		 * `frames=0 draws=24` and could not tell "it drew 24 times just now"
+		 * from "it drew 24 times at startup and has been idle since". A
+		 * livelock test built on that difference cannot be built on a counter
+		 * that does not have it.
+		 *
+		 * The BUFFER gauges go too, for the same reason the transient pool
+		 * keeps `creates`: uploads, reuses and grows are events in an
+		 * interval, not state. Capacity and the slots themselves are state and
+		 * are not touched.
+		 */
+		struct avk_gradient_stats *gs =
+			&avk.renderers[i].renderer.gradients.stats;
+		gs->draws = gs->linear_draws = gs->conic_draws = 0;
+		gs->colors_processed = 0;
+		gs->buffer_uploads = gs->buffer_upload_bytes = 0;
+		gs->buffer_reuses = gs->buffer_grows = 0;
 	}
 	avk.frames = 0;
 	avk.fallback_frames = 0;
