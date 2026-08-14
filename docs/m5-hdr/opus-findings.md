@@ -425,3 +425,61 @@ variants cannot be exercised without a device, and C1–C6's isolated work is
 what the rest of M5 is built on. The decode ordering it must implement is
 already pinned by the CPU reference and by gate 2, so when it is written there
 is an oracle waiting for it.
+
+---
+
+## F11 — Path A is an 8-BIT path, and the audit's UNKNOWN is closed (C5)
+
+The audit left one UNKNOWN: can the swapchain image be created MUTABLE with an
+`_SRGB` view usable as a colour attachment, **for the modifiers KMS actually
+selects**? C5's contract says to record the observed value from the live GPU
+when first run, because the modifier is a per-output runtime choice.
+
+**It is not a per-output question on this GPU, or on any device.** Run at
+DEBUG, the probe reports `scanout_srgb_attachment=20 of 70 render pairs`, and
+the 20 fall out along one axis only:
+
+| format | Path-A-capable render modifiers |
+|---|---|
+| `AR24` `XR24` `AB24` `XB24` (8-bit) | **5 of 5** |
+| `AR30` `XR30` `AB30` `XB30` (10-bit) | 0 of 5 |
+| `AB48` `XB48` `AB4H` `XB4H` `RG16` (FP16) | 0 of 6 |
+
+Every 8-bit format supports it on **every** modifier the device advertises for
+render — LINEAR, `GFX9,64KB_S`, and the three `GFX10_RBPLUS` tilings including
+the DCC pair. So whichever modifier KMS picks for an 8-bit scanout buffer, the
+answer is yes; and for a 10-bit or FP16 buffer the answer is no regardless.
+
+**The reason is in the Vulkan format enumeration, not in this driver.**
+`avk_drm_format.c` maps `DRM_FORMAT_ARGB2101010` and the FP16 formats to
+`VK_FORMAT_UNDEFINED` for `vk_srgb` because **there is no sRGB variant of a
+10-bit or half-float Vulkan format** — sRGB variants exist only at 8 bits per
+channel. `avk_scanout_srgb_attach_ok()` is therefore false by construction
+there, and would be on any conformant implementation.
+
+### What this means for the ADRs
+
+**Path A and Path B are not a device-capability split. They are an 8-bit /
+deep-colour split, and it is decided by the output's bit depth.**
+
+- An 8-bit SDR output: Path A is available, unconditionally.
+- A 10-bit output: Path B, always. **Including a 10-bit SDR output**, which is
+  a configuration a user can select without asking for HDR at all.
+- An HDR output: 10-bit or FP16 by definition, therefore Path B, always.
+
+The last two are worth stating plainly because the ADRs discuss Path A/B as
+though the capability probe might go either way per machine. It cannot. The
+probe stays — a device that advertises no 8-bit render modifier at all would
+still be caught, and answering false costs Path A and nothing else — but the
+per-output `scanout_srgb_view_ok` call now has a predictable answer and should
+not be described as an unknown.
+
+**Consequence for C6/ADR-012 sizing.** If a 10-bit SDR output is on Path B,
+then the intermediate target and the FP16 blur transients are not an
+HDR-only cost — they are the cost of any deep-colour output. The M4I background
+blur cache (C8) sits behind that decision too: two output-resolution images per
+output, 66.4 MB at 4 bytes on DP-1 and 132.7 MB at 8. Whoever sizes Path B
+should know that turning on 10-bit SDR doubles it.
+
+Measured headlessly on the same physical GPU the session uses; no live install
+required, which is why this closed without one.
