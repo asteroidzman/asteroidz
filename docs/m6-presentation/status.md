@@ -73,3 +73,46 @@ stretched VRR panel, and no constant removes it.
 sustained load. That is the first frame of an animation started from a
 stretched panel. Whether it is *visible* is a question for the live quality
 pass, not for a tighter constant.
+
+## ADR-611's enforcement half: the evidence, and why it is a product call
+
+The derivation half landed (`anim_eval_at`). The enforcement half — each output
+evaluating the trajectory at its *own* instant instead of sharing one box —
+was measured before being built, and the measurement says it is a trade rather
+than a fix.
+
+**The skew is bounded and real.** Per-output target instants during an
+animation, both outputs driven:
+
+```
+  skew between targets   median 4.80ms   p95 13.17ms   max 15.05ms
+  window speed           4.04 px/ms
+  implied disagreement   median 19.4px   p95 53.2px    max 60.8px
+```
+
+The max sits just under HDMI-A-1's 16.67 ms period, which is the theoretical
+bound — a measurement agreeing with its own bound is what says it is measuring
+the right thing. The first attempt reported 72 ms median and 362 ms max, which
+is impossible; it was measuring the *staleness* of an output that M4G had
+correctly declined to wake, not a skew.
+
+**It affects straddling windows only.** The worry that a single-output window
+is ticked with the other output's instant — `rendermon` walks every client on
+every output's pass with no monitor filter — does not materialise: M4G's frame
+reach means the other output is never woken by motion it cannot see, so it
+never ticks the client at all. Measured: **0 backward steps** across 105 moves
+on one output and 121 on two. A monotone trajectory sampled at monotone
+instants cannot go backwards, so a non-monotonic step would have been the
+defect showing itself. There is none.
+
+**And the error does not disappear either way.** Today both screens draw the
+same box and one of them is up to ~61 px stale for its own presentation
+instant. Enforced, each screen is correct for itself and they disagree by that
+much at the seam. Same magnitude; lag traded for disagreement.
+
+So the decision is: *is up to 61 px of seam disagreement during a fast tag
+switch preferable to up to 61 px of temporal lag on one of the two screens?*
+ADR-607 rules the disagreement legitimate. It is still a visible change on
+adjacent monitors, and "no new cross-output artifacts" is an operator
+judgement rather than a measurement — so it is left un-enforced with the
+evidence recorded, not deferred for lack of effort.

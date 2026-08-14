@@ -177,6 +177,7 @@ static uint64_t az_presenter_arm(Monitor *m, uint64_t now_ns) {
 	}
 
 	p->armed_target_ns = target;
+	p->last_target_ns = target;
 	p->armed_at_ns = now_ns;
 	return target;
 }

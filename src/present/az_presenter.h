@@ -139,6 +139,16 @@ struct az_presenter {
 
 	uint64_t armed_target_ns;  /* 0 == nothing armed */
 	uint64_t armed_at_ns;
+	/*
+	 * The last target this output aimed at, kept for OBSERVATION only.
+	 *
+	 * armed_target_ns is cleared when the frame commits -- 0 genuinely means
+	 * "nothing armed", and accessors depend on that. But it also makes the
+	 * target invisible to anything asking between frames, which is every
+	 * external observer. This copy is never cleared and is never read by the
+	 * predictor.
+	 */
+	uint64_t last_target_ns;
 
 	struct az_present_inflight inflight[AZ_PRESENT_INFLIGHT];
 

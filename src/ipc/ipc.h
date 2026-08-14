@@ -842,6 +842,16 @@ static void handle_command(int client_fd, const char *cmd_raw) {
 				(double)az_presenter_period_ns(pm) / 1e3);
 			cJSON_AddNumberToObject(pr, "t_pipe_us",
 				(double)ps->t_pipe_ns / 1e3);
+			/* The instant THIS output's current pass is aiming at. Two outputs
+			 * animating one window aim at different instants, and the gap
+			 * between them times the window's speed is how far apart
+			 * per-output evaluation would place it on each screen -- the
+			 * quantity that decides whether enforcing ADR-611 is a correctness
+			 * nicety or a visible seam. */
+			cJSON_AddNumberToObject(pr, "armed_target_us",
+				(double)ps->last_target_ns / 1e3);
+			cJSON_AddNumberToObject(pr, "last_present_us",
+				(double)ps->last_present_ns / 1e3);
 			cJSON_AddNumberToObject(pr, "accepted",
 				(double)ps->presents_accepted);
 			cJSON_AddNumberToObject(pr, "discarded_pre_epoch",
