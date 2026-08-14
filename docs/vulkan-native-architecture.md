@@ -2781,6 +2781,13 @@ exactly what it was written for and nothing is being silently reinterpreted.
 | intermediates | **2**, one per output |
 | VUID / SYNC-HAZARD, whole boot | **0** |
 | waits / lifecycle / fallback | 0 / 0 / 0 |
+| teardown census | **all zero**, every object class |
+
+The teardown matters more here than on Path A: it is the first time the two
+whole-output FP16 intermediates, their views and memory, and the lazily
+compiled encode pipeline and its layout have ever been destroyed — 84 MB of
+images plus a 168 MB blur cache — and every class came back zero under a
+validation layer that would have reported a leak or a double destroy.
 
 `compiles` staying at 1 is the one that mattered: a pipeline compile on the
 frame path is a millisecond-scale stall that no timing percentile can tell from
