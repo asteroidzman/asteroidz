@@ -20,6 +20,7 @@
 #include "common/corner_location.h"
 /* Early, because the animation and overview code below asks what buffer a
  * surface is showing and must not answer it with a renderer wrapper. */
+#include "render/az_output_color.h"
 #include "render/az_surface.h"
 #include <signal.h>
 #include <stdbool.h>
@@ -958,6 +959,19 @@ struct Monitor {
 	bool hdr_capability_failed;
 	int32_t bitdepth;
 	float hdr_max_luminance, hdr_min_luminance, hdr_max_fall;
+	/*
+	 * M5/C3. The derived colour state for this output: which path it takes,
+	 * the encode transfer function, the primaries+saturation matrix, the scene
+	 * reference and the tone map's ceiling.
+	 *
+	 * DERIVED, NEVER SET DIRECTLY. mon_state_apply_color() is the only writer,
+	 * and it recomputes the whole struct from the state it is about to commit
+	 * -- so there is no partial update and no field that can go stale on its
+	 * own. Nothing renders from it yet (C6/C7 wire that), which is deliberate:
+	 * having it observable BEFORE anything reads it is what lets the model be
+	 * checked against real outputs while a wrong answer still costs nothing.
+	 */
+	struct az_output_color_state color_state;
 	struct wlr_color_transform *icc_transform;
 	char icc_path[256];
 	struct wlr_scene_optimized_blur *blur;
@@ -5343,6 +5357,70 @@ static Client *mon_hdr_scanout_candidate(Monitor *m) {
  * (bitdepth:10 rule, implied by HDR to avoid PQ banding) and an optional
  * HDR mode (BT.2020 primaries with the PQ transfer function). Falls back
  * gracefully when the output or backend refuses. */
+/*
+ * ── M5/C3: DERIVE THE OUTPUT'S COLOUR STATE ───────────────────────────────
+ *
+ * SEPARATE FROM mon_state_apply_color(), AND CALLED FOR EVERY OUTPUT.
+ *
+ * That function is skipped for headless/virtual outputs because COMMITTING
+ * HDR and colour state to something with no real connector can fail the commit
+ * or crash. Deriving a struct cannot. Folding the derivation in there left
+ * every virtual output with a zero-initialised colour state -- which reads as
+ * Path A with ref_nits 0 and peak_scene 0, a poison value that a consumer
+ * would divide by -- and, incidentally, made the whole thing invisible to the
+ * headless fixtures, which is how it was found.
+ *
+ * Called at the END of a state build, because everything before it can still
+ * change the answer: `m->hdr` may have just been refused, and the render
+ * format may have just fallen back from 10-bit to 8-bit.
+ *
+ * NOTHING RENDERS FROM THIS YET. It is derived and logged so the model can be
+ * checked against real outputs -- including live HDR transitions -- before any
+ * pixel depends on it being right.
+ */
+static void mon_derive_color_state(Monitor *m,
+		const struct wlr_output_state *state) {
+	struct wlr_output *wlr_output = m->wlr_output;
+	/*
+	 * The format comes from the STATE when the state carries one and from the
+	 * live output otherwise: mon_state_apply_color() only sets it when it
+	 * DIFFERS, so an unchanged 10-bit output has no format in its state and
+	 * would otherwise be derived as 8-bit.
+	 */
+	uint32_t fmt = (state != NULL
+			&& (state->committed & WLR_OUTPUT_STATE_RENDER_FORMAT))
+		? state->render_format : wlr_output->render_format;
+	struct az_output_desc desc = {
+		.bits_per_channel = (fmt == DRM_FORMAT_XRGB2101010
+			|| fmt == DRM_FORMAT_ARGB2101010) ? 10 : 8,
+		.hdr = m->hdr != 0,
+		.has_icc = m->icc_transform != NULL,
+		.hdr_max_nits = m->hdr_max_luminance,
+		.scene_ref_nits = config.sdr_reference_luminance,
+		.sdr_saturation = config.sdr_saturation,
+		/* Per FORMAT, not per modifier: a modifier belongs to a swapchain
+		 * buffer and is not known here, and F11 established the answer does
+		 * not vary by modifier. False whenever AVK is not the renderer, which
+		 * is correct -- Path A is an AVK path. */
+		.scanout_srgb_view_ok = az_avk_scanout_srgb_format_ok(fmt),
+	};
+	struct az_output_color_state prev = m->color_state;
+	m->color_state = az_output_color_derive(&desc);
+	if (prev.path != m->color_state.path
+			|| prev.encode_tf != m->color_state.encode_tf
+			|| prev.ref_nits != m->color_state.ref_nits
+			|| prev.peak_scene != m->color_state.peak_scene) {
+		wlr_log(WLR_INFO, "M5 color: %s path=%s tf=%s %dbpc ref=%.0f "
+			"peak_scene=%.3f dither_q=%.5f srgb_view=%d",
+			wlr_output->name,
+			az_output_path_name(m->color_state.path),
+			az_tf_name(m->color_state.encode_tf),
+			desc.bits_per_channel, m->color_state.ref_nits,
+			m->color_state.peak_scene, m->color_state.dither_q,
+			(int)desc.scanout_srgb_view_ok);
+	}
+}
+
 void mon_state_apply_color(Monitor *m, struct wlr_output_state *state) {
 	struct wlr_output *wlr_output = m->wlr_output;
 
@@ -5457,6 +5535,7 @@ void mon_state_apply_color(Monitor *m, struct wlr_output_state *state) {
 	 * check). The real commit right after this call is the actual
 	 * source of truth; its caller falls back to a retrain on failure. */
 }
+
 
 void createmon(struct wl_listener *listener, void *data) {
 	/* This event is raised by the backend when a new output (aka a display or
@@ -5620,6 +5699,8 @@ void createmon(struct wl_listener *listener, void *data) {
 	 * state, it can crash or fail the commit */
 	if (!wlr_output_is_headless(wlr_output))
 		mon_state_apply_color(m, &state);
+	/* EVERY output, virtual ones included -- see mon_derive_color_state(). */
+	mon_derive_color_state(m, &state);
 	if (!wlr_output_commit_state(wlr_output, &state)) {
 		/* A rejected initial commit is not survivable if ignored, and it was
 		 * ignored: the output stays !enabled, and the very next updatemons --
@@ -7883,6 +7964,7 @@ static int monitor_retrain_step(void *data) {
 		if (m->retrain_restore_mode)
 			wlr_output_state_set_mode(&state, m->retrain_restore_mode);
 		mon_state_apply_color(m, &state);
+		mon_derive_color_state(m, &state);
 		wlr_output_commit_state(m->wlr_output, &state);
 		m->retrain_phase = 0;
 		m->retrain_restore_mode = NULL;
@@ -8262,6 +8344,7 @@ static void render_monitor(Monitor *m) {
 		 * guaranteed failure plus a retrain. */
 		state.allow_reconfiguration = true;
 		mon_state_apply_color(m, &state);
+		mon_derive_color_state(m, &state);
 		struct az_frame_options frame_options = {
 			.color_transform = m->hdr ? NULL : m->icc_transform,
 		};

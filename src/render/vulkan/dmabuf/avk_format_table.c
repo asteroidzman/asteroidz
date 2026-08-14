@@ -339,6 +339,39 @@ bool avk_format_table_scanout_srgb_ok(const struct avk_format_table *table,
 	return mod != NULL && mod->srgb_attachment;
 }
 
+bool avk_format_table_scanout_srgb_format_ok(
+		const struct avk_format_table *table, uint32_t fourcc) {
+	/*
+	 * THE SAME QUESTION WITHOUT THE MODIFIER, and it is answerable because the
+	 * answer does not depend on one -- see F11 in opus-findings.md.
+	 *
+	 * The per-modifier form above is the contract, but a modifier is a property
+	 * of the swapchain buffer and is not known where an output's colour state
+	 * is derived. Measured on this device: every 8-bit format supports the
+	 * _SRGB attachment view on EVERY render modifier it advertises, and no
+	 * 10-bit or half-float format supports it on any -- because Vulkan has no
+	 * sRGB variant of those formats at all. That is a property of the format
+	 * enumeration, not of a driver, so it holds anywhere.
+	 *
+	 * ALL, not ANY. Should some device ever disagree across its own modifiers,
+	 * this returns false and costs Path A -- the same safe direction an unknown
+	 * format takes.
+	 */
+	if (table == NULL) {
+		return false;
+	}
+	const struct avk_format_caps *caps = avk_format_table_find(table, fourcc);
+	if (caps == NULL || caps->render_mod_count == 0) {
+		return false;
+	}
+	for (uint32_t i = 0; i < caps->render_mod_count; i++) {
+		if (!caps->render_mods[i].srgb_attachment) {
+			return false;
+		}
+	}
+	return true;
+}
+
 void avk_format_table_log(const struct avk_format_table *table) {
 	/* M5/C5: how many render modifiers could carry Path A. Counted rather
 	 * than listed, because the number is the headline -- a zero here means

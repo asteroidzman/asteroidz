@@ -56,6 +56,16 @@ enum az_output_path {
 	AZ_OUTPUT_PATH_FALLBACK,
 };
 
+/* For logs and test output. Not a parser: nothing reads these back. */
+static inline const char *az_output_path_name(enum az_output_path p) {
+	switch (p) {
+	case AZ_OUTPUT_PATH_A_DIRECT_SRGB: return "A-direct-srgb";
+	case AZ_OUTPUT_PATH_B_ENCODE:      return "B-encode";
+	case AZ_OUTPUT_PATH_FALLBACK:      return "fallback";
+	}
+	return "?";
+}
+
 /* wlroots' default when a display declares no peak (frog-color-management.h:211
  * uses the same number). Only ever consulted for an HDR output. */
 #define AZ_HDR_DEFAULT_PEAK_NITS 1000.0f

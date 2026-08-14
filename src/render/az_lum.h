@@ -51,6 +51,19 @@ enum az_tf {
 	AZ_TF_COUNT,
 };
 
+/* For logs and test output. Not a parser: nothing reads these back. */
+static inline const char *az_tf_name(enum az_tf tf) {
+	switch (tf) {
+	case AZ_TF_SRGB:       return "srgb";
+	case AZ_TF_GAMMA22:    return "gamma2.2";
+	case AZ_TF_BT1886:     return "bt1886";
+	case AZ_TF_PQ:         return "pq";
+	case AZ_TF_LINEAR_EXT: return "linear-ext";
+	case AZ_TF_COUNT:      break;
+	}
+	return "?";
+}
+
 enum az_primaries {
 	AZ_PRIM_BT709 = 0,
 	AZ_PRIM_BT2020,

@@ -108,6 +108,20 @@ const struct avk_modifier_caps *avk_format_caps_find_modifier(
 bool avk_format_table_scanout_srgb_ok(const struct avk_format_table *table,
 	uint32_t fourcc, uint64_t modifier);
 
+/*
+ * The same question with no modifier in hand: true only if EVERY render
+ * modifier this format advertises can carry the _SRGB attachment view.
+ *
+ * It exists because a modifier belongs to a swapchain buffer and is not known
+ * where an output's colour state is derived — and because the answer turns out
+ * not to need one. See F11: on this device every 8-bit format answers yes on
+ * every modifier and no 10-bit or half-float format answers yes on any, since
+ * Vulkan has no sRGB variant of those formats. ALL rather than ANY, so a device
+ * that disagreed with itself would fall back to Path B rather than guess.
+ */
+bool avk_format_table_scanout_srgb_format_ok(
+	const struct avk_format_table *table, uint32_t fourcc);
+
 /* The full table at DEBUG, a summary at INFO. */
 void avk_format_table_log(const struct avk_format_table *table);
 

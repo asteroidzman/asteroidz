@@ -1130,6 +1130,21 @@ static struct az_avk_renderer_slot *az_avk_renderer_for(VkFormat format) {
  * which is no use for one we are about to render into -- so allocating one
  * would produce a buffer AVK cannot attach.
  */
+/*
+ * M5/C3 input: can an output rendering into `fourcc` composite scene-linearly
+ * through an _SRGB attachment view -- i.e. does Path A exist for it?
+ *
+ * FALSE WHEN AVK IS NOT THE RENDERER, and that is the right answer rather than
+ * a missing one: Path A is an AVK path, so an output on the SceneFX renderer
+ * does not have one to take.
+ */
+static bool az_avk_scanout_srgb_format_ok(uint32_t fourcc) {
+	if (!avk.active) {
+		return false;
+	}
+	return avk_format_table_scanout_srgb_format_ok(&avk.importer.table, fourcc);
+}
+
 static bool az_avk_pick_format(struct wlr_output *output, uint32_t fourcc,
 		int width, int height, struct wlr_drm_format *out) {
 	const struct avk_format_caps *caps =
