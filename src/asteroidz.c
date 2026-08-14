@@ -9729,13 +9729,92 @@ void setup(void) {
 	 * functions the renderer can handle, so HDR clients can attach
 	 * parametric (e.g. BT.2020 + PQ) image descriptions */
 	{
+		/*
+		 * ── THE LIST DESCRIBES WHATEVER DECODES THE SURFACE ────────────────
+		 *
+		 * This is what a client may TAG ITS SURFACE WITH, so it has to describe
+		 * the renderer that will decode that surface. Derived from `drw` it
+		 * describes the wlroots compatibility renderer, which composites
+		 * nothing -- the startup log a few hundred lines above says so in as
+		 * many words: "protocols, allocation and screencopy only, no part of
+		 * composition".
+		 *
+		 * That was not a small inaccuracy. The wlroots renderer's list came
+		 * back EMPTY, so `wayland-info` reported no named transfer functions
+		 * and no named primaries at all and NO CLIENT COULD ATTACH AN IMAGE
+		 * DESCRIPTION OF ANY KIND. mpv would announce "transfer: pq,
+		 * primaries: bt.2020", fail to create it, tone-map its own HDR10 down
+		 * to SDR and hand over gamma2.2/BT.709 -- which the compositor then
+		 * re-encoded to PQ for the panel. AVK's PQ decode was unreachable for
+		 * that reason alone and nothing in the renderer could have fixed it.
+		 *
+		 * ── AND WHY THIS IS BUILT FROM wlroots ENUMS, NOT PROTOCOL ONES ────
+		 *
+		 * wlr_color_manager_v1_transfer_function_to_wlr() ABORTS when a
+		 * protocol value has no matching wlroots entry, and scenefx calls it on
+		 * whatever a client attaches (surface.c's surface_reconfigure). So
+		 * advertising a protocol value wlroots cannot map does not degrade --
+		 * it kills the compositor as soon as any client uses it, which at login
+		 * is immediately.
+		 *
+		 * Starting from wlroots' OWN enum values and mapping outward with
+		 * _from_wlr() (which has no such abort) makes that impossible by
+		 * construction: every value advertised came from a wlroots entry, so a
+		 * matching entry necessarily exists on the way back. The defensive
+		 * alternative -- calling _to_wlr() to check -- would be calling the
+		 * aborting function to find out whether it aborts.
+		 */
 		size_t cm_tf_len = 0, cm_primaries_len = 0;
-		enum wp_color_manager_v1_transfer_function *cm_tfs =
-			wlr_color_manager_v1_transfer_function_list_from_renderer(
+		enum wp_color_manager_v1_transfer_function *cm_tfs = NULL;
+		enum wp_color_manager_v1_primaries *cm_primaries = NULL;
+		enum wp_color_manager_v1_transfer_function avk_tfs[8];
+		enum wp_color_manager_v1_primaries avk_prims[4];
+		bool cm_owned = false;
+#ifdef AZ_HAVE_VULKAN
+		if (az_renderer == AZ_RENDERER_AVK) {
+			/*
+			 * Exactly the curves AVK has a decode variant for -- see
+			 * enum avk_decode_variant and texture.frag. EXT_LINEAR is
+			 * deliberately absent: AVK handles it correctly (a linear source
+			 * needs no EOTF, only the domain's scale) but it has no variant of
+			 * its own and therefore no test, and advertising a curve nothing
+			 * has measured is how a client is invited to send something that
+			 * comes out wrong.
+			 */
+			static const enum wlr_color_transfer_function avk_wlr_tfs[] = {
+				WLR_COLOR_TRANSFER_FUNCTION_SRGB,
+				WLR_COLOR_TRANSFER_FUNCTION_GAMMA22,
+				WLR_COLOR_TRANSFER_FUNCTION_BT1886,
+				WLR_COLOR_TRANSFER_FUNCTION_ST2084_PQ,
+			};
+			static const enum wlr_color_named_primaries avk_wlr_prims[] = {
+				WLR_COLOR_NAMED_PRIMARIES_SRGB,   /* the scene's own, BT.709 */
+				WLR_COLOR_NAMED_PRIMARIES_BT2020, /* converted at decode */
+			};
+			for (size_t i = 0; i < LENGTH(avk_wlr_tfs); i++) {
+				avk_tfs[cm_tf_len++] =
+					wlr_color_manager_v1_transfer_function_from_wlr(
+						avk_wlr_tfs[i]);
+			}
+			for (size_t i = 0; i < LENGTH(avk_wlr_prims); i++) {
+				avk_prims[cm_primaries_len++] =
+					wlr_color_manager_v1_primaries_from_wlr(avk_wlr_prims[i]);
+			}
+			cm_tfs = avk_tfs;
+			cm_primaries = avk_prims;
+			wlr_log(WLR_INFO, "color-management: advertising AVK's %zu transfer "
+					"functions and %zu primaries (the wlroots renderer "
+					"composites nothing and is not asked)",
+					cm_tf_len, cm_primaries_len);
+		}
+#endif
+		if (cm_tfs == NULL) {
+			cm_tfs = wlr_color_manager_v1_transfer_function_list_from_renderer(
 				drw, &cm_tf_len);
-		enum wp_color_manager_v1_primaries *cm_primaries =
-			wlr_color_manager_v1_primaries_list_from_renderer(
+			cm_primaries = wlr_color_manager_v1_primaries_list_from_renderer(
 				drw, &cm_primaries_len);
+			cm_owned = true;
+		}
 		const enum wp_color_manager_v1_render_intent cm_render_intents[] = {
 			WP_COLOR_MANAGER_V1_RENDER_INTENT_PERCEPTUAL,
 		};
@@ -9755,8 +9834,11 @@ void setup(void) {
 		};
 		color_manager = wlr_color_manager_v1_create(dpy, 2, &cm_options);
 		wlr_scene_set_color_manager_v1(scene, color_manager);
-		free(cm_tfs);
-		free(cm_primaries);
+		/* Only the renderer-derived lists are heap allocated. */
+		if (cm_owned) {
+			free(cm_tfs);
+			free(cm_primaries);
+		}
 
 		/* gamescope HDR passthrough: it can't use our wp-color-management
 		 * (needs six features, wlroots implements two), but its frog path

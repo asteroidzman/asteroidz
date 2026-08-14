@@ -3856,10 +3856,19 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 				pixman_region32_rectangles(
 					(pixman_region32_t *)&c->clip, &nrects);
 			}
-			wlr_log(WLR_ERROR, "cmd[%zu] %s dst=%d,%d %dx%d clip=%drects%s", i,
+			/* M5: the resolved luminance domain, on the dump line rather than
+			 * in a counter, because "which curve did THIS surface get" is a
+			 * per-command question and a total cannot answer it. A PQ client
+			 * whose domain came out sRGB is invisible in the totals -- every
+			 * other surface on the desktop is legitimately sRGB and swamps it. */
+			wlr_log(WLR_ERROR, "cmd[%zu] %s dst=%d,%d %dx%d clip=%drects%s"
+				" lum[tf=%s prim=%s scale=%.3f peak=%.3f]", i,
 				(int)c->type < 4 ? kind[c->type] : "?",
 				c->dst.x, c->dst.y, c->dst.width, c->dst.height, nrects,
-				c->type == AVK_CMD_BLUR ? " (blur)" : "");
+				c->type == AVK_CMD_BLUR ? " (blur)" : "",
+				az_tf_name(c->lum.tf),
+				c->lum.primaries == AZ_PRIM_BT2020 ? "2020" : "709",
+				(double)c->lum.scale, (double)c->lum.content_peak);
 		}
 		/* One frame, whichever way it was asked for. Every output renders its
 		 * own frame, so this fires for the first one only -- which is what a
