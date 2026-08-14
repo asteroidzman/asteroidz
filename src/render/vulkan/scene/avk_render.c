@@ -115,7 +115,6 @@ bool avk_renderer_init(struct avk_renderer *renderer, struct avk_device *dev,
 	renderer->break_shadow_no_dither =
 		getenv("AZ_SHADOW_NO_DITHER") != NULL;
 	renderer->break_no_occlusion = getenv("AZ_AVK_NO_OCCLUSION") != NULL;
-	renderer->opaque_noblend = getenv("AZ_AVK_OPAQUE_NOBLEND") != NULL;
 	renderer->break_occlude_all = getenv("AZ_AVK_OCCLUDE_ALL") != NULL;
 	if (renderer->break_occlude_all) {
 		avk_log(AVK_ERROR, "M4H break switch active: EVERY command is treated "
@@ -807,44 +806,6 @@ static bool avk_render_reserve_regions(struct avk_renderer *renderer,
 	return true;
 }
 
-/*
- * Is EVERY fragment of this command's footprint alpha 1?
- *
- * Stricter than az_cmd_opaque_region() below, and the difference is the whole
- * reason this is a separate function rather than a shared helper. That one
- * answers "which pixels does this command definitely cover", and handles a
- * rounded draw by insetting past the arcs. This one answers "may the whole
- * draw skip blending", and a pipeline is bound once for the draw -- there is
- * nothing to inset. So any corner radius, any interior cut-out, any coverage
- * that is not identically 1 disqualifies it.
- *
- * A false answer here costs a blend that was not needed. A true answer where
- * coverage is partial writes an antialiased edge straight over the
- * destination, which is a hard line down the side of every rounded window.
- */
-static bool az_cmd_fully_opaque(const struct avk_cmd *cmd) {
-	if (cmd->opacity < 1.0f || cmd->has_inner) {
-		return false;
-	}
-	for (int i = 0; i < 4; i++) {
-		if (cmd->corners[i] > 0.0f) {
-			return false;
-		}
-	}
-	switch (cmd->type) {
-	case AVK_CMD_TEXTURE:
-		/* has_alpha is the FORMAT's answer, and it is the same source of truth
-		 * the draw uses to force params[1] to 0 for the X formats. */
-		return cmd->image != NULL && !cmd->image->has_alpha;
-	case AVK_CMD_RECT:
-		return cmd->color[3] >= 1.0f
-			&& cmd->gradient.type == AVK_GRADIENT_NONE;
-	default:
-		/* A shadow is a falloff and a blur result may carry a soft edge or an
-		 * alpha of its own. Neither is opaque anywhere it matters. */
-		return false;
-	}
-}
 
 static bool az_cmd_opaque_region(const struct avk_renderer *renderer,
 		const struct avk_cmd *cmd,
@@ -1524,11 +1485,7 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 				pixman_region32_fini(&region);
 				continue;
 			}
-			want = (renderer->opaque_noblend && az_cmd_fully_opaque(cmd))
-				? pipes->texture_opaque : pipes->texture;
-			if (want == pipes->texture_opaque) {
-				renderer->stats.opaque_noblend_draws++;
-			}
+			want = pipes->texture;
 			/*
 			 * M5/C7. The decode variant this source's domain asks for.
 			 *
@@ -1592,11 +1549,7 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 				pipes->layout, 0, 1, &set, 0, NULL);
 			renderer->stats.surfaces++;
 		} else {
-			want = (renderer->opaque_noblend && az_cmd_fully_opaque(cmd))
-				? pipes->rect_opaque : pipes->rect;
-			if (want == pipes->rect_opaque) {
-				renderer->stats.opaque_noblend_draws++;
-			}
+			want = pipes->rect;
 			for (int c = 0; c < 3; c++) {
 				pc.color[c] = cmd->color[c] * cmd->color[3];
 			}

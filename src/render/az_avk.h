@@ -4420,7 +4420,7 @@ static cJSON *az_avk_stats_json(void) {
 
 	/* composition */
 	uint64_t surfaces = 0, rects = 0, submit_ns = 0, sync_waits = 0;
-	uint64_t opaque_noblend = 0, decode_draws = 0, srgb_segs = 0;
+	uint64_t decode_draws = 0, srgb_segs = 0;
 	uint64_t encode_draws = 0, encode_px = 0, encode_compiles = 0;
 	for (size_t i = 0; i < AZ_AVK_MAX_FORMATS; i++) {
 		if (!avk.renderers[i].used) {
@@ -4429,7 +4429,6 @@ static cJSON *az_avk_stats_json(void) {
 		const struct avk_renderer_stats *st = &avk.renderers[i].renderer.stats;
 		surfaces += st->surfaces;
 		rects += st->rects;
-		opaque_noblend += st->opaque_noblend_draws;
 		decode_draws += st->decode_draws;
 		srgb_segs += st->srgb_attach_segments;
 		encode_draws += st->encode_draws;
@@ -4442,10 +4441,6 @@ static cJSON *az_avk_stats_json(void) {
 	cJSON_AddNumberToObject(o, "fallback_frames", (double)avk.fallback_frames);
 	cJSON_AddNumberToObject(o, "surfaces", (double)surfaces);
 	cJSON_AddNumberToObject(o, "rects", (double)rects);
-	/* M4J. How many draws took the blend-free pipeline. Zero with the
-	 * experiment off, and zero WITH it on would mean the predicate matched
-	 * nothing -- two different readings that a timing delta alone conflates. */
-	cJSON_AddNumberToObject(o, "opaque_noblend_draws", (double)opaque_noblend);
 	/* M5/C7. The two halves of Path A, counted separately -- because "both are
 	 * on" has been an inference from a pixel error and needs to be a reading. */
 	cJSON_AddNumberToObject(o, "m5_decode_draws", (double)decode_draws);

@@ -79,7 +79,6 @@ avk-gles-floor.sh                  manual
 avk-final-matrix.sh                perf
 avk-graph-test.sh                  required
 avk-occlusion-test.sh              required
-avk-opaque-noblend-ab.sh           perf
 avk-oracle-test.sh                 required
 avk-rounded-alpha-test.sh          required
 avk-rounded-persist-test.sh        required

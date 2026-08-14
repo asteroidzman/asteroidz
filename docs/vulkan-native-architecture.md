@@ -2237,12 +2237,26 @@ blur's down and up passes — so every content and rect draw blends, including
 ones the renderer already proves opaque each frame for occlusion culling.
 Content is 21.3% of post.
 
-`AZ_AVK_OPAQUE_NOBLEND=1` (off by default) sends draws opaque over their WHOLE
-footprint to a blend-free pipeline. `az_cmd_fully_opaque()` is deliberately
+`AZ_AVK_OPAQUE_NOBLEND=1` (off by default) sent draws opaque over their WHOLE
+footprint to a blend-free pipeline. `az_cmd_fully_opaque()` was deliberately
 stricter than `az_cmd_opaque_region()`: that one handles a rounded draw by
 insetting the region it reports, and a pipeline bound once for the draw cannot
-inset anything. Headless: −0.25%, bit-exact. Retained for one live arm; delete
-if it does not clear 5%.
+inset anything. Headless: −0.25%, bit-exact.
+
+**DELETED, un-run.** It was kept for one live arm it never got. The bar was 5%
+for a simple optimisation and it measured a fortieth of that, so the live arm
+would have had to move it twenty-fold — and running it costs a session restart,
+which severs every client the user has open. Spending that to confirm a
+rejection is the wrong trade, and keeping an off-by-default second pipeline pair
+for every format is a standing cost paid for nothing: two pipelines, a predicate
+and a counter, all reachable only by an environment variable nobody sets.
+
+The reasoning survives here in case the question returns. What would revive it
+is evidence that the ROP's destination read is a measurable share of a real
+frame — which is a bandwidth question, and this GPU's headless clocks make
+bandwidth effects *understate* rather than overstate, so the headless −0.25% is
+not conclusive. It is, however, the only number there is, and the rule is to
+qualify winners rather than losers.
 
 **The pixel oracle was lying.** The first A/B reported 2,574 differing pixels.
 Two runs with byte-identical environments differ by the *same* 2,574 pixels in

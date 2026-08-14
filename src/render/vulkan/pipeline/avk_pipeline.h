@@ -111,27 +111,6 @@ struct avk_pipelines {
 	VkPipeline rect;
 	VkPipeline texture;
 	/*
-	 * M4J EXPERIMENT. The same two shaders with blending OFF, for draws that
-	 * are provably opaque over their whole footprint.
-	 *
-	 * BIT-EXACT, not an approximation. AZ_BLEND_OVER is premultiplied
-	 * (ONE, ONE_MINUS_SRC_ALPHA), so a fragment with alpha 1 already resolves
-	 * to exactly `src` -- the destination factor is zero. Replacing the blend
-	 * with a straight write for those draws cannot change a pixel; it removes
-	 * the ROP's read of a destination it was about to discard.
-	 *
-	 * `alpha 1 over the WHOLE footprint` is stricter than the occlusion
-	 * predicate next door in avk_render.c: a rounded draw has partial coverage
-	 * along its arcs, and az_cmd_opaque_region handles that by INSETTING the
-	 * region it reports. A pipeline is chosen per draw and cannot inset
-	 * anything, so anything with a corner radius is excluded here.
-	 *
-	 * Off unless AZ_AVK_OPAQUE_NOBLEND=1 -- see the measurement in
-	 * docs/vulkan-native-architecture.md before turning it on by default.
-	 */
-	VkPipeline rect_opaque;
-	VkPipeline texture_opaque;
-	/*
 	 * M5/C7. One texture pipeline per source decode, compiled from the one
 	 * texture.frag through a specialisation constant.
 	 *

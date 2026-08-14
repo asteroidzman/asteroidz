@@ -435,10 +435,6 @@ struct avk_renderer_stats {
 	uint64_t frames;
 	uint64_t surfaces;
 	uint64_t rects;
-	/* M4J experiment. Draws that took the blend-free pipeline because every
-	 * fragment was alpha 1. Reported so "the experiment did nothing" and "the
-	 * experiment did nothing useful" are different readings. */
-	uint64_t opaque_noblend_draws;
 	/* M5/C7. Draws that took a decode variant. Zero with decode off, and zero
 	 * WITH it on would mean no source asked for one -- two different readings
 	 * that a pixel comparison alone conflates. */
@@ -616,15 +612,6 @@ struct avk_renderer {
 	 * two builds are bit-identical and the culled one drew less".
 	 */
 	bool break_no_occlusion;
-	/*
-	 * M4J EXPERIMENT, OFF BY DEFAULT. AZ_AVK_OPAQUE_NOBLEND=1 sends draws that
-	 * are opaque over their whole footprint to a blend-free pipeline. Bit-exact
-	 * by construction -- premultiplied OVER with alpha 1 already resolves to
-	 * src -- so the oracle for it is "the framebuffer does not change", and the
-	 * only question it exists to answer is whether removing the ROP's read is
-	 * worth anything on this hardware.
-	 */
-	bool opaque_noblend;
 	/*
 	 * M5/C7. Select a decode variant from each source's luminance domain.
 	 *
