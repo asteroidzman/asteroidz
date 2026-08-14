@@ -2582,9 +2582,40 @@ reconstructs the node's own prefix and applies darken as a blend against that.
 Those are documented as different mechanisms, and 47 codes over most of the
 output is more than "documented as different" accounts for.
 
-That is an M4I question, not an M5 one, and it is written down here rather than
-chased: the oracle fixture no longer conflates it with damage, and nothing in
-M5.5 touches it.
+That is an M4I question, not an M5 one. It was measured far enough to be
+actionable and then left: the oracle fixture no longer conflates it with damage,
+and nothing in M5.5 touches it.
+
+**Split by cache kind**, capturing the scan-out buffer with `AZ_BLUR_CACHE=0`
+against `=1` on the same scene:
+
+| consumers | px differing | worst | bbox |
+|---|---|---|---|
+| shadows OFF — PLAIN only | 25,467 | 11 | the blur node's own box |
+| shadows ON — PLAIN + DARK | 573,358 | 26 | ~the whole output |
+
+**So it is not only the darken clamp.** PLAIN alone diverges, and in both cases
+the difference is confined to blurred regions.
+
+**The hypothesis, stated as one:** sampling PHASE rather than arithmetic. The
+cache holds `blur(background)` computed over the WHOLE OUTPUT from origin 0,0;
+the live path captures the node's prefix over the node's own box plus halo and
+blurs that. A dual-Kawase downsample grid is anchored to its attachment, so at
+level *k* the two paths sample on grids offset by the capture origin mod 2^k —
+and a blur of a crop is not the crop of a blur. The halo makes the interior's
+*input* complete; it cannot change the phase.
+
+If that is right, the divergence is inherent to having two paths rather than a
+defect in either, and the consequence worth caring about is a STEP: a consumer
+that switches between cached and live — on an invalidation, or a node falling
+back — moves by up to 26 codes in one frame.
+
+**What would settle it:** a consumer whose blur node covers the whole output at
+origin 0,0, which shares the cache's extent AND its phase, must then agree. The
+obvious attempt failed and is recorded so it is not repeated: `wlbgeffect` does
+not honour a fullscreen configure — its buffer stays 264x200 — so
+`toggle_fullscreen` moved the decorations and left the node alone, and both
+probes returned byte-identical numbers, which was the tell.
 
 ## 5.16 A suite that prints its own failures and exits 0
 
