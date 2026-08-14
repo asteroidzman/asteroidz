@@ -221,6 +221,20 @@ struct avk_blur_damage {
  * backwards, and demand never flows forwards.
  */
 
+/* The primitive classes AZ_AVK_SKIP_DRAW can suppress, and the classes the
+ * px_* counters are bucketed by. One enumeration for both so a class cannot be
+ * measured under one name and skipped under another. */
+enum avk_prim_class {
+	AVK_PRIM_CLEAR = 1u << 0,
+	AVK_PRIM_CONTENT = 1u << 1,
+	AVK_PRIM_SHADOW = 1u << 2,
+	AVK_PRIM_BORDER = 1u << 3,
+	AVK_PRIM_BLUR = 1u << 4,
+	AVK_PRIM_GRADIENT = 1u << 5,
+	AVK_PRIM_RECT = 1u << 6,
+	AVK_PRIM_ROUND = 1u << 7,   /* not a primitive: the coverage evaluation */
+};
+
 struct avk_renderer_stats {
 	/* M4A. Proof the rounded path is being taken at all, and how often it is
 	 * taken with corners that differ -- the case a single-radius
@@ -254,6 +268,46 @@ struct avk_renderer_stats {
 	uint64_t surfaces;
 	uint64_t rects;
 	uint64_t draws;          /* commands x damage rects */
+	/*
+	 * M4H. FRAGMENT AREA, BY PRIMITIVE CLASS, IN TWO BUCKETS.
+	 *
+	 * Draw COUNTS cannot tell an expensive frame from a cheap one: one shadow
+	 * over a 4K envelope and one shadow over a 200x100 window are both
+	 * `shadow_draws = 1`. These are the sum of the SCISSOR areas actually
+	 * submitted -- clip, interior cut-out and frame damage all already applied
+	 * -- so they are what the rasteriser was asked to shade, not what the scene
+	 * asked for.
+	 *
+	 * TWO BUCKETS BECAUSE A DECORATION IS RASTERISED TWICE. The output pass
+	 * composites the desktop; every blur chain first replays the scene prefix
+	 * behind its node into a capture target, through this same function. A
+	 * shadow that lies behind two blur nodes is shaded three times, and a
+	 * single total would report that as one large number with no way to see
+	 * which half of it is the blur's. `prefix` is every regional capture,
+	 * `out` is the output segment, and the discriminator is the segment's own
+	 * `load` flag -- the output preserves what it does not damage, a capture
+	 * target is written whole.
+	 *
+	 * The pair `shadow` / `shadow_env` is the point of the shadow fields: the
+	 * envelope is what a naive implementation would shade, the first is what
+	 * this one does, and their ratio is the answer to "is the shadow region
+	 * oversized". Same for `border` against `border_outer`.
+	 *
+	 * `target` is the attachment area, summed once per segment, so it is the
+	 * denominator for that bucket and nothing else.
+	 */
+	struct avk_prim_px {
+		uint64_t clear;        /* the background rect */
+		uint64_t content;      /* client textures */
+		uint64_t shadow;       /* scissored: envelope minus the caster */
+		uint64_t shadow_env;   /* the same shadows' full envelopes */
+		uint64_t border;       /* border annulus, scissored */
+		uint64_t border_outer; /* the same borders' full outer rects */
+		uint64_t blur_comp;    /* blur result composited back */
+		uint64_t rect;         /* solid rects that are not borders */
+		uint64_t gradient;     /* of which shaded by the gradient pipeline */
+		uint64_t target;       /* attachment area, once per segment */
+	} px_out, px_prefix;
 	uint64_t barriers;
 	uint64_t cpu_sync_waits; /* MUST stay 0 on the steady-state frame path */
 	/*
@@ -326,6 +380,55 @@ struct avk_renderer {
 	 * concentric halos on a flat backdrop.
 	 */
 	bool break_shadow_no_dither;
+	/*
+	 * M4H DIAGNOSTIC ATTRIBUTION MASK -- AZ_AVK_SKIP_DRAW.
+	 *
+	 * A comma-separated list of primitive classes whose vkCmdDraw is suppressed:
+	 * clear, content, shadow, border, blur, gradient, round. Everything else
+	 * about the frame is untouched -- the scene is built identically, the damage
+	 * is identical, every blur chain still runs, every transient is still
+	 * acquired, every barrier is still emitted. Only the rasterisation of that
+	 * class does not happen.
+	 *
+	 * THAT IS THE WHOLE POINT, and it is why this exists rather than the obvious
+	 * alternative of turning the feature off in the config. `shadow { enable 0 }`
+	 * removes a node, which changes the scene, which changes the damage, which
+	 * changes the blur source region and every downstream chain -- so the
+	 * measured difference would be a geometry difference wearing a shadow's name.
+	 * Suppressing the draw and nothing else is the only variant that isolates
+	 * fragment cost.
+	 *
+	 * `round` is the odd one out: it does not skip a draw, it forces every
+	 * radius to zero so the SDF early-outs. That measures the coverage
+	 * evaluation rather than the primitive.
+	 *
+	 * DIAGNOSTIC ONLY. Every one of these renders a visibly wrong desktop, and
+	 * none of them is a performance setting.
+	 */
+	uint32_t skip_draw;
+	/* AZ_AVK_CMD_DUMP=N: log the draw ledger for the first N segments, then
+	 * stop for good. `dump_seg` is the running segment number. */
+	uint32_t cmd_dump;
+	uint32_t dump_seg;
+	/*
+	 * M4H break -- AZ_AVK_NO_OCCLUSION=1 restores the pure painter's
+	 * algorithm: every command draws its whole damaged extent whether or not
+	 * something opaque covers it.
+	 *
+	 * This is the falsifier for the culling, and it is an unusual one because
+	 * the two builds must agree EXACTLY. An optimisation that changes a pixel
+	 * is a bug, so the test is not "the culled build looks right", it is "the
+	 * two builds are bit-identical and the culled one drew less".
+	 */
+	bool break_no_occlusion;
+	/* M4H break -- AZ_AVK_OCCLUDE_ALL=1: every command occludes, whatever its
+	 * alpha or shape. The over-culling failure the oracle must be able to
+	 * catch; see az_cmd_opaque_region(). */
+	bool break_occlude_all;
+	/* Per-segment draw regions, computed top-down. Grown, never freed per
+	 * frame; see avk_render_reserve_regions(). */
+	pixman_region32_t *region_scratch;
+	size_t region_scratch_len;
 	/*
 	 * M4F.2A.2 break. Replays [0, scene->len) into the prefix instead of
 	 * [0, k) -- the WHOLE scene, including everything drawn after the blur

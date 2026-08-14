@@ -4173,6 +4173,38 @@ static cJSON *az_avk_stats_json(void) {
 		}
 	}
 
+	/*
+	 * M4H. FRAGMENT AREA BY PRIMITIVE CLASS.
+	 *
+	 * Every draw counter above answers "did the path run". These answer "how
+	 * much of the screen did it run over", which is the only one of the two
+	 * that can explain a frame time. `px_output` is the denominator, summed
+	 * per composed segment, so px_total / px_output is the overdraw factor.
+	 *
+	 * px_shadow_env and px_border_outer are the same primitives measured
+	 * WITHOUT their interior cut-out, so the pair states how much of the naive
+	 * rectangle this renderer avoids -- and would catch a shadow whose
+	 * envelope had come loose from its window the way M4G's blur node had.
+	 */
+#define AZ_AVK_PX(bucket, field) \
+	cJSON_AddNumberToObject(o, "px_" #bucket "_" #field, \
+		(double)az_avk_renderer_stat_sum(offsetof(struct avk_renderer_stats, \
+			px_##bucket) + offsetof(struct avk_prim_px, field)))
+#define AZ_AVK_PX_BUCKET(bucket) \
+	AZ_AVK_PX(bucket, clear); \
+	AZ_AVK_PX(bucket, content); \
+	AZ_AVK_PX(bucket, shadow); \
+	AZ_AVK_PX(bucket, shadow_env); \
+	AZ_AVK_PX(bucket, border); \
+	AZ_AVK_PX(bucket, border_outer); \
+	AZ_AVK_PX(bucket, blur_comp); \
+	AZ_AVK_PX(bucket, rect); \
+	AZ_AVK_PX(bucket, gradient); \
+	AZ_AVK_PX(bucket, target)
+	AZ_AVK_PX_BUCKET(out);
+	AZ_AVK_PX_BUCKET(prefix);
+#undef AZ_AVK_PX_BUCKET
+#undef AZ_AVK_PX
 	cJSON_AddNumberToObject(o, "rounded_clip_draws",
 		(double)az_avk_renderer_stat_sum(offsetof(struct avk_renderer_stats,
 			rounded_clip_draws)));
@@ -4951,6 +4983,12 @@ static void az_avk_stats_reset(void) {
 			if (avk.renderers[i].used) {
 				struct avk_renderer *r = &avk.renderers[i].renderer;
 				r->stats = (struct avk_renderer_stats){0};
+				/* Re-arm the M4H draw ledger from here. The segment counter
+				 * is process-wide, so without this AZ_AVK_CMD_DUMP would be
+				 * exhausted by startup frames long before a fixture reached
+				 * the scene it wanted to see. "Reset the stats" already means
+				 * "the measurement starts now" everywhere else. */
+				r->dump_seg = 0;
 				/* The blur accounting too. It lives beside the renderer stats
 				 * rather than inside them, and a reset that zeroed one and not
 				 * the other would report a per-frame cost against a frame count

@@ -39,10 +39,12 @@
 #include <wayland-client.h>
 #include "xdg-shell-client-protocol.h"
 #include "ext-background-effect-v1-client-protocol.h"
+#include "xdg-decoration-unstable-v1-client-protocol.h"
 
 static struct wl_compositor *compositor = NULL;
 static struct wl_shm *shm = NULL;
 static struct xdg_wm_base *wm_base = NULL;
+static struct zxdg_decoration_manager_v1 *decoration_manager = NULL;
 static struct ext_background_effect_manager_v1 *bg_manager = NULL;
 static bool configured = false;
 
@@ -89,6 +91,10 @@ static void registry_global(void *data, struct wl_registry *registry,
 			ext_background_effect_manager_v1_interface.name)) {
 		bg_manager = wl_registry_bind(registry, name,
 			&ext_background_effect_manager_v1_interface, 1);
+	} else if (!strcmp(interface,
+			zxdg_decoration_manager_v1_interface.name)) {
+		decoration_manager = wl_registry_bind(registry, name,
+			&zxdg_decoration_manager_v1_interface, 1);
 	}
 }
 static void registry_global_remove(void *data, struct wl_registry *r,
@@ -353,6 +359,32 @@ int main(int argc, char **argv) {
 	xdg_toplevel_add_listener(toplevel, &toplevel_listener, NULL);
 	xdg_toplevel_set_app_id(toplevel, app_id);
 	xdg_toplevel_set_title(toplevel, app_id);
+	/*
+	 * WLBGEFFECT_SSD=1 -- ask for a server-side border.
+	 *
+	 * asteroidz treats an xdg-toplevel that never negotiates decorations as
+	 * client-decorated (client_wants_ssd), draws no border rect for it, and
+	 * still reserves borderpx around the surface -- so the window LOOKS
+	 * bordered and the ring is simply empty. A fixture that prices border
+	 * fragment cost against such a client measures a border that was never
+	 * drawn and reports it as free. That is not hypothetical: the M4H
+	 * decoration audit's first run recorded border_draws = 0 with borderpx 4
+	 * configured, and the ledger showed no border command in a 17-command
+	 * frame.
+	 */
+	if (getenv("WLBGEFFECT_SSD") != NULL) {
+		if (decoration_manager == NULL) {
+			fprintf(stderr, "wlbgeffect: WLBGEFFECT_SSD but no "
+					"xdg-decoration -- this window will have NO border\n");
+		} else {
+			struct zxdg_toplevel_decoration_v1 *dec =
+				zxdg_decoration_manager_v1_get_toplevel_decoration(
+					decoration_manager, toplevel);
+			zxdg_toplevel_decoration_v1_set_mode(dec,
+				ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
+			fprintf(stderr, "wlbgeffect: requested server-side decoration\n");
+		}
+	}
 	wl_surface_commit(surface);
 
 	while (!configured && wl_display_dispatch(display) != -1)
