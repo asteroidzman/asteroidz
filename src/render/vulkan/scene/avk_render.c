@@ -2456,9 +2456,12 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 		cache->format = renderer->format;
 	}
 	if (renderer->blur_chain_trace && cache_enabled) {
-		avk_log(AVK_ERROR, "avk blurcache: tgt=%ux%u gen=%" PRIu64
-			" plain=%s/%d/%zu dark=%s/%d/%zu hits=%" PRIu64 " rebuilds=%" PRIu64
-			" bytes=%" PRIu64, width, height, scene->blur_cache.generation,
+		avk_log(AVK_ERROR, "avk blurcache: tgt=%ux%u cache=%dx%d@%d,%d "
+			"gen=%" PRIu64 " plain=%s/%d/%zu dark=%s/%d/%zu hits=%" PRIu64
+			" rebuilds=%" PRIu64 " bytes=%" PRIu64, width, height,
+			scene->blur_cache.bounds.width, scene->blur_cache.bounds.height,
+			scene->blur_cache.bounds.x, scene->blur_cache.bounds.y,
+			scene->blur_cache.generation,
 			avk_blur_cache_reason_name(cache_reason[AVK_BLUR_CACHE_PLAIN]),
 			(int)cache_ready[AVK_BLUR_CACHE_PLAIN], want[AVK_BLUR_CACHE_PLAIN],
 			avk_blur_cache_reason_name(cache_reason[AVK_BLUR_CACHE_DARK]),

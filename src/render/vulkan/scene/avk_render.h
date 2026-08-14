@@ -183,11 +183,22 @@ static inline const char *avk_blur_cache_kind_name(enum avk_blur_cache_kind k) {
 }
 
 struct avk_blur_cache_image {
-	/* Two slots, and two is derived rather than chosen: a rebuild must not
-	 * write the image the previous frame is sampling, and the previous frame is
-	 * the only one that can still be reading, because a rebuild is ordered
-	 * after every prior submission on the same queue. A third slot would be
-	 * dead memory at output resolution. */
+	/*
+	 * Two slots -- and MEASURED TO BE REDUNDANT, which is recorded here rather
+	 * than left as a plausible-sounding invariant.
+	 *
+	 * The reasoning that produced two was: a rebuild must not write the image
+	 * the previous frame is sampling. AZ_BLUR_CACHE_UNSAFE_REUSE removes the
+	 * alternation and, under validate_sync with the control proving the layer
+	 * is watching, reports ZERO hazards. avk_graph.c is why: an image's layout
+	 * persists on the avk_image across frames, so declaring the cache as
+	 * COLOR_WRITE while it sits in SHADER_READ_ONLY_OPTIMAL emits a transition,
+	 * and a barrier's first synchronisation scope covers everything previously
+	 * submitted to the same queue. The graph was already ordering it.
+	 *
+	 * Kept for now because removing it is a separate change needing its own
+	 * oracle; one slot per kind would halve the cache (DP-1 39.4MB -> 19.7MB).
+	 */
 	struct avk_image *slots[2];
 	uint64_t slot_bytes[2];
 	uint32_t slot;

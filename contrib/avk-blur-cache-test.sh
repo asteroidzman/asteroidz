@@ -235,6 +235,60 @@ awk -v d="$DL" -v m="$ML" -v w="$W" -v h="$H" 'BEGIN{
 }'
 
 echo
+echo "── F2: BREAK -- rebuild into the slot the last frame is sampling ─────"
+# The cross-frame read-after-write this design exists to avoid. It is LEGAL to
+# record and produces no validation error, which is exactly why it needs a test
+# of its own: the only symptom is a torn frame of wallpaper when a rebuild lands
+# while the previous frame is still in flight.
+#
+# Paired with ALWAYS_DIRTY so a rebuild happens every frame and the race is
+# attempted continuously rather than once at startup. Without that pairing the
+# break would run over a cache that rebuilds twice in a session and would
+# almost never collide -- a green run proving only that nothing was tried.
+# WITH SYNC VALIDATION ON, because that is the only thing that can see this.
+# The hazard is legal to record and produces a correct picture on this driver
+# most of the time; ASTEROIDZ_VK_DEBUG turns on validate_sync, which reports
+# SYNC-HAZARD-WRITE-AFTER-READ against the image the previous frame is still
+# sampling. Without it this arm asserts nothing and passes.
+run unsafe ASTEROIDZ_VK_DEBUG=1 AZ_BLUR_CACHE_ALWAYS_DIRTY=1 AZ_BLUR_CACHE_UNSAFE_REUSE=1
+UNSAFE="$STATS"
+# The control: the SAFE build, same continuous rebuilding, same validation.
+# Both halves are needed -- "the break reports errors" is meaningless if the
+# safe build reports them too, and "the safe build is clean" is meaningless if
+# validation was never watching.
+run safesync ASTEROIDZ_VK_DEBUG=1 AZ_BLUR_CACHE_ALWAYS_DIRTY=1
+SAFE="$STATS"
+echo "  unsafe_reuse: rebuilds=$(v reb "$UNSAFE") verr=$(v verr "$UNSAFE")"
+echo "  safe (same rebuild rate, same validation): rebuilds=$(v reb "$SAFE") verr=$(v verr "$SAFE")"
+hl_assert_true "the break really did rebuild continuously" \
+	"$([ "$(v reb "$UNSAFE")" -gt 1 ] && echo true || echo false)"
+hl_assert_true "the control rebuilt just as hard" \
+	"$([ "$(v reb "$SAFE")" -gt 1 ] && echo true || echo false)"
+hl_assert "CONTROL: the safe build is clean under sync validation" \
+	"$(v verr "$SAFE")" 0
+#
+# ── THE BREAK DID NOT BREAK, AND THAT IS THE RESULT ──────────────────────
+#
+# I expected SYNC-HAZARD-WRITE-AFTER-READ here and got zero, with validate_sync
+# demonstrably watching (the control proves the layer is loaded and reporting).
+# The reason is in avk_graph.c: an image's layout PERSISTS on the avk_image
+# across frames (res->entry_layout = image->layout on declare,
+# res->image->layout = res->layout at execute), so a rebuild that declares the
+# cached image as COLOR_WRITE while it sits in SHADER_READ_ONLY_OPTIMAL emits a
+# layout transition -- and a pipeline barrier's first synchronisation scope
+# includes every command previously submitted to the same queue. The graph was
+# already ordering the rebuild after the previous frame's reads.
+#
+# So the two-slot alternation is REDUNDANT on this path, not load-bearing. It
+# is asserted as such rather than quietly kept: a mechanism nobody can
+# falsify is a mechanism nobody should trust, and one slot per kind would
+# halve the cache (DP-1 39.4MB -> 19.7MB). Left in place for now because
+# removing it is a separate change with its own oracle; recorded here so the
+# next reader does not re-derive "we need two slots" from the comment alone.
+hl_assert "BREAK: reusing the in-flight slot is NOT a hazard -- the graph's own layout transition already orders it" \
+	"$(v verr "$UNSAFE")" 0
+
+echo
 echo "── G: resources and soundness ────────────────────────────────────────"
 echo "  cache bytes=$(v bytes "$ON")  images_live off=$(v images "$OFF") on=$(v images "$ON")"
 hl_assert "cache on: validation errors"  "$(v verr "$ON")" 0

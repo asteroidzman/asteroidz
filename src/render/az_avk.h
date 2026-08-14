@@ -4076,6 +4076,7 @@ static cJSON *az_avk_stats_json(void) {
 		uint64_t i_gen = 0, i_geo = 0, i_par = 0, i_fmt = 0, i_new = 0,
 		         i_forced = 0;
 		uint64_t gen_max = 0;
+		uint32_t cache_w = 0, cache_h = 0;
 		Monitor *mm;
 		wl_list_for_each(mm, &mons, link) {
 			if (mm->avk == NULL) {
@@ -4096,12 +4097,25 @@ static cJSON *az_avk_stats_json(void) {
 			if (mm->avk->blur_cache_generation > gen_max) {
 				gen_max = mm->avk->blur_cache_generation;
 			}
+			if ((uint64_t)c->width * c->height
+					> (uint64_t)cache_w * cache_h) {
+				cache_w = c->width;
+				cache_h = c->height;
+			}
 		}
 		cJSON_AddNumberToObject(o, "blur_cache_requests", (double)req);
 		cJSON_AddNumberToObject(o, "blur_cache_hits", (double)hit);
 		cJSON_AddNumberToObject(o, "blur_cache_rebuilds", (double)reb);
 		cJSON_AddNumberToObject(o, "blur_cache_invalidations", (double)inval);
 		cJSON_AddNumberToObject(o, "blur_cache_bytes", (double)bytes);
+		/* THE EXTENT THE CACHE IS ACTUALLY ALLOCATED AT.
+		 *
+		 * Reported because the byte total could not be reconciled with it:
+		 * DP-1 read 39,387,136 bytes for two images, and a 3840x2160 four-byte
+		 * image cannot be smaller than 33,177,600 on its own. A memory figure
+		 * whose extent is unknown is not a measurement. */
+		cJSON_AddNumberToObject(o, "blur_cache_width", (double)cache_w);
+		cJSON_AddNumberToObject(o, "blur_cache_height", (double)cache_h);
 		cJSON_AddNumberToObject(o, "blur_cache_generation", (double)gen_max);
 		cJSON_AddNumberToObject(o, "blur_cache_saved_prefix_draws",
 			(double)s_draws);
