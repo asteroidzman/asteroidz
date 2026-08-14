@@ -281,11 +281,13 @@ static void az_presenter_present(Monitor *m,
 	 * THE ERROR SERIES, matched strictly on commit_seq. A latency attributed
 	 * to whatever happened to be in a slot looks plausible and is fiction.
 	 */
+	bool matched = false;
 	for (int i = 0; i < AZ_PRESENT_INFLIGHT; i++) {
 		struct az_present_inflight *s = &p->inflight[i];
 		if (!s->used || s->commit_seq != ev->commit_seq) {
 			continue;
 		}
+		matched = true;
 		if (p->clock == AZ_PRESENT_CLOCK_MONOTONIC && s->target_ns) {
 			int64_t err = (int64_t)when_ns - (int64_t)s->target_ns;
 			if (p->err_count == 0 || err < p->err_min_ns) {
@@ -299,13 +301,73 @@ static void az_presenter_present(Monitor *m,
 			p->err_abs_sum_ns += (uint64_t)(err < 0 ? -err : err);
 
 			/*
-			 * ADR-609. A miss is a frame that lit up more than half a period
-			 * after the instant it was aiming at. Each one gets exactly ONE
-			 * verdict, from the first rule its evidence PROVES -- and the
-			 * default is UNKNOWN, not a guess.
+			 * ── ADR-609: A MISS IS A LOST PRESENTATION OPPORTUNITY ────────
+			 *
+			 * One definition for both regimes -- a frame that did not make its
+			 * next available presentation opportunity -- but the EVIDENCE that
+			 * establishes it differs, because the two panels fail differently.
+			 *
+			 *   FIXED  the vblank lattice quantises presents, so ordinary
+			 *          prediction spread cannot cross half a period. A large
+			 *          error there really is a slipped slot. A sequence slip
+			 *          proves it directly.
+			 *   VRR    presentation FOLLOWS the commit. `present > target`
+			 *          means the target was optimistic and nothing more, so
+			 *          only a sequence slip proves a lost opportunity.
+			 *
+			 * The tolerance crossing is still counted, as prediction_exceeded,
+			 * and is never called a miss. See that field for the measurement
+			 * that forced the distinction.
 			 */
-			uint64_t tol = p->nominal_period_ns / 2;
-			if (tol > 0 && err > (int64_t)tol) {
+			uint64_t period_ns = p->nominal_period_ns;
+			uint64_t tol = period_ns / 2;
+			bool exceeded = tol > 0 && err > (int64_t)tol;
+			if (exceeded) {
+				p->prediction_exceeded++;
+			}
+			/*
+			 * A SLIP IS A FRAME THAT WAS READY AND STILL MISSED ITS VBLANK.
+			 *
+			 * Sequence delta alone does not say that. Two animations separated
+			 * by an idle second are two presents ~100 vblanks apart, and the
+			 * previous one did carry a frame of ours -- so "the previous
+			 * present had an in-flight frame" passes, and the next animation's
+			 * FIRST frame reads as a slip. Measured: DP-1 reported 38 misses
+			 * against a cadence of 28 x1 and zero x2/x3+, which is zero frames
+			 * actually late.
+			 *
+			 * What distinguishes a slip from an idle gap is whether we were
+			 * READY for the vblanks we passed over. A frame committed before
+			 * the vblank after the previous present, and presented later than
+			 * that, provably missed a slot it could have filled. A frame
+			 * committed long afterwards had nothing to miss -- there was
+			 * simply nothing to show.
+			 */
+			bool ready_for_next = period_ns > 0
+				&& s->commit_ret_ns < p->last_present_ns + period_ns;
+			bool slipped = p->prev_had_inflight && ready_for_next
+				&& ev->seq > p->last_seq + 1;
+			bool missed = p->regime == AZ_PRESENT_VRR
+				? slipped
+				: (slipped || exceeded);
+			/* AZ_BREAK_PRESENT_SPREAD_IS_MISS (falsifier I18): restore the
+			 * pre-correction rule, where prediction spread counted as a lost
+			 * frame on every regime. */
+			static int break_spread = -1;
+			if (break_spread < 0) {
+				break_spread =
+					getenv("AZ_BREAK_PRESENT_SPREAD_IS_MISS") != NULL;
+				if (break_spread) {
+					wlr_log(WLR_ERROR, "M6A break: "
+						"AZ_BREAK_PRESENT_SPREAD_IS_MISS -- prediction spread "
+						"counts as a lost frame again; a VRR panel presenting "
+						"every frame on the next vblank will report misses");
+				}
+			}
+			if (break_spread && exceeded) {
+				missed = true;
+			}
+			if (missed) {
 				enum az_present_verdict v;
 				const int64_t delta = 500000; /* 500us margin */
 				if (s->commit_ret_ns >= s->target_ns) {
@@ -314,19 +376,18 @@ static void az_presenter_present(Monitor *m,
 					 * have made it. */
 					v = (int64_t)s->commit_call_ns
 							< (int64_t)s->target_ns - delta
-						? AZ_MISS_KMS_COMMIT_LATE  /* ready in time; the
-						                            * commit call itself ate
-						                            * the margin */
+						? AZ_MISS_KMS_COMMIT_LATE  /* ready in time; the commit
+						                            * call itself ate the
+						                            * margin */
 						: AZ_MISS_CPU_LATE;
 				} else {
 					/*
-					 * Committed with margin to spare and still missed. That is
-					 * either the GPU signalling late or the display flipping
-					 * late, and CPU timestamps cannot tell those apart --
-					 * both need a real GPU completion instant. Until
-					 * VK_EXT_calibrated_timestamps is wired this is UNKNOWN,
-					 * deliberately: naming it GPU_LATE here would be the
-					 * reflex this whole table exists to stop.
+					 * Committed with margin to spare and still missed: either
+					 * the GPU signalled late or the display flipped late, and
+					 * CPU timestamps cannot separate those. Both need a real
+					 * GPU completion instant. Until VK_EXT_calibrated_timestamps
+					 * is wired this is UNKNOWN, deliberately -- naming it
+					 * GPU_LATE would be the reflex this table exists to stop.
 					 */
 					v = AZ_MISS_UNKNOWN;
 				}
@@ -342,6 +403,7 @@ static void az_presenter_present(Monitor *m,
 	p->last_seq = ev->seq;
 	p->sync = AZ_PRESENT_SYNCED;
 	p->presents_accepted++;
+	p->prev_had_inflight = matched;
 }
 
 /*

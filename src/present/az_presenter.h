@@ -202,6 +202,37 @@ struct az_presenter {
 	/* Misses, by what the timestamps could prove. See az_present_verdict. */
 	uint64_t misses;
 	uint64_t verdicts[AZ_MISS_COUNT];
+	/*
+	 * PREDICTION SPREAD, WHICH IS NOT A MISS.
+	 *
+	 * Frames that lit up more than the tolerance after their target. On a
+	 * FIXED output that IS a lost presentation opportunity, because the vblank
+	 * lattice quantises presents and ordinary spread cannot cross a half
+	 * period. On a VRR output it is not: presentation follows the commit, so
+	 * "later than target" means the target was optimistic.
+	 *
+	 * Measured live before this distinction existed: DP-1 reported 42 misses
+	 * out of 56 frames while its cadence was 53 x1, zero x2, zero x3+ and
+	 * dropped=0 -- every frame landed on the very next vblank and not one was
+	 * late. The error series' abs mean was 3417us against a 3472us tolerance,
+	 * so ordinary on-time frames were crossing it on spread alone.
+	 *
+	 * So it is counted, named for what it is, and given no verdict. It is an
+	 * ADR-605 prediction-quality statistic -- the error series' tail with a
+	 * name -- and never a pacing failure.
+	 */
+	uint64_t prediction_exceeded;
+	/*
+	 * Did the PREVIOUS accepted present also carry a frame of ours?
+	 *
+	 * A sequence slip only means a lost opportunity if we were actually trying
+	 * to fill the intervening vblanks. The first frame after a stretched idle
+	 * period naturally arrives with a seq delta greater than one on a VRR
+	 * panel, and counting that as a miss re-imports exactly the false positive
+	 * this correction removes. Such a frame belongs to ADR-605's post-idle
+	 * prediction bucket instead.
+	 */
+	bool prev_had_inflight;
 	uint64_t resets[AZ_PRESENT_RESET_COUNT];
 };
 

@@ -805,14 +805,59 @@ cannot separate CPU-late from GPU-late from commit-late, and every
 unexplained miss defaults, culturally, to "GPU too slow". The brief demands
 verdicts that name their evidence and an UNKNOWN that is used honestly.
 
-**DECISION.** A **miss** is: an accepted present with
-`present_ns − target_ns > tol` for its matched in-flight frame (`tol =
-nominal_period_ns / 2` in the FIXED regime; `P_min / 2` initial in the VRR
-regime, revisable from the M-8 latency distribution), or — FIXED regime
-only — a per-epoch `seq` delta > 1 across a window where a frame was in
-flight (under VRR a stretched cadence is the panel following content, not a
-slip). Each miss gets exactly one verdict, from the first rule that its
-evidence *proves*; margins `δ = 500 µs` initial, config-tunable:
+**DECISION.** The definition is regime-independent; the evidence rules are
+not. A **miss** is a frame that did not make its **next available
+presentation opportunity**. What constitutes proof differs by regime,
+because the opportunity structure differs:
+
+- **FIXED regime:** an accepted present with `present_ns − target_ns >
+  nominal_period_ns / 2` for its matched in-flight frame (the lattice
+  quantises presents, so a half-period error proves slot displacement —
+  spread cannot produce it), or a per-epoch `seq` delta > 1 between
+  consecutive accepted presents that **both** carried in-flight frames.
+- **VRR regime:** a `seq` delta > 1 between consecutive accepted presents
+  that **both** carried in-flight frames, or a failed/dropped commit while
+  animating. The prediction error **never counts**: on a VRR panel
+  presentation follows the commit, so `present > target` means "the
+  target was optimistic", not "the frame slipped" — the panel gave the
+  frame the next opportunity it had. The both-in-flight requirement is
+  load-bearing in this regime too: the first in-flight present after a
+  stretched idle period naturally carries `seq` delta > 1 (the panel was
+  free-running slowly), is not a miss, and lands in ADR-605's post-idle
+  prediction bucket instead.
+
+Separately, an accepted present with `|present_ns − target_ns| > tol`
+(`tol` = the regime's period / 2 initially) increments
+**`prediction_exceeded`**, per output, per regime — an ADR-605
+prediction-quality statistic, the tail of the error series given a name.
+It is never called a miss, it receives no verdict, and conflating the two
+counters is the defect this correction removes.
+
+**The correction's evidence, recorded** (live tag animations, verdict
+table implemented, gpu_ts unavailable): HDMI-A-1 34 samples / 4 misses,
+DP-1 56 samples / 42 "misses", **all 46 UNKNOWN with `cpu_late = 0`,
+`kms_commit_late = 0`** — every frame committed with margin, so "the
+compositor is too slow" is disproven for all 46; the strictness did its
+job. But DP-1's cadence over the same window was x1 = 53, x2 = 0,
+x3plus = 0, dropped = 0: **not one frame failed to make the next vblank.**
+The 42 came from prediction spread (error mean 2 136 µs, abs 3 417 µs,
+against a tolerance of 3 472 µs) — the ~2.7 ms burst-start spread ADR-605
+already predicts and forbids chasing with a constant. The original text
+had restricted the seq-delta rule to FIXED on exactly this reasoning and
+failed to apply the same reasoning to the error rule; the evidence closed
+the gap. Widening the VRR tolerance was considered and rejected: it
+buries a definitional error under a tuned constant that would move with
+the panel.
+
+**Cadence is only a slip signal while something is animating.** HDMI-A-1's
+same window read x1 = 50, x3plus = 57 — the 57 are idle gaps *between*
+animations, not slips; a naive histogram reader would diagnose a severe
+pacing problem on an output that was resting. This is why every miss rule
+above carries the in-flight condition, and why the cadence histogram in
+the stats surface is descriptive, never a verdict input on its own.
+
+Each miss gets exactly one verdict, from the first rule that its evidence
+*proves*; margins `δ = 500 µs` initial, config-tunable:
 
 | verdict | required evidence | reading |
 |---|---|---|
@@ -861,6 +906,16 @@ hooks), GPU_LATE via a heavy synthetic pass with timestamps enabled,
 each asserting its named evidence appears in the miss line. A verdict
 whose premise test cannot induce it stays documented as untestable rather
 than trusted.
+
+The miss/prediction separation is itself an invariant with a break:
+`AZ_BREAK_PRESENT_SPREAD_IS_MISS` (restore the error-based miss rule on a
+VRR epoch — the pre-correction behaviour codified). Oracle: a VRR fixture
+animating with a deliberately biased target (the placeholder `t_pipe`
+under-seed suffices) and a clean x1 cadence must report **zero misses and
+nonzero `prediction_exceeded`**; under the break the miss counter goes
+nonzero — deterministic failure. The burst-start guard has its own premise
+test: a single in-flight frame after a synthetic idle gap must classify as
+post-idle prediction data, never as a seq-delta miss.
 
 ---
 
@@ -1278,6 +1333,7 @@ duplicate hides a dead break. The mapping: `BREAK_ANIM_SAMPLE_CPU_NOW` ≡
 | I15 | presentation transforms move scene-linear pixels only | `AZ_BREAK_ANIM_TRANSFORM_ENCODED` | moving-vs-rest colour equality per output on the straddle fixture (ADR-615/617) |
 | I16 | semantic → presentation derivation is one-way and pure | (static + replay) | frame-snapshot type containment; ADR-607 replay equality (ADR-611) |
 | I17 | motion model is analytic / refresh-independent in form | (static twin of I4) | 48 Hz vs 240 Hz sampling-grid identity unit test; spring settle dead-tail oracle (ADR-616) |
+| I18 | a miss is a lost presentation opportunity; prediction spread never counts as one | `AZ_BREAK_PRESENT_SPREAD_IS_MISS` | VRR fixture, biased target, clean x1 cadence ⇒ zero misses + nonzero `prediction_exceeded` (ADR-609) |
 
 Foreign-clock handling (ADR-603) is covered by a unit premise test rather
 than a break switch: it needs a synthetic event, not a runtime toggle.
@@ -1331,6 +1387,31 @@ the presentation IPC):**
   agrees with the independently derived period to 18 ns — a cross-check
   that the Δwhen/Δseq derivation is sound. Confirms the ban on
   `ev->refresh` as a predictor input.
+- **Verdict table live run (drove the ADR-609 correction):** HDMI-A-1
+  34 samples / 4 misses, DP-1 56 / 42, all 46 UNKNOWN with
+  `cpu_late = 0`, `kms_commit_late = 0` and commit margin on every frame —
+  "compositor too slow" disproven for the whole window — while DP-1's
+  cadence was a clean x1 = 53 with zero drops. The 42 were prediction
+  spread, not lateness; the error-based miss rule is now FIXED-regime
+  only and the crossing counter is `prediction_exceeded` (ADR-609).
+  GPU_LATE / PRESENTATION_SCHEDULING remain structurally unreachable
+  until M-3 lands; `gpu_ts_available: false` is reported beside the
+  counters, as specified.
+- **Idle gaps read as x3plus cadence** (HDMI-A-1: x1 = 50, x3plus = 57 in
+  the same window — all inter-animation idle, zero slips): cadence is a
+  slip signal only while something is animating; the histogram is
+  descriptive, never a verdict input on its own (ADR-609).
+- **Falsifier status:** I1/I4/I5/I10/I12 shown red and green. The ADR-608
+  anchoring rule (retarget anchors at the last `sample_ns`, not CPU-now)
+  caught a real defect the G2 change had introduced — the contract paid
+  for itself before the milestone closed. `anim_eval_at` makes the
+  trajectory a pure function, so ADR-607 statement 1 holds by
+  construction.
+- **ADR-611 enforcement half deliberately unbuilt pending operator
+  judgement:** measured seam disagreement median 19.4 px / max 60.8 px.
+  Whether that per-output divergence is acceptable on the live desk is a
+  product call, escalated rather than decided in implementation; the
+  ADR-607 legality bounds stand either way.
 
 **Measurements requested from Opus** (record results in this directory;
 M-8 gates a constant, nothing gates the build):

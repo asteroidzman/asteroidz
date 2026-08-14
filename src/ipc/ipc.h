@@ -874,6 +874,11 @@ static void handle_command(int client_fd, const char *cmd_raw) {
 			 */
 			cJSON *ms = cJSON_AddObjectToObject(pr, "misses");
 			cJSON_AddNumberToObject(ms, "total", (double)ps->misses);
+			/* NOT a miss, and the naming is the point: prediction spread that
+			 * crossed the tolerance. On VRR this is the whole of what the old
+			 * rule was counting. See az_presenter.prediction_exceeded. */
+			cJSON_AddNumberToObject(ms, "prediction_exceeded",
+				(double)ps->prediction_exceeded);
 			cJSON_AddBoolToObject(ms, "gpu_ts_available", false);
 			for (int v = AZ_MISS_CPU_LATE; v < AZ_MISS_COUNT; v++) {
 				cJSON_AddNumberToObject(ms,
