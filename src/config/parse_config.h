@@ -4810,6 +4810,8 @@ void override_config(void) {
 		CLAMP_INT(config.theme.corner_radius, -1, 100);
 	config.theme.padding_x = CLAMP_INT(config.theme.padding_x, 0, 100);
 	config.theme.padding_y = CLAMP_INT(config.theme.padding_y, 0, 100);
+
+	schema_clamp_all();
 }
 
 void set_value_default() {

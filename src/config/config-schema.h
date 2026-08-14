@@ -818,4 +818,89 @@ static const char *schema_type_name(OptType t) {
 	return "unknown";
 }
 
+/*
+ * ── THE TABLE'S min/max, ACTUALLY ENFORCED ────────────────────────────────
+ *
+ * `min`/`max` are documented as "the clamp that is actually applied", and the
+ * settings window builds its slider track from the same two numbers. Those are
+ * one promise, not two, and keeping it by hand did not survive contact:
+ *
+ *   f53619d  schema borderpx max 200, override_config clamps 0..200. Agreed.
+ *   033b133  twenty-two ceilings lowered so the sliders were aimable --
+ *            borderpx to 32, the gaps to 200, the animation durations to 3000.
+ *            The commit said in as many words that "these bounds are enforced,
+ *            not advisory", and the enforcing half was never written.
+ *
+ * The hand-written CLAMP_INT calls in override_config still held the OLD, wider
+ * numbers, so a slider that stopped at 32 was backed by a clamp that allowed
+ * 200. `asteroidz -S` reported it as 22 failures from that day and was right
+ * every time.
+ *
+ * Rather than copy twenty-two numbers into a second place again -- which is the
+ * step that just failed -- this walks the table and clamps each numeric field
+ * at its own offset. The schema becomes the one source, the duplicate can no
+ * longer disagree with it, and lowering a ceiling in the table is now a single
+ * edit that takes effect everywhere.
+ *
+ * Runs LAST in override_config, after the hand-written clamps. Those are kept:
+ * they are all equal or wider, so they are no-ops for anything described here,
+ * and they still guard the fields the table does not yet cover.
+ *
+ * Types the check itself skips are skipped here for the same reasons: an enum's
+ * bounds are its member list, a colour is four channels behind one offset, and
+ * a bezier is four doubles.
+ */
+static inline void schema_clamp_all(void) {
+	extern Config config;
+	for (size_t i = 0; i < CONFIG_SCHEMA_COUNT; i++) {
+		const ConfigOption *o = &config_schema[i];
+		if (isnan(o->min) && isnan(o->max)) {
+			continue;
+		}
+		switch (o->type) {
+		case OPT_BOOL:
+		case OPT_INT: {
+			int32_t *p = (int32_t *)((char *)&config + o->offset);
+			if (!isnan(o->min) && (double)*p < o->min) {
+				*p = (int32_t)o->min;
+			}
+			if (!isnan(o->max) && (double)*p > o->max) {
+				*p = (int32_t)o->max;
+			}
+			break;
+		}
+		case OPT_FLOAT: {
+			float *p = (float *)((char *)&config + o->offset);
+			if (!isnan(o->min) && (double)*p < o->min) {
+				*p = (float)o->min;
+			}
+			if (!isnan(o->max) && (double)*p > o->max) {
+				*p = (float)o->max;
+			}
+			break;
+		}
+		case OPT_DOUBLE: {
+			double *p = (double *)((char *)&config + o->offset);
+			if (!isnan(o->min) && *p < o->min) {
+				*p = o->min;
+			}
+			if (!isnan(o->max) && *p > o->max) {
+				*p = o->max;
+			}
+			break;
+		}
+		/* An enum's valid set is `members`; a numeric range over its indices
+		 * would be a different claim and is not one this makes. A colour is
+		 * four channels behind one offset and a bezier is four doubles --
+		 * neither is a scalar to clamp. The self-check skips exactly these. */
+		case OPT_ENUM:
+		case OPT_COLOR:
+		case OPT_STRING:
+		case OPT_STRPTR:
+		case OPT_BEZIER:
+			break;
+		}
+	}
+}
+
 #endif /* ASTEROIDZ_CONFIG_SCHEMA_H */
