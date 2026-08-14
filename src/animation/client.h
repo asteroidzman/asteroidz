@@ -2635,6 +2635,9 @@ void client_animation_next_tick(Client *c, uint64_t sample_ns) {
 	 * about that. See anim_eval_at. */
 	struct anim_eval ev;
 	anim_eval_at(c, now_ns, &ev);
+	/* What a retarget will anchor to if one arrives before this animation
+	 * finishes. See dwl_animation.last_sample_ns. */
+	c->animation.last_sample_ns = now_ns;
 	double animation_passed = ev.linear;
 	double factor = ev.factor;
 	int32_t type = ev.type;
@@ -2913,8 +2916,23 @@ void client_commit(Client *c) {
 			(unsigned long long)az_pace_now_ns());
 
 		c->animation.initial = c->animainit_geom;
-		c->animation.time_started = get_now_in_ms();
-		c->animation.time_started_ns = az_pace_now_ns();
+		/*
+		 * A RETARGET ANCHORS AT THE INSTANT THE OLD SEGMENT WAS LAST
+		 * EVALUATED; a fresh animation anchors at now (ADR-608, ADR-611).
+		 *
+		 * The distinction is not cosmetic. `initial` above is the position the
+		 * old trajectory had reached, and under target-time sampling that was
+		 * computed for a moment in the future. Starting the clock at now would
+		 * assert the window is already there, counting the lead interval twice
+		 * and jumping it forward by up to one frame's travel. A NEW animation
+		 * has no such history -- the decision genuinely happens at CPU time,
+		 * which is why semantic start times are CPU-now by design.
+		 */
+		bool retargeting = c->animation.running && c->animation.last_sample_ns;
+		c->animation.time_started_ns = retargeting
+			? c->animation.last_sample_ns : az_pace_now_ns();
+		c->animation.time_started =
+			(int32_t)(c->animation.time_started_ns / 1000000ull);
 		/* The tick counter is per ANIMATION, not per client: leaving it to
 		 * accumulate makes every animation after the first start with a large
 		 * offset and complete instantly, which is a different defect from

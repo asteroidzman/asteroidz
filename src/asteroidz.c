@@ -450,6 +450,19 @@ struct dwl_animation {
 	 * Zero and unread in every normal build.
 	 */
 	uint64_t break_ticks;
+	/*
+	 * The instant this animation was most recently EVALUATED at (ADR-608).
+	 *
+	 * A retarget seeds the new segment with the position the old one had
+	 * reached -- and under target-time sampling that position was computed for
+	 * a moment in the FUTURE, not for now. Starting the new clock at CPU-now
+	 * while seeding with X(s) claims the window is at X(s) at time now, when
+	 * it will not be there until s: the lead interval gets counted twice and
+	 * the window jumps forward by up to one frame's travel. Anchoring the new
+	 * segment at `s` instead is the one place presentation-time sampling
+	 * changes retarget arithmetic.
+	 */
+	uint64_t last_sample_ns;
 };
 
 struct dwl_opacity_animation {
