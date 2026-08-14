@@ -61,6 +61,22 @@ struct avk_image {
 	uint64_t last_use;
 
 	/*
+	 * HOW MANY TIMES THE CONTENTS HAVE BEEN REPLACED.
+	 *
+	 * `id` identifies the IMAGE; this identifies what is in it. They come
+	 * apart on the CPU path: a client that re-uploads into the same shm buffer
+	 * keeps the same wlr_buffer, so the importer's cache hands back the same
+	 * avk_image with the same id and entirely different pixels.
+	 *
+	 * Anything caching a picture DERIVED from this image needs both, and the
+	 * M4I background blur cache is the reason this exists -- a wallpaper
+	 * repainted in place would otherwise hash identical to the one before it,
+	 * and the cache would serve a blur of the old picture forever. Bumped by
+	 * the upload path, never by a draw.
+	 */
+	uint64_t content_seq;
+
+	/*
 	 * M5/C7. THE _SRGB VIEW, and whether one is legal at all.
 	 *
 	 * `format_srgb` is the sRGB twin of `format` -- VK_FORMAT_UNDEFINED when

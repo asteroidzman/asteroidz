@@ -262,6 +262,34 @@ struct avk_blur_cache {
 	struct avk_blur_cache_image img[AVK_BLUR_CACHE_KINDS];
 
 	uint64_t generation;
+	/*
+	 * ── WHAT THE CACHED PICTURE WAS ACTUALLY BUILT FROM ───────────────────
+	 *
+	 * A digest of the prefix commands: for each one its type, its destination
+	 * box, its opacity, and -- for a texture -- the image it samples and the
+	 * source rectangle it samples from. That is everything that decides the
+	 * background's pixels.
+	 *
+	 * `generation` alone was the validity rule and it was not sufficient. It
+	 * counts an EDGE (wlr_scene_optimized_blur.dirty) observed once per output
+	 * per frame, so it is only as good as the claim that every way the
+	 * background can change funnels through wlr_scene_optimized_blur_mark_dirty
+	 * -- and on this desktop it demonstrably did not: a live capture showed the
+	 * blurred backdrop rendering a photograph that had not been the wallpaper
+	 * for several rotations, while the unblurred wallpaper beside it was
+	 * correct and the generation had not moved.
+	 *
+	 * This does not replace the generation and does not try to find the missing
+	 * producer. It makes the rule state a fact about the SOURCE rather than a
+	 * fact about the notification, so a background that changed without telling
+	 * anyone still cannot be served from here. It can only ever cause a rebuild
+	 * -- it is an additional disagreement, never a way to agree -- so the worst
+	 * case of a hash that moves too eagerly is work, not a wrong picture.
+	 *
+	 * Cost is one pass over the prefix per frame. The prefix is the background:
+	 * a wallpaper and, at most, a handful of nodes beneath the blur layer.
+	 */
+	uint64_t source_hash;
 	int32_t origin_x, origin_y;
 	uint32_t width, height;
 	VkFormat format;
@@ -285,13 +313,14 @@ struct avk_blur_cache {
 	/* Why the last rebuild happened, and how many of each kind there have
 	 * been. A cache that rebuilds unexpectedly must say why in one reading. */
 	uint64_t inv_generation, inv_geometry, inv_params, inv_format,
-	         inv_never_built, inv_forced;
+	         inv_never_built, inv_forced, inv_source;
 };
 
 enum avk_blur_cache_reason {
 	AVK_BLUR_CACHE_OK = 0,
 	AVK_BLUR_CACHE_NEVER_BUILT,
 	AVK_BLUR_CACHE_GENERATION,
+	AVK_BLUR_CACHE_SOURCE,
 	AVK_BLUR_CACHE_GEOMETRY,
 	AVK_BLUR_CACHE_PARAMS,
 	AVK_BLUR_CACHE_FORMAT,
@@ -304,6 +333,7 @@ static inline const char *avk_blur_cache_reason_name(
 	case AVK_BLUR_CACHE_OK:          return "OK";
 	case AVK_BLUR_CACHE_NEVER_BUILT: return "NEVER_BUILT";
 	case AVK_BLUR_CACHE_GENERATION:  return "GENERATION";
+	case AVK_BLUR_CACHE_SOURCE:      return "SOURCE";
 	case AVK_BLUR_CACHE_GEOMETRY:    return "GEOMETRY";
 	case AVK_BLUR_CACHE_PARAMS:      return "PARAMS";
 	case AVK_BLUR_CACHE_FORMAT:      return "FORMAT";
@@ -1051,6 +1081,14 @@ struct avk_renderer {
 	bool break_blur_cache_ignore_dirty;
 	bool break_blur_cache_stale_geometry;
 	bool break_blur_cache_stale_params;
+	/*
+	 * AZ_BLUR_CACHE_IGNORE_SOURCE -- restore the pre-fix validity rule, where
+	 * the cache trusted the dirty notification and asked nothing about the
+	 * source it had actually been built from. Paired with IGNORE_DIRTY it is
+	 * the stale-wallpaper defect exactly as it shipped, which is what makes the
+	 * fixture for the fix able to fail.
+	 */
+	bool break_blur_cache_ignore_source;
 	/*
 	 * WHAT THE CHAIN WOULD HAVE TO PROCESS, summed per pass, with every
 	 * filter footprint included -- avk_blur_work_of(). The denominator of the

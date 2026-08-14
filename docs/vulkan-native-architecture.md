@@ -2167,6 +2167,25 @@ A monotonic per-output generation, plus geometry, kernel and format. Ten
 full-output damage cycles rebuild nothing; a background-layer commit rebuilds
 once. That separation is the whole architecture.
 
+**And it was not sufficient — see F18.** The generation counts an *edge*, so
+the rule was only as strong as the claim that every way the background can
+change reaches `wlr_scene_optimized_blur_mark_dirty()`. On a live desktop it
+did not: the blurred backdrops rendered a photograph that had not been the
+wallpaper for several rotations while the sharp wallpaper beside them was
+correct. Validity now also carries `source_hash`, a digest of the prefix
+commands the cache was actually built from — image identity (`avk_image.id`,
+not the pointer) *and* `avk_image.content_seq`, source rect, dst, opacity,
+transform. Identity and content are separate questions: a shm client that
+repaints into the same buffer keeps its id and changes every pixel. It can only
+force a rebuild, never permit one. `SOURCE` is checked *after* `GENERATION`, so
+`blur_cache_inv_source` moving at all means a background changed without
+telling anyone; it is a diagnosis, not a health metric.
+
+`blur_cache_generation` in `avk-stats` is a **maximum across outputs** and must
+not be read as a health signal for either: one output going dead while the
+other invalidates leaves it climbing forever. `blur_cache_outputs` states each
+output separately, and that is the view to read.
+
 **Live, DP-1, interleaved OFF/ON/ON/OFF, 10 tag switches per arm:**
 
 | | p50 | p95 | p99 | max | >6944 |

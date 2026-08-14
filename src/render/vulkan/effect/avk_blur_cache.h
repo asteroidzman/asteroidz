@@ -34,9 +34,21 @@ bool avk_blur_params_equal(const struct avk_blur_params *a,
  */
 enum avk_blur_cache_reason avk_blur_cache_check(
 	const struct avk_blur_cache *cache, uint64_t generation,
+	uint64_t source_hash,
 	int32_t origin_x, int32_t origin_y, uint32_t width, uint32_t height,
 	VkFormat format, const struct avk_blur_params *params,
 	enum avk_blur_cache_kind kind, bool force_rebuild);
+
+/*
+ * A digest of the commands that will be blurred into the cache: everything
+ * about the prefix that decides its pixels, and nothing that does not.
+ *
+ * Exists because `generation` describes a NOTIFICATION and this describes the
+ * SOURCE. See avk_blur_cache.source_hash for what went wrong with only the
+ * former. Never zero for a non-empty prefix, so "not computed" and "computed
+ * and empty" cannot be confused.
+ */
+uint64_t avk_blur_cache_source_hash(const struct avk_cmd *cmds, size_t len);
 
 /* Add one to the counter for `r` and to the invalidation total. OK counts
  * nothing -- it is not an invalidation. */

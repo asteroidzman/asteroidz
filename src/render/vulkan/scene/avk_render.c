@@ -145,6 +145,8 @@ bool avk_renderer_init(struct avk_renderer *renderer, struct avk_device *dev,
 		getenv("AZ_BLUR_CACHE_STALE_GEOMETRY") != NULL;
 	renderer->break_blur_cache_stale_params =
 		getenv("AZ_BLUR_CACHE_STALE_PARAMS") != NULL;
+	renderer->break_blur_cache_ignore_source =
+		getenv("AZ_BLUR_CACHE_IGNORE_SOURCE") != NULL;
 	if (renderer->break_blur_cache_off) {
 		avk_log(AVK_ERROR, "M4I: the monitor background blur cache is OFF -- "
 			"every backdrop blur reconstructs the background for itself");
@@ -152,15 +154,17 @@ bool avk_renderer_init(struct avk_renderer *renderer, struct avk_device *dev,
 	if (renderer->break_blur_cache_always_dirty
 			|| renderer->break_blur_cache_ignore_dirty
 			|| renderer->break_blur_cache_stale_geometry
-			|| renderer->break_blur_cache_stale_params) {
+			|| renderer->break_blur_cache_stale_params
+			|| renderer->break_blur_cache_ignore_source) {
 		avk_log(AVK_ERROR, "M4I break switch active on the blur cache "
 			"(always_dirty=%d ignore_dirty=%d stale_geometry=%d "
-			"stale_params=%d) -- this build renders a WRONG "
+			"stale_params=%d ignore_source=%d) -- this build renders a WRONG "
 			"desktop and exists to make an oracle fail",
 			(int)renderer->break_blur_cache_always_dirty,
 			(int)renderer->break_blur_cache_ignore_dirty,
 			(int)renderer->break_blur_cache_stale_geometry,
-			(int)renderer->break_blur_cache_stale_params);
+			(int)renderer->break_blur_cache_stale_params,
+			(int)renderer->break_blur_cache_ignore_source);
 	}
 	for (int k = 0; k < AVK_BLUR_CACHE_KINDS; k++) {
 		pixman_region32_init(&renderer->blur_cache_region[k]);
@@ -2337,6 +2341,7 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 			.saturation = cmd->blur_saturation,
 			.noise = cmd->blur_noise,
 			.apply_effects = cmd->blur_apply_effects,
+			.linear_src = renderer->decode_enabled,
 			.darken = cmd->blur_darken
 				&& !renderer->break_blur_ignore_darken,
 		};
@@ -2583,6 +2588,7 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 			.saturation = scene->blur_cache.saturation,
 			.noise = scene->blur_cache.noise,
 			.apply_effects = scene->blur_cache.apply_effects,
+			.linear_src = renderer->decode_enabled,
 			.darken = (k == AVK_BLUR_CACHE_DARK),
 		};
 	}
@@ -2633,6 +2639,15 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 	 * from the other side. A desktop with no shadows never allocates the dark
 	 * image at all.
 	 */
+	/*
+	 * Computed once for both kinds: they are built from the same prefix, so a
+	 * hash per kind would be the same number twice. Only when the cache is in
+	 * play at all -- an output with no background blur node must not pay for a
+	 * walk over its command list.
+	 */
+	const uint64_t source_hash = cache_enabled
+		? avk_blur_cache_source_hash(scene->cmds,
+			scene->blur_cache.prefix_end) : 0;
 	enum avk_blur_cache_reason cache_reason[AVK_BLUR_CACHE_KINDS];
 	bool cache_ready[AVK_BLUR_CACHE_KINDS] = {false, false};
 	bool blur_begin_marked = false;
@@ -2644,7 +2659,8 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 		}
 		cache_consumers += want[k];
 		cache_reason[k] = avk_blur_cache_check(cache,
-			scene->blur_cache.generation, scene->blur_cache.bounds.x,
+			scene->blur_cache.generation, source_hash,
+			scene->blur_cache.bounds.x,
 			scene->blur_cache.bounds.y,
 			(uint32_t)scene->blur_cache.bounds.width,
 			(uint32_t)scene->blur_cache.bounds.height, renderer->format,
@@ -2669,6 +2685,10 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 				&& cache_reason[k] == AVK_BLUR_CACHE_PARAMS) {
 			cache_reason[k] = AVK_BLUR_CACHE_OK;
 		}
+		if (renderer->break_blur_cache_ignore_source
+				&& cache_reason[k] == AVK_BLUR_CACHE_SOURCE) {
+			cache_reason[k] = AVK_BLUR_CACHE_OK;
+		}
 		if (want[k] == 0) {
 			continue;
 		}
@@ -2691,6 +2711,7 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 	 */
 	if (cache_ready[AVK_BLUR_CACHE_PLAIN] || cache_ready[AVK_BLUR_CACHE_DARK]) {
 		cache->generation = scene->blur_cache.generation;
+		cache->source_hash = source_hash;
 		cache->origin_x = scene->blur_cache.bounds.x;
 		cache->origin_y = scene->blur_cache.bounds.y;
 		cache->width = (uint32_t)scene->blur_cache.bounds.width;

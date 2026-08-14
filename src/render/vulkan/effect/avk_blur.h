@@ -62,6 +62,18 @@ struct avk_blur_params {
 	bool apply_effects;
 
 	/*
+	 * M5. Does the buffer these run on hold scene-linear light?
+	 *
+	 * The parameters above are authored against encoded values, so the shader
+	 * encodes before applying them and decodes after. Carried HERE rather than
+	 * read from the renderer at draw time because it is part of the cached
+	 * image's identity: a background blurred in one domain is not the picture a
+	 * consumer in the other domain asked for, and avk_blur_params_equal() is
+	 * what the M4I cache compares.
+	 */
+	bool linear_src;
+
+	/*
 	 * THE DARKEN CLAMP: the result may never come out LIGHTER than the source it
 	 * replaced, per channel.
 	 *

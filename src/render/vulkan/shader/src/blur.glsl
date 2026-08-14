@@ -66,6 +66,13 @@ vec4 az_blur_tap(sampler2D tex, vec2 uv) {
 #define AZ_BLUR_SATURATION  pc.inner_box.z
 #define AZ_BLUR_NOISE       pc.inner_box.w
 #define AZ_BLUR_EFFECTS     pc.inner_corners.x
+/*
+ * M5. The blur buffer holds SCENE-LINEAR values on both output paths, because
+ * the renderer composites into an FP16 intermediate (Path B) or decodes on
+ * sample (Path A). Before M5 it held gamma-encoded values, and every parameter
+ * below was authored against those.
+ */
+#define AZ_BLUR_LINEAR_SRC  (pc.inner_corners.y > 0.5)
 
 /*
  * Oklab chroma scaling for saturation.
@@ -117,11 +124,37 @@ float az_blur_noise(vec2 p) {
 vec4 az_blur_effects(vec4 color, vec2 uv) {
 	vec3 rgb = max(color.rgb, vec3(0.0));
 
+	/*
+	 * ── THE DOMAIN THESE PARAMETERS MEAN SOMETHING IN ─────────────────────
+	 *
+	 * brightness, contrast and saturation are authored by hand against
+	 * ENCODED values: that is what `contrast 0.9` meant when it was written
+	 * into a config, and it is the only domain in which the 0.5 pivot below
+	 * sits at mid grey. In scene-linear light 0.5 is ~74% encoded -- nearly
+	 * white -- so essentially the whole picture falls below the pivot and gets
+	 * lifted toward it. Measured on the live desktop's own wallpaper that is
+	 * 94% of pixels moved by more than 8 sRGB codes, worst 124, as a blue-ward
+	 * lift with saturated regions pushed into flat bands.
+	 *
+	 * So encode, apply, decode. A pure power law rather than the piecewise
+	 * sRGB curve, because it has to survive values above 1.0: an HDR output
+	 * composites a scene peak well past white (1.429 on this desktop) and the
+	 * piecewise form is only defined on [0,1]. pow() is monotonic there and
+	 * the round trip is exact.
+	 *
+	 * Not a parity argument with the GLES renderer. The argument is that a
+	 * config value must keep the meaning it was written with; M5 changed the
+	 * buffer under these parameters without changing them.
+	 */
+	if (AZ_BLUR_LINEAR_SRC) {
+		rgb = pow(rgb, vec3(1.0 / 2.2));
+	}
+
 	if (AZ_BLUR_SATURATION != 1.0) {
-		/* The blur buffer holds gamma-encoded values today, so linearise
-		 * around the Oklab step. M5 composites scene-linear and this round
-		 * trip becomes the identity -- the reason it is written as an explicit
-		 * pair rather than folded into the matrices. */
+		/* Linearise around the Oklab step, which requires linear input. This
+		 * is a genuine round trip and not the identity: `rgb` is encoded here
+		 * on every path now, either because the buffer was encoded or because
+		 * the block above encoded it. */
 		vec3 linear = pow(rgb, vec3(2.2));
 		vec3 lab = az_linear_to_oklab(linear);
 		lab.yz *= AZ_BLUR_SATURATION;
@@ -131,5 +164,12 @@ vec4 az_blur_effects(vec4 color, vec2 uv) {
 		rgb = 0.5 * pow(rgb * 2.0, vec3(AZ_BLUR_CONTRAST));
 	}
 	rgb *= AZ_BLUR_BRIGHTNESS * (1.0 + az_blur_noise(uv));
+
+	/* Back to the domain the caller composites in. The darken clamp runs after
+	 * this against the chain's own level 0, which is in that same domain, so
+	 * the min() stays a comparison of like with like. */
+	if (AZ_BLUR_LINEAR_SRC) {
+		rgb = pow(max(rgb, vec3(0.0)), vec3(2.2));
+	}
 	return vec4(rgb, color.a);
 }

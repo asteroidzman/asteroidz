@@ -785,6 +785,10 @@ static bool az_avk_upload_shm(struct az_avk_buffer *entry) {
 			entry->stat_partial_uploads++;
 			entry->stat_upload_bytes += copied;
 			avk.shm_damage_pixels += damage_px;
+			/* The image now holds different pixels behind the same identity --
+			 * see avk_image.content_seq. A partial upload counts: a wallpaper
+			 * that changed only where it differs is still a new wallpaper. */
+			entry->image->content_seq++;
 			ok = true;
 			goto uploaded;
 		}
@@ -802,6 +806,7 @@ static bool az_avk_upload_shm(struct az_avk_buffer *entry) {
 		avk.shm_damage_pixels += committed_px;
 		entry->stat_full_uploads++;
 		entry->stat_upload_bytes += (uint64_t)stride * entry->buffer->height;
+		entry->image->content_seq++;
 	}
 
 uploaded:
@@ -2793,9 +2798,38 @@ static void az_avk_walk_node(struct az_avk_walk *walk,
 		 * renderer to reach back into the scene graph after submission, which
 		 * is precisely the mutable-state-after-snapshot the design forbids.
 		 */
+		/*
+		 * AZ_BLUR_CACHE_NO_DIRTY_EDGE is the falsifier for the SOURCE digest,
+		 * and it models the SHIPPED defect rather than an invented one: the
+		 * background changes and the notification never arrives, so the
+		 * generation stays equal and only a fact about the source can catch it.
+		 *
+		 * NOT AZ_BLUR_CACHE_IGNORE_DIRTY, which is a different condition and
+		 * cannot test this. That one lets the generation move and then
+		 * suppresses the reason -- but avk_blur_cache_check() returns at the
+		 * first disagreement, so it returns GENERATION and the SOURCE
+		 * comparison below it is never evaluated at all. A fixture built on it
+		 * reports inv_source == 0 and looks like the digest does nothing.
+		 *
+		 * The flag is still CLEARED. Leaving it set would make the next frame
+		 * increment instead, which is a delayed notification rather than a lost
+		 * one.
+		 */
+		static int no_dirty_edge = -1;
+		if (no_dirty_edge < 0) {
+			no_dirty_edge = az_avk_env_flag("AZ_BLUR_CACHE_NO_DIRTY_EDGE")
+				? 1 : 0;
+			if (no_dirty_edge) {
+				wlr_log(WLR_ERROR, "M4I break: AZ_BLUR_CACHE_NO_DIRTY_EDGE -- "
+					"the background dirty signal is DROPPED; only the source "
+					"digest can now notice a wallpaper change");
+			}
+		}
 		if (ob->dirty) {
 			ob->dirty = false;
-			(*walk->mon_blur_generation)++;
+			if (!no_dirty_edge) {
+				(*walk->mon_blur_generation)++;
+			}
 		}
 		walk->scene->blur_cache.present = true;
 		walk->scene->blur_cache.prefix_end = walk->scene->len;
@@ -4230,6 +4264,21 @@ static void az_avk_surface_commit(struct wl_listener *listener, void *data) {
 		 */
 		struct az_avk_buffer *entry = wl_container_of(addon, entry, addon);
 		az_avk_pool_add(as, entry);
+		/*
+		 * RE-ATTACHING A BUFFER MEANS ITS CONTENTS MAY HAVE MOVED, whatever
+		 * kind of buffer it is -- see avk_image.content_seq.
+		 *
+		 * Outside the is_shm branch below on purpose. That branch is about
+		 * whether AVK has to re-UPLOAD, which only the CPU path does; this is
+		 * about whether anything caching a picture derived from the image can
+		 * still trust it, and a GPU client that renders into a released dmabuf
+		 * and re-commits it has changed every pixel without a single upload.
+		 * Missing that would leave the M4I cache blurring the old contents,
+		 * which is the defect this exists to close.
+		 */
+		if (entry->image != NULL) {
+			entry->image->content_seq++;
+		}
 		if (entry->is_shm) {
 			entry->content_generation++;
 			entry->stat_generations++;
@@ -4619,7 +4668,7 @@ static cJSON *az_avk_stats_json(void) {
 		uint64_t reb_k[AVK_BLUR_CACHE_KINDS] = {0};
 		uint64_t s_draws = 0, s_px = 0, s_chains = 0, s_blur = 0;
 		uint64_t i_gen = 0, i_geo = 0, i_par = 0, i_fmt = 0, i_new = 0,
-		         i_forced = 0;
+		         i_forced = 0, i_src = 0;
 		uint64_t gen_max = 0;
 		uint32_t cache_w = 0, cache_h = 0;
 		struct avk_blur_cache_inventory inv = {0};
@@ -4637,6 +4686,7 @@ static cJSON *az_avk_stats_json(void) {
 			i_gen += c->inv_generation; i_geo += c->inv_geometry;
 			i_par += c->inv_params; i_fmt += c->inv_format;
 			i_new += c->inv_never_built; i_forced += c->inv_forced;
+			i_src += c->inv_source;
 			for (int k = 0; k < AVK_BLUR_CACHE_KINDS; k++) {
 				hit_k[k] += c->hits_by_kind[k];
 				reb_k[k] += c->rebuilds_by_kind[k];
@@ -4677,12 +4727,60 @@ static cJSON *az_avk_stats_json(void) {
 		cJSON_AddNumberToObject(o, "blur_cache_req_bytes",
 			(double)inv.req_bytes);
 		cJSON_AddNumberToObject(o, "blur_cache_generation", (double)gen_max);
+		/*
+		 * ── PER OUTPUT, BECAUSE THE MAX ABOVE CAN HIDE A DEAD ONE ─────────
+		 *
+		 * `blur_cache_generation` is the largest generation across outputs, and
+		 * a maximum is exactly the wrong summary for the failure that matters:
+		 * one output's cache going stale while another's keeps invalidating
+		 * leaves the reported number climbing healthily forever. That is not
+		 * hypothetical -- the dirty edge is delivered to l->mon's node by
+		 * layer_flush_blur_background(), so a wallpaper surface associated with
+		 * the wrong monitor invalidates the wrong cache, and the aggregate says
+		 * everything is fine.
+		 *
+		 * So each output states its own. Cheap, and it is the only view in
+		 * which "DP-1 has not invalidated in six hours" is a readable fact.
+		 */
+		cJSON *per = cJSON_AddArrayToObject(o, "blur_cache_outputs");
+		if (per != NULL) {
+			wl_list_for_each(mm, &mons, link) {
+				if (mm->avk == NULL) {
+					continue;
+				}
+				const struct avk_blur_cache *c = &mm->avk->blur_cache;
+				cJSON *e = cJSON_CreateObject();
+				if (e == NULL) {
+					continue;
+				}
+				cJSON_AddStringToObject(e, "name",
+					mm->wlr_output != NULL ? mm->wlr_output->name : "?");
+				cJSON_AddNumberToObject(e, "generation",
+					(double)mm->avk->blur_cache_generation);
+				cJSON_AddNumberToObject(e, "rebuilds", (double)c->rebuilds);
+				cJSON_AddNumberToObject(e, "hits", (double)c->hits);
+				cJSON_AddNumberToObject(e, "inv_generation",
+					(double)c->inv_generation);
+				cJSON_AddNumberToObject(e, "inv_source", (double)c->inv_source);
+				cJSON_AddItemToArray(per, e);
+			}
+		}
 		cJSON_AddNumberToObject(o, "blur_cache_saved_prefix_draws",
 			(double)s_draws);
 		cJSON_AddNumberToObject(o, "blur_cache_saved_prefix_px", (double)s_px);
 		cJSON_AddNumberToObject(o, "blur_cache_saved_chains", (double)s_chains);
 		cJSON_AddNumberToObject(o, "blur_cache_saved_blur_px", (double)s_blur);
 		cJSON_AddNumberToObject(o, "blur_cache_inv_generation", (double)i_gen);
+		/*
+		 * NON-ZERO MEANS A BACKGROUND CHANGED WITHOUT SAYING SO.
+		 *
+		 * Every ordinary change bumps the generation and is counted there, so
+		 * this only moves when the source digest disagrees while the
+		 * notification did not -- which is the stale-wallpaper defect, caught
+		 * rather than rendered. It is a diagnosis, not a health metric: watch
+		 * it, do not normalise it.
+		 */
+		cJSON_AddNumberToObject(o, "blur_cache_inv_source", (double)i_src);
 		cJSON_AddNumberToObject(o, "blur_cache_inv_geometry", (double)i_geo);
 		cJSON_AddNumberToObject(o, "blur_cache_inv_params", (double)i_par);
 		cJSON_AddNumberToObject(o, "blur_cache_inv_format", (double)i_fmt);

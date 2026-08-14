@@ -55,12 +55,75 @@ bool avk_blur_params_equal(const struct avk_blur_params *a,
 		&& a->saturation == b->saturation
 		&& a->noise == b->noise
 		&& a->apply_effects == b->apply_effects
+		&& a->linear_src == b->linear_src
 		&& a->darken == b->darken;
+}
+
+/*
+ * FNV-1a over the fields that decide the prefix's pixels.
+ *
+ * Not a cryptographic digest and it does not need to be: the alternative it is
+ * being compared against is a counter that could be wrong in one direction
+ * only, and a 64-bit collision between two consecutive wallpapers is not a
+ * failure mode anybody will meet. What it must not do is MISS a change, so it
+ * takes the image POINTER (a re-imported buffer is a different avk_image, which
+ * is exactly the wallpaper-swap case) alongside the geometry, rather than
+ * trying to be clever about content.
+ */
+static inline uint64_t hash_bytes(uint64_t h, const void *p, size_t n) {
+	const uint8_t *b = p;
+	for (size_t i = 0; i < n; i++) {
+		h = (h ^ b[i]) * 0x100000001b3ULL;
+	}
+	return h;
+}
+
+uint64_t avk_blur_cache_source_hash(const struct avk_cmd *cmds, size_t len) {
+	uint64_t h = 0xcbf29ce484222325ULL;
+	for (size_t i = 0; i < len; i++) {
+		const struct avk_cmd *c = &cmds[i];
+		uint32_t type = (uint32_t)c->type;
+		h = hash_bytes(h, &type, sizeof(type));
+		h = hash_bytes(h, &c->dst, sizeof(c->dst));
+		h = hash_bytes(h, &c->opacity, sizeof(c->opacity));
+		h = hash_bytes(h, c->color, sizeof(c->color));
+		/*
+		 * The identity of the sampled image, and the window into it. A
+		 * wallpaper swap changes the first; a crop or transform change changes
+		 * the second.
+		 *
+		 * avk_image.id, NOT the pointer. Images are freed and reallocated
+		 * constantly, so a heap address recycled for the new wallpaper would
+		 * hash the same as the old one -- an ABA that would make this whole
+		 * check silently useless in exactly the case it exists for. `id` comes
+		 * from a monotonic per-device counter and is never reused.
+		 */
+		uint64_t img = c->image != NULL ? c->image->id : 0;
+		h = hash_bytes(h, &img, sizeof(img));
+		/*
+		 * AND WHAT IS IN IT, which is not the same question.
+		 *
+		 * A dmabuf wallpaper swap gives a new buffer and therefore a new `id`.
+		 * A CPU-path client that repaints into the SAME shm buffer does not:
+		 * the importer's cache returns the same avk_image, the id is unchanged,
+		 * and only the pixels moved. Hashing identity alone would miss exactly
+		 * that case and leave this check useless for a whole class of client.
+		 */
+		uint64_t seq = c->image != NULL ? c->image->content_seq : 0;
+		h = hash_bytes(h, &seq, sizeof(seq));
+		h = hash_bytes(h, &c->src, sizeof(c->src));
+		uint32_t tf = (uint32_t)c->transform;
+		h = hash_bytes(h, &tf, sizeof(tf));
+	}
+	/* Reserve 0 for "no prefix", so an empty background and an unhashed one
+	 * are distinguishable in the trace. */
+	return h == 0 ? 1 : h;
 }
 
 enum avk_blur_cache_reason avk_blur_cache_check(
 		const struct avk_blur_cache *cache,
-		uint64_t generation, int32_t origin_x, int32_t origin_y,
+		uint64_t generation, uint64_t source_hash,
+		int32_t origin_x, int32_t origin_y,
 		uint32_t width, uint32_t height, VkFormat format,
 		const struct avk_blur_params *params, enum avk_blur_cache_kind kind,
 		bool force_rebuild) {
@@ -98,6 +161,26 @@ enum avk_blur_cache_reason avk_blur_cache_check(
 	if (cache->generation != generation) {
 		return AVK_BLUR_CACHE_GENERATION;
 	}
+	/*
+	 * AFTER the generation, so that an ordinary notified change is still
+	 * reported as GENERATION and the reason table keeps its meaning. SOURCE
+	 * therefore names exactly one thing: the background changed and nothing
+	 * told us. That is a defect somewhere upstream, and a non-zero
+	 * blur_cache_inv_source is how it becomes visible instead of becoming a
+	 * stale picture.
+	 *
+	 * WHICH MEANS AZ_BLUR_CACHE_IGNORE_DIRTY CANNOT TEST THIS. This function
+	 * returns at the first disagreement, so when the generation has moved it
+	 * returns GENERATION and never evaluates the line below; suppressing that
+	 * reason afterwards leaves the source comparison unreached, and a fixture
+	 * built on it reads inv_source == 0 and concludes the digest is inert. The
+	 * break for this rule is AZ_BLUR_CACHE_NO_DIRTY_EDGE, which drops the
+	 * notification so the generations still agree -- which is also the shipped
+	 * defect rather than an invented one.
+	 */
+	if (cache->source_hash != source_hash) {
+		return AVK_BLUR_CACHE_SOURCE;
+	}
 	return AVK_BLUR_CACHE_OK;
 }
 
@@ -110,6 +193,7 @@ void avk_blur_cache_count_reason(struct avk_blur_cache *cache,
 	case AVK_BLUR_CACHE_OK:                                        return;
 	case AVK_BLUR_CACHE_NEVER_BUILT: cache->inv_never_built++;     break;
 	case AVK_BLUR_CACHE_GENERATION:  cache->inv_generation++;      break;
+	case AVK_BLUR_CACHE_SOURCE:      cache->inv_source++;          break;
 	case AVK_BLUR_CACHE_GEOMETRY:    cache->inv_geometry++;        break;
 	case AVK_BLUR_CACHE_PARAMS:      cache->inv_params++;          break;
 	case AVK_BLUR_CACHE_FORMAT:      cache->inv_format++;          break;

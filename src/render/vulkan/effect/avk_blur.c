@@ -412,6 +412,7 @@ static void record_blur_pass(VkCommandBuffer cb, void *user) {
 	pc.inner_box[2] = p->effects.saturation;
 	pc.inner_box[3] = p->effects.noise;
 	pc.inner_corners[0] = p->apply_effects ? 1.0f : 0.0f;
+	pc.inner_corners[1] = p->effects.linear_src ? 1.0f : 0.0f;
 
 	vkCmdPushConstants(cb, p->pipes->layout,
 		VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,

@@ -214,6 +214,15 @@ of bugs found on a real desktop.
 `transparency_threshold` ("alpha below/at which surface pixels don't count for
 the blur transparency mask"). `blur_data_apply_strength()` scales them per node.
 
+`brightness`, `contrast` and `saturation` are authored against **encoded**
+values — `contrast` is a power law about a 0.5 pivot, which is mid grey there
+and ~74 % encoded in linear light. Under M5 the blur buffer holds scene-linear
+values on both output paths, so `az_blur_effects()` encodes, applies and
+decodes, gated on `avk_blur_params.linear_src`. Applying them directly to
+linear values moved 94 % of a real wallpaper's pixels by more than 8 sRGB codes
+(F17). A pure power law, not the piecewise sRGB curve: an HDR output composites
+past white and the piecewise form is undefined above 1.0.
+
 **Per-node** — `wlr_scene_blur`:
 
 | field | meaning |

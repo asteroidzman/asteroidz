@@ -755,3 +755,130 @@ Run against a build with the walk's decode removed, stage 2 reports the border
 at **(228, 173, 106)** where the config asked for **(198, 107, 37)** — and
 stage 1, the wallpaper, still passes at 0 px, which is what makes the two
 stages genuinely independent probes rather than one claim written twice.
+
+## F17 — M5 changed the domain under the blur's post-effects, and nothing moved them
+
+Reported live, not by inspection: the desktop's blurred backdrops looked "dark
+and muddy", "banded", and like "a blob that slightly resembles the wallpaper"
+rather than frosted glass.
+
+`blur.glsl` folds brightness, contrast, saturation and noise into the last
+upsample, and it said what it needed:
+
+> The blur buffer holds gamma-encoded values today, so linearise around the
+> Oklab step. **M5 composites scene-linear and this round trip becomes the
+> identity** — the reason it is written as an explicit pair rather than folded
+> into the matrices.
+
+M5 landed. `linear_compose = path_a || path_b` (`az_avk.h`), the blur transients
+and the M4I cache follow the renderer's format onto the intermediate (ADR-012),
+and the buffer is FP16 scene-linear on this desktop — the arithmetic says so
+without asking the code: `blur_cache_texel_bytes` is 149,299,200 for two outputs
+at two kinds, which is 8 B/px on DP-1's 3840×2160 and 4 B/px on HDMI-A-1's
+1920×1080, exactly.
+
+The post-effects never moved. Applied to linear values they mean something else:
+
+- **contrast** is `0.5 * pow(2v, c)`, a power law about a **0.5 pivot**. In the
+  encoded domain 0.5 is mid grey. In linear it is ~74 % encoded — nearly white —
+  so essentially the whole picture falls *below* the pivot and is lifted toward
+  it. That is the muddiness, and it is not subtle.
+- **saturation** scales Oklab chroma after a `pow(2.2)` that was meant to
+  linearise an encoded value. Handed one that is already linear it squares the
+  transfer, and saturated regions are pushed into flat bands.
+
+Measured on the live desktop's own wallpaper: **94 % of pixels move by more than
+8 sRGB codes, worst 124**, as a blue-ward lift.
+
+**Confirmed against real pixels rather than argued.** A window with
+`background_opacity=0` on an empty tag shows the blurred backdrop and nothing
+else, so its interior *is* the blur. Two CPU models of the same wallpaper —
+effects applied in the encoded domain, effects applied in the linear domain —
+were scored against a `screenshot_ui,rawhdr` capture of that window:
+
+```
+  live capture   mean [117.7  86.1 121.2]
+  INTENDED       RMSE 20.9 codes
+  ACTUAL         RMSE  9.5 codes     <- the GPU is doing this one
+```
+
+**The fix** encodes, applies, decodes, gated on a new `avk_blur_params.linear_src`
+carried from `renderer->decode_enabled`. A pure power law, not the piecewise
+sRGB curve, because an HDR output composites a scene peak past white (1.429
+here) and the piecewise form is only defined on [0,1]; `pow()` is monotonic
+above 1 and the round trip is exact.
+
+`linear_src` lives on `avk_blur_params` — the *cache key* — rather than being
+read from the renderer at draw time, because a background blurred in one domain
+is not the picture a consumer in the other domain asked for.
+
+This is not a parity argument with the GLES renderer. It is that `contrast 0.9`
+in a config file must keep the meaning it was written with; M5 changed the
+buffer under it.
+
+## F18 — the blur cache's validity described a notification, not a source
+
+The same report, second symptom: the pixels being blurred were **not from the
+configured wallpaper**. A live capture settled it — the wallpaper on screen was
+a sea turtle and the blurred backdrop was a photograph of giraffes, a wallpaper
+several rotations old.
+
+Everything upstream was correct. Configured file, loaded file, and the unblurred
+background all agreed: 3840×2160 source on a 3840×2160 mode, 1:1, no crop, no
+transform, upright.
+
+**The validity rule was `generation + geometry + kernel + format`**, and
+`generation` counts an *edge* — `wlr_scene_optimized_blur.dirty`, converted to a
+counter at the single point the node is observed. `az_avk.h` claimed:
+
+> Every producer of the signal funnels through
+> `wlr_scene_optimized_blur_mark_dirty()`: a background layer commit, a
+> blur-parameter change, a resize.
+
+That claim was load-bearing and it is false. The live cache held a wallpaper
+that was no longer on screen.
+
+**What made it invisible.** `blur_cache_generation` in `avk-stats` is a **max
+across outputs**. One output's cache going dead while the other keeps
+invalidating leaves the aggregate climbing healthily forever — and the edge is
+delivered to `l->mon`'s node by `layer_flush_blur_background()`, so a wallpaper
+surface associated with the wrong monitor invalidates the wrong cache and the
+summary says everything is fine. `blur_cache_outputs` now states each output's
+generation, rebuilds and invalidation reasons separately, because a maximum is
+exactly the wrong summary for a failure of this shape.
+
+**The fix does not hunt the missing producer.** Validity now also carries
+`source_hash`: a digest of the prefix commands — type, dst, opacity, colour, the
+sampled image's identity, its source rect, its transform. That is everything
+deciding the background's pixels. It can only ever force a rebuild, never permit
+one, so the worst case of a digest that moves too eagerly is work rather than a
+wrong picture, and a background that changed without telling anyone can no
+longer be served from the cache.
+
+**It hashes `avk_image.id`, not the pointer.** Images are freed and reallocated
+constantly; a heap address recycled for the new wallpaper would hash identical
+to the old one, and the check would be silently useless in precisely the case it
+exists for. `id` is a monotonic per-device counter and is never reused.
+
+**And `content_seq` beside it, because identity is not content.** A dmabuf
+wallpaper swap arrives as a new buffer and therefore a new `id`. A client on the
+CPU path that repaints into the *same* shm buffer does not: the importer's cache
+returns the same `avk_image` with the same `id` and entirely different pixels.
+Hashing identity alone would have missed that for a whole class of client —
+including, plausibly, this desktop's own wallpaper. `avk_image.content_seq` is
+bumped by the upload path (full *and* partial: a wallpaper repainted only where
+it differs is still a new wallpaper) and never by a draw.
+
+**A new reason, and it is a diagnosis rather than a metric.** `SOURCE` is tested
+*after* `GENERATION`, so an ordinary notified change is still reported as
+`GENERATION`. `blur_cache_inv_source` therefore moves only when the source
+disagreed and the notification did not — the defect, caught instead of rendered.
+Watch it; do not normalise it.
+
+**The break had to change too.** `AZ_BLUR_CACHE_IGNORE_DIRTY` alone no longer
+produces a stale picture — the digest catches it, which is the whole point. Arm
+C of `avk-blur-cache-dirty.sh` now needs `AZ_BLUR_CACHE_IGNORE_SOURCE` as well
+to reproduce the shipped defect, and a new arm C2 asserts that the digest alone
+tracks the change and attributes it to `SOURCE`. A break that stops breaking is
+a fixture that has stopped looking, and this one would have gone green for the
+wrong reason.

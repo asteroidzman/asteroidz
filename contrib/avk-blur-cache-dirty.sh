@@ -74,6 +74,7 @@ JQ='{frames:.frames, req:.blur_cache_requests, hit:.blur_cache_hits,
      reb:.blur_cache_rebuilds, gen:.blur_cache_generation,
      inv_gen:.blur_cache_inv_generation, inv_geo:.blur_cache_inv_geometry,
      inv_par:.blur_cache_inv_params, inv_new:.blur_cache_inv_never_built,
+     inv_src:.blur_cache_inv_source,
      verr:.validation_errors}'
 snap() { hl_get "get avk-stats" | jq -r "$JQ | to_entries |
 	map(\"\(.key)=\(.value)\") | join(\" \")" 2>/dev/null; }
@@ -238,12 +239,28 @@ hl_assert_true "the cached run tracked the change (>=50% of the uncached delta)"
 	"$([ $(( DON * 2 )) -ge "$DREF" ] && echo true || echo false)"
 
 echo
-echo "── C: BREAK -- ignore the dirty generation ───────────────────────────"
-session ignoredirty AZ_BLUR_CACHE_IGNORE_DIRTY=1
+echo "── C: BREAK -- the shipped defect: no notification, no digest ────────"
+# BOTH SUPPRESSIONS, and that is the fix speaking.
+#
+# Dropping the notification alone used to be enough to render a stale picture,
+# because the generation was the whole validity rule. It is not any more: the
+# cache also compares a digest of the commands it was actually built from, so
+# losing only the notification leaves the source check to catch the change --
+# which is the entire point of it, and is asserted on its own in arm C2.
+#
+# NO_DIRTY_EDGE, not IGNORE_DIRTY. The two are different conditions and only
+# one of them is the bug that was reported: IGNORE_DIRTY lets the generation
+# move and suppresses the reason, which makes avk_blur_cache_check() return
+# GENERATION and never reach the SOURCE comparison at all -- so it would report
+# inv_source == 0 and look like the digest does nothing. NO_DIRTY_EDGE drops
+# the increment, leaving the generations in agreement, which is what a lost
+# notification actually looks like.
+session ignoredirty AZ_BLUR_CACHE_NO_DIRTY_EDGE=1 AZ_BLUR_CACHE_IGNORE_SOURCE=1
 IGN_BG="$S_BG"
-echo "  ignore_dirty: rebuilds=$(v reb "$IGN_BG") inv_gen=$(v inv_gen "$IGN_BG")"
+echo "  no_dirty_edge+ignore_source: rebuilds=$(v reb "$IGN_BG") inv_gen=$(v inv_gen "$IGN_BG") inv_src=$(v inv_src "$IGN_BG")"
 hl_assert "the break suppressed every generation invalidation" \
 	"$(v inv_gen "$IGN_BG")" 0
+hl_assert "and every source invalidation" "$(v inv_src "$IGN_BG")" 0
 read -r DIGN _ <<<"$(diffpx ignoredirty-warm ignoredirty-bg)"
 echo "  with the break, the background change moves $DIGN px (was $DON)"
 # THE FALSIFIER. The source changed and the cache did not notice, so the blurred
@@ -262,6 +279,41 @@ read -r DSTALE _ <<<"$(diffpx ignoredirty-bg on-bg)"
 echo "  broken vs correct, after the change: $DSTALE px differ"
 hl_assert_true "BREAK: and it differs from the correct picture" \
 	"$([ "$DSTALE" -gt 1000 ] && echo true || echo false)"
+
+echo
+echo "── C2: the source digest alone catches a background that changed ─────"
+#
+# THE ARM FOR THE SHIPPED DEFECT.
+#
+# On the live desktop the blurred backdrop rendered a photograph that had not
+# been the wallpaper for several rotations, while the unblurred wallpaper beside
+# it was correct -- so the background changed and the dirty edge did not arrive.
+# Whatever produces that, the cache must not serve the old picture.
+#
+# NO_DIRTY_EDGE is exactly that condition, deliberately induced: the
+# notification is thrown away and nothing else is, so the generations still
+# agree and no other rule can cover for the digest. The cache must still track
+# the change, and it must attribute it to SOURCE -- attributing it to anything
+# else would mean something else caught it and the digest is untested.
+session srcalone AZ_BLUR_CACHE_NO_DIRTY_EDGE=1
+SRC_WARM="$S_WARM"; SRC_BG="$S_BG"
+echo "  ignore_dirty only: rebuilds=$(v reb "$SRC_BG") inv_gen=$(v inv_gen "$SRC_BG") inv_src=$(v inv_src "$SRC_BG")"
+hl_assert "PREMISE: the generation really was suppressed" \
+	"$(v inv_gen "$SRC_BG")" 0
+hl_assert_true "the source digest noticed the change instead" \
+	"$([ "$(v inv_src "$SRC_BG")" -ge 1 ] && echo true || echo false)"
+hl_assert_true "and forced a rebuild" \
+	"$([ "$(v reb "$SRC_BG")" -gt "$(v reb "$SRC_WARM")" ] && echo true || echo false)"
+read -r DSRC _ <<<"$(diffpx srcalone-warm srcalone-bg)"
+echo "  with only the notification lost, the change moves $DSRC px (correct: $DON, broken: $DIGN)"
+hl_assert_true "THE FIX: the picture tracked the change as well as the correct run" \
+	"$([ $(( DSRC * 2 )) -ge "$DON" ] && echo true || echo false)"
+# And it is NOT the stale picture. Without this, an arm that moved pixels for
+# some unrelated reason would still read green.
+read -r DSRCSTALE _ <<<"$(diffpx srcalone-bg ignoredirty-bg)"
+echo "  vs the fully-broken run: $DSRCSTALE px differ"
+hl_assert_true "and it differs from the stale picture the old rule produced" \
+	"$([ "$DSRCSTALE" -gt 1000 ] && echo true || echo false)"
 
 echo
 echo "── D: BREAK -- ignore a kernel change ────────────────────────────────"
