@@ -48,6 +48,12 @@ enum az_tf {
 	AZ_TF_BT1886,
 	AZ_TF_PQ,
 	AZ_TF_LINEAR_EXT, /* scRGB: linear light, 1.0 == 80 cd/m2 */
+	/*
+	 * M6B. A measured display curve -- TRC^-1 with the profile's vcgt composed
+	 * on -- carried as a table rather than a formula, because a vcgt has no
+	 * closed form. Only ever an OUTPUT encode: no source declares it.
+	 */
+	AZ_TF_LUT1D,
 	AZ_TF_COUNT,
 };
 
@@ -58,6 +64,7 @@ static inline const char *az_tf_name(enum az_tf tf) {
 	case AZ_TF_GAMMA22:    return "gamma2.2";
 	case AZ_TF_BT1886:     return "bt1886";
 	case AZ_TF_PQ:         return "pq";
+	case AZ_TF_LUT1D:      return "lut1d";
 	case AZ_TF_LINEAR_EXT: return "linear-ext";
 	case AZ_TF_COUNT:      break;
 	}

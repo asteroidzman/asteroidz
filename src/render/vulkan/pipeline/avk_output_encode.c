@@ -51,10 +51,78 @@ bool avk_output_encode_init(struct avk_output_encode *enc,
 		.offset = 0,
 		.size = sizeof(struct avk_encode_push),
 	};
+	/*
+	 * SET 1 IS THE MEASURED CURVE. Declared for every variant, sampled by one:
+	 * the specialisation constant eliminates the branch in the analytic
+	 * variants, so the descriptor is not statically used there and needs no
+	 * binding. Declaring it uniformly keeps ONE pipeline layout rather than
+	 * two that must be kept in step.
+	 */
+	VkDescriptorSetLayoutBinding lut_binding = {
+		.binding = 0,
+		.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		.descriptorCount = 1,
+		.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+	};
+	VkDescriptorSetLayoutCreateInfo lut_li = {
+		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+		.bindingCount = 1,
+		.pBindings = &lut_binding,
+	};
+	if (!avk_check(vkCreateDescriptorSetLayout(dev->dev, &lut_li, NULL,
+			&enc->lut_set_layout), "vkCreateDescriptorSetLayout (encode lut)")) {
+		return false;
+	}
+	/*
+	 * CLAMP_TO_EDGE and LINEAR. The clamp matters: a scene value at exactly
+	 * 1.0 lands on the last tap's centre plus half a texel, and REPEAT would
+	 * wrap it to black -- a white that encodes as a black pixel, which is the
+	 * kind of failure that looks like a renderer bug and is a sampler state.
+	 */
+	VkSamplerCreateInfo si = {
+		.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+		.magFilter = VK_FILTER_LINEAR,
+		.minFilter = VK_FILTER_LINEAR,
+		.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
+		.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+		.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+		.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+		.maxLod = 0.0f,
+	};
+	if (!avk_check(vkCreateSampler(dev->dev, &si, NULL, &enc->lut_sampler),
+			"vkCreateSampler (encode lut)")) {
+		return false;
+	}
+	VkDescriptorPoolSize psz = {
+		.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+		.descriptorCount = 1,
+	};
+	VkDescriptorPoolCreateInfo pi = {
+		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+		.maxSets = 1,
+		.poolSizeCount = 1,
+		.pPoolSizes = &psz,
+	};
+	if (!avk_check(vkCreateDescriptorPool(dev->dev, &pi, NULL, &enc->lut_pool),
+			"vkCreateDescriptorPool (encode lut)")) {
+		return false;
+	}
+	VkDescriptorSetAllocateInfo ai = {
+		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+		.descriptorPool = enc->lut_pool,
+		.descriptorSetCount = 1,
+		.pSetLayouts = &enc->lut_set_layout,
+	};
+	if (!avk_check(vkAllocateDescriptorSets(dev->dev, &ai, &enc->lut_set),
+			"vkAllocateDescriptorSets (encode lut)")) {
+		return false;
+	}
+
+	VkDescriptorSetLayout sets[2] = { set_layout, enc->lut_set_layout };
 	VkPipelineLayoutCreateInfo li = {
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-		.setLayoutCount = 1,
-		.pSetLayouts = &set_layout,
+		.setLayoutCount = 2,
+		.pSetLayouts = sets,
 		.pushConstantRangeCount = 1,
 		.pPushConstantRanges = &range,
 	};
@@ -85,6 +153,23 @@ void avk_output_encode_finish(struct avk_output_encode *enc) {
 		}
 	}
 	enc->variant_len = 0;
+	if (enc->lut_pool != VK_NULL_HANDLE) {
+		/* The set is freed with its pool; freeing it separately would need the
+		 * pool created with FREE_DESCRIPTOR_SET, which this one is not. */
+		vkDestroyDescriptorPool(dev->dev, enc->lut_pool, NULL);
+		enc->lut_pool = VK_NULL_HANDLE;
+		enc->lut_set = VK_NULL_HANDLE;
+	}
+	if (enc->lut_set_layout != VK_NULL_HANDLE) {
+		vkDestroyDescriptorSetLayout(dev->dev, enc->lut_set_layout, NULL);
+		enc->lut_set_layout = VK_NULL_HANDLE;
+	}
+	if (enc->lut_sampler != VK_NULL_HANDLE) {
+		vkDestroySampler(dev->dev, enc->lut_sampler, NULL);
+		enc->lut_sampler = VK_NULL_HANDLE;
+	}
+	/* Borrowed, never owned: the image belongs to whoever built the curve. */
+	enc->lut_bound = NULL;
 	if (enc->vert != VK_NULL_HANDLE) {
 		vkDestroyShaderModule(dev->dev, enc->vert, NULL);
 		enc->vert = VK_NULL_HANDLE;
@@ -101,13 +186,13 @@ void avk_output_encode_finish(struct avk_output_encode *enc) {
 }
 
 static VkPipeline encode_build(struct avk_output_encode *enc, VkFormat format,
-		bool pq) {
+		enum avk_encode_tf tf_in) {
 	struct avk_device *dev = enc->dev;
 
 	/* AZ_ENCODE_TF, constant_id 0. The other curve is not compiled in at all,
 	 * which is the point: "there is no PQ encode in an SDR pipeline" is a
 	 * stronger statement than "the branch is not taken". */
-	int32_t tf = pq ? 1 : 0;
+	int32_t tf = (int32_t)tf_in;
 	VkSpecializationMapEntry entry = {
 		.constantID = 0,
 		.offset = 0,
@@ -217,17 +302,19 @@ static VkPipeline encode_build(struct avk_output_encode *enc, VkFormat format,
 	AVK_LIVE_INC(dev, pipelines);
 	enc->compiles++;
 	avk_device_name_object(dev, VK_OBJECT_TYPE_PIPELINE, (uint64_t)pipeline,
-		"avk pipeline output_encode %s fmt=%d", pq ? "pq" : "srgb", (int)format);
+		"avk pipeline output_encode %s fmt=%d",
+		tf_in == AVK_ENCODE_TF_LUT1D ? "lut1d"
+			: tf_in == AVK_ENCODE_TF_PQ ? "pq" : "srgb", (int)format);
 	return pipeline;
 }
 
 VkPipeline avk_output_encode_pipeline(struct avk_output_encode *enc,
-		VkFormat format, bool pq) {
+		VkFormat format, enum avk_encode_tf tf) {
 	if (enc == NULL || enc->dev == NULL || enc->frag == VK_NULL_HANDLE) {
 		return VK_NULL_HANDLE;
 	}
 	for (uint32_t i = 0; i < enc->variant_len; i++) {
-		if (enc->variants[i].format == format && enc->variants[i].pq == pq) {
+		if (enc->variants[i].format == format && enc->variants[i].tf == tf) {
 			return enc->variants[i].pipeline;
 		}
 	}
@@ -240,15 +327,16 @@ VkPipeline avk_output_encode_pipeline(struct avk_output_encode *enc,
 		 */
 		avk_log(AVK_ERROR, "avk encode: %d pipeline variants already built; "
 			"no room for format %d %s", AVK_ENCODE_MAX_VARIANTS, (int)format,
-			pq ? "pq" : "srgb");
+			tf == AVK_ENCODE_TF_LUT1D ? "lut1d"
+				: tf == AVK_ENCODE_TF_PQ ? "pq" : "srgb");
 		return VK_NULL_HANDLE;
 	}
-	VkPipeline pipeline = encode_build(enc, format, pq);
+	VkPipeline pipeline = encode_build(enc, format, tf);
 	/* Recorded even when it is VK_NULL_HANDLE: a format that cannot compile
 	 * must fail once, not once per frame. */
 	enc->variants[enc->variant_len++] = (struct avk_encode_variant){
 		.format = format,
-		.pq = pq,
+		.tf = tf,
 		.pipeline = pipeline,
 	};
 	return pipeline;
@@ -301,6 +389,37 @@ void avk_output_encode_record(VkCommandBuffer cb, void *user) {
 	}
 	vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, p->enc->layout,
 		0, 1, &set, 0, NULL);
+	/*
+	 * SET 1, only for the variant that samples it. The analytic variants
+	 * eliminate the sample at specialisation, so the descriptor is not
+	 * statically used there and binding it would be work with no reader.
+	 *
+	 * The write happens here rather than per frame because the curve changes
+	 * when a PROFILE is loaded -- an output-state event -- and `lut_bound`
+	 * makes that explicit: re-pointing the set at an image it already holds is
+	 * skipped, so the steady state costs one pointer comparison.
+	 */
+	if (p->params.tf == AVK_ENCODE_TF_LUT1D && p->params.lut != NULL) {
+		if (p->enc->lut_bound != p->params.lut) {
+			VkDescriptorImageInfo ii = {
+				.sampler = p->enc->lut_sampler,
+				.imageView = p->params.lut->view,
+				.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+			};
+			VkWriteDescriptorSet w = {
+				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+				.dstSet = p->enc->lut_set,
+				.dstBinding = 0,
+				.descriptorCount = 1,
+				.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				.pImageInfo = &ii,
+			};
+			vkUpdateDescriptorSets(p->enc->dev->dev, 1, &w, 0, NULL);
+			p->enc->lut_bound = p->params.lut;
+		}
+		vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
+			p->enc->layout, 1, 1, &p->enc->lut_set, 0, NULL);
+	}
 
 	struct avk_encode_push pc = {0};
 	for (int r = 0; r < 3; r++) {

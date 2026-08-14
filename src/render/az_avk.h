@@ -1872,7 +1872,14 @@ static struct avk_encode_params az_avk_encode_params(const Monitor *m) {
 	 * encode cannot be written without confronting the question. */
 	p.origin_x = 0.0f;
 	p.origin_y = 0.0f;
-	p.pq = s->encode_tf == AZ_TF_PQ;
+	/*
+	 * M6B/G2. Three curves now, so the mapping is explicit rather than a
+	 * predicate. A profiled SDR output encodes with the display's own measured
+	 * curve; everything else keeps M5's two.
+	 */
+	p.tf = s->encode_tf == AZ_TF_PQ ? AVK_ENCODE_TF_PQ
+		: s->encode_tf == AZ_TF_LUT1D ? AVK_ENCODE_TF_LUT1D
+		: AVK_ENCODE_TF_SRGB;
 	return p;
 }
 

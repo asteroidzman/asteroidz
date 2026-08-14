@@ -46,7 +46,25 @@
 /* Pipelines are built per (format, tf). Two scanout formats and two curves is
  * the whole space this renderer can reach; the extra room is so that a mixed
  * multi-output desktop cannot silently start recompiling on the frame path. */
-#define AVK_ENCODE_MAX_VARIANTS 8
+#define AVK_ENCODE_MAX_VARIANTS 12
+
+/*
+ * Which curve a variant encodes with. An enum rather than the `bool pq` this
+ * replaces, because M6B adds a third and ADR-000's HLG would be a fourth --
+ * the same reason az_tf is an enum and not `is_hdr`.
+ *
+ * These values ARE the specialisation constant; they must match the
+ * AZ_ENCODE_TF_* defines in shader/src/output_encode.frag.
+ */
+enum avk_encode_tf {
+	AVK_ENCODE_TF_SRGB = 0,
+	AVK_ENCODE_TF_PQ = 1,
+	AVK_ENCODE_TF_LUT1D = 2,
+};
+
+/* Taps in the measured curve. Must match AZ_ICC_CURVE_TAPS and the shader's
+ * AZ_ENCODE_LUT_TAPS; a mismatch is a silently skewed curve, not an error. */
+#define AVK_ENCODE_LUT_TAPS 256
 
 /*
  * ONE OUTPUT'S ENCODE CONSTANTS, in the order ADR-008 applies them.
@@ -68,7 +86,11 @@
  *            dither pattern is anchored to the display and cannot phase-shift.
  *            0,0 for the whole-output pass; the field exists so a regional one
  *            cannot be written without confronting the question.
- * pq         the encode transfer function, as the specialisation constant.
+ * tf         the encode transfer function, as the specialisation constant.
+ * lut        the measured encode curve, when tf is LUT1D. Owned by the caller
+ *            and guaranteed live for the frame; NULL for the analytic curves,
+ *            where the spec constant compiles the sample out entirely so the
+ *            descriptor is never statically used.
  */
 struct avk_encode_params {
 	float matrix[9];
@@ -77,7 +99,8 @@ struct avk_encode_params {
 	float anchor;
 	float dither_q;
 	float origin_x, origin_y;
-	bool pq;
+	enum avk_encode_tf tf;
+	struct avk_image *lut;
 };
 
 /* Must match the block in shader/src/output_encode.frag exactly. */
@@ -92,7 +115,7 @@ _Static_assert(sizeof(struct avk_encode_push) == 64,
 
 struct avk_encode_variant {
 	VkFormat format;
-	bool pq;
+	enum avk_encode_tf tf;
 	VkPipeline pipeline;
 };
 
@@ -100,6 +123,23 @@ struct avk_output_encode {
 	struct avk_device *dev;
 	VkPipelineLayout layout;
 	VkShaderModule vert, frag;
+
+	/*
+	 * The LUT's own descriptor set (set 1). The renderer's shared texture
+	 * layout carries exactly one binding and every pipeline in the tree is
+	 * built from it, so a second binding there would be a change to all of
+	 * them for the benefit of one variant. A set the encode pass owns is the
+	 * contained alternative.
+	 *
+	 * One set, not one per frame: the curve changes when a profile is loaded,
+	 * which is an output-state event and never a frame event. Nothing here is
+	 * allocated on the frame path.
+	 */
+	VkDescriptorSetLayout lut_set_layout;
+	VkDescriptorPool lut_pool;
+	VkDescriptorSet lut_set;
+	VkSampler lut_sampler;
+	struct avk_image *lut_bound; /* what lut_set currently points at */
 
 	struct avk_encode_variant variants[AVK_ENCODE_MAX_VARIANTS];
 	uint32_t variant_len;
@@ -132,7 +172,7 @@ void avk_output_encode_finish(struct avk_output_encode *enc);
  * electrical. The frame is refused instead; see avk_render.c.
  */
 VkPipeline avk_output_encode_pipeline(struct avk_output_encode *enc,
-	VkFormat format, bool pq);
+	VkFormat format, enum avk_encode_tf tf);
 
 /*
  * ONE ENCODE PASS, as a graph pass record callback.

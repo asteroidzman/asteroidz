@@ -2171,7 +2171,7 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 				inter->extent.width, inter->extent.height, width, height);
 		} else {
 			encode_pipeline = avk_output_encode_pipeline(&renderer->encode,
-				target->format, renderer->encode_params.pq);
+				target->format, renderer->encode_params.tf);
 			if (encode_pipeline != VK_NULL_HANDLE) {
 				r_compose = avk_graph_add_image(graph, inter, false,
 					AVK_EXIT_KEEP);

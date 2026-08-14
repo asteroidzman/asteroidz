@@ -53,9 +53,40 @@
  * compiled out of every SDR pipeline" is a stronger statement than "the branch
  * is not taken".
  */
+#define AZ_ENCODE_LUT_TAPS 256
 #define AZ_ENCODE_TF_SRGB 0
 #define AZ_ENCODE_TF_PQ 1
+/*
+ * M6B/G2. A measured display's encode curve, as a table.
+ *
+ * Not a third analytic transfer function: the curve is TRC^-1 with the
+ * profile's vcgt composed on (D4), and a vcgt is measured data with no closed
+ * form. It arrives as a 256-texel RGBA texture, one channel per colour
+ * channel, on its OWN descriptor set -- the renderer's shared texture layout
+ * has exactly one binding and adding a second would disturb every pipeline
+ * built from it.
+ */
+#define AZ_ENCODE_TF_LUT1D 2
 layout(constant_id = 0) const int AZ_ENCODE_TF = AZ_ENCODE_TF_SRGB;
+layout(set = 1, binding = 0) uniform sampler2D az_encode_lut;
+
+/*
+ * The table is sampled on a SQUARED index -- tap i holds the curve at
+ * (i/(N-1))^2 -- because an encode curve has infinite slope at zero and a
+ * uniform grid cannot track it there: 5.81 codes of error at 256 taps, still
+ * 2.51 at 1024, against 0.01 on this warp. See AZ_ICC_CURVE_TAPS; the CPU
+ * reference uses the same two functions, so the shader and az_icc_apply() are
+ * one function rather than two approximations of it.
+ *
+ * The half-texel offset is not decoration either. With LINEAR filtering, tap i
+ * sits at u = (i + 0.5)/N; indexing with a bare 0..1 coordinate samples
+ * halfway between taps at both ends and skews the whole curve by half a tap.
+ */
+float az_encode_lut_u(float linear) {
+	float idx = sqrt(max(linear, 0.0));
+	return (idx * float(AZ_ENCODE_LUT_TAPS - 1) + 0.5)
+		/ float(AZ_ENCODE_LUT_TAPS);
+}
 
 /*
  * 64 bytes: three matrix rows with a scalar riding in each w, plus one vec4.
@@ -109,9 +140,20 @@ void main() {
 	}
 	v = clamp(v, vec3(0.0), vec3(1.0));
 
-	/* 5. encode. The one PQ inverse EOTF in the tree. */
-	vec3 e = AZ_ENCODE_TF == AZ_ENCODE_TF_PQ ? az_pq_ieotf(v)
-											 : az_srgb_ieotf(v);
+	/* 5. encode. The one PQ inverse EOTF in the tree; or the measured curve,
+	 *    which replaces the analytic one entirely rather than composing with
+	 *    it -- the profile's TRC already IS this display's transfer function,
+	 *    so applying sRGB as well would encode twice. */
+	vec3 e;
+	if (AZ_ENCODE_TF == AZ_ENCODE_TF_LUT1D) {
+		e.r = texture(az_encode_lut, vec2(az_encode_lut_u(v.r), 0.5)).r;
+		e.g = texture(az_encode_lut, vec2(az_encode_lut_u(v.g), 0.5)).g;
+		e.b = texture(az_encode_lut, vec2(az_encode_lut_u(v.b), 0.5)).b;
+	} else if (AZ_ENCODE_TF == AZ_ENCODE_TF_PQ) {
+		e = az_pq_ieotf(v);
+	} else {
+		e = az_srgb_ieotf(v);
+	}
 
 	/* 6. dither. On the ELECTRICAL value, at the target's quantum, RGB only.
 	 *    Dithering the scene instead would be an amplitude correct at one grey

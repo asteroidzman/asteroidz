@@ -1077,7 +1077,7 @@ static struct avk_encode_params sdr_encode_params(void) {
 	p.peak = 1.0f;
 	p.anchor = 0.0f;
 	p.dither_q = 0.0f;
-	p.pq = false;
+	p.tf = AVK_ENCODE_TF_SRGB;
 	return p;
 }
 
@@ -1425,7 +1425,7 @@ static void test_path_b_pq_encode(struct harness *h) {
 	/* Dither OFF for the comparison. ADR-011's noise is +-half a code by
 	 * design, which is the whole tolerance this test has. */
 	params.dither_q = 0.0f;
-	params.pq = true;
+	params.tf = AVK_ENCODE_TF_PQ;
 
 	/* Scene values across the interesting range: below SDR white, AT it (the
 	 * 203-nit patch the ADR names), through the knee, and at the panel's
