@@ -8,9 +8,16 @@ conversion, linear FP16 composition, tone mapping, gamut conversion, luminance
 anchor and PQ encode to a 10-bit scan-out.
 
 HDR is on by default wherever C3 chooses Path B, with no environment variable.
-Path A (8-bit SDR linear compositing) remains opt-in behind `AZ_M5_PATH_A=1`:
-it is correct and qualified, but it changes how every SDR pixel on the desktop
-blends and nobody has asked for that.
+
+> **AMENDED 2026-08-14 (M6B/D5).** Path A is on by default too. It read
+> "remains opt-in behind `AZ_M5_PATH_A=1`: it is correct and qualified, but it
+> changes how every SDR pixel blends and nobody has asked for that" -- and
+> "not yet asked for" is a condition that never ends on its own. The flag now
+> has the same shape as `AZ_M5_PATH_B`: unset = on wherever C3 chose it, `=0` =
+> the bisect handle that restores pre-M5 blending exactly. What changes is
+> where the encode happens, not whether; storage stays 8-bit sRGB-coded and the
+> round trip is closed at zero codes on the GPU. Blended pixels do change, and
+> that is ADR-005 rather than a regression.
 
 See `opus-findings.md` for what implementation found that the architecture did
 not -- F1 through F16 -- and section 5.12 onward of

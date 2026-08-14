@@ -101,7 +101,14 @@ run() { # run NAME [EXTRA_ENV...]
 echo "══ M5 Path A ══ ${W}x${H}, wallpaper only"
 echo
 
-run off
+# M6B/D5 INVERTED THE DEFAULT: unset now means ON, so the control arm has to
+# ask for OFF explicitly. It used to be spelled `run off` with no environment at
+# all, and after the promotion that arm was quietly running the SAME
+# configuration as the `on` arm -- which showed up here as the premises failing
+# ("Path A off decodes nothing" reading 2 decodes) rather than as the gate
+# silently comparing a thing to itself. That is the only reason this fixture
+# noticed the promotion at all.
+run off AZ_M5_PATH_A=0
 OFF="$STATS"
 run on AZ_M5_PATH_A=1
 ON="$STATS"

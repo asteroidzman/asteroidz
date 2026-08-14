@@ -3615,7 +3615,11 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 	 * electrical value and has to be decoded before it enters a linear blend
 	 * (az_avk_scene_rgb), and the walk runs long before the frame is recorded.
 	 */
-	const bool path_a = az_avk_env_flag("AZ_M5_PATH_A")
+	/* Unset means ON here (D5), so the env flag is read for its ABSENCE as
+	 * well as its value -- az_avk_env_flag() answers "is it truthy", which is
+	 * false for both "unset" and "=0" and cannot tell them apart. */
+	const char *path_a_env = getenv("AZ_M5_PATH_A");
+	const bool path_a = (path_a_env == NULL || strcmp(path_a_env, "0") != 0)
 		&& m->color_state.path == AZ_OUTPUT_PATH_A_DIRECT_SRGB;
 	const bool linear_compose = path_a || path_b;
 	const VkFormat compose_format = path_b
@@ -4024,12 +4028,27 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 	 * two disagreed. Cleared afterwards so a path that forgets to set them
 	 * renders the pre-M5 picture rather than inheriting the last output's.
 	 *
-	 * OFF UNLESS ASKED FOR. AZ_M5_PATH_A=1 is the opt-in, because turning this
-	 * on changes every pixel on the display and the on-GPU gate has so far only
-	 * run against a fixture's own target. It is not a break switch: with it set
-	 * the compositor renders the CORRECT picture through the colour-managed
-	 * path, which is the whole point -- it is off because it has not been
-	 * qualified live, not because it is wrong.
+	 * ── M6B/D5: ON BY DEFAULT, WHEREVER C3 CHOSE IT ──────────────────────
+	 *
+	 * It was opt-in for a milestone, on the stated grounds that it had not been
+	 * watched live rather than that it was wrong -- and "not yet watched" is a
+	 * condition that runs forever if nothing ends it. D5 ends it: Path A is the
+	 * default for 8-bit SDR outputs, with the same flag shape as AZ_M5_PATH_B.
+	 *
+	 *   unset   on wherever C3 chose Path A
+	 *   =0      off -- THE BISECT HANDLE, restoring pre-M5 blending exactly
+	 *   =1      on (the old opt-in spelling, kept working)
+	 *
+	 * What Path A changes is WHERE the encode happens, not whether: composition
+	 * blends scene-linearly through the scanout buffer's _SRGB view, so the
+	 * hardware decodes on sample and encodes on write. Storage stays 8-bit
+	 * sRGB-coded -- the same quantisation as before, neither better nor worse --
+	 * and the round trip is closed at ZERO codes by the on-GPU gate.
+	 *
+	 * BLENDED pixels do change, and that is the feature rather than a
+	 * regression: blending in linear light is what ADR-005 is for. It is also
+	 * the one thing a fixture cannot call correct or incorrect on its own, which
+	 * is why D5 gates the promotion on the operator watching it once.
 	 */
 	/*
 	 * ── PATH B, LENT THE SAME WAY ─────────────────────────────────────────

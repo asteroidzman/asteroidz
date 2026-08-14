@@ -2797,6 +2797,10 @@ Each path got a temporary GDM session carrying its environment variable, since
 
 ### Path A — `AZ_M5_PATH_A=1`
 
+> Since M6B/D5 this is the DEFAULT: unset means on wherever C3 chose Path A,
+> and `AZ_M5_PATH_A=0` is the bisect handle. The readings below were taken
+> under the old opt-in spelling, which still works.
+
 | reading | value |
 |---|---|
 | `srgb_attach_segments` / `frames` | **634 / 634** — every frame through the scan-out buffer's `_SRGB` view |
