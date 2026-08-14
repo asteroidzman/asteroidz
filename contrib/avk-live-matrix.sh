@@ -41,7 +41,32 @@ PID="$(pgrep -x asteroidz | head -1)"
 
 START_TAG="$(amsg get all-monitors | jq -r \
 	".monitors[] | select(.name==\"$MON\") | .active_tags[0]")"
+# ── IS ANYONE WATCHING FOR VUIDs? ─────────────────────────────────────────
+#
+# The VUID column below is `validation_errors`, which only ever increments from
+# the Vulkan validation layer's callback. There are two AVK session files and
+# only one loads it:
+#
+#   asteroidz-avk.desktop        ... ASTEROIDZ_RENDERER=avk asteroidz
+#   asteroidz-avk-debug.desktop  ... ASTEROIDZ_VK_DEBUG=1 asteroidz
+#
+# An earlier run of this matrix reported "0 VUID" from the PLAIN session, where
+# the counter could not have moved -- the same defect that let Path A emit
+# twenty VUIDs a run unseen. So the answer is printed here, at the top, and the
+# table says UNWATCHED rather than 0 when nothing is looking.
+VALIDATION="$(amsg get avk-stats 2>/dev/null | jq -r '.validation_enabled')"
 echo "══ live matrix ══ pid=$PID monitor=$MON budget=${BUDGET_US}us"
+if [ "$VALIDATION" = "true" ]; then
+	echo "   validation layer: ON -- the VUID column is a real result."
+	echo "   NOTE: validation inflates CPU-side timing by ~100x. The gpu_frame"
+	echo "   percentiles below are GPU timestamp spans and stay meaningful, but"
+	echo "   this session cannot pace like the plain one, so the SCENARIO is not"
+	echo "   the same workload. Do not compare these percentiles to a run made"
+	echo "   without the layer."
+else
+	echo "   validation layer: OFF -- the VUID column CANNOT MOVE and means"
+	echo "   nothing. Log into asteroidz-avk-debug for a real answer."
+fi
 echo "   the display WILL switch tags and a scratch window WILL appear."
 echo "   starting tag on $MON: $START_TAG (restored at the end)"
 echo
@@ -139,9 +164,10 @@ kill "$SCRATCH" 2>/dev/null; SCRATCH=""; SCRATCH_CLIENT_PID=""
 sleep 1
 
 echo
-python3 - "$OUT" "$MON" "$BUDGET_US" <<'PY'
+python3 - "$OUT" "$MON" "$BUDGET_US" "$VALIDATION" <<'PY'
 import os, re, sys, json
 out, mon, budget = sys.argv[1], sys.argv[2], float(sys.argv[3])
+watched = len(sys.argv) > 4 and sys.argv[4] == "true"
 RX = re.compile(r'READ\s+out=(\S+).*?gpu_frame=([\d.]+) us')
 
 def frames(name):
@@ -169,6 +195,8 @@ def stat(name, key):
         return None
 
 print("  THE BUDGET IS %.0fus. These microseconds are the real ones." % budget)
+if len(sys.argv) > 4 and sys.argv[4] != "true":
+    print("  VUID reads UNWATCHED: no validation layer in this session.")
 print()
 hdr = ("  %-8s %6s %8s %8s %8s %8s %6s %4s %4s %4s %6s %6s"
        % ("scenario","n","p50","p95","p99","max",">bud","1x","2x","3x","VUID","waits"))
@@ -182,7 +210,8 @@ for name in ("idle", "tag", "move", "resize"):
           % (name, len(v), pct(v,.50), pct(v,.95), pct(v,.99), max(v),
              sum(1 for x in v if x > budget),
              longest(v,1), longest(v,2), longest(v,3),
-             stat(name, "validation_errors"), stat(name, "cpu_sync_waits")))
+             stat(name, "validation_errors") if watched else "UNWATCH",
+             stat(name, "cpu_sync_waits")))
 PY
 echo
 echo "logs: $OUT"
