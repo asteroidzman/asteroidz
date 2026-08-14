@@ -87,6 +87,10 @@ libscenefx_proj = subproject(
 )
 libscenefx_dep = libscenefx_proj.get_variable('scenefx')
 pixman_dep = dependency('pixman-1')
+# M6B/D2: ICC matrix-shaper ingest. Already in the dependency closure via
+# wlroots' colour management; named explicitly so the ingest unit can be built
+# and unit-tested without a renderer.
+lcms2_dep = dependency('lcms2')
 cjson_dep = dependency('libcjson')
 pangocairo_dep = dependency('pangocairo')
 gdkpixbuf_dep = dependency('gdk-pixbuf-2.0')
@@ -220,6 +224,13 @@ test('lum-domain', test_lum_domain, timeout : 30)
 # The output-colour-state decision table (M5, contract C3). Five outcomes, four
 # of which render a plausible picture when chosen wrongly -- which is why the
 # table asserts the WHOLE state per row rather than the field it is about.
+test_icc_shaper = executable('test-icc-shaper',
+                             ['tests/test-icc-shaper.c',
+                              'src/render/color/az_icc.c'],
+                             dependencies : [lcms2_dep, libm],
+                             build_by_default : false)
+test('icc-shaper', test_icc_shaper, timeout : 30)
+
 test_output_color = executable('test-output-color',
                                'tests/test-output-color.c',
                                dependencies : [az_color_dep],
