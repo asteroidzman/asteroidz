@@ -267,8 +267,10 @@ for n in $(reg_names); do
 	# the symptom is the NEXT suite failing. Reported rather than killed: this
 	# runner does not own those processes and a pattern kill here would be one
 	# typo away from the user's own session.
-	stray="$(pgrep -c -f 'build/asteroidz -c /tmp/asteroidz-' 2>/dev/null || echo 0)"
-	[ "${stray:-0}" -gt 0 ] && echo "  WARNING: $stray headless compositor(s) still running"
+	# `pgrep -c` prints 0 AND exits 1 when nothing matches, so `|| echo 0`
+	# appends a second zero and the comparison below says "integer expected".
+	stray="$(pgrep -c -f 'build/asteroidz -c /tmp/asteroidz-' 2>/dev/null)"
+	[ "${stray:-0}" -gt 0 ] 2>/dev/null && echo "  WARNING: $stray headless compositor(s) still running"
 	echo "  /tmp: $(free_mb)MB free"
 	echo
 done
