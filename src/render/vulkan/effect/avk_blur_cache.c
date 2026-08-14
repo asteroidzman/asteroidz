@@ -86,7 +86,7 @@ enum avk_blur_cache_reason avk_blur_cache_check(
 			|| cache->origin_x != origin_x || cache->origin_y != origin_y) {
 		return AVK_BLUR_CACHE_GEOMETRY;
 	}
-	if (!avk_blur_params_equal(&cache->params, params)) {
+	if (!avk_blur_params_equal(&cache->img[kind].params, params)) {
 		return AVK_BLUR_CACHE_PARAMS;
 	}
 	/*

@@ -192,6 +192,15 @@ struct avk_blur_cache_image {
 	uint64_t slot_bytes[2];
 	uint32_t slot;
 	bool valid;
+	/* THE KERNEL THIS IMAGE WAS BUILT WITH, per kind and not shared.
+	 *
+	 * A single shared `params` cannot validate two images whose kernels differ
+	 * in `darken` -- the check compared the dark image against a stored kernel
+	 * stamped from the plain one, found a difference every single frame, and
+	 * rebuilt: 383 output-sized rebuilds in 13 seconds of an idle desktop,
+	 * reported honestly as PARAMS by the reason table. The fix is to stop
+	 * having one field describe two images. */
+	struct avk_blur_params params;
 	/* Built only where something asked for it. A desktop with no shadows never
 	 * allocates the dark image, and one with no window backdrops never
 	 * allocates the plain one -- which matters, because each is a full
@@ -206,7 +215,11 @@ struct avk_blur_cache {
 	int32_t origin_x, origin_y;
 	uint32_t width, height;
 	VkFormat format;
-	struct avk_blur_params params;
+	/* No shared `params` here on purpose: the kernel lives on each image (see
+	 * avk_blur_cache_image), because the two kinds differ in exactly that
+	 * field and one copy describing both is what caused the every-frame
+	 * rebuild. What IS shared is everything that describes the SOURCE --
+	 * generation, extent, format -- which is genuinely one thing. */
 
 	/* Telemetry. Requests are consumer asks; hits are asks served from here;
 	 * rebuilds are producer runs. saved_* is the work a hit avoided, priced in

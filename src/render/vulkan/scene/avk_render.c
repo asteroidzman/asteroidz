@@ -1819,6 +1819,7 @@ static bool az_blur_cache_rebuild(struct avk_renderer *renderer,
 	cache->rebuilds++;
 	cache->rebuilds_by_kind[kind]++;
 	cache->img[kind].valid = true;
+	cache->img[kind].params = *params;
 	return true;
 }
 
@@ -2453,7 +2454,6 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 		cache->width = (uint32_t)scene->blur_cache.bounds.width;
 		cache->height = (uint32_t)scene->blur_cache.bounds.height;
 		cache->format = renderer->format;
-		cache->params = cache_params[AVK_BLUR_CACHE_PLAIN];
 	}
 	if (renderer->blur_chain_trace && cache_enabled) {
 		avk_log(AVK_ERROR, "avk blurcache: tgt=%ux%u gen=%" PRIu64
