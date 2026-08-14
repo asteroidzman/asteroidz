@@ -117,9 +117,16 @@ int main(void) {
 		{"ICC profile attached -> AVK refuses",
 			{10, false, true, 0.0f, 0.0f, 1.0f, true},
 			AZ_OUTPUT_PATH_FALLBACK, AZ_TF_SRGB, 1.0, 0.0, true},
-		{"ICC on an HDR output -> still refuses",
+		/* M6B/D3: hdr is decided BEFORE has_icc. A profile on an HDR output
+		 * is inert -- the connector is already colour-managing it, and
+		 * az_output_color_transform() has always returned NULL there -- so it
+		 * must not also cost the output its renderer. This row asserted the
+		 * opposite until the operator's own calibrated-display config line
+		 * turned out to be unrestorable because of it. */
+		{"ICC on an HDR output -> HDR wins, profile inert",
 			{10, true, true, 1000.0f, 0.0f, 1.0f, true},
-			AZ_OUTPUT_PATH_FALLBACK, AZ_TF_SRGB, 1.0, 0.0, true},
+			AZ_OUTPUT_PATH_B_ENCODE, AZ_TF_PQ, 1000.0 / 203.0, 1.0 / 1023.0,
+			false},
 	};
 
 	printf("the decision table\n");
@@ -288,9 +295,43 @@ int main(void) {
 		CHECK(!az_output_may_drive(&hdr, true, false, false),
 			"HDR + encode pass DISABLED: refused (the interlock)");
 		CHECK(!az_output_may_drive(&icc, false, true, true),
-			"an ICC transform is refused even with the pass on (M6)");
+			"an SDR ICC transform is refused even with the pass on (M6B/D2)");
 		CHECK(!az_output_may_drive(&icc, false, false, true),
 			"and C3's own FALLBACK is refused without being asked twice");
+
+		/*
+		 * ── M6B/D3: A PROFILE MUST NOT COST AN HDR OUTPUT ITS RENDERER ────
+		 *
+		 * has_icc used to be tested before hdr, so ANY profiled output derived
+		 * FALLBACK regardless of what else it was. The operator's own
+		 * monitors.kdl carries the consequence, commented out beside a note
+		 * that the display is calibrated:
+		 *
+		 *     icc-profile "/home/ralf/FI32U.icm"; hdr 1;
+		 *
+		 * Restoring that line lost DP-1's HDR and its renderer together. An
+		 * HDR output is colour-managed by the connector; the profile is inert
+		 * there, not a reason to abandon the output.
+		 */
+		struct az_output_desc hdr_icc_desc = {10, true, true, 400.0f, 0.0f,
+			1.0f, false};
+		struct az_output_color_state hdr_icc =
+			az_output_color_derive(&hdr_icc_desc);
+		CHECK(hdr_icc.path == AZ_OUTPUT_PATH_B_ENCODE,
+			"HDR + profile: Path B, the profile does not cost the renderer");
+		CHECK(hdr_icc.encode_tf == AZ_TF_PQ,
+			"HDR + profile: still PQ -- the connector manages the colour");
+		/* has_color_transform is FALSE here, modelling the real call site:
+		 * az_output_color_transform() returns NULL whenever the output carries
+		 * its own image description, so an HDR output never presents AVK with
+		 * a transform to refuse. Passing true here would test a state the
+		 * compositor cannot produce. */
+		CHECK(az_output_may_drive(&hdr_icc, true, false, true),
+			"HDR + profile + encode pass: DRIVEN (the config line is "
+			"restorable)");
+		CHECK(!az_output_may_drive(&hdr_icc, true, false, false),
+			"HDR + profile without the pass: still refused (the interlock "
+			"outranks the profile)");
 		CHECK(az_output_may_drive(&sdr8, false, false, false),
 			"SDR with no encode pass: driven, as every build before M5 did");
 		CHECK(az_output_may_drive(&sdr8, false, false, true),

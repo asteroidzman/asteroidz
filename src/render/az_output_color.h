@@ -159,19 +159,37 @@ az_output_color_derive(const struct az_output_desc *o) {
 		return s;
 	}
 
-	if (o->has_icc) {
-		/* ADR-000: fx_vk keeps this one. Every other field stays at its
-		 * neutral value so a caller that reads them anyway gets an SDR
-		 * identity rather than an uninitialised matrix. */
-		return s;
-	}
-
 	/* One code (1/255 or 1/1023) peak-to-peak, per ADR-011. Computed from the
 	 * depth rather than switched on it, so a future 12-bit output is not a
 	 * silent zero. */
 	const int bpc = o->bits_per_channel > 0 ? o->bits_per_channel : 8;
 	const float quantum = 1.0f / (float)((1u << bpc) - 1u);
 
+	/*
+	 * ── M6B/D3: hdr IS DECIDED BEFORE has_icc, AND THAT IS THE POINT ──────
+	 *
+	 * This test used to sit above, returning FALLBACK for any profiled output
+	 * before `hdr` was ever read. The consequence was concrete and lived in
+	 * the operator's own monitors.kdl, commented out with a note that the
+	 * display IS calibrated: restoring
+	 *
+	 *     icc-profile "/home/ralf/FI32U.icm"; hdr 1;
+	 *
+	 * took DP-1 off AVK entirely -- not just losing the profile, losing HDR
+	 * and the renderer with it.
+	 *
+	 * An HDR output is already colour-managed by the connector: it presents
+	 * its own image description and the sink applies it. Layering a profile's
+	 * SDR characterisation on top of that would apply TWO transforms, which is
+	 * the same error `az_output_color_transform` already refuses. So on an HDR
+	 * output the profile is INERT -- deliberately, once, with a log line --
+	 * rather than a reason to abandon the output.
+	 *
+	 * On an SDR output the profile is exactly what the encode pass is for, and
+	 * that is D2/D4's work; until the matrix-shaper ingest lands, an SDR
+	 * profiled output keeps today's FALLBACK behaviour rather than silently
+	 * rendering unmanaged colour on a display someone calibrated.
+	 */
 	if (o->hdr) {
 		s.path = AZ_OUTPUT_PATH_B_ENCODE;
 		s.encode_tf = AZ_TF_PQ;
@@ -197,6 +215,23 @@ az_output_color_derive(const struct az_output_desc *o) {
 				s.matrix[i] = AZ_MAT_709_TO_2020[i];
 			}
 		}
+		return s;
+	}
+
+	if (o->has_icc) {
+		/*
+		 * SDR + profile: still FALLBACK, and still SceneFX's output -- but now
+		 * for a stated reason rather than as a side effect of test order. The
+		 * encode pass cannot yet apply a profile TRC (D2/D4), and rendering a
+		 * calibrated display's colour UNMANAGED would be worse than declining
+		 * it: the operator asked for characterised output and would get
+		 * uncharacterised output that looks plausible.
+		 */
+		s.path = AZ_OUTPUT_PATH_FALLBACK;
+		s.encode_tf = AZ_TF_SRGB;
+		az_output_color_set_identity(s.matrix);
+		s.peak_scene = 1.0f;
+		s.dither_q = 0.0f;
 		return s;
 	}
 
