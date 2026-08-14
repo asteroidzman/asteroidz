@@ -51,6 +51,7 @@ m6a-mixed-refresh-test.sh          required
 m6a-idle-test.sh                   required
 m6a-retarget-test.sh               required
 m6b-icc-drive-test.sh              required
+m6b-preferred-desc-test.sh         required
 avk-blur-cache-multi.sh            required
 avk-blur-cache-test.sh             required
 avk-blur-damage-test.sh            required

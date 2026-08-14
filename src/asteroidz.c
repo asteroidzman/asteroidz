@@ -1415,6 +1415,11 @@ static void reset_maximizescreen_size(Client *c);
 static void setgaps(int32_t oh, int32_t ov, int32_t ih, int32_t iv);
 
 static void setmon(Client *c, Monitor *m, uint32_t newtags, bool focus);
+/* M6B/D6. Defined beside setmon, called from mapnotify and from the colour
+ * derivation, both of which come earlier in this file. */
+static void surface_send_preferred_description(struct wlr_surface *surface,
+	Monitor *m);
+static void mon_send_preferred_descriptions(Monitor *m);
 static void setpsel(struct wl_listener *listener, void *data);
 static void setsel(struct wl_listener *listener, void *data);
 static void setup(void);
@@ -8828,6 +8833,21 @@ static void render_monitor(Monitor *m) {
 		}
 		wlr_output_state_finish(&state);
 		m->hdr_pending_change = false;
+		/*
+		 * M6B/D6. HERE, AND NOT IN hdr_resolve(). What a surface should prefer
+		 * is read off `wlr_output->image_description`, which only becomes
+		 * current when the state COMMITS -- hdr_resolve merely sets the pending
+		 * flag. Announcing from there would state the description the output is
+		 * about to leave, which is worse than silence: a client would retarget
+		 * to PQ at the moment the output dropped out of it.
+		 *
+		 * Unconditional on reaching here, failure branches included: a failed
+		 * commit leaves the output on its OLD description, and re-stating the
+		 * truth costs a comparison inside wlroots (it suppresses an identical
+		 * description) while a missed update leaves a client tone-mapping for a
+		 * display state that no longer exists.
+		 */
+		mon_send_preferred_descriptions(m);
 	} else if (wlr_scene_output_needs_frame(m->scene_output)) {
 		pace_needed_frame = true;
 		/* What wlr_scene_output_commit() does, written out, because the
@@ -9898,6 +9918,149 @@ void setmon(Client *c, Monitor *m, uint32_t newtags, bool focus) {
 
 	if (focus && !client_is_x11_popup(c)) {
 		focusclient(focustop(selmon), 1);
+	}
+
+	/* M6B/D6. The surface has changed output, so what its display prefers may
+	 * have changed with it -- an SDR panel and an HDR one side by side are the
+	 * whole reason this is said per output rather than once. */
+	if (m != NULL) {
+		struct wlr_surface *s = client_surface(c);
+		if (s != NULL && s->mapped) {
+			surface_send_preferred_description(s, m);
+		}
+	}
+}
+
+/*
+ * ── M6B/D6: TELL A SURFACE WHAT ITS OUTPUT PREFERS ────────────────────────
+ *
+ * `wlr_color_manager_v1_set_surface_preferred_image_description` had no callers
+ * anywhere in the tree, which means every wp-cm client asking DP-1 what it
+ * would like got the compositor default -- SDR -- and correctly tone-mapped its
+ * HDR content down to meet it. The panel is in HDR10, the client has HDR10, and
+ * the handshake in between says "this display is SDR". That is the same failure
+ * shape as the capability list one protocol object over: nothing errors,
+ * nothing logs, the picture is merely wrong in the one place HDR was for.
+ *
+ * WHAT IS PREFERRED IS THE OUTPUT'S OWN DESCRIPTION, not a guess. When the
+ * output is presenting HDR that is PQ/BT.2020 carrying the monitor rule's
+ * mastering values; otherwise it is the default, and NULL is how this protocol
+ * says "the default" -- not an omission.
+ *
+ * NOT ON EVERY FRAME. The description changes when an output's colour state
+ * changes or when a surface moves to a different output, and both are rare
+ * events. wlroots additionally suppresses a repeat of an identical description
+ * (`last_image_desc_identity`), so a redundant call here costs a comparison
+ * rather than a protocol event -- but the calls are still placed at the three
+ * moments the answer can change rather than sprayed.
+ */
+static void surface_send_preferred_description(struct wlr_surface *surface,
+		Monitor *m) {
+	if (color_manager == NULL || surface == NULL) {
+		return;
+	}
+	/*
+	 * BREAK: AZ_BREAK_CM_NO_PREFERRED restores the pre-M6B behaviour exactly --
+	 * the compositor never tells a surface anything, and the client falls back
+	 * to the default. G4's falsifier: with this set, a client that observed
+	 * PQ must observe the default instead.
+	 */
+	static int suppressed = -1;
+	if (suppressed < 0) {
+		suppressed = getenv("AZ_BREAK_CM_NO_PREFERRED") != NULL;
+	}
+	if (suppressed) {
+		return;
+	}
+	/*
+	 * ── NEVER NULL. wlroots DEREFERENCES THIS. ────────────────────────────
+	 *
+	 * `wlr_color_manager_v1_set_surface_preferred_image_description` reads
+	 * `*data` unconditionally -- both in its equality test and in the
+	 * assignment -- so passing NULL to mean "the default" is a null dereference
+	 * in the compositor, taken the moment any wp-cm client holds a feedback
+	 * object on an SDR output. It reads like an optional argument and is not
+	 * one.
+	 *
+	 * So the SDR case is stated EXPLICITLY: sRGB transfer, sRGB primaries.
+	 * That is also the better answer on its own terms -- "this output is sRGB"
+	 * is a fact a client can act on, where silence is merely an absence a
+	 * client has to guess about.
+	 */
+	/*
+	 * ── AND EVERY PROTOCOL VALUE COMES FROM A wlroots ENUM ────────────────
+	 *
+	 * Not written as a protocol constant, for the reason the color-manager
+	 * setup in this file already states at length: _to_wlr() ABORTS on a
+	 * protocol value with no matching wlroots entry, and wlroots calls it on
+	 * this data the moment a client asks the description for its information.
+	 *
+	 * WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_SRGB is exactly such a value. It
+	 * exists in the protocol, it is the obvious constant to reach for, and
+	 * wlroots maps its own WLR_..._SRGB to COMPOUND_POWER_2_4 instead -- so
+	 * _to_wlr(WP_..._SRGB) falls through to abort(). Hard-coding it killed the
+	 * compositor the first time a wp-cm client called get_information, which is
+	 * how this comment came to be written.
+	 */
+	struct wlr_image_description_v1_data sdr = {
+		.tf_named = wlr_color_manager_v1_transfer_function_from_wlr(
+			WLR_COLOR_TRANSFER_FUNCTION_SRGB),
+		.primaries_named = wlr_color_manager_v1_primaries_from_wlr(
+			WLR_COLOR_NAMED_PRIMARIES_SRGB),
+	};
+	const struct wlr_image_description_v1_data *data = &sdr;
+	struct wlr_image_description_v1_data hdr;
+	if (m != NULL && m->wlr_output != NULL
+			&& m->wlr_output->image_description != NULL) {
+		const struct wlr_output_image_description *od =
+			m->wlr_output->image_description;
+		hdr = (struct wlr_image_description_v1_data){
+			/* Through _from_wlr() as well. These two happen to round-trip, but
+			 * "happens to" is not a property to rely on twice in one function
+			 * when the other case already proved it can be false. */
+			.tf_named = wlr_color_manager_v1_transfer_function_from_wlr(
+				WLR_COLOR_TRANSFER_FUNCTION_ST2084_PQ),
+			.primaries_named = wlr_color_manager_v1_primaries_from_wlr(
+				WLR_COLOR_NAMED_PRIMARIES_BT2020),
+			/* The output's OWN numbers, so a client is told what this display
+			 * actually claims rather than what the protocol permits. Zero means
+			 * unset in both structs, which is why the has_* flag is derived
+			 * from the value rather than set unconditionally: declaring a
+			 * mastering luminance of 0 is a claim, and a false one. */
+			.has_mastering_luminance = od->mastering_luminance.max > 0.0f,
+			.mastering_luminance = {
+				.min = od->mastering_luminance.min,
+				.max = od->mastering_luminance.max,
+			},
+			.max_cll = od->max_cll,
+			.max_fall = od->max_fall,
+		};
+		data = &hdr;
+	}
+	if (getenv("AZ_DEBUG_CM") != NULL) {
+		wlr_log(WLR_INFO, "D6: surface %p tf=%u primaries=%u minlum=%f "
+			"maxlum=%f cll=%u fall=%u", (void *)surface, data->tf_named,
+			data->primaries_named,
+			data->has_mastering_luminance ? data->mastering_luminance.min : -1.0,
+			data->has_mastering_luminance ? data->mastering_luminance.max : -1.0,
+			data->max_cll, data->max_fall);
+	}
+	wlr_color_manager_v1_set_surface_preferred_image_description(color_manager,
+		surface, data);
+}
+
+/* Every mapped client on `m`. Called when the output's colour state changes,
+ * which is the one case where nothing about the surfaces themselves moved. */
+static void mon_send_preferred_descriptions(Monitor *m) {
+	Client *c;
+	wl_list_for_each(c, &clients, link) {
+		if (c->mon != m || !c->mon) {
+			continue;
+		}
+		struct wlr_surface *s = client_surface(c);
+		if (s != NULL && s->mapped) {
+			surface_send_preferred_description(s, m);
+		}
 	}
 }
 
