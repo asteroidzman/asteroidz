@@ -273,9 +273,59 @@ struct avk_cmd {
 	struct avk_box sample_exclude;
 	bool has_sample_exclude;
 
+	/*
+	 * M4I. The producer asked for the CACHED BOTTOM LAYER rather than a live
+	 * sample of the scene prefix -- SceneFX's should_only_blur_bottom_layer.
+	 *
+	 * It is a request about this blur's SOURCE, not about its appearance: the
+	 * node wants the monitor-wide background blur that was computed once, and
+	 * is willing to be wrong about anything drawn above the background. AVK has
+	 * always recorded the request and always ignored it, which is not free --
+	 * every such node instead replays the scene prefix and runs a private
+	 * dual-Kawase chain over it, so a desktop with n of them recomputes the
+	 * same background blur n times a frame.
+	 *
+	 * Carried on the command so the renderer can CLASSIFY a chain by role
+	 * (avk_blur_role) with no scene-graph lookup at record time, which is what
+	 * makes same-frame attribution possible; whether the request is honoured is
+	 * a separate decision made in avk_render.c.
+	 */
+	bool blur_bottom_only;
+
 	/* reserved for M4F */
 	bool has_blur;
 };
+
+/*
+ * WHAT A BLUR CHAIN IS FOR -- the axis that chain COUNT could not express.
+ *
+ * Frame cost correlated with rebuilt pixels at r=+0.664 and with chain count at
+ * only +0.431, because two chains are not two of the same thing: one may be a
+ * 200x40 tooltip backdrop and the next a full-screen window's, and averaging
+ * them produced a "chains=3 is slower than chains=4" inversion that read as
+ * nonsense. Role is the missing key.
+ */
+enum avk_blur_role {
+	/* A window/layer backdrop that asked for the cached bottom layer. Its
+	 * source is the monitor background and nothing else, by the producer's own
+	 * declaration. */
+	AVK_BLUR_ROLE_WINDOW_BACKDROP,
+	/* A live blur: its source is genuinely the current scene prefix, including
+	 * whatever windows lie beneath it. Never cacheable. */
+	AVK_BLUR_ROLE_LIVE,
+	/* The monitor-wide background blur node itself. */
+	AVK_BLUR_ROLE_MONITOR_BACKGROUND,
+};
+#define AVK_BLUR_ROLE_COUNT ((int)AVK_BLUR_ROLE_MONITOR_BACKGROUND + 1)
+
+static inline const char *avk_blur_role_name(enum avk_blur_role r) {
+	switch (r) {
+	case AVK_BLUR_ROLE_WINDOW_BACKDROP:    return "WINDOW_BACKDROP";
+	case AVK_BLUR_ROLE_LIVE:               return "LIVE";
+	case AVK_BLUR_ROLE_MONITOR_BACKGROUND: return "MONITOR_BACKGROUND";
+	}
+	return "?";
+}
 
 /*
  * One frame's worth of work.
@@ -334,6 +384,52 @@ struct avk_scene {
 	/* Cleared before anything is drawn, in the damaged region only. */
 	float clear_color[4];
 	bool has_clear;
+
+	/*
+	 * ── THE MONITOR BACKGROUND BLUR, AS A REQUEST RATHER THAN A COMMAND ───
+	 *
+	 * SceneFX's WLR_SCENE_NODE_OPTIMIZED_BLUR: blur everything drawn so far,
+	 * once, and keep the result for the nodes above to sample. asteroidz puts
+	 * it in LyrBlur, one layer above LyrBg, so "everything drawn so far" is the
+	 * wallpaper and nothing else -- which is why the result survives frames in
+	 * which the entire desktop moved.
+	 *
+	 * NOT a command, deliberately. A command would have to be given a draw, a
+	 * region, an opaque region, an occlusion answer and a class in five
+	 * exhaustive switches, and it draws nothing in any of them: it is a
+	 * PRODUCER of an off-screen resource, not a thing on the screen. Carrying it
+	 * beside the command list keeps every one of those switches honest and makes
+	 * the one fact that matters -- where its source range ends -- a field rather
+	 * than a search.
+	 *
+	 * `prefix_end` is the number of commands emitted BEFORE the node was
+	 * reached, so the source is scene->cmds[0, prefix_end). Exactly the same
+	 * rule a live blur's source obeys; the only difference is that this one's
+	 * answer is kept.
+	 */
+	struct {
+		bool present;
+		size_t prefix_end;
+		/* Output pixels, like every other box here. The cache is allocated at
+		 * this extent and invalidated when it changes. */
+		struct avk_box bounds;
+		uint32_t levels;
+		float radius;
+		float brightness, contrast, saturation, noise;
+		bool apply_effects;
+		/*
+		 * A MONOTONIC GENERATION, NOT A DIRTY BIT.
+		 *
+		 * SceneFX exposes `dirty`, a boolean the producer clears on success.
+		 * A boolean cannot survive two changes that race a single frame: mark,
+		 * render, mark again, clear -- and the second change is lost with the
+		 * flag reading clean. The compositor therefore converts every dirty
+		 * edge into an increment and never clears anything, so the renderer's
+		 * validity test is an equality between two numbers that only ever go
+		 * forward.
+		 */
+		uint64_t generation;
+	} blur_cache;
 };
 
 void avk_scene_init(struct avk_scene *scene);

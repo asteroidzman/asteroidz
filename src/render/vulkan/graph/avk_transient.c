@@ -52,6 +52,7 @@ void avk_transient_pool_init(struct avk_transient_pool *pool,
 		avk_log(AVK_WARN, "AZ_TRANSIENT_POISON=1 -- new transients are filled "
 			"with magenta so that sampling outside a written region shows");
 	}
+	pool->trace = getenv("AZ_TRANSIENT_TRACE") != NULL;
 	pool->break_early_reuse = getenv("AZ_TRANSIENT_EARLY_REUSE") != NULL;
 	if (pool->break_early_reuse) {
 		avk_log(AVK_ERROR, "M4E break switch active: the transient pool will "
@@ -275,12 +276,34 @@ struct avk_image *avk_transient_acquire(struct avk_transient_pool *pool,
 	/* One timeline read for the whole acquire, not one per candidate. */
 	uint64_t completed = avk_device_timeline_value(pool->dev);
 
+	/*
+	 * WHY a miss happened, not just that one did.
+	 *
+	 * "80-130 images created during one tag transition" is not actionable
+	 * while every miss is the same category. An entry can be unavailable for
+	 * three quite different reasons and they have three different fixes:
+	 * nothing of that shape exists (extent churn -> quantise or grow), one
+	 * exists but another chain in THIS frame holds it (concurrency -> more
+	 * instances are genuinely needed), or one exists and is idle but still in
+	 * flight on the GPU (pipeline depth -> more instances, or wait, which
+	 * this pool deliberately never does).
+	 */
+	bool saw_key = false, saw_in_use = false, saw_in_flight = false;
+
 	for (uint32_t i = 0; i < pool->len; i++) {
 		struct avk_transient_entry *e = &pool->entries[i];
-		if (e->image == NULL || e->in_use || !key_eq(&e->key, &key)) {
+		if (e->image == NULL || !key_eq(&e->key, &key)) {
+			continue;
+		}
+		saw_key = true;
+		if (e->in_use) {
+			saw_in_use = true;
 			continue;
 		}
 		bool ready = e->last_use <= completed;
+		if (!ready) {
+			saw_in_flight = true;
+		}
 		if (!ready && !pool->break_early_reuse) {
 			/* Still in flight. NOT a reason to wait -- fall through and
 			 * allocate. A pool that blocked here would put a CPU wait on the
@@ -307,6 +330,17 @@ struct avk_image *avk_transient_acquire(struct avk_transient_pool *pool,
 		}
 		pool->entries = grown;
 		pool->cap = next;
+	}
+	const char *why = !saw_key ? "NO_KEY_MATCH"
+		: saw_in_use ? "ALL_IN_USE_THIS_FRAME"
+		: saw_in_flight ? "IN_FLIGHT_ON_GPU" : "OTHER";
+	pool->stats.miss_no_key += !saw_key ? 1 : 0;
+	pool->stats.miss_in_use += (saw_key && saw_in_use) ? 1 : 0;
+	pool->stats.miss_in_flight += (saw_key && !saw_in_use && saw_in_flight) ? 1 : 0;
+	if (pool->trace) {
+		avk_log(AVK_INFO, "aztrans create why=%s key=%ux%u fmt=%d usage=0x%x "
+			"pool_len=%u req=%ux%u", why, key.width, key.height,
+			(int)key.format, (unsigned)key.usage, pool->len, width, height);
 	}
 	VkDeviceSize bytes = 0;
 	struct avk_image *image = create_image(pool, &key, &bytes);

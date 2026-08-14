@@ -112,6 +112,173 @@ struct avk_blur_result {
 };
 
 /*
+ * ── THE MONITOR BACKGROUND BLUR RESULT CACHE (M4I) ────────────────────────
+ *
+ * One finished, output-sized, already-blurred picture of everything below the
+ * scene's optimized-blur node -- in asteroidz, the wallpaper and nothing else.
+ * It is built when its source changes and reused until its source changes
+ * again, and the whole point is that FRAME DAMAGE IS NOT A SOURCE CHANGE. A
+ * tag transition damages every pixel of the output while the wallpaper behind
+ * it is the same wallpaper, and every version of this renderer before M4I
+ * rebuilt the background blur anyway -- once per consuming node, per frame.
+ *
+ * ── VALIDITY IS AN EQUALITY, NOT A JUDGEMENT ──────────────────────────────
+ *
+ * The cache is usable exactly when every field below still describes the frame
+ * asking for it. There is no "probably unchanged" anywhere in this contract:
+ * if the renderer cannot prove validity it rebuilds, because a stale backdrop
+ * is a wrong picture that persists until something unrelated disturbs it, and
+ * that is the worst failure mode a cache can have.
+ *
+ *   generation  the compositor's dirty counter at the time this was built.
+ *               Monotonic; a boolean cannot survive mark/render/mark/clear.
+ *   width/height, origin  the extent it was built at. An output resize, a
+ *               scale change and a transform change all land here.
+ *   params      the kernel it was built with. A radius or level-count change
+ *               produces a different picture from the same source.
+ *   format      the VkFormat, which is also (M5) the colour domain. A cache
+ *               built in one working space may not be sampled in another.
+ *
+ * ── LIFETIME ──────────────────────────────────────────────────────────────
+ *
+ * The image is cross-frame, so it cannot come from the transient pool: a
+ * transient is recycled the moment its frame retires, which is precisely the
+ * property this must not have. It is owned here and handed to the retire queue
+ * on replacement, so a frame still sampling the old image keeps it alive
+ * without a CPU wait. `slot` alternates so a rebuild never writes the image an
+ * in-flight frame is reading.
+ */
+/*
+ * TWO PICTURES OF THE SAME BACKGROUND, and the second is not a variant -- it is
+ * a different image that a different set of nodes needs.
+ *
+ * PLAIN  blur(background). What a window's own backdrop shows.
+ * DARK   min(blur(background), background), per channel. What a SHADOW's
+ *        backdrop shows.
+ *
+ * The clamp exists because a blur is an average, and averaging bright detail
+ * over a dark ground raises the mean -- so a shadow's backdrop over a terminal
+ * came out LIGHTER than the thing it replaced and read as a glow around every
+ * window. Serving a shadow from the plain image would reintroduce that defect
+ * exactly, and serving a window from the dark one would darken every backdrop
+ * on the desktop. Both are needed or neither node can be cached.
+ *
+ * They are both pure functions of the background, which is the whole reason
+ * this works: with the source fixed, min(blur(bg), bg) is as cacheable as
+ * blur(bg) is. On the LIVE path the clamp compares against the node's own
+ * reconstructed prefix, which is why it has to be applied at build time here
+ * rather than at the composite -- see avk_blur.c, where darken is a
+ * VK_BLEND_OP_MIN against a destination that still holds the unblurred source,
+ * and is therefore only available when the chain writes back into its own
+ * source image.
+ */
+enum avk_blur_cache_kind {
+	AVK_BLUR_CACHE_PLAIN = 0,
+	AVK_BLUR_CACHE_DARK,
+};
+#define AVK_BLUR_CACHE_KINDS 2
+
+static inline const char *avk_blur_cache_kind_name(enum avk_blur_cache_kind k) {
+	return k == AVK_BLUR_CACHE_DARK ? "dark" : "plain";
+}
+
+struct avk_blur_cache_image {
+	/*
+	 * ONE image per kind, not two -- and the second one was removed on evidence.
+	 *
+	 * The reasoning that first produced two slots was: a rebuild must not write
+	 * the image the previous frame is still sampling, so alternate. That is a
+	 * true statement about an unordered write and a false one about this write.
+	 * avk_graph.c persists an image's layout on the avk_image across frames, so
+	 * declaring the cache as COLOR_WRITE while it sits in
+	 * SHADER_READ_ONLY_OPTIMAL emits a layout transition, and a barrier's first
+	 * synchronisation scope covers everything previously submitted to the same
+	 * queue -- of which this device has exactly one. The graph was already
+	 * ordering it, and the alternation was buying nothing but an
+	 * output-resolution image per kind.
+	 *
+	 * The break that proved this (AZ_BLUR_CACHE_UNSAFE_REUSE, "write the slot
+	 * being read") reported ZERO sync hazards under validate_sync with a control
+	 * proving the layer was watching. It is gone with the alternation, because
+	 * with one slot it describes the ordinary path. What replaced it is stronger
+	 * and still falsifiable: AZ_BLUR_CACHE_ALWAYS_DIRTY rebuilds into the single
+	 * live image EVERY frame while consumers sample it, under validation, and
+	 * the result must still be bit-exact against the forced-live path.
+	 */
+	struct avk_image *image;
+	uint64_t image_bytes;
+	bool valid;
+	/* THE KERNEL THIS IMAGE WAS BUILT WITH, per kind and not shared.
+	 *
+	 * A single shared `params` cannot validate two images whose kernels differ
+	 * in `darken` -- the check compared the dark image against a stored kernel
+	 * stamped from the plain one, found a difference every single frame, and
+	 * rebuilt: 383 output-sized rebuilds in 13 seconds of an idle desktop,
+	 * reported honestly as PARAMS by the reason table. The fix is to stop
+	 * having one field describe two images. */
+	struct avk_blur_params params;
+	/* Built only where something asked for it. A desktop with no shadows never
+	 * allocates the dark image, and one with no window backdrops never
+	 * allocates the plain one -- which matters, because each is a full
+	 * output-sized image and DP-1's is 33MB. */
+	bool wanted;
+};
+
+struct avk_blur_cache {
+	struct avk_blur_cache_image img[AVK_BLUR_CACHE_KINDS];
+
+	uint64_t generation;
+	int32_t origin_x, origin_y;
+	uint32_t width, height;
+	VkFormat format;
+	/* No shared `params` here on purpose: the kernel lives on each image (see
+	 * avk_blur_cache_image), because the two kinds differ in exactly that
+	 * field and one copy describing both is what caused the every-frame
+	 * rebuild. What IS shared is everything that describes the SOURCE --
+	 * generation, extent, format -- which is genuinely one thing. */
+
+	/* Telemetry. Requests are consumer asks; hits are asks served from here;
+	 * rebuilds are producer runs. saved_* is the work a hit avoided, priced in
+	 * the same units the uncached path reports, so the two are comparable. */
+	uint64_t requests, hits, rebuilds, invalidations;
+	uint64_t saved_prefix_draws, saved_prefix_px;
+	uint64_t saved_chains, saved_blur_px;
+	uint64_t bytes;
+	/* Split by kind, so "the shadow backdrops are being served" is a reading
+	 * rather than a deduction from the total. */
+	uint64_t hits_by_kind[AVK_BLUR_CACHE_KINDS];
+	uint64_t rebuilds_by_kind[AVK_BLUR_CACHE_KINDS];
+	/* Why the last rebuild happened, and how many of each kind there have
+	 * been. A cache that rebuilds unexpectedly must say why in one reading. */
+	uint64_t inv_generation, inv_geometry, inv_params, inv_format,
+	         inv_never_built, inv_forced;
+};
+
+enum avk_blur_cache_reason {
+	AVK_BLUR_CACHE_OK = 0,
+	AVK_BLUR_CACHE_NEVER_BUILT,
+	AVK_BLUR_CACHE_GENERATION,
+	AVK_BLUR_CACHE_GEOMETRY,
+	AVK_BLUR_CACHE_PARAMS,
+	AVK_BLUR_CACHE_FORMAT,
+	AVK_BLUR_CACHE_FORCED,
+};
+
+static inline const char *avk_blur_cache_reason_name(
+		enum avk_blur_cache_reason r) {
+	switch (r) {
+	case AVK_BLUR_CACHE_OK:          return "OK";
+	case AVK_BLUR_CACHE_NEVER_BUILT: return "NEVER_BUILT";
+	case AVK_BLUR_CACHE_GENERATION:  return "GENERATION";
+	case AVK_BLUR_CACHE_GEOMETRY:    return "GEOMETRY";
+	case AVK_BLUR_CACHE_PARAMS:      return "PARAMS";
+	case AVK_BLUR_CACHE_FORMAT:      return "FORMAT";
+	case AVK_BLUR_CACHE_FORCED:      return "FORCED";
+	}
+	return "?";
+}
+
+/*
  * ── ONE BLUR'S DAMAGE, AS SIX DISTINCT REGIONS ────────────────────────────
  *
  * Collapsing any two of these still renders a picture, and the picture is wrong
@@ -221,6 +388,20 @@ struct avk_blur_damage {
  * backwards, and demand never flows forwards.
  */
 
+/* The primitive classes AZ_AVK_SKIP_DRAW can suppress, and the classes the
+ * px_* counters are bucketed by. One enumeration for both so a class cannot be
+ * measured under one name and skipped under another. */
+enum avk_prim_class {
+	AVK_PRIM_CLEAR = 1u << 0,
+	AVK_PRIM_CONTENT = 1u << 1,
+	AVK_PRIM_SHADOW = 1u << 2,
+	AVK_PRIM_BORDER = 1u << 3,
+	AVK_PRIM_BLUR = 1u << 4,
+	AVK_PRIM_GRADIENT = 1u << 5,
+	AVK_PRIM_RECT = 1u << 6,
+	AVK_PRIM_ROUND = 1u << 7,   /* not a primitive: the coverage evaluation */
+};
+
 struct avk_renderer_stats {
 	/* M4A. Proof the rounded path is being taken at all, and how often it is
 	 * taken with corners that differ -- the case a single-radius
@@ -253,7 +434,51 @@ struct avk_renderer_stats {
 	uint64_t frames;
 	uint64_t surfaces;
 	uint64_t rects;
+	/* M4J experiment. Draws that took the blend-free pipeline because every
+	 * fragment was alpha 1. Reported so "the experiment did nothing" and "the
+	 * experiment did nothing useful" are different readings. */
+	uint64_t opaque_noblend_draws;
 	uint64_t draws;          /* commands x damage rects */
+	/*
+	 * M4H. FRAGMENT AREA, BY PRIMITIVE CLASS, IN TWO BUCKETS.
+	 *
+	 * Draw COUNTS cannot tell an expensive frame from a cheap one: one shadow
+	 * over a 4K envelope and one shadow over a 200x100 window are both
+	 * `shadow_draws = 1`. These are the sum of the SCISSOR areas actually
+	 * submitted -- clip, interior cut-out and frame damage all already applied
+	 * -- so they are what the rasteriser was asked to shade, not what the scene
+	 * asked for.
+	 *
+	 * TWO BUCKETS BECAUSE A DECORATION IS RASTERISED TWICE. The output pass
+	 * composites the desktop; every blur chain first replays the scene prefix
+	 * behind its node into a capture target, through this same function. A
+	 * shadow that lies behind two blur nodes is shaded three times, and a
+	 * single total would report that as one large number with no way to see
+	 * which half of it is the blur's. `prefix` is every regional capture,
+	 * `out` is the output segment, and the discriminator is the segment's own
+	 * `load` flag -- the output preserves what it does not damage, a capture
+	 * target is written whole.
+	 *
+	 * The pair `shadow` / `shadow_env` is the point of the shadow fields: the
+	 * envelope is what a naive implementation would shade, the first is what
+	 * this one does, and their ratio is the answer to "is the shadow region
+	 * oversized". Same for `border` against `border_outer`.
+	 *
+	 * `target` is the attachment area, summed once per segment, so it is the
+	 * denominator for that bucket and nothing else.
+	 */
+	struct avk_prim_px {
+		uint64_t clear;        /* the background rect */
+		uint64_t content;      /* client textures */
+		uint64_t shadow;       /* scissored: envelope minus the caster */
+		uint64_t shadow_env;   /* the same shadows' full envelopes */
+		uint64_t border;       /* border annulus, scissored */
+		uint64_t border_outer; /* the same borders' full outer rects */
+		uint64_t blur_comp;    /* blur result composited back */
+		uint64_t rect;         /* solid rects that are not borders */
+		uint64_t gradient;     /* of which shaded by the gradient pipeline */
+		uint64_t target;       /* attachment area, once per segment */
+	} px_out, px_prefix;
 	uint64_t barriers;
 	uint64_t cpu_sync_waits; /* MUST stay 0 on the steady-state frame path */
 	/*
@@ -326,6 +551,64 @@ struct avk_renderer {
 	 * concentric halos on a flat backdrop.
 	 */
 	bool break_shadow_no_dither;
+	/*
+	 * M4H DIAGNOSTIC ATTRIBUTION MASK -- AZ_AVK_SKIP_DRAW.
+	 *
+	 * A comma-separated list of primitive classes whose vkCmdDraw is suppressed:
+	 * clear, content, shadow, border, blur, gradient, round. Everything else
+	 * about the frame is untouched -- the scene is built identically, the damage
+	 * is identical, every blur chain still runs, every transient is still
+	 * acquired, every barrier is still emitted. Only the rasterisation of that
+	 * class does not happen.
+	 *
+	 * THAT IS THE WHOLE POINT, and it is why this exists rather than the obvious
+	 * alternative of turning the feature off in the config. `shadow { enable 0 }`
+	 * removes a node, which changes the scene, which changes the damage, which
+	 * changes the blur source region and every downstream chain -- so the
+	 * measured difference would be a geometry difference wearing a shadow's name.
+	 * Suppressing the draw and nothing else is the only variant that isolates
+	 * fragment cost.
+	 *
+	 * `round` is the odd one out: it does not skip a draw, it forces every
+	 * radius to zero so the SDF early-outs. That measures the coverage
+	 * evaluation rather than the primitive.
+	 *
+	 * DIAGNOSTIC ONLY. Every one of these renders a visibly wrong desktop, and
+	 * none of them is a performance setting.
+	 */
+	uint32_t skip_draw;
+	/* AZ_AVK_CMD_DUMP=N: log the draw ledger for the first N segments, then
+	 * stop for good. `dump_seg` is the running segment number. */
+	uint32_t cmd_dump;
+	uint32_t dump_seg;
+	/*
+	 * M4H break -- AZ_AVK_NO_OCCLUSION=1 restores the pure painter's
+	 * algorithm: every command draws its whole damaged extent whether or not
+	 * something opaque covers it.
+	 *
+	 * This is the falsifier for the culling, and it is an unusual one because
+	 * the two builds must agree EXACTLY. An optimisation that changes a pixel
+	 * is a bug, so the test is not "the culled build looks right", it is "the
+	 * two builds are bit-identical and the culled one drew less".
+	 */
+	bool break_no_occlusion;
+	/*
+	 * M4J EXPERIMENT, OFF BY DEFAULT. AZ_AVK_OPAQUE_NOBLEND=1 sends draws that
+	 * are opaque over their whole footprint to a blend-free pipeline. Bit-exact
+	 * by construction -- premultiplied OVER with alpha 1 already resolves to
+	 * src -- so the oracle for it is "the framebuffer does not change", and the
+	 * only question it exists to answer is whether removing the ROP's read is
+	 * worth anything on this hardware.
+	 */
+	bool opaque_noblend;
+	/* M4H break -- AZ_AVK_OCCLUDE_ALL=1: every command occludes, whatever its
+	 * alpha or shape. The over-culling failure the oracle must be able to
+	 * catch; see az_cmd_opaque_region(). */
+	bool break_occlude_all;
+	/* Per-segment draw regions, computed top-down. Grown, never freed per
+	 * frame; see avk_render_reserve_regions(). */
+	pixman_region32_t *region_scratch;
+	size_t region_scratch_len;
 	/*
 	 * M4F.2A.2 break. Replays [0, scene->len) into the prefix instead of
 	 * [0, k) -- the WHOLE scene, including everything drawn after the blur
@@ -511,6 +794,21 @@ struct avk_renderer {
 	uint64_t blur_source_damage_pixels;
 	uint64_t blur_output_damage_pixels;
 	uint64_t blur_prefix_rebuild_pixels;
+	/*
+	 * M4H.6. Of blur_prefix_rebuild_pixels, how many lie inside the frame's
+	 * arriving damage -- which is exactly the set a copy from the output
+	 * attachment could serve, because that is where the attachment is current
+	 * rather than holding the previous frame. The quotient of the two is the
+	 * premise for replacing prefix replay with a copy, and it has to be
+	 * measured on the SLOW frames rather than assumed from the architecture.
+	 */
+	uint64_t blur_prefix_copyable_pixels;
+	/* The bounding-box collapse, priced. rects is the fragment count at the
+	 * moment of collapse; before/after are the region's area and its bounding
+	 * box's, so after-before is the fill the collapse invented. */
+	uint64_t blur_fallback_rects;
+	uint64_t blur_fallback_area_before;
+	uint64_t blur_fallback_area_after;
 	uint64_t blur_full_dependency_pixels;
 	uint64_t blur_full_write_pixels;
 	uint64_t blur_full_capture_pixels;
@@ -558,6 +856,68 @@ struct avk_renderer {
 	uint64_t blur_capture_pixels;
 	uint64_t blur_result_pixels;
 	uint64_t blur_processed_pixels;
+	/*
+	 * M4I. THE SAME QUANTITIES, SPLIT BY ROLE (enum avk_blur_role).
+	 *
+	 * Every aggregate above sums a tooltip's backdrop and a maximised window's
+	 * into one mean, and that mean is what produced "chains=3 costs more than
+	 * chains=4" -- a true statement about the aggregate and a useless one about
+	 * the renderer. Cost belongs to a KIND of chain, so it is counted per kind.
+	 *
+	 * Indexed by enum avk_blur_role. A role's entry moving while the total does
+	 * not is the shape of every attribution question left in this milestone.
+	 */
+	uint64_t blur_role_chains[AVK_BLUR_ROLE_COUNT];
+	uint64_t blur_role_capture_px[AVK_BLUR_ROLE_COUNT];
+	uint64_t blur_role_rebuild_px[AVK_BLUR_ROLE_COUNT];
+	uint64_t blur_role_prefix_cmds[AVK_BLUR_ROLE_COUNT];
+	uint64_t blur_role_result_px[AVK_BLUR_ROLE_COUNT];
+	/* Per-chain geometry + role, one log line each, under
+	 * AZ_BLUR_CHAIN_TRACE=1 or `amsg dispatch set_blur_chain_trace,1`. Runtime
+	 * toggle because the interesting frames are live ones and a restart to
+	 * enable a trace changes the workload being traced. */
+	uint32_t blur_chain_trace;
+	/*
+	 * M4I. The OUTPUT's monitor background blur cache, borrowed for the frame.
+	 *
+	 * A pointer and not a member: a renderer is shared by every output using
+	 * the same VkFormat, and this resource is per output. The caller sets it
+	 * before recording and it is read only during recording, so it never
+	 * becomes mutable state consulted after the snapshot.
+	 */
+	struct avk_blur_cache *blur_cache;
+	/* The producer segments' active regions, owned for the frame. Per kind:
+	 * both may be rebuilt in one frame, and one shared region would be reset
+	 * under the first segment's feet while the graph still held the pointer. */
+	pixman_region32_t blur_cache_region[AVK_BLUR_CACHE_KINDS];
+	/*
+	 * ── FALSIFIERS ────────────────────────────────────────────────────────
+	 *
+	 * Each one must make a specific oracle FAIL. A break that leaves every
+	 * assertion green is a break that proves the assertion tests nothing, and
+	 * two of those were found doing exactly that in M4H.
+	 *
+	 * off            AZ_BLUR_CACHE=0. The A/B arm: same binary, no cache, the
+	 *                pre-M4I path in full.
+	 * always_dirty   rebuild every frame. Hit rate must go to zero and the
+	 *                frame cost must return to the uncached baseline. If the
+	 *                cache still claims a win with this on, the attribution is
+	 *                wrong, not the cache.
+	 * ignore_dirty   never invalidate on generation. Changing the wallpaper
+	 *                must then leave stale pixels and fail the dirty oracle.
+	 * stale_geometry ignore an extent change. A resize must fail the oracle.
+	 * stale_params   ignore a kernel change. A radius change must fail it.
+	 *
+	 * There is no unsafe_reuse break any more: it meant "rebuild into the slot
+	 * the previous frame is sampling", and with one slot per kind that is the
+	 * ordinary path. always_dirty now covers the same hazard and covers it
+	 * harder -- every frame rather than only on a rebuild.
+	 */
+	bool break_blur_cache_off;
+	bool break_blur_cache_always_dirty;
+	bool break_blur_cache_ignore_dirty;
+	bool break_blur_cache_stale_geometry;
+	bool break_blur_cache_stale_params;
 	/*
 	 * WHAT THE CHAIN WOULD HAVE TO PROCESS, summed per pass, with every
 	 * filter footprint included -- avk_blur_work_of(). The denominator of the
@@ -797,6 +1157,15 @@ void avk_renderer_finish(struct avk_renderer *renderer);
  * client's acquire fence gets waited on by the GPU rather than the CPU, and
  * how the render-completion semaphore gets exported for KMS.
  */
+/* M4H diagnostic: override the blur damage rectangle cap for every renderer,
+ * from now on. 0 restores AZ_BLUR_DAMAGE_MAX_RECTS or the built-in default.
+ * Runtime rather than env because the A/B has to run without restarting the
+ * session that produces the workload. */
+void avk_render_set_damage_rect_cap(int cap);
+/* M4I. Enable or disable the monitor background blur cache at runtime, on one
+ * renderer. See the note at the definition for why this is not env-only. */
+void avk_render_set_blur_cache_enabled(struct avk_renderer *renderer, bool on);
+
 uint64_t avk_render_frame(struct avk_renderer *renderer,
 	struct avk_image *target, const struct avk_scene *scene,
 	const VkSemaphoreSubmitInfo *wait, uint32_t wait_count,

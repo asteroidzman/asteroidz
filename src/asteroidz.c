@@ -1395,6 +1395,27 @@ static void az_frame_reach_add(const struct wlr_box *b) {
  * fringe stale along a seam, which is the failure M4F.2C existed to fix.
  */
 #define AZ_FRAME_REACH_PAD 256
+
+/*
+ * M4I. One line per frame of a tag transition; see the trace in render_monitor.
+ *
+ * Runtime-settable as well as env-settable. AZ_TAGTRACE is fine for a headless
+ * fixture, but `restart` re-execs with the same environ, so on the live session
+ * an env-only switch can never be turned on --- and the live session is the
+ * only place the interesting distribution exists.
+ */
+static int az_tagtrace_runtime = -1;
+static inline bool az_tagtrace_on(void) {
+	if (az_tagtrace_runtime >= 0) {
+		return az_tagtrace_runtime != 0;
+	}
+	static int cached = -1;
+	if (cached < 0) {
+		const char *env = getenv("AZ_TAGTRACE");
+		cached = (env != NULL && env[0] == '1' && env[1] == '\0');
+	}
+	return cached != 0;
+}
 static Client *find_client_by_direction(Client *tc, const Arg *arg,
 										bool findfloating);
 static void exit_scroller_stack(Client *c);
@@ -1733,6 +1754,10 @@ struct Pertag {
 /* Defined after render/az_avk.h is available; named by the dispatch table in
  * parse_config.h, which is included first. */
 static int32_t reset_avk_stats(const Arg *arg);
+static int32_t set_blur_rect_cap(const Arg *arg);
+static int32_t set_blur_chain_trace(const Arg *arg);
+static int32_t set_blur_cache(const Arg *arg);
+static int32_t set_frame_trace(const Arg *arg);
 static int32_t dump_scene(const Arg *arg);
 static int32_t damage_all(const Arg *arg);
 static int32_t capture_output(const Arg *arg);
@@ -1879,6 +1904,94 @@ static int32_t reset_avk_stats(const Arg *arg) {
 #ifdef AZ_HAVE_VULKAN
 	az_avk_stats_reset();
 	wlr_log(WLR_INFO, "AVK: statistics reset");
+#endif
+	return 0;
+}
+/*
+ * `amsg dispatch set_blur_rect_cap,<n>` -- the blur damage rectangle cap.
+ *
+ * DIAGNOSTIC. Past this many rectangles a blur's rebuild region collapses to
+ * its bounding box, which is conservative --- the box contains the region, so
+ * the result is identical and only the work grows. Live, on a tag transition,
+ * that fires on a fifth of all blur chains at 1.74x inflation, and it has never
+ * fired on any headless fixture.
+ *
+ * A dispatch rather than the environment because `restart` re-execs with the
+ * same environ, so an env-only knob cannot be A/B'd against a running session
+ * --- and restarting into a new value destroys the workload that fragments the
+ * region in the first place.
+ */
+/*
+ * `amsg dispatch set_frame_trace,<0|1>` -- per-frame tracing, live.
+ *
+ * Turns on both the AVK timestamp READ line and the tag-transition trace, which
+ * together give one frame's GPU cost beside that frame's transition progress
+ * and visible areas. That pairing is the only thing that can answer "what does
+ * a transition frame cost" without going through a percentile --- and the
+ * percentiles are aggregated across outputs of different size and refresh, so
+ * they have now sent this investigation the wrong way three times.
+ *
+ * DIAGNOSTIC: it logs several lines per frame at ERROR.
+ */
+static int32_t set_frame_trace(const Arg *arg) {
+	bool on = arg != NULL && arg->i != 0;
+	az_tagtrace_runtime = on ? 1 : 0;
+#ifdef AZ_HAVE_VULKAN
+	az_avk_set_frame_trace(on);
+#endif
+	wlr_log(WLR_INFO, "frame trace %s", on ? "ON" : "off");
+	return 0;
+}
+/*
+ * `amsg dispatch set_blur_chain_trace,<0|1>` -- one log line per blur chain.
+ *
+ * A chain's cost is not a property of the frame it is in; it is a property of
+ * WHAT THE CHAIN IS FOR. Aggregating a tooltip's backdrop with a maximised
+ * window's produced the "chains=3 is slower than chains=4" reading, which is
+ * true of the aggregate and says nothing about the renderer. This prints the
+ * role and the geometry, so a slow frame can be decomposed into the chains that
+ * made it slow rather than into a chain COUNT.
+ *
+ * DIAGNOSTIC: several lines per frame on a populated desktop.
+ */
+static int32_t set_blur_chain_trace(const Arg *arg) {
+#ifdef AZ_HAVE_VULKAN
+	bool on = arg != NULL && arg->i != 0;
+	az_avk_set_blur_chain_trace(on);
+	wlr_log(WLR_INFO, "AVK: blur chain trace %s", on ? "ON" : "off");
+#else
+	(void)arg;
+#endif
+	return 0;
+}
+/*
+ * `amsg dispatch set_blur_cache,<0|1>` -- the monitor background blur cache.
+ *
+ * The A/B arm, live. With it off every backdrop blur reconstructs the
+ * background for itself, which is what AVK did before M4I; with it on the
+ * background is built when its source changes and reused until it changes
+ * again. Same binary, same session, same windows -- which is the only way to
+ * compare two arms without also comparing two GPU thermal states and two
+ * different sets of animations.
+ */
+static int32_t set_blur_cache(const Arg *arg) {
+#ifdef AZ_HAVE_VULKAN
+	bool on = arg != NULL && arg->i != 0;
+	az_avk_set_blur_cache(on);
+	wlr_log(WLR_INFO, "AVK: monitor background blur cache %s", on ? "ON" : "off");
+#else
+	(void)arg;
+#endif
+	return 0;
+}
+static int32_t set_blur_rect_cap(const Arg *arg) {
+#ifdef AZ_HAVE_VULKAN
+	int cap = arg != NULL ? arg->i : 0;
+	avk_render_set_damage_rect_cap(cap);
+	wlr_log(WLR_INFO, "AVK: blur damage rectangle cap -> %d%s", cap,
+		cap >= 1 ? "" : " (default)");
+#else
+	(void)arg;
 #endif
 	return 0;
 }
@@ -7987,8 +8100,50 @@ static void render_monitor(Monitor *m) {
 	// cursor zoom view tracking (set_zoom handles its own damage and frame scheduling)
 	cursor_zoom_frame(m);
 
+	/*
+	 * ── M4I: WHAT A TAG TRANSITION ACTUALLY EXPOSES, PER FRAME ────────────
+	 *
+	 * AZ_TAGTRACE=1 logs one line per frame in which any client is sliding in
+	 * or out of a tag: how much of this output each side actually covers, and
+	 * how many windows each contributes.
+	 *
+	 * The whole architectural question -- is the cost inherent to showing two
+	 * tags at once, or is it inefficient recomposition -- turns on a number
+	 * nobody has: the simultaneous VISIBLE area of the two populations. A
+	 * design argument about push versus cover versus clipped slide is an
+	 * argument about that number, and it has so far been made from the shape
+	 * of the animation rather than from measurement.
+	 *
+	 * Visible means clipped to THIS output. A window sliding out is mostly
+	 * off-screen for most of the transition, and counting its full box would
+	 * report an overlap that the rasteriser never sees.
+	 */
+	uint64_t tag_px_out = 0, tag_px_in = 0;
+	int tag_n_out = 0, tag_n_in = 0;
+	bool tag_any = false;
 	// draw clients
 	wl_list_for_each(c, &clients, link) {
+		if (az_tagtrace_on() &&
+				(c->animation.tagouting || c->animation.tagining)) {
+			struct wlr_box vis = c->animation.current;
+			struct wlr_box mon = m->m;
+			int32_t x0 = vis.x > mon.x ? vis.x : mon.x;
+			int32_t y0 = vis.y > mon.y ? vis.y : mon.y;
+			int32_t x1 = vis.x + vis.width < mon.x + mon.width
+				? vis.x + vis.width : mon.x + mon.width;
+			int32_t y1 = vis.y + vis.height < mon.y + mon.height
+				? vis.y + vis.height : mon.y + mon.height;
+			uint64_t px = (x1 > x0 && y1 > y0)
+				? (uint64_t)(x1 - x0) * (uint64_t)(y1 - y0) : 0;
+			tag_any = true;
+			if (c->animation.tagouting) {
+				tag_px_out += px;
+				tag_n_out++;
+			} else {
+				tag_px_in += px;
+				tag_n_in++;
+			}
+		}
 		if (client_draw_frame(c)) {
 			need_more_frames = true;
 			/* An opacity-only animation ticks without moving, so
@@ -8004,6 +8159,21 @@ static void render_monitor(Monitor *m) {
 			AZ_ZONE_END(az_animate);
 			goto skip;
 		}
+	}
+
+	if (tag_any) {
+		/* Against the OUTPUT's own logical area, so the two ratios are
+		 * comparable between a 4K display and a 1080p one and a reader can
+		 * add them: 1.30 means the two populations together cover 130% of
+		 * the screen, i.e. they overlap by 30%. */
+		uint64_t mon_px = (uint64_t)m->m.width * (uint64_t)m->m.height;
+		wlr_log(WLR_ERROR, "aztag mon=%s out_px=%" PRIu64 " in_px=%" PRIu64
+			" out_frac=%.3f in_frac=%.3f sum=%.3f n_out=%d n_in=%d",
+			m->wlr_output->name, tag_px_out, tag_px_in,
+			mon_px ? (double)tag_px_out / (double)mon_px : 0.0,
+			mon_px ? (double)tag_px_in / (double)mon_px : 0.0,
+			mon_px ? (double)(tag_px_out + tag_px_in) / (double)mon_px : 0.0,
+			tag_n_out, tag_n_in);
 	}
 
 	if (m->skiping_frame) {

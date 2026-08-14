@@ -2130,3 +2130,170 @@ corners, so a build that permuted the outer radii and not the inner ones would
 open its ring there. Outer and inner go through one call to
 `az_avk_corners_from_scenefx()`, so they cannot be permuted differently without
 editing the line that does both.
+
+## 5.8 M4I — the background is blurred once and kept
+
+The accepted root cause of the transition tail was "a monitor-sized optimized
+blur node is recomputed live every frame". Read from the source that could not
+be what happened: `az_avk.h` skipped `WLR_SCENE_NODE_OPTIMIZED_BLUR` outright,
+so the monitor node cost nothing at all.
+
+The real waste was the other direction. 51,632 of 106,062 blur nodes asked for
+the cached bottom layer, were refused, and each privately replayed the scene
+prefix and ran its own dual-Kawase chain — 8.93 Mpx of capture and 5.16 Mpx of
+replay per frame on an 8.29 Mpx display, all of it reproducing a blur of an
+unchanged wallpaper. `blur_optimized 0` had looked exonerating because it stops
+nodes ASKING, not the work.
+
+**Two images per output, and no more.**
+
+    PLAIN = blur(background)                       window backdrops
+    DARK  = min(blur(background), background)      shadow backdrops
+
+`DARK` exists because a blur is an average, and averaging bright detail over
+dark ground raises the mean. The clamp is blend state — `VK_BLEND_OP_MIN`
+against the destination — so it is only available while the chain writes back
+into the image that still holds its own unblurred source. The rebuild therefore
+replays the prefix **directly into the cached image** and chains in place. A
+first version chained transient → cache, which would have shipped an unclamped
+shadow backdrop: `src != dst`, `avk_blur.c`'s `darken && src_resource ==
+dst_resource` silently false, and the glow defect back.
+
+**Validity is identity, never damage.**
+
+    FRAME DAMAGE != CACHE SOURCE DIRT
+
+A monotonic per-output generation, plus geometry, kernel and format. Ten
+full-output damage cycles rebuild nothing; a background-layer commit rebuilds
+once. That separation is the whole architecture.
+
+**Live, DP-1, interleaved OFF/ON/ON/OFF, 10 tag switches per arm:**
+
+| | p50 | p95 | p99 | max | >6944 |
+|---|---|---|---|---|---|
+| OFF | 6 | 6249 | 6937 | 10023 | 31 |
+| ON | 6 | **3252** | **4017** | **4817** | **0** |
+
+Blur leaves the tail almost entirely: in the slowest 1%, 3972 → 909 µs. `post`
+is untouched at 3343 µs and becomes the whole remainder.
+
+### What the milestone's own instruments got wrong
+
+**The alternation was redundant.** Two slots per kind guarded against a rebuild
+writing the image the previous frame samples. `AZ_BLUR_CACHE_UNSAFE_REUSE`
+removed the alternation and reported ZERO sync hazards with `validate_sync`
+demonstrably watching. `avk_graph.c` is why: an image's layout persists on the
+`avk_image` across frames, so declaring the cache as COLOR_WRITE out of
+SHADER_READ_ONLY_OPTIMAL emits a transition, and a barrier's first
+synchronisation scope covers everything already submitted to the same queue —
+of which this device has one. One image per kind, and DP-1 went 132.7 → 66.4 MB
+of logical texels.
+
+**One shared kernel field validated two images.** The dark image compared
+against the plain one's kernel, differed every frame, and rebuilt **383 times in
+13 seconds of an idle desktop**. The reason table reported `dark=PARAMS` on
+every line, which made it a two-minute diagnosis — and the headless suite passed
+18/18 on both sides of the fix, because it had no shadow backdrops to build a
+dark image for.
+
+**Every output kept whichever node it walked last.** `layers[LyrBlur]` is one
+global layer holding every monitor's node and the walk covers the whole scene,
+so HEADLESS-2 built its cache at bounds `(-1280,0)` — monitor 1's area in
+monitor 2's pixels. Quieter half: `ob->dirty` is an edge cleared by the first
+observer, so the second output never incremented its generation and would blur a
+wallpaper it no longer had, indefinitely. Matched by node **identity** now: a box
+comparison agrees until two outputs share an origin or a size, which is what a
+mirrored pair is.
+
+**Two rebuilds in one frame wrote the same timestamp queries.**
+`VUID-vkCmdWriteTimestamp2-None-03864`. The rebuild path now follows the rule
+the consumer chains already had: phase marks belong to the first blur work only,
+and `BLUR_END` is moved onto whichever chain declared last.
+
+### The fixtures, and four ways they passed while measuring nothing
+
+`contrib/avk-blur-cache-test.sh` (26), `-dirty.sh` (18), `-multi.sh` (21),
+`avk-blur-role-split.sh` (6).
+
+- **Tiled windows covered the background layer**, so the mutation under test was
+  invisible — premise 0 px.
+- **Floating them removed every consumer**: `blur_cached = config.blur_optimized
+  && !c->isfloating`.
+- **The background was flat**, so `STALE_PARAMS` rendered a pixel-identical
+  desktop. Blurring one colour gives that colour at any radius.
+- **`shadow only-floating` defaults to 1**, so a tiled fixture has no shadow
+  tree, no dark consumer, and 25 green assertions over half a cache.
+
+## 5.9 M4J — the POST audit, and one candidate
+
+Six checks against the per-primitive fragment ledger. Five came back clean with
+numbers: shadow shades **6%** of its envelope and border **1%** of its outer
+rect (`area` is already `dst ∩ clip ∩ damage`); `implicit_copy_bytes = 0`;
+overdraw is 1.13× of target; `az_rounded_coverage` returns 1.0 on a uniform
+push-constant test that cannot split a quad.
+
+The sixth is real. `AZ_BLEND_REPLACE` existed for exactly two consumers — the
+blur's down and up passes — so every content and rect draw blends, including
+ones the renderer already proves opaque each frame for occlusion culling.
+Content is 21.3% of post.
+
+`AZ_AVK_OPAQUE_NOBLEND=1` (off by default) sends draws opaque over their WHOLE
+footprint to a blend-free pipeline. `az_cmd_fully_opaque()` is deliberately
+stricter than `az_cmd_opaque_region()`: that one handles a rounded draw by
+insetting the region it reports, and a pipeline bound once for the draw cannot
+inset anything. Headless: −0.25%, bit-exact. Retained for one live arm; delete
+if it does not clear 5%.
+
+**The pixel oracle was lying.** The first A/B reported 2,574 differing pixels.
+Two runs with byte-identical environments differ by the *same* 2,574 pixels in
+the same 429×6 strip — the **titlebar text**, present in one capture and absent
+from the other. `contrib/lib/headless.sh` sets `titlebar { enable 1 }`, so every
+fixture that compares captures and does not override it carries that noise
+underneath. With it off, two identical runs differ by 0 px. The fixture now runs
+one arm twice as a control and asserts the noise floor first.
+
+Second silent failure from the same chase: a 3840×2160 PPM is 24.9 MB and was
+being copied before the compositor finished writing it. `ppm.py` refused the
+truncated file and the oracle printed `-1`, which reads as a failure rather than
+as "there was no picture".
+
+## 5.10 The GLES floor is accepted as UNVERIFIED
+
+Three instruments, each tried and each measured to be incapable:
+
+1. **GPU timestamps are an AVK instrument.** A matrix that ran GLES arms
+   produced a neat, well-formatted `NO TRACE ROWS` for every one.
+2. **Client frame callbacks are vblank-scheduled**, not render-completion
+   scheduled. `contrib/wlrepaint` reads 61.9 and 62.0 fps — at 8 windows and at
+   20, at 60 Hz and at 1000 Hz. Three loads, one number; "AVK / GLES = 1.00×"
+   was the frame scheduler read twice.
+3. **Compositor CPU is 0.008 s against 0.009 s** over an 18-second run. Not a
+   tie: both arms doing so little CPU work that there is nothing to compare,
+   consistent with ~80 µs of record per frame. The work is on the GPU.
+
+Establishing it needs the SceneFX path instrumented, which buys a comparison
+against a renderer asteroidz no longer uses. **Declined.**
+`contrib/avk-gles-floor.sh` is kept and kept FAILING its own premise, as the
+record of why rather than as a gate. Do not relax the premise to make it green.
+
+Two artefacts of that chase, recorded so they are not rediscovered:
+`utime+stime` from `/proc/<pid>/stat` is in 10 ms ticks and read `0.01` for both
+renderers — one tick, a tie that was the counter's resolution (`schedstat` is
+nanoseconds); and driving the output at 1000 Hz to unpin the callback rate made
+the compositor wake on a 1 ms frame timer and burn 99.8% of a core to complete
+66 frames whose GPU time totalled 41 ms — the fixture's own knob, and exactly
+the kind of number that gets quoted as a renderer property.
+
+## 5.11 The AVK suite register
+
+`contrib/avk-suite.sh` holds a disposition for all 62 suites (required / perf /
+live / manual) and fails on two conditions: a registered suite that is absent or
+not executable, and a discovered `avk-*.sh` with no disposition. The second is
+the half that keeps working — a static list decays the moment somebody adds a
+file.
+
+It exists because `avk-blur-required-test.sh` shipped without its executable bit
+and nobody noticed: nothing enumerated these suites, and a suite that cannot
+execute is indistinguishable from a suite that was not run. The first audit
+found **three** non-executable suites, not one. Both halves were falsified
+before being trusted.

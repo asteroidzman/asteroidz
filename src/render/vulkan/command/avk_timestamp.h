@@ -146,6 +146,29 @@ struct avk_ts_slot {
 	 * off whatever the CPU is doing when the result finally comes back.
 	 */
 	bool blur_active;
+	/*
+	 * WHICH OUTPUT THIS FRAME WAS FOR, carried in the SLOT for the same
+	 * reason blur_active is: a timestamp result arrives several frames later,
+	 * and reading the name off whatever the CPU is doing when it lands
+	 * attributes a 4K frame to whichever display happened to be rendering
+	 * next. Every percentile in this milestone has been mixed across a
+	 * 4K/144Hz output and a 1080p/60Hz one, and a 1080p frame is a quarter of
+	 * the fill --- so the aggregate is bimodal and was being read as one
+	 * population. A short fixed buffer, because this must not own memory.
+	 */
+	char output[16];
+	/*
+	 * The REGION SIZES this frame worked on, in pixels.
+	 *
+	 * prefix and post were observed growing ~5x together at a FIXED chain
+	 * count, and two phases moving in lockstep by the same factor share an
+	 * input. The only thing a prefix replay and the output composite have in
+	 * common is how much of the screen is being rebuilt --- so that quantity
+	 * has to be on the frame, not in a running total that cannot be joined
+	 * back to the frame that produced it.
+	 */
+	uint64_t damage_px;
+	uint64_t rebuild_px;
 	/* How many blur chains this frame declared. The count, not the bool: at
 	 * N > 1 the PREFIX_END and DOWN_END marks belong to the FIRST chain only,
 	 * so a phase decomposition read without it silently attributes chains
@@ -195,6 +218,17 @@ struct avk_timestamps {
 	 * every sample. */
 	uint64_t gpu_frame_ns_total;
 	uint64_t samples;
+	/*
+	 * M4H.7. The deadline this output actually has, in nanoseconds, and how
+	 * often the GPU missed it. Set by avk_timestamps_set_budget() from the
+	 * output's refresh; 0 disables the accounting rather than defaulting to a
+	 * number, because a wrong budget scores silently.
+	 */
+	uint64_t budget_ns;
+	uint64_t budget_frames;
+	uint64_t over_budget;
+	uint64_t over_budget_2x;
+	uint64_t over_budget_3x;
 	uint64_t dropped;
 
 	/*
@@ -220,6 +254,18 @@ struct avk_timestamps {
 	/* gpu_frame, restricted to frames that actually ran blur. Same samples,
 	 * same boundaries, different cohort. */
 	struct avk_hist gpu_frame_blur_hist;
+	/*
+	 * THE REST OF THE FRAME, which nothing measured.
+	 *
+	 * FRAME_BEGIN -> BLUR_BEGIN is everything drawn before the first blur
+	 * pass; BLUR_END -> FRAME_END is the final composite and everything after
+	 * it. Together with blur_total they partition a blur-bearing frame with no
+	 * overlap and no gap, and until they existed the answer to "where does the
+	 * frame go" was 44% blur and 56% unattributed -- which is not an answer.
+	 * No new queries: both spans come from marks already written.
+	 */
+	struct avk_hist blur_pre_hist;
+	struct avk_hist blur_post_hist;
 
 	/*
 	 * ── COHORT ACCOUNTING ─────────────────────────────────────────────────
@@ -251,10 +297,14 @@ struct avk_timestamps {
 	bool cohort_wrong;
 	bool cur_blur_active;
 	bool trace;
+	/* Set per frame before recording; copied into the slot at begin. */
+	char pending_output[16];
 	/* Carried from the gpu_frame block down to the trace line at the end of
 	 * read_slot(), so one frame prints as ONE line with its phases beside its
 	 * total instead of two lines that have to be joined by frame id. */
 	bool trace_pending, trace_cohort, trace_slot_active, trace_cur_active;
+	char trace_output[16];
+	uint64_t trace_damage_px, trace_rebuild_px;
 	uint64_t trace_gpu_frame_ns, trace_frame_id;
 	uint32_t trace_slot;
 };
@@ -266,6 +316,40 @@ void avk_timestamps_single_chain(struct avk_timestamps *ts, uint32_t slot,
 
 /* Whether this frame ran blur work, so its gpu_frame sample joins the
  * blur-active cohort as well as the all-frames one. */
+/* The frame deadline for the output this renderer is serving, in nanoseconds.
+ * Called once per frame from the render path, because an output's refresh can
+ * change under a mode set and a budget captured at init would then be judging
+ * against a rate the display no longer runs at. */
+static inline void avk_timestamps_set_budget(struct avk_timestamps *ts,
+		uint64_t budget_ns) {
+	ts->budget_ns = budget_ns;
+}
+
+/* Turn the per-frame READ trace on or off while running. AZ_TS_TRACE is read
+ * once at init and `restart` re-execs with the same environ, so on a live
+ * session there is otherwise no way to get per-frame data at all --- and every
+ * aggregate percentile this milestone has produced has been mixed across two
+ * outputs of different size and refresh, which is exactly what per-frame data
+ * exists to replace. */
+static inline void avk_timestamps_set_trace(struct avk_timestamps *ts,
+		bool on) {
+	ts->trace = on;
+}
+
+/* The output name this frame is being recorded for. Copied, not borrowed, and
+ * truncated rather than allocated. */
+void avk_timestamps_set_output(struct avk_timestamps *ts, const char *name);
+
+/* This frame's damaged output area and total blur rebuild area, recorded into
+ * the slot alongside the chain count. */
+static inline void avk_timestamps_set_regions(struct avk_timestamps *ts,
+		uint32_t slot, uint64_t damage_px, uint64_t rebuild_px) {
+	if (slot < AVK_FRAMES_IN_FLIGHT) {
+		ts->slots[slot].damage_px = damage_px;
+		ts->slots[slot].rebuild_px = rebuild_px;
+	}
+}
+
 void avk_timestamps_blur_active(struct avk_timestamps *ts, uint32_t slot,
 	bool active, uint32_t chains);
 

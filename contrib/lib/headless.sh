@@ -19,6 +19,10 @@
 #               repo, falling back to /usr/bin/asteroidz)
 #   HL_OUTDIR   work dir (default /tmp/asteroidz-hl-<random>)
 #   HL_WIDTH / HL_HEIGHT   output size (default 1920x1080)
+#   HL_WIDTH2 / HL_HEIGHT2 the SECOND output's size (default: the first's). Set
+#                          it when the thing under test is sized per output in
+#                          pixels -- two outputs at one resolution can share a
+#                          single allocation and still render correctly.
 #   HL_OUTPUTS             how many headless outputs (default 1). 2 creates
 #                          HEADLESS-2 immediately to the RIGHT of HEADLESS-1,
 #                          which is what makes "this node belongs to the other
@@ -192,7 +196,16 @@ hl_start() { # hl_start [EXTRA_KDL]
 	local hz1="${HL_HZ1:-60}" hz2="${HL_HZ2:-60}"
 	local secondary_output=""
 	if [ "${HL_OUTPUTS:-1}" -ge 2 ]; then
-		secondary_output="output HEADLESS-2 { ${scale2}${rr2}x $x2; y 0; width $HL_WIDTH; height $HL_HEIGHT; refresh $hz2 }"
+		# HL_WIDTH2 / HL_HEIGHT2 are the second output's RESOLUTION, defaulting
+		# to the first output's so that every fixture written before this
+		# existed keeps its meaning. Separate from HL_SCALE2 because the two
+		# falsify different things: a per-output blur KERNEL is scaled, so a
+		# scale difference catches a shared kernel -- but a per-output cached
+		# IMAGE is sized in pixels, and two outputs at one resolution can share
+		# one image and still render correctly. The real desktop is 3840x2160
+		# beside 1920x1080, and that difference is the only thing that makes a
+		# cross-output alias visible at all.
+		secondary_output="output HEADLESS-2 { ${scale2}${rr2}x $x2; y 0; width ${HL_WIDTH2:-$HL_WIDTH}; height ${HL_HEIGHT2:-$HL_HEIGHT}; refresh $hz2 }"
 	fi
 
 	cat > "$HL_CONFIG" <<EOF
@@ -215,6 +228,22 @@ output $HL_MON { ${scale1}${rr1}x 0; y 0; width $HL_WIDTH; height $HL_HEIGHT; re
 $secondary_output
 layout {
 	titlebar { enable 1 }
+	# ── A PIXEL ORACLE MUST TURN THIS OFF ────────────────────────────────
+	#
+	# The titlebar's TEXT does not render identically from one run to the
+	# next. Two runs of the same fixture with byte-identical environments
+	# differed by 2,574 pixels in a 429x6 strip -- the title present in one
+	# capture and absent from the other, leaving the theme colour underneath.
+	#
+	# That is enough to fail a zero-pixel oracle, and it did: an A/B reported
+	# "this change is not bit-exact" over a difference that had nothing to do
+	# with the change. With `layout { titlebar { enable 0 } }` appended, two
+	# identical runs differ by 0 px.
+	#
+	# It stays ON here because most fixtures want a realistic desktop and a
+	# titlebar is part of one. Any fixture that COMPARES CAPTURES must append
+	# the override -- and should run one arm twice as a control and assert the
+	# noise floor is zero before trusting a cross-arm diff.
 	scroller { preset 0.3,0.5,0.8 }
 }
 dwindle_manual_split 1

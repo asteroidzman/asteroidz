@@ -3,12 +3,55 @@
 #include "avk_render.h"
 
 #include <stdlib.h>
+#include "../effect/avk_blur_cache.h"
 #include "../debug/avk_debug.h"
 
 #include <inttypes.h>
 #include <math.h>
 #include <string.h>
 #include <time.h>
+
+/* AZ_AVK_SKIP_DRAW="shadow,border" -> AVK_PRIM_SHADOW | AVK_PRIM_BORDER.
+ * An unrecognised name is LOUD rather than ignored: a typo that silently
+ * measured the full frame and got reported as "shadows cost nothing" is the
+ * exact failure this whole audit exists to avoid. */
+static uint32_t az_parse_skip_draw(const char *spec) {
+	if (spec == NULL || spec[0] == '\0') {
+		return 0;
+	}
+	static const struct { const char *name; uint32_t bit; } table[] = {
+		{ "clear", AVK_PRIM_CLEAR },
+		{ "content", AVK_PRIM_CONTENT },
+		{ "shadow", AVK_PRIM_SHADOW },
+		{ "border", AVK_PRIM_BORDER },
+		{ "blur", AVK_PRIM_BLUR },
+		{ "gradient", AVK_PRIM_GRADIENT },
+		{ "rect", AVK_PRIM_RECT },
+		{ "round", AVK_PRIM_ROUND },
+	};
+	uint32_t mask = 0;
+	const char *p = spec;
+	while (*p != '\0') {
+		const char *comma = strchr(p, ',');
+		size_t len = comma != NULL ? (size_t)(comma - p) : strlen(p);
+		bool found = false;
+		for (size_t i = 0; i < sizeof(table) / sizeof(table[0]); i++) {
+			if (strlen(table[i].name) == len &&
+					strncmp(p, table[i].name, len) == 0) {
+				mask |= table[i].bit;
+				found = true;
+				break;
+			}
+		}
+		if (!found) {
+			avk_log(AVK_ERROR, "AZ_AVK_SKIP_DRAW: unknown class '%.*s' -- "
+				"IGNORED, so this run does NOT measure what you asked for",
+				(int)len, p);
+		}
+		p = comma != NULL ? comma + 1 : p + len;
+	}
+	return mask;
+}
 
 bool avk_renderer_init(struct avk_renderer *renderer, struct avk_device *dev,
 		VkFormat format) {
@@ -54,6 +97,65 @@ bool avk_renderer_init(struct avk_renderer *renderer, struct avk_device *dev,
 		getenv("AZ_SHADOW_SYMMETRIC") != NULL;
 	renderer->break_shadow_no_dither =
 		getenv("AZ_SHADOW_NO_DITHER") != NULL;
+	renderer->break_no_occlusion = getenv("AZ_AVK_NO_OCCLUSION") != NULL;
+	renderer->opaque_noblend = getenv("AZ_AVK_OPAQUE_NOBLEND") != NULL;
+	renderer->break_occlude_all = getenv("AZ_AVK_OCCLUDE_ALL") != NULL;
+	if (renderer->break_occlude_all) {
+		avk_log(AVK_ERROR, "M4H break switch active: EVERY command is treated "
+			"as an opaque occluder -- translucent surfaces, shadows and "
+			"rounded corners will erase what is behind them");
+	}
+	if (renderer->break_no_occlusion) {
+		avk_log(AVK_ERROR, "M4H break switch active: opaque occlusion culling "
+			"is OFF -- every hidden layer is drawn. The output must be "
+			"BIT-IDENTICAL to a build without this; only the fill differs.");
+	}
+	const char *dump = getenv("AZ_AVK_CMD_DUMP");
+	renderer->cmd_dump = dump != NULL ? (uint32_t)atoi(dump) : 0;
+	renderer->blur_chain_trace = getenv("AZ_BLUR_CHAIN_TRACE") != NULL;
+	/*
+	 * M4I. The cache is ON unless explicitly disabled -- AZ_BLUR_CACHE=0 is the
+	 * A/B arm, and it must be a value rather than a presence test so that one
+	 * environment can carry the variable through a restart and flip it.
+	 */
+	const char *cache_env = getenv("AZ_BLUR_CACHE");
+	renderer->break_blur_cache_off =
+		cache_env != NULL && atoi(cache_env) == 0;
+	renderer->break_blur_cache_always_dirty =
+		getenv("AZ_BLUR_CACHE_ALWAYS_DIRTY") != NULL;
+	renderer->break_blur_cache_ignore_dirty =
+		getenv("AZ_BLUR_CACHE_IGNORE_DIRTY") != NULL;
+	renderer->break_blur_cache_stale_geometry =
+		getenv("AZ_BLUR_CACHE_STALE_GEOMETRY") != NULL;
+	renderer->break_blur_cache_stale_params =
+		getenv("AZ_BLUR_CACHE_STALE_PARAMS") != NULL;
+	if (renderer->break_blur_cache_off) {
+		avk_log(AVK_ERROR, "M4I: the monitor background blur cache is OFF -- "
+			"every backdrop blur reconstructs the background for itself");
+	}
+	if (renderer->break_blur_cache_always_dirty
+			|| renderer->break_blur_cache_ignore_dirty
+			|| renderer->break_blur_cache_stale_geometry
+			|| renderer->break_blur_cache_stale_params) {
+		avk_log(AVK_ERROR, "M4I break switch active on the blur cache "
+			"(always_dirty=%d ignore_dirty=%d stale_geometry=%d "
+			"stale_params=%d) -- this build renders a WRONG "
+			"desktop and exists to make an oracle fail",
+			(int)renderer->break_blur_cache_always_dirty,
+			(int)renderer->break_blur_cache_ignore_dirty,
+			(int)renderer->break_blur_cache_stale_geometry,
+			(int)renderer->break_blur_cache_stale_params);
+	}
+	for (int k = 0; k < AVK_BLUR_CACHE_KINDS; k++) {
+		pixman_region32_init(&renderer->blur_cache_region[k]);
+	}
+	renderer->skip_draw = az_parse_skip_draw(getenv("AZ_AVK_SKIP_DRAW"));
+	if (renderer->skip_draw != 0) {
+		avk_log(AVK_ERROR, "M4H diagnostic active: AZ_AVK_SKIP_DRAW=0x%x -- "
+			"primitive classes are being suppressed at the draw. The desktop "
+			"this renders is WRONG and the frame times are attribution data, "
+			"not a performance result.", renderer->skip_draw);
+	}
 	renderer->break_blur_scene_after =
 		getenv("AZ_BLUR_SCENE_AFTER") != NULL;
 	if (renderer->break_blur_scene_after) {
@@ -149,6 +251,11 @@ void avk_renderer_finish(struct avk_renderer *renderer) {
 	 * slots still hold. */
 	free(renderer->blur_results);
 	renderer->blur_results = NULL;
+	/* The regions inside are finished at the end of every segment that used
+	 * them, so only the array itself is outstanding here. */
+	free(renderer->region_scratch);
+	renderer->region_scratch = NULL;
+	renderer->region_scratch_len = 0;
 	avk_gradient_store_finish(&renderer->gradients);
 	/* Before the retire queue is drained, like the gradient store and for the
 	 * same reason: dropping a pool entry pushes its image onto that queue. */
@@ -493,8 +600,75 @@ static uint64_t az_region_area(const pixman_region32_t *region) {
  * Chosen to match wlroots' own damage-ring limit, which collapses at 20: a
  * region that has fragmented further than the compositor's own damage tracking
  * would keep is not one worth walking per level.
+ *
+ * THAT RATIONALE IS ABOUT THE WRONG COST. wlroots collapses at 20 because of
+ * what IT does with a region; a blur chain does something else entirely --- it
+ * walks the region once per pass, so N rectangles cost N scissored draws times
+ * the pass count, while collapsing costs the bounding box's extra fill times
+ * the same pass count. Which of those is larger is a measurement, and borrowing
+ * somebody else's constant is not one.
+ *
+ * It matters, live: on a tag transition the rebuild region reaches 39
+ * rectangles, 16.5% of chains collapse, and the collapse inflates their area
+ * 1.74x --- concentrated in exactly the frames that miss the deadline. It never
+ * fired at all on any headless fixture, which is why it went unnoticed.
+ *
+ * AZ_BLUR_DAMAGE_MAX_RECTS overrides it. Raising it cannot change a pixel: the
+ * collapse is conservative in one direction only --- the bounding box always
+ * CONTAINS the region, so a collapsed chain rebuilds a superset and produces
+ * the same result more expensively. That makes the tuning safe to measure with
+ * a pixel oracle that must report zero difference at every setting.
  */
 #define AVK_BLUR_DAMAGE_MAX_RECTS 20
+
+/*
+ * Settable at RUNTIME, not just from the environment, and that is the whole
+ * reason this is not a `static int cached`.
+ *
+ * `amsg dispatch restart` re-execs with the same environ, so an env-only knob
+ * cannot be changed on a running session at all --- which made the A/B this
+ * constant exists for impossible to run against the live desktop, where it is
+ * the only place the collapse has ever been observed. Restarting into a
+ * different value is not an alternative: it destroys the workload, and the
+ * workload is what fragments the region.
+ */
+static int az_blur_rect_cap = 0;
+
+/*
+ * M4I. The cache, on or off, without a restart.
+ *
+ * A dispatch and not only an environment variable, for the reason the rectangle
+ * cap needed one: `restart` re-execs with the same environ, so an env-only knob
+ * cannot be A/B'd against a RUNNING session -- and restarting into the other
+ * value destroys the workload being measured and starts a cold GPU, which is
+ * how this milestone produced a 2.6x result that was nothing but unequal
+ * animation counts.
+ *
+ * Turning it off leaves the cached image allocated and simply stops consuming
+ * it; turning it back on resumes only if the generation still matches, so a
+ * wallpaper change during the OFF arm is not silently reinstated.
+ */
+void avk_render_set_blur_cache_enabled(struct avk_renderer *renderer, bool on) {
+	if (renderer != NULL) {
+		renderer->break_blur_cache_off = !on;
+	}
+}
+
+void avk_render_set_damage_rect_cap(int cap) {
+	az_blur_rect_cap = cap >= 1 ? cap : 0;
+}
+
+static int az_blur_damage_max_rects(void) {
+	if (az_blur_rect_cap >= 1) {
+		return az_blur_rect_cap;
+	}
+	const char *env = getenv("AZ_BLUR_DAMAGE_MAX_RECTS");
+	int v = env != NULL ? atoi(env) : 0;
+	/* A cap below 1 would collapse every region including a single rectangle,
+	 * which is not a setting anyone wants and would look like the damage
+	 * system had been switched off. */
+	return v >= 1 ? v : AVK_BLUR_DAMAGE_MAX_RECTS;
+}
 
 /* One blur's damage regions, plus what the declaration loop needs to build its
  * chain. Held in a per-frame array so the two sweeps and the declaration can
@@ -503,6 +677,13 @@ struct az_blur_slot {
 	size_t index;
 	struct avk_blur_params params;
 	struct avk_blur_damage damage;
+	/* M4I. This node's source is the monitor background cache, so it needs no
+	 * prefix replay and no chain of its own. Decided once, after the damage
+	 * sweeps, so the two loops cannot disagree about it. `cache_kind` says
+	 * WHICH of the two cached images -- a shadow's clamped one or a window's
+	 * plain one -- and serving the wrong one is a visible defect either way. */
+	bool cacheable;
+	enum avk_blur_cache_kind cache_kind;
 };
 
 static void az_blur_damage_init(struct avk_blur_damage *d) {
@@ -548,6 +729,184 @@ static void command_region(const struct avk_cmd *cmd,
 	if (damage != NULL) {
 		pixman_region32_intersect(out, out, (pixman_region32_t *)damage);
 	}
+}
+
+/*
+ * ── OCCLUSION ───────────────────────────────────────────────────────────────
+ *
+ * What a command definitely covers, so that everything below it in the same
+ * segment can stop drawing there.
+ *
+ * WHY THIS IS WORTH THE CODE. The AVK walker builds commands bottom to top and
+ * the renderer draws them in that order, which is a painter's algorithm and is
+ * correct without any occlusion information at all -- and that is exactly what
+ * the first cut said, in a comment, deliberately. The M4H draw ledger then
+ * priced it. An ordinary full-damage frame draws the scene's background clear
+ * over the whole output, then the background rect over the whole output, then
+ * an opaque wallpaper over the whole output: three full-screen fills of which
+ * two cannot be seen. Measured on the fixture below, suppressing just those two
+ * draws is 14.4% of the frame, and the same two layers are replayed into every
+ * blur prefix capture as well -- 265 of 534 Mpx in the output pass and 260 of
+ * 470 Mpx in the captures.
+ *
+ * CONSERVATIVE IN ONE DIRECTION ONLY. Every rule here may UNDER-report what is
+ * covered and may never over-report it: a missed occluder costs a fill that was
+ * already being paid, an imagined one erases a pixel that should have been
+ * drawn. So opacity below 1, an alpha-bearing image, a gradient, a shadow, a
+ * blur result and an annulus are all treated as transparent without further
+ * thought.
+ *
+ * ROUNDED CORNERS are the one case worth doing properly rather than excluding,
+ * because the live desktop rounds every window and excluding them would leave
+ * the maximised-window case -- the common one -- unculled. A rounded rectangle
+ * contains the union of two bands: the full width inset vertically by the
+ * radius, and the full height inset horizontally by it. That union is a subset
+ * of the shape (it gives up four r-by-r corner squares that are mostly inside),
+ * so it is safe by construction, and pixman represents it exactly.
+ */
+/* Scratch for one segment's draw regions, grown and kept. Sized by the largest
+ * segment the process has seen, which is bounded by the scene, so it stops
+ * growing almost immediately -- and it must NOT be freed per frame: a
+ * malloc/free pair per segment per frame is precisely the kind of steady-state
+ * allocation the renderer has been kept clear of. */
+static bool avk_render_reserve_regions(struct avk_renderer *renderer,
+		size_t want) {
+	if (renderer->region_scratch_len >= want) {
+		return true;
+	}
+	pixman_region32_t *grown = realloc(renderer->region_scratch,
+		want * sizeof(*grown));
+	if (grown == NULL) {
+		return false;
+	}
+	renderer->region_scratch = grown;
+	renderer->region_scratch_len = want;
+	return true;
+}
+
+/*
+ * Is EVERY fragment of this command's footprint alpha 1?
+ *
+ * Stricter than az_cmd_opaque_region() below, and the difference is the whole
+ * reason this is a separate function rather than a shared helper. That one
+ * answers "which pixels does this command definitely cover", and handles a
+ * rounded draw by insetting past the arcs. This one answers "may the whole
+ * draw skip blending", and a pipeline is bound once for the draw -- there is
+ * nothing to inset. So any corner radius, any interior cut-out, any coverage
+ * that is not identically 1 disqualifies it.
+ *
+ * A false answer here costs a blend that was not needed. A true answer where
+ * coverage is partial writes an antialiased edge straight over the
+ * destination, which is a hard line down the side of every rounded window.
+ */
+static bool az_cmd_fully_opaque(const struct avk_cmd *cmd) {
+	if (cmd->opacity < 1.0f || cmd->has_inner) {
+		return false;
+	}
+	for (int i = 0; i < 4; i++) {
+		if (cmd->corners[i] > 0.0f) {
+			return false;
+		}
+	}
+	switch (cmd->type) {
+	case AVK_CMD_TEXTURE:
+		/* has_alpha is the FORMAT's answer, and it is the same source of truth
+		 * the draw uses to force params[1] to 0 for the X formats. */
+		return cmd->image != NULL && !cmd->image->has_alpha;
+	case AVK_CMD_RECT:
+		return cmd->color[3] >= 1.0f
+			&& cmd->gradient.type == AVK_GRADIENT_NONE;
+	default:
+		/* A shadow is a falloff and a blur result may carry a soft edge or an
+		 * alpha of its own. Neither is opaque anywhere it matters. */
+		return false;
+	}
+}
+
+static bool az_cmd_opaque_region(const struct avk_renderer *renderer,
+		const struct avk_cmd *cmd,
+		const struct avk_box *bounds, pixman_region32_t *out) {
+	/*
+	 * AZ_AVK_OCCLUDE_ALL=1 -- THE BREAK, and it is the one that matters.
+	 *
+	 * The whole risk in occlusion culling is over-reporting: claiming a
+	 * translucent surface, a shadow or a rounded corner hides what is beneath
+	 * it, and erasing pixels that should have been drawn. This asserts exactly
+	 * that -- every command's full destination becomes an occluder -- so a test
+	 * that compares culled against unculled output has something it must
+	 * detect. Without it, "the two builds agree" is also what a build that
+	 * culls NOTHING would report.
+	 */
+	if (renderer->break_occlude_all) {
+		pixman_region32_init_rect(out, cmd->dst.x, cmd->dst.y,
+			(unsigned)(cmd->dst.width > 0 ? cmd->dst.width : 0),
+			(unsigned)(cmd->dst.height > 0 ? cmd->dst.height : 0));
+		pixman_region32_intersect_rect(out, out, bounds->x, bounds->y,
+			(unsigned)bounds->width, (unsigned)bounds->height);
+		return pixman_region32_not_empty(out);
+	}
+	if (cmd->opacity < 1.0f) {
+		return false;
+	}
+	switch (cmd->type) {
+	case AVK_CMD_TEXTURE:
+		/* has_alpha is the format's answer, and the X formats' fourth channel
+		 * means nothing -- which is why the draw forces params[1] to 0 for
+		 * them. Same source of truth here. */
+		if (cmd->image == NULL || cmd->image->has_alpha) {
+			return false;
+		}
+		break;
+	case AVK_CMD_RECT:
+		if (cmd->color[3] < 1.0f ||
+				cmd->gradient.type != AVK_GRADIENT_NONE) {
+			return false;
+		}
+		break;
+	default:
+		/* A shadow is a falloff and a blur result may carry a soft edge or an
+		 * alpha of its own. Neither can be an occluder. */
+		return false;
+	}
+	if (cmd->has_inner) {
+		/* An annulus has a hole in the middle, and the hole is the part that
+		 * would otherwise look like the biggest occluder in the frame. */
+		return false;
+	}
+
+	int32_t r = 0;
+	for (int i = 0; i < 4; i++) {
+		int32_t ri = (int32_t)ceilf(cmd->corners[i]);
+		if (ri > r) {
+			r = ri;
+		}
+	}
+	/* One pixel beyond the radius, for the antialiased band. The band is
+	 * outside the shape everywhere the SDF is positive, but a pixel of margin
+	 * costs a pixel and buying certainty with it is the right trade. */
+	r += 1;
+
+	pixman_region32_init(out);
+	if (cmd->dst.width <= 2 * r || cmd->dst.height <= 2 * r) {
+		/* Smaller than its own corners in one axis: nothing survives the
+		 * inset, and a negative extent would be a region bug rather than an
+		 * empty one. */
+		return false;
+	}
+	pixman_region32_init_rect(out, cmd->dst.x, cmd->dst.y + r,
+		(unsigned)cmd->dst.width, (unsigned)(cmd->dst.height - 2 * r));
+	pixman_region32_t vertical;
+	pixman_region32_init_rect(&vertical, cmd->dst.x + r, cmd->dst.y,
+		(unsigned)(cmd->dst.width - 2 * r), (unsigned)cmd->dst.height);
+	pixman_region32_union(out, out, &vertical);
+	pixman_region32_fini(&vertical);
+
+	if (cmd->has_clip) {
+		pixman_region32_intersect(out, out, (pixman_region32_t *)&cmd->clip);
+	}
+	pixman_region32_intersect_rect(out, out, bounds->x, bounds->y,
+		(unsigned)bounds->width, (unsigned)bounds->height);
+	return pixman_region32_not_empty(out);
 }
 
 /*
@@ -627,6 +986,32 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 	};
 	vkCmdBeginRendering(cb, &rendering);
 
+	/*
+	 * Which bucket this segment's fragments belong to. `load` is true only for
+	 * the output segment -- a capture target is written whole and has nothing
+	 * to preserve -- so it is the existing, load-bearing discriminator rather
+	 * than a new flag that could drift out of agreement with the real one.
+	 */
+	struct avk_prim_px *px = ctx->load
+		? &renderer->stats.px_out : &renderer->stats.px_prefix;
+	/* Per SEGMENT, not per frame. A two-output frame composes two targets and
+	 * both are real fill, so a ratio taken against one output's area would read
+	 * as double the overdraw on a machine that simply has two screens. */
+	px->target += (uint64_t)width * (uint64_t)height;
+
+	/* Segments are numbered across the whole process, not within a frame, so
+	 * the ledger below stops after the first N segments EVER -- a per-frame
+	 * limit would print the same first frame forever and never reach a
+	 * multi-chain one. */
+	const uint32_t dump_seg = renderer->dump_seg;
+	if (renderer->cmd_dump > 0 && dump_seg < renderer->cmd_dump) {
+		renderer->dump_seg = dump_seg + 1;
+		avk_log(AVK_ERROR, "avk cmd: seg=%u %s target=%ux%u@%d,%d "
+			"cmds=[%zu,%zu) clear=%d", dump_seg, ctx->load ? "OUT" : "PREFIX",
+			width, height, ctx->origin_x, ctx->origin_y, begin, end,
+			scene->has_clear && ctx->clear);
+	}
+
 	VkViewport viewport = {
 		.x = 0, .y = 0,
 		.width = (float)width, .height = (float)height,
@@ -644,8 +1029,59 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 
 	VkPipeline bound = VK_NULL_HANDLE;
 
+	/*
+	 * ── PASS ONE: TOP DOWN, WORKING OUT WHAT IS HIDDEN ──────────────────────
+	 *
+	 * Every command's draw region, computed in REVERSE scene order with an
+	 * accumulating opaque region subtracted from each. The draws themselves
+	 * still happen bottom to top below -- only the regions are decided here,
+	 * because "what covers me" is only knowable from above.
+	 *
+	 * PER SEGMENT, over [begin, end) and nothing else. A prefix capture
+	 * contains the scene BEHIND a blur node, and culling it against a window
+	 * drawn after that node would erase backdrop the blur is entitled to read.
+	 * The range is the segment's own, so that cannot happen by construction
+	 * rather than by remembering to check.
+	 *
+	 * AZ_AVK_NO_OCCLUSION=1 skips the subtraction and restores the painter's
+	 * algorithm exactly. It is the falsifier: the same scene rendered with and
+	 * without it must be BIT-IDENTICAL, because occlusion culling that changes
+	 * a single pixel is not an optimisation, it is a rendering bug.
+	 */
+	const size_t span = end > begin ? end - begin : 0;
+	if (!avk_render_reserve_regions(renderer, span + 1)) {
+		/* Out of memory for the scratch. Drawing an unculled frame is the
+		 * correct fallback -- it is slower and identical. */
+		avk_log(AVK_ERROR, "avk: no scratch for occlusion, drawing unculled");
+	}
+	pixman_region32_t *regions =
+		renderer->region_scratch_len >= span + 1 ? renderer->region_scratch : NULL;
+	pixman_region32_t occluded;
+	pixman_region32_init(&occluded);
+	if (regions != NULL) {
+		for (size_t k = 0; k <= span; k++) {
+			pixman_region32_init(&regions[k]);
+		}
+		for (size_t i = end; i-- > begin; ) {
+			const struct avk_cmd *cmd = &scene->cmds[i];
+			pixman_region32_t *r = &regions[i - begin + 1];
+			command_region(cmd, damage, &bounds,
+				cmd->type == AVK_CMD_BLUR && renderer->break_blur_ignore_clip,
+				r);
+			if (!renderer->break_no_occlusion) {
+				pixman_region32_subtract(r, r, &occluded);
+			}
+			pixman_region32_t op;
+			if (az_cmd_opaque_region(renderer, cmd, &bounds, &op)) {
+				pixman_region32_union(&occluded, &occluded, &op);
+				pixman_region32_fini(&op);
+			}
+		}
+	}
+
 	/* The background, as a command like any other, so it is damage-clipped
-	 * rather than clearing the world. */
+	 * rather than clearing the world -- and, now, occluded like one too: it is
+	 * the bottom of the segment, so everything opaque above it hides it. */
 	if (scene->has_clear && ctx->clear) {
 		struct avk_cmd clear = {
 			.type = AVK_CMD_RECT,
@@ -656,9 +1092,16 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 
 		pixman_region32_t region;
 		command_region(&clear, damage, &bounds, false, &region);
+		if (!renderer->break_no_occlusion) {
+			pixman_region32_subtract(&region, &region, &occluded);
+		}
 		int count = 0;
 		const pixman_box32_t *rects =
 			pixman_region32_rectangles(&region, &count);
+		px->clear += az_region_area(&region);
+		if (count > 0 && (renderer->skip_draw & AVK_PRIM_CLEAR) != 0) {
+			count = 0;
+		}
 		if (count > 0) {
 			vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
 				renderer->pipes.rect);
@@ -714,12 +1157,20 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 		}
 
 		pixman_region32_t region;
-		/* AZ_BLUR_IGNORE_CLIP drops the clip for blur commands only:
-		 * the composite then covers the whole node instead of the region
-		 * the client or the compositor restricted it to. */
-		command_region(cmd, damage, &bounds,
-			cmd->type == AVK_CMD_BLUR && renderer->break_blur_ignore_clip,
-			&region);
+		/* Decided in pass one, where what covers this command was known. The
+		 * fallback recomputes it unculled, and is only reached when the
+		 * scratch could not be allocated. */
+		if (regions != NULL) {
+			pixman_region32_init(&region);
+			pixman_region32_copy(&region, &regions[i - begin + 1]);
+		} else {
+			/* AZ_BLUR_IGNORE_CLIP drops the clip for blur commands only:
+			 * the composite then covers the whole node instead of the region
+			 * the client or the compositor restricted it to. */
+			command_region(cmd, damage, &bounds,
+				cmd->type == AVK_CMD_BLUR && renderer->break_blur_ignore_clip,
+				&region);
+		}
 		int count = 0;
 		const pixman_box32_t *rects =
 			pixman_region32_rectangles(&region, &count);
@@ -777,7 +1228,8 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 				radii[i] *= renderer->break_scale_hint;
 			}
 		}
-		if (renderer->break_rounded_off) {
+		if (renderer->break_rounded_off ||
+				(renderer->skip_draw & AVK_PRIM_ROUND) != 0) {
 			radii[0] = radii[1] = radii[2] = radii[3] = 0.0f;
 		}
 		az_corner_normalise(radii, (float)cmd->dst.width,
@@ -811,14 +1263,33 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 				cmd->inner_corners[2], cmd->inner_corners[3] };
 			az_corner_normalise(inner, (float)cmd->inner.width,
 				(float)cmd->inner.height, pc.inner_corners);
-			renderer->stats.border_draws++;
-			if (pc.inner_corners[0] > 0.0f || pc.inner_corners[1] > 0.0f ||
-					pc.inner_corners[2] > 0.0f || pc.inner_corners[3] > 0.0f) {
-				renderer->stats.rounded_border_draws++;
-				if (pc.inner_corners[0] != pc.inner_corners[1] ||
-						pc.inner_corners[1] != pc.inner_corners[2] ||
-						pc.inner_corners[2] != pc.inner_corners[3]) {
-					renderer->stats.asymmetric_border_draws++;
+			if ((renderer->skip_draw & AVK_PRIM_ROUND) != 0) {
+				/* The square-hole scissor cut has already been subtracted
+				 * compositor-side, so zeroing the arcs takes the early-out in
+				 * az_rounded_coverage rather than changing what is covered. */
+				pc.inner_corners[0] = pc.inner_corners[1] =
+					pc.inner_corners[2] = pc.inner_corners[3] = 0.0f;
+			}
+			/*
+			 * A SHADOW ALSO CARRIES AN INTERIOR CUT-OUT, so `has_inner` alone
+			 * is not "this is a border" -- az_avk_clip_out_region() serves both
+			 * and says so. Counting shadows here made border_draws exactly
+			 * equal shadow_draws on a fixture with no borders in it at all,
+			 * which reads as "the border path ran" and is the opposite of the
+			 * truth. The M4B assertions this counter exists for are about
+			 * borders, so the shadow case is excluded.
+			 */
+			if (cmd->type != AVK_CMD_SHADOW) {
+				renderer->stats.border_draws++;
+				if (pc.inner_corners[0] > 0.0f || pc.inner_corners[1] > 0.0f ||
+						pc.inner_corners[2] > 0.0f ||
+						pc.inner_corners[3] > 0.0f) {
+					renderer->stats.rounded_border_draws++;
+					if (pc.inner_corners[0] != pc.inner_corners[1] ||
+							pc.inner_corners[1] != pc.inner_corners[2] ||
+							pc.inner_corners[2] != pc.inner_corners[3]) {
+						renderer->stats.asymmetric_border_draws++;
+					}
 				}
 			}
 		}
@@ -971,7 +1442,11 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 				pixman_region32_fini(&region);
 				continue;
 			}
-			want = renderer->pipes.texture;
+			want = (renderer->opaque_noblend && az_cmd_fully_opaque(cmd))
+				? renderer->pipes.texture_opaque : renderer->pipes.texture;
+			if (want == renderer->pipes.texture_opaque) {
+				renderer->stats.opaque_noblend_draws++;
+			}
 
 			float origin[2], dx[2], dy[2];
 			transform_uv(&cmd->src, cmd->image->extent.width,
@@ -997,7 +1472,11 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 				renderer->pipes.layout, 0, 1, &set, 0, NULL);
 			renderer->stats.surfaces++;
 		} else {
-			want = renderer->pipes.rect;
+			want = (renderer->opaque_noblend && az_cmd_fully_opaque(cmd))
+				? renderer->pipes.rect_opaque : renderer->pipes.rect;
+			if (want == renderer->pipes.rect_opaque) {
+				renderer->stats.opaque_noblend_draws++;
+			}
 			for (int c = 0; c < 3; c++) {
 				pc.color[c] = cmd->color[c] * cmd->color[3];
 			}
@@ -1031,6 +1510,92 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 			}
 		}
 
+		/*
+		 * WHAT THE RASTERISER IS ABOUT TO BE ASKED TO SHADE.
+		 *
+		 * `region` is the command's destination intersected with its clip and
+		 * with the frame damage -- so for a border it is already the annulus
+		 * with the interior cut away, and for a shadow already the envelope
+		 * with the window's footprint removed. Recording it HERE, past every
+		 * `continue` above, means a command that resolved to no image and drew
+		 * nothing contributes nothing, which is what makes the sum comparable
+		 * to a fragment-invocation count.
+		 *
+		 * The `_env` / `_outer` partners are the same primitives' UNCUT boxes.
+		 * The ratio between the two is the entire answer to "is this region
+		 * oversized" -- one number instead of an argument about the shader.
+		 */
+		uint64_t area = az_region_area(&region);
+		uint32_t klass;
+		uint64_t dst_area =
+			(uint64_t)cmd->dst.width * (uint64_t)cmd->dst.height;
+		if (cmd->type == AVK_CMD_SHADOW) {
+			klass = AVK_PRIM_SHADOW;
+			px->shadow += area;
+			px->shadow_env += dst_area;
+		} else if (cmd->type == AVK_CMD_BLUR) {
+			klass = AVK_PRIM_BLUR;
+			px->blur_comp += area;
+		} else if (cmd->type == AVK_CMD_TEXTURE) {
+			klass = AVK_PRIM_CONTENT;
+			px->content += area;
+		} else if (cmd->has_inner) {
+			/*
+			 * A RECT CARRYING AN INTERIOR CUT-OUT IS A BORDER. Not every
+			 * border reaches here: az_avk_clip_out_region only cuts when the
+			 * node has a clipped_region, so a border around a window with no
+			 * rounding is an ordinary filled rect and lands in `rect` below --
+			 * where it is a FULL window rectangle, not a ring. That difference
+			 * is a measurement, so the two must not be merged.
+			 */
+			klass = AVK_PRIM_BORDER;
+			px->border += area;
+			px->border_outer += dst_area;
+		} else {
+			klass = AVK_PRIM_RECT;
+			px->rect += area;
+		}
+		/* Not exclusive with the above: a gradient BORDER is an annulus that
+		 * happens to be shaded by the gradient pipeline, and it belongs in
+		 * both totals. Keyed on the pipeline actually selected, so it counts
+		 * gradients that were DRAWN as such rather than merely requested. */
+		if (want == renderer->pipes.gradient) {
+			px->gradient += area;
+		}
+		/*
+		 * AZ_AVK_CMD_DUMP=N -- the frame's draw ledger, for the first N
+		 * segments. One line per command that survived to a draw, naming its
+		 * class, its destination, what the scissor reduced it to, and which
+		 * segment it is in.
+		 *
+		 * This exists because "post-blur is 7ms" is not a finding, and neither
+		 * is a per-class total on its own: a class total says shadows cost
+		 * 2% without saying whether that is one shadow over the screen or
+		 * forty tight ones. The ledger is the only form in which "the same
+		 * decoration is rasterised three times" is directly readable.
+		 */
+		if (renderer->cmd_dump > 0 && dump_seg < renderer->cmd_dump) {
+			static const char *names[] = { "clear", "content", "shadow",
+				"border", "blur", "gradient", "rect", "round" };
+			const char *nm = "?";
+			for (int b = 0; b < 8; b++) {
+				if (klass == (1u << b)) { nm = names[b]; break; }
+			}
+			avk_log(AVK_ERROR, "avk cmd: seg=%u %s idx=%zu %s "
+				"dst=%dx%d@%d,%d dst_px=%" PRIu64 " drawn_px=%" PRIu64
+				" rects=%d%s%s", dump_seg,
+				ctx->load ? "OUT" : "PREFIX", i, nm,
+				cmd->dst.width, cmd->dst.height, cmd->dst.x, cmd->dst.y,
+				dst_area, area, count,
+				cmd->has_inner ? " cutout" : "",
+				(renderer->skip_draw & klass) != 0 ? " SKIPPED" : "");
+		}
+
+		if ((renderer->skip_draw & klass) != 0) {
+			pixman_region32_fini(&region);
+			continue;
+		}
+
 		if (bound != want) {
 			vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, want);
 			bound = want;
@@ -1053,6 +1618,13 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 		}
 		pixman_region32_fini(&region);
 	}
+
+	if (regions != NULL) {
+		for (size_t k = 0; k <= span; k++) {
+			pixman_region32_fini(&regions[k]);
+		}
+	}
+	pixman_region32_fini(&occluded);
 
 	vkCmdEndRendering(cb);
 }
@@ -1179,6 +1751,138 @@ bool avk_render_declare_segment(struct avk_graph *graph,
 		}
 	}
 	avk_graph_pass_end(graph);
+	return true;
+}
+
+/*
+ * ── BUILDING THE MONITOR BACKGROUND BLUR (M4I) ────────────────────────────
+ *
+ * Replay scene[0, prefix_end) at full output extent DIRECTLY INTO the cached
+ * image, then run the dual-Kawase chain on that image IN PLACE.
+ *
+ * In place, and that is not a micro-optimisation -- it is the only arrangement
+ * in which the darken clamp exists at all. avk_blur.c applies the clamp as a
+ * VK_BLEND_OP_MIN against the destination attachment, which works because the
+ * final upsample writes back into the image that still holds the unblurred
+ * source; with a separate destination there is nothing to clamp against and the
+ * chain says so and skips it. An earlier version of this function replayed into
+ * a transient and chained transient -> cache, which is correct for the plain
+ * image and silently produces an UNCLAMPED shadow backdrop -- the glow this
+ * project spent a milestone finding.
+ *
+ * It also happens to remove a full output-sized transient from the rebuild.
+ *
+ * WHY THE WHOLE EXTENT AND NOT A DAMAGED SUB-REGION. This runs when the SOURCE
+ * changed, and a wallpaper change is a change everywhere. Rebuilding a fraction
+ * would leave the rest holding the previous wallpaper, blurred -- a seam across
+ * the desktop that survives until something unrelated invalidates the cache.
+ */
+static bool az_blur_cache_rebuild(struct avk_renderer *renderer,
+		struct avk_graph *graph, const struct avk_scene *scene,
+		const struct avk_blur_params *params, enum avk_blur_cache_kind kind,
+		VkDescriptorSet gradient_set, struct avk_render_segment *seg,
+		bool *blur_begin_marked) {
+	struct avk_blur_cache *cache = renderer->blur_cache;
+	const struct avk_box bounds = scene->blur_cache.bounds;
+	if (bounds.width <= 0 || bounds.height <= 0) {
+		return false;
+	}
+	const uint32_t cw = (uint32_t)bounds.width;
+	const uint32_t ch = (uint32_t)bounds.height;
+
+	struct avk_image *dst = avk_blur_cache_target(cache, kind, renderer->dev,
+		&renderer->retire, renderer->format, cw, ch);
+	if (dst == NULL) {
+		return false;
+	}
+	uint32_t r_dst = avk_graph_add_image(graph, dst, false, AVK_EXIT_KEEP);
+	if (r_dst == AVK_GRAPH_INVALID) {
+		return false;
+	}
+
+	/* The segment's active region has to outlive this call: the graph holds the
+	 * pointer until execute. Per kind, because both may be rebuilt in one
+	 * frame and one shared region would be reset under the first one's feet. */
+	pixman_region32_t *full = &renderer->blur_cache_region[kind];
+	pixman_region32_clear(full);
+	pixman_region32_union_rect(full, full, bounds.x, bounds.y, cw, ch);
+
+	*seg = (struct avk_render_segment){
+		.renderer = renderer,
+		.scene = scene,
+		.target = dst,
+		.width = cw,
+		.height = ch,
+		.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+		.origin_x = bounds.x,
+		.origin_y = bounds.y,
+		.begin = 0,
+		/* [0, prefix_end) -- exactly the range the scene said is below the
+		 * cache node, and the same rule a live blur's source obeys. */
+		.end = scene->blur_cache.prefix_end,
+		.active = full,
+		.clear = true,
+		.load = false,
+		.gradient_set = gradient_set,
+	};
+	if (!avk_render_declare_segment(graph, seg, r_dst)) {
+		return false;
+	}
+	/* This is the frame's first blur work when it runs at all: it is declared
+	 * before every consumer chain, so BLUR_BEGIN belongs to it. */
+	const bool first_blur_work = !*blur_begin_marked;
+	if (first_blur_work) {
+		avk_graph_pass_time(graph, AVK_TS_BLUR_BEGIN, AVK_TS_BLUR_PREFIX_END);
+		*blur_begin_marked = true;
+	}
+	renderer->blur_prefix_replays++;
+	renderer->blur_prefix_commands += seg->end - seg->begin;
+	renderer->blur_prefix_pixels += (uint64_t)cw * (uint64_t)ch;
+
+	/*
+	 * PHASE MARKS FOR THE FIRST BLUR WORK ONLY, on the same rule the consumer
+	 * chains already follow -- and it is a rule about a Vulkan query pool, not
+	 * about tidy attribution.
+	 *
+	 * A timestamp query must be reset between uses. Two rebuilds in one frame
+	 * (a plain background for the window backdrops and a darkened one for the
+	 * shadows) both wrote DOWN_END, UP_PENULT_END and BLUR_END into the same
+	 * query slots, which is VUID-vkCmdWriteTimestamp2-None-03864. It went
+	 * unseen for as long as this fixture had no shadow backdrops to build a
+	 * second image for.
+	 *
+	 * BLUR_END is not claimed here at all: it is MOVED onto whichever chain
+	 * declared last, below, exactly as the consumer path does -- a mark bound
+	 * to a chain that turns out not to declare is a mark that is never written.
+	 */
+	struct avk_blur_marks marks = {
+		.down_end = first_blur_work ? AVK_TS_BLUR_DOWN_END : AVK_TS_NONE,
+		.up_end = AVK_TS_NONE,
+		.up_penult_end = first_blur_work
+			? AVK_TS_BLUR_UP_PENULT_END : AVK_TS_NONE,
+	};
+	struct avk_blur_work work;
+	const bool have_work = avk_blur_work_of(params, cw, ch, NULL, &work);
+	if (!avk_blur_declare(graph, &renderer->transients, &renderer->pipes,
+			&renderer->blur_stats, r_dst, r_dst, cw, ch, renderer->format,
+			params, &marks, have_work ? &work : NULL)) {
+		return false;
+	}
+	/* THIS chain declared, so it is the last one so far. */
+	avk_graph_pass_time_move_end(graph, AVK_TS_BLUR_END);
+	/* The producer's own cost, attributed to the role that incurred it rather
+	 * than folded into the window backdrops it exists to serve. */
+	const uint64_t px = (uint64_t)cw * (uint64_t)ch;
+	renderer->blur_role_chains[AVK_BLUR_ROLE_MONITOR_BACKGROUND]++;
+	renderer->blur_role_capture_px[AVK_BLUR_ROLE_MONITOR_BACKGROUND] += px;
+	renderer->blur_role_rebuild_px[AVK_BLUR_ROLE_MONITOR_BACKGROUND] += px;
+	renderer->blur_role_result_px[AVK_BLUR_ROLE_MONITOR_BACKGROUND] += px;
+	renderer->blur_role_prefix_cmds[AVK_BLUR_ROLE_MONITOR_BACKGROUND] +=
+		scene->blur_cache.prefix_end;
+	cache->rebuilds++;
+	cache->rebuilds_by_kind[kind]++;
+	cache->img[kind].valid = true;
+	cache->img[kind].params = *params;
 	return true;
 }
 
@@ -1353,6 +2057,9 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 	 * back to `scene->damage` unchanged, which is the direct path costing three
 	 * region operations rather than a branch nobody tests.
 	 */
+	/* Per-frame, for the trace: the sum over every blur of the source region
+	 * it reconstructed. The running total next to it survives across frames. */
+	uint64_t frame_rebuild_px = 0;
 	pixman_region32_t prefix_damage, frame_damage, blur_generated;
 	pixman_region32_init(&prefix_damage);
 	pixman_region32_init(&frame_damage);
@@ -1389,7 +2096,11 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 			renderer->blur_results_cap * sizeof(*renderer->blur_results));
 		/* One segment per blur, alive until avk_graph_execute() has recorded
 		 * them -- the graph holds the pointer. */
-		prefix_segs = calloc(blur_count, sizeof(*prefix_segs));
+		/* blur_count + one per cache kind: each cached image's own prefix
+		 * replay is a segment like any other and must live until
+		 * avk_graph_execute() the same way. */
+		prefix_segs = calloc(blur_count + AVK_BLUR_CACHE_KINDS,
+			sizeof(*prefix_segs));
 		if (prefix_segs == NULL) {
 			free(slots);
 			pixman_region32_fini(&prefix_damage);
@@ -1620,12 +2331,29 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 		if ((uint64_t)rects > renderer->blur_damage_rects_max) {
 			renderer->blur_damage_rects_max = (uint64_t)rects;
 		}
-		if (rects > AVK_BLUR_DAMAGE_MAX_RECTS) {
+		if (rects > az_blur_damage_max_rects()) {
+			/*
+			 * WHAT THE COLLAPSE COSTS, not just that it happened.
+			 *
+			 * There is one fallback site and one reason -- the region
+			 * fragmented past the rectangle cap -- so a taxonomy of
+			 * reasons would have one entry. The question worth asking is how
+			 * much AREA the bounding box adds, because that is the extra fill
+			 * every pass downstream inherits: a collapse that turns 100k
+			 * sparse pixels into 2M is an optimisation target and one that
+			 * turns 100k into 110k is not, and the counter that only says
+			 * "16% of chains fell back" cannot tell those apart.
+			 */
+			uint64_t before = az_region_area(&d->prefix_rebuild);
 			pixman_box32_t ext = *pixman_region32_extents(&d->prefix_rebuild);
 			pixman_region32_fini(&d->prefix_rebuild);
 			pixman_region32_init_rect(&d->prefix_rebuild, ext.x1, ext.y1,
 				(unsigned)(ext.x2 - ext.x1), (unsigned)(ext.y2 - ext.y1));
 			renderer->blur_damage_fallbacks++;
+			renderer->blur_fallback_rects += (uint64_t)rects;
+			renderer->blur_fallback_area_before += before;
+			renderer->blur_fallback_area_after +=
+				(uint64_t)(ext.x2 - ext.x1) * (uint64_t)(ext.y2 - ext.y1);
 		}
 
 		pixman_region32_union(&demand, &demand, &d->prefix_rebuild);
@@ -1642,6 +2370,167 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 	renderer->blur_damage_build_ns +=
 		(uint64_t)(damage_end.tv_sec - damage_start.tv_sec) * 1000000000ULL
 		+ (uint64_t)(damage_end.tv_nsec - damage_start.tv_nsec);
+
+	/*
+	 * ══ THE MONITOR BACKGROUND BLUR RESULT CACHE ══════════════════════════
+	 *
+	 * Everything below the scene's optimized-blur node, blurred once and kept.
+	 * In asteroidz that node sits in LyrBlur, one layer above LyrBg, so the
+	 * source is the wallpaper -- a picture that changes when the user changes
+	 * it and at no other time.
+	 *
+	 * THE SEPARATION THIS EXISTS TO MAKE: frame damage is not source damage. A
+	 * tag transition damages every pixel of the output, and before M4I that
+	 * rebuilt this background blur once per consuming node per frame, because
+	 * the only question anyone asked was "did these pixels change on screen".
+	 * They did. The wallpaper did not. Validity is decided by a generation
+	 * counter and geometry, and NEVER by damage.
+	 */
+	struct avk_blur_cache *cache = renderer->blur_cache;
+	/*
+	 * TWO KERNELS, differing in one field. The consumer's own params carry
+	 * `darken` too, so comparing the whole struct routes a node to the right
+	 * image automatically -- a shadow's kernel equals cache_params[DARK] and a
+	 * window's equals cache_params[PLAIN], and neither can be served the other's
+	 * picture by accident.
+	 */
+	struct avk_blur_params cache_params[AVK_BLUR_CACHE_KINDS];
+	for (int k = 0; k < AVK_BLUR_CACHE_KINDS; k++) {
+		cache_params[k] = (struct avk_blur_params){
+			.levels = scene->blur_cache.levels,
+			.radius = scene->blur_cache.radius,
+			.brightness = scene->blur_cache.brightness,
+			.contrast = scene->blur_cache.contrast,
+			.saturation = scene->blur_cache.saturation,
+			.noise = scene->blur_cache.noise,
+			.apply_effects = scene->blur_cache.apply_effects,
+			.darken = (k == AVK_BLUR_CACHE_DARK),
+		};
+	}
+	const bool cache_enabled = cache != NULL && scene->blur_cache.present
+		&& scene->blur_cache.levels > 0 && !renderer->break_blur_cache_off;
+	/*
+	 * WHO MAY SAMPLE IT, and which of the two images.
+	 *
+	 *   bottom_only     the producer DECLARED that this node's source is the
+	 *                   background. Without the declaration the node's source
+	 *                   genuinely contains the windows beneath it.
+	 *   above the node  a blur below the cache node is not looking at the
+	 *                   cache's contents; it is part of them.
+	 *   same kernel     a different radius or level count is a different picture
+	 *                   from the same source, so a node at reduced strength
+	 *                   falls back -- which is what SceneFX does with it too.
+	 *
+	 * sample_exclude is NOT a disqualification, and that is a claim worth
+	 * stating. It exists because SceneFX's live blur samples the previous
+	 * frame's final composite, which contains the owning window, and the field
+	 * marks the box to keep out of the source. The cached background contains no
+	 * window at all, so the box it names is already excluded by construction --
+	 * the same reason AVK's live path ignores it (see az_avk.h).
+	 *
+	 * `darken` is not a disqualification either, now that there are two images:
+	 * it selects the clamped one.
+	 */
+	size_t want[AVK_BLUR_CACHE_KINDS] = {0};
+	if (cache_enabled) {
+		for (size_t s = 0; s < slot_len; s++) {
+			const struct avk_cmd *c = &scene->cmds[slots[s].index];
+			slots[s].cache_kind = c->blur_darken
+				? AVK_BLUR_CACHE_DARK : AVK_BLUR_CACHE_PLAIN;
+			slots[s].cacheable = c->blur_bottom_only
+				&& slots[s].index >= scene->blur_cache.prefix_end
+				&& avk_blur_params_equal(&slots[s].params,
+					&cache_params[slots[s].cache_kind]);
+			if (slots[s].cacheable && slots[s].damage.active) {
+				want[slots[s].cache_kind]++;
+			}
+		}
+	}
+	/*
+	 * PER KIND: check, then rebuild only what something asked for.
+	 *
+	 * A rebuild on a frame with no consumer is an output-sized blur nothing
+	 * reads -- precisely the work this milestone exists to remove, reintroduced
+	 * from the other side. A desktop with no shadows never allocates the dark
+	 * image at all.
+	 */
+	enum avk_blur_cache_reason cache_reason[AVK_BLUR_CACHE_KINDS];
+	bool cache_ready[AVK_BLUR_CACHE_KINDS] = {false, false};
+	bool blur_begin_marked = false;
+	size_t cache_consumers = 0;
+	for (int k = 0; k < AVK_BLUR_CACHE_KINDS; k++) {
+		cache_reason[k] = AVK_BLUR_CACHE_NEVER_BUILT;
+		if (!cache_enabled) {
+			continue;
+		}
+		cache_consumers += want[k];
+		cache_reason[k] = avk_blur_cache_check(cache,
+			scene->blur_cache.generation, scene->blur_cache.bounds.x,
+			scene->blur_cache.bounds.y,
+			(uint32_t)scene->blur_cache.bounds.width,
+			(uint32_t)scene->blur_cache.bounds.height, renderer->format,
+			&cache_params[k], (enum avk_blur_cache_kind)k,
+			renderer->break_blur_cache_always_dirty);
+		/*
+		 * THE STALENESS BREAKS, applied as a SUPPRESSION of the reason the check
+		 * already found. Written this way, and not as a second copy of the
+		 * comparison inside the check, so a break can only ever hide a real
+		 * invalidation -- it can never invent one, and it cannot drift away from
+		 * the test it is meant to disable.
+		 */
+		if (renderer->break_blur_cache_ignore_dirty
+				&& cache_reason[k] == AVK_BLUR_CACHE_GENERATION) {
+			cache_reason[k] = AVK_BLUR_CACHE_OK;
+		}
+		if (renderer->break_blur_cache_stale_geometry
+				&& cache_reason[k] == AVK_BLUR_CACHE_GEOMETRY) {
+			cache_reason[k] = AVK_BLUR_CACHE_OK;
+		}
+		if (renderer->break_blur_cache_stale_params
+				&& cache_reason[k] == AVK_BLUR_CACHE_PARAMS) {
+			cache_reason[k] = AVK_BLUR_CACHE_OK;
+		}
+		if (want[k] == 0) {
+			continue;
+		}
+		cache->img[k].wanted = true;
+		if (cache_reason[k] == AVK_BLUR_CACHE_OK) {
+			cache_ready[k] = true;
+			continue;
+		}
+		avk_blur_cache_count_reason(cache, cache_reason[k]);
+		cache_ready[k] = az_blur_cache_rebuild(renderer, graph, scene,
+			&cache_params[k], (enum avk_blur_cache_kind)k, gradient_set,
+			&prefix_segs[blur_count + k], &blur_begin_marked);
+	}
+	/*
+	 * THE SHARED IDENTITY, stamped once and only if something was built.
+	 *
+	 * Shared because it describes the SOURCE, which both images are built from:
+	 * one generation, one extent, one format. Only the per-kind `valid` flag and
+	 * the kernel's darken bit differ, and the kernel is compared per kind.
+	 */
+	if (cache_ready[AVK_BLUR_CACHE_PLAIN] || cache_ready[AVK_BLUR_CACHE_DARK]) {
+		cache->generation = scene->blur_cache.generation;
+		cache->origin_x = scene->blur_cache.bounds.x;
+		cache->origin_y = scene->blur_cache.bounds.y;
+		cache->width = (uint32_t)scene->blur_cache.bounds.width;
+		cache->height = (uint32_t)scene->blur_cache.bounds.height;
+		cache->format = renderer->format;
+	}
+	if (renderer->blur_chain_trace && cache_enabled) {
+		avk_log(AVK_ERROR, "avk blurcache: tgt=%ux%u cache=%dx%d@%d,%d "
+			"gen=%" PRIu64 " plain=%s/%d/%zu dark=%s/%d/%zu hits=%" PRIu64
+			" rebuilds=%" PRIu64 " bytes=%" PRIu64, width, height,
+			scene->blur_cache.bounds.width, scene->blur_cache.bounds.height,
+			scene->blur_cache.bounds.x, scene->blur_cache.bounds.y,
+			scene->blur_cache.generation,
+			avk_blur_cache_reason_name(cache_reason[AVK_BLUR_CACHE_PLAIN]),
+			(int)cache_ready[AVK_BLUR_CACHE_PLAIN], want[AVK_BLUR_CACHE_PLAIN],
+			avk_blur_cache_reason_name(cache_reason[AVK_BLUR_CACHE_DARK]),
+			(int)cache_ready[AVK_BLUR_CACHE_DARK], want[AVK_BLUR_CACHE_DARK],
+			cache->hits, cache->rebuilds, cache->bytes);
+	}
 
 	size_t seg_at = 0;
 	for (size_t s = 0; s < slot_len; s++) {
@@ -1665,6 +2554,37 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 			az_region_area(&d->output_damage);
 		uint64_t rebuild_px = az_region_area(&d->prefix_rebuild);
 		renderer->blur_prefix_rebuild_pixels += rebuild_px;
+		frame_rebuild_px += rebuild_px;
+		/*
+		 * M4H.6 PREMISE INSTRUMENT -- how much of this blur's source could be
+		 * COPIED from the output attachment instead of replayed into a
+		 * transient.
+		 *
+		 * The candidate optimisation is to stop replaying scene[0,k) for every
+		 * blur node and take those pixels from the target, which by then holds
+		 * the composited prefix. That is only sound where the target is
+		 * CURRENT, and the target is current exactly inside this frame's
+		 * damage: everywhere else it still holds the previous frame's final
+		 * composite, and sampling it is the SceneFX halo defect that prefix
+		 * capture exists to make impossible.
+		 *
+		 * So the copyable fraction is prefix_rebuild inside the frame damage,
+		 * and the replay that would remain is the rest. On a full-damage
+		 * transition frame the first should be everything -- and transition
+		 * frames are the slow ones. If it is not, the candidate cannot pay for
+		 * itself and dies here rather than after a graph restructure.
+		 *
+		 * `scene->damage` and not `frame_damage`: the question is which pixels
+		 * the OUTPUT segment will have recomposited by the time blur k runs,
+		 * and that is the damage the frame arrived with, before this frame's
+		 * own blurs add to it.
+		 */
+		pixman_region32_t copyable;
+		pixman_region32_init(&copyable);
+		pixman_region32_intersect(&copyable, &d->prefix_rebuild,
+			(pixman_region32_t *)&scene->damage);
+		renderer->blur_prefix_copyable_pixels += az_region_area(&copyable);
+		pixman_region32_fini(&copyable);
 		uint64_t full_px = (uint64_t)rg.capture.width
 			* (uint64_t)rg.capture.height;
 		renderer->blur_damage_saved_pixels +=
@@ -1698,10 +2618,105 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 		if (!d->active) {
 			continue;
 		}
-		renderer->blur_damage_nodes_touched++;
-		renderer->blur_capture_pixels +=
+		/*
+		 * ── SERVED FROM THE CACHE: NO REPLAY, NO CHAIN ────────────────────
+		 *
+		 * The composite ahead already knows how to draw an arbitrary result
+		 * image at an arbitrary origin -- that is what avk_blur_result.capture
+		 * is for -- so handing it the cached image at the cache's own origin is
+		 * the whole of the consumer side. No branch reaches the draw.
+		 *
+		 * What is NOT done here is just as important: nothing subtracts this
+		 * node's write region from anything, and its output damage was computed
+		 * by the ordinary sweep above. A cached source does not make a node's
+		 * RESULT static -- the node still moves, and when it moves the pixels
+		 * it uncovers and covers are damaged exactly as before.
+		 */
+		if (slot->cacheable && cache_ready[slot->cache_kind]) {
+			const struct avk_blur_cache_image *ci = &cache->img[slot->cache_kind];
+			renderer->blur_results[i] = (struct avk_blur_result){
+				.image = ci->image,
+				.capture = { cache->origin_x, cache->origin_y,
+					(int32_t)cache->width, (int32_t)cache->height },
+			};
+			cache->requests++;
+			cache->hits++;
+			cache->hits_by_kind[slot->cache_kind]++;
+			/* WHAT THE HIT AVOIDED, in the same units the uncached path
+			 * reports, so "the cache is working" is a comparison rather than a
+			 * hit rate. A hit rate of 100% on chains that were cheap anyway
+			 * would look identical to this and mean nothing. */
+			cache->saved_prefix_draws += i;
+			cache->saved_prefix_px += rebuild_px;
+			cache->saved_chains++;
+			cache->saved_blur_px += (uint64_t)rg.capture.width
+				* (uint64_t)rg.capture.height;
+			renderer->blur_role_chains[AVK_BLUR_ROLE_WINDOW_BACKDROP]++;
+			renderer->blur_role_result_px[AVK_BLUR_ROLE_WINDOW_BACKDROP] +=
+				az_region_area(&d->result_region);
+			if (renderer->blur_chain_trace) {
+				avk_log(AVK_ERROR, "avk chain: role=%s CACHED(%s) tgt=%ux%u "
+					"idx=%zu dst=%d,%d %dx%d avoided_cap_px=%" PRIu64 " "
+					"avoided_rebuild_px=%" PRIu64 " avoided_cmds=%zu",
+					avk_blur_role_name(AVK_BLUR_ROLE_WINDOW_BACKDROP),
+					avk_blur_cache_kind_name(slot->cache_kind),
+					width, height, i, scene->cmds[i].dst.x,
+					scene->cmds[i].dst.y, scene->cmds[i].dst.width,
+					scene->cmds[i].dst.height,
+					(uint64_t)rg.capture.width * (uint64_t)rg.capture.height,
+					rebuild_px, i);
+			}
+			continue;
+		}
+		if (slot->cacheable && cache_enabled) {
+			/* Eligible and not served: the cache exists but could not be made
+			 * ready this frame. Counted, because a consumer silently falling
+			 * back is the difference between "the cache works" and "the cache
+			 * is never used", and both render correctly. */
+			cache->requests++;
+		}
+		/*
+		 * ── ROLE, DECIDED HERE AND CARRIED THROUGH THE FRAME ──────────────
+		 *
+		 * The producer's own declaration, not a guess from geometry. A blur
+		 * that asked for the cached bottom layer has told the renderer that its
+		 * source is the monitor background; one that did not has told it the
+		 * opposite. Inferring the role from size instead would classify a
+		 * maximised window's live blur as a monitor background and cache
+		 * something that legitimately contains other windows.
+		 *
+		 * AVK does not yet honour the request -- that is what M4I is for -- but
+		 * the classification is what makes the cost of not honouring it a
+		 * number rather than an argument.
+		 */
+		const enum avk_blur_role role =
+			scene->cmds[i].blur_bottom_only
+				? AVK_BLUR_ROLE_WINDOW_BACKDROP : AVK_BLUR_ROLE_LIVE;
+		const uint64_t cap_px =
 			(uint64_t)rg.capture.width * (uint64_t)rg.capture.height;
-		renderer->blur_result_pixels += az_region_area(&d->result_region);
+		const uint64_t res_px = az_region_area(&d->result_region);
+		renderer->blur_role_chains[role]++;
+		renderer->blur_role_capture_px[role] += cap_px;
+		renderer->blur_role_rebuild_px[role] += rebuild_px;
+		renderer->blur_role_result_px[role] += res_px;
+		renderer->blur_role_prefix_cmds[role] += i;
+		if (renderer->blur_chain_trace) {
+			pixman_box32_t re = *pixman_region32_extents(&d->result_region);
+			avk_log(AVK_ERROR, "avk chain: role=%s tgt=%ux%u idx=%zu "
+				"dst=%d,%d %dx%d cap=%d,%d %dx%d cap_px=%" PRIu64 " "
+				"rebuild_px=%" PRIu64 " result_px=%" PRIu64 " "
+				"result=%d,%d..%d,%d prefix_cmds=%zu levels=%u radius=%.2f",
+				avk_blur_role_name(role), width, height, i,
+				scene->cmds[i].dst.x, scene->cmds[i].dst.y,
+				scene->cmds[i].dst.width, scene->cmds[i].dst.height,
+				rg.capture.x, rg.capture.y, rg.capture.width,
+				rg.capture.height, cap_px, rebuild_px, res_px,
+				re.x1, re.y1, re.x2, re.y2, i, params.levels,
+				(double)params.radius);
+		}
+		renderer->blur_damage_nodes_touched++;
+		renderer->blur_capture_pixels += cap_px;
+		renderer->blur_result_pixels += res_px;
 		renderer->blur_processed_pixels = renderer->blur_stats.processed_pixels;
 		if (params.darken) {
 			renderer->stats.blur_darken_passes++;
@@ -1771,9 +2786,16 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 		 * command stream containing all the blur work and nothing else.
 		 * PREFIX_END closes the first chain's replay phase.
 		 */
-		if (s == 0) {
+		/* The frame's FIRST blur work, whichever it turns out to be. This used
+		 * to be `s == 0`, which stopped being the first the moment the monitor
+		 * background cache could be rebuilt ahead of it -- BLUR_BEGIN would
+		 * then have been planted in the middle of the blur work and the
+		 * prefix/down/rest partition would not have summed to the blur total.
+		 */
+		if (!blur_begin_marked) {
 			avk_graph_pass_time(graph, AVK_TS_BLUR_BEGIN,
 				AVK_TS_BLUR_PREFIX_END);
+			blur_begin_marked = true;
 		}
 		renderer->blur_prefix_replays++;
 		/*
@@ -1988,6 +3010,16 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 	 */
 	avk_timestamps_blur_active(&renderer->timestamps, ts_slot,
 		declared_chains > 0, (uint32_t)declared_chains);
+	/*
+	 * The two region sizes THIS frame worked on, recorded beside the chain
+	 * count so a trace line can be read on its own. `frame_damage` is what the
+	 * output segment will recomposite; the rebuild total is the sum over every
+	 * blur of the source it had to reconstruct. Both are per-frame quantities
+	 * that previously existed only as running totals, which cannot be joined
+	 * back to the frame that produced them.
+	 */
+	avk_timestamps_set_regions(&renderer->timestamps, ts_slot,
+		az_region_area(&frame_damage), frame_rebuild_px);
 	if ((uint64_t)slot_len > renderer->blur_max_slots) {
 		renderer->blur_max_slots = (uint64_t)slot_len;
 	}
