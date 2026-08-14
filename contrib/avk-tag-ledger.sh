@@ -134,8 +134,14 @@ row "border Mpx"        px_border  1000000
 row "target Mpx"        px_target  1000000
 row "prefix target Mpx" pfx_target 1000000
 echo
-echo "  GPU (p50, us):  static frame=$(( $(v f50 "$S") / 1000 )) blur=$(( $(v blur50 "$S") / 1000 )) post=$(( $(v post50 "$S") / 1000 ))"
-echo "                  push   frame=$(( $(v f50 "$P") / 1000 )) blur=$(( $(v blur50 "$P") / 1000 )) post=$(( $(v post50 "$P") / 1000 ))"
+# NULL-SAFE. These percentiles are null wherever the device cannot write
+# timestamps, and `$(( null / 1000 ))` aborts the whole fixture under `set -u`
+# -- so a machine with no GPU timing lost the entire ledger, which is the part
+# that does not need a GPU at all.
+us() { local x; x="$(v "$1" "$2")"; case "$x" in ''|null) echo "-" ;;
+	*) echo $(( x / 1000 )) ;; esac; }
+echo "  GPU (p50, us):  static frame=$(us f50 "$S") blur=$(us blur50 "$S") post=$(us post50 "$S")"
+echo "                  push   frame=$(us f50 "$P") blur=$(us blur50 "$P") post=$(us post50 "$P")"
 echo
 BAD=""
 [ "$(v waits "$S")" = "0" ] && [ "$(v waits "$P")" = "0" ] || BAD="$BAD cpu_waits"

@@ -331,6 +331,13 @@ bool avk_pipelines_init(struct avk_pipelines *pipes, struct avk_device *dev,
 			&pipes->rect)
 		&& create_pipeline(pipes, format, vert, texture_frag, "texture",
 			&pipes->texture)
+		/* The same two shaders, blending off. Bit-exact for alpha-1 fragments
+		 * because AZ_BLEND_OVER's destination factor is (1 - srcAlpha) = 0
+		 * there; see the note on rect_opaque. */
+		&& create_pipeline_ex(pipes, format, vert, rect_frag, "rect_opaque",
+			AZ_BLEND_REPLACE, &pipes->rect_opaque)
+		&& create_pipeline_ex(pipes, format, vert, texture_frag,
+			"texture_opaque", AZ_BLEND_REPLACE, &pipes->texture_opaque)
 		&& create_pipeline(pipes, format, vert, gradient_frag, "gradient",
 			&pipes->gradient)
 		&& create_pipeline(pipes, format, vert, shadow_frag, "shadow",
@@ -399,6 +406,14 @@ void avk_pipelines_finish(struct avk_pipelines *pipes) {
 	}
 	if (pipes->texture != VK_NULL_HANDLE) {
 		vkDestroyPipeline(dev, pipes->texture, NULL);
+		AVK_LIVE_DEC(pipes->dev, pipelines);
+	}
+	if (pipes->rect_opaque != VK_NULL_HANDLE) {
+		vkDestroyPipeline(dev, pipes->rect_opaque, NULL);
+		AVK_LIVE_DEC(pipes->dev, pipelines);
+	}
+	if (pipes->texture_opaque != VK_NULL_HANDLE) {
+		vkDestroyPipeline(dev, pipes->texture_opaque, NULL);
 		AVK_LIVE_DEC(pipes->dev, pipelines);
 	}
 	if (pipes->blur_down != VK_NULL_HANDLE) {

@@ -434,6 +434,10 @@ struct avk_renderer_stats {
 	uint64_t frames;
 	uint64_t surfaces;
 	uint64_t rects;
+	/* M4J experiment. Draws that took the blend-free pipeline because every
+	 * fragment was alpha 1. Reported so "the experiment did nothing" and "the
+	 * experiment did nothing useful" are different readings. */
+	uint64_t opaque_noblend_draws;
 	uint64_t draws;          /* commands x damage rects */
 	/*
 	 * M4H. FRAGMENT AREA, BY PRIMITIVE CLASS, IN TWO BUCKETS.
@@ -588,6 +592,15 @@ struct avk_renderer {
 	 * two builds are bit-identical and the culled one drew less".
 	 */
 	bool break_no_occlusion;
+	/*
+	 * M4J EXPERIMENT, OFF BY DEFAULT. AZ_AVK_OPAQUE_NOBLEND=1 sends draws that
+	 * are opaque over their whole footprint to a blend-free pipeline. Bit-exact
+	 * by construction -- premultiplied OVER with alpha 1 already resolves to
+	 * src -- so the oracle for it is "the framebuffer does not change", and the
+	 * only question it exists to answer is whether removing the ROP's read is
+	 * worth anything on this hardware.
+	 */
+	bool opaque_noblend;
 	/* M4H break -- AZ_AVK_OCCLUDE_ALL=1: every command occludes, whatever its
 	 * alpha or shape. The over-culling failure the oracle must be able to
 	 * catch; see az_cmd_opaque_region(). */

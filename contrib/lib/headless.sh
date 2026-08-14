@@ -228,6 +228,22 @@ output $HL_MON { ${scale1}${rr1}x 0; y 0; width $HL_WIDTH; height $HL_HEIGHT; re
 $secondary_output
 layout {
 	titlebar { enable 1 }
+	# ── A PIXEL ORACLE MUST TURN THIS OFF ────────────────────────────────
+	#
+	# The titlebar's TEXT does not render identically from one run to the
+	# next. Two runs of the same fixture with byte-identical environments
+	# differed by 2,574 pixels in a 429x6 strip -- the title present in one
+	# capture and absent from the other, leaving the theme colour underneath.
+	#
+	# That is enough to fail a zero-pixel oracle, and it did: an A/B reported
+	# "this change is not bit-exact" over a difference that had nothing to do
+	# with the change. With `layout { titlebar { enable 0 } }` appended, two
+	# identical runs differ by 0 px.
+	#
+	# It stays ON here because most fixtures want a realistic desktop and a
+	# titlebar is part of one. Any fixture that COMPARES CAPTURES must append
+	# the override -- and should run one arm twice as a control and assert the
+	# noise floor is zero before trusting a cross-arm diff.
 	scroller { preset 0.3,0.5,0.8 }
 }
 dwindle_manual_split 1
