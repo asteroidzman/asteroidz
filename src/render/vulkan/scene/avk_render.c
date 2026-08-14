@@ -561,8 +561,39 @@ static uint64_t az_region_area(const pixman_region32_t *region) {
  * Chosen to match wlroots' own damage-ring limit, which collapses at 20: a
  * region that has fragmented further than the compositor's own damage tracking
  * would keep is not one worth walking per level.
+ *
+ * THAT RATIONALE IS ABOUT THE WRONG COST. wlroots collapses at 20 because of
+ * what IT does with a region; a blur chain does something else entirely --- it
+ * walks the region once per pass, so N rectangles cost N scissored draws times
+ * the pass count, while collapsing costs the bounding box's extra fill times
+ * the same pass count. Which of those is larger is a measurement, and borrowing
+ * somebody else's constant is not one.
+ *
+ * It matters, live: on a tag transition the rebuild region reaches 39
+ * rectangles, 16.5% of chains collapse, and the collapse inflates their area
+ * 1.74x --- concentrated in exactly the frames that miss the deadline. It never
+ * fired at all on any headless fixture, which is why it went unnoticed.
+ *
+ * AZ_BLUR_DAMAGE_MAX_RECTS overrides it. Raising it cannot change a pixel: the
+ * collapse is conservative in one direction only --- the bounding box always
+ * CONTAINS the region, so a collapsed chain rebuilds a superset and produces
+ * the same result more expensively. That makes the tuning safe to measure with
+ * a pixel oracle that must report zero difference at every setting.
  */
 #define AVK_BLUR_DAMAGE_MAX_RECTS 20
+
+static int az_blur_damage_max_rects(void) {
+	static int cached = -1;
+	if (cached < 0) {
+		const char *env = getenv("AZ_BLUR_DAMAGE_MAX_RECTS");
+		int v = env != NULL ? atoi(env) : 0;
+		/* A cap below 1 would collapse every region including a single
+		 * rectangle, which is not a setting anyone wants and would look like
+		 * the damage system had been switched off. */
+		cached = v >= 1 ? v : AVK_BLUR_DAMAGE_MAX_RECTS;
+	}
+	return cached;
+}
 
 /* One blur's damage regions, plus what the declaration loop needs to build its
  * chain. Held in a per-frame array so the two sweeps and the declaration can
@@ -2032,12 +2063,12 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 		if ((uint64_t)rects > renderer->blur_damage_rects_max) {
 			renderer->blur_damage_rects_max = (uint64_t)rects;
 		}
-		if (rects > AVK_BLUR_DAMAGE_MAX_RECTS) {
+		if (rects > az_blur_damage_max_rects()) {
 			/*
 			 * WHAT THE COLLAPSE COSTS, not just that it happened.
 			 *
 			 * There is one fallback site and one reason -- the region
-			 * fragmented past AVK_BLUR_DAMAGE_MAX_RECTS -- so a taxonomy of
+			 * fragmented past the rectangle cap -- so a taxonomy of
 			 * reasons would have one entry. The question worth asking is how
 			 * much AREA the bounding box adds, because that is the extra fill
 			 * every pass downstream inherits: a collapse that turns 100k
