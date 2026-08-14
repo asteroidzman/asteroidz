@@ -121,7 +121,28 @@ hl_assert "a deliberate damage hole is CAUGHT" \
 
 echo
 echo "── control: a clean single output ────────────────────────────────────"
-HL_ENV="ASTEROIDZ_RENDERER=avk AZ_FRAME_ORACLE=1"
+# ── AZ_BLUR_CACHE=0, AND WHAT IT COST TO FIND OUT ──────────────────────────
+#
+# THIS ARM IS THE DAMAGE ORACLE. It asserts that a partial render of a frame
+# equals a full render of the same snapshot -- i.e. that damage tracking left
+# nothing stale. Nothing else.
+#
+# But the oracle's reference render is issued AFTER avk_render_frame(), by which
+# point az_avk.h has already taken the M4I blur cache back (`blur_cache = NULL`,
+# lent per frame because it is per output). So the reference reconstructs every
+# blur LIVE while production served it from the cache, and the comparison was
+# quietly cached-versus-live rather than partial-versus-full.
+#
+# Measured: with the cache on, 16 of 20 frames diverge, 245745 px at up to 47
+# codes, bbox covering nearly the whole output. With it off, 0 of 19. Same
+# result on the pre-M5 tree, so this is not new -- it is an instrument that has
+# been answering a different question than its assertion claims, and failing.
+#
+# The cached-versus-live delta is a REAL and separate question and it is written
+# down as one (docs/vulkan-native-architecture.md, the M4I cache section). It is
+# not this fixture's, and leaving it here made this fixture permanently red
+# while measuring nothing about damage.
+HL_ENV="ASTEROIDZ_RENDERER=avk AZ_FRAME_ORACLE=1 AZ_BLUR_CACHE=0"
 export HL_ENV
 hl_start "$BLUR_CFG"
 exercise 120

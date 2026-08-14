@@ -2510,8 +2510,10 @@ fixture was not wrong — it was answering a different question than the one its
 name suggested.
 
 The fix is `az_avk_scene_rgb()` in `az_avk.h`: ADR-004's rule applied to the
-other kind of source in the scene, at the rect colour, the shadow colour, the
-gradient stops and the clear. Rect colours are un-premultiplied first (a
+other kind of source in the scene, at the rect colour, the shadow colour and the
+gradient stops. Not the clear — it is exactly black, where the decode is the
+identity; if it ever stops being black it needs the same call. Rect colours are
+un-premultiplied first (a
 transfer function applied to colour-times-coverage is neither the colour nor the
 coverage) and gradient stops make the round trip explicitly. RGB only — alpha is
 coverage, linear by definition, and has no colorimetry.
@@ -2530,3 +2532,87 @@ ADR-005 rather than a defect. Against a build with the walk's decode removed the
 border reads **(228, 173, 106)** where the config asked for **(198, 107, 37)**,
 while stage 1 still passes at 0 px. That is what makes them two probes rather
 than one claim written twice.
+
+## 5.15 Two required suites were measuring the absence of the cache
+
+M5.5's qualification came back **41 of 43**. Both failures predate it — the same
+two fail identically on `d32a859`, before any Path B work — and both have the
+same cause: **M4I's cache works now, and three fixtures were written when it did
+not.**
+
+A consumer served from the monitor background cache runs no chain, replays no
+prefix and builds no darken. That is the entire saving. Three fixtures required
+one of those per frame, so each was asserting the *absence* of the optimisation:
+
+| fixture | was | measured instead |
+|---|---|---|
+| `avk-blur-required-test.sh` | 7/11 | `chains=0 proc=0 req=0` — no blur ran, so every "0 px differ" below it was vacuous |
+| `avk-blur-walker-test.sh` | 23/28 | 0 prefix replays, 0 darken chains, `touched+skipped=6` of 12 emitted |
+| `avk-oracle-test.sh` | 5/6 | 16 of 20 frames "diverge" |
+
+**Each now runs with `AZ_BLUR_CACHE=0`**, because each measures the live chain:
+the required-region fixture falsifies what a live pass derives, the walker pins
+the prefix architecture, and the oracle compares a partial render against a full
+one. All three: 11/11, 28/28, 6/6.
+
+**The assertions were NOT broadened to "replays OR cache hits", and that was a
+deliberate reversal.** The first attempt did exactly that, and it is the weaker
+choice: `replays + hits > 0` is satisfied by the cache even if prefix replay is
+completely broken, which is precisely how a break stops breaking — twice already
+in this project. The claims stay strict and the fixture is given the path it is
+about. The cache's own correctness has three fixtures of its own.
+
+### The real question this uncovered, which is NOT closed
+
+The oracle's reference render is issued after `avk_render_frame()`, by which
+point `az_avk.h` has taken the blur cache back (`blur_cache = NULL`, lent per
+frame because it is per output). So the reference reconstructs every blur LIVE
+while production served it from the cache, and the comparison was quietly
+**cached-versus-live**:
+
+```
+cache on   16 of 20 frames differ, 245745 px, worst 47 codes, bbox ~whole output
+cache off   0 of 19
+```
+
+`avk-blur-cache-test.sh` separately asserts that a cache HIT is bit-identical to
+a cache REBUILD, and passes 26/26 — but a rebuild is not the live path. The
+rebuild writes the cached image through the cache producer; the live path
+reconstructs the node's own prefix and applies darken as a blend against that.
+Those are documented as different mechanisms, and 47 codes over most of the
+output is more than "documented as different" accounts for.
+
+That is an M4I question, not an M5 one, and it is written down here rather than
+chased: the oracle fixture no longer conflates it with damage, and nothing in
+M5.5 touches it.
+
+## 5.16 A suite that prints its own failures and exits 0
+
+`avk-blur-walker-test.sh` ended like this:
+
+```sh
+hl_summary                 # returns 1 when an assertion failed
+echo
+echo "logs: $OUTDIR"
+if [ -n "$BREAK" ]; then ... fi
+```
+
+The script's exit status is the last command's — the trailing `fi` — so it was
+**always 0**. `avk-suite.sh` ran it, read success, and left it out of the FAILED
+list while five of its assertions were failing. The failures were printed on
+screen the whole time.
+
+That is strictly worse than the missing executable bit the register was built
+for: that one was silent, this one does the work, reports the failure, and then
+says it passed.
+
+The fixture now captures `$?` and exits with it. More usefully, **the register
+audit gained a third check**: every `required` suite must call `hl_summary` and
+end in a way that carries its status. `perf`, `live` and `manual` suites measure
+rather than assert and are exempt by disposition — which is what a disposition
+is for. Falsified before being trusted: stripping the `exit` line from the
+walker makes the audit fail with that suite named, and restoring it makes it
+green.
+
+Of the 43 required suites, exactly one had the defect. The eleven other suites
+with no `hl_summary` at all are all perf, live or manual.

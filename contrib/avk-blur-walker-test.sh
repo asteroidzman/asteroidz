@@ -93,7 +93,22 @@ effects {
 OUTDIR="${TMPDIR:-/tmp}/asteroidz-avk-blur-walker-$$"
 HL_OUTDIR="$OUTDIR"
 HL_WIDTH=1280 HL_HEIGHT=800
-HL_ENV="ASTEROIDZ_RENDERER=avk ASTEROIDZ_VK_DEBUG=1"
+# ── AZ_BLUR_CACHE=0, BECAUSE EVERY CLAIM BELOW IS ABOUT THE LIVE CHAIN ─────
+#
+# What this fixture pins is the PREFIX ARCHITECTURE: that a blur's source is
+# a replay of [0, k) and not the whole scene, that every recomputed node gets
+# its own replay, and that the producer's darken reaches the renderer. M4I's
+# monitor background cache bypasses all of it by design -- a served consumer
+# runs no chain and replays no prefix -- so with the cache on these read 0 and
+# the fixture failed while nothing was wrong.
+#
+# The cache is off rather than the assertions being broadened to
+# "replays OR cache hits", and that is the whole point: a disjunction like that
+# is satisfied by the cache even if prefix replay were completely broken, which
+# is precisely how a break stops breaking. The claims stay strict; the cache's
+# own correctness has three fixtures of its own (avk-blur-cache-test,
+# -dirty, -multi).
+HL_ENV="ASTEROIDZ_RENDERER=avk ASTEROIDZ_VK_DEBUG=1 AZ_BLUR_CACHE=0"
 case "$BREAK" in
 scene-after) HL_ENV="$HL_ENV AZ_BLUR_SCENE_AFTER=1" ;;
 no-darken)   HL_ENV="$HL_ENV AZ_BLUR_IGNORE_DARKEN=1" ;;
@@ -374,7 +389,7 @@ hl_stop
 
 # ── 6. the direct path ─────────────────────────────────────────────────────
 
-HL_ENV="ASTEROIDZ_RENDERER=avk ASTEROIDZ_VK_DEBUG=1"
+HL_ENV="ASTEROIDZ_RENDERER=avk ASTEROIDZ_VK_DEBUG=1 AZ_BLUR_CACHE=0"
 export HL_ENV
 hl_start "$NOBLUR_KDL"
 hl_reset_spawn_colors
@@ -416,7 +431,19 @@ hl_assert "every phase's log was kept (premise)" \
 hl_assert "no validation errors across every phase" "${VUID:-x}" "0"
 hl_assert "no synchronisation hazards" "${HAZ:-x}" "0"
 
+# ── THE STATUS HAS TO SURVIVE WHAT COMES AFTER IT ─────────────────────────
+#
+# hl_summary returns 1 when an assertion failed, and this was followed by three
+# more commands -- so the script's exit status was the trailing `fi`, which is
+# always 0. The fixture printed its own failures and reported SUCCESS to
+# anything reading its exit code, which is how avk-suite.sh ran it, saw 0, and
+# left it out of the FAILED list while five of its assertions were failing.
+#
+# Worse than the missing executable bit the register was built for: that one at
+# least did nothing visible. This one does the work, prints the failure, and
+# then says it passed.
 hl_summary
+STATUS=$?
 
 echo
 echo "logs: $OUTDIR"
@@ -424,3 +451,4 @@ if [ -n "$BREAK" ]; then
 	echo
 	echo "BREAK=$BREAK was set: this run is EXPECTED TO FAIL."
 fi
+exit "$STATUS"

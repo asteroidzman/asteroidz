@@ -3496,6 +3496,20 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 		}
 	}
 
+	/*
+	 * An output that has LEFT Path B gives its intermediate back.
+	 *
+	 * 66 MB on a 4K output, and nothing would ever ask for it again -- the
+	 * frame path only reads it while `path_b` holds, so without this it sits
+	 * allocated until the monitor is unplugged. Retired against its own last
+	 * use, like everything else here, so a frame still sampling it when HDR was
+	 * toggled off keeps it alive.
+	 */
+	if (!path_b && out->encode_work.image != NULL) {
+		avk_encode_intermediate_finish(&out->encode_work,
+			out->slot->renderer.dev, &out->slot->renderer.retire);
+	}
+
 	/* Before anything is rendered: can this frame be handed over with a fence
 	 * at the end of it? Finding out afterwards would mean either presenting it
 	 * unsynchronised or throwing away work already submitted. */

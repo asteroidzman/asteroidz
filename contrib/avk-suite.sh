@@ -14,6 +14,13 @@
 #
 #   - every registered suite must exist and be executable, or the audit FAILS
 #   - every contrib/avk-*.sh must be registered, or the audit FAILS
+#   - every REQUIRED suite must be able to report a failure, or the audit FAILS
+#
+# The third was added after avk-blur-walker-test.sh was found running five
+# failing assertions, printing them, and exiting 0 -- because it called
+# hl_summary and then ran three more commands, so its status was the trailing
+# `fi`. This runner read that 0 and left it out of the FAILED list. Strictly
+# worse than the executable bit: that one was silent, this one lied.
 #
 # The second half is the part that keeps working. A static list decays the
 # moment somebody adds a file; requiring a disposition for every discovered
@@ -135,6 +142,34 @@ for f in avk-*.sh; do
 	[ -n "$(reg_disp "$f")" ] || UNREG="$UNREG $f"
 done
 
+# ── 3. every REQUIRED suite can actually report a failure ─────────────────
+#
+# hl_summary returns 1 when an assertion failed. A script that calls it and then
+# runs anything else exits with THAT command's status instead -- so the fixture
+# prints its own failures and reports success to whoever reads its exit code.
+#
+# avk-blur-walker-test.sh did exactly this. It ended with an `if ... fi` after
+# hl_summary, so its status was always 0: this runner executed it, saw success,
+# and left it out of the FAILED list below while five of its assertions were
+# failing. That is strictly worse than the missing executable bit this file was
+# built for -- that one was silent, this one lies.
+#
+# So a required suite must both CALL hl_summary and end in a way that carries
+# its status: `hl_summary` as the last effective line, or an explicit `exit`.
+# perf, live and manual suites measure rather than assert and are exempt by
+# disposition, which is what the disposition is for.
+NOSTATUS=""
+for n in $(reg_names); do
+	[ "$(reg_disp "$n")" = required ] || continue
+	[ -f "$n" ] || continue
+	grep -q 'hl_summary' "$n" || { NOSTATUS="$NOSTATUS $n(no-summary)"; continue; }
+	last="$(grep -vE '^[[:space:]]*(#|$)' "$n" | tail -1)"
+	case "$last" in
+		*hl_summary*|exit*|*"exit \"\$"*) ;;
+		*) NOSTATUS="$NOSTATUS $n";;
+	esac
+done
+
 for d in required perf live manual; do
 	c=$(echo "$REGISTER" | awk -v d="$d" '$2==d' | wc -l)
 	printf "  %-9s %2d\n" "$d" "$c"
@@ -159,10 +194,16 @@ if [ -n "$UNREG" ]; then
 	for n in $UNREG; do echo "    $n"; done
 	FAIL=1
 fi
+if [ -n "$NOSTATUS" ]; then
+	# A suite that cannot fail is a suite that is not being run, one level up.
+	echo "  REQUIRED BUT CANNOT REPORT FAILURE (end with hl_summary or exit \$?):"
+	for n in $NOSTATUS; do echo "    $n"; done
+	FAIL=1
+fi
 
 if [ "$WANT" = "--audit" ]; then
 	if [ "$FAIL" = 0 ]; then
-		echo "  every suite exists, executes, and has a disposition."
+		echo "  every suite exists, executes, has a disposition, and can fail."
 	fi
 	exit "$FAIL"
 fi

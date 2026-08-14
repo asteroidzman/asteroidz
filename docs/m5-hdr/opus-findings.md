@@ -723,11 +723,15 @@ out.
 
 **The fix** is `az_avk_scene_rgb()` in `az_avk.h` — ADR-004's rule ("what is
 untagged is piecewise-sRGB BT.709") applied to the other kind of source in the
-scene. Applied at four sites: the rect colour (un-premultiplied first, because
+scene. Applied at three sites: the rect colour (un-premultiplied first, because
 a curve applied to colour-times-coverage is neither), the shadow colour (already
-straight), the gradient stops (un-premultiply, decode, re-premultiply — a
+straight), and the gradient stops (un-premultiply, decode, re-premultiply — a
 gradient whose ends were decoded and whose stops were not is a border that
-changes colour along its length), and the frame's clear.
+changes colour along its length).
+
+Not the frame's clear, and that is a statement rather than an omission: the
+clear is exactly black, `az_srgb_eotf(0) = 0`, and the decode is the identity
+there. If it ever stops being black it needs the same call as everything else.
 
 It lives on the compositor side of the boundary, not in the renderer, for the
 same reason `az_avk_lum_of()` does: a command still does not know which
