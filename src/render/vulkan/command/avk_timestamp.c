@@ -337,6 +337,8 @@ static bool read_slot(struct avk_timestamps *ts, uint32_t slot,
 			on++;
 		}
 		ts->trace_output[on] = '\0';
+		ts->trace_damage_px = s->damage_px;
+		ts->trace_rebuild_px = s->rebuild_px;
 		ts->trace_frame_id = s->frame_id;
 		ts->trace_slot = slot;
 		ts->trace_pending = true;
@@ -425,14 +427,16 @@ static bool read_slot(struct avk_timestamps *ts, uint32_t slot,
 		avk_log(AVK_INFO, "avk cohort: READ  out=%s frame=%" PRIu64 " slot=%u "
 			"slot.blur_active=%d cur.blur_active=%d -> cohort=%d "
 			"(built %" PRIu64 " frames ago) gpu_frame=%.1f us "
-			"chains=%u single=%d blur_total_us=%.1f prefix_us=%.1f "
+			"chains=%u single=%d damage_px=%" PRIu64 " rebuild_px=%" PRIu64 " "
+			"blur_total_us=%.1f prefix_us=%.1f "
 			"down_us=%.1f remainder_us=%.1f pre_us=%.1f post_us=%.1f",
 			ts->trace_output, ts->trace_frame_id, ts->trace_slot,
 			ts->trace_slot_active ? 1 : 0,
 			ts->trace_cur_active ? 1 : 0, ts->trace_cohort ? 1 : 0,
 			ts->frames_built - ts->trace_frame_id,
 			(double)ts->trace_gpu_frame_ns / 1e3,
-			s->chains, s->single_chain ? 1 : 0, (double)tr_total / 1e3,
+			s->chains, s->single_chain ? 1 : 0,
+			ts->trace_damage_px, ts->trace_rebuild_px, (double)tr_total / 1e3,
 			(double)tr_prefix / 1e3, (double)tr_down / 1e3,
 			tr_total > tr_prefix + tr_down
 				? (double)(tr_total - tr_prefix - tr_down) / 1e3 : 0.0,

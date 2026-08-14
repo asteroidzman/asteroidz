@@ -157,6 +157,18 @@ struct avk_ts_slot {
 	 * population. A short fixed buffer, because this must not own memory.
 	 */
 	char output[16];
+	/*
+	 * The REGION SIZES this frame worked on, in pixels.
+	 *
+	 * prefix and post were observed growing ~5x together at a FIXED chain
+	 * count, and two phases moving in lockstep by the same factor share an
+	 * input. The only thing a prefix replay and the output composite have in
+	 * common is how much of the screen is being rebuilt --- so that quantity
+	 * has to be on the frame, not in a running total that cannot be joined
+	 * back to the frame that produced it.
+	 */
+	uint64_t damage_px;
+	uint64_t rebuild_px;
 	/* How many blur chains this frame declared. The count, not the bool: at
 	 * N > 1 the PREFIX_END and DOWN_END marks belong to the FIRST chain only,
 	 * so a phase decomposition read without it silently attributes chains
@@ -292,6 +304,7 @@ struct avk_timestamps {
 	 * total instead of two lines that have to be joined by frame id. */
 	bool trace_pending, trace_cohort, trace_slot_active, trace_cur_active;
 	char trace_output[16];
+	uint64_t trace_damage_px, trace_rebuild_px;
 	uint64_t trace_gpu_frame_ns, trace_frame_id;
 	uint32_t trace_slot;
 };
@@ -326,6 +339,16 @@ static inline void avk_timestamps_set_trace(struct avk_timestamps *ts,
 /* The output name this frame is being recorded for. Copied, not borrowed, and
  * truncated rather than allocated. */
 void avk_timestamps_set_output(struct avk_timestamps *ts, const char *name);
+
+/* This frame's damaged output area and total blur rebuild area, recorded into
+ * the slot alongside the chain count. */
+static inline void avk_timestamps_set_regions(struct avk_timestamps *ts,
+		uint32_t slot, uint64_t damage_px, uint64_t rebuild_px) {
+	if (slot < AVK_FRAMES_IN_FLIGHT) {
+		ts->slots[slot].damage_px = damage_px;
+		ts->slots[slot].rebuild_px = rebuild_px;
+	}
+}
 
 void avk_timestamps_blur_active(struct avk_timestamps *ts, uint32_t slot,
 	bool active, uint32_t chains);

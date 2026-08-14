@@ -1812,6 +1812,9 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 	 * back to `scene->damage` unchanged, which is the direct path costing three
 	 * region operations rather than a branch nobody tests.
 	 */
+	/* Per-frame, for the trace: the sum over every blur of the source region
+	 * it reconstructed. The running total next to it survives across frames. */
+	uint64_t frame_rebuild_px = 0;
 	pixman_region32_t prefix_damage, frame_damage, blur_generated;
 	pixman_region32_init(&prefix_damage);
 	pixman_region32_init(&frame_damage);
@@ -2141,6 +2144,7 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 			az_region_area(&d->output_damage);
 		uint64_t rebuild_px = az_region_area(&d->prefix_rebuild);
 		renderer->blur_prefix_rebuild_pixels += rebuild_px;
+		frame_rebuild_px += rebuild_px;
 		/*
 		 * M4H.6 PREMISE INSTRUMENT -- how much of this blur's source could be
 		 * COPIED from the output attachment instead of replayed into a
@@ -2494,6 +2498,16 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 	 */
 	avk_timestamps_blur_active(&renderer->timestamps, ts_slot,
 		declared_chains > 0, (uint32_t)declared_chains);
+	/*
+	 * The two region sizes THIS frame worked on, recorded beside the chain
+	 * count so a trace line can be read on its own. `frame_damage` is what the
+	 * output segment will recomposite; the rebuild total is the sum over every
+	 * blur of the source it had to reconstruct. Both are per-frame quantities
+	 * that previously existed only as running totals, which cannot be joined
+	 * back to the frame that produced them.
+	 */
+	avk_timestamps_set_regions(&renderer->timestamps, ts_slot,
+		az_region_area(&frame_damage), frame_rebuild_px);
 	if ((uint64_t)slot_len > renderer->blur_max_slots) {
 		renderer->blur_max_slots = (uint64_t)slot_len;
 	}
