@@ -1388,6 +1388,17 @@ static void az_frame_reach_add(const struct wlr_box *b) {
  * fringe stale along a seam, which is the failure M4F.2C existed to fix.
  */
 #define AZ_FRAME_REACH_PAD 256
+
+/* M4I. One line per frame of a tag transition; see the trace in render_monitor.
+ * Read once, because this is on the per-client path of every frame. */
+static inline bool az_tagtrace_on(void) {
+	static int cached = -1;
+	if (cached < 0) {
+		const char *env = getenv("AZ_TAGTRACE");
+		cached = (env != NULL && env[0] == '1' && env[1] == '\0');
+	}
+	return cached != 0;
+}
 static Client *find_client_by_direction(Client *tc, const Arg *arg,
 										bool findfloating);
 static void exit_scroller_stack(Client *c);
@@ -8000,8 +8011,50 @@ static void render_monitor(Monitor *m) {
 	// cursor zoom view tracking (set_zoom handles its own damage and frame scheduling)
 	cursor_zoom_frame(m);
 
+	/*
+	 * ── M4I: WHAT A TAG TRANSITION ACTUALLY EXPOSES, PER FRAME ────────────
+	 *
+	 * AZ_TAGTRACE=1 logs one line per frame in which any client is sliding in
+	 * or out of a tag: how much of this output each side actually covers, and
+	 * how many windows each contributes.
+	 *
+	 * The whole architectural question -- is the cost inherent to showing two
+	 * tags at once, or is it inefficient recomposition -- turns on a number
+	 * nobody has: the simultaneous VISIBLE area of the two populations. A
+	 * design argument about push versus cover versus clipped slide is an
+	 * argument about that number, and it has so far been made from the shape
+	 * of the animation rather than from measurement.
+	 *
+	 * Visible means clipped to THIS output. A window sliding out is mostly
+	 * off-screen for most of the transition, and counting its full box would
+	 * report an overlap that the rasteriser never sees.
+	 */
+	uint64_t tag_px_out = 0, tag_px_in = 0;
+	int tag_n_out = 0, tag_n_in = 0;
+	bool tag_any = false;
 	// draw clients
 	wl_list_for_each(c, &clients, link) {
+		if (az_tagtrace_on() &&
+				(c->animation.tagouting || c->animation.tagining)) {
+			struct wlr_box vis = c->animation.current;
+			struct wlr_box mon = m->m;
+			int32_t x0 = vis.x > mon.x ? vis.x : mon.x;
+			int32_t y0 = vis.y > mon.y ? vis.y : mon.y;
+			int32_t x1 = vis.x + vis.width < mon.x + mon.width
+				? vis.x + vis.width : mon.x + mon.width;
+			int32_t y1 = vis.y + vis.height < mon.y + mon.height
+				? vis.y + vis.height : mon.y + mon.height;
+			uint64_t px = (x1 > x0 && y1 > y0)
+				? (uint64_t)(x1 - x0) * (uint64_t)(y1 - y0) : 0;
+			tag_any = true;
+			if (c->animation.tagouting) {
+				tag_px_out += px;
+				tag_n_out++;
+			} else {
+				tag_px_in += px;
+				tag_n_in++;
+			}
+		}
 		if (client_draw_frame(c)) {
 			need_more_frames = true;
 			/* An opacity-only animation ticks without moving, so
@@ -8017,6 +8070,21 @@ static void render_monitor(Monitor *m) {
 			AZ_ZONE_END(az_animate);
 			goto skip;
 		}
+	}
+
+	if (tag_any) {
+		/* Against the OUTPUT's own logical area, so the two ratios are
+		 * comparable between a 4K display and a 1080p one and a reader can
+		 * add them: 1.30 means the two populations together cover 130% of
+		 * the screen, i.e. they overlap by 30%. */
+		uint64_t mon_px = (uint64_t)m->m.width * (uint64_t)m->m.height;
+		wlr_log(WLR_ERROR, "aztag mon=%s out_px=%" PRIu64 " in_px=%" PRIu64
+			" out_frac=%.3f in_frac=%.3f sum=%.3f n_out=%d n_in=%d",
+			m->wlr_output->name, tag_px_out, tag_px_in,
+			mon_px ? (double)tag_px_out / (double)mon_px : 0.0,
+			mon_px ? (double)tag_px_in / (double)mon_px : 0.0,
+			mon_px ? (double)(tag_px_out + tag_px_in) / (double)mon_px : 0.0,
+			tag_n_out, tag_n_in);
 	}
 
 	if (m->skiping_frame) {
