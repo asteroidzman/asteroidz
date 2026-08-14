@@ -682,10 +682,19 @@ static void test_path_a_roundtrip(struct harness *h) {
 	CHECK(avk_image_srgb_view(h->dev, target) != VK_NULL_HANDLE,
 		"PREMISE: the mutable target really can carry an _SRGB view");
 
-	static const uint8_t vals[] = { 16, 48, 96, 128, 176, 208, 240 };
+	/*
+	 * ALL 256 CODES, NOT A HANDFUL.
+	 *
+	 * The first version of this sampled seven values and reported a perfect
+	 * round trip. On a real output the same pair was one code out on 94% of
+	 * the frame -- because the shader's pow()-based EOTF and the hardware's
+	 * sRGB table are not exact inverses, and seven values is a small enough
+	 * sample to miss that entirely. A 16x16 tile holds every 8-bit code
+	 * exactly once, so there is no reason to sample at all.
+	 */
 	uint32_t src[16 * 16];
 	for (size_t i = 0; i < 16 * 16; i++) {
-		uint8_t v = vals[i % (sizeof(vals) / sizeof(vals[0]))];
+		uint8_t v = (uint8_t)i;
 		src[i] = 0xFF000000u | ((uint32_t)v << 16) | ((uint32_t)v << 8) | v;
 	}
 	struct avk_image *surface = make_image_ex(h->dev, 16, 16,
@@ -702,6 +711,7 @@ static void test_path_a_roundtrip(struct harness *h) {
 	h->target = target;
 
 	int worst[3] = { -1, -1, -1 };
+	uint64_t decoded[3] = { 0, 0, 0 };
 	for (int arm = 0; arm < 3; arm++) {
 		struct avk_scene scene;
 		avk_scene_init(&scene);
@@ -715,11 +725,13 @@ static void test_path_a_roundtrip(struct harness *h) {
 		tex->opacity = 1.0f;
 		tex->filter_linear = false;
 
+		uint64_t before = h->renderer.stats.decode_draws;
 		h->renderer.decode_enabled = (arm >= 1);
 		h->renderer.encode_srgb = (arm == 2);
 		bool ok = render(h, &scene);
 		h->renderer.decode_enabled = false;
 		h->renderer.encode_srgb = false;
+		decoded[arm] = h->renderer.stats.decode_draws - before;
 		avk_scene_finish(&scene);
 		if (!ok) {
 			CHECK(false, "path A: arm %d renders", arm);
@@ -739,6 +751,17 @@ static void test_path_a_roundtrip(struct harness *h) {
 
 	printf("  ---- worst channel: neither %d, decode-only %d, both %d\n",
 		worst[0], worst[1], worst[2]);
+	printf("  ---- decode draws:  neither %llu, decode-only %llu, both %llu\n",
+		(unsigned long long)decoded[0], (unsigned long long)decoded[1],
+		(unsigned long long)decoded[2]);
+	/* THE PREMISE THAT WAS MISSING. "Both halves round-trip at 0 codes" and
+	 * "neither half ran" produce the same number, and only this tells them
+	 * apart. It is the assertion whose absence let a fixture disagree with a
+	 * real output for an hour. */
+	CHECK(decoded[0] == 0 && decoded[1] == 1 && decoded[2] == 1,
+		"PREMISE: decode ran in exactly the arms it should (%llu/%llu/%llu)",
+		(unsigned long long)decoded[0], (unsigned long long)decoded[1],
+		(unsigned long long)decoded[2]);
 	CHECK(worst[0] == 0,
 		"neither half: bit-exact, the pre-M5 path (worst %d)", worst[0]);
 	/* THE FALSIFIER. Decode without encode must be visibly wrong, or "both

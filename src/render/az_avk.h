@@ -3619,8 +3619,30 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 	 * takes the live path, rather than silently inheriting the last output's.
 	 */
 	out->slot->renderer.blur_cache = &out->blur_cache;
+	/*
+	 * ── M5 PATH A, LENT THE SAME WAY AND FOR THE SAME REASON ──────────────
+	 *
+	 * Which colour path an output takes is a property of that output, and a
+	 * renderer is shared by every output with the same VkFormat -- so leaving
+	 * these set would decode DP-1's sources on HDMI-A-1's frame the moment the
+	 * two disagreed. Cleared afterwards so a path that forgets to set them
+	 * renders the pre-M5 picture rather than inheriting the last output's.
+	 *
+	 * OFF UNLESS ASKED FOR. AZ_M5_PATH_A=1 is the opt-in, because turning this
+	 * on changes every pixel on the display and the on-GPU gate has so far only
+	 * run against a fixture's own target. It is not a break switch: with it set
+	 * the compositor renders the CORRECT picture through the colour-managed
+	 * path, which is the whole point -- it is off because it has not been
+	 * qualified live, not because it is wrong.
+	 */
+	const bool path_a = az_avk_env_flag("AZ_M5_PATH_A")
+		&& m->color_state.path == AZ_OUTPUT_PATH_A_DIRECT_SRGB;
+	out->slot->renderer.decode_enabled = path_a;
+	out->slot->renderer.encode_srgb = path_a;
 	uint64_t timeline = avk_render_frame(&out->slot->renderer, target, &scene,
 		waits, wait_count, signals, 1);
+	out->slot->renderer.decode_enabled = false;
+	out->slot->renderer.encode_srgb = false;
 	out->slot->renderer.blur_cache = NULL;
 	/*
 	 * WHAT THE FRAME REDREW, WHICH MAY BE MORE THAN WHAT WAS HANDED IN.
