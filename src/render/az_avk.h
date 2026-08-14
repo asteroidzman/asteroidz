@@ -2927,8 +2927,18 @@ static bool az_avk_output_supported(Monitor *m,
 			avk.warned_color_transform = true;
 			if (color_transform != NULL
 					|| m->color_state.path == AZ_OUTPUT_PATH_FALLBACK) {
-				wlr_log(WLR_INFO, "AVK: %s has an ICC/3D-LUT transform; that is "
-					"M6, so this output stays on the SceneFX path",
+				/*
+				 * M6B/G3b. The old wording said "that is M6", which is no longer
+				 * a reason -- this IS M6, and a matrix-shaper profile is carried
+				 * by the encode pass now. Reaching here with a profile means the
+				 * profile did not REDUCE: a cLUT (A2B/B2A) transform, which the
+				 * matrix+curve form cannot express. Naming that is the whole
+				 * value of the line; "it is a later milestone" would now send
+				 * someone looking for work that is already done.
+				 */
+				wlr_log(WLR_INFO, "AVK: %s has a colour transform this renderer "
+					"cannot express as a matrix and a curve (a cLUT profile); "
+					"SceneFX drives this output so the profile is still applied",
 					output->name);
 			} else {
 				wlr_log(WLR_INFO, "AVK: %s is presenting HDR but the M5 output "

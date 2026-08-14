@@ -227,9 +227,19 @@ test('lum-domain', test_lum_domain, timeout : 30)
 test_icc_shaper = executable('test-icc-shaper',
                              ['tests/test-icc-shaper.c',
                               'src/render/color/az_icc.c'],
+                             # contrib/icc-synth.c is #included by the test, not
+                             # listed here: it carries a main() behind a guard.
                              dependencies : [lcms2_dep, libm],
                              build_by_default : false)
 test('icc-shaper', test_icc_shaper, timeout : 30)
+
+# M6B/G3b. Generates the ICC profiles this machine does not have -- above all a
+# cLUT display profile, without which D2's refusal has no falsifier. Not a test:
+# a tool the headless fixture runs. See contrib/icc-synth.c for why the cLUT one
+# carries colorants as well.
+icc_synth = executable('icc-synth', 'contrib/icc-synth.c',
+                       dependencies : [lcms2_dep],
+                       build_by_default : false)
 
 test_output_color = executable('test-output-color',
                                'tests/test-output-color.c',

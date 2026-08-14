@@ -26,6 +26,14 @@
 #include <string.h>
 
 #include "../src/render/color/az_icc.h"
+/*
+ * The synthetic profiles, compiled in rather than shelled out to. These are the
+ * profiles this machine does not have and cannot get -- above all a cLUT
+ * display profile -- and without them D2's REFUSALS are untested code that has
+ * only ever been reasoned about.
+ */
+#define AZ_ICC_SYNTH_NO_MAIN
+#include "../contrib/icc-synth.c"
 
 static int checks, failures;
 
@@ -259,6 +267,73 @@ int main(void) {
 		ok(worst_effect * 255.0 > 0.5,
 			"PREMISE: the vcgt is non-trivial, so composing it MATTERS");
 		cmsCloseProfile(h2);
+	}
+
+	/*
+	 * ── THE REFUSALS, WHICH ARE BEHAVIOUR AND NOT LEFTOVERS ───────────────
+	 *
+	 * D2 refuses three things before it ever looks for a matrix, and until now
+	 * none of them had ever been executed: the only profile on this desk is an
+	 * RGB display matrix-shaper, so every path except the accepting one was
+	 * reasoned about and never run. Each profile below is synthesised for the
+	 * refusal it is meant to trigger.
+	 *
+	 * THE cLUT ONE CARRIES COLORANTS AND TRCs. That is what makes it a test: a
+	 * cLUT profile without them would be refused by an implementation that
+	 * merely failed to find a matrix, so it would pass while proving nothing
+	 * about classification. This one gives a matrix-shaper reader everything it
+	 * wants and must still be refused, because an A2B0 transform is not a
+	 * matrix and approximating it would characterise the display wrongly while
+	 * looking like it worked.
+	 */
+	{
+		const char *dir = getenv("TMPDIR");
+		char p_clut[512], p_gray[512], p_input[512];
+		snprintf(p_clut, sizeof(p_clut), "%s/az-g1-clut.icc",
+			dir != NULL ? dir : "/tmp");
+		snprintf(p_gray, sizeof(p_gray), "%s/az-g1-gray.icc",
+			dir != NULL ? dir : "/tmp");
+		snprintf(p_input, sizeof(p_input), "%s/az-g1-input.icc",
+			dir != NULL ? dir : "/tmp");
+		ok(make_clut(p_clut) && make_gray(p_gray) && make_input(p_input),
+			"PREMISE: the synthetic profiles are written");
+
+		const struct { const char *path; enum az_icc_reject want; const char *what; }
+		REFUSE[] = {
+			{p_clut,  AZ_ICC_REJECT_CLUT,
+			 "a cLUT profile WITH colorants is refused by classification"},
+			{p_gray,  AZ_ICC_REJECT_NOT_RGB, "a GRAY profile is refused"},
+			{p_input, AZ_ICC_REJECT_NOT_DISPLAY,
+			 "an INPUT-class RGB profile is refused"},
+		};
+		for (size_t i = 0; i < sizeof(REFUSE) / sizeof(REFUSE[0]); i++) {
+			void *d2 = NULL;
+			size_t s2 = 0;
+			char msg[256];
+			if (!slurp(REFUSE[i].path, &d2, &s2)) {
+				snprintf(msg, sizeof(msg), "%s (could not read it back)",
+					REFUSE[i].what);
+				ok(false, msg);
+				continue;
+			}
+			struct az_icc_shaper sh;
+			enum az_icc_reject r2 = az_icc_load_shaper(d2, s2, true, &sh);
+			snprintf(msg, sizeof(msg), "%s (got %s)", REFUSE[i].what,
+				az_icc_reject_name(r2));
+			ok(r2 == REFUSE[i].want, msg);
+			free(d2);
+		}
+
+		/* THE PREMISE FOR ALL THREE. If the loader refused everything --
+		 * including the real profile -- the rows above would pass for the
+		 * wrong reason. That it accepted FI32U.icm is asserted at the top of
+		 * this file; this states the pair explicitly. */
+		ok(rc == AZ_ICC_OK,
+			"PREMISE: the same loader ACCEPTS the real profile, so the "
+			"refusals above are discrimination and not blanket rejection");
+		remove(p_clut);
+		remove(p_gray);
+		remove(p_input);
 	}
 
 	cmsDeleteTransform(t);
