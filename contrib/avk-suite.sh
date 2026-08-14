@@ -67,6 +67,7 @@ avk-gradient-crossoutput-test.sh   required
 avk-gradient-test.sh               required
 avk-graph-test.sh                  required
 avk-occlusion-test.sh              required
+avk-opaque-noblend-ab.sh           perf
 avk-oracle-test.sh                 required
 avk-rounded-alpha-test.sh          required
 avk-rounded-persist-test.sh        required
