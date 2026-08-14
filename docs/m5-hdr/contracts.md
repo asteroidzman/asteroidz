@@ -449,3 +449,91 @@ wire later.
 8. Docs + manpages + harness updates in the same commits (project rule);
    live testing only with explicit user warning per the live-session
    rules.
+
+---
+
+# C8 — THE MONITOR BACKGROUND BLUR CACHE (M4I), as M5 inherits it
+
+M4I added a cross-frame cache that M5 will have to integrate against, and it is
+the first thing in this renderer that holds a rendered image from one frame into
+the next. Everything below is a property M5 may rely on; anything M5 changes
+here changes what the cache is caching.
+
+**WHAT IT HOLDS.** Two images per output, no more:
+
+    PLAIN = blur(background)
+    DARK  = min(blur(background), background)
+
+DARK exists because a blur is an average, and averaging bright detail over dark
+ground raises the mean -- so a shadow's backdrop is clamped darken-only. That
+clamp is BLEND STATE (`VK_BLEND_OP_MIN` against the destination), which means it
+is only available when the chain writes back into the image that still holds its
+own unblurred source. The rebuild therefore replays the scene prefix DIRECTLY
+INTO the cached image and chains in place. **A refactor that introduces a
+transient between the replay and the chain silently disables the clamp** and
+returns the glow defect M4F spent a milestone finding.
+
+**WHEN IT IS VALID.** Node identity, source generation, geometry, blur kernel,
+and format. NEVER frame damage:
+
+    FRAME DAMAGE != CACHE SOURCE DIRT
+
+A full-output damage cycle does not rebuild the cache; a background-layer commit
+does. The generation is monotonic and per output, incremented where the walk
+observes `wlr_scene_optimized_blur.dirty` and clears it.
+
+**PER OUTPUT, BY NODE IDENTITY.** Every monitor's optimized-blur node lives in
+one global scene layer, so the walk matches `m->blur` by POINTER, not by
+geometry -- a box comparison agrees until two outputs share an origin or a size,
+which is what a mirrored or same-model pair is. The dirty flag is an edge and
+belongs to whoever owns the node: reading a neighbour's consumes it and leaves
+that display blurring a wallpaper it no longer has.
+
+**PER-IMAGE KERNEL STATE.** The kernel lives on each image, not on the cache.
+One shared field validating two images that differ in `darken` compared the dark
+image against the plain one's kernel, found a difference every frame, and
+rebuilt 383 times in 13 seconds of an idle desktop.
+
+**LIFETIME.** One image per kind. The alternation that used to guard against
+writing an image the previous frame is sampling was removed on evidence: the
+graph persists image layout across frames, so declaring the cache as COLOR_WRITE
+out of SHADER_READ_ONLY_OPTIMAL emits a transition whose first synchronisation
+scope covers everything already submitted to this device's single queue. No
+`vkDeviceWaitIdle`, no `vkQueueWaitIdle`, no CPU fence wait on the frame path;
+replacement is deferred against the image's OWN `last_use`.
+
+## What M5 must decide
+
+**THE CACHE IS A WORKING-DOMAIN IMAGE, NOT A FINAL FRAMEBUFFER.** It holds the
+blurred background in whatever domain the compositor composites in, BEFORE the
+final SDR/PQ transform and BEFORE dithering. That is a property M5 inherits and
+should preserve rather than discover:
+
+- **Format follows the path.** ADR-012 already says the blur transient's format
+  follows the output path (FP16 on Path B). The CACHE is the same decision one
+  level up, and it is bigger: two output-resolution images per output, so on
+  DP-1 that is 66.4 MB of logical texels at 4 bytes and 132.7 MB at 8. The
+  reported figures are `blur_cache_images`, `blur_cache_texel_bytes` and
+  `blur_cache_req_bytes` -- separate on purpose, because a single byte total
+  with no extent or count beside it could not be reconciled with its own
+  arithmetic for a whole milestone.
+- **No dither in the cache.** Dithering is an encode-stage operation against the
+  output's bit depth; a cached image that has been dithered is a cached image
+  that cannot be composited twice without banding.
+- **A colour-domain change is a cache invalidation.** `format` is already part
+  of the validity check, but a change of DOMAIN at constant VkFormat is not --
+  and Path A and Path B can share a format while meaning different things. If
+  M5 makes the working domain a per-output variable, it must join the validity
+  tuple, or the first frame after an HDR transition composites a backdrop from
+  the wrong domain.
+
+**NO NEIGHBOUR FRAMEBUFFER DEPENDENCY.** The M4F.2C rule stands: one output must
+not reconstruct its source from another's final framebuffer. The cache does not,
+and the falsifier that proves it (`AZ_BLUR_CACHE_WRONG_OUTPUT`) is in
+`contrib/avk-blur-cache-multi.sh`.
+
+**WHERE TO LOOK.** `src/render/vulkan/effect/avk_blur_cache.{c,h}` owns the
+resource; `az_blur_cache_rebuild()` in `avk_render.c` owns the decision;
+`src/render/az_avk.h`'s `WLR_SCENE_NODE_OPTIMIZED_BLUR` case owns the request
+and the dirty edge. Falsifiers: `AZ_BLUR_CACHE=0`, `_ALWAYS_DIRTY`,
+`_IGNORE_DIRTY`, `_STALE_GEOMETRY`, `_STALE_PARAMS`, `_WRONG_OUTPUT`.

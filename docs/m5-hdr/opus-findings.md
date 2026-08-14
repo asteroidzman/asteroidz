@@ -128,7 +128,7 @@ runs are allowed again. It is the only C1 item outstanding.
 
 ---
 
-## F5 — ADR-007 and ADR-009 cannot both hold on Path A (C4) **needs Fable**
+## F5 — ADR-007 and ADR-009 cannot both hold on Path A (C4) — **RESOLVED 2026-08-14**
 
 **The two statements.**
 
@@ -172,6 +172,30 @@ state), so the alternative is one line to try.
 
 Option 2 is the smallest change that makes ADR-007's sentence true. Nothing in
 M5 is blocked on it — it changes one argument.
+
+**RESOLUTION (user, 2026-08-14): option 2, and ADR-007's sentence is struck.**
+
+The instruction was to make the architectural distinction reflect reality: the
+physical attachment clips to its extent, while logical out-of-bounds source
+support is reconstructed from scene semantics — and not to preserve an ADR that
+implementation evidence has falsified.
+
+Applied here that reads: an 8-bit SDR attachment clamps to its representable
+extent, full stop. That is a property of the attachment and no ADR sentence can
+make it untrue, so **"so the attachment never clamps" comes out of ADR-007**.
+Handling values above SDR white is a SCENE-SEMANTIC job done in the shader
+before the attachment ever sees them — which is exactly option 2: a knee below
+1.0, in the >1-capable pipeline variant only, so ordinary SDR content keeps
+ADR-009's identity guarantee and the regression floor holds.
+
+The knee VALUE is still unchosen and is one push-constant argument. Whoever
+picks it owns a falsifier: with the >1 variant selected and the lower knee, a
+PQ source on an 8-bit output must NOT hard-clip at SDR white, and an ordinary
+SDR source must be bit-identical to a build with the curve compiled out.
+
+Recorded by the performance agent at M4 handoff. This is a reading of a
+one-sentence instruction about a conflict whose other half (F6) was not
+addressed — if the intent was narrower, F5 is the item to re-open.
 
 ---
 
