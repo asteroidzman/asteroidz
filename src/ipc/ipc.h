@@ -672,6 +672,83 @@ static void handle_command(int client_fd, const char *cmd_raw) {
 		cJSON_AddStringToObject(resp, "backend", "scenefx");
 		cJSON_AddBoolToObject(resp, "active", false);
 #endif
+	} else if (strcmp(cmd, "get presentation") == 0) {
+		/*
+		 * M6A.1. WHAT PRESENTATION ACTUALLY DID, per output.
+		 *
+		 * Separate from avk-stats because it is not the renderer's: these are
+		 * facts about the display's page flips, and the two answer different
+		 * questions. Observed only -- nothing here is a prediction yet.
+		 */
+		resp = cJSON_CreateObject();
+		cJSON *arr = cJSON_AddArrayToObject(resp, "outputs");
+		Monitor *pm;
+		wl_list_for_each(pm, &mons, link) {
+			if (pm->wlr_output == NULL)
+				continue;
+			cJSON *e = cJSON_CreateObject();
+			cJSON_AddStringToObject(e, "name", pm->wlr_output->name);
+			cJSON_AddNumberToObject(e, "presented", (double)pm->present_count);
+			cJSON_AddNumberToObject(e, "dropped", (double)pm->present_dropped);
+			cJSON_AddNumberToObject(e, "no_stamp",
+				(double)pm->present_no_stamp);
+			cJSON_AddNumberToObject(e, "last_seq",
+				(double)pm->present_last_seq);
+			/* Both, and never one alone: the nominal figure is what the mode
+			 * claims and the observed one is what the display did. DP-1
+			 * reports 143.999 Hz and they are not the same number. */
+			cJSON_AddNumberToObject(e, "nominal_refresh_mhz",
+				(double)pm->wlr_output->refresh);
+			/* Per VBLANK, from the sequence delta -- not the gap between
+			 * presented frames, which on a damage-driven compositor is an
+			 * arrival rate and not a display period. */
+			cJSON_AddNumberToObject(e, "observed_interval_us",
+				(double)pm->present_interval_ns / 1000.0);
+			cJSON_AddNumberToObject(e, "interval_rejected",
+				(double)pm->present_interval_rejected);
+			cJSON *cad = cJSON_AddObjectToObject(e, "cadence");
+			cJSON_AddNumberToObject(cad, "x1", (double)pm->present_cadence_1x);
+			cJSON_AddNumberToObject(cad, "x2", (double)pm->present_cadence_2x);
+			cJSON_AddNumberToObject(cad, "x3plus",
+				(double)pm->present_cadence_3x);
+			cJSON_AddStringToObject(e, "stamp_clock",
+				pm->present_clock == PRESENT_CLOCK_MONOTONIC  ? "monotonic"
+				: pm->present_clock == PRESENT_CLOCK_REALTIME ? "realtime"
+				: pm->present_clock == PRESENT_CLOCK_NEITHER  ? "neither"
+				                                              : "unknown");
+			cJSON_AddNumberToObject(e, "stamp_skew_monotonic_us",
+				(double)pm->present_skew_mono_ns / 1000.0);
+			cJSON_AddNumberToObject(e, "stamp_skew_realtime_us",
+				(double)pm->present_skew_real_ns / 1000.0);
+			/* The hardware's own next-refresh guess, which under VRR is the
+			 * only period the display itself states. */
+			cJSON_AddNumberToObject(e, "hw_next_refresh_us",
+				(double)pm->present_hw_refresh_ns / 1000.0);
+			/* M-8: what ADR-605's t_pipe is seeded from. Both intervals,
+			 * because they answer different questions -- arm-to-photons is
+			 * what a predictor must add to `now`, commit-to-photons is how
+			 * much of it is outside the compositor's control. */
+			cJSON *lat = cJSON_AddObjectToObject(e, "latency");
+			cJSON_AddNumberToObject(lat, "samples", (double)pm->m8_samples);
+			cJSON_AddNumberToObject(lat, "unmatched",
+				(double)pm->m8_unmatched);
+			if (pm->m8_samples) {
+				cJSON_AddNumberToObject(lat, "arm_to_present_mean_us",
+					(double)pm->m8_arm_sum_ns / (double)pm->m8_samples / 1e3);
+				cJSON_AddNumberToObject(lat, "arm_to_present_min_us",
+					(double)pm->m8_arm_min_ns / 1e3);
+				cJSON_AddNumberToObject(lat, "arm_to_present_max_us",
+					(double)pm->m8_arm_max_ns / 1e3);
+				cJSON_AddNumberToObject(lat, "commit_to_present_mean_us",
+					(double)pm->m8_commit_sum_ns / (double)pm->m8_samples
+						/ 1e3);
+				cJSON_AddNumberToObject(lat, "commit_to_present_min_us",
+					(double)pm->m8_commit_min_ns / 1e3);
+				cJSON_AddNumberToObject(lat, "commit_to_present_max_us",
+					(double)pm->m8_commit_max_ns / 1e3);
+			}
+			cJSON_AddItemToArray(arr, e);
+		}
 	} else if (strcmp(cmd, "get dmabuf-feedback") == 0) {
 #ifdef AZ_HAVE_VULKAN
 		resp = az_dmabuf_feedback_json();

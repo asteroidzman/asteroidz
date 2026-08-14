@@ -851,6 +851,99 @@ struct Monitor {
 	/* AZ_PACE=1 only (see common/pace.h) -- not wired otherwise. */
 	struct wl_listener pace_present;
 	uint64_t pace_last_present_ns;
+	/*
+	 * M6A.1. PRESENTATION FEEDBACK, IN PRODUCTION.
+	 *
+	 * Wired unconditionally, unlike pace_present above. M6A's whole subject is
+	 * the loop "predict a presentation time, present, correct from what
+	 * actually happened", and until now the compositor discarded the only
+	 * signal that closes it -- while wlr_presentation_create() handed the same
+	 * feedback to every CLIENT.
+	 *
+	 * Nothing here predicts anything yet. These are the raw observed facts, so
+	 * that the model built on top of them can be checked against something
+	 * that was measured rather than assumed.
+	 */
+	struct wl_listener present;
+	uint64_t present_last_ns;   /* ev->when of the last PRESENTED frame */
+	uint64_t present_last_seq;
+	uint64_t present_count;     /* frames that actually reached the screen */
+	uint64_t present_dropped;   /* ev->presented false: signal, but no photons */
+	uint64_t present_no_stamp;  /* presented, but the backend gave no time */
+	/*
+	 * OBSERVED interval, from the presented series, in nanoseconds. Kept
+	 * beside the nominal figure rather than instead of it: DP-1 reports
+	 * 143.999 Hz and a predictor built on the round number accrues phase error
+	 * against reality (audit G5).
+	 */
+	uint64_t present_interval_ns;
+	/*
+	 * CADENCE, FROM PRESENTATION RATHER THAN FROM GPU TIMING.
+	 *
+	 * The vblank-sequence delta between one presented frame and the next: 1
+	 * means the very next vblank, 2 means one went by. A GPU frame comfortably
+	 * inside budget can still land here as 2 because it arrived after the flip
+	 * deadline, and that distinction is invisible to any duration-based
+	 * measure. On a damage-driven desktop a large delta is usually just an idle
+	 * gap, so these count occurrences and are not a quality score on their own.
+	 */
+	uint64_t present_cadence_1x, present_cadence_2x, present_cadence_3x;
+	/* Periods that did not resemble the mode at all -- a jumped sequence, a
+	 * mode change, or a backend that does not count vblanks. Counted rather
+	 * than averaged in, because a silently wrong period poisons everything
+	 * built on it. */
+	uint64_t present_interval_rejected;
+	/*
+	 * ── M-8. ARM-TO-PHOTONS AND COMMIT-TO-PHOTONS ─────────────────────────
+	 *
+	 * ADR-605 needs one number to make the VRR predictor honest: `t_pipe`,
+	 * the time from the frame event through render, commit and scanout to
+	 * light. Under adaptive sync there is no vblank lattice to project onto --
+	 * presentation follows the commit -- so what the compositor must predict
+	 * is its own latency, and until this is measured the ADR's placeholder is
+	 * a documented bias.
+	 *
+	 * Correlated by commit_seq, which wlr_output_event_present carries for
+	 * exactly this purpose. Only the most recent armed frame is tracked: the
+	 * pipeline is one commit deep in the ordinary case, and a present whose
+	 * commit_seq does not match is counted rather than guessed at, so a
+	 * deeper pipeline shows up as unmatched samples instead of as wrong
+	 * latencies.
+	 */
+	uint64_t m8_arm_ns;      /* frame event entered rendermon */
+	uint64_t m8_commit_ns;   /* wlr_output_commit_state returned */
+	uint32_t m8_commit_seq;  /* what to match ev->commit_seq against */
+	bool m8_armed;
+	uint64_t m8_samples, m8_unmatched;
+	uint64_t m8_arm_sum_ns, m8_arm_min_ns, m8_arm_max_ns;
+	uint64_t m8_commit_sum_ns, m8_commit_min_ns, m8_commit_max_ns;
+	/* The kernel's own guess at when the next refresh may occur, from
+	 * ev->refresh. Zero when unavailable. Under VRR this is the closest thing
+	 * to a period the hardware will tell us, so it is worth reading rather
+	 * than deriving. */
+	uint64_t present_hw_refresh_ns;
+	/*
+	 * ── WHICH CLOCK ev->when IS IN, PROVEN RATHER THAN BELIEVED ───────────
+	 *
+	 * wlroots' DRM backend reports the page-flip timestamp, and the natural
+	 * assumption is CLOCK_MONOTONIC. It is only an assumption: the kernel
+	 * reports a realtime-based stamp where the driver cannot supply a
+	 * monotonic one, and a predictor that subtracts a realtime stamp from a
+	 * monotonic one is not slightly wrong, it is wrong by the machine's uptime.
+	 *
+	 * So the first presented frame on each output records the distance from
+	 * ev->when to BOTH clocks read in the handler, and `present_clock` states
+	 * which one it landed on. Anything that does arithmetic across this
+	 * boundary must consult it instead of assuming.
+	 */
+	int64_t present_skew_mono_ns;
+	int64_t present_skew_real_ns;
+	enum {
+		PRESENT_CLOCK_UNKNOWN = 0,
+		PRESENT_CLOCK_MONOTONIC,
+		PRESENT_CLOCK_REALTIME,
+		PRESENT_CLOCK_NEITHER,
+	} present_clock;
 	struct wl_listener destroy;
 	struct wl_listener request_state;
 	struct wl_listener destroy_lock_surface;
@@ -1198,6 +1291,7 @@ static void powermgrsetmode(struct wl_listener *listener, void *data);
 static void wake_monitor(Monitor *m);
 static void wake_sleeping_monitors(void);
 static void rendermon(struct wl_listener *listener, void *data);
+static void presentmon(struct wl_listener *listener, void *data);
 static void requestdecorationmode(struct wl_listener *listener, void *data);
 static void requestdrmlease(struct wl_listener *listener, void *data);
 static void requeststartdrag(struct wl_listener *listener, void *data);
@@ -4078,6 +4172,7 @@ void cleanupmon(struct wl_listener *listener, void *data) {
 	wl_list_remove(&m->frame.link);
 	if (az_pace_on())
 		wl_list_remove(&m->pace_present.link);
+	wl_list_remove(&m->present.link);
 	wl_list_remove(&m->link);
 	wl_list_remove(&m->request_state.link);
 	if (m->lock_surface)
@@ -5688,6 +5783,10 @@ void createmon(struct wl_listener *listener, void *data) {
 	 * to be a no-op is still a listener on a hot signal. */
 	if (az_pace_on())
 		LISTEN(&wlr_output->events.present, &m->pace_present, pacepresent);
+	/* M6A.1: unconditional, unlike the trace listener above. See presentmon --
+	 * the compositor cannot own presentation while discarding the only signal
+	 * that says when presentation happened. */
+	LISTEN(&wlr_output->events.present, &m->present, presentmon);
 	LISTEN(&wlr_output->events.destroy, &m->destroy, cleanupmon);
 	LISTEN(&wlr_output->events.request_state, &m->request_state,
 		   requestmonstate);
@@ -8128,6 +8227,12 @@ static void render_monitor(Monitor *m) {
 	bool need_more_frames = false;
 	struct timespec render_t0;
 	clock_gettime(CLOCK_MONOTONIC, &render_t0);
+	/* M-8: the arm instant. This is the moment ADR-605's `t_pipe` is measured
+	 * FROM -- a VRR predictor asks "if I start now, when does it light up?",
+	 * and the answer has to include this frame's own render, not just the
+	 * commit that follows it. */
+	m->m8_arm_ns = (uint64_t)render_t0.tv_sec * 1000000000ull
+		+ (uint64_t)render_t0.tv_nsec;
 
 	if (session && !session->active) {
 		return;
@@ -8410,6 +8515,16 @@ static void render_monitor(Monitor *m) {
 				az_output_commit_failed(m);
 			} else {
 				pace_committed = true;
+				/* M-8: the commit that this frame's presentation will report
+				 * back. Stamped AFTER the commit returns, so the interval to
+				 * `when` is genuinely commit-to-photons and contains no
+				 * compositor work. */
+				struct timespec ct;
+				clock_gettime(CLOCK_MONOTONIC, &ct);
+				m->m8_commit_ns =
+					(uint64_t)ct.tv_sec * 1000000000ull + (uint64_t)ct.tv_nsec;
+				m->m8_commit_seq = m->wlr_output->commit_seq;
+				m->m8_armed = true;
 			}
 		} else {
 			wlr_log(WLR_ERROR, "Failed to build frame for %s",
@@ -8470,6 +8585,159 @@ skip:
 		pace_damage_ext.y2 - pace_damage_ext.y1,
 		(unsigned long long)az_pace_now_ns());
 	AZ_ZONE_END(az_render);
+}
+
+/*
+ * M6A.1. PRESENTATION FEEDBACK IN PRODUCTION -- observed facts only.
+ *
+ * No prediction, no correction, no policy. This exists so that the timing
+ * model M6A is about can be built against measurements instead of against the
+ * arrival pattern of frame events, which is what render-late currently infers
+ * misses from (audit G4) and which cannot tell a late CPU from a late flip.
+ *
+ * The clock-domain proof runs once per output, on its first PRESENTED frame,
+ * and is the reason this handler reads two clocks. It is cheap exactly once
+ * and never repeated -- see Monitor.present_clock.
+ */
+static void presentmon(struct wl_listener *listener, void *data) {
+	Monitor *m = wl_container_of(listener, m, present);
+	const struct wlr_output_event_present *ev = data;
+
+	/* A dropped update still fires this signal. Folding one into the interval
+	 * series would invent a refresh that never happened. */
+	if (!ev->presented) {
+		m->present_dropped++;
+		return;
+	}
+	if (!ev->when.tv_sec && !ev->when.tv_nsec) {
+		m->present_no_stamp++;
+		return;
+	}
+
+	uint64_t when_ns =
+		(uint64_t)ev->when.tv_sec * 1000000000ull + (uint64_t)ev->when.tv_nsec;
+
+	if (m->present_clock == PRESENT_CLOCK_UNKNOWN) {
+		struct timespec mono, real;
+		clock_gettime(CLOCK_MONOTONIC, &mono);
+		clock_gettime(CLOCK_REALTIME, &real);
+		uint64_t mono_ns =
+			(uint64_t)mono.tv_sec * 1000000000ull + (uint64_t)mono.tv_nsec;
+		uint64_t real_ns =
+			(uint64_t)real.tv_sec * 1000000000ull + (uint64_t)real.tv_nsec;
+		m->present_skew_mono_ns = (int64_t)when_ns - (int64_t)mono_ns;
+		m->present_skew_real_ns = (int64_t)when_ns - (int64_t)real_ns;
+		/*
+		 * A page flip that has already happened is at most a few frames behind
+		 * the handler and never ahead of it, so the right clock is the one the
+		 * stamp is within a second of. The two clocks are separated by the
+		 * machine's uptime, so this is not a close call and a tolerance far
+		 * wider than any plausible latency still cannot confuse them.
+		 */
+		const int64_t near = 1000000000ll; /* 1s */
+		int64_t dm = m->present_skew_mono_ns < 0 ? -m->present_skew_mono_ns
+		                                         : m->present_skew_mono_ns;
+		int64_t dr = m->present_skew_real_ns < 0 ? -m->present_skew_real_ns
+		                                         : m->present_skew_real_ns;
+		m->present_clock = dm < near   ? PRESENT_CLOCK_MONOTONIC
+		                   : dr < near ? PRESENT_CLOCK_REALTIME
+		                               : PRESENT_CLOCK_NEITHER;
+		wlr_log(WLR_INFO,
+			"M6A: %s presentation stamp is %s (mono %+.3fms, real %+.3fms)",
+			m->wlr_output->name,
+			m->present_clock == PRESENT_CLOCK_MONOTONIC   ? "CLOCK_MONOTONIC"
+			: m->present_clock == PRESENT_CLOCK_REALTIME  ? "CLOCK_REALTIME"
+			                                              : "NEITHER CLOCK",
+			(double)m->present_skew_mono_ns / 1.0e6,
+			(double)m->present_skew_real_ns / 1.0e6);
+	}
+
+	/*
+	 * ── THE DISPLAY'S PERIOD, AND THE CADENCE, ARE TWO DIFFERENT NUMBERS ──
+	 *
+	 * The gap between consecutive PRESENTED frames is not the refresh period.
+	 * This compositor is damage-driven: it presents when there is something to
+	 * show, so on a quiet desktop consecutive presentations are several vblanks
+	 * apart. Measured that way DP-1 read 7673us against a 6944us mode and
+	 * looked like a display running slow, which it was not.
+	 *
+	 * `ev->seq` is the vblank counter, so the period is the time delta divided
+	 * by the SEQUENCE delta -- correct whether or not frames were skipped. The
+	 * sequence delta is itself the cadence: 1 means the next vblank, 2 means
+	 * one was missed or nothing was drawn for it, and that is the 1x/2x/3x
+	 * accounting derived from actual presentation rather than inferred from GPU
+	 * timing.
+	 */
+	if (m->present_last_ns && when_ns > m->present_last_ns
+			&& ev->seq > m->present_last_seq) {
+		uint64_t d = when_ns - m->present_last_ns;
+		uint64_t nseq = ev->seq - m->present_last_seq;
+		uint64_t per = d / nseq;
+		/* refresh is in mHz: the period in ns is 1e12/refresh. rendermon()
+		 * spells the same conversion 1.0e6/refresh for milliseconds. An
+		 * earlier 1e15 here made this guard unreachable and folded a 468ms
+		 * idle gap into a 60Hz output's period, which is how it announced
+		 * itself on the very first run. */
+		uint64_t nominal = m->wlr_output->refresh > 0
+			? (uint64_t)(1.0e12 / (double)m->wlr_output->refresh)
+			: 0;
+		/* A per-vblank period that is not near the mode's is not a period --
+		 * it is a sequence counter that jumped, an output that changed mode,
+		 * or a backend that does not count vblanks. Reject rather than
+		 * average, and count it, because a silently-wrong period would poison
+		 * every prediction built on it. */
+		if (nominal == 0 || (per > nominal / 2 && per < nominal * 2)) {
+			m->present_interval_ns = m->present_interval_ns
+				? (m->present_interval_ns * 7 + per) / 8
+				: per;
+			if (nseq == 1) {
+				m->present_cadence_1x++;
+			} else if (nseq == 2) {
+				m->present_cadence_2x++;
+			} else {
+				m->present_cadence_3x++;
+			}
+		} else {
+			m->present_interval_rejected++;
+		}
+	}
+	/* The hardware's own guess at the next refresh. Under VRR this is the
+	 * closest thing to a period the display will state, rather than one
+	 * derived from history. */
+	if (ev->refresh > 0) {
+		m->present_hw_refresh_ns = (uint64_t)ev->refresh;
+	}
+
+	/*
+	 * M-8. Matched strictly on commit_seq. An unmatched present means the
+	 * pipeline was deeper than the single slot tracked here, and it is COUNTED
+	 * rather than attributed to whatever was in the slot -- a latency series
+	 * quietly built from mismatched pairs would look plausible and be fiction.
+	 */
+	if (m->m8_armed && ev->commit_seq == m->m8_commit_seq) {
+		m->m8_armed = false;
+		if (when_ns > m->m8_arm_ns && when_ns > m->m8_commit_ns) {
+			uint64_t a = when_ns - m->m8_arm_ns;
+			uint64_t c = when_ns - m->m8_commit_ns;
+			m->m8_samples++;
+			m->m8_arm_sum_ns += a;
+			m->m8_commit_sum_ns += c;
+			if (!m->m8_arm_min_ns || a < m->m8_arm_min_ns)
+				m->m8_arm_min_ns = a;
+			if (a > m->m8_arm_max_ns)
+				m->m8_arm_max_ns = a;
+			if (!m->m8_commit_min_ns || c < m->m8_commit_min_ns)
+				m->m8_commit_min_ns = c;
+			if (c > m->m8_commit_max_ns)
+				m->m8_commit_max_ns = c;
+		}
+	} else if (m->m8_armed) {
+		m->m8_unmatched++;
+	}
+
+	m->present_last_ns = when_ns;
+	m->present_last_seq = ev->seq;
+	m->present_count++;
 }
 
 /* Presentation feedback, recorded per output. Wired only under AZ_PACE=1. */
