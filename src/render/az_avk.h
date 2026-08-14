@@ -339,6 +339,24 @@ static struct az_avk avk = {0};
 /* A switch is on. Used by the break tests and by the two presentation
  * fallbacks; read every time rather than cached, because these are set once
  * before the process starts and never change. */
+/*
+ * Is the C6 encode pass enabled in this session, and is it FORCED?
+ *
+ * One reader for AZ_M5_PATH_B, because two call sites now depend on the answer
+ * -- the frame path, which decides where the scene composites, and
+ * az_avk_output_supported(), which must not accept an HDR output the pass is
+ * not going to run for. Those disagreeing is exactly the failure that puts
+ * scene-linear values into a PQ buffer.
+ */
+static bool az_avk_encode_pass_enabled(bool *forced_out) {
+	const char *v = getenv("AZ_M5_PATH_B");
+	const bool forced = v != NULL && strcmp(v, "force") == 0;
+	if (forced_out != NULL) {
+		*forced_out = forced;
+	}
+	return forced || (v != NULL && v[0] == '1');
+}
+
 static bool az_avk_env_flag(const char *name) {
 	const char *v = getenv(name);
 	return v != NULL && v[0] == '1';
@@ -2797,12 +2815,37 @@ static bool az_avk_output_supported(Monitor *m,
 		return false;
 	}
 
-	if (color_transform != NULL || output->image_description != NULL) {
+	/*
+	 * ── M5.6: HDR IS NO LONGER REFUSED OUTRIGHT ───────────────────────────
+	 *
+	 * This was one condition covering two unrelated things, and only one of
+	 * them may be lifted. az_output_may_drive() is the decision and it is pure,
+	 * so the table is a unit test rather than something only a real HDR panel
+	 * can exercise; see az_output_color.h for why each branch is what it is.
+	 *
+	 * The interlock that matters: an HDR output is accepted ONLY when the C6
+	 * encode pass will actually run for it. Its scan-out buffer is PQ-encoded
+	 * BT.2020, so compositing into it without the pass writes scene-linear
+	 * values as though they were already electrical -- which is much worse than
+	 * the SceneFX fallback this replaces, and worse on exactly the content the
+	 * user enabled HDR for.
+	 */
+	if (!az_output_may_drive(&m->color_state,
+			output->image_description != NULL, color_transform != NULL,
+			az_avk_encode_pass_enabled(NULL))) {
 		if (!avk.warned_color_transform) {
 			avk.warned_color_transform = true;
-			wlr_log(WLR_INFO, "AVK: %s needs a colour transform (ICC or HDR); "
-				"colour management is M6, so this output stays on the SceneFX "
-				"path", output->name);
+			if (color_transform != NULL
+					|| m->color_state.path == AZ_OUTPUT_PATH_FALLBACK) {
+				wlr_log(WLR_INFO, "AVK: %s has an ICC/3D-LUT transform; that is "
+					"M6, so this output stays on the SceneFX path",
+					output->name);
+			} else {
+				wlr_log(WLR_INFO, "AVK: %s is presenting HDR but the M5 output "
+					"encode pass is not enabled (AZ_M5_PATH_B=1); refusing "
+					"rather than writing scene values into a PQ buffer -- this "
+					"output stays on the SceneFX path", output->name);
+			}
 		}
 		return false;
 	}
@@ -3462,10 +3505,8 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 	 *                     anything. Not a setting -- Path A is strictly cheaper
 	 *                     where it is available.
 	 */
-	const char *path_b_env = getenv("AZ_M5_PATH_B");
-	const bool path_b_forced = path_b_env != NULL
-		&& strcmp(path_b_env, "force") == 0;
-	const bool path_b = (path_b_forced || az_avk_env_flag("AZ_M5_PATH_B"))
+	bool path_b_forced = false;
+	const bool path_b = az_avk_encode_pass_enabled(&path_b_forced)
 		&& (path_b_forced
 			|| m->color_state.path == AZ_OUTPUT_PATH_B_ENCODE);
 	/*

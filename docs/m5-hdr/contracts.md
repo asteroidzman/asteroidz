@@ -474,12 +474,26 @@ wire later.
    transient format follows the path with no code of its own; the oracle
    DECLINES the FP16 taps rather than learning them, and the reason is
    recorded under C6.
-7. `az_avk.h`: remove the `image_description` refusal. HDR live behind
-   `hdr_resolve` exactly as today. **NOT DONE, AND DELIBERATELY.** The encode
-   pass is qualified on an SDR output forced onto Path B and against the CPU
-   reference for PQ; it has never driven a real HDR display. Removing the
-   refusal changes what the user's own monitor does, so it is a live step with
-   the user watching, not a consequence of C6 compiling.
+7. ~~`az_avk.h`: remove the `image_description` refusal~~ **DONE (M5.6)**, and
+   it was not a deletion. That condition covered two unrelated things and only
+   one could go: an ICC/3D-LUT transform is still refused (ADR-000, M6), while
+   an image description is accepted **only when the C6 encode pass will
+   actually run for it**. `az_output_may_drive()` is the decision, pure and in
+   `az_output_color.h`, so the table is a unit test rather than something only
+   a real HDR panel can exercise.
+
+   The interlock is the whole point: an HDR scan-out buffer is PQ-encoded
+   BT.2020, so accepting one while the pass is disabled composites
+   scene-linear values as though they were already electrical — a wrong
+   picture on exactly the content HDR was enabled for, and strictly worse than
+   the SceneFX fallback it replaces. Falsified: removing the interlock fails
+   the assertion, restoring it passes.
+
+   **Unchanged by default.** `AZ_M5_PATH_B` is unset in the shipped session, so
+   an HDR output still takes the SceneFX fallback exactly as before — now with
+   a log line saying which of the two reasons applied. What remains untested is
+   an actual HDR display driven by AVK, which needs HDR content and a session
+   carrying the flag.
 8. Docs + manpages + harness updates in the same commits (project rule);
    live testing only with explicit user warning per the live-session
    rules.

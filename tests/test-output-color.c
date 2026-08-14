@@ -259,6 +259,51 @@ int main(void) {
 			"with an initialised identity matrix, not garbage");
 	}
 
+	/* ── M5.6: MAY AVK DRIVE THIS OUTPUT? ──────────────────────────────── */
+	//
+	// The refusal that used to read
+	//     color_transform != NULL || output->image_description != NULL
+	// was one condition covering two unrelated things, and only the second may
+	// be lifted. This is the table that replaced it.
+	//
+	// The row that matters most is the third: an HDR output with the encode
+	// pass DISABLED must be refused. Accepting it composites scene-linear
+	// values into a PQ-encoded BT.2020 scan-out buffer as though they were
+	// already electrical -- a wrong picture on exactly the content HDR was
+	// enabled for, and strictly worse than the SceneFX fallback it replaces.
+	printf("M5.6 may-drive decision\n");
+	{
+		struct az_output_desc hdr_desc = {10, true, false, 1000.0f, 0.0f, 1.0f,
+			false};
+		struct az_output_color_state hdr = az_output_color_derive(&hdr_desc);
+		struct az_output_desc sdr8_desc = {8, false, false, 0.0f, 0.0f, 1.0f,
+			true};
+		struct az_output_color_state sdr8 = az_output_color_derive(&sdr8_desc);
+		struct az_output_desc icc_desc = {8, false, true, 0.0f, 0.0f, 1.0f,
+			true};
+		struct az_output_color_state icc = az_output_color_derive(&icc_desc);
+
+		CHECK(az_output_may_drive(&hdr, true, false, true),
+			"HDR + encode pass enabled: DRIVEN");
+		CHECK(!az_output_may_drive(&hdr, true, false, false),
+			"HDR + encode pass DISABLED: refused (the interlock)");
+		CHECK(!az_output_may_drive(&icc, false, true, true),
+			"an ICC transform is refused even with the pass on (M6)");
+		CHECK(!az_output_may_drive(&icc, false, false, true),
+			"and C3's own FALLBACK is refused without being asked twice");
+		CHECK(az_output_may_drive(&sdr8, false, false, false),
+			"SDR with no encode pass: driven, as every build before M5 did");
+		CHECK(az_output_may_drive(&sdr8, false, false, true),
+			"SDR with the pass available: driven");
+		CHECK(!az_output_may_drive(NULL, false, false, true),
+			"a NULL state refuses rather than guessing");
+		/* An image description on an output C3 did NOT put on Path B is either
+		 * a stale state or a derivation bug. Both are reasons to refuse: the
+		 * buffer is PQ and the pass would not encode for it. */
+		CHECK(!az_output_may_drive(&sdr8, true, false, true),
+			"an image description on a non-Path-B state: refused, not guessed");
+	}
+
 	printf("\n%d checks, %d failures\n", checks, failures);
 	return failures == 0 ? 0 : 1;
 }

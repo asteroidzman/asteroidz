@@ -216,4 +216,61 @@ az_output_color_derive(const struct az_output_desc *o) {
 	return s;
 }
 
+/*
+ * ── MAY AVK DRIVE THIS OUTPUT? (M5.6) ─────────────────────────────────────
+ *
+ * The refusal this replaces was one condition covering two unrelated things:
+ *
+ *     color_transform != NULL || output->image_description != NULL
+ *
+ * and only the second may be lifted. They are different questions:
+ *
+ *   an ICC / 3D-LUT transform  is ADR-000 scope: M6. AVK has no LUT stage and
+ *                              must keep refusing, forever as far as M5 knows.
+ *                              C3 already says so by deriving FALLBACK.
+ *
+ *   an image description       means the output is presenting HDR. AVK can now
+ *                              drive that -- but ONLY through the C6 encode
+ *                              pass, because the scan-out buffer is PQ-encoded
+ *                              BT.2020 and compositing into it without the pass
+ *                              writes scene-linear values as though they were
+ *                              already electrical.
+ *
+ * THE INTERLOCK IS THE POINT. An HDR output accepted while the encode pass is
+ * not going to run is far worse than an HDR output refused: refusing costs the
+ * SceneFX fallback, accepting costs a wrong picture on the one content type the
+ * user turned HDR on for. So acceptance requires the encode pass to be reachable
+ * -- both C3 choosing Path B and the pass being enabled in this session.
+ *
+ * Pure, and separate from az_avk.h, so the decision table is a unit test rather
+ * than something only a real HDR display can exercise.
+ */
+static inline bool az_output_may_drive(const struct az_output_color_state *s,
+		bool has_image_description, bool has_color_transform,
+		bool encode_pass_enabled) {
+	if (s == NULL) {
+		return false;
+	}
+	/* M6. Not a colour-path question -- AVK has nowhere to put a LUT. */
+	if (has_color_transform || s->path == AZ_OUTPUT_PATH_FALLBACK) {
+		return false;
+	}
+	if (has_image_description) {
+		/* Every HDR output is Path B by ADR-008, so a state that says anything
+		 * else here is either stale or a derivation bug, and both are reasons
+		 * to refuse rather than to guess. */
+		if (s->path != AZ_OUTPUT_PATH_B_ENCODE || s->encode_tf != AZ_TF_PQ) {
+			return false;
+		}
+		return encode_pass_enabled;
+	}
+	/*
+	 * SDR. Path A and Path B are both fine, and so is neither: an SDR output
+	 * whose encode pass is disabled composites straight into its own buffer in
+	 * its own encoding, which is what every version before M5 did and is not
+	 * wrong -- only un-colour-managed.
+	 */
+	return true;
+}
+
 #endif /* AZ_OUTPUT_COLOR_H */
