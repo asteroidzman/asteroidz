@@ -2535,6 +2535,62 @@ static bool anim_spring_converged(Client *c, int32_t type, double t,
  * rates -- and the wall time to reach a given progress therefore scales with
  * that sum, which is exactly the dependency ADR-607 statement 3 forbids.
  */
+/*
+ * ── THE TRAJECTORY, EVALUATED. NOTHING ELSE. ──────────────────────────────
+ *
+ * M6A/ADR-611. Semantic animation state answers *what motion is happening*;
+ * this answers *where that motion has reached, at this instant*. It is the
+ * one-way derivation the split is about, and it is pure: given the same
+ * semantic state and the same `sample_ns` it returns the same answer, reads no
+ * clock, and mutates nothing.
+ *
+ * That purity is the point rather than a nicety. It is what lets a fixture
+ * replay a frame and get the identical box -- so "the committed geometry lies
+ * on the trajectory at this frame's own sample instant" (ADR-607 statement 1)
+ * becomes a checkable claim instead of an intention. Any hidden state feeding
+ * the transform would break that equality, which is how it would be caught.
+ *
+ * The caller still owns the consequences -- writing the scene node, deciding
+ * the animation has ended, scheduling more frames. Those are decisions; this
+ * is arithmetic.
+ */
+struct anim_eval {
+	double linear;    /* elapsed / duration, before the curve */
+	double factor;    /* the curve's output, 1.0 once converged */
+	bool converged;   /* a spring reached its settle criterion */
+	struct wlr_box box;
+	int32_t type;
+};
+
+static inline void anim_eval_at(const Client *c, uint64_t sample_ns,
+		struct anim_eval *out) {
+	double passed_ms = c->animation.time_started_ns
+		? (double)(sample_ns - c->animation.time_started_ns) / 1.0e6
+		: 0.0;
+	out->linear = c->animation.duration
+		? passed_ms / (double)c->animation.duration
+		: 1.0;
+	out->type = c->animation.action == NONE ? MOVE : c->animation.action;
+	out->factor = find_animation_curve_at(out->linear, out->type);
+	/* A converged spring finishes HERE, on the exact target, rather than being
+	 * ticked to nowhere until the duration expires. Snapping to 1.0 rather
+	 * than leaving 1.000003 is what stops the last frame being a 1px flip. */
+	out->converged = anim_spring_converged(c, out->type, out->linear,
+		out->factor);
+	if (out->converged) {
+		out->factor = 1.0;
+		out->linear = 1.0;
+	}
+	out->box = (struct wlr_box){
+		.x = anim_lerp(c->animation.initial.x, c->current.x, out->factor),
+		.y = anim_lerp(c->animation.initial.y, c->current.y, out->factor),
+		.width = anim_lerp(c->animation.initial.width, c->current.width,
+			out->factor),
+		.height = anim_lerp(c->animation.initial.height, c->current.height,
+			out->factor),
+	};
+}
+
 static inline bool anim_retarget_reset_break(void) {
 	static int on = -1;
 	if (on < 0) {
@@ -2573,25 +2629,16 @@ void client_animation_next_tick(Client *c, uint64_t sample_ns) {
 		? (double)(now_ns - c->animation.time_started_ns) / 1.0e6
 		: 0.0;
 	int32_t passed_time = (int32_t)passed_ms;   /* the trace's units only */
-	double animation_passed =
-		c->animation.duration
-			? passed_ms / (double)c->animation.duration
-			: 1.0;
 
-	int32_t type = c->animation.action == NONE ? MOVE : c->animation.action;
-	double factor = find_animation_curve_at(animation_passed, type);
-
-	/* A converged spring finishes HERE, on the exact target, rather than
-	 * being ticked to nowhere until duration_ms expires. Snapping factor to
-	 * 1.0 rather than leaving it at 1.000003 is what stops the last frame
-	 * being a 1px flip; the completion block below then runs unchanged, so
-	 * scanout, pointer re-entry and need_output_flush all settle exactly as
-	 * they do on the timed path. */
-	bool converged = anim_spring_converged(c, type, animation_passed, factor);
-	if (converged) {
-		factor = 1.0;
-		animation_passed = 1.0;
-	}
+	/* Everything about WHERE the window is at this instant comes from the pure
+	 * evaluator; everything below it is what the compositor then decides to do
+	 * about that. See anim_eval_at. */
+	struct anim_eval ev;
+	anim_eval_at(c, now_ns, &ev);
+	double animation_passed = ev.linear;
+	double factor = ev.factor;
+	int32_t type = ev.type;
+	bool converged = ev.converged;
 
 	/* Fade the backdrop blur in with the open animation instead of popping to
 	 * full on the first frame. Fade only the ALPHA and keep strength at 1: a
@@ -2613,13 +2660,10 @@ void client_animation_next_tick(Client *c, uint64_t sample_ns) {
 	double sx = 0, sy = 0;
 	struct wlr_surface *surface = NULL;
 
-	int32_t width = anim_lerp(c->animation.initial.width,
-		c->current.width, factor);
-	int32_t height = anim_lerp(c->animation.initial.height,
-		c->current.height, factor);
-
-	int32_t x = anim_lerp(c->animation.initial.x, c->current.x, factor);
-	int32_t y = anim_lerp(c->animation.initial.y, c->current.y, factor);
+	int32_t width = ev.box.width;
+	int32_t height = ev.box.height;
+	int32_t x = ev.box.x;
+	int32_t y = ev.box.y;
 
 	/* Both the real-valued position the curve asked for and the integer one
 	 * the scene node can hold. A trace that logged only the second could not
