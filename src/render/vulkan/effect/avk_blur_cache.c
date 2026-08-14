@@ -62,7 +62,8 @@ enum avk_blur_cache_reason avk_blur_cache_check(
 		const struct avk_blur_cache *cache,
 		uint64_t generation, int32_t origin_x, int32_t origin_y,
 		uint32_t width, uint32_t height, VkFormat format,
-		const struct avk_blur_params *params, bool force_rebuild) {
+		const struct avk_blur_params *params, enum avk_blur_cache_kind kind,
+		bool force_rebuild) {
 	if (cache == NULL) {
 		return AVK_BLUR_CACHE_NEVER_BUILT;
 	}
@@ -74,7 +75,8 @@ enum avk_blur_cache_reason avk_blur_cache_check(
 	if (force_rebuild) {
 		return AVK_BLUR_CACHE_FORCED;
 	}
-	if (!cache->valid || cache->slots[cache->slot] == NULL) {
+	if (!cache->img[kind].valid
+			|| cache->img[kind].slots[cache->img[kind].slot] == NULL) {
 		return AVK_BLUR_CACHE_NEVER_BUILT;
 	}
 	if (cache->format != format) {
@@ -201,11 +203,13 @@ static struct avk_image *cache_image_create(struct avk_device *dev,
 }
 
 struct avk_image *avk_blur_cache_next_slot(struct avk_blur_cache *cache,
-		struct avk_device *dev, struct avk_retire_queue *retire,
-		VkFormat format, uint32_t width, uint32_t height, bool unsafe_reuse) {
+		enum avk_blur_cache_kind kind, struct avk_device *dev,
+		struct avk_retire_queue *retire, VkFormat format, uint32_t width,
+		uint32_t height, bool unsafe_reuse) {
 	if (cache == NULL || dev == NULL) {
 		return NULL;
 	}
+	struct avk_blur_cache_image *ci = &cache->img[kind];
 	/*
 	 * ALTERNATE, DO NOT OVERWRITE.
 	 *
@@ -220,14 +224,14 @@ struct avk_image *avk_blur_cache_next_slot(struct avk_blur_cache *cache,
 	 * fixture, and visible only as one torn frame of wallpaper whenever a
 	 * rebuild happens to land while the previous frame is still in flight.
 	 */
-	uint32_t next = unsafe_reuse ? cache->slot : (cache->slot ^ 1u);
-	struct avk_image *img = cache->slots[next];
+	uint32_t next = unsafe_reuse ? ci->slot : (ci->slot ^ 1u);
+	struct avk_image *img = ci->slots[next];
 	if (img != NULL && (img->format != format
 			|| img->extent.width != width || img->extent.height != height)) {
 		/* Wrong shape: retire it rather than reuse it. Ownership transfers to
 		 * the queue, so the slot must be cleared before anything can fail. */
-		cache->slots[next] = NULL;
-		cache->slot_bytes[next] = 0;
+		ci->slots[next] = NULL;
+		ci->slot_bytes[next] = 0;
 		/*
 		 * Deferred against THE IMAGE'S OWN last use, not against some current
 		 * timeline value. Every frame that sampled this image stamped last_use
@@ -244,11 +248,15 @@ struct avk_image *avk_blur_cache_next_slot(struct avk_blur_cache *cache,
 		if (img == NULL) {
 			return NULL;
 		}
-		cache->slots[next] = img;
-		cache->slot_bytes[next] = (uint64_t)bytes;
+		ci->slots[next] = img;
+		ci->slot_bytes[next] = (uint64_t)bytes;
 	}
-	cache->bytes = cache->slot_bytes[0] + cache->slot_bytes[1];
-	cache->slot = next;
+	cache->bytes = 0;
+	for (int k = 0; k < AVK_BLUR_CACHE_KINDS; k++) {
+		cache->bytes += cache->img[k].slot_bytes[0]
+			+ cache->img[k].slot_bytes[1];
+	}
+	ci->slot = next;
 	return img;
 }
 
@@ -257,19 +265,24 @@ void avk_blur_cache_finish(struct avk_blur_cache *cache,
 	if (cache == NULL) {
 		return;
 	}
-	for (uint32_t i = 0; i < 2; i++) {
-		struct avk_image *img = cache->slots[i];
-		cache->slots[i] = NULL;
-		cache->slot_bytes[i] = 0;
-		if (img == NULL) {
-			continue;
+	for (int k = 0; k < AVK_BLUR_CACHE_KINDS; k++) {
+		struct avk_blur_cache_image *ci = &cache->img[k];
+		for (uint32_t i = 0; i < 2; i++) {
+			struct avk_image *img = ci->slots[i];
+			ci->slots[i] = NULL;
+			ci->slot_bytes[i] = 0;
+			if (img == NULL) {
+				continue;
+			}
+			if (retire != NULL) {
+				avk_retire_push(retire, dev, img->last_use, avk_image_destroy,
+					img);
+			} else {
+				avk_image_destroy(dev, img);
+			}
 		}
-		if (retire != NULL) {
-			avk_retire_push(retire, dev, img->last_use, avk_image_destroy, img);
-		} else {
-			avk_image_destroy(dev, img);
-		}
+		ci->valid = false;
+		ci->wanted = false;
 	}
-	cache->valid = false;
 	cache->bytes = 0;
 }

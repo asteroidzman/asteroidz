@@ -148,7 +148,41 @@ struct avk_blur_result {
  * without a CPU wait. `slot` alternates so a rebuild never writes the image an
  * in-flight frame is reading.
  */
-struct avk_blur_cache {
+/*
+ * TWO PICTURES OF THE SAME BACKGROUND, and the second is not a variant -- it is
+ * a different image that a different set of nodes needs.
+ *
+ * PLAIN  blur(background). What a window's own backdrop shows.
+ * DARK   min(blur(background), background), per channel. What a SHADOW's
+ *        backdrop shows.
+ *
+ * The clamp exists because a blur is an average, and averaging bright detail
+ * over a dark ground raises the mean -- so a shadow's backdrop over a terminal
+ * came out LIGHTER than the thing it replaced and read as a glow around every
+ * window. Serving a shadow from the plain image would reintroduce that defect
+ * exactly, and serving a window from the dark one would darken every backdrop
+ * on the desktop. Both are needed or neither node can be cached.
+ *
+ * They are both pure functions of the background, which is the whole reason
+ * this works: with the source fixed, min(blur(bg), bg) is as cacheable as
+ * blur(bg) is. On the LIVE path the clamp compares against the node's own
+ * reconstructed prefix, which is why it has to be applied at build time here
+ * rather than at the composite -- see avk_blur.c, where darken is a
+ * VK_BLEND_OP_MIN against a destination that still holds the unblurred source,
+ * and is therefore only available when the chain writes back into its own
+ * source image.
+ */
+enum avk_blur_cache_kind {
+	AVK_BLUR_CACHE_PLAIN = 0,
+	AVK_BLUR_CACHE_DARK,
+};
+#define AVK_BLUR_CACHE_KINDS 2
+
+static inline const char *avk_blur_cache_kind_name(enum avk_blur_cache_kind k) {
+	return k == AVK_BLUR_CACHE_DARK ? "dark" : "plain";
+}
+
+struct avk_blur_cache_image {
 	/* Two slots, and two is derived rather than chosen: a rebuild must not
 	 * write the image the previous frame is sampling, and the previous frame is
 	 * the only one that can still be reading, because a rebuild is ordered
@@ -158,6 +192,15 @@ struct avk_blur_cache {
 	uint64_t slot_bytes[2];
 	uint32_t slot;
 	bool valid;
+	/* Built only where something asked for it. A desktop with no shadows never
+	 * allocates the dark image, and one with no window backdrops never
+	 * allocates the plain one -- which matters, because each is a full
+	 * output-sized image and DP-1's is 33MB. */
+	bool wanted;
+};
+
+struct avk_blur_cache {
+	struct avk_blur_cache_image img[AVK_BLUR_CACHE_KINDS];
 
 	uint64_t generation;
 	int32_t origin_x, origin_y;
@@ -172,6 +215,10 @@ struct avk_blur_cache {
 	uint64_t saved_prefix_draws, saved_prefix_px;
 	uint64_t saved_chains, saved_blur_px;
 	uint64_t bytes;
+	/* Split by kind, so "the shadow backdrops are being served" is a reading
+	 * rather than a deduction from the total. */
+	uint64_t hits_by_kind[AVK_BLUR_CACHE_KINDS];
+	uint64_t rebuilds_by_kind[AVK_BLUR_CACHE_KINDS];
 	/* Why the last rebuild happened, and how many of each kind there have
 	 * been. A cache that rebuilds unexpectedly must say why in one reading. */
 	uint64_t inv_generation, inv_geometry, inv_params, inv_format,
@@ -797,8 +844,10 @@ struct avk_renderer {
 	 * becomes mutable state consulted after the snapshot.
 	 */
 	struct avk_blur_cache *blur_cache;
-	/* The producer segment's active region, owned for the frame. */
-	pixman_region32_t blur_cache_region;
+	/* The producer segments' active regions, owned for the frame. Per kind:
+	 * both may be rebuilt in one frame, and one shared region would be reset
+	 * under the first segment's feet while the graph still held the pointer. */
+	pixman_region32_t blur_cache_region[AVK_BLUR_CACHE_KINDS];
 	/*
 	 * ── FALSIFIERS ────────────────────────────────────────────────────────
 	 *

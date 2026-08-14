@@ -149,7 +149,9 @@ bool avk_renderer_init(struct avk_renderer *renderer, struct avk_device *dev,
 			(int)renderer->break_blur_cache_stale_params,
 			(int)renderer->break_blur_cache_unsafe_reuse);
 	}
-	pixman_region32_init(&renderer->blur_cache_region);
+	for (int k = 0; k < AVK_BLUR_CACHE_KINDS; k++) {
+		pixman_region32_init(&renderer->blur_cache_region[k]);
+	}
 	renderer->skip_draw = az_parse_skip_draw(getenv("AZ_AVK_SKIP_DRAW"));
 	if (renderer->skip_draw != 0) {
 		avk_log(AVK_ERROR, "M4H diagnostic active: AZ_AVK_SKIP_DRAW=0x%x -- "
@@ -680,8 +682,11 @@ struct az_blur_slot {
 	struct avk_blur_damage damage;
 	/* M4I. This node's source is the monitor background cache, so it needs no
 	 * prefix replay and no chain of its own. Decided once, after the damage
-	 * sweeps, so the two loops cannot disagree about it. */
+	 * sweeps, so the two loops cannot disagree about it. `cache_kind` says
+	 * WHICH of the two cached images -- a shadow's clamped one or a window's
+	 * plain one -- and serving the wrong one is a visible defect either way. */
 	bool cacheable;
+	enum avk_blur_cache_kind cache_kind;
 };
 
 static void az_blur_damage_init(struct avk_blur_damage *d) {
@@ -1708,27 +1713,31 @@ bool avk_render_declare_segment(struct avk_graph *graph,
 /*
  * ── BUILDING THE MONITOR BACKGROUND BLUR (M4I) ────────────────────────────
  *
- * Replay scene[0, prefix_end) at full output extent into a transient, run the
- * dual-Kawase chain on it, and land the FINAL UPSAMPLE DIRECTLY IN THE CACHED
- * IMAGE. SceneFX's fx_vk copies its result into the cache afterwards; here the
- * chain's destination resource is the cache, so a rebuild costs no output-sized
- * blit at all.
+ * Replay scene[0, prefix_end) at full output extent DIRECTLY INTO the cached
+ * image, then run the dual-Kawase chain on that image IN PLACE.
+ *
+ * In place, and that is not a micro-optimisation -- it is the only arrangement
+ * in which the darken clamp exists at all. avk_blur.c applies the clamp as a
+ * VK_BLEND_OP_MIN against the destination attachment, which works because the
+ * final upsample writes back into the image that still holds the unblurred
+ * source; with a separate destination there is nothing to clamp against and the
+ * chain says so and skips it. An earlier version of this function replayed into
+ * a transient and chained transient -> cache, which is correct for the plain
+ * image and silently produces an UNCLAMPED shadow backdrop -- the glow this
+ * project spent a milestone finding.
+ *
+ * It also happens to remove a full output-sized transient from the rebuild.
  *
  * WHY THE WHOLE EXTENT AND NOT A DAMAGED SUB-REGION. This runs when the SOURCE
  * changed, and a wallpaper change is a change everywhere. Rebuilding a fraction
  * would leave the rest holding the previous wallpaper, blurred -- a seam across
  * the desktop that survives until something unrelated invalidates the cache.
- * The cost is one output-sized chain on a frame that happens when the user
- * changes their wallpaper, and it is paid in full rather than amortised into a
- * correctness risk.
- *
- * The segment holds a pointer the graph keeps until execute, so it is owned by
- * the renderer for the frame rather than by this stack frame.
  */
 static bool az_blur_cache_rebuild(struct avk_renderer *renderer,
 		struct avk_graph *graph, const struct avk_scene *scene,
-		const struct avk_blur_params *params, VkDescriptorSet gradient_set,
-		struct avk_render_segment *seg, bool *blur_begin_marked) {
+		const struct avk_blur_params *params, enum avk_blur_cache_kind kind,
+		VkDescriptorSet gradient_set, struct avk_render_segment *seg,
+		bool *blur_begin_marked) {
 	struct avk_blur_cache *cache = renderer->blur_cache;
 	const struct avk_box bounds = scene->blur_cache.bounds;
 	if (bounds.width <= 0 || bounds.height <= 0) {
@@ -1737,35 +1746,28 @@ static bool az_blur_cache_rebuild(struct avk_renderer *renderer,
 	const uint32_t cw = (uint32_t)bounds.width;
 	const uint32_t ch = (uint32_t)bounds.height;
 
-	struct avk_image *dst = avk_blur_cache_next_slot(cache, renderer->dev,
+	struct avk_image *dst = avk_blur_cache_next_slot(cache, kind, renderer->dev,
 		&renderer->retire, renderer->format, cw, ch,
 		renderer->break_blur_cache_unsafe_reuse);
 	if (dst == NULL) {
 		return false;
 	}
-	struct avk_image *src = avk_transient_acquire(&renderer->transients,
-		renderer->format, cw, ch,
-		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT
-			| (renderer->oracle.enabled ? VK_IMAGE_USAGE_TRANSFER_SRC_BIT : 0));
-	if (src == NULL) {
-		return false;
-	}
-	uint32_t r_src = avk_graph_add_image(graph, src, false, AVK_EXIT_KEEP);
 	uint32_t r_dst = avk_graph_add_image(graph, dst, false, AVK_EXIT_KEEP);
-	if (r_src == AVK_GRAPH_INVALID || r_dst == AVK_GRAPH_INVALID) {
+	if (r_dst == AVK_GRAPH_INVALID) {
 		return false;
 	}
 
 	/* The segment's active region has to outlive this call: the graph holds the
-	 * pointer until execute. It is a renderer field, reset per rebuild. */
-	pixman_region32_t *full = &renderer->blur_cache_region;
+	 * pointer until execute. Per kind, because both may be rebuilt in one
+	 * frame and one shared region would be reset under the first one's feet. */
+	pixman_region32_t *full = &renderer->blur_cache_region[kind];
 	pixman_region32_clear(full);
 	pixman_region32_union_rect(full, full, bounds.x, bounds.y, cw, ch);
 
 	*seg = (struct avk_render_segment){
 		.renderer = renderer,
 		.scene = scene,
-		.target = src,
+		.target = dst,
 		.width = cw,
 		.height = ch,
 		.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
@@ -1780,7 +1782,7 @@ static bool az_blur_cache_rebuild(struct avk_renderer *renderer,
 		.load = false,
 		.gradient_set = gradient_set,
 	};
-	if (!avk_render_declare_segment(graph, seg, r_src)) {
+	if (!avk_render_declare_segment(graph, seg, r_dst)) {
 		return false;
 	}
 	/* This is the frame's first blur work when it runs at all: it is declared
@@ -1801,22 +1803,22 @@ static bool az_blur_cache_rebuild(struct avk_renderer *renderer,
 	struct avk_blur_work work;
 	const bool have_work = avk_blur_work_of(params, cw, ch, NULL, &work);
 	if (!avk_blur_declare(graph, &renderer->transients, &renderer->pipes,
-			&renderer->blur_stats, r_src, r_dst, cw, ch, renderer->format,
+			&renderer->blur_stats, r_dst, r_dst, cw, ch, renderer->format,
 			params, &marks, have_work ? &work : NULL)) {
 		return false;
 	}
 	/* The producer's own cost, attributed to the role that incurred it rather
 	 * than folded into the window backdrops it exists to serve. */
+	const uint64_t px = (uint64_t)cw * (uint64_t)ch;
 	renderer->blur_role_chains[AVK_BLUR_ROLE_MONITOR_BACKGROUND]++;
-	renderer->blur_role_capture_px[AVK_BLUR_ROLE_MONITOR_BACKGROUND] +=
-		(uint64_t)cw * (uint64_t)ch;
-	renderer->blur_role_rebuild_px[AVK_BLUR_ROLE_MONITOR_BACKGROUND] +=
-		(uint64_t)cw * (uint64_t)ch;
-	renderer->blur_role_result_px[AVK_BLUR_ROLE_MONITOR_BACKGROUND] +=
-		(uint64_t)cw * (uint64_t)ch;
+	renderer->blur_role_capture_px[AVK_BLUR_ROLE_MONITOR_BACKGROUND] += px;
+	renderer->blur_role_rebuild_px[AVK_BLUR_ROLE_MONITOR_BACKGROUND] += px;
+	renderer->blur_role_result_px[AVK_BLUR_ROLE_MONITOR_BACKGROUND] += px;
 	renderer->blur_role_prefix_cmds[AVK_BLUR_ROLE_MONITOR_BACKGROUND] +=
 		scene->blur_cache.prefix_end;
-	avk_graph_pass_time_move_end(graph, AVK_TS_BLUR_END);
+	cache->rebuilds++;
+	cache->rebuilds_by_kind[kind]++;
+	cache->img[kind].valid = true;
 	return true;
 }
 
@@ -2030,10 +2032,11 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 			renderer->blur_results_cap * sizeof(*renderer->blur_results));
 		/* One segment per blur, alive until avk_graph_execute() has recorded
 		 * them -- the graph holds the pointer. */
-		/* blur_count + 1: the last entry belongs to the monitor background
-		 * cache's own prefix replay, which is a segment like any other and must
-		 * live until avk_graph_execute() the same way. */
-		prefix_segs = calloc(blur_count + 1, sizeof(*prefix_segs));
+		/* blur_count + one per cache kind: each cached image's own prefix
+		 * replay is a segment like any other and must live until
+		 * avk_graph_execute() the same way. */
+		prefix_segs = calloc(blur_count + AVK_BLUR_CACHE_KINDS,
+			sizeof(*prefix_segs));
 		if (prefix_segs == NULL) {
 			free(slots);
 			pixman_region32_fini(&prefix_damage);
@@ -2320,110 +2323,147 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 	 * counter and geometry, and NEVER by damage.
 	 */
 	struct avk_blur_cache *cache = renderer->blur_cache;
-	const struct avk_blur_params cache_params = {
-		.levels = scene->blur_cache.levels,
-		.radius = scene->blur_cache.radius,
-		.brightness = scene->blur_cache.brightness,
-		.contrast = scene->blur_cache.contrast,
-		.saturation = scene->blur_cache.saturation,
-		.noise = scene->blur_cache.noise,
-		.apply_effects = scene->blur_cache.apply_effects,
-		/* Never. The darken clamp compares a blur against the unblurred source
-		 * it replaced, which is a per-node quantity; a shared background has no
-		 * such source. A node that wants it is not eligible -- see below. */
-		.darken = false,
-	};
+	/*
+	 * TWO KERNELS, differing in one field. The consumer's own params carry
+	 * `darken` too, so comparing the whole struct routes a node to the right
+	 * image automatically -- a shadow's kernel equals cache_params[DARK] and a
+	 * window's equals cache_params[PLAIN], and neither can be served the other's
+	 * picture by accident.
+	 */
+	struct avk_blur_params cache_params[AVK_BLUR_CACHE_KINDS];
+	for (int k = 0; k < AVK_BLUR_CACHE_KINDS; k++) {
+		cache_params[k] = (struct avk_blur_params){
+			.levels = scene->blur_cache.levels,
+			.radius = scene->blur_cache.radius,
+			.brightness = scene->blur_cache.brightness,
+			.contrast = scene->blur_cache.contrast,
+			.saturation = scene->blur_cache.saturation,
+			.noise = scene->blur_cache.noise,
+			.apply_effects = scene->blur_cache.apply_effects,
+			.darken = (k == AVK_BLUR_CACHE_DARK),
+		};
+	}
 	const bool cache_enabled = cache != NULL && scene->blur_cache.present
 		&& scene->blur_cache.levels > 0 && !renderer->break_blur_cache_off;
-	enum avk_blur_cache_reason cache_reason = AVK_BLUR_CACHE_NEVER_BUILT;
-	if (cache_enabled) {
-		cache_reason = avk_blur_cache_check(cache,
-			scene->blur_cache.generation, scene->blur_cache.bounds.x,
-			scene->blur_cache.bounds.y,
-			(uint32_t)scene->blur_cache.bounds.width,
-			(uint32_t)scene->blur_cache.bounds.height, renderer->format,
-			&cache_params, renderer->break_blur_cache_always_dirty);
-		/*
-		 * THE STALENESS BREAKS, applied as a SUPPRESSION of the reason the
-		 * check already found. Written this way, and not as a second copy of
-		 * the comparison inside the check, so a break can only ever hide a
-		 * real invalidation -- it can never invent one, and it cannot drift
-		 * away from the test it is meant to disable.
-		 */
-		if (renderer->break_blur_cache_ignore_dirty
-				&& cache_reason == AVK_BLUR_CACHE_GENERATION) {
-			cache_reason = AVK_BLUR_CACHE_OK;
-		}
-		if (renderer->break_blur_cache_stale_geometry
-				&& cache_reason == AVK_BLUR_CACHE_GEOMETRY) {
-			cache_reason = AVK_BLUR_CACHE_OK;
-		}
-		if (renderer->break_blur_cache_stale_params
-				&& cache_reason == AVK_BLUR_CACHE_PARAMS) {
-			cache_reason = AVK_BLUR_CACHE_OK;
-		}
-	}
 	/*
-	 * WHO MAY SAMPLE IT. Four conditions, and each one is a picture that would
-	 * otherwise be wrong rather than a conservatism:
+	 * WHO MAY SAMPLE IT, and which of the two images.
 	 *
 	 *   bottom_only     the producer DECLARED that this node's source is the
 	 *                   background. Without the declaration the node's source
 	 *                   genuinely contains the windows beneath it.
 	 *   above the node  a blur below the cache node is not looking at the
 	 *                   cache's contents; it is part of them.
-	 *   no exclusion    sample_exclude and darken are per-node facts about a
-	 *                   node's own source. A shared image has neither.
-	 *   same kernel     a different radius or level count is a different
-	 *                   picture from the same source. A node at reduced
-	 *                   strength therefore falls back, which is exactly what
-	 *                   SceneFX does with it.
+	 *   same kernel     a different radius or level count is a different picture
+	 *                   from the same source, so a node at reduced strength
+	 *                   falls back -- which is what SceneFX does with it too.
+	 *
+	 * sample_exclude is NOT a disqualification, and that is a claim worth
+	 * stating. It exists because SceneFX's live blur samples the previous
+	 * frame's final composite, which contains the owning window, and the field
+	 * marks the box to keep out of the source. The cached background contains no
+	 * window at all, so the box it names is already excluded by construction --
+	 * the same reason AVK's live path ignores it (see az_avk.h).
+	 *
+	 * `darken` is not a disqualification either, now that there are two images:
+	 * it selects the clamped one.
 	 */
-	size_t cache_consumers = 0;
+	size_t want[AVK_BLUR_CACHE_KINDS] = {0};
 	if (cache_enabled) {
 		for (size_t s = 0; s < slot_len; s++) {
 			const struct avk_cmd *c = &scene->cmds[slots[s].index];
+			slots[s].cache_kind = c->blur_darken
+				? AVK_BLUR_CACHE_DARK : AVK_BLUR_CACHE_PLAIN;
 			slots[s].cacheable = c->blur_bottom_only
 				&& slots[s].index >= scene->blur_cache.prefix_end
-				&& !c->has_sample_exclude && !c->blur_darken
-				&& avk_blur_params_equal(&slots[s].params, &cache_params);
+				&& avk_blur_params_equal(&slots[s].params,
+					&cache_params[slots[s].cache_kind]);
 			if (slots[s].cacheable && slots[s].damage.active) {
-				cache_consumers++;
+				want[slots[s].cache_kind]++;
 			}
 		}
 	}
 	/*
-	 * BUILT ONLY WHERE SOMEBODY WOULD SAMPLE IT. A rebuild on a frame with no
-	 * consumer is an output-sized blur nothing reads -- which is precisely the
-	 * work this milestone exists to remove, reintroduced from the other side.
+	 * PER KIND: check, then rebuild only what something asked for.
+	 *
+	 * A rebuild on a frame with no consumer is an output-sized blur nothing
+	 * reads -- precisely the work this milestone exists to remove, reintroduced
+	 * from the other side. A desktop with no shadows never allocates the dark
+	 * image at all.
 	 */
-	bool cache_ready = cache_enabled && cache_reason == AVK_BLUR_CACHE_OK
-		&& cache_consumers > 0;
+	enum avk_blur_cache_reason cache_reason[AVK_BLUR_CACHE_KINDS];
+	bool cache_ready[AVK_BLUR_CACHE_KINDS] = {false, false};
 	bool blur_begin_marked = false;
-	if (cache_enabled && cache_consumers > 0
-			&& cache_reason != AVK_BLUR_CACHE_OK) {
-		avk_blur_cache_count_reason(cache, cache_reason);
-		cache_ready = az_blur_cache_rebuild(renderer, graph, scene,
-			&cache_params, gradient_set, &prefix_segs[blur_count],
-			&blur_begin_marked);
-		if (cache_ready) {
-			cache->generation = scene->blur_cache.generation;
-			cache->origin_x = scene->blur_cache.bounds.x;
-			cache->origin_y = scene->blur_cache.bounds.y;
-			cache->width = (uint32_t)scene->blur_cache.bounds.width;
-			cache->height = (uint32_t)scene->blur_cache.bounds.height;
-			cache->format = renderer->format;
-			cache->params = cache_params;
-			cache->valid = true;
-			cache->rebuilds++;
+	size_t cache_consumers = 0;
+	for (int k = 0; k < AVK_BLUR_CACHE_KINDS; k++) {
+		cache_reason[k] = AVK_BLUR_CACHE_NEVER_BUILT;
+		if (!cache_enabled) {
+			continue;
 		}
+		cache_consumers += want[k];
+		cache_reason[k] = avk_blur_cache_check(cache,
+			scene->blur_cache.generation, scene->blur_cache.bounds.x,
+			scene->blur_cache.bounds.y,
+			(uint32_t)scene->blur_cache.bounds.width,
+			(uint32_t)scene->blur_cache.bounds.height, renderer->format,
+			&cache_params[k], (enum avk_blur_cache_kind)k,
+			renderer->break_blur_cache_always_dirty);
+		/*
+		 * THE STALENESS BREAKS, applied as a SUPPRESSION of the reason the check
+		 * already found. Written this way, and not as a second copy of the
+		 * comparison inside the check, so a break can only ever hide a real
+		 * invalidation -- it can never invent one, and it cannot drift away from
+		 * the test it is meant to disable.
+		 */
+		if (renderer->break_blur_cache_ignore_dirty
+				&& cache_reason[k] == AVK_BLUR_CACHE_GENERATION) {
+			cache_reason[k] = AVK_BLUR_CACHE_OK;
+		}
+		if (renderer->break_blur_cache_stale_geometry
+				&& cache_reason[k] == AVK_BLUR_CACHE_GEOMETRY) {
+			cache_reason[k] = AVK_BLUR_CACHE_OK;
+		}
+		if (renderer->break_blur_cache_stale_params
+				&& cache_reason[k] == AVK_BLUR_CACHE_PARAMS) {
+			cache_reason[k] = AVK_BLUR_CACHE_OK;
+		}
+		if (want[k] == 0) {
+			continue;
+		}
+		cache->img[k].wanted = true;
+		if (cache_reason[k] == AVK_BLUR_CACHE_OK) {
+			cache_ready[k] = true;
+			continue;
+		}
+		avk_blur_cache_count_reason(cache, cache_reason[k]);
+		cache_ready[k] = az_blur_cache_rebuild(renderer, graph, scene,
+			&cache_params[k], (enum avk_blur_cache_kind)k, gradient_set,
+			&prefix_segs[blur_count + k], &blur_begin_marked);
+	}
+	/*
+	 * THE SHARED IDENTITY, stamped once and only if something was built.
+	 *
+	 * Shared because it describes the SOURCE, which both images are built from:
+	 * one generation, one extent, one format. Only the per-kind `valid` flag and
+	 * the kernel's darken bit differ, and the kernel is compared per kind.
+	 */
+	if (cache_ready[AVK_BLUR_CACHE_PLAIN] || cache_ready[AVK_BLUR_CACHE_DARK]) {
+		cache->generation = scene->blur_cache.generation;
+		cache->origin_x = scene->blur_cache.bounds.x;
+		cache->origin_y = scene->blur_cache.bounds.y;
+		cache->width = (uint32_t)scene->blur_cache.bounds.width;
+		cache->height = (uint32_t)scene->blur_cache.bounds.height;
+		cache->format = renderer->format;
+		cache->params = cache_params[AVK_BLUR_CACHE_PLAIN];
 	}
 	if (renderer->blur_chain_trace && cache_enabled) {
-		avk_log(AVK_ERROR, "avk blurcache: tgt=%ux%u gen=%" PRIu64 " reason=%s "
-			"consumers=%zu ready=%d hits=%" PRIu64 " rebuilds=%" PRIu64,
-			width, height, scene->blur_cache.generation,
-			avk_blur_cache_reason_name(cache_reason), cache_consumers,
-			(int)cache_ready, cache->hits, cache->rebuilds);
+		avk_log(AVK_ERROR, "avk blurcache: tgt=%ux%u gen=%" PRIu64
+			" plain=%s/%d/%zu dark=%s/%d/%zu hits=%" PRIu64 " rebuilds=%" PRIu64
+			" bytes=%" PRIu64, width, height, scene->blur_cache.generation,
+			avk_blur_cache_reason_name(cache_reason[AVK_BLUR_CACHE_PLAIN]),
+			(int)cache_ready[AVK_BLUR_CACHE_PLAIN], want[AVK_BLUR_CACHE_PLAIN],
+			avk_blur_cache_reason_name(cache_reason[AVK_BLUR_CACHE_DARK]),
+			(int)cache_ready[AVK_BLUR_CACHE_DARK], want[AVK_BLUR_CACHE_DARK],
+			cache->hits, cache->rebuilds, cache->bytes);
 	}
 
 	size_t seg_at = 0;
@@ -2526,14 +2566,16 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 		 * RESULT static -- the node still moves, and when it moves the pixels
 		 * it uncovers and covers are damaged exactly as before.
 		 */
-		if (slot->cacheable && cache_ready) {
+		if (slot->cacheable && cache_ready[slot->cache_kind]) {
+			const struct avk_blur_cache_image *ci = &cache->img[slot->cache_kind];
 			renderer->blur_results[i] = (struct avk_blur_result){
-				.image = cache->slots[cache->slot],
+				.image = ci->slots[ci->slot],
 				.capture = { cache->origin_x, cache->origin_y,
 					(int32_t)cache->width, (int32_t)cache->height },
 			};
 			cache->requests++;
 			cache->hits++;
+			cache->hits_by_kind[slot->cache_kind]++;
 			/* WHAT THE HIT AVOIDED, in the same units the uncached path
 			 * reports, so "the cache is working" is a comparison rather than a
 			 * hit rate. A hit rate of 100% on chains that were cheap anyway
@@ -2547,10 +2589,11 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 			renderer->blur_role_result_px[AVK_BLUR_ROLE_WINDOW_BACKDROP] +=
 				az_region_area(&d->result_region);
 			if (renderer->blur_chain_trace) {
-				avk_log(AVK_ERROR, "avk chain: role=%s CACHED tgt=%ux%u "
+				avk_log(AVK_ERROR, "avk chain: role=%s CACHED(%s) tgt=%ux%u "
 					"idx=%zu dst=%d,%d %dx%d avoided_cap_px=%" PRIu64 " "
 					"avoided_rebuild_px=%" PRIu64 " avoided_cmds=%zu",
 					avk_blur_role_name(AVK_BLUR_ROLE_WINDOW_BACKDROP),
+					avk_blur_cache_kind_name(slot->cache_kind),
 					width, height, i, scene->cmds[i].dst.x,
 					scene->cmds[i].dst.y, scene->cmds[i].dst.width,
 					scene->cmds[i].dst.height,

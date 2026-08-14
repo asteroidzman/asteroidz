@@ -4070,6 +4070,8 @@ static cJSON *az_avk_stats_json(void) {
 	 */
 	{
 		uint64_t req = 0, hit = 0, reb = 0, inval = 0, bytes = 0;
+		uint64_t hit_k[AVK_BLUR_CACHE_KINDS] = {0};
+		uint64_t reb_k[AVK_BLUR_CACHE_KINDS] = {0};
 		uint64_t s_draws = 0, s_px = 0, s_chains = 0, s_blur = 0;
 		uint64_t i_gen = 0, i_geo = 0, i_par = 0, i_fmt = 0, i_new = 0,
 		         i_forced = 0;
@@ -4087,6 +4089,10 @@ static cJSON *az_avk_stats_json(void) {
 			i_gen += c->inv_generation; i_geo += c->inv_geometry;
 			i_par += c->inv_params; i_fmt += c->inv_format;
 			i_new += c->inv_never_built; i_forced += c->inv_forced;
+			for (int k = 0; k < AVK_BLUR_CACHE_KINDS; k++) {
+				hit_k[k] += c->hits_by_kind[k];
+				reb_k[k] += c->rebuilds_by_kind[k];
+			}
 			if (mm->avk->blur_cache_generation > gen_max) {
 				gen_max = mm->avk->blur_cache_generation;
 			}
@@ -4108,6 +4114,19 @@ static cJSON *az_avk_stats_json(void) {
 		cJSON_AddNumberToObject(o, "blur_cache_inv_format", (double)i_fmt);
 		cJSON_AddNumberToObject(o, "blur_cache_inv_never_built", (double)i_new);
 		cJSON_AddNumberToObject(o, "blur_cache_inv_forced", (double)i_forced);
+		/* PER KIND, because "the shadow backdrops are being served" must be a
+		 * reading and not a subtraction. A total that is healthy while the dark
+		 * image is never built describes a desktop whose shadows all fell back
+		 * to the live path, which is the state this extension exists to end. */
+		for (int k = 0; k < AVK_BLUR_CACHE_KINDS; k++) {
+			char key[64];
+			const char *nm = avk_blur_cache_kind_name(
+				(enum avk_blur_cache_kind)k);
+			snprintf(key, sizeof(key), "blur_cache_%s_hits", nm);
+			cJSON_AddNumberToObject(o, key, (double)hit_k[k]);
+			snprintf(key, sizeof(key), "blur_cache_%s_rebuilds", nm);
+			cJSON_AddNumberToObject(o, key, (double)reb_k[k]);
+		}
 	}
 	cJSON_AddNumberToObject(o, "blur_nodes_clipped",
 		(double)avk.blur_nodes_clipped);
@@ -5187,6 +5206,8 @@ static void az_avk_stats_reset(void) {
 		c->saved_chains = c->saved_blur_px = 0;
 		c->inv_generation = c->inv_geometry = c->inv_params = 0;
 		c->inv_format = c->inv_never_built = c->inv_forced = 0;
+		memset(c->hits_by_kind, 0, sizeof(c->hits_by_kind));
+		memset(c->rebuilds_by_kind, 0, sizeof(c->rebuilds_by_kind));
 	}
 	for (size_t i = 0; i < AZ_AVK_MAX_FORMATS; i++) {
 		if (!avk.renderers[i].used) {

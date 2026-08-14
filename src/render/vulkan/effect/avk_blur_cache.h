@@ -36,7 +36,7 @@ enum avk_blur_cache_reason avk_blur_cache_check(
 	const struct avk_blur_cache *cache, uint64_t generation,
 	int32_t origin_x, int32_t origin_y, uint32_t width, uint32_t height,
 	VkFormat format, const struct avk_blur_params *params,
-	bool force_rebuild);
+	enum avk_blur_cache_kind kind, bool force_rebuild);
 
 /* Add one to the counter for `r` and to the invalidation total. OK counts
  * nothing -- it is not an invalidation. */
@@ -51,8 +51,9 @@ void avk_blur_cache_count_reason(struct avk_blur_cache *cache,
  * must take the live path.
  */
 struct avk_image *avk_blur_cache_next_slot(struct avk_blur_cache *cache,
-	struct avk_device *dev, struct avk_retire_queue *retire,
-	VkFormat format, uint32_t width, uint32_t height, bool unsafe_reuse);
+	enum avk_blur_cache_kind kind, struct avk_device *dev,
+	struct avk_retire_queue *retire, VkFormat format, uint32_t width,
+	uint32_t height, bool unsafe_reuse);
 
 /*
  * Release both slots. With `retire` non-NULL each image is destroyed once the
