@@ -168,6 +168,82 @@ vec3 az_mat_mul(vec3 r0, vec3 r1, vec3 r2, vec3 v) {
 	return vec3(dot(r0, v), dot(r1, v), dot(r2, v));
 }
 
+/*
+ * ── THE CEILING CURVE (C7 / F5), AND WHY IT IS NOT az_tonemap ─────────────
+ *
+ * az_tonemap() is the identity for peak <= 1 -- ADR-009 says so and C1's unit
+ * test asserts it over 101 samples, because "everything at or below SDR white
+ * is untouched on every output" is the guarantee that keeps ordinary SDR
+ * content bit-exact. Calling it with peak = 1.0 therefore does NOTHING no
+ * matter what knee it is given.
+ *
+ * That is exactly the conflict F5 recorded: ADR-007 promised that a >1-capable
+ * source on an 8-bit output would roll off so "the attachment never clamps",
+ * while ADR-009's guard makes the only available curve an identity there. The
+ * sentence was struck and replaced with option 2 -- a knee BELOW 1.0, in the
+ * >1-capable variant only.
+ *
+ * So this is the same algebra with the peak pinned at 1.0 and the peak guard
+ * removed, and it is a SEPARATE FUNCTION rather than a relaxation of
+ * az_tonemap so that ADR-009's invariant stays literally true for everything
+ * that uses it. It is reachable only from the decode variant of a domain whose
+ * scale exceeds 1.0; ordinary SDR content never sees it.
+ *
+ *     f(m) = knee + P*x/(P + x),  P = 1 - knee,  x = m - knee
+ *
+ * C1 at the knee (f(knee) = knee, f'(knee) = 1) and asymptotic to 1.0, so
+ * nothing above the knee ever reaches the clamp and nothing below it moves.
+ */
+vec3 az_rolloff_ceiling(vec3 v, float knee) {
+	float m = max(max(v.r, v.g), v.b);
+	float x = max(m - knee, 0.0);
+	float P = max(1.0 - knee, 0.0);
+	float f = knee + P * x / (P + x + 1e-6);
+	/* Engaged only above the knee. One common scale on all three channels, so
+	 * the ratios -- and therefore the hue -- survive exactly. */
+	float engaged = 1.0 - step(m, knee);
+	return v * mix(1.0, f / max(m, 1e-6), engaged);
+}
+
+/*
+ * ── BT.2020 -> BT.709, AS A CONSTANT (C7) ─────────────────────────────────
+ *
+ * The SOURCE side of the gamut question, and the only conversion that exists
+ * on it: the scene is BT.709 (ADR-002), and the only other primaries a client
+ * can declare through wp-color-management that this renderer will meet is
+ * BT.2020. So this is a fixed matrix rather than a push constant -- which is
+ * what lets the whole conversion be a uniform branch instead of nine floats
+ * that would not fit in push.glsl's 128 bytes anyway.
+ *
+ * THESE NINE NUMBERS ARE DUPLICATED FROM az_color.c's AZ_MAT_2020_TO_709 and
+ * that duplication is pinned: tests/test-color-pipeline.c parses both and
+ * fails if they drift. The alternative -- pushing the matrix per draw -- costs
+ * a push-constant budget this block does not have, for a value that is one of
+ * exactly two possibilities.
+ *
+ * Rows, not a mat3, for the reason az_mat_mul() states: GLSL's mat3
+ * constructor is column-major and a transposed gamut matrix still renders a
+ * plausible picture.
+ */
+const vec3 AZ_2020_TO_709_R0 = vec3( 1.66049100, -0.58764114, -0.07284986);
+const vec3 AZ_2020_TO_709_R1 = vec3(-0.12455047,  1.13289990, -0.00834942);
+const vec3 AZ_2020_TO_709_R2 = vec3(-0.01815076, -0.10057890,  1.11872966);
+
+/*
+ * Convert a linear-light triple from BT.2020 into the scene's BT.709.
+ *
+ * NEGATIVES ARE KEPT. A BT.709 container cannot hold every BT.2020 colour, so
+ * out-of-gamut inputs come out with a negative component -- and that is the
+ * honest scene value, not an error. ADR-010 clamps at the OUTPUT, once, after
+ * the tone map has bounded the max channel; clamping here instead would throw
+ * away chroma that the output's own primaries may well be able to show, and on
+ * a BT.2020 output it would clamp a colour that never needed clamping at all.
+ */
+vec3 az_2020_to_709(vec3 v) {
+	return az_mat_mul(AZ_2020_TO_709_R0, AZ_2020_TO_709_R1,
+		AZ_2020_TO_709_R2, v);
+}
+
 /* ── dither (ADR-011) ───────────────────────────────────────────────────── */
 
 /* Interleaved gradient noise, [0, 1). Identical arithmetic to

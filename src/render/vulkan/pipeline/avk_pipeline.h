@@ -91,6 +91,10 @@ enum avk_decode_variant {
 	AVK_DECODE_SRGB,
 	AVK_DECODE_GAMMA22,
 	AVK_DECODE_BT1886,
+	/* M5/C7. PQ is decoded like any other curve -- invariant 1 confines the
+	 * ENCODE to the output pass, not the decode. What comes out is absolute
+	 * (1.0 = 10000 cd/m2) and the domain's scale makes it relative. */
+	AVK_DECODE_PQ,
 	AVK_DECODE_COUNT,
 };
 

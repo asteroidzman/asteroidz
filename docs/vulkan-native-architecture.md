@@ -2917,3 +2917,58 @@ above is SDR content on an HDR *output*, which is ADR-008's stated case ("SDR
 content on the HDR output renders at scene_reference_luminance with correct
 primaries") and is the whole of what C6 delivers. Genuine HDR video would be
 decoded as though it were SDR and then PQ-encoded a second time.
+
+## 5.20 C7 completed: PQ decode, source primaries, and the Path-A ceiling
+
+C7 shipped with only its transfer-function half — sRGB, gamma 2.2 and BT.1886.
+Three pieces were missing, and one of them was a silent defect rather than an
+absence.
+
+**PQ decode.** `AVK_DECODE_PQ`, a fifth specialisation-constant variant. The
+decode is allowed anywhere; it is the *encode* that invariant 1 confines to the
+output pass. Matches C1's `az_pq_eotf` at **0 codes** across five values from
+1.0 down to 0.024 — chosen where PQ has resolution to spare, because it is steep
+enough near black that evenly spaced inputs would be comparing zeros.
+
+**Source primaries — the silent one.** `az_lum_domain` carried `primaries`, the
+walk filled it, and nothing ever read it. A BT.2020-tagged surface was
+composited as though it were BT.709 and then converted 709→2020 by the output
+pass: a double conversion. Now converted at decode, exact against
+`AZ_MAT_2020_TO_709`, and the premise asserted separately — declaring BT.2020
+moves the picture by 49 codes, so "the conversion matched" cannot also be what
+no conversion would report.
+
+The matrix is a shader constant rather than a push constant: the scene is BT.709
+and BT.2020 is the only other thing a client can declare, so it is one fixed
+matrix instead of nine floats that would not fit in the 128-byte block. That
+duplicates `az_color.c`, so `test-color-pipeline.c` parses the literals back out
+of the shader and compares — falsified by drifting one digit.
+
+**The Path-A ceiling, and F5 shown as code.** F5 recorded that ADR-007 promised
+a >1-capable source on an 8-bit output would roll off so "the attachment never
+clamps", while ADR-009's curve is the identity for `peak <= 1` — leaving no
+curve that could keep the promise. The resolution was option 2, a knee below
+1.0 in that variant only, with the value unchosen and *"whoever picks it owns a
+falsifier"*.
+
+**0.75 is picked**, and both falsifiers are asserted. A scale-3.0 domain:
+
+```
+knee 1.0 (what ADR-009 mandates)   165  255  255  255   <- hard clip
+knee 0.75                          165  237  245  249   <- distinct
+```
+
+An ordinary SDR domain is bit-identical either way, because the knee is never
+set for `scale <= 1` — which is the other half of what F5 asked for, and what
+keeps ADR-009's identity guarantee literally true.
+
+`az_tonemap()` could not be reused for this. Its `peak <= 1` guard makes it the
+identity at a ceiling of 1.0 whatever knee it is handed, so it would have done
+nothing — F5's conflict restated in code. `az_rolloff_ceiling()` is the same
+extended-Reinhard algebra with the peak pinned and the guard removed, kept as a
+separate function so nothing weakens the invariant C1 asserts over 101 samples.
+
+**What C7 still does not have:** `OPAQUE_SRGB`, the `_SRGB`-view sampling fast
+path. The view machinery exists and Path A uses it for the ATTACHMENT, but no
+texture draw samples through one. That is an optimisation with no measurement
+behind it yet, not a correctness gap.

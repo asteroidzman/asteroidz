@@ -39,7 +39,26 @@
 #define AZ_DECODE_SRGB     1
 #define AZ_DECODE_GAMMA22  2
 #define AZ_DECODE_BT1886   3
+#define AZ_DECODE_PQ       4
 layout(constant_id = 0) const int az_decode = AZ_DECODE_NONE;
+
+/*
+ * ── WHY THE GAMUT AND THE TONE MAP ARE UNIFORM BRANCHES, NOT VARIANTS ─────
+ *
+ * The decode curve is a specialisation constant because it is one of five
+ * mutually exclusive functions and folding it out is free. Source primaries and
+ * the Path-A ceiling are DIFFERENT: each is an independent yes/no, so making
+ * them specialisation constants too would multiply the pipeline table by four
+ * -- five decodes x two gamuts x two ceilings = twenty texture pipelines per
+ * renderer per format, to save a branch whose condition is identical for every
+ * texel of the draw.
+ *
+ * They ride in push slots a texture draw does not otherwise use (see
+ * push.glsl's overlay table). Both are uniform across the draw, so the branch
+ * is coherent and costs nothing measurable; what it saves is fifteen pipelines.
+ */
+#define AZ_TEX_SRC_BT2020 (pc.color.y > 0.5)
+#define AZ_TEX_CEIL_KNEE  (pc.color.z)
 
 layout(set = 0, binding = 0) uniform sampler2D tex;
 
@@ -71,12 +90,53 @@ void main() {
 			straight = az_srgb_eotf(straight);
 		} else if (az_decode == AZ_DECODE_GAMMA22) {
 			straight = az_gamma22_eotf(straight);
-		} else {
+		} else if (az_decode == AZ_DECODE_BT1886) {
 			straight = az_bt1886_eotf(straight);
+		} else {
+			/* PQ. The DECODE is allowed anywhere; it is the ENCODE that
+			 * invariant 1 confines to the output pass. What comes out is
+			 * absolute, 1.0 = 10000 cd/m2, and the scale below is what turns it
+			 * into a relative scene value (ADR-006: 10000/ref x hdr_gain). */
+			straight = az_pq_eotf(straight);
 		}
 		/* M5/C2: the source's luminance scale, applied in LINEAR light where
 		 * it means what it says. See AZ_TEX_LUM_SCALE. */
 		straight *= AZ_TEX_LUM_SCALE;
+		/*
+		 * ── C7: THE SOURCE'S PRIMARIES, IN LINEAR LIGHT AND BEFORE THE
+		 *    CEILING ───────────────────────────────────────────────────────
+		 *
+		 * A gamut conversion is a linear-light operation, so it belongs after
+		 * the EOTF; and the tone map below is hue-preserving on the SCENE's
+		 * primaries, so it belongs after this. Reversing the two tone-maps a
+		 * colour in the wrong space and moves its hue -- which is the one thing
+		 * ADR-009's curve family exists to avoid.
+		 */
+		if (AZ_TEX_SRC_BT2020) {
+			straight = az_2020_to_709(straight);
+		}
+		/*
+		 * ── C7 / F5: THE PATH-A CEILING ──────────────────────────────────
+		 *
+		 * On Path B the output-encode pass tone-maps the COMPOSITED value and
+		 * this must not run -- doing it twice would compress twice. On Path A
+		 * there IS no encode pass, so a domain that can exceed 1.0 has nowhere
+		 * to be bounded except here, and an 8-bit attachment clamps per channel
+		 * whatever the ADR says about it.
+		 *
+		 * ADR-007's original sentence promised "the attachment never clamps"
+		 * with a knee of 1.0 and a ceiling of 1.0, which is a curve with no
+		 * interval to work in -- it is the identity, and everything above white
+		 * clips. That sentence was struck (F5); what replaced it is a knee
+		 * BELOW 1.0 in this variant only, so ordinary SDR content keeps
+		 * ADR-009's identity guarantee exactly.
+		 *
+		 * Zero means "no ceiling": Path B, and every domain that cannot exceed
+		 * 1.0, pass through untouched.
+		 */
+		if (AZ_TEX_CEIL_KNEE > 0.0) {
+			straight = az_rolloff_ceiling(straight, AZ_TEX_CEIL_KNEE);
+		}
 		c.rgb = straight * a;
 	} else {
 		/* The pre-M5 path: no decode, and the scale is an identity because

@@ -62,6 +62,39 @@
 #define AVK_DITHER_REF_BACKDROP (45.0f / 255.0f)
 
 /*
+ * ── THE PATH-A CEILING KNEE (C7 / F5) ─────────────────────────────────────
+ *
+ * Where a >1-capable source starts rolling off on an output that has no encode
+ * pass. Path B never uses it: there the output pass tone-maps the COMPOSITED
+ * value, which is the whole of ADR-008's argument for doing it once at the end.
+ *
+ * F5 left this number unchosen and said whoever picks it owns a falsifier.
+ * 0.75 is picked here, and the reasoning is the whole of it:
+ *
+ *   - it must be strictly below 1.0, or the curve has no interval to work in
+ *     and everything above SDR white clips -- which is the defect F5 exists to
+ *     record;
+ *   - the interval [knee, 1] is what an unbounded input is compressed into, so
+ *     too high a knee crushes highlights into a few codes; a quarter of the
+ *     range is enough for the extended-Reinhard tail to stay smooth;
+ *   - everything below it is UNTOUCHED, so the lower it goes the more ordinary
+ *     picture content it moves. 0.75 leaves three quarters of the range exactly
+ *     where ADR-009 promises it.
+ *
+ * THE FALSIFIERS IT OWES, both asserted in tests/test-avk-render.c:
+ *
+ *   an SDR source (scale <= 1) is BIT-IDENTICAL with the ceiling reachable and
+ *   with it compiled out -- the knee is simply never set for it;
+ *
+ *   a >1 source on Path A does NOT hard-clip at white: distinct scene values
+ *   above the knee must come back as DISTINCT codes below 1.0, which is
+ *   precisely what the struck sentence of ADR-007 promised and the identity
+ *   curve could not deliver.
+ */
+#define AVK_PATH_A_CEILING_KNEE 0.75f
+
+
+/*
  * Peak-to-peak dither for one attachment format, in alpha units.
  *
  * Derived from the target's precision rather than hardcoded for 8 bits, so a

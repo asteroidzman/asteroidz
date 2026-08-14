@@ -4500,7 +4500,7 @@ static cJSON *az_avk_stats_json(void) {
 	cJSON_AddNumberToObject(o, "m5_encode_px", (double)encode_px);
 	cJSON_AddNumberToObject(o, "m5_encode_compiles", (double)encode_compiles);
 	{
-		static const char *dv[] = { "none", "srgb", "gamma22", "bt1886" };
+		static const char *dv[] = { "none", "srgb", "gamma22", "bt1886", "pq" };
 		for (int i = 0; i < AVK_DECODE_COUNT; i++) {
 			uint64_t n = 0;
 			for (size_t k = 0; k < AZ_AVK_MAX_FORMATS; k++) {

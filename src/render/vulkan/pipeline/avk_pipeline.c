@@ -227,6 +227,7 @@ static bool create_decode_variants(struct avk_pipelines *pipes,
 	static const char *names[AVK_DECODE_COUNT] = {
 		"texture_decode_none", "texture_decode_srgb",
 		"texture_decode_gamma22", "texture_decode_bt1886",
+		"texture_decode_pq",
 	};
 	for (int i = 0; i < AVK_DECODE_COUNT; i++) {
 		int32_t value = i;

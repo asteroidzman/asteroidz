@@ -452,6 +452,33 @@ view addition (unowned). The scene-walk attachment of domains and the
 per-draw variant selection in `avk_render.c`/`az_avk.h`: **DEFERRED —
 PERFORMANCE OWNED**.
 
+**STATUS: COMPLETE (M5.7).** The transfer-function half shipped with M5.3; the
+rest landed here. Three things came out differently from the contract:
+
+- **The variant axis stayed one specialisation constant.** Decode is a spec
+  constant (five mutually exclusive curves, folded out for free), but source
+  primaries and the Path-A ceiling are INDEPENDENT yes/nos — making them spec
+  constants too would have multiplied the table to twenty texture pipelines per
+  renderer per format to save two branches whose condition is identical for
+  every texel of a draw. They ride in push slots a texture draw does not
+  otherwise use (`color.y`, `color.z`), which the contract explicitly permits.
+- **The gamut matrix is a shader constant, not a push constant.** The scene is
+  BT.709 and the only other primaries a client can declare is BT.2020, so the
+  conversion is one fixed matrix rather than nine floats that would not fit in
+  the 128-byte block. The duplication against `az_color.c` is pinned by a
+  text-level check in `test-color-pipeline.c`, falsified by drifting a literal.
+- **`az_tonemap()` could not be used for the Path-A ceiling.** It is the
+  identity for `peak <= 1` — ADR-009 says so and C1 asserts it over 101 samples
+  — so it does nothing at a ceiling of 1.0 whatever knee it is given. That is
+  F5's conflict as code. `az_rolloff_ceiling()` is the same algebra with the
+  peak pinned at 1.0 and the guard removed, kept SEPARATE so ADR-009's
+  invariant stays literally true for everything that uses `az_tonemap`.
+
+`OPAQUE_SRGB` (the `_SRGB`-view sampling fast path) is **not** implemented: the
+`_SRGB` view machinery exists and is used for Path A's ATTACHMENT, but no
+texture draw samples through one. It is an optimisation, not a correctness gap,
+and nothing measures it yet.
+
 **CONFLICT STATUS.** MEDIUM — the files are unowned but `avk_render.c`
 constructs pipelines via `avk_pipelines_*`; additive API only (new
 functions, no signature changes to existing ones), so the perf agent's

@@ -810,6 +810,240 @@ static void test_path_a_roundtrip(struct harness *h) {
 	avk_image_destroy(h->dev, target);
 }
 
+/*
+ * ── C7: THE REST OF THE DECODE PATH ──────────────────────────────────────
+ *
+ * PQ decode, source primaries, and the Path-A ceiling -- the three pieces of
+ * C7 that were missing while the transfer-function half shipped.
+ *
+ * WHY THE FRAMEBUFFER IS A DIRECT READING OF THE SCENE VALUE HERE. With decode
+ * on and NO encode pass, composited scene values are written to the 8-bit
+ * attachment as they are. So `code / 255` IS the scene value the decode
+ * produced, clamped to the attachment's range -- which makes this a probe of
+ * the decode itself rather than of a round trip, and means a wrong answer shows
+ * as a wrong number rather than as a cancelled pair of errors.
+ */
+static void test_c7_decode_path(struct harness *h) {
+	printf("M5/C7: PQ decode, source primaries, and the Path-A ceiling\n");
+
+	uint32_t src[16 * 16];
+	struct avk_image *surface = make_image(h->dev, 16, 16,
+		VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, false);
+	if (surface == NULL) {
+		CHECK(false, "c7: source allocates");
+		return;
+	}
+
+	/* ── 1. PQ ──────────────────────────────────────────────────────────
+	 *
+	 * Codes chosen where PQ has resolution to spare: it is so steep near black
+	 * that most of the 8-bit range decodes to under one output code, and a test
+	 * built from evenly spaced inputs would be comparing zeros. */
+	static const uint8_t pq_codes[] = { 255, 235, 204, 180, 153 };
+	const int npq = (int)(sizeof(pq_codes) / sizeof(pq_codes[0]));
+	for (int i = 0; i < 16 * 16; i++) {
+		uint8_t v = pq_codes[i % npq];
+		src[i] = 0xFF000000u | ((uint32_t)v << 16) | ((uint32_t)v << 8) | v;
+	}
+	if (!upload(h, surface, src, 16, 16)) {
+		CHECK(false, "c7: PQ source uploads");
+		avk_image_destroy(h->dev, surface);
+		return;
+	}
+	{
+		struct avk_scene sc;
+		avk_scene_init(&sc);
+		pixman_region32_union_rect(&sc.damage, &sc.damage, 0, 0, W, H);
+		sc.has_clear = true;
+		sc.clear_color[3] = 1.0f;
+		struct avk_cmd *t = avk_scene_add(&sc, AVK_CMD_TEXTURE);
+		t->dst = (struct avk_box){ 0, 0, 16, 16 };
+		t->image = surface;
+		t->src = (struct avk_fbox){ 0, 0, 16, 16 };
+		t->opacity = 1.0f;
+		t->filter_linear = false;
+		t->lum.tf = AZ_TF_PQ;
+		t->lum.primaries = AZ_PRIM_BT709;
+		t->lum.scale = 1.0f;   /* isolate the curve from the domain's scale */
+		uint64_t before = h->renderer.stats.decode_by_variant[AVK_DECODE_PQ];
+		h->renderer.decode_enabled = true;
+		bool ok = render_with(h, &h->renderer, &sc);
+		h->renderer.decode_enabled = false;
+		uint64_t pq_draws =
+			h->renderer.stats.decode_by_variant[AVK_DECODE_PQ] - before;
+		avk_scene_finish(&sc);
+
+		CHECK(pq_draws == 1, "PREMISE: the PQ variant was selected (%llu draws)",
+			(unsigned long long)pq_draws);
+		int worst = 0;
+		for (int i = 0; i < npq && ok; i++) {
+			double want_lin = az_pq_eotf((float)pq_codes[i] / 255.0f);
+			int want = (int)(want_lin * 255.0 + 0.5);
+			int got = b_of(px(h, (uint32_t)i, 0));
+			int d = got - want; if (d < 0) { d = -d; }
+			if (d > worst) { worst = d; }
+			printf("  ---- PQ code %3d -> scene %.5f  want %3d  got %3d\n",
+				pq_codes[i], want_lin, want, got);
+		}
+		CHECK(ok && worst <= 1,
+			"PQ decode matches C1's az_pq_eotf (worst %d codes)", worst);
+	}
+
+	/* ── 2. SOURCE PRIMARIES ────────────────────────────────────────────
+	 *
+	 * A colour whose BT.2020 -> BT.709 conversion stays INSIDE [0,1]. A
+	 * saturated one would leave the container, the attachment would clamp it,
+	 * and a clamped result cannot tell a correct conversion from an absent
+	 * one -- the same reason the earlier falsifiers needed colour rather than
+	 * grey, one step further on. */
+	{
+		const uint8_t cr = 200, cg = 150, cb = 100;
+		for (int i = 0; i < 16 * 16; i++) {
+			src[i] = 0xFF000000u | ((uint32_t)cr << 16)
+				| ((uint32_t)cg << 8) | cb;
+		}
+		if (!upload(h, surface, src, 16, 16)) {
+			CHECK(false, "c7: primaries source uploads");
+			avk_image_destroy(h->dev, surface);
+			return;
+		}
+		int got709[3] = {0,0,0}, got2020[3] = {0,0,0};
+		for (int arm = 0; arm < 2; arm++) {
+			struct avk_scene sc;
+			avk_scene_init(&sc);
+			pixman_region32_union_rect(&sc.damage, &sc.damage, 0, 0, W, H);
+			sc.has_clear = true;
+			sc.clear_color[3] = 1.0f;
+			struct avk_cmd *t = avk_scene_add(&sc, AVK_CMD_TEXTURE);
+			t->dst = (struct avk_box){ 0, 0, 16, 16 };
+			t->image = surface;
+			t->src = (struct avk_fbox){ 0, 0, 16, 16 };
+			t->opacity = 1.0f;
+			t->filter_linear = false;
+			t->lum.tf = AZ_TF_SRGB;
+			t->lum.primaries = arm == 0 ? AZ_PRIM_BT709 : AZ_PRIM_BT2020;
+			t->lum.scale = 1.0f;
+			h->renderer.decode_enabled = true;
+			bool ok = render_with(h, &h->renderer, &sc);
+			h->renderer.decode_enabled = false;
+			avk_scene_finish(&sc);
+			if (!ok) { CHECK(false, "c7: primaries arm %d renders", arm); }
+			uint32_t p = px(h, 4, 4);
+			int *dst = arm == 0 ? got709 : got2020;
+			dst[0] = r_of(p); dst[1] = g_of(p); dst[2] = b_of(p);
+		}
+		double lin[3] = {
+			az_srgb_eotf((float)cr / 255.0f),
+			az_srgb_eotf((float)cg / 255.0f),
+			az_srgb_eotf((float)cb / 255.0f),
+		};
+		float linf[3] = { (float)lin[0], (float)lin[1], (float)lin[2] };
+		float conv[3];
+		az_mat_mul_vec3(AZ_MAT_2020_TO_709, linf, conv);
+		int want[3];
+		for (int c = 0; c < 3; c++) {
+			double v = conv[c] < 0.0f ? 0.0 : (conv[c] > 1.0f ? 1.0 : conv[c]);
+			want[c] = (int)(v * 255.0 + 0.5);
+		}
+		printf("  ---- src(%d,%d,%d)  as BT.709 -> %d,%d,%d   "
+			"as BT.2020 -> %d,%d,%d (want %d,%d,%d)\n", cr, cg, cb,
+			got709[0], got709[1], got709[2], got2020[0], got2020[1], got2020[2],
+			want[0], want[1], want[2]);
+		int worst = 0;
+		for (int c = 0; c < 3; c++) {
+			int d = got2020[c] - want[c]; if (d < 0) { d = -d; }
+			if (d > worst) { worst = d; }
+		}
+		CHECK(worst <= 1,
+			"a BT.2020 source is converted to the scene's primaries "
+			"(worst %d codes)", worst);
+		/* Without this, "the conversion matched" is also what NO conversion
+		 * would report if the reference happened to be the identity. */
+		int moved = 0;
+		for (int c = 0; c < 3; c++) {
+			int d = got2020[c] - got709[c]; if (d < 0) { d = -d; }
+			if (d > moved) { moved = d; }
+		}
+		CHECK(moved > 8,
+			"PREMISE: declaring BT.2020 CHANGES the picture (%d codes)", moved);
+	}
+
+	/* ── 3. THE PATH-A CEILING (F5) ─────────────────────────────────────── */
+	{
+		static const uint8_t codes[] = { 128, 180, 220, 255 };
+		const int nc = (int)(sizeof(codes) / sizeof(codes[0]));
+		for (int i = 0; i < 16 * 16; i++) {
+			uint8_t v = codes[i % nc];
+			src[i] = 0xFF000000u | ((uint32_t)v << 16) | ((uint32_t)v << 8) | v;
+		}
+		if (!upload(h, surface, src, 16, 16)) {
+			CHECK(false, "c7: ceiling source uploads");
+			avk_image_destroy(h->dev, surface);
+			return;
+		}
+		int got[2][4] = {{0}};
+		for (int arm = 0; arm < 2; arm++) {
+			struct avk_scene sc;
+			avk_scene_init(&sc);
+			pixman_region32_union_rect(&sc.damage, &sc.damage, 0, 0, W, H);
+			sc.has_clear = true;
+			sc.clear_color[3] = 1.0f;
+			struct avk_cmd *t = avk_scene_add(&sc, AVK_CMD_TEXTURE);
+			t->dst = (struct avk_box){ 0, 0, 16, 16 };
+			t->image = surface;
+			t->src = (struct avk_fbox){ 0, 0, 16, 16 };
+			t->opacity = 1.0f;
+			t->filter_linear = false;
+			t->lum.tf = AZ_TF_SRGB;
+			t->lum.primaries = AZ_PRIM_BT709;
+			/* arm 0: an ordinary SDR domain, which must never see the curve.
+			 * arm 1: a domain that can reach scene 3.0, which on Path A has
+			 * nowhere to be bounded but the decode. */
+			t->lum.scale = arm == 0 ? 1.0f : 3.0f;
+			h->renderer.decode_enabled = true;
+			bool ok = render_with(h, &h->renderer, &sc);
+			h->renderer.decode_enabled = false;
+			avk_scene_finish(&sc);
+			if (!ok) { CHECK(false, "c7: ceiling arm %d renders", arm); }
+			for (int i = 0; i < nc; i++) {
+				got[arm][i] = b_of(px(h, (uint32_t)i, 0));
+			}
+		}
+		printf("  ---- scale 1.0: %3d %3d %3d %3d\n",
+			got[0][0], got[0][1], got[0][2], got[0][3]);
+		printf("  ---- scale 3.0: %3d %3d %3d %3d\n",
+			got[1][0], got[1][1], got[1][2], got[1][3]);
+
+		/* An ordinary SDR domain is untouched: every value below the knee, and
+		 * the knee is never even set for scale <= 1. Compared against C1
+		 * directly rather than against the other arm. */
+		int worst_sdr = 0;
+		for (int i = 0; i < nc; i++) {
+			int want = (int)(az_srgb_eotf((float)codes[i] / 255.0f) * 255.0
+				+ 0.5);
+			int d = got[0][i] - want; if (d < 0) { d = -d; }
+			if (d > worst_sdr) { worst_sdr = d; }
+		}
+		CHECK(worst_sdr <= 1,
+			"an SDR domain never meets the ceiling (worst %d codes)",
+			worst_sdr);
+		/*
+		 * THE FALSIFIER THE KNEE OWES (F5): a >1 domain must not hard-clip at
+		 * white. Every one of these scene values exceeds 1.0 -- 128 alone is
+		 * 0.216*3 = 0.65 and the rest are far above -- so with the identity
+		 * curve ADR-009 mandates they would ALL read 255 and be
+		 * indistinguishable. They must instead be distinct and below 255.
+		 */
+		CHECK(got[1][3] < 255,
+			"a >1 domain does NOT clip at white (top value %d)", got[1][3]);
+		CHECK(got[1][1] < got[1][2] && got[1][2] < got[1][3],
+			"and values above the knee stay DISTINCT (%d < %d < %d)",
+			got[1][1], got[1][2], got[1][3]);
+	}
+
+	avk_image_destroy(h->dev, surface);
+}
+
 /* ── M5 PATH B: THE OUTPUT-ENCODE PASS (C6, ADR-008) ─────────────────────── */
 
 /*
@@ -2005,6 +2239,7 @@ int main(void) {
 	test_path_b_sdr_gate(&h);
 	test_path_b_pq_encode(&h);
 	test_solid_colour_domain(&h);
+	test_c7_decode_path(&h);
 	test_overlap_alpha(&h);
 	test_crop_scale(&h);
 	test_transforms(&h);

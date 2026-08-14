@@ -1505,6 +1505,14 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 				case AZ_TF_SRGB:    v = AVK_DECODE_SRGB;    break;
 				case AZ_TF_GAMMA22: v = AVK_DECODE_GAMMA22; break;
 				case AZ_TF_BT1886:  v = AVK_DECODE_BT1886;  break;
+				case AZ_TF_PQ:      v = AVK_DECODE_PQ;      break;
+				/*
+				 * LINEAR_EXT (scRGB) is ALREADY linear, so its decode is the
+				 * identity and the whole of its domain is the scale -- which
+				 * the no-decode branch applies. It takes AVK_DECODE_NONE
+				 * deliberately rather than gaining a variant that would
+				 * compile to the same code.
+				 */
 				default: break;
 				}
 				if (v != AVK_DECODE_NONE
@@ -1537,6 +1545,36 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 			 * proved the obvious encoding wrong.
 			 */
 			pc.color[0] = cmd->lum.scale - 1.0f;
+			/*
+			 * ── C7: THE SOURCE'S PRIMARIES ────────────────────────────────
+			 *
+			 * A flag, not a matrix: the scene is BT.709 and the only other
+			 * primaries a client can declare here is BT.2020, so the shader
+			 * holds the one constant matrix and this says whether to apply it.
+			 * Nine floats would not fit in the 128-byte block anyway.
+			 *
+			 * Only meaningful when a decode variant is selected -- the
+			 * no-decode branch is the pre-M5 path and converts nothing.
+			 */
+			pc.color[1] = (renderer->decode_enabled
+				&& cmd->lum.primaries == AZ_PRIM_BT2020) ? 1.0f : 0.0f;
+			/*
+			 * ── C7 / F5: THE PATH-A CEILING ──────────────────────────────
+			 *
+			 * A knee below 1.0 for a domain that can exceed 1.0, and ONLY when
+			 * there is no encode pass to do the tone mapping downstream. On
+			 * Path B this must be zero or the composited value would be
+			 * compressed twice.
+			 *
+			 * `scale` IS the domain's ceiling: the largest electrical value a
+			 * source can carry is 1.0, so the largest scene value it can
+			 * produce is exactly the scale. That makes the test one comparison
+			 * rather than a list of transfer functions to keep in step.
+			 */
+			const bool needs_ceiling = renderer->decode_enabled
+				&& renderer->encode_intermediate == NULL
+				&& cmd->lum.scale > 1.0f;
+			pc.color[2] = needs_ceiling ? AVK_PATH_A_CEILING_KNEE : 0.0f;
 
 			VkDescriptorSet set = avk_pipelines_texture_set(pipes,
 				cmd->image, cmd->filter_linear);

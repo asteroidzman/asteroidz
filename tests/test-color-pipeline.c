@@ -739,6 +739,57 @@ static void gate7_pq_never_internal(const char *root) {
 	CHECK(e != NULL && strstr(e, "az_pq_ieotf") != NULL,
 		"  premise: output_encode.frag DOES call az_pq_ieotf");
 	free(e);
+
+	/*
+	 * ── C7: THE GAMUT MATRIX EXISTS TWICE, SO PIN IT ──────────────────────
+	 *
+	 * color.glsl carries BT.2020 -> BT.709 as nine literals because the source
+	 * conversion has to happen in the shader and nine floats do not fit in
+	 * push.glsl's 128 bytes. That is a duplicate of az_color.c's
+	 * AZ_MAT_2020_TO_709, and a duplicate nobody checks is a duplicate that
+	 * drifts -- silently, because a slightly wrong gamut matrix renders a
+	 * completely plausible picture.
+	 *
+	 * So the literals are parsed back out of the shader source and compared.
+	 * Text-level, like the PQ scan above, and for the same reason: it needs no
+	 * device and it cannot be satisfied by the implementation agreeing with
+	 * itself.
+	 */
+	char glsl[2048];
+	snprintf(glsl, sizeof(glsl), "%s/color.glsl", dirpath);
+	char *g = slurp(glsl);
+	CHECK(g != NULL, "  premise: color.glsl is readable");
+	if (g != NULL) {
+		double got[9];
+		int n = 0;
+		for (int row = 0; row < 3 && n == row * 3; row++) {
+			char key[64];
+			snprintf(key, sizeof(key), "AZ_2020_TO_709_R%d = vec3(", row);
+			const char *at = strstr(g, key);
+			if (at == NULL) {
+				break;
+			}
+			at += strlen(key);
+			for (int c = 0; c < 3; c++) {
+				got[row * 3 + c] = strtod(at, (char **)&at);
+				while (*at == ' ' || *at == ',') {
+					at++;
+				}
+				n++;
+			}
+		}
+		CHECK(n == 9, "  premise: parsed 9 literals from color.glsl (%d)", n);
+		double worst = 0.0;
+		for (int i = 0; i < n; i++) {
+			double d = got[i] - (double)AZ_MAT_2020_TO_709[i];
+			if (d < 0.0) { d = -d; }
+			if (d > worst) { worst = d; }
+		}
+		CHECK(n == 9 && worst < 1e-7,
+			"color.glsl's BT.2020->BT.709 matches az_color.c (worst %.3g)",
+			worst);
+		free(g);
+	}
 }
 
 /* ── the breaks ─────────────────────────────────────────────────────────── */
