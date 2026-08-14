@@ -345,11 +345,20 @@ static void az_presenter_present(Monitor *m,
 			 */
 			bool ready_for_next = period_ns > 0
 				&& s->commit_ret_ns < p->last_present_ns + period_ns;
-			bool slipped = p->prev_had_inflight && ready_for_next
-				&& ev->seq > p->last_seq + 1;
+			bool slipped = ready_for_next && ev->seq > p->last_seq + 1;
+			/*
+			 * ONE PRINCIPLE: no frame can lose a slot it was not ready for.
+			 *
+			 * The readiness test gates BOTH regimes' rules. The lattice
+			 * argument for FIXED -- that spread cannot cross half a period
+			 * because presents are quantised -- holds only in steady state,
+			 * with a fresh anchor and a frame that was ready. At burst start a
+			 * stale-anchor projection, or the UNSYNCED `now + period` path,
+			 * can cross with no slot lost at all.
+			 */
 			bool missed = p->regime == AZ_PRESENT_VRR
 				? slipped
-				: (slipped || exceeded);
+				: (slipped || (exceeded && ready_for_next));
 			/* AZ_BREAK_PRESENT_SPREAD_IS_MISS (falsifier I18): restore the
 			 * pre-correction rule, where prediction spread counted as a lost
 			 * frame on every regime. */
@@ -403,7 +412,6 @@ static void az_presenter_present(Monitor *m,
 	p->last_seq = ev->seq;
 	p->sync = AZ_PRESENT_SYNCED;
 	p->presents_accepted++;
-	p->prev_had_inflight = matched;
 }
 
 /*

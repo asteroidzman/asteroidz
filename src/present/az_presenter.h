@@ -223,16 +223,13 @@ struct az_presenter {
 	 */
 	uint64_t prediction_exceeded;
 	/*
-	 * Did the PREVIOUS accepted present also carry a frame of ours?
-	 *
-	 * A sequence slip only means a lost opportunity if we were actually trying
-	 * to fill the intervening vblanks. The first frame after a stretched idle
-	 * period naturally arrives with a seq delta greater than one on a VRR
-	 * panel, and counting that as a miss re-imports exactly the false positive
-	 * this correction removes. Such a frame belongs to ADR-605's post-idle
-	 * prediction bucket instead.
+	 * `prev_had_inflight` used to live here and is gone deliberately, not by
+	 * omission. It guarded slips on whether the PREVIOUS present carried a
+	 * frame of ours -- which the readiness test subsumes, on evidence about
+	 * THIS frame rather than a property of whatever came before it. Worse, it
+	 * was not harmless: a genuine ready slip whose previous accepted present
+	 * was a cursor-only or backend commit would have been masked by it.
 	 */
-	bool prev_had_inflight;
 	uint64_t resets[AZ_PRESENT_RESET_COUNT];
 };
 

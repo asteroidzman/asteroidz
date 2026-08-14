@@ -810,21 +810,54 @@ not. A **miss** is a frame that did not make its **next available
 presentation opportunity**. What constitutes proof differs by regime,
 because the opportunity structure differs:
 
-- **FIXED regime:** an accepted present with `present_ns − target_ns >
-  nominal_period_ns / 2` for its matched in-flight frame (the lattice
-  quantises presents, so a half-period error proves slot displacement —
-  spread cannot produce it), or a per-epoch `seq` delta > 1 between
-  consecutive accepted presents that **both** carried in-flight frames.
-- **VRR regime:** a `seq` delta > 1 between consecutive accepted presents
-  that **both** carried in-flight frames, or a failed/dropped commit while
-  animating. The prediction error **never counts**: on a VRR panel
-  presentation follows the commit, so `present > target` means "the
-  target was optimistic", not "the frame slipped" — the panel gave the
-  frame the next opportunity it had. The both-in-flight requirement is
-  load-bearing in this regime too: the first in-flight present after a
-  stretched idle period naturally carries `seq` delta > 1 (the panel was
-  free-running slowly), is not a miss, and lands in ADR-605's post-idle
-  prediction bucket instead.
+All miss evidence in both regimes is gated by one discriminator, the
+**readiness test** (implemented at `b0d3bc5`):
+
+```
+ready_for_next = commit_ret_ns < last_present_ns + P
+                 (P = nominal_period_ns on FIXED, P_min on VRR)
+```
+
+A frame committed before the vblank following the previous accepted
+present, and presented later than that, provably missed a slot it could
+have filled. A frame committed after that vblank had nothing to miss:
+there was nothing ready to show. The principle in one line: **no frame
+can lose a slot it was not ready for.** The test uses `commit_ret_ns`,
+which the verdict table already records — evidence, not a heuristic about
+gap sizes. The rules:
+
+- **FIXED regime:** a matched in-flight present with `ready_for_next`
+  **and** (`present_ns − target_ns > P/2` **or** `seq > last_seq + 1`).
+  The lattice-quantisation argument — spread cannot cross half a period —
+  holds only in steady state, where the anchor is fresh and the frame was
+  ready; at burst start a stale-anchor projection or the UNSYNCED
+  `now + P` path can cross the threshold with no slot lost, which is why
+  the error rule is readiness-gated too (measurement M-11 audits this).
+- **VRR regime:** a matched in-flight present with `ready_for_next` and
+  `seq > last_seq + 1`, or a failed/dropped commit while animating. The
+  prediction error **never counts**: on a VRR panel presentation follows
+  the commit, so `present > target` means "the target was optimistic",
+  not "the frame slipped" — the panel gave the frame the next opportunity
+  it had.
+
+**Two corrections got the rule here; both are recorded so neither is
+re-derived.** First, the error-based rule was removed from VRR (below).
+Second, its replacement — a seq-delta rule guarded by "the previous
+accepted present also carried an in-flight frame" — measured wrong the
+same day: DP-1 showed 38 misses on a clean 27×x1 cadence. The guard
+excluded the false positive at the *entry* to an idle period and not at
+the *exit* from one, and the exit is the common case — every animation
+after the first begins there (animation A's last frame is an in-flight
+accepted present; 0.7 s of idle; animation B's first frame arrives with
+`seq` delta ~100 and a TRUE guard). The readiness test subsumes the
+guard's intent with evidence about *this* frame instead of a property of
+whatever the previous present happened to be, so `prev_had_inflight` is
+**dropped, not kept alongside**: it is not merely redundant — it would
+false-negative a genuine ready slip whose previous accepted present was a
+cursor-only or backend commit, and a redundant guard is exactly where a
+future reader deletes the wrong condition. After the fix, live: DP-1
+misses 38 → 1 with `prediction_exceeded` 42 (spread finally named as
+spread); HDMI-A-1 misses 12 = crossings 12.
 
 Separately, an accepted present with `|present_ns − target_ns| > tol`
 (`tol` = the regime's period / 2 initially) increments
@@ -913,9 +946,21 @@ VRR epoch — the pre-correction behaviour codified). Oracle: a VRR fixture
 animating with a deliberately biased target (the placeholder `t_pipe`
 under-seed suffices) and a clean x1 cadence must report **zero misses and
 nonzero `prediction_exceeded`**; under the break the miss counter goes
-nonzero — deterministic failure. The burst-start guard has its own premise
-test: a single in-flight frame after a synthetic idle gap must classify as
-post-idle prediction data, never as a seq-delta miss.
+nonzero — deterministic failure.
+
+The readiness gate has its own break and two premise tests, derived from
+the live evidence that produced it. Break:
+`AZ_BREAK_PRESENT_SLIP_NO_READINESS` (evaluate the slip rules without
+`ready_for_next` — the 38-misses-on-clean-cadence behaviour codified).
+Oracle: the **exit-from-idle fixture** — two animations separated by an
+idle gap; animation B's first frame must classify as post-idle prediction
+data, never as a slip; under the break it counts — deterministic failure.
+Premise tests on the pure predicate (unit-testable, no compositor): (1)
+a ready frame (`commit_ret < last_present + P`) presented with `seq`
+delta > 1 **is** a slip even when the previous accepted present carried
+no in-flight frame — the case the dropped `prev_had_inflight` guard would
+have masked; (2) an unready frame with arbitrarily large `seq` delta is
+never a slip, whatever the previous present was.
 
 ---
 
@@ -1334,6 +1379,7 @@ duplicate hides a dead break. The mapping: `BREAK_ANIM_SAMPLE_CPU_NOW` ≡
 | I16 | semantic → presentation derivation is one-way and pure | (static + replay) | frame-snapshot type containment; ADR-607 replay equality (ADR-611) |
 | I17 | motion model is analytic / refresh-independent in form | (static twin of I4) | 48 Hz vs 240 Hz sampling-grid identity unit test; spring settle dead-tail oracle (ADR-616) |
 | I18 | a miss is a lost presentation opportunity; prediction spread never counts as one | `AZ_BREAK_PRESENT_SPREAD_IS_MISS` | VRR fixture, biased target, clean x1 cadence ⇒ zero misses + nonzero `prediction_exceeded` (ADR-609) |
+| I19 | no frame can lose a slot it was not ready for — all miss evidence is readiness-gated | `AZ_BREAK_PRESENT_SLIP_NO_READINESS` | exit-from-idle fixture: animation B's first frame after an idle gap is never a slip; plus the two pure-predicate premise tests (ADR-609) |
 
 Foreign-clock handling (ADR-603) is covered by a unit premise test rather
 than a break switch: it needs a synthetic event, not a runtime toggle.
@@ -1401,6 +1447,24 @@ the presentation IPC):**
   the same window — all inter-animation idle, zero slips): cadence is a
   slip signal only while something is animating; the histogram is
   descriptive, never a verdict input on its own (ADR-609).
+- **The readiness correction (`b0d3bc5`):** the both-in-flight guard
+  measured wrong — DP-1 38 misses on a clean 27×x1 cadence, because the
+  guard covered the entry to an idle period and not the exit, and every
+  animation after the first begins at an exit. Replaced by the readiness
+  test (`commit_ret < last_present + P`); after: DP-1 misses 38 → 1,
+  `prediction_exceeded` 42; HDMI-A-1 misses 12 = crossings 12 (M-11
+  audits whether those 12 include burst-start false positives).
+  `prev_had_inflight` dropped from the predicate per ruling (subsumed,
+  and capable of masking a real slip after a cursor-only present).
+- **Method note, third confirmation this session:** the defect was caught
+  by two independent derivations of one quantity disagreeing — the
+  cadence histogram against the miss counter; neither alone showed
+  anything wrong, and the miss counter alone read as a severe pacing
+  problem on a compositor that had not dropped a frame. Same mechanism
+  found the blur cache's period defect and the presenter construction-
+  order defect. Keeping redundant derivations of load-bearing quantities
+  is deliberate policy in this milestone's instrumentation, not waste to
+  be optimised away.
 - **Falsifier status:** I1/I4/I5/I10/I12 shown red and green. The ADR-608
   anchoring rule (retarget anchors at the last `sample_ns`, not CPU-now)
   caught a real defect the G2 change had introduced — the contract paid
@@ -1453,3 +1517,12 @@ M-8 gates a constant, nothing gates the build):
   commit this compositor makes (`is_vrr_opening` and the tearing path
   transitions). Validates ADR-604's regime-per-epoch claim; if violated,
   the reset-trigger list grows before the claim is trusted.
+- **M-11** Classify HDMI-A-1's 12 error-rule misses as burst-start vs
+  steady-state (requested). The readiness gate now applies to the FIXED
+  error rule on logical grounds — the lattice-quantisation argument holds
+  only for frames that were ready — and this measurement verifies it:
+  expected outcome is that burst-start crossings reclassify to
+  `prediction_exceeded` and remaining misses are steady-state slips. If
+  the 12 turn out ready and steady-state, they were genuine and the gate
+  changes nothing for them — either result is information, neither
+  reopens the rule.
