@@ -2519,8 +2519,42 @@ static bool anim_spring_converged(Client *c, int32_t type, double t,
 	return step_px < ANIM_CONVERGE_PX;
 }
 
+/*
+ * ── AZ_BREAK_ANIM_FRAME_STEP (falsifier I4) ───────────────────────────────
+ *
+ * Derives progress from a COUNT OF TICKS instead of from elapsed time -- which
+ * is what a frame-stepped animation genuinely is, and why the break lives here
+ * rather than in the sample instant. A substitute instant cannot express it:
+ * the sample function does not know when an animation started, so anything it
+ * returns either drifts (completing instantly once the counter outruns the
+ * clock) or goes negative (completing never). Both were tried; both failed the
+ * oracle for reasons that had nothing to do with frame stepping.
+ *
+ * The step is one 60Hz period per tick. rendermon ticks every client on every
+ * output's pass, so a client's ticks arrive at the SUM of the outputs' refresh
+ * rates -- and the wall time to reach a given progress therefore scales with
+ * that sum, which is exactly the dependency ADR-607 statement 3 forbids.
+ */
+static inline bool anim_frame_step_break(void) {
+	static int on = -1;
+	if (on < 0) {
+		on = getenv("AZ_BREAK_ANIM_FRAME_STEP") != NULL;
+		if (on) {
+			wlr_log(WLR_ERROR, "M6A break: AZ_BREAK_ANIM_FRAME_STEP -- "
+				"animation progress counts TICKS instead of elapsed time; "
+				"duration now depends on how many outputs tick it, and how "
+				"fast");
+		}
+	}
+	return on != 0;
+}
+
 void client_animation_next_tick(Client *c, uint64_t sample_ns) {
 	uint64_t now_ns = sample_ns;
+	if (anim_frame_step_break()) {
+		now_ns = c->animation.time_started_ns
+			+ (c->animation.break_ticks++) * 16666666ull;
+	}
 	double passed_ms = c->animation.time_started_ns
 		? (double)(now_ns - c->animation.time_started_ns) / 1.0e6
 		: 0.0;
@@ -2823,6 +2857,12 @@ void client_commit(Client *c) {
 		c->animation.initial = c->animainit_geom;
 		c->animation.time_started = get_now_in_ms();
 		c->animation.time_started_ns = az_pace_now_ns();
+		/* The tick counter is per ANIMATION, not per client: leaving it to
+		 * accumulate makes every animation after the first start with a large
+		 * offset and complete instantly, which is a different defect from
+		 * frame stepping and fails its oracle for the wrong reason.
+		 * AZ_BREAK_ANIM_FRAME_STEP only; zero and unread otherwise. */
+		c->animation.break_ticks = 0;
 
 		// Mark the animation as started
 		c->animation.running = true;

@@ -122,6 +122,30 @@ re-anchors on the first accepted present, so the damage is bounded to one
 frame's prediction; it is not a wedged state. Worth fixing when session
 tracking exists, not worth inventing a session for.
 
+## M-1 / M-2 — what the headless backend does and does not provide
+
+Both were flagged as unproven assumptions that fixture design rests on.
+Measured, and the answer is split:
+
+**It honours a custom refresh in its frame timer.** A two-output headless
+session at `HL_HZ1=144 HL_HZ2=60` derives nominal periods of 6944.444 µs and
+16666.666 µs, and presented 2305 against 874 frames over the same window — a
+ratio of 2.64 against the 2.4 the rates imply. Mixed-refresh fixtures are
+therefore viable headless.
+
+**It does not count vblanks.** `wlr_output_event_present.seq` is documented
+"zero if unavailable" and the headless backend never fills it. Every period and
+cadence figure here is derived from a *sequence* delta, so on that backend they
+read **0 while frames are presenting perfectly well**. `seq_available` is
+reported per output precisely so that zero is not mistaken for "nothing
+presented" — a misreading this author made within five minutes of first seeing
+it.
+
+Consequence for fixture placement: an oracle that needs a real period, a real
+cadence, or a miss classification belongs on hardware. One that needs only
+wall-clock timing — ADR-607 statement 3, the frame-step falsifier — runs
+headless, which is why that is the mixed-refresh statement built first.
+
 ## What already holds and must not regress
 
 - **No CPU waits.** M3.5's explicit GPU→KMS sync via syncobj timelines. The
@@ -135,3 +159,35 @@ tracking exists, not worth inventing a session for.
   wakeup with nothing to display.
 - **Per-output frame reach.** `request_fresh_for_box` already limits which
   outputs a motion wakes (M4G).
+
+## What the falsifiers cost to get right
+
+Four instruments in this milestone looked like they were working and were not.
+Recorded together because the pattern is the lesson, not any one of them:
+
+1. **`set_t_pipe` never parsed its argument.** Each int dispatch converts its
+   own `arg_value` in its own branch; omitting that line is silent. The
+   handler ran with `arg->i == 0` every time, so a four-point sweep produced
+   four measurements of the same configuration and its flat response read as
+   "this parameter has no effect". Caught by reading the value back instead of
+   trusting the write.
+
+2. **The mixed-refresh oracle could not detect the defect it was named after.**
+   Its arms were 144+60 and 60+144 — but `rendermon` ticks every client on
+   every output's pass, so a frame-stepped animation advances at the *sum* of
+   the rates, and both arms summed to 204 Hz. The arms now differ in that sum.
+
+3. **The frame-step break, twice, in the wrong place.** Substituting an instant
+   in the sample function cannot express "progress advances per tick": that
+   function does not know when an animation started, so the substitute either
+   drifted ahead of the clock (animations completed instantly, 4 ms) or fell
+   behind it (nothing completed, 4996 ms). Both failed the oracle for reasons
+   unrelated to frame stepping. The break belongs in the progress computation.
+
+4. **And then its counter was per client rather than per animation**, so every
+   animation after the first began with a large offset and completed instantly
+   — the same wrong-reason failure one level down.
+
+Every one was caught by insisting the break go red. None was caught by the
+passing run. A green test that has never been shown to fail is an untested
+test, and on this evidence it is more likely broken than not.

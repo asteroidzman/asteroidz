@@ -443,6 +443,13 @@ struct dwl_animation {
 	struct wlr_box initial;
 	struct wlr_box current;
 	int32_t action;
+	/*
+	 * AZ_BREAK_ANIM_FRAME_STEP only (falsifier I4): how many ticks this
+	 * animation has received. The break derives progress from this instead of
+	 * from elapsed time, which is what a frame-stepped animation actually is.
+	 * Zero and unread in every normal build.
+	 */
+	uint64_t break_ticks;
 };
 
 struct dwl_opacity_animation {
@@ -898,6 +905,23 @@ struct Monitor {
 	 * than averaged in, because a silently wrong period poisons everything
 	 * built on it. */
 	uint64_t present_interval_rejected;
+	/*
+	 * DOES THIS BACKEND COUNT VBLANKS AT ALL?
+	 *
+	 * wlr_output_event_present.seq is documented "zero if unavailable", and
+	 * the headless backend never fills it. Every derived period and every
+	 * cadence figure here comes from a SEQUENCE delta, so on such a backend
+	 * they legitimately stay zero while frames are being presented perfectly
+	 * well -- 2305 and 874 presents across a 144Hz/60Hz pair, with observed
+	 * period and cadence both reading 0.
+	 *
+	 * Stated explicitly because the alternative is a reader concluding from
+	 * `observed_interval_us: 0` that nothing presented. Oracles that need a
+	 * real period or a real cadence belong on hardware; ones that need only
+	 * wall-clock timing run headless.
+	 */
+	bool present_seq_available;
+
 	/*
 	 * ── M-8. ARM-TO-PHOTONS AND COMMIT-TO-PHOTONS ─────────────────────────
 	 *
@@ -2043,7 +2067,7 @@ static uint64_t az_pointer_notify_internal;
 static uint64_t az_sample_not_target;   /* I1: must stay 0 */
 static uint64_t az_sample_total;
 
-static inline uint64_t az_frame_sample_ns(const Monitor *m) {
+static inline uint64_t az_frame_sample_ns(Monitor *m) {
 	uint64_t t = az_presenter_sample_ns(m);
 	if (t == 0) {
 		/* No armed target -- a pass outside the presenter's knowledge. Fall
@@ -8908,6 +8932,9 @@ static void presentmon(struct wl_listener *listener, void *data) {
 	 * derived from history. */
 	if (ev->refresh > 0) {
 		m->present_hw_refresh_ns = (uint64_t)ev->refresh;
+	}
+	if (ev->seq != 0) {
+		m->present_seq_available = true;
 	}
 
 	/*

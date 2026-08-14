@@ -194,6 +194,18 @@ static cJSON *build_client_json(Client *c) {
 	cJSON_AddStringToObject(obj, "title", client_get_title(c));
 	cJSON_AddStringToObject(obj, "appid", client_get_appid(c));
 	cJSON_AddBoolToObject(obj, "is_xwayland", client_is_x11(c));
+	/*
+	 * M6A. Whether this window is mid-animation, geometry or opacity.
+	 *
+	 * Exposed because "when did the animation finish" is a question about TIME
+	 * and every other way of asking it answers a different one: a screenshot
+	 * compares pixels, and polling geometry until it stops moving cannot tell
+	 * a finished animation from a stalled one. ADR-607 statement 3 -- that a
+	 * completion happens at the same wall-clock instant whatever the refresh
+	 * rate -- needs exactly this bit and nothing more.
+	 */
+	cJSON_AddBoolToObject(obj, "animating",
+		c->animation.running || c->opacity_animation.running);
 	cJSON_AddStringToObject(obj, "icon", c->icon_name ? c->icon_name : "");
 	cJSON_AddStringToObject(obj, "monitor",
 							c->mon ? c->mon->wlr_output->name : "");
@@ -712,6 +724,11 @@ static void handle_command(int client_fd, const char *cmd_raw) {
 				(double)pm->present_interval_ns / 1000.0);
 			cJSON_AddNumberToObject(e, "interval_rejected",
 				(double)pm->present_interval_rejected);
+			/* False means the backend does not count vblanks, and every
+			 * sequence-derived figure below is therefore 0 BY ABSENCE rather
+			 * than by measurement. The headless backend is such a backend. */
+			cJSON_AddBoolToObject(e, "seq_available",
+				pm->present_seq_available);
 			cJSON *cad = cJSON_AddObjectToObject(e, "cadence");
 			cJSON_AddNumberToObject(cad, "x1", (double)pm->present_cadence_1x);
 			cJSON_AddNumberToObject(cad, "x2", (double)pm->present_cadence_2x);

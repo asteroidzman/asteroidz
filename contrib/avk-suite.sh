@@ -47,6 +47,7 @@ cd "$(dirname "$0")" || exit 1
 REGISTER="
 avk-blur-cache-dirty.sh            required
 m6a-sample-instant-test.sh         required
+m6a-mixed-refresh-test.sh          required
 avk-blur-cache-multi.sh            required
 avk-blur-cache-test.sh             required
 avk-blur-damage-test.sh            required
