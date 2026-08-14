@@ -614,6 +614,15 @@ struct avk_renderer {
 	uint64_t blur_source_damage_pixels;
 	uint64_t blur_output_damage_pixels;
 	uint64_t blur_prefix_rebuild_pixels;
+	/*
+	 * M4H.6. Of blur_prefix_rebuild_pixels, how many lie inside the frame's
+	 * arriving damage -- which is exactly the set a copy from the output
+	 * attachment could serve, because that is where the attachment is current
+	 * rather than holding the previous frame. The quotient of the two is the
+	 * premise for replacing prefix replay with a copy, and it has to be
+	 * measured on the SLOW frames rather than assumed from the architecture.
+	 */
+	uint64_t blur_prefix_copyable_pixels;
 	/* The bounding-box collapse, priced. rects is the fragment count at the
 	 * moment of collapse; before/after are the region's area and its bounding
 	 * box's, so after-before is the fill the collapse invented. */

@@ -2094,6 +2094,36 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 			az_region_area(&d->output_damage);
 		uint64_t rebuild_px = az_region_area(&d->prefix_rebuild);
 		renderer->blur_prefix_rebuild_pixels += rebuild_px;
+		/*
+		 * M4H.6 PREMISE INSTRUMENT -- how much of this blur's source could be
+		 * COPIED from the output attachment instead of replayed into a
+		 * transient.
+		 *
+		 * The candidate optimisation is to stop replaying scene[0,k) for every
+		 * blur node and take those pixels from the target, which by then holds
+		 * the composited prefix. That is only sound where the target is
+		 * CURRENT, and the target is current exactly inside this frame's
+		 * damage: everywhere else it still holds the previous frame's final
+		 * composite, and sampling it is the SceneFX halo defect that prefix
+		 * capture exists to make impossible.
+		 *
+		 * So the copyable fraction is prefix_rebuild inside the frame damage,
+		 * and the replay that would remain is the rest. On a full-damage
+		 * transition frame the first should be everything -- and transition
+		 * frames are the slow ones. If it is not, the candidate cannot pay for
+		 * itself and dies here rather than after a graph restructure.
+		 *
+		 * `scene->damage` and not `frame_damage`: the question is which pixels
+		 * the OUTPUT segment will have recomposited by the time blur k runs,
+		 * and that is the damage the frame arrived with, before this frame's
+		 * own blurs add to it.
+		 */
+		pixman_region32_t copyable;
+		pixman_region32_init(&copyable);
+		pixman_region32_intersect(&copyable, &d->prefix_rebuild,
+			(pixman_region32_t *)&scene->damage);
+		renderer->blur_prefix_copyable_pixels += az_region_area(&copyable);
+		pixman_region32_fini(&copyable);
 		uint64_t full_px = (uint64_t)rg.capture.width
 			* (uint64_t)rg.capture.height;
 		renderer->blur_damage_saved_pixels +=
