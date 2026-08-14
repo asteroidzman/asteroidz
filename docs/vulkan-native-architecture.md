@@ -2682,3 +2682,59 @@ green.
 
 Of the 43 required suites, exactly one had the defect. The eleven other suites
 with no `hl_summary` at all are all perf, live or manual.
+
+## 5.17 The first live VUID result that means anything
+
+M5.5 shipped a `validation_enabled` field because "0 validation errors" had been
+asserted for a milestone by fixtures that never loaded the layer (§5.13). The
+same was then found to be true of the live desktop: `asteroidz-avk.desktop` does
+not set `ASTEROIDZ_VK_DEBUG`, so the P3 live matrix's 0-VUID column was equally
+vacuous.
+
+Re-run 2026-08-14 in `asteroidz-avk-debug`, with the premise verified two
+independent ways — `avk-stats` reporting `validation_enabled=true`, and the
+instance's own line:
+
+```
+avk instance: debug_utils=yes validation=on sync_validation=on gpu_assisted=off
+```
+
+Both VUID *and* synchronisation validation are loaded, so this covers hazards as
+well as usage.
+
+| scenario | n | p50 | p95 | p99 | max | >6944 | VUID | waits |
+|---|---|---|---|---|---|---|---|---|
+| idle | 39 | 1047 | 2171 | 2267 | 2267 | 0 | 0 | 0 |
+| tag | 376 | 409 | 1936 | 2418 | 2525 | 0 | 0 | 0 |
+| move | 172 | 1579 | 2469 | 2702 | 2715 | 0 | 0 | 0 |
+| resize | 345 | 883 | 1333 | 2015 | 2408 | 0 | 0 | 0 |
+
+Plus a multi-output seam walk — a 900x600 floating window stepped across the
+DP-1/HDMI-A-1 boundary and back, the two outputs differing in scale (1.5 against
+1.0), with blur active (4,846 blur draws): 0 VUID, 0 waits, 0 lifecycle
+violations, 0 fallback frames.
+
+**Zero VUIDs and zero synchronisation hazards across the entire boot**, which
+includes startup, both outputs' dma-buf scanout with drm_syncobj timeline
+handover, every scenario above and the seam walk. That is the surface no
+headless fixture reaches, and it is the first time anything was watching it.
+
+**THE TIMINGS ABOVE ARE NOT COMPARABLE TO §5.10b** and the fixture now prints
+that warning itself. Two reasons, and both matter: validation intercepts every
+Vulkan call CPU-side at roughly 100x, so this session cannot pace like the plain
+one; and the desktop was almost empty (one terminal) against the earlier run's
+Firefox and two terminals. The numbers being *lower* than the qualified run is a
+lighter scene, not a faster renderer. The correctness columns are the result
+here; the percentiles are not.
+
+### The log appends across boots, and it nearly reversed this conclusion
+
+`~/.local/state/asteroidz/asteroidz.log` accumulates, and timestamps restart at
+`00:00:00.x` every session. Grepping for the instance line and taking the first
+match returned `validation=off` — the *previous* boot. The current boot's line
+was 500 lines further down and said the opposite.
+
+What caught it was the disagreement with `avk-stats`' `validation_enabled=true`:
+two independent readings of one fact, which is the only reason the wrong one did
+not get written down as a result. Find the boot boundary first
+(`grep -n "avk instance:"`, take the last) and read forward from there.
