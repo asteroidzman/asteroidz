@@ -126,6 +126,7 @@
 #include "common/util.h"
 #include "draw/text-node.h"
 #include "draw/ufo-node.h"
+#include "present/az_presenter.h"
 
 /* macros */
 #define ASTEROIDZ_MAX(A, B) ((A) > (B) ? (A) : (B))
@@ -865,6 +866,10 @@ struct Monitor {
 	 * that was measured rather than assumed.
 	 */
 	struct wl_listener present;
+	/* M6A/ADR-602. The per-output timing owner. Embedded by value, never
+	 * pointed to: a pointer member invites exactly the stale-across-hotplug
+	 * class this milestone exists to make impossible. */
+	struct az_presenter presenter;
 	uint64_t present_last_ns;   /* ev->when of the last PRESENTED frame */
 	uint64_t present_last_seq;
 	uint64_t present_count;     /* frames that actually reached the screen */
@@ -917,6 +922,24 @@ struct Monitor {
 	uint64_t m8_samples, m8_unmatched;
 	uint64_t m8_arm_sum_ns, m8_arm_min_ns, m8_arm_max_ns;
 	uint64_t m8_commit_sum_ns, m8_commit_min_ns, m8_commit_max_ns;
+	/*
+	 * COMMIT-TO-PHOTONS AS A DISTRIBUTION, NOT THREE NUMBERS.
+	 *
+	 * `t_pipe` (ADR-605) is the latency when the pipeline is NOT waiting for
+	 * the display to become ready -- the queueing case is already modelled by
+	 * the predictor's `last_present + P_min` floor, so seeding from the mean
+	 * would count the wait twice and put every target a frame late. The mean
+	 * is therefore the wrong estimator and the minimum is a single sample of
+	 * an extreme, which is no better.
+	 *
+	 * So: a histogram, and read a low percentile off it. 100us buckets to
+	 * 12.8ms, which brackets both a 60Hz and a 144Hz period, plus one overflow
+	 * bucket so a long tail is visible as a count rather than distorting the
+	 * scale.
+	 */
+#define AZ_M8_BUCKETS 129 /* 128 x 100us, then overflow */
+#define AZ_M8_BUCKET_NS 100000ull
+	uint32_t m8_hist[AZ_M8_BUCKETS];
 	/* The kernel's own guess at when the next refresh may occur, from
 	 * ev->refresh. Zero when unavailable. Under VRR this is the closest thing
 	 * to a period the hardware will tell us, so it is worth reading rather
@@ -1862,6 +1885,8 @@ struct Pertag {
 /* Defined after render/az_avk.h is available; named by the dispatch table in
  * parse_config.h, which is included first. */
 static int32_t reset_avk_stats(const Arg *arg);
+static int32_t reset_presentation(const Arg *arg);
+static int32_t set_t_pipe(const Arg *arg);
 static int32_t set_blur_rect_cap(const Arg *arg);
 static int32_t set_blur_chain_trace(const Arg *arg);
 static int32_t set_blur_cache(const Arg *arg);
@@ -1996,6 +2021,7 @@ static uint64_t az_pointer_notify_internal;
 /* The rendering seam, before anything that builds a frame: ext-protocol's
  * tearing path is one of az_output_build_frame()'s four callers. */
 #ifdef AZ_HAVE_VULKAN
+#include "present/az_presenter_impl.h"
 #include "render/az_avk.h"
 #include "render/az_dmabuf_caps.h"
 #endif
@@ -2013,6 +2039,71 @@ static int32_t reset_avk_stats(const Arg *arg) {
 	az_avk_stats_reset();
 	wlr_log(WLR_INFO, "AVK: statistics reset");
 #endif
+	return 0;
+}
+/*
+ * `amsg dispatch reset_presentation` -- zero the per-output presentation
+ * counters in place.
+ *
+ * Measuring a REGIME rather than a session. The M-8 latency series mixes idle
+ * and continuous frames, and those are not one population: on a VRR output the
+ * mean is dominated by waiting for the display to be ready, which is queueing
+ * and not pipeline latency. Separating them needs a reset that does not
+ * restart the compositor, because restarting destroys the workload being
+ * measured.
+ *
+ * The clock-domain proof is deliberately NOT cleared: it is a fact about the
+ * backend, established once, and re-deriving it per measurement would make it
+ * a repeated assumption again.
+ */
+/*
+ * `amsg dispatch set_t_pipe,<microseconds>` -- ADR-605's VRR pipeline
+ * constant, settable so it can be MEASURED rather than argued about.
+ *
+ * The value is not obvious and the obvious value is wrong: seeding it from the
+ * idle arm-to-photons mean (9050us on DP-1) fixes the idle bias and wrecks the
+ * loaded case, because under load the frame event fires essentially at the
+ * previous present, so `now + t_pipe` overtakes `last_present + P_min` and the
+ * max() picks the term that does not apply. Being able to set it live turns
+ * that from an argument into a measurement.
+ */
+static int32_t set_t_pipe(const Arg *arg) {
+	uint64_t us = arg != NULL && arg->i > 0 ? (uint64_t)arg->i : 0;
+	Monitor *m;
+	wl_list_for_each(m, &mons, link) {
+		m->presenter.t_pipe_ns = us * 1000ull;
+	}
+	wlr_log(WLR_INFO, "M6A: t_pipe set to %llu us on every output",
+		(unsigned long long)us);
+	return 0;
+}
+static int32_t reset_presentation(const Arg *arg) {
+	(void)arg;
+	Monitor *m;
+	wl_list_for_each(m, &mons, link) {
+		m->present_count = m->present_dropped = m->present_no_stamp = 0;
+		m->present_interval_ns = 0;
+		m->present_interval_rejected = 0;
+		m->present_cadence_1x = m->present_cadence_2x = m->present_cadence_3x
+			= 0;
+		m->present_last_ns = 0;
+		m->present_last_seq = 0;
+		m->m8_samples = m->m8_unmatched = 0;
+		m->m8_arm_sum_ns = m->m8_arm_min_ns = m->m8_arm_max_ns = 0;
+		m->m8_commit_sum_ns = m->m8_commit_min_ns = m->m8_commit_max_ns = 0;
+		m->m8_armed = false;
+		memset(m->m8_hist, 0, sizeof(m->m8_hist));
+		/* The presenter's own series too, so a regime measurement covers both
+		 * views. Not a full epoch reset: the mode has not changed, so the
+		 * phase and the proven clock domain stay valid. */
+		m->presenter.err_count = 0;
+		m->presenter.err_sum_ns = 0;
+		m->presenter.err_abs_sum_ns = 0;
+		m->presenter.err_min_ns = m->presenter.err_max_ns = 0;
+		m->presenter.obs_when_sum_ns = 0;
+		m->presenter.obs_seq_sum = 0;
+	}
+	wlr_log(WLR_INFO, "M6A: presentation counters reset");
 	return 0;
 }
 /*
@@ -5829,6 +5920,20 @@ void createmon(struct wl_listener *listener, void *data) {
 	}
 	wlr_output_state_finish(&state);
 
+	/*
+	 * ADR-604 trigger 1, and it has to be HERE rather than at listener setup.
+	 *
+	 * The presenter derives its nominal period and its regime from the output,
+	 * so resetting before the mode and adaptive-sync state were committed read
+	 * whatever the backend came up with: DP-1 took HDMI's 16666.666us period
+	 * onto a 6944us display and reported regime=fixed on a VRR panel. Every
+	 * number downstream then followed it -- the observed-period guard rejected
+	 * every real sample as out of range and accepted only idle gaps, and the
+	 * predictor aimed a 16.7ms lattice at a 6.9ms display for a -9266us mean
+	 * error. One wrong field at construction, and nothing after it was right.
+	 */
+	az_presenter_reset(m, AZ_PRESENT_RESET_CREATE);
+
 	wl_list_insert(&mons, &m->link);
 
 	m->pertag = calloc(1, sizeof(Pertag));
@@ -6555,11 +6660,14 @@ void requestmonstate(struct wl_listener *listener, void *data) {
 	 * old size, so only the top-left of the frame was ever painted and the
 	 * host's own wallpaper showed through the rest. Commit the state the
 	 * backend actually asked for. */
+	/* ADR-604 trigger 3: a backend-initiated state change. Reset AFTER the
+	 * commit, so the period is re-derived from what landed. */
 	if (!wlr_output_commit_state(m->wlr_output, event->state)) {
 		wlr_log(WLR_ERROR, "output %s: requested state could not be applied",
 				m->wlr_output->name);
 		return;
 	}
+	az_presenter_reset(m, AZ_PRESENT_RESET_REQUEST_STATE);
 
 	/* A size change has to re-run the layout: m->m/m->w, the bar strip and
 	 * every tiled window are all derived from the output geometry. Bitmask
@@ -7911,6 +8019,12 @@ outputmgrapplyortest(struct wlr_output_configuration_v1 *output_config, int32_t 
 		bool head_committed = test ? wlr_output_test_state(wlr_output, &state)
 								  : wlr_output_commit_state(wlr_output, &state);
 		ok &= head_committed;
+		/* ADR-604 trigger 2: a successful commit carrying mode, scale,
+		 * transform or adaptive sync. A TEST commits nothing and must not
+		 * reset -- the epoch would then bump on a query. */
+		if (!test && head_committed && m != NULL) {
+			az_presenter_reset(m, AZ_PRESENT_RESET_MODE);
+		}
 
 		/* clients like DMS's own idle-monitor-off feature (and wlr-randr)
 		 * enable/disable outputs through wlr-output-management-v1 instead
@@ -8233,6 +8347,10 @@ static void render_monitor(Monitor *m) {
 	 * commit that follows it. */
 	m->m8_arm_ns = (uint64_t)render_t0.tv_sec * 1000000000ull
 		+ (uint64_t)render_t0.tv_nsec;
+	/* ADR-605: state this pass's target presentation time, once, here. Every
+	 * animated object must sample against THIS instant rather than reading
+	 * its own clock (audit G3). */
+	az_presenter_arm(m, m->m8_arm_ns);
 
 	if (session && !session->active) {
 		return;
@@ -8525,6 +8643,8 @@ static void render_monitor(Monitor *m) {
 					(uint64_t)ct.tv_sec * 1000000000ull + (uint64_t)ct.tv_nsec;
 				m->m8_commit_seq = m->wlr_output->commit_seq;
 				m->m8_armed = true;
+				az_presenter_committed(m, m->wlr_output->commit_seq,
+					m->m8_commit_ns);
 			}
 		} else {
 			wlr_log(WLR_ERROR, "Failed to build frame for %s",
@@ -8616,6 +8736,17 @@ static void presentmon(struct wl_listener *listener, void *data) {
 
 	uint64_t when_ns =
 		(uint64_t)ev->when.tv_sec * 1000000000ull + (uint64_t)ev->when.tv_nsec;
+
+	{
+		/* ADR-603. The presenter's own view of this event: it applies its
+		 * epoch and clock gates independently, because the raw counters below
+		 * answer "what did the display do" and the presenter answers "was our
+		 * prediction any good", and those must not share a filter. */
+		struct timespec pn;
+		clock_gettime(CLOCK_MONOTONIC, &pn);
+		az_presenter_present(m, ev,
+			(uint64_t)pn.tv_sec * 1000000000ull + (uint64_t)pn.tv_nsec);
+	}
 
 	if (m->present_clock == PRESENT_CLOCK_UNKNOWN) {
 		struct timespec mono, real;
@@ -8730,6 +8861,8 @@ static void presentmon(struct wl_listener *listener, void *data) {
 				m->m8_commit_min_ns = c;
 			if (c > m->m8_commit_max_ns)
 				m->m8_commit_max_ns = c;
+			uint64_t b = c / AZ_M8_BUCKET_NS;
+			m->m8_hist[b < AZ_M8_BUCKETS - 1 ? b : AZ_M8_BUCKETS - 1]++;
 		}
 	} else if (m->m8_armed) {
 		m->m8_unmatched++;

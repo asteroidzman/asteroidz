@@ -746,6 +746,80 @@ static void handle_command(int client_fd, const char *cmd_raw) {
 					(double)pm->m8_commit_min_ns / 1e3);
 				cJSON_AddNumberToObject(lat, "commit_to_present_max_us",
 					(double)pm->m8_commit_max_ns / 1e3);
+				/*
+				 * Percentiles off the histogram. p10 is the one that matters:
+				 * it is commit-to-photons with the display READY, which is
+				 * what ADR-605's t_pipe wants -- the queueing case is already
+				 * carried by the predictor's P_min floor, so a mean would
+				 * count the wait twice. p50/p95 are here so the shape can be
+				 * seen rather than inferred from three numbers.
+				 */
+				static const int want[3] = {10, 50, 95};
+				static const char *names[3] = {
+					"commit_to_present_p10_us",
+					"commit_to_present_p50_us",
+					"commit_to_present_p95_us",
+				};
+				for (int w = 0; w < 3; w++) {
+					uint64_t need = pm->m8_samples * (uint64_t)want[w] / 100;
+					uint64_t acc = 0;
+					int b = 0;
+					for (; b < AZ_M8_BUCKETS; b++) {
+						acc += pm->m8_hist[b];
+						if (acc > need)
+							break;
+					}
+					/* The bucket's upper edge, so the figure is an inclusive
+					 * bound rather than a midpoint that no sample had. */
+					cJSON_AddNumberToObject(lat, names[w],
+						(double)((b + 1) * (int)(AZ_M8_BUCKET_NS / 1000)));
+				}
+			}
+			/*
+			 * ADR-601/605. The PRESENTER's view, kept beside the raw
+			 * observations rather than replacing them: the counters above say
+			 * what the display did, and this says whether the prediction was
+			 * any good. Conflating them would leave no way to tell a bad
+			 * predictor from a busy display.
+			 */
+			const struct az_presenter *ps = &pm->presenter;
+			cJSON *pr = cJSON_AddObjectToObject(e, "presenter");
+			cJSON_AddNumberToObject(pr, "epoch", (double)ps->epoch);
+			cJSON_AddStringToObject(pr, "regime",
+				az_present_regime_name(ps->regime));
+			cJSON_AddStringToObject(pr, "sync",
+				ps->sync == AZ_PRESENT_SYNCED ? "synced" : "unsynced");
+			cJSON_AddStringToObject(pr, "clock",
+				ps->clock == AZ_PRESENT_CLOCK_MONOTONIC ? "monotonic"
+				: ps->clock == AZ_PRESENT_CLOCK_FOREIGN ? "foreign"
+				                                        : "unknown");
+			cJSON_AddNumberToObject(pr, "nominal_period_us",
+				(double)ps->nominal_period_ns / 1e3);
+			cJSON_AddNumberToObject(pr, "period_us",
+				(double)az_presenter_period_ns(pm) / 1e3);
+			cJSON_AddNumberToObject(pr, "t_pipe_us",
+				(double)ps->t_pipe_ns / 1e3);
+			cJSON_AddNumberToObject(pr, "accepted",
+				(double)ps->presents_accepted);
+			cJSON_AddNumberToObject(pr, "discarded_pre_epoch",
+				(double)ps->presents_discarded_epoch);
+			/*
+			 * THE ERROR SERIES. Signed: positive means the frame lit up LATER
+			 * than predicted. mean and mean_abs are both here because a
+			 * predictor that is early half the time and late half the time has
+			 * a mean near zero and is not thereby good.
+			 */
+			cJSON *er = cJSON_AddObjectToObject(pr, "error");
+			cJSON_AddNumberToObject(er, "count", (double)ps->err_count);
+			if (ps->err_count) {
+				cJSON_AddNumberToObject(er, "mean_us",
+					(double)ps->err_sum_ns / (double)ps->err_count / 1e3);
+				cJSON_AddNumberToObject(er, "mean_abs_us",
+					(double)ps->err_abs_sum_ns / (double)ps->err_count / 1e3);
+				cJSON_AddNumberToObject(er, "min_us",
+					(double)ps->err_min_ns / 1e3);
+				cJSON_AddNumberToObject(er, "max_us",
+					(double)ps->err_max_ns / 1e3);
 			}
 			cJSON_AddItemToArray(arr, e);
 		}

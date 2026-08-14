@@ -371,6 +371,12 @@ static const DispatchAction dispatch_actions[] = {
 	{"reload_config", "", "Re-read the config from disk."},
 	{"reset_avk_stats", "",
 	 "Zero the Vulkan renderer's counters (see amsg get avk-stats)."},
+	{"set_t_pipe", "int",
+	 "M6A: the VRR pipeline constant in microseconds (see amsg get "
+	 "presentation)."},
+	{"reset_presentation", "",
+	 "Zero the per-output presentation counters (see amsg get presentation). "
+	 "The proven clock domain is kept."},
 	{"set_frame_trace", "int",
 	 "Diagnostic: log per-frame GPU timings and tag-transition progress at "
 	 "ERROR (1 on, 0 off). Several lines per frame."},

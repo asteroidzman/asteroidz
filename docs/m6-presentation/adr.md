@@ -17,6 +17,11 @@ with an `amsg get presentation` surface; the display period must be derived
 from vblank-**sequence** deltas, never presented-frame gaps; and **DP-1 runs
 with VRR enabled** — its vblank interval tracks content (11.9 ms idle,
 7.5 ms busy, against a 6.944 ms minimum), which reshapes ADR-605 entirely.
+M-8's regime split then sharpened this: under sustained animation load DP-1
+converges to the fixed floor lattice (79 ns off the mode period, zero
+skips), so the two prediction regimes diverge only at idle and at burst
+start — see ADR-605's M-8 refinement for why both branches are kept and
+how `t_pipe` is seeded.
 
 **Vocabulary fixed for all of M6** (no synonyms permitted in code or docs):
 
@@ -184,8 +189,8 @@ struct az_presenter {
     enum az_present_clock clock; /* UNKNOWN | MONOTONIC | FOREIGN */
     uint64_t nominal_period_ns;  /* from the committed mode; the MINIMUM
                                     period when regime == VRR */
-    uint64_t t_pipe_ns;          /* VRR regime: commit-to-photons estimate,
-                                    seeded from measurement M-8 (ADR-605) */
+    uint64_t t_pipe_ns;          /* VRR regime: arm-to-photons estimate,
+                                    seeded from measurement M-8c (ADR-605) */
     uint64_t last_present_ns;    /* meaningful only when SYNCED */
     uint32_t last_seq;           /* per-epoch, delta use only */
     uint32_t reset_commit_seq;   /* wlr_output->commit_seq at reset */
@@ -459,12 +464,14 @@ A lattice model applied to DP-1 would be systematically early by up to
   `P_min = nominal_period_ns` (the max-refresh floor, 6.944 ms on DP-1) and
   `t_pipe_ns` is the arm-to-photons estimate: the time from this instant
   through render, commit and scanout to light. In M6A `t_pipe_ns` is a
-  **per-output deterministic constant**, seeded from measurement M-8
-  (commit-to-present latency on DP-1, which Opus can instrument now that
-  both stamps share a proven clock domain) — it never self-adjusts within
-  the milestone. Until M-8 lands, the placeholder is `P_min`, documented as
-  a placeholder and expected biased; the error series quantifies exactly
-  how biased.
+  **per-output deterministic constant** — it never self-adjusts within the
+  milestone. Its seed comes from the **idle-regime arm→present**
+  distribution (measurement M-8c; see the M-8 refinement below for why
+  idle, and why arm→present rather than commit→present). Until M-8c
+  lands, the placeholder is the measured idle commit→present p50
+  (7 700 µs on DP-1) — documented as a placeholder that under-states the
+  constant by the arm→commit span; the error series quantifies exactly
+  how much.
 - **UNSYNCED, or clock FOREIGN:** `target_ns = now + t_pipe_ns` (no floor
   available; none needed for one honest frame).
 - Error asymmetry, stated so the series is read correctly: on FIXED a
@@ -472,6 +479,58 @@ A lattice model applied to DP-1 would be systematically early by up to
   never precede the commit, so predicted-too-early shows as one-sided
   positive error bounded below by the floor. The metric stays
   `present − target` in both regimes; its interpretation is per-regime.
+
+**The M-8 refinement** (measured mid-implementation; regime-split
+commit→present percentiles, 20 s windows after `reset_presentation`):
+
+- **Convergence under load.** Under continuous damage DP-1 stops
+  stretching: interval 6 944.413 µs against the 6 944.492 µs mode floor
+  (79 ns), cadence 2 871/2 871 × x1, zero skipped vblanks, commit→present
+  collapsed to p10/p50/p95 = 6 700/6 800/6 800 µs — one period with no
+  spread. In that state the floor term dominates and the VRR rule
+  `max(now + t_pipe, last_present + P_min)` **is algebraically the FIXED
+  lattice projection with n = 1** — the two regimes agree exactly in the
+  regime where prediction matters most, and diverge only at idle and at
+  burst start. The two branches are kept anyway, for three reasons. (a)
+  The divergence sits precisely on the highest-stakes frame: the first
+  frame of an animation leaving an idle, stretched display — the frame
+  whose mis-prediction is a visible hitch — where the floor does not bind
+  and only `now + t_pipe` speaks. (b) The convergence is this panel's
+  observed behaviour under saturating damage, not a contract: content
+  paced below the floor rate (client video under VRR) re-stretches the
+  interval while a compositor animation can overlap it, and other panels
+  or LFC states (M-9) need not converge at all. (c) There is no machinery
+  to remove — the `max()` *is* the collapse, one expression and one
+  constant; deleting the branch would mean lattice-projecting idle DP-1
+  on a 6.944 ms grid whose vblanks measurably arrive at 11.5 ms. The
+  analyser gains the corresponding cross-check: during sustained x1
+  cadence on a VRR epoch, armed targets must sit on the
+  `last_present + P_min` lattice; divergence there means the panel or the
+  model changed, and the check flags it as a finding rather than a
+  failure.
+- **Seeding correction, recorded so it is not re-derived.** An earlier
+  suggestion — seed `t_pipe` near the minimum of the pooled
+  commit→present series (~240 µs was cited) on the theory that the mean
+  was queueing-contaminated — is measured wrong. Under load the whole
+  distribution sits at one period with p10–p95 spanning 100 µs: there is
+  no queueing tail to strip, one period *is* the steady-state latency,
+  and the sub-millisecond pooled samples were idle-regime commits landing
+  just before an already-scheduled stretched flip. A low-percentile
+  pooled seed would have biased every target roughly a full frame
+  **early**. The operative case for `t_pipe` is the idle-start frame, so
+  the seed comes from the **idle-regime** distribution — and since
+  `t_pipe` is defined arm→photons, from idle-regime **arm→present**
+  (M-8c), not commit→present, which under-states it by the arm→commit
+  span (render + record + submit; the decaying-max `render_dur_ms` says
+  that span is not negligible).
+- **Expectation set now, not discovered later.** DP-1's idle
+  commit→present is genuinely wide (p10 2 400 / p50 7 700 / p95
+  12 900 µs): an idle VRR panel's readiness varies. The post-idle error
+  bucket on a VRR epoch is therefore *expected* wide; no constant removes
+  panel-readiness variance. If burst-start prediction error proves
+  visually significant, narrowing it (e.g. aligning the first commit's
+  phase) is an M6B project that must argue from this bucket — it is not a
+  reason to make `t_pipe` adaptive in M6A.
 
 **Tearing overlay** (either regime): the frame is neither anchored nor
 error-scored; sampling still needs an instant, so `target_ns = now +
@@ -487,9 +546,10 @@ separate "post-idle" error bucket, so a rephasing panel shows up as a
 bimodal post-idle distribution. **After idle, VRR:** the floor almost never
 binds (the last present is long past), so `target = now + t_pipe` — and
 this idle-burst first frame is precisely the case that matters most on the
-live desk, so M-8 must measure it separately from the continuous-damage
-steady state (the ~84 Hz idle cadence suggests low-framerate compensation,
-whose first-commit-after-quiet behaviour is unknown; M-9). **After a
+live desk, which is why M-8 was split by regime (delivered — see the M-8
+refinement above) and why the seed comes from the idle side (the ~84 Hz
+idle cadence still suggests low-framerate compensation, whose
+first-commit-after-quiet behaviour is unknown; M-9). **After a
 miss:** nothing special in either regime. The anchors self-correct on the
 next accepted present; a special-cased "miss recovery" path would be
 untested code on the hottest failure path.
@@ -1250,6 +1310,27 @@ the presentation IPC):**
   x2=35, x3plus=104 — genuinely stretched vblanks, not skips. HDMI-A-1:
   16 667.3 µs observed vs 16 666.7 nominal (0.6 µs). Basis of ADR-605's
   regime split.
+- **M-8 (delivered): commit→present split by regime**, 20 s windows after
+  `reset_presentation`, 100 µs histogram. Idle: HDMI-A-1 n=53
+  p10/p50/p95 = 12 900/12 900/12 900 µs (min 12 043, interval
+  16 666.647 µs); DP-1 n=256 p10/p50/p95 = 2 400/7 700/12 900 µs
+  (min 577, interval 11 519.525 µs, cadence 41/14/31). Continuous:
+  HDMI-A-1 n=1 198 p10/p50/p95 = 6 900/7 000/12 000 µs; DP-1 n=2 871
+  p10/p50/p95 = 6 700/6 800/6 800 µs, interval 6 944.413 µs vs floor
+  6 944.492 µs, cadence 2 871×x1, zero skips. Headline: **under sustained
+  load DP-1 converges to the fixed floor lattice**; VRR stretching happens
+  precisely when nothing is animating. Consequences folded into ADR-605's
+  M-8 refinement (regime convergence kept as two branches; `t_pipe` seeded
+  from the idle regime; the earlier near-minimum pooled-series seeding
+  suggestion is withdrawn as measured wrong — it would have biased targets
+  ~a full frame early).
+- **M-5 (answered): `ev->refresh` is not VRR-aware.** DP-1 reports a
+  constant 6 944.492 µs regardless of the actual stretched interval — the
+  hardware will not report the adaptive period; it must be derived from
+  sequence deltas, which the presenter does. On HDMI-A-1 the same field
+  agrees with the independently derived period to 18 ns — a cross-check
+  that the Δwhen/Δseq derivation is sound. Confirms the ban on
+  `ev->refresh` as a predictor input.
 
 **Measurements requested from Opus** (record results in this directory;
 M-8 gates a constant, nothing gates the build):
@@ -1267,25 +1348,26 @@ M-8 gates a constant, nothing gates the build):
 - **M-4** Post-idle phase continuity on the FIXED output (HDMI-A-1): the
   ADR-605 post-idle error bucket answers it; a rephasing panel shows a
   bimodal distribution.
-- **M-5** `ev->refresh` population on this backend (cross-check series
-  only; never a predictor input).
+- **M-5** — answered; see measured facts (`ev->refresh` not VRR-aware;
+  18 ns HDMI agreement validates the period derivation).
 - **M-6** Signed mean of the FIXED-regime error series ≈ 0 (lattice point
   chosen correctly) vs ≈ −1 period (off-by-one flip → apply the one-line
   `+P` correction with the evidence in hand).
 - **M-7** Per-frame snapshot churn and CPU eval cost attributable to
   animation transforms (ADR-612's reopen condition needs its
   instrumentation to exist, or "on merit" is rhetoric).
-- **M-8** — **wanted before the VRR `t_pipe_ns` constant is seeded, and
-  the answer to "which measurements do you want": this one first.**
-  Commit-to-photons latency on DP-1 (KMS commit point → presentation
-  stamp, same proven clock), measured separately for (a) continuous-damage
-  steady state and (b) the first commit after an idle gap (the LFC
-  interaction is the unknown that matters on the live desk). The ADR-605
-  VRR rule is parametric on this constant, so implementation proceeds with
-  the documented placeholder meanwhile.
+- **M-8** — delivered (commit→present split by regime; see measured
+  facts and the ADR-605 M-8 refinement). Outstanding remainder:
+  **M-8c — arm→present split by regime on DP-1** (requested; ~40 s). This
+  is the number that seeds `t_pipe_ns`, because `t_pipe` is defined
+  arm→photons and commit→present under-states it by the arm→commit span.
+  Until it lands, the documented placeholder is the idle commit→present
+  p50 (7 700 µs). Do not seed the constant from commit→present or from
+  any pooled-regime percentile.
 - **M-9** The panel's actual VRR range (min/max refresh from DRM) and
-  whether the 11.9 ms idle cadence is LFC doubling. Interprets M-8(b) and
-  the PRESENTATION_SCHEDULING population; not blocking.
+  whether the 11.9 ms idle cadence is LFC doubling. Interprets the
+  idle-regime M-8 distribution and the PRESENTATION_SCHEDULING
+  population; not blocking.
 - **M-10** Whether wlroots/asteroidz can enter/leave VRR without an output
   commit this compositor makes (`is_vrr_opening` and the tearing path
   transitions). Validates ADR-604's regime-per-epoch claim; if violated,
