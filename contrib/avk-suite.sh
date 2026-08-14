@@ -65,6 +65,8 @@ avk-frame-test.sh                  required
 avk-gradient-border-test.sh        required
 avk-gradient-crossoutput-test.sh   required
 avk-gradient-test.sh               required
+avk-m5-path-a-test.sh              required
+avk-live-matrix.sh                 live
 avk-gles-floor.sh                  manual
 avk-final-matrix.sh                perf
 avk-graph-test.sh                  required
