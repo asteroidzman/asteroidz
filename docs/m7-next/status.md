@@ -84,6 +84,83 @@ profile inert; a profile that does not reduce → FALLBACK; `peak_scene` still
 exactly 1.0 and `dither_q` still one output code. Falsifiers seen red: dropping
 the shaper's matrix, removing the LUT1D interlock, ignoring the shaper entirely.
 
+### D5 + G5 — Path A promoted
+
+`AZ_M5_PATH_A` now has the same shape as `AZ_M5_PATH_B`: unset = on wherever C3
+chose it, `=0` = the bisect handle restoring pre-M5 blending exactly. It was
+opt-in for a milestone on the stated grounds that it had not been *watched*
+rather than that it was wrong, and "not yet watched" never ends on its own.
+
+The promotion broke its own fixture, which is the only reason it was noticed:
+the control arm was spelled `run off` with no environment at all, so after the
+inversion both arms ran the same configuration. It failed on its premises
+rather than silently comparing a thing to itself. 12/12 with the arm fixed.
+
+**The live quality pass D5 asks for is OUTSTANDING and is the operator's.** What
+Path A changes is where the encode happens, not whether; blended pixels do
+change, and that is ADR-005 rather than a regression — but it is also the one
+thing no fixture can call correct on its own.
+
+### D6 + G4 — the preferred image description (`contrib/m6b-preferred-desc-test.sh`)
+
+`wlr_color_manager_v1_set_surface_preferred_image_description` had no callers,
+so every wp-cm client asking DP-1 what it preferred was told the compositor
+default — SDR — and correctly tone-mapped its HDR down to meet it. Each mapped
+surface is now told its output's own description, on map, on output-enter, and
+**after** an HDR state change commits (not in `hdr_resolve`, which would
+announce the description the output is about to leave).
+
+| | |
+|---|---|
+| wired | `preferred: set tf=14 primaries=1 … have=11100` |
+| broken (`AZ_BREAK_CM_NO_PREFERRED`) | `preferred: none` |
+
+`tf=14` **is** sRGB: wlroots maps its own `WLR_..._SRGB` to the protocol's
+`COMPOUND_POWER_2_4`, not to the protocol's `SRGB`. Asserting 14 asserts that
+the value went out through wlroots' mapping rather than being written by hand.
+
+The assertion had to come from a client — nothing inside the compositor can tell
+whether it said anything. `contrib/wlcm` distinguishes `set` / `none` /
+`no-protocol`, because "told SDR" and "told NOTHING" look identical on screen
+and are unrelated defects.
+
+**Two crashes, both mine, both in code that looked obviously right:**
+
+1. **NULL is not "the default".** wlroots dereferences `data` unconditionally,
+   so passing NULL for an SDR output is a null dereference the moment any wp-cm
+   client holds a feedback object.
+2. **A hard-coded protocol constant killed the compositor.** `_to_wlr()` has no
+   case for protocol `SRGB` and falls through to `abort()` — SIGABRT, core
+   dumped, observed. This file already carried the rule (start from wlroots'
+   enums, map outward with `_from_wlr()`); I reached for the obvious constant
+   instead.
+
+**The HDR arm is not covered headlessly and is not faked**: a headless output
+cannot present an HDR image description. Live-only, on DP-1.
+
+### G6 — transitions (`contrib/m6b-transition-test.sh`)
+
+Twenty profile on/off cycles, moving an 8-bit SDR output between Path A and
+Path B — the same resource lifecycle an HDR toggle uses.
+
+| | |
+|---|---|
+| validation errors across 20 cycles | **0** (layer asserted present first) |
+| frames refused | **0** |
+| pipeline compiles | **1**, not 20 — the keying holds |
+| intermediate images after | **0** — returned, not leaked |
+| blur cache rebuilds | **80** (≥ 2 per cycle) |
+
+The blur assertion had to earn its place twice: first it was measuring nothing
+(the M4I cache has no backdrop without a blurring shadow, so it read 0/0
+forever), then "greater than zero" was still satisfied by ordinary damage.
+**Falsifier, run and seen red:** removing `format` from the cache's validity
+test drops rebuilds from 80 to **zero** while hits stay at 80 — the cache is
+served straight across every domain change.
+
+**Why not HDR↔SDR, which is what G6 named:** a headless output does not support
+BT.2020 + PQ, so an HDR toggle there would be twenty no-ops reporting success.
+
 ### G3b — driven by AVK, headless (`contrib/m6b-icc-drive-test.sh`)
 
 Three arms differing in one config line, landing in three states:
@@ -140,16 +217,23 @@ perfectly. Only saturated colour moves visibly (`255,0,0 → 241,56,25`).
 
 ---
 
-## Open
+## Open — and all of it needs the operator, not more code
 
-- **G4 / D6** — preferred image description
-  (`wlr_color_manager_v1_set_surface_preferred_image_description`, zero callers
-  today), with `AZ_BREAK_CM_NO_PREFERRED`.
-- **G5 / D5** — Path A promotion. The headless half is green; the live half's
-  instrument is the operator watching HDMI-A-1, which is the point of it.
-- **G6** — the closing transition gate: ≥20 HDR↔SDR cycles, `validation_enabled`
-  asserted first, 0 VUIDs, the encode intermediate returned on every B-exit,
-  the blur cache invalidated across the domain change.
+Every gate that a machine can settle is settled. What remains needs a display
+that can present HDR and a person who can look at it.
+
+- **D5's live quality pass.** Path A is now the default; what it changes is
+  blended pixels, and no fixture can call that correct. One watched session.
+- **G4's HDR arm.** A headless output cannot present an HDR image description,
+  so `preferred: set tf=PQ primaries=BT2020` with DP-1's mastering values can
+  only be read on DP-1. `contrib/wlcm` is the instrument and takes seconds.
+- **G6's HDR↔SDR half.** Same reason: twenty toggles on DP-1, with
+  `validation_enabled` asserted first. The profile-toggle half is green and
+  exercises the same lifecycle.
+
+All three fit in **one** live session, which is what D5 asked for in the first
+place. Nothing about them is blocked on further work.
+
 - **The blend-domain residual, newly sharpened.** On the live A/B, ~2–3% of
   pixels sit beyond 1 code from the model, concentrated on translucent UI.
   Encoded-space and linear-space compositing must differ there, and in the

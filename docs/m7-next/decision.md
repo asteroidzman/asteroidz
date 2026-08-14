@@ -239,6 +239,12 @@ plumbing all exists on the output side.
   coarsely to act on.
 - **Everything M6A closed** stays closed on its own terms (status.md).
 
+> **DELIVERED 2026-08-14.** Every gate below that a machine can settle is
+> green, each with its falsifier observed red. What remains needs a display
+> that can present HDR and a person watching it: D5's live quality pass, G4's
+> HDR arm, and G6's HDR↔SDR half — all three in one session. Measurements,
+> defects found, and the one open finding are in `status.md`.
+
 **D8 — Acceptance gates.** Per the standing rule, no gate counts until its
 falsifier has been seen red; every break below runs in the ordinary suite,
 and a green break run is a suite failure.
