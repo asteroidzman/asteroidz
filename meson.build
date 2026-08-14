@@ -405,8 +405,14 @@ if build_vulkan
   # compared. These assert on the framebuffer, not on functions returning
   # true -- a renderer with the wrong blend state or a mis-folded transform
   # succeeds at every call it makes and draws the wrong picture.
-  test_avk_render = executable('test-avk-render', 'tests/test-avk-render.c',
-                               dependencies : [avk_dep],
+  # az_color_ref.c is linked in for M5's Path-B tests: the PQ encode is
+  # compared against C4's CPU reference, which was written from the ADRs rather
+  # than from the shader. A second copy of the shader's own arithmetic would be
+  # a tautology.
+  test_avk_render = executable('test-avk-render',
+                               ['tests/test-avk-render.c',
+                                'src/render/color/az_color_ref.c'],
+                               dependencies : [avk_dep, az_color_dep, libm],
                                build_by_default : false)
   test('avk-render', test_avk_render, timeout : 60)
 

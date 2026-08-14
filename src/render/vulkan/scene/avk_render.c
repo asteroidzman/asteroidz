@@ -78,6 +78,23 @@ bool avk_renderer_init(struct avk_renderer *renderer, struct avk_device *dev,
 		return false;
 	}
 
+	/*
+	 * M5/C6. The encode pass's own pipeline layout, sharing this renderer's
+	 * texture descriptor set layout so the intermediate's sampler set comes out
+	 * of the existing per-image cache.
+	 *
+	 * A failure here is NOT fatal: it costs Path B, which is an output that
+	 * falls back rather than a compositor that will not start. The frame path
+	 * checks for a pipeline before it composites into an intermediate, so the
+	 * failure mode is "this output renders through SceneFX", never "the scene is
+	 * written out as linear values pretending to be electrical ones".
+	 */
+	if (!avk_output_encode_init(&renderer->encode, dev,
+			renderer->pipes.texture_set_layout)) {
+		avk_log(AVK_ERROR, "avk: the output-encode pass did not initialise; "
+			"Path B outputs will not be driven by AVK");
+	}
+
 	/* M4D.P. A device that cannot measure itself must still draw, so a false
 	 * return here is recorded and ignored rather than failing init. */
 	avk_timestamps_init(&renderer->timestamps, dev);
@@ -264,6 +281,12 @@ void avk_renderer_finish(struct avk_renderer *renderer) {
 	avk_timestamps_finish(&renderer->timestamps);
 	avk_retire_finish(&renderer->retire, renderer->dev);
 	avk_cmd_ring_finish(&renderer->ring);
+	/* After the retire queue: the encode pipelines are not retired against a
+	 * timeline point, so nothing may still be recording with them bound. */
+	avk_output_encode_finish(&renderer->encode);
+	if (renderer->pipes_srgb_format != VK_FORMAT_UNDEFINED) {
+		avk_pipelines_finish(&renderer->pipes_srgb);
+	}
 	avk_pipelines_finish(&renderer->pipes);
 	memset(renderer, 0, sizeof(*renderer));
 }
@@ -920,6 +943,44 @@ static bool az_cmd_opaque_region(const struct avk_renderer *renderer,
  * batches was correct here for three milestones and would stop being correct
  * the first time a second pass was added above it.
  */
+/*
+ * PATH A'S SECOND PIPELINE SET, built on first use.
+ *
+ * Lazy rather than at init because it is worth nothing on a desktop with no
+ * Path-A output, and because the _SRGB twin format is a property of the TARGET
+ * (its dma-buf's format list) rather than of the renderer -- so it is not known
+ * until a frame arrives carrying one.
+ *
+ * A failure is not fatal: the caller then does not take the _SRGB view and the
+ * frame renders the pre-M5 picture, which is exactly the fallback an output
+ * whose modifier cannot carry the view already gets.
+ */
+static bool avk_renderer_srgb_pipelines(struct avk_renderer *renderer,
+		VkFormat srgb) {
+	if (srgb == VK_FORMAT_UNDEFINED) {
+		return false;
+	}
+	if (renderer->pipes_srgb_ok) {
+		/* One renderer serves one UNORM format and its _SRGB twin is unique, so
+		 * a disagreement here is a bug elsewhere -- and must not turn into a
+		 * pipeline recompile on the frame path. */
+		return renderer->pipes_srgb_format == srgb;
+	}
+	/* Attempted, recorded before the result, so a device that cannot build them
+	 * is asked once rather than once per frame. */
+	renderer->pipes_srgb_ok = true;
+	renderer->pipes_srgb_format = VK_FORMAT_UNDEFINED;
+	if (!avk_pipelines_init(&renderer->pipes_srgb, renderer->dev, srgb)) {
+		avk_log(AVK_ERROR, "avk: no _SRGB pipeline set for format %d; Path A "
+			"stays on the direct write for this target", (int)srgb);
+		return false;
+	}
+	renderer->pipes_srgb_format = srgb;
+	avk_log(AVK_INFO, "avk: Path A pipelines built for the _SRGB attachment "
+		"format %d", (int)srgb);
+	return true;
+}
+
 static void az_record_compose(VkCommandBuffer cb, void *user) {
 	struct avk_render_segment *ctx = user;
 	struct avk_renderer *renderer = ctx->renderer;
@@ -963,10 +1024,21 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 	 */
 	bool break_preserve = avk_no_load_preserve();
 	VkImageView attach_view = target->view;
+	/*
+	 * WHICH PIPELINE SET THIS SEGMENT DRAWS WITH.
+	 *
+	 * The renderer's own, except on Path A: there the attachment is the
+	 * target's _SRGB view, and the pipelines bound to it MUST declare that same
+	 * format or every draw is invalid usage. See `pipes_srgb` in avk_render.h
+	 * for the VUID and for why nothing noticed.
+	 */
+	struct avk_pipelines *pipes = &renderer->pipes;
 	if (renderer->encode_srgb) {
 		VkImageView srgb = avk_image_srgb_view(renderer->dev, target);
-		if (srgb != VK_NULL_HANDLE) {
+		if (srgb != VK_NULL_HANDLE
+				&& avk_renderer_srgb_pipelines(renderer, target->format_srgb)) {
 			attach_view = srgb;
+			pipes = &renderer->pipes_srgb;
 			renderer->stats.srgb_attach_segments++;
 		}
 	}
@@ -1034,7 +1106,7 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 	 * gradients are drawn -- and none at all in a frame that draws none. */
 	if (gradient_set != VK_NULL_HANDLE) {
 		vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
-			renderer->pipes.layout, 1, 1, &gradient_set, 0, NULL);
+			pipes->layout, 1, 1, &gradient_set, 0, NULL);
 	}
 
 	VkPipeline bound = VK_NULL_HANDLE;
@@ -1114,8 +1186,8 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 		}
 		if (count > 0) {
 			vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
-				renderer->pipes.rect);
-			bound = renderer->pipes.rect;
+				pipes->rect);
+			bound = pipes->rect;
 
 			struct avk_push_constants pc = {0};
 			pc.uv_dy[2] = (float)ctx->origin_x;
@@ -1130,7 +1202,7 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 			pc.params[0] = 1.0f;
 			pc.params[2] = (float)width;
 			pc.params[3] = (float)height;
-			vkCmdPushConstants(cb, renderer->pipes.layout,
+			vkCmdPushConstants(cb, pipes->layout,
 				VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
 				sizeof(pc), &pc);
 
@@ -1306,7 +1378,7 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 
 		VkPipeline want;
 		if (cmd->type == AVK_CMD_SHADOW) {
-			want = renderer->pipes.shadow;
+			want = pipes->shadow;
 			/*
 			 * STRAIGHT rgb, not premultiplied, and this is the one command
 			 * type that hands the shader an unpremultiplied colour on purpose.
@@ -1397,13 +1469,13 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 			 * image know about neither.
 			 */
 			if (cmd->blur_edge_softness > 0.0f) {
-				want = renderer->pipes.blur_soft;
+				want = pipes->blur_soft;
 				/* The same slot a shadow's sigma uses, for the same quantity;
 				 * see push.glsl. Set AFTER the block below, which writes 1.0
 				 * there for the hard-edged case. */
 				renderer->stats.blur_soft_draws++;
 			} else {
-				want = renderer->pipes.texture;
+				want = pipes->texture;
 			}
 			/*
 			 * The result transient covers the CAPTURE region and may be larger
@@ -1437,14 +1509,14 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 			}
 			pc.params[1] = edge > 0.0f ? edge : 1.0f;
 
-			VkDescriptorSet set = avk_pipelines_texture_set(&renderer->pipes,
+			VkDescriptorSet set = avk_pipelines_texture_set(pipes,
 				result, false);
 			if (set == VK_NULL_HANDLE) {
 				pixman_region32_fini(&region);
 				continue;
 			}
 			vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
-				renderer->pipes.layout, 0, 1, &set, 0, NULL);
+				pipes->layout, 0, 1, &set, 0, NULL);
 			renderer->stats.surfaces++;
 			renderer->stats.blur_draws++;
 		} else if (cmd->type == AVK_CMD_TEXTURE) {
@@ -1453,8 +1525,8 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 				continue;
 			}
 			want = (renderer->opaque_noblend && az_cmd_fully_opaque(cmd))
-				? renderer->pipes.texture_opaque : renderer->pipes.texture;
-			if (want == renderer->pipes.texture_opaque) {
+				? pipes->texture_opaque : pipes->texture;
+			if (want == pipes->texture_opaque) {
 				renderer->stats.opaque_noblend_draws++;
 			}
 			/*
@@ -1479,9 +1551,9 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 				default: break;
 				}
 				if (v != AVK_DECODE_NONE
-						&& renderer->pipes.texture_decode[v]
+						&& pipes->texture_decode[v]
 							!= VK_NULL_HANDLE) {
-					want = renderer->pipes.texture_decode[v];
+					want = pipes->texture_decode[v];
 					renderer->stats.decode_draws++;
 					renderer->stats.decode_by_variant[v]++;
 				}
@@ -1509,7 +1581,7 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 			 */
 			pc.color[0] = cmd->lum.scale - 1.0f;
 
-			VkDescriptorSet set = avk_pipelines_texture_set(&renderer->pipes,
+			VkDescriptorSet set = avk_pipelines_texture_set(pipes,
 				cmd->image, cmd->filter_linear);
 			if (set == VK_NULL_HANDLE) {
 				pixman_region32_fini(&region);
@@ -1517,12 +1589,12 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 			}
 
 			vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
-				renderer->pipes.layout, 0, 1, &set, 0, NULL);
+				pipes->layout, 0, 1, &set, 0, NULL);
 			renderer->stats.surfaces++;
 		} else {
 			want = (renderer->opaque_noblend && az_cmd_fully_opaque(cmd))
-				? renderer->pipes.rect_opaque : renderer->pipes.rect;
-			if (want == renderer->pipes.rect_opaque) {
+				? pipes->rect_opaque : pipes->rect;
+			if (want == pipes->rect_opaque) {
 				renderer->stats.opaque_noblend_draws++;
 			}
 			for (int c = 0; c < 3; c++) {
@@ -1552,7 +1624,7 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 				uint32_t rec = avk_gradient_store_push(&renderer->gradients, g,
 					scene->gradient_colors + (size_t)g->color_offset * 4);
 				if (rec != UINT32_MAX) {
-					want = renderer->pipes.gradient;
+					want = pipes->gradient;
 					pc.params[1] = (float)rec;
 				}
 			}
@@ -1607,7 +1679,7 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 		 * happens to be shaded by the gradient pipeline, and it belongs in
 		 * both totals. Keyed on the pipeline actually selected, so it counts
 		 * gradients that were DRAWN as such rather than merely requested. */
-		if (want == renderer->pipes.gradient) {
+		if (want == pipes->gradient) {
 			px->gradient += area;
 		}
 		/*
@@ -1648,7 +1720,7 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 			vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, want);
 			bound = want;
 		}
-		vkCmdPushConstants(cb, renderer->pipes.layout,
+		vkCmdPushConstants(cb, pipes->layout,
 			VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
 			sizeof(pc), &pc);
 
@@ -2071,6 +2143,57 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 	}
 
 	/*
+	 * ── PATH B: WHERE THE SCENE COMPOSITES ────────────────────────────────
+	 *
+	 * On Path B the scene does NOT composite into the scan-out buffer. It
+	 * composites into a scene-linear FP16 intermediate the caller lends us, and
+	 * one damage-scissored encode pass at the end of the frame turns those
+	 * values into output codes (ADR-008). `compose` is the attachment every
+	 * segment below renders into, and it is the scan-out buffer only on Path A.
+	 *
+	 * THE PIPELINE IS RESOLVED FIRST, BEFORE ANYTHING IS DECLARED. A frame that
+	 * composited into the intermediate and then found it had no encode pipeline
+	 * would have two bad options left: present the intermediate's linear values
+	 * as though they were electrical, or present the previous frame. Refusing
+	 * Path B here instead leaves the ordinary path intact, which renders the
+	 * pre-M5 picture -- wrong for a colour-managed output and not wrong for
+	 * anything else.
+	 */
+	struct avk_image *compose = target;
+	uint32_t r_compose = r_target;
+	VkImageLayout compose_layout = target_layout;
+	VkPipeline encode_pipeline = VK_NULL_HANDLE;
+	bool path_b = false;
+	if (renderer->encode_intermediate != NULL) {
+		struct avk_image *inter = renderer->encode_intermediate;
+		if (inter->extent.width != width || inter->extent.height != height) {
+			/* Loud rather than silent: a mismatched intermediate would map the
+			 * fullscreen triangle's [0,1] onto a different rectangle of the
+			 * source, which is a plausible-looking rescale of the whole
+			 * desktop. */
+			avk_log(AVK_ERROR, "avk encode: intermediate is %ux%u for a %ux%u "
+				"target; this frame takes the direct path",
+				inter->extent.width, inter->extent.height, width, height);
+		} else {
+			encode_pipeline = avk_output_encode_pipeline(&renderer->encode,
+				target->format, renderer->encode_params.pq);
+			if (encode_pipeline != VK_NULL_HANDLE) {
+				r_compose = avk_graph_add_image(graph, inter, false,
+					AVK_EXIT_KEEP);
+				if (r_compose != AVK_GRAPH_INVALID) {
+					compose = inter;
+					/* Ours, never foreign: nothing outside this device can see
+					 * it, so no acquire from VK_QUEUE_FAMILY_FOREIGN_EXT. */
+					compose_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+					path_b = true;
+				} else {
+					r_compose = r_target;
+				}
+			}
+		}
+	}
+
+	/*
 	 * ── LIVE BLUR: every chain, declared before anything draws ────────────
 	 *
 	 * For each AVK_CMD_BLUR at index k, in INCREASING scene order:
@@ -2116,6 +2239,23 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 	pixman_region32_init(&blur_generated);
 	pixman_region32_copy(&prefix_damage, &scene->damage);
 	pixman_region32_copy(&frame_damage, &scene->damage);
+	/*
+	 * A FRESH INTERMEDIATE HOLDS NOTHING, so the first frame into it must be a
+	 * whole one.
+	 *
+	 * The damage handed in describes the age of the SCAN-OUT buffer, which
+	 * rotates through several while the intermediate does not -- so it is always
+	 * at least a frame's worth and usually more, which is why every LATER frame
+	 * needs nothing special here. Only the first does, and getting it wrong
+	 * leaves whatever the driver last left in that memory visible outside the
+	 * first frame's damage.
+	 */
+	if (path_b && renderer->encode_full_frame) {
+		pixman_region32_union_rect(&prefix_damage, &prefix_damage, 0, 0,
+			width, height);
+		pixman_region32_union_rect(&frame_damage, &frame_damage, 0, 0,
+			width, height);
+	}
 	if (blur_count > 0) {
 		slots = calloc(blur_count, sizeof(*slots));
 		if (slots == NULL) {
@@ -3017,10 +3157,14 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 	struct avk_render_segment ctx = {
 		.renderer = renderer,
 		.scene = scene,
-		.target = target,
+		/* The scan-out buffer on Path A, the scene-linear intermediate on
+		 * Path B. Nothing else in the segment changes: the coordinate contract
+		 * is origin 0,0 either way, and a command does not know which
+		 * attachment it lands in. */
+		.target = compose,
 		.width = width,
 		.height = height,
-		.layout = target_layout,
+		.layout = compose_layout,
 		.origin_x = 0,
 		.origin_y = 0,
 		.begin = 0,
@@ -3072,9 +3216,50 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 		renderer->blur_max_slots = (uint64_t)slot_len;
 	}
 
-	if (!avk_render_declare_segment(graph, &ctx, r_target)) {
+	if (!avk_render_declare_segment(graph, &ctx, r_compose)) {
 		avk_cmd_ring_abandon(&renderer->ring);
 		return 0;
+	}
+
+	/*
+	 * ── THE ENCODE PASS (C6, ADR-008) ─────────────────────────────────────
+	 *
+	 * Declared AFTER the composition segment, so the graph derives exactly the
+	 * one dependency this architecture has: the intermediate goes from
+	 * colour-write to sampled-read, and the scan-out buffer is acquired for
+	 * colour-write. Neither barrier is written here.
+	 *
+	 * `encode` outlives avk_graph_execute() by living in this frame's stack
+	 * frame, the same way the segments do -- the graph holds the pointer and
+	 * records the pass later.
+	 */
+	struct avk_encode_pass encode = {0};
+	if (path_b) {
+		encode = (struct avk_encode_pass){
+			.enc = &renderer->encode,
+			.pipes = &renderer->pipes,
+			.src = compose,
+			.dst_view = target->view,
+			.dst_layout = target_layout,
+			.width = width,
+			.height = height,
+			.pipeline = encode_pipeline,
+			.params = renderer->encode_params,
+			/* The same region the composition segment drew: every pixel that
+			 * may have changed and no others. */
+			.damage = &frame_damage,
+			.draws = &renderer->stats.encode_draws,
+			.px = &renderer->stats.encode_px,
+		};
+		if (!avk_graph_pass_begin(graph, "output_encode",
+				avk_output_encode_record, &encode)
+				|| !avk_graph_use(graph, r_compose, AVK_USE_SAMPLED_READ, NULL)
+				|| !avk_graph_use(graph, r_target, AVK_USE_COLOR_WRITE, NULL)) {
+			avk_graph_pass_end(graph);
+			avk_cmd_ring_abandon(&renderer->ring);
+			return 0;
+		}
+		avk_graph_pass_end(graph);
 	}
 
 	/*
@@ -3169,6 +3354,16 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 	 * own. Whoever presents or reads it next transitions from what the image
 	 * says, not from an assumption. */
 	target->last_use = value;
+	/*
+	 * And the intermediate, which this frame both wrote and sampled. Without
+	 * this its last_use stays 0 and an output resize would push it onto the
+	 * retire queue as already-finished -- vkDestroyImage on an image a submitted
+	 * command buffer is still reading. Exactly the class of bug the sampled-image
+	 * stamping above exists for.
+	 */
+	if (path_b && compose != target) {
+		compose->last_use = value;
+	}
 	renderer->stats.frames++;
 
 	struct timespec end;

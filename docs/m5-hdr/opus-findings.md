@@ -574,3 +574,180 @@ distinct "untagged" value so the two cases stop being the same value. That is a
 subproject change with an ABI surface, it is not needed for Path A to be
 correct, and the decision is the ADR owner's. Until then this adapter is the one
 place the ambiguity is resolved, and it says so.
+
+---
+
+## F13 — Path A is invalid usage, and it shipped a milestone that way (C7)
+
+**The defect.** Path A attaches the target's `_SRGB` view to pipelines created
+with the UNORM twin as their colour-attachment format. Dynamic rendering bakes
+that format into the pipeline and the spec requires it to match the attached
+view:
+
+    VUID-vkCmdDraw-dynamicRenderingUnusedAttachments-08910: vkCmdDraw():
+    VkRenderingInfo::pColorAttachments[0].imageView format
+    (VK_FORMAT_B8G8R8A8_SRGB) must match the corresponding format in
+    VkPipelineRenderingCreateInfo::pColorAttachmentFormats[0]
+    (VK_FORMAT_B8G8R8A8_UNORM).
+
+**Why it looked right.** RADV executes it correctly. Path A produced the right
+picture, a clean A/B against the direct path, and a 0-code round trip on both
+the unit fixture and a real output — while being undefined behaviour on every
+draw of every frame. It fired twenty times in a single run of
+`tests/test-avk-render.c` the first time that fixture was run under the
+validation layer, which was during M5.5. It is present on the unmodified M5.4
+tree; this is not a regression introduced by Path B.
+
+**The fix.** A second `avk_pipelines` declaring the `_SRGB` format, built lazily
+on the first frame that takes the fast path — so a desktop with no Path-A output
+never pays for it, and the twin format is discovered from the target rather than
+guessed at init. Only the pipeline objects differ: descriptor sets, samplers and
+pools still come from the primary set through the same per-image cache, because
+the two pipeline layouts are created from identically defined set layouts and
+identical push-constant ranges, which is the spec's definition of layout
+compatibility. Duplicating the descriptor cache to avoid using it would double
+every surface's descriptors for nothing.
+
+**After:** 0 VUIDs in the unit fixture, and Path A's compositor round trip is
+still 0 differing pixels.
+
+**The alternative that was not taken.** Path A could instead have selected the
+renderer keyed on the `_SRGB` format outright, the way Path B selects the FP16
+one. That is arguably cleaner, but it would also make every blur transient and
+the whole M4I cache `_SRGB`-encoded storage — a real change to what a blur
+averages, needing its own measurement. Correcting invalid usage should not
+smuggle in a change to what the blur does.
+
+---
+
+## F14 — every `validation_errors == 0` assertion without the layer was empty
+
+**The mechanism.** `validation_errors` increments in exactly one place: the
+validation layer's message callback (`avk_log.c`). The layer is only loaded when
+`ASTEROIDZ_VK_DEBUG` is set. So in every fixture that does not set it, the
+counter reads 0 whatever the frame did.
+
+`avk-m5-path-a-test.sh` asserted it that way for the whole of M5.4, over a Path
+A that was emitting twenty VUIDs a run. It is not the only one: of the fixtures
+under `contrib/` that assert `validation_errors`, most never set the variable.
+The live session does have it set (it is in the GDM line), which is why the live
+qualification's 0-VUID column was real and the headless ones were not.
+
+**The fix is a premise, not a habit.** `avk-stats` now reports
+**`validation_enabled`**, taken from `avk_instance.validation_enabled` — what
+the loader actually gave us, not what the environment asked for. A fixture that
+asserts the count asserts that first, and both M5 fixtures now run every arm
+under the layer:
+
+| fixture | before | after |
+|---|---|---|
+| `avk-m5-path-a-test.sh` | 10/10, layer off | **12/12, layer on** |
+| `avk-m5-path-b-test.sh` | — | **13/13, layer on** |
+
+**The general shape**, which this project has now hit four times (two dead
+breaks in M4H, the rejected config in M4I, the vacuous multi-output assertions,
+and this): an instrument that reports success by measuring nothing. The rule
+that falls out is narrow enough to be worth writing down — *an assertion on a
+counter must be preceded by an assertion that the counter can move.*
+
+---
+
+## F15 — C6 landed, and the falsifier was inert on grey
+
+**Status.** C6 is complete: `avk_output_encode.{c,h}` (pipeline per (target
+format, curve), fullscreen triangle, damage as scissors, LOAD attachment), the
+per-output persistent FP16 intermediate, and the integration in
+`avk_render_frame` / `az_avk.h`. F10's deferral is closed.
+
+**ADR-012 needed no code.** The blur transients, the prefix captures and the
+M4I cache are all allocated in `renderer->format`, and Path B selects the
+renderer keyed on `R16G16B16A16_SFLOAT` — so "the blur transient format follows
+the path" is a consequence of the existing per-format renderer selection rather
+than a rule anything enforces. The cache's `format` field then invalidates it
+across a path change without a line written for that either.
+
+**The falsifier that measured nothing.** The Path-B SDR gate's break replaces
+the identity matrix with BT.709→BT.2020, which C3 must never derive for an SDR
+output. Run against a grey ramp it reported **0 codes of difference** — because
+every row of that matrix sums to 1, so a neutral colour is invariant under it.
+The assertion was true about grey and said nothing whatever about the matrix.
+With the channels offset by a third of the range each, the same break moves the
+worst channel to **61**.
+
+This is the `coverage by coincidence` pattern again, and the tell was the same:
+the right answer and the wrong answer agreed, so the test could not tell them
+apart.
+
+**What Path B measures.**
+
+| claim | result |
+|---|---|
+| SDR round trip vs the pre-M5 8-bit picture | worst channel **0** |
+| wrong gamut matrix (the break) | worst channel **61** |
+| PQ vs `az_ref_encode_scene`, 10-bit | **0** codes at five of six values, 1 at the panel ceiling |
+| compositor: wallpaper-only frame, real scan-out | **0** px differ |
+| encode pipeline compiles, steady state | **1**, and it stops |
+| validation errors, layer confirmed on | **0** |
+
+The one code at scene 4.926 is the FP16 store rather than the encode's
+arithmetic: half-float carries about 5e-4 of relative precision and PQ's slope
+turns that into rather more than one 10-bit code near the ceiling. It is stated
+here instead of being folded into a vaguer tolerance.
+
+---
+
+## F16 — a config colour is a source too, and nothing was decoding it
+
+**The defect.** C7 gives every client BUFFER a luminance domain and decodes it.
+A border's colour has no buffer: it is an sRGB hex triple out of a config file
+that reaches the renderer as a command field. Nothing decoded it, because until
+M5 composition happened in the same encoding the config was written in.
+
+On a linear path that is wrong by a lot. An electrical 0.5 entered the blend as
+though it were a scene value and the encode re-encoded it. Measured on the GPU
+(`tests/test-avk-render.c`, before the fix):
+
+| asked | direct | linear path | error |
+|---|---|---|---|
+| 64 | 64 | 137 | **+73** |
+| 128 | 128 | 188 | **+60** |
+| 192 | 192 | 225 | **+33** |
+
+That is every border, every background rect and every shadow tint on the
+desktop — on **both** Path A and Path B, so it was present and unnoticed
+through M5.4's gate. The gate did not catch it because the gate draws a
+TEXTURE, and so did both compositor fixtures: the harness wallpaper is a PNG,
+which is a client buffer and takes C7's path. A frame made entirely of decoded
+sources round-trips perfectly while every solid colour on top of it is 60 codes
+out.
+
+**The fix** is `az_avk_scene_rgb()` in `az_avk.h` — ADR-004's rule ("what is
+untagged is piecewise-sRGB BT.709") applied to the other kind of source in the
+scene. Applied at four sites: the rect colour (un-premultiplied first, because
+a curve applied to colour-times-coverage is neither), the shadow colour (already
+straight), the gradient stops (un-premultiply, decode, re-premultiply — a
+gradient whose ends were decoded and whose stops were not is a border that
+changes colour along its length), and the frame's clear.
+
+It lives on the compositor side of the boundary, not in the renderer, for the
+same reason `az_avk_lum_of()` does: a command still does not know which
+attachment it lands in, and colour policy is not the renderer's.
+
+**RGB only.** Alpha is coverage; it is linear by definition and has no
+colorimetry (ADR-005). Running it through a transfer function is the mistake
+that makes every translucent panel the wrong opacity.
+
+**Asserted in two places, deliberately split.** The renderer's half — given a
+SCENE value, the encode puts the right code on screen — is
+`test_solid_colour_domain`, with a falsifier that feeds it the electrical value
+and requires 188. The compositor's half — the walk supplies scene values — is
+stage 2 of `contrib/avk-m5-path-b-test.sh`, which probes a pixel in the middle
+of a 12px border ring rather than comparing whole frames, because a window's
+antialiased corners and blended edge are *expected* to move on a linear path.
+With one test spanning both halves, a fix in either would make it pass and
+neither would be pinned.
+
+Run against a build with the walk's decode removed, stage 2 reports the border
+at **(228, 173, 106)** where the config asked for **(198, 107, 37)** — and
+stage 1, the wallpaper, still passes at 0 px, which is what makes the two
+stages genuinely independent probes rather than one claim written twice.

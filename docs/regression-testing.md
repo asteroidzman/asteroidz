@@ -1199,6 +1199,16 @@ A tap is a graph pass declaring `AVK_USE_TRANSFER_READ`, which is what makes
 reading the *foreign* scan-out target possible without hand-rolling a
 queue-family transfer — the graph already owns the acquire and release.
 
+**On Path B the PREFIX and BLUR taps are DECLINED, and say so once.** Every
+stride and every compare in the oracle is four-bytes-a-pixel; Path B's prefix
+and blur images are scene-linear FP16 at eight, so a tap would read half of each
+row and report the difference between two misaligned pictures as a divergence.
+The OUTPUT tap is unaffected — that is still the scan-out buffer, in the
+scan-out format — so the oracle still names a divergent frame, it just cannot
+say which boundary produced it. Adapting it would mean giving it a second notion
+of difference: its whole vocabulary is "N pixels differ by M *codes*", and a
+code is a property of a quantised format, not of half-floats.
+
 ```text
 contrib/avk-oracle-test.sh   10   premise + control; MODE=fixture adds 180 deg
 contrib/avk-oracle-runs.sh   --   the same trigger N times, one row per run
@@ -1367,6 +1377,46 @@ presentation feedback at commit — measured end-of-render to present is 4 µs a
 p50 — so effective-refresh collapse (§ the 6.9/13.9/6.9 cadence) is a question
 only the live DRM backend can answer. Headless can prove the animation engine is
 refresh-independent; it cannot prove the display kept up.
+
+### M5: the two colour paths, and asserting the premise of a premise
+
+```text
+contrib/avk-m5-path-a-test.sh   12   decode on sample + _SRGB encode on write
+contrib/avk-m5-path-b-test.sh   13   FP16 intermediate + the output-encode pass
+./build/test-avk-render          -   both paths on a device, plus PQ vs the
+                                     CPU reference at 10 bits
+```
+
+Both fixtures render a **wallpaper-only** frame, and that is not a shortcut:
+the whole point of either path is to move composition into linear light, so a
+*blended* pixel is expected to come out different — that is ADR-005 and it is
+the feature. A frame with nothing blended in it must round-trip exactly, so
+any difference at all is a defect rather than a judgement call about how much
+linear compositing should move a pixel. Both report **0 differing pixels** on
+the real scan-out buffer.
+
+`avk-m5-path-b-test.sh` runs the SAME configuration twice before it compares
+anything, and asserts those two are identical. Without that control, "the
+direct and Path-B frames agree" is also what a capture path that always returns
+the same bytes — or always fails the same way — would report.
+
+**Both fixtures run every arm under `ASTEROIDZ_VK_DEBUG=1`, and assert
+`validation_enabled` before they assert `validation_errors`.** The counter only
+increments from the validation layer's callback, so without the layer it reads
+0 whatever the frame did. `avk-m5-path-a-test.sh` asserted it that way for a
+whole milestone while Path A attached the scan-out's `_SRGB` view to pipelines
+declaring the UNORM twin — twenty VUIDs a run, invisible to every headless
+fixture. Most fixtures under `contrib/` that assert `validation_errors` still
+never set the variable; that is worth fixing where it matters, but the rule to
+carry forward is the general one: **an assertion on a counter must be preceded
+by an assertion that the counter can move.**
+
+Path B is reached with `AZ_M5_PATH_B=force`, which puts an output C3 assigned
+to Path A onto Path B instead. That is a test instrument and not a setting —
+Path A is strictly cheaper where it exists. The force is what makes the
+comparison mean anything: there is no pre-M5 10-bit picture for a genuine
+Path-B output to be compared against, so the gate has to run on an 8-bit
+output that has one.
 
 ### M4F.2C.4e: the rest of the transform surface
 

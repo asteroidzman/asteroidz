@@ -28,6 +28,11 @@
 #include <unistd.h>
 
 #include "render/vulkan/scene/avk_render.h"
+/* C1's primitives and C4's CPU reference: the PQ test compares against them
+ * rather than against a second copy of the same arithmetic. */
+#include "render/az_output_color.h"
+#include "render/color/az_color.h"
+#include "render/color/az_color_ref.h"
 
 static int failures = 0;
 static int checks = 0;
@@ -56,6 +61,11 @@ struct harness {
 	struct avk_instance *inst;
 	struct avk_device *dev;
 	struct avk_renderer renderer;
+	/* M5/C6. The scene-linear working renderer, built lazily: composition on
+	 * Path B targets an FP16 attachment, and dynamic rendering bakes that
+	 * format into every pipeline, so it is a second renderer by construction. */
+	struct avk_renderer fp16;
+	bool fp16_ok;
 	struct avk_image *target;
 	uint32_t pixels[W * H];
 };
@@ -75,9 +85,9 @@ static uint32_t find_memory(struct avk_device *dev, uint32_t bits,
 	return UINT32_MAX;
 }
 
-static struct avk_image *make_image_ex(struct avk_device *dev, uint32_t width,
+static struct avk_image *make_image_fmt(struct avk_device *dev, uint32_t width,
 		uint32_t height, VkImageUsageFlags usage, bool has_alpha,
-		bool srgb_mutable) {
+		bool srgb_mutable, VkFormat format) {
 	/*
 	 * avk_image_alloc(), not calloc(). A bare calloc leaves `life` at 0, and
 	 * avk_image_destroy() correctly REFUSES to destroy an image that does not
@@ -89,7 +99,7 @@ static struct avk_image *make_image_ex(struct avk_device *dev, uint32_t width,
 	if (image == NULL) {
 		return NULL;
 	}
-	image->format = TARGET_FORMAT;
+	image->format = format;
 	image->extent = (VkExtent2D){ width, height };
 	image->has_alpha = has_alpha;
 	image->layout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -101,7 +111,7 @@ static struct avk_image *make_image_ex(struct avk_device *dev, uint32_t width,
 	/* M5/C7: the caller may ask for an image that can carry an _SRGB view.
 	 * Opt-in, because the flag is not free and every pre-M5 image here wants
 	 * exactly what it always had. */
-	VkFormat view_formats[2] = { TARGET_FORMAT, VK_FORMAT_B8G8R8A8_SRGB };
+	VkFormat view_formats[2] = { format, VK_FORMAT_B8G8R8A8_SRGB };
 	VkImageFormatListCreateInfo format_list = {
 		.sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO,
 		.viewFormatCount = 2,
@@ -112,7 +122,7 @@ static struct avk_image *make_image_ex(struct avk_device *dev, uint32_t width,
 		.pNext = srgb_mutable ? (const void *)&format_list : NULL,
 		.flags = srgb_mutable ? VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT : 0,
 		.imageType = VK_IMAGE_TYPE_2D,
-		.format = TARGET_FORMAT,
+		.format = format,
 		.extent = { width, height, 1 },
 		.mipLevels = 1,
 		.arrayLayers = 1,
@@ -146,6 +156,13 @@ static struct avk_image *make_image_ex(struct avk_device *dev, uint32_t width,
 	AVK_LIVE_INC(dev, device_memory);
 	image->memory_count = 1;
 	return image;
+}
+
+static struct avk_image *make_image_ex(struct avk_device *dev, uint32_t width,
+		uint32_t height, VkImageUsageFlags usage, bool has_alpha,
+		bool srgb_mutable) {
+	return make_image_fmt(dev, width, height, usage, has_alpha, srgb_mutable,
+		TARGET_FORMAT);
 }
 
 static struct avk_image *make_image(struct avk_device *dev, uint32_t width,
@@ -346,14 +363,18 @@ static bool near(int got, int want, int tol) {
 	return got >= want - tol && got <= want + tol;
 }
 
-static bool render(struct harness *h, struct avk_scene *scene) {
-	uint64_t value = avk_render_frame(&h->renderer, h->target, scene, NULL, 0,
-		NULL, 0);
+static bool render_with(struct harness *h, struct avk_renderer *r,
+		struct avk_scene *scene) {
+	uint64_t value = avk_render_frame(r, h->target, scene, NULL, 0, NULL, 0);
 	if (value == 0) {
 		return false;
 	}
 	return avk_device_timeline_wait(h->dev, value, 2000000000ULL)
 		&& readback(h);
+}
+
+static bool render(struct harness *h, struct avk_scene *scene) {
+	return render_with(h, &h->renderer, scene);
 }
 
 /* ── THE M5 SDR GATE, ON THE GPU ────────────────────────────────────────── */
@@ -786,6 +807,485 @@ static void test_path_a_roundtrip(struct harness *h) {
 		worst[2]);
 
 	avk_image_destroy(h->dev, surface);
+	avk_image_destroy(h->dev, target);
+}
+
+/* ── M5 PATH B: THE OUTPUT-ENCODE PASS (C6, ADR-008) ─────────────────────── */
+
+/*
+ * The scene-linear working renderer, built on first use.
+ *
+ * A SECOND RENDERER and not a mode on the first, because dynamic rendering
+ * bakes the colour-attachment format into every pipeline: composition on
+ * Path B targets an FP16 intermediate, so it is a different pipeline set by
+ * construction. az_avk.h picks between them exactly this way.
+ */
+static struct avk_renderer *fp16_renderer(struct harness *h) {
+	if (!h->fp16_ok) {
+		if (!avk_renderer_init(&h->fp16, h->dev,
+				VK_FORMAT_R16G16B16A16_SFLOAT)) {
+			return NULL;
+		}
+		h->fp16_ok = true;
+	}
+	return &h->fp16;
+}
+
+/* SDR, identity everything: the state C3 derives for an 8-bit or 10-bit output
+ * with no image description. Dither off, because this is a round-trip test and
+ * a deliberate +-half-code perturbation would be measuring the dither. */
+static struct avk_encode_params sdr_encode_params(void) {
+	struct avk_encode_params p = {0};
+	for (int i = 0; i < 9; i++) {
+		p.matrix[i] = (i % 4) == 0 ? 1.0f : 0.0f;
+	}
+	p.knee = 1.0f;
+	p.peak = 1.0f;
+	p.anchor = 0.0f;
+	p.dither_q = 0.0f;
+	p.pq = false;
+	return p;
+}
+
+/*
+ * THE PATH-B SDR GATE.
+ *
+ * C4's gate says an opaque sRGB source drawn 1:1 must come back within one
+ * 8-bit code once a decode/encode round trip exists. Path A closes it at ZERO
+ * because both halves are the hardware's own sRGB conversion and exact
+ * inverses. Path B cannot: the decode is a shader pow(), the encode is a
+ * different shader pow(), and the value between them has been through an FP16
+ * store. One code is the contract and this measures how much of it is used.
+ *
+ * IT RUNS ON THE SAME 8-BIT TARGET AS PATH A ON PURPOSE. A gate that ran only
+ * on a 10-bit target would compare Path B against nothing -- there IS no
+ * pre-M5 10-bit picture to be within a code of. Forcing Path B onto an 8-bit
+ * output is what makes "within a code of the picture we already had" a
+ * statement about this pass rather than about a format change.
+ */
+static void test_path_b_sdr_gate(struct harness *h) {
+	printf("M5 PATH B: the encode pass, against the pre-M5 8-bit picture\n");
+
+	struct avk_renderer *fp = fp16_renderer(h);
+	if (fp == NULL) {
+		CHECK(false, "path B: FP16 renderer initialises");
+		return;
+	}
+
+	/*
+	 * All 256 codes in every channel -- the same reason as Path A's: seven
+	 * values missed a one-code error covering 94% of a real display.
+	 *
+	 * NOT A GREY RAMP, and that is not a refinement. Every row of the
+	 * BT.709->BT.2020 matrix sums to 1, so a NEUTRAL colour is invariant under
+	 * it: this test's falsifier ran the wrong matrix over a grey ramp and
+	 * reported ZERO difference, which is a true statement about grey and no
+	 * statement at all about the matrix. Offsetting the channels by a third of
+	 * the range each keeps the per-channel coverage complete and makes no
+	 * pixel neutral.
+	 */
+	uint32_t src[16 * 16];
+	for (size_t i = 0; i < 16 * 16; i++) {
+		uint8_t r = (uint8_t)i;
+		uint8_t g = (uint8_t)((i + 85) % 256);
+		uint8_t b = (uint8_t)((i + 170) % 256);
+		src[i] = 0xFF000000u | ((uint32_t)r << 16) | ((uint32_t)g << 8) | b;
+	}
+	struct avk_image *surface = make_image(h->dev, 16, 16,
+		VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, false);
+	if (surface == NULL || !upload(h, surface, src, 16, 16)) {
+		CHECK(false, "path B: source uploads");
+		if (surface != NULL) { avk_image_destroy(h->dev, surface); }
+		return;
+	}
+
+	struct avk_encode_intermediate work = {0};
+	struct avk_image *inter = avk_encode_intermediate_get(&work, h->dev,
+		&fp->retire, VK_FORMAT_R16G16B16A16_SFLOAT, W, H);
+	CHECK(inter != NULL, "PREMISE: the FP16 intermediate allocates at %dx%d",
+		W, H);
+	if (inter == NULL) {
+		avk_image_destroy(h->dev, surface);
+		return;
+	}
+
+	int worst[3] = { -1, -1, -1 };
+	uint64_t enc_draws[3] = { 0, 0, 0 };
+	for (int arm = 0; arm < 3; arm++) {
+		struct avk_renderer *r = arm == 0 ? &h->renderer : fp;
+
+		struct avk_scene scene;
+		avk_scene_init(&scene);
+		pixman_region32_union_rect(&scene.damage, &scene.damage, 0, 0, W, H);
+		scene.has_clear = true;
+		scene.clear_color[3] = 1.0f;
+		struct avk_cmd *tex = avk_scene_add(&scene, AVK_CMD_TEXTURE);
+		tex->dst = (struct avk_box){ 0, 0, 16, 16 };
+		tex->image = surface;
+		tex->src = (struct avk_fbox){ 0, 0, 16, 16 };
+		tex->opacity = 1.0f;
+		tex->filter_linear = false;
+
+		uint64_t before = r->stats.encode_draws;
+		if (arm > 0) {
+			r->decode_enabled = true;
+			r->encode_intermediate = inter;
+			r->encode_params = sdr_encode_params();
+			/* The first frame into a freshly created intermediate; it holds
+			 * nothing, so the whole thing has to be composited. */
+			r->encode_full_frame = (arm == 1);
+			if (arm == 2) {
+				/*
+				 * THE FALSIFIER: the BT.709 -> BT.2020 matrix, on an SDR
+				 * output that must not have one. C3 derives the identity here
+				 * (the scene's primaries ARE the output's), and a wrong matrix
+				 * is the failure ADR-008's own falsifier names -- it renders a
+				 * complete, plausible, differently-coloured desktop.
+				 */
+				for (int i = 0; i < 9; i++) {
+					r->encode_params.matrix[i] = AZ_MAT_709_TO_2020[i];
+				}
+			}
+		}
+		bool ok = render_with(h, r, &scene);
+		enc_draws[arm] = r->stats.encode_draws - before;
+		r->decode_enabled = false;
+		r->encode_intermediate = NULL;
+		r->encode_full_frame = false;
+		avk_scene_finish(&scene);
+		if (!ok) {
+			CHECK(false, "path B: arm %d renders", arm);
+			continue;
+		}
+		int w = 0;
+		for (uint32_t i = 0; i < 16 * 16; i++) {
+			uint32_t want = src[i];
+			uint32_t got = px(h, i % 16, i / 16);
+			int dr = r_of(got) - r_of(want); if (dr < 0) { dr = -dr; }
+			int dg = g_of(got) - g_of(want); if (dg < 0) { dg = -dg; }
+			int db = b_of(got) - b_of(want); if (db < 0) { db = -db; }
+			int d = dr > dg ? dr : dg;
+			if (db > d) { d = db; }
+			if (d > w) { w = d; }
+		}
+		worst[arm] = w;
+	}
+
+	printf("  ---- worst channel: direct %d, path B %d, wrong-matrix %d\n",
+		worst[0], worst[1], worst[2]);
+	printf("  ---- encode draws:  direct %llu, path B %llu, wrong-matrix %llu\n",
+		(unsigned long long)enc_draws[0], (unsigned long long)enc_draws[1],
+		(unsigned long long)enc_draws[2]);
+
+	/* THE PREMISE. "Path B round-trips" and "the encode pass never ran" produce
+	 * the same number when the arm silently fell back to the direct path. */
+	CHECK(enc_draws[0] == 0 && enc_draws[1] > 0 && enc_draws[2] > 0,
+		"PREMISE: the encode pass ran in exactly the arms it should "
+		"(%llu/%llu/%llu)",
+		(unsigned long long)enc_draws[0], (unsigned long long)enc_draws[1],
+		(unsigned long long)enc_draws[2]);
+	CHECK(worst[0] == 0,
+		"direct: bit-exact, the pre-M5 path (worst %d)", worst[0]);
+	CHECK(worst[1] >= 0 && worst[1] <= 1,
+		"THE PATH B SDR GATE: within one code of the pre-M5 picture (worst %d)",
+		worst[1]);
+	/* Without this, "within a code" is also what an encode pass that did
+	 * nothing at all would report. */
+	CHECK(worst[2] > 20,
+		"FALSIFIER: a wrong gamut matrix is visibly wrong (worst %d)",
+		worst[2]);
+
+	avk_encode_intermediate_finish(&work, h->dev, &fp->retire);
+	avk_image_destroy(h->dev, surface);
+}
+
+/*
+ * SOLID COLOURS ARE SCENE VALUES ON A LINEAR PATH, AND THE COST OF FORGETTING.
+ *
+ * Every texture a client hands over is decoded (C7). A RECT's colour is not a
+ * client buffer -- it is an sRGB hex triple out of a config file -- and nothing
+ * used to decode it, because composition happened in the same encoding the
+ * config was written in. On a linear path it must be decoded like any other
+ * source, and az_avk.h's az_avk_scene_rgb() is where that happens.
+ *
+ * MEASURED BEFORE THE FIX, on this fixture: an electrical 64 came back 137, 128
+ * came back 188, 192 came back 225. That is every border, every background rect
+ * and every shadow tint on the desktop, not an edge case.
+ *
+ * What THIS asserts is the renderer's half of the contract, which is the half
+ * the renderer owns: given a SCENE value, the encode puts the right electrical
+ * code on screen. The other half -- that the walk supplies scene values -- is a
+ * compositor question and is asserted by contrib/avk-m5-path-b-test.sh, which
+ * has a walk in it. Splitting them is deliberate: with one test spanning both,
+ * a fix in either place makes it pass and neither is pinned.
+ */
+static void test_solid_colour_domain(struct harness *h) {
+	printf("M5: what a solid rect's colour means on a linear path\n");
+
+	struct avk_renderer *fp = fp16_renderer(h);
+	if (fp == NULL) {
+		CHECK(false, "solid: FP16 renderer initialises");
+		return;
+	}
+	struct avk_encode_intermediate work = {0};
+	struct avk_image *inter = avk_encode_intermediate_get(&work, h->dev,
+		&fp->retire, VK_FORMAT_R16G16B16A16_SFLOAT, W, H);
+	if (inter == NULL) {
+		CHECK(false, "solid: intermediate allocates");
+		return;
+	}
+
+	/* Three values across the midtones, where the two curves are furthest
+	 * apart in absolute codes. */
+	static const uint8_t want[] = { 64, 128, 192 };
+	int got[3][2] = {{0, 0}, {0, 0}, {0, 0}};
+	/* THE LINEAR ARM IS FED SCENE VALUES, exactly what the walk now produces.
+	 * Feeding it the electrical code instead is the defect this exists for, and
+	 * it is what the numbers in the comment above were measured with. */
+
+	for (int arm = 0; arm < 2; arm++) {
+		struct avk_renderer *r = arm == 0 ? &h->renderer : fp;
+		struct avk_scene scene;
+		avk_scene_init(&scene);
+		pixman_region32_union_rect(&scene.damage, &scene.damage, 0, 0, W, H);
+		scene.has_clear = true;
+		scene.clear_color[3] = 1.0f;
+		for (int i = 0; i < 3; i++) {
+			struct avk_cmd *c = avk_scene_add(&scene, AVK_CMD_RECT);
+			c->dst = (struct avk_box){ i * 16, 0, 16, 16 };
+			float e = (float)want[i] / 255.0f;
+			float v = arm == 1 ? az_srgb_eotf(e) : e;
+			for (int ch = 0; ch < 3; ch++) {
+				c->color[ch] = v;
+			}
+			c->color[3] = 1.0f;
+		}
+		if (arm == 1) {
+			r->decode_enabled = true;
+			r->encode_intermediate = inter;
+			r->encode_params = sdr_encode_params();
+			r->encode_full_frame = true;
+		}
+		bool ok = render_with(h, r, &scene);
+		r->decode_enabled = false;
+		r->encode_intermediate = NULL;
+		r->encode_full_frame = false;
+		avk_scene_finish(&scene);
+		if (!ok) {
+			CHECK(false, "solid: arm %d renders", arm);
+			avk_encode_intermediate_finish(&work, h->dev, &fp->retire);
+			return;
+		}
+		for (int i = 0; i < 3; i++) {
+			got[i][arm] = b_of(px(h, (uint32_t)(i * 16 + 8), 8));
+		}
+	}
+
+	int worst = 0;
+	for (int i = 0; i < 3; i++) {
+		int d = got[i][1] - got[i][0];
+		if (d < 0) { d = -d; }
+		if (d > worst) { worst = d; }
+		printf("  ---- asked %3d  direct %3d  linear path %3d  (%+d)\n",
+			want[i], got[i][0], got[i][1], got[i][1] - got[i][0]);
+	}
+	CHECK(got[0][0] == want[0] && got[1][0] == want[1]
+			&& got[2][0] == want[2],
+		"PREMISE: the direct path puts a rect's colour on screen unchanged");
+	CHECK(worst <= 1,
+		"a solid rect given as a SCENE value comes back at its own code "
+		"(worst %d)", worst);
+	/*
+	 * THE FALSIFIER, and it is the whole reason this test is not vacuous:
+	 * feeding the linear arm the ELECTRICAL value -- the pre-fix behaviour --
+	 * must be badly wrong. Without it, "worst 0" is also what an encode pass
+	 * that did nothing at all would report.
+	 */
+	{
+		struct avk_scene scene;
+		avk_scene_init(&scene);
+		pixman_region32_union_rect(&scene.damage, &scene.damage, 0, 0, W, H);
+		scene.has_clear = true;
+		scene.clear_color[3] = 1.0f;
+		struct avk_cmd *c = avk_scene_add(&scene, AVK_CMD_RECT);
+		c->dst = (struct avk_box){ 0, 0, 16, 16 };
+		for (int ch = 0; ch < 3; ch++) {
+			c->color[ch] = 128.0f / 255.0f;
+		}
+		c->color[3] = 1.0f;
+		fp->decode_enabled = true;
+		fp->encode_intermediate = inter;
+		fp->encode_params = sdr_encode_params();
+		bool ok = render_with(h, fp, &scene);
+		fp->decode_enabled = false;
+		fp->encode_intermediate = NULL;
+		avk_scene_finish(&scene);
+		int raw = ok ? b_of(px(h, 8, 8)) : -1;
+		printf("  ---- undecoded 128 through the encode: %d\n", raw);
+		CHECK(raw > 170,
+			"FALSIFIER: an ELECTRICAL colour fed in as a scene value is "
+			"visibly wrong (%d, asked 128)", raw);
+	}
+
+	avk_encode_intermediate_finish(&work, h->dev, &fp->retire);
+}
+
+/* ── 10-bit readback ─────────────────────────────────────────────────────── */
+
+/* A2R10G10B10_UNORM_PACK32: one uint32 per pixel, alpha in the top two bits.
+ * Separate accessors from the 8-bit ones rather than a scale factor, because a
+ * 10-bit value silently divided by four is exactly the class of error a PQ
+ * comparison would absorb into its tolerance. */
+static int r10_of(uint32_t p) { return (int)((p >> 20) & 0x3FF); }
+static int g10_of(uint32_t p) { return (int)((p >> 10) & 0x3FF); }
+static int b10_of(uint32_t p) { return (int)(p & 0x3FF); }
+
+/*
+ * ADR-008's FALSIFIER, ON THE GPU.
+ *
+ * "PQ signal for the 203-nit patch must equal PQ-1(203/10000) +- 1/1023. A
+ * miss means a luminance constant is on the wrong side of the matrix."
+ *
+ * The scene values are stated by RECT COMMANDS rather than decoded from a
+ * texture, and that is the point: a rect's colour reaches the FP16 attachment
+ * unmodified, so the input to the encode is known exactly and every code of
+ * disagreement belongs to the pass. Decoding a source first would fold C7's
+ * error into C6's measurement, and the two are separately falsifiable.
+ *
+ * The reference is az_ref_encode_scene() -- C4's CPU implementation of the same
+ * six steps, written from the ADR rather than from this shader.
+ */
+static void test_path_b_pq_encode(struct harness *h) {
+	printf("M5 PATH B: PQ encode against the C4 reference\n");
+
+	struct avk_renderer *fp = fp16_renderer(h);
+	if (fp == NULL) {
+		CHECK(false, "pq: FP16 renderer initialises");
+		return;
+	}
+
+	/*
+	 * A 1000-nit panel at the 203-nit scene reference: peak_scene = 4.926, so
+	 * SDR white sits at a fifth of the panel's ceiling. That is ADR-003's
+	 * headroom and it is what makes the tone map's knee reachable by the
+	 * values below rather than a branch nothing takes.
+	 */
+	struct az_output_desc desc = {
+		.bits_per_channel = 10,
+		.hdr = true,
+		.hdr_max_nits = 1000.0f,
+		.scene_ref_nits = 203.0f,
+	};
+	struct az_output_color_state state = az_output_color_derive(&desc);
+	CHECK(state.path == AZ_OUTPUT_PATH_B_ENCODE && state.encode_tf == AZ_TF_PQ,
+		"PREMISE: C3 puts a 1000-nit HDR output on Path B with PQ (path=%d tf=%d)",
+		(int)state.path, (int)state.encode_tf);
+
+	struct avk_encode_params params = {0};
+	for (int i = 0; i < 9; i++) {
+		params.matrix[i] = state.matrix[i];
+	}
+	params.knee = 1.0f;
+	params.peak = state.peak_scene;
+	params.anchor = state.ref_nits / 10000.0f;
+	/* Dither OFF for the comparison. ADR-011's noise is +-half a code by
+	 * design, which is the whole tolerance this test has. */
+	params.dither_q = 0.0f;
+	params.pq = true;
+
+	/* Scene values across the interesting range: below SDR white, AT it (the
+	 * 203-nit patch the ADR names), through the knee, and at the panel's
+	 * ceiling where the tone map's asymptote is. */
+	static const float vals[] = { 0.05f, 0.25f, 1.0f, 2.0f, 4.0f, 4.926f };
+	const int nv = (int)(sizeof(vals) / sizeof(vals[0]));
+
+	struct avk_image *target = make_image_fmt(h->dev, W, H,
+		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT
+		| VK_IMAGE_USAGE_SAMPLED_BIT, true, false,
+		VK_FORMAT_A2R10G10B10_UNORM_PACK32);
+	if (target == NULL) {
+		CHECK(false, "pq: 10-bit target allocates");
+		return;
+	}
+	struct avk_encode_intermediate work = {0};
+	struct avk_image *inter = avk_encode_intermediate_get(&work, h->dev,
+		&fp->retire, VK_FORMAT_R16G16B16A16_SFLOAT, W, H);
+	if (inter == NULL) {
+		CHECK(false, "pq: intermediate allocates");
+		avk_image_destroy(h->dev, target);
+		return;
+	}
+
+	struct avk_image *saved = h->target;
+	h->target = target;
+
+	struct avk_scene scene;
+	avk_scene_init(&scene);
+	pixman_region32_union_rect(&scene.damage, &scene.damage, 0, 0, W, H);
+	scene.has_clear = true;
+	scene.clear_color[3] = 1.0f;
+	for (int i = 0; i < nv; i++) {
+		struct avk_cmd *c = avk_scene_add(&scene, AVK_CMD_RECT);
+		/* One 8-pixel column each, so a patch is sampled well away from any
+		 * antialiased edge. */
+		c->dst = (struct avk_box){ i * 8, 0, 8, 8 };
+		c->color[0] = vals[i];
+		c->color[1] = vals[i];
+		c->color[2] = vals[i];
+		c->color[3] = 1.0f;
+	}
+
+	fp->encode_intermediate = inter;
+	fp->encode_params = params;
+	fp->encode_full_frame = true;
+	bool ok = render_with(h, fp, &scene);
+	fp->encode_intermediate = NULL;
+	fp->encode_full_frame = false;
+	avk_scene_finish(&scene);
+
+	h->target = saved;
+
+	if (!ok) {
+		CHECK(false, "pq: frame renders");
+	} else {
+		struct az_ref_output ref = { .state = state, .knee = 1.0, .dither = false };
+		int worst = 0;
+		int worst_i = -1;
+		for (int i = 0; i < nv; i++) {
+			double rgb[3] = { vals[i], vals[i], vals[i] };
+			double e[3];
+			az_ref_encode_scene(&ref, rgb, e);
+			int want = (int)(e[0] * 1023.0 + 0.5);
+			uint32_t p = px(h, (uint32_t)(i * 8 + 4), 4);
+			int got = r10_of(p);
+			int d = got - want; if (d < 0) { d = -d; }
+			printf("  ---- scene %.3f -> want %4d  got %4d  (%+d)\n",
+				(double)vals[i], want, got, got - want);
+			if (d > worst) { worst = d; worst_i = i; }
+			/* Every channel took the same route: a matrix applied to the wrong
+			 * side, or a channel swap, shows here and nowhere else on a grey. */
+			CHECK(g10_of(p) == got && b10_of(p) == got,
+				"pq: scene %.3f is neutral out (%d/%d/%d)", (double)vals[i],
+				got, g10_of(p), b10_of(p));
+		}
+		/*
+		 * TWO CODES, not one, and the second is FP16.
+		 *
+		 * ADR-008 asks for +-1/1023 and the arithmetic here is exact to well
+		 * within that; what is not exact is the STORE. The composited value
+		 * makes a round trip through a half-float, whose relative precision is
+		 * about 5e-4, and PQ's slope near black turns that into rather more
+		 * than one 10-bit code. The extra code is the intermediate's format
+		 * rather than the encode's arithmetic, which is why it is stated here
+		 * instead of being folded into a vaguer bound.
+		 */
+		CHECK(worst <= 2,
+			"ADR-008: PQ encode matches the CPU reference (worst %d codes at "
+			"scene %.3f)", worst,
+			worst_i >= 0 ? (double)vals[worst_i] : 0.0);
+	}
+
+	avk_encode_intermediate_finish(&work, h->dev, &fp->retire);
 	avk_image_destroy(h->dev, target);
 }
 
@@ -1433,6 +1933,9 @@ int main(void) {
 	test_srgb_view_refusal(&h);
 	test_decode_variant(&h);
 	test_path_a_roundtrip(&h);
+	test_path_b_sdr_gate(&h);
+	test_path_b_pq_encode(&h);
+	test_solid_colour_domain(&h);
 	test_overlap_alpha(&h);
 	test_crop_scale(&h);
 	test_transforms(&h);
@@ -1454,6 +1957,9 @@ done:
 		avk_image_destroy(h.dev, h.target);
 	}
 	avk_device_wait_idle(h.dev);
+	if (h.fp16_ok) {
+		avk_renderer_finish(&h.fp16);
+	}
 	avk_renderer_finish(&h.renderer);
 	avk_device_destroy(h.dev);
 	avk_instance_destroy(h.inst);

@@ -369,6 +369,32 @@ Integration: **DEFERRED — PERFORMANCE OWNED** (`avk_render.c`,
 `az_avk.h`, `avk_oracle.c` timing; also blur-transient format switch in
 `avk_blur.c`/`avk_render.c`). **SHADER+PIPELINE READY TO IMPLEMENT NOW.**
 
+**STATUS: COMPLETE (M5.5).** `avk_output_encode.{c,h}` + the integration in
+`avk_render_frame` and `az_avk.h`. Three things came out differently from
+the contract and are recorded here rather than left to be rediscovered:
+
+- **The intermediate is PERSISTENT and per output, not a pooled transient.**
+  The contract left the allocation open; damage closes it. The encode pass
+  re-encodes only the damaged region, so the intermediate must still hold the
+  previous frame's composite everywhere else — which a transient, recycled at
+  frame retire, does not. Its extent must also be EXACT: the pool rounds to a
+  granularity, and the fullscreen triangle maps [0,1] of the attachment onto
+  [0,1] of the source, which is one rectangle only when the extents match.
+  A first frame into a freshly created intermediate is forced full, because the
+  damage handed in describes the age of the SCAN-OUT buffer, which rotates
+  through several while this does not.
+- **ADR-012 needed no code.** Blur transients, prefix captures and the M4I
+  cache are all allocated in `renderer->format`; Path B selects the renderer
+  keyed on `R16G16B16A16_SFLOAT`, so "the blur transient format follows the
+  path" is a consequence of the existing per-format renderer selection. The
+  cache's own `format` field then invalidates it across a path change.
+- **`avk_oracle.c` DECLINES the FP16 taps** rather than learning them. Every
+  stride and compare in it is four-bytes-a-pixel, and its vocabulary is "N
+  pixels differ by M CODES" — which has no meaning over half-floats. The
+  OUTPUT tap is unaffected (still the scan-out buffer) and still names a
+  divergent frame; the prefix and blur taps log once and stand down. A second
+  notion of difference is real work and is not part of this contract.
+
 ---
 
 ## C7 — Source decode path (texture pipeline variants)
@@ -436,16 +462,24 @@ wire later.
 
 ## Integration order (for the deferred series, post-freeze)
 
-1. C5 probe results observed on the live GPU (answers the Path-A UNKNOWN).
-2. Wire C3 derivation into output state changes.
-3. `avk_scene.h`: add `az_lum_domain` to texture commands; `az_avk.h`
-   walk fills it (C2 resolver).
-4. `avk_render.c`: per-draw variant selection (C7).
-5. Path A live; run C4 SDR gate on-GPU. **Gate.**
-6. `avk_render.c` Path B: intermediate target + C6 pass; blur transient
-   format follows the path; `avk_oracle.c` learns the encode stage.
+1. ~~C5 probe results observed on the live GPU~~ **DONE** (F11: Path A is an
+   8-bit path on any conformant device).
+2. ~~Wire C3 derivation into output state changes~~ **DONE**.
+3. ~~`avk_scene.h`: `az_lum_domain` on texture commands; the C2 resolver in
+   the walk~~ **DONE**.
+4. ~~`avk_render.c`: per-draw variant selection (C7)~~ **DONE**.
+5. ~~Path A live; C4 SDR gate on-GPU~~ **DONE — GATE GREEN** (0 codes; F12 was
+   what stood between it and one code on every pixel of the display).
+6. ~~`avk_render.c` Path B: intermediate + C6 pass~~ **DONE** (M5.5). The blur
+   transient format follows the path with no code of its own; the oracle
+   DECLINES the FP16 taps rather than learning them, and the reason is
+   recorded under C6.
 7. `az_avk.h`: remove the `image_description` refusal. HDR live behind
-   `hdr_resolve` exactly as today.
+   `hdr_resolve` exactly as today. **NOT DONE, AND DELIBERATELY.** The encode
+   pass is qualified on an SDR output forced onto Path B and against the CPU
+   reference for PQ; it has never driven a real HDR display. Removing the
+   refusal changes what the user's own monitor does, so it is a live step with
+   the user watching, not a consequence of C6 compiling.
 8. Docs + manpages + harness updates in the same commits (project rule);
    live testing only with explicit user warning per the live-session
    rules.

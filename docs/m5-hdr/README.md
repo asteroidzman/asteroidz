@@ -1,5 +1,12 @@
 # M5 — scene-linear HDR: architecture package
 
+**Status (2026-08-14): C1-C8 implemented; both output paths qualified on a
+GPU.** Path A (8-bit direct `_SRGB`) and Path B (FP16 intermediate + encode
+pass) both close the SDR round trip at **0 codes**, and PQ matches the CPU
+reference to 0-1 codes at 10 bits. HDR is **not** enabled on a real display:
+step 7 of the integration order -- removing the `image_description` refusal --
+is a live step, not a consequence of C6 compiling. See `opus-findings.md`.
+
 This directory is the Phase-1 architecture deliverable for milestone M5
 (scene-linear HDR). It was produced by reading the code at `2c1c015`, not from
 the milestone summaries. It is written for the implementing agent; nothing in
@@ -14,6 +21,7 @@ file:line reference and a confidence class.
 | `adr.md` | The architecture decisions, ADR-000 … ADR-013, each with context, options, decision, consequences and a falsifier |
 | `contracts.md` | Implementation contracts C1 … C7 for the implementing agent, in the FEATURE / INPUTS / OUTPUT / FORMAT / INVARIANTS / PERFORMANCE / TESTS / FILES / CONFLICT-STATUS format |
 | `conflict-manifest.md` | The integration conflict manifest: every path M5 touches, who owns it, and what may land now versus later |
+| `opus-findings.md` | What implementation found that the architecture did not: F1-F15, each with what was believed, what was measured, and what changed as a result |
 
 ## Confidence vocabulary (used throughout)
 

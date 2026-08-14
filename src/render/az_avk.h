@@ -1031,6 +1031,17 @@ struct az_avk_output {
 	struct avk_blur_cache blur_cache;
 
 	/*
+	 * M5/C6. THE PATH-B WORKING INTERMEDIATE, per output for the same reasons
+	 * the blur cache is: it is the output's own extent, and it holds the
+	 * PREVIOUS frame's composite outside this frame's damage, which is what
+	 * makes the encode pass damage-scissorable at all.
+	 *
+	 * Empty on Path A, where there is no encode pass and composition goes
+	 * straight into the scan-out buffer through its _SRGB view.
+	 */
+	struct avk_encode_intermediate encode_work;
+
+	/*
 	 * M4F.2C.4c forensics. Per OUTPUT, because "frame 41" has to mean the same
 	 * thing in the log and in the fixture, and the renderer's own frame counter
 	 * is shared by every output using its VkFormat.
@@ -1521,6 +1532,10 @@ static void az_avk_output_finish(struct az_avk_output *out) {
 	if (out->slot != NULL) {
 		avk_blur_cache_finish(&out->blur_cache, out->slot->renderer.dev,
 			&out->slot->renderer.retire);
+		/* M5/C6. The Path-B working intermediate, released the same way and for
+		 * the same reason. */
+		avk_encode_intermediate_finish(&out->encode_work,
+			out->slot->renderer.dev, &out->slot->renderer.retire);
 	}
 	free(out);
 }
@@ -1630,7 +1645,59 @@ struct az_avk_walk {
 	 * scene 1.0 means, and a window straddling two outputs would split.
 	 */
 	float scene_ref_nits;
+	/*
+	 * M5. Composition for this frame happens in LINEAR LIGHT (Path A or B),
+	 * so a colour that arrives as an sRGB code has to be decoded like any
+	 * other source before it enters the blend.
+	 *
+	 * Read once per frame and carried, not recomputed per node: it is a
+	 * property of the OUTPUT this walk is building for, and two nodes of one
+	 * frame disagreeing about it would put half the desktop in one domain.
+	 */
+	bool linear_compose;
 };
+
+/*
+ * ── M5: A CONFIG COLOUR IS AN ELECTRICAL VALUE ────────────────────────────
+ *
+ * A client's buffer is decoded because C7 gives it a luminance domain. A
+ * BORDER's colour has no buffer and no domain: it is an sRGB hex triple out of
+ * a config file, and until M5 nothing needed to say so, because composition
+ * happened in the same encoding the config was written in.
+ *
+ * On a linear path it does need saying. Left alone, an electrical 0.5 enters
+ * the blend as though it were a scene value and the encode re-encodes it:
+ * srgb_ieotf(0.5) = 0.735, which is 187 where the config asked for 128.
+ * Measured on the GPU before this existed -- 64 came out 137, 128 came out 188,
+ * 192 came out 225. That is the whole of a desktop's chrome, not an edge case.
+ *
+ * ADR-004's rule, applied to the one other kind of source in the scene: what is
+ * untagged is piecewise-sRGB BT.709. Config colours are exactly that, and
+ * saying it here rather than in the renderer keeps colour policy on the
+ * compositor side of the boundary -- a command still does not know which
+ * attachment it lands in.
+ *
+ * RGB ONLY. Alpha is coverage, it is linear by definition and it has no
+ * colorimetry (ADR-005). Passing it through a transfer function is the mistake
+ * that makes every translucent panel the wrong opacity.
+ */
+/*
+ * How many gradient stops the decode above will handle without allocating.
+ * Generous against what a border theme uses (two to four); a gradient longer
+ * than this takes the undecoded path rather than putting a malloc on the frame
+ * path, and says so nowhere because it cannot happen with a config-driven
+ * border -- if it ever does, the symptom is a gradient in the wrong domain,
+ * which the border oracle sees.
+ */
+#define AZ_AVK_GRADIENT_STOPS_MAX 32
+
+static inline void az_avk_scene_rgb(bool linear, const float in[4],
+		float out[4]) {
+	for (int i = 0; i < 3; i++) {
+		out[i] = linear ? az_srgb_eotf(in[i]) : in[i];
+	}
+	out[3] = in[3];
+}
 
 /*
  * ── M5/C2: SCENEFX'S COLOUR FIELDS -> A LUMINANCE DOMAIN ──────────────────
@@ -1717,6 +1784,48 @@ static struct az_lum_domain az_avk_lum_of(
 	}
 	struct az_lum_rules rules = az_lum_rules_default();
 	return az_lum_resolve(&src, &rules, scene_ref_nits);
+}
+
+/*
+ * ── M5/C6: THE OUTPUT'S COLOUR STATE -> THE ENCODE PASS'S CONSTANTS ───────
+ *
+ * The other adapter, and it is deliberately this thin. C3 derived every value
+ * here when the output's state last changed (az_output_color_derive); nothing
+ * is computed per frame, and nothing is decided here that is not already
+ * decided there. What this function IS, is the one place a compositor type
+ * (Monitor) meets a renderer type (avk_encode_params), which is the boundary
+ * that keeps az_output_color.h free of Vulkan and avk_output_encode.h free of
+ * wlroots.
+ *
+ * THE KNEE IS NOT IN az_output_color_state, and that is C6's decision rather
+ * than an omission: ADR-009 fixes it at scene SDR white, and it rides on the
+ * pass's push constants so that F5's question -- what a knee of 1.0 means
+ * against an SDR ceiling of 1.0 -- is answerable by changing one number rather
+ * than by arguing about a struct.
+ */
+static struct avk_encode_params az_avk_encode_params(const Monitor *m) {
+	struct avk_encode_params p = {0};
+	const struct az_output_color_state *s = &m->color_state;
+	for (int i = 0; i < 9; i++) {
+		p.matrix[i] = s->matrix[i];
+	}
+	/* ADR-009: scene SDR white. Everything at or below it is untouched on every
+	 * output, which is what makes the SDR round trip an exact identity. */
+	p.knee = 1.0f;
+	p.peak = s->peak_scene;
+	/* PQ is ABSOLUTE -- its optical 1.0 is 10000 cd/m2 -- and the scene is
+	 * relative. This is where the two meet, and it is applied AFTER the gamut
+	 * matrix (ADR-008 step 4): before it would scale the values the matrix
+	 * mixes, and the result is a plausible picture with the wrong white. */
+	p.anchor = s->ref_nits / 10000.0f;
+	p.dither_q = s->dither_q;
+	/* The whole-output pass: this attachment IS the output raster, so the
+	 * dither's anchor is the identity. The field exists so that a regional
+	 * encode cannot be written without confronting the question. */
+	p.origin_x = 0.0f;
+	p.origin_y = 0.0f;
+	p.pq = s->encode_tf == AZ_TF_PQ;
+	return p;
 }
 
 static enum avk_transform az_avk_transform(enum wl_output_transform t) {
@@ -2157,9 +2266,37 @@ static void az_avk_walk_node(struct az_avk_walk *walk,
 				rect->gradient_colors != NULL) {
 			enum avk_gradient_type type = rect->gradient_linear == 2
 				? AVK_GRADIENT_CONIC : AVK_GRADIENT_LINEAR;
+			const float *stops = rect->gradient_colors;
+			/*
+			 * M5. The same decode the rect's own colour gets, because a
+			 * gradient stop is the same kind of value from the same config --
+			 * and a gradient whose ENDS were decoded while its stops were not
+			 * is a border that changes colour along its length.
+			 *
+			 * These arrive PREMULTIPLIED, so the round trip is explicit:
+			 * un-premultiply, decode, re-premultiply. A stack copy bounded by
+			 * the same cap the gradient store already enforces; anything
+			 * larger takes the undecoded path rather than allocating on the
+			 * frame path.
+			 */
+			float decoded[AZ_AVK_GRADIENT_STOPS_MAX * 4];
+			if (walk->linear_compose
+					&& rect->gradient_count <= AZ_AVK_GRADIENT_STOPS_MAX) {
+				for (int s = 0; s < rect->gradient_count; s++) {
+					const float *in = &stops[s * 4];
+					float *out = &decoded[s * 4];
+					float a = in[3];
+					for (int i = 0; i < 3; i++) {
+						float straight = a > 0.0f ? in[i] / a : 0.0f;
+						out[i] = az_srgb_eotf(straight) * a;
+					}
+					out[3] = a;
+				}
+				stops = decoded;
+			}
 			avk_cmd_set_gradient(walk->scene, cmd, type, rect->gradient_degree,
 				rect->gradient_blend != 0, rect->gradient_origin,
-				rect->gradient_colors, (uint32_t)rect->gradient_count);
+				stops, (uint32_t)rect->gradient_count);
 		}
 		/* wlr_scene rect colours are PREMULTIPLIED -- scenefx writes them
 		 * straight to the framebuffer under source-over blending. AVK's
@@ -2168,10 +2305,15 @@ static void az_avk_walk_node(struct az_avk_walk *walk,
 		 * translucent panel in the overview by exactly its own alpha, which
 		 * looks like a theming choice rather than a bug. */
 		float a = rect->color[3];
+		float straight[4];
 		for (int i = 0; i < 3; i++) {
-			cmd->color[i] = a > 0.0f ? rect->color[i] / a : 0.0f;
+			straight[i] = a > 0.0f ? rect->color[i] / a : 0.0f;
 		}
-		cmd->color[3] = a;
+		straight[3] = a;
+		/* Un-premultiplied FIRST, then decoded. A transfer function applied to
+		 * a premultiplied value is a curve applied to colour-times-coverage,
+		 * which is not the colour and not the coverage. */
+		az_avk_scene_rgb(walk->linear_compose, straight, cmd->color);
 		return;
 	}
 
@@ -2334,8 +2476,9 @@ static void az_avk_walk_node(struct az_avk_walk *walk,
 		cmd->blur_sigma = shadow->blur_sigma * (float)walk->scale;
 
 		/* Straight, not premultiplied: shadow.frag multiplies through by the
-		 * coverage it computes, which is not known until then. */
-		memcpy(cmd->color, shadow->color, sizeof(cmd->color));
+		 * coverage it computes, which is not known until then. Already
+		 * straight, so the decode needs no un-premultiply. */
+		az_avk_scene_rgb(walk->linear_compose, shadow->color, cmd->color);
 
 		/*
 		 * The interior cut-out -- the window's own footprint kept out of its
@@ -3296,6 +3439,63 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 		return false;
 	}
 
+	/*
+	 * ── M5/C6. WHICH RENDERER COMPOSITES THIS OUTPUT ──────────────────────
+	 *
+	 * On Path B the scene does not composite into the scan-out buffer at all --
+	 * it composites into a scene-linear FP16 intermediate, and one encode pass
+	 * writes the scan-out buffer (ADR-008). Dynamic rendering bakes the colour
+	 * attachment's format into every pipeline, so that is a DIFFERENT renderer:
+	 * az_avk_renderer_for() already keys one per VkFormat.
+	 *
+	 * ADR-012 -- "the blur transient format follows the path" -- then needs no
+	 * code of its own. The blur transients, the M4I cache and the prefix
+	 * captures are all allocated in `renderer->format`, so they become FP16 by
+	 * the same act, and the cache's format field invalidates it across a path
+	 * change without a line being written for that either.
+	 *
+	 * AZ_M5_PATH_B=1      drive Path B wherever C3 chose it (10-bit, HDR).
+	 * AZ_M5_PATH_B=force  additionally put a Path-A output on it. THE TEST
+	 *                     INSTRUMENT: it is what lets the SDR round-trip gate
+	 *                     run on the same 8-bit output as Path A, which is the
+	 *                     only comparison in which "within a code" means
+	 *                     anything. Not a setting -- Path A is strictly cheaper
+	 *                     where it is available.
+	 */
+	const char *path_b_env = getenv("AZ_M5_PATH_B");
+	const bool path_b_forced = path_b_env != NULL
+		&& strcmp(path_b_env, "force") == 0;
+	const bool path_b = (path_b_forced || az_avk_env_flag("AZ_M5_PATH_B"))
+		&& (path_b_forced
+			|| m->color_state.path == AZ_OUTPUT_PATH_B_ENCODE);
+	/*
+	 * Path A is decided here too, and not down beside the render call where it
+	 * used to be, because the SCENE WALK needs to know. A config colour is an
+	 * electrical value and has to be decoded before it enters a linear blend
+	 * (az_avk_scene_rgb), and the walk runs long before the frame is recorded.
+	 */
+	const bool path_a = az_avk_env_flag("AZ_M5_PATH_A")
+		&& m->color_state.path == AZ_OUTPUT_PATH_A_DIRECT_SRGB;
+	const bool linear_compose = path_a || path_b;
+	const VkFormat compose_format = path_b
+		? VK_FORMAT_R16G16B16A16_SFLOAT : out->vk_format;
+	if (out->slot->format != compose_format) {
+		struct az_avk_renderer_slot *slot = az_avk_renderer_for(compose_format);
+		if (slot == NULL) {
+			/* No renderer for the working format: keep the one we have, which
+			 * renders the pre-M5 picture rather than nothing. Path B is then
+			 * declined below because the intermediate's format would not match
+			 * the renderer's. */
+			wlr_log(WLR_ERROR, "AVK: no renderer slot for the %s working "
+				"format on %s", path_b ? "Path B" : "direct", output->name);
+		} else {
+			wlr_log(WLR_INFO, "AVK: %s composites through %s", output->name,
+				path_b ? "a scene-linear FP16 intermediate (Path B)"
+					: "the scan-out buffer directly");
+			out->slot = slot;
+		}
+	}
+
 	/* Before anything is rendered: can this frame be handed over with a fence
 	 * at the end of it? Finding out afterwards would mean either presenting it
 	 * unsynchronised or throwing away work already submitted. */
@@ -3502,6 +3702,9 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 		.mon_blur_node = m->blur,
 		/* ADR-003: one reference for the whole scene, read once per frame. */
 		.scene_ref_nits = config.sdr_reference_luminance,
+		/* M5: whether this output composites in linear light, which decides
+		 * what a config colour means. See az_avk_scene_rgb(). */
+		.linear_compose = linear_compose,
 	};
 
 	/*
@@ -3664,14 +3867,43 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 	 * path, which is the whole point -- it is off because it has not been
 	 * qualified live, not because it is wrong.
 	 */
-	const bool path_a = az_avk_env_flag("AZ_M5_PATH_A")
-		&& m->color_state.path == AZ_OUTPUT_PATH_A_DIRECT_SRGB;
-	out->slot->renderer.decode_enabled = path_a;
+	/*
+	 * ── PATH B, LENT THE SAME WAY ─────────────────────────────────────────
+	 *
+	 * The intermediate and the encode constants are both per OUTPUT and the
+	 * renderer is shared by every output using its VkFormat, so both are lent
+	 * for the frame and taken back after it. A forgotten clear here would encode
+	 * one monitor's frame with another's curve, peak and matrix -- which on two
+	 * SDR outputs is invisible and on an SDR/HDR pair is the whole picture.
+	 *
+	 * `encode_full_frame` is set exactly when the intermediate was just created:
+	 * it holds nothing, and the damage handed in describes the age of the
+	 * SCAN-OUT buffer, which rotates through several while this does not.
+	 */
+	if (path_b) {
+		struct avk_image *had = out->encode_work.image;
+		struct avk_image *inter = avk_encode_intermediate_get(&out->encode_work,
+			out->slot->renderer.dev, &out->slot->renderer.retire,
+			VK_FORMAT_R16G16B16A16_SFLOAT,
+			target->extent.width, target->extent.height);
+		out->slot->renderer.encode_intermediate = inter;
+		out->slot->renderer.encode_full_frame = inter != NULL && inter != had;
+		out->slot->renderer.encode_params = az_avk_encode_params(m);
+	}
+	/*
+	 * DECODE IS ON FOR BOTH PATHS, and it has to be: the two paths differ only
+	 * in WHERE the encode happens (a fixed-function attachment view against a
+	 * shader pass), never in whether the sources were decoded. Decode without
+	 * encode washes every window out; encode without decode darkens everything.
+	 */
+	out->slot->renderer.decode_enabled = path_a || path_b;
 	out->slot->renderer.encode_srgb = path_a;
 	uint64_t timeline = avk_render_frame(&out->slot->renderer, target, &scene,
 		waits, wait_count, signals, 1);
 	out->slot->renderer.decode_enabled = false;
 	out->slot->renderer.encode_srgb = false;
+	out->slot->renderer.encode_intermediate = NULL;
+	out->slot->renderer.encode_full_frame = false;
 	out->slot->renderer.blur_cache = NULL;
 	/*
 	 * WHAT THE FRAME REDREW, WHICH MAY BE MORE THAN WHAT WAS HANDED IN.
@@ -4175,6 +4407,7 @@ static cJSON *az_avk_stats_json(void) {
 	/* composition */
 	uint64_t surfaces = 0, rects = 0, submit_ns = 0, sync_waits = 0;
 	uint64_t opaque_noblend = 0, decode_draws = 0, srgb_segs = 0;
+	uint64_t encode_draws = 0, encode_px = 0, encode_compiles = 0;
 	for (size_t i = 0; i < AZ_AVK_MAX_FORMATS; i++) {
 		if (!avk.renderers[i].used) {
 			continue;
@@ -4185,6 +4418,9 @@ static cJSON *az_avk_stats_json(void) {
 		opaque_noblend += st->opaque_noblend_draws;
 		decode_draws += st->decode_draws;
 		srgb_segs += st->srgb_attach_segments;
+		encode_draws += st->encode_draws;
+		encode_px += st->encode_px;
+		encode_compiles += avk.renderers[i].renderer.encode.compiles;
 		submit_ns += st->cpu_record_ns;
 		sync_waits += st->cpu_sync_waits;
 	}
@@ -4200,6 +4436,19 @@ static cJSON *az_avk_stats_json(void) {
 	 * on" has been an inference from a pixel error and needs to be a reading. */
 	cJSON_AddNumberToObject(o, "m5_decode_draws", (double)decode_draws);
 	cJSON_AddNumberToObject(o, "m5_srgb_attach_segments", (double)srgb_segs);
+	/*
+	 * M5/C6. Path B, as three separate readings rather than one.
+	 *
+	 * draws is damage rectangles and px their area, so a frame that "ran the
+	 * encode" over four pixels is distinguishable from one that encoded the
+	 * display. compiles must STOP MOVING after each output's first frame: a
+	 * pipeline compile on the frame path is a stall of milliseconds, and this is
+	 * the only instrument that separates "the variant was cached" from "it was
+	 * built again", which no timing percentile can.
+	 */
+	cJSON_AddNumberToObject(o, "m5_encode_draws", (double)encode_draws);
+	cJSON_AddNumberToObject(o, "m5_encode_px", (double)encode_px);
+	cJSON_AddNumberToObject(o, "m5_encode_compiles", (double)encode_compiles);
 	{
 		static const char *dv[] = { "none", "srgb", "gamma22", "bt1886" };
 		for (int i = 0; i < AVK_DECODE_COUNT; i++) {
@@ -4353,6 +4602,42 @@ static cJSON *az_avk_stats_json(void) {
 		cJSON_AddNumberToObject(o, "blur_cache_inv_geometry", (double)i_geo);
 		cJSON_AddNumberToObject(o, "blur_cache_inv_params", (double)i_par);
 		cJSON_AddNumberToObject(o, "blur_cache_inv_format", (double)i_fmt);
+		/*
+		 * M5/C6. THE PATH-B INTERMEDIATE, PRICED BESIDE THE CACHE IT DOUBLES.
+		 *
+		 * Reported here rather than under the encode counters because the
+		 * question it answers is the same one blur_cache_texel_bytes answers,
+		 * and the two must be readable together: on Path B the M4I cache is FP16
+		 * as well (ADR-012), so its bytes double AND this is added on top. For a
+		 * 3840x2160 output that is 66.4 MB of intermediate beside 132.7 MB of
+		 * cache, against 66.4 MB total on Path A. Stating it as one number
+		 * somewhere else is how a memory figure becomes unreconcilable.
+		 *
+		 * Both texel and requirement bytes, for exactly the reason the cache
+		 * carries both: one is arithmetic anyone can check, the other is what
+		 * the driver asked for, and their difference is tiling rather than a
+		 * mystery.
+		 */
+		{
+			uint64_t enc_images = 0, enc_texel = 0, enc_req = 0;
+			Monitor *me;
+			wl_list_for_each(me, &mons, link) {
+				if (me->avk == NULL || me->avk->encode_work.image == NULL) {
+					continue;
+				}
+				const struct avk_image *img = me->avk->encode_work.image;
+				enc_images++;
+				enc_req += me->avk->encode_work.image_bytes;
+				enc_texel += (uint64_t)img->extent.width * img->extent.height
+					* avk_format_bytes_per_pixel(img->format);
+			}
+			cJSON_AddNumberToObject(o, "m5_intermediate_images",
+				(double)enc_images);
+			cJSON_AddNumberToObject(o, "m5_intermediate_texel_bytes",
+				(double)enc_texel);
+			cJSON_AddNumberToObject(o, "m5_intermediate_req_bytes",
+				(double)enc_req);
+		}
 		cJSON_AddNumberToObject(o, "blur_cache_inv_never_built", (double)i_new);
 		cJSON_AddNumberToObject(o, "blur_cache_inv_forced", (double)i_forced);
 		/* PER KIND, because "the shadow backdrops are being served" must be a
@@ -5378,6 +5663,23 @@ static cJSON *az_avk_stats_json(void) {
 	}
 	cJSON_AddNumberToObject(o, "validation_errors",
 		(double)avk_validation_errors());
+	/*
+	 * WHETHER THAT COUNTER COULD HAVE MOVED AT ALL.
+	 *
+	 * `validation_errors` only ever increments from the validation layer's
+	 * message callback, so with the layer absent it reads 0 no matter what the
+	 * frame did -- and every fixture asserting `validation_errors == 0` without
+	 * ASTEROIDZ_VK_DEBUG has therefore been asserting nothing. That is not a
+	 * hypothetical: Path A spent a milestone attaching an _SRGB view to
+	 * pipelines that declared the UNORM twin (VUID-...-08910, twenty times in
+	 * one run), green in every headless fixture, and caught the first time the
+	 * on-GPU unit test was run under the layer.
+	 *
+	 * So the premise is a field now. A fixture that asserts the count asserts
+	 * this first, exactly as it would assert any other premise.
+	 */
+	cJSON_AddBoolToObject(o, "validation_enabled",
+		avk.instance != NULL && avk.instance->validation_enabled);
 	return o;
 }
 

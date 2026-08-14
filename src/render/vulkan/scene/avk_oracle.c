@@ -252,6 +252,34 @@ bool avk_oracle_tap(struct avk_oracle *o, struct avk_graph *graph,
 		o->dropped++;
 		return false;
 	}
+	/*
+	 * FOUR BYTES A PIXEL, OR NOTHING.
+	 *
+	 * Every stride here, the compare, and the PPM writer below all assume it,
+	 * and on Path B they would be wrong: the prefix and blur taps land on
+	 * scene-linear FP16 images at EIGHT bytes a pixel, so a tap would read half
+	 * of each row and report the difference between two misaligned pictures as
+	 * a divergence. The OUTPUT tap is unaffected -- that is still the scan-out
+	 * buffer, in the scan-out format.
+	 *
+	 * DECLINED rather than adapted, deliberately. This oracle's entire
+	 * vocabulary is "N pixels differ by M CODES", and a code is a property of a
+	 * quantised format -- there is no honest reading of "worst channel 3" over
+	 * half-floats. Giving it a second notion of difference is real work and it
+	 * is not this one, so the tap says so once and stands down.
+	 */
+	if (avk_format_bytes_per_pixel(image->format) != 4) {
+		static bool warned = false;
+		if (!warned) {
+			warned = true;
+			avk_log(AVK_INFO, "avk oracle: prefix/blur taps are declined on a "
+				"%u-byte format (Path B's FP16 intermediate); the OUTPUT tap "
+				"still names a divergent frame",
+				avk_format_bytes_per_pixel(image->format));
+		}
+		o->dropped++;
+		return false;
+	}
 	/* Clamp to the image: a capture region may be declared larger than the
 	 * backing extent the pool handed out, and a copy past the edge is a
 	 * validation error rather than an interesting result. */
