@@ -128,8 +128,6 @@ bool avk_renderer_init(struct avk_renderer *renderer, struct avk_device *dev,
 		getenv("AZ_BLUR_CACHE_STALE_GEOMETRY") != NULL;
 	renderer->break_blur_cache_stale_params =
 		getenv("AZ_BLUR_CACHE_STALE_PARAMS") != NULL;
-	renderer->break_blur_cache_unsafe_reuse =
-		getenv("AZ_BLUR_CACHE_UNSAFE_REUSE") != NULL;
 	if (renderer->break_blur_cache_off) {
 		avk_log(AVK_ERROR, "M4I: the monitor background blur cache is OFF -- "
 			"every backdrop blur reconstructs the background for itself");
@@ -137,17 +135,15 @@ bool avk_renderer_init(struct avk_renderer *renderer, struct avk_device *dev,
 	if (renderer->break_blur_cache_always_dirty
 			|| renderer->break_blur_cache_ignore_dirty
 			|| renderer->break_blur_cache_stale_geometry
-			|| renderer->break_blur_cache_stale_params
-			|| renderer->break_blur_cache_unsafe_reuse) {
+			|| renderer->break_blur_cache_stale_params) {
 		avk_log(AVK_ERROR, "M4I break switch active on the blur cache "
 			"(always_dirty=%d ignore_dirty=%d stale_geometry=%d "
-			"stale_params=%d unsafe_reuse=%d) -- this build renders a WRONG "
+			"stale_params=%d) -- this build renders a WRONG "
 			"desktop and exists to make an oracle fail",
 			(int)renderer->break_blur_cache_always_dirty,
 			(int)renderer->break_blur_cache_ignore_dirty,
 			(int)renderer->break_blur_cache_stale_geometry,
-			(int)renderer->break_blur_cache_stale_params,
-			(int)renderer->break_blur_cache_unsafe_reuse);
+			(int)renderer->break_blur_cache_stale_params);
 	}
 	for (int k = 0; k < AVK_BLUR_CACHE_KINDS; k++) {
 		pixman_region32_init(&renderer->blur_cache_region[k]);
@@ -1746,9 +1742,8 @@ static bool az_blur_cache_rebuild(struct avk_renderer *renderer,
 	const uint32_t cw = (uint32_t)bounds.width;
 	const uint32_t ch = (uint32_t)bounds.height;
 
-	struct avk_image *dst = avk_blur_cache_next_slot(cache, kind, renderer->dev,
-		&renderer->retire, renderer->format, cw, ch,
-		renderer->break_blur_cache_unsafe_reuse);
+	struct avk_image *dst = avk_blur_cache_target(cache, kind, renderer->dev,
+		&renderer->retire, renderer->format, cw, ch);
 	if (dst == NULL) {
 		return false;
 	}
@@ -1787,7 +1782,8 @@ static bool az_blur_cache_rebuild(struct avk_renderer *renderer,
 	}
 	/* This is the frame's first blur work when it runs at all: it is declared
 	 * before every consumer chain, so BLUR_BEGIN belongs to it. */
-	if (!*blur_begin_marked) {
+	const bool first_blur_work = !*blur_begin_marked;
+	if (first_blur_work) {
 		avk_graph_pass_time(graph, AVK_TS_BLUR_BEGIN, AVK_TS_BLUR_PREFIX_END);
 		*blur_begin_marked = true;
 	}
@@ -1795,10 +1791,27 @@ static bool az_blur_cache_rebuild(struct avk_renderer *renderer,
 	renderer->blur_prefix_commands += seg->end - seg->begin;
 	renderer->blur_prefix_pixels += (uint64_t)cw * (uint64_t)ch;
 
+	/*
+	 * PHASE MARKS FOR THE FIRST BLUR WORK ONLY, on the same rule the consumer
+	 * chains already follow -- and it is a rule about a Vulkan query pool, not
+	 * about tidy attribution.
+	 *
+	 * A timestamp query must be reset between uses. Two rebuilds in one frame
+	 * (a plain background for the window backdrops and a darkened one for the
+	 * shadows) both wrote DOWN_END, UP_PENULT_END and BLUR_END into the same
+	 * query slots, which is VUID-vkCmdWriteTimestamp2-None-03864. It went
+	 * unseen for as long as this fixture had no shadow backdrops to build a
+	 * second image for.
+	 *
+	 * BLUR_END is not claimed here at all: it is MOVED onto whichever chain
+	 * declared last, below, exactly as the consumer path does -- a mark bound
+	 * to a chain that turns out not to declare is a mark that is never written.
+	 */
 	struct avk_blur_marks marks = {
-		.down_end = AVK_TS_BLUR_DOWN_END,
-		.up_end = AVK_TS_BLUR_END,
-		.up_penult_end = AVK_TS_BLUR_UP_PENULT_END,
+		.down_end = first_blur_work ? AVK_TS_BLUR_DOWN_END : AVK_TS_NONE,
+		.up_end = AVK_TS_NONE,
+		.up_penult_end = first_blur_work
+			? AVK_TS_BLUR_UP_PENULT_END : AVK_TS_NONE,
 	};
 	struct avk_blur_work work;
 	const bool have_work = avk_blur_work_of(params, cw, ch, NULL, &work);
@@ -1807,6 +1820,8 @@ static bool az_blur_cache_rebuild(struct avk_renderer *renderer,
 			params, &marks, have_work ? &work : NULL)) {
 		return false;
 	}
+	/* THIS chain declared, so it is the last one so far. */
+	avk_graph_pass_time_move_end(graph, AVK_TS_BLUR_END);
 	/* The producer's own cost, attributed to the role that incurred it rather
 	 * than folded into the window backdrops it exists to serve. */
 	const uint64_t px = (uint64_t)cw * (uint64_t)ch;
@@ -2572,7 +2587,7 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 		if (slot->cacheable && cache_ready[slot->cache_kind]) {
 			const struct avk_blur_cache_image *ci = &cache->img[slot->cache_kind];
 			renderer->blur_results[i] = (struct avk_blur_result){
-				.image = ci->slots[ci->slot],
+				.image = ci->image,
 				.capture = { cache->origin_x, cache->origin_y,
 					(int32_t)cache->width, (int32_t)cache->height },
 			};

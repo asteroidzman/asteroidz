@@ -184,24 +184,29 @@ static inline const char *avk_blur_cache_kind_name(enum avk_blur_cache_kind k) {
 
 struct avk_blur_cache_image {
 	/*
-	 * Two slots -- and MEASURED TO BE REDUNDANT, which is recorded here rather
-	 * than left as a plausible-sounding invariant.
+	 * ONE image per kind, not two -- and the second one was removed on evidence.
 	 *
-	 * The reasoning that produced two was: a rebuild must not write the image
-	 * the previous frame is sampling. AZ_BLUR_CACHE_UNSAFE_REUSE removes the
-	 * alternation and, under validate_sync with the control proving the layer
-	 * is watching, reports ZERO hazards. avk_graph.c is why: an image's layout
-	 * persists on the avk_image across frames, so declaring the cache as
-	 * COLOR_WRITE while it sits in SHADER_READ_ONLY_OPTIMAL emits a transition,
-	 * and a barrier's first synchronisation scope covers everything previously
-	 * submitted to the same queue. The graph was already ordering it.
+	 * The reasoning that first produced two slots was: a rebuild must not write
+	 * the image the previous frame is still sampling, so alternate. That is a
+	 * true statement about an unordered write and a false one about this write.
+	 * avk_graph.c persists an image's layout on the avk_image across frames, so
+	 * declaring the cache as COLOR_WRITE while it sits in
+	 * SHADER_READ_ONLY_OPTIMAL emits a layout transition, and a barrier's first
+	 * synchronisation scope covers everything previously submitted to the same
+	 * queue -- of which this device has exactly one. The graph was already
+	 * ordering it, and the alternation was buying nothing but an
+	 * output-resolution image per kind.
 	 *
-	 * Kept for now because removing it is a separate change needing its own
-	 * oracle; one slot per kind would halve the cache (DP-1 39.4MB -> 19.7MB).
+	 * The break that proved this (AZ_BLUR_CACHE_UNSAFE_REUSE, "write the slot
+	 * being read") reported ZERO sync hazards under validate_sync with a control
+	 * proving the layer was watching. It is gone with the alternation, because
+	 * with one slot it describes the ordinary path. What replaced it is stronger
+	 * and still falsifiable: AZ_BLUR_CACHE_ALWAYS_DIRTY rebuilds into the single
+	 * live image EVERY frame while consumers sample it, under validation, and
+	 * the result must still be bit-exact against the forced-live path.
 	 */
-	struct avk_image *slots[2];
-	uint64_t slot_bytes[2];
-	uint32_t slot;
+	struct avk_image *image;
+	uint64_t image_bytes;
 	bool valid;
 	/* THE KERNEL THIS IMAGE WAS BUILT WITH, per kind and not shared.
 	 *
@@ -889,16 +894,17 @@ struct avk_renderer {
 	 *                must then leave stale pixels and fail the dirty oracle.
 	 * stale_geometry ignore an extent change. A resize must fail the oracle.
 	 * stale_params   ignore a kernel change. A radius change must fail it.
-	 * unsafe_reuse   rebuild into the slot the previous frame is sampling,
-	 *                which is the cross-frame read-after-write this design
-	 *                exists to avoid.
+	 *
+	 * There is no unsafe_reuse break any more: it meant "rebuild into the slot
+	 * the previous frame is sampling", and with one slot per kind that is the
+	 * ordinary path. always_dirty now covers the same hazard and covers it
+	 * harder -- every frame rather than only on a rebuild.
 	 */
 	bool break_blur_cache_off;
 	bool break_blur_cache_always_dirty;
 	bool break_blur_cache_ignore_dirty;
 	bool break_blur_cache_stale_geometry;
 	bool break_blur_cache_stale_params;
-	bool break_blur_cache_unsafe_reuse;
 	/*
 	 * WHAT THE CHAIN WOULD HAVE TO PROCESS, summed per pass, with every
 	 * filter footprint included -- avk_blur_work_of(). The denominator of the

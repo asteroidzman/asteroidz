@@ -75,8 +75,7 @@ enum avk_blur_cache_reason avk_blur_cache_check(
 	if (force_rebuild) {
 		return AVK_BLUR_CACHE_FORCED;
 	}
-	if (!cache->img[kind].valid
-			|| cache->img[kind].slots[cache->img[kind].slot] == NULL) {
+	if (!cache->img[kind].valid || cache->img[kind].image == NULL) {
 		return AVK_BLUR_CACHE_NEVER_BUILT;
 	}
 	if (cache->format != format) {
@@ -202,36 +201,30 @@ static struct avk_image *cache_image_create(struct avk_device *dev,
 	return image;
 }
 
-struct avk_image *avk_blur_cache_next_slot(struct avk_blur_cache *cache,
+struct avk_image *avk_blur_cache_target(struct avk_blur_cache *cache,
 		enum avk_blur_cache_kind kind, struct avk_device *dev,
 		struct avk_retire_queue *retire, VkFormat format, uint32_t width,
-		uint32_t height, bool unsafe_reuse) {
+		uint32_t height) {
 	if (cache == NULL || dev == NULL) {
 		return NULL;
 	}
 	struct avk_blur_cache_image *ci = &cache->img[kind];
 	/*
-	 * ALTERNATE, DO NOT OVERWRITE.
-	 *
-	 * A rebuild renders into the slot the previous frame was NOT sampling. The
-	 * previous frame is the only one that can still be reading, because this
-	 * rebuild is recorded into a command buffer submitted after it on the same
-	 * queue -- so one spare slot is exactly enough, and a third would be an
-	 * output-resolution image that is never read.
-	 *
-	 * Writing back into the same image instead would be a read-after-write
-	 * hazard across frames: legal to record, undetectable in a single-frame
-	 * fixture, and visible only as one torn frame of wallpaper whenever a
-	 * rebuild happens to land while the previous frame is still in flight.
+	 * ONE IMAGE. The rebuild renders into the same image the previous frame
+	 * sampled, and that is ordered rather than raced -- see
+	 * struct avk_blur_cache_image for why, and for the break that established
+	 * it. What orders it is the graph's own layout transition out of
+	 * SHADER_READ_ONLY_OPTIMAL, whose first synchronisation scope covers every
+	 * command already submitted to this device's single graphics queue.
 	 */
-	uint32_t next = unsafe_reuse ? ci->slot : (ci->slot ^ 1u);
-	struct avk_image *img = ci->slots[next];
+	struct avk_image *img = ci->image;
 	if (img != NULL && (img->format != format
 			|| img->extent.width != width || img->extent.height != height)) {
 		/* Wrong shape: retire it rather than reuse it. Ownership transfers to
 		 * the queue, so the slot must be cleared before anything can fail. */
-		ci->slots[next] = NULL;
-		ci->slot_bytes[next] = 0;
+		ci->image = NULL;
+		ci->image_bytes = 0;
+		ci->valid = false;
 		/*
 		 * Deferred against THE IMAGE'S OWN last use, not against some current
 		 * timeline value. Every frame that sampled this image stamped last_use
@@ -248,16 +241,40 @@ struct avk_image *avk_blur_cache_next_slot(struct avk_blur_cache *cache,
 		if (img == NULL) {
 			return NULL;
 		}
-		ci->slots[next] = img;
-		ci->slot_bytes[next] = (uint64_t)bytes;
+		ci->image = img;
+		ci->image_bytes = (uint64_t)bytes;
 	}
 	cache->bytes = 0;
 	for (int k = 0; k < AVK_BLUR_CACHE_KINDS; k++) {
-		cache->bytes += cache->img[k].slot_bytes[0]
-			+ cache->img[k].slot_bytes[1];
+		cache->bytes += cache->img[k].image_bytes;
 	}
-	ci->slot = next;
 	return img;
+}
+
+void avk_blur_cache_inventory(const struct avk_blur_cache *cache,
+		struct avk_blur_cache_inventory *out) {
+	if (cache == NULL || out == NULL) {
+		return;
+	}
+	for (int k = 0; k < AVK_BLUR_CACHE_KINDS; k++) {
+		const struct avk_blur_cache_image *ci = &cache->img[k];
+		if (ci->image == NULL) {
+			continue;
+		}
+		out->images++;
+		out->req_bytes += ci->image_bytes;
+		/*
+		 * LOGICAL TEXEL BYTES: width x height x the format's block size, with
+		 * no tiling, no alignment and no metadata. Reported beside req_bytes
+		 * rather than instead of it, because the difference between the two IS
+		 * the answer to "why is the cache bigger than the arithmetic" -- and a
+		 * single number that silently folds driver padding into the extent is
+		 * what made the 39,387,136 figure unreconcilable in the first place.
+		 */
+		out->texel_bytes += (uint64_t)ci->image->extent.width
+			* ci->image->extent.height
+			* avk_format_bytes_per_pixel(ci->image->format);
+	}
 }
 
 void avk_blur_cache_finish(struct avk_blur_cache *cache,
@@ -267,22 +284,19 @@ void avk_blur_cache_finish(struct avk_blur_cache *cache,
 	}
 	for (int k = 0; k < AVK_BLUR_CACHE_KINDS; k++) {
 		struct avk_blur_cache_image *ci = &cache->img[k];
-		for (uint32_t i = 0; i < 2; i++) {
-			struct avk_image *img = ci->slots[i];
-			ci->slots[i] = NULL;
-			ci->slot_bytes[i] = 0;
-			if (img == NULL) {
-				continue;
-			}
-			if (retire != NULL) {
-				avk_retire_push(retire, dev, img->last_use, avk_image_destroy,
-					img);
-			} else {
-				avk_image_destroy(dev, img);
-			}
-		}
+		struct avk_image *img = ci->image;
+		ci->image = NULL;
+		ci->image_bytes = 0;
 		ci->valid = false;
 		ci->wanted = false;
+		if (img == NULL) {
+			continue;
+		}
+		if (retire != NULL) {
+			avk_retire_push(retire, dev, img->last_use, avk_image_destroy, img);
+		} else {
+			avk_image_destroy(dev, img);
+		}
 	}
 	cache->bytes = 0;
 }

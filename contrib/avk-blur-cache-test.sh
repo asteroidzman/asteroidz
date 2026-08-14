@@ -60,9 +60,29 @@ WINDOWS="${WINDOWS:-5}"
 CYCLES="${CYCLES:-10}"
 
 # optimized 1 is what makes a client blur node ASK for the cached bottom layer.
+#
+# blur-background 1 is here because WITHOUT IT THIS FIXTURE HAS NO DARK CONSUMER
+# AT ALL, and a cache with two kinds tested through one of them is a cache with
+# an untested half. That is not hypothetical: a single shared kernel field once
+# validated both images, the dark one mismatched every frame and rebuilt 383
+# times in 13 seconds on the live desktop -- and this suite passed 18/18 on both
+# sides of the fix, because it never built a dark image to get wrong. The
+# assertions below require both kinds to be exercised, so the config that makes
+# that possible has to be part of the fixture rather than part of the user's
+# desktop.
+#
+# only-floating 0 IS LOAD-BEARING and was the whole reason this fixture had no
+# dark consumer. It defaults to 1 -- shadows on floating windows only -- and
+# every window here is tiled, so the shadow tree was empty, so no shadow blur
+# node was ever created, so the dark image was never built. The suite passed
+# either way and measured half a cache. The user's own desktop sets
+# only-floating 0 and tiled-scale 1.0, which is the configuration this is
+# supposed to be qualifying.
 CFG="border_radius 12
 borderpx 4
-effects { shadow { enable 1; size 20; blur_sigma 12; position_y 6 }
+effects { shadow { enable 1; size 20; blur 12; only-floating 0; tiled-scale 1.0
+    position { y 6 }
+    blur-background 1; blur-background-strength 0.55; blur-background-darken 1 }
   blur { enable 1; optimized 1; passes 2; radius 6
     params { noise 0.0; brightness 0.9; contrast 0.9; saturation 1.2 } } }"
 
@@ -81,6 +101,11 @@ JQ='{frames:.frames, forced:.blur_nodes_forced_live,
      inv_forced:.blur_cache_inv_forced,
      s_px:.blur_cache_saved_prefix_px, s_blur:.blur_cache_saved_blur_px,
      s_ch:.blur_cache_saved_chains,
+     plain_hit:.blur_cache_plain_hits, plain_reb:.blur_cache_plain_rebuilds,
+     dark_hit:.blur_cache_dark_hits, dark_reb:.blur_cache_dark_rebuilds,
+     cache_images:.blur_cache_images, cache_w:.blur_cache_width,
+     cache_h:.blur_cache_height, cache_texel:.blur_cache_texel_bytes,
+     cache_req:.blur_cache_req_bytes,
      images:.live_images, mem:.live_device_memory,
      verr:.validation_errors, waits:.cpu_sync_waits}'
 
@@ -162,6 +187,17 @@ hl_assert_true "the background is built at least once" \
 hl_assert_true "consumers were served from it" \
 	"$([ "$(v hit "$ON")" -gt 0 ] && echo true || echo false)"
 hl_assert "every request was a hit" "$(v req "$ON")" "$(v hit "$ON")"
+# BOTH KINDS, INDIVIDUALLY. The total is not evidence for either half: a healthy
+# `hits` with the dark image never built describes a desktop whose shadow
+# backdrops all silently fell back to the live path, which is the state this
+# extension exists to end -- and which this suite could not see until
+# blur-background became part of the fixture config.
+echo "  plain: hits=$(v plain_hit "$ON") rebuilds=$(v plain_reb "$ON")"
+echo "  dark:  hits=$(v dark_hit "$ON") rebuilds=$(v dark_reb "$ON")"
+hl_assert_true "THE PLAIN CONSUMER RAN (window backdrops served)" \
+	"$([ "$(v plain_hit "$ON")" -gt 0 ] && echo true || echo false)"
+hl_assert_true "THE DARK CONSUMER RAN (shadow backdrops served)" \
+	"$([ "$(v dark_hit "$ON")" -gt 0 ] && echo true || echo false)"
 
 echo
 echo "── C: FULL DAMAGE IS NOT SOURCE DAMAGE ───────────────────────────────"
@@ -172,8 +208,11 @@ awk -v r="$(v reb "$ON")" -v c="$CYCLES" -v f="$(v frames "$ON")" 'BEGIN{
 	printf "  %d full-output damage cycles over %d frames -> %d rebuild(s)\n",
 		c, f, r;
 }'
-hl_assert_true "full-output damage did NOT rebuild the cache ($(v reb "$ON") <= 1)" \
-	"$([ "$(v reb "$ON")" -le 1 ] && echo true || echo false)"
+# <= 2, not <= 1: there are two kinds and each is built once. The bound is the
+# number of KINDS, not a tolerance -- a third rebuild is a cache rebuilding on
+# damage and this must fail on it.
+hl_assert_true "full-output damage did NOT rebuild the cache ($(v reb "$ON") <= 2, one per kind)" \
+	"$([ "$(v reb "$ON")" -le 2 ] && echo true || echo false)"
 hl_assert "no rebuild blamed on damage-driven invalidation" \
 	"$(v inv_gen "$ON")" 0
 
@@ -235,62 +274,67 @@ awk -v d="$DL" -v m="$ML" -v w="$W" -v h="$H" 'BEGIN{
 }'
 
 echo
-echo "── F2: BREAK -- rebuild into the slot the last frame is sampling ─────"
-# The cross-frame read-after-write this design exists to avoid. It is LEGAL to
-# record and produces no validation error, which is exactly why it needs a test
-# of its own: the only symptom is a torn frame of wallpaper when a rebuild lands
-# while the previous frame is still in flight.
+echo "── F2: writing the image the last frame is sampling, every frame ─────"
 #
-# Paired with ALWAYS_DIRTY so a rebuild happens every frame and the race is
-# attempted continuously rather than once at startup. Without that pairing the
-# break would run over a cache that rebuilds twice in a session and would
-# almost never collide -- a green run proving only that nothing was tried.
-# WITH SYNC VALIDATION ON, because that is the only thing that can see this.
-# The hazard is legal to record and produces a correct picture on this driver
-# most of the time; ASTEROIDZ_VK_DEBUG turns on validate_sync, which reports
-# SYNC-HAZARD-WRITE-AFTER-READ against the image the previous frame is still
-# sampling. Without it this arm asserts nothing and passes.
-run unsafe ASTEROIDZ_VK_DEBUG=1 AZ_BLUR_CACHE_ALWAYS_DIRTY=1 AZ_BLUR_CACHE_UNSAFE_REUSE=1
-UNSAFE="$STATS"
-# The control: the SAFE build, same continuous rebuilding, same validation.
-# Both halves are needed -- "the break reports errors" is meaningless if the
-# safe build reports them too, and "the safe build is clean" is meaningless if
-# validation was never watching.
+# ── WHY THIS ARM EXISTS, AND WHY IT IS NO LONGER A BREAK ─────────────────
+#
+# There used to be one image per kind PER SLOT, alternating, on the reasoning
+# that a rebuild must not write what the previous frame is reading. A break
+# (AZ_BLUR_CACHE_UNSAFE_REUSE) removed the alternation and reported ZERO sync
+# hazards, with the control below proving validate_sync was watching. avk_graph.c
+# is why: an image's layout PERSISTS on the avk_image across frames
+# (res->entry_layout = image->layout on declare, res->image->layout = res->layout
+# at execute), so a rebuild that declares the cached image as COLOR_WRITE while
+# it sits in SHADER_READ_ONLY_OPTIMAL emits a layout transition -- and a barrier's
+# first synchronisation scope covers every command already submitted to the same
+# queue, of which this device has exactly one.
+#
+# So the alternation was buying nothing but an output-resolution image per kind,
+# and it is gone. The break went with it, because with one image "write the slot
+# being read" describes the ordinary path -- there is nothing left to switch on.
+#
+# What this arm asserts NOW is the same hazard, harder: ALWAYS_DIRTY rebuilds
+# into the single live image EVERY frame while consumers sample it, under sync
+# validation, and must stay clean. That is a stronger continuous version of what
+# the break used to attempt occasionally.
 run safesync ASTEROIDZ_VK_DEBUG=1 AZ_BLUR_CACHE_ALWAYS_DIRTY=1
 SAFE="$STATS"
-echo "  unsafe_reuse: rebuilds=$(v reb "$UNSAFE") verr=$(v verr "$UNSAFE")"
-echo "  safe (same rebuild rate, same validation): rebuilds=$(v reb "$SAFE") verr=$(v verr "$SAFE")"
-hl_assert_true "the break really did rebuild continuously" \
-	"$([ "$(v reb "$UNSAFE")" -gt 1 ] && echo true || echo false)"
-hl_assert_true "the control rebuilt just as hard" \
+echo "  rebuild-every-frame under validate_sync: rebuilds=$(v reb "$SAFE") verr=$(v verr "$SAFE")"
+# THE PREMISE, asserted before the result. A clean run over a cache that never
+# rebuilt would be a green arm that tried nothing -- which is exactly how the
+# original break came to look meaningful.
+hl_assert_true "PREMISE: the single image really was rewritten continuously" \
 	"$([ "$(v reb "$SAFE")" -gt 1 ] && echo true || echo false)"
-hl_assert "CONTROL: the safe build is clean under sync validation" \
+hl_assert_true "PREMISE: consumers really were sampling it while it was rewritten" \
+	"$([ "$(v hit "$SAFE")" -gt 0 ] && echo true || echo false)"
+hl_assert "one image, written and read every frame: sync hazards" \
 	"$(v verr "$SAFE")" 0
-#
-# ── THE BREAK DID NOT BREAK, AND THAT IS THE RESULT ──────────────────────
-#
-# I expected SYNC-HAZARD-WRITE-AFTER-READ here and got zero, with validate_sync
-# demonstrably watching (the control proves the layer is loaded and reporting).
-# The reason is in avk_graph.c: an image's layout PERSISTS on the avk_image
-# across frames (res->entry_layout = image->layout on declare,
-# res->image->layout = res->layout at execute), so a rebuild that declares the
-# cached image as COLOR_WRITE while it sits in SHADER_READ_ONLY_OPTIMAL emits a
-# layout transition -- and a pipeline barrier's first synchronisation scope
-# includes every command previously submitted to the same queue. The graph was
-# already ordering the rebuild after the previous frame's reads.
-#
-# So the two-slot alternation is REDUNDANT on this path, not load-bearing. It
-# is asserted as such rather than quietly kept: a mechanism nobody can
-# falsify is a mechanism nobody should trust, and one slot per kind would
-# halve the cache (DP-1 39.4MB -> 19.7MB). Left in place for now because
-# removing it is a separate change with its own oracle; recorded here so the
-# next reader does not re-derive "we need two slots" from the comment alone.
-hl_assert "BREAK: reusing the in-flight slot is NOT a hazard -- the graph's own layout transition already orders it" \
-	"$(v verr "$UNSAFE")" 0
 
 echo
 echo "── G: resources and soundness ────────────────────────────────────────"
-echo "  cache bytes=$(v bytes "$ON")  images_live off=$(v images "$OFF") on=$(v images "$ON")"
+# THE THREE FIGURES, SEPARATELY -- see avk_blur_cache_inventory(). A single
+# byte total with no extent, no count and no format beside it is what made the
+# old 39,387,136 reading impossible to reconcile with its own arithmetic.
+CI="$(v cache_images "$ON")"; CW="$(v cache_w "$ON")"; CH="$(v cache_h "$ON")"
+CT="$(v cache_texel "$ON")"; CR="$(v cache_req "$ON")"
+echo "  cache: images=$CI extent=${CW}x${CH} texel_bytes=$CT req_bytes=$CR"
+awk -v i="$CI" -v w="$CW" -v h="$CH" -v t="$CT" -v r="$CR" 'BEGIN{
+	if (i > 0 && t > 0)
+		printf "  %d image(s), %d px each; VkMemoryRequirements is %.1f%% over texel bytes\n",
+			i, w*h, 100*(r-t)/t;
+}'
+# ONE IMAGE PER KIND, and the kinds are the only multiplier. If a slot ever
+# comes back this fails, which is the point.
+hl_assert_true "at most one cache image per kind (got $CI, kinds=2)" \
+	"$([ "$CI" -le 2 ] && echo true || echo false)"
+# texel_bytes must equal images x extent x 4 exactly -- it is arithmetic, not a
+# measurement, and if it disagrees the extent being reported is not the extent
+# being allocated.
+hl_assert_true "texel bytes == images x ${CW}x${CH} x 4" \
+	"$([ "$CT" -eq $(( CI * CW * CH * 4 )) ] && echo true || echo false)"
+hl_assert_true "the driver asked for at least the texels ($CR >= $CT)" \
+	"$([ "$CR" -ge "$CT" ] && echo true || echo false)"
+echo "  images_live off=$(v images "$OFF") on=$(v images "$ON")"
 hl_assert "cache on: validation errors"  "$(v verr "$ON")" 0
 hl_assert "cache off: validation errors" "$(v verr "$OFF")" 0
 hl_assert "always-dirty: validation errors" "$(v verr "$DIRTY")" 0

@@ -4077,12 +4077,14 @@ static cJSON *az_avk_stats_json(void) {
 		         i_forced = 0;
 		uint64_t gen_max = 0;
 		uint32_t cache_w = 0, cache_h = 0;
+		struct avk_blur_cache_inventory inv = {0};
 		Monitor *mm;
 		wl_list_for_each(mm, &mons, link) {
 			if (mm->avk == NULL) {
 				continue;
 			}
 			const struct avk_blur_cache *c = &mm->avk->blur_cache;
+			avk_blur_cache_inventory(c, &inv);
 			req += c->requests; hit += c->hits; reb += c->rebuilds;
 			inval += c->invalidations; bytes += c->bytes;
 			s_draws += c->saved_prefix_draws; s_px += c->saved_prefix_px;
@@ -4108,14 +4110,27 @@ static cJSON *az_avk_stats_json(void) {
 		cJSON_AddNumberToObject(o, "blur_cache_rebuilds", (double)reb);
 		cJSON_AddNumberToObject(o, "blur_cache_invalidations", (double)inval);
 		cJSON_AddNumberToObject(o, "blur_cache_bytes", (double)bytes);
-		/* THE EXTENT THE CACHE IS ACTUALLY ALLOCATED AT.
+		/*
+		 * WHAT THE CACHE COSTS, in numbers that can disagree with each other.
 		 *
-		 * Reported because the byte total could not be reconciled with it:
-		 * DP-1 read 39,387,136 bytes for two images, and a 3840x2160 four-byte
-		 * image cannot be smaller than 33,177,600 on its own. A memory figure
-		 * whose extent is unknown is not a measurement. */
+		 * `bytes` alone could not be reconciled with anything: it read
+		 * 39,387,136 with no extent, no image count and no format beside it, so
+		 * it was not a measurement of anything. These four are separable --
+		 * images x extent x format gives texel_bytes by hand, req_bytes is what
+		 * VkMemoryRequirements asked for, and the gap between them is the
+		 * driver's tiling and metadata rather than a mystery.
+		 *
+		 * The extent is the LARGEST across outputs, because the outputs differ
+		 * (DP-1 3840x2160, HDMI-A-1 1920x1080) and a sum of two extents is not
+		 * an extent. The byte figures ARE summed, because bytes do add.
+		 */
 		cJSON_AddNumberToObject(o, "blur_cache_width", (double)cache_w);
 		cJSON_AddNumberToObject(o, "blur_cache_height", (double)cache_h);
+		cJSON_AddNumberToObject(o, "blur_cache_images", (double)inv.images);
+		cJSON_AddNumberToObject(o, "blur_cache_texel_bytes",
+			(double)inv.texel_bytes);
+		cJSON_AddNumberToObject(o, "blur_cache_req_bytes",
+			(double)inv.req_bytes);
 		cJSON_AddNumberToObject(o, "blur_cache_generation", (double)gen_max);
 		cJSON_AddNumberToObject(o, "blur_cache_saved_prefix_draws",
 			(double)s_draws);

@@ -44,19 +44,40 @@ void avk_blur_cache_count_reason(struct avk_blur_cache *cache,
 	enum avk_blur_cache_reason r);
 
 /*
- * The image the next rebuild must render into: the slot the previous frame is
- * NOT sampling, created or resized as needed, with the old one handed to the
- * retire queue at `last_submit`. Advances cache->slot. NULL on allocation
- * failure, in which case the cache is left exactly as it was and the caller
- * must take the live path.
+ * The image the next rebuild must render into: the single image for this kind,
+ * created or reshaped as needed, with a wrongly-shaped predecessor handed to
+ * the retire queue at its OWN last use. NULL on allocation failure, in which
+ * case the cache is left exactly as it was and the caller must take the live
+ * path.
  */
-struct avk_image *avk_blur_cache_next_slot(struct avk_blur_cache *cache,
+struct avk_image *avk_blur_cache_target(struct avk_blur_cache *cache,
 	enum avk_blur_cache_kind kind, struct avk_device *dev,
 	struct avk_retire_queue *retire, VkFormat format, uint32_t width,
-	uint32_t height, bool unsafe_reuse);
+	uint32_t height);
 
 /*
- * Release both slots. With `retire` non-NULL each image is destroyed once the
+ * WHAT THIS CACHE ACTUALLY COSTS, in three separable numbers.
+ *
+ * They are separate because they answer different questions and only one of
+ * them is arithmetic: texel_bytes is extent x format and can be checked by
+ * hand; req_bytes is what VkMemoryRequirements asked for, which includes the
+ * driver's tiling, alignment and any compression metadata; images says how many
+ * of them exist at all. A single figure conflating these is how a byte total
+ * came to disagree with its own extent for a whole milestone.
+ */
+struct avk_blur_cache_inventory {
+	uint32_t images;
+	uint64_t texel_bytes;
+	uint64_t req_bytes;
+};
+
+/* Accumulates INTO `out` -- so it can be summed over outputs without a caller
+ * having to add three fields itself. Zero it first. */
+void avk_blur_cache_inventory(const struct avk_blur_cache *cache,
+	struct avk_blur_cache_inventory *out);
+
+/*
+ * Release every cached image. With `retire` non-NULL each is destroyed once the
  * GPU passes its own last use; with it NULL they are destroyed immediately, which
  * is only correct from teardown after the device is idle.
  */
