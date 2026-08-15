@@ -66,7 +66,20 @@ ok()  { pass=$(( pass + 1 )); printf '  ok   %s\n' "$1"; }
 bad() { fail=$(( fail + 1 )); printf '  FAIL %s\n' "$1"; }
 chk() { if [ "$2" = "$3" ]; then ok "$1 ($2)"; else bad "$1 (got '$2', want '$3')"; fi; }
 
-j() { amsg get "$1" 2>/dev/null; }
+# ── EVERY QUERY GOES THROUGH THE PIN ─────────────────────────────────────
+#
+# The first attempt at this gate reported "no validation errors across 20
+# cycles" from a session that had no validation layer at all. amsg had fallen
+# back to scanning XDG_RUNTIME_DIR and answered from a leftover headless test
+# instance -- and every headless M6B fixture sets ASTEROIDZ_VK_DEBUG=1, so the
+# wrong respondent reported exactly the value the precondition wanted to see.
+# Every amsg-derived number in that run described a different compositor.
+#
+# AZ() is the only way this fixture talks to a compositor. AMSG_REQUIRE_* are
+# exported once in the preflight, so a call that forgets the pin cannot exist:
+# there is nothing to forget.
+AZ() { amsg "$@"; }
+j() { AZ get "$1" 2>/dev/null; }
 mon_field() { j all-monitors | jq -r ".monitors[] | select(.name==\"$1\") | .$2"; }
 stat_field() { j avk-stats | jq -r ".$1"; }
 
@@ -80,6 +93,72 @@ MON="${AZ_MON:-DP-1}"
 echo "  target output: $MON"
 
 if ! command -v jq >/dev/null; then echo "  need jq"; exit 1; fi
+
+# ── WHO IS ANSWERING, AND IS IT THE BUILD UNDER TEST ─────────────────────
+#
+# Established BEFORE anything is toggled and before any counter is read. A
+# forty-modeset run on the operator's own display that turns out to have been
+# measuring another process is worse than no run: it produces numbers that look
+# like evidence.
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+IDENT="$(amsg --instance 2>&1)"
+if ! printf '%s' "$IDENT" | grep -q '^pid'; then
+	echo "  ABORT: could not read the compositor's identity."
+	echo "         \`get instance\` arrived with 5b9c742; if the running"
+	echo "         compositor predates it, this gate cannot pin its target and"
+	echo "         must not run. Log out and back in to pick up the install."
+	printf '%s\n' "$IDENT" | sed 's/^/         /'
+	exit 1
+fi
+LIVE_PID="$(printf '%s' "$IDENT"   | awk '/^pid/{print $2}')"
+LIVE_BUILD="$(printf '%s' "$IDENT" | awk '/^build/{print $2}')"
+LIVE_SESS="$(printf '%s' "$IDENT"  | awk '/^session/{print $2}')"
+LIVE_BACK="$(printf '%s' "$IDENT"  | awk '/^backend/{print $2}')"
+LIVE_VAL="$(printf '%s' "$IDENT"   | awk '/^validation_enabled/{print $2}')"
+LIVE_CAND="$(printf '%s' "$IDENT"  | awk '/^candidates/{print $2}')"
+BUILD_ID="$(file "$REPO/build/asteroidz" 2>/dev/null \
+	| grep -o 'BuildID\[sha1\]=[0-9a-f]*' | cut -d= -f2)"
+INST_ID="$(file /usr/bin/asteroidz 2>/dev/null \
+	| grep -o 'BuildID\[sha1\]=[0-9a-f]*' | cut -d= -f2)"
+HEADSHA="$(cd "$REPO" && git rev-parse --short HEAD)"
+DIRTY="$(cd "$REPO" && git status --porcelain | wc -l)"
+
+echo "  ── the instance under test ──"
+echo "     pid        $LIVE_PID"
+echo "     build      $LIVE_BUILD"
+echo "     session    $LIVE_SESS"
+echo "     backend    $LIVE_BACK"
+echo "     validation $LIVE_VAL"
+echo "     candidates $LIVE_CAND live socket(s) in XDG_RUNTIME_DIR"
+echo "     HEAD       $HEADSHA ($DIRTY modified)"
+echo "     build/     $BUILD_ID"
+echo "     installed  $INST_ID"
+
+# NO CLOSURE EVIDENCE FROM MIXED BINARIES. Source, installed and running must
+# be the same code, or the run measures a combination that exists nowhere.
+if [ "$LIVE_BUILD" != "$BUILD_ID" ] || [ "$BUILD_ID" != "$INST_ID" ]; then
+	echo "  ABORT: running / built / installed are not the same build."
+	echo "         A gate that closes a milestone must run the code being"
+	echo "         closed. Install, log out, log back in."
+	exit 1
+fi
+if [ "$DIRTY" != "0" ]; then
+	echo "  ABORT: the working tree has $DIRTY modified file(s)."
+	echo "         The frozen candidate must be what is committed."
+	exit 1
+fi
+ok "PREMISE: source == installed == running ($HEADSHA / $BUILD_ID)"
+
+# FROM HERE ON, EVERY amsg CALL IS PINNED. A wrong-instance answer is an error
+# with a message, not a plausible number.
+export AMSG_REQUIRE_PID="$LIVE_PID"
+export AMSG_REQUIRE_BUILD="$LIVE_BUILD"
+export AMSG_REQUIRE_VALIDATION=1
+if ! AZ get version >/dev/null 2>&1; then
+	echo "  ABORT: the pin does not resolve -- amsg refused its own target."
+	exit 1
+fi
+ok "PREMISE: every query below is pinned to pid $LIVE_PID"
 # NOTHING ELSE MAY BE DRIVING THE GPU. A headless suite starts compositors of
 # its own, competes for the device, and reaps /tmp directories that are not its
 # own -- all three of which corrupt this run rather than merely slowing it.
@@ -92,7 +171,7 @@ fi
 if [ "$(j avk-stats | jq -r .active)" != "true" ]; then
 	echo "  ABORT: AVK is not the renderer in this session."; exit 1
 fi
-VON="$(stat_field validation_enabled)"
+VON="$LIVE_VAL"
 if [ "$VON" != "true" ]; then
 	echo "  ABORT: the validation layer is NOT loaded."
 	echo "         validation_errors cannot move, so asserting it would be a"
@@ -138,7 +217,32 @@ KDL="$HOME/.config/asteroidz/monitors.kdl"
 cp -f "$KDL" "$OUT/monitors.kdl.bak" 2>/dev/null && \
 	echo "  monitors.kdl backed up to $OUT/monitors.kdl.bak"
 
+# The observer's path is needed by the freeze below, which runs before the
+# confirmation -- and `set -u` turns a forward reference into an abort, not a
+# blank.
+BGE="$(cd "$(dirname "$0")" && pwd)/wlbgeffect/wlbgeffect"
+
+# ── FREEZE THE EXPERIMENT ────────────────────────────────────────────────
+#
+# Recorded before the first modeset and re-checked at the end. NEVER EDIT A
+# RUNNING EXPERIMENT: bash reads a script by byte offset, so editing one
+# mid-run resumes it in the middle of a token -- that destroyed a 50-fixture
+# summary once. If a defect in this fixture appears during the run, the run is
+# invalidated, the fixture fixed, the freeze re-cut and the whole thing redone.
+# A patched-mid-flight run is not a result.
+FREEZE="$OUT/freeze.txt"
+{
+	echo "HEAD        $HEADSHA"
+	echo "compositor  $LIVE_BUILD (pid $LIVE_PID, session $LIVE_SESS)"
+	for f in "$0" "$BGE" "$(command -v amsg)" "$REPO/build/asteroidz"; do
+		[ -e "$f" ] && printf '%-60s %s\n' "$f" "$(sha256sum "$f" | cut -c1-16)"
+	done
+	echo "cycles      $CYCLES  ($(( CYCLES * 2 )) transitions, $(( CYCLES * 4 )) modesets)"
+	echo "started     $(date -Is)"
+} | tee "$FREEZE"
+SELF_HASH="$(sha256sum "$0" | cut -c1-16)"
 echo
+
 echo "  This will toggle HDR on $MON $(( CYCLES * 2 )) times."
 echo "  Each toggle RETRAINS the output: two modesets and a visible flash."
 echo "  Watch it. Do not walk away -- you are the instrument for anything the"
@@ -179,7 +283,6 @@ echo
 # reliably, which matters: an unmapped surface is on no output and the
 # compositor correctly says nothing about it -- indistinguishable from a
 # compositor that forgot to send.
-BGE="$(cd "$(dirname "$0")" && pwd)/wlbgeffect/wlbgeffect"
 frog_events() { grep -c "^frog\[" "$OUT/frogwin.log" 2>/dev/null || echo 0; }
 frog_last()   { grep "^frog\[" "$OUT/frogwin.log" 2>/dev/null | tail -1; }
 frog_mon()    { amsg get all-clients 2>/dev/null | jq -r '.clients[] | select(.title=="fwlive") | .monitor' | head -1; }
@@ -258,25 +361,57 @@ BASE_FB="$(stat_field fallback_frames)"
 BASE_BYTES="$(stat_field m5_intermediate_req_bytes)"
 BASE_IMGS="$(stat_field m5_intermediate_images)"
 BASE_BC="$(j avk-stats | jq -r "[.blur_cache_outputs[] | select(.name==\"$MON\") | .rebuilds][0] // 0")"
+BASE_LIFE="$(stat_field lifecycle_violations)"
+BASE_CPUW="$(stat_field cpu_sync_waits)"
+BASE_PRESW="$(stat_field presentation_waits)"
+BASE_COMPILES="$(stat_field m5_encode_compiles)"
+# The compositor's OWN resolved description for the observer surface -- the
+# wp-cm half. The frog log says what went on the wire; this says what the
+# shared policy selected. They are separate claims and are kept separate:
+# az_preferred.h is one policy with two serializers, and a fixture that only
+# read the wire could not tell a correct policy with a broken serializer from
+# the reverse.
+pref_of() { AZ get all-clients 2>/dev/null \
+	| jq -r ".clients[] | select(.title==\"fwlive\") | \"\(.preferred_output) \(.preferred_hdr) \(.preferred_max_luminance) \(.preferred_identity)\"" | head -1; }
+BASE_PREF="$(pref_of)"
 echo "  before: verr=$BASE_VERR fallback=$BASE_FB imgs=$BASE_IMGS bytes=$BASE_BYTES cache_rebuilds=$BASE_BC"
+echo "          lifecycle=$BASE_LIFE cpu_waits=$BASE_CPUW present_waits=$BASE_PRESW compiles=$BASE_COMPILES"
+echo "          wp-cm preferred: $BASE_PREF"
 echo
 
 # ── THE CYCLES ───────────────────────────────────────────────────────────
 echo "── $CYCLES HDR off/on cycles ────────────────────────────────────────"
 i=0; sdr_seen=0
 FROG_SDR_META=""; FROG_HDR_META=""; FROG_IDS=""
+SDR_PREF=""
+# Per-cycle record, so a failure at the end can be attributed to a cycle rather
+# than to the run. Written as it goes: a fixture that only reports totals
+# cannot say whether the fortieth transition behaved like the first.
+CYCLELOG="$OUT/cycles.tsv"
+printf 'cycle\tstate\thdr\tpath\ttf\tfallback\tverr\tcompiles\tfrog_ev\tpref_ident\n' \
+	>"$CYCLELOG"
+rec() { # rec <cycle> <state>
+	printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+		"$1" "$2" "$(mon_field "$MON" hdr)" "$(mon_field "$MON" color_path)" \
+		"$(mon_field "$MON" color_encode_tf)" "$(stat_field fallback_frames)" \
+		"$(stat_field validation_errors)" "$(stat_field m5_encode_compiles)" \
+		"$(frog_events)" "$(frog_ident)" >>"$CYCLELOG"
+}
 while [ "$i" -lt "$CYCLES" ]; do
-	amsg dispatch "set_output_hdr,$MON,0" >/dev/null 2>&1
+	AZ dispatch "set_output_hdr,$MON,0" >/dev/null 2>&1
 	sleep 1.5
 	if [ "$(mon_field "$MON" hdr)" = "false" ]; then
 		sdr_seen=$(( sdr_seen + 1 ))
 		[ -z "$FROG_SDR_META" ] && FROG_SDR_META="$(frog_last)"
+		[ -z "$SDR_PREF" ] && SDR_PREF="$(pref_of)"
 	fi
 	FROG_IDS="$FROG_IDS $(frog_ident)"
-	amsg dispatch "set_output_hdr,$MON,1" >/dev/null 2>&1
+	rec "$(( i + 1 ))" sdr
+	AZ dispatch "set_output_hdr,$MON,1" >/dev/null 2>&1
 	sleep 1.5
 	[ -z "$FROG_HDR_META" ] && FROG_HDR_META="$(frog_last)"
 	FROG_IDS="$FROG_IDS $(frog_ident)"
+	rec "$(( i + 1 ))" hdr
 	i=$(( i + 1 ))
 	printf '\r  cycle %d/%d (SDR states observed: %d, frog events: %d)   ' \
 		"$i" "$CYCLES" "$sdr_seen" "$(frog_events)"
@@ -289,7 +424,14 @@ AFT_FB="$(stat_field fallback_frames)"
 AFT_BYTES="$(stat_field m5_intermediate_req_bytes)"
 AFT_IMGS="$(stat_field m5_intermediate_images)"
 AFT_BC="$(j avk-stats | jq -r "[.blur_cache_outputs[] | select(.name==\"$MON\") | .rebuilds][0] // 0")"
+AFT_LIFE="$(stat_field lifecycle_violations)"
+AFT_CPUW="$(stat_field cpu_sync_waits)"
+AFT_PRESW="$(stat_field presentation_waits)"
+AFT_COMPILES="$(stat_field m5_encode_compiles)"
+AFT_PREF="$(pref_of)"
 echo "  after : verr=$AFT_VERR fallback=$AFT_FB imgs=$AFT_IMGS bytes=$AFT_BYTES cache_rebuilds=$AFT_BC"
+echo "          lifecycle=$AFT_LIFE cpu_waits=$AFT_CPUW present_waits=$AFT_PRESW compiles=$AFT_COMPILES"
+echo "          wp-cm preferred: $AFT_PREF"
 echo
 
 # ── 1. THE TRANSITIONS HAPPENED ──────────────────────────────────────────
@@ -303,6 +445,48 @@ chk "on Path B with the PQ encode, as it started" \
 
 # ── 2-3. CLEAN ───────────────────────────────────────────────────────────
 chk "no validation errors across $CYCLES cycles" "$AFT_VERR" "$BASE_VERR"
+
+# ── THE HARD GATES ───────────────────────────────────────────────────────
+# Each is a count that must not move at all. They are separate assertions
+# rather than one summed check, because "something went wrong" is not a
+# finding -- which counter moved is.
+chk "no lifecycle violations" "$AFT_LIFE" "$BASE_LIFE"
+chk "no CPU sync waits" "$AFT_CPUW" "$BASE_CPUW"
+chk "no presentation waits" "$AFT_PRESW" "$BASE_PRESW"
+
+# ── PIPELINE COMPILES ARE NOT PER-TRANSITION ─────────────────────────────
+#
+# The invariant the headless gate established as "1 compile, not 20", carried
+# to 40 transitions. The encode variants are keyed, so re-entering HDR must
+# reuse the pipeline it built the first time. A count that tracks the
+# transition count means the key is not doing its job, and the cost is a
+# shader compile on a modeset path the operator is watching.
+COMPILE_DELTA=$(( AFT_COMPILES - BASE_COMPILES ))
+if [ "$COMPILE_DELTA" -le 4 ]; then
+	ok "pipeline compiles do not track transitions ($COMPILE_DELTA over $(( CYCLES * 2 )))"
+else
+	bad "pipeline compiles track transitions ($COMPILE_DELTA over $(( CYCLES * 2 )) -- the variant key is not holding)"
+fi
+
+# ── THE wp-cm HALF: THE POLICY MOVED, AND CAME BACK ──────────────────────
+#
+# az_preferred.h is ONE policy with two serializers, so the wire alone cannot
+# settle it: a correct policy with a broken serializer and a broken policy with
+# a correct serializer look different only from here. The compositor's own
+# resolved description for the stationary surface must differ between the two
+# states and return to its starting value.
+echo "  wp-cm preferred, SDR state: $SDR_PREF"
+if [ -n "$SDR_PREF" ] && [ "$SDR_PREF" != "$BASE_PREF" ]; then
+	ok "the resolved description CHANGES with the output's HDR state"
+else
+	bad "the resolved description CHANGES with the output's HDR state (SDR '$SDR_PREF' vs HDR '$BASE_PREF')"
+fi
+chk "and returns to its starting value" "$AFT_PREF" "$BASE_PREF"
+# The output identity must NOT drift: the surface never moved, so every
+# resolution across 40 transitions must have named the same output.
+DRIFT="$(printf '%s' "$AFT_PREF" | awk '{print $1}')"
+chk "the surface's output identity never drifted" "$DRIFT" \
+	"$(printf '%s' "$BASE_PREF" | awk '{print $1}')"
 # ── ONE REFUSED FRAME PER TRANSITION, AND IT IS THE INTERLOCK WORKING ────
 #
 # Measured: 20 cycles = 40 transitions produced 20 refused frames. During a
@@ -433,6 +617,16 @@ if [ "$MOVED" -le "$LIMIT" ]; then
 else
 	bad "the picture CHANGED across the transitions ($MOVED px > $LIMIT)"
 fi
+
+# ── THE EXPERIMENT WAS NOT EDITED WHILE IT RAN ───────────────────────────
+chk "the fixture is byte-identical to its frozen hash" \
+	"$(sha256sum "$0" | cut -c1-16)" "$SELF_HASH"
+# AND THE SAME COMPOSITOR ANSWERED THROUGHOUT. A restart mid-run would give a
+# new pid, and every counter delta above would be a comparison across two
+# different processes -- which reads as "nothing leaked" rather than as an
+# invalid run.
+END_PID="$(amsg --instance 2>/dev/null | awk '/^pid/{print $2}')"
+chk "the same instance answered from first query to last" "$END_PID" "$LIVE_PID"
 
 # ── config.kdl IS RESTORED FIRST ─────────────────────────────────────────
 # ── monitors.kdl IS RESTORED, BY HASH ────────────────────────────────────
