@@ -56,6 +56,7 @@ m6b-transition-test.sh             required
 m6b-frog-metadata-test.sh          required
 amsg-identity-test.sh              required
 cm-two-writer-test.sh              required
+cm-native-caps-test.sh             required
 m6b-hdr-transition-live.sh         live
 avk-blur-cache-multi.sh            required
 avk-blur-cache-test.sh             required

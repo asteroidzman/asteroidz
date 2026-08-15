@@ -21,6 +21,9 @@ wayland_xmls = [
 	wl_protocol_dir + '/staging/ext-workspace/ext-workspace-v1.xml',
 	wl_protocol_dir + '/staging/tearing-control/tearing-control-v1.xml',
 	wl_protocol_dir + '/staging/ext-background-effect/ext-background-effect-v1.xml',
+	# Phase 1 of native wp-color-management ownership. Scanned but not yet
+	# authoritative: wlroots still creates the global unless AZ_NATIVE_CM=1.
+	wl_protocol_dir + '/staging/color-management/color-management-v1.xml',
 	'wlr-foreign-toplevel-management-unstable-v1.xml',
 	'frog-color-management-v1.xml',
 	'dwl-ipc-unstable-v2.xml',

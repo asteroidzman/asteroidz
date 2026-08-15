@@ -414,8 +414,14 @@ static void frog_color_management_init(void) {
 					 frog_factory_bind);
 	if (color_manager)
 		filtered_wp_color_manager_global = color_manager->global;
-	wlr_scene_set_surface_color_description_fallback(
-		frog_surface_image_description);
+	/*
+	 * THE SCENE FALLBACK IS NOT REGISTERED HERE ANY MORE.
+	 *
+	 * It is a single slot and two protocols need to answer through it, so
+	 * whichever registered last would silently win. setup() registers one
+	 * multiplexer for both (az_cm_surface_description) after both inits, which
+	 * makes precedence a decision rather than an ordering accident.
+	 */
 	wlr_log(WLR_INFO, "frog-color-management-v1 enabled "
 					  "(wp-color-management hidden from gamescope)");
 }

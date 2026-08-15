@@ -162,6 +162,29 @@ static const struct wp_image_description_info_v1_listener cm_info_listener = {
 	.target_max_fall = cm_info_target_max_fall,
 };
 
+static void cm_mgr_intent(void *d, struct wp_color_manager_v1 *m, uint32_t v) {
+	(void)d; (void)m; printf("cmcap intent %u\n", v);
+}
+static void cm_mgr_feature(void *d, struct wp_color_manager_v1 *m, uint32_t v) {
+	(void)d; (void)m; printf("cmcap feature %u\n", v);
+}
+static void cm_mgr_tf(void *d, struct wp_color_manager_v1 *m, uint32_t v) {
+	(void)d; (void)m; printf("cmcap tf %u\n", v);
+}
+static void cm_mgr_prim(void *d, struct wp_color_manager_v1 *m, uint32_t v) {
+	(void)d; (void)m; printf("cmcap primaries %u\n", v);
+}
+static void cm_mgr_done(void *d, struct wp_color_manager_v1 *m) {
+	(void)d; (void)m; printf("cmcap done\n"); fflush(stdout);
+}
+static const struct wp_color_manager_v1_listener cm_mgr_listener = {
+	.supported_intent = cm_mgr_intent,
+	.supported_feature = cm_mgr_feature,
+	.supported_tf_named = cm_mgr_tf,
+	.supported_primaries_named = cm_mgr_prim,
+	.done = cm_mgr_done,
+};
+
 static void cm_desc_ready(void *d, struct wp_image_description_v1 *desc,
 		uint32_t identity) {
 	(void)d; (void)identity;
@@ -257,6 +280,12 @@ static void registry_global(void *data, struct wl_registry *registry,
 	} else if (!strcmp(interface, wl_shm_interface.name)) {
 		shm = wl_registry_bind(registry, name, &wl_shm_interface, 1);
 	} else if (strcmp(interface, wp_color_manager_v1_interface.name) == 0) {
+		/* The capability advertisement, printed verbatim in arrival order.
+		 * The gate that compares the native manager against wlroots' compares
+		 * THESE LINES -- so the client must not sort, dedupe or interpret
+		 * them: two implementations that advertise the same set in a different
+		 * order are not the same advertisement to a client that reads the
+		 * first one it recognises. */
 		/*
 		 * VERSION 2, and version 1 is not good enough here.
 		 *
@@ -271,6 +300,7 @@ static void registry_global(void *data, struct wl_registry *registry,
 		 */
 		cm_manager = wl_registry_bind(registry, name,
 			&wp_color_manager_v1_interface, 2);
+		wp_color_manager_v1_add_listener(cm_manager, &cm_mgr_listener, NULL);
 	} else if (strcmp(interface,
 			frog_color_management_factory_v1_interface.name) == 0) {
 		frog_factory = wl_registry_bind(registry, name,

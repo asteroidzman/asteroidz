@@ -2480,7 +2480,9 @@ static int32_t capture_output(const Arg *arg) {
 /* M6B/D6. The ONE preferred-colour policy, before either protocol frontend
  * that serializes it -- so neither can invent its own. */
 #include "render/az_preferred.h"
+#include "ext-protocol/az_cm_caps.h"
 #include "ext-protocol/frog-color-management.h"
+#include "ext-protocol/wp-color-management.h"
 #include "fetch/fetch.h"
 #include "ipc/ipc.h"
 #include "ipc/portals.h"
@@ -4423,6 +4425,15 @@ void cleanupmon(struct wl_listener *listener, void *data) {
 	Monitor *m = wl_container_of(listener, m, destroy);
 	LayerSurface *l = NULL, *tmp = NULL;
 	uint32_t i;
+
+	/*
+	 * A wp-cm output object may outlive the output it describes -- a client
+	 * still holds the resource and may still call get_image_description on it.
+	 * The object is made inert rather than destroyed: answering from a stale
+	 * wlr_output pointer is a use-after-free, and destroying the client's
+	 * object out from under it is a protocol violation.
+	 */
+	az_wpcm_output_gone(m->wlr_output);
 
 	/* don't leave the screenshot UI pointing at a monitor that's going away */
 	if (shotui.capture_mon == m) {
@@ -10116,6 +10127,16 @@ static void surface_send_preferred_description(struct wlr_surface *surface,
 			data->has_mastering_luminance ? data->mastering_luminance.max : -1.0,
 			data->max_cll, data->max_fall);
 	}
+	/*
+	 * ONE POLICY, TWO SERIALIZERS -- and here is the second one. Under native
+	 * ownership there is no wlroots manager to hand this to; the feedback
+	 * objects are told directly, and they carry the mastering values wlroots
+	 * would have dropped.
+	 */
+	if (az_native_cm_enabled()) {
+		az_wpcm_send_preferred(surface);
+		return;
+	}
 	wlr_color_manager_v1_set_surface_preferred_image_description(color_manager,
 		surface, data);
 }
@@ -10123,6 +10144,12 @@ static void surface_send_preferred_description(struct wlr_surface *surface,
 /* Every mapped client on `m`. Called when the output's colour state changes,
  * which is the one case where nothing about the surfaces themselves moved. */
 static void mon_send_preferred_descriptions(Monitor *m) {
+	/* The output's own object, if any client asked for one. Separate from the
+	 * per-surface sends below: a client may be watching the OUTPUT without
+	 * having a surface on it. */
+	if (m != NULL && m->wlr_output != NULL) {
+		az_wpcm_output_changed(m->wlr_output);
+	}
 	Client *c;
 	wl_list_for_each(c, &clients, link) {
 		if (c->mon != m || !c->mon) {
@@ -10649,111 +10676,49 @@ void setup(void) {
 		 * alternative -- calling _to_wlr() to check -- would be calling the
 		 * aborting function to find out whether it aborts.
 		 */
-		size_t cm_tf_len = 0, cm_primaries_len = 0;
-		enum wp_color_manager_v1_transfer_function *cm_tfs = NULL;
-		enum wp_color_manager_v1_primaries *cm_primaries = NULL;
-		enum wp_color_manager_v1_transfer_function avk_tfs[8];
-		enum wp_color_manager_v1_primaries avk_prims[4];
-		bool cm_owned = false;
-#ifdef AZ_HAVE_VULKAN
-		if (az_renderer == AZ_RENDERER_AVK) {
-			/*
-			 * Exactly the curves AVK has a decode variant for -- see
-			 * enum avk_decode_variant and texture.frag. EXT_LINEAR is
-			 * deliberately absent: AVK handles it correctly (a linear source
-			 * needs no EOTF, only the domain's scale) but it has no variant of
-			 * its own and therefore no test, and advertising a curve nothing
-			 * has measured is how a client is invited to send something that
-			 * comes out wrong.
-			 */
-			static const enum wlr_color_transfer_function avk_wlr_tfs[] = {
-				WLR_COLOR_TRANSFER_FUNCTION_SRGB,
-				WLR_COLOR_TRANSFER_FUNCTION_GAMMA22,
-				WLR_COLOR_TRANSFER_FUNCTION_BT1886,
-				WLR_COLOR_TRANSFER_FUNCTION_ST2084_PQ,
-			};
-			static const enum wlr_color_named_primaries avk_wlr_prims[] = {
-				WLR_COLOR_NAMED_PRIMARIES_SRGB,   /* the scene's own, BT.709 */
-				WLR_COLOR_NAMED_PRIMARIES_BT2020, /* converted at decode */
-			};
-			for (size_t i = 0; i < LENGTH(avk_wlr_tfs); i++) {
-				avk_tfs[cm_tf_len++] =
-					wlr_color_manager_v1_transfer_function_from_wlr(
-						avk_wlr_tfs[i]);
-			}
-			for (size_t i = 0; i < LENGTH(avk_wlr_prims); i++) {
-				avk_prims[cm_primaries_len++] =
-					wlr_color_manager_v1_primaries_from_wlr(avk_wlr_prims[i]);
-			}
-			cm_tfs = avk_tfs;
-			cm_primaries = avk_prims;
-			wlr_log(WLR_INFO, "color-management: advertising AVK's %zu transfer "
-					"functions and %zu primaries (the wlroots renderer "
-					"composites nothing and is not asked)",
-					cm_tf_len, cm_primaries_len);
-		}
-#endif
-		if (cm_tfs == NULL) {
-			cm_tfs = wlr_color_manager_v1_transfer_function_list_from_renderer(
-				drw, &cm_tf_len);
-			cm_primaries = wlr_color_manager_v1_primaries_list_from_renderer(
-				drw, &cm_primaries_len);
-			cm_owned = true;
-		}
-		const enum wp_color_manager_v1_render_intent cm_render_intents[] = {
-			WP_COLOR_MANAGER_V1_RENDER_INTENT_PERCEPTUAL,
-		};
-		/* only enable features wlr_color_manager_v1 implements; wlroots
-		 * asserts on the rest (set_luminances, mastering primaries, ...) */
-		struct wlr_color_manager_v1_options cm_options = {
-			.features =
-				{
-					.parametric = true,
-				},
-			.render_intents = cm_render_intents,
-			.render_intents_len = LENGTH(cm_render_intents),
-			.transfer_functions = cm_tfs,
-			.transfer_functions_len = cm_tf_len,
-			.primaries = cm_primaries,
-			.primaries_len = cm_primaries_len,
-		};
-		color_manager = wlr_color_manager_v1_create(dpy, 2, &cm_options);
+		struct az_cm_caps caps;
+		az_cm_caps_build(&caps, drw);
+
 		/*
-		 * ── AND SCENEFX IS DELIBERATELY NOT GIVEN IT ─────────────────────
+		 * EXACTLY ONE IMPLEMENTATION OWNS THE GLOBAL.
 		 *
-		 * wlr_scene_set_color_manager_v1() is what arms scenefx's own
-		 * preferred-description writer (types/scene/surface.c:164), and that
-		 * writer has a DIFFERENT POLICY from this compositor's: "the
-		 * max-preference transfer function across every output the surface
-		 * touches", against az_preferred.h's "the surface's own output".
+		 * wlr_color_manager_v1 has no destroy function -- it lives until display
+		 * teardown -- and two live wp_color_manager_v1 globals would both appear
+		 * in the registry with clients binding whichever they saw first. So the
+		 * choice is made once, here, at startup: native if AZ_NATIVE_CM selects
+		 * it, wlroots otherwise. Both paths are in the tree; never in a session.
 		 *
-		 * Two writers, two policies, one
-		 * wlr_color_manager_v1_set_surface_preferred_image_description --
-		 * the exact defect az_preferred.h was written to end, one layer
-		 * further down than it was looking.
-		 *
-		 * IT WAS NOT AN EDGE CASE, though it was first described as one. The
-		 * two disagree on an ORDINARY SDR SURFACE: scenefx defaults to
-		 * GAMMA22 (protocol 2) while this file sends
-		 * WLR_COLOR_TRANSFER_FUNCTION_SRGB, which wlroots maps to
-		 * COMPOUND_POWER_2_4 (protocol 14). Measured against a client before
-		 * this line was removed: 8 of 8 descriptions read 2. Every SDR window
-		 * was being told the wrong transfer function, and
-		 * m6b-preferred-desc-test.sh passed throughout because it reads once,
-		 * at a moment when this file's writer had fired last.
-		 *
-		 * Leaving the scene's manager NULL costs nothing: scenefx's writer is
-		 * that field's only consumer, and every moment the answer can change
-		 * -- map, setmon, an HDR commit -- is already covered by
-		 * surface_send_preferred_description(). The CLIENT->COMPOSITOR
-		 * direction is untouched; it goes through the scene's colour
-		 * description fallback, which frog already uses.
+		 * Both are handed the SAME capability set, so "the native manager
+		 * advertises what wlroots advertised" holds by construction rather than
+		 * by a second list somebody has to keep in step.
 		 */
-		/* Only the renderer-derived lists are heap allocated. */
-		if (cm_owned) {
-			free(cm_tfs);
-			free(cm_primaries);
+		if (az_wpcm_create(dpy, &caps)) {
+			/*
+			 * THE NATIVE MANAGER KEEPS THE LISTS. It reads them on every bind,
+			 * for the life of the session, so they must not be freed here --
+			 * az_cm_caps_finish() below runs only on the wlroots path, where
+			 * wlr_color_manager_v1_create() has already copied them into the
+			 * manager it built.
+			 */
+		} else {
+			/* only enable features wlr_color_manager_v1 implements; wlroots
+			 * asserts on the rest (set_luminances, mastering primaries, ...) */
+			struct wlr_color_manager_v1_options cm_options = {
+				.features =
+					{
+						.parametric = true,
+					},
+				.render_intents = az_cm_render_intents,
+				.render_intents_len = LENGTH(az_cm_render_intents),
+				.transfer_functions = caps.tfs,
+				.transfer_functions_len = caps.tf_len,
+				.primaries = caps.primaries,
+				.primaries_len = caps.primaries_len,
+			};
+			color_manager = wlr_color_manager_v1_create(dpy, AZ_WPCM_VERSION,
+				&cm_options);
 		}
+		az_cm_caps_finish(&caps);
 
 		/* gamescope HDR passthrough: it can't use our wp-color-management
 		 * (needs six features, wlroots implements two), but its frog path
@@ -10763,6 +10728,17 @@ void setup(void) {
 		if (config.frog_color_management) {
 			frog_color_management_init();
 		}
+		/*
+		 * ONE FALLBACK, BOTH PROTOCOLS, REGISTERED AFTER BOTH INITS.
+		 *
+		 * wlr_scene_set_surface_color_description_fallback takes a single
+		 * callback and frog used to claim it directly. Native wp-cm needs to
+		 * answer through the same slot, so registering here -- once, after
+		 * both -- makes precedence a decision instead of a question of which
+		 * init ran last.
+		 */
+		wlr_scene_set_surface_color_description_fallback(
+			az_cm_surface_description);
 	}
 
 	modern_protocols_init(dpy, drw);
