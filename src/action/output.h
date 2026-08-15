@@ -632,18 +632,29 @@ int32_t set_output_hdr(const Arg *arg) {
 	 * later capture session end flip it back */
 	hdr_resolve(m);
 
+	/*
+	 * "0", NOT ABSENCE. Turning HDR off used to REMOVE the key, which leaves
+	 * the output unconfigured -- and an unconfigured output takes the global
+	 * `hdr-mode` default, so with `hdr-mode on` a reload turned HDR straight
+	 * back on and the operator's explicit "off" evaporated. An explicit choice
+	 * has to survive as an explicit choice.
+	 */
 	const char *keys[] = {"hdr"};
-	const char *vals[] = {m->hdr_configured ? "1" : NULL};
+	const char *vals[] = {m->hdr_configured > 0 ? "1" : "0"};
 	output_persist(m, keys, vals, 1);
 
 	if ((m->hdr > 0) != (m->hdr_configured > 0)) {
+		/* Now only reachable for reasons that genuinely outrank an explicit
+		 * request: the output cannot do BT.2020+PQ, the global kill switch is
+		 * set, or a force_hdr client is holding it on. `hdr-mode on` is no
+		 * longer among them -- it is a default for outputs nobody has spoken
+		 * for, not an override of the ones they have. */
 		wlr_log(WLR_INFO,
 				"set_output_hdr: %s saved as the baseline for %s, but %s "
 				"overrides it for now (hdr is %s)",
-				m->hdr_configured ? "on" : "off", m->wlr_output->name,
+				m->hdr_configured > 0 ? "on" : "off", m->wlr_output->name,
 				m->hdr_capability_failed ? "this output's lack of BT.2020+PQ"
 				: config.hdr_mode == 0	 ? "`misc { hdr-mode off }`"
-				: config.hdr_mode == 2	 ? "`misc { hdr-mode on }`"
 										 : "a force_hdr client",
 				m->hdr > 0 ? "on" : "off");
 	}

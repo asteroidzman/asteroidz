@@ -1132,6 +1132,20 @@ struct Monitor {
 	 * capture fallback pulling an HDR output down to SDR. Everything that
 	 * renders or reports reads hdr; only hdr_resolve() may write it. */
 	int32_t hdr;
+	/*
+	 * TRI-STATE, and the third state is the whole point:
+	 *
+	 *   -1  no explicit per-output choice has been made
+	 *    0  explicitly OFF   (a rule said `hdr 0`, or a dispatch turned it off)
+	 *    1  explicitly ON
+	 *
+	 * It used to be 0/1 with no way to tell "the operator turned this output's
+	 * HDR off" from "the operator never mentioned it", so hdr_resolve() could
+	 * only treat 0 as absence -- and `hdr-mode on` therefore outranked every
+	 * per-output request. set_output_hdr and toggle_hdr wrote a baseline that
+	 * was overridden inside the same call, IPC answered success, and the
+	 * dispatch had never once worked on a desktop configured that way.
+	 */
 	int32_t hdr_configured;
 	/* Sticky: mon_state_apply_color() refused HDR because the output or
 	 * renderer can't do BT.2020+PQ. Without this, hdr_resolve() would keep
@@ -6047,7 +6061,9 @@ void createmon(struct wl_listener *listener, void *data) {
 	if (monitor_merge_rules(m, &merged_rule)) {
 		m->m.x = merged_rule.x;
 		m->m.y = merged_rule.y;
-		m->hdr_configured = merged_rule.hdr > 0 ? merged_rule.hdr : 0;
+		/* -1 when the rule is silent, so a later dispatch is an EXPLICIT
+		 * choice rather than indistinguishable from the default. */
+		m->hdr_configured = merged_rule.hdr >= 0 ? merged_rule.hdr : -1;
 		/* a reconfigure may be a hotplug onto a different panel, so re-test
 		 * capability rather than staying latched off from the old one */
 		m->hdr_capability_failed = false;
@@ -11218,13 +11234,33 @@ static void hdr_resolve(Monitor *m) {
 	if (!m || !m->wlr_output || !m->wlr_output->enabled)
 		return;
 
+	/*
+	 * ── AN EXPLICIT PER-OUTPUT CHOICE OUTRANKS THE GLOBAL DEFAULT ─────────
+	 *
+	 * `hdr-mode` is a POLICY for outputs that have not been spoken for. It used
+	 * to be an absolute override, which made `hdr-mode on` silently defeat
+	 * set_output_hdr and toggle_hdr entirely: the dispatch set the baseline,
+	 * hdr_resolve immediately re-asserted HDR, and the only trace was a log
+	 * line saying the request was overridden "for now". On a desktop with
+	 * `hdr-mode on` the toggle had never worked at all.
+	 *
+	 * Order now:
+	 *   1. the output cannot do BT.2020+PQ    -> off, and nothing overrides it
+	 *   2. `hdr-mode off`                     -> off; a kill switch is absolute
+	 *   3. an explicit per-output choice      -> honoured, either way
+	 *   4. a force_hdr client                 -> on
+	 *   5. `hdr-mode on`                      -> on, as the default
+	 *   6. otherwise                          -> off
+	 */
 	bool want;
-	if (config.hdr_mode == 0 || m->hdr_capability_failed) {
+	if (m->hdr_capability_failed || config.hdr_mode == 0) {
 		want = false;
-	} else if (config.hdr_mode == 2) {
-		want = true;
-	} else { /* auto */
+	} else if (m->hdr_configured >= 0) {
 		want = m->hdr_configured > 0 || mon_has_force_hdr_client(m);
+	} else if (mon_has_force_hdr_client(m)) {
+		want = true;
+	} else {
+		want = config.hdr_mode == 2;
 	}
 
 	if (want == (m->hdr > 0))
