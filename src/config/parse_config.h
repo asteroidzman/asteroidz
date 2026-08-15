@@ -5338,7 +5338,16 @@ void reapply_monitor_rules(void) {
 			my = merged_rule.y == INT32_MAX ? m->m.y : merged_rule.y;
 			vrr = merged_rule.vrr >= 0 ? merged_rule.vrr : 0;
 			custom = merged_rule.custom >= 0 ? merged_rule.custom : 0;
-			m->hdr = merged_rule.hdr > 0 ? merged_rule.hdr : 0;
+			/*
+			 * The reload restates the rule's INTENT and lets hdr_resolve()
+			 * derive the effective value, exactly as setmon does. Writing
+			 * m->hdr here directly left hdr_configured holding whatever it
+			 * held before the reload, so the next resolve -- a toggle, a
+			 * hotplug, a force_hdr client mapping -- recomputed from the
+			 * stale intent and undid the rule that had just been loaded.
+			 */
+			m->hdr_configured = merged_rule.hdr >= 0 ? merged_rule.hdr : -1;
+			hdr_resolve(m);
 			m->bitdepth =
 				merged_rule.bitdepth > 0 ? merged_rule.bitdepth : 0;
 			m->hdr_max_luminance = merged_rule.hdr_max_luminance > 0

@@ -346,6 +346,19 @@ static cJSON *build_monitor_json(Monitor *m) {
 	 * check. */
 	cJSON_AddBoolToObject(resp, "hdr", m->wlr_output->image_description != NULL);
 	cJSON_AddBoolToObject(resp, "hdr_enabled", m->hdr);
+	/*
+	 * The BASELINE, as a tri-state: -1 nobody has spoken for this output,
+	 * 0 explicitly off, 1 explicitly on. hdr_enabled cannot carry it -- it is
+	 * a bool, so an unconfigured output and an explicitly-on one are the same
+	 * value on the wire.
+	 *
+	 * That flattening is why a real defect stayed invisible: setmon assigned
+	 * the tri-state straight into the effective m->hdr, so every unconfigured
+	 * output ran as HDR (-1 is truthy), and IPC reported hdr_enabled=true --
+	 * indistinguishable from working correctly. A fixture could see the wrong
+	 * PIXELS but not the wrong INTENT.
+	 */
+	cJSON_AddNumberToObject(resp, "hdr_configured", m->hdr_configured);
 	cJSON_AddBoolToObject(resp, "hdr_capable",
 						  (m->wlr_output->supported_primaries &
 						   WLR_COLOR_NAMED_PRIMARIES_BT2020) &&

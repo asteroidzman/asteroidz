@@ -6067,7 +6067,18 @@ void createmon(struct wl_listener *listener, void *data) {
 		/* a reconfigure may be a hotplug onto a different panel, so re-test
 		 * capability rather than staying latched off from the old one */
 		m->hdr_capability_failed = false;
-		m->hdr = m->hdr_configured;
+		/*
+		 * hdr_configured is TRI-STATE; hdr is a committed BOOLEAN. Assigning
+		 * one to the other leaks -1 ("never mentioned") into the effective
+		 * state, and -1 is truthy: every `if (m->hdr)` -- the PQ branch in
+		 * mon_derive_color_state, the HDR commit in mon_state_apply_color, the
+		 * 10-bit format choice -- reads an unconfigured output as HDR. Worse,
+		 * hdr_resolve() compares `want == (m->hdr > 0)`, so want=false matches
+		 * and it returns before ever normalising the value: the output stays
+		 * at -1 for its whole life. Headless outputs came up on PQ + Path B
+		 * and refused their first frames; 12 fixtures moved.
+		 */
+		m->hdr = m->hdr_configured > 0 ? 1 : 0;
 		m->bitdepth = merged_rule.bitdepth > 0 ? merged_rule.bitdepth : 0;
 		m->hdr_max_luminance =
 			merged_rule.hdr_max_luminance > 0 ? merged_rule.hdr_max_luminance : 0;
@@ -11222,14 +11233,8 @@ static bool mon_has_force_hdr_client(Monitor *m) {
  * output's own configured intent, and the two overrides -- into one effective
  * value, then schedules a commit only when it actually changed.
  *
- * Precedence, highest first:
- *   1. capture fallback  -- forces OFF (a recording in progress must not get
- *                           PQ samples it will decode as plain gamma)
- *   2. hdr-mode off      -- forces OFF, the global kill switch
- *   3. capability failure-- forces OFF, output/renderer can't do BT.2020+PQ
- *   4. hdr-mode on       -- forces ON
- *   5. force_hdr client  -- forces ON while visible on this output
- *   6. per-output `hdr`  -- the configured baseline */
+ * The precedence itself is stated at the branch below, where it can be read
+ * against the code that implements it. */
 static void hdr_resolve(Monitor *m) {
 	if (!m || !m->wlr_output || !m->wlr_output->enabled)
 		return;

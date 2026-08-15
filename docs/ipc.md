@@ -687,7 +687,7 @@ synthesised.
 
 | | |
 |---|---|
-| `misc { hdr-mode off\|auto\|on }` | global policy: never / let the levels below decide / always |
+| `misc { hdr-mode off\|auto\|on }` | global policy for outputs nobody has spoken for: never / off / on |
 | per-output `hdr` | this display's desktop baseline — what `set_output_hdr` writes |
 | window-rule `force_hdr` | this app overrides, while it is visible on that output |
 
@@ -695,6 +695,14 @@ A global tri-state cannot express "HDR on the capable panel, SDR on the one
 beside it", which is the ordinary two-monitor case — hence the per-output level.
 And `auto` is what makes `force_hdr` useful: SDR desktop, until mpv is on
 screen. `off` is a kill switch that overrides `force_hdr` too.
+
+`on` is a **default, not an override**. It decides for outputs that have no
+per-output `hdr` of their own; the moment one is set — by a rule or by
+`set_output_hdr` — that output's choice wins, in both directions. It used to be
+absolute, which made `hdr-mode on` silently defeat `set_output_hdr` and
+`toggle_hdr` entirely: the dispatch wrote the baseline, the resolver
+immediately re-asserted HDR, and IPC still answered success. On a desktop
+configured that way the toggle had never once worked.
 
 `set_output_hdr` writes `hdr_configured`, the **input** to the resolver, never
 the resolved `m->hdr`. Setting a baseline the policy currently overrides is not
