@@ -6538,8 +6538,14 @@ void cursorwarptohint(void) {
 
 	toplevel_from_wlr_surface(active_constraint->surface, &c, NULL);
 	if (c && active_constraint->current.cursor_hint.enabled) {
-		wlr_cursor_warp(cursor, NULL, sx + c->geom.x + c->bw,
-						sy + c->geom.y + c->bw);
+		/* BOUNDARY 4 again, in the other direction. The hint is where the
+		 * CLIENT wants the pointer, in its own surface coordinates; the
+		 * cursor is warped in layout coordinates, and the seat is told the
+		 * surface ones unchanged. `s` is 1 for every client but an X11 one
+		 * being sized in raw pixels. */
+		float s = client_x11_scale(c);
+		wlr_cursor_warp(cursor, NULL, sx / s + c->geom.x + c->bw,
+						sy / s + c->geom.y + c->bw);
 		wlr_seat_pointer_warp(active_constraint->seat, sx, sy);
 	}
 }
@@ -8124,13 +8130,23 @@ void motionnotify(uint32_t time, struct wlr_input_device *device, double dx,
 
 				toplevel_from_wlr_surface(active_constraint->surface, &c, NULL);
 				if (c) {
-					sx = cursor->x - c->geom.x - c->bw;
-					sy = cursor->y - c->geom.y - c->bw;
+					/* BOUNDARY 4, the half that has no picture attached to
+					 * it. The confine region belongs to the SURFACE and is in
+					 * its coordinates -- raw pixels for an X11 client being
+					 * sized in them -- while the cursor and the deltas are
+					 * layout-logical. Left unconverted, a game's confinement
+					 * rectangle would cover 1/1.25 of the window it was meant
+					 * for and the pointer would stop 20% short of the right
+					 * and bottom edges. `s` is 1 for every other client, so
+					 * this is arithmetic-neutral everywhere else. */
+					float s = client_x11_scale(c);
+					sx = (cursor->x - c->geom.x - c->bw) * s;
+					sy = (cursor->y - c->geom.y - c->bw) * s;
 					if (wlr_region_confine(&active_constraint->region, sx, sy,
-										   sx + dx, sy + dy, &sx_confined,
-										   &sy_confined)) {
-						dx = sx_confined - sx;
-						dy = sy_confined - sy;
+										   sx + dx * s, sy + dy * s,
+										   &sx_confined, &sy_confined)) {
+						dx = (sx_confined - sx) / s;
+						dy = (sy_confined - sy) / s;
 					}
 				}
 			}

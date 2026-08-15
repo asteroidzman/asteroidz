@@ -407,9 +407,11 @@ static const ConfigOption config_schema[] = {
 	 "no fractional scaling, so without this an X window on a 1.25x display "
 	 "commits a buffer 1.25x too small and the compositor magnifies it -- a "
 	 "fullscreen game renders 3072x1728 on a 4K screen. With it, the window is "
-	 "asked for the real pixel count and its buffer is presented 1:1. X11 apps "
-	 "that read the screen size themselves will see pixels, so anything "
-	 "drawing its own UI at a fixed point size comes out small.",
+	 "asked for the real pixel count and its buffer is presented 1:1. Two "
+	 "costs: an app drawing its UI at a fixed pixel size comes out physically "
+	 "smaller, and absolute pointer position is clamped in the outer 1-1/scale "
+	 "of a window because Xwayland's X screen stays the logical size. Games "
+	 "that grab the pointer read relative motion and are unaffected.",
 	 OPT_BOOL, offsetof(Config, xwayland_force_scale_one), 0, 0, 1, NULL, 0,
 	 "0", 0},
 	{"primary_selection", "misc/primary-selection", "misc", "general",

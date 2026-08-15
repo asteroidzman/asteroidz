@@ -8,7 +8,7 @@ description: Advanced settings for XWayland, focus behavior, and system integrat
 | Setting | Default | Description |
 | :--- | :--- | :--- |
 | `xwayland_persistence` | `1` | Keep XWayland running even when no X11 apps are open (reduces startup lag). |
-| `xwayland_force_scale_one` | `0` | Size X11 windows in raw output pixels instead of logical units. X11 has no fractional scaling, so without this an X window on a 1.25x display commits a buffer 1.25x too small and the compositor magnifies it — a fullscreen game renders 3072x1728 on a 4K screen. With it, the window is asked for the real pixel count and its buffer is presented 1:1. An app drawing its UI at a fixed pixel size comes out physically smaller. See below. |
+| `xwayland_force_scale_one` | `0` | Size X11 windows in raw output pixels instead of logical units. X11 has no fractional scaling, so without this an X window on a 1.25x display commits a buffer 1.25x too small and the compositor magnifies it — a fullscreen game renders 3072x1728 on a 4K screen. With it, the window is asked for the real pixel count and its buffer is presented 1:1. Two costs: an app drawing its UI at a fixed pixel size comes out physically smaller, and absolute pointer position is clamped in the outer `1 − 1/scale` of a window because Xwayland's X screen stays the logical size. Games that grab the pointer read relative motion and are unaffected. See below. |
 | `syncobj_enable` | `0` | Enable `drm_syncobj` timeline support (helps with gaming stutter/lag). **Requires restart.** |
 | `primary_selection` | `1` | Advertise the middle-click "copy on select" clipboard. Set to `0` for one clipboard only: the global is not bound, so toolkits stop publishing on select and middle-click paste does nothing, and XWayland's X `PRIMARY` is refused too. **Requires restart.** |
 | `render_late` | `0` | Adaptive render-late scheduling: defer each frame's render toward the next vblank so input is sampled fresher (cuts up to a frame of input latency). `2` additionally logs per-frame timing for tuning. |
@@ -70,6 +70,39 @@ pixels — possible at 1.25× or 1.5× for a window at an odd position — the
 renderer's edge rounding can leave the window one device pixel wider or
 narrower than its buffer, which shows as a single duplicated or dropped row of
 texels at one edge. A fullscreen window starts at 0 and is exact.
+
+**Absolute pointer position is wrong in the outer band of a window.** This is
+the real cost, and it is measured rather than estimated.
+
+Xwayland sizes its X screen from the outputs' *logical* geometry — 1536×864
+for a 1920×1080 display at 1.25× — because it derives that from the Wayland
+output, not from anything asteroidz configures. This option sizes windows in
+device pixels, so a fullscreen window is 1920×1080 inside a 1536×864 screen.
+X11 requires the pointer to be inside the root window, so any position beyond
+the screen is clamped to its edge before the client is told:
+
+```text
+scale 1.25, fullscreen         option OFF        option ON
+  logical (600,400)       ->   600,400           750,500     correct
+  logical (900,500)       ->   900,500           1125,625    correct
+  logical (1300,700)      ->   1300,700          1535,863    clamped
+  logical (1450,800)      ->   1450,800          1535,863    clamped
+```
+
+1535,863 is exactly one pixel inside the X screen. **Games that lock or grab
+the pointer are unaffected** — they read relative motion, which carries no
+position and is never clamped — and that is the case this option exists for.
+An X11 app that uses absolute pointer position in the outer `1 − 1/scale` of
+its window is not.
+
+There is no fix available from inside the compositor: wlroots exposes no way
+to tell Xwayland a different screen size, and reporting the outputs at scale 1
+to enlarge it would take fractional scaling away from every Wayland client.
+The limitation is pinned by the `1.25-screen-clamp` arm of
+`contrib/xw-scale-test.sh`, which asserts the clamped values deliberately — if
+it ever goes red, the screen got big enough and this section is obsolete.
+
+This is why the option is **off by default**.
 
 ## Focus & Input
 

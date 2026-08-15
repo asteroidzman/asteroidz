@@ -290,6 +290,28 @@ void scene_buffer_apply_effect(struct wlr_scene_buffer *buffer, int32_t sx,
 
 	if (buffer_data->should_scale) {
 
+		/* ── X11 AT A FRACTIONAL SCALE: WHY THIS IS ALREADY RIGHT ─────────
+		 *
+		 * This overwrites the destination size on every drawn frame, and
+		 * `surface->current.width` is the surface's OWN width -- which for an
+		 * X11 client under xwayland_force_scale_one is raw output pixels,
+		 * 1.25x larger than the logical box the window occupies. Taken at
+		 * face value it would present the window 1.25x too large and undo the
+		 * view scale for as long as anything was animating.
+		 *
+		 * It does not, because of the clamp below: buffer_data->width is the
+		 * clip box, which is logical, and the product above is always the
+		 * larger of the two at any scale above 1 -- so the clamp fires and
+		 * the destination comes out logical. That holds for the settled case
+		 * (width_scale forced to 1) and for every frame of an animation
+		 * (width_scale is a ratio of two logical numbers).
+		 *
+		 * It is correct, but it is correct as a CONSEQUENCE rather than by
+		 * intent, so it is written down: if the clamp is ever relaxed, or
+		 * made conditional, X11 windows on a fractional-scale output will
+		 * grow by the scale factor whenever they animate. There is a fixture
+		 * for exactly that -- the 1.25-anim and 1.25-overview arms of
+		 * contrib/xw-scale-test.sh. */
 		int32_t surface_width = surface->current.width;
 		int32_t surface_height = surface->current.height;
 

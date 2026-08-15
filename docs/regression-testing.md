@@ -1634,6 +1634,31 @@ missed the window. `1.25-off` is the bug itself, measured, and it stays in the
 suite permanently: an oracle whose failing case has stopped failing has stopped
 testing. `1.25-on` is the fix.
 
+**Six arms, and each one exists because the others cannot see what it sees.**
+`scale-1` and `1.25-off` are the premise and the falsifier described above;
+`1.25-on` is the fix. `1.25-tiled` is the only arm with a border, a non-zero
+origin and a surface clip that covers less than the whole surface — the clip
+is expressed in *surface* coordinates, which for these windows are raw pixels,
+while every clip box in the compositor is logical, and left unconverted the
+window is cropped to 1/scale of itself. That arm asserts zero desktop pixels
+inside the window's content box rather than a `native` verdict, because a
+tiled window's edges need not land on whole device pixels and demanding
+bit-exactness there would assert more than the option claims. `1.25-anim` and
+`1.25-overview` cover the two paths that write the scene buffer's destination
+size *themselves*, per frame: a wrong value there wins over the view scale,
+and only while something is moving, so a fixture measuring a still desktop
+cannot see it. `1.25-screen-clamp` asserts a defect on purpose — see below.
+
+**One arm asserts a limitation rather than a behaviour.** Xwayland sizes its X
+screen from the outputs' *logical* geometry, while this option sizes windows
+in device pixels, so a fullscreen window overflows the screen it lives on and
+X11 clamps the pointer to the root window. Measured at 1.25×: logical
+(900,500) arrives correctly at 1125,625, and logical (1450,800) arrives at
+1535,863 — the screen's last pixel — instead of 1812,1000. The
+`1.25-screen-clamp` arm claims those clamped values, with premises that the
+screen really is smaller than the window, so the limitation cannot quietly
+change. If it ever goes red, the X screen got big enough and the bug is fixed.
+
 **Both premises are load-bearing and both have been observed red.** A window
 that never painted has no greys, so a gate counting only those calls a blank
 black rectangle `native` — the equal-neighbour count is what catches it

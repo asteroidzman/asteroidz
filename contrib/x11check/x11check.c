@@ -194,6 +194,15 @@ int main(int argc, char **argv) {
 		return 1;
 	}
 
+	/* The size of the X screen as this client sees it. Reported, never
+	 * asserted on here: it is what an X11 app that measures the display for
+	 * itself reads, it comes from Xwayland's own view of the wl_outputs rather
+	 * than from anything the compositor configures, and it is what makes a
+	 * window sized in device pixels overflow the screen it lives on. See the
+	 * 1.25-screen-clamp arm of contrib/xw-scale-test.sh. */
+	printf("screen %d %d\n", screen->width_in_pixels,
+		   screen->height_in_pixels);
+
 	win = xcb_generate_id(conn);
 	uint32_t mask = XCB_CW_BACK_PIXEL | XCB_CW_EVENT_MASK;
 	uint32_t vals[2] = {

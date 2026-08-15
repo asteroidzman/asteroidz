@@ -431,4 +431,118 @@ print('yes' if int(d['dup_h']) < 0.9 * int(d['px']) else 'no')" $m)" "yes"
 
 tiled_arm 1.25-tiled 1.25 "xwayland_force_scale_one 1"
 
+# ── with animations, and after a round trip through overview ─────────────
+#
+# Both of these override the scene buffer's destination size themselves, on
+# every drawn frame, from numbers that are a mix of the surface's own size
+# (pixels) and the window's logical box. The view scale lives on the scene
+# surface and is re-applied on every commit; a per-frame dest-size written
+# from the wrong space would win over it, and it would win only while the
+# animation or the overview is running -- so a fixture that measures a
+# perfectly still desktop cannot see it.
+#
+# The animation arm measures after the open animation has SETTLED, which is
+# the state a stale dest-size survives into. The overview arm goes in and
+# comes back out: overview is the one place that deliberately shrinks a live
+# surface, and if it restores the wrong number the window stays a thumbnail
+# or comes back cropped.
+arm 1.25-anim 1.25 "xwayland_force_scale_one 1
+animations 1" native 1920 1080 1125 625
+
+# THE OVERVIEW ARM IS A TILED ARM, AND THAT IS NOT A COMPROMISE.
+#
+# It was written as a fullscreen arm first, and failed: after
+# overview-in-overview-out the window was at 157,120 1221x683 and no longer
+# fullscreen. The obvious reading is that this feature broke the restore. It
+# did not. The same round trip was run at scale 1, with the option off, and
+# with a WAYLAND client instead of an X11 one, and all three come back exactly
+# the same way -- a window that was fullscreen before overview is tiled after
+# it, for every client this compositor has. That is pre-existing overview
+# behaviour and nothing to do with scaling.
+#
+# So the arm asserts what is actually interesting: the window comes back in a
+# state where the conversion still holds -- configured to round(logical x
+# scale) for its NEW box, with no desktop showing through it. A stale clip or
+# a stale dest-size left behind by overview would land exactly there.
+tiled_arm 1.25-overview 1.25 "xwayland_force_scale_one 1" \
+	'hl_dispatch "toggle_overview" 1.5; hl_dispatch "toggle_overview" 1.5; sleep 1' \
+	skip-configure
+
+# ── THE X SCREEN IS A FIFTH BOUNDARY, AND IT IS NOT OURS TO CONVERT ──────
+#
+# This arm asserts a DEFECT, on purpose, because the alternative is that
+# nobody finds out about it until a user does.
+#
+# Xwayland sizes its X screen from the outputs' LOGICAL geometry: 1536x864 for
+# a 1920x1080 display at 1.25. This option sizes windows in DEVICE PIXELS, so
+# a fullscreen window is 1920x1080 inside a 1536x864 screen and overflows it
+# by exactly the scale factor. X11 requires the pointer to be inside the root
+# window, so every pointer position beyond the screen is clamped to its edge
+# before the client is told -- and the client is told window-relative
+# coordinates derived from that clamped position.
+#
+# Measured, at scale 1.25, fullscreen, option ON:
+#
+#     logical (600,400)  -> 750,500     correct
+#     logical (900,500)  -> 1125,625    correct
+#     logical (1300,700) -> 1535,863    CLAMPED (should be 1625,875)
+#     logical (1450,800) -> 1535,863    CLAMPED (should be 1812,1000)
+#
+# With the option off all four are exact. So the option trades pointer
+# accuracy in the outer 1/scale of a window for native resolution. Games that
+# lock or grab the pointer use relative motion and are unaffected, which is
+# the case the option is for; anything using absolute pointer position in that
+# band is not.
+#
+# There is no fix available from inside this compositor. Xwayland derives the
+# screen from the wl_output/xdg_output logical geometry, wlroots 0.20 exposes
+# no way to tell Xwayland a different one, and reporting the outputs at scale
+# 1 to get a bigger X screen would take fractional scaling away from every
+# Wayland client. It is the one part of the design that cannot be expressed as
+# a conversion at a boundary the compositor owns.
+#
+# THE ASSERTION IS THE CLAMPED VALUE. That pins the limitation in place: if
+# somebody makes the X screen big enough, this arm goes red and the comment
+# above is what tells them it is red because the bug is FIXED.
+screen_clamp_arm() { # screen_clamp_arm NAME SCALE
+	local name="$1" scale="$2"
+	wanted "$name" || return 0
+
+	echo
+	echo "── arm $name (output scale $scale) ──"
+	HL_SCALE1="$scale"; HL_ENV="$BREAKS"; export HL_SCALE1 HL_ENV
+	hl_start "$FLAT_BASE
+xwayland_force_scale_one 1" >/dev/null 2>&1
+	hl_xdisplay >/dev/null || {
+		hl_assert "$name: Xwayland came up" "no" "yes"; hl_stop >/dev/null 2>&1; return; }
+	hl_spawn_x11check "xw$name" 40 "x11-$name" >/dev/null
+	hl_wait_client_count 1 80 || {
+		hl_assert "$name: the X11 client mapped" "no" "yes"; hl_stop >/dev/null 2>&1; return; }
+	hl_dispatch "toggle_fullscreen" 1
+	hl_x11check_wait_configure 1920 1080 "x11-$name" 50 || true
+
+	local scr
+	scr="$(grep '^screen ' "$HL_OUTDIR/x11-$name.log" | head -1 | awk '{print $2, $3}')"
+	# PREMISE: the X screen really is smaller than the window. Without this
+	# the arm would "pass" on any layout where nothing overflows, asserting a
+	# clamp that never happened.
+	hl_assert "$name: premise -- the X screen is the LOGICAL desktop" "$scr" "1536 864"
+	hl_assert "$name: premise -- the window is larger than the X screen" \
+		"$(hl_x11check_last_configure "x11-$name")" "1920 1080"
+
+	# Inside the screen: exact.
+	hl_move 900 500; sleep 0.3; hl_click 900 500; sleep 0.5
+	hl_assert "$name: inside the X screen, the click is exact" \
+		"$(hl_x11check_last_button "x11-$name")" "1125 625"
+
+	# Outside it: clamped to the screen's last pixel. KNOWN LIMITATION.
+	hl_move 1450 800; sleep 0.3; hl_click 1450 800; sleep 0.5
+	hl_assert "$name: outside it, the click clamps to the X screen edge" \
+		"$(hl_x11check_last_button "x11-$name")" "1535 863"
+
+	hl_stop >/dev/null 2>&1
+}
+
+screen_clamp_arm 1.25-screen-clamp 1.25
+
 hl_summary
