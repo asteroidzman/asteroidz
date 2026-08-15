@@ -811,8 +811,12 @@ static void handle_command(int client_fd, const char *cmd_raw) {
 						(double)az_tag_cost.last.frames);
 					cJSON_AddNumberToObject(tc, "committed",
 						(double)az_tag_cost.last.committed);
-					cJSON_AddNumberToObject(tc, "blur_rebuild_px",
-						(double)az_tag_cost.last.blur_rebuild_px);
+					cJSON_AddNumberToObject(tc, "blur_prefix_px",
+						(double)az_tag_cost.last.blur_prefix_px);
+					cJSON_AddNumberToObject(tc, "blur_rebuilds",
+						(double)az_tag_cost.last.blur_rebuilds);
+					cJSON_AddNumberToObject(tc, "blur_hits",
+						(double)az_tag_cost.last.blur_hits);
 					cJSON_AddNumberToObject(tc, "damage_px",
 						(double)az_tag_cost.last.damage_px);
 					cJSON_AddNumberToObject(tc, "p50_ms",

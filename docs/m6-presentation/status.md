@@ -261,11 +261,13 @@ threw the distribution away.
 
 | | blur off | blur on |
 |---|---|---|
-| blur rebuild px / transition | **0** | **1 200 320** |
-| damage px / transition | 340 200 | **12 421 560** |
+| blur **priced** px / transition | 0 | 1 200 940 |
+| blur **rebuilds** / transition | 0 | **0** |
+| blur cache hits / transition | 0 | 12 |
+| damage px / transition | 339 000 | 12 417 336 |
 | frames / transition | 28 | 28 |
-| p50 frame ms | 0.062 | 0.065 |
-| p95 frame ms | 0.098 | 0.113 |
+| p50 frame ms | 0.071 | 0.076 |
+| p95 frame ms | 0.113 | 0.106 |
 
 The blur-off arm reading exactly zero is the negative control: the counter is
 not merely always-nonzero, so the blur-on figure is measuring what it claims.
@@ -282,3 +284,58 @@ be made against a live measurement, not this fixture.
 `contrib/tag-cost-test.sh` runs the same slide twice, blur off and on, and
 fails if the two are close — a fixture that measured a scene with no blur in it
 would report a beautiful zero that reads as "tag slides are already cheap".
+
+## P4b — the blur-freeze lever, DECLINED ON EVIDENCE
+
+The plan's lever was: during a TAG animation, serve a blurred window's backdrop
+from the transition's first-frame blur output, translated with the window,
+instead of re-rendering it per frame. **It is not built, because the work it
+would avoid is already not being done.**
+
+### What the first measurement actually said
+
+P4a reported "blur rebuild px / transition = 1 200 320" and that number is
+real, but the label was wrong — and the mistake is worth keeping because it is
+an easy one to repeat. `blur_prefix_rebuild_pixels` is accumulated for **every
+blur slot whether or not its chain runs**; the comment at its increment site
+says so explicitly, because a skipped blur's saving is only meaningful against
+what it would otherwise have cost. It is a **price list, not an invoice**.
+
+### The invoice
+
+Probing the per-role and per-cache counters across twelve tag transitions with
+a blurred window on screen:
+
+```
+blur_role_MONITOR_BACKGROUND_rebuild_px  2073600  before  ->  2073600  after
+blur_role_WINDOW_BACKDROP_rebuild_px           0  before  ->        0  after
+blur_cache_requests 106   blur_cache_hits 106   blur_cache_rebuilds 1
+```
+
+One rebuild, at startup. **106 requests, 106 hits, a 100% hit rate across every
+slide.** The M4I background-blur cache already does what the lever proposed,
+and does it better: it is keyed on source identity (generation *and* a source
+hash) rather than on "a tag animation is running", so it stays correct when the
+wallpaper changes mid-slide, which a freeze keyed on TAG motion would not.
+
+`blur_role_WINDOW_BACKDROP_rebuild_px` is zero because the only blurred surface
+in this scene takes the bottom-only path. A window blurring *other windows*
+would not be cacheable — that is a real remaining case, but it is not what a
+tag slide does, and no measurement here shows it costing anything.
+
+### What this leaves
+
+The 36x damage amplification (339 000 → 12 417 336 px per transition) is real
+and is **not** blur rebuild cost — it is damage area, i.e. how much of the
+output the slide repaints. That is a separate lever with a separate argument,
+and it is not the one P4 specified.
+
+`contrib/tag-cost-test.sh` now asserts `blur_rebuilds == 0` for a slide, with
+`hits > 0` as the premise that zero means *served* rather than *skipped*. If a
+future change starts rebuilding the blur mid-slide it fails there, in the
+fixture that knows what the number means.
+
+**No `AZ_SLIDE_NO_BLUR_FREEZE` and no `AZ_BREAK_SLIDE_FREEZE_STALE`** were
+added: a control env and a staleness falsifier for a lever that does not exist
+would be dead switches, and the project's own rule is that a break which cannot
+fail is a suite failure waiting to happen.

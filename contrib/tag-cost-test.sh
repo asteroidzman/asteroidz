@@ -6,10 +6,19 @@
 # TRANSITION, not averaged over a session, because a tag slide is a burst and
 # an average over idle frames hides it completely.
 #
-# The number the lever exists to move is `blur_rebuild_px`: prefix pixels the
-# blur chain re-rendered during the slide. A blurred window moving across a
-# backdrop makes the chain rebuild that backdrop every frame, and this says how
-# much.
+# TWO NUMBERS, AND THE DIFFERENCE BETWEEN THEM IS THE POINT.
+#
+#   blur_prefix_px  the prefix area the blur chain PRICED. Accumulated for
+#                   every slot whether or not its chain runs, because a skipped
+#                   blur's saving is only meaningful against what it would
+#                   otherwise have cost. A price list.
+#   blur_rebuilds   the background blur actually re-rendered. The invoice.
+#
+# P4's lever was to be justified by the first and is refuted by the second: the
+# priced area is ~1.2M pixels per transition, and the rebuild count is ZERO,
+# because the M4I background-blur cache already serves the whole slide from a
+# single build. Reading the price list as the invoice is what made a lever look
+# necessary; this fixture now reports both so it cannot happen again.
 #
 # ── THE PREMISE THIS FIXTURE MUST ASSERT ─────────────────────────────────
 #
@@ -89,7 +98,8 @@ import re, sys, json
 
 TC = re.compile(
     r"azpace tag cost dur_ms=(\S+) frames=(\d+) committed=(\d+) "
-    r"blur_rebuild_px=(\d+) damage_px=(\d+) p50_ms=(\S+) p95_ms=(\S+) "
+    r"blur_prefix_px=(\d+) blur_rebuilds=(\d+) blur_hits=(\d+) "
+    r"damage_px=(\d+) p50_ms=(\S+) p95_ms=(\S+) "
     r"samples=(\d+) truncated=(\d) n=(\d+)")
 
 rows = []
@@ -98,10 +108,12 @@ for line in open(sys.argv[1] + "/trace.txt", errors="replace"):
     if m:
         rows.append({"dur_ms": float(m.group(1)), "frames": int(m.group(2)),
                      "committed": int(m.group(3)),
-                     "blur_px": int(m.group(4)), "damage_px": int(m.group(5)),
-                     "p50": float(m.group(6)), "p95": float(m.group(7)),
-                     "samples": int(m.group(8)),
-                     "truncated": int(m.group(9))})
+                     "blur_px": int(m.group(4)),
+                     "rebuilds": int(m.group(5)), "hits": int(m.group(6)),
+                     "damage_px": int(m.group(7)),
+                     "p50": float(m.group(8)), "p95": float(m.group(9)),
+                     "samples": int(m.group(10)),
+                     "truncated": int(m.group(11))})
 
 out = {"transitions": len(rows)}
 if rows:
@@ -112,6 +124,10 @@ if rows:
     body.sort(key=lambda r: r["blur_px"])
     mid = body[len(body) // 2]
     out["median_blur_px"] = mid["blur_px"]
+    out["median_rebuilds"] = mid["rebuilds"]
+    out["median_hits"] = mid["hits"]
+    out["total_rebuilds"] = sum(r["rebuilds"] for r in rows)
+    out["total_hits"] = sum(r["hits"] for r in rows)
     out["median_damage_px"] = mid["damage_px"]
     out["median_frames"] = mid["frames"]
     out["median_p50_ms"] = mid["p50"]
@@ -129,6 +145,11 @@ echo "=== tag slide, blur ON ==="
 J1="$(analyse "$(run_case blur 1)")"
 echo "  $J1"
 
+pred_num() { J="$1" python3 -c '
+import json, os, sys
+j = json.loads(os.environ["J"])
+print(eval(sys.argv[1]))' "$2"; }
+
 pred() { J="$1" python3 -c '
 import json, os, sys
 j = json.loads(os.environ["J"])
@@ -144,9 +165,27 @@ hl_assert_true "PREMISE: the percentiles are of complete samples, not a prefix" 
 # If the two are close, this fixture is not measuring blur.
 B0="$(python3 -c "import json;print(json.loads('''$J0''').get('median_blur_px',0))")"
 B1="$(python3 -c "import json;print(json.loads('''$J1''').get('median_blur_px',0))")"
-echo "  median blur_rebuild_px: off=$B0 on=$B1"
+echo "  median blur_prefix_px (PRICED, not work): off=$B0 on=$B1"
 hl_assert_true "PREMISE: blur is what this fixture is measuring (on >> off)" \
 	"$(python3 -c "print('true' if $B1 > $B0 * 4 + 100000 else 'false')")"
+
+# ── AND THE FINDING THAT MADE P4's LEVER UNNECESSARY ─────────────────────
+#
+# The priced area above is NOT work done. The M4I background-blur cache already
+# serves a whole tag slide from one build -- measured 106 requests, 106 hits,
+# 1 rebuild across twelve transitions -- so there is nothing left for a
+# "freeze the blur during a slide" lever to avoid.
+#
+# Asserted rather than merely recorded, so that if some future change starts
+# rebuilding the blur mid-slide it fails HERE, in the fixture that knows what
+# the number means, instead of as a slide nobody can explain.
+R="$(pred_num "$J1" 'j.get("total_rebuilds", -1)')"
+H="$(pred_num "$J1" 'j.get("total_hits", 0)')"
+echo "  blur cache during slides (blur on): rebuilds=$R hits=$H"
+hl_assert_true "a tag slide rebuilds no background blur -- it is served from the M4I cache" \
+	"$(python3 -c "print('true' if $R == 0 else 'false')")"
+hl_assert_true "PREMISE: the cache was actually exercised (hits > 0), so zero rebuilds means served not skipped" \
+	"$(python3 -c "print('true' if $H > 0 else 'false')")"
 
 echo
 echo "logs: $OUTDIR"

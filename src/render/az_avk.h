@@ -345,7 +345,7 @@ static struct az_avk avk = {0};
  * contribution. That is how a tag transition's blur cost is attributed to the
  * output paying it without threading a counter through the renderer.
  */
-static uint64_t az_avk_blur_rebuild_pixels(void) {
+static uint64_t az_avk_blur_prefix_px(void) {
 	uint64_t total = 0;
 	for (size_t i = 0; i < AZ_AVK_MAX_FORMATS; i++) {
 		if (avk.renderers[i].used) {
@@ -354,6 +354,8 @@ static uint64_t az_avk_blur_rebuild_pixels(void) {
 	}
 	return total;
 }
+
+
 
 /* A switch is on. Used by the break tests and by the two presentation
  * fallbacks; read every time rather than cached, because these are set once
@@ -4741,6 +4743,33 @@ static uint64_t az_avk_gradient_stat_sum(size_t off) {
 		}
 	}
 	return total;
+}
+
+/*
+ * THE WORK ACTUALLY DONE, as opposed to the work priced above.
+ *
+ * The distinction is the entire finding of P4b. `blur_prefix_rebuild_pixels`
+ * is accumulated for every blur slot WHETHER OR NOT ITS CHAIN RUNS -- the
+ * comment at its increment site says so, because a skipped blur's saving is
+ * only meaningful against what it would otherwise have cost. It is a price
+ * list, not an invoice.
+ *
+ * `rebuilds` is the invoice: how many times the monitor background blur was
+ * genuinely re-rendered. A tag slide that leaves this flat did no blur work at
+ * all, however large the price list looks.
+ */
+static void az_avk_blur_cache_counts(uint64_t *rebuilds, uint64_t *hits) {
+	uint64_t r = 0, h = 0;
+	Monitor *mm;
+	wl_list_for_each(mm, &mons, link) {
+		if (mm->avk == NULL) {
+			continue;
+		}
+		r += mm->avk->blur_cache.rebuilds;
+		h += mm->avk->blur_cache.hits;
+	}
+	*rebuilds = r;
+	*hits = h;
 }
 
 static cJSON *az_avk_stats_json(void) {

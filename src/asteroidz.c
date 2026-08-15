@@ -8743,10 +8743,11 @@ static void render_monitor(Monitor *m) {
 	clock_gettime(CLOCK_MONOTONIC, &render_t0);
 	/* P4. The blur chain's rebuild counter before this pass; the delta after
 	 * it is what this output's frame cost the chain. See az_tag_cost.h. */
-	uint64_t tag_cost_blur0 = 0;
+	uint64_t tag_cost_prefix0 = 0, tag_cost_reb0 = 0, tag_cost_hit0 = 0;
 #ifdef AZ_HAVE_VULKAN
 	if (az_renderer_is_avk()) {
-		tag_cost_blur0 = az_avk_blur_rebuild_pixels();
+		tag_cost_prefix0 = az_avk_blur_prefix_px();
+		az_avk_blur_cache_counts(&tag_cost_reb0, &tag_cost_hit0);
 	}
 #endif
 	/* M-8: the arm instant. This is the moment ADR-605's `t_pipe` is measured
@@ -9153,15 +9154,18 @@ skip:
 				break;
 			}
 		}
-		uint64_t blur_delta = 0;
+		uint64_t prefix_d = 0, reb_d = 0, hit_d = 0;
 #ifdef AZ_HAVE_VULKAN
 		if (az_renderer_is_avk()) {
-			uint64_t now_px = az_avk_blur_rebuild_pixels();
-			blur_delta = now_px > tag_cost_blur0 ? now_px - tag_cost_blur0 : 0;
+			uint64_t px = az_avk_blur_prefix_px(), reb = 0, hit = 0;
+			az_avk_blur_cache_counts(&reb, &hit);
+			prefix_d = px > tag_cost_prefix0 ? px - tag_cost_prefix0 : 0;
+			reb_d = reb > tag_cost_reb0 ? reb - tag_cost_reb0 : 0;
+			hit_d = hit > tag_cost_hit0 ? hit - tag_cost_hit0 : 0;
 		}
 #endif
 		az_tag_cost_frame(in_tag, az_pace_now_ns(), dur_ms, pace_committed,
-			(uint64_t)pace_damage_px, blur_delta);
+			(uint64_t)pace_damage_px, prefix_d, reb_d, hit_d);
 	}
 
 	AZ_PACE("render mon=%s dur_us=%lld needed=%d committed=%d more=%d "

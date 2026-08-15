@@ -11,9 +11,11 @@
  * those two instants:
  *
  *   frames          committed frames, per output
- *   blur rebuild px prefix pixels the blur chain re-rendered (the lever's
- *                   target: a window sliding over a blurred backdrop makes the
- *                   chain rebuild that backdrop every frame)
+ *   blur prefix px  the prefix area the blur chain PRICED. Not work done --
+ *                   see the field comment; this was mistaken for work once and
+ *                   the mistake is what P4b turned on
+ *   blur rebuilds   the background blur actually re-rendered. THIS is the work
+ *   blur hits       the times it was served from the M4I cache instead
  *   damage px       what the frame committed
  *   frame ms        the per-frame render cost, kept as a SAMPLE ARRAY so p50
  *                   and p95 are real order statistics
@@ -40,7 +42,22 @@ struct az_tag_cost {
 
 	uint64_t frames;
 	uint64_t committed;
-	uint64_t blur_rebuild_px;
+	/*
+	 * WHAT IT WOULD HAVE COST versus WHAT IT COST.
+	 *
+	 * blur_prefix_px is the prefix area the blur chain PRICED -- accumulated
+	 * for every slot whether or not its chain ran, because a skipped blur's
+	 * saving is only meaningful against what it would otherwise have cost. It
+	 * is a price list.
+	 *
+	 * blur_rebuilds is the invoice: how many times the background blur was
+	 * genuinely re-rendered during the transition. The two are wildly
+	 * different on this compositor, and reading the first as the second is the
+	 * mistake this field pair exists to make impossible -- see status.md.
+	 */
+	uint64_t blur_prefix_px;
+	uint64_t blur_rebuilds;
+	uint64_t blur_hits;
 	uint64_t damage_px;
 
 	uint32_t nsamples;
@@ -52,7 +69,8 @@ struct az_tag_cost {
 	struct {
 		bool valid;
 		uint64_t duration_ns;
-		uint64_t frames, committed, blur_rebuild_px, damage_px;
+		uint64_t frames, committed, blur_prefix_px, blur_rebuilds, blur_hits;
+		uint64_t damage_px;
 		double p50_ms, p95_ms;
 		uint32_t nsamples;
 		bool truncated;
@@ -106,7 +124,9 @@ static void az_tag_cost_close(uint64_t now_ns) {
 	t->last.duration_ns = t->ended_ns - t->started_ns;
 	t->last.frames = t->frames;
 	t->last.committed = t->committed;
-	t->last.blur_rebuild_px = t->blur_rebuild_px;
+	t->last.blur_prefix_px = t->blur_prefix_px;
+	t->last.blur_rebuilds = t->blur_rebuilds;
+	t->last.blur_hits = t->blur_hits;
 	t->last.damage_px = t->damage_px;
 	t->last.p50_ms = az_tag_cost_pct(sorted, n, 0.50);
 	t->last.p95_ms = az_tag_cost_pct(sorted, n, 0.95);
@@ -115,12 +135,15 @@ static void az_tag_cost_close(uint64_t now_ns) {
 	t->transitions++;
 
 	AZ_PACE("tag cost dur_ms=%.3f frames=%llu committed=%llu "
-		"blur_rebuild_px=%llu damage_px=%llu p50_ms=%.3f p95_ms=%.3f "
+		"blur_prefix_px=%llu blur_rebuilds=%llu blur_hits=%llu "
+		"damage_px=%llu p50_ms=%.3f p95_ms=%.3f "
 		"samples=%u truncated=%d n=%llu",
 		(double)t->last.duration_ns / 1.0e6,
 		(unsigned long long)t->last.frames,
 		(unsigned long long)t->last.committed,
-		(unsigned long long)t->last.blur_rebuild_px,
+		(unsigned long long)t->last.blur_prefix_px,
+		(unsigned long long)t->last.blur_rebuilds,
+		(unsigned long long)t->last.blur_hits,
 		(unsigned long long)t->last.damage_px,
 		t->last.p50_ms, t->last.p95_ms, t->last.nsamples,
 		t->last.truncated ? 1 : 0,
@@ -133,7 +156,8 @@ static void az_tag_cost_close(uint64_t now_ns) {
  * geometry.
  */
 static void az_tag_cost_frame(bool in_tag, uint64_t now_ns, double dur_ms,
-		bool committed, uint64_t damage_px, uint64_t blur_rebuild_delta) {
+		bool committed, uint64_t damage_px, uint64_t blur_prefix_delta,
+		uint64_t blur_rebuild_delta, uint64_t blur_hit_delta) {
 	struct az_tag_cost *t = &az_tag_cost;
 
 	if (!in_tag) {
@@ -144,7 +168,8 @@ static void az_tag_cost_frame(bool in_tag, uint64_t now_ns, double dur_ms,
 		t->active = true;
 		t->started_ns = now_ns;
 		t->frames = t->committed = 0;
-		t->blur_rebuild_px = t->damage_px = 0;
+		t->blur_prefix_px = t->blur_rebuilds = t->blur_hits = 0;
+		t->damage_px = 0;
 		t->nsamples = 0;
 		t->truncated = false;
 	}
@@ -153,7 +178,9 @@ static void az_tag_cost_frame(bool in_tag, uint64_t now_ns, double dur_ms,
 		t->committed++;
 	}
 	t->damage_px += damage_px;
-	t->blur_rebuild_px += blur_rebuild_delta;
+	t->blur_prefix_px += blur_prefix_delta;
+	t->blur_rebuilds += blur_rebuild_delta;
+	t->blur_hits += blur_hit_delta;
 	if (t->nsamples < AZ_TAG_COST_SAMPLES) {
 		t->sample_ms[t->nsamples++] = dur_ms;
 	} else {
