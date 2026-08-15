@@ -1599,6 +1599,52 @@ own case releases against a timeline point that is never signalled.
 nothing in production acquires a transient yet. A break that cannot fail a
 suite must not be counted as coverage for it.
 
+## XWayland on a fractional-scale output
+
+`contrib/xw-scale-test.sh` asks one question: does an X11 window reach a
+1.25x output at its native pixel size, or does the renderer magnify it?
+
+X11 has no notion of a fractional output scale. An X window is configured in
+**logical** units, commits a buffer of that many pixels, and the scene presents
+it at its buffer size — so on a 1.25x output a fullscreen game renders
+1536x864 and is stretched to 1920x1080. `xwayland_force_scale_one` is the
+option that stops that; this fixture is how it is measured.
+
+```bash
+flock -w 3600 -o /tmp/asteroidz-headless.lock ./contrib/xw-scale-test.sh
+```
+
+Three boundaries are asserted separately, because they fail independently:
+
+| boundary | how it is read | what a failure means |
+| --- | --- | --- |
+| configure | the client's own `configure W H` line | the compositor sized the X window in the wrong units. Needs no renderer, so it fails first and points straight at the configure path |
+| presentation | `checker.py verdict` over a region of the capture | the buffer is being magnified on the way to the screen |
+| input | the client's own `button X Y` line | a click lands somewhere other than where it was aimed. **This one has no visual symptom** — with presentation fixed and the input transform missing, the picture is perfect and every click is off by the scale factor |
+
+**The click probe is at (900,500) logical and not at any origin or centre.**
+`0 x 1.25` is still `0`, so a probe at the window origin passes at every scale
+and against every implementation, right or wrong. (900,500) maps to (1125,625)
+raw and to nothing else, so a wrong answer has to differ.
+
+**The arms are a premise, a falsifier and the fix.** `scale-1` says only that
+the instrument recognises a 1:1 presentation when given one — without it a
+`scaled` verdict could equally mean the capture path resamples or the region
+missed the window. `1.25-off` is the bug itself, measured, and it stays in the
+suite permanently: an oracle whose failing case has stopped failing has stopped
+testing. `1.25-on` is the fix.
+
+**Both premises are load-bearing and both have been observed red.** A window
+that never painted has no greys, so a gate counting only those calls a blank
+black rectangle `native` — the equal-neighbour count is what catches it
+(`X11CHECK_BREAK_NOPAINT=1`: `grey=0 dup_h=399500`, gate red). And any region
+that misses the window reports `scaled`, including a region of plain
+wallpaper, which would let the falsifier arm pass while measuring nothing — so
+the fixture repaints the wallpaper pure red and asserts zero red pixels inside
+the sampled region. Measured on a region that deliberately missed: 25 600 red
+pixels and a `scaled` verdict, exactly the false pass that assertion exists to
+stop.
+
 ## Live-session mode (extreme caution)
 
 `HL_LIVE=1` attaches to the *caller's own already-running* compositor instead
@@ -1712,7 +1758,8 @@ order, with `hl_reset` between each. Extend coverage by adding a new
 ## Custom test clients
 
 None of `kitty`/`wlvptr`/`wlvkbd` can reach every corner of the compositor,
-so the harness includes a few small purpose-built Wayland clients:
+so the harness includes a few small purpose-built clients — all Wayland except
+`x11check`, which has to be an X11 client to test the XWayland path at all:
 
 - **`contrib/wlvptr`** — `wlr-virtual-pointer-unstable-v1` client for
   synthetic pointer input (click/scroll/drag), scoped to whichever
@@ -1797,6 +1844,24 @@ so the harness includes a few small purpose-built Wayland clients:
   `tests/security-context.sh`, which also asserts the mirror image (an ordinary
   client still sees the global) so a compositor that simply stopped
   advertising it can't read as a pass.
+- **`contrib/x11check`** — the only **X11** client here, and the only one that
+  can say whether a window reached the screen 1:1. It is a raw XCB client that
+  fills itself with a **one-pixel checkerboard** and reports, on stdout, every
+  `configure` the compositor sends it (in X11's own units, which are raw
+  pixels) and the window-local coordinates of every button press.
+
+  Both halves matter and neither substitutes for the other. The `configure`
+  line covers the size boundary with no renderer involved at all; the
+  checkerboard covers presentation, because a magnified *flat* colour is the
+  same flat colour and any fixture built on ordinary window content is blind to
+  scaling in the window's interior. The pattern is read back by
+  `contrib/lib/checker.py`, which counts **greys** (a bilinear tap between
+  black and white) and **equal neighbours** (a nearest tap repeating a source
+  texel) — one for each of the two ways a magnified window can look, so
+  neither filter mode can pass as native. `X11CHECK_BREAK_NOPAINT=1` leaves the
+  window unpainted, which is how a fixture shows its pixel gate is about the
+  content and not merely about a window existing. Use `hl_spawn_x11check`,
+  `hl_x11check_last_configure`, `hl_x11check_last_button` and `hl_xdisplay`.
 - **`contrib/portal-inhibit-client.py`** — not a Wayland client at all: a D-Bus
   one that takes an `org.freedesktop.impl.portal.Inhibit` request and then
   *stays connected*. `busctl` cannot test that interface, because an inhibition

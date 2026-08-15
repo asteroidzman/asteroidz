@@ -121,6 +121,7 @@ avk-software-cursor-acceptance.sh  live
 avk-transform-live-test.sh         live
 avk-oracle-runs.sh                 manual
 avk-transform-classify.sh          manual
+xw-scale-test.sh                   required
 "
 
 WANT="${1:---audit}"
@@ -154,7 +155,7 @@ done
 # and invisible for the same reason everything else here is: an unregistered
 # suite and a suite that passes look identical from outside.
 UNREG=""
-for f in avk-*.sh m6a-*.sh m6b-*.sh amsg-*.sh cm-*.sh; do
+for f in avk-*.sh m6a-*.sh m6b-*.sh amsg-*.sh cm-*.sh xw-*.sh; do
 	[ "$f" = "avk-suite.sh" ] && continue
 	[ -e "$f" ] || continue
 	[ -n "$(reg_disp "$f")" ] || UNREG="$UNREG $f"

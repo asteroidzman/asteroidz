@@ -19,6 +19,7 @@ contrib/wlbgeffect/xdg-shell-client-protocol.h
 contrib/wlbgeffect/ext-background-effect-v1-protocol.c
 contrib/wlbgeffect/ext-background-effect-v1-client-protocol.h
 contrib/wlsandbox/wlsandbox
+contrib/x11check/x11check
 
 # meson downloads the tracy client into subprojects/tracy (see
 # subprojects/tracy.wrap). The wrap and its packagefiles patch are tracked;

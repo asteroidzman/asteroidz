@@ -96,6 +96,7 @@ HL_WLKEYS="$HL_REPO/contrib/wlkeys/wlkeys"
 HL_WLSTATES="$HL_REPO/contrib/wlstates/wlstates"
 HL_WLSANDBOX="$HL_REPO/contrib/wlsandbox/wlsandbox"
 HL_WLBGEFFECT="$HL_REPO/contrib/wlbgeffect/wlbgeffect"
+HL_X11CHECK="$HL_REPO/contrib/x11check/x11check"
 HL_WIDTH="${HL_WIDTH:-1920}"
 # How many headless outputs the backend creates. One unless a test says
 # otherwise; see the HL_OUTPUTS note in the header for why a second one is not
@@ -938,6 +939,89 @@ hl_wlstates_last() { # hl_wlstates_last [LOGNAME]
 hl_sandbox_globals() { # hl_sandbox_globals -> interface names on stdout
 	"$HL_WLSANDBOX" "hl-sandbox-$$" 2>"$HL_OUTDIR/wlsandbox.err" |
 		sed -n 's/^sandboxed \([a-z_0-9]*\) .*/\1/p'
+}
+
+# ─── XWayland ─────────────────────────────────────────────────────────────
+#
+# The X display this instance's Xwayland is on, e.g. ":2".
+#
+# READ FROM THE COMPOSITOR'S LOG, and there is nowhere else to read it from.
+# The compositor calls setenv("DISPLAY", ...) on ITSELF once Xwayland is up, so
+# the value exists only inside that process: /proc/PID/environ still shows the
+# environment it was exec'd with (setenv does not write back into it), and the
+# instance is started with `env -i` so there was nothing there to begin with.
+#
+# NOT A FIXED NUMBER. Xwayland takes the first free display, so a test instance
+# started while the operator's real session holds :0 and :1 lands on :2 -- and
+# hardcoding one would either fail to connect or, far worse, connect to THEIR
+# X server and put a test window on their actual screen.
+hl_xdisplay() {
+	local log="$HL_STATE/asteroidz/asteroidz.log"
+	[ -f "$log" ] || return 1
+	local d
+	d="$(grep -ao 'Starting Xwayland on :[0-9]*' "$log" | tail -1 |
+		sed 's/.*on //')"
+	[ -n "$d" ] || return 1
+	echo "$d"
+}
+
+# hl_spawn_x11check TITLE HOLD_S [LOGNAME] [W H] -> pid
+#
+# An X11 client filled with a one-pixel checkerboard, which is the only client
+# here that can answer "did this reach the screen 1:1 or was it magnified".
+# See contrib/x11check/x11check.c for why the pattern has to be that and not a
+# flat fill, and contrib/lib/checker.py for how the answer is read back.
+#
+# Its log is the cheap half of the oracle: one `configure W H X Y` line per
+# compositor-issued resize IN X11'S OWN UNITS (raw pixels), and one
+# `button X Y B` line per press in window-local X11 coordinates. Those two need
+# no screenshot at all, and they cover the configure-out and input boundaries
+# directly.
+hl_spawn_x11check() {
+	local title="$1" hold="$2" logname="${3:-x11check}" w="${4:-}" h="${5:-}"
+	local disp
+	disp="$(hl_xdisplay)" || {
+		echo "hl_spawn_x11check: no Xwayland display in the compositor log" >&2
+		return 1
+	}
+	[ -x "$HL_X11CHECK" ] || {
+		echo "hl_spawn_x11check: not built -- run: cd contrib/x11check && make" >&2
+		return 1
+	}
+	# shellcheck disable=SC2086
+	DISPLAY="$disp" "$HL_X11CHECK" "$title" "$hold" $w $h \
+		> "$HL_OUTDIR/$logname.log" 2>&1 &
+	local pid=$!
+	HL_SPAWNED_PIDS+=("$pid")
+	echo "$pid"
+}
+
+# The size from the LAST configure the X client was sent, as "W H". Empty if it
+# has not been configured yet, which a caller must treat as "not ready" rather
+# than as a size -- an empty string compares unequal to everything and would
+# otherwise read as a failed assertion about scaling.
+hl_x11check_last_configure() { # hl_x11check_last_configure [LOGNAME]
+	grep '^configure ' "$HL_OUTDIR/${1:-x11check}.log" 2>/dev/null | tail -1 |
+		awk '{print $2, $3}'
+}
+
+# The window-local coordinates of the LAST button press, as "X Y".
+hl_x11check_last_button() { # hl_x11check_last_button [LOGNAME]
+	grep '^button ' "$HL_OUTDIR/${1:-x11check}.log" 2>/dev/null | tail -1 |
+		awk '{print $2, $3}'
+}
+
+# Wait until the X client reports a configure of exactly W H. Polling rather
+# than sleeping: an X11 window is configured several times on the way to its
+# final size (map, tile, then fullscreen), so a fixed sleep reads whichever
+# intermediate size the race landed on.
+hl_x11check_wait_configure() { # hl_x11check_wait_configure W H [LOGNAME] [tenths=50]
+	local want="$1 $2" logname="${3:-x11check}" timeout="${4:-50}" i
+	for i in $(seq 1 "$timeout"); do
+		[ "$(hl_x11check_last_configure "$logname")" = "$want" ] && return 0
+		sleep 0.1
+	done
+	return 1
 }
 
 hl_spawn_wllayer() { # hl_spawn_wllayer LAYER ANCHOR EXCL_ZONE W H KB HOLD_S [RESIZE_SPEC] LOGNAME -> pid
