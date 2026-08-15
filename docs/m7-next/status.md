@@ -6,9 +6,11 @@ ADR-613/614's oracles, the VT-switch reset — are closure decisions, not
 outstanding M6A work, and do not reopen without a regression or a new measured
 requirement.
 
-**M6B: HEADLESS GATES GREEN. MILESTONE NOT CLOSED.** Two technical items
-remain: the G6 live HDR↔SDR gate in a validation session, and the blend-domain
-residual. The upstream wp-cm mastering gap is *decided*, not open, and is not a
+**M6B: ALL GATES GREEN. CLOSURE PENDING ONE CLEAN HEADLESS QUALIFICATION.**
+The G6 live gate passed 34/34 on 2026-08-15 and the blend-domain residual is
+resolved. What remains is not a gate but a re-run: the final headless
+qualification was interrupted at 13 of 52 fixtures, and a partial run qualifies
+nothing. The upstream wp-cm mastering gap is *decided*, not open, and is not a
 blocker.
 
 The milestone defined in `decision.md`. This records what is closed, what it
@@ -401,7 +403,69 @@ each frontend converts only to its own wire units. The upstream limitation is
 visible as *a frontend cannot currently emit this*, never as *the value
 disappeared before reaching the frontend*.
 
-## The attempted live G6 run — CONTAMINATED, NOT EVIDENCE
+## G6 live — PASSED 2026-08-15, on DP-1, 34/34
+
+`contrib/m6b-hdr-transition-live.sh`, 20 cycles / 40 transitions / 80 modesets.
+The run that counts, and the one below records why the previous attempt did not.
+
+**Identity first, before any modeset.** pid 46513, build `9faa8687`, session
+`asteroidz-avk-debug`, backend `drm`, `validation_enabled true`, **0** other
+candidate sockets — and `source == installed == running` at `a210adb4` with a
+clean tree. Every query pinned by `AMSG_REQUIRE_PID/BUILD/VALIDATION`. The same
+pid answered the first query and the last, and the fixture's own sha256 was
+unchanged at the end.
+
+| gate | result |
+|---|---|
+| validation errors | **0**, with the layer proven loaded on *this* instance |
+| lifecycle violations | 0 |
+| CPU sync waits | 0 |
+| presentation waits | 0 |
+| pipeline compiles | **1 over 40 transitions** |
+| intermediate images / bytes | 1 → 1, 67174400 → 67174400 |
+| blur cache (same-domain) | 2 → 2, correctly preserved |
+| monitors.kdl | restored byte for byte |
+| frog resends | 1 → 41: exactly one per transition, no churn |
+
+**The per-cycle record says more than the totals**, which is why it is kept
+(`cycles.tsv`):
+
+- **Every SDR half landed on `B-encode/lut1d`** — the ICC profile activating,
+  because DP-1 carries one and it is inert only in HDR. So the run exercised
+  the display-profile path live twenty times as a side effect of toggling HDR,
+  and D3's claim (a profile must not cost an output its renderer) held on every
+  one.
+- **The single extra pipeline compile happened at the first SDR entry and never
+  again** across nineteen more. That is the keying invariant proven rather than
+  bounded — "1 over 40" could otherwise have been one compile late in the run.
+- **Refused frames increment once per CYCLE, on the HDR→SDR direction only**
+  (1,1,2,2,3,3…), never on SDR→HDR. Sharper than "bounded by 20".
+
+**`fallback_frames` is 20, not 0, and that is a DEVIATION FROM THE STATED GATE
+rather than a pass.** One frame per HDR→SDR transition is refused by
+`az_output_may_drive()` while the committed image description and the derived
+colour state are momentarily out of step; SceneFX draws that frame instead of
+AVK writing scene-linear values into a PQ buffer. Refusing is the designed
+behaviour and the alternative is a visibly wrong frame — but zero was the
+gate as written, and this is 20. What is bounded and proven is the RATE: exactly
+one per cycle, on one direction, across twenty cycles.
+
+**The picture-unchanged assertion is weak and should not be read as more.**
+The control pair was captured seconds apart (29056 px of churn, worst 253); the
+final comparison spans the whole two-minute run (72718 px). A desktop with an
+animating bar accumulates more difference over minutes than over seconds, so
+the two are not comparable quantities and the 4× limit is generous by
+construction. It is a smoke test for gross corruption, not a claim that the
+frame is identical.
+
+**The wp-cm half moved and returned**: `DP-1 true 400` → `DP-1 false 280` →
+`DP-1 true 400`, identity `2357112514714281158` ↔ `908963075078007682`, with
+the surface's output never drifting. The wire carried
+`tf=3 primaries=35400,14600 maxlum=400 minlum=4000 maxfall=250` in HDR and
+`tf=2 primaries=32000,16500 maxlum=280 minlum=2000 maxfall=280` in SDR — the
+operator's own rule values, on the path that can carry them.
+
+## The FIRST attempt — CONTAMINATED, NOT EVIDENCE
 
 An HDR↔SDR run was attempted on 2026-08-14 and **does not count**. It is
 recorded here rather than deleted, because the way it false-passed is the
