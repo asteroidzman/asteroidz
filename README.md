@@ -1,9 +1,9 @@
 <div align="center">
   <img src="assets/asteroidz-256.png" alt="asteroidz logo" width="120"/>
 
-  <h1>asteroidz</h1>
+  <h1>Asteroidz</h1>
 
-  <p>A fast, HDR-capable Wayland compositor for daily driving</p>
+  <p><b>A fast, modern Wayland compositor built around Vulkan.</b></p>
 
 <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-blue?style=flat" alt="License"/></a>
 
@@ -16,150 +16,620 @@
 
 ---
 
-asteroidz is a wlroots compositor with a dwm-style tag model and a modern
-rendering pipeline. It aims to be lean and fast while shipping the things a
-desktop actually needs: real HDR, tasteful effects, and window management
-that stays out of your way.
+Asteroidz is a Wayland compositor for Linux focused on **smoothness, visual quality, responsiveness, modern displays, and a polished desktop experience**.
 
-## Highlights
+It is designed for users who want a lightweight and highly responsive environment without giving up effects such as blur, shadows, rounded corners, HDR, high-refresh-rate animation, or advanced multi-monitor support.
 
-- **HDR & 10-bit output** — BT.2020 + PQ signalling with a 3D-LUT color
-  resolve pass, ICC profile support, EDID-derived luminance, and live
-  `sdr_reference_luminance` / `sdr_saturation` controls so SDR content looks
-  right on HDR panels
-- **Dynamic VRR & tearing** — VRR that follows fullscreen games
-  (`vrr_only_fullscreen` window rule) and content-type-aware tearing;
-  video never tears, games can
-- **Full effect suite on GLES2, the daily driver** — blur (with
-  pixel-accurate ext-background-effect-v1 regions), soft shadows, rounded
-  corners, gradient borders, spring animation curves, plus HDR/SDR colour,
-  all on the stable `asteroidz-scenefx` GLES2 renderer. An experimental
-  Vulkan (`fx_vk`) renderer is also available — near feature parity, pending
-  future wlroots enhancements before it becomes the recommended default
-- **Privacy shield** — `shield_when_capture` window and layer rules cover
-  marked surfaces whenever a screen-capture session is active
-- **Tags, not workspaces** — per-tag layouts: scroller, master-stack,
-  monocle (with icon pills), dwindle, grid, and more
-- **Display resilience** — DPMS/disable monitor split, `retrain_monitor`
-  and `dpms_wake_retrain` for panels whose DSC decoders wake up corrupted
-- **The rest of a daily driver** — scratchpads, window swallowing, overview
-  mode, hot-reload config, in-place restart, JSON IPC (`amsg`), gestures,
-  GlobalShortcuts portal, xdg-toplevel icons, security-context filtering
+---
 
-## Building
+## ✨ Highlights
 
-asteroidz renders on **GLES2 by default** — the in-tree `asteroidz-scenefx`
-fork's GLES2 renderer (HDR10, rounded corners, blur, shadows, gradient
-borders, SDR colour) is the stable, everyday driver. An **experimental
-Vulkan (`fx_vk`) renderer** is also available — near parity already, but
-still pending future wlroots enhancements (see
-[`docs/vulkan-journey.md`](docs/vulkan-journey.md) for the full state and
-known gaps) before it's the recommended default. It's one binary; the
-renderer is chosen per session via `WLR_RENDERER`.
+- Native Vulkan rendering
+- Smooth, presentation-aware animations
+- HDR10 / PQ support
+- SDR and HDR applications on the same desktop
+- ICC color management
+- Per-display color handling
+- Background blur
+- Soft directional shadows
+- Rounded corners
+- Borders and gradients
+- Mixed-refresh-rate monitor support
+- Mixed-DPI and fractional scaling
+- Efficient partial rendering
+- Hardware and software cursors
+- Modern Wayland application support
 
-Dependencies: wlroots 0.20, wayland, libinput, xkbcommon, pango/cairo,
-gdk-pixbuf, cJSON, pcre2, libsystemd, plus libglvnd/mesa/lcms2 for the
-effects library. The Vulkan renderer additionally needs the Vulkan
-loader/headers and `glslang` (to compile the effect shaders to SPIR-V).
+---
 
-> **asteroidz-scenefx is not a separate dependency.** The effects library is
-> asteroidz's own fork — not upstream `wlrfx/scenefx`, and the two are not
-> interchangeable — and it lives in this repository at
-> `subprojects/asteroidz-scenefx`, built and linked statically. One
-> self-contained binary, nothing to install alongside. It was brought in with
-> `git subtree`, so the fork's own history is part of this repository's — there
-> is no separate repo to clone, track or keep in version lockstep.
+## ⚡ Smooth and Responsive
 
-The bar is [asteroidz-bar](https://github.com/asteroidzman/asteroidz-bar), a
-quickshell (QML/Qt6) shell that also draws the wallpaper — one process for
-both, on one Wayland connection. It is a separate program, not part of this
-one: the compositor resolves `bar {}` and `theme {}` and serves them over
-`get`/`watch bar-config`, and the shell draws from that.
+Asteroidz is designed to feel immediate.
 
-It replaced a compositor-native bar, and before that a waybar plus a set of
-CFFI plugins. Both are gone; `bar { enable false }` and
-`spawn-at-startup "asteroidz-bar"` is the supported arrangement. Any other bar
-still works — build with `-Dbar-config=false` to compile the `bar {}` block and
-its IPC out entirely, which is what a setup driving waybar or yambar
-exclusively wants.
+Animations are based on **time and actual display presentation**, rather than simply advancing once for every rendered frame.
+
+This helps movement remain consistent whether a monitor is running at 60 Hz, 144 Hz, or another refresh rate.
+
+Features include:
+
+- Smooth workspace transitions
+- Fluid window movement
+- Fractional motion without visible stepping
+- Interruptible animations
+- Natural animation retargeting
+- Position- and velocity-continuous motion
+- Independent timing for monitors with different refresh rates
+
+A missed frame does not slow the animation down or change its duration.
+
+---
+
+## 🚀 Vulkan Powered
+
+Asteroidz uses a native Vulkan renderer built specifically for the compositor.
+
+Windows, effects, backgrounds, HDR processing, and final display output are handled through the same modern rendering system.
+
+The goal is not simply to use Vulkan.
+
+The goal is to provide:
+
+- Low latency
+- High visual quality
+- Efficient GPU usage
+- Smooth high-refresh rendering
+- Predictable frame delivery
+- Modern HDR and color support
+
+The Vulkan renderer is the primary rendering path.
+
+---
+
+## 🌈 HDR
+
+Asteroidz supports a modern HDR desktop pipeline, including real HDR applications and video.
+
+Current HDR capabilities include:
+
+- HDR10 / PQ content
+- 10-bit output
+- Wide-gamut color
+- Tone mapping
+- HDR mastering information
+- SDR applications on HDR displays
+- HDR and SDR applications simultaneously
+- Per-display HDR handling
+
+HDR is integrated into the compositor rather than being applied as a simple final-screen filter.
+
+This allows SDR and HDR content to be handled correctly within the same desktop.
+
+---
+
+## 🎨 Color Management
+
+Different monitors reproduce color differently.
+
+Asteroidz includes color-management support so each display can be handled according to its own capabilities.
+
+Current functionality includes:
+
+- ICC display profiles
+- GPU color correction
+- Per-monitor color configuration
+- HDR display information
+- Per-application color descriptions
+- `frog-color-management`
+- Wayland color-management support
+- Automatic preferred display information for applications
+
+Color decisions are made per display instead of assuming every connected monitor is identical.
+
+---
+
+## 🖥️ Multi-Monitor Support
+
+Asteroidz treats each display independently.
+
+Connected displays can use different:
+
+- Resolutions
+- Refresh rates
+- Scaling factors
+- Orientations
+- HDR states
+- Color profiles
+- Color capabilities
+
+For example, a setup such as:
+
+```text
+Display 1
+3840×2160
+144 Hz
+HDR
+150% scaling
+
+Display 2
+1920×1080
+60 Hz
+SDR
+100% scaling
+```
+
+can operate without forcing both displays onto the same refresh timing, scaling model, or color configuration.
+
+---
+
+## 🎞️ High-Refresh Displays
+
+High-refresh monitors are first-class citizens.
+
+Asteroidz uses each monitor's own presentation timing rather than driving the entire desktop from one global animation clock.
+
+This means a 144 Hz display can remain smooth while a connected 60 Hz display continues operating at its own refresh rate.
+
+Animations remain based on elapsed time, so they do not become:
+
+- Faster on high-refresh monitors
+- Slower on low-refresh monitors
+- Dependent on the number of rendered frames
+
+---
+
+## 🪟 Window Effects
+
+Asteroidz includes a native set of Vulkan-powered desktop effects.
+
+### Blur
+
+Windows, panels, and other translucent surfaces can use real background blur.
+
+The blur follows the actual desktop background and updates when that background changes.
+
+Asteroidz also avoids repeatedly rebuilding expensive background blur when the source has not changed.
+
+The result is intended to look like natural frosted glass rather than a heavily smeared or glowing image.
+
+---
+
+### Shadows
+
+Windows use soft directional shadows designed to create depth without surrounding every window with a uniform glow.
+
+The visual style favors a natural light source above the desktop, producing a broader and softer shadow underneath the window.
+
+---
+
+### Rounded Corners
+
+Windows can use independently rounded corners.
+
+Corner rendering remains correct during:
+
+- Animation
+- Fractional scaling
+- Multi-monitor movement
+- Different monitor scales
+- Display rotation
+
+---
+
+### Borders
+
+Window borders are rendered natively and remain attached cleanly to rounded window geometry.
+
+---
+
+### Gradients
+
+Borders can use gradients without requiring a separate rendering path for every appearance.
+
+---
+
+## 🖼️ Wallpapers
+
+Asteroidz supports wallpapers across single-monitor and multi-monitor layouts.
+
+Background effects are derived from the wallpaper that is actually being displayed.
+
+Changing a wallpaper automatically refreshes effects that depend on it, including background blur.
+
+Per-display wallpaper configuration is supported according to the configured wallpaper scope.
+
+---
+
+## 🎮 Gaming and Media
+
+Asteroidz is designed with modern Linux graphics workloads in mind.
+
+It supports graphics paths commonly used by:
+
+- Games
+- Browsers
+- Video players
+- GPU-accelerated applications
+- Wayland-native applications
+- HDR media applications
+
+HDR-aware applications can provide HDR content directly while ordinary SDR applications continue to coexist on the same desktop.
+
+Asteroidz also supports DMA-BUF based rendering used by modern Linux applications.
+
+---
+
+## 🧊 Frosted and Transparent Applications
+
+Applications using transparency can participate in the compositor's blur pipeline.
+
+This includes applications and panels that expose partially transparent backgrounds.
+
+Opaque applications remain opaque and do not incur unnecessary transparency or blur work.
+
+---
+
+## ⚙️ Efficient Rendering
+
+Asteroidz is designed around doing only the work required for the current frame.
+
+Examples include:
+
+- Reusing unchanged background blur
+- Avoiding rendering pixels hidden behind opaque windows
+- Updating only damaged regions of the screen
+- Reusing uploaded application textures when possible
+- Avoiding unnecessary full-screen redraws
+- Avoiding CPU waits for the GPU during normal rendering
+
+These optimizations are especially useful for:
+
+- 4K displays
+- High refresh rates
+- Multiple monitors
+- Blur-heavy desktops
+- Animated workspace transitions
+- HDR output
+
+---
+
+## 💤 Idle Means Idle
+
+When nothing on the desktop changes, Asteroidz does not continuously redraw the screen just to maintain an animation or timing loop.
+
+No unnecessary frames are generated simply because the compositor is running.
+
+This reduces needless GPU work and power usage while the desktop is idle.
+
+---
+
+## 🖱️ Cursor Support
+
+Asteroidz supports both hardware and software cursor rendering.
+
+The compositor automatically uses the appropriate path depending on the display and graphics environment.
+
+---
+
+## 🌐 Wayland
+
+Asteroidz is a Wayland compositor.
+
+It uses wlroots for core Linux and Wayland infrastructure while maintaining its own rendering, effects, presentation, and color-management architecture.
+
+This provides compatibility with the wider Wayland ecosystem without limiting Asteroidz to a traditional renderer design.
+
+---
+
+## 🎨 Application Color Management
+
+Applications can communicate their color characteristics to Asteroidz.
+
+Supported paths include:
+
+- `frog-color-management`
+- `wp-color-management`
+
+Asteroidz can provide applications with information about the display they are actually being shown on.
+
+This matters on multi-monitor systems where one display may be HDR and another SDR, or where monitors have different color capabilities.
+
+---
+
+## 🐸 frog-color-management
+
+Asteroidz directly supports `frog-color-management`.
+
+Compatible applications can receive display information such as:
+
+- Display primaries
+- Maximum luminance
+- Minimum luminance
+- Maximum frame-average brightness
+
+This information follows the display associated with the application rather than being taken from an unrelated monitor.
+
+Applications already running are updated when relevant display state changes.
+
+---
+
+## 🖥️ Mixed HDR and SDR Displays
+
+HDR does not have to be enabled globally for every monitor.
+
+Asteroidz is designed to support systems where:
+
+- One display is HDR
+- Another display is SDR
+- Applications move between them
+- Each output has different color characteristics
+
+The compositor tracks those differences per monitor.
+
+---
+
+## 📈 Performance Philosophy
+
+Asteroidz favors measured improvements over complexity for its own sake.
+
+A feature or optimization is kept when it provides a meaningful improvement in areas such as:
+
+- Responsiveness
+- Frame timing
+- GPU usage
+- CPU usage
+- Memory bandwidth
+- Power efficiency
+- Visual quality
+- Architectural simplicity
+
+The project deliberately avoids adding complicated rendering techniques merely because Vulkan makes them possible.
+
+---
+
+## ✅ Correctness Philosophy
+
+Visual correctness is treated as seriously as performance.
+
+Important rendering features are tested not only by checking that they work, but also by deliberately breaking them and confirming that the tests detect the failure.
+
+This helps avoid situations where a test reports success without actually exercising the feature it claims to verify.
+
+The project favors:
+
+```text
+prove the feature is exercised
+        ↓
+break it deliberately
+        ↓
+verify the test fails
+        ↓
+restore it
+        ↓
+verify the test passes
+```
+
+rather than relying only on large collections of passing tests.
+
+---
+
+## 🚧 Project Status
+
+Asteroidz is under active development.
+
+Major completed areas include:
+
+- ✅ Native Vulkan desktop rendering
+- ✅ DMA-BUF support
+- ✅ Partial screen updates
+- ✅ Efficient shared-memory application updates
+- ✅ Hardware and software cursor support
+- ✅ Vulkan-to-display synchronization
+- ✅ Rounded corners
+- ✅ Borders
+- ✅ Gradients
+- ✅ Directional shadows
+- ✅ Background blur
+- ✅ Rendering and occlusion optimizations
+- ✅ HDR10 / PQ
+- ✅ Scene-linear HDR composition
+- ✅ Tone mapping
+- ✅ 10-bit HDR output
+- ✅ Presentation-aware animation
+- ✅ Mixed-refresh monitor timing
+- ✅ Position- and velocity-continuous animation retargeting
+- ✅ ICC color-profile support
+- ✅ GPU color correction
+- ✅ Per-display preferred color information
+- ✅ `frog-color-management`
+- ✅ Wayland color-management integration
+
+Current development is focused on final color-management qualification and production hardening.
+
+---
+
+## 🛠️ Building
+
+Asteroidz uses Meson.
+
+Clone the repository and configure the build:
 
 ```bash
-meson setup build --prefix=/usr
+meson setup build
+```
+
+Build Asteroidz:
+
+```bash
 ninja -C build
-sudo ninja -C build install
 ```
 
-This installs the `asteroidz` binary, the `amsg` IPC tool, two wayland
-session entries — **Asteroidz** (GLES2, the daily driver and default) and
-**Asteroidz (Vulkan, experimental)** — and the GlobalShortcuts portal
-definition.
-
-### Arch Linux
-
-The easiest path is the AUR (the effects library is built in, so there is
-no companion package to install):
+For an existing build directory:
 
 ```bash
-yay -S asteroidz
-```
-
-(or any AUR helper, or `makepkg` by hand against each package's
-`PKGBUILD`.) Log out and pick a session as described below.
-
-To build from source instead (e.g. to track a specific commit, or
-contribute): everything asteroidz needs is in the official repos except
-the scenefx fork, which you build from source. `wlroots0.20` lives in
-`extra`; the stock `scenefx` packages are 0.3/0.4, so the renamed 0.5 fork
-(`asteroidz-scenefx`) is a manual step.
-
-Install the toolchain and dependencies (Vulkan loader/headers + `glslang`
-build the experimental Vulkan renderer alongside GLES2 — one binary, both
-renderers, GLES2 is what actually runs by default):
-
-```bash
-sudo pacman -S --needed base-devel git meson ninja \
-  wlroots0.20 wayland wayland-protocols libxkbcommon libinput \
-  pcre2 pixman cjson pango gdk-pixbuf2 libdrm systemd-libs \
-  vulkan-icd-loader vulkan-headers glslang \
-  libxcb xcb-util-wm xorg-xwayland
-```
-
-One clone, one build — the effects library is in this tree and is linked
-statically, so there is nothing to install before it:
-
-```bash
-git clone https://github.com/asteroidzman/asteroidz.git
-cd asteroidz
-meson setup build --prefix=/usr
 ninja -C build
-sudo ninja -C build install
 ```
 
-Log out and pick **Asteroidz** (GLES2, the default) from your display
-manager's session list, or **Asteroidz (Vulkan, experimental)** to try the
-Vulkan renderer. From a TTY: `dbus-run-session env WLR_RENDERER=gles2
-asteroidz`, or swap in `vulkan` to try the experimental renderer.
+Installation depends on your distribution and environment.
 
-(`xorg-xwayland` is only needed for X11 app support; drop it and build with
-`-Dxwayland=disabled` for pure Wayland. Note: some native-Wayland GPU apps —
-notably Electron — don't yet import on the experimental Vulkan renderer and
-render blank; run them under XWayland, or just use the default GLES2
-session.)
+---
 
-## Configuration
+## 🚀 Running
 
-Config lives at `~/.config/asteroidz/config.kdl` (falling back to
-`/etc/asteroidz/config.kdl`). Changes hot-reload with
-`amsg dispatch reload_config`; `SUPER+CTRL+R` restarts in place without
-ending the session.
+The Vulkan renderer is the primary renderer.
 
-See `docs/` for the full option and dispatcher reference.
+```bash
+ASTEROIDZ_RENDERER=avk asteroidz
+```
 
-## Acknowledgements
+Your display, input, wallpaper, appearance, and other compositor settings are controlled through the Asteroidz configuration.
 
-- [wlroots](https://gitlab.freedesktop.org/wlroots/wlroots) — Wayland protocol implementation
-- [mango](https://github.com/mangowm/mango) — the compositor this project was forked from
-- [dwl](https://codeberg.org/dwl/dwl) — the compositor family this project descends from
-- [scenefx](https://github.com/wlrfx/scenefx) — the effects library our rendering fork builds on
-- [niri](https://github.com/YaLTeR/niri) — inspiration for scrollable-tiling ergonomics
-- [Hyprland](https://github.com/hyprwm/Hyprland) — inspiration for window-management UX
+---
+
+## 🧪 Vulkan Validation
+
+Developers debugging Vulkan behavior can enable the validation path:
+
+```bash
+ASTEROIDZ_RENDERER=avk \
+ASTEROIDZ_VK_DEBUG=1 \
+asteroidz
+```
+
+Validation mode is intended for debugging and testing rather than normal performance measurements.
+
+---
+
+## 🎯 Project Goals
+
+Asteroidz aims to provide a Linux desktop that is:
+
+- **Fast**
+- **Smooth**
+- **Responsive**
+- **Visually polished**
+- **Vulkan native**
+- **HDR capable**
+- **Color managed**
+- **Efficient at high refresh rates**
+- **Multi-monitor aware**
+- **Comfortable on mixed-DPI setups**
+- **Built around modern Linux graphics**
+
+---
+
+## 💡 Why Asteroidz?
+
+Modern desktop systems increasingly combine:
+
+- High-refresh displays
+- 4K monitors
+- Fractional scaling
+- HDR
+- Wide-gamut color
+- Multiple monitors with different capabilities
+- GPU-accelerated applications
+- Complex transparency and visual effects
+
+Asteroidz is designed around those requirements rather than treating them as separate features added later.
+
+Vulkan rendering, animation timing, effects, HDR, color management, and display presentation are designed to operate as one system.
+
+The goal is a compositor equally at home on:
+
+- A laptop
+- A multi-monitor workstation
+- A high-refresh gaming setup
+- A 4K desktop
+- An HDR workstation
+- A mixed SDR/HDR environment
+
+---
+
+## 🔭 Roadmap
+
+Development continues in several areas.
+
+### Color Management
+
+Current work is completing qualification of:
+
+- HDR ↔ SDR display transitions
+- Application metadata updates when display state changes
+- Translucent color blending
+- Additional real-world multi-monitor color behavior
+
+### Wayland Color Management
+
+Asteroidz continues to improve compatibility with the evolving Wayland color-management ecosystem.
+
+### Production Hardening
+
+Future work includes continued testing of:
+
+- Monitor hotplug
+- Display mode changes
+- HDR/SDR transitions
+- Multi-monitor lifecycle
+- Long-running sessions
+- GPU buffer lifetime
+- Restart and shutdown behavior
+- Performance regression detection
+
+### Future Color Features
+
+Potential future work includes:
+
+- Additional display-profile capabilities
+- More advanced color transforms
+- HLG support where useful
+- Additional HDR tone-mapping options
+
+Features are added based on real use cases rather than simply completing a checklist.
+
+---
+
+## 🧭 Design Principles
+
+### Modern graphics first
+
+Asteroidz is designed around Vulkan rather than treating Vulkan as an alternate compatibility renderer.
+
+### Smoothness matters
+
+Animation and presentation timing should remain consistent regardless of refresh rate.
+
+### Displays are independent
+
+Different monitors are allowed to have different refresh rates, scaling, HDR states, and color characteristics.
+
+### HDR should not break SDR
+
+Ordinary applications should continue to look correct when HDR is enabled.
+
+### Effects should remain efficient
+
+Blur, shadows, borders, and animations should not require wasteful full-screen rendering.
+
+### Idle systems should remain idle
+
+The compositor should not continuously render when nothing has changed.
+
+### Complexity must earn its place
+
+More sophisticated code is only worthwhile when it provides a meaningful benefit.
+
+### Visual correctness comes first
+
+An optimization that makes the desktop faster but visually incorrect is not an optimization.
+
+---
+
+## 📜 License
+
+See the repository's `LICENSE` file for licensing information.
+
+---
+
+## Asteroidz
+
+**A presentation-native, scene-linear Vulkan Wayland compositor built for modern Linux desktops.**
