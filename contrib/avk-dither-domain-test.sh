@@ -143,8 +143,22 @@ echo "  with NO dither, 0 vs 180 differs $FD px (worst $FW)"
 # with dither off: 1247 px, 1163 of them differing by exactly 1. So the control
 # here is not "zero" -- it is "small, and sub-step", and it exists to be
 # SUBTRACTED from the measurement below rather than to pass on its own.
+# TWELVE, NOT EIGHT, AND THE CHANGE IS MEASURED RATHER THAN CONVENIENT.
+#
+# M6B/D5 made Path A the default, so a shadow's antialiased edge is now blended
+# in LINEAR LIGHT. Its mirrored samples at 180 degrees therefore round slightly
+# differently and the geometry floor moved by exactly one code:
+#
+#     AZ_M5_PATH_A=0   worst 8   (this threshold's original measurement)
+#     default (on)     worst 9
+#
+# Confirmed by running this fixture both ways; the PIXEL COUNT assertion below
+# is unchanged and still passes, so this is one outlier rounding differently
+# rather than a broad shift. The bound exists to catch GEOMETRY MOVING
+# WHOLESALE -- hundreds of codes, a picture in the wrong place -- and 12 leaves
+# three codes of headroom so a further one-code drift does not reopen this.
 hl_assert "CONTROL: the geometry-only residual is sub-step (worst $FW codes)" \
-	"$([ "${FW:-99}" -le 8 ] && echo true || echo false)" true
+	"$([ "${FW:-99}" -le 12 ] && echo true || echo false)" true
 hl_assert "CONTROL: and it is a small part of the frame ($FD px of 480000)" \
 	"$([ "${FD:-999999}" -lt 20000 ] && echo true || echo false)" true
 
@@ -168,8 +182,10 @@ hl_assert "the dither field rotates WITH the device grid ($EXCESS px beyond the 
 	"$([ "$EXCESS" -gt 5000 ] && echo true || echo false)" true
 # AND IT IS STILL DITHER. A difference of the right SIZE but the wrong
 # MAGNITUDE would be geometry moving, which is what this excludes.
+# Same re-baseline, same reason: this residual contains the geometry floor
+# above, so it cannot be tighter than it.
 hl_assert "and the difference is sub-step, so it is dither (worst $RW codes)" \
-	"$([ "${RW:-99}" -le 8 ] && echo true || echo false)" true
+	"$([ "${RW:-99}" -le 12 ] && echo true || echo false)" true
 
 echo
 echo "── 3. and it is stable at a rotated transform too ────────────────────"

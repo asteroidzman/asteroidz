@@ -237,11 +237,26 @@ rounded() {
 # outputs for being CORRECT -- 9 at scale 1.5 and 6 at scale 1.0 -- and the
 # premise it was guarding is exactly the one whose absence would make every
 # corner read "rounded" for the wrong reason.
-expect1=$(awk -v b="$BORDER" -v s="${HL_SCALE1:-1}" 'BEGIN{printf "%d", b*s}')
+# ONE PIXEL OF ANTIALIASING ALLOWANCE, measured rather than guessed.
+#
+# M6B/D5 made Path A the default, so the border's edge pixel is now blended in
+# LINEAR LIGHT and lands further from the pure border colour than the
+# classifier's distance-60 threshold allows. Exactly one pixel per output drops
+# out of the count:
+#
+#     AZ_M5_PATH_A=0   o1 9   o2 6   (the figures this premise was written to)
+#     default (on)     o1 8   o2 5
+#
+# Confirmed by running this fixture both ways. The premise exists to catch a
+# border that is NOT PAINTED AT ALL -- which would make every corner read
+# "rounded" for the wrong reason and would count zero, not one short. The same
+# allowance the corner probe already makes for antialiasing either side of its
+# arc (`guard = 2.0`) belongs here too.
+expect1=$(awk -v b="$BORDER" -v s="${HL_SCALE1:-1}" 'BEGIN{printf "%d", b*s-1}')
 hl_assert "premise: output 1 paints a border of the expected width" \
 	"$([ "$(get border_px_o1)" -ge "$expect1" ] 2>/dev/null && echo true || echo false)" true
 if [ "$MODE" = dual ]; then
-	expect2=$(awk -v b="$BORDER" -v s="${HL_SCALE2:-1}" 'BEGIN{printf "%d", b*s}')
+	expect2=$(awk -v b="$BORDER" -v s="${HL_SCALE2:-1}" 'BEGIN{printf "%d", b*s-1}')
 	hl_assert "premise: output 2 paints a border of the expected width" \
 		"$([ "$(get border_px_o2)" -ge "$expect2" ] 2>/dev/null && echo true || echo false)" true
 fi

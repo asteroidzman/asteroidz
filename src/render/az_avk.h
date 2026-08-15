@@ -4107,8 +4107,24 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 	out->slot->renderer.encode_srgb = path_a;
 	uint64_t timeline = avk_render_frame(&out->slot->renderer, target, &scene,
 		waits, wait_count, signals, 1);
-	out->slot->renderer.decode_enabled = false;
-	out->slot->renderer.encode_srgb = false;
+	/*
+	 * ── decode_enabled AND encode_srgb OUTLIVE THE PRODUCTION RENDER ──────
+	 *
+	 * They are cleared AFTER the oracle below, not here, because the oracle's
+	 * reference render is part of this frame's work and has to composite under
+	 * the same conditions. Cleared here, the reference frame ran with decode
+	 * OFF and no _SRGB attachment while production ran with both ON -- so every
+	 * pixel of every frame differed and the oracle reported 18 of 20 frames
+	 * divergent, WRONG=480000, worst 42 codes on a flat background.
+	 *
+	 * The instrument was disagreeing with itself. It went unnoticed for as long
+	 * as Path A was opt-in and appeared the moment M6B/D5 made it the default,
+	 * which is the same way the Path A fixture's own control arm was caught.
+	 *
+	 * The other three below are still cleared here: the intermediate and the
+	 * blur cache are per-output resources the reference render must NOT reuse,
+	 * and encode_full_frame describes a scan-out buffer the reference is not.
+	 */
 	out->slot->renderer.encode_intermediate = NULL;
 	out->slot->renderer.encode_full_frame = false;
 	out->slot->renderer.blur_cache = NULL;
@@ -4133,6 +4149,12 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 	az_avk_capture_frame(out, m, target, timeline);
 	az_avk_oracle_frame(out, m, target, &scene, buffer, &ring_damage,
 		&scene.damage, timeline);
+	/* Now: the reference render is done and nothing else this frame composites.
+	 * A path that forgets to set them next frame renders the pre-M5 picture
+	 * rather than inheriting this output's, which is the property the original
+	 * placement was protecting. */
+	out->slot->renderer.decode_enabled = false;
+	out->slot->renderer.encode_srgb = false;
 	out->frame_seq++;
 	avk_scene_finish(&scene);
 	if (timeline == 0) {

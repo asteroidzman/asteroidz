@@ -588,8 +588,45 @@ struct avk_image *avk_oracle_ref_target(struct avk_oracle *o, VkFormat format,
 	image->layout = VK_IMAGE_LAYOUT_UNDEFINED;
 	image->origin = AVK_IMAGE_OWNED;
 
+	/*
+	 * ── THE REFERENCE MUST BE ABLE TO ENCODE THE WAY PRODUCTION DOES ──────
+	 *
+	 * On Path A a frame is composited through the scan-out buffer's _SRGB
+	 * attachment view, so the hardware encodes on write. avk_image_srgb_view()
+	 * returns NULL for an image that was not created MUTABLE with that format
+	 * in its view list, and avk_render_frame() then falls back to the plain
+	 * view -- silently, because that fallback is correct for a target which
+	 * genuinely has no twin.
+	 *
+	 * The reference target used to be such an image. The production frame
+	 * therefore wrote ENCODED values and the reference wrote LINEAR ones, and
+	 * the oracle reported every pixel of every frame as divergent: 18 of 20
+	 * frames, WRONG=480000, worst 42 codes on a flat background. That is the
+	 * instrument disagreeing with itself, not the compositor -- and it appeared
+	 * the moment M6B/D5 made Path A the default, having been invisible for as
+	 * long as Path A was opt-in.
+	 *
+	 * Only 8-bit formats have sRGB twins (F11: Vulkan defines none at 10 bits
+	 * or half float), which is exactly the set Path A applies to.
+	 */
+	VkFormat twin = VK_FORMAT_UNDEFINED;
+	switch (format) {
+	case VK_FORMAT_B8G8R8A8_UNORM: twin = VK_FORMAT_B8G8R8A8_SRGB; break;
+	case VK_FORMAT_R8G8B8A8_UNORM: twin = VK_FORMAT_R8G8B8A8_SRGB; break;
+	default: break;
+	}
+	VkFormat view_formats[2] = { format, twin };
+	VkImageFormatListCreateInfo fmt_list = {
+		.sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO,
+		.viewFormatCount = 2,
+		.pViewFormats = view_formats,
+	};
+
 	VkImageCreateInfo info = {
 		.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+		.pNext = twin != VK_FORMAT_UNDEFINED ? &fmt_list : NULL,
+		.flags = twin != VK_FORMAT_UNDEFINED
+			? VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT : 0,
 		.imageType = VK_IMAGE_TYPE_2D,
 		.format = format,
 		.extent = { width, height, 1 },
@@ -603,6 +640,8 @@ struct avk_image *avk_oracle_ref_target(struct avk_oracle *o, VkFormat format,
 		.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
 		.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
 	};
+	image->format_srgb = twin;
+	image->srgb_mutable = twin != VK_FORMAT_UNDEFINED;
 	if (!avk_check(vkCreateImage(o->dev->dev, &info, NULL, &image->image),
 			"vkCreateImage (oracle reference)")) {
 		free(image);
