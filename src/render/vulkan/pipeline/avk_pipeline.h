@@ -126,6 +126,22 @@ struct avk_pipelines {
 	 */
 	VkPipeline texture_decode[AVK_DECODE_COUNT];
 	/*
+	 * P2. The same decode variants, drawn through quad_free.vert instead --
+	 * four corners placed independently rather than derived from an
+	 * axis-aligned rectangle.
+	 *
+	 * ONE ARRAY AND NOT ONE PIPELINE, for the same reason texture_decode is an
+	 * array: a quad samples a real surface, and a surface that needs a PQ or
+	 * BT.1886 decode needs it however its corners are arranged. Sharing
+	 * texture.frag with the array above is what makes that true by
+	 * construction rather than by a second copy of the decode ladder.
+	 *
+	 * Same fallback rule: VK_NULL_HANDLE means the variant did not compile and
+	 * the selector drops to quad_tex_plain.
+	 */
+	VkPipeline quad_tex_plain;
+	VkPipeline quad_tex_decode[AVK_DECODE_COUNT];
+	/*
 	 * M4D. ONE shadow pipeline for every shadow on the desktop: the caster's
 	 * geometry and its blur radius are push constants, so a window shadow, a
 	 * titlebar shadow and an overview thumbnail's shadow are the same pipeline

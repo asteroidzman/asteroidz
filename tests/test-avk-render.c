@@ -2643,6 +2643,181 @@ static void test_rounded_with_transform(struct harness *h) {
 	avk_image_destroy(h->dev, surface);
 }
 
+
+/* ── P2: the arbitrary-corner textured quad ─────────────────────────────── */
+
+/*
+ * TWO GATES, AND THEY FAIL FOR DIFFERENT REASONS ON PURPOSE.
+ *
+ * EQUIVALENCE establishes the premise: a quad given the four corners of an
+ * axis-aligned rectangle must be the SAME PICTURE, byte for byte, as the
+ * ordinary texture command over that rectangle. That is checkable exactly --
+ * quad_free.vert and quad.vert emit identical vertex positions here, because
+ * at the four vertices the interpolant is exactly 0 or 1 and every mix()
+ * returns an endpoint unchanged rather than a rounded blend. If this drifts by
+ * a single byte, the quad is not the same primitive and every comparison built
+ * on it is worthless.
+ *
+ * ROTATION is the independent derivation, and it is the one that can catch a
+ * corner-ordering mistake. AVK already renders a 90-degree rotation a second
+ * way -- the transform enum, which folds the rotation into the UV vectors and
+ * leaves the destination axis-aligned. Placing the quad's corners to rotate
+ * the DESTINATION instead must land the same image. The two routes share no
+ * arithmetic: one rotates where pixels are sampled FROM, the other rotates
+ * where they are drawn TO.
+ *
+ * Rotation is compared with a tolerance and equivalence is not, and that is a
+ * statement about the two, not a convenience. Equivalence renders the same
+ * geometry through two spellings of one expression; rotation reaches the same
+ * image through genuinely different arithmetic, so the UV a fragment ends up
+ * with can differ in the last bit and pick the neighbouring texel along a
+ * quadrant boundary. Demanding equality there would be demanding that two
+ * different computations round identically, which is not a property the
+ * renderer has or needs.
+ */
+
+static uint32_t g_quad_ref[W * H];
+
+/* The four corners of an axis-aligned box, in the order quad_free.vert walks:
+ * top-left, top-right, bottom-left, bottom-right. */
+static void quad_from_box(float *q, float x0, float y0, float x1, float y1) {
+	q[0] = x0; q[1] = y0;
+	q[2] = x1; q[3] = y0;
+	q[4] = x0; q[5] = y1;
+	q[6] = x1; q[7] = y1;
+}
+
+static void test_quad_equivalence(struct harness *h) {
+	printf("test P2a: a degenerate quad is the texture command\n");
+	struct avk_image *surface = quadrant_surface(h);
+	if (surface == NULL) {
+		CHECK(false, "prepare the quadrant surface");
+		return;
+	}
+
+	struct avk_scene scene;
+
+	/* The reference: an ordinary axis-aligned texture command. */
+	scene_begin(&scene);
+	struct avk_cmd *tex = avk_scene_add(&scene, AVK_CMD_TEXTURE);
+	tex->dst = (struct avk_box){ 0, 0, W, H };
+	tex->image = surface;
+	tex->src = (struct avk_fbox){ 0, 0, 32, 32 };
+	CHECK(render(h, &scene), "rendered the reference texture command");
+	memcpy(g_quad_ref, h->pixels, sizeof(g_quad_ref));
+	avk_scene_finish(&scene);
+
+	/* THE PREMISE: the reference is a real picture and not an empty frame. An
+	 * all-zero buffer would compare equal to another all-zero buffer and this
+	 * whole gate would pass having drawn nothing. */
+	int nonzero = 0;
+	for (int i = 0; i < W * H; i++) {
+		if ((g_quad_ref[i] & 0x00FFFFFFu) != 0) {
+			nonzero++;
+		}
+	}
+	CHECK(nonzero > (W * H) / 2,
+		"PREMISE: the reference frame has content in it");
+
+	/* The same rectangle, as four corners. */
+	scene_begin(&scene);
+	struct avk_cmd *q = avk_scene_add(&scene, AVK_CMD_TEXTURE_QUAD);
+	q->dst = (struct avk_box){ 0, 0, W, H };
+	q->image = surface;
+	q->src = (struct avk_fbox){ 0, 0, 32, 32 };
+	quad_from_box(q->quad, 0.0f, 0.0f, (float)W, (float)H);
+	CHECK(render(h, &scene), "rendered the degenerate quad");
+
+	int differing = 0;
+	for (int i = 0; i < W * H; i++) {
+		if (h->pixels[i] != g_quad_ref[i]) {
+			differing++;
+		}
+	}
+	printf("  differing pixels: %d of %d\n", differing, W * H);
+	CHECK(differing == 0,
+		"a degenerate quad is byte-identical to the texture command");
+	CHECK(h->renderer.stats.quads > 0,
+		"PREMISE: the free-corner pipeline actually drew (stats.quads > 0)");
+
+	avk_scene_finish(&scene);
+	avk_image_destroy(h->dev, surface);
+}
+
+static void test_quad_rotation(struct harness *h) {
+	printf("test P2b: a rotated quad equals the transform-enum rotation\n");
+	struct avk_image *surface = quadrant_surface(h);
+	if (surface == NULL) {
+		CHECK(false, "prepare the quadrant surface");
+		return;
+	}
+
+	struct avk_scene scene;
+
+	/* The reference: the rotation AVK already knows how to do. */
+	scene_begin(&scene);
+	struct avk_cmd *tex = avk_scene_add(&scene, AVK_CMD_TEXTURE);
+	tex->dst = (struct avk_box){ 0, 0, W, H };
+	tex->image = surface;
+	tex->src = (struct avk_fbox){ 0, 0, 32, 32 };
+	tex->transform = AVK_TRANSFORM_90;
+	CHECK(render(h, &scene), "rendered the transform-enum 90-degree reference");
+	memcpy(g_quad_ref, h->pixels, sizeof(g_quad_ref));
+	avk_scene_finish(&scene);
+
+	/*
+	 * The same picture by moving the corners instead.
+	 *
+	 * AVK_TRANSFORM_90 puts the source's TOP-RIGHT quadrant at the
+	 * destination's top-left (test 3's table, corrected in M4F.2C.4e). Corner 1
+	 * is the one carrying the source's top-right under an untransformed
+	 * mapping, so corner 1 is the one that has to land at the destination's
+	 * top-left; the rest follow from rotating the square anticlockwise.
+	 *
+	 *   corner 0 (src TL) -> bottom-left
+	 *   corner 1 (src TR) -> top-left
+	 *   corner 2 (src BL) -> bottom-right
+	 *   corner 3 (src BR) -> top-right
+	 */
+	scene_begin(&scene);
+	struct avk_cmd *q = avk_scene_add(&scene, AVK_CMD_TEXTURE_QUAD);
+	q->dst = (struct avk_box){ 0, 0, W, H };
+	q->image = surface;
+	q->src = (struct avk_fbox){ 0, 0, 32, 32 };
+	q->quad[0] = 0.0f;     q->quad[1] = (float)H;   /* src TL -> BL */
+	q->quad[2] = 0.0f;     q->quad[3] = 0.0f;       /* src TR -> TL */
+	q->quad[4] = (float)W; q->quad[5] = (float)H;   /* src BL -> BR */
+	q->quad[6] = (float)W; q->quad[7] = 0.0f;       /* src BR -> TR */
+	CHECK(render(h, &scene), "rendered the corner-rotated quad");
+
+	/*
+	 * Content first, as a claim that does not depend on the reference at all:
+	 * green (the source's top-right) has to be at the destination's top-left,
+	 * which is the same assertion test 3 makes about AVK_TRANSFORM_90.
+	 */
+	CHECK(g_of(px(h, 4, 4)) > 200 && r_of(px(h, 4, 4)) < 60,
+		"the rotated quad puts source top-right at destination top-left");
+
+	int differing = 0;
+	for (int i = 0; i < W * H; i++) {
+		if (h->pixels[i] != g_quad_ref[i]) {
+			differing++;
+		}
+	}
+	printf("  differing pixels: %d of %d\n", differing, W * H);
+	/*
+	 * A boundary tolerance, not a licence. The quadrant edges are the only
+	 * place two routes to the same UV can disagree, and there are 2 * 64 of
+	 * them in a 64x64 frame; 1% of the frame is comfortably below "the
+	 * rotation went the wrong way", which moves thousands of pixels.
+	 */
+	CHECK(differing <= (W * H) / 100,
+		"the corner-rotated quad matches the transform-enum rotation");
+
+	avk_scene_finish(&scene);
+	avk_image_destroy(h->dev, surface);
+}
+
 /* ── test 3: transforms ─────────────────────────────────────────────────── */
 
 static void test_transforms(struct harness *h) {
@@ -2934,6 +3109,8 @@ int main(void) {
 	test_rounded_asymmetric(&h);
 	test_rounded_destination_space(&h);
 	test_rounded_with_transform(&h);
+	test_quad_equivalence(&h);
+	test_quad_rotation(&h);
 	test_clip(&h);
 	test_opacity(&h);
 

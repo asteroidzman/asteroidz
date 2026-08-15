@@ -5315,3 +5315,87 @@ From measurements. Anything not measured says so.
 | `REGRESSION_MATRIX` | **PASS** | 22 unit suites, 20 headless suites; one documented no-coverage skip (`avk-gradient-test`) |
 | `LIVE_ACCEPTANCE` | **NOT RUN** | headless only, by instruction |
 | `NO_INSTALL` | **HELD** | `/usr/bin/asteroidz` is still M4E |
+
+## P2 — the arbitrary-corner textured quad
+
+Every AVK primitive until now was axis-aligned. `AVK_CMD_TEXTURE_QUAD` is the
+same textured draw with its four destination corners placed independently, so a
+primitive can tumble; P3's shatter fragments are the first caller.
+
+**It samples exactly what a texture command samples.** Same `image`, same `src`
+crop, same `transform`, same decode variant chosen from the same `lum` domain.
+The only difference is the vertex stage. That is why the two share the record
+branch and the decode ladder rather than each having a copy — a second copy is
+how the two would have drifted apart on the next colour change.
+
+### Where the corners live, and why they can live there
+
+The push-constant block is exactly 128 bytes, the guaranteed Vulkan minimum,
+with no room to grow. A new primitive therefore cannot add fields; it can only
+reuse ones its own pipeline does not read.
+
+`az_rounded_coverage()` returns `1.0` immediately when all four radii are zero,
+**without reading the box it was handed**. A textured quad carries no rounding
+and no inner cut-out, so `texture.frag`'s two coverage calls early out and
+`round_box` and `inner_box` are dead storage for the whole draw. The four
+corners go there:
+
+| slot | corner | vertex |
+|---|---|---|
+| `round_box.xy` | 0 — top-left | `p = 0,0` |
+| `round_box.zw` | 1 — top-right | `p = 1,0` |
+| `inner_box.xy` | 2 — bottom-left | `p = 0,1` |
+| `inner_box.zw` | 3 — bottom-right | `p = 1,1` |
+
+This is why the variant has **no rounding, and cannot be given any**. A nonzero
+radius would stop the early-out and make the fragment shader read a corner
+*position* as a rectangle. The recorder forces `corners` and `inner_corners` to
+zero; `quad_free.vert` states the same contract from the shader side.
+
+`dst` is still required, set to the quad's bounding box — the scissor, the
+damage arithmetic and the transient sizing all read it, and a `dst` that does
+not contain all four corners clips the quad.
+
+### Never an occluder
+
+Occlusion is expressed as axis-aligned opaque rectangles. A rotated quad's
+`dst` is its bounding box: strictly larger than the quad, containing pixels it
+does not cover. Reporting that box as covered would delete things behind the
+corners that are genuinely visible, and the exact region — a rotated
+quadrilateral — is not something the region algebra can hold. `AVK_CMD_TEXTURE_QUAD`
+is therefore listed explicitly in the occluder switch rather than left to fall
+through `default`, because the cost of getting it wrong is invisible in a still
+frame and obvious in motion.
+
+### The two gates
+
+Both live in `tests/test-avk-render.c` and fail for different reasons.
+
+**Equivalence** (`test P2a`) is the premise: a quad given the four corners of an
+axis-aligned rectangle is byte-for-byte the ordinary texture command over that
+rectangle. Exactly, not approximately — at the four vertices the interpolant is
+0 or 1, so every `mix()` returns an endpoint unchanged and there is no
+arithmetic to round differently. If this drifts by one byte the quad is not the
+same primitive and every comparison built on it is worthless.
+
+**Rotation** (`test P2b`) is the independent derivation. AVK already renders a
+90° rotation another way — the transform enum, which folds the rotation into the
+UV vectors and leaves the destination axis-aligned. Placing the quad's corners
+to rotate the *destination* must land the same image. The two share no
+arithmetic: one rotates where pixels are sampled **from**, the other where they
+are drawn **to**.
+
+Rotation is compared with a 1% tolerance and equivalence is not, and that is a
+statement about the two rather than a convenience. Equivalence renders identical
+geometry through two spellings of one expression. Rotation reaches the same
+image through genuinely different arithmetic, so a fragment's UV can differ in
+the last bit and pick the neighbouring texel along a quadrant boundary.
+Demanding equality there would demand that two different computations round
+identically, which is not a property the renderer has or needs. A rotation that
+actually went the wrong way moves thousands of pixels, not sixty.
+
+### Falsifier
+
+`AZ_BREAK_AVK_QUAD_SWAP_CORNERS` swaps corners 1 and 2 at record time, folding
+the quad into a bow tie — the same four points, wound wrongly, which is exactly
+what a corner-ordering mistake produces. Both gates must go red under it.

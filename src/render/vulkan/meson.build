@@ -35,6 +35,12 @@ avk_embed = find_program('shader/embed.py')
 
 avk_shader_headers = []
 foreach shader : [['quad.vert', 'quad_vert_spv'],
+                  # P2: the same quad with its four corners placed
+                  # independently, for primitives that are not axis-aligned.
+                  # Its own vertex stage and deliberately NOT its own fragment
+                  # stage -- it shares texture.frag, which is what makes a
+                  # degenerate quad provably identical to a texture command.
+                  ['quad_free.vert', 'quad_free_vert_spv'],
                   ['quad.frag', 'quad_frag_spv'],
                   ['texture.frag', 'texture_frag_spv'],
                   ['gradient.frag', 'gradient_frag_spv'],

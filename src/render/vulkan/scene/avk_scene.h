@@ -62,6 +62,30 @@ enum avk_cmd_type {
 	AVK_CMD_RECT,
 	AVK_CMD_TEXTURE,
 	/*
+	 * P2. A textured quad whose four corners are placed independently, rather
+	 * than derived from an axis-aligned rectangle.
+	 *
+	 * Everything about SAMPLING is the same as AVK_CMD_TEXTURE: the same
+	 * image, the same `src` crop, the same `transform`, the same decode
+	 * variant chosen from the same `lum` domain. What differs is only where
+	 * the four destination corners land -- `quad`, below.
+	 *
+	 * WHAT IT DELIBERATELY DOES NOT HAVE: rounding, an inner cut-out, or a
+	 * shadow. Not an omission to be filled in later -- the corner positions
+	 * are CARRIED IN the push-constant slots those fields would occupy (the
+	 * block is at the 128-byte guaranteed minimum with no room to grow), so a
+	 * rounded quad would ask the fragment shader to read a corner position as
+	 * a rectangle. `corners` and the inner fields are asserted zero when one
+	 * of these is recorded.
+	 *
+	 * It is also NEVER AN OCCLUDER. The occlusion pass reasons about
+	 * axis-aligned opaque rectangles; a rotated quad's `dst` is its bounding
+	 * box, which is larger than the quad and contains pixels it does not
+	 * cover, so treating it as an occluder would erase things behind it that
+	 * are actually visible.
+	 */
+	AVK_CMD_TEXTURE_QUAD,
+	/*
 	 * M4D. A rounded-rectangle drop shadow, evaluated analytically -- no
 	 * intermediate image, no blur pass. `dst` is the shadow's ENVELOPE and the
 	 * caster is that box inset by `blur_sigma`; see shadow.frag.
@@ -159,6 +183,25 @@ struct avk_cmd {
 	 * because it knows the scale factor; a renderer guessing from the box
 	 * ratio gets fractional-scale cases wrong. */
 	bool filter_linear;
+
+	/*
+	 * AVK_CMD_TEXTURE_QUAD only: the four destination corners in OUTPUT
+	 * PIXELS, as x0,y0, x1,y1, x2,y2, x3,y3.
+	 *
+	 * The order is the one gl_VertexIndex walks, so that a strip winds the
+	 * same way it does for every other primitive:
+	 *
+	 *     0 ── 1        0 top-left      1 top-right
+	 *     │    │        2 bottom-left   3 bottom-right
+	 *     2 ── 3        (of the UNROTATED quad; after a rotation they are
+	 *                   simply four points, and "top-left" names which
+	 *                   source corner each one carries)
+	 *
+	 * `dst` must still be set, to the quad's bounding box: it is what the
+	 * scissor, the damage arithmetic and the transient-target sizing all read.
+	 * A dst that does not contain all four corners clips the quad.
+	 */
+	float quad[8];
 
 	/*
 	 * Rounded corners, in OUTPUT PIXELS, clockwise from the top left:

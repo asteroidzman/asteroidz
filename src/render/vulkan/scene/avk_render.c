@@ -108,6 +108,8 @@ bool avk_renderer_init(struct avk_renderer *renderer, struct avk_device *dev,
 	renderer->break_rounded_off = getenv("AZ_ROUNDED_OFF") != NULL;
 	renderer->break_rounded_single = getenv("AZ_ROUNDED_SINGLE_RADIUS") != NULL;
 	renderer->break_bottom_swap = getenv("AZ_ROUNDED_BOTTOM_SWAP") != NULL;
+	renderer->break_quad_swap_corners =
+		getenv("AZ_BREAK_AVK_QUAD_SWAP_CORNERS") != NULL;
 	renderer->break_shadow_single_radius =
 		getenv("AZ_SHADOW_SINGLE_RADIUS") != NULL;
 	renderer->break_shadow_symmetric =
@@ -851,6 +853,21 @@ static bool az_cmd_opaque_region(const struct avk_renderer *renderer,
 			return false;
 		}
 		break;
+	case AVK_CMD_TEXTURE_QUAD:
+		/*
+		 * NEVER AN OCCLUDER, even fully opaque with an opaque source.
+		 *
+		 * Occlusion is expressed as axis-aligned rectangles, and a rotated
+		 * quad's `dst` is its BOUNDING BOX -- strictly larger than the quad
+		 * and containing pixels it does not cover. Reporting that box as
+		 * covered would delete things behind the corners that are genuinely
+		 * visible. The exact region is a rotated quadrilateral, which the
+		 * region algebra cannot represent, so the honest answer is none.
+		 *
+		 * Listed rather than left to `default` because the cost of getting
+		 * this wrong is invisible in a still frame and obvious in motion.
+		 */
+		return false;
 	default:
 		/* A shadow is a falloff and a blur result may carry a soft edge or an
 		 * alpha of its own. Neither can be an occluder. */
@@ -1484,12 +1501,27 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 				pipes->layout, 0, 1, &set, 0, NULL);
 			renderer->stats.surfaces++;
 			renderer->stats.blur_draws++;
-		} else if (cmd->type == AVK_CMD_TEXTURE) {
+		} else if (cmd->type == AVK_CMD_TEXTURE
+				|| cmd->type == AVK_CMD_TEXTURE_QUAD) {
 			if (cmd->image == NULL) {
 				pixman_region32_fini(&region);
 				continue;
 			}
-			want = pipes->texture;
+			/*
+			 * P2. The two share EVERYTHING about sampling -- the crop, the
+			 * transform, the decode ladder, the luminance domain, the
+			 * descriptor -- and differ only in which vertex stage places the
+			 * four corners. So they share this branch too, and the pipeline
+			 * arrays are selected in parallel rather than the whole block
+			 * being copied. A second copy is how the decode ladder and the
+			 * quad's would have drifted.
+			 */
+			const bool is_quad = cmd->type == AVK_CMD_TEXTURE_QUAD;
+			VkPipeline plain = is_quad ? pipes->quad_tex_plain
+				: pipes->texture;
+			const VkPipeline *decode_set = is_quad
+				? pipes->quad_tex_decode : pipes->texture_decode;
+			want = plain;
 			/*
 			 * M5/C7. The decode variant this source's domain asks for.
 			 *
@@ -1520,9 +1552,8 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 				default: break;
 				}
 				if (v != AVK_DECODE_NONE
-						&& pipes->texture_decode[v]
-							!= VK_NULL_HANDLE) {
-					want = pipes->texture_decode[v];
+						&& decode_set[v] != VK_NULL_HANDLE) {
+					want = decode_set[v];
 					renderer->stats.decode_draws++;
 					renderer->stats.decode_by_variant[v]++;
 				}
@@ -1579,6 +1610,45 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 				&& renderer->encode_intermediate == NULL
 				&& cmd->lum.scale > 1.0f;
 			pc.color[2] = needs_ceiling ? AVK_PATH_A_CEILING_KNEE : 0.0f;
+
+			/*
+			 * ── P2: THE FOUR CORNERS, WRITTEN LAST ────────────────────────
+			 *
+			 * Last on purpose. Everything above filled pc.round_box from the
+			 * destination box and pc.corners from the radii, exactly as for
+			 * any other command, and this overwrites the two boxes with corner
+			 * positions -- so it has to run after them or they would overwrite
+			 * it back.
+			 *
+			 * THE RADII ARE FORCED TO ZERO, and that is a correctness
+			 * requirement rather than tidiness. az_rounded_coverage() only
+			 * ignores the box it is handed when all four radii are zero; a
+			 * nonzero radius would make texture.frag read a corner POSITION as
+			 * a rectangle and shade a shape nobody asked for. quad_free.vert
+			 * documents the same contract from the other side.
+			 */
+			if (is_quad) {
+				float q[8];
+				memcpy(q, cmd->quad, sizeof(q));
+				if (renderer->break_quad_swap_corners) {
+					/* Corner 1 and corner 2 -- the diagonal pair. Swapping
+					 * them folds the quad into a bow tie: the same four
+					 * points, wound wrongly, which is exactly the defect a
+					 * corner-ordering mistake produces. */
+					float t0 = q[2], t1 = q[3];
+					q[2] = q[4]; q[3] = q[5];
+					q[4] = t0;   q[5] = t1;
+				}
+				pc.round_box[0] = q[0]; pc.round_box[1] = q[1];
+				pc.round_box[2] = q[2]; pc.round_box[3] = q[3];
+				pc.inner_box[0] = q[4]; pc.inner_box[1] = q[5];
+				pc.inner_box[2] = q[6]; pc.inner_box[3] = q[7];
+				pc.corners[0] = pc.corners[1] =
+					pc.corners[2] = pc.corners[3] = 0.0f;
+				pc.inner_corners[0] = pc.inner_corners[1] =
+					pc.inner_corners[2] = pc.inner_corners[3] = 0.0f;
+				renderer->stats.quads++;
+			}
 
 			VkDescriptorSet set = avk_pipelines_texture_set(pipes,
 				cmd->image, cmd->filter_linear);
@@ -1777,7 +1847,7 @@ bool avk_cmd_graph_uses(const struct avk_scene *scene, size_t index,
 	 * the build HERE, at the switch that has to learn about it, rather than at a
 	 * missing barrier six months later. (-Wall's -Wswitch also fires on the
 	 * default-less switch below; the assert is the one that is not a warning.) */
-	_Static_assert(AVK_CMD_TYPE_COUNT == 4,
+	_Static_assert(AVK_CMD_TYPE_COUNT == 5,
 		"a new avk_cmd_type needs a case in avk_cmd_graph_uses(): state its "
 		"sampled images, or state explicitly that it has none");
 	switch (cmd->type) {
@@ -1795,6 +1865,10 @@ bool avk_cmd_graph_uses(const struct avk_scene *scene, size_t index,
 		declared = true;
 		break;
 	case AVK_CMD_TEXTURE:
+	case AVK_CMD_TEXTURE_QUAD:
+		/* A quad samples exactly what a texture command samples; only its
+		 * destination corners differ, and the graph cares about what a draw
+		 * READS, not where it lands. */
 		az_add_sampled(out, cmd->image);
 		declared = true;
 		break;

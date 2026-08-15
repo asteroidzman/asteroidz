@@ -2543,7 +2543,7 @@ static inline void anim_curve_all(const Client *c, double t, int32_t type,
  * large-travel axis's error budget. Each axis is now measured against its own
  * travel, which is the distance its own rounding actually has to survive.
  */
-static bool anim_spring_converged(Client *c, int32_t type, double t,
+static bool anim_spring_converged(const Client *c, int32_t type, double t,
 		const double factor[ANIM_AXIS_COUNT]) {
 	if (!config.animation_curve_spring || anim_no_converge_break()) {
 		return false;

@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "quad_vert.spv.h"
+#include "quad_free_vert.spv.h"
 #include "quad_frag.spv.h"
 #include "texture_frag.spv.h"
 #include "gradient_frag.spv.h"
@@ -222,13 +223,19 @@ static bool create_pipeline_ex(struct avk_pipelines *pipes, VkFormat format,
  * device creation instead would take a whole desktop down over a colour path
  * almost nothing on it uses yet.
  */
-static bool create_decode_variants(struct avk_pipelines *pipes,
-		VkFormat format, VkShaderModule vert, VkShaderModule frag) {
-	static const char *names[AVK_DECODE_COUNT] = {
-		"texture_decode_none", "texture_decode_srgb",
-		"texture_decode_gamma22", "texture_decode_bt1886",
-		"texture_decode_pq",
-	};
+/*
+ * The decode ladder, compiled against WHICHEVER VERTEX STAGE is handed in.
+ *
+ * P2 gave the same fragment shader a second vertex stage (quad_free.vert,
+ * four independently placed corners). Taking `vert` and the destination array
+ * as parameters is what keeps that a second CALL rather than a second copy of
+ * the ladder -- the decode variants, their specialisation constants and their
+ * not-fatal fallback rule are declared once and cannot drift between the
+ * axis-aligned and free-corner forms.
+ */
+static bool create_decode_variants_into(struct avk_pipelines *pipes,
+		VkFormat format, VkShaderModule vert, VkShaderModule frag,
+		const char *const *names, VkPipeline *out) {
 	for (int i = 0; i < AVK_DECODE_COUNT; i++) {
 		int32_t value = i;
 		VkSpecializationMapEntry entry = {
@@ -243,13 +250,35 @@ static bool create_decode_variants(struct avk_pipelines *pipes,
 			.pData = &value,
 		};
 		if (!create_pipeline_ex(pipes, format, vert, frag, names[i],
-				AZ_BLEND_OVER, &spec, &pipes->texture_decode[i])) {
+				AZ_BLEND_OVER, &spec, &out[i])) {
 			avk_log(AVK_ERROR, "avk: decode variant %s did not compile; "
 				"sources in that domain will render undecoded", names[i]);
-			pipes->texture_decode[i] = VK_NULL_HANDLE;
+			out[i] = VK_NULL_HANDLE;
 		}
 	}
 	return true;
+}
+
+static bool create_decode_variants(struct avk_pipelines *pipes,
+		VkFormat format, VkShaderModule vert, VkShaderModule frag) {
+	static const char *const names[AVK_DECODE_COUNT] = {
+		"texture_decode_none", "texture_decode_srgb",
+		"texture_decode_gamma22", "texture_decode_bt1886",
+		"texture_decode_pq",
+	};
+	return create_decode_variants_into(pipes, format, vert, frag, names,
+		pipes->texture_decode);
+}
+
+static bool create_quad_decode_variants(struct avk_pipelines *pipes,
+		VkFormat format, VkShaderModule vert, VkShaderModule frag) {
+	static const char *const names[AVK_DECODE_COUNT] = {
+		"quad_decode_none", "quad_decode_srgb",
+		"quad_decode_gamma22", "quad_decode_bt1886",
+		"quad_decode_pq",
+	};
+	return create_decode_variants_into(pipes, format, vert, frag, names,
+		pipes->quad_tex_decode);
 }
 
 static bool create_pipeline(struct avk_pipelines *pipes, VkFormat format,
@@ -360,6 +389,8 @@ bool avk_pipelines_init(struct avk_pipelines *pipes, struct avk_device *dev,
 
 	VkShaderModule vert = create_module(dev, quad_vert_spv,
 		sizeof(quad_vert_spv), "quad.vert");
+	VkShaderModule quad_free_vert = create_module(dev, quad_free_vert_spv,
+		sizeof(quad_free_vert_spv), "quad_free.vert");
 	VkShaderModule rect_frag = create_module(dev, quad_frag_spv,
 		sizeof(quad_frag_spv), "quad.frag");
 	VkShaderModule texture_frag = create_module(dev, texture_frag_spv,
@@ -383,6 +414,12 @@ bool avk_pipelines_init(struct avk_pipelines *pipes, struct avk_device *dev,
 		&& create_pipeline(pipes, format, vert, texture_frag, "texture",
 			&pipes->texture)
 		&& create_decode_variants(pipes, format, vert, texture_frag)
+		/* P2: the same fragment stage through the free-corner vertex stage. */
+		&& quad_free_vert != VK_NULL_HANDLE
+		&& create_pipeline(pipes, format, quad_free_vert, texture_frag,
+			"quad_tex", &pipes->quad_tex_plain)
+		&& create_quad_decode_variants(pipes, format, quad_free_vert,
+			texture_frag)
 		&& create_pipeline(pipes, format, vert, gradient_frag, "gradient",
 			&pipes->gradient)
 		&& create_pipeline(pipes, format, vert, shadow_frag, "shadow",
@@ -406,6 +443,9 @@ bool avk_pipelines_init(struct avk_pipelines *pipes, struct avk_device *dev,
 	 * returns. */
 	if (vert != VK_NULL_HANDLE) {
 		vkDestroyShaderModule(dev->dev, vert, NULL);
+	}
+	if (quad_free_vert != VK_NULL_HANDLE) {
+		vkDestroyShaderModule(dev->dev, quad_free_vert, NULL);
 	}
 	if (rect_frag != VK_NULL_HANDLE) {
 		vkDestroyShaderModule(dev->dev, rect_frag, NULL);
@@ -456,6 +496,16 @@ void avk_pipelines_finish(struct avk_pipelines *pipes) {
 	for (int i = 0; i < AVK_DECODE_COUNT; i++) {
 		if (pipes->texture_decode[i] != VK_NULL_HANDLE) {
 			vkDestroyPipeline(dev, pipes->texture_decode[i], NULL);
+			AVK_LIVE_DEC(pipes->dev, pipelines);
+		}
+	}
+	if (pipes->quad_tex_plain != VK_NULL_HANDLE) {
+		vkDestroyPipeline(dev, pipes->quad_tex_plain, NULL);
+		AVK_LIVE_DEC(pipes->dev, pipelines);
+	}
+	for (int i = 0; i < AVK_DECODE_COUNT; i++) {
+		if (pipes->quad_tex_decode[i] != VK_NULL_HANDLE) {
+			vkDestroyPipeline(dev, pipes->quad_tex_decode[i], NULL);
 			AVK_LIVE_DEC(pipes->dev, pipelines);
 		}
 	}

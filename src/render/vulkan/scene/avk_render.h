@@ -487,6 +487,13 @@ struct avk_renderer_stats {
 	uint64_t rounded_shadow_draws;
 	uint64_t asymmetric_shadow_draws;
 	/*
+	 * P2. Textured quads drawn through quad_free.vert. Counted at the DRAW so
+	 * a fixture can tell "the free-corner pipeline ran" from "a quad command
+	 * was recorded" -- a quad whose image failed to resolve is skipped, and
+	 * the two claims are different.
+	 */
+	uint64_t quads;
+	/*
 	 * M4F. What the blur node's material actually did, as opposed to what the
 	 * scene asked for. Counted at the DRAW, so a fixture can tell "the soft-edge
 	 * pipeline ran" from "edge_softness was set in the command" -- which are two
@@ -601,6 +608,14 @@ struct avk_renderer {
 	bool break_rounded_off;
 	bool break_rounded_single;
 	bool break_bottom_swap;
+	/*
+	 * P2. Swaps two of a textured quad's four destination corners at record
+	 * time, which folds the quad into a bow tie: the same four points, wound
+	 * wrongly. Both P2 gates must go red under it -- the degenerate quad stops
+	 * matching the texture command it should equal, and the rotated quad stops
+	 * matching the transform-enum render it should equal.
+	 */
+	bool break_quad_swap_corners;
 	bool break_rounded_double_scale;
 	float break_scale_hint;
 	/*
