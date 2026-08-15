@@ -99,6 +99,7 @@ Current HDR capabilities include:
 - SDR applications on HDR displays
 - HDR and SDR applications simultaneously
 - Per-display HDR handling
+- Turning HDR on and off per display, while applications keep running
 
 HDR is integrated into the compositor rather than being applied as a simple final-screen filter.
 
@@ -442,8 +443,14 @@ Major completed areas include:
 - ✅ Per-display preferred color information
 - ✅ `frog-color-management`
 - ✅ Wayland color-management integration
+- ✅ Switching a display between HDR and SDR while apps keep running
+- ✅ Applications told automatically when their display's color changes
+- ✅ Display profiles verified on real monitors
+- ✅ Correct color blending for translucent windows
 
-Current development is focused on final color-management qualification and production hardening.
+Color management is complete and has been verified on real HDR and SDR displays, including repeated HDR/SDR switching with applications running throughout.
+
+Current development is focused on giving more applications access to full display color information, and on production hardening.
 
 ---
 
@@ -551,16 +558,18 @@ Development continues in several areas.
 
 ### Color Management
 
-Current work is completing qualification of:
+Recently completed and verified on real displays:
 
-- HDR ↔ SDR display transitions
-- Application metadata updates when display state changes
-- Translucent color blending
-- Additional real-world multi-monitor color behavior
+- Switching a display between HDR and SDR, repeatedly, with applications running
+- Applications being told when the display they are on changes color state
+- Display profiles applied live to a connected monitor
+- Correct color blending for translucent windows and panels
 
 ### Wayland Color Management
 
-Asteroidz continues to improve compatibility with the evolving Wayland color-management ecosystem.
+Applications can already ask Asteroidz about the display they are on, and HDR-aware applications receive full display information through `frog-color-management`.
+
+Ongoing work is aimed at making that same complete display information available to applications using the newer standard Wayland color-management path, so more apps can tone-map correctly without special support.
 
 ### Production Hardening
 
