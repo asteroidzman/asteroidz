@@ -1,8 +1,34 @@
 # M6B — status
 
+**M6A: CLOSED** (`../m6-presentation/status.md`). Its knowingly-unbuilt items —
+the ADR-611 refactor, ADR-612's GPU half, `VK_EXT_calibrated_timestamps`,
+ADR-613/614's oracles, the VT-switch reset — are closure decisions, not
+outstanding M6A work, and do not reopen without a regression or a new measured
+requirement.
+
+**M6B: HEADLESS GATES GREEN. MILESTONE NOT CLOSED.** Two technical items
+remain: the G6 live HDR↔SDR gate in a validation session, and the blend-domain
+residual. The upstream wp-cm mastering gap is *decided*, not open, and is not a
+blocker.
+
 The milestone defined in `decision.md`. This records what is closed, what it
 measured, and what is not closed. Measurements are quoted from the runs that
 produced them, not from the plan that asked for them.
+
+**Suite state at `aa17a47a`** — the only currently valid counts:
+
+| | |
+|---|---|
+| AVK required set | **51/51 fixtures, 961/961 assertions**, zero `FAIL` |
+| regression suite | **557/557** |
+
+Counted from the run logs, not read off the summary lines. That distinction is
+not pedantry here: an earlier attempt at this same qualification invoked
+`avk-suite.sh` bare, which is a *register* that runs nothing without
+`--run required`. It printed a clean audit over 51 suites in nine lines and
+exited 0. A batch runner must assert that work happened — count executed
+fixtures and refuse to report below a floor — because an exit status of 0 is
+not evidence that anything ran.
 
 **Standing rule in force throughout:** a green oracle is not trustworthy until
 its falsifier has been observed red. Every number below has a break beside it
@@ -222,6 +248,63 @@ colorants exist to catch), and making the derivation ignore the shaper (7 red).
 
 ---
 
+## A plausible fix that regressed, and got as far as closure qualification
+
+This is the most instructive thing that happened in M6B and the record must not
+compress it to "bug fixed, tests pass."
+
+**`a52650f` fixed a real defect.** The operator reported that `amsg toggle_hdr`
+had never worked. It hadn't: `hdr-mode` was an absolute *override* rather than a
+default, so on a desktop configured `hdr-mode on` the dispatch wrote the
+baseline, `hdr_resolve` immediately re-asserted HDR, IPC answered success, and
+the only trace was a log line saying the request was overridden "for now". The
+fix made `hdr_configured` a tri-state — `-1` nobody has spoken for this output,
+`0` explicitly off, `1` explicitly on — so an explicit per-output choice could
+outrank the global default.
+
+**`aa17a47a` fixed what that fix broke.** `setmon` still did
+`m->hdr = m->hdr_configured`, copying the new tri-state straight into the
+effective boolean. **`-1` is truthy.** Every `if (m->hdr)` — the PQ branch in
+`mon_derive_color_state`, the HDR commit in `mon_state_apply_color`, the 10-bit
+format choice — read an output nobody had configured as HDR. And `hdr_resolve`
+compares `want == (m->hdr > 0)`, so `want=false` matched and it returned
+*before* normalising: the output stayed at `-1` for its entire life.
+
+Headless outputs came up on PQ + Path B and refused their first frames.
+**Twelve fixtures moved in the closure run**, `m6b-icc-drive` from 19/19 to
+9/19 with all three arms collapsed onto the same `path=B-encode tf=pq` — three
+arms that must differ reporting identically being the tell, because it means
+none of them chose the state they were in.
+
+**Why it survived that far.** The only observable was a bool. `hdr_enabled` is
+`m->hdr` through `cJSON_AddBoolToObject`, which reports `-1` as `true` —
+indistinguishable from correct. A fixture could see the wrong PIXELS but never
+the wrong INTENT, and pixel damage reads as a renderer problem, which is where
+the twelve moved fixtures pointed. IPC now carries `hdr_configured` as the
+tri-state it is; the `hdr` regression module's header had said the policy inputs
+were not headlessly assertable, and that was true until then.
+
+**Three further things this cost, all worth keeping:**
+
+1. **Three fixtures were nearly written off as baseline.**
+   `avk-crossoutput-round` (5/7), `avk-oracle` (5/6) and `avk-scale-transform`
+   (41/47) failed *identically* in two consecutive full runs, which is exactly
+   the signature of known baseline noise. They were not: the first run's
+   failures were Path-A-promotion fallout fixed by `f462a316`, the second's were
+   this regression. Two different causes producing the same numbers. All three
+   are green now. Identical failures across runs are not evidence of a stable
+   baseline.
+2. **The guard's first version was non-discriminating.** It read
+   `hdr_configured` expecting `-1` but ran *after* the toggle test and read that
+   test's leftover `1`. It went red on the broken build — for a reason unrelated
+   to the bug — and would have failed identically on the fixed one. `-1` is a
+   write-once observation: `set_output_hdr` takes a boolean, so nothing can
+   restore "never mentioned". It now runs first and asserts its premise.
+3. **The assertion that catches this was already in the repo.**
+   `contrib/regression/tests/hdr.sh` has asserted `starts with hdr_enabled
+   false` all along. The module simply was not run after `a52650f` changed HDR
+   resolution. The suite was not missing a test; the test was not run.
+
 ## Defects this milestone found, which its own gates did not
 
 Recorded because all three were green-at-the-time and none was found by the
@@ -318,32 +401,108 @@ each frontend converts only to its own wire units. The upstream limitation is
 visible as *a frontend cannot currently emit this*, never as *the value
 disappeared before reaching the frontend*.
 
-## Open — and all of it needs the operator, not more code
+## The attempted live G6 run — CONTAMINATED, NOT EVIDENCE
 
-Every gate that a machine can settle is settled. What remains needs a display
-that can present HDR and a person who can look at it.
+An HDR↔SDR run was attempted on 2026-08-14 and **does not count**. It is
+recorded here rather than deleted, because the way it false-passed is the
+finding.
 
-- **G6's HDR↔SDR half.** A headless output cannot enter HDR, so twenty toggles
-  on DP-1 is the only place this runs — and the gate requires
-  `validation_enabled` asserted first, which means the `asteroidz-avk-debug`
-  session and therefore a logout, not a restart. Each toggle is a retrain (two
-  modesets and a visible flash; see `project_hdr_pending_commit_fails`), so
-  twenty cycles is forty of them.
+**Validation was never loaded.** The session was `asteroidz-avk`, which carries
+no `ASTEROIDZ_VK_DEBUG`; `avk_debug_enabled()` reads only that variable, so the
+Vulkan validation layer was absent for the whole run.
+
+**And the precondition written to prevent exactly that FALSE-PASSED.** The
+fixture asserted `validation_enabled` first — the guard against a vacuous
+`validation_errors: 0` — and the assertion passed. It passed because `amsg`
+resolves its socket from `ASTEROIDZ_INSTANCE_SIGNATURE`, **falling back to
+scanning `XDG_RUNTIME_DIR`**, and with several compositors alive it answered
+from a leftover headless test instance. Every M6B headless fixture sets
+`ASTEROIDZ_VK_DEBUG=1`, so the wrong respondent reported exactly the value the
+precondition wanted to see.
+
+**Therefore every amsg-derived metric from that run is discarded** — the
+validation-error count, the fallback-frame count, the monitor states, the
+intermediate accounting. None of it may be cited as closure evidence. It was
+not measuring the production compositor.
+
+**The frog client-side evidence survives, and only because it did not come
+through amsg.** `contrib/wlbgeffect`'s own log file recorded 41 preferred-metadata
+events across the transitions, in both HDR states, carrying DP-1's rule values
+`400 / 0.4 / 250` on the wire. That observation depended on nothing but the
+client's connection to the compositor it was actually rendering on. It is
+useful, and final closure should still tie it to an identified build and
+identified state transitions rather than stand alone.
+
+**The infrastructure defect is being fixed, not worked around.** Killing stray
+compositors before a run would hide it. The live harness must bind its telemetry
+to the intended instance — PID, executable, embedded build hash, endpoint,
+backend, session — verify all of it before any modeset, and refuse to run when
+more than one plausible instance exists or the respondent does not match.
+
+## Open — the exact remaining M6B gates
+
+Two. Neither is the upstream wp-cm mastering gap, which is decided (below) and
+is **not** an M6B blocker.
+
+- **G6's HDR↔SDR half, in a validation session.** A headless output cannot
+  enter HDR, so DP-1 is the only place this runs, and it needs
+  `asteroidz-avk-debug` — a logout, not a restart. Twenty cycles is forty
+  modesets (each transition on this output falls back to a retrain; see
+  `project_hdr_pending_commit_fails`). That same logout is what aligns
+  `running == installed == HEAD`; no closure evidence comes from mixed
+  binaries.
 
   The profile-toggle half **is** green and exercises the same lifecycle:
   intermediate allocated and returned, blur cache invalidated across the domain
   change, no per-cycle recompile, zero refused frames, zero VUIDs. What the HDR
-  half adds is the KMS modeset and image-description commit path. Worth doing;
-  not worth doing without the operator choosing the moment.
+  half adds is the KMS modeset and image-description commit path — plus the one
+  frog case a headless output cannot reach: a stationary mapped surface whose
+  output changes HDR state, receiving updated metadata on the same protocol
+  object.
 
-- **D6's mastering values** are blocked upstream (above), not by this tree.
+- **The blend-domain residual** — see below. It needs a layer-aware fixture,
+  which is buildable headlessly and is not waiting on the operator.
 
-- **The blend-domain residual, newly sharpened.** On the live A/B, ~2–3% of
-  pixels sit beyond 1 code from the model, concentrated on translucent UI.
-  Encoded-space and linear-space compositing must differ there, and in the
-  direction observed — but *must differ* is weaker than *differs by this much*,
-  and **a screenshot pair cannot close it**: the model sees only the composited
-  result, never the layers that made it. Settling it needs the same content
-  composited both ways with no profile in force, which is a fixture and not a
-  capture. An attempt to isolate it by 3×3 flatness **failed** — a translucent
-  bar over a uniform backdrop is flat in the output and still a blend.
+- **D6's mastering values** are blocked upstream (above), not by this tree, and
+  are not counted as an open M6B item.
+
+## The blend-domain residual — the second real closure item
+
+On the live A/B, ~2–3% of pixels sit beyond 1 code from the model, concentrated
+on translucent UI. Encoded-space and linear-space compositing must differ there,
+and in the direction observed — but *must differ* is weaker than *differs by
+this much*.
+
+**A screenshot pair provably cannot close it.** The CPU model sees the
+already-composited output, never the independent foreground and background
+layers that produced it. No amount of capture analysis recovers the inputs.
+Deriving layer-blend correctness from final images is abandoned as a method,
+not merely unfinished.
+
+**The 3×3 flatness isolation attempt is recorded as NON-DISCRIMINATING and must
+not be cited later as partial evidence.** A translucent flat foreground over a
+uniform flat background produces flat composited output whether or not the
+blend semantics are correct. It could not have distinguished the two.
+
+**What closes it** is a deterministic fixture that knows its inputs before
+composition — background linear RGB, foreground linear RGB, alpha,
+premultiplication state, source colour description, output state — compared
+against a CPU reference that independently implements source decode, linear
+conversion, premultiplication, the `over` operation and output encode. The
+reference must not call the production helper; an implementation agreeing with
+itself proves nothing.
+
+Swept across alpha (0, low, ~0.25, 0.5, ~0.75, 1) and over patterned or
+chromatic content where flat content would let a second bug masquerade as
+correct. It must produce a meaningful red against each of: gamma-domain blend,
+wrong premultiplication, double premultiplication, straight alpha used as
+premultiplied, wrong source decode before blend, and encode-before-blend
+ordering where representable.
+
+Two acceptable outcomes, and the residual does not stay open past them:
+
+- **A real blend bug** — locate the first divergence, fix it, re-run the
+  targeted fixture, record the final code error.
+- **A final-image model artifact** — if the layer-aware fixture agrees within
+  tolerance, the 2–3% screenshot residual closes as NON-DIAGNOSTIC, because a
+  discriminating instrument answered what a non-discriminating one raised.
