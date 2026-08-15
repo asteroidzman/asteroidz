@@ -7814,6 +7814,28 @@ mapnotify(struct wl_listener *listener, void *data) {
 	// make sure the animation is open type
 	c->is_pending_open_animation = true;
 	resize(c, c->geom, 0);
+
+	/*
+	 * ── AND TELL IT WHAT ITS DISPLAY PREFERS, NOW THAT IT IS MAPPED ───────
+	 *
+	 * setmon() already does this, but setmon runs while the surface is still
+	 * unmapped, and the send there is gated on `s->mapped` -- correctly, since
+	 * an unmapped surface is on no output. The consequence was that a client
+	 * learned NOTHING at startup: it read whatever wlroots defaults to
+	 * (GAMMA22) and kept it until something moved the window to another output
+	 * and setmon fired again. Measured with a wp-cm observer: the first
+	 * description read after map was tf=2, and only a move produced the
+	 * correct tf=14.
+	 *
+	 * Here is the first moment both halves are true -- the surface is mapped
+	 * and it has an output -- so this is where the answer is finally sayable.
+	 */
+	if (c->mon != NULL) {
+		struct wlr_surface *s = client_surface(c);
+		if (s != NULL && s->mapped) {
+			surface_send_preferred_description(s, c->mon);
+		}
+	}
 	printstatus(IPC_WATCH_ARRANGGE);
 }
 
@@ -10696,7 +10718,37 @@ void setup(void) {
 			.primaries_len = cm_primaries_len,
 		};
 		color_manager = wlr_color_manager_v1_create(dpy, 2, &cm_options);
-		wlr_scene_set_color_manager_v1(scene, color_manager);
+		/*
+		 * ── AND SCENEFX IS DELIBERATELY NOT GIVEN IT ─────────────────────
+		 *
+		 * wlr_scene_set_color_manager_v1() is what arms scenefx's own
+		 * preferred-description writer (types/scene/surface.c:164), and that
+		 * writer has a DIFFERENT POLICY from this compositor's: "the
+		 * max-preference transfer function across every output the surface
+		 * touches", against az_preferred.h's "the surface's own output".
+		 *
+		 * Two writers, two policies, one
+		 * wlr_color_manager_v1_set_surface_preferred_image_description --
+		 * the exact defect az_preferred.h was written to end, one layer
+		 * further down than it was looking.
+		 *
+		 * IT WAS NOT AN EDGE CASE, though it was first described as one. The
+		 * two disagree on an ORDINARY SDR SURFACE: scenefx defaults to
+		 * GAMMA22 (protocol 2) while this file sends
+		 * WLR_COLOR_TRANSFER_FUNCTION_SRGB, which wlroots maps to
+		 * COMPOUND_POWER_2_4 (protocol 14). Measured against a client before
+		 * this line was removed: 8 of 8 descriptions read 2. Every SDR window
+		 * was being told the wrong transfer function, and
+		 * m6b-preferred-desc-test.sh passed throughout because it reads once,
+		 * at a moment when this file's writer had fired last.
+		 *
+		 * Leaving the scene's manager NULL costs nothing: scenefx's writer is
+		 * that field's only consumer, and every moment the answer can change
+		 * -- map, setmon, an HDR commit -- is already covered by
+		 * surface_send_preferred_description(). The CLIENT->COMPOSITOR
+		 * direction is untouched; it goes through the scene's colour
+		 * description fallback, which frog already uses.
+		 */
 		/* Only the renderer-derived lists are heap allocated. */
 		if (cm_owned) {
 			free(cm_tfs);

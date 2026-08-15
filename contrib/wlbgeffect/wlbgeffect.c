@@ -53,6 +53,23 @@
  * changes what this client renders.
  */
 #include "frog-color-management-v1-client-protocol.h"
+/*
+ * AND A wp-color-management-v1 OBSERVER, BESIDE THE FROG ONE.
+ *
+ * The two protocols are serialized from ONE policy (src/render/az_preferred.h),
+ * so a fixture that reads only one of them cannot tell a correct policy with a
+ * broken serializer from a broken policy with a correct one. Both observers
+ * live in this client for the same reason the frog one does: its surface
+ * demonstrably maps, and an unmapped surface is on no output.
+ *
+ * This one exists specifically to catch a SECOND WRITER. scenefx has a
+ * preferred-description writer of its own whose policy is "max preference
+ * across every output the surface touches", against az_preferred's "the
+ * surface's own output" -- and the two only disagree for a surface that
+ * touches two outputs in different colour states. Nothing inside the
+ * compositor can see which of them reached the client; only the client can.
+ */
+#include "color-management-v1-client-protocol.h"
 #include "xdg-decoration-unstable-v1-client-protocol.h"
 
 static struct wl_compositor *compositor = NULL;
@@ -60,6 +77,9 @@ static struct wl_shm *shm = NULL;
 static struct frog_color_management_factory_v1 *frog_factory = NULL;
 static struct frog_color_managed_surface *frog_surface = NULL;
 static int frog_events = 0;
+static struct wp_color_manager_v1 *cm_manager = NULL;
+static struct wp_color_management_surface_feedback_v1 *cm_feedback = NULL;
+static int cm_events = 0;
 
 /* One line per preferred_metadata event, numbered. The NUMBER is half the
  * assertion: "the metadata is correct" and "nothing was ever sent" carry the
@@ -76,6 +96,122 @@ static void frog_preferred_metadata(void *data,
 		rx, ry, gx, gy, bx, by, wx, wy, max_lum, min_lum, max_fall);
 	fflush(stdout);
 }
+/*
+ * The description's own values, one line per read. `tf` and `primaries` are the
+ * two the compositor can currently put on this wire; the luminances are printed
+ * too so that the day they start arriving, the fixture reading this does not
+ * have to change to notice.
+ */
+static uint32_t cm_tf = 0, cm_prim = 0;
+static void cm_info_tf_named(void *d, struct wp_image_description_info_v1 *i,
+		uint32_t tf) { (void)d; (void)i; cm_tf = tf; }
+static void cm_info_primaries_named(void *d,
+		struct wp_image_description_info_v1 *i, uint32_t p) {
+	(void)d; (void)i; cm_prim = p;
+}
+static void cm_info_done(void *d, struct wp_image_description_info_v1 *i) {
+	(void)d;
+	cm_events++;
+	printf("wpcm[%d]: tf=%u primaries=%u\n", cm_events, cm_tf, cm_prim);
+	fflush(stdout);
+	wp_image_description_info_v1_destroy(i);
+}
+static void cm_info_icc(void *d, struct wp_image_description_info_v1 *i,
+		int32_t fd, uint32_t size) { (void)d; (void)i; (void)size; close(fd); }
+static void cm_info_primaries(void *d, struct wp_image_description_info_v1 *i,
+		int32_t rx, int32_t ry, int32_t gx, int32_t gy, int32_t bx, int32_t by,
+		int32_t wx, int32_t wy) {
+	(void)d; (void)i; (void)rx; (void)ry; (void)gx; (void)gy;
+	(void)bx; (void)by; (void)wx; (void)wy;
+}
+static void cm_info_tf_power(void *d, struct wp_image_description_info_v1 *i,
+		uint32_t e) { (void)d; (void)i; (void)e; }
+static void cm_info_luminances(void *d, struct wp_image_description_info_v1 *i,
+		uint32_t min, uint32_t max, uint32_t ref) {
+	(void)d; (void)i; (void)min; (void)max; (void)ref;
+}
+static void cm_info_target_primaries(void *d,
+		struct wp_image_description_info_v1 *i, int32_t rx, int32_t ry,
+		int32_t gx, int32_t gy, int32_t bx, int32_t by, int32_t wx, int32_t wy) {
+	(void)d; (void)i; (void)rx; (void)ry; (void)gx; (void)gy;
+	(void)bx; (void)by; (void)wx; (void)wy;
+}
+static void cm_info_target_luminance(void *d,
+		struct wp_image_description_info_v1 *i, uint32_t min, uint32_t max) {
+	(void)d; (void)i; (void)min; (void)max;
+}
+static void cm_info_target_max_cll(void *d,
+		struct wp_image_description_info_v1 *i, uint32_t v) {
+	(void)d; (void)i; (void)v;
+}
+static void cm_info_target_max_fall(void *d,
+		struct wp_image_description_info_v1 *i, uint32_t v) {
+	(void)d; (void)i; (void)v;
+}
+static const struct wp_image_description_info_v1_listener cm_info_listener = {
+	.done = cm_info_done,
+	.icc_file = cm_info_icc,
+	.primaries = cm_info_primaries,
+	.primaries_named = cm_info_primaries_named,
+	.tf_power = cm_info_tf_power,
+	.tf_named = cm_info_tf_named,
+	.luminances = cm_info_luminances,
+	.target_primaries = cm_info_target_primaries,
+	.target_luminance = cm_info_target_luminance,
+	.target_max_cll = cm_info_target_max_cll,
+	.target_max_fall = cm_info_target_max_fall,
+};
+
+static void cm_desc_ready(void *d, struct wp_image_description_v1 *desc,
+		uint32_t identity) {
+	(void)d; (void)identity;
+	struct wp_image_description_info_v1 *info =
+		wp_image_description_v1_get_information(desc);
+	wp_image_description_info_v1_add_listener(info, &cm_info_listener, NULL);
+}
+static void cm_desc_failed(void *d, struct wp_image_description_v1 *desc,
+		uint32_t cause, const char *msg) {
+	(void)d; (void)desc; (void)cause;
+	printf("wpcm_failed: %s\n", msg ? msg : "?");
+	fflush(stdout);
+}
+/* v2 replaced `ready` with `ready2`. BOTH must be in the listener: libwayland
+ * dispatches by opcode and aborts the client on a NULL slot for an event the
+ * bound version can deliver -- "listener function for opcode 2 of
+ * wp_image_description_v1 is NULL" is the whole client gone, not a warning. */
+static void cm_desc_ready2(void *d, struct wp_image_description_v1 *desc,
+		uint32_t lo, uint32_t hi) {
+	(void)hi;
+	cm_desc_ready(d, desc, lo);
+}
+static const struct wp_image_description_v1_listener cm_desc_listener = {
+	.failed = cm_desc_failed,
+	.ready = cm_desc_ready,
+	.ready2 = cm_desc_ready2,
+};
+
+/* The compositor says the preferred description changed; ask what it is now.
+ * The event carries no values -- it is a hint to re-read, which is why the
+ * event count alone cannot stand in for the description. */
+static void cm_preferred_changed(void *d,
+		struct wp_color_management_surface_feedback_v1 *fb, uint32_t identity) {
+	(void)d; (void)identity;
+	struct wp_image_description_v1 *desc =
+		wp_color_management_surface_feedback_v1_get_preferred(fb);
+	wp_image_description_v1_add_listener(desc, &cm_desc_listener, NULL);
+}
+static void cm_preferred_changed2(void *d,
+		struct wp_color_management_surface_feedback_v1 *fb,
+		uint32_t lo, uint32_t hi) {
+	(void)hi;
+	cm_preferred_changed(d, fb, lo);
+}
+static const struct wp_color_management_surface_feedback_v1_listener
+		cm_feedback_listener = {
+	.preferred_changed = cm_preferred_changed,
+	.preferred_changed2 = cm_preferred_changed2,
+};
+
 static const struct frog_color_managed_surface_listener frog_surface_listener = {
 	.preferred_metadata = frog_preferred_metadata,
 };
@@ -120,6 +256,21 @@ static void registry_global(void *data, struct wl_registry *registry,
 		compositor = wl_registry_bind(registry, name, &wl_compositor_interface, 4);
 	} else if (!strcmp(interface, wl_shm_interface.name)) {
 		shm = wl_registry_bind(registry, name, &wl_shm_interface, 1);
+	} else if (strcmp(interface, wp_color_manager_v1_interface.name) == 0) {
+		/*
+		 * VERSION 2, and version 1 is not good enough here.
+		 *
+		 * The compositor describes an SDR output with COMPOUND_POWER_2_4
+		 * (protocol 14), which the XML marks `since="2"`. Bound at 1, this
+		 * observer received `failed: unhandled value for tf_named` instead of
+		 * a description -- correct protocol behaviour, and it meant the
+		 * fixture could not read the very value it exists to assert.
+		 *
+		 * Worth keeping in mind beyond this client: a REAL wp-cm client that
+		 * binds version 1 hits the same wall against this compositor.
+		 */
+		cm_manager = wl_registry_bind(registry, name,
+			&wp_color_manager_v1_interface, 2);
 	} else if (strcmp(interface,
 			frog_color_management_factory_v1_interface.name) == 0) {
 		frog_factory = wl_registry_bind(registry, name,
@@ -485,6 +636,13 @@ int main(int argc, char **argv) {
 		printf("noeffect\n");
 		fflush(stdout);
 	}
+	if (cm_manager != NULL) {
+		cm_feedback = wp_color_manager_v1_get_surface_feedback(cm_manager,
+			surface);
+		wp_color_management_surface_feedback_v1_add_listener(cm_feedback,
+			&cm_feedback_listener, NULL);
+	}
+
 	wl_surface_commit(surface);
 	wl_display_roundtrip(display);
 
@@ -499,7 +657,24 @@ int main(int argc, char **argv) {
 			&frog_surface_listener, NULL);
 		wl_display_roundtrip(display);
 	}
+	if (cm_feedback != NULL) {
+		/*
+		 * READ AFTER MAP, but the feedback object itself was created BEFORE it
+		 * (see above). A feedback created after the compositor has already
+		 * sent its preferred description starts at wlroots' default and only
+		 * learns the real answer on the next CHANGE -- so a fixture built that
+		 * way reads gamma22 first and looks like a compositor defect. Creating
+		 * it early is also what a real client does: you ask for feedback when
+		 * you make the surface, not after you have drawn to it.
+		 */
+		struct wp_image_description_v1 *desc =
+			wp_color_management_surface_feedback_v1_get_preferred(cm_feedback);
+		wp_image_description_v1_add_listener(desc, &cm_desc_listener, NULL);
+		wl_display_roundtrip(display);
+		wl_display_roundtrip(display);
+	}
 	printf("frog_bound %d\n", frog_factory != NULL ? 1 : 0);
+	printf("wpcm_bound %d\n", cm_manager != NULL ? 1 : 0);
 	printf("ready %dx%d rects=%d,%d %dx%d and %d,%d %dx%d gap=%d\n",
 		SURF_W, SURF_H, R1_X, R1_Y, R1_W, R1_H, R2_X, R2_Y, R2_W, R2_H, GAP_W);
 	fflush(stdout);

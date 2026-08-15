@@ -65,6 +65,42 @@ name said.** Every fix in this milestone was cheaper than the detection.
 - **Blend** — layer-aware fixture resolved the residual: outcome B, the
   modelling error identified by name.
 
+## After closure — the two-writer defect, found by the wp-cm audit
+
+A bounded audit of native wp-color-management ownership found something M6B
+did not: **two writers were authoring the preferred description**, with
+different policies.
+
+| | |
+|---|---|
+| asteroidz | `az_preferred.h` — the surface's own output. Sends `WLR_COLOR_TRANSFER_FUNCTION_SRGB`, which wlroots maps to protocol `COMPOUND_POWER_2_4` = **14** |
+| scenefx | `types/scene/surface.c:164` — max preference across every output the surface touches. Defaults to `GAMMA22` = **2** |
+
+Both called `wlr_color_manager_v1_set_surface_preferred_image_description` on
+the same surface. Whichever fired last won.
+
+**It was not a multi-monitor edge case, though the audit and I both first
+called it one.** 2 and 14 differ on an ordinary SDR surface on one output.
+Measured against a client before the fix: **7 of 7 descriptions read 2** — every
+SDR window was being told the wrong transfer function.
+`m6b-preferred-desc-test.sh` passed throughout because it reads once, at a
+moment when asteroidz's writer had fired last; a fixture that reads once cannot
+see a race.
+
+Fixed by not calling `wlr_scene_set_color_manager_v1` — scenefx's writer is
+that field's only consumer, so the scene keeps a NULL manager and **zero
+scenefx changes were needed**. A second defect surfaced while proving it: the
+map-time send was gated on `s->mapped` inside `setmon`, which runs while the
+surface is still unmapped, so a client learned nothing at startup and kept
+wlroots' default until something moved the window. Now sent from `mapnotify`,
+the first moment the surface is both mapped and on an output.
+
+`contrib/cm-two-writer-test.sh` holds it, with the pre-fix binary as its
+falsifier. It settles **which writer**, not **which output** — with
+`AZ_BREAK_FROG_FIRST_HDR_OUTPUT` it stays green, because two headless SDR
+outputs describe identical colour. That claim stays with
+`m6b-frog-metadata-test.sh`, which reads the resolved output directly.
+
 ## What is NOT closed by this
 
 - The upstream wp-cm mastering serialization (decided: no patch, no fork).

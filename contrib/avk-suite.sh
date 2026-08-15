@@ -55,6 +55,7 @@ m6b-preferred-desc-test.sh         required
 m6b-transition-test.sh             required
 m6b-frog-metadata-test.sh          required
 amsg-identity-test.sh              required
+cm-two-writer-test.sh              required
 m6b-hdr-transition-live.sh         live
 avk-blur-cache-multi.sh            required
 avk-blur-cache-test.sh             required
@@ -152,7 +153,7 @@ done
 # and invisible for the same reason everything else here is: an unregistered
 # suite and a suite that passes look identical from outside.
 UNREG=""
-for f in avk-*.sh m6a-*.sh m6b-*.sh amsg-*.sh; do
+for f in avk-*.sh m6a-*.sh m6b-*.sh amsg-*.sh cm-*.sh; do
 	[ "$f" = "avk-suite.sh" ] && continue
 	[ -e "$f" ] || continue
 	[ -n "$(reg_disp "$f")" ] || UNREG="$UNREG $f"
@@ -190,7 +191,7 @@ for d in required perf live manual; do
 	c=$(echo "$REGISTER" | awk -v d="$d" '$2==d' | wc -l)
 	printf "  %-9s %2d\n" "$d" "$c"
 done
-echo "  discovered $(ls avk-*.sh m6a-*.sh m6b-*.sh amsg-*.sh 2>/dev/null | grep -cv '^avk-suite.sh$')"
+echo "  discovered $(ls avk-*.sh m6a-*.sh m6b-*.sh amsg-*.sh cm-*.sh 2>/dev/null | grep -cv '^avk-suite.sh$')"
 echo
 
 if [ -n "$MISSING" ]; then
