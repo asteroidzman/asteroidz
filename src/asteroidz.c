@@ -2276,6 +2276,7 @@ static inline uint64_t az_frame_sample_ns(Monitor *m) {
 	return t;
 }
 #include "render/az_avk.h"
+#include "present/az_tag_cost.h"
 #include "render/az_dmabuf_caps.h"
 #endif
 #include "render/az_output.h"
@@ -8740,6 +8741,14 @@ static void render_monitor(Monitor *m) {
 	bool need_more_frames = false;
 	struct timespec render_t0;
 	clock_gettime(CLOCK_MONOTONIC, &render_t0);
+	/* P4. The blur chain's rebuild counter before this pass; the delta after
+	 * it is what this output's frame cost the chain. See az_tag_cost.h. */
+	uint64_t tag_cost_blur0 = 0;
+#ifdef AZ_HAVE_VULKAN
+	if (az_renderer_is_avk()) {
+		tag_cost_blur0 = az_avk_blur_rebuild_pixels();
+	}
+#endif
 	/* M-8: the arm instant. This is the moment ADR-605's `t_pipe` is measured
 	 * FROM -- a VRR predictor asks "if I start now, when does it light up?",
 	 * and the answer has to include this frame's own render, not just the
@@ -9126,6 +9135,35 @@ skip:
 	 * nothing -- the shape of a scheduler that keeps asking for frames after
 	 * the motion has stopped. It is invisible in every present-side metric,
 	 * because there is no present. */
+	/*
+	 * ── P4: WHAT THIS FRAME COST A TAG TRANSITION ────────────────────────
+	 *
+	 * `in_tag` is the compositor's own answer -- a client with a TAG animation
+	 * still running -- rather than a guess from the geometry, because a slide
+	 * and a move look identical from the outside and only one of them is the
+	 * transition being measured.
+	 */
+	{
+		bool in_tag = false;
+		Client *tc = NULL;
+		wl_list_for_each(tc, &clients, link) {
+			if (tc->animation.running
+					&& tc->animation.action == TAG) {
+				in_tag = true;
+				break;
+			}
+		}
+		uint64_t blur_delta = 0;
+#ifdef AZ_HAVE_VULKAN
+		if (az_renderer_is_avk()) {
+			uint64_t now_px = az_avk_blur_rebuild_pixels();
+			blur_delta = now_px > tag_cost_blur0 ? now_px - tag_cost_blur0 : 0;
+		}
+#endif
+		az_tag_cost_frame(in_tag, az_pace_now_ns(), dur_ms, pace_committed,
+			(uint64_t)pace_damage_px, blur_delta);
+	}
+
 	AZ_PACE("render mon=%s dur_us=%lld needed=%d committed=%d more=%d "
 		"damage_px=%llu damage_rects=%d damage_ext=%d,%d,%dx%d t_ns=%llu",
 		m->wlr_output->name,

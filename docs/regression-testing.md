@@ -1336,6 +1336,9 @@ anim tick    one interpolation step: the clock it read, the eased factor, the
 shatter tick one step of a `shatter` close: its normalised progress, how many
              fragments are still live, the cloud's bounding box (which is what
              bounds the frame's damage) and the fade
+tag cost     one completed TAG transition: how long it lasted, how many
+             frames it took, the blur prefix pixels it rebuilt, what it
+             damaged, and the p50/p95 of its per-frame render cost
 present      per output, from the backend's own presentation feedback
 render       one render_monitor pass: its cost, whether it committed anything,
              and the damage area and extents it committed

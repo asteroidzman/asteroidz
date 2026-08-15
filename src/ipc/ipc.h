@@ -792,6 +792,41 @@ static void handle_command(int client_fd, const char *cmd_raw) {
 	} else if (strcmp(cmd, "get avk-stats") == 0) {
 #ifdef AZ_HAVE_VULKAN
 		resp = az_avk_stats_json();
+		/*
+		 * P4. The last completed tag transition, attached here rather than
+		 * inside az_avk_stats_json(): the accumulator lives above the renderer
+		 * (it counts frames and damage, which are the compositor's, not
+		 * AVK's), and az_avk.h is included before it. One reader, one place.
+		 */
+		if (resp != NULL) {
+			cJSON *tc = cJSON_CreateObject();
+			if (tc != NULL) {
+				cJSON_AddNumberToObject(tc, "transitions",
+					(double)az_tag_cost.transitions);
+				cJSON_AddBoolToObject(tc, "valid", az_tag_cost.last.valid);
+				if (az_tag_cost.last.valid) {
+					cJSON_AddNumberToObject(tc, "duration_ms",
+						(double)az_tag_cost.last.duration_ns / 1.0e6);
+					cJSON_AddNumberToObject(tc, "frames",
+						(double)az_tag_cost.last.frames);
+					cJSON_AddNumberToObject(tc, "committed",
+						(double)az_tag_cost.last.committed);
+					cJSON_AddNumberToObject(tc, "blur_rebuild_px",
+						(double)az_tag_cost.last.blur_rebuild_px);
+					cJSON_AddNumberToObject(tc, "damage_px",
+						(double)az_tag_cost.last.damage_px);
+					cJSON_AddNumberToObject(tc, "p50_ms",
+						az_tag_cost.last.p50_ms);
+					cJSON_AddNumberToObject(tc, "p95_ms",
+						az_tag_cost.last.p95_ms);
+					cJSON_AddNumberToObject(tc, "samples",
+						(double)az_tag_cost.last.nsamples);
+					cJSON_AddBoolToObject(tc, "truncated",
+						az_tag_cost.last.truncated);
+				}
+				cJSON_AddItemToObject(resp, "tag_cost", tc);
+			}
+		}
 #else
 		resp = cJSON_CreateObject();
 		cJSON_AddStringToObject(resp, "backend", "scenefx");

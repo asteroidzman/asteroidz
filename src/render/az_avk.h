@@ -336,6 +336,25 @@ struct az_avk {
 
 static struct az_avk avk = {0};
 
+/*
+ * P4. Blur prefix rebuild pixels, summed across every renderer slot.
+ *
+ * Slots are keyed by VkFormat and shared between outputs, so this is not a
+ * per-output number on its own -- but render_monitor runs one output's pass at
+ * a time on the main thread, so a DELTA taken around one pass is that pass's
+ * contribution. That is how a tag transition's blur cost is attributed to the
+ * output paying it without threading a counter through the renderer.
+ */
+static uint64_t az_avk_blur_rebuild_pixels(void) {
+	uint64_t total = 0;
+	for (size_t i = 0; i < AZ_AVK_MAX_FORMATS; i++) {
+		if (avk.renderers[i].used) {
+			total += avk.renderers[i].renderer.blur_prefix_rebuild_pixels;
+		}
+	}
+	return total;
+}
+
 /* A switch is on. Used by the break tests and by the two presentation
  * fallbacks; read every time rather than cached, because these are set once
  * before the process starts and never change. */

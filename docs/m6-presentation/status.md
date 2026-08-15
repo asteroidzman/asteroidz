@@ -239,3 +239,46 @@ disagree — a window moved across outputs keeps its assigned monitor — so the
 trespass rule read "not home" for the whole cloud. The emitter now resolves its
 home monitor from the window's own geometry, and visibility is tested against
 the whole layout rather than one monitor.
+
+## P4 — what a tag slide costs
+
+Instrumentation first, and its own commit, because the lever it exists to
+justify should be argued from a number rather than from an intuition.
+
+A **transition** is the interval during which at least one client is running a
+TAG animation. `az_tag_cost.h` accumulates over it: frames, committed frames,
+blur prefix rebuild pixels, damage pixels, and the per-frame render cost as a
+sample array so p50 and p95 are real order statistics. It closes on the first
+frame that sees no TAG animation, emits an `azpace tag cost` line, and keeps
+the result for `amsg get avk-stats` to report under `tag_cost`.
+
+p95 rather than a maximum, deliberately: one pathological frame and a
+uniformly slow slide are different facts, and a max cannot tell them apart —
+the pacing work already made that mistake with a decaying-max estimator that
+threw the distribution away.
+
+### Measured, headless, 1 output at 144Hz, 6 transitions per arm
+
+| | blur off | blur on |
+|---|---|---|
+| blur rebuild px / transition | **0** | **1 200 320** |
+| damage px / transition | 340 200 | **12 421 560** |
+| frames / transition | 28 | 28 |
+| p50 frame ms | 0.062 | 0.065 |
+| p95 frame ms | 0.098 | 0.113 |
+
+The blur-off arm reading exactly zero is the negative control: the counter is
+not merely always-nonzero, so the blur-on figure is measuring what it claims.
+
+**Two things worth saying about these numbers before anyone optimises against
+them.** The pixel counters move enormously — a blurred tag slide rebuilds 1.2M
+prefix pixels and damages 36x what an unblurred one does. The frame-time
+percentiles barely move at all, 0.062 → 0.065ms, because a headless run on a
+trivial scene is dominated by CPU record time and never pays the GPU cost the
+pixels represent. So **the pixel counters are the headless signal and the
+percentiles are not**; a claim that the freeze lever makes slides faster has to
+be made against a live measurement, not this fixture.
+
+`contrib/tag-cost-test.sh` runs the same slide twice, blur off and on, and
+fails if the two are close — a fixture that measured a scene with no blur in it
+would report a beautiful zero that reads as "tag slides are already cheap".

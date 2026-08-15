@@ -52,6 +52,7 @@ m6a-idle-test.sh                   required
 m6a-retarget-test.sh               required
 anim-vector-continuity-test.sh     required
 anim-shatter-test.sh               required
+tag-cost-test.sh                   required
 m6b-icc-drive-test.sh              required
 m6b-preferred-desc-test.sh         required
 m6b-transition-test.sh             required
