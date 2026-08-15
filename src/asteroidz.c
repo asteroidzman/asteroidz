@@ -2463,6 +2463,9 @@ static int32_t capture_output(const Arg *arg) {
 }
 
 #include "ext-protocol/all.h"
+/* M6B/D6. The ONE preferred-colour policy, before either protocol frontend
+ * that serializes it -- so neither can invent its own. */
+#include "render/az_preferred.h"
 #include "ext-protocol/frog-color-management.h"
 #include "fetch/fetch.h"
 #include "ipc/ipc.h"
@@ -8848,6 +8851,12 @@ static void render_monitor(Monitor *m) {
 		 * display state that no longer exists.
 		 */
 		mon_send_preferred_descriptions(m);
+		/* M6B/D6. And the frog path, which carries what wp-cm currently
+		 * cannot: wlroots drops a preferred description's mastering
+		 * luminances and max_cll/max_fall, so this is the only route by which
+		 * a client learns the panel's actual ceiling. Same moment, same
+		 * reason. */
+		frog_send_preferred_metadata_all(m);
 	} else if (wlr_scene_output_needs_frame(m->scene_output)) {
 		pace_needed_frame = true;
 		/* What wlr_scene_output_commit() does, written out, because the
@@ -9928,6 +9937,10 @@ void setmon(Client *c, Monitor *m, uint32_t newtags, bool focus) {
 		if (s != NULL && s->mapped) {
 			surface_send_preferred_description(s, m);
 		}
+		/* The frog half of the same statement. A surface that moved to another
+		 * display must be told that display's metadata, not the one it was
+		 * created on. */
+		frog_send_preferred_metadata_all(m);
 	}
 }
 
@@ -9959,6 +9972,15 @@ static void surface_send_preferred_description(struct wlr_surface *surface,
 	if (color_manager == NULL || surface == NULL) {
 		return;
 	}
+	/*
+	 * THE SHARED POLICY DECIDES, not the caller. `m` is taken as a hint only
+	 * and is re-derived: the whole point of az_preferred.h is that frog and
+	 * wp-cm cannot answer "which display is this surface on" differently, and
+	 * a caller that passed the wrong monitor would reintroduce exactly that.
+	 */
+	struct az_preferred pref;
+	az_preferred_resolve(surface, &pref);
+	m = pref.mon;
 	/*
 	 * BREAK: AZ_BREAK_CM_NO_PREFERRED restores the pre-M6B behaviour exactly --
 	 * the compositor never tells a surface anything, and the client falls back

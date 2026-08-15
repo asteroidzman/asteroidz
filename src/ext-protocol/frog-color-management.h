@@ -21,12 +21,37 @@ typedef struct {
 	struct wlr_addon addon;		 /* on surface->addons, keyed by frog impl */
 	struct wlr_image_description_v1_data data;
 	bool active; /* client declared some colorimetry */
+	struct wl_list link;   /* frog_surfaces */
+	uint64_t sent_identity; /* az_preferred.identity last SENT; 0 = never */
 } FrogColorSurface;
+
+/*
+ * M6B/D6. EVERY LIVE frog SURFACE, so the preferred metadata can be re-sent.
+ *
+ * It used to be sent exactly once, when the client created the object, and
+ * never again -- so an HDR toggle after a client connected never reached it and
+ * the client kept tone-mapping for the display state it was told about at
+ * startup. That is the same defect wp-cm had one protocol object over, and it
+ * needs the same fix: a list to walk when the answer changes.
+ */
+static struct wl_list frog_surfaces;
+static bool frog_surfaces_init;
+/* How many preferred_metadata events have actually gone out. A transition
+ * oracle has to be able to tell "the metadata is correct" from "nothing was
+ * ever sent and the client is reading its own initial state". */
+static uint64_t frog_metadata_sends;
 
 static void frog_surface_addon_destroy(struct wlr_addon *addon) {
 	FrogColorSurface *fs = wl_container_of(addon, fs, addon);
 	wlr_addon_finish(&fs->addon);
 	fs->surface = NULL;
+}
+
+/* The monitor a frog surface is actually ON -- through the SHARED policy, so
+ * frog and wp-cm cannot answer this differently for the same surface. See
+ * az_preferred.h for why that is not a hypothetical. */
+static Monitor *frog_surface_monitor(FrogColorSurface *fs) {
+	return az_surface_effective_output(fs->surface);
 }
 
 static const struct wlr_addon_interface frog_surface_addon_impl = {
@@ -57,6 +82,10 @@ static void frog_surface_resource_destroy(struct wl_resource *resource) {
 		return;
 	if (fs->surface)
 		wlr_addon_finish(&fs->addon);
+	/* Off the registry BEFORE the free, or the next re-send walks a freed
+	 * entry -- the list is walked from an output-state change, which can
+	 * happen at any point relative to a client disconnecting. */
+	wl_list_remove(&fs->link);
 	free(fs);
 }
 
@@ -188,37 +217,63 @@ static const struct frog_color_managed_surface_interface frog_surface_impl = {
 /* the output metadata a frog client should target: the HDR monitor's PQ
  * envelope when one exists, the SDR defaults otherwise. gamescope flips
  * its HDR exposure on iff the transfer function here is ST2084_PQ. */
-static void frog_surface_send_preferred_metadata(struct wl_resource *resource) {
-	Monitor *m = NULL, *it;
-	wl_list_for_each(it, &mons, link) {
-		if (it->wlr_output->enabled && it->hdr) {
-			m = it;
-			break;
-		}
+/*
+ * SERIALIZE THE SHARED DESCRIPTION. This function decides nothing: which
+ * output, whether it is HDR and what its mastering values are all come from
+ * az_preferred_resolve(). What belongs here and nowhere else is frog's wire
+ * format -- CIE xy in units of 1/50000, luminance in cd/m2, min luminance in
+ * units of 0.0001 cd/m2.
+ *
+ * RETURNS whether it actually sent, so a caller can count.
+ */
+static bool frog_surface_send_preferred_metadata(FrogColorSurface *fs) {
+	struct az_preferred pref;
+	az_preferred_resolve(fs->surface, &pref);
+	if (pref.identity == 0) {
+		/* Not on an output yet. Say NOTHING rather than invent a display: the
+		 * setmon path re-sends the instant it lands somewhere. */
+		return false;
 	}
-	if (!m)
-		m = selmon;
+	/*
+	 * BREAK: AZ_BREAK_FROG_SEND_ONCE suppresses every send after the first, so
+	 * the stale-metadata defect is reproducible. The object still exists, the
+	 * walk still reaches it, the identity still changes -- only the wire event
+	 * is withheld, which is exactly the shape of the original bug.
+	 */
+	static int break_send_once = -1;
+	if (break_send_once < 0) {
+		break_send_once = getenv("AZ_BREAK_FROG_SEND_ONCE") != NULL;
+	}
+	if (break_send_once && fs->sent_identity != 0) {
+		return false;
+	}
+	if (pref.identity == fs->sent_identity) {
+		/* ZERO CHURN. An HDR toggle on the other monitor, a hotplug elsewhere,
+		 * a layout change that did not move this surface -- all reach here and
+		 * all stop, at the cost of one comparison. */
+		return false;
+	}
 
-	bool hdr = m && m->hdr;
-	/* BT.2020 / sRGB primaries in the protocol's 1/50000 CIE xy units */
-	uint32_t rx = hdr ? 35400 : 32000, ry = hdr ? 14600 : 16500;
-	uint32_t gx = hdr ? 8500 : 15000, gy = hdr ? 39850 : 30000;
-	uint32_t bx = hdr ? 6550 : 7500, by = hdr ? 2300 : 3000;
+	/* BT.2020 or BT.709, in the protocol's 1/50000 CIE xy units. */
+	uint32_t rx = pref.bt2020 ? 35400 : 32000, ry = pref.bt2020 ? 14600 : 16500;
+	uint32_t gx = pref.bt2020 ?  8500 : 15000, gy = pref.bt2020 ? 39850 : 30000;
+	uint32_t bx = pref.bt2020 ?  6550 :  7500, by = pref.bt2020 ?  2300 :  3000;
 	uint32_t wx = 15635, wy = 16450; /* D65 */
 
-	float max_lum = 203.0f, min_lum = 0.2f, max_fall = 203.0f;
-	if (hdr) {
-		max_lum = m->hdr_max_luminance > 0 ? m->hdr_max_luminance : 1000.0f;
-		min_lum = m->hdr_min_luminance >= 0 ? m->hdr_min_luminance : 0.005f;
-		max_fall = m->hdr_max_fall > 0 ? m->hdr_max_fall : max_lum;
-	}
-
 	frog_color_managed_surface_send_preferred_metadata(
-		resource,
-		hdr ? FROG_COLOR_MANAGED_SURFACE_TRANSFER_FUNCTION_ST2084_PQ
+		fs->resource,
+		pref.hdr ? FROG_COLOR_MANAGED_SURFACE_TRANSFER_FUNCTION_ST2084_PQ
 			: FROG_COLOR_MANAGED_SURFACE_TRANSFER_FUNCTION_GAMMA_22,
-		rx, ry, gx, gy, bx, by, wx, wy, (uint32_t)max_lum,
-		(uint32_t)(min_lum * 10000.0f), (uint32_t)max_fall);
+		rx, ry, gx, gy, bx, by, wx, wy,
+		(uint32_t)pref.max_luminance,
+		/* min luminance rides the wire in units of 0.0001 cd/m2 -- the rule's
+		 * 0.4 becomes 4000. Rounded, not truncated: 0.4f * 10000 lands at
+		 * 3999.99 in float and truncation would ship 3999. */
+		(uint32_t)(pref.min_luminance * 10000.0f + 0.5f),
+		(uint32_t)pref.max_fall);
+	fs->sent_identity = pref.identity;
+	frog_metadata_sends++;
+	return true;
 }
 
 static void frog_factory_handle_destroy(struct wl_client *client,
@@ -251,7 +306,52 @@ static void frog_factory_get_color_managed_surface(
 	wl_resource_set_implementation(fs->resource, &frog_surface_impl, fs,
 								   frog_surface_resource_destroy);
 
-	frog_surface_send_preferred_metadata(fs->resource);
+	wl_list_insert(&frog_surfaces, &fs->link);
+	frog_surface_send_preferred_metadata(fs);
+	/* No error if that sent nothing: a surface with no output yet simply has
+	 * no preferred display, and setmon will deliver one. */
+}
+
+/*
+ * ── M6B/D6: THE MASTERING VALUES, RE-SENT WHEN THEY CHANGE ────────────────
+ *
+ * Called from the same place the wp-cm preferred description is: after an HDR
+ * state change COMMITS, and when a surface changes output. Both are the moments
+ * the answer can differ, and neither is a frame event.
+ *
+ * frog carries what wp-cm currently cannot. wlroots 0.20.2 sends a preferred
+ * image description's transfer function and primaries but drops its mastering
+ * luminances and max_cll/max_fall on the floor (two TODOs in
+ * types/wlr_color_management_v1.c), so on the wp-cm path a client learns THAT
+ * the display is HDR and not HOW BRIGHT it goes. On this path it learns both --
+ * the monitor rule's own max-luminance, min-luminance and max-fall -- which is
+ * why this is worth keeping correct rather than treating as gamescope's legacy
+ * corner.
+ */
+static void frog_send_preferred_metadata_all(Monitor *m) {
+	if (!frog_surfaces_init) {
+		return;
+	}
+	FrogColorSurface *fs;
+	wl_list_for_each(fs, &frog_surfaces, link) {
+		if (fs->resource == NULL) {
+			continue;
+		}
+		/*
+		 * NULL m means "reconsider every surface" -- a surface that MOVED has
+		 * changed output and neither its old nor its new monitor identifies it
+		 * usefully here. Otherwise only surfaces on the output that changed.
+		 *
+		 * Either way the identity comparison in the sender is what actually
+		 * decides: this filter is an optimisation, not the correctness
+		 * boundary, so getting it wrong costs a comparison rather than a wrong
+		 * announcement.
+		 */
+		if (m != NULL && frog_surface_monitor(fs) != m) {
+			continue;
+		}
+		frog_surface_send_preferred_metadata(fs);
+	}
 }
 
 static const struct frog_color_management_factory_v1_interface
@@ -306,6 +406,10 @@ static bool frog_wp_color_manager_visible(const struct wl_client *client,
 }
 
 static void frog_color_management_init(void) {
+	if (!frog_surfaces_init) {
+		wl_list_init(&frog_surfaces);
+		frog_surfaces_init = true;
+	}
 	wl_global_create(dpy, &frog_color_management_factory_v1_interface, 1, NULL,
 					 frog_factory_bind);
 	if (color_manager)

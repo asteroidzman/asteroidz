@@ -39,10 +39,46 @@
 #include <wayland-client.h>
 #include "xdg-shell-client-protocol.h"
 #include "ext-background-effect-v1-client-protocol.h"
+/*
+ * M6B/D6. A FROG OBSERVER ON A SURFACE THAT DEMONSTRABLY MAPS.
+ *
+ * The colour-management fixtures need a client whose surface really becomes a
+ * window on a real output -- a preferred-metadata assertion made against an
+ * unmapped surface proves nothing, because an unmapped surface is on no output
+ * and the compositor correctly says nothing about it. This client already maps
+ * reliably and is already trusted by the blur fixtures, so it observes frog
+ * rather than a second client being written for the purpose.
+ *
+ * Observation only: one object, one listener, one line per event. Nothing here
+ * changes what this client renders.
+ */
+#include "frog-color-management-v1-client-protocol.h"
 #include "xdg-decoration-unstable-v1-client-protocol.h"
 
 static struct wl_compositor *compositor = NULL;
 static struct wl_shm *shm = NULL;
+static struct frog_color_management_factory_v1 *frog_factory = NULL;
+static struct frog_color_managed_surface *frog_surface = NULL;
+static int frog_events = 0;
+
+/* One line per preferred_metadata event, numbered. The NUMBER is half the
+ * assertion: "the metadata is correct" and "nothing was ever sent" carry the
+ * same values, and only a count separates them. */
+static void frog_preferred_metadata(void *data,
+		struct frog_color_managed_surface *s, uint32_t tf,
+		uint32_t rx, uint32_t ry, uint32_t gx, uint32_t gy,
+		uint32_t bx, uint32_t by, uint32_t wx, uint32_t wy,
+		uint32_t max_lum, uint32_t min_lum, uint32_t max_fall) {
+	(void)data; (void)s;
+	frog_events++;
+	printf("frog[%d]: tf=%u primaries=%u,%u/%u,%u/%u,%u white=%u,%u "
+		"maxlum=%u minlum=%u maxfall=%u\n", frog_events, tf,
+		rx, ry, gx, gy, bx, by, wx, wy, max_lum, min_lum, max_fall);
+	fflush(stdout);
+}
+static const struct frog_color_managed_surface_listener frog_surface_listener = {
+	.preferred_metadata = frog_preferred_metadata,
+};
 static struct xdg_wm_base *wm_base = NULL;
 static struct zxdg_decoration_manager_v1 *decoration_manager = NULL;
 static struct ext_background_effect_manager_v1 *bg_manager = NULL;
@@ -84,6 +120,10 @@ static void registry_global(void *data, struct wl_registry *registry,
 		compositor = wl_registry_bind(registry, name, &wl_compositor_interface, 4);
 	} else if (!strcmp(interface, wl_shm_interface.name)) {
 		shm = wl_registry_bind(registry, name, &wl_shm_interface, 1);
+	} else if (strcmp(interface,
+			frog_color_management_factory_v1_interface.name) == 0) {
+		frog_factory = wl_registry_bind(registry, name,
+			&frog_color_management_factory_v1_interface, 1);
 	} else if (!strcmp(interface, xdg_wm_base_interface.name)) {
 		wm_base = wl_registry_bind(registry, name, &xdg_wm_base_interface, 6);
 		xdg_wm_base_add_listener(wm_base, &wm_base_listener, NULL);
@@ -448,6 +488,18 @@ int main(int argc, char **argv) {
 	wl_surface_commit(surface);
 	wl_display_roundtrip(display);
 
+	/* AFTER the surface is mapped and committed, which is the point of putting
+	 * the observer in this client: the object is created against a surface the
+	 * compositor already has a window for, so a NULL effective output would be
+	 * a compositor answer rather than a client artefact. */
+	if (frog_factory != NULL) {
+		frog_surface = frog_color_management_factory_v1_get_color_managed_surface(
+			frog_factory, surface);
+		frog_color_managed_surface_add_listener(frog_surface,
+			&frog_surface_listener, NULL);
+		wl_display_roundtrip(display);
+	}
+	printf("frog_bound %d\n", frog_factory != NULL ? 1 : 0);
 	printf("ready %dx%d rects=%d,%d %dx%d and %d,%d %dx%d gap=%d\n",
 		SURF_W, SURF_H, R1_X, R1_Y, R1_W, R1_H, R2_X, R2_Y, R2_W, R2_H, GAP_W);
 	fflush(stdout);

@@ -45,9 +45,22 @@
 
 #include "color-management-v1-client-protocol.h"
 #include "xdg-shell-client-protocol.h"
+/*
+ * FROG TOO, in the same client and on the SAME surface.
+ *
+ * The two protocols must agree about which display a surface is on -- that is
+ * the whole point of asteroidz's shared preferred-colour policy -- and the only
+ * way to catch them disagreeing is to hold both objects for one wl_surface and
+ * compare what each was told. Two separate clients could always be explained
+ * away as having landed on different outputs.
+ */
+#include "frog-color-management-v1-client-protocol.h"
 
 static struct wl_compositor *compositor;
 static struct wl_shm *shm;
+static struct frog_color_management_factory_v1 *frog;
+static struct frog_color_managed_surface *frog_surf;
+static int frog_events;
 static struct xdg_wm_base *wm_base;
 static struct wp_color_manager_v1 *cm;
 static struct wl_surface *surface;
@@ -232,6 +245,9 @@ static void reg_global(void *d, struct wl_registry *r, uint32_t name,
 	} else if (strcmp(iface, xdg_wm_base_interface.name) == 0) {
 		wm_base = wl_registry_bind(r, name, &xdg_wm_base_interface, 1);
 		xdg_wm_base_add_listener(wm_base, &wm_base_listener, NULL);
+	} else if (strcmp(iface, frog_color_management_factory_v1_interface.name) == 0) {
+		frog = wl_registry_bind(r, name,
+			&frog_color_management_factory_v1_interface, 1);
 	} else if (strcmp(iface, wp_color_manager_v1_interface.name) == 0) {
 		uint32_t v = version < 2 ? version : 2;
 		cm = wl_registry_bind(r, name, &wp_color_manager_v1_interface, v);
@@ -281,6 +297,25 @@ static struct wl_buffer *create_buffer(int w, int h) {
 	return b;
 }
 
+/* Every event, numbered and printed as it arrives. A transition oracle needs to
+ * distinguish "the metadata is right" from "nothing was ever sent and the
+ * client is reporting its own initial state", and from "it was re-sent five
+ * times when nothing changed". Only a running count can do that. */
+static void frog_preferred(void *d, struct frog_color_managed_surface *s,
+		uint32_t tf, uint32_t rx, uint32_t ry, uint32_t gx, uint32_t gy,
+		uint32_t bx, uint32_t by, uint32_t wx, uint32_t wy,
+		uint32_t max_lum, uint32_t min_lum, uint32_t max_fall) {
+	(void)d; (void)s;
+	frog_events++;
+	printf("frog[%d]: tf=%u primaries=%u,%u/%u,%u/%u,%u white=%u,%u "
+		"maxlum=%u minlum=%u maxfall=%u\n", frog_events, tf,
+		rx, ry, gx, gy, bx, by, wx, wy, max_lum, min_lum, max_fall);
+	fflush(stdout);
+}
+static const struct frog_color_managed_surface_listener frog_listener = {
+	.preferred_metadata = frog_preferred,
+};
+
 static long now_ms(void) {
 	struct timespec ts;
 	clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -317,6 +352,10 @@ int main(int argc, char **argv) {
 	struct xdg_toplevel *top = xdg_surface_get_toplevel(xs);
 	xdg_toplevel_add_listener(top, &xdg_toplevel_listener, NULL);
 	xdg_toplevel_set_title(top, "wlcm");
+	/* Both contrib clients that map reliably set one; asteroidz's window rules
+	 * key on app_id and a surface without one is an unusual shape to hand a
+	 * compositor. */
+	xdg_toplevel_set_app_id(top, "wlcm");
 	/*
 	 * FEEDBACK BEFORE THE FIRST COMMIT. The compositor sends the initial
 	 * preferred description when the surface becomes known to it, and a
@@ -324,11 +363,40 @@ int main(int argc, char **argv) {
 	 * as "never told" -- a fixture failing on its own ordering rather than on
 	 * the compositor.
 	 */
+	if (frog != NULL) {
+		frog_surf = frog_color_management_factory_v1_get_color_managed_surface(
+			frog, surface);
+		frog_color_managed_surface_add_listener(frog_surf, &frog_listener,
+			NULL);
+	}
 	feedback = wp_color_manager_v1_get_surface_feedback(cm, surface);
 	wp_color_management_surface_feedback_v1_add_listener(feedback, &fb_listener,
 		NULL);
 	wl_surface_commit(surface);
-	wl_display_roundtrip(dpy);
+
+	/*
+	 * WAIT FOR THE INITIAL CONFIGURE, AND ACK IT, BEFORE ATTACHING.
+	 *
+	 * xdg-shell requires commit-with-no-buffer -> configure -> ack -> attach.
+	 * A single roundtrip is not enough: if the configure has not arrived, the
+	 * attach happens out of sequence and the toplevel NEVER MAPS. The
+	 * compositor then has no Client for it, the surface is on no output, and
+	 * both colour protocols correctly say nothing -- which reads exactly like
+	 * a compositor that forgot to send, and cost an hour of looking in the
+	 * wrong place.
+	 */
+	/* wl_display_dispatch, blocking on the fd -- the same construct every
+	 * client in contrib/ that maps reliably uses. A polling loop of roundtrips
+	 * was not equivalent here: the toplevel never mapped, the compositor never
+	 * made a Client for it, and both colour protocols then correctly described
+	 * nothing. */
+	while (!configured && wl_display_dispatch(dpy) != -1) {
+		;
+	}
+	if (!configured) {
+		fprintf(stderr, "wlcm: no xdg_surface.configure arrived\n");
+		return 1;
+	}
 
 	/*
 	 * A REAL BUFFER, because a surface with none NEVER MAPS -- and an unmapped
@@ -360,8 +428,25 @@ int main(int argc, char **argv) {
 		nanosleep(&ts, NULL);
 	}
 
+	/*
+	 * WATCH MODE: argv[2] = seconds to stay alive after the first read, so a
+	 * fixture can toggle HDR or move the window and see whether the SAME
+	 * object is updated. A client that has to reconnect to learn the new state
+	 * proves nothing about re-sending.
+	 */
+	int watch = argc > 2 ? atoi(argv[2]) : 0;
+
 	if (!got_preferred) {
 		printf("preferred: none\n");
+		if (watch > 0) {
+			long end = now_ms() + watch * 1000;
+			while (now_ms() < end) {
+				if (wl_display_roundtrip(dpy) < 0) { break; }
+				struct timespec ts = {0, 100 * 1000000};
+				nanosleep(&ts, NULL);
+			}
+			printf("frog events: %d\n", frog_events);
+		}
 		return 0;
 	}
 

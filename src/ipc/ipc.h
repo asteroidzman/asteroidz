@@ -224,6 +224,36 @@ static cJSON *build_client_json(Client *c) {
 	cJSON_AddStringToObject(obj, "icon", c->icon_name ? c->icon_name : "");
 	cJSON_AddStringToObject(obj, "monitor",
 							c->mon ? c->mon->wlr_output->name : "");
+	/*
+	 * ── M6B/D6: THE COMPOSITOR'S OWN ANSWER, SO A FIXTURE HAS TWO WITNESSES ──
+	 *
+	 * `monitor` above is where the LAYOUT put the window. These two are what
+	 * the colour policy RESOLVED for its surface, and the whole point is that
+	 * they must agree: the frog wrong-display defect was precisely a colour
+	 * policy that disagreed with the layout.
+	 *
+	 * A client-side observation alone cannot prove which output was described
+	 * when two outputs are both SDR -- the serialized bytes are identical. So
+	 * the fixture reads the compositor's resolved output and identity here and
+	 * the client's received tuple over the wire, and asserts they correspond.
+	 * Neither observation is sufficient; together they are.
+	 */
+	{
+		struct az_preferred pref;
+		az_preferred_resolve(client_surface(c), &pref);
+		cJSON_AddStringToObject(obj, "preferred_output",
+			pref.mon != NULL ? pref.mon->wlr_output->name : "");
+		/* As a string: a 64-bit hash does not survive a JSON double. */
+		char idbuf[32];
+		snprintf(idbuf, sizeof(idbuf), "%" PRIu64, pref.identity);
+		cJSON_AddStringToObject(obj, "preferred_identity", idbuf);
+		cJSON_AddBoolToObject(obj, "preferred_hdr", pref.hdr);
+		cJSON_AddNumberToObject(obj, "preferred_max_luminance",
+			pref.max_luminance);
+		cJSON_AddNumberToObject(obj, "preferred_min_luminance",
+			pref.min_luminance);
+		cJSON_AddNumberToObject(obj, "preferred_max_fall", pref.max_fall);
+	}
 	cJSON_AddItemToObject(obj, "tags", tags_mask_to_array(c->tags));
 	cJSON_AddBoolToObject(obj, "is_focused", c->isfocused);
 	cJSON_AddBoolToObject(obj, "is_fullscreen", c->isfullscreen);

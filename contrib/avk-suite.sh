@@ -53,6 +53,8 @@ m6a-retarget-test.sh               required
 m6b-icc-drive-test.sh              required
 m6b-preferred-desc-test.sh         required
 m6b-transition-test.sh             required
+m6b-frog-metadata-test.sh          required
+m6b-hdr-transition-live.sh         live
 avk-blur-cache-multi.sh            required
 avk-blur-cache-test.sh             required
 avk-blur-damage-test.sh            required

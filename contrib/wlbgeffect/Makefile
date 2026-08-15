@@ -5,6 +5,8 @@ CFLAGS ?= -O2 -Wall -Wextra
 XDG := xdg-shell
 DEC := xdg-decoration-unstable-v1
 BGE := ext-background-effect-v1
+FROG := frog-color-management-v1
+FROG_XML := ../../protocols/$(FROG).xml
 BGE_XML := $(shell pkg-config --variable=pkgdatadir wayland-protocols)/staging/ext-background-effect/$(BGE).xml
 DEC_XML := $(shell pkg-config --variable=pkgdatadir wayland-protocols)/unstable/xdg-decoration/$(DEC).xml
 
@@ -28,16 +30,24 @@ $(DEC)-protocol.c:
 $(BGE)-protocol.c:
 	wayland-scanner private-code $(BGE_XML) $@
 
+$(FROG)-client-protocol.h:
+	wayland-scanner client-header $(FROG_XML) $@
+
+$(FROG)-protocol.c:
+	wayland-scanner private-code $(FROG_XML) $@
+
 wlbgeffect: wlbgeffect.c $(XDG)-protocol.c $(XDG)-client-protocol.h \
             $(BGE)-protocol.c $(BGE)-client-protocol.h \
-            $(DEC)-protocol.c $(DEC)-client-protocol.h
+            $(DEC)-protocol.c $(DEC)-client-protocol.h \
+            $(FROG)-protocol.c $(FROG)-client-protocol.h
 	$(CC) $(CFLAGS) -o $@ wlbgeffect.c $(XDG)-protocol.c $(BGE)-protocol.c \
-		$(DEC)-protocol.c \
+		$(DEC)-protocol.c $(FROG)-protocol.c \
 		$$(pkg-config --cflags --libs wayland-client)
 
 clean:
 	rm -f wlbgeffect $(XDG)-protocol.c $(XDG)-client-protocol.h \
 		$(BGE)-protocol.c $(BGE)-client-protocol.h \
-		$(DEC)-protocol.c $(DEC)-client-protocol.h
+		$(DEC)-protocol.c $(DEC)-client-protocol.h \
+		$(FROG)-protocol.c $(FROG)-client-protocol.h
 
 .PHONY: all clean

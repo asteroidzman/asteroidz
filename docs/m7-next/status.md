@@ -155,10 +155,32 @@ sends them:
     types/wlr_color_management_v1.c:171  // TODO: send target_max_cll and
                                          //       target_max_fall
 
-So D6 is delivered in the half that was broken -- the client knows it is HDR --
-and blocked in the half that needs upstream. The data is already correct on our
-side of the call and is discarded inside wlroots; nothing in this tree can close
-it.
+**THE VALUES ARE NOT LOST, AND THE FIRST VERSION OF THIS NOTE WAS WRONG TO
+SHRUG.** They reach clients through **frog-color-management**, which asteroidz
+implements itself and which gamescope actually uses:
+`frog_surface_send_preferred_metadata` sends the monitor rule's own
+`max-luminance`, `min-luminance` and `max-fall`, plus BT.2020 primaries, in the
+protocol's own units. wp-cm is the path that drops them; frog is the path that
+carries them, and it is entirely ours.
+
+Auditing it under D6's own principle found **two defects of exactly the kind D6
+exists to fix, one protocol object over**:
+
+1. **It described the wrong display.** The monitor was chosen as "the first
+   enabled HDR output, else selmon" -- so a window living entirely on the SDR
+   panel was handed the HDR panel's BT.2020 primaries and 400-nit ceiling, and
+   told to tone-map for a display it is not on. Now resolved from the surface's
+   own client and its own monitor.
+2. **It was sent once and never again.** A client that connected before an HDR
+   toggle kept tone-mapping for the display state it was told about at startup,
+   forever. There is now a registry of live frog surfaces, re-sent at the same
+   two moments as the wp-cm description: after an HDR state change commits, and
+   when a surface changes output.
+
+So the mastering half of D6 is delivered on the path that can carry it, and is
+blocked only on `wp_color_management`, where the data is correct on our side of
+the call and discarded inside wlroots. Closing that half means patching wlroots
+-- a decision, not a task.
 
 ### G6 — transitions (`contrib/m6b-transition-test.sh`)
 
@@ -238,6 +260,63 @@ correctly reported "nothing changed at all" while the profile was being applied
 perfectly. Only saturated colour moves visibly (`255,0,0 → 241,56,25`).
 
 ---
+
+## The colour-protocol boundary — a decision, not unfinished work
+
+Asteroidz speaks two colour-management protocols to clients. **They do not have
+identical expressive power, and pretending otherwise would be the dishonest
+part.**
+
+| | frog-color-management-v1 | wp-color-management-v1 |
+|---|---|---|
+| implemented by | **asteroidz**, in this tree | wlroots 0.20.2 |
+| primaries | yes | yes |
+| transfer function | yes | yes |
+| max luminance | **yes** | not serialized upstream |
+| min luminance | **yes** | not serialized upstream |
+| max FALL | **yes** | not serialized upstream |
+| used by | gamescope | mpv, kodi, browsers |
+
+The gap is one function: `image_desc_handle_get_information` in
+`types/wlr_color_management_v1.c` sends the transfer function's *default*
+luminances and carries two literal `TODO`s where the real mastering values
+belong. Asteroidz supplies them correctly; wlroots discards them.
+
+**Say it precisely.** Not "asteroidz loses mastering metadata" — asteroidz
+retains it internally and exposes it through frog; the wlroots wp-cm frontend
+does not yet serialize the mastering-luminance / content-light-level events.
+
+**No local wlroots patch, no fork, no vendored overlay, no cherry-pick.** That
+is a standing decision: filling an upstream implementation gap with a carried
+patch buys one feature and a permanent dependency-maintenance liability. An
+upstream contribution is welcome and non-blocking; the tree must never depend on
+an unmerged one.
+
+### One policy, two serializers
+
+The two frontends previously disagreed, which is why `src/render/az_preferred.h`
+now exists. frog resolved its output as *"the first enabled HDR monitor, else
+selmon"* while wp-cm resolved the surface's own — so a window living entirely on
+the SDR panel was handed the HDR panel's BT.2020 primaries and its 400-nit
+ceiling, and told to tone-map for a display it was not on.
+
+`az_surface_effective_output()` is now the single answer: `c->mon`, which
+`setmon()` alone writes and which every other per-output decision in the
+compositor already follows. A straddling surface therefore gets an answer that
+agrees with where its borders are drawn and where its blur is clipped. **There
+is no `selmon` fallback** — a surface not on an output has no preferred display,
+and inventing one is the defect this file ended.
+
+`az_preferred_resolve()` returns the resolved description plus an **identity**
+(FNV-1a over output name, HDR state, primaries, max/min luminance, max FALL).
+A frontend caches the identity it last *sent* and re-sends only when it changes,
+so an HDR toggle on another monitor, a hotplug elsewhere, or a layout change
+that did not move the surface all cost exactly one comparison.
+
+Values cross the boundary **unnormalised**: DP-1's rule says 400 / 0.4 / 250 and
+each frontend converts only to its own wire units. The upstream limitation is
+visible as *a frontend cannot currently emit this*, never as *the value
+disappeared before reaching the frontend*.
 
 ## Open — and all of it needs the operator, not more code
 
