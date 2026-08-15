@@ -76,6 +76,13 @@ designed against).
 | I10 | static, no switch | passes | red on a reintroduced `clock_gettime` |
 | I12 | `AZ_BREAK_ANIM_RETARGET_POSITION_RESET` | 42 px | 1027 px |
 | I6 | `AZ_BREAK_ANIM_RETARGET_ZERO_VELOCITY` | 60 px overshoot | 0 px |
+| P1 | `AZ_BREAK_ANIM_SPRING_SCALAR_V0` | y enters at 0.089 of its peak | 0.777 |
+
+P1's switch restores the projected-scalar retarget velocity that per-axis
+seeding replaced. Its fixture is `contrib/anim-vector-continuity-test.sh`,
+which runs both arms in one invocation and fails if the broken one comes out
+green. `contrib/m6a-retarget-test.sh` (I6, I12) was re-run against the
+per-axis implementation and still flips both ways: 7/7.
 
 ## Not built
 

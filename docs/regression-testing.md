@@ -1329,7 +1329,10 @@ anim start   a semantic change gave a client a new target, and whether the
              previous one was still in flight (retarget=1)
 anim tick    one interpolation step: the clock it read, the eased factor, the
              real-valued position the curve asked for, and the INTEGER one the
-             scene node stored
+             scene node stored. `fv=` carries the FOUR per-axis curve factors
+             (x, y, width, height) behind it, and `ideal=` is each coordinate
+             on its own curve; `factor=` stays one settled-ness number, the
+             minimum across the four
 present      per output, from the backend's own presentation feedback
 render       one render_monitor pass: its cost, whether it committed anything,
              and the damage area and extents it committed

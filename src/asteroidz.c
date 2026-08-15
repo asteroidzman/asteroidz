@@ -418,6 +418,22 @@ typedef struct {
 	InputDevice *input_dev;
 } Switch;
 
+/*
+ * ── THE FOUR AXES A GEOMETRY ANIMATION MOVES ALONG ────────────────────────
+ *
+ * A window's animated geometry is four independent scalars, and a spring
+ * retarget has to be able to carry a different initial velocity into each of
+ * them (ADR-608). The order is the one dwl_animation.spring_v0 is indexed by
+ * and the one the AZ_PACE trace prints; it is not otherwise meaningful.
+ */
+enum anim_axis {
+	ANIM_AXIS_X = 0,
+	ANIM_AXIS_Y,
+	ANIM_AXIS_W,
+	ANIM_AXIS_H,
+	ANIM_AXIS_COUNT
+};
+
 struct dwl_animation {
 	bool should_animate;
 	bool running;
@@ -473,8 +489,24 @@ struct dwl_animation {
 	 * again (ADR-608). Beziers ignore it: that curve family has no state to
 	 * inject, and substituting a spring under a configured bezier would change
 	 * motion the operator chose.
+	 *
+	 * ── ONE PER AXIS, AND WHY THE SCALAR WAS NOT ENOUGH ───────────────────
+	 *
+	 * This was a single scalar, and the seeding code projected the outgoing
+	 * velocity onto the new direction of travel -- so the component ACROSS
+	 * that direction was dropped. A 90-degree retarget is entirely that
+	 * component: a window travelling east, redirected north, was projected
+	 * onto north with an outgoing velocity that had no north in it, seeded
+	 * with v0 == 0, and started the new segment from rest. The stall the
+	 * velocity-continuity work existed to remove survived in exactly the turn
+	 * that shows it most.
+	 *
+	 * Four axes, four independent springs, four v0s. Each axis carries its own
+	 * outgoing speed and none of them is projected away. The old comment here
+	 * named the fix and declined it ("that needs a factor per axis"); this is
+	 * that factor.
 	 */
-	double spring_v0;
+	double spring_v0[ANIM_AXIS_COUNT];
 	/*
 	 * Where this segment was heading. `initial` is where it began; the target
 	 * lives in Client.current, which is overwritten with the NEW target before
@@ -1537,6 +1569,7 @@ static double find_animation_curve_at(double t, int32_t type);
  * the same reason find_animation_curve_at is declared here. */
 static struct dvec2 calculate_spring_curve_at_v(double t, double v0);
 static double spring_curve_velocity_at(double t);
+static double spring_curve_velocity_at_v(double t, double v0);
 
 static void apply_opacity_to_rect_nodes(Client *c, struct wlr_scene_node *node,
 										double animation_passed);

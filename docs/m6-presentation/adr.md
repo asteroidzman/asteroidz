@@ -775,6 +775,22 @@ polish must not block the timing core.
    family has no state to inject, and silently substituting a spring under
    a user-configured bezier would change chosen motion — out of bounds.
 
+   **AMENDED BY P1 — one velocity per axis, not one projected scalar.** The
+   first implementation carried a single `v₀` for x, y, width and height
+   together, obtained by projecting the outgoing velocity onto the new
+   direction of travel, and dropped the perpendicular component. That is
+   within this ADR's letter — a spring is started at *an* initial velocity —
+   but it fails its intent whenever the turn is not along the old direction:
+   the axis that carried the motion is handed a fraction of its speed, and an
+   axis that was stationary is handed a velocity it never had. P1 gives each
+   axis its own spring and its own analytically seeded `v₀`. Nothing else here
+   changes: the anchor is still the last sampled instant, beziers are still
+   excluded, and the seed is still analytic rather than a finite difference of
+   stored integers. `spring_curve_velocity_at_v` extends the closed form to
+   differentiate a segment that itself began with a `v₀` — which a chained
+   retarget needs and the scalar version got wrong, since it always
+   differentiated the `v₀ == 0` curve.
+
 **REJECTED ALTERNATIVES.** Requiring velocity continuity for all curves
 (forces the bezier substitution above). Blocking M6A on the spring work
 (explicitly against the brief). Seeding retargets from a fresh CPU-now

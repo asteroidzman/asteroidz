@@ -2505,16 +2505,46 @@ static bool anim_no_converge_break(void) {
  * -- and the table has no way to carry a per-animation initial velocity, which
  * is what a continuous retarget needs.
  */
-static inline double anim_curve_at(const Client *c, double t, int32_t type) {
+static inline double anim_curve_at_axis(const Client *c, double t,
+		int32_t type, enum anim_axis axis) {
 	if (config.animation_curve_spring
 			&& (type == MOVE || type == OPEN || type == TAG)) {
-		return calculate_spring_curve_at_v(t, c->animation.spring_v0).y;
+		return calculate_spring_curve_at_v(t, c->animation.spring_v0[axis]).y;
 	}
 	return find_animation_curve_at(t, type);
 }
 
+/*
+ * The whole animation's four curves at t, one per axis.
+ *
+ * A bezier returns the same number four times -- it has no per-animation state
+ * and every axis is on the identical curve -- and that is deliberate rather
+ * than wasteful: the caller then has ONE shape to reason about, and the
+ * per-axis path is not a special case only springs exercise.
+ */
+static inline void anim_curve_all(const Client *c, double t, int32_t type,
+		double out[ANIM_AXIS_COUNT]) {
+	for (enum anim_axis a = 0; a < ANIM_AXIS_COUNT; a++) {
+		out[a] = anim_curve_at_axis(c, t, type, a);
+	}
+}
+
+/*
+ * ── SETTLED MEANS EVERY AXIS IS SETTLED ───────────────────────────────────
+ *
+ * Each axis now rides its own spring with its own v0, so they no longer reach
+ * rest together: after a 90-degree retarget the axis that kept its velocity is
+ * still ringing while the one that started from rest has long since arrived.
+ * The criterion is therefore the MAX residual across the four, and an
+ * animation is finished only when the worst axis is finished.
+ *
+ * This also fixes an inaccuracy the scalar version had: it multiplied ONE
+ * factor by the LARGEST axis travel, so a small-travel axis was judged by a
+ * large-travel axis's error budget. Each axis is now measured against its own
+ * travel, which is the distance its own rounding actually has to survive.
+ */
 static bool anim_spring_converged(Client *c, int32_t type, double t,
-		double factor) {
+		const double factor[ANIM_AXIS_COUNT]) {
 	if (!config.animation_curve_spring || anim_no_converge_break()) {
 		return false;
 	}
@@ -2528,31 +2558,35 @@ static bool anim_spring_converged(Client *c, int32_t type, double t,
 		return false;
 	}
 
-	double travel = 0.0;
-	double d;
-	d = fabs((double)c->current.x - (double)c->animation.initial.x);
-	travel = d > travel ? d : travel;
-	d = fabs((double)c->current.y - (double)c->animation.initial.y);
-	travel = d > travel ? d : travel;
-	d = fabs((double)c->current.width - (double)c->animation.initial.width);
-	travel = d > travel ? d : travel;
-	d = fabs((double)c->current.height - (double)c->animation.initial.height);
-	travel = d > travel ? d : travel;
+	const double travel[ANIM_AXIS_COUNT] = {
+		[ANIM_AXIS_X] = fabs((double)c->current.x
+			- (double)c->animation.initial.x),
+		[ANIM_AXIS_Y] = fabs((double)c->current.y
+			- (double)c->animation.initial.y),
+		[ANIM_AXIS_W] = fabs((double)c->current.width
+			- (double)c->animation.initial.width),
+		[ANIM_AXIS_H] = fabs((double)c->current.height
+			- (double)c->animation.initial.height),
+	};
 
 	double scale = 1.0;
 	if (c->mon && c->mon->wlr_output && c->mon->wlr_output->scale > 0.0f) {
 		scale = (double)c->mon->wlr_output->scale;
 	}
 
-	double err_px = fabs(1.0 - factor) * travel * scale;
-	if (err_px >= ANIM_CONVERGE_PX) {
-		return false;
-	}
-
 	double dt = ANIM_CONVERGE_LOOKAHEAD_MS / (double)c->animation.duration;
-	double ahead = anim_curve_at(c, t + dt, type);
-	double step_px = fabs(ahead - factor) * travel * scale;
-	return step_px < ANIM_CONVERGE_PX;
+	for (enum anim_axis a = 0; a < ANIM_AXIS_COUNT; a++) {
+		double err_px = fabs(1.0 - factor[a]) * travel[a] * scale;
+		if (err_px >= ANIM_CONVERGE_PX) {
+			return false;
+		}
+		double ahead = anim_curve_at_axis(c, t + dt, type, a);
+		double step_px = fabs(ahead - factor[a]) * travel[a] * scale;
+		if (step_px >= ANIM_CONVERGE_PX) {
+			return false;
+		}
+	}
+	return true;
 }
 
 /*
@@ -2592,12 +2626,27 @@ static bool anim_spring_converged(Client *c, int32_t type, double t,
  */
 struct anim_eval {
 	double linear;    /* elapsed / duration, before the curve */
-	double factor;    /* the curve's output, 1.0 once converged */
-	bool converged;   /* a spring reached its settle criterion */
+	/* the curve's output PER AXIS, all 1.0 once converged. Four numbers
+	 * because four springs: see dwl_animation.spring_v0. */
+	double factor[ANIM_AXIS_COUNT];
+	bool converged;   /* every axis reached its settle criterion */
 	struct wlr_box box;
 	int32_t type;
 };
 
+/*
+ * The one number for a consumer that only asks "is this finished yet?".
+ *
+ * The MINIMUM, so it reads 1.0 only when every axis has arrived -- a max would
+ * call the animation settled while the slowest axis was still travelling.
+ */
+static inline double anim_eval_settle(const struct anim_eval *ev) {
+	double m = ev->factor[0];
+	for (enum anim_axis a = 1; a < ANIM_AXIS_COUNT; a++) {
+		m = ev->factor[a] < m ? ev->factor[a] : m;
+	}
+	return m;
+}
 
 static inline void anim_eval_at(const Client *c, uint64_t sample_ns,
 		struct anim_eval *out) {
@@ -2608,23 +2657,29 @@ static inline void anim_eval_at(const Client *c, uint64_t sample_ns,
 		? passed_ms / (double)c->animation.duration
 		: 1.0;
 	out->type = c->animation.action == NONE ? MOVE : c->animation.action;
-	out->factor = anim_curve_at(c, out->linear, out->type);
+	anim_curve_all(c, out->linear, out->type, out->factor);
 	/* A converged spring finishes HERE, on the exact target, rather than being
 	 * ticked to nowhere until the duration expires. Snapping to 1.0 rather
 	 * than leaving 1.000003 is what stops the last frame being a 1px flip. */
 	out->converged = anim_spring_converged(c, out->type, out->linear,
 		out->factor);
 	if (out->converged) {
-		out->factor = 1.0;
+		for (enum anim_axis a = 0; a < ANIM_AXIS_COUNT; a++) {
+			out->factor[a] = 1.0;
+		}
 		out->linear = 1.0;
 	}
+	/* Each axis lerps on ITS OWN curve. This is the line the whole per-axis
+	 * change exists to write: four springs, four factors, four coordinates. */
 	out->box = (struct wlr_box){
-		.x = anim_lerp(c->animation.initial.x, c->current.x, out->factor),
-		.y = anim_lerp(c->animation.initial.y, c->current.y, out->factor),
+		.x = anim_lerp(c->animation.initial.x, c->current.x,
+			out->factor[ANIM_AXIS_X]),
+		.y = anim_lerp(c->animation.initial.y, c->current.y,
+			out->factor[ANIM_AXIS_Y]),
 		.width = anim_lerp(c->animation.initial.width, c->current.width,
-			out->factor),
+			out->factor[ANIM_AXIS_W]),
 		.height = anim_lerp(c->animation.initial.height, c->current.height,
-			out->factor),
+			out->factor[ANIM_AXIS_H]),
 	};
 }
 
@@ -2676,7 +2731,10 @@ void client_animation_next_tick(Client *c, uint64_t sample_ns) {
 	 * finishes. See dwl_animation.last_sample_ns. */
 	c->animation.last_sample_ns = now_ns;
 	double animation_passed = ev.linear;
-	double factor = ev.factor;
+	/* The settled-ness scalar, for the consumers that only compare it against
+	 * 1.0. Per-axis positions come from ev.box; per-axis curves from
+	 * ev.factor[]. See anim_eval_settle. */
+	double factor = anim_eval_settle(&ev);
 	int32_t type = ev.type;
 	bool converged = ev.converged;
 
@@ -2718,17 +2776,31 @@ void client_animation_next_tick(Client *c, uint64_t sample_ns) {
 		az_frame_reach_add(&reach);
 	}
 
+	/*
+	 * `ideal` is each coordinate on ITS OWN curve, which is what the window is
+	 * actually being drawn from; `fv` is the four factors themselves, in
+	 * ANIM_AXIS order, so a trace can recover the per-axis velocity without
+	 * differencing rounded geometry. `factor` remains the settled-ness scalar
+	 * the existing parsers read.
+	 */
 	AZ_PACE("anim tick c=%p mon=%s action=%d dur=%u t_ms=%d lin=%.6f "
-		"factor=%.6f ideal=%.3f,%.3f,%.3fx%.3f geom=%d,%d,%dx%d t_ns=%llu",
+		"factor=%.6f ideal=%.3f,%.3f,%.3fx%.3f geom=%d,%d,%dx%d t_ns=%llu "
+		"fv=%.6f,%.6f,%.6f,%.6f",
 		(void *)c, az_pace_mon, type, c->animation.duration, passed_time,
 		animation_passed, factor,
-		c->animation.initial.x + (c->current.x - c->animation.initial.x) * factor,
-		c->animation.initial.y + (c->current.y - c->animation.initial.y) * factor,
+		c->animation.initial.x + (c->current.x - c->animation.initial.x)
+			* ev.factor[ANIM_AXIS_X],
+		c->animation.initial.y + (c->current.y - c->animation.initial.y)
+			* ev.factor[ANIM_AXIS_Y],
 		c->animation.initial.width +
-			(c->current.width - c->animation.initial.width) * factor,
+			(c->current.width - c->animation.initial.width)
+			* ev.factor[ANIM_AXIS_W],
 		c->animation.initial.height +
-			(c->current.height - c->animation.initial.height) * factor,
-		x, y, width, height, (unsigned long long)az_pace_now_ns());
+			(c->current.height - c->animation.initial.height)
+			* ev.factor[ANIM_AXIS_H],
+		x, y, width, height, (unsigned long long)az_pace_now_ns(),
+		ev.factor[ANIM_AXIS_X], ev.factor[ANIM_AXIS_Y],
+		ev.factor[ANIM_AXIS_W], ev.factor[ANIM_AXIS_H]);
 
 	wlr_scene_node_set_position(&c->scene->node, x, y);
 	c->animation.current = (struct wlr_box){
@@ -2967,18 +3039,31 @@ void client_commit(Client *c) {
 		 * being left -- the first version did exactly that and produced a v0
 		 * of the wrong sign.
 		 *
-		 * THE CURVE IS ONE SCALAR for x, y, width and height together, so
-		 * per-axis velocity cannot all be preserved; that needs a factor per
-		 * axis. The meaningful reduction is the PROJECTION of the current
-		 * velocity onto the new direction of travel: a redirect that reverses
-		 * gets a negative v0 and decelerates through the turn, as a real
-		 * object does. The component across the new direction is
-		 * unrepresentable and is dropped, deliberately.
+		 * ONE SPRING PER AXIS, so per-axis velocity IS preserved -- which is
+		 * the difference between this and the version that stood here.
+		 *
+		 * That version projected the outgoing velocity onto the new direction
+		 * of travel and kept a single scalar, so the component ACROSS the new
+		 * direction was dropped "deliberately". A 90-degree retarget is
+		 * ENTIRELY that component: a window moving east, redirected north,
+		 * projected its eastward speed onto north, got zero, and started from
+		 * rest -- the exact stall velocity continuity exists to prevent, in
+		 * the turn that shows it most. Four axes, four v0s, nothing projected.
+		 *
+		 * EACH AXIS IS SEEDED ANALYTICALLY. The outgoing speed of an axis is
+		 * (its own span) * f'(u) / duration in px/ms, and the new segment's
+		 * curve needs a v0 in normalised units, so it is scaled by the new
+		 * duration and divided by the new span -- the same arithmetic the
+		 * projection did along one direction, done four times along the axes.
+		 *
+		 * An axis with no new span cannot express a velocity: its position is
+		 * initial + 0 * f(t) whatever v0 says. Those get zero rather than a
+		 * division by nearly nothing.
 		 *
 		 * Springs only. A bezier has no state to inject, and substituting one
 		 * would change motion the operator configured.
 		 */
-		double v0 = 0.0;
+		double v0[ANIM_AXIS_COUNT] = {0.0, 0.0, 0.0, 0.0};
 		if (retargeting && config.animation_curve_spring
 				&& c->animation.duration > 0) {
 			int32_t t_old = c->animation.action == NONE
@@ -2987,21 +3072,88 @@ void client_commit(Client *c) {
 				double u = (double)(c->animation.last_sample_ns
 					- c->animation.time_started_ns) / 1.0e6
 					/ (double)c->animation.duration;
-				double dfdu = spring_curve_velocity_at(u);
-				/* The segment being LEFT: its own start and its own target. */
-				double ox = (double)(c->animation.target.x
-					- c->animation.initial.x) * dfdu
-					/ (double)c->animation.duration;
-				double oy = (double)(c->animation.target.y
-					- c->animation.initial.y) * dfdu
-					/ (double)c->animation.duration;
+				double dur = (double)c->animation.duration;
+				/* The segment being LEFT: its own start, its own target, and
+				 * its own initial velocity -- the last of which matters when
+				 * this is a retarget OF a retarget. */
+				const double old_span[ANIM_AXIS_COUNT] = {
+					[ANIM_AXIS_X] = (double)(c->animation.target.x
+						- c->animation.initial.x),
+					[ANIM_AXIS_Y] = (double)(c->animation.target.y
+						- c->animation.initial.y),
+					[ANIM_AXIS_W] = (double)(c->animation.target.width
+						- c->animation.initial.width),
+					[ANIM_AXIS_H] = (double)(c->animation.target.height
+						- c->animation.initial.height),
+				};
 				/* The segment being STARTED. */
-				double nx = (double)(c->geom.x - c->animainit_geom.x);
-				double ny = (double)(c->geom.y - c->animainit_geom.y);
-				double len = sqrt(nx * nx + ny * ny);
-				if (len > 0.5) {
-					double along = (ox * nx + oy * ny) / len; /* px per ms */
-					v0 = along * (double)c->animation.duration / len;
+				const double new_span[ANIM_AXIS_COUNT] = {
+					[ANIM_AXIS_X] = (double)(c->geom.x - c->animainit_geom.x),
+					[ANIM_AXIS_Y] = (double)(c->geom.y - c->animainit_geom.y),
+					[ANIM_AXIS_W] = (double)(c->geom.width
+						- c->animainit_geom.width),
+					[ANIM_AXIS_H] = (double)(c->geom.height
+						- c->animainit_geom.height),
+				};
+				for (enum anim_axis a = 0; a < ANIM_AXIS_COUNT; a++) {
+					double dfdu = spring_curve_velocity_at_v(u,
+						c->animation.spring_v0[a]);
+					double px_per_ms = old_span[a] * dfdu / dur;
+					if (fabs(new_span[a]) > 0.5) {
+						v0[a] = px_per_ms * dur / new_span[a];
+					}
+				}
+			}
+		}
+		/*
+		 * ── AZ_BREAK_ANIM_SPRING_SCALAR_V0 (P1's falsifier) ───────────────
+		 *
+		 * Restores the projected-scalar seeding this replaced: one v0 for all
+		 * four axes, taken from the projection of the outgoing velocity onto
+		 * the new direction of travel in x/y. The vector-continuity oracle
+		 * must go RED under it -- the perpendicular axis of a 90-degree
+		 * retarget collapses to rest, which is precisely what the scalar
+		 * could not carry.
+		 */
+		{
+			static int scalar_v = -1;
+			if (scalar_v < 0) {
+				scalar_v = getenv("AZ_BREAK_ANIM_SPRING_SCALAR_V0") != NULL;
+				if (scalar_v) {
+					wlr_log(WLR_ERROR, "M6A break: "
+						"AZ_BREAK_ANIM_SPRING_SCALAR_V0 -- retarget velocity "
+						"is projected onto the new direction and shared by "
+						"all four axes; a 90-degree turn starts from rest");
+				}
+			}
+			if (scalar_v) {
+				double s = 0.0;
+				if (retargeting && config.animation_curve_spring
+						&& c->animation.duration > 0) {
+					int32_t t_old = c->animation.action == NONE
+						? MOVE : c->animation.action;
+					if (t_old == MOVE || t_old == OPEN || t_old == TAG) {
+						double u = (double)(c->animation.last_sample_ns
+							- c->animation.time_started_ns) / 1.0e6
+							/ (double)c->animation.duration;
+						double dfdu = spring_curve_velocity_at(u);
+						double ox = (double)(c->animation.target.x
+							- c->animation.initial.x) * dfdu
+							/ (double)c->animation.duration;
+						double oy = (double)(c->animation.target.y
+							- c->animation.initial.y) * dfdu
+							/ (double)c->animation.duration;
+						double nx = (double)(c->geom.x - c->animainit_geom.x);
+						double ny = (double)(c->geom.y - c->animainit_geom.y);
+						double len = sqrt(nx * nx + ny * ny);
+						if (len > 0.5) {
+							double along = (ox * nx + oy * ny) / len;
+							s = along * (double)c->animation.duration / len;
+						}
+					}
+				}
+				for (enum anim_axis a = 0; a < ANIM_AXIS_COUNT; a++) {
+					v0[a] = s;
 				}
 			}
 		}
@@ -3017,19 +3169,26 @@ void client_commit(Client *c) {
 				}
 			}
 			if (drop_v) {
-				v0 = 0.0;
+				for (enum anim_axis a = 0; a < ANIM_AXIS_COUNT; a++) {
+					v0[a] = 0.0;
+				}
 			}
 		}
 		if (getenv("AZ_ANIM_V0_TRACE") != NULL) {
-			wlr_log(WLR_ERROR, "M6A v0trace: retarget=%d v0=%.4f "
+			wlr_log(WLR_ERROR, "M6A v0trace: retarget=%d "
+				"v0=%.4f,%.4f,%.4f,%.4f "
 				"oldinit=%d,%d oldtgt=%d,%d newinit=%d,%d newtgt=%d,%d",
-				retargeting ? 1 : 0, v0,
+				retargeting ? 1 : 0,
+				v0[ANIM_AXIS_X], v0[ANIM_AXIS_Y],
+				v0[ANIM_AXIS_W], v0[ANIM_AXIS_H],
 				c->animation.initial.x, c->animation.initial.y,
 				c->animation.target.x, c->animation.target.y,
 				c->animainit_geom.x, c->animainit_geom.y,
 				c->geom.x, c->geom.y);
 		}
-		c->animation.spring_v0 = v0;
+		for (enum anim_axis a = 0; a < ANIM_AXIS_COUNT; a++) {
+			c->animation.spring_v0[a] = v0[a];
+		}
 
 		c->animation.initial = c->animainit_geom;
 		c->animation.target = c->geom;

@@ -355,6 +355,20 @@ test_ipc_out = executable('test-ipc-out', 'tests/test-ipc-out.c',
                           build_by_default : false)
 test('ipc-out', test_ipc_out)
 
+# The spring, per axis (P1). animation/spring.h is written to be includable
+# with nothing but a dvec2 and two doubles, which is what lets this run without
+# a compositor, a GPU or a display -- so the retarget arithmetic is checked on
+# every build rather than only when someone drives a window across a screen.
+test_anim_spring = executable('test-anim-spring', 'tests/test-anim-spring.c',
+                              include_directories : include_directories('src'),
+                              dependencies : [libm],
+                              # spring.h carries the whole curve family; this
+                              # test drives the two the retarget needs and is
+                              # not obliged to call the rest.
+                              c_args : ['-Wno-unused-function'],
+                              build_by_default : false)
+test('anim-spring', test_anim_spring, timeout : 60)
+
 # ── the Vulkan engine ───────────────────────────────────────────────────────
 #
 # M1 of the migration in docs/vulkan-native-architecture.md. Built whenever
