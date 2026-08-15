@@ -239,11 +239,19 @@ plumbing all exists on the output side.
   coarsely to act on.
 - **Everything M6A closed** stays closed on its own terms (status.md).
 
-> **DELIVERED 2026-08-14.** Every gate below that a machine can settle is
-> green, each with its falsifier observed red. What remains needs a display
-> that can present HDR and a person watching it: D5's live quality pass, G4's
-> HDR arm, and G6's HDR↔SDR half — all three in one session. Measurements,
-> defects found, and the one open finding are in `status.md`.
+> **CLOSED 2026-08-15** at `48de472b`. Every gate green with its falsifier
+> observed red; the live half — D5's quality pass, G4's HDR arm, G6's HDR↔SDR
+> half — passed on DP-1 in a validation session, 34/34, with the answering
+> instance identified by pid and ELF build-id rather than assumed.
+>
+> Qualified once and completely: 52/52 AVK fixtures (979 assertions), 557/557
+> regression, 0 failures across four on-GPU unit fixtures, `source ==
+> installed == running`.
+>
+> `status.md` carries the measurements, the defects found, and — deliberately
+> — what went wrong on the way: a fix that regressed, a precondition that
+> false-passed, a residual that was the model rather than the renderer, and
+> three runners that reported on nothing.
 
 **D8 — Acceptance gates.** Per the standing rule, no gate counts until its
 falsifier has been seen red; every break below runs in the ordinary suite,

@@ -1,4 +1,4 @@
-# M6B — status
+# M6B — COLOUR MANAGEMENT — **CLOSED** 2026-08-15
 
 **M6A: CLOSED** (`../m6-presentation/status.md`). Its knowingly-unbuilt items —
 the ADR-611 refactor, ADR-612's GPU half, `VK_EXT_calibrated_timestamps`,
@@ -6,12 +6,72 @@ ADR-613/614's oracles, the VT-switch reset — are closure decisions, not
 outstanding M6A work, and do not reopen without a regression or a new measured
 requirement.
 
-**M6B: ALL GATES GREEN. CLOSURE PENDING ONE CLEAN HEADLESS QUALIFICATION.**
-The G6 live gate passed 34/34 on 2026-08-15 and the blend-domain residual is
-resolved. What remains is not a gate but a re-run: the final headless
-qualification was interrupted at 13 of 52 fixtures, and a partial run qualifies
-nothing. The upstream wp-cm mastering gap is *decided*, not open, and is not a
+Closed at `48de472b`, qualified once and completely, with `source == installed
+== running` and a clean tree throughout.
+
+| | |
+|---|---|
+| AVK required set | **52/52 fixtures, 979/979 assertions**, 0 `FAIL` lines |
+| regression suite | **557/557** |
+| on-GPU unit fixtures | render 111, icc-shaper 14, output-color 80, color-pipeline 39 — 0 failures |
+| G6 live, DP-1 | **34/34**, 20 cycles / 40 transitions / 80 modesets |
+
+The upstream wp-cm mastering gap is *decided*, not open, and was never a
 blocker.
+
+## What the milestone actually cost, said plainly
+
+M6B did not run green to closure and the record should not read as though it
+did. Four things went wrong that were worth more than the features:
+
+1. **A plausible fix caused a second-order regression that reached closure
+   qualification.** `a52650f` correctly made `hdr_configured` a tri-state;
+   `setmon` still assigned it into a boolean, and `-1` is truthy. Twelve
+   fixtures moved. It survived because the only observable was a bool that
+   reported the broken value as `true` — wrong pixels were visible, wrong
+   intent was not.
+2. **A live gate's own precondition false-passed.** It asserted
+   `validation_enabled` — the guard against a vacuous `validation_errors: 0` —
+   against a session with no validation layer, because `amsg` answered from a
+   leftover headless instance that sets `ASTEROIDZ_VK_DEBUG=1` itself. Every
+   amsg-derived number in that run described a different compositor.
+3. **The residual was in the model, not the renderer.** AVK un-premultiplies in
+   the encoded domain, decodes, and re-premultiplies in linear — more correct
+   than the reference first written to check it, and than the live screenshot
+   model that raised the 2–3%.
+4. **Three separate runners reported on nothing.** `avk-suite.sh` invoked bare
+   (it is a register; `--run required` is what executes), a runner built from a
+   reaped scratch file, and a fixture whose premise read another test's
+   leftover state. Only the last of these was caught by an assertion; the other
+   two by output being implausibly short.
+
+The common shape: **a green result whose instrument was not measuring what its
+name said.** Every fix in this milestone was cheaper than the detection.
+
+## Closure conditions, each met
+
+- **Build** — source `48de472b` == installed == running, tree clean, verified
+  by ELF build-id rather than path or version.
+- **Headless** — retained gates green, falsifiers known red beside each.
+- **G6 live** — validation genuinely loaded on the identified instance, 40
+  transitions, 0 VUIDs, 0 lifecycle violations, 0 CPU sync waits, 0
+  presentation waits, state restored, `monitors.kdl` byte-identical, one
+  pipeline compile across 40 transitions. `fallback_frames` = 20 accepted by
+  operator decision, recorded above as a deviation.
+- **frog** — per-surface output correct, HDR toggle resends exactly once per
+  transition, no redundant churn.
+- **wp-cm** — preferred description correct for the fields wlroots serializes;
+  the mastering limitation documented as upstream.
+- **Blend** — layer-aware fixture resolved the residual: outcome B, the
+  modelling error identified by name.
+
+## What is NOT closed by this
+
+- The upstream wp-cm mastering serialization (decided: no patch, no fork).
+- **NEXT — NATIVE WP-CM OWNERSHIP RE-AUDIT.** Not a milestone and not named
+  M6C until a re-derived verdict says it earns one. The previous audit predates
+  `az_preferred.h`, which is the contract such an implementation would
+  serialize, so its estimate cannot be planned against.
 
 The milestone defined in `decision.md`. This records what is closed, what it
 measured, and what is not closed. Measurements are quoted from the runs that
