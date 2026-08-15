@@ -414,7 +414,7 @@ static const ConfigOption config_schema[] = {
 	 "of a window because Xwayland's X screen stays the logical size. Games "
 	 "that grab the pointer read relative motion and are unaffected.",
 	 OPT_BOOL, offsetof(Config, xwayland_force_scale_one), 0, 0, 1, NULL, 0,
-	 "0", 0},
+	 "1", 0},
 	{"primary_selection", "misc/primary-selection", "misc", "general",
 	 "Primary selection",
 	 "Advertise the middle-click \"copy on select\" clipboard. Off leaves one "

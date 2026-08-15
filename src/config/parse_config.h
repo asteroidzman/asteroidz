@@ -4928,7 +4928,7 @@ void set_value_default() {
 	config.view_current_to_back = 0;
 	config.single_scratchpad = 1;
 	config.xwayland_persistence = 1;
-	config.xwayland_force_scale_one = 0;
+	config.xwayland_force_scale_one = 1;
 	config.primary_selection = 1;
 	config.syncobj_enable = 0;
 	config.tag_carousel = 0;

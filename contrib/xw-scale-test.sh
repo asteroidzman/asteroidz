@@ -276,7 +276,14 @@ arm scale-1 1 "" native 1920 1080 900 500
 # The bug itself, measured. This arm must report `scaled`, a 1536x864
 # configure and an untransformed click for as long as the option is off --
 # an oracle whose failing case has stopped failing has stopped testing.
-arm 1.25-off 1.25 "" scaled 1536 864 900 500
+#
+# It sets the option to 0 EXPLICITLY rather than leaving the config empty and
+# taking whatever the default is. It did rely on the default, and the default
+# then flipped to 1: this arm would have started reporting `native`, failed,
+# and read as a regression in the feature it was written to measure. What this
+# arm means is "with the option off", which is not the same statement as "with
+# the option unmentioned" and must not be spelled the same way.
+arm 1.25-off 1.25 "xwayland_force_scale_one 0" scaled 1536 864 900 500
 
 # ── the fix ──────────────────────────────────────────────────────────────
 # Same output, same client, one option. The X window is asked for the real
