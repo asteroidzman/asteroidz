@@ -71,6 +71,10 @@ static const struct expectation table[] = {
 		"per-frame storage buffer bound for the whole segment" },
 	{ AVK_CMD_TEXTURE, "texture", &fake_surface,
 		"the client surface it draws" },
+	{ AVK_CMD_TEXTURE_QUAD, "texture-quad", &fake_surface,
+		"the same client surface a texture samples -- only its destination "
+		"corners differ, and the graph cares what a draw READS, not where it "
+		"lands" },
 	{ AVK_CMD_SHADOW, "shadow", NULL,
 		"M4D's shadow is analytic -- an SDF in the fragment shader, with no "
 		"blurred texture to sample" },
@@ -92,7 +96,11 @@ static void test_every_kind(void) {
 		avk_scene_init(&scene);
 		struct avk_cmd *cmd = avk_scene_add(&scene, e->type);
 		cmd->dst = (struct avk_box){ 0, 0, 32, 32 };
-		if (e->type == AVK_CMD_TEXTURE) {
+		/* Both sampling kinds read cmd->image. Spelled as a list rather than
+		 * as `!= AVK_CMD_RECT` so a new kind that samples something has to be
+		 * named here too, instead of being handed an image by a condition that
+		 * happens to include it. */
+		if (e->type == AVK_CMD_TEXTURE || e->type == AVK_CMD_TEXTURE_QUAD) {
 			cmd->image = &fake_surface;
 		}
 
