@@ -518,6 +518,10 @@ typedef struct {
 
 	int32_t single_scratchpad;
 	int32_t xwayland_persistence;
+	/* Size X11 windows in raw output pixels instead of logical units, so a
+	 * fractional-scale output presents their buffers 1:1 rather than
+	 * magnifying them. See client_x11_scale() in src/client/client.h. */
+	int32_t xwayland_force_scale_one;
 	int32_t primary_selection;
 	int32_t syncobj_enable;
 	int32_t tag_carousel;
@@ -1918,6 +1922,8 @@ bool parse_option(Config *config, char *key, char *value) {
 		config->single_scratchpad = atoi(value);
 	} else if (strcmp(key, "xwayland_persistence") == 0) {
 		config->xwayland_persistence = atoi(value);
+	} else if (strcmp(key, "xwayland_force_scale_one") == 0) {
+		config->xwayland_force_scale_one = atoi(value);
 	} else if (strcmp(key, "primary_selection") == 0) {
 		config->primary_selection = atoi(value);
 	} else if (strcmp(key, "syncobj_enable") == 0) {
@@ -3713,6 +3719,7 @@ static const struct {
 	{"overview/no-resize", "ov_no_resize"},
 	/* misc */
 	{"misc/xwayland-persistence", "xwayland_persistence"},
+	{"misc/xwayland-force-scale-one", "xwayland_force_scale_one"},
 	{"misc/primary-selection", "primary_selection"},
 	{"misc/syncobj", "syncobj_enable"},
 	{"misc/focus-on-activate", "focus_on_activate"},
@@ -4681,6 +4688,8 @@ void override_config(void) {
 	config.shadows_blur_background_darken =
 		CLAMP_INT(config.shadows_blur_background_darken, 0, 1);
 	config.xwayland_persistence = CLAMP_INT(config.xwayland_persistence, 0, 1);
+	config.xwayland_force_scale_one =
+		CLAMP_INT(config.xwayland_force_scale_one, 0, 1);
 	config.primary_selection = CLAMP_INT(config.primary_selection, 0, 1);
 	config.syncobj_enable = CLAMP_INT(config.syncobj_enable, 0, 1);
 	config.drag_tile_refresh_interval =
@@ -4909,6 +4918,7 @@ void set_value_default() {
 	config.view_current_to_back = 0;
 	config.single_scratchpad = 1;
 	config.xwayland_persistence = 1;
+	config.xwayland_force_scale_one = 0;
 	config.primary_selection = 1;
 	config.syncobj_enable = 0;
 	config.tag_carousel = 0;

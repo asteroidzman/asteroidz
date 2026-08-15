@@ -8,6 +8,7 @@ description: Advanced settings for XWayland, focus behavior, and system integrat
 | Setting | Default | Description |
 | :--- | :--- | :--- |
 | `xwayland_persistence` | `1` | Keep XWayland running even when no X11 apps are open (reduces startup lag). |
+| `xwayland_force_scale_one` | `0` | Size X11 windows in raw output pixels instead of logical units. X11 has no fractional scaling, so without this an X window on a 1.25x display commits a buffer 1.25x too small and the compositor magnifies it — a fullscreen game renders 3072x1728 on a 4K screen. With it, the window is asked for the real pixel count and its buffer is presented 1:1. X11 apps that read the screen size themselves will see pixels, so anything drawing its own UI at a fixed point size comes out small. |
 | `syncobj_enable` | `0` | Enable `drm_syncobj` timeline support (helps with gaming stutter/lag). **Requires restart.** |
 | `primary_selection` | `1` | Advertise the middle-click "copy on select" clipboard. Set to `0` for one clipboard only: the global is not bound, so toolkits stop publishing on select and middle-click paste does nothing, and XWayland's X `PRIMARY` is refused too. **Requires restart.** |
 | `render_late` | `0` | Adaptive render-late scheduling: defer each frame's render toward the next vblank so input is sampled fresher (cuts up to a frame of input latency). `2` additionally logs per-frame timing for tuning. |

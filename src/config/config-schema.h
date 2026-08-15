@@ -401,6 +401,17 @@ static const ConfigOption config_schema[] = {
 	 "Blur what is under the shadow as well as darkening it.", OPT_BOOL,
 	 offsetof(Config, shadows_blur_background), 0, SCHEMA_NOCLAMP,
 	 SCHEMA_NOCLAMP, NULL, 0, "0", 0},
+	{"xwayland_force_scale_one", "misc/xwayland-force-scale-one", "misc",
+	 "general", "Render X11 windows at native resolution",
+	 "Size X11 windows in raw output pixels instead of logical units. X11 has "
+	 "no fractional scaling, so without this an X window on a 1.25x display "
+	 "commits a buffer 1.25x too small and the compositor magnifies it -- a "
+	 "fullscreen game renders 3072x1728 on a 4K screen. With it, the window is "
+	 "asked for the real pixel count and its buffer is presented 1:1. X11 apps "
+	 "that read the screen size themselves will see pixels, so anything "
+	 "drawing its own UI at a fixed point size comes out small.",
+	 OPT_BOOL, offsetof(Config, xwayland_force_scale_one), 0, 0, 1, NULL, 0,
+	 "0", 0},
 	{"primary_selection", "misc/primary-selection", "misc", "general",
 	 "Primary selection",
 	 "Advertise the middle-click \"copy on select\" clipboard. Off leaves one "

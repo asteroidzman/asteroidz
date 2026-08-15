@@ -95,6 +95,7 @@ KEY_MAP = {
     "ov_tab_mode": "overview/tab-mode",
     "ov_no_resize": "overview/no-resize",
     "xwayland_persistence": "misc/xwayland-persistence",
+    "xwayland_force_scale_one": "misc/xwayland-force-scale-one",
     "primary_selection": "misc/primary-selection",
     "syncobj_enable": "misc/syncobj",
     "focus_on_activate": "misc/focus-on-activate",
