@@ -4069,7 +4069,6 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 	if (az_avk_dumping()) {
 		for (size_t i = 0; i < scene.len; i++) {
 			const struct avk_cmd *c = &scene.cmds[i];
-			static const char *kind[] = { "RECT", "TEXTURE", "SHADOW", "BLUR" };
 			/* The clip's RECTANGLE COUNT, not just whether it exists. A
 			 * multi-rectangle region that arrived as one rectangle has had its
 			 * bounding box taken somewhere, and that is invisible in every
@@ -4086,7 +4085,7 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 			 * other surface on the desktop is legitimately sRGB and swamps it. */
 			wlr_log(WLR_ERROR, "cmd[%zu] %s dst=%d,%d %dx%d clip=%drects%s"
 				" lum[tf=%s prim=%s scale=%.3f peak=%.3f]", i,
-				(int)c->type < 4 ? kind[c->type] : "?",
+				avk_cmd_kind_name(c->type),
 				c->dst.x, c->dst.y, c->dst.width, c->dst.height, nrects,
 				c->type == AVK_CMD_BLUR ? " (blur)" : "",
 				az_tf_name(c->lum.tf),

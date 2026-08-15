@@ -1143,7 +1143,7 @@ tests/test-avk-blur-scene.c      24   a blur's source is the CURRENT-frame prefi
 tests/test-avk-segment.c         18   any command range, any regional target
 tests/test-avk-blur-material.c   30   darken, edge_softness, clip, alpha, corners
 tests/test-avk-cmd-uses.c        19   every command kind states what it samples
-contrib/avk-blur-walker-test.sh  26   real WLR_SCENE_NODE_BLUR through the walker
+contrib/avk-blur-walker-test.sh  29   real WLR_SCENE_NODE_BLUR through the walker
 contrib/wlbgeffect/              --   a client that supplies a real blur region
 ```
 

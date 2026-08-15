@@ -118,6 +118,47 @@ enum avk_cmd_type {
  */
 #define AVK_CMD_TYPE_COUNT ((int)AVK_CMD_BLUR + 1)
 
+/*
+ * The command kind's name, for diagnostics.
+ *
+ * ── WHY THIS IS A FUNCTION AND NOT AN ARRAY ──────────────────────────────
+ *
+ * It was an array, `{ "RECT", "TEXTURE", "SHADOW", "BLUR" }`, indexed by
+ * cmd->type and bounded by a literal 4, sitting in the scene dump in az_avk.h.
+ * AVK_CMD_TEXTURE_QUAD was then inserted in the MIDDLE of the enum, which
+ * shifted every later enumerator by one and left that array describing an enum
+ * that no longer existed: a SHADOW printed as "BLUR", a TEXTURE_QUAD printed as
+ * "SHADOW", and a real BLUR fell past the bound and printed as "?".
+ *
+ * Nothing rendered wrongly -- that dump line was, and is, the only place in the
+ * renderer indexed by command type. What broke was the ability to SEE. The blur
+ * walker's fixture greps the dump for BLUR, so it measured shadow commands
+ * instead: it read a shadow's window-shaped hole (a box minus a box, which is
+ * exactly 4 rectangles) where it expected a client's 2-rectangle blur region,
+ * and reported a blur regression that had not happened. The fixture's own
+ * comment records the identical "right answer, wrong command" mistake from an
+ * earlier milestone; this is that mistake arriving by a different road.
+ *
+ * The switch has NO `default`, so -Wswitch names this function when a type is
+ * added, and the assert below is the half that is not merely a warning. Both
+ * guards already existed for avk_cmd_graph_uses() and both did their job there
+ * -- the array was simply outside their reach, which is the whole argument for
+ * not having an array.
+ */
+_Static_assert(AVK_CMD_TYPE_COUNT == 5,
+	"a new avk_cmd_type needs a case in avk_cmd_kind_name(): name it, or the "
+	"scene dump will label it as some other kind of command");
+static inline const char *avk_cmd_kind_name(enum avk_cmd_type t) {
+	switch (t) {
+	case AVK_CMD_RECT:         return "RECT";
+	case AVK_CMD_TEXTURE:      return "TEXTURE";
+	case AVK_CMD_TEXTURE_QUAD: return "TEXTURE_QUAD";
+	case AVK_CMD_SHADOW:       return "SHADOW";
+	case AVK_CMD_BLUR:         return "BLUR";
+	}
+	return "?";
+}
+
 /* 1 and 2 are the values SceneFX's `gradient_linear` field carries, kept rather
  * than renumbered so a mismatch between the two is a compile error rather than
  * a gradient that silently renders as the other kind. */

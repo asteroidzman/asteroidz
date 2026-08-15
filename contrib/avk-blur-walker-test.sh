@@ -285,7 +285,30 @@ hl_assert "the window (last texture, $LAST_TEX) comes AFTER the blur ($BLUR_AT)"
 #
 # 2, not ">= 1". A bounding box is one rectangle and would satisfy ">= 1"
 # forever, which is exactly how the collapse survived the previous milestone.
-MAXRECTS="$(grep -a 'BLUR' "$DUMP" | grep -o 'clip=[0-9]*rects' | grep -o '[0-9]*' | sort -n | tail -1)"
+# ── FIRST: THE LABEL ITSELF, CROSS-CHECKED ───────────────────────────────
+#
+# The dump names a command's kind TWICE, from two independent expressions: the
+# kind string, and a trailing "(blur)" emitted from its own
+# `type == AVK_CMD_BLUR` test. Nothing compared them, and they diverged --
+# AVK_CMD_TEXTURE_QUAD was inserted into the MIDDLE of the enum, every later
+# enumerator shifted by one, and the dump's lookup table still described the old
+# order. A SHADOW printed as "BLUR", so this fixture measured a shadow's
+# window-shaped hole (a box minus a box: exactly 4 rectangles) and reported a
+# blur regression that had never happened. The renderer was correct throughout.
+#
+# So the two spellings are compared before anything is read from either. A
+# mislabelled dump is not a cosmetic fault here: this fixture's every claim
+# about blur is a grep for the word.
+LBL="$(grep -ac ' BLUR .*(blur)' "$DUMP")"
+ANY="$(grep -ac ' BLUR ' "$DUMP")"
+MRK="$(grep -ac '(blur)' "$DUMP")"
+echo "  note: $ANY lines named BLUR, $MRK carry the (blur) marker, $LBL agree"
+hl_assert "the dump's two spellings of \"this is a blur\" agree" \
+	"$ANY/$MRK" "$LBL/$LBL"
+
+# The word, delimited. An undelimited grep also matches any future kind whose
+# name merely CONTAINS it.
+MAXRECTS="$(grep -a ' BLUR ' "$DUMP" | grep -o 'clip=[0-9]*rects' | grep -o '[0-9]*' | sort -n | tail -1)"
 echo "  note: the most rectangles a BLUR command's clip arrived in: ${MAXRECTS:-0}"
 hl_assert "a client's two-rectangle blur region reaches the command with its gap" \
 	"${MAXRECTS:-0}" "2"
