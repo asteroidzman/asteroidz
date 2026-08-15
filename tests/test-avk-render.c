@@ -1885,6 +1885,386 @@ static void test_path_b_pq_encode(struct harness *h) {
 
 /* ── test 1: overlapping surfaces and alpha ─────────────────────────────── */
 
+/*
+ * ── M6B: WHICH DOMAIN DOES A TRANSLUCENT WINDOW BLEND IN? ────────────────
+ *
+ * The live A/B left ~2-3% of pixels more than a code from the CPU model,
+ * concentrated on translucent UI. A SCREENSHOT PAIR CANNOT SETTLE THAT and no
+ * amount of capture analysis will: the model sees the already-composited
+ * result and never the two layers that produced it, so "the blend is wrong"
+ * and "the model of the blend is wrong" predict the same image.
+ *
+ * An attempt to isolate it by 3x3 flatness FAILED and is recorded as
+ * NON-DISCRIMINATING: a translucent flat foreground over a uniform flat
+ * background is flat in the output whether or not the blend semantics are
+ * right, so flatness could never have separated them.
+ *
+ * This fixture knows its inputs BEFORE composition, which is the whole point.
+ *
+ * ── WHY IT NEEDS TWO ARMS ────────────────────────────────────────────────
+ *
+ * Every alpha assertion in this file until now rendered into the shared
+ * B8G8R8A8_UNORM target, so it composited on ENCODED codes -- the pre-M5 path.
+ * test_overlap_alpha's own arithmetic says so: it asserts
+ * 0x80 + 255*(1-0.5) = 255, which is only true if 0x80 is a code rather than a
+ * light value. Production defaults to Path A, where the attachment carries an
+ * _SRGB view and the hardware blends in LINEAR light. So the domain that ships
+ * had no blend coverage at all, and the residual sat exactly there.
+ *
+ * Both arms render THE SAME SCENE and each is checked against its own
+ * independently-computed model. The premise that makes it discriminating is
+ * that the two arms must DISAGREE: if the chosen colours blend to the same
+ * codes in both domains, this fixture is blind and says so rather than
+ * reporting a green it did not earn.
+ *
+ * ── THE REFERENCE IS NOT THE IMPLEMENTATION ──────────────────────────────
+ *
+ * srgb_dec/srgb_enc below are written from the sRGB piecewise definition, not
+ * called out of the renderer or its shaders. A reference that calls the code
+ * under test agrees with itself by construction.
+ *
+ * ── AND THE WRONG MODELS MUST BE FAR AWAY ────────────────────────────────
+ *
+ * Matching the correct model proves little on its own if a wrong one predicts
+ * nearly the same pixel. So each wrong form is computed too, and the fixture
+ * asserts that every one of them is materially separated from the correct
+ * answer AT THESE INPUTS. That assertion is what makes the colours and alphas
+ * defensible rather than decorative.
+ */
+
+/* The sRGB transfer pair, from the specification. */
+static double srgb_dec(double e) {
+	return e <= 0.04045 ? e / 12.92 : pow((e + 0.055) / 1.055, 2.4);
+}
+static double srgb_enc(double l) {
+	if (l <= 0.0) { return 0.0; }
+	if (l >= 1.0) { return 1.0; }
+	return l <= 0.0031308 ? l * 12.92 : 1.055 * pow(l, 1.0 / 2.4) - 0.055;
+}
+static int to_code(double v) {
+	int c = (int)(v * 255.0 + 0.5);
+	return c < 0 ? 0 : (c > 255 ? 255 : c);
+}
+
+/* The models. `fp` is the PREMULTIPLIED foreground code as stored, `fs` the
+ * straight one, `b` the background code, `a` the alpha.
+ *
+ * PREMULTIPLICATION IS APPLIED TO ENCODED VALUES -- that is what a Wayland
+ * client stores. Blending must happen in linear light, so the only correct
+ * order is: UN-premultiply in the encoded domain, decode, RE-premultiply in
+ * linear, then `over`. Decoding the premultiplied value directly is the common
+ * approximation, and it is wrong by up to 45 codes at these inputs; it is
+ * listed below as a wrong model because it is exactly what this fixture's own
+ * first reference did, and what the live screenshot model did before it. */
+
+/* CORRECT for Path A. */
+static int model_linear(int fp, int b, double a) {
+	if (a <= 0.0) { return b; }
+	double f_lin = srgb_dec((fp / 255.0) / a) * a;
+	double b_lin = srgb_dec(b / 255.0);
+	return to_code(srgb_enc(f_lin + b_lin * (1.0 - a)));
+}
+/* CORRECT for the UNORM arm; WRONG for Path A -- blends the codes themselves. */
+static int model_encoded(int fp, int b, double a) {
+	return to_code(fp / 255.0 + (b / 255.0) * (1.0 - a));
+}
+/* WRONG: decode the premultiplied value directly, never un-premultiplying. */
+static int model_premult_decoded(int fp, int b, double a) {
+	double f_lin = srgb_dec(fp / 255.0);
+	double b_lin = srgb_dec(b / 255.0);
+	return to_code(srgb_enc(f_lin + b_lin * (1.0 - a)));
+}
+/* WRONG: straight alpha used as if premultiplied. */
+static int model_straight_as_premult(int fs, int b, double a) {
+	double f_lin = srgb_dec(fs / 255.0);
+	double b_lin = srgb_dec(b / 255.0);
+	return to_code(srgb_enc(f_lin + b_lin * (1.0 - a)));
+}
+/* WRONG: premultiplied a second time in linear. */
+static int model_double_premult(int fp, int b, double a) {
+	if (a <= 0.0) { return b; }
+	double f_lin = srgb_dec((fp / 255.0) / a) * a * a;
+	double b_lin = srgb_dec(b / 255.0);
+	return to_code(srgb_enc(f_lin + b_lin * (1.0 - a)));
+}
+/* WRONG: source never decoded -- encoded foreground blended into linear. */
+static int model_no_src_decode(int fp, int b, double a) {
+	double f_lin = fp / 255.0;
+	double b_lin = srgb_dec(b / 255.0);
+	return to_code(srgb_enc(f_lin + b_lin * (1.0 - a)));
+}
+/* WRONG: each layer encoded before the blend -- the ordering error. */
+static int model_encode_before_blend(int fp, int b, double a) {
+	if (a <= 0.0) { return b; }
+	double f_e = srgb_enc(srgb_dec((fp / 255.0) / a) * a);
+	double b_e = srgb_enc(srgb_dec(b / 255.0));
+	return to_code(f_e + b_e * (1.0 - a));
+}
+
+/* Diagnostic: one alpha, the four decode/encode combinations, so a wrong
+ * answer can be attributed to a half rather than guessed at from the pair. */
+static void blend_probe(struct harness *h, struct avk_image *lin_target) {
+	const int FG[3] = { 200, 80, 30 }, BG[3] = { 40, 160, 90 };
+	const double a = 0.5;
+	int fp[3];
+	for (int c = 0; c < 3; c++) { fp[c] = to_code((FG[c] / 255.0) * a); }
+	struct avk_image *saved = h->target;
+	printf("  PROBE fp=(%d,%d,%d) bg=(%d,%d,%d) a=%.2f\n",
+		fp[0], fp[1], fp[2], BG[0], BG[1], BG[2], a);
+	for (int combo = 0; combo < 4; combo++) {
+		bool dec = (combo & 1) != 0, enc = (combo & 2) != 0;
+		uint32_t src[16 * 16], bgsrc[16 * 16];
+		uint32_t texel = ((uint32_t)to_code(a) << 24) | ((uint32_t)fp[0] << 16)
+			| ((uint32_t)fp[1] << 8) | (uint32_t)fp[2];
+		uint32_t bgtexel = 0xFF000000u | ((uint32_t)BG[0] << 16)
+			| ((uint32_t)BG[1] << 8) | (uint32_t)BG[2];
+		for (int i = 0; i < 16 * 16; i++) { src[i] = texel; bgsrc[i] = bgtexel; }
+		struct avk_image *fg = make_image_ex(h->dev, 16, 16,
+			VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, true, dec);
+		struct avk_image *bgi = make_image_ex(h->dev, 16, 16,
+			VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, false, dec);
+		if (fg == NULL || bgi == NULL || !upload(h, fg, src, 16, 16)
+				|| !upload(h, bgi, bgsrc, 16, 16)) {
+			printf("    combo %d: setup failed\n", combo);
+			if (fg) avk_image_destroy(h->dev, fg);
+			if (bgi) avk_image_destroy(h->dev, bgi);
+			continue;
+		}
+		h->target = enc ? lin_target : saved;
+		struct avk_scene scene;
+		avk_scene_init(&scene);
+		pixman_region32_union_rect(&scene.damage, &scene.damage, 0, 0, W, H);
+		scene.has_clear = true;
+		scene.clear_color[0] = 0; scene.clear_color[1] = 0;
+		scene.clear_color[2] = 0; scene.clear_color[3] = 1.0f;
+		struct avk_cmd *b = avk_scene_add(&scene, AVK_CMD_TEXTURE);
+		b->dst = (struct avk_box){ 0, 0, 32, 32 };
+		b->image = bgi; b->src = (struct avk_fbox){ 0, 0, 16, 16 };
+		b->opacity = 1.0f; b->filter_linear = false;
+		struct avk_cmd *t = avk_scene_add(&scene, AVK_CMD_TEXTURE);
+		t->dst = (struct avk_box){ 0, 0, 32, 32 };
+		t->image = fg; t->src = (struct avk_fbox){ 0, 0, 16, 16 };
+		t->opacity = 1.0f; t->filter_linear = false;
+		h->renderer.decode_enabled = dec;
+		h->renderer.encode_srgb = enc;
+		bool ok = render(h, &scene);
+		h->renderer.decode_enabled = false;
+		h->renderer.encode_srgb = false;
+		avk_scene_finish(&scene);
+		if (ok) {
+			printf("    decode=%d encode=%d -> (%d,%d,%d)\n", dec, enc,
+				r_of(px(h, 16, 16)), g_of(px(h, 16, 16)), b_of(px(h, 16, 16)));
+		}
+		avk_image_destroy(h->dev, fg);
+		avk_image_destroy(h->dev, bgi);
+	}
+	h->target = saved;
+}
+
+static void test_blend_domain(struct harness *h) {
+	printf("M6B: the blend domain, with the layers known before composition\n");
+
+	/*
+	 * CHROMATIC, AND DELIBERATELY NOT NEUTRAL OR SATURATED-PRIMARY. A grey
+	 * foreground over a grey background cannot separate a per-channel error
+	 * from a luminance one, and a channel pinned at 0 or 255 hides both
+	 * clamping and premultiplication mistakes in the same place.
+	 */
+	const int FG[3] = { 200, 80, 30 };   /* straight (unpremultiplied) */
+	const int BG[3] = { 40, 160, 90 };
+	const double ALPHAS[] = { 0.0, 0.1, 0.25, 0.5, 0.75, 1.0 };
+	const int NA = (int)(sizeof(ALPHAS) / sizeof(ALPHAS[0]));
+
+	struct avk_image *lin_target = make_image_ex(h->dev, W, H,
+		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT
+		| VK_IMAGE_USAGE_SAMPLED_BIT, true, true);
+	if (lin_target == NULL) {
+		CHECK(false, "blend: mutable target allocates");
+		return;
+	}
+	CHECK(avk_image_srgb_view(h->dev, lin_target) != VK_NULL_HANDLE,
+		"PREMISE: the linear arm's target really can carry an _SRGB view");
+
+	if (getenv("AZ_BLEND_DUMP") != NULL) { blend_probe(h, lin_target); }
+
+	struct avk_image *saved = h->target;
+	int worst_lin = 0, worst_enc = 0;
+	int arms_differ = 0, checked = 0;
+	int sep_straight = 0, sep_double = 0, sep_nodec = 0, sep_order = 0;
+	int sep_premdec = 0, sep_domain = 0;
+
+	for (int ai = 0; ai < NA; ai++) {
+		double a = ALPHAS[ai];
+		/* Premultiplied as Wayland requires: the colour channels are already
+		 * scaled by alpha in the ENCODED values that are stored. */
+		int fp[3];
+		for (int c = 0; c < 3; c++) {
+			fp[c] = to_code((FG[c] / 255.0) * a);
+		}
+		uint32_t texel = ((uint32_t)to_code(a) << 24)
+			| ((uint32_t)fp[0] << 16) | ((uint32_t)fp[1] << 8) | (uint32_t)fp[2];
+		uint32_t src[16 * 16];
+		for (int i = 0; i < 16 * 16; i++) { src[i] = texel; }
+
+		for (int arm = 0; arm < 2; arm++) {   /* 0 = encoded, 1 = linear */
+			struct avk_image *surface = make_image_ex(h->dev, 16, 16,
+				VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+				true, arm == 1);
+			if (surface == NULL || !upload(h, surface, src, 16, 16)) {
+				CHECK(false, "blend: source uploads (a=%.2f arm=%d)", a, arm);
+				if (surface != NULL) { avk_image_destroy(h->dev, surface); }
+				continue;
+			}
+			h->target = arm == 1 ? lin_target : saved;
+
+			struct avk_scene scene;
+			avk_scene_init(&scene);
+			pixman_region32_union_rect(&scene.damage, &scene.damage, 0, 0, W, H);
+			scene.has_clear = true;
+			scene.clear_color[0] = 0.0f; scene.clear_color[1] = 0.0f;
+			scene.clear_color[2] = 0.0f; scene.clear_color[3] = 1.0f;
+
+			/*
+			 * The background is a TEXTURE, not a RECT. A rect's colour is a
+			 * float the shader writes; a texture's is an 8-bit code that takes
+			 * the same decode path the foreground does. Using a rect would
+			 * make the background's own domain a second unpinned variable, and
+			 * the fixture would be measuring two things at once.
+			 */
+			uint32_t bgsrc[16 * 16];
+			uint32_t bgtexel = 0xFF000000u | ((uint32_t)BG[0] << 16)
+				| ((uint32_t)BG[1] << 8) | (uint32_t)BG[2];
+			for (int i = 0; i < 16 * 16; i++) { bgsrc[i] = bgtexel; }
+			struct avk_image *bgimg = make_image_ex(h->dev, 16, 16,
+				VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+				false, arm == 1);
+			if (bgimg == NULL || !upload(h, bgimg, bgsrc, 16, 16)) {
+				CHECK(false, "blend: background uploads");
+				avk_image_destroy(h->dev, surface);
+				if (bgimg != NULL) { avk_image_destroy(h->dev, bgimg); }
+				avk_scene_finish(&scene);
+				continue;
+			}
+			struct avk_cmd *bg = avk_scene_add(&scene, AVK_CMD_TEXTURE);
+			bg->dst = (struct avk_box){ 0, 0, 32, 32 };
+			bg->image = bgimg;
+			bg->src = (struct avk_fbox){ 0, 0, 16, 16 };
+			bg->opacity = 1.0f;
+			bg->filter_linear = false;
+
+			struct avk_cmd *tex = avk_scene_add(&scene, AVK_CMD_TEXTURE);
+			tex->dst = (struct avk_box){ 0, 0, 32, 32 };
+			tex->image = surface;
+			tex->src = (struct avk_fbox){ 0, 0, 16, 16 };
+			tex->opacity = 1.0f;
+			tex->filter_linear = false;
+
+			h->renderer.decode_enabled = (arm == 1);
+			h->renderer.encode_srgb = (arm == 1);
+			bool ok = render(h, &scene);
+			h->renderer.decode_enabled = false;
+			h->renderer.encode_srgb = false;
+			avk_scene_finish(&scene);
+
+			if (ok) {
+				int got[3] = { r_of(px(h, 16, 16)), g_of(px(h, 16, 16)),
+					b_of(px(h, 16, 16)) };
+				if (getenv("AZ_BLEND_DUMP") != NULL) {
+					printf("  a=%.2f arm=%d fp=(%d,%d,%d) got=(%d,%d,%d) "
+						"lin=(%d,%d,%d) enc=(%d,%d,%d)\n", a, arm,
+						fp[0], fp[1], fp[2], got[0], got[1], got[2],
+						model_linear(fp[0], BG[0], a), model_linear(fp[1], BG[1], a),
+						model_linear(fp[2], BG[2], a),
+						model_encoded(fp[0], BG[0], a), model_encoded(fp[1], BG[1], a),
+						model_encoded(fp[2], BG[2], a));
+				}
+				for (int c = 0; c < 3; c++) {
+					int want = arm == 1 ? model_linear(fp[c], BG[c], a)
+									    : model_encoded(fp[c], BG[c], a);
+					int d = got[c] - want; if (d < 0) { d = -d; }
+					if (arm == 1) {
+						if (d > worst_lin) { worst_lin = d; }
+					} else {
+						if (d > worst_enc) { worst_enc = d; }
+					}
+					if (arm == 1) {
+						/* How far each WRONG model sits from the right one at
+						 * these inputs. The minimum over the sweep is what the
+						 * fixture can actually discriminate. */
+						/* Measured against what the GPU ACTUALLY produced,
+						 * not against the correct model: "the data rules this
+						 * out" is the claim, and it must be made from the
+						 * data. */
+						int s1 = abs(model_straight_as_premult(FG[c], BG[c], a) - got[c]);
+						int s2 = abs(model_double_premult(fp[c], BG[c], a) - got[c]);
+						int s3 = abs(model_no_src_decode(fp[c], BG[c], a) - got[c]);
+						int s4 = abs(model_encode_before_blend(fp[c], BG[c], a) - got[c]);
+						int s5 = abs(model_encoded(fp[c], BG[c], a) - got[c]);
+						int s6 = abs(model_premult_decoded(fp[c], BG[c], a) - got[c]);
+						if (a > 0.0 && a < 1.0) {
+							if (s1 > sep_straight) { sep_straight = s1; }
+							if (s2 > sep_double) { sep_double = s2; }
+							if (s3 > sep_nodec) { sep_nodec = s3; }
+							if (s4 > sep_order) { sep_order = s4; }
+							if (s6 > sep_premdec) { sep_premdec = s6; }
+							if (s5 > sep_domain) { sep_domain = s5; }
+							if (s5 > 1) { arms_differ++; }
+							checked++;
+						}
+					}
+				}
+			} else {
+				CHECK(false, "blend: arm %d renders at a=%.2f", arm, a);
+			}
+			avk_image_destroy(h->dev, surface);
+			avk_image_destroy(h->dev, bgimg);
+		}
+	}
+	h->target = saved;
+
+	printf("  ---- worst vs model: linear arm %d, encoded arm %d\n",
+		worst_lin, worst_enc);
+	printf("  ---- domain separation: %d codes (%d of %d samples differ)\n",
+		sep_domain, arms_differ, checked);
+	printf("  ---- each wrong model is ruled out by this much (max over sweep):\n"
+		"       straight-as-premult %d, double-premult %d, no-src-decode %d,\n"
+		"       encode-before-blend %d, premultiplied-decoded %d\n",
+		sep_straight, sep_double, sep_nodec, sep_order, sep_premdec);
+
+	/*
+	 * THE PREMISE. If the two domains agreed at these colours, everything
+	 * below would pass without discriminating anything -- the same coincidence
+	 * that let a one-window frog fixture miss a wrong-display defect.
+	 */
+	CHECK(arms_differ > 0 && sep_domain > 5,
+		"PREMISE: the two domains disagree here, so the arms can be told apart "
+		"(%d codes)", sep_domain);
+
+	/* Each wrong form must be far from the right answer AT THESE INPUTS, or
+	 * the fixture cannot claim to rule it out. */
+	CHECK(sep_straight > 5, "RULES OUT straight-alpha-as-premultiplied (%d codes)",
+		sep_straight);
+	CHECK(sep_double > 5, "RULES OUT double premultiplication (%d codes)",
+		sep_double);
+	CHECK(sep_nodec > 5, "RULES OUT a missing source decode (%d codes)", sep_nodec);
+	CHECK(sep_order > 5, "RULES OUT encode-before-blend ordering (%d codes)",
+		sep_order);
+	/* The one this fixture's own first reference got wrong, and the one the
+	 * live screenshot model got wrong -- so it is ruled out by name. */
+	CHECK(sep_premdec > 5,
+		"RULES OUT decoding the premultiplied value directly (%d codes)",
+		sep_premdec);
+
+	/* THE ANSWER. */
+	CHECK(worst_enc <= 1,
+		"the UNORM arm blends on ENCODED codes, as modelled (worst %d)",
+		worst_enc);
+	CHECK(worst_lin <= 1,
+		"Path A blends in LINEAR light, as modelled (worst %d)", worst_lin);
+
+	avk_image_destroy(h->dev, lin_target);
+}
+
 static void test_overlap_alpha(struct harness *h) {
 	printf("test 1: background + opaque rect + 50%% alpha surface\n");
 
@@ -2546,6 +2926,7 @@ int main(void) {
 	test_path_b_lut_encode(&h);
 	test_solid_colour_domain(&h);
 	test_c7_decode_path(&h);
+	test_blend_domain(&h);
 	test_overlap_alpha(&h);
 	test_crop_scale(&h);
 	test_transforms(&h);

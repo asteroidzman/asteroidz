@@ -499,10 +499,49 @@ wrong premultiplication, double premultiplication, straight alpha used as
 premultiplied, wrong source decode before blend, and encode-before-blend
 ordering where representable.
 
-Two acceptable outcomes, and the residual does not stay open past them:
+### RESOLVED — outcome B, and the modelling error has a name
 
-- **A real blend bug** — locate the first divergence, fix it, re-run the
-  targeted fixture, record the final code error.
-- **A final-image model artifact** — if the layer-aware fixture agrees within
-  tolerance, the 2–3% screenshot residual closes as NON-DIAGNOSTIC, because a
-  discriminating instrument answered what a non-discriminating one raised.
+`test_blend_domain` in `tests/test-avk-render.c`. Both arms render the same
+scene; each is checked against its own independently-computed model.
+
+| | |
+|---|---|
+| Path A (linear), vs model | **worst 1 code** |
+| UNORM arm (encoded), vs model | **worst 1 code** |
+| the two domains disagree here | 31 codes, 12 of 12 samples — the premise |
+
+**The renderer is correct, and it is more correct than the reference first
+written for it.** AVK un-premultiplies in the ENCODED domain, decodes, then
+re-premultiplies in LINEAR before the `over`. That is the right order:
+premultiplication is applied to encoded values by the client, so decoding the
+premultiplied value directly — the common approximation — is wrong by up to 49
+codes at these inputs.
+
+**That approximation is what the live screenshot model did, and it is the
+2–3% residual.** The first version of this fixture's own reference made the
+identical assumption and reported Path A as 51 codes wrong; the renderer was
+right and the model was wrong, in exactly the way the live A/B had been. So the
+residual closes as a **NON-DIAGNOSTIC FINAL-IMAGE MODEL ERROR**, with the error
+identified rather than merely retired.
+
+Each wrong form is ruled out **by the measured data**, not by comparison
+against the correct model — the claim is "the data excludes this", so it is
+made from the data:
+
+| wrong form | ruled out by |
+|---|---|
+| straight alpha used as premultiplied | 125 codes |
+| decoding the premultiplied value directly | 49 codes |
+| double premultiplication | 47 codes |
+| missing source decode | 46 codes |
+| encode-before-blend ordering | 26 codes |
+| gamma-domain blend | 31 codes |
+
+**Two things this found on the way.** Every alpha assertion in the suite until
+now rendered into the shared `B8G8R8A8_UNORM` target, so it composited on
+encoded codes — `test_overlap_alpha` asserts `0x80 + 255*(1-0.5) = 255`, which
+is only true if `0x80` is a code rather than a light value. The domain that
+ships had no blend coverage at all, and the residual sat exactly there. And the
+first colour pair chosen here was a near-mirror (`FG 200,80,30` over
+`BG 30,90,200`), which makes red and blue land on the same value at α=0.5 —
+two channels that stop being two samples.
