@@ -692,8 +692,19 @@ test('shipped-config', asteroidz_exe,
 mandir = get_option('mandir')
 desktop_install_dir = join_paths(prefix, 'share/wayland-sessions')
 portal_install_dir = join_paths(prefix, 'share/xdg-desktop-portal')
-install_data('assets/asteroidz.desktop', install_dir : desktop_install_dir)
-install_data('assets/asteroidz-vulkan.desktop', install_dir : desktop_install_dir)
+#
+# ── THREE SESSIONS, AND THE GREETER LIST IS PART OF THE PRODUCT ──────────
+#
+# Every entry here appears in the login screen the operator actually uses, so
+# the list is not free: an env-gated experiment left installed is a way to boot
+# into a configuration nobody meant to be in, and one of them was DELIBERATELY
+# BROKEN. Four were removed at once (fx_vk, two software-cursor variants, and
+# the M4A bottom-swap break) because their milestones had closed or they had
+# stopped being referenced -- and one of those, asteroidz-avk-swcursor, was
+# found installed on the machine while not being shipped from here at all: an
+# orphan left by an older build that outlived the source it came from. Sessions
+# added for one experiment need removing when that experiment ends.
+#
 # The AVK session sets WLR_RENDERER=gles2 deliberately rather than leaving it
 # unset. ASTEROIDZ_RENDERER is independent of it -- wlroots still needs a
 # renderer for shm formats, the allocator and screencopy, none of which are
@@ -701,23 +712,16 @@ install_data('assets/asteroidz-vulkan.desktop', install_dir : desktop_install_di
 # configuration contrib/avk-frame-test.sh asserts against.
 install_data('assets/asteroidz-avk.desktop', install_dir : desktop_install_dir)
 
-# Acceptance sessions. Installed rather than left as hand-written files under
-# /usr/share, because an acceptance run whose environment is a local artefact
-# cannot be reproduced later -- and "validation was on" is a claim the session
-# entry has to be able to back up. Both are deliberately slower than the plain
-# AVK session and say so in their own Comment.
-install_data('assets/asteroidz-avk-debug.desktop',
-	install_dir : desktop_install_dir)
-install_data('assets/asteroidz-avk-swcursor-debug.desktop',
-	install_dir : desktop_install_dir)
+# The GLES2/SceneFX session, kept as the way back in. If an AVK change makes
+# the desktop unusable, this is what the greeter still offers.
+install_data('assets/asteroidz.desktop', install_dir : desktop_install_dir)
 
-# A DELIBERATELY BROKEN session, installed on purpose. The M4A bottom-corner
-# falsifier needs a state the headless fixture cannot build -- a window dragged
-# past a monitor edge, where the cleared corner is off-screen and only its
-# opposite is measurable -- so the break has to be reachable from a real
-# greeter. Its own Comment says it is wrong; leaving it uninstalled would mean
-# the invariant stays untested instead.
-install_data('assets/asteroidz-avk-break-bottomswap.desktop',
+# The acceptance session, installed rather than left as a hand-written file
+# under /usr/share: an acceptance run whose environment is a local artefact
+# cannot be reproduced later, and "validation was on" is a claim the session
+# entry has to be able to back up. Deliberately slower than the plain AVK
+# session -- ~99x the CPU per frame -- and its Comment says so.
+install_data('assets/asteroidz-avk-debug.desktop',
 	install_dir : desktop_install_dir)
 install_data('assets/asteroidz-portals.conf', install_dir : portal_install_dir)
 install_data('assets/asteroidz.portal', install_dir : join_paths(prefix, 'share/xdg-desktop-portal/portals'))

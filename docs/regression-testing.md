@@ -1647,9 +1647,14 @@ are the same code path there. On real KMS they are not: one hands 64×64 to a
 plane, the other puts the compositor in the frame path for every pointer
 motion, at pointer rates, indefinitely.
 
-It needs a session started from
-`/usr/share/wayland-sessions/asteroidz-avk-swcursor.desktop`
-(`ASTEROIDZ_AVK_FORCE_SOFTWARE_CURSOR=1`). There is deliberately no runtime
+It needs a session with `ASTEROIDZ_AVK_FORCE_SOFTWARE_CURSOR=1` set at
+startup. **That session is no longer installed.** It shipped as
+`asteroidz-avk-swcursor.desktop` for M3.5E and was removed once that milestone
+closed, along with three other experiment-scoped entries — every one of them
+appears in the greeter the operator actually uses, so the list is not free.
+Re-running this needs the entry restored to `meson.build` first (see the
+session block there) and a logout; `restart` re-execs with the same environ and
+cannot add one. There is deliberately no runtime
 toggle: promotion and demotion are startup decisions, and a switch would let a
 test claim a transition the compositor never makes. The script checks
 `/proc/<pid>/environ` rather than the counters, because a counter cannot

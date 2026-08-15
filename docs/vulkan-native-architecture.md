@@ -1583,9 +1583,10 @@ It is a **startup** flag. There is no runtime toggle, so live evidence for
 promotion and demotion has to come from a recorder taking and dropping the lock
 rather than from flipping a switch.
 
-Which is also why the acceptance run for it is a live one.
-`/usr/share/wayland-sessions/asteroidz-avk-swcursor.desktop` starts a session
-with the flag set, and `contrib/avk-software-cursor-acceptance.sh` measures it.
+Which is also why the acceptance run for it is a live one. A session with the
+flag set at startup is what `contrib/avk-software-cursor-acceptance.sh`
+measures — though that session entry was **removed when M3.5 closed** and has
+to be restored to `meson.build` before the run is possible again.
 A headless output cannot: the headless backend's `output_set_cursor()` is
 `return true;`, so it believes it always has a plane — a fresh headless AVK
 instance reports `hardware_cursor_frames: 3, software_cursor_frames: 0` with no

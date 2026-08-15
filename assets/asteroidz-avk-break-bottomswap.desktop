@@ -1,8 +1,0 @@
-[Desktop Entry]
-Encoding=UTF-8
-Name=Asteroidz (AVK, BROKEN bottom-corner order — test only)
-DesktopNames=asteroidz;wlroots
-Comment=DELIBERATELY WRONG. Swaps the two bottom corner radii so BR takes BL's arc, restoring the ordering mistake fx_corner_radii invites. Exists so the M4A bottom-swap falsifier can be run against a real desktop, because the state it needs -- a window dragged past a monitor edge, where BL is off-screen and only BR is measurable -- cannot be built headlessly. Not for ordinary use.
-Exec=env WLR_RENDERER=gles2 ASTEROIDZ_RENDERER=avk ASTEROIDZ_VK_DEBUG=1 AZ_ROUNDED_BOTTOM_SWAP=1 asteroidz
-Icon=asteroidz
-Type=Application

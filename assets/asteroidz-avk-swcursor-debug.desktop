@@ -1,8 +1,0 @@
-[Desktop Entry]
-Encoding=UTF-8
-Name=Asteroidz (AVK, software cursor + Vulkan validation)
-DesktopNames=asteroidz;wlroots
-Comment=AVK with the cursor plane disabled AND Vulkan/synchronization validation enabled -- the M3.5 acceptance session. Slower than either alone; not for ordinary use
-Exec=env WLR_RENDERER=gles2 ASTEROIDZ_RENDERER=avk ASTEROIDZ_AVK_FORCE_SOFTWARE_CURSOR=1 ASTEROIDZ_VK_DEBUG=1 asteroidz
-Icon=asteroidz
-Type=Application
