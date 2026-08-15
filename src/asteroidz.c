@@ -1761,7 +1761,6 @@ static inline void client_set_scene_enabled(Client *c, bool enabled) {
 static struct wlr_renderer *drw;
 static struct wlr_allocator *alloc;
 static struct wlr_compositor *compositor;
-static struct wlr_color_manager_v1 *color_manager;
 
 static struct wlr_xdg_shell *xdg_shell;
 static struct wlr_xdg_activation_v1 *activation;
@@ -5903,15 +5902,24 @@ void mon_state_apply_color(Monitor *m, struct wlr_output_state *state) {
 			Client *candidate = mon_hdr_scanout_candidate(m);
 			struct wlr_surface *candidate_surface =
 				candidate ? client_surface(candidate) : NULL;
+			/*
+			 * THROUGH THE MULTIPLEXER, not wlroots' surface accessor.
+			 *
+			 * wlr_surface_get_image_description_v1_data() reads the addon
+			 * wlroots' own wp-cm implementation attaches -- and under native
+			 * ownership that implementation does not exist, so it returns NULL
+			 * forever. Every wp-cm client's mastering metadata would silently
+			 * stop reaching the scanout path, which is exactly the case this
+			 * block was added to fix.
+			 *
+			 * az_cm_surface_description() answers from native wp-cm first, then
+			 * frog -- the same one slot the scene consults, so the scanout path
+			 * and the composited path cannot disagree about what a surface is.
+			 */
 			const struct wlr_image_description_v1_data *content_desc =
 				candidate_surface
-					? wlr_surface_get_image_description_v1_data(
-						  candidate_surface)
+					? az_cm_surface_description(candidate_surface)
 					: NULL;
-			if (!content_desc && candidate_surface) {
-				content_desc =
-					frog_surface_image_description(candidate_surface);
-			}
 			if (content_desc && content_desc->tf_named ==
 									 WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_ST2084_PQ) {
 				if (content_desc->has_mastering_luminance) {
@@ -10029,7 +10037,7 @@ void setmon(Client *c, Monitor *m, uint32_t newtags, bool focus) {
  */
 static void surface_send_preferred_description(struct wlr_surface *surface,
 		Monitor *m) {
-	if (color_manager == NULL || surface == NULL) {
+	if (az_wpcm_global == NULL || surface == NULL) {
 		return;
 	}
 	/*
@@ -10128,17 +10136,12 @@ static void surface_send_preferred_description(struct wlr_surface *surface,
 			data->max_cll, data->max_fall);
 	}
 	/*
-	 * ONE POLICY, TWO SERIALIZERS -- and here is the second one. Under native
-	 * ownership there is no wlroots manager to hand this to; the feedback
-	 * objects are told directly, and they carry the mastering values wlroots
-	 * would have dropped.
+	 * ONE POLICY, TWO SERIALIZERS -- and here is the second one. The feedback
+	 * objects are told directly, and they carry the mastering values wlroots'
+	 * implementation dropped: this compositor's own wp-cm is the reason those
+	 * numbers reach a client at all.
 	 */
-	if (az_native_cm_enabled()) {
-		az_wpcm_send_preferred(surface);
-		return;
-	}
-	wlr_color_manager_v1_set_surface_preferred_image_description(color_manager,
-		surface, data);
+	az_wpcm_send_preferred(surface);
 }
 
 /* Every mapped client on `m`. Called when the output's colour state changes,
@@ -10680,45 +10683,27 @@ void setup(void) {
 		az_cm_caps_build(&caps, drw);
 
 		/*
-		 * EXACTLY ONE IMPLEMENTATION OWNS THE GLOBAL.
+		 * THE COMPOSITOR'S OWN wp-color-management, and the only one.
 		 *
-		 * wlr_color_manager_v1 has no destroy function -- it lives until display
-		 * teardown -- and two live wp_color_manager_v1 globals would both appear
-		 * in the registry with clients binding whichever they saw first. So the
-		 * choice is made once, here, at startup: native if AZ_NATIVE_CM selects
-		 * it, wlroots otherwise. Both paths are in the tree; never in a session.
+		 * wlroots' implementation is not created and not kept as a fallback. It
+		 * cannot serialize the mastering-luminance or content-light-level
+		 * events -- two literal TODOs in its image_desc_handle_get_information
+		 * -- which is the entire reason this exists; and it has no destroy
+		 * function, so it lives until display teardown and could never have
+		 * shared a session with a second manager anyway. Two live
+		 * wp_color_manager_v1 globals would both appear in the registry with
+		 * clients binding whichever they saw first.
 		 *
-		 * Both are handed the SAME capability set, so "the native manager
-		 * advertises what wlroots advertised" holds by construction rather than
-		 * by a second list somebody has to keep in step.
+		 * The capability set is built once, in az_cm_caps.h, from wlroots' own
+		 * enums -- so every value advertised round-trips through _to_wlr(), the
+		 * function that aborts on anything it cannot map. The lists are read on
+		 * every bind for the life of the session and are deliberately never
+		 * freed.
 		 */
-		if (az_wpcm_create(dpy, &caps)) {
-			/*
-			 * THE NATIVE MANAGER KEEPS THE LISTS. It reads them on every bind,
-			 * for the life of the session, so they must not be freed here --
-			 * az_cm_caps_finish() below runs only on the wlroots path, where
-			 * wlr_color_manager_v1_create() has already copied them into the
-			 * manager it built.
-			 */
-		} else {
-			/* only enable features wlr_color_manager_v1 implements; wlroots
-			 * asserts on the rest (set_luminances, mastering primaries, ...) */
-			struct wlr_color_manager_v1_options cm_options = {
-				.features =
-					{
-						.parametric = true,
-					},
-				.render_intents = az_cm_render_intents,
-				.render_intents_len = LENGTH(az_cm_render_intents),
-				.transfer_functions = caps.tfs,
-				.transfer_functions_len = caps.tf_len,
-				.primaries = caps.primaries,
-				.primaries_len = caps.primaries_len,
-			};
-			color_manager = wlr_color_manager_v1_create(dpy, AZ_WPCM_VERSION,
-				&cm_options);
+		if (!az_wpcm_create(dpy, &caps)) {
+			wlr_log(WLR_ERROR, "colour management: the manager global could not "
+					"be created; clients will not be able to describe their colour");
 		}
-		az_cm_caps_finish(&caps);
 
 		/* gamescope HDR passthrough: it can't use our wp-color-management
 		 * (needs six features, wlroots implements two), but its frog path
@@ -10727,6 +10712,15 @@ void setup(void) {
 		 * against, or if a user doesn't want gamescope HDR passthrough. */
 		if (config.frog_color_management) {
 			frog_color_management_init();
+			/*
+			 * gamescope's frog path is enabled by us answering PQ, and its
+			 * wp-cm path needs six features we do not implement -- so wp-cm is
+			 * hidden from it and frog is not. The filter keys on the GLOBAL,
+			 * which used to be wlroots' and is now ours; leaving it pointing
+			 * at the old one would have shown gamescope a manager it cannot
+			 * use and taken away the one it can.
+			 */
+			filtered_wp_color_manager_global = az_wpcm_global;
 		}
 		/*
 		 * ONE FALLBACK, BOTH PROTOCOLS, REGISTERED AFTER BOTH INITS.

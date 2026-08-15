@@ -40,14 +40,21 @@
  * be unmappable.
  */
 
+/*
+ * ── AND THE LISTS OUTLIVE EVERY CALLER ───────────────────────────────────
+ *
+ * There is no finish function and nothing frees these. The manager reads them
+ * on every bind for the life of the session, so whichever way they were built
+ * -- static storage on the AVK path, heap from wlroots' renderer helpers on the
+ * other -- they are process-lifetime. The one that used to free them ran on the
+ * wlroots-manager path, which no longer exists; freeing them now would hand the
+ * manager a dangling list to advertise from on the next client that connects.
+ */
 struct az_cm_caps {
 	const enum wp_color_manager_v1_transfer_function *tfs;
 	size_t tf_len;
 	const enum wp_color_manager_v1_primaries *primaries;
 	size_t primaries_len;
-	/* The two lists came from wlroots' renderer helpers and are heap
-	 * allocated; the AVK ones are static storage and must not be freed. */
-	bool owned;
 };
 
 /* Exactly the curves AVK has a decode variant for -- see enum
@@ -105,15 +112,6 @@ static void az_cm_caps_build(struct az_cm_caps *out, struct wlr_renderer *drw) {
 		drw, &out->tf_len);
 	out->primaries = wlr_color_manager_v1_primaries_list_from_renderer(
 		drw, &out->primaries_len);
-	out->owned = true;
-}
-
-static void az_cm_caps_finish(struct az_cm_caps *c) {
-	if (c->owned) {
-		free((void *)c->tfs);
-		free((void *)c->primaries);
-	}
-	*c = (struct az_cm_caps){0};
 }
 
 #endif /* AZ_CM_CAPS_H */

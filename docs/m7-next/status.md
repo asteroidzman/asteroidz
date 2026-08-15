@@ -442,36 +442,46 @@ perfectly. Only saturated colour moves visibly (`255,0,0 → 241,56,25`).
 
 ---
 
-## The colour-protocol boundary — a decision, not unfinished work
+## The colour-protocol boundary — closed by owning it
 
-Asteroidz speaks two colour-management protocols to clients. **They do not have
-identical expressive power, and pretending otherwise would be the dishonest
-part.**
+Asteroidz speaks two colour-management protocols to clients, and now
+**implements both**. It did not always; the asymmetry below is written in the
+past tense because closing it is the work.
 
 | | frog-color-management-v1 | wp-color-management-v1 |
 |---|---|---|
-| implemented by | **asteroidz**, in this tree | wlroots 0.20.2 |
+| implemented by | **asteroidz**, in this tree | **asteroidz**, in this tree (was: wlroots 0.20.2) |
 | primaries | yes | yes |
 | transfer function | yes | yes |
-| max luminance | **yes** | not serialized upstream |
-| min luminance | **yes** | not serialized upstream |
-| max FALL | **yes** | not serialized upstream |
+| max luminance | **yes** | **yes** (was: not serialized) |
+| min luminance | **yes** | **yes** (was: not serialized) |
+| max FALL | **yes** | **yes** (was: not serialized) |
 | used by | gamescope | mpv, kodi, browsers |
 
-The gap is one function: `image_desc_handle_get_information` in
+The gap had been one function: `image_desc_handle_get_information` in wlroots'
 `types/wlr_color_management_v1.c` sends the transfer function's *default*
 luminances and carries two literal `TODO`s where the real mastering values
-belong. Asteroidz supplies them correctly; wlroots discards them.
-
-**Say it precisely.** Not "asteroidz loses mastering metadata" — asteroidz
-retains it internally and exposes it through frog; the wlroots wp-cm frontend
-does not yet serialize the mastering-luminance / content-light-level events.
+belong. Asteroidz supplied them correctly; wlroots discarded them on the way
+out.
 
 **No local wlroots patch, no fork, no vendored overlay, no cherry-pick.** That
-is a standing decision: filling an upstream implementation gap with a carried
-patch buys one feature and a permanent dependency-maintenance liability. An
-upstream contribution is welcome and non-blocking; the tree must never depend on
-an unmerged one.
+standing decision is what shaped the fix. Filling an upstream implementation gap
+with a carried patch buys one feature and a permanent dependency-maintenance
+liability, so the alternative taken was to implement the protocol here:
+`src/ext-protocol/wp-color-management.h`, built on `wlr_surface_synced` and the
+generated protocol bindings, both of which are public API. wlroots stays a
+system package, unmodified. An upstream contribution is welcome and
+non-blocking; the tree must never depend on an unmerged one.
+
+**There is no second implementation behind a switch.** `wlr_color_manager_v1`
+is not created at all. It has no destroy function — it lives until display
+teardown — so two managers could never have shared a session anyway: both
+globals would appear in the registry and clients would bind whichever they saw
+first. The capability set both were handed is built once, in
+`src/ext-protocol/az_cm_caps.h`, from wlroots' *own* enums, so every advertised
+value round-trips through `_to_wlr()`, the function that aborts on anything it
+cannot map. `contrib/cm-native-caps-test.sh` pins the advertisement against the
+byte-for-byte recording taken while both implementations still existed.
 
 ### One policy, two serializers
 

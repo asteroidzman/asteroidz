@@ -412,8 +412,8 @@ static void frog_color_management_init(void) {
 	}
 	wl_global_create(dpy, &frog_color_management_factory_v1_interface, 1, NULL,
 					 frog_factory_bind);
-	if (color_manager)
-		filtered_wp_color_manager_global = color_manager->global;
+	/* filtered_wp_color_manager_global is assigned by setup() once the native
+	 * manager exists -- this file is included before it. */
 	/*
 	 * THE SCENE FALLBACK IS NOT REGISTERED HERE ANY MORE.
 	 *

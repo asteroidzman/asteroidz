@@ -15,29 +15,22 @@
  * WITHOUT PATCHING wlroots: no fork, no vendored copy, no local patch, no
  * dependency on an unmerged branch. wlroots stays a system package.
  *
- * ── WHAT PHASE 1 IS, AND WHAT IT DELIBERATELY IS NOT ─────────────────────
+ * ── THIS IS THE IMPLEMENTATION. THERE IS NO OTHER ONE. ───────────────────
  *
- * This file currently implements the MANAGER GLOBAL ONLY: the bind handler and
- * the capability advertisement. Every object-creating request is answered with
- * a protocol error naming itself as unimplemented.
+ * The wlroots path is gone rather than kept behind a switch. Two
+ * implementations in one tree means two capability sets, two lifetimes and two
+ * sets of bugs, and wlr_color_manager_v1 has no destroy function -- it lives
+ * until display teardown -- so they could never have coexisted in a session
+ * anyway. Keeping the loser as a fallback would have been a permanent
+ * maintenance surface for a path nobody runs, which is the shape of the
+ * back-compat this project declines on principle.
  *
- * That is why AZ_NATIVE_CM defaults OFF. A session with it on can enumerate
- * what the compositor supports and can do nothing else -- which is a useful
- * thing to be able to compare against the wlroots path byte for byte, and a
- * useless thing to run a desktop on.
- *
- * REFUSING LOUDLY RATHER THAN RETURNING A NIL OBJECT is deliberate. A request
- * that silently produced no object would leave the client waiting on events
- * that never arrive, which reads exactly like a compositor that is slow rather
- * than one that has not been written yet.
- *
- * ── WHY THE GLOBAL IS A SWITCH AND NOT A HANDOVER ────────────────────────
- *
- * wlr_color_manager_v1 has no destroy function -- it lives until display
- * teardown -- and two live wp_color_manager_v1 globals would both appear in the
- * registry with clients binding whichever they saw first. So exactly one
- * implementation creates the global per session, chosen at startup. Both paths
- * coexist in the tree; never in a session.
+ * What is NOT yet answered is answered LOUDLY: set_luminances and
+ * set_mastering_display_primaries are refused with the protocol's own
+ * unsupported_feature error rather than accepted and ignored. Native ownership
+ * makes them reachable, which is the strongest argument for having done this at
+ * all, but a request answered before the decode path uses the values would
+ * promise what nothing keeps.
  *
  * ── VERSION 2, MATCHING WHAT wlroots ADVERTISES TODAY ────────────────────
  *
@@ -55,22 +48,6 @@
 
 static struct wl_global *az_wpcm_global = NULL;
 static struct az_cm_caps az_wpcm_caps;
-
-/* Whether the native implementation owns the protocol this session.
- *
- * An environment variable rather than a config option ON PURPOSE: this is
- * scaffolding that gets deleted when the cutover completes, and a config option
- * that ships and is then removed is a user-visible setting that vanishes. The
- * standing rule here is no back-compat on removal, so the gate must not be
- * something a user could have written into their config. */
-static bool az_native_cm_enabled(void) {
-	static int cached = -1;
-	if (cached < 0) {
-		const char *v = getenv("AZ_NATIVE_CM");
-		cached = (v != NULL && *v != '\0' && strcmp(v, "0") != 0) ? 1 : 0;
-	}
-	return cached == 1;
-}
 
 /*
  * ── IDENTITIES ───────────────────────────────────────────────────────────
@@ -525,12 +502,10 @@ az_wpcm_surface_image_description(struct wlr_surface *surface) {
  */
 static const struct wlr_image_description_v1_data *
 az_cm_surface_description(struct wlr_surface *surface) {
-	if (az_native_cm_enabled()) {
-		const struct wlr_image_description_v1_data *d =
-			az_wpcm_surface_image_description(surface);
-		if (d != NULL) {
-			return d;
-		}
+	const struct wlr_image_description_v1_data *d =
+		az_wpcm_surface_image_description(surface);
+	if (d != NULL) {
+		return d;
 	}
 	return frog_surface_image_description(surface);
 }
@@ -967,9 +942,6 @@ static void az_wpcm_bind(struct wl_client *client, void *data,
  * exists in any session. */
 static bool az_wpcm_create(struct wl_display *dpy,
 		const struct az_cm_caps *caps) {
-	if (!az_native_cm_enabled()) {
-		return false;
-	}
 	az_wpcm_caps = *caps;
 	if (!az_wpcm_feedbacks_init) {
 		wl_list_init(&az_wpcm_feedbacks);
@@ -985,9 +957,8 @@ static bool az_wpcm_create(struct wl_display *dpy,
 		wlr_log(WLR_ERROR, "native colour manager: wl_global_create failed");
 		return false;
 	}
-	wlr_log(WLR_INFO, "colour management: NATIVE implementation owns "
-			"wp_color_manager_v1 (version %d, %zu transfer functions, "
-			"%zu primaries) -- development gate AZ_NATIVE_CM",
+	wlr_log(WLR_INFO, "colour management: wp_color_manager_v1 version %d, "
+			"%zu transfer functions, %zu primaries",
 			AZ_WPCM_VERSION, az_wpcm_caps.tf_len, az_wpcm_caps.primaries_len);
 	return true;
 }
