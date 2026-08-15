@@ -330,7 +330,11 @@ executable('amsg',
   wayland_scanner_private_code.process(dwl_ipc_protocol),
   wayland_scanner_client_header.process(dwl_ipc_protocol),
   dependencies: [
-    libwayland_client_dep
+    libwayland_client_dep,
+    # --require-* parses `get instance`. Scanning that response with strstr
+    # would make the identity check -- the one thing that must not be
+    # approximately right -- the least rigorous parse in the tree.
+    cjson_dep,
   ],
   install: true,
   c_args: [

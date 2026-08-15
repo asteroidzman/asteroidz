@@ -54,6 +54,7 @@ m6b-icc-drive-test.sh              required
 m6b-preferred-desc-test.sh         required
 m6b-transition-test.sh             required
 m6b-frog-metadata-test.sh          required
+amsg-identity-test.sh              required
 m6b-hdr-transition-live.sh         live
 avk-blur-cache-multi.sh            required
 avk-blur-cache-test.sh             required
@@ -141,12 +142,19 @@ for n in $(reg_names); do
 done
 
 # ── 2. every discovered suite is registered ───────────────────────────────
-# The half that keeps this file honest as the tree changes. A new avk-*.sh with
-# no disposition is not "probably fine": it is a suite nobody has decided
+# The half that keeps this file honest as the tree changes. A discovered suite
+# with no disposition is not "probably fine": it is a suite nobody has decided
 # whether to gate on.
+#
+# The glob covers every fixture FAMILY, not just avk-*. It used to be avk-*.sh
+# alone, which meant the m6a-*, m6b-* and amsg-* fixtures could be added and go
+# unregistered indefinitely -- decay in exactly the half written to prevent it,
+# and invisible for the same reason everything else here is: an unregistered
+# suite and a suite that passes look identical from outside.
 UNREG=""
-for f in avk-*.sh; do
+for f in avk-*.sh m6a-*.sh m6b-*.sh amsg-*.sh; do
 	[ "$f" = "avk-suite.sh" ] && continue
+	[ -e "$f" ] || continue
 	[ -n "$(reg_disp "$f")" ] || UNREG="$UNREG $f"
 done
 
@@ -182,7 +190,7 @@ for d in required perf live manual; do
 	c=$(echo "$REGISTER" | awk -v d="$d" '$2==d' | wc -l)
 	printf "  %-9s %2d\n" "$d" "$c"
 done
-echo "  discovered $(ls avk-*.sh | grep -cv '^avk-suite.sh$')"
+echo "  discovered $(ls avk-*.sh m6a-*.sh m6b-*.sh amsg-*.sh 2>/dev/null | grep -cv '^avk-suite.sh$')"
 echo
 
 if [ -n "$MISSING" ]; then

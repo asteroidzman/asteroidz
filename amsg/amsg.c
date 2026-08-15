@@ -1,4 +1,5 @@
 #define _GNU_SOURCE
+#include <cjson/cJSON.h>
 #include <dirent.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -17,6 +18,12 @@
 // silently (theme written, never reloaded). Prefer the env path only if it
 // still exists; otherwise fall back to the newest asteroidz-*.sock present in
 // XDG_RUNTIME_DIR. Returns a static buffer, or NULL if nothing is found.
+/* How many plausible instances the fallback had to choose between. Read by
+ * --require-*: "the newest socket" is a fine default and a terrible thing to
+ * measure through, so strict mode refuses an AMBIGUOUS choice rather than
+ * silently taking the same one the default would. */
+static int az_socket_candidates;
+
 static const char *resolve_socket(void) {
 	static char buf[256];
 	const char *env = getenv("ASTEROIDZ_INSTANCE_SIGNATURE");
@@ -48,10 +55,12 @@ static const char *resolve_socket(void) {
 			(int)sizeof(path)) {
 			continue;
 		}
-		if (stat(path, &st) == 0 && S_ISSOCK(st.st_mode) &&
-			st.st_mtime > best_mtime) {
-			best_mtime = st.st_mtime;
-			strncpy(best, path, sizeof(best) - 1);
+		if (stat(path, &st) == 0 && S_ISSOCK(st.st_mode)) {
+			az_socket_candidates++;
+			if (st.st_mtime > best_mtime) {
+				best_mtime = st.st_mtime;
+				strncpy(best, path, sizeof(best) - 1);
+			}
 		}
 	}
 	closedir(d);
@@ -61,6 +70,151 @@ static const char *resolve_socket(void) {
 		return buf;
 	}
 	return (env && *env) ? env : NULL;
+}
+
+/*
+ * ── PINNING THE TARGET ───────────────────────────────────────────────────
+ *
+ * `--require-pid`, `--require-build`, `--require-session`,
+ * `--require-validation` (or the AMSG_REQUIRE_* environment equivalents).
+ *
+ * WHY THIS EXISTS. An M6B live gate asserted `validation_enabled` as its
+ * precondition -- the guard against a vacuous `validation_errors: 0` -- and
+ * the assertion PASSED against a session that had no validation layer at all.
+ * amsg had fallen back to scanning XDG_RUNTIME_DIR and answered from a
+ * leftover headless test instance, and every headless M6B fixture sets
+ * ASTEROIDZ_VK_DEBUG=1, so the wrong respondent reported exactly the value the
+ * precondition wanted. The entire run's amsg-derived numbers described a
+ * different compositor.
+ *
+ * THE FALLBACK IS NOT THE BUG AND IS NOT REMOVED. It exists because
+ * ASTEROIDZ_INSTANCE_SIGNATURE goes stale on every restart, so a tool that
+ * inherited an old environment must still find the live compositor instead of
+ * failing silently against a dead socket. Deleting it to fix this would break
+ * the case it was written for. What was missing is a way for a caller that
+ * KNOWS which instance it means to say so and be refused otherwise.
+ *
+ * REFUSE, NEVER GUESS. Under --require-*, ambiguity is a failure: if the
+ * fallback had to choose between multiple live sockets, that is exactly the
+ * condition that produced the false pass, and picking the newest one again
+ * would reproduce it. A qualification harness gets an error and a non-zero
+ * exit, not a plausible answer.
+ */
+/* One connected socket to `path`, or -1 with the reason already reported. */
+static int az_connect(const char *path) {
+	int sock = socket(AF_UNIX, SOCK_STREAM, 0);
+	if (sock < 0) {
+		perror("socket");
+		return -1;
+	}
+	struct sockaddr_un addr = {.sun_family = AF_UNIX};
+	strncpy(addr.sun_path, path, sizeof(addr.sun_path) - 1);
+	if (connect(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+		perror("connect");
+		close(sock);
+		return -1;
+	}
+	return sock;
+}
+
+struct az_require {
+	long pid;			 /* -1 = unset */
+	const char *build;	 /* NULL = unset */
+	const char *session; /* NULL = unset */
+	int validation;		 /* 0 = unset, 1 = must be true */
+	int any;
+};
+
+static void az_require_from_env(struct az_require *r) {
+	const char *v;
+	if ((v = getenv("AMSG_REQUIRE_PID")) && *v) {
+		r->pid = atol(v);
+		r->any = 1;
+	}
+	if ((v = getenv("AMSG_REQUIRE_BUILD")) && *v) {
+		r->build = v;
+		r->any = 1;
+	}
+	if ((v = getenv("AMSG_REQUIRE_SESSION")) && *v) {
+		r->session = v;
+		r->any = 1;
+	}
+	if ((v = getenv("AMSG_REQUIRE_VALIDATION")) && *v && strcmp(v, "0") != 0) {
+		r->validation = 1;
+		r->any = 1;
+	}
+}
+
+/* Ask the connected instance who it is and hold it to the requirements.
+ * Returns 0 on match, non-zero on refusal. */
+static int az_verify_instance(int sock, const struct az_require *r,
+							  int print_only) {
+	const char *q = "get instance\n";
+	if (write(sock, q, strlen(q)) < 0) {
+		fprintf(stderr, "amsg: could not ask the compositor for its identity\n");
+		return 1;
+	}
+	char buf[4096];
+	ssize_t n = read(sock, buf, sizeof(buf) - 1);
+	if (n <= 0) {
+		fprintf(stderr, "amsg: no identity response\n");
+		return 1;
+	}
+	buf[n] = '\0';
+	cJSON *j = cJSON_Parse(buf);
+	if (!j) {
+		fprintf(stderr, "amsg: identity response was not JSON -- this build of "
+						"the compositor has no `get instance`\n");
+		return 1;
+	}
+	cJSON *pid = cJSON_GetObjectItem(j, "pid");
+	cJSON *build = cJSON_GetObjectItem(j, "build");
+	cJSON *sess = cJSON_GetObjectItem(j, "session");
+	cJSON *sockp = cJSON_GetObjectItem(j, "socket");
+	cJSON *exe = cJSON_GetObjectItem(j, "exe");
+	cJSON *backend = cJSON_GetObjectItem(j, "backend");
+	cJSON *val = cJSON_GetObjectItem(j, "validation_enabled");
+
+	if (print_only) {
+		printf("pid                %.0f\n", cJSON_IsNumber(pid) ? pid->valuedouble : -1);
+		printf("build              %s\n", cJSON_IsString(build) ? build->valuestring : "?");
+		printf("exe                %s\n", cJSON_IsString(exe) ? exe->valuestring : "?");
+		printf("socket             %s\n", cJSON_IsString(sockp) ? sockp->valuestring : "?");
+		printf("backend            %s\n", cJSON_IsString(backend) ? backend->valuestring : "?");
+		printf("session            %s\n", cJSON_IsString(sess) ? sess->valuestring : "?");
+		printf("validation_enabled %s\n", cJSON_IsTrue(val) ? "true" : "false");
+		printf("candidates         %d\n", az_socket_candidates);
+		cJSON_Delete(j);
+		return 0;
+	}
+
+	int bad = 0;
+	if (r->pid >= 0 &&
+		(!cJSON_IsNumber(pid) || (long)pid->valuedouble != r->pid)) {
+		fprintf(stderr, "amsg: WRONG INSTANCE -- required pid %ld, answered %.0f\n",
+				r->pid, cJSON_IsNumber(pid) ? pid->valuedouble : -1);
+		bad = 1;
+	}
+	if (r->build &&
+		(!cJSON_IsString(build) || strcmp(build->valuestring, r->build) != 0)) {
+		fprintf(stderr, "amsg: WRONG BUILD -- required %s, answered %s\n",
+				r->build, cJSON_IsString(build) ? build->valuestring : "?");
+		bad = 1;
+	}
+	if (r->session &&
+		(!cJSON_IsString(sess) || strcmp(sess->valuestring, r->session) != 0)) {
+		fprintf(stderr, "amsg: WRONG SESSION -- required %s, answered %s\n",
+				r->session, cJSON_IsString(sess) ? sess->valuestring : "?");
+		bad = 1;
+	}
+	if (r->validation && !cJSON_IsTrue(val)) {
+		fprintf(stderr, "amsg: VALIDATION NOT LOADED on the instance that "
+						"answered (pid %.0f)\n",
+				cJSON_IsNumber(pid) ? pid->valuedouble : -1);
+		bad = 1;
+	}
+	cJSON_Delete(j);
+	return bad;
 }
 
 static void usage(void) {
@@ -140,6 +294,55 @@ int main(int argc, char *argv[]) {
 		return EXIT_SUCCESS;
 	}
 
+	/* --require-* and --instance are consumed here, before the command is
+	 * read, so everything below sees the argv it would have seen without
+	 * them. Environment equivalents let a harness export the pin once and
+	 * have every amsg call in the script inherit it -- which is the point:
+	 * a pin that must be repeated per call is a pin somebody will forget on
+	 * the one call that mattered. */
+	struct az_require require = {.pid = -1};
+	int print_instance = 0;
+	az_require_from_env(&require);
+	int w = 1;
+	for (int i = 1; i < argc; i++) {
+		const char *a = argv[i];
+		if (strncmp(a, "--require-pid=", 14) == 0) {
+			require.pid = atol(a + 14);
+			require.any = 1;
+		} else if (strncmp(a, "--require-build=", 16) == 0) {
+			require.build = a + 16;
+			require.any = 1;
+		} else if (strncmp(a, "--require-session=", 18) == 0) {
+			require.session = a + 18;
+			require.any = 1;
+		} else if (strcmp(a, "--require-validation") == 0) {
+			require.validation = 1;
+			require.any = 1;
+		} else if (strcmp(a, "--instance") == 0) {
+			print_instance = 1;
+		} else {
+			argv[w++] = argv[i];
+		}
+	}
+	argc = w;
+	argv[argc] = NULL;
+
+	if (print_instance && argc < 2) {
+		/* `amsg --instance` on its own is the report, not a command. */
+		const char *sp = resolve_socket();
+		if (!sp) {
+			fprintf(stderr, "Error: no asteroidz IPC socket found\n");
+			return EXIT_FAILURE;
+		}
+		int vs = az_connect(sp);
+		if (vs < 0) {
+			return EXIT_FAILURE;
+		}
+		int rc = az_verify_instance(vs, &require, 1);
+		close(vs);
+		return rc == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
+	}
+
 	if (argc < 2) {
 		fprintf(stderr, "Usage: amsg <command> [args...]\n");
 		fprintf(stderr, "  get <type> ...      one-shot request\n");
@@ -156,18 +359,41 @@ int main(int argc, char *argv[]) {
 		return EXIT_FAILURE;
 	}
 
-	int sock = socket(AF_UNIX, SOCK_STREAM, 0);
-	if (sock < 0) {
-		perror("socket");
-		return EXIT_FAILURE;
+	/*
+	 * The identity check runs on its own connection: a one-shot command closes
+	 * the socket once its reply has flushed, so the verification and the real
+	 * command cannot share one. They resolve the SAME path, which is what makes
+	 * the check meaningful -- it is the endpoint that is pinned, not the
+	 * connection.
+	 */
+	if (require.any || print_instance) {
+		if (require.any && az_socket_candidates > 1 &&
+			!(getenv("ASTEROIDZ_INSTANCE_SIGNATURE") &&
+			  *getenv("ASTEROIDZ_INSTANCE_SIGNATURE"))) {
+			fprintf(stderr,
+					"amsg: AMBIGUOUS TARGET -- %d live asteroidz sockets in "
+					"XDG_RUNTIME_DIR and no ASTEROIDZ_INSTANCE_SIGNATURE. "
+					"Refusing to guess; this is the condition that made a live "
+					"gate read another compositor's telemetry.\n",
+					az_socket_candidates);
+			return EXIT_FAILURE;
+		}
+		int vsock = az_connect(socket_path);
+		if (vsock < 0) {
+			return EXIT_FAILURE;
+		}
+		int rc = az_verify_instance(vsock, &require, print_instance);
+		close(vsock);
+		if (rc != 0) {
+			return EXIT_FAILURE;
+		}
+		if (print_instance && argc < 2) {
+			return EXIT_SUCCESS;
+		}
 	}
 
-	struct sockaddr_un addr = {.sun_family = AF_UNIX};
-	strncpy(addr.sun_path, socket_path, sizeof(addr.sun_path) - 1);
-
-	if (connect(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-		perror("connect");
-		close(sock);
+	int sock = az_connect(socket_path);
+	if (sock < 0) {
 		return EXIT_FAILURE;
 	}
 

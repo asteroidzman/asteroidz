@@ -1,4 +1,4 @@
-.TH "amsg" "1" "2026-07-12" "asteroidz" "amsg manual"
+.TH "amsg" "1" "2026-08-15" "asteroidz" "amsg manual"
 .SH NAME
 amsg \- send commands to the asteroidz Wayland compositor and receive JSON responses
 .SH SYNOPSIS
@@ -20,6 +20,19 @@ All \fBget\fR commands print a single JSON object and then close the connection.
 .TP
 \fBget version\fR
 Return compositor version.
+.TP
+\fBget instance\fR
+Return the identity of the compositor that answered: \fBpid\fR, \fBversion\fR,
+\fBbuild\fR (the ELF build\-id of the running image), \fBsocket\fR, \fBexe\fR,
+\fBbackend\fR (\fBdrm\fR or \fBheadless\fR), \fBsession\fR, \fBrenderer\fR and
+\fBvalidation_enabled\fR.
+.IP
+Intended for qualification harnesses, which must be able to prove which
+instance produced a measurement before the measurement means anything.
+\fBbuild\fR is the build\-id rather than \fBexe\fR or \fBversion\fR because a
+compositor whose binary has been replaced by a fresh install reports
+\fB/usr/bin/asteroidz (deleted)\fR, and \fBversion\fR is identical across every
+build of a release.
 .TP
 \fBget cursorpos\fR
 Return the global pointer position (\fBx\fR, \fBy\fR) and the monitor under it
@@ -636,11 +649,46 @@ privileges. See \fBdocs/visuals/effects.md\fR.
 .TP
 \fBdump_blur_source\fR,<string>
 .\" END GENERATED DISPATCHES
+.SH TARGETING A SPECIFIC INSTANCE
+By default \fBamsg\fR prefers \fIASTEROIDZ_INSTANCE_SIGNATURE\fR when it names a
+live socket, and otherwise falls back to the newest \fBasteroidz\-*.sock\fR in
+\fIXDG_RUNTIME_DIR\fR. The fallback exists because the signature goes stale on
+every compositor restart, so a tool that inherited an older environment would
+otherwise fail silently against a dead socket.
+.PP
+That convenience is wrong for measurement. With several compositors alive \(em a
+desktop session and a headless test instance, say \(em the fallback can answer
+from one that is not under test, and a precondition asserted through it can
+pass for the wrong reason. The following options make \fBamsg\fR refuse rather
+than guess. Each has an environment equivalent so a harness can pin once and
+have every later call inherit it.
+.TP
+\fB\-\-require\-pid=\fIN\fR (\fIAMSG_REQUIRE_PID\fR)
+Fail unless the compositor that answers reports process id \fIN\fR.
+.TP
+\fB\-\-require\-build=\fIHEX\fR (\fIAMSG_REQUIRE_BUILD\fR)
+Fail unless its ELF build\-id matches.
+.TP
+\fB\-\-require\-session=\fINAME\fR (\fIAMSG_REQUIRE_SESSION\fR)
+Fail unless its \fIDESKTOP_SESSION\fR matches.
+.TP
+\fB\-\-require\-validation\fR (\fIAMSG_REQUIRE_VALIDATION\fR)
+Fail unless the Vulkan validation layer is loaded in it. Without this, a
+\fBvalidation_errors: 0\fR reading is vacuous.
+.TP
+\fB\-\-instance\fR
+Print the identity of the instance that would be used and exit.
+.PP
+When any \fB\-\-require\-*\fR option is given and \fIASTEROIDZ_INSTANCE_SIGNATURE\fR
+is unset while more than one live socket exists, \fBamsg\fR reports an ambiguous
+target and exits non\-zero. Picking the newest one is what produced a false pass;
+under an explicit requirement, ambiguity is a failure.
 .SH ENVIRONMENT
 .TP
 \fIASTEROIDZ_INSTANCE_SIGNATURE\fR
 Path to the compositor's IPC socket. Set automatically by \fBasteroidz\fR(1).
-If unset, \fBamsg\fR prints an error and exits.
+If unset, \fBamsg\fR falls back as described above; if nothing is found it
+prints an error and exits.
 .SH EXIT STATUS
 .TP
 \fB0\fR

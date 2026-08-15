@@ -24,6 +24,7 @@ description: Control asteroidz programmatically using amsg.
 | Command | Description |
 | :--- | :--- |
 | `get version` | Returns the current version of the compositor. |
+| `get instance` | Returns the identity of the compositor that answered: `pid`, `version`, `build` (the ELF build-id of the running image), `socket`, `exe`, `backend`, `session`, `renderer` and `validation_enabled`. For qualification harnesses — see [Which compositor answered](#which-compositor-answered). |
 | `get cursorpos` | Returns the global pointer position (`x`, `y`), the monitor under it, and what the pointer currently looks like: `cursor-shape` is the [`wp_cursor_shape_v1`](https://wayland.app/protocols/cursor-shape-v1) name the focused client last asked for (`"default"`, `"pointer"`, `"text"`, …, or `"unset"` if none has), and `cursor-surface` is `true` when the client supplied a surface of its own instead, in which case there is no shape to name. |
 | `get idle` | Returns `inhibited` (what the idle notifier was told — will this machine sleep), `manual` (the flag `toggle_idle_inhibit` owns), and `portal` (every live [Inhibit portal](./configuration/xdg-portals.md#inhibit) request, with the app that asked, its reason and its flags). Separate fields because a client's own inhibitor is not something a toggle can clear, and a portal request has no window to point at. |
 | `get keymode` | Returns the current active keyboard mode (e.g., normal, insert). |
@@ -51,6 +52,40 @@ amsg get all-clients
 amsg get all-monitors
 amsg get cursorpos
 ```
+
+#### Which compositor answered
+
+A measurement is worth nothing until the instance that produced it is known.
+
+`amsg` prefers `ASTEROIDZ_INSTANCE_SIGNATURE` when it names a live socket and
+otherwise falls back to the newest `asteroidz-*.sock` in `XDG_RUNTIME_DIR`. That
+fallback is correct and stays: the signature goes stale on every restart, so a
+tool holding an older environment would otherwise fail silently against a dead
+socket — a theme written and never reloaded.
+
+It is wrong for measurement. An M6B live gate asserted `validation_enabled` as
+its precondition — the guard against a vacuous `validation_errors: 0` — and the
+assertion **passed against a session with no validation layer at all**. The
+fallback had answered from a leftover headless test instance, and every headless
+fixture sets `ASTEROIDZ_VK_DEBUG=1`, so the wrong respondent reported exactly the
+value the precondition was looking for. Every amsg-derived number in that run
+described a different compositor.
+
+So `get instance` reports identity, and `amsg --require-pid=` / `--require-build=`
+/ `--require-session=` / `--require-validation` enforce it, with `AMSG_REQUIRE_*`
+environment equivalents so a harness pins once rather than per call. Under any
+requirement, **ambiguity is a failure**: an unset signature with more than one
+live socket exits non-zero rather than picking the newest, because picking the
+newest is what produced the false pass.
+
+`build` is the ELF build-id, not `exe` and not `version`. A compositor whose
+binary has been replaced by a fresh install reports `/usr/bin/asteroidz
+(deleted)` — exactly the state in which "is this the build I think it is?"
+matters most — and `version` is identical across every build of a release.
+
+`contrib/amsg-identity-test.sh` holds this to two live instances that differ in
+pid and validation state, and asserts that difference as a premise: two identical
+compositors cannot distinguish "picked the right one" from "picked either one".
 
 #### Large replies
 

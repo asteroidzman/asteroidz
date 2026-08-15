@@ -1212,6 +1212,15 @@ static bool az_avk_is_active(void) {
 	return avk.active;
 }
 
+/* Is the Vulkan validation layer actually loaded? The same value avk-stats
+ * reports, reachable without parsing that response -- `get instance` answers
+ * it alongside the identity, so a live gate can settle "who answered, and can
+ * they see VUIDs at all" in ONE round trip. Two round trips is two chances for
+ * the second to reach a different compositor than the first. */
+static bool az_avk_validation_enabled(void) {
+	return avk.instance != NULL && avk.instance->validation_enabled;
+}
+
 static bool az_avk_scanout_srgb_format_ok(uint32_t fourcc) {
 	if (!avk.active) {
 		return false;

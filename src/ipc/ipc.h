@@ -9,6 +9,7 @@
 #include <sys/un.h>
 #include <unistd.h>
 
+#include "az_identity.h"
 #include "ipc-config.h"
 #include "ipc-rules.h"
 #include "ipc-out.h"
@@ -612,6 +613,10 @@ static const char *cursor_shape_name(enum wp_cursor_shape_device_v1_shape s) {
 	return "unset";
 }
 
+/* Declared here rather than beside ipc_init: `get instance` reports it, and
+ * a harness pinning its target needs the endpoint the answer came from. */
+static char ipc_socket_path[256];
+
 /* ---------- one-shot command handling ---------- */
 static void handle_command(int client_fd, const char *cmd_raw) {
 	cJSON *resp = NULL;
@@ -627,6 +632,38 @@ static void handle_command(int client_fd, const char *cmd_raw) {
 	if (strcmp(cmd, "get version") == 0) {
 		resp = cJSON_CreateObject();
 		cJSON_AddStringToObject(resp, "version", VERSION);
+	} else if (strcmp(cmd, "get instance") == 0) {
+		/*
+		 * WHICH COMPOSITOR IS ANSWERING. Everything a qualification harness
+		 * needs to prove it is talking to the instance it means, in one
+		 * round trip, so the check happens BEFORE any measurement rather
+		 * than being reconstructed from a log afterwards.
+		 *
+		 * See az_identity.h for why `build` is the ELF build-id and not the
+		 * path or VERSION: a freshly-installed-over binary reads
+		 * "/usr/bin/asteroidz (deleted)", which is exactly the moment the
+		 * question matters.
+		 */
+		resp = cJSON_CreateObject();
+		cJSON_AddNumberToObject(resp, "pid", (double)getpid());
+		cJSON_AddStringToObject(resp, "version", VERSION);
+		cJSON_AddStringToObject(resp, "build", az_build_id());
+		cJSON_AddStringToObject(resp, "socket", ipc_socket_path);
+		char exe[512];
+		ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+		exe[n > 0 ? n : 0] = '\0';
+		cJSON_AddStringToObject(resp, "exe", exe);
+		cJSON_AddStringToObject(resp, "backend",
+								wlr_backend_is_headless(backend) ? "headless"
+																 : "drm");
+		const char *sess = getenv("DESKTOP_SESSION");
+		cJSON_AddStringToObject(resp, "session", sess ? sess : "");
+		const char *rend = getenv("ASTEROIDZ_RENDERER");
+		cJSON_AddStringToObject(resp, "renderer", rend ? rend : "");
+		/* The precondition an M6B live gate needs, from the instance itself
+		 * rather than from whichever process happened to answer. */
+		cJSON_AddBoolToObject(resp, "validation_enabled",
+							  az_avk_validation_enabled());
 	} else if (strcmp(cmd, "get cursorpos") == 0) {
 		resp = cJSON_CreateObject();
 		cJSON_AddNumberToObject(resp, "x", cursor->x);
@@ -1878,7 +1915,6 @@ void ipc_notify_kb_layout(void) {
 /* ---------- init and cleanup ---------- */
 static int ipc_sock_fd = -1;
 static struct wl_event_source *ipc_event_source = NULL;
-static char ipc_socket_path[256];
 
 void ipc_init(struct wl_event_loop *event_loop) {
 	wl_list_init(&watch_clients);
