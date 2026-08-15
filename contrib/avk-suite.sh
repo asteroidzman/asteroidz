@@ -122,6 +122,7 @@ avk-transform-live-test.sh         live
 avk-oracle-runs.sh                 manual
 avk-transform-classify.sh          manual
 xw-scale-test.sh                   required
+xw-mixed-test.sh                   required
 "
 
 WANT="${1:---audit}"

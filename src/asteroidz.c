@@ -10008,8 +10008,23 @@ void setmon(Client *c, Monitor *m, uint32_t newtags, bool focus) {
 
 	/* The monitor decides the X11 scale, so this is the moment it can change.
 	 * Before the resize below, so the configure that follows is already in
-	 * the new unit rather than one frame behind it. */
-	client_update_x11_scale(c);
+	 * the new unit rather than one frame behind it.
+	 *
+	 * BREAK: AZ_BREAK_X11_MON_MIGRATE=1 skips it, leaving a window measured
+	 * in the units of the display it OPENED on. That is the most plausible
+	 * way to get this wrong, and on a single-output layout it is
+	 * indistinguishable from correct -- which is why
+	 * contrib/xw-mixed-test.sh exists and runs two outputs at two scales. */
+	{
+		static int break_migrate = -1;
+		if (break_migrate < 0) {
+			const char *e = getenv("AZ_BREAK_X11_MON_MIGRATE");
+			break_migrate = e && *e && *e != '0';
+		}
+		if (!break_migrate) {
+			client_update_x11_scale(c);
+		}
+	}
 
 	/* Scene graph sends surface leave/enter events on move and resize */
 	if (oldmon)
@@ -12072,26 +12087,92 @@ static void x11_scale_apply_iter(struct wlr_scene_buffer *buffer, int32_t sx,
 												 : WLR_SCALE_FILTER_NEAREST);
 }
 
-/* The scale an X11 client should be sized in, from the monitor it is on.
+/* The scale of a monitor, as an X11 client would be measured in it.
+ *
+ * At or below 1 there is nothing to force: the buffer would have to be
+ * SMALLER than the logical box, and the logical -> pixel -> logical round trip
+ * stops being lossless below 1, which would drift geometry a pixel at a time.
+ * See client_x11_scale(). */
+static float x11_scale_of_mon(Monitor *m) {
+	if (!m || !m->wlr_output) {
+		return 1.0f;
+	}
+	float s = (float)m->wlr_output->scale;
+	return s > 1.0f ? s : 1.0f;
+}
+
+/*
+ * ── WHICH MONITOR AN X11 WINDOW IS MEASURED IN ───────────────────────────
+ *
+ * For a managed client this is not a question: c->mon is decided by setmon
+ * and everything follows from it. An override-redirect window -- a menu, a
+ * tooltip, a drag icon, a splash -- never goes through setmon at all and has
+ * no monitor of its own, so it has to be attributed.
+ *
+ * THE OBVIOUS ANSWER, LOOKING UP ITS POSITION, IS AMBIGUOUS BY CONSTRUCTION.
+ * With this option on, each monitor's X11 zone is its logical box multiplied
+ * by its OWN scale, and those products overlap on a mixed-DPI layout: a
+ * 1920x1080 output at 1.25 is logical 0..1536 and X11 0..1920, while the
+ * output starting at logical 1536 with scale 1 is X11 1536..3456. X11
+ * coordinate 1700 is inside both zones and there is no arithmetic that can
+ * say which one meant it.
+ *
+ * A POPUP'S PARENT IS NOT AMBIGUOUS. It is a managed window with a monitor,
+ * and a menu belongs to the window that opened it. That is also the only
+ * answer that keeps parent and popup in the SAME unit -- the client computed
+ * the offset between them itself, and it is only correct if both are measured
+ * the same way. So the parent is asked first, and the zone lookup is the
+ * fallback for a window that has none. Its first match wins, in monitor
+ * order: a stated, repeatable rule rather than whichever one happened to be
+ * checked first.
+ */
+static Monitor *client_x11_monitor(Client *c) {
+	if (c->mon) {
+		return c->mon;
+	}
+
+	struct wlr_xwayland_surface *parent = c->surface.xwayland->parent;
+	while (parent != NULL) {
+		Client *pc = parent->data;
+		if (pc && pc->mon) {
+			return pc->mon;
+		}
+		/* A tooltip on a menu on a window: keep walking rather than give up
+		 * at the first unmapped link, which has no monitor either. */
+		parent = parent->parent;
+	}
+
+	int32_t x = c->surface.xwayland->x, y = c->surface.xwayland->y;
+	Monitor *m;
+	wl_list_for_each(m, &mons, link) {
+		if (!m->wlr_output || !m->wlr_output->enabled) {
+			continue;
+		}
+		float s = config.xwayland_force_scale_one ? x11_scale_of_mon(m) : 1.0f;
+		struct wlr_box zone = {
+			.x = (int32_t)lroundf((float)m->m.x * s),
+			.y = (int32_t)lroundf((float)m->m.y * s),
+			.width = (int32_t)lroundf((float)m->m.width * s),
+			.height = (int32_t)lroundf((float)m->m.height * s),
+		};
+		if (wlr_box_contains_point(&zone, x, y)) {
+			return m;
+		}
+	}
+
+	return selmon;
+}
+
+/* The scale an X11 client should be sized in.
  *
  * Not the sharpest output in the layout, and not a global: two displays at
- * different scales are the reason this is per client at all. A client with no
- * monitor yet falls back to selmon, which is where it is about to be placed.
+ * different scales are the reason this is per client at all.
  */
 static float client_x11_target_scale(Client *c) {
 	if (!config.xwayland_force_scale_one || !client_is_x11(c)) {
 		return 1.0f;
 	}
-	Monitor *m = c->mon ? c->mon : selmon;
-	if (!m || !m->wlr_output) {
-		return 1.0f;
-	}
-	float s = (float)m->wlr_output->scale;
-	/* At or below 1 there is nothing to force: the buffer would have to be
-	 * SMALLER than the logical box, and the logical -> pixel -> logical round
-	 * trip stops being lossless, which would drift geometry a pixel at a
-	 * time. See client_x11_scale(). */
-	return s > 1.0f ? s : 1.0f;
+	return x11_scale_of_mon(client_x11_monitor(c));
 }
 
 void client_update_x11_scale(Client *c) {
@@ -12118,9 +12199,15 @@ void client_update_x11_scale(Client *c) {
 	 * Skipped while c->geom is still empty. The first call happens in
 	 * mapnotify BEFORE the geometry has been read, deliberately (see there),
 	 * and configuring a window to 0x0 at that point would be the only lasting
-	 * effect of it. */
-	if (c->geom.width > 0 && c->geom.height > 0 && client_surface(c) &&
-		client_surface(c)->mapped) {
+	 * effect of it.
+	 *
+	 * NOT for an override-redirect window. Those place and size themselves;
+	 * the compositor telling one what size to be is how a menu ends up
+	 * fighting its own client for its geometry. Its presentation and its
+	 * geometry-in conversion have already changed above, which is what makes
+	 * it read correctly, and its next self-configure settles the rest. */
+	if (!client_is_unmanaged(c) && c->geom.width > 0 && c->geom.height > 0 &&
+		client_surface(c) && client_surface(c)->mapped) {
 		client_set_size(c, c->geom.width, c->geom.height);
 	}
 }
@@ -12374,6 +12461,13 @@ void xwaylandready(struct wl_listener *listener, void *data) {
 
 static void setgeometrynotify(struct wl_listener *listener, void *data) {
 	Client *c = wl_container_of(listener, c, set_geometry);
+
+	/* An override-redirect window never reaches setmon, so moving one to
+	 * another display is the ONLY way its scale can change -- and it is a
+	 * real case: a menu opened near a seam can be placed on the neighbouring
+	 * monitor. Re-attributed before the position is read, so both halves of
+	 * this function agree about which unit they are in. */
+	client_update_x11_scale(c);
 
 	/* BOUNDARY 2. A scene node's position is logical; the X window's is not. */
 	wlr_scene_node_set_position(

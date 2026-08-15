@@ -1645,6 +1645,64 @@ the sampled region. Measured on a region that deliberately missed: 25 600 red
 pixels and a `scaled` verdict, exactly the false pass that assertion exists to
 stop.
 
+### Two displays, two scales
+
+`contrib/xw-mixed-test.sh` is the same question asked where it can have two
+different answers.
+
+With one output there is only one scale, so a per-client scale, a global
+scale, the sharpest scale in the layout and "whatever `selmon` is" all produce
+the same number — a single-output fixture passes against all four. The layout
+here is mismatched in both resolution and scale:
+
+```text
+HEADLESS-1   1920x1080 at 1.25   logical 1536x864    layout x = 0
+HEADLESS-2   2880x1620 at 1.5    logical 1920x1080   layout x = 1536
+```
+
+A fullscreen X window must be configured 1920×1080 on the first and 2880×1620
+on the second. Those differ in both axes and neither is derivable from the
+other, so an implementation sharing one scale across the layout fails on
+whichever output it is not tracking. The fixture moves one window between them
+with `tag_monitor` and asserts the configure both times, plus a click on each
+(logical 900 into the window is raw 1125 at 1.25×; 600 is 900 at 1.5×) and a
+capture of each output.
+
+**The numbers are chosen so that `logical × scale` is a whole number** —
+1536 × 1.25 = 1920 and 1920 × 1.5 = 2880 exactly. Not to flatter the feature:
+so that the fixture measures monitor *attribution* rather than rounding. A
+mode like 2560×1440 at 1.5 has a logical width of 1706.67, which wlroots
+rounds to 1707, and 1707 × 1.5 is 2560.5 — the configure comes back a pixel
+wide and the assertion fails for a reason that has nothing to do with which
+monitor was picked.
+
+**Every geometry assertion is monitor-relative.** The second output starts at
+logical x = 1536, so anything written against an origin of 0,0 would pass on
+one output and fail here — which is the same trap live multi-monitor runs hit.
+
+**The click probe on the second output is at logical 600, not 900, and the
+reason is a real limitation rather than a tuning choice.** That window sits at
+X 2304 and is 2880 wide, while the whole X screen is only 3456 — so it runs
+off the right of the X screen at local x = 1152 and X11 clamps the pointer to
+the root window. A probe past that point reports the screen edge no matter
+what the compositor sent. See the `1.25-screen-clamp` arm of
+`contrib/xw-scale-test.sh`, which asserts that clamping deliberately.
+
+`AZ_BREAK_X11_MON_MIGRATE=1` is its falsifier: never re-evaluate the scale when
+a window changes monitor, so it keeps the units of the display it opened on.
+That is the most plausible way to get this wrong and it is invisible on a
+single output. Observed red at 13/17, with the first output still green and
+the second reporting a 2400×1350 configure — the second output's logical box
+times the *first* output's scale.
+
+**The fixture's own first run was a false negative.** It assumed the window
+would open on `HEADLESS-1`; it opened on `HEADLESS-2` — whichever `selmon`
+happens to be — so the "on mon1" half measured a window that was never there
+and the "moved to mon2" half measured a move that never happened. Both halves
+reported on the same monitor while four assertions failed in ways that pointed
+at the compositor. The window is now placed explicitly, with a premise
+assertion that it really is where the fixture thinks.
+
 ## Live-session mode (extreme caution)
 
 `HL_LIVE=1` attaches to the *caller's own already-running* compositor instead
