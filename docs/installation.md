@@ -107,7 +107,7 @@ The repository provides a Flake with a NixOS module.
 
    ```nix
    services.displayManager = {
-     defaultSession = "asteroidz"; # derived from asteroidz.desktop filename
+     defaultSession = "asteroidz-avk"; # derived from asteroidz-avk.desktop filename
      autoLogin = {
        enable = true;
        user = "your-username";
@@ -242,34 +242,20 @@ You will need to build `wlroots` and asteroidz's `scenefx` fork manually as well
    off by default, and it fetches the Tracy client over the network, so it is
    not suitable for an offline or clean-chroot build.
 
-   This installs the `asteroidz` binary, the `amsg` IPC tool, three wayland
+   This installs the `asteroidz` binary, the `amsg` IPC tool, two wayland
    session entries, and the GlobalShortcuts portal definition.
 
-   | session | what composites the frame |
+   | session | what it is |
    |---|---|
-   | **Asteroidz** | SceneFX on wlroots' GLES2 renderer — the daily driver and default |
-   | **Asteroidz (Vulkan, experimental)** | SceneFX on wlroots' Vulkan renderer (`fx_vk`) |
-   | **Asteroidz (AVK native Vulkan)** | asteroidz's own Vulkan engine, no `wlr_renderer` involved |
+   | **Asteroidz (AVK native Vulkan)** | the desktop. asteroidz's own Vulkan engine composites every frame |
+   | **Asteroidz (AVK + Vulkan validation)** | the same, with the Vulkan validation layers on — for acceptance runs only |
 
-   The AVK session is under construction — no effects, no colour management,
-   full damage every frame — and it pins `WLR_RENDERER=gles2` on purpose:
+   Pick the first one. The second exists so an acceptance run can prove its
+   own environment rather than claiming it, and it costs roughly 99x the CPU
+   per frame; it is not a session to work in.
+
+   Both pin `WLR_RENDERER=gles2` on purpose, and that is not a contradiction:
    wlroots still needs a renderer for shm formats, the allocator and
-   screencopy, none of which are composition. If AVK cannot render an output
-   correctly (a colour-managed display, a software cursor) it hands that frame
-   back to SceneFX and says so in the log rather than drawing it wrongly.
-
-   There is a third, separate switch: `ASTEROIDZ_RENDERER=avk` selects
-   asteroidz's own native Vulkan engine, which composites the desktop itself
-   instead of going through a `wlr_renderer` at all. It is under construction
-   — no effects, no colour management, no partial damage yet — and it is
-   deliberately independent of `WLR_RENDERER`, so
-   `WLR_RENDERER=gles2 ASTEROIDZ_RENDERER=avk` is a valid and useful pairing.
+   screencopy, none of which are composition. The switch that decides who
+   draws the desktop is `ASTEROIDZ_RENDERER=avk`, which is independent of it.
    See [`docs/vulkan-native-architecture.md`](./vulkan-native-architecture.md).
-
-   asteroidz uses the GLES2 renderer by default; the renderer is selected
-   per session via `WLR_RENDERER` (`gles2` or `vulkan`). Vulkan is
-   experimental — near feature parity for everyday use, pending future
-   wlroots enhancements before it's the recommended default. Some
-   native-Wayland GPU apps (e.g. Electron) don't yet import on the Vulkan
-   renderer — run them under XWayland, or just use the default GLES2
-   session.

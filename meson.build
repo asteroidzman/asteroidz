@@ -693,7 +693,7 @@ mandir = get_option('mandir')
 desktop_install_dir = join_paths(prefix, 'share/wayland-sessions')
 portal_install_dir = join_paths(prefix, 'share/xdg-desktop-portal')
 #
-# ── THREE SESSIONS, AND THE GREETER LIST IS PART OF THE PRODUCT ──────────
+# ── TWO SESSIONS, AND THE GREETER LIST IS PART OF THE PRODUCT ────────────
 #
 # Every entry here appears in the login screen the operator actually uses, so
 # the list is not free: an env-gated experiment left installed is a way to boot
@@ -705,16 +705,18 @@ portal_install_dir = join_paths(prefix, 'share/xdg-desktop-portal')
 # orphan left by an older build that outlived the source it came from. Sessions
 # added for one experiment need removing when that experiment ends.
 #
+# The GLES2/SceneFX session went the same way. It was kept as the way back in
+# if an AVK change made the desktop unusable -- but AVK is the renderer this
+# compositor is, the fallback had stopped being tested as a desktop, and there
+# are other ways back to a shell that do not cost a permanent greeter entry
+# advertising a second-class configuration.
+#
 # The AVK session sets WLR_RENDERER=gles2 deliberately rather than leaving it
 # unset. ASTEROIDZ_RENDERER is independent of it -- wlroots still needs a
 # renderer for shm formats, the allocator and screencopy, none of which are
 # composition -- and pinning it to GLES2 makes the session exactly the
 # configuration contrib/avk-frame-test.sh asserts against.
 install_data('assets/asteroidz-avk.desktop', install_dir : desktop_install_dir)
-
-# The GLES2/SceneFX session, kept as the way back in. If an AVK change makes
-# the desktop unusable, this is what the greeter still offers.
-install_data('assets/asteroidz.desktop', install_dir : desktop_install_dir)
 
 # The acceptance session, installed rather than left as a hand-written file
 # under /usr/share: an acceptance run whose environment is a local artefact

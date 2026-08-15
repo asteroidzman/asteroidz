@@ -32,7 +32,8 @@ in {
       enable = lib.mkDefault true;
 
       config = {
-        # Must match XDG_CURRENT_DESKTOP (DesktopNames in asteroidz.desktop).
+        # Must match XDG_CURRENT_DESKTOP (DesktopNames in the session entries
+        # under assets/, all of which declare `asteroidz;wlroots`).
         asteroidz = {
           default = [
             "gtk"

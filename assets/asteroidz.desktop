@@ -1,8 +1,0 @@
-[Desktop Entry]
-Encoding=UTF-8
-Name=Asteroidz
-DesktopNames=asteroidz;wlroots
-Comment=asteroidz WM (GLES2 renderer, the daily driver)
-Exec=env WLR_RENDERER=gles2 asteroidz
-Icon=asteroidz
-Type=Application
