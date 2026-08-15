@@ -441,14 +441,27 @@ unchanged at the end.
 - **Refused frames increment once per CYCLE, on the HDR→SDR direction only**
   (1,1,2,2,3,3…), never on SDR→HDR. Sharper than "bounded by 20".
 
-**`fallback_frames` is 20, not 0, and that is a DEVIATION FROM THE STATED GATE
-rather than a pass.** One frame per HDR→SDR transition is refused by
-`az_output_may_drive()` while the committed image description and the derived
-colour state are momentarily out of step; SceneFX draws that frame instead of
-AVK writing scene-linear values into a PQ buffer. Refusing is the designed
-behaviour and the alternative is a visibly wrong frame — but zero was the
-gate as written, and this is 20. What is bounded and proven is the RATE: exactly
-one per cycle, on one direction, across twenty cycles.
+### `fallback_frames` = 20 — ACCEPTED BY OPERATOR DECISION, 2026-08-15
+
+The gate as written asked for zero. The run produced twenty, and that was
+surfaced as a **deviation** rather than folded into a pass; the operator
+accepted it.
+
+One frame per HDR→SDR transition is refused by `az_output_may_drive()` while
+the committed image description and the derived colour state are momentarily
+out of step — the description is committed by KMS, the state derived from
+`m->hdr`. SceneFX draws that frame instead of AVK writing scene-linear values
+into a PQ buffer. **Refusing is the designed behaviour and the alternative is a
+visibly wrong frame.**
+
+What is bounded and proven, from `cycles.tsv`, is the RATE rather than the
+total: exactly one per cycle, on the HDR→SDR direction only, never on SDR→HDR,
+across twenty cycles. A change that made this per-*transition* would double it
+and the existing bound would catch that.
+
+**The gate keeps its `<= CYCLES` bound and does not become `== 0`.** Rewriting
+the assertion to expect twenty would make it pass on a compositor that refused
+twenty frames for an entirely different reason.
 
 **The picture-unchanged assertion is weak and should not be read as more.**
 The control pair was captured seconds apart (29056 px of churn, worst 253); the
