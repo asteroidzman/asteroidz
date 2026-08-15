@@ -137,6 +137,7 @@ static const OptEnumMember schema_anim_type_close[] = {
 	{"fade", 0, false, "Fade out."},
 	{"asteroid", 0, false, "Break apart and fly off."},
 	{"fall", 0, false, "Break into a grid of tiles and scatter."},
+	{"shatter", 0, false, "Break into tumbling shards under gravity."},
 };
 
 static const OptEnumMember schema_curve_type[] = {
@@ -569,6 +570,15 @@ static const ConfigOption config_schema[] = {
 	 "window-close", "Fall rows",
 	 "Rows the window breaks into for the fall animation.", OPT_INT,
 	 offsetof(Config, fall_rows), 0, 1, 12, NULL, 0, "3", 0},
+	/* ONE number, not a column/row pair like `fall` above: a shatter's grid is
+	 * square by construction, and the gravity, launch speed and spin that make
+	 * it look like breaking glass are internal constants with deterministic
+	 * jitter rather than knobs. A user who can set the spin can set it to
+	 * something that does not look like anything. */
+	{"shatter_fragments", "animations/window-close/shatter-fragments",
+	 "animations", "window-close", "Shatter fragments",
+	 "Fragments per axis the window breaks into for the shatter animation.",
+	 OPT_INT, offsetof(Config, shatter_fragments), 0, 2, 12, NULL, 0, "6", 0},
 	{"animation_duration_move", "animation_duration_move", "animations",
 	 "general", "Move duration",
 	 "How long a window takes to move or resize, in milliseconds.", OPT_INT,

@@ -2489,6 +2489,95 @@ static void az_avk_walk_node(struct az_avk_walk *walk,
 			 * honest about something having gone wrong. */
 			return;
 		}
+		/*
+		 * ── P3: ONE MARKER NODE, N TUMBLING FRAGMENTS ─────────────────────
+		 *
+		 * A shatter cloud is a single scene node holding the closing window's
+		 * own buffer. Here it becomes one AVK_CMD_TEXTURE_QUAD per fragment,
+		 * all sampling THAT SAME image through per-fragment source rects --
+		 * no capture pass, no copy, and one buffer import rather than N.
+		 *
+		 * THE TRAJECTORY IS NOT EVALUATED HERE. The corners were computed on
+		 * the CPU, at this output's own presentation instant, by
+		 * shatter_next_tick (ADR-612 Model A: the CPU decides where, the GPU
+		 * draws it). The walker reads them. If it recomputed them from a clock
+		 * of its own, two outputs drawing the same frame could disagree about
+		 * where a fragment is, which is the whole defect per-output
+		 * presentation sampling exists to prevent.
+		 */
+		struct ShatterEmitter *shatter = shatter_emitter_for(buf);
+		if (shatter != NULL) {
+			for (int32_t i = 0; i < shatter->nfrags; i++) {
+				if (shatter->frags[i].dropped) {
+					/* Entered another monitor and was retired; see the
+					 * trespass rule in animation/client.h. */
+					continue;
+				}
+				const float *cor = &shatter->corners[i * 8];
+
+				/*
+				 * Layout pixels to output pixels, THROUGH THE EXISTING
+				 * CONVERSION, one corner at a time as a 1x1 box.
+				 *
+				 * az_avk_box_to_output already handles the output's origin,
+				 * its scale and all eight transforms, and is exercised by
+				 * every other command in the tree. A second, quad-only
+				 * conversion would be a second chance to get a rotated output
+				 * wrong -- and that class of bug renders perfectly on the
+				 * machine it was written on. The cost is that corners land on
+				 * whole output pixels, which is the same quantisation every
+				 * other scene node's position already has.
+				 */
+				float q[8];
+				bool sane = true;
+				for (int k = 0; k < 4; k++) {
+					struct wlr_box pt;
+					az_avk_box_to_output(walk, (int)lroundf(cor[k * 2]),
+						(int)lroundf(cor[k * 2 + 1]), 1, 1, &pt);
+					q[k * 2] = (float)pt.x;
+					q[k * 2 + 1] = (float)pt.y;
+					if (!isfinite(cor[k * 2]) || !isfinite(cor[k * 2 + 1])) {
+						sane = false;
+					}
+				}
+				if (!sane) {
+					continue;
+				}
+
+				/* The fragment's own bounding box, which is what the scissor
+				 * and the damage arithmetic read. A dst that did not contain
+				 * all four corners would clip the fragment. */
+				float bx0 = q[0], bx1 = q[0], by0 = q[1], by1 = q[1];
+				for (int k = 1; k < 4; k++) {
+					bx0 = fminf(bx0, q[k * 2]);
+					bx1 = fmaxf(bx1, q[k * 2]);
+					by0 = fminf(by0, q[k * 2 + 1]);
+					by1 = fmaxf(by1, q[k * 2 + 1]);
+				}
+				struct avk_cmd *fc = avk_scene_add(walk->scene,
+					AVK_CMD_TEXTURE_QUAD);
+				if (fc == NULL) {
+					return;
+				}
+				fc->dst = (struct avk_box){ (int)floorf(bx0), (int)floorf(by0),
+					(int)ceilf(bx1) - (int)floorf(bx0) + 1,
+					(int)ceilf(by1) - (int)floorf(by0) + 1 };
+				fc->image = image;
+				fc->opacity = shatter->opacity;
+				fc->lum = az_avk_lum_of(buf, walk->scene_ref_nits);
+				fc->src = (struct avk_fbox){ shatter->frags[i].sx,
+					shatter->frags[i].sy, shatter->frags[i].sw,
+					shatter->frags[i].sh };
+				fc->transform = az_avk_transform(wlr_output_transform_compose(
+					buf->transform, walk->transform));
+				/* Always linear: a rotated fragment never samples 1:1, so
+				 * nearest would crawl along its edges as it turns. */
+				fc->filter_linear = true;
+				memcpy(fc->quad, q, sizeof(q));
+			}
+			return;
+		}
+
 		struct avk_cmd *cmd = avk_scene_add(walk->scene, AVK_CMD_TEXTURE);
 		if (cmd == NULL) {
 			return;

@@ -1333,6 +1333,9 @@ anim tick    one interpolation step: the clock it read, the eased factor, the
              (x, y, width, height) behind it, and `ideal=` is each coordinate
              on its own curve; `factor=` stays one settled-ness number, the
              minimum across the four
+shatter tick one step of a `shatter` close: its normalised progress, how many
+             fragments are still live, the cloud's bounding box (which is what
+             bounds the frame's damage) and the fade
 present      per output, from the backend's own presentation feedback
 render       one render_monitor pass: its cost, whether it committed anything,
              and the damage area and extents it committed

@@ -172,3 +172,70 @@ declined to wake.
 **Single-output windows are unaffected.** M4G's frame reach means an output
 never woken by motion it cannot see never ticks the client: 0 backward steps
 across 105 moves on one output and 121 on two.
+
+## P3 — the shatter close
+
+A `shatter` close breaks the window into a square grid of fragments that are
+thrown outward, rotate, and fall under gravity. It is the first caller of P2's
+arbitrary-corner quad, and the first close animation whose pieces can turn.
+
+**The trajectory is a closed form in wall-clock time** (ADR-616), evaluated at
+each output's own presentation instant and never advanced per frame:
+
+```
+p(t) = p0 + v0*t + 0.5*g*t^2        theta(t) = theta0 + omega*t
+```
+
+Gravity, launch speed and spin are internal constants with hash-seeded
+per-fragment jitter — never `rand()`, because a window has to come apart the
+same way twice or the purity gate cannot replay it. Only the fragment count is
+configurable (`shatter-fragments`, 2–12, default 6).
+
+**One scene node, N quads.** `fall` gives every tile its own scene tree because
+a scene node cannot rotate; a shatter fragment can, so the scene holds a single
+marker node in `LyrFadeOut` and the AVK walker expands it into one
+`AVK_CMD_TEXTURE_QUAD` per fragment, all sampling the window's existing
+snapshot image through per-fragment source rects. No capture pass, one buffer
+import, and 36 fragments cost one node to position and damage rather than 36.
+
+The renderer recognises the marker through a **registry of live emitters**, not
+a tag in `node->data` — `data` already carries a `Client *` for other node
+kinds, so reading a magic number out of it would be reinterpreting whatever
+that pointer happens to be.
+
+**It ends when the cloud is spent**, not when the clock runs out: once every
+fragment has left every screen or faded below visibility, the animation
+finishes. This is the same finding the spring work measured on `move` — 26–27
+consecutive ticks with the position unchanged, 43–100% of an animation's
+committed frames carrying no damage — applied before it could happen again.
+
+**Not on SceneFX.** Rotation is an AVK primitive; on the other renderer the
+close falls back to `fall`. The renderers are allowed to differ.
+
+### Gates
+
+Three are arithmetic and live in `tests/test-anim-shatter.c` (2779 checks, run
+on every build): purity replay, gravity recovered from the trajectory's second
+difference, and the speed bound `|v| <= |v0| + g*t`. Two are compositor
+behaviour and live in `contrib/anim-shatter-test.sh`.
+
+| # | switch | correct | broken |
+|---|---|---|---|
+| P3a | `AZ_BREAK_SHATTER_FRAME_STEP` | 2779/2779 checks; bound approached 0.944 | 2416 fail; bound 2174399 |
+| P3b | `AZ_BREAK_SHATTER_DAMAGE_FULL` | damage 732576px of 2073600 | full output |
+
+### The fixture trap this cost, recorded because it passed 3/3 first
+
+The damage gate was originally run against a **tiled** window. A maximised
+window's fragment cloud *is* the output, so "damage fits inside the cloud" was
+satisfied by a full-output repaint — the assertion passed while the trace
+showed `damage_px` of exactly 2073600. The fixture now floats and shrinks the
+window, and asserts as a **premise** that the cloud is smaller than the output
+before it makes any claim about damage.
+
+The second version then failed for a real reason: every fragment was retired on
+the first tick. `Client.mon` and where a window's pixels actually are can
+disagree — a window moved across outputs keeps its assigned monitor — so the
+trespass rule read "not home" for the whole cloud. The emitter now resolves its
+home monitor from the window's own geometry, and visibility is tested against
+the whole layout rather than one monitor.

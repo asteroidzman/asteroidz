@@ -563,6 +563,7 @@ typedef struct {
 
 /* one tile of the "fall" close animation; defined in animation/client.h */
 struct FalloutShard;
+struct ShatterEmitter;
 /* the vector break-up of the "asteroid" close animation */
 typedef struct AsteroidBreak AsteroidBreak;
 
@@ -622,6 +623,12 @@ struct Client {
 	 * real client, and never set at the same time as `shards` -- the two are
 	 * different animations, not two halves of one. */
 	AsteroidBreak *rocks;
+	/* "shatter" close animation only, on the throwaway fadeout client: the
+	 * window's own pixels as a grid of fragments that tumble and fall. NULL
+	 * for every real client, and never set at the same time as `shards` or
+	 * `rocks` -- the three are different animations. Needs AVK; the SceneFX
+	 * path cannot rotate a primitive and falls back to "fall". */
+	struct ShatterEmitter *shatter;
 	union {
 		struct wlr_xdg_surface *xdg;
 		struct wlr_xwayland_surface *xwayland;
@@ -1565,6 +1572,10 @@ static void get_layer_target_geometry(LayerSurface *l,
 static void scene_buffer_apply_effect(struct wlr_scene_buffer *buffer,
 									  int32_t sx, int32_t sy, void *data);
 static double find_animation_curve_at(double t, int32_t type);
+/* render/az_output.h owns the renderer selector and is included AFTER
+ * animation/client.h, which asks the question -- the same reason
+ * find_animation_curve_at is declared up here. */
+static bool az_renderer_is_avk(void);
 /* animation/common.h is included AFTER animation/client.h, which uses these --
  * the same reason find_animation_curve_at is declared here. */
 static struct dvec2 calculate_spring_curve_at_v(double t, double v0);
@@ -2162,6 +2173,7 @@ static uint64_t az_pointer_notify_internal;
 
 #include "action/client.h"
 #include "action/output.h"
+#include "animation/shatter.h"
 #include "animation/client.h"
 #include "animation/common.h"
 #include "animation/layer.h"

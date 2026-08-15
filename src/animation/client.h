@@ -2126,6 +2126,340 @@ static void asteroid_break_destroy(AsteroidBreak *br) {
 /* Build the tile grid for `fadeout_client` from `c`'s current appearance.
  * Returns false if the window can't be sliced, in which case the caller falls
  * back to one of the whole-window close animations. */
+/*
+ * ── SHATTER: BUILDING THE CLOUD ───────────────────────────────────────────
+ *
+ * One scene node, not one per fragment. `fall` gives every tile its own
+ * wlr_scene_tree with a sliced copy of the snapshot inside it, which is the
+ * only way to move pieces independently when the primitive cannot rotate. A
+ * shatter fragment DOES rotate (AVK_CMD_TEXTURE_QUAD), and the renderer can
+ * place four corners per fragment from one node's worth of state -- so the
+ * scene holds a single marker node and the walker expands it.
+ *
+ * That is not just tidier. 6x6 is 36 fragments; as scene trees that is 36
+ * nodes to position, damage and cull every tick, against one.
+ */
+
+/* The largest buffer node in a snapshot: the window's own content, as opposed
+ * to its titlebar, shadow or border. Largest rather than first because tree
+ * order is not content order. */
+static void shatter_find_main_buffer(struct wlr_scene_node *node,
+		struct wlr_scene_buffer **best, int64_t *best_area) {
+	if (!node->enabled)
+		return;
+	if (node->type == WLR_SCENE_NODE_TREE) {
+		struct wlr_scene_tree *tree = wlr_scene_tree_from_node(node);
+		struct wlr_scene_node *child;
+		wl_list_for_each(child, &tree->children, link)
+			shatter_find_main_buffer(child, best, best_area);
+		return;
+	}
+	if (node->type != WLR_SCENE_NODE_BUFFER)
+		return;
+	struct wlr_scene_buffer *buf = wlr_scene_buffer_from_node(node);
+	if (!buf->buffer)
+		return;
+	int64_t area = (int64_t)buf->dst_width * (int64_t)buf->dst_height;
+	if (area > *best_area) {
+		*best_area = area;
+		*best = buf;
+	}
+}
+
+static bool init_shatter_frags(Client *fadeout_client, Client *c) {
+	int32_t n = CLAMP_INT(config.shatter_fragments, 2, 12);
+	struct wlr_box win = c->animation.current;
+	if (win.width <= 0 || win.height <= 0) {
+		wlr_log(WLR_ERROR, "shatter: declined, empty geometry %dx%d",
+			win.width, win.height);
+		return false;
+	}
+
+	struct wlr_scene_tree *snap =
+		wlr_scene_tree_snapshot(&c->scene->node, layers[LyrFadeOut]);
+	if (!snap) {
+		wlr_log(WLR_ERROR, "shatter: declined, no snapshot");
+		return false;
+	}
+	wlr_scene_node_set_enabled(&snap->node, true);
+
+	struct wlr_scene_buffer *src = NULL;
+	int64_t area = 0;
+	shatter_find_main_buffer(&snap->node, &src, &area);
+	if (!src || !src->buffer) {
+		wlr_log(WLR_ERROR, "shatter: declined, no buffer in snapshot");
+		wlr_scene_node_destroy(&snap->node);
+		return false;
+	}
+
+	/*
+	 * The marker carries the SAME wlr_buffer the snapshot found.
+	 * wlr_scene_buffer takes its own lock on it, so the snapshot tree can be
+	 * torn down immediately below and the pixels stay alive for as long as the
+	 * cloud does. That is the "no capture pass" part: the fragments sample the
+	 * window's existing image through per-fragment source rects, and nothing
+	 * is ever copied.
+	 */
+	struct wlr_scene_buffer *marker =
+		wlr_scene_buffer_create(layers[LyrFadeOut], src->buffer);
+	struct ShatterEmitter *e = marker ? calloc(1, sizeof(*e)) : NULL;
+	struct ShatterFrag *frags = e
+		? calloc((size_t)n * (size_t)n, sizeof(*frags)) : NULL;
+	float *corners = frags
+		? calloc((size_t)n * (size_t)n * 8, sizeof(*corners)) : NULL;
+	if (!corners) {
+		free(frags);
+		free(e);
+		if (marker)
+			wlr_scene_node_destroy(&marker->node);
+		wlr_scene_node_destroy(&snap->node);
+		return false;
+	}
+
+	double img_w = src->buffer->width, img_h = src->buffer->height;
+	if (src->transform & WL_OUTPUT_TRANSFORM_90) {
+		double swap = img_w;
+		img_w = img_h;
+		img_h = swap;
+	}
+
+	for (int32_t row = 0; row < n; row++) {
+		for (int32_t col = 0; col < n; col++) {
+			shatter_frag_init(&frags[row * n + col], col, row, n, &win,
+				img_w, img_h);
+		}
+	}
+
+	wlr_scene_node_destroy(&snap->node);
+
+	shatter_registry_init();
+	/* Home is where the pixels are: the monitor holding the centre of the
+	 * window as it broke. See ShatterEmitter.home. */
+	{
+		struct wlr_box centre = {.x = win.x + win.width / 2,
+			.y = win.y + win.height / 2, .width = 1, .height = 1};
+		Monitor *m = NULL;
+		e->home = c->mon;
+		wl_list_for_each(m, &mons, link) {
+			struct wlr_box hit;
+			if (!m->wlr_output || !m->wlr_output->enabled)
+				continue;
+			if (wlr_box_intersection(&hit, &centre, &m->m)) {
+				e->home = m;
+				break;
+			}
+		}
+	}
+	e->marker = marker;
+	e->frags = frags;
+	e->nfrags = n * n;
+	e->corners = corners;
+	e->span = (double)ASTEROIDZ_MIN(win.width, win.height);
+	e->img_w = img_w;
+	e->img_h = img_h;
+	e->opacity = 1.0f;
+	wl_list_insert(&shatter_emitters, &e->link);
+
+	/* The marker's own dst is the cloud's bounding box, refreshed every tick.
+	 * Everything that is not the AVK walker -- damage, culling, the layer
+	 * ordering -- reads exactly that and needs to know nothing else. */
+	wlr_scene_buffer_set_dest_size(marker, win.width, win.height);
+	wlr_scene_node_set_position(&marker->node, win.x, win.y);
+
+	fadeout_client->scene = wlr_scene_tree_create(layers[LyrFadeOut]);
+	if (!fadeout_client->scene) {
+		wl_list_remove(&e->link);
+		wlr_scene_node_destroy(&marker->node);
+		free(corners);
+		free(frags);
+		free(e);
+		return false;
+	}
+	wlr_scene_node_reparent(&marker->node, fadeout_client->scene);
+	fadeout_client->shatter = e;
+	return true;
+}
+
+static void shatter_destroy(struct ShatterEmitter *e) {
+	if (!e)
+		return;
+	wl_list_remove(&e->link);
+	free(e->corners);
+	free(e->frags);
+	free(e);
+}
+
+/*
+ * Advance the cloud to normalised time `t`, and report whether anything is
+ * still worth drawing.
+ *
+ * RETURNS FALSE WHEN THE CLOUD IS SPENT, which is the cheapness half of this
+ * animation and not an optimisation bolted on. A close animation runs for its
+ * configured duration; the fragments are gone long before that -- off every
+ * output, or faded to nothing -- and every tick after that point positions
+ * nodes, damages regions and asks for frames on behalf of pixels no one can
+ * see. The spring work measured the same failure mode on `move`: 26-27
+ * consecutive ticks with the position unchanged, 43-100% of an animation's
+ * committed frames carrying no damage. Ending here is that finding applied.
+ */
+static bool shatter_next_tick(Client *c, double t) {
+	struct ShatterEmitter *e = c->shatter;
+	if (!e)
+		return false;
+
+	double fade = find_animation_curve_at(t, OPAFADEOUT);
+	e->opacity = (float)ASTEROIDZ_MAX(
+		config.fadeout_begin_opacity - fade * config.fadeout_begin_opacity, 0);
+
+	double min_x = 1e30, min_y = 1e30, max_x = -1e30, max_y = -1e30;
+	int32_t live = 0;
+
+	for (int32_t i = 0; i < e->nfrags; i++) {
+		struct ShatterFrag *f = &e->frags[i];
+		float *cor = &e->corners[i * 8];
+		shatter_corners_at(f, t, e->span, cor);
+
+		double fx0 = cor[0], fx1 = cor[0], fy0 = cor[1], fy1 = cor[1];
+		for (int k = 1; k < 4; k++) {
+			fx0 = ASTEROIDZ_MIN(fx0, cor[k * 2]);
+			fx1 = ASTEROIDZ_MAX(fx1, cor[k * 2]);
+			fy0 = ASTEROIDZ_MIN(fy0, cor[k * 2 + 1]);
+			fy1 = ASTEROIDZ_MAX(fy1, cor[k * 2 + 1]);
+		}
+
+		/*
+		 * Debris never lands on a screen it did not come from -- the same rule
+		 * `fall` applies, and for the same reason: these are nodes in a global
+		 * layer, so a fragment thrown past its own monitor's edge turns up on
+		 * the neighbouring one, throwing shrapnel across a screen that had
+		 * nothing to do with the window.
+		 *
+		 * DROPPED ON ENTERING another monitor, not on leaving its own. A
+		 * maximised window's outermost fragments start flush against the edge,
+		 * so "wholly inside" fails on frame one and the entire outer ring
+		 * blinks out the instant the window closes. Flying off the outside
+		 * edge of the desk is fine; there is nothing out there to pollute.
+		 *
+		 * And once dropped it STAYS dropped: a fragment that tumbles back out
+		 * of the neighbour must not reappear, or the cloud flickers.
+		 */
+		if (!f->dropped) {
+			struct wlr_box box = {
+				.x = (int32_t)floor(fx0), .y = (int32_t)floor(fy0),
+				.width = (int32_t)ceil(fx1 - fx0) + 1,
+				.height = (int32_t)ceil(fy1 - fy0) + 1};
+			Monitor *other = NULL;
+			wl_list_for_each(other, &mons, link) {
+				struct wlr_box hit;
+				if (other == e->home || !other->wlr_output ||
+					!other->wlr_output->enabled)
+					continue;
+				if (wlr_box_intersection(&hit, &box, &other->m)) {
+					f->dropped = true;
+					break;
+				}
+			}
+		}
+		if (f->dropped)
+			continue;
+
+		/*
+		 * Still somewhere a screen can show it?
+		 *
+		 * AGAINST THE WHOLE LAYOUT, not against c->mon. A fragment that has
+		 * flown off the outside edge of the desk is gone and should stop
+		 * contributing to the cloud's bounding box -- otherwise the box grows
+		 * without limit and takes the damage with it. But the monitor to test
+		 * against is the LAYOUT, because a fadeout client's own `mon` can
+		 * disagree with where its pixels are: a window moved across outputs
+		 * keeps the monitor it was assigned, and testing against that dropped
+		 * every fragment of a window that had been moved -- live=0 on the
+		 * first tick, the whole animation gone, and no trace line to say so.
+		 *
+		 * The trespass rule below is what keeps debris off a NEIGHBOUR; this
+		 * is only about whether anything can see it at all.
+		 */
+		{
+			struct wlr_box probe = {
+				.x = (int32_t)floor(fx0), .y = (int32_t)floor(fy0),
+				.width = (int32_t)ceil(fx1 - fx0) + 1,
+				.height = (int32_t)ceil(fy1 - fy0) + 1};
+			bool on_a_screen = false;
+			Monitor *m = NULL;
+			wl_list_for_each(m, &mons, link) {
+				struct wlr_box hit;
+				if (!m->wlr_output || !m->wlr_output->enabled)
+					continue;
+				if (wlr_box_intersection(&hit, &probe, &m->m)) {
+					on_a_screen = true;
+					break;
+				}
+			}
+			if (!on_a_screen)
+				continue;
+		}
+		live++;
+		min_x = ASTEROIDZ_MIN(min_x, fx0);
+		min_y = ASTEROIDZ_MIN(min_y, fy0);
+		max_x = ASTEROIDZ_MAX(max_x, fx1);
+		max_y = ASTEROIDZ_MAX(max_y, fy1);
+	}
+
+	if (live == 0 || e->opacity <= 0.004f) {
+		/* Nothing on any screen, or nothing anyone could see. */
+		return false;
+	}
+
+	/*
+	 * The marker's box is the union of the fragments that are still drawn --
+	 * the CLOUD AABB. The scene damages old-box-union-new-box when a node
+	 * moves or resizes, so keeping this tight is what keeps a shatter's damage
+	 * proportional to where the debris actually is, rather than to the output
+	 * (ADR-613: presented union of evaluated boxes, never a full-output
+	 * fallback).
+	 */
+	int32_t bx = (int32_t)floor(min_x), by = (int32_t)floor(min_y);
+	int32_t bw = (int32_t)ceil(max_x) - bx + 1;
+	int32_t bh = (int32_t)ceil(max_y) - by + 1;
+	if (bw < 1) bw = 1;
+	if (bh < 1) bh = 1;
+
+	/*
+	 * ── AZ_BREAK_SHATTER_DAMAGE_FULL (P3's damage falsifier) ──────────────
+	 *
+	 * Widens the marker to the whole monitor, so every tick damages the entire
+	 * output instead of the cloud. That is the full-output fallback ADR-613
+	 * forbids, and it is invisible on screen -- the same picture is drawn, at
+	 * a cost nobody sees without measuring. Which is exactly why the damage
+	 * gate has to be able to fail.
+	 */
+	{
+		static int on = -1;
+		if (on < 0) {
+			on = getenv("AZ_BREAK_SHATTER_DAMAGE_FULL") != NULL;
+			if (on) {
+				wlr_log(WLR_ERROR, "P3 break: AZ_BREAK_SHATTER_DAMAGE_FULL -- "
+					"a shatter damages the whole output every tick");
+			}
+		}
+		if (on && c->mon) {
+			bx = c->mon->m.x;
+			by = c->mon->m.y;
+			bw = c->mon->m.width;
+			bh = c->mon->m.height;
+		}
+	}
+	wlr_scene_node_set_position(&e->marker->node, bx, by);
+	wlr_scene_buffer_set_dest_size(e->marker, bw, bh);
+	wlr_scene_buffer_set_opacity(e->marker, e->opacity);
+
+	AZ_PACE("shatter tick c=%p t=%.6f live=%d/%d aabb=%d,%d,%dx%d "
+		"opacity=%.4f t_ns=%llu",
+		(void *)c, t, live, e->nfrags, bx, by, bw, bh, (double)e->opacity,
+		(unsigned long long)az_pace_now_ns());
+	return true;
+}
+
 static bool init_fallout_shards(Client *fadeout_client, Client *c) {
 	int32_t cols = CLAMP_INT(config.fall_cols, 1, 12);
 	int32_t rows = CLAMP_INT(config.fall_rows, 1, 12);
@@ -2373,6 +2707,22 @@ void fadeout_client_animation_next_tick(Client *c, uint64_t sample_ns) {
 			wl_list_remove(&c->fadeout_link);
 			wlr_scene_node_destroy(&c->scene->node);
 			asteroid_break_destroy(c->rocks);
+			free(c);
+		}
+		return;
+	}
+
+	/*
+	 * "shatter": one marker node the AVK walker expands into a quad per
+	 * fragment. Its own tick and teardown, and the only one of the three that
+	 * can finish EARLY -- see shatter_next_tick.
+	 */
+	if (c->shatter) {
+		bool alive = shatter_next_tick(c, ASTEROIDZ_MIN(animation_passed, 1.0));
+		if (!alive || animation_passed >= 1.0) {
+			wl_list_remove(&c->fadeout_link);
+			wlr_scene_node_destroy(&c->scene->node);
+			shatter_destroy(c->shatter);
 			free(c);
 		}
 		return;
@@ -2924,6 +3274,22 @@ void init_fadeout_client(Client *c) {
 													 : config.animation_type_close;
 	bool want_rock = close_type && strcmp(close_type, "asteroid") == 0;
 	bool want_fall = close_type && strcmp(close_type, "fall") == 0;
+	/*
+	 * "shatter" NEEDS AVK. Its fragments rotate, and rotation is an
+	 * AVK_CMD_TEXTURE_QUAD -- a primitive the SceneFX/GLES path does not have
+	 * and cannot express with a scene node's position, size and crop.
+	 *
+	 * So on the other renderer it becomes "fall", which is the same pixels
+	 * breaking into the same grid without the rotation or the gravity. The
+	 * renderers are allowed to differ; the alternative is holding the Vulkan
+	 * engine down to what the older one can draw, which is the opposite of why
+	 * it exists.
+	 */
+	bool want_shatter = close_type && strcmp(close_type, "shatter") == 0;
+	if (want_shatter && !az_renderer_is_avk()) {
+		want_shatter = false;
+		want_fall = true;
+	}
 
 	/* Both builders can decline (a zero-sized window, a failed allocation), in
 	 * which case the plain whole-window snapshot below still gives the close a
@@ -2931,6 +3297,8 @@ void init_fadeout_client(Client *c) {
 	bool built = false;
 	if (want_rock)
 		built = init_asteroid_break(fadeout_client, c);
+	else if (want_shatter)
+		built = init_shatter_frags(fadeout_client, c);
 	else if (want_fall)
 		built = init_fallout_shards(fadeout_client, c);
 	if (!built)

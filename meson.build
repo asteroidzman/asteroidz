@@ -369,6 +369,18 @@ test_anim_spring = executable('test-anim-spring', 'tests/test-anim-spring.c',
                               build_by_default : false)
 test('anim-spring', test_anim_spring, timeout : 60)
 
+# The shatter trajectory (P3). Same shape as the spring test and for the same
+# reason: animation/shatter.h is a closed form in t with no compositor in it,
+# so purity, the recovered gravity and the speed bound are checkable on every
+# build rather than only when a window is closed on a screen.
+test_anim_shatter = executable('test-anim-shatter',
+                               'tests/test-anim-shatter.c',
+                               include_directories : include_directories('src'),
+                               dependencies : [libm],
+                               c_args : ['-Wno-unused-function'],
+                               build_by_default : false)
+test('anim-shatter', test_anim_shatter, timeout : 60)
+
 # ── the Vulkan engine ───────────────────────────────────────────────────────
 #
 # M1 of the migration in docs/vulkan-native-architecture.md. Built whenever

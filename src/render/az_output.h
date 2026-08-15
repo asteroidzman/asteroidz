@@ -25,6 +25,11 @@ enum az_renderer_backend {
 
 static enum az_renderer_backend az_renderer = AZ_RENDERER_WLR;
 
+/* For the callers included before this header; see asteroidz.c. */
+static bool az_renderer_is_avk(void) {
+	return az_renderer == AZ_RENDERER_AVK;
+}
+
 struct az_frame_options {
 	/* The colour transform the frame should be built with, exactly as the
 	 * caller would have put it in wlr_scene_output_state_options. */

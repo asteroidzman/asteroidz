@@ -228,6 +228,9 @@ typedef struct {
 	/* grid the "fall" close animation breaks a window into */
 	int32_t fall_cols;
 	int32_t fall_rows;
+	/* fragments PER AXIS the "shatter" close animation breaks a window into;
+	 * the grid is square, so this is one number and not two */
+	int32_t shatter_fragments;
 	int32_t tag_animation_direction;
 	float zoom_initial_ratio;
 	float zoom_end_ratio;
@@ -1673,6 +1676,8 @@ bool parse_option(Config *config, char *key, char *value) {
 		config->fall_cols = atoi(value);
 	} else if (strcmp(key, "fall_rows") == 0) {
 		config->fall_rows = atoi(value);
+	} else if (strcmp(key, "shatter_fragments") == 0) {
+		config->shatter_fragments = atoi(value);
 	} else if (strcmp(key, "tag_animation_direction") == 0) {
 		config->tag_animation_direction = atoi(value);
 	} else if (strcmp(key, "zoom_initial_ratio") == 0) {
@@ -3710,6 +3715,7 @@ static const struct {
 	{"animations/window-close/fade-begin-opacity", "fadeout_begin_opacity"},
 	{"animations/window-close/fall-columns", "fall_cols"},
 	{"animations/window-close/fall-rows", "fall_rows"},
+	{"animations/window-close/shatter-fragments", "shatter_fragments"},
 	/* overview */
 	{"overview/gaps/inner", "overviewgappi"},
 	{"overview/gaps/outer", "overviewgappo"},
@@ -4624,6 +4630,9 @@ void override_config(void) {
 	config.animation_fade_out = CLAMP_INT(config.animation_fade_out, 0, 1);
 	config.fall_cols = CLAMP_INT(config.fall_cols, 1, 12);
 	config.fall_rows = CLAMP_INT(config.fall_rows, 1, 12);
+	/* 2 is the smallest number that is a break rather than a move; 12 is the
+	 * same ceiling `fall` uses, and 12x12 is 144 quads on one window. */
+	config.shatter_fragments = CLAMP_INT(config.shatter_fragments, 2, 12);
 	config.zoom_initial_ratio =
 		CLAMP_FLOAT(config.zoom_initial_ratio, 0.1f, 1.0f);
 	config.zoom_end_ratio = CLAMP_FLOAT(config.zoom_end_ratio, 0.1f, 1.0f);
@@ -4850,6 +4859,7 @@ void set_value_default() {
 	strcpy(config.animation_type_close, "asteroid");
 	config.fall_cols = 4;
 	config.fall_rows = 3;
+	config.shatter_fragments = 6;
 	config.tag_animation_direction = HORIZONTAL;
 	config.zoom_initial_ratio = 0.4f;
 	config.zoom_end_ratio = 0.8f;

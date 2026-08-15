@@ -18,8 +18,8 @@ misc {
 
 You can define different animation styles for opening and closing windows and layer surfaces.
 
-Available types: `slide`, `zoom`, `fade`, `none`, plus `asteroid` and `fall`
-for closing windows.
+Available types: `slide`, `zoom`, `fade`, `none`, plus `asteroid`, `fall` and
+`shatter` for closing windows.
 
 ```kdl
 animations {
@@ -85,6 +85,47 @@ Neither uses gravity, an arc, or any settling: debris in that game leaves the
 wreck in a straight line and fades before it gets anywhere. Distance eases out
 in both, putting most of the travel in the first third, which is what sells a
 burst at a duration short enough to stay out of the way.
+
+### `shatter` — the same pixels, tumbling, under gravity
+
+`fall`'s note above — that the pieces **cannot rotate**, because a scene node
+has a position, a size and a crop and no transform — was a statement about the
+renderer, not about the animation. `shatter` is what the animation looks like
+once that stops being true.
+
+The window breaks into a square grid of fragments which are thrown outward,
+**rotate as they go**, and **fall under gravity**, arcing over instead of
+travelling in a straight line. It reads as glass hitting a floor rather than as
+a burst.
+
+```kdl
+animations {
+    window-close {
+        type shatter
+        duration 350
+        shatter-fragments 6   // fragments PER AXIS (2–12, default 6)
+    }
+}
+```
+
+One number and not a column/row pair: the grid is square. Gravity, launch speed
+and spin are **not settings**. They are internal constants with deterministic
+per-fragment jitter, because the three are not independent — the launch speed
+that reads as *thrown* depends on the gravity that reads as *falling*, and a
+spin rate that can be set can be set to something that does not look like
+anything.
+
+**It needs the Vulkan renderer.** Rotation is an
+[`AVK_CMD_TEXTURE_QUAD`](../avk-effects.md#p2--the-arbitrary-corner-textured-quad),
+a primitive whose four destination corners are placed independently; the
+SceneFX/GLES path has no such primitive and falls back to `fall`. The two
+renderers are allowed to differ here rather than the better one being held back
+to what the older one can express.
+
+The trajectory is a **closed form in wall-clock time** — `p(t) = p₀ + v₀t +
+½gt²`, `θ(t) = θ₀ + ωt` — evaluated at each output's own presentation instant,
+never advanced once per frame. That is what keeps a close finishing at the same
+moment on a 60 Hz and a 144 Hz screen, and on a window spanning both.
 
 **No shader is involved, and none is needed.** Rotation is why `asteroid` is
 drawn rather than sliced: a tumbling fragment has to be re-drawn at its current
