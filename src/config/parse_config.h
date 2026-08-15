@@ -5687,6 +5687,21 @@ void config_apply_live(void) {
 			setborder_color(c);
 	}
 
+#ifdef XWAYLAND
+	/* xwayland_force_scale_one changes the unit every X11 window is measured
+	 * in, so flipping it has to reach the windows that are already open --
+	 * otherwise the option appears to do nothing until each one is moved to
+	 * another monitor. A no-op for every client whose scale did not change,
+	 * which is all of them on any other reload. */
+	{
+		Client *c;
+		wl_list_for_each(c, &clients, link) {
+			if (client_is_x11(c))
+				client_update_x11_scale(c);
+		}
+	}
+#endif
+
 	arrange(selmon, false, false);
 }
 

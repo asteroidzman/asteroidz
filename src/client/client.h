@@ -141,13 +141,100 @@ static inline void client_get_clip(Client *c, struct wlr_box *clip) {
 	clip->y = c->surface.xdg->geometry.y;
 }
 
+/*
+ * ── THE X11 SCALE, AND THE FOUR PLACES IT IS ALLOWED TO EXIST ────────────
+ *
+ * X11 has no fractional output scale and no way to be told about one. An X
+ * client asks for, and is told, a number of PIXELS. Everything else in this
+ * compositor -- c->geom, tiling, snapping, borders, animations -- works in
+ * LOGICAL units, and c->geom stays the single source of truth for a window's
+ * position and size whatever kind of client it is.
+ *
+ * So the two spaces meet at exactly four boundaries, and nowhere else:
+ *
+ *   1. configure-out   client_x11_configure() below: logical x scale, rounded
+ *   2. geometry-in     client_get_geometry() below: the same, divided back
+ *   3. presentation    wlr_scene_surface_set_view_scale(), in the scene
+ *   4. input           the view scale again, in the scene's hit test
+ *
+ * A fifth place would be a bug. The whole reason this is affordable is that
+ * nothing between those four has to know an X11 window is different.
+ *
+ * `c->x11_scale` holds the factor, recomputed when the client's monitor is
+ * decided and whenever it changes. It is 1 for every Wayland client, for
+ * every X11 client while the option is off, and -- deliberately -- for every
+ * output at scale 1 or below. Below 1 there is nothing to gain (the buffer
+ * would be asked to be SMALLER than the logical box) and something to lose:
+ * the round trip logical -> pixels -> logical is only lossless while the
+ * scale is at least 1, and a value that does not survive it would make
+ * geometry drift by a pixel every time a window was configured.
+ */
+static inline float client_x11_scale(Client *c) {
+	if (!client_is_x11(c) || c->x11_scale < 1.0f) {
+		return 1.0f;
+	}
+	return c->x11_scale;
+}
+
+/* Logical -> raw X11 pixels, and back. Rounded, not truncated: truncation
+ * biases every conversion the same way, so a window would lose a pixel per
+ * round trip rather than land back where it started. */
+static inline int32_t client_x11_from_logical(Client *c, int32_t v) {
+	float s = client_x11_scale(c);
+	return s == 1.0f ? v : (int32_t)lroundf((float)v * s);
+}
+
+static inline int32_t client_x11_to_logical(Client *c, int32_t v) {
+	float s = client_x11_scale(c);
+	return s == 1.0f ? v : (int32_t)lroundf((float)v / s);
+}
+
+#ifdef XWAYLAND
+/* BOUNDARY 1. Every wlr_xwayland_surface_configure() in the tree goes through
+ * here, because a single missed one sizes a window in the wrong space and the
+ * symptom -- a window that is 1.25x too big, or a popup 1.25x off its
+ * parent -- looks nothing like "somebody forgot a conversion". */
+static inline void client_x11_configure(Client *c, int32_t x, int32_t y,
+										int32_t w, int32_t h) {
+	wlr_xwayland_surface_configure(
+		c->surface.xwayland, (int16_t)client_x11_from_logical(c, x),
+		(int16_t)client_x11_from_logical(c, y),
+		(uint16_t)client_x11_from_logical(c, w),
+		(uint16_t)client_x11_from_logical(c, h));
+}
+#endif
+
+/* BOUNDARY 1, second half. The surface clip is expressed in SURFACE
+ * coordinates, which for an X11 client are the same raw pixels its configure
+ * is in -- while every clip box in this tree is computed from c->geom and is
+ * therefore logical. Handing a logical clip to a surface committing pixels
+ * crops the window to 1/scale of itself AND makes the scene present the crop
+ * at 1/scale again: the window loses its right-hand fifth and what is left is
+ * shrunk. Every caller keeps working in logical units and converts here. */
+static inline void client_set_surface_clip(Client *c, struct wlr_box *clip) {
+#ifdef XWAYLAND
+	if (client_is_x11(c) && client_x11_scale(c) != 1.0f) {
+		struct wlr_box px = {
+			.x = client_x11_from_logical(c, clip->x),
+			.y = client_x11_from_logical(c, clip->y),
+			.width = client_x11_from_logical(c, clip->width),
+			.height = client_x11_from_logical(c, clip->height),
+		};
+		wlr_scene_subsurface_tree_set_clip(&c->scene_surface->node, &px);
+		return;
+	}
+#endif
+	wlr_scene_subsurface_tree_set_clip(&c->scene_surface->node, clip);
+}
+
+/* BOUNDARY 2. */
 static inline void client_get_geometry(Client *c, struct wlr_box *geom) {
 #ifdef XWAYLAND
 	if (client_is_x11(c)) {
-		geom->x = c->surface.xwayland->x;
-		geom->y = c->surface.xwayland->y;
-		geom->width = c->surface.xwayland->width;
-		geom->height = c->surface.xwayland->height;
+		geom->x = client_x11_to_logical(c, c->surface.xwayland->x);
+		geom->y = client_x11_to_logical(c, c->surface.xwayland->y);
+		geom->width = client_x11_to_logical(c, c->surface.xwayland->width);
+		geom->height = client_x11_to_logical(c, c->surface.xwayland->height);
 		return;
 	}
 #endif
@@ -352,33 +439,44 @@ static inline uint32_t client_set_size(Client *c, uint32_t width,
 		struct wlr_xwayland_surface *surface = c->surface.xwayland;
 		struct wlr_surface_state *state = &surface->surface->current;
 
-		if ((int32_t)c->geom.width - 2 * (int32_t)c->bw ==
-				(int32_t)state->width &&
-			(int32_t)c->geom.height - 2 * (int32_t)c->bw ==
-				(int32_t)state->height &&
-			(int32_t)c->surface.xwayland->x ==
-				(int32_t)c->geom.x + (int32_t)c->bw &&
-			(int32_t)c->surface.xwayland->y ==
-				(int32_t)c->geom.y + (int32_t)c->bw) {
+		int32_t width = c->geom.width - 2 * c->bw;
+		int32_t height = c->geom.height - 2 * c->bw;
+
+		/* The short circuit compares against what the X SERVER holds, which is
+		 * pixels -- state->width is a surface size at buffer scale 1, and
+		 * xwayland->x/y are X coordinates. So the logical side is converted
+		 * up rather than the pixel side down: a comparison made in logical
+		 * units would find 1536 != 1920 on every single call at 1.25x and
+		 * reconfigure the window forever. */
+		if (client_x11_from_logical(c, width) == (int32_t)state->width &&
+			client_x11_from_logical(c, height) == (int32_t)state->height &&
+			client_x11_from_logical(c, c->geom.x + (int32_t)c->bw) ==
+				(int32_t)c->surface.xwayland->x &&
+			client_x11_from_logical(c, c->geom.y + (int32_t)c->bw) ==
+				(int32_t)c->surface.xwayland->y) {
 			return 0;
 		}
 
+		/* Size hints are the client's own numbers, so they are in pixels too.
+		 * Brought into logical units here rather than applied in pixels,
+		 * because everything downstream of this branch -- including
+		 * client_x11_configure -- is logical. */
 		xcb_size_hints_t *size_hints = surface->size_hints;
-		int32_t width = c->geom.width - 2 * c->bw;
-		int32_t height = c->geom.height - 2 * c->bw;
+		int32_t min_w =
+			size_hints ? client_x11_to_logical(c, size_hints->min_width) : 0;
+		int32_t min_h =
+			size_hints ? client_x11_to_logical(c, size_hints->min_height) : 0;
 
 		/* overview shrinks windows into thumbnails; honouring a large min-size
 		 * hint there snaps the window back to full size and overflows its cell */
 		bool ov = c->mon && c->mon->isoverview;
-		if (!ov && size_hints &&
-			c->geom.width - 2 * (int32_t)c->bw < size_hints->min_width)
-			width = size_hints->min_width;
-		if (!ov && size_hints &&
-			c->geom.height - 2 * (int32_t)c->bw < size_hints->min_height)
-			height = size_hints->min_height;
+		if (!ov && size_hints && width < min_w)
+			width = min_w;
+		if (!ov && size_hints && height < min_h)
+			height = min_h;
 
-		wlr_xwayland_surface_configure(c->surface.xwayland, c->geom.x + c->bw,
-									   c->geom.y + c->bw, width, height);
+		client_x11_configure(c, c->geom.x + c->bw, c->geom.y + c->bw, width,
+							 height);
 		return 1;
 	}
 #endif
@@ -611,20 +709,28 @@ static inline void client_set_size_bound(Client *c) {
 		if (!size_hints)
 			return;
 
-		if (!ov &&
-			(uint32_t)c->geom.width - 2 * c->bw < size_hints->min_width &&
-			size_hints->min_width > 0)
-			c->geom.width = size_hints->min_width + 2 * c->bw;
-		if (!ov &&
-			(uint32_t)c->geom.height - 2 * c->bw < size_hints->min_height &&
-			size_hints->min_height > 0)
-			c->geom.height = size_hints->min_height + 2 * c->bw;
-		if ((uint32_t)c->geom.width - 2 * c->bw > size_hints->max_width &&
-			size_hints->max_width > 0)
-			c->geom.width = size_hints->max_width + 2 * c->bw;
-		if ((uint32_t)c->geom.height - 2 * c->bw > size_hints->max_height &&
-			size_hints->max_height > 0)
-			c->geom.height = size_hints->max_height + 2 * c->bw;
+		/* The hints are the client's own numbers and are therefore in raw X11
+		 * pixels; c->geom is logical. Converted, not compared across the two
+		 * spaces -- at 1.25x an untranslated min-width of 800 would read as
+		 * 800 logical, and every window with a min-size hint would come out a
+		 * quarter too large. */
+		int32_t min_w = client_x11_to_logical(c, size_hints->min_width);
+		int32_t min_h = client_x11_to_logical(c, size_hints->min_height);
+		int32_t max_w = client_x11_to_logical(c, size_hints->max_width);
+		int32_t max_h = client_x11_to_logical(c, size_hints->max_height);
+
+		/* The comparisons keep their original (unsigned) shape deliberately:
+		 * only the numbers being compared against have moved space, and a
+		 * change of arithmetic here would alter behaviour for every X11
+		 * client whether the option is on or not. */
+		if (!ov && (uint32_t)c->geom.width - 2 * c->bw < min_w && min_w > 0)
+			c->geom.width = min_w + 2 * c->bw;
+		if (!ov && (uint32_t)c->geom.height - 2 * c->bw < min_h && min_h > 0)
+			c->geom.height = min_h + 2 * c->bw;
+		if ((uint32_t)c->geom.width - 2 * c->bw > max_w && max_w > 0)
+			c->geom.width = max_w + 2 * c->bw;
+		if ((uint32_t)c->geom.height - 2 * c->bw > max_h && max_h > 0)
+			c->geom.height = max_h + 2 * c->bw;
 		return;
 	}
 #endif

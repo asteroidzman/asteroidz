@@ -615,6 +615,13 @@ struct Client {
 	struct wl_listener commmitx11;
 #endif
 	uint32_t bw;
+	/* X11 ONLY, and 1 for everything else. How many of this client's own
+	 * pixels go into one logical pixel -- see the long note above
+	 * client_x11_scale() in src/client/client.h. Recomputed when the client's
+	 * monitor is decided and whenever it changes; never read directly, always
+	 * through client_x11_scale(), which is what enforces the "1 at or below
+	 * scale 1" rule in one place. */
+	float x11_scale;
 	uint32_t tags, oldtags, mini_restore_tag;
 	bool dirty;
 	uint32_t configure_serial;
@@ -1969,6 +1976,13 @@ static struct {
 } last_cursor;
 
 #include "client/client.h"
+#ifdef XWAYLAND
+/* Declared here rather than with the other XWayland statics below, because
+ * config/parse_config.h is included before them and config_apply_live() has
+ * to reach it -- flipping xwayland_force_scale_one must re-measure the
+ * windows that are already open. */
+static void client_update_x11_scale(Client *c);
+#endif
 #include "config/preset.h"
 struct Pertag {
 	uint32_t curtag, prevtag;
@@ -7683,6 +7697,20 @@ mapnotify(struct wl_listener *listener, void *data) {
 			: wlr_scene_subsurface_tree_create(c->scene, client_surface(c));
 	c->scene->node.data = c->scene_surface->node.data = c;
 
+	/* BEFORE client_get_geometry, not after. The X window's current size is
+	 * in the client's own units, and this is what decides whether those units
+	 * are logical or raw pixels -- so reading the geometry first would take a
+	 * pixel size for a logical one and open the window 1.25x too large. The
+	 * client has no monitor yet, so this uses selmon; setmon calls it again
+	 * once the real one is known.
+	 *
+	 * This is also why an X11 app comes out physically smaller with the
+	 * option on: it asked for 400 of what it believes are screen units, and
+	 * with the option on those are device pixels. That is the same trade
+	 * Hyprland's force_zero_scaling makes, and it is stated in the option's
+	 * own description rather than hidden. */
+	client_update_x11_scale(c);
+
 	client_get_geometry(c, &c->geom);
 
 	if (client_is_x11(c))
@@ -7712,9 +7740,8 @@ mapnotify(struct wl_listener *listener, void *data) {
 		/* Unmanaged clients always are floating */
 		fix_xwayland_coordinate(&c->geom);
 		wlr_scene_node_set_position(&c->scene->node, c->geom.x, c->geom.y);
-		wlr_xwayland_surface_configure(c->surface.xwayland, c->geom.x,
-									   c->geom.y, c->geom.width,
-									   c->geom.height);
+		client_x11_configure(c, c->geom.x, c->geom.y, c->geom.width,
+							 c->geom.height);
 		LISTEN(&c->surface.xwayland->events.set_geometry, &c->set_geometry,
 			   setgeometrynotify);
 		wlr_scene_node_reparent(&c->scene->node, layers[LyrOverlay]);
@@ -9979,6 +10006,11 @@ void setmon(Client *c, Monitor *m, uint32_t newtags, bool focus) {
 
 	c->mon = m;
 
+	/* The monitor decides the X11 scale, so this is the moment it can change.
+	 * Before the resize below, so the configure that follows is already in
+	 * the new unit rather than one frame behind it. */
+	client_update_x11_scale(c);
+
 	/* Scene graph sends surface leave/enter events on move and resize */
 	if (oldmon)
 		arrange(oldmon, false, false);
@@ -11986,6 +12018,113 @@ void fix_xwayland_coordinate(struct wlr_box *geom) {
 	geom->y = selmon->m.y + (selmon->m.height - geom->height) / 2;
 }
 
+/* ── BOUNDARY 3: PRESENTATION ─────────────────────────────────────────────
+ *
+ * Tell the scene how many of this surface's pixels go into one logical pixel,
+ * and pin the sampler while we are there.
+ *
+ * NEAREST, not the default bilinear. The whole point is that the buffer is
+ * already the right number of pixels, so no filtering should be needed at
+ * all -- and where the renderer's edge rounding leaves a fractional pixel
+ * (see below), nearest duplicates one texel row while bilinear smears the
+ * entire image. A filter that is never asked to interpolate costs nothing;
+ * one that is asked to interpolate everything is exactly the blur this
+ * option exists to remove. It is set per buffer and survives a reconfigure,
+ * so it does not have to be re-applied on every commit.
+ *
+ * ── THE HONEST CAVEAT ────────────────────────────────────────────────────
+ *
+ * 1:1 is exact only where both edges of the window's logical box land on
+ * whole device pixels. AVK converts a logical box to the output raster by
+ * rounding each EDGE and subtracting (az_avk_box_to_output), which is what
+ * makes adjacent windows meet without a seam -- but at 1.25x or 1.5x it also
+ * means a window at an odd logical position can come out one device pixel
+ * wider or narrower than its buffer. With NEAREST that is a single
+ * duplicated or dropped texel row at one edge, which is what Hyprland's
+ * force_zero_scaling does too. A fullscreen window -- the case this option
+ * is for -- starts at 0 and is exact. A dst-snap refinement in AVK could
+ * remove the remainder; it is deliberately not attempted here.
+ */
+static void x11_scale_apply_iter(struct wlr_scene_buffer *buffer, int32_t sx,
+								 int32_t sy, void *data) {
+	struct wlr_scene_surface *scene_surface =
+		wlr_scene_surface_try_from_buffer(buffer);
+	if (scene_surface == NULL) {
+		return;
+	}
+	float scale = *(float *)data;
+	/* BREAK: AZ_BREAK_X11_VIEW_SCALE=1 sizes the X window in pixels and then
+	 * does NOT tell the scene about it, which is the state the feature is
+	 * half-implemented in. The buffer is magnified exactly as before, so the
+	 * pixel gate in contrib/xw-scale-test.sh must report `scaled` even with
+	 * the option on. Its falsifier: if that gate still passes, it is not
+	 * measuring presentation. */
+	static int break_view_scale = -1;
+	if (break_view_scale < 0) {
+		const char *e = getenv("AZ_BREAK_X11_VIEW_SCALE");
+		break_view_scale = e && *e && *e != '0';
+	}
+	if (!break_view_scale) {
+		wlr_scene_surface_set_view_scale(scene_surface, scale);
+	}
+	wlr_scene_buffer_set_filter_mode(buffer, scale == 1.0f
+												 ? WLR_SCALE_FILTER_BILINEAR
+												 : WLR_SCALE_FILTER_NEAREST);
+}
+
+/* The scale an X11 client should be sized in, from the monitor it is on.
+ *
+ * Not the sharpest output in the layout, and not a global: two displays at
+ * different scales are the reason this is per client at all. A client with no
+ * monitor yet falls back to selmon, which is where it is about to be placed.
+ */
+static float client_x11_target_scale(Client *c) {
+	if (!config.xwayland_force_scale_one || !client_is_x11(c)) {
+		return 1.0f;
+	}
+	Monitor *m = c->mon ? c->mon : selmon;
+	if (!m || !m->wlr_output) {
+		return 1.0f;
+	}
+	float s = (float)m->wlr_output->scale;
+	/* At or below 1 there is nothing to force: the buffer would have to be
+	 * SMALLER than the logical box, and the logical -> pixel -> logical round
+	 * trip stops being lossless, which would drift geometry a pixel at a
+	 * time. See client_x11_scale(). */
+	return s > 1.0f ? s : 1.0f;
+}
+
+void client_update_x11_scale(Client *c) {
+	if (!c || !client_is_x11(c)) {
+		return;
+	}
+
+	float want = client_x11_target_scale(c);
+	if (want == c->x11_scale) {
+		return;
+	}
+	c->x11_scale = want;
+
+	if (c->scene_surface) {
+		wlr_scene_node_for_each_buffer(&c->scene_surface->node,
+									   x11_scale_apply_iter, &want);
+	}
+
+	/* The window is now being measured in a different unit, so whatever it
+	 * was last told is wrong by exactly that factor. Ask again -- the short
+	 * circuit in client_set_size compares in X11's space, so this is a no-op
+	 * when nothing actually changed.
+	 *
+	 * Skipped while c->geom is still empty. The first call happens in
+	 * mapnotify BEFORE the geometry has been read, deliberately (see there),
+	 * and configuring a window to 0x0 at that point would be the only lasting
+	 * effect of it. */
+	if (c->geom.width > 0 && c->geom.height > 0 && client_surface(c) &&
+		client_surface(c)->mapped) {
+		client_set_size(c, c->geom.width, c->geom.height);
+	}
+}
+
 int32_t synckeymap(void *data) {
 	reset_keyboard_layout();
 	// we only need to sync keymap once
@@ -12062,25 +12201,26 @@ void configurex11(struct wl_listener *listener, void *data) {
 	Client *c = wl_container_of(listener, c, configure);
 	struct wlr_xwayland_surface_configure_event *event = data;
 	struct wlr_box new_geo;
-	new_geo.x = event->x;
-	new_geo.y = event->y;
-	new_geo.width = event->width;
-	new_geo.height = event->height;
+	/* BOUNDARY 2. The client asked in ITS units; everything below -- the
+	 * monitor clamp in fix_xwayland_coordinate, resize(), the scene node's
+	 * position -- is logical. */
+	new_geo.x = client_x11_to_logical(c, event->x);
+	new_geo.y = client_x11_to_logical(c, event->y);
+	new_geo.width = client_x11_to_logical(c, event->width);
+	new_geo.height = client_x11_to_logical(c, event->height);
 	fix_xwayland_coordinate(&new_geo);
 
 	if (!client_surface(c) || !client_surface(c)->mapped) {
 
-		wlr_xwayland_surface_configure(c->surface.xwayland, new_geo.x,
-									   new_geo.y, new_geo.width,
-									   new_geo.height);
+		client_x11_configure(c, new_geo.x, new_geo.y, new_geo.width,
+							 new_geo.height);
 		return;
 	}
 
 	if (client_is_unmanaged(c)) {
 		wlr_scene_node_set_position(&c->scene->node, new_geo.x, new_geo.y);
-		wlr_xwayland_surface_configure(c->surface.xwayland, new_geo.x,
-									   new_geo.y, new_geo.width,
-									   new_geo.height);
+		client_x11_configure(c, new_geo.x, new_geo.y, new_geo.width,
+							 new_geo.height);
 		return;
 	}
 
@@ -12110,6 +12250,10 @@ void createnotifyx11(struct wl_listener *listener, void *data) {
 	c = xsurface->data = ecalloc(1, sizeof(*c));
 	c->surface.xwayland = xsurface;
 	c->type = X11;
+	/* Explicit rather than left at ecalloc's 0. client_x11_scale() reads
+	 * anything below 1 as 1, so both behave the same -- but a scale of zero
+	 * sitting in the struct is a division waiting to happen. */
+	c->x11_scale = 1.0f;
 	/* Listen to the various events it can emit */
 	LISTEN(&xsurface->events.associate, &c->associate, associatex11);
 	LISTEN(&xsurface->events.destroy, &c->destroy, destroynotify);
@@ -12128,13 +12272,20 @@ void commitx11(struct wl_listener *listener, void *data) {
 	Client *c = wl_container_of(listener, c, commmitx11);
 	struct wlr_surface_state *state = &c->surface.xwayland->surface->current;
 
-	if ((int32_t)c->geom.width - 2 * (int32_t)c->bw == (int32_t)state->width &&
-		(int32_t)c->geom.height - 2 * (int32_t)c->bw ==
+	/* Compared in X11's space, for the same reason as the short circuit in
+	 * client_set_size: state->width is the surface's own pixel count and
+	 * xwayland->x/y are X coordinates, while c->geom is logical. In logical
+	 * units these would never match at a fractional scale, and the client
+	 * would be treated as permanently mid-resize. */
+	if (client_x11_from_logical(c, (int32_t)c->geom.width - 2 * (int32_t)c->bw) ==
+			(int32_t)state->width &&
+		client_x11_from_logical(c, (int32_t)c->geom.height -
+									   2 * (int32_t)c->bw) ==
 			(int32_t)state->height &&
-		(int32_t)c->surface.xwayland->x ==
-			(int32_t)c->geom.x + (int32_t)c->bw &&
-		(int32_t)c->surface.xwayland->y ==
-			(int32_t)c->geom.y + (int32_t)c->bw) {
+		client_x11_from_logical(c, (int32_t)c->geom.x + (int32_t)c->bw) ==
+			(int32_t)c->surface.xwayland->x &&
+		client_x11_from_logical(c, (int32_t)c->geom.y + (int32_t)c->bw) ==
+			(int32_t)c->surface.xwayland->y) {
 		c->configure_serial = 0;
 	}
 
@@ -12224,8 +12375,10 @@ void xwaylandready(struct wl_listener *listener, void *data) {
 static void setgeometrynotify(struct wl_listener *listener, void *data) {
 	Client *c = wl_container_of(listener, c, set_geometry);
 
-	wlr_scene_node_set_position(&c->scene->node, c->surface.xwayland->x,
-								c->surface.xwayland->y);
+	/* BOUNDARY 2. A scene node's position is logical; the X window's is not. */
+	wlr_scene_node_set_position(
+		&c->scene->node, client_x11_to_logical(c, c->surface.xwayland->x),
+		client_x11_to_logical(c, c->surface.xwayland->y));
 	motionnotify(0, NULL, 0, 0, 0, 0);
 }
 #endif

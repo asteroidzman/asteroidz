@@ -105,6 +105,36 @@ RX0=400; RY0=300; RX1=1200; RY1=800
 # Where the click goes, in LOGICAL layout coordinates.
 CLICK_X=900; CLICK_Y=500
 
+# ── BREAK KNOBS ──────────────────────────────────────────────────────────
+#
+# Forwarded EXPLICITLY. hl_start launches the compositor under `env -i`, so an
+# exported variable does not reach it -- a break set the obvious way is simply
+# not applied, and the run comes back green while claiming to have been
+# falsified. That has happened here before with MESA_VK_TRACE.
+#
+#   AZ_BREAK_X11_VIEW_SCALE=1   size the window in pixels but never tell the
+#                               scene: the pixel gate must go red.
+#   AZ_BREAK_X11_INPUT_SCALE=1  present correctly but drop the input
+#                               conversion: the click gates must go red, and
+#                               the pixel gate must stay green -- that pairing
+#                               is the whole point, because the defect it
+#                               models is invisible on screen.
+BREAKS=""
+for v in AZ_BREAK_X11_VIEW_SCALE AZ_BREAK_X11_INPUT_SCALE; do
+	eval "val=\${$v:-}"
+	[ -n "$val" ] && BREAKS="$BREAKS $v=$val"
+done
+[ -n "$BREAKS" ] && echo "xw-scale: BREAKS =$BREAKS"
+
+# ARMS filters which arms run, so a falsification run costs one compositor
+# instead of three. Empty means all of them.
+ARMS="${ARMS:-}"
+wanted() {
+	[ -z "$ARMS" ] && return 0
+	case " $ARMS " in *" $1 "*) return 0 ;; esac
+	return 1
+}
+
 near() { # near ACTUAL EXPECTED TOL -> "yes"/"no"
 	local a="$1" e="$2" t="$3"
 	[ -n "$a" ] || { echo "no"; return; }
@@ -112,15 +142,23 @@ near() { # near ACTUAL EXPECTED TOL -> "yes"/"no"
 	[ "$d" -le "$t" ] && echo "yes" || echo "no"
 }
 
-arm() { # arm NAME SCALE EXTRA_KDL EXP_VERDICT EXP_W EXP_H EXP_BTN_X EXP_BTN_Y
+arm() { # arm NAME SCALE EXTRA_KDL EXP_VERDICT EXP_W EXP_H EXP_BTN_X EXP_BTN_Y [POST]
 	local name="$1" scale="$2" extra="$3"
 	local exp_verdict="$4" exp_w="$5" exp_h="$6" exp_bx="$7" exp_by="$8"
+	# POST runs once the window is fullscreen and before anything is measured.
+	# It is how an arm asks "does the window come BACK from this correctly",
+	# which is a different question from "is it right when nothing has
+	# happened to it" and is where a stale clip or a stale dest-size hides.
+	local post="${9:-}"
+
+	wanted "$name" || return 0
 
 	echo
 	echo "── arm $name (output scale $scale) ──"
 
 	HL_SCALE1="$scale"
-	export HL_SCALE1
+	HL_ENV="$BREAKS"
+	export HL_SCALE1 HL_ENV
 	hl_start "$FLAT_BASE
 $extra" >/dev/null 2>&1
 	echo "  binary: $(hl_binary)"
@@ -145,6 +183,10 @@ $extra" >/dev/null 2>&1
 	# capture is client pixels.
 	hl_dispatch "toggle_fullscreen" 1
 
+	if [ -n "$post" ]; then
+		eval "$post"
+	fi
+
 	# ── PREMISE: the window really does cover the output ─────────────────
 	# Asserted, not assumed. If fullscreen silently failed, the region below
 	# would be sampling the wallpaper -- a flat grey, which has no greys near
@@ -161,6 +203,13 @@ $extra" >/dev/null 2>&1
 	hl_assert "$name: premise -- the client is fullscreen" "$fs" "true"
 	hl_assert "$name: premise -- it covers the output logically" \
 		"$cx,$cy,${cw}x$ch" "0,0,${mw}x$mh"
+
+	# What the X SCREEN measures, for the log only. It comes from Xwayland's
+	# own reading of the wl_outputs, not from anything asteroidz configures,
+	# and an X11 app that sizes itself from the screen rather than from its
+	# configure will use it. Reported so the gap is visible when it matters;
+	# not asserted, because it is not this compositor's number to set.
+	echo "  X screen: $(grep '^screen ' "$HL_OUTDIR/x11-$name.log" | head -1)"
 
 	# ── BOUNDARY 1: the size the X window was actually given ─────────────
 	hl_x11check_wait_configure "$exp_w" "$exp_h" "x11-$name" 50 || true
@@ -228,5 +277,158 @@ arm scale-1 1 "" native 1920 1080 900 500
 # configure and an untransformed click for as long as the option is off --
 # an oracle whose failing case has stopped failing has stopped testing.
 arm 1.25-off 1.25 "" scaled 1536 864 900 500
+
+# ── the fix ──────────────────────────────────────────────────────────────
+# Same output, same client, one option. The X window is asked for the real
+# pixel count, the scene presents that buffer across 1536 logical pixels --
+# which is 1920 device pixels -- and the click that was aimed at logical
+# (900,500) arrives at raw (1125,625). All three boundaries move together;
+# any one of them left behind shows up as its own failed assertion rather
+# than as a vague "it still looks wrong".
+arm 1.25-on 1.25 "xwayland_force_scale_one 1" native 1920 1080 1125 625
+
+# ── a window that is NOT fullscreen ──────────────────────────────────────
+#
+# Everything above runs fullscreen, at the origin, with no border. That is the
+# case the option is for, and it is also the easiest one: the surface clip
+# covers the whole window and both edges land on whole device pixels.
+#
+# A TILED window has a border, sits at a non-zero origin, and is clipped to
+# less than the surface. The clip is the part that has no separate boundary of
+# its own -- it is expressed in SURFACE coordinates, which for these windows
+# are raw pixels, while every clip box in the compositor is computed from
+# c->geom and is logical. Left unconverted the window is cropped to 1/scale of
+# itself, and what shows through the missing fifth is the desktop.
+#
+# So this arm asserts the crop rather than the sampler: ZERO wallpaper pixels
+# anywhere inside the window's content box. It deliberately does NOT assert
+# `native`. At 1.25x a window whose logical edges fall between device pixels
+# can come out one pixel wider or narrower than its buffer -- the caveat
+# documented on the option itself -- and demanding bit-exactness here would be
+# asserting something the implementation does not claim.
+tiled_arm() { # tiled_arm NAME SCALE EXTRA_KDL [POST] [SKIP_CONFIGURE]
+	local name="$1" scale="$2" extra="$3" post="${4:-}" skip_cfg="${5:-}"
+	local bw=2
+
+	wanted "$name" || return 0
+
+	echo
+	echo "── arm $name (output scale $scale, tiled, ${bw}px border) ──"
+
+	HL_SCALE1="$scale"
+	HL_ENV="$BREAKS"
+	export HL_SCALE1 HL_ENV
+	hl_start "$FLAT_BASE
+borderpx $bw
+$extra" >/dev/null 2>&1
+
+	hl_xdisplay >/dev/null || {
+		hl_assert "$name: Xwayland came up" "no" "yes"
+		hl_stop >/dev/null 2>&1
+		return
+	}
+	hl_spawn_x11check "xw$name" 40 "x11-$name" >/dev/null
+	if ! hl_wait_client_count 1 80; then
+		hl_assert "$name: the X11 client mapped" "no" "yes"
+		hl_stop >/dev/null 2>&1
+		return
+	fi
+	sleep 1
+
+	if [ -n "$post" ]; then
+		eval "$post"
+	fi
+
+	local cx cy cw ch
+	cx="$(hl_client_field "xw$name" x)"; cy="$(hl_client_field "xw$name" y)"
+	cw="$(hl_client_field "xw$name" width)"; ch="$(hl_client_field "xw$name" height)"
+
+	# PREMISE: it really is tiled somewhere other than the origin, with a
+	# border. Fullscreen or an origin of 0,0 would make this arm a slower copy
+	# of the ones above.
+	hl_assert "$name: premise -- fullscreen is off" \
+		"$(hl_client_field "xw$name" is_fullscreen)" "false"
+	hl_assert "$name: premise -- the window is not at the layout origin" \
+		"$([ "$cx" -gt 0 ] && [ "$cy" -gt 0 ] && echo yes || echo no)" "yes"
+
+	# The expectation is derived from the window's own logical box, so this
+	# measures the CONVERSION and not the layout's gap arithmetic.
+	local exp
+	exp="$(python3 -c "
+import sys
+cw, ch, bw, s = int(sys.argv[1]), int(sys.argv[2]), int(sys.argv[3]), float(sys.argv[4])
+print(round((cw - 2*bw) * s), round((ch - 2*bw) * s))" "$cw" "$ch" "$bw" "$scale")"
+	if [ -n "$skip_cfg" ]; then
+		# ── WHY THIS ARM DOES NOT COMPARE THOSE TWO NUMBERS ──────────────
+		#
+		# The assertion below ties the size the X client was last given to the
+		# window's logical box as the compositor reports it. After an overview
+		# round trip those two genuinely disagree: the compositor's own
+		# bookkeeping is left holding the overview-scaled box (1221x683) while
+		# the client was last configured for the ordinary tiled one
+		# (1890x1050, which is exactly 1516x844 logical x 1.25). Both numbers
+		# are internally consistent -- the conversion is right in each -- they
+		# are just measurements of different moments.
+		#
+		# That divergence is not this feature's: exiting overview leaves a
+		# window un-fullscreened and its geometry un-restored for a WAYLAND
+		# client too, at scale 1, with the option off. Asserting the pair here
+		# would be a test of overview's bookkeeping wearing this fixture's
+		# name, and it would fail whatever the scaling code did.
+		#
+		# What IS this feature's -- that the surface is not cropped and the
+		# window is not showing desktop through itself -- is asserted below
+		# and is unaffected.
+		echo "  configure: $(hl_x11check_last_configure "x11-$name") (not asserted, see the comment)"
+	else
+		# Polled, not slept on: an X11 window is configured several times on
+		# the way to its final size, and a fixed wait reads whichever
+		# intermediate size the race happened to leave behind.
+		hl_x11check_wait_configure "${exp% *}" "${exp#* }" "x11-$name" 50 || true
+		hl_assert "$name: X window configured to round(logical x $scale)" \
+			"$(hl_x11check_last_configure "x11-$name")" "$exp"
+	fi
+
+	hl_move 20 20
+	sleep 0.5
+	hl_screenshot_output "$HL_MON" "cap-$name"
+
+	# The content box in OUTPUT PIXELS, inset by two pixels on every side so
+	# the assertion is about the crop and not about the one-pixel edge
+	# remainder the option's own documentation admits to.
+	local box
+	box="$(python3 -c "
+import sys
+cx, cy, cw, ch, bw = (int(v) for v in sys.argv[1:6])
+s = float(sys.argv[6])
+x0 = round((cx + bw) * s) + 2
+y0 = round((cy + bw) * s) + 2
+x1 = round((cx + cw - bw) * s) - 2
+y1 = round((cy + ch - bw) * s) - 2
+print(x0, y0, x1, y1)" "$cx" "$cy" "$cw" "$ch" "$bw" "$scale")"
+	echo "  content box (px): $box"
+
+	hl_assert "$name: no desktop shows through the window's content box" \
+		"$(python3 "$CHECKER" count "$HL_OUTDIR/cap-$name.png" $box "$WALLPAPER_HEX")" "0"
+
+	# And the content really is the client's, not a coincidence: a box full of
+	# wallpaper would also report zero RED if the wallpaper had been repainted
+	# by something else, so say what it IS as well as what it is not.
+	local m
+	m="$(python3 "$CHECKER" measure "$HL_OUTDIR/cap-$name.png" $box)"
+	echo "  content box: $m"
+	hl_assert "$name: premise -- the content box holds a checkerboard" \
+		"$(python3 -c "
+import sys
+d = dict(kv.split('=') for kv in sys.argv[1:])
+# A checkerboard, magnified or not, is a long way from a flat fill: fewer than
+# nine tenths of its neighbours are equal. A flat region has essentially all
+# of them, which is what an empty or wallpapered box would look like.
+print('yes' if int(d['dup_h']) < 0.9 * int(d['px']) else 'no')" $m)" "yes"
+
+	hl_stop >/dev/null 2>&1
+}
+
+tiled_arm 1.25-tiled 1.25 "xwayland_force_scale_one 1"
 
 hl_summary

@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <math.h>
 #include <stdlib.h>
 #include <wlr/types/wlr_alpha_modifier_v1.h>
 #include <wlr/types/wlr_color_management_v1.h>
@@ -249,6 +250,30 @@ static int min(int a, int b) {
 	return a < b ? a : b;
 }
 
+// ASTEROIDZ FORK ADDITION, used by the view-scale change below. Divides every
+// rectangle in `region` by the given factors, rounding each edge INWARD so the
+// result is never larger than the truth -- an opaque region is a promise that
+// nothing behind it needs drawing, and over-promising is what leaves holes.
+static void region_scale_down(pixman_region32_t *region, float sx, float sy) {
+	int nrects = 0;
+	const pixman_box32_t *rects = pixman_region32_rectangles(region, &nrects);
+
+	pixman_region32_t scaled;
+	pixman_region32_init(&scaled);
+	for (int i = 0; i < nrects; i++) {
+		int x1 = (int)ceilf((float)rects[i].x1 / sx);
+		int y1 = (int)ceilf((float)rects[i].y1 / sy);
+		int x2 = (int)floorf((float)rects[i].x2 / sx);
+		int y2 = (int)floorf((float)rects[i].y2 / sy);
+		if (x2 > x1 && y2 > y1) {
+			pixman_region32_union_rect(&scaled, &scaled, x1, y1,
+				x2 - x1, y2 - y1);
+		}
+	}
+	pixman_region32_copy(region, &scaled);
+	pixman_region32_fini(&scaled);
+}
+
 static void surface_reconfigure(struct wlr_scene_surface *scene_surface) {
 	struct wlr_scene_buffer *scene_buffer = scene_surface->buffer;
 	struct wlr_surface *surface = scene_surface->surface;
@@ -335,9 +360,52 @@ static void surface_reconfigure(struct wlr_scene_surface *scene_surface) {
 		}
 	}
 
+	// ── ASTEROIDZ FORK CHANGE 1 of 2 ──────────────────────────────────────
+	//
+	// The destination size is re-asserted on EVERY commit, from the surface's
+	// own size. That is right for a Wayland client, which negotiates its
+	// buffer scale with the compositor and therefore commits a buffer that
+	// already means the right number of logical pixels.
+	//
+	// An X11 client cannot do that -- there is no protocol for it to be told
+	// an output's fractional scale -- so asteroidz asks the X window for the
+	// output's raw pixel count instead and presents it across fewer logical
+	// pixels. The compositor cannot express that by calling
+	// wlr_scene_buffer_set_dest_size() itself: this line would overwrite it on
+	// the client's very next commit, which for a game is 60 times a second.
+	// So the ratio has to live where the recomputation happens.
+	//
+	// A scale of 0 (never set) or 1 leaves the arithmetic exactly as it was.
+	int dest_width = width, dest_height = height;
+	if (scene_surface->view_scale > 0.0f && scene_surface->view_scale != 1.0f) {
+		dest_width = (int)lroundf((float)width / scene_surface->view_scale);
+		dest_height = (int)lroundf((float)height / scene_surface->view_scale);
+		// A surface narrower than the scale would otherwise round to zero,
+		// which wlr_scene_buffer_set_dest_size treats as "use the buffer
+		// size" and would silently undo the whole thing.
+		if (dest_width < 1) {
+			dest_width = 1;
+		}
+		if (dest_height < 1) {
+			dest_height = 1;
+		}
+	}
+
+	// The opaque region is carried in the NODE's coordinates, and the node
+	// just shrank. Left alone, a surface's partial opaque region would be
+	// intersected against a smaller node and would claim a larger fraction of
+	// it than the client declared -- 50% of a 1920-wide surface read as 62.5%
+	// of a 1536-wide node -- which is the direction that produces artifacts:
+	// the scene skips drawing what it believes is hidden. Shrinking each
+	// rectangle inward is conservative in the safe direction.
+	if (dest_width != width || dest_height != height) {
+		region_scale_down(&opaque, (float)width / (float)dest_width,
+			(float)height / (float)dest_height);
+	}
+
 	wlr_scene_buffer_set_opaque_region(scene_buffer, &opaque);
 	wlr_scene_buffer_set_source_box(scene_buffer, &src_box);
-	wlr_scene_buffer_set_dest_size(scene_buffer, width, height);
+	wlr_scene_buffer_set_dest_size(scene_buffer, dest_width, dest_height);
 	wlr_scene_buffer_set_transform(scene_buffer, state->transform);
 	wlr_scene_buffer_set_opacity(scene_buffer, opacity);
 	wlr_scene_buffer_set_transfer_function(scene_buffer, tf);
@@ -451,6 +519,45 @@ static bool scene_buffer_point_accepts_input(struct wlr_scene_buffer *scene_buff
 	struct wlr_scene_surface *scene_surface =
 		wlr_scene_surface_try_from_buffer(scene_buffer);
 
+	// ── ASTEROIDZ FORK CHANGE 2 of 2 ──────────────────────────────────────
+	//
+	// sx/sy arrive in NODE-LOCAL coordinates and are used as SURFACE
+	// coordinates: for the hit test here, and -- because wlr_scene_node_at()
+	// hands back whatever this function leaves behind -- as the surface-local
+	// position the compositor then sends to the client. Everywhere else in
+	// wlroots those two spaces are the same thing, so nothing converts
+	// between them.
+	//
+	// The view scale is the one case where they are not. A surface presented
+	// at 1/1.25 of its size has node-local coordinates 1.25x smaller than its
+	// own, so without this every click inside an X11 window on a 1.25x output
+	// lands 1.25x short of where it was aimed -- and it lands there
+	// SILENTLY. The picture is pixel-perfect; only the pointer is wrong,
+	// increasingly so towards the bottom right, which reads as a broken
+	// application rather than as a compositor bug.
+	//
+	// Written from view_scale rather than from the dst_width/state.width
+	// ratio on purpose. That ratio is also non-1 while an open or close
+	// animation is scaling a window, and converting there would change the
+	// behaviour of every animated client on both renderers -- a much larger
+	// change than this is, for a case where the window is moving under the
+	// pointer anyway.
+	//
+	// BREAK: AZ_BREAK_X11_INPUT_SCALE=1 drops the conversion and nothing
+	// else. It is the shape of the bug this is here to prevent -- a perfect
+	// picture with every click in the wrong place -- and it is what
+	// contrib/xw-scale-test.sh's click assertions are falsified against.
+	static int break_input_scale = -1;
+	if (break_input_scale < 0) {
+		const char *e = getenv("AZ_BREAK_X11_INPUT_SCALE");
+		break_input_scale = e && *e && *e != '0';
+	}
+	if (!break_input_scale && scene_surface->view_scale > 0.0f &&
+			scene_surface->view_scale != 1.0f) {
+		*sx *= scene_surface->view_scale;
+		*sy *= scene_surface->view_scale;
+	}
+
 	*sx += scene_surface->clip.x;
 	*sy += scene_surface->clip.y;
 
@@ -505,6 +612,10 @@ struct wlr_scene_surface *wlr_scene_surface_create(struct wlr_scene_tree *parent
 
 	surface->buffer = scene_buffer;
 	surface->surface = wlr_surface;
+	// ASTEROIDZ FORK ADDITION. Explicit rather than left at calloc's 0, which
+	// the arithmetic treats as 1 anyway -- but a scale field that reads as
+	// zero is the kind of thing a later division gets wrong once.
+	surface->view_scale = 1.0f;
 	scene_buffer->point_accepts_input = scene_buffer_point_accepts_input;
 
 	surface->outputs_update.notify = handle_scene_buffer_outputs_update;
@@ -528,6 +639,20 @@ struct wlr_scene_surface *wlr_scene_surface_create(struct wlr_scene_tree *parent
 	surface_reconfigure(surface);
 
 	return surface;
+}
+
+// ASTEROIDZ FORK ADDITION. See the field's documentation in wlr_scene.h.
+void wlr_scene_surface_set_view_scale(struct wlr_scene_surface *surface,
+		float scale) {
+	if (scale <= 0.0f) {
+		scale = 1.0f;
+	}
+	if (surface->view_scale == scale) {
+		return;
+	}
+
+	surface->view_scale = scale;
+	surface_reconfigure(surface);
 }
 
 void scene_surface_set_clip(struct wlr_scene_surface *surface, struct wlr_box *clip) {

@@ -8,7 +8,7 @@ description: Advanced settings for XWayland, focus behavior, and system integrat
 | Setting | Default | Description |
 | :--- | :--- | :--- |
 | `xwayland_persistence` | `1` | Keep XWayland running even when no X11 apps are open (reduces startup lag). |
-| `xwayland_force_scale_one` | `0` | Size X11 windows in raw output pixels instead of logical units. X11 has no fractional scaling, so without this an X window on a 1.25x display commits a buffer 1.25x too small and the compositor magnifies it — a fullscreen game renders 3072x1728 on a 4K screen. With it, the window is asked for the real pixel count and its buffer is presented 1:1. X11 apps that read the screen size themselves will see pixels, so anything drawing its own UI at a fixed point size comes out small. |
+| `xwayland_force_scale_one` | `0` | Size X11 windows in raw output pixels instead of logical units. X11 has no fractional scaling, so without this an X window on a 1.25x display commits a buffer 1.25x too small and the compositor magnifies it — a fullscreen game renders 3072x1728 on a 4K screen. With it, the window is asked for the real pixel count and its buffer is presented 1:1. An app drawing its UI at a fixed pixel size comes out physically smaller. See below. |
 | `syncobj_enable` | `0` | Enable `drm_syncobj` timeline support (helps with gaming stutter/lag). **Requires restart.** |
 | `primary_selection` | `1` | Advertise the middle-click "copy on select" clipboard. Set to `0` for one clipboard only: the global is not bound, so toolkits stop publishing on select and middle-click paste does nothing, and XWayland's X `PRIMARY` is refused too. **Requires restart.** |
 | `render_late` | `0` | Adaptive render-late scheduling: defer each frame's render toward the next vblank so input is sampled fresher (cuts up to a frame of input latency). `2` additionally logs per-frame timing for tuning. |
@@ -36,6 +36,40 @@ small enough to stop arming is a state the loop can never climb out of, and
 render-late silently stops working with no log and no recovery short of a
 restart. The floor scales with the refresh interval, because the trap does:
 the threshold is `1 / interval_ms`, which is 0.06 at 60 Hz but 0.24 at 240 Hz.
+
+### X11 windows on a fractional-scale display
+
+`xwayland_force_scale_one` exists because X11 has no fractional scaling and no
+way to be told about it. A Wayland client negotiates its buffer scale with the
+compositor; an X11 client asks for, and is told, a number of *pixels*, and has
+no protocol to learn that a pixel on this display is worth 0.8 of a logical
+one.
+
+With the option **off**, an X window on a 1.25× output is configured in logical
+units, commits a buffer of that many pixels, and the renderer magnifies it to
+fill the space. On a 4K display at 1.25×, a fullscreen game renders 3072×1728
+and is stretched to 3840×2160. That stretch is the blur.
+
+With it **on**, the window is asked for the real pixel count instead, and the
+compositor presents that buffer across the logical box it belongs in — so the
+1:1 mapping the display can actually show is the one it gets. The window's
+position and size in the layout do not change: everything else in the
+compositor still works in logical units, and only four things convert.
+
+**Windows come out smaller.** An X11 window's size is now counted in device
+pixels, so an app laying its interface out at a fixed pixel size is physically
+smaller on screen. That is inherent — the same trade Hyprland's
+`force_zero_scaling` makes, for the same reason. Toolkit apps that honour
+`Xft.dpi` or `GDK_SCALE` can be told to compensate; a game rendering at the
+panel's native resolution is the case this is for.
+
+**How exact it is.** Sampling is pinned to nearest-neighbour for these
+windows, since a buffer that is already the right size should never be
+interpolated. Where a window's logical edges do not land on whole device
+pixels — possible at 1.25× or 1.5× for a window at an odd position — the
+renderer's edge rounding can leave the window one device pixel wider or
+narrower than its buffer, which shows as a single duplicated or dropped row of
+texels at one edge. A fullscreen window starts at 0 and is exact.
 
 ## Focus & Input
 

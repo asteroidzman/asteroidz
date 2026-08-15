@@ -146,6 +146,28 @@ struct wlr_scene_surface {
 	struct wlr_scene_buffer *buffer;
 	struct wlr_surface *surface;
 
+	/* ── ASTEROIDZ FORK ADDITION ──────────────────────────────────────
+	 *
+	 * How many of this surface's own pixels go into one logical pixel on
+	 * screen. 1 (or 0, treated as 1) means what it has always meant: the
+	 * surface is presented at its own size and the output scale magnifies
+	 * it from there.
+	 *
+	 * It exists for XWayland. An X11 client has no way to be told about a
+	 * fractional output scale, so on a 1.25x display it commits a buffer
+	 * 1.25x too small and the renderer magnifies it. asteroidz can instead
+	 * ask the X window for the real pixel count -- but then the scene would
+	 * present a 1920-wide buffer across 1920 LOGICAL pixels and the
+	 * renderer would magnify it again, by the same 1.25. Setting the view
+	 * scale to 1.25 makes the scene present it across 1536 logical pixels,
+	 * which is 1920 device pixels: 1:1, which is the entire point.
+	 *
+	 * Set with wlr_scene_surface_set_view_scale(). See the note in
+	 * types/scene/surface.c for why it cannot simply be a
+	 * wlr_scene_buffer_set_dest_size() call from the compositor.
+	 */
+	float view_scale;
+
 	struct {
 		struct wlr_box clip;
 
@@ -714,6 +736,19 @@ struct wlr_scene_surface *wlr_scene_surface_try_from_buffer(
  */
 void wlr_scene_surface_send_frame_done(struct wlr_scene_surface *scene_surface,
 	const struct timespec *when);
+
+/**
+ * ASTEROIDZ FORK ADDITION. Present this surface's buffer across
+ * round(size / scale) logical pixels instead of across `size` of them, so
+ * that an output running at that same scale draws it 1:1. See the field's
+ * documentation on struct wlr_scene_surface.
+ *
+ * A scale of 0 or 1 restores the default. Also affects input: the
+ * node-local coordinates a hit test produces are converted back into
+ * surface coordinates, so a click lands where it was aimed.
+ */
+void wlr_scene_surface_set_view_scale(struct wlr_scene_surface *scene_surface,
+	float scale);
 
 /**
  * Add a node displaying a solid-colored rectangle to the scene-graph.

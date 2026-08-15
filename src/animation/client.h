@@ -1630,8 +1630,7 @@ void client_apply_clip(Client *c, float factor) {
 		}
 
 		if (!c->overview_scene_surface) {
-			wlr_scene_subsurface_tree_set_clip(&c->scene_surface->node,
-											   &clip_box);
+			client_set_surface_clip(c, &clip_box);
 		}
 		client_draw_shield(c, clip_box);
 
@@ -1705,11 +1704,9 @@ void client_apply_clip(Client *c, float factor) {
 				full_clip.x = 0;
 				full_clip.y = 0;
 			}
-			wlr_scene_subsurface_tree_set_clip(&c->scene_surface->node,
-											   &full_clip);
+			client_set_surface_clip(c, &full_clip);
 		} else {
-			wlr_scene_subsurface_tree_set_clip(&c->scene_surface->node,
-											   &clip_box);
+			client_set_surface_clip(c, &clip_box);
 		}
 	}
 	client_draw_shield(c, clip_box);
@@ -3229,7 +3226,7 @@ void resize(Client *c, struct wlr_box geo, int32_t interact) {
 		apply_border(c);
 		client_draw_titlebar(c);
 		client_get_clip(c, &clip);
-		wlr_scene_subsurface_tree_set_clip(&c->scene_surface->node, &clip);
+		client_set_surface_clip(c, &clip);
 		client_draw_shield(c, clip);
 		return;
 	}
