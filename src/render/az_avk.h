@@ -386,6 +386,19 @@ struct az_avk {
 	 * because a mean hides exactly the frames that miss a vblank. */
 	uint64_t cpu_frame_us;
 	uint64_t cpu_frame_us_max;
+	/*
+	 * THIS frame's record time and THIS frame's shm join time, kept so a stall
+	 * can be attributed instead of guessed at.
+	 *
+	 * handler_over_30ms and cpu_frame_us_p99 disagreed -- 3.3% of frames over
+	 * 30ms in the handler against 1% over 10ms in the record phase -- and a
+	 * handler cannot exceed the record phase unless the time is somewhere
+	 * else. Two aggregates cannot say where; one line naming the parts of a
+	 * single slow frame can. Scratch, not statistics: both are overwritten
+	 * every frame.
+	 */
+	uint64_t frame_record_us;
+	uint64_t frame_join_ns;
 	/* Distributions, because the mean is the wrong statistic for a deadline.
 	 * 20us buckets over 512 gives 10.2ms of exact resolution, which brackets
 	 * the 6.944ms budget at 144Hz with room to see the tail. */
@@ -1154,6 +1167,7 @@ static bool az_avk_shm_job_settle(struct az_avk_buffer *entry, bool block) {
 		if (waited > avk.shm_async_join_ns_max) {
 			avk.shm_async_join_ns_max = waited;
 		}
+		avk.frame_join_ns += waited;
 		/*
 		 * The wait is NOT recorded as a copy time.
 		 *
@@ -4383,6 +4397,8 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 
 	struct timespec frame_t0;
 	clock_gettime(CLOCK_MONOTONIC, &frame_t0);
+	/* Zeroed here so what accumulates below belongs to THIS frame. */
+	avk.frame_join_ns = 0;
 
 	/*
 	 * Anything the worker finished but the loop has not noticed yet.
@@ -5188,6 +5204,7 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 	uint64_t us = (uint64_t)((frame_t1.tv_sec - frame_t0.tv_sec) * 1000000
 		+ (frame_t1.tv_nsec - frame_t0.tv_nsec) / 1000);
 	avk.cpu_frame_us += us;
+	avk.frame_record_us = us;
 	if (us > avk.cpu_frame_us_max) {
 		avk.cpu_frame_us_max = us;
 	}

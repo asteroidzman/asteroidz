@@ -9316,8 +9316,43 @@ static void render_monitor(Monitor *m) {
 						avk.handler_ns_max = h_ns;
 					if (h_ns > 10000000ull)
 						avk.handler_over_10ms++;
-					if (h_ns > 30000000ull)
+					if (h_ns > 30000000ull) {
 						avk.handler_over_30ms++;
+						/*
+						 * NAME THE PARTS OF A STALL, once it is a stall.
+						 *
+						 * handler_over_30ms and cpu_frame_us_p99 disagree
+						 * about how often a frame runs long -- 3.3% against
+						 * 1% -- and no aggregate can say where the missing
+						 * time went. Guessing produced a fix for a cause
+						 * that was not there once already.
+						 *
+						 * `record` is AVK's record phase, `join` is what it
+						 * spent inside that waiting for a client's SHM copy,
+						 * `commit` is the KMS commit. `unaccounted` is the
+						 * rest of the frame handler: the animation ticks,
+						 * fadeouts, cursor zoom and per-client work between
+						 * the arm and the build. That last one is the
+						 * suspect precisely because nothing has ever
+						 * measured it.
+						 *
+						 * Deliberately not rate-limited. libinput caps its
+						 * own complaint at five per hour, so the log went
+						 * quiet while the stalls continued -- and the stalls
+						 * arrive in bursts, which is a shape only one line
+						 * each can show.
+						 */
+						uint64_t rec_ns = avk.frame_record_us * 1000ull;
+						wlr_log(WLR_ERROR,
+							"frame stall on %s: handler=%" PRIu64 "us "
+							"record=%" PRIu64 "us join=%" PRIu64 "us "
+							"commit=%" PRIu64 "us unaccounted=%" PRIu64 "us",
+							m->wlr_output->name, h_ns / 1000,
+							avk.frame_record_us, avk.frame_join_ns / 1000,
+							c_ns / 1000,
+							h_ns > rec_ns + c_ns
+								? (h_ns - rec_ns - c_ns) / 1000 : 0);
+					}
 				}
 				az_presenter_committed(m, m->wlr_output->commit_seq,
 					commit_call_ns, m->m8_commit_ns);
