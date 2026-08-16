@@ -2478,3 +2478,43 @@ are reset rather than freed. `graph_allocs` moved 5 → 6 once, when the scene
 gained a resource it had not seen before, and then stopped — which is the shape
 the flat-array design promises: bounded growth to the scene's demand, not
 per-frame churn.
+
+## Reproducing an SHM upload stall without the client that caused it
+
+The stall class that produced "libinput: event processing lagging behind by
+47ms" comes from one shape: a client committing a very large `wl_shm` buffer,
+with a fresh buffer identity every generation. A 56 MB block streams at about
+1 GB/s because it blows every cache level, so the copy takes ~50 ms, and a
+frame that waits for it stalls for three vblanks.
+
+The browser that caused it cannot be relied on to reproduce it. A freshly
+started Firefox on this machine renders through **dmabuf** — `shm_commits`
+stayed at 0 across 3056 frames — and only emits 56 MB shm buffers once it has
+fallen into a software-rendering path. Vivaldi does the same thing. Waiting
+for that state to recur is not a test.
+
+`contrib/wlrepaint` reproduces it deliberately, live or headless:
+
+```sh
+wlrepaint --title big --size 5200x2800 --solid 3060a0 \
+          --frames 1500 --hold-ms 0 --churn
+```
+
+`--churn` is the load-bearing flag: it gives every generation a **new**
+`wl_buffer`, which is what leaves a surface with no previously-uploaded buffer
+to fall back on. Without it the compositor caches by buffer identity and warms
+up after two generations. `--size` has to be large enough that one copy
+outlasts a frame; at 2560x1360 the copy takes ~7 ms and the worker always wins,
+which makes the test pass by never entering the code under test.
+
+What to read afterwards, and what each answer means:
+
+| | |
+|---|---|
+| `shm_worker_pack_us_max` ≈ 50000 | the premise: copies really are that slow |
+| `shm_async_join_waits` | frames that blocked. Should be 0 |
+| `shm_stale_frames` | frames that drew a previous generation instead |
+| `handler_over_30ms` | stalls the user would have felt |
+
+**Assert the premise.** A run where `shm_worker_pack_us_max` is small never
+provoked anything, and every assertion below it passes for free.
