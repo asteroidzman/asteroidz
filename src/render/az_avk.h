@@ -254,6 +254,10 @@ struct az_avk {
 	 * the wait is what stops that from becoming corruption. */
 	uint64_t shm_staging_waits;
 	uint64_t shm_staging_wait_ns_max, shm_staging_wait_ns_sum;
+	/* Region plans turned into a whole-buffer copy because the damage covered
+	 * most of the buffer and one memcpy beats many. Counted so the threshold
+	 * is a decision with evidence rather than a constant nobody revisits. */
+	uint64_t shm_plan_promoted_full;
 	/* Buffers the walker asked to resolve, and nodes it discarded before
 	 * asking because they cannot touch this output at all. */
 	uint64_t buffer_resolve_attempts;
@@ -999,6 +1003,38 @@ static enum az_shm_plan_result az_avk_shm_plan(struct az_avk_buffer *entry,
 		}
 		if (n > 0 && avk_upload_plan_regions(plan, entry->image, stride,
 				(uint32_t)entry->buffer->height, rects, n)) {
+			/*
+			 * MORE BYTES, LESS TIME.
+			 *
+			 * A region plan copies row by row, because a rectangle's source
+			 * rows are stride apart. A full plan is one memcpy. Measured here:
+			 * 6.1GB/s whole versus 1.9GB/s row-by-row, so the row-by-row path
+			 * has to move less than a third of the bytes before it is actually
+			 * cheaper.
+			 *
+			 * Clients routinely damage most of a surface and still report it
+			 * as rectangles -- the surface driving this was averaging 86% of
+			 * its buffer per "partial" upload, which cost 6.5MB row-by-row
+			 * where 7.6MB in one block would have been three times faster.
+			 * Above the crossover, honouring the damage precisely is the slow
+			 * answer.
+			 *
+			 * The threshold is deliberately well above the 1/3 crossover: near
+			 * it the two are within noise of each other, and uploading bytes
+			 * the client did not change should need a clear win, not a
+			 * marginal one.
+			 */
+			uint64_t full_bytes = (uint64_t)stride
+				* (uint64_t)entry->buffer->height;
+			if (full_bytes > 0 && plan->bytes * 4 >= full_bytes * 3) {
+				struct avk_upload_plan whole;
+				if (avk_upload_plan_full(&whole, entry->image, stride,
+						(uint32_t)entry->buffer->height)) {
+					avk.shm_plan_promoted_full++;
+					*plan = whole;
+					return AZ_SHM_PLAN_FULL;
+				}
+			}
 			return AZ_SHM_PLAN_REGIONS;
 		}
 		/* The partial path declined; fall through and do it whole rather than
@@ -5836,6 +5872,8 @@ static cJSON *az_avk_stats_json(void) {
 		(double)avk.shm_staging_waits);
 	cJSON_AddNumberToObject(o, "shm_staging_wait_us_max",
 		(double)(avk.shm_staging_wait_ns_max / 1000));
+	cJSON_AddNumberToObject(o, "shm_plan_promoted_full",
+		(double)avk.shm_plan_promoted_full);
 	{
 		uint64_t packed = 0, stolen = 0;
 		avk_upload_worker_counts(avk.upload_worker, &packed, &stolen);
@@ -7298,6 +7336,7 @@ static void az_avk_stats_reset(void) {
 	avk.shm_async_join_waits = 0;
 	avk.shm_async_join_ns_max = 0;
 	avk.shm_staging_waits = 0;
+	avk.shm_plan_promoted_full = 0;
 	avk.shm_staging_wait_ns_max = avk.shm_staging_wait_ns_sum = 0;
 	avk.shm_async_join_ns_sum = 0;
 	avk.buffer_resolve_attempts = 0;
