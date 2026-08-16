@@ -2647,6 +2647,9 @@ void clear_fullscreen_flag(Client *c) {
 }
 
 void client_pending_fullscreen_state(Client *c, int32_t isfullscreen) {
+	const bool was_fullscreen = c->isfullscreen != 0;
+	const bool now_fullscreen = isfullscreen != 0;
+
 	c->isfullscreen = isfullscreen;
 
 	if (c->foreign_toplevel && !c->iskilling)
@@ -2657,8 +2660,31 @@ void client_pending_fullscreen_state(Client *c, int32_t isfullscreen) {
 	 * candidate for mon_state_apply_color's per-content HDR metadata
 	 * forwarding (see mon_hdr_scanout_candidate) -- fold a refresh into the
 	 * monitor's next commit so it picks up (or drops) this client without
-	 * waiting for an unrelated HDR toggle/retrain. */
-	if (c->mon && c->mon->hdr)
+	 * waiting for an unrelated HDR toggle/retrain.
+	 *
+	 * ── ONLY ON AN ACTUAL TRANSITION ─────────────────────────────────────
+	 *
+	 * This used to arm on every call, without comparing. That is not cheap:
+	 * the frame handler folds the flag in with allow_reconfiguration, which
+	 * in this wlroots means .modeset = true -- a BLOCKING full modeset,
+	 * whether or not the mode changed. The comment there accepts the cost as
+	 * "one blocking commit on a deliberate, rare HDR change"; on a display
+	 * that is permanently HDR it was neither deliberate nor rare.
+	 *
+	 * Most callers pass a state the client is already in. setfloating and
+	 * setmaximizescreen clear a flag that is usually already clear, the
+	 * scratchpad and unmap paths do the same, and the overview clears it for
+	 * every window it lays out. Each of those was costing a modeset. A live
+	 * session logged 58 of them, every one re-setting the SAME
+	 * 3840x2160@143.999 mode, in bursts of up to eight in 1.3 seconds -- and
+	 * libinput's "event processing lagging behind by 42-51ms" complaints fall
+	 * inside the densest burst, which is a blocked event loop being felt as a
+	 * pointer that freezes and jumps.
+	 *
+	 * A call that does not change the flag cannot change whether this client
+	 * is a scanout candidate, so there is nothing for the commit to pick up.
+	 */
+	if (c->mon && c->mon->hdr && was_fullscreen != now_fullscreen)
 		c->mon->hdr_pending_change = true;
 }
 

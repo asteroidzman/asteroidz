@@ -312,6 +312,52 @@ void scene_buffer_apply_effect(struct wlr_scene_buffer *buffer, int32_t sx,
 		 * grow by the scale factor whenever they animate. There is a fixture
 		 * for exactly that -- the 1.25-anim and 1.25-overview arms of
 		 * contrib/xw-scale-test.sh. */
+		const bool is_subsurface =
+			wlr_subsurface_try_from_wlr_surface(surface) != NULL;
+
+		/*
+		 * ── THE OVERVIEW SHRINKS THE WHOLE TREE, SUBSURFACES INCLUDED ────
+		 *
+		 * Under ov_no_resize the window keeps its real size and the overview
+		 * shrinks it VISUALLY into its cell, so every buffer in the client's
+		 * tree has to come down by the same ratio. The root does, but only as
+		 * a side effect: the ternary below refuses any scale under 1, and the
+		 * root then reaches cell size through the clamp further down. A
+		 * SUBSURFACE has no such clamp -- it hits `return` instead, so
+		 * wlr_scene_buffer_set_dest_size() is never called for it and it keeps
+		 * whatever destination it last had, which is its FULL size.
+		 *
+		 * Firefox drew twice because of this: the correct 1049x550 cell, and
+		 * its subsurface at 2524x1327 anchored to the same origin, spilling
+		 * across the screen and onto the next monitor. Windows without
+		 * subsurfaces were unaffected, which is why a terminal looked fine
+		 * beside it and why two headless repros with simple clients could not
+		 * see it at all.
+		 *
+		 * Scaled here, explicitly and by the same factors as the root, rather
+		 * than by relaxing the clamp below. That clamp is what keeps X11
+		 * windows logical on a fractional-scale output -- its own comment says
+		 * so, and contrib/xw-scale-test.sh's 1.25-anim and 1.25-overview arms
+		 * assert it -- so it is left exactly as it is, and this returns before
+		 * reaching it. Outside the overview a subsurface larger than its
+		 * window's clip box is still left alone, unchanged.
+		 */
+		if (buffer_data->ov_live && is_subsurface) {
+			int32_t sub_w = (int32_t)(buffer_data->width_scale *
+									  (float)surface->current.width);
+			int32_t sub_h = (int32_t)(buffer_data->height_scale *
+									  (float)surface->current.height);
+			/* A subsurface narrower than the ratio would round to zero, which
+			 * wlr_scene_buffer_set_dest_size() reads as "use the buffer size"
+			 * -- the full size, i.e. exactly the bug this is fixing. */
+			if (sub_w < 1)
+				sub_w = 1;
+			if (sub_h < 1)
+				sub_h = 1;
+			wlr_scene_buffer_set_dest_size(buffer, sub_w, sub_h);
+			return;
+		}
+
 		int32_t surface_width = surface->current.width;
 		int32_t surface_height = surface->current.height;
 
