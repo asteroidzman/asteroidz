@@ -38,3 +38,6 @@ contrib/x11check/x11check
 *.pkg.tar.xz
 /pkg/
 __pycache__/
+
+# /export dumps, kept out of the repo
+claude.md
