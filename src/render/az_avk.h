@@ -1154,7 +1154,16 @@ static bool az_avk_shm_job_settle(struct az_avk_buffer *entry, bool block) {
 		if (waited > avk.shm_async_join_ns_max) {
 			avk.shm_async_join_ns_max = waited;
 		}
-		az_avk_note_copy_ns(waited);
+		/*
+		 * The wait is NOT recorded as a copy time.
+		 *
+		 * It used to be, and the consequence was that shm_copy_us_max and
+		 * shm_async_join_us_max printed the same number and could never
+		 * disagree -- so the one question they were read to answer, "is the
+		 * copy slow or is the wait slow", had been defined away. The copy's
+		 * own duration comes from the thread that performs it; see
+		 * avk_upload_worker_timing() and shm_worker_pack_us_max.
+		 */
 	}
 
 	VkSemaphoreSubmitInfo wait;
@@ -5836,6 +5845,20 @@ static cJSON *az_avk_stats_json(void) {
 		 * no longer enough. */
 		cJSON_AddNumberToObject(o, "shm_worker_packed", (double)packed);
 		cJSON_AddNumberToObject(o, "shm_worker_stolen", (double)stolen);
+
+		/* The copy's OWN duration, measured on the thread that performs it,
+		 * and the rate it implies. This is the number that says whether a long
+		 * join was a slow copy or a slow wake-up -- see the comment where the
+		 * join wait is recorded. */
+		uint64_t p_max = 0, p_sum = 0, p_n = 0, p_bytes = 0;
+		avk_upload_worker_timing(avk.upload_worker, &p_max, &p_sum, &p_n,
+			&p_bytes);
+		cJSON_AddNumberToObject(o, "shm_worker_pack_us_max",
+			(double)(p_max / 1000));
+		cJSON_AddNumberToObject(o, "shm_worker_pack_us_avg",
+			(double)(p_n ? p_sum / p_n / 1000 : 0));
+		cJSON_AddNumberToObject(o, "shm_worker_pack_mb_s",
+			p_sum ? (double)p_bytes * 1000.0 / (double)p_sum : 0);
 	}
 	cJSON_AddNumberToObject(o, "buffer_resolve_attempts",
 		(double)avk.buffer_resolve_attempts);

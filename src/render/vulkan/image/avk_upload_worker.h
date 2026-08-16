@@ -113,4 +113,18 @@ uint64_t avk_upload_worker_finish(struct avk_upload_worker *w,
 void avk_upload_worker_counts(const struct avk_upload_worker *w,
 	uint64_t *packed, uint64_t *stolen);
 
+/*
+ * How long the worker's memcpys actually took, and over how many bytes.
+ *
+ * Separate from the join wait on purpose. A caller that waits 59ms for a copy
+ * has learned nothing about WHY: a slow copy (bandwidth, page faults on a
+ * fresh mapping) and a fast copy behind a slow wake-up are the same wait and
+ * different bugs. Bytes are reported alongside so the answer can be given as a
+ * rate, which is the form in which "that is not memcpy speed" is obvious.
+ *
+ * Any out-param may be NULL.
+ */
+void avk_upload_worker_timing(struct avk_upload_worker *w,
+	uint64_t *ns_max, uint64_t *ns_sum, uint64_t *count, uint64_t *bytes);
+
 #endif /* AVK_UPLOAD_WORKER_H */

@@ -33,6 +33,22 @@ struct avk_upload_worker {
 
 	uint64_t packed;   /* jobs the worker did */
 	uint64_t stolen;   /* jobs the calling thread had to do itself */
+
+	/*
+	 * How long the memcpy ITSELF took, on this thread, and over how many
+	 * bytes.
+	 *
+	 * Without this the only available number was the join wait, and
+	 * az_avk_shm_job_settle() then recorded that wait as a copy time -- so
+	 * "the copy took 59ms" and "the frame waited 59ms" were the same
+	 * measurement printed twice, and could not disagree. They answer
+	 * different questions: a slow copy is a bandwidth or page-fault problem,
+	 * a long wait behind a fast copy is a scheduling or wake-up problem, and
+	 * the fixes have nothing in common.
+	 *
+	 * Written under `lock`, which the worker retakes after the pack anyway.
+	 */
+	uint64_t pack_ns_max, pack_ns_sum, pack_count, pack_bytes;
 };
 
 /*
@@ -122,7 +138,10 @@ static void *worker_main(void *data) {
 		pthread_mutex_unlock(&w->lock);
 
 		/* THE ONLY WORK THIS THREAD DOES, and the only reason it exists. */
+		uint64_t pack_t0 = now_ns();
+		uint64_t pack_bytes = job->plan.bytes;
 		avk_upload_pack(&job->plan, job->src, job->dst);
+		uint64_t pack_ns = now_ns() - pack_t0;
 
 		atomic_store_explicit(&job->state, AVK_UPLOAD_JOB_DONE,
 			memory_order_release);
@@ -130,6 +149,12 @@ static void *worker_main(void *data) {
 		 * eventfd is for the event loop, which is in poll() and would
 		 * otherwise not learn about this until its next frame. */
 		pthread_mutex_lock(&w->lock);
+		w->pack_count++;
+		w->pack_ns_sum += pack_ns;
+		w->pack_bytes += pack_bytes;
+		if (pack_ns > w->pack_ns_max) {
+			w->pack_ns_max = pack_ns;
+		}
 		pthread_cond_broadcast(&w->finished);
 		notify(w);
 	}
@@ -281,4 +306,23 @@ void avk_upload_worker_counts(const struct avk_upload_worker *w,
 	}
 	*packed = w->packed;
 	*stolen = w->stolen;
+}
+
+void avk_upload_worker_timing(struct avk_upload_worker *w,
+		uint64_t *ns_max, uint64_t *ns_sum, uint64_t *count, uint64_t *bytes) {
+	uint64_t mx = 0, sum = 0, n = 0, b = 0;
+	if (w != NULL) {
+		/* Under the lock: the worker writes these from its own thread, and a
+		 * torn 64-bit read would be a measurement that never happened. */
+		pthread_mutex_lock(&w->lock);
+		mx = w->pack_ns_max;
+		sum = w->pack_ns_sum;
+		n = w->pack_count;
+		b = w->pack_bytes;
+		pthread_mutex_unlock(&w->lock);
+	}
+	if (ns_max != NULL) { *ns_max = mx; }
+	if (ns_sum != NULL) { *ns_sum = sum; }
+	if (count != NULL)  { *count = n; }
+	if (bytes != NULL)  { *bytes = b; }
 }
