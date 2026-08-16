@@ -130,6 +130,94 @@ uint64_t avk_upload_image_write_regions(struct avk_device *dev,
 	uint64_t *bytes_copied,
 	const VkSemaphoreSubmitInfo *waits, uint32_t wait_count);
 
+/*
+ * ── THE COPY, SEPARATED FROM EVERYTHING THAT MUST HAPPEN ON ONE THREAD ────
+ *
+ * The two functions above are plan, memcpy and submit fused together, which is
+ * fine for a caller that is allowed to spend the memcpy where it stands. The
+ * SHM client path is not: it is reached from a wl_surface commit on the
+ * compositor's event loop, and while it runs the loop is not in poll(), so
+ * libinput's fds are not read. A 6.5 MB memcpy there is measured on the mouse.
+ *
+ * So the same work is also available as three pieces, split exactly along the
+ * line of what may leave the main thread:
+ *
+ *   plan    pure arithmetic. Decides which bytes move and where they land in
+ *           staging. No Vulkan, no memory touched.
+ *   pack    the memcpy, and NOTHING else. Reads `src`, writes `dst`, reads the
+ *           plan. Touches no shared state, calls into no library, so it is
+ *           safe on a worker thread.
+ *   submit  the barriers, the copy command and the queue submission. Vulkan
+ *           objects are externally synchronised, so this stays on the thread
+ *           that owns the ring -- the main one.
+ *
+ * The fused functions are implemented on top of these, so the synchronous path
+ * and the asynchronous one are the same code and cannot drift.
+ */
+enum { AVK_UPLOAD_MAX_REGIONS = 64 };
+
+struct avk_upload_plan {
+	/* One region per damage rectangle, or a single whole-image region. */
+	struct avk_upload_rect rects[AVK_UPLOAD_MAX_REGIONS];
+	VkDeviceSize offsets[AVK_UPLOAD_MAX_REGIONS];
+	uint32_t rect_count;
+
+	/* Bytes staging must hold, and bytes the pack will actually move. Equal
+	 * for the whole-image plan; the region plan's total includes the padding
+	 * between regions that alignment forces and pack does not write. */
+	VkDeviceSize total;
+	uint64_t bytes;
+
+	uint32_t bpp;
+	uint32_t stride;     /* SOURCE stride in bytes */
+	uint32_t height;     /* SOURCE height in rows */
+
+	/*
+	 * Whole image, copied verbatim including the source's row padding, so the
+	 * copy is one memcpy and bufferRowLength is stride/bpp. The region path
+	 * repacks rows tightly instead, which is why it cannot use the same
+	 * bufferRowLength -- see the note on avk_upload_image_write_regions().
+	 */
+	bool full;
+};
+
+/* Plan a whole-image copy. False when the format or the stride makes the copy
+ * inexpressible, having said which. */
+bool avk_upload_plan_full(struct avk_upload_plan *plan,
+	const struct avk_image *image, uint32_t stride, uint32_t height);
+
+/* Plan a copy of `rect_count` rectangles. False when a rectangle is outside
+ * the image, there are more than this path packs, or nothing would move. */
+bool avk_upload_plan_regions(struct avk_upload_plan *plan,
+	const struct avk_image *image, uint32_t stride, uint32_t height,
+	const struct avk_upload_rect *rects, uint32_t rect_count);
+
+/*
+ * Move the bytes. THREAD-SAFE and deliberately dependency-free: this is the
+ * function a worker thread runs, and anything it touched beyond src, dst and
+ * the plan would be a race waiting to be found by a user rather than by this
+ * comment.
+ */
+void avk_upload_pack(const struct avk_upload_plan *plan, const void *src,
+	void *dst);
+
+/* Make staging at least `size` bytes, retiring the old buffer against the
+ * submission that read it rather than destroying it under a copy in flight. */
+bool avk_upload_staging_ensure(struct avk_device *dev, struct avk_upload *up,
+	struct avk_retire_queue *retire, VkDeviceSize size);
+
+/*
+ * Record and submit a copy for staging that is ALREADY PACKED.
+ *
+ * `waits` is the caller's ordering against whatever last read the image --
+ * for the client path, a timeline wait on image->last_use. Same contract as
+ * avk_upload_image_write(): returns the timeline value, or 0.
+ */
+uint64_t avk_upload_submit_packed(struct avk_device *dev,
+	struct avk_cmd_ring *ring, struct avk_upload *up, struct avk_image *image,
+	const struct avk_upload_plan *plan,
+	const VkSemaphoreSubmitInfo *waits, uint32_t wait_count);
+
 /* Release the staging buffer. Does NOT wait for the GPU -- retire it. */
 void avk_upload_finish(struct avk_device *dev, struct avk_upload *up);
 

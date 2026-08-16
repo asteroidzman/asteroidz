@@ -24,6 +24,11 @@ avk_pixman_dep = dependency('pixman-1')
 # libm: avk_blur.c derives the blur's support bound and rounds it outward, which
 # is ceil(). Not a renderer abstraction; the C standard library's own maths.
 avk_libm_dep = meson.get_compiler('c').find_library('m', required : false)
+# pthreads: the SHM upload's memcpy runs on a worker thread so that a client's
+# commit does not hold the compositor's event loop out of poll() -- see
+# image/avk_upload_worker.h. Not a renderer abstraction either; the one
+# dependency this engine has ever had a latency reason to take.
+avk_threads_dep = dependency('threads')
 
 # ── shaders ────────────────────────────────────────────────────────────────
 # GLSL -> SPIR-V at build time, then embedded as a C array. Compiling at build
@@ -111,6 +116,7 @@ avk_sources = files(
   'graph/avk_transient.c',
   'image/avk_image.c',
   'image/avk_upload.c',
+  'image/avk_upload_worker.c',
   'pipeline/avk_gradient.c',
   'pipeline/avk_output_encode.c',
   'pipeline/avk_pipeline.c',
@@ -129,13 +135,13 @@ avk_lib = static_library('avk',
   # is set here: avk_device.c wants _GNU_SOURCE for asprintf() and a
   # command-line _POSIX_C_SOURCE would just have to be undefined again.
   dependencies : [vulkan_dep, avk_libdrm_dep, avk_gbm_dep, avk_pixman_dep,
-                  avk_libm_dep],
+                  avk_libm_dep, avk_threads_dep],
   include_directories : include_directories('../..'),
 )
 
 avk_dep = declare_dependency(
   link_with : avk_lib,
   dependencies : [vulkan_dep, avk_libdrm_dep, avk_gbm_dep, avk_pixman_dep,
-                  avk_libm_dep],
+                  avk_libm_dep, avk_threads_dep],
   include_directories : include_directories('../..'),
 )

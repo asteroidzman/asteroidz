@@ -152,7 +152,7 @@ struct avk_image *avk_upload_image_create_3d(struct avk_device *dev,
 	return upload_image_create(dev, drm_format, dim, dim, dim, origin);
 }
 
-static bool staging_ensure(struct avk_device *dev, struct avk_upload *up,
+bool avk_upload_staging_ensure(struct avk_device *dev, struct avk_upload *up,
 		struct avk_retire_queue *retire, VkDeviceSize size) {
 	if (up->buffer != VK_NULL_HANDLE && up->size >= size) {
 		return true;
@@ -271,28 +271,156 @@ static bool unsafe_reuse(void) {
 	return cached != 0;
 }
 
-uint64_t avk_upload_image_write(struct avk_device *dev,
-		struct avk_cmd_ring *ring, struct avk_upload *up,
-		struct avk_image *image, const void *pixels, uint32_t stride,
-		uint32_t height, const VkSemaphoreSubmitInfo *waits,
-		uint32_t wait_count) {
+/* lcm(bpp, 4): what Vulkan requires of bufferOffset -- a multiple of 4 and of
+ * the texel size. Computed rather than assumed 4, because a format with an odd
+ * texel size would silently produce a misaligned copy. */
+static VkDeviceSize copy_offset_align(uint32_t bpp) {
+	VkDeviceSize align = bpp;
+	while (align % 4 != 0) {
+		align += bpp;
+	}
+	return align;
+}
+
+bool avk_upload_plan_full(struct avk_upload_plan *plan,
+		const struct avk_image *image, uint32_t stride, uint32_t height) {
+	*plan = (struct avk_upload_plan){ 0 };
 	uint32_t bpp = avk_format_bytes_per_pixel(image->format);
 	if (bpp == 0) {
-		return 0;
+		return false;
 	}
 	if (stride % bpp != 0) {
 		/* bufferRowLength is in PIXELS. A stride that is not a whole number of
 		 * pixels cannot be expressed, and rounding it shears the image. */
 		avk_log(AVK_ERROR, "upload: stride %u is not a multiple of %u bytes "
 			"per pixel", stride, bpp);
-		return 0;
+		return false;
+	}
+	if (height == 0) {
+		return false;
+	}
+	plan->full = true;
+	plan->bpp = bpp;
+	plan->stride = stride;
+	plan->height = height;
+	plan->rect_count = 1;
+	plan->rects[0] = (struct avk_upload_rect){
+		.x = 0, .y = 0,
+		.width = image->extent.width, .height = image->extent.height,
+	};
+	plan->offsets[0] = 0;
+	plan->total = (VkDeviceSize)stride * height;
+	plan->bytes = (uint64_t)stride * height;
+	return true;
+}
+
+bool avk_upload_plan_regions(struct avk_upload_plan *plan,
+		const struct avk_image *image, uint32_t stride, uint32_t height,
+		const struct avk_upload_rect *rects, uint32_t rect_count) {
+	*plan = (struct avk_upload_plan){ 0 };
+	if (rect_count == 0) {
+		return false;
+	}
+	uint32_t bpp = avk_format_bytes_per_pixel(image->format);
+	if (bpp == 0) {
+		return false;
+	}
+	if (rect_count > AVK_UPLOAD_MAX_REGIONS) {
+		/* The caller is expected to coalesce before it gets here; refusing is
+		 * better than truncating, because a truncated copy leaves the image
+		 * holding a mixture of two generations with nothing to say so. */
+		avk_log(AVK_ERROR, "upload: %u regions is more than the %d this path "
+			"packs at once", rect_count, AVK_UPLOAD_MAX_REGIONS);
+		return false;
 	}
 
-	VkDeviceSize size = (VkDeviceSize)stride * height;
-	if (!staging_ensure(dev, up, ring->retire, size)) {
+	const VkDeviceSize align = copy_offset_align(bpp);
+	VkDeviceSize total = 0;
+	uint64_t bytes = 0;
+	uint32_t packed = 0;
+	for (uint32_t i = 0; i < rect_count; i++) {
+		const struct avk_upload_rect *r = &rects[i];
+		if (r->width == 0 || r->height == 0) {
+			continue;
+		}
+		/* Bounds are the caller's job, but a rectangle that escaped it would
+		 * read past the client's mapping -- so it is checked here as well. */
+		if (r->x + r->width > image->extent.width ||
+				r->y + r->height > image->extent.height) {
+			avk_log(AVK_ERROR, "upload: region %u,%u %ux%u is outside a %ux%u "
+				"image", r->x, r->y, r->width, r->height,
+				image->extent.width, image->extent.height);
+			return false;
+		}
+		total = (total + align - 1) / align * align;
+		plan->offsets[packed] = total;
+		plan->rects[packed] = *r;
+		packed++;
+		VkDeviceSize span = (VkDeviceSize)r->width * r->height * bpp;
+		total += span;
+		bytes += (uint64_t)span;
+	}
+	if (packed == 0 || total == 0) {
+		return false;
+	}
+	plan->rect_count = packed;
+	plan->total = total;
+	/*
+	 * `bytes` is what pack() writes; `total` is what staging must hold. They
+	 * differ by the alignment padding between regions, and reporting `total`
+	 * as "bytes copied" would credit the damage path with moving padding it
+	 * never touches.
+	 */
+	plan->bytes = bytes;
+	plan->bpp = bpp;
+	plan->stride = stride;
+	plan->height = height;
+	plan->full = false;
+	return true;
+}
+
+void avk_upload_pack(const struct avk_upload_plan *plan, const void *src,
+		void *dst) {
+	if (plan->full) {
+		memcpy(dst, src, (size_t)plan->total);
+		return;
+	}
+	uint8_t *out = dst;
+	const uint8_t *in = src;
+	for (uint32_t i = 0; i < plan->rect_count; i++) {
+		const struct avk_upload_rect *r = &plan->rects[i];
+		size_t row_bytes = (size_t)r->width * plan->bpp;
+		for (uint32_t row = 0; row < r->height; row++) {
+			/*
+			 * ROW BY ROW, because a source row is `stride` bytes apart and a
+			 * rectangle's rows are not contiguous unless it spans the full
+			 * width. Copying width * height * bpp as one block is the obvious
+			 * shortcut and it shears the rectangle diagonally.
+			 */
+			memcpy(out + plan->offsets[i] + (size_t)row * row_bytes,
+				in + (size_t)(r->y + row) * plan->stride
+					+ (size_t)r->x * plan->bpp,
+				row_bytes);
+		}
+	}
+}
+
+uint64_t avk_upload_submit_packed(struct avk_device *dev,
+		struct avk_cmd_ring *ring, struct avk_upload *up,
+		struct avk_image *image, const struct avk_upload_plan *plan,
+		const VkSemaphoreSubmitInfo *waits, uint32_t wait_count) {
+	(void)dev;
+	if (plan->rect_count == 0) {
 		return 0;
 	}
-	memcpy(up->mapped, pixels, (size_t)size);
+	if (!plan->full && image->layout == VK_IMAGE_LAYOUT_UNDEFINED) {
+		/* UNDEFINED discards the contents, which for a partial update would
+		 * throw away every pixel outside the damaged rectangles. A partial
+		 * update into an image nothing has written yet is a caller bug. */
+		avk_log(AVK_ERROR, "upload: a partial update of an image with no "
+			"previous contents would discard everything outside the damage");
+		return 0;
+	}
 
 	VkCommandBuffer cb = avk_cmd_ring_begin(ring);
 	if (cb == VK_NULL_HANDLE) {
@@ -332,33 +460,44 @@ uint64_t avk_upload_image_write(struct avk_device *dev,
 	};
 	vkCmdPipelineBarrier2(cb, &dep);
 
-	VkBufferImageCopy2 region = {
-		.sType = VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2,
-		.bufferOffset = 0,
-		/* In PIXELS, not bytes -- the classic way to get a sheared image. */
-		.bufferRowLength = stride / bpp,
-		/*
-		 * ROWS PER SLICE, which is the IMAGE's height and not the caller's row
-		 * count. The two are the same for every 2D caller (they hand over the
-		 * whole image) and differ by a factor of `depth` for M6C's cube, whose
-		 * dim*dim rows are dim slices of dim rows. Taking it from the image is
-		 * the reading that is right in both cases.
-		 */
-		.bufferImageHeight = image->extent.height,
-		.imageSubresource = {
-			.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-			.layerCount = 1,
-		},
-		.imageExtent = { image->extent.width, image->extent.height,
-			image->depth },
-	};
+	VkBufferImageCopy2 regions[AVK_UPLOAD_MAX_REGIONS];
+	for (uint32_t i = 0; i < plan->rect_count; i++) {
+		const struct avk_upload_rect *r = &plan->rects[i];
+		regions[i] = (VkBufferImageCopy2){
+			.sType = VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2,
+			.bufferOffset = plan->offsets[i],
+			/* In PIXELS, not bytes -- the classic way to get a sheared image.
+			 * The whole-image plan keeps the SOURCE stride because it copied
+			 * the padding too; the region plan packed rows tightly, so its row
+			 * length is each rectangle's own width. */
+			.bufferRowLength = plan->full ? plan->stride / plan->bpp : r->width,
+			/*
+			 * ROWS PER SLICE, which is the IMAGE's height and not the caller's
+			 * row count. The two are the same for every 2D caller -- it hands
+			 * over the whole image -- and differ by a factor of `depth` for
+			 * M6C's cube, whose dim*dim rows are dim slices of dim rows.
+			 * Taking it from the image is the reading that is right in both
+			 * cases; taking it from the plan shears the cube.
+			 */
+			.bufferImageHeight = plan->full ? image->extent.height : r->height,
+			.imageSubresource = {
+				.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+				.layerCount = 1,
+			},
+			.imageOffset = { (int32_t)r->x, (int32_t)r->y, 0 },
+			/* depth from the IMAGE for the same reason: 1 for every surface,
+			 * `dim` for the cube. A partial region is always 2D. */
+			.imageExtent = { r->width, r->height,
+				plan->full ? image->depth : 1 },
+		};
+	}
 	VkCopyBufferToImageInfo2 copy = {
 		.sType = VK_STRUCTURE_TYPE_COPY_BUFFER_TO_IMAGE_INFO_2,
 		.srcBuffer = up->buffer,
 		.dstImage = image->image,
 		.dstImageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-		.regionCount = 1,
-		.pRegions = &region,
+		.regionCount = plan->rect_count,
+		.pRegions = regions,
 	};
 	vkCmdCopyBufferToImage2(cb, &copy);
 
@@ -380,6 +519,49 @@ uint64_t avk_upload_image_write(struct avk_device *dev,
 	image->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 	image->last_use = timeline;
 	up->last_use = timeline;
+	return timeline;
+}
+
+uint64_t avk_upload_image_write(struct avk_device *dev,
+		struct avk_cmd_ring *ring, struct avk_upload *up,
+		struct avk_image *image, const void *pixels, uint32_t stride,
+		uint32_t height, const VkSemaphoreSubmitInfo *waits,
+		uint32_t wait_count) {
+	struct avk_upload_plan plan;
+	if (!avk_upload_plan_full(&plan, image, stride, height)) {
+		return 0;
+	}
+	if (!avk_upload_staging_ensure(dev, up, ring->retire, plan.total)) {
+		return 0;
+	}
+	avk_upload_pack(&plan, pixels, up->mapped);
+	return avk_upload_submit_packed(dev, ring, up, image, &plan, waits,
+		wait_count);
+}
+
+uint64_t avk_upload_image_write_regions(struct avk_device *dev,
+		struct avk_cmd_ring *ring, struct avk_upload *up,
+		struct avk_image *image, const void *pixels, uint32_t stride,
+		uint32_t height, const struct avk_upload_rect *rects,
+		uint32_t rect_count, uint64_t *bytes_copied,
+		const VkSemaphoreSubmitInfo *waits, uint32_t wait_count) {
+	if (bytes_copied != NULL) {
+		*bytes_copied = 0;
+	}
+	struct avk_upload_plan plan;
+	if (!avk_upload_plan_regions(&plan, image, stride, height, rects,
+			rect_count)) {
+		return 0;
+	}
+	if (!avk_upload_staging_ensure(dev, up, ring->retire, plan.total)) {
+		return 0;
+	}
+	avk_upload_pack(&plan, pixels, up->mapped);
+	uint64_t timeline = avk_upload_submit_packed(dev, ring, up, image, &plan,
+		waits, wait_count);
+	if (timeline != 0 && bytes_copied != NULL) {
+		*bytes_copied = plan.bytes;
+	}
 	return timeline;
 }
 
@@ -406,182 +588,4 @@ void avk_upload_retire(struct avk_device *dev, void *upload) {
 	avk_upload_finish(dev, up);
 	AVK_LIVE_DEC(dev, avk_uploads);
 	free(up);
-}
-
-/* lcm(bpp, 4): what Vulkan requires of bufferOffset -- a multiple of 4 and of
- * the texel size. Computed rather than assumed 4, because a format with an odd
- * texel size would silently produce a misaligned copy. */
-static VkDeviceSize copy_offset_align(uint32_t bpp) {
-	VkDeviceSize align = bpp;
-	while (align % 4 != 0) {
-		align += bpp;
-	}
-	return align;
-}
-
-uint64_t avk_upload_image_write_regions(struct avk_device *dev,
-		struct avk_cmd_ring *ring, struct avk_upload *up,
-		struct avk_image *image, const void *pixels, uint32_t stride,
-		uint32_t height, const struct avk_upload_rect *rects,
-		uint32_t rect_count, uint64_t *bytes_copied,
-		const VkSemaphoreSubmitInfo *waits, uint32_t wait_count) {
-	if (bytes_copied != NULL) {
-		*bytes_copied = 0;
-	}
-	if (rect_count == 0) {
-		return 0;
-	}
-
-	uint32_t bpp = avk_format_bytes_per_pixel(image->format);
-	if (bpp == 0) {
-		return 0;
-	}
-
-	enum { MAX_REGIONS = 64 };
-	if (rect_count > MAX_REGIONS) {
-		/* The caller is expected to coalesce before it gets here; refusing is
-		 * better than truncating, because a truncated copy leaves the image
-		 * holding a mixture of two generations with nothing to say so. */
-		avk_log(AVK_ERROR, "upload: %u regions is more than the %d this path "
-			"packs at once", rect_count, MAX_REGIONS);
-		return 0;
-	}
-
-	const VkDeviceSize align = copy_offset_align(bpp);
-	VkBufferImageCopy2 regions[MAX_REGIONS];
-	VkDeviceSize offsets[MAX_REGIONS];
-	VkDeviceSize total = 0;
-
-	for (uint32_t i = 0; i < rect_count; i++) {
-		const struct avk_upload_rect *r = &rects[i];
-		if (r->width == 0 || r->height == 0) {
-			continue;
-		}
-		/* Bounds are the caller's job, but a rectangle that escaped it would
-		 * read past the client's mapping -- so it is checked here as well. */
-		if (r->x + r->width > image->extent.width ||
-				r->y + r->height > image->extent.height) {
-			avk_log(AVK_ERROR, "upload: region %u,%u %ux%u is outside a %ux%u "
-				"image", r->x, r->y, r->width, r->height,
-				image->extent.width, image->extent.height);
-			return 0;
-		}
-		total = (total + align - 1) / align * align;
-		offsets[i] = total;
-		total += (VkDeviceSize)r->width * r->height * bpp;
-	}
-	if (total == 0) {
-		return 0;
-	}
-	if (!staging_ensure(dev, up, ring->retire, total)) {
-		return 0;
-	}
-
-	uint8_t *dst = up->mapped;
-	const uint8_t *src = pixels;
-	uint32_t packed = 0;
-	for (uint32_t i = 0; i < rect_count; i++) {
-		const struct avk_upload_rect *r = &rects[i];
-		if (r->width == 0 || r->height == 0) {
-			continue;
-		}
-		size_t row_bytes = (size_t)r->width * bpp;
-		for (uint32_t row = 0; row < r->height; row++) {
-			memcpy(dst + offsets[i] + (size_t)row * row_bytes,
-				src + (size_t)(r->y + row) * stride + (size_t)r->x * bpp,
-				row_bytes);
-		}
-		regions[packed++] = (VkBufferImageCopy2){
-			.sType = VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2,
-			.bufferOffset = offsets[i],
-			/* Tightly packed in staging, so the row length is this
-			 * rectangle's own width and NOT the source stride. */
-			.bufferRowLength = r->width,
-			.bufferImageHeight = r->height,
-			.imageSubresource = {
-				.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-				.layerCount = 1,
-			},
-			.imageOffset = { (int32_t)r->x, (int32_t)r->y, 0 },
-			.imageExtent = { r->width, r->height, 1 },
-		};
-	}
-	if (packed == 0) {
-		return 0;
-	}
-
-	VkCommandBuffer cb = avk_cmd_ring_begin(ring);
-	if (cb == VK_NULL_HANDLE) {
-		return 0;
-	}
-
-	VkImageMemoryBarrier2 to_dst = {
-		.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-		.srcStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-		.srcAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-		.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
-		.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-		.oldLayout = image->layout,
-		.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-		.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-		.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-		.image = image->image,
-		.subresourceRange = {
-			.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-			.levelCount = 1,
-			.layerCount = 1,
-		},
-	};
-	if (unsafe_reuse()) {
-		to_dst.srcStageMask = VK_PIPELINE_STAGE_2_NONE;
-		to_dst.srcAccessMask = 0;
-	}
-	if (image->layout == VK_IMAGE_LAYOUT_UNDEFINED) {
-		/* UNDEFINED discards the contents, which for a partial update would
-		 * throw away every pixel outside the damaged rectangles. A partial
-		 * update into an image nothing has written yet is a caller bug. */
-		avk_log(AVK_ERROR, "upload: a partial update of an image with no "
-			"previous contents would discard everything outside the damage");
-		avk_cmd_ring_abandon(ring);
-		return 0;
-	}
-	VkDependencyInfo dep = {
-		.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-		.imageMemoryBarrierCount = 1,
-		.pImageMemoryBarriers = &to_dst,
-	};
-	vkCmdPipelineBarrier2(cb, &dep);
-
-	VkCopyBufferToImageInfo2 copy = {
-		.sType = VK_STRUCTURE_TYPE_COPY_BUFFER_TO_IMAGE_INFO_2,
-		.srcBuffer = up->buffer,
-		.dstImage = image->image,
-		.dstImageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-		.regionCount = packed,
-		.pRegions = regions,
-	};
-	vkCmdCopyBufferToImage2(cb, &copy);
-
-	VkImageMemoryBarrier2 to_read = to_dst;
-	to_read.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
-	to_read.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-	to_read.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-	to_read.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
-	to_read.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-	to_read.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-	dep.pImageMemoryBarriers = &to_read;
-	vkCmdPipelineBarrier2(cb, &dep);
-
-	uint64_t timeline = avk_cmd_ring_submit(ring, waits, wait_count, NULL, 0);
-	if (timeline == 0) {
-		return 0;
-	}
-
-	if (bytes_copied != NULL) {
-		*bytes_copied = (uint64_t)total;
-	}
-	image->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-	image->last_use = timeline;
-	up->last_use = timeline;
-	return timeline;
 }
