@@ -248,6 +248,12 @@ struct az_avk {
 	uint64_t shm_sync_copies;
 	uint64_t shm_async_joins, shm_async_join_waits;
 	uint64_t shm_async_join_ns_max, shm_async_join_ns_sum;
+	/* Times the alternating staging slot was STILL being read by the GPU when
+	 * the host wanted to write it. Double buffering exists so this is zero;
+	 * a nonzero count means uploads are outrunning the transfer queue, and
+	 * the wait is what stops that from becoming corruption. */
+	uint64_t shm_staging_waits;
+	uint64_t shm_staging_wait_ns_max, shm_staging_wait_ns_sum;
 	/* Buffers the walker asked to resolve, and nodes it discarded before
 	 * asking because they cannot touch this output at all. */
 	uint64_t buffer_resolve_attempts;
@@ -514,7 +520,37 @@ struct az_avk_buffer {
 	/* CPU-backed buffers have to be re-uploaded when their contents change,
 	 * so they keep their staging buffer rather than reallocating it. */
 	bool is_shm;
-	struct avk_upload upload;
+	/*
+	 * TWO staging buffers, alternating, and the reason is a corruption bug.
+	 *
+	 * A copy out of staging is a GPU read that outlives the submission call:
+	 * vkCmdCopyBufferToImage2 returns immediately and the transfer happens
+	 * later. With one staging buffer the next upload's memcpy writes the very
+	 * bytes that copy is still reading -- a host write-after-GPU-read hazard
+	 * with nothing between them. The result on screen is horizontal bands,
+	 * because the copy walks staging in row order and picks up whichever
+	 * generation had reached each row.
+	 *
+	 * avk_upload_staging_ensure() cannot fix it: it returns early whenever the
+	 * existing buffer is big enough, and it is asked about SIZE, not about who
+	 * is still reading. The wait that protects the destination image
+	 * (az_avk_shm_wait, on image->last_use) is the other direction and does
+	 * not help either.
+	 *
+	 * The hazard predates the upload worker -- the synchronous path packs and
+	 * submits back to back as well -- but it was hard to reach, because the
+	 * next commit was a frame away and the transfer had usually finished. The
+	 * worker made it reachable: settle() submits and the very next commit
+	 * posts a memcpy into the same buffer, so a client committing every vblank
+	 * hits it every vblank.
+	 *
+	 * Alternating means the slot being written is two submissions old, so
+	 * az_avk_shm_staging_take() finds it complete and never waits in the
+	 * steady state. shm_staging_waits counts the times it did, because "it
+	 * never waits" is a claim and not an assumption.
+	 */
+	struct avk_upload upload[2];
+	uint32_t upload_slot;   /* the slot the LAST copy used */
 
 	/* Set once nothing worked, so the failure is diagnosed once instead of
 	 * once per frame for as long as the window is open. */
@@ -601,6 +637,10 @@ struct az_avk_buffer {
 	 */
 	struct avk_upload_job *job;
 	uint64_t job_generation;
+	/* Which of the two staging slots the worker is filling. The submit has to
+	 * copy out of the slot the memcpy went into, and by the time it runs
+	 * upload_slot may have moved on. */
+	uint32_t job_slot;
 	struct wl_list job_link;   /* az_avk.shm_jobs */
 
 	/* AVK's own mapping of this buffer's wl_shm pool: what a deferred copy
@@ -658,11 +698,17 @@ static void az_avk_buffer_destroy(struct az_avk_buffer *entry) {
 			avk_image_destroy, entry->image);
 		entry->image = NULL;
 	}
-	if (entry->is_shm) {
+	/* BOTH slots. Retiring only the one the last copy used would leak the
+	 * other and, worse, destroy nothing while the GPU may still be reading
+	 * it. */
+	for (size_t s = 0; entry->is_shm && s < 2; s++) {
+		if (entry->upload[s].buffer == VK_NULL_HANDLE) {
+			continue;
+		}
 		struct avk_upload *up = calloc(1, sizeof(*up));
 		if (up != NULL) {
 			AVK_LIVE_INC(avk.device, avk_uploads);
-			*up = entry->upload;
+			*up = entry->upload[s];
 			/* Against the submission that actually read it. This used to be
 			 * `current value + 1` -- a point no submission owns, chosen to
 			 * mean "one more frame from now". During a session that is
@@ -988,6 +1034,62 @@ static uint32_t az_avk_shm_wait(const struct az_avk_buffer *entry,
 	return entry->image->last_use > 0 ? 1 : 0;
 }
 
+/*
+ * Take the staging slot the next copy may write into, sized for `size`.
+ *
+ * The slot that is NOT the one the last copy used, so the host writes one
+ * while the GPU may still be reading the other. See the comment on
+ * az_avk_buffer.upload for what a single buffer did to the screen.
+ *
+ * Returns NULL if the slot could not be sized, in which case the caller does
+ * what it already does when staging cannot be had: nothing, and try again on
+ * the next commit. The slot is NOT committed to on failure -- upload_slot is
+ * advanced by the caller once the copy is actually going to happen -- so a
+ * failed attempt leaves the alternation where it was rather than skipping a
+ * slot and landing back on the one the GPU is reading.
+ */
+static struct avk_upload *az_avk_shm_staging_take(struct az_avk_buffer *entry,
+		VkDeviceSize size, uint32_t *slot_out) {
+	uint32_t slot = entry->upload_slot ^ 1u;
+	if (az_avk_env_flag("AZ_AVK_UNSAFE_STAGING")) {
+		/* Break test: one staging buffer for every copy, which is what this
+		 * code did before. The host memcpy then overwrites the bytes an
+		 * in-flight vkCmdCopyBufferToImage2 is still reading, which
+		 * synchronisation validation reports as a write-after-read hazard on
+		 * the buffer -- and which, without validation, is the horizontal
+		 * banding that looks like a client rendering bug. */
+		slot = 0;
+	}
+	struct avk_upload *up = &entry->upload[slot];
+
+	/*
+	 * Wait only if this slot is genuinely still in flight. Alternating makes
+	 * that the two-submissions-ago case, which has normally long completed --
+	 * so this is a poll that almost always answers immediately, not a fence
+	 * wait on the event loop.
+	 */
+	if (up->last_use > 0
+			&& avk_device_timeline_value(avk.device) < up->last_use) {
+		uint64_t t0 = az_avk_now_ns();
+		if (!avk_device_timeline_wait(avk.device, up->last_use, UINT64_MAX)) {
+			return NULL;
+		}
+		uint64_t waited = az_avk_now_ns() - t0;
+		avk.shm_staging_waits++;
+		avk.shm_staging_wait_ns_sum += waited;
+		if (waited > avk.shm_staging_wait_ns_max) {
+			avk.shm_staging_wait_ns_max = waited;
+		}
+	}
+
+	if (!avk_upload_staging_ensure(avk.device, up,
+			avk.importer.upload_ring.retire, size)) {
+		return NULL;
+	}
+	*slot_out = slot;
+	return up;
+}
+
 /* Book-keeping for one completed upload, whichever path performed it. */
 static void az_avk_shm_account(struct az_avk_buffer *entry,
 		const struct avk_upload_plan *plan) {
@@ -1057,8 +1159,10 @@ static bool az_avk_shm_job_settle(struct az_avk_buffer *entry, bool block) {
 
 	VkSemaphoreSubmitInfo wait;
 	uint32_t wait_count = az_avk_shm_wait(entry, &wait);
+	/* The slot the WORKER filled, not the current one: another commit may have
+	 * advanced upload_slot between the post and this submit. */
 	bool ok = avk_upload_submit_packed(avk.device, &avk.importer.upload_ring,
-		&entry->upload, entry->image, &entry->job->plan, &wait,
+		&entry->upload[entry->job_slot], entry->image, &entry->job->plan, &wait,
 		wait_count) != 0;
 	if (ok) {
 		az_avk_shm_account(entry, &entry->job->plan);
@@ -1122,8 +1226,9 @@ static bool az_avk_shm_job_start(struct az_avk_buffer *entry) {
 	if (res == AZ_SHM_PLAN_FAILED) {
 		return false;
 	}
-	if (!avk_upload_staging_ensure(avk.device, &entry->upload,
-			avk.importer.upload_ring.retire, plan.total)) {
+	uint32_t slot = 0;
+	struct avk_upload *up = az_avk_shm_staging_take(entry, plan.total, &slot);
+	if (up == NULL) {
 		return false;
 	}
 
@@ -1133,7 +1238,7 @@ static bool az_avk_shm_job_start(struct az_avk_buffer *entry) {
 	}
 	job->plan = plan;
 	job->src = data;
-	job->dst = entry->upload.mapped;
+	job->dst = up->mapped;
 	job->user = entry;
 
 	/*
@@ -1149,6 +1254,10 @@ static bool az_avk_shm_job_start(struct az_avk_buffer *entry) {
 	entry->pending_full = false;
 	entry->job = job;
 	entry->job_generation = entry->content_generation;
+	/* Committed to only now that the copy is certainly happening; see
+	 * az_avk_shm_staging_take() on why a failed attempt must not advance it. */
+	entry->job_slot = slot;
+	entry->upload_slot = slot;
 	/* Released in az_avk_shm_job_release(); see the comment on
 	 * az_avk_buffer.job for why the lock is necessary and the data-ptr access
 	 * is not. */
@@ -1231,22 +1340,28 @@ static bool az_avk_upload_shm(struct az_avk_buffer *entry) {
 	if (res == AZ_SHM_PLAN_FAILED) {
 		goto out;
 	}
-	if (!avk_upload_staging_ensure(avk.device, &entry->upload,
-			avk.importer.upload_ring.retire, plan.total)) {
+	/* Alternating here too. The synchronous path packs and submits back to
+	 * back, so its window is narrow, but it is the same host-write-over-a-
+	 * GPU-read and it is the path a single-pixel or unmappable buffer always
+	 * takes -- the two paths are not allowed to differ about this. */
+	uint32_t slot = 0;
+	struct avk_upload *up = az_avk_shm_staging_take(entry, plan.total, &slot);
+	if (up == NULL) {
 		goto out;
 	}
+	entry->upload_slot = slot;
 
 	/* THE BLOCK. Timed rather than described, because a claim about how long
 	 * the event loop is held is worth nothing without the number. */
 	uint64_t t0 = az_avk_now_ns();
-	avk_upload_pack(&plan, data, entry->upload.mapped);
+	avk_upload_pack(&plan, data, up->mapped);
 	az_avk_note_copy_ns(az_avk_now_ns() - t0);
 	avk.shm_sync_copies++;
 
 	VkSemaphoreSubmitInfo wait;
 	uint32_t wait_count = az_avk_shm_wait(entry, &wait);
 	ok = avk_upload_submit_packed(avk.device, &avk.importer.upload_ring,
-		&entry->upload, entry->image, &plan, &wait, wait_count) != 0;
+		up, entry->image, &plan, &wait, wait_count) != 0;
 	if (ok) {
 		az_avk_shm_account(entry, &plan);
 		pixman_region32_clear(&entry->pending_damage);
@@ -5704,6 +5819,14 @@ static cJSON *az_avk_stats_json(void) {
 		(double)avk.shm_async_join_waits);
 	cJSON_AddNumberToObject(o, "shm_async_join_us_max",
 		(double)(avk.shm_async_join_ns_max / 1000));
+	/* Zero is the working state: the alternating slot has always completed by
+	 * the time the host wants it again. Nonzero means uploads are outrunning
+	 * the transfer queue and the wait is the only thing between that and the
+	 * horizontal banding double buffering was added to stop. */
+	cJSON_AddNumberToObject(o, "shm_staging_waits",
+		(double)avk.shm_staging_waits);
+	cJSON_AddNumberToObject(o, "shm_staging_wait_us_max",
+		(double)(avk.shm_staging_wait_ns_max / 1000));
 	{
 		uint64_t packed = 0, stolen = 0;
 		avk_upload_worker_counts(avk.upload_worker, &packed, &stolen);
@@ -7151,6 +7274,8 @@ static void az_avk_stats_reset(void) {
 	avk.shm_async_joins = 0;
 	avk.shm_async_join_waits = 0;
 	avk.shm_async_join_ns_max = 0;
+	avk.shm_staging_waits = 0;
+	avk.shm_staging_wait_ns_max = avk.shm_staging_wait_ns_sum = 0;
 	avk.shm_async_join_ns_sum = 0;
 	avk.buffer_resolve_attempts = 0;
 	avk.nodes_output_culled_before_resolve = 0;
