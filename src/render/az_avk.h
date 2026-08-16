@@ -5013,6 +5013,33 @@ static cJSON *az_avk_stats_json(void) {
 				cJSON_AddNumberToObject(e, "inv_generation",
 					(double)c->inv_generation);
 				cJSON_AddNumberToObject(e, "inv_source", (double)c->inv_source);
+				/*
+				 * ── PER KIND, BECAUSE THE TWO REBUILD INDEPENDENTLY ───────
+				 *
+				 * The same argument as the per-output split above, one level
+				 * down. A kind is only rebuilt when a consumer of that kind was
+				 * damaged, so the two run at different rates -- and a kind whose
+				 * record has stopped advancing while the output's generation
+				 * climbs is a cached picture that has gone stale. There is no
+				 * aggregate in which that is visible: this is the reading.
+				 */
+				for (int k = 0; k < AVK_BLUR_CACHE_KINDS; k++) {
+					const struct avk_blur_cache_image *ci = &c->img[k];
+					const char *kn = avk_blur_cache_kind_name(
+						(enum avk_blur_cache_kind)k);
+					char key[48];
+					snprintf(key, sizeof(key), "%s_built", kn);
+					cJSON_AddBoolToObject(e, key, ci->valid);
+					snprintf(key, sizeof(key), "%s_generation", kn);
+					cJSON_AddNumberToObject(e, key, (double)ci->generation);
+					snprintf(key, sizeof(key), "%s_source_hash", kn);
+					/* As a string: a 64-bit digest does not survive a JSON
+					 * number, and a silently-rounded hash that compares equal
+					 * to a different one is the exact failure this reports. */
+					char hx[24];
+					snprintf(hx, sizeof(hx), "%016" PRIx64, ci->source_hash);
+					cJSON_AddStringToObject(e, key, hx);
+				}
 				cJSON_AddItemToArray(per, e);
 			}
 		}
@@ -6148,6 +6175,17 @@ static void az_avk_set_blur_cache(bool on) {
 	}
 }
 
+/* M4I instrument. -1 none, otherwise an avk_blur_cache_kind whose consumers are
+ * treated as absent. Every renderer, because a monitor's cache belongs to
+ * whichever format renderer drew it. */
+static void az_avk_set_blur_cache_starve(int kind) {
+	for (size_t i = 0; i < AZ_AVK_MAX_FORMATS; i++) {
+		if (avk.renderers[i].used) {
+			avk_render_set_blur_cache_starve(&avk.renderers[i].renderer, kind);
+		}
+	}
+}
+
 static void az_avk_set_blur_chain_trace(bool on) {
 	for (size_t i = 0; i < AZ_AVK_MAX_FORMATS; i++) {
 		if (avk.renderers[i].used) {
@@ -6182,6 +6220,11 @@ static void az_avk_stats_reset(void) {
 		c->saved_chains = c->saved_blur_px = 0;
 		c->inv_generation = c->inv_geometry = c->inv_params = 0;
 		c->inv_format = c->inv_never_built = c->inv_forced = 0;
+		/* inv_source with the rest of the reason table, which it was left out
+		 * of. It is the one counter a fixture reads as an absolute ("no source
+		 * disagreement happened in this interval"), so a monotonic value here
+		 * carries a previous interval's diagnosis into this one's assertion. */
+		c->inv_source = 0;
 		memset(c->hits_by_kind, 0, sizeof(c->hits_by_kind));
 		memset(c->rebuilds_by_kind, 0, sizeof(c->rebuilds_by_kind));
 	}

@@ -32,12 +32,18 @@ bool avk_blur_params_equal(const struct avk_blur_params *a,
  * AZ_BLUR_CACHE_ALWAYS_DIRTY. It is checked FIRST so that a forced run always
  * reports FORCED rather than whichever ordinary reason happened to also apply.
  */
+/*
+ * `shared_identity` is the falsifier for the per-kind record -- see
+ * AZ_BLUR_CACHE_SHARED_IDENTITY. True restores the shipped defect: both kinds
+ * are validated against the cache-wide identity, which is stamped by whichever
+ * kind last rebuilt, so a starved kind is certified by the other one's work.
+ */
 enum avk_blur_cache_reason avk_blur_cache_check(
 	const struct avk_blur_cache *cache, uint64_t generation,
 	uint64_t source_hash,
 	int32_t origin_x, int32_t origin_y, uint32_t width, uint32_t height,
 	VkFormat format, const struct avk_blur_params *params,
-	enum avk_blur_cache_kind kind, bool force_rebuild);
+	enum avk_blur_cache_kind kind, bool force_rebuild, bool shared_identity);
 
 /*
  * A digest of the commands that will be blurred into the cache: everything

@@ -2054,6 +2054,7 @@ static int32_t set_t_pipe(const Arg *arg);
 static int32_t set_blur_rect_cap(const Arg *arg);
 static int32_t set_blur_chain_trace(const Arg *arg);
 static int32_t set_blur_cache(const Arg *arg);
+static int32_t set_blur_cache_starve(const Arg *arg);
 static int32_t set_frame_trace(const Arg *arg);
 static int32_t dump_scene(const Arg *arg);
 static int32_t damage_all(const Arg *arg);
@@ -2432,6 +2433,29 @@ static int32_t set_blur_cache(const Arg *arg) {
 	bool on = arg != NULL && arg->i != 0;
 	az_avk_set_blur_cache(on);
 	wlr_log(WLR_INFO, "AVK: monitor background blur cache %s", on ? "ON" : "off");
+#else
+	(void)arg;
+#endif
+	return 0;
+}
+/*
+ * `amsg dispatch set_blur_cache_starve,<0|1|2>` -- 0 none, 1 plain, 2 dark.
+ *
+ * The starved kind is treated as having no damaged consumer, which is what an
+ * ordinary frame does to whichever kind the damage missed. It exists so a
+ * fixture can put the cache in that state ON PURPOSE and then ask what the
+ * other kind's rebuild did to it.
+ *
+ * 1-BASED, WITH 0 MEANING NONE, so that a dispatch with a missing or
+ * unparseable argument (which arrives as 0) turns the instrument OFF rather
+ * than silently starving the plain image on a session nobody meant to break.
+ */
+static int32_t set_blur_cache_starve(const Arg *arg) {
+#ifdef AZ_HAVE_VULKAN
+	int v = arg != NULL ? arg->i : 0;
+	az_avk_set_blur_cache_starve(v - 1);
+	wlr_log(WLR_INFO, "AVK: blur cache starve -> %s",
+		v == 1 ? "plain" : v == 2 ? "dark" : "none");
 #else
 	(void)arg;
 #endif

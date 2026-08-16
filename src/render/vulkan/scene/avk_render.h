@@ -251,6 +251,39 @@ struct avk_blur_cache_image {
 	 * reported honestly as PARAMS by the reason table. The fix is to stop
 	 * having one field describe two images. */
 	struct avk_blur_params params;
+	/*
+	 * ── AND THE SOURCE THIS IMAGE WAS BUILT FROM, ALSO PER KIND ───────────
+	 *
+	 * The same argument as `params` above, and it was left half-applied. These
+	 * describe the SOURCE, which really is one thing shared by both images --
+	 * but "what the source is now" and "what THIS image was built from" are
+	 * different facts, and only the second one can validate an image.
+	 *
+	 * The two kinds are built INDEPENDENTLY: a kind is only rebuilt when
+	 * something asked for it that frame (`want[k] > 0`, which is gated on the
+	 * frame damage reaching a consumer of that kind), so an ordinary frame
+	 * rebuilds one and leaves the other alone. With one shared record, the
+	 * kind that rebuilt stamped the NEW identity over the record the untouched
+	 * kind is validated against -- and the untouched kind, still holding the
+	 * previous wallpaper, then compared equal on every field and was served as
+	 * a hit for the rest of the session.
+	 *
+	 * That is the "blurred backdrop of a wallpaper several rotations old"
+	 * defect returning by a second road, after `source_hash` closed the first
+	 * one. A digest of the source cannot help if it is stamped on behalf of an
+	 * image that was never rebuilt from that source.
+	 *
+	 * `generation` and `source_hash` are the two halves of the source identity
+	 * (a notification and a fact -- see the comment on avk_blur_cache); the
+	 * extent, origin and format are the target's shape, which the consumer also
+	 * reads back as the capture box, so a stale image must not be sampled with
+	 * a fresh box either.
+	 */
+	uint64_t generation;
+	uint64_t source_hash;
+	int32_t origin_x, origin_y;
+	uint32_t width, height;
+	VkFormat format;
 	/* Built only where something asked for it. A desktop with no shadows never
 	 * allocates the dark image, and one with no window backdrops never
 	 * allocates the plain one -- which matters, because each is a full
@@ -293,11 +326,18 @@ struct avk_blur_cache {
 	int32_t origin_x, origin_y;
 	uint32_t width, height;
 	VkFormat format;
-	/* No shared `params` here on purpose: the kernel lives on each image (see
-	 * avk_blur_cache_image), because the two kinds differ in exactly that
-	 * field and one copy describing both is what caused the every-frame
-	 * rebuild. What IS shared is everything that describes the SOURCE --
-	 * generation, extent, format -- which is genuinely one thing. */
+	/*
+	 * ── EVERYTHING ABOVE IS TELEMETRY, NOT VALIDITY ───────────────────────
+	 *
+	 * It records what the LAST rebuild of any kind was built from, which is
+	 * what a trace line and avk-stats want to print. Nothing validates against
+	 * it: an image is validated against its OWN copy in avk_blur_cache_image,
+	 * because the two kinds rebuild independently and a shared record is
+	 * stamped by whichever kind happened to rebuild. See the comment there --
+	 * validating against this is how a stale backdrop came to be certified
+	 * valid forever. `params` was moved per-kind for the same reason and this
+	 * is the rest of that move.
+	 */
 
 	/* Telemetry. Requests are consumer asks; hits are asks served from here;
 	 * rebuilds are producer runs. saved_* is the work a hit avoided, priced in
@@ -1097,6 +1137,31 @@ struct avk_renderer {
 	bool break_blur_cache_stale_geometry;
 	bool break_blur_cache_stale_params;
 	/*
+	 * An avk_blur_cache_kind whose consumers are treated as absent, or -1.
+	 *
+	 * NOT A SUPPRESSION OF A CHECK -- it is the other kind of instrument. The
+	 * breaks above hide an invalidation the check already found; this one
+	 * arranges the ORDINARY frame in which a kind is simply not asked for, so
+	 * that the rule about what the other kind's rebuild does to it can be
+	 * stated at all. See avk_render_set_blur_cache_starve().
+	 */
+	int break_blur_cache_starve_kind;
+	/*
+	 * VALIDATE BOTH KINDS AGAINST THE CACHE-WIDE RECORD -- the shipped defect,
+	 * restored on demand.
+	 *
+	 * That record is written by whichever kind last rebuilt, so with this on a
+	 * kind that was starved across a background change is certified by the
+	 * other kind's rebuild and served stale. It is the falsifier for the
+	 * per-kind identity, and it is the ONLY one that can be: nothing else
+	 * produces "every field compares equal and the picture is a wallpaper
+	 * several rotations old".
+	 *
+	 * Pairs with break_blur_cache_starve_kind, which arranges the frame it
+	 * needs. Neither is any use without the other.
+	 */
+	bool break_blur_cache_shared_identity;
+	/*
 	 * AZ_BLUR_CACHE_IGNORE_SOURCE -- restore the pre-fix validity rule, where
 	 * the cache trusted the dirty notification and asked nothing about the
 	 * source it had actually been built from. Paired with IGNORE_DIRTY it is
@@ -1351,6 +1416,32 @@ void avk_render_set_damage_rect_cap(int cap);
 /* M4I. Enable or disable the monitor background blur cache at runtime, on one
  * renderer. See the note at the definition for why this is not env-only. */
 void avk_render_set_blur_cache_enabled(struct avk_renderer *renderer, bool on);
+/*
+ * ── STARVE ONE CACHED KIND, ON ONE RENDERER ───────────────────────────────
+ *
+ * `kind` is an avk_blur_cache_kind, or -1 for none. While set, that kind is
+ * treated as having no damaged consumer this frame: it is not checked, not
+ * rebuilt, and not served. Everything else -- the other kind, the generation,
+ * the source digest -- is untouched.
+ *
+ * IT MODELS THE ORDINARY FRAME, NOT AN EXOTIC ONE. `want[k]` is already gated
+ * on the frame damage reaching a consumer of that kind, so a frame that
+ * rebuilds one kind and leaves the other alone is the common case; this makes
+ * it happen on demand instead of waiting for the damage to fall the right way.
+ *
+ * WHY NOT `shadows_blur_background 0`, WHICH REMOVES THE SAME CONSUMERS. That
+ * is a config change, and a config change reaches
+ * layer_flush_blur_background() and MOVES THE GENERATION. The cache check
+ * returns at the first disagreement, so a moved generation is reported as
+ * GENERATION and every later rule is never evaluated -- the fixture built on
+ * that lever passed on the broken build, having tested nothing. Same trap as
+ * AZ_BLUR_CACHE_IGNORE_DIRTY, different road.
+ *
+ * Runtime rather than env-only because the kind must be starved and un-starved
+ * WITHIN one session: a cache torn down between the two starts from
+ * NEVER_BUILT and can never be stale.
+ */
+void avk_render_set_blur_cache_starve(struct avk_renderer *renderer, int kind);
 
 uint64_t avk_render_frame(struct avk_renderer *renderer,
 	struct avk_image *target, const struct avk_scene *scene,

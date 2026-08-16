@@ -126,7 +126,7 @@ enum avk_blur_cache_reason avk_blur_cache_check(
 		int32_t origin_x, int32_t origin_y,
 		uint32_t width, uint32_t height, VkFormat format,
 		const struct avk_blur_params *params, enum avk_blur_cache_kind kind,
-		bool force_rebuild) {
+		bool force_rebuild, bool shared_identity) {
 	if (cache == NULL) {
 		return AVK_BLUR_CACHE_NEVER_BUILT;
 	}
@@ -138,17 +138,47 @@ enum avk_blur_cache_reason avk_blur_cache_check(
 	if (force_rebuild) {
 		return AVK_BLUR_CACHE_FORCED;
 	}
-	if (!cache->img[kind].valid || cache->img[kind].image == NULL) {
+	/*
+	 * EVERY COMPARISON BELOW IS AGAINST THIS IMAGE'S OWN RECORD, never against
+	 * the cache-wide one.
+	 *
+	 * The two kinds are rebuilt independently -- only what a consumer asked for
+	 * that frame -- so a cache-wide record is stamped by whichever kind ran and
+	 * then certifies the kind that did not. That is not a hypothetical: it
+	 * served a blurred backdrop of a wallpaper several rotations old, with
+	 * every field comparing equal, for the rest of the session. See
+	 * struct avk_blur_cache_image.
+	 */
+	const struct avk_blur_cache_image *ci = &cache->img[kind];
+	if (!ci->valid || ci->image == NULL) {
 		return AVK_BLUR_CACHE_NEVER_BUILT;
 	}
-	if (cache->format != format) {
+	/*
+	 * THE BREAK, and it changes only WHICH RECORD is read -- never the
+	 * comparisons, never their order, never the reasons they return. Written
+	 * as a choice of source rather than as a second copy of the checks, so the
+	 * falsifier cannot drift away from the rule it exists to disable.
+	 *
+	 * `valid` and `params` are not part of it: both were already per-kind
+	 * before this defect and neither is what went wrong.
+	 */
+	const uint64_t was_generation =
+		shared_identity ? cache->generation : ci->generation;
+	const uint64_t was_source =
+		shared_identity ? cache->source_hash : ci->source_hash;
+	const int32_t was_x = shared_identity ? cache->origin_x : ci->origin_x;
+	const int32_t was_y = shared_identity ? cache->origin_y : ci->origin_y;
+	const uint32_t was_w = shared_identity ? cache->width : ci->width;
+	const uint32_t was_h = shared_identity ? cache->height : ci->height;
+	const VkFormat was_format = shared_identity ? cache->format : ci->format;
+	if (was_format != format) {
 		return AVK_BLUR_CACHE_FORMAT;
 	}
-	if (cache->width != width || cache->height != height
-			|| cache->origin_x != origin_x || cache->origin_y != origin_y) {
+	if (was_w != width || was_h != height
+			|| was_x != origin_x || was_y != origin_y) {
 		return AVK_BLUR_CACHE_GEOMETRY;
 	}
-	if (!avk_blur_params_equal(&cache->img[kind].params, params)) {
+	if (!avk_blur_params_equal(&ci->params, params)) {
 		return AVK_BLUR_CACHE_PARAMS;
 	}
 	/*
@@ -158,7 +188,7 @@ enum avk_blur_cache_reason avk_blur_cache_check(
 	 * all as GENERATION would make the reason table useless exactly when it is
 	 * needed.
 	 */
-	if (cache->generation != generation) {
+	if (was_generation != generation) {
 		return AVK_BLUR_CACHE_GENERATION;
 	}
 	/*
@@ -178,7 +208,7 @@ enum avk_blur_cache_reason avk_blur_cache_check(
 	 * notification so the generations still agree -- which is also the shipped
 	 * defect rather than an invented one.
 	 */
-	if (cache->source_hash != source_hash) {
+	if (was_source != source_hash) {
 		return AVK_BLUR_CACHE_SOURCE;
 	}
 	return AVK_BLUR_CACHE_OK;

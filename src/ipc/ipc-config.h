@@ -387,6 +387,10 @@ static const DispatchAction dispatch_actions[] = {
 	{"set_blur_cache", "int",
 	 "Enable (1) or disable (0) the monitor background blur cache. Off makes "
 	 "every backdrop blur reconstruct the background for itself."},
+	{"set_blur_cache_starve", "int",
+	 "Diagnostic: treat one cached blur kind as having no damaged consumer "
+	 "(0 none, 1 plain, 2 dark). Reproduces the ordinary frame that rebuilds "
+	 "one cached image and leaves the other alone."},
 	{"set_blur_chain_trace", "int",
 	 "Diagnostic: log every blur chain's role, geometry and rebuilt area at "
 	 "ERROR (1 on, 0 off). One line per chain, several per frame."},

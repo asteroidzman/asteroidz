@@ -2182,10 +2182,32 @@ force a rebuild, never permit one. `SOURCE` is checked *after* `GENERATION`, so
 `blur_cache_inv_source` moving at all means a background changed without
 telling anyone; it is a diagnosis, not a health metric.
 
+**And that was not sufficient either — see F19.** The identity was one record
+per output describing *both* images, stamped whenever either kind was ready.
+But the two kinds are rebuilt **independently**: a kind is only rebuilt when a
+consumer of that kind was damaged that frame, so the ordinary frame rebuilds one
+and leaves the other alone. The kind that rebuilt therefore wrote the new
+generation, digest and extent over the record the untouched kind was validated
+against — and the untouched kind, still holding the previous wallpaper, compared
+equal on every field for the rest of the session. Same symptom as F18, second
+road: a window backdrop blurring a wallpaper several rotations old beside a
+correct sharp one.
+
+The identity now lives on `avk_blur_cache_image`, stamped inside
+`az_blur_cache_rebuild()` on the one image that was actually built, and the
+consumer reads that image's own capture box. `params` had already been moved
+per-kind for exactly this reason (a shared kernel rebuilt 383 times in 13
+seconds); this is the rest of that move. The copy on `avk_blur_cache` is
+telemetry only.
+
 `blur_cache_generation` in `avk-stats` is a **maximum across outputs** and must
 not be read as a health signal for either: one output going dead while the
 other invalidates leaves it climbing forever. `blur_cache_outputs` states each
-output separately, and that is the view to read.
+output separately, and that is the view to read — now including
+`plain_built`/`plain_generation`/`plain_source_hash` and the `dark_` triple, so
+"this output's DARK image has not been rebuilt in six hours while its generation
+climbed to 40" is a reading rather than a deduction. There is no aggregate in
+which a single stale kind is visible.
 
 **Live, DP-1, interleaved OFF/ON/ON/OFF, 10 tag switches per arm:**
 

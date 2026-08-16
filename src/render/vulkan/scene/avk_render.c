@@ -149,6 +149,31 @@ bool avk_renderer_init(struct avk_renderer *renderer, struct avk_device *dev,
 		getenv("AZ_BLUR_CACHE_STALE_PARAMS") != NULL;
 	renderer->break_blur_cache_ignore_source =
 		getenv("AZ_BLUR_CACHE_IGNORE_SOURCE") != NULL;
+	/* -1 unless named. `plain` and `dark` rather than 0 and 1, because a
+	 * fixture that starves the wrong kind reads as a fixture that found
+	 * nothing, and a number gives it no way to be obviously wrong. */
+	renderer->break_blur_cache_shared_identity =
+		getenv("AZ_BLUR_CACHE_SHARED_IDENTITY") != NULL;
+	if (renderer->break_blur_cache_shared_identity) {
+		avk_log(AVK_ERROR, "M4I break: AZ_BLUR_CACHE_SHARED_IDENTITY -- both "
+			"cached kinds are validated against the record whichever of them "
+			"rebuilt last; a starved kind is served STALE");
+	}
+	renderer->break_blur_cache_starve_kind = -1;
+	{
+		const char *starve = getenv("AZ_BLUR_CACHE_STARVE");
+		if (starve != NULL && strcmp(starve, "plain") == 0) {
+			renderer->break_blur_cache_starve_kind = AVK_BLUR_CACHE_PLAIN;
+		} else if (starve != NULL && strcmp(starve, "dark") == 0) {
+			renderer->break_blur_cache_starve_kind = AVK_BLUR_CACHE_DARK;
+		}
+	}
+	if (renderer->break_blur_cache_starve_kind >= 0) {
+		avk_log(AVK_ERROR, "M4I instrument: AZ_BLUR_CACHE_STARVE=%s -- that "
+			"cached kind is treated as having no damaged consumer",
+			avk_blur_cache_kind_name((enum avk_blur_cache_kind)
+				renderer->break_blur_cache_starve_kind));
+	}
 	if (renderer->break_blur_cache_off) {
 		avk_log(AVK_ERROR, "M4I: the monitor background blur cache is OFF -- "
 			"every backdrop blur reconstructs the background for itself");
@@ -680,6 +705,17 @@ void avk_render_set_blur_cache_enabled(struct avk_renderer *renderer, bool on) {
 	if (renderer != NULL) {
 		renderer->break_blur_cache_off = !on;
 	}
+}
+
+void avk_render_set_blur_cache_starve(struct avk_renderer *renderer, int kind) {
+	if (renderer == NULL) {
+		return;
+	}
+	/* Anything outside the enum is "none", so a caller that passes a parsed
+	 * -1, or a kind this build does not have, starves nothing rather than
+	 * indexing past the array. */
+	renderer->break_blur_cache_starve_kind =
+		(kind >= 0 && kind < AVK_BLUR_CACHE_KINDS) ? kind : -1;
 }
 
 void avk_render_set_damage_rect_cap(int cap) {
@@ -1969,8 +2005,8 @@ bool avk_render_declare_segment(struct avk_graph *graph,
 static bool az_blur_cache_rebuild(struct avk_renderer *renderer,
 		struct avk_graph *graph, const struct avk_scene *scene,
 		const struct avk_blur_params *params, enum avk_blur_cache_kind kind,
-		VkDescriptorSet gradient_set, struct avk_render_segment *seg,
-		bool *blur_begin_marked) {
+		uint64_t source_hash, VkDescriptorSet gradient_set,
+		struct avk_render_segment *seg, bool *blur_begin_marked) {
 	struct avk_blur_cache *cache = renderer->blur_cache;
 	const struct avk_box bounds = scene->blur_cache.bounds;
 	if (bounds.width <= 0 || bounds.height <= 0) {
@@ -2070,8 +2106,40 @@ static bool az_blur_cache_rebuild(struct avk_renderer *renderer,
 		scene->blur_cache.prefix_end;
 	cache->rebuilds++;
 	cache->rebuilds_by_kind[kind]++;
-	cache->img[kind].valid = true;
-	cache->img[kind].params = *params;
+	/*
+	 * ── THE IDENTITY, STAMPED ON THE IMAGE THAT WAS JUST BUILT ────────────
+	 *
+	 * Here and nowhere else, so a kind can only ever be certified against the
+	 * source IT was built from. Stamping a shared record on behalf of both
+	 * kinds -- which is what this did -- hands the untouched kind a fresh
+	 * identity for a picture it never rebuilt, and the check then agrees on
+	 * every field forever. See struct avk_blur_cache_image.
+	 *
+	 * Everything is taken from what this call actually used: the segment's own
+	 * bounds and the renderer format it declared with, not the caller's
+	 * intentions, so a rebuild that clamped or reshaped cannot record a shape
+	 * it did not produce.
+	 */
+	struct avk_blur_cache_image *ci = &cache->img[kind];
+	ci->valid = true;
+	ci->params = *params;
+	ci->generation = scene->blur_cache.generation;
+	ci->source_hash = source_hash;
+	ci->origin_x = bounds.x;
+	ci->origin_y = bounds.y;
+	ci->width = cw;
+	ci->height = ch;
+	ci->format = renderer->format;
+	/* The cache-wide copy is telemetry: what the last rebuild of any kind was
+	 * built from, for the trace line and avk-stats. Nothing validates against
+	 * it -- see the comment on struct avk_blur_cache. */
+	cache->generation = ci->generation;
+	cache->source_hash = ci->source_hash;
+	cache->origin_x = ci->origin_x;
+	cache->origin_y = ci->origin_y;
+	cache->width = ci->width;
+	cache->height = ci->height;
+	cache->format = ci->format;
 	return true;
 }
 
@@ -2704,6 +2772,21 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 				want[slots[s].cache_kind]++;
 			}
 		}
+		/*
+		 * THE STARVE INSTRUMENT, applied to the DEMAND and to nothing else.
+		 *
+		 * Written here, on the finished counts, rather than inside the loop:
+		 * `want` is the only thing it is allowed to change, and computing it and
+		 * then zeroing it keeps that visible. The starved kind is now
+		 * indistinguishable from one whose consumers were simply not damaged
+		 * this frame -- which is the frame this exists to produce on demand.
+		 * See avk_render_set_blur_cache_starve().
+		 */
+		if (renderer->break_blur_cache_starve_kind >= 0
+				&& renderer->break_blur_cache_starve_kind
+					< AVK_BLUR_CACHE_KINDS) {
+			want[renderer->break_blur_cache_starve_kind] = 0;
+		}
 	}
 	/*
 	 * PER KIND: check, then rebuild only what something asked for.
@@ -2739,7 +2822,8 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 			(uint32_t)scene->blur_cache.bounds.width,
 			(uint32_t)scene->blur_cache.bounds.height, renderer->format,
 			&cache_params[k], (enum avk_blur_cache_kind)k,
-			renderer->break_blur_cache_always_dirty);
+			renderer->break_blur_cache_always_dirty,
+			renderer->break_blur_cache_shared_identity);
 		/*
 		 * THE STALENESS BREAKS, applied as a SUPPRESSION of the reason the check
 		 * already found. Written this way, and not as a second copy of the
@@ -2773,25 +2857,21 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 		}
 		avk_blur_cache_count_reason(cache, cache_reason[k]);
 		cache_ready[k] = az_blur_cache_rebuild(renderer, graph, scene,
-			&cache_params[k], (enum avk_blur_cache_kind)k, gradient_set,
-			&prefix_segs[blur_count + k], &blur_begin_marked);
+			&cache_params[k], (enum avk_blur_cache_kind)k, source_hash,
+			gradient_set, &prefix_segs[blur_count + k], &blur_begin_marked);
 	}
 	/*
-	 * THE SHARED IDENTITY, stamped once and only if something was built.
+	 * NO SHARED STAMP HERE, and its absence is the fix.
 	 *
-	 * Shared because it describes the SOURCE, which both images are built from:
-	 * one generation, one extent, one format. Only the per-kind `valid` flag and
-	 * the kernel's darken bit differ, and the kernel is compared per kind.
+	 * It used to run whenever EITHER kind was ready -- including when a kind was
+	 * merely a hit -- and write the current generation, source digest and extent
+	 * over the one record both kinds were validated against. A frame that
+	 * rebuilt only the plain image (because nothing damaged a shadow backdrop
+	 * that frame) therefore certified the dark image, still holding the previous
+	 * wallpaper, as current; every later check agreed on every field and served
+	 * it. The identity is now stamped inside az_blur_cache_rebuild(), on the one
+	 * image that was actually built.
 	 */
-	if (cache_ready[AVK_BLUR_CACHE_PLAIN] || cache_ready[AVK_BLUR_CACHE_DARK]) {
-		cache->generation = scene->blur_cache.generation;
-		cache->source_hash = source_hash;
-		cache->origin_x = scene->blur_cache.bounds.x;
-		cache->origin_y = scene->blur_cache.bounds.y;
-		cache->width = (uint32_t)scene->blur_cache.bounds.width;
-		cache->height = (uint32_t)scene->blur_cache.bounds.height;
-		cache->format = renderer->format;
-	}
 	if (renderer->blur_chain_trace && cache_enabled) {
 		avk_log(AVK_ERROR, "avk blurcache: tgt=%ux%u cache=%dx%d@%d,%d "
 			"gen=%" PRIu64 " plain=%s/%d/%zu dark=%s/%d/%zu hits=%" PRIu64
@@ -2908,10 +2988,15 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 		 */
 		if (slot->cacheable && cache_ready[slot->cache_kind]) {
 			const struct avk_blur_cache_image *ci = &cache->img[slot->cache_kind];
+			/* THE IMAGE'S OWN CAPTURE BOX, not the cache-wide one: they are the
+			 * same number on a healthy frame and different exactly when this
+			 * image was built at a shape some other kind has since replaced.
+			 * Sampling a stale image with a fresh box is a second way to render
+			 * the wrong desktop from the same mistake. */
 			renderer->blur_results[i] = (struct avk_blur_result){
 				.image = ci->image,
-				.capture = { cache->origin_x, cache->origin_y,
-					(int32_t)cache->width, (int32_t)cache->height },
+				.capture = { ci->origin_x, ci->origin_y,
+					(int32_t)ci->width, (int32_t)ci->height },
 			};
 			cache->requests++;
 			cache->hits++;
