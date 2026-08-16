@@ -410,6 +410,9 @@ struct az_avk {
 	 */
 	uint64_t frame_record_us;
 	uint64_t frame_join_ns;
+	/* The output being recorded right now, so a decision taken deep in the
+	 * walk can say WHICH output it was taken for. NULL outside a build. */
+	struct wlr_output *frame_output;
 	/* Distributions, because the mean is the wrong statistic for a deadline.
 	 * 20us buckets over 512 gives 10.2ms of exact resolution, which brackets
 	 * the 6.944ms budget at 144Hz with room to see the tail. */
@@ -589,6 +592,11 @@ struct az_avk_buffer {
 	 * damage that would have caused one was consumed by the frame that
 	 * skipped. */
 	bool drew_stale;
+	/* Which output actually drew it. The repaint is owed to that output and
+	 * to no other: damaging every monitor made a two-output window redraw
+	 * fully instead of partially, which avk-crossoutput-border-test.sh
+	 * measures directly (it wants partial > full, and got 115 against 174). */
+	struct wlr_output *stale_output;
 
 
 	/* Set once nothing worked, so the failure is diagnosed once instead of
@@ -1541,6 +1549,7 @@ static struct avk_image *az_avk_shm_bring_current(struct az_avk_buffer *entry) {
 					? entry->image : az_avk_shm_sibling_image(entry);
 			if (stale != NULL) {
 				entry->drew_stale = true;
+				entry->stale_output = avk.frame_output;
 				avk.shm_stale_frames++;
 				return stale;
 			}
@@ -1591,6 +1600,7 @@ static void az_avk_shm_drain(void) {
 			if (entry->job != NULL && avk_upload_job_done(entry->job)) {
 				bool owed = entry->drew_stale;
 				entry->drew_stale = false;
+				/* Read before the settle; cleared after the repaint below. */
 				az_avk_shm_job_settle(entry, false);
 				if (owed) {
 					/*
@@ -1600,15 +1610,26 @@ static void az_avk_shm_drain(void) {
 					 * quiet would sit a generation stale forever -- so the
 					 * repaint is asked for here.
 					 *
-					 * Whole-output damage because the entry does not know
-					 * which region of which output it reached; it is the
-					 * blunt answer, and it is bounded by how often a copy
-					 * actually outruns a frame.
+					 * ONLY on the output that actually drew it. The first
+					 * version damaged every monitor, on the grounds that the
+					 * entry did not know which one it had reached. It does
+					 * now, and the difference is measurable: a window
+					 * spanning two outputs went from redrawing partially to
+					 * redrawing fully, because the output that never showed
+					 * the surface was being told its whole surface changed.
+					 * avk-crossoutput-border-test.sh asserts partial > full
+					 * and read 115 against 174.
+					 *
+					 * Still whole-output rather than the surface's own
+					 * region: AVK has no path from a wlr_surface to its scene
+					 * node, so the region is not available here. Bounded by
+					 * how often a copy outruns a frame on that one output.
 					 */
 					Monitor *dm;
 					wl_list_for_each(dm, &mons, link) {
 						if (dm->scene_output == NULL || dm->wlr_output == NULL
-								|| !dm->wlr_output->enabled) {
+								|| !dm->wlr_output->enabled
+								|| dm->wlr_output != entry->stale_output) {
 							continue;
 						}
 						wlr_damage_ring_add_whole(
@@ -4566,6 +4587,7 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 	clock_gettime(CLOCK_MONOTONIC, &frame_t0);
 	/* Zeroed here so what accumulates below belongs to THIS frame. */
 	avk.frame_join_ns = 0;
+	avk.frame_output = m->wlr_output;
 
 	/*
 	 * Anything the worker finished but the loop has not noticed yet.
