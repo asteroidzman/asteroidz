@@ -7047,6 +7047,18 @@ static void az_avk_set_blur_chain_trace(bool on) {
 
 static void az_avk_stats_reset(void) {
 	/*
+	 * The event-loop blocking counters, zeroed with everything else.
+	 *
+	 * These were added to answer "did the shm copy come off the event loop",
+	 * and were then left out of the reset -- so a reproduction started with
+	 * handler_us_max already carrying the wallpaper's 6.2ms from session
+	 * start. A maximum that survives the reset is not a maximum of the
+	 * measurement window, and it is the one number a reader trusts most.
+	 */
+	avk.commit_ns_max = avk.commit_ns_sum = avk.commit_samples = 0;
+	avk.handler_ns_max = avk.handler_ns_sum = 0;
+	avk.handler_over_10ms = avk.handler_over_30ms = 0;
+	/*
 	 * M4I. The cache's INTERVAL counters, zeroed with everything else.
 	 *
 	 * They live on the output rather than the renderer, so they were missed by
