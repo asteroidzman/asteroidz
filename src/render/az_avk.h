@@ -174,6 +174,24 @@ struct az_avk {
 	/* Counters. The instrumentation the M3 brief asks for; dumped by
 	 * az_avk_log_stats() at shutdown and on demand over IPC. */
 	uint64_t frames;              /* frames AVK composited */
+	/*
+	 * ── HOW LONG THE EVENT LOOP WAS NOT READING INPUT ────────────────────
+	 *
+	 * cpu_frame_us measures AVK's RECORD phase and nothing else, so a frame
+	 * handler that spends 50ms inside wlr_output_commit_state() reads as a
+	 * 240us frame. libinput was reporting "event processing lagging behind by
+	 * 47-52ms" with every other explanation eliminated -- no modesets, no GL,
+	 * no VRR dependency, no software cursor, no CPU sync waits -- and nothing
+	 * in the compositor could see the gap because nothing measured the commit.
+	 *
+	 * These are the commit itself (call -> return) and the whole handler
+	 * (frame event -> commit returned). The second is the one that matters:
+	 * it is the interval the compositor is not in poll(), which is exactly
+	 * what libinput is complaining about.
+	 */
+	uint64_t commit_ns_max, commit_ns_sum, commit_samples;
+	uint64_t handler_ns_max, handler_ns_sum;
+	uint64_t handler_over_10ms, handler_over_30ms;
 	uint64_t fallback_frames;     /* frames handed back to the SceneFX path */
 	uint64_t buffer_imports;      /* client buffers resolved to an avk_image */
 	uint64_t buffer_import_fails;
@@ -2263,8 +2281,41 @@ static void az_avk_walk_node(struct az_avk_walk *walk,
 			struct wlr_scene_buffer *b = wlr_scene_buffer_from_node(node);
 			w = b->dst_width;
 			h = b->dst_height;
-			wlr_log(WLR_ERROR, "scene: node=%p BUFFER at %d,%d %dx%d buffer=%p",
-				(void *)node, lx, ly, w, h, (void *)b->buffer);
+			/*
+			 * WHAT THE NODE IS, not just where it is.
+			 *
+			 * The line used to print position, destination size and the
+			 * buffer pointer, and nothing else. Two buffer nodes at one
+			 * origin with different buffer pointers were read as "a toplevel
+			 * and its subsurface" -- an inference, never checked -- and a fix
+			 * was written for subsurfaces that could not possibly have run,
+			 * because the oversized node may not be a wlr_scene_surface at
+			 * all. Whether a node carries a surface, and whether that surface
+			 * is a subsurface, decides which code touches it; neither was
+			 * visible here.
+			 *
+			 * `src` is printed with it: dst is what the node presents, src is
+			 * what it samples, and a node presenting its buffer at natural
+			 * size is exactly the case being hunted.
+			 */
+			struct wlr_scene_surface *ss =
+				wlr_scene_surface_try_from_buffer(b);
+			const char *kind = "plain";
+			int sw = 0, sh = 0;
+			if (ss != NULL && ss->surface != NULL) {
+				sw = ss->surface->current.width;
+				sh = ss->surface->current.height;
+				kind = wlr_subsurface_try_from_wlr_surface(ss->surface)
+						   ? "subsurface"
+						   : (wlr_xdg_popup_try_from_wlr_surface(ss->surface)
+								  ? "popup"
+								  : "toplevel");
+			}
+			wlr_log(WLR_ERROR,
+				"scene: node=%p BUFFER at %d,%d %dx%d buffer=%p "
+				"kind=%s surface=%dx%d src=%.0fx%.0f",
+				(void *)node, lx, ly, w, h, (void *)b->buffer, kind, sw, sh,
+				b->src_box.width, b->src_box.height);
 		}
 		if (node->type != WLR_SCENE_NODE_BUFFER) {
 			wlr_log(WLR_ERROR, "scene: node=%p type=%d at %d,%d %dx%d",
@@ -3014,13 +3065,20 @@ static void az_avk_walk_node(struct az_avk_walk *walk,
  * untrustworthy for months.
  */
 static bool az_avk_output_supported(Monitor *m,
-		struct wlr_color_transform *color_transform) {
+		struct wlr_color_transform *color_transform, const char **why) {
 	struct wlr_output *output = m->wlr_output;
+
+	/* Every `false` below names itself. The caller turns a refusal into a
+	 * fatal error by default, and "AVK refused this output" without the reason
+	 * is the diagnostic this whole change exists to stop producing. */
+	*why = "unknown";
 
 	/* Decided once, on the first frame, and permanent: an output whose frames
 	 * cannot be handed over with a fence attached is not one AVK may present,
 	 * however well it composites. */
 	if (m->avk != NULL && m->avk->present_sync == AZ_AVK_PRESENT_SYNC_BROKEN) {
+		*why = "explicit present-sync is broken on this output (frames cannot "
+			   "be handed over with a fence attached)";
 		return false;
 	}
 
@@ -3066,6 +3124,13 @@ static bool az_avk_output_supported(Monitor *m,
 					"output stays on the SceneFX path", output->name);
 			}
 		}
+		*why = (color_transform != NULL
+				|| m->color_state.path == AZ_OUTPUT_PATH_FALLBACK)
+			? "a colour transform this renderer cannot express as a matrix and "
+			  "a curve (a cLUT ICC profile)"
+			: "the output presents HDR but the M5 encode pass is not enabled "
+			  "(AZ_M5_PATH_B=1), so scene-linear values would be written into "
+			  "a PQ buffer";
 		return false;
 	}
 
@@ -3075,6 +3140,7 @@ static bool az_avk_output_supported(Monitor *m,
 			wlr_log(WLR_INFO, "AVK: output magnification is not implemented "
 				"yet; zoomed frames stay on the SceneFX path");
 		}
+		*why = "output magnification (zoom > 1) is not implemented";
 		return false;
 	}
 
@@ -3595,9 +3661,35 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 	if (!avk.active || m->scene_output == NULL) {
 		return false;
 	}
-	if (!az_avk_output_supported(m, color_transform)) {
+	const char *refused_why = NULL;
+	if (!az_avk_output_supported(m, color_transform, &refused_why)) {
 		avk.fallback_frames++;
-		return false;
+		/*
+		 * ── FALLING BACK TO SceneFX IS FATAL ─────────────────────────────
+		 *
+		 * Returning false here hands the output to wlr_scene_output_build_state()
+		 * and the desktop keeps working, composited by SceneFX on wlroots' GLES
+		 * renderer. That is precisely the behaviour being removed: the picture
+		 * stays plausible, so the refusal is discovered -- if ever -- as a
+		 * performance mystery or a colour mystery, long after the frame that
+		 * caused it, with a renderer nobody was investigating in the loop.
+		 *
+		 * A refusal is a bug in AVK or an output AVK must learn to drive.
+		 * Either way the useful outcome is a stack and a reason at the moment
+		 * it happens, not a second renderer quietly covering for it. So this
+		 * aborts, naming the output and the condition.
+		 *
+		 * There is deliberately NO environment variable to re-enable the
+		 * fallback. An escape hatch is a fallback with an extra step: it gets
+		 * set once to get past a bad login, stays set, and the next refusal is
+		 * silent again -- which is the exact failure this replaces.
+		 */
+		wlr_log(WLR_ERROR,
+			"AVK REFUSED %s: %s. This compositor does not composite with GL, "
+			"so there is nothing to fall back to and this is fatal.",
+			m->wlr_output != NULL ? m->wlr_output->name : "(output)",
+			refused_why != NULL ? refused_why : "unknown");
+		abort();
 	}
 
 	struct timespec frame_t0;
@@ -5864,6 +5956,14 @@ static cJSON *az_avk_stats_json(void) {
 	}
 	cJSON_AddNumberToObject(o, "budget_frames", (double)ob_frames);
 	cJSON_AddNumberToObject(o, "over_budget", (double)ob);
+	cJSON_AddNumberToObject(o, "commit_us_max", (double)(avk.commit_ns_max / 1000));
+	cJSON_AddNumberToObject(o, "commit_us_avg", (double)(avk.commit_samples
+		? avk.commit_ns_sum / avk.commit_samples / 1000 : 0));
+	cJSON_AddNumberToObject(o, "handler_us_max", (double)(avk.handler_ns_max / 1000));
+	cJSON_AddNumberToObject(o, "handler_us_avg", (double)(avk.commit_samples
+		? avk.handler_ns_sum / avk.commit_samples / 1000 : 0));
+	cJSON_AddNumberToObject(o, "handler_over_10ms", (double)avk.handler_over_10ms);
+	cJSON_AddNumberToObject(o, "handler_over_30ms", (double)avk.handler_over_30ms);
 	cJSON_AddNumberToObject(o, "over_budget_2x", (double)ob2);
 	cJSON_AddNumberToObject(o, "over_budget_3x", (double)ob3);
 	cJSON_AddNumberToObject(o, "blur_full_dependency_pixels",

@@ -737,11 +737,17 @@ portal_install_dir = join_paths(prefix, 'share/xdg-desktop-portal')
 # are other ways back to a shell that do not cost a permanent greeter entry
 # advertising a second-class configuration.
 #
-# The AVK session sets WLR_RENDERER=gles2 deliberately rather than leaving it
+# The AVK sessions set WLR_RENDERER=vulkan deliberately rather than leaving it
 # unset. ASTEROIDZ_RENDERER is independent of it -- wlroots still needs a
 # renderer for shm formats, the allocator and screencopy, none of which are
-# composition -- and pinning it to GLES2 makes the session exactly the
-# configuration contrib/avk-frame-test.sh asserts against.
+# composition -- and it used to be pinned to gles2 for exactly that reason.
+#
+# It is vulkan now because gles2 meant a GL context, GL buffers and GL calls
+# existed in a session whose desktop is composited entirely by AVK, and the one
+# thing they were still used for -- the DRM cursor plane's 64x64 buffer -- was
+# indistinguishable, from outside, from AVK having fallen back. Nothing in this
+# compositor composites with GL any more, and the compatibility renderer no
+# longer offers a way for it to start.
 install_data('assets/asteroidz-avk.desktop', install_dir : desktop_install_dir)
 
 # The acceptance session, installed rather than left as a hand-written file

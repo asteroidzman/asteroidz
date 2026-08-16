@@ -12,7 +12,11 @@
 #include <limits.h>
 #include <linux/input-event-codes.h>
 #include <math.h>
-#include <scenefx/render/fx_renderer/fx_renderer.h>
+/* The scenefx VULKAN renderer is never created -- wlr_renderer_autocreate()
+ * replaced fx_renderer_create() -- but one diagnostic still lives in it:
+ * fx_vk_blur_debug_arm(), behind `amsg dispatch dump_blur_source`, which
+ * writes the image a blur is about to sample. That is the only reason this
+ * header remains; fx_renderer.h went with the renderer itself. */
 #include <scenefx/render/fx_renderer/fx_vk_renderer.h>
 #include <scenefx/types/fx/blur_data.h>
 #include <scenefx/types/fx/clipped_region.h>
@@ -45,6 +49,9 @@
 #include <wlr/render/wlr_texture.h>
 #include <wlr/types/wlr_alpha_modifier_v1.h>
 #include <wlr/render/color.h>
+#include <wlr/render/gles2.h>
+#include <wlr/render/pixman.h>
+#include <wlr/render/vulkan.h>
 #include <wlr/types/wlr_buffer.h>
 #include <wlr/types/wlr_color_management_v1.h>
 #include <wlr/types/wlr_color_representation_v1.h>
@@ -1810,6 +1817,65 @@ static inline void client_set_scene_enabled(Client *c, bool enabled) {
 		wlr_scene_node_set_enabled(&c->shadow_tree->node, enabled);
 }
 static struct wlr_renderer *drw;
+
+/*
+ * The compatibility renderer must be the Vulkan one, and nothing else.
+ *
+ * wlroots needs a wlr_renderer for shm formats, the allocator, wl_drm and
+ * screencopy -- none of which is composition, all of which take one as a
+ * parameter with no variant that does not. So the object exists. What it must
+ * never be is a GL renderer: a GLES2 context in this process means GL buffers,
+ * GL textures and a second way for a frame to reach the screen, and the only
+ * thing that ever used it -- the DRM cursor plane's 64x64 buffer -- was
+ * indistinguishable from outside from AVK having quietly fallen back.
+ *
+ * Checked rather than assumed. The session pins WLR_RENDERER=vulkan, but a
+ * session file is a string in a desktop entry: it can be edited, inherited
+ * from a stale copy in /usr, or overridden in the environment, and the result
+ * would be a working desktop that is wrong in precisely the way this whole
+ * change exists to prevent. Pixman is refused for the same reason -- it is a
+ * software renderer, and a silent fall to it is a slideshow nobody diagnosed.
+ */
+/*
+ * Create it, rather than ask the environment for it.
+ *
+ * wlr_renderer_autocreate() picks from WLR_RENDERER, and its default order
+ * starts at GL. That made the session file's `env WLR_RENDERER=vulkan` load
+ * bearing: a string in a desktop entry, which can be edited, inherited from a
+ * stale copy under /usr, or overridden per-launch, deciding whether a GL
+ * context exists in this process. There is no switch now -- it is Vulkan or
+ * the compositor does not start.
+ */
+static struct wlr_renderer *az_create_renderer(struct wlr_backend *b) {
+	/*
+	 * wlr_vk_renderer_create_with_drm_fd() is the direct call and it was tried
+	 * first, but it needs a DRM fd and the HEADLESS backend has none -- which
+	 * is every fixture in contrib/. So the choice is forced into the variable
+	 * wlr_renderer_autocreate() reads, and the result is checked.
+	 *
+	 * Note what this is not: it is not a switch. Nothing outside this function
+	 * can express a preference -- the session entries carry no WLR_RENDERER,
+	 * and an inherited value is overwritten here rather than honoured, so a
+	 * stale environment cannot put a GL context in this process. The guard
+	 * below turns "somehow not Vulkan" into an abort rather than a fallback.
+	 */
+	setenv("WLR_RENDERER", "vulkan", 1);
+	return wlr_renderer_autocreate(b);
+}
+
+static void az_require_vulkan_renderer(struct wlr_renderer *r) {
+	if (r == NULL || wlr_renderer_is_vk(r)) {
+		return;
+	}
+	wlr_log(WLR_ERROR,
+		"the wlroots compatibility renderer is %s, not Vulkan. This "
+		"compositor composites with AVK and will not run beside a %s "
+		"renderer. Set WLR_RENDERER=vulkan.",
+		wlr_renderer_is_gles2(r) ? "GLES2"
+			: (wlr_renderer_is_pixman(r) ? "pixman" : "an unknown backend"),
+		wlr_renderer_is_gles2(r) ? "GL" : "software");
+	abort();
+}
 static struct wlr_allocator *alloc;
 static struct wlr_compositor *compositor;
 
@@ -3053,8 +3119,9 @@ void gpureset(struct wl_listener *listener, void *data) {
 
 	wlr_log(WLR_DEBUG, "gpu reset");
 
-	if (!(drw = fx_renderer_create(backend)))
+	if (!(drw = az_create_renderer(backend)))
 		die("couldn't recreate renderer");
+	az_require_vulkan_renderer(drw);
 
 	if (!(alloc = wlr_allocator_autocreate(backend, drw)))
 		die("couldn't recreate allocator");
@@ -8120,6 +8187,32 @@ void resize_floating_window(Client *grabc) {
 static void cursor_zoom_apply(Monitor *m) {
 	if (!m->scene_output)
 		return;
+	/*
+	 * ── AVK DOES NOT IMPLEMENT OUTPUT MAGNIFICATION ──────────────────────
+	 *
+	 * az_avk_output_supported() refuses an output whose scene zoom is above 1,
+	 * and a refusal is fatal now -- so setting the zoom here would end the
+	 * session on the next frame, from a keybind, with the reason three layers
+	 * away from the thing the user pressed.
+	 *
+	 * Declined at the input instead, and said out loud. This is NOT the GLES
+	 * fallback returning by another door: nothing is composited by anyone
+	 * else, the zoom simply does not happen. The honest fix is magnification
+	 * in AVK; until that exists, "asteroidz cannot do this" is a better answer
+	 * than a dead desktop.
+	 */
+	if (az_renderer == AZ_RENDERER_AVK && m->cursor_zoom > 1.0f) {
+		static bool warned = false;
+		if (!warned) {
+			warned = true;
+			wlr_log(WLR_ERROR, "output magnification is not implemented by AVK "
+				"-- the zoom request on %s is ignored",
+				m->wlr_output != NULL ? m->wlr_output->name : "(output)");
+		}
+		m->cursor_zoom = 1.0f;
+		wlr_scene_output_set_zoom(m->scene_output, 1.0f, m->zoom_cx, m->zoom_cy);
+		return;
+	}
 	wlr_scene_output_set_zoom(m->scene_output, m->cursor_zoom, m->zoom_cx,
 							  m->zoom_cy);
 }
@@ -9135,6 +9228,28 @@ static void render_monitor(Monitor *m) {
 					(uint64_t)ct.tv_sec * 1000000000ull + (uint64_t)ct.tv_nsec;
 				m->m8_commit_seq = m->wlr_output->commit_seq;
 				m->m8_armed = true;
+				/* How long the event loop was not in poll(). See the counters'
+				 * comment in az_avk.h: cpu_frame_us covers AVK's record phase
+				 * only, so a commit that blocks is invisible to every number
+				 * this compositor reports -- while libinput complains that
+				 * input is 50ms late. */
+				{
+					uint64_t c_ns = m->m8_commit_ns > commit_call_ns
+						? m->m8_commit_ns - commit_call_ns : 0;
+					uint64_t h_ns = m->m8_commit_ns > m->m8_arm_ns
+						? m->m8_commit_ns - m->m8_arm_ns : 0;
+					avk.commit_samples++;
+					avk.commit_ns_sum += c_ns;
+					if (c_ns > avk.commit_ns_max)
+						avk.commit_ns_max = c_ns;
+					avk.handler_ns_sum += h_ns;
+					if (h_ns > avk.handler_ns_max)
+						avk.handler_ns_max = h_ns;
+					if (h_ns > 10000000ull)
+						avk.handler_over_10ms++;
+					if (h_ns > 30000000ull)
+						avk.handler_over_30ms++;
+				}
 				az_presenter_committed(m, m->wlr_output->commit_seq,
 					commit_call_ns, m->m8_commit_ns);
 			}
@@ -10626,8 +10741,9 @@ void setup(void) {
 	}
 
 	/* Create a renderer with the default implementation */
-	if (!(drw = fx_renderer_create(backend)))
+	if (!(drw = az_create_renderer(backend)))
 		die("couldn't create renderer");
+	az_require_vulkan_renderer(drw);
 
 	wl_signal_add(&drw->events.lost, &gpu_reset);
 
@@ -11112,7 +11228,6 @@ void setup(void) {
 		config.blur_params.noise, config.blur_params.brightness,
 		config.blur_params.contrast, config.blur_params.saturation,
 		config.blur_params.transparency_threshold);
-	fx_renderer_set_srgb_blending(drw, config.srgb_blending != 0);
 
 	/* Plot appearance, declared once. Without this the viewer picks defaults
 	 * per plot and the render-late curves come out as unconnected points at

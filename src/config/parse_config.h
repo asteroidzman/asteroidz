@@ -5303,7 +5303,6 @@ void reset_blur_params(void) {
 	/* Re-pushed on every reload alongside the blur parameters, so the blend
 	 * space can be flipped and judged live rather than across restarts --
 	 * which is the only sane way to compare two renderings of the same desk. */
-	fx_renderer_set_srgb_blending(drw, config.srgb_blending != 0);
 
 	if (config.blur) {
 		wl_list_for_each(m, &mons, link) {

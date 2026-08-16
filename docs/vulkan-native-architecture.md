@@ -485,7 +485,7 @@ stays clean; deliberately not fixed as part of the renderer migration.
 
 `ASTEROIDZ_RENDERER=avk` is read once in `setup()`, independently of
 `WLR_RENDERER`. The pairing that proves the two are unrelated is
-`WLR_RENDERER=gles2 ASTEROIDZ_RENDERER=avk`: a Vulkan-composited desktop with
+`WLR_RENDERER=vulkan ASTEROIDZ_RENDERER=avk`: a Vulkan-composited desktop with
 GLES2 sitting alongside, touching no part of composition. That is what
 `contrib/avk-frame-test.sh` runs.
 
@@ -2532,8 +2532,8 @@ columns were therefore real. That is true of `asteroidz-avk-debug.desktop` and
 false of `asteroidz-avk.desktop`, which is the session actually running:
 
 ```
-asteroidz-avk.desktop        env WLR_RENDERER=gles2 ASTEROIDZ_RENDERER=avk asteroidz
-asteroidz-avk-debug.desktop  env WLR_RENDERER=gles2 ASTEROIDZ_RENDERER=avk ASTEROIDZ_VK_DEBUG=1 asteroidz
+asteroidz-avk.desktop        env WLR_RENDERER=vulkan ASTEROIDZ_RENDERER=avk asteroidz
+asteroidz-avk-debug.desktop  env WLR_RENDERER=vulkan ASTEROIDZ_RENDERER=avk ASTEROIDZ_VK_DEBUG=1 asteroidz
 ```
 
 Verified after the restart: `GDMSESSION=asteroidz-avk`, no `ASTEROIDZ_VK_DEBUG`

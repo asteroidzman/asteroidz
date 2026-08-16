@@ -254,7 +254,7 @@ You will need to build `wlroots` and asteroidz's `scenefx` fork manually as well
    own environment rather than claiming it, and it costs roughly 99x the CPU
    per frame; it is not a session to work in.
 
-   Both pin `WLR_RENDERER=gles2` on purpose, and that is not a contradiction:
+   Both pin `WLR_RENDERER=vulkan` on purpose, and that is not a contradiction:
    wlroots still needs a renderer for shm formats, the allocator and
    screencopy, none of which are composition. The switch that decides who
    draws the desktop is `ASTEROIDZ_RENDERER=avk`, which is independent of it.

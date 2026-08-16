@@ -161,6 +161,29 @@ bool custom_wlr_scene_output_commit(struct wlr_scene_output *scene_output,
 
 void apply_tear_state(Monitor *m) {
 	if (wlr_scene_output_needs_frame(m->scene_output)) {
+#ifdef AZ_HAVE_VULKAN
+		/*
+		 * ── THE TEARING PATH NEVER WENT THROUGH AVK ──────────────────────
+		 *
+		 * This calls wlr_scene_output_build_state() directly, so every torn
+		 * frame was composited by SceneFX on wlroots' GLES renderer even in an
+		 * AVK session -- silently, and only for the applications a window rule
+		 * marks force_tearing, which are exactly the ones being watched for
+		 * frame-timing problems.
+		 *
+		 * AVK implements no tearing page flip, so there is nothing to route
+		 * this to. It aborts rather than compositing with GL.
+		 */
+		if (az_renderer == AZ_RENDERER_AVK) {
+			wlr_log(WLR_ERROR,
+				"tearing is not implemented by AVK and %s asked for a torn "
+				"frame -- this compositor does not composite with GL. Remove "
+				"force_tearing from the window rule, or implement a tearing "
+				"page flip in AVK.",
+				m->wlr_output != NULL ? m->wlr_output->name : "(output)");
+			abort();
+		}
+#endif
 		wlr_output_state_init(&m->pending);
 		struct wlr_scene_output_state_options icc_options = {
 			.color_transform =

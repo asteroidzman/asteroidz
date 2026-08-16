@@ -40,10 +40,13 @@ struct az_frame_options {
  * Build one frame of `m` into `state`.
  *
  * Returns false if no frame could be built, which the callers treat the same
- * way they always have. Note what this does NOT mean: an AVK-mode output that
- * cannot be composited by AVK does not fail here -- it falls back to the
- * SceneFX path inside this function and returns true. The distinction matters
- * because a fallback is a slower frame while a failure is no frame.
+ * way they always have.
+ *
+ * An AVK-mode output that cannot be composited by AVK no longer falls back:
+ * it aborts, here or inside az_avk_build_frame(), naming the reason. A frame
+ * that silently came from the other renderer is indistinguishable from a
+ * correct one until something else goes wrong, and by then the frame that
+ * caused it is long gone.
  */
 static inline bool az_output_build_frame(Monitor *m,
 		struct wlr_output_state *state, const struct az_frame_options *opts) {
@@ -51,6 +54,33 @@ static inline bool az_output_build_frame(Monitor *m,
 	if (az_renderer == AZ_RENDERER_AVK &&
 			az_avk_build_frame(m, state, opts->color_transform)) {
 		return true;
+	}
+	/*
+	 * ── IN AN AVK SESSION, REACHING SceneFX IS FATAL ─────────────────────
+	 *
+	 * az_avk_build_frame() aborts on an output it REFUSES, naming the reason.
+	 * It also returns false without refusing anything -- when AVK is not
+	 * active, or the monitor has no scene output -- and control then arrives
+	 * here, where SceneFX composites the frame on wlroots' GLES renderer and
+	 * the desktop looks fine.
+	 *
+	 * That second path is the one worth closing, because it has no diagnostic
+	 * at all: not a warning, not a counter, just a frame that came from the
+	 * other renderer. An AVK session that composites with GL is either a bug
+	 * or a state nobody intended, and both are best investigated at the frame
+	 * that did it.
+	 *
+	 * No escape variable here either, for the same reason it is absent in
+	 * az_avk.h: a switch that turns the fallback back on is the fallback.
+	 */
+	if (az_renderer == AZ_RENDERER_AVK) {
+		wlr_log(WLR_ERROR,
+			"AVK session reached the SceneFX/GLES compositor for %s "
+			"(avk active=%d, scene_output=%p) -- this compositor does not "
+			"composite with GL.",
+			m->wlr_output != NULL ? m->wlr_output->name : "(output)",
+			(int)avk.active, (void *)m->scene_output);
+		abort();
 	}
 #endif
 	struct wlr_scene_output_state_options scene_options = {
