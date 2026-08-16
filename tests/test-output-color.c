@@ -73,6 +73,17 @@ static bool matrix_is(const float m[9], const float want[9], double tol) {
 	return true;
 }
 
+/* M6C. Any non-identity evaluator will do for the decision table -- what is
+ * being asserted is what the state DERIVES from a cube's presence, not what the
+ * cube contains. A channel swap because it cannot be mistaken for the identity
+ * if it ever ends up printed. */
+static void clut_eval_swap(void *user, const float in[3], float out[3]) {
+	(void)user;
+	out[0] = in[0];
+	out[1] = in[2];
+	out[2] = in[1];
+}
+
 struct row {
 	const char *what;
 	struct az_output_desc out;
@@ -224,6 +235,110 @@ int main(void) {
 			"LUT1D + encode pass enabled: DRIVEN");
 		CHECK(!az_output_may_drive(&s, false, false, false),
 			"LUT1D + encode pass DISABLED: refused (the M6B/G2 interlock)");
+	}
+
+	/* ── M6C: A PROFILE THAT DOES NOT REDUCE ────────────────────────────── */
+	printf("a cLUT profile puts an SDR output on Path B with CLUT3D\n");
+	{
+		/*
+		 * A SYNTHETIC cube, and its CONTENTS are irrelevant to this table:
+		 * every field of the derived state is a function of the pointer being
+		 * non-NULL and of nothing inside it. Two samples is enough to have
+		 * built one legally. The cube's arithmetic is test-icc-shaper's gate
+		 * and its pixels are test-avk-render's.
+		 */
+		struct az_icc_clut *c = az_icc_clut_build(2, clut_eval_swap, NULL);
+		CHECK(c != NULL, "PREMISE: a cube can be built at all");
+		if (c == NULL) {
+			return 1;
+		}
+
+		struct az_output_desc o = {
+			.bits_per_channel = 8, .has_icc = true,
+			.sdr_saturation = 1.0f, .scanout_srgb_view_ok = true,
+			.icc_clut = c,
+		};
+		struct az_output_color_state s = az_output_color_derive(&o);
+		CHECK(s.path == AZ_OUTPUT_PATH_B_ENCODE,
+			"a cLUT-profiled SDR output takes Path B (got %s)",
+			path_name(s.path));
+		CHECK(s.encode_tf == AZ_TF_CLUT3D, "and encodes through the cube");
+		/*
+		 * THE IDENTITY MATRIX IS THE ASSERTION THAT MATTERS HERE.
+		 *
+		 * The cube already contains the colorant transform. A derivation that
+		 * filled this with the profile's 709->device -- the obvious thing to do
+		 * by analogy with LUT1D one branch above -- would apply the gamut
+		 * conversion twice and render a picture that is smooth, saturated and
+		 * wrong. Nothing downstream could notice: the encode pass multiplies by
+		 * whatever it is given.
+		 */
+		CHECK(matrix_is(s.matrix, AZ_MAT_IDENTITY, 1e-6),
+			"and the matrix is the IDENTITY -- the cube carries the gamut");
+		CHECK(s.peak_scene == 1.0f, "an SDR ceiling is still exactly 1.0");
+		NEAR(s.dither_q, 1.0 / 255.0, 1e-9, "and still one output code");
+
+		/* THE INTERLOCK, the same one LUT1D has and for the same reason: C3
+		 * took the output off FALLBACK on the promise that the encode pass
+		 * would sample the cube. */
+		CHECK(az_output_may_drive(&s, false, false, true),
+			"CLUT3D + encode pass enabled: DRIVEN");
+		CHECK(!az_output_may_drive(&s, false, false, false),
+			"CLUT3D + encode pass DISABLED: refused (the M6C interlock)");
+
+		/*
+		 * ── THE SHAPER STILL WINS ─────────────────────────────────────────
+		 *
+		 * A profile offered in BOTH forms must take the matrix-shaper one. The
+		 * compositor never offers both, but "never" is a property of one call
+		 * site and this is the table that would silently absorb it if that
+		 * changed -- and absorbing it would swap a 0.01-code curve for a
+		 * trilinear approximation of the same display, invisibly.
+		 */
+		struct az_icc_shaper shaper = {0};
+		const float M[9] = {
+			1.10f, -0.06f, -0.02f,
+			-0.03f, 1.04f, -0.01f,
+			0.00f, -0.07f, 1.20f,
+		};
+		for (int i = 0; i < 9; i++) {
+			shaper.matrix[i] = M[i];
+		}
+		struct az_output_desc both = o;
+		both.icc_shaper = &shaper;
+		struct az_output_color_state bs = az_output_color_derive(&both);
+		CHECK(bs.encode_tf == AZ_TF_LUT1D,
+			"both forms offered: the matrix-shaper wins");
+		CHECK(matrix_is(bs.matrix, M, 1e-6),
+			"and it is the shaper's matrix, not the cube's identity");
+
+		/*
+		 * AND ON AN HDR OUTPUT THE CUBE IS INERT, exactly as the shaper is
+		 * (D3). A profile's SDR characterisation on top of a connector that is
+		 * already colour-managing would be two transforms.
+		 */
+		struct az_output_desc hdr = o;
+		hdr.hdr = true;
+		hdr.bits_per_channel = 10;
+		hdr.hdr_max_nits = 1000.0f;
+		struct az_output_color_state hs = az_output_color_derive(&hdr);
+		CHECK(hs.path == AZ_OUTPUT_PATH_B_ENCODE && hs.encode_tf == AZ_TF_PQ,
+			"HDR + a cLUT profile is still PQ, cube inert");
+
+		/*
+		 * AND NEITHER FORM IS STILL FALLBACK. This is the row D2 used to be,
+		 * kept because it is now the only path to it: an unreadable profile,
+		 * or one whose transform would not evaluate.
+		 */
+		struct az_output_desc neither = o;
+		neither.icc_clut = NULL;
+		struct az_output_color_state ns = az_output_color_derive(&neither);
+		CHECK(ns.path == AZ_OUTPUT_PATH_FALLBACK && ns.encode_tf == AZ_TF_SRGB,
+			"a profile in NEITHER form is still FALLBACK");
+		CHECK(!az_output_may_drive(&ns, false, false, true),
+			"and is refused whatever the encode pass is doing");
+
+		az_icc_clut_free(c);
 	}
 
 	/* ── the SDR guarantee ──────────────────────────────────────────────── */

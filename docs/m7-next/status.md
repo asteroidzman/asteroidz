@@ -143,9 +143,11 @@ scene-BT.709-linear → device-linear matrix with Bradford adaptation, and a
 per-channel encode curve with the vcgt composed on. Pure CPU, no Vulkan and no
 wlroots, so it is unit-testable without a renderer.
 
-cLUT profiles are refused **by classification**, before anything is read. D2's
-revival condition stands: a real cLUT profile for a connected display existing
-on this machine.
+cLUT profiles are refused **by classification**, before anything is read — the
+reduction refuses them, and M6C below carries them by another route entirely.
+D2's revival condition (a real cLUT profile for a connected display) was
+overtaken by a different one: with SceneFX being removed, `FALLBACK` stopped
+meaning "the other renderer handles it" and started meaning "abort".
 
 **A uniform LUT index cannot represent an encode curve.** γ⁻¹ has infinite slope
 at zero, so a uniform grid mistracks it near black however large it is — 5.81
@@ -337,12 +339,115 @@ Three arms differing in one config line, landing in three states:
 |---|---|---|---|---|
 | no profile | `A-direct-srgb` | srgb | false | 0 |
 | FI32U.icm | **`B-encode`** | **lut1d** | true | **0**, 3 encode draws |
-| synthetic cLUT | `fallback` | srgb | false | 3 (SceneFX drives it) |
+| synthetic cLUT | **`B-encode`** | **clut3d** | false (cube: true) | **0**, 3 encode draws |
 
-19/19, with `validation_enabled` asserted first and 0 validation errors.
+27/27, with `validation_enabled` asserted first and 0 validation errors.
 Falsifiers seen red: removing the cLUT classification (the synthetic profile is
 then **accepted as a matrix-shaper**, 4 assertions red — which is the trap its
-colorants exist to catch), and making the derivation ignore the shaper (7 red).
+colorants exist to catch), making the derivation ignore the shaper (7 red), and
+— M6C — disabling the compositor-side cube build (**7 red**, the output falling
+back to `fallback`/`srgb` with 3 refused frames).
+
+**The third row used to read `fallback` / SceneFX drives it, and the arm
+changed sides in M6C.** The comparison at the end of the fixture changed with
+it: two of the three arms are now `B-encode`, so comparing *paths* would pass
+while the compositor treated a cLUT profile exactly like a matrix-shaper one.
+It compares `(path, curve)`.
+
+---
+
+## M6C — the profiles that do not reduce
+
+`FALLBACK` was a safe answer only while a second renderer existed. Removing
+SceneFX makes a refusal an abort, and the profile a colorimeter produces is a
+cLUT profile — so "AVK refuses cLUT" and "a user who calibrates their display
+cannot start the compositor" became the same sentence.
+
+### The domain, which is the whole of the correctness
+
+The cube's input axis is **scene-linear** BT.709 light and its output is
+**device code** — electrical, post-TRC. That is not a choice: wlroots builds its
+ICC transform (`render/color_lcms2.c`) from an lcms2 source profile with
+**gamma-1.0 TRCs**, so the domain is linear by construction, and the
+destination is the display profile in `TYPE_RGB_FLT`, which is what the
+scan-out buffer holds.
+
+Two consequences, both load-bearing:
+
+- The cube **replaces both the gamut matrix and the inverse EOTF**, because it
+  already contains them. C3 therefore derives the **identity** matrix for this
+  path. Filling it with the profile's 709→device — the obvious thing to do by
+  analogy with `LUT1D` one branch above — applies the colorant transform twice.
+- Sampling with the sRGB-**encoded** value instead of the linear one is the
+  classic version of this project's recurring mistake. It is smooth, plausible
+  and wrong everywhere except 0 and 1, which is why it has its own break.
+
+### 65³ on a squared index, and why not wlroots' uniform 33³
+
+γ⁻¹ has infinite slope at zero in three dimensions for the same reason it does
+in one, so D2's warp applies again. Measured against lcms2's own transform for
+the synthesised cLUT profile (γ 2.6, wide primaries), worst error over a 41³
+off-grid sweep:
+
+| dim | index | worst | memory |
+|---|---|---|---|
+| 33 | uniform | 13.82 codes | 0.3 MB | ← wlroots' choice |
+| 65 | uniform | 5.91 | 2.1 MB |
+| 33 | squared | 3.99 | 0.3 MB |
+| 45 | squared | 2.90 | 0.7 MB |
+| **65** | **squared** | **1.60** | **2.1 MB** | ← this |
+
+The warp is worth more than the memory — a squared 33 beats a uniform 65 at an
+eighth of the size — and both are taken because 2.1 MB against the 66 MB
+Path-B intermediate the same output already owns is not a trade. Cost at load:
+274625 lcms2 evaluations, **59 ms**, on a monitor rule change and nothing else.
+
+**AVK's cube is therefore not SceneFX's cube.** The two sample the same lcms2
+transform at different resolutions. Anything comparing the two renderers pixel
+for pixel must budget for that.
+
+### The shader is a second module, not a fourth branch
+
+The 1D table is a `sampler2D` and the cube is a `sampler3D`, and both live on
+set 1 because the renderer's shared texture layout has exactly one binding. Two
+declarations of one binding are **both statically used** — a property of the
+SPIR-V that specialisation does not remove, which this pass already learned via
+`VUID-vkCmdDraw-None-08600`. So `output_encode.frag` is compiled twice, once
+with `-DAZ_ENCODE_CLUT=1`. Building the cLUT variant from the 2D module instead
+was run deliberately and produces exactly the predicted
+`VUID-vkCmdDraw-viewType-07752`, plus 73 codes of wrong picture.
+
+### Gates
+
+| gate | where | result |
+|---|---|---|
+| cube vs lcms2, off-grid | `tests/test-icc-shaper.c` (no device) | **0.90 codes** (gate < 2) |
+| premise: the profile is non-identity | same | **133.6 codes** from a plain sRGB encode |
+| `AZ_TF_CLUT3D` encode vs `az_icc_clut_apply` | `tests/test-avk-render.c` | **worst 1 code** (gate ≤ 1) |
+| premise: it moves the fixture's patches | same | **73 codes** |
+| derivation, interlock, both-forms precedence | `tests/test-output-color.c` | 13 rows |
+| driven by a real compositor | `contrib/m6b-icc-drive-test.sh` | arm 3 |
+
+Falsifiers, each run and seen red:
+
+| break | red by |
+|---|---|
+| `AZ_BREAK_CLUT_IDENTITY` (identity cube, everything else intact) | **137 codes** |
+| `AZ_BREAK_CLUT_DOMAIN` (sample with the encoded value) | **68 codes** |
+| shader index warp removed (uniform axis) | **66 codes** |
+| shader samples the cube with transposed axes | **152 codes** |
+| cLUT variant built from the `sampler2D` module | 73 codes **+ 3 validation errors** |
+| C3's cLUT branch disabled | 4 red in `test-output-color`, 1 premise red on the GPU |
+| compositor-side cube build disabled | 7 red in the headless fixture |
+| `clut_encoded_domain` dropped in the record path | the domain break collapses to **1 code — red** |
+
+**One thing the GPU gate provably cannot catch**, established by running it:
+transposing the axes in `az_icc_clut_build` leaves `test-avk-render` at 135/135,
+because the CPU reference reads the same array the same way and the GPU samples
+the same texels — reference and subject are transposed together. The lcms2
+comparison in `test-icc-shaper` goes red on it. The GPU gate answers "does the
+shader *sample* the table correctly"; the CPU gate answers "was the table
+*built* correctly". Neither can do the other's job.
 
 ---
 

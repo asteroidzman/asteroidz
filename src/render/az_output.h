@@ -129,7 +129,11 @@ static inline struct wlr_color_transform *az_output_color_transform(Monitor *m) 
 	if (m->wlr_output->image_description != NULL) {
 		return NULL;
 	}
-	if (m->color_state.encode_tf == AZ_TF_LUT1D) {
+	/* M6C adds CLUT3D, where the double application would be even more literal:
+	 * the same 3D table, built from the same profile, sampled once in AVK's
+	 * encode pass and once in SceneFX's. */
+	if (m->color_state.encode_tf == AZ_TF_LUT1D
+			|| m->color_state.encode_tf == AZ_TF_CLUT3D) {
 		return NULL;
 	}
 	return m->icc_transform;

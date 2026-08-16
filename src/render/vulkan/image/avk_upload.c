@@ -42,8 +42,8 @@ uint32_t avk_format_bytes_per_pixel(VkFormat format) {
 	}
 }
 
-struct avk_image *avk_upload_image_create(struct avk_device *dev,
-		uint32_t drm_format, uint32_t width, uint32_t height,
+static struct avk_image *upload_image_create(struct avk_device *dev,
+		uint32_t drm_format, uint32_t width, uint32_t height, uint32_t depth,
 		enum avk_image_origin origin) {
 	const struct avk_drm_format *fmt = avk_drm_format_from_fourcc(drm_format);
 	if (fmt == NULL) {
@@ -59,8 +59,9 @@ struct avk_image *avk_upload_image_create(struct avk_device *dev,
 			name);
 		return NULL;
 	}
-	if (width == 0 || height == 0) {
-		avk_log(AVK_ERROR, "cannot upload a %ux%u image", width, height);
+	if (width == 0 || height == 0 || depth == 0) {
+		avk_log(AVK_ERROR, "cannot upload a %ux%ux%u image", width, height,
+			depth);
 		return NULL;
 	}
 
@@ -71,6 +72,7 @@ struct avk_image *avk_upload_image_create(struct avk_device *dev,
 	image->format = fmt->vk;
 	image->drm_format = drm_format;
 	image->extent = (VkExtent2D){ width, height };
+	image->depth = depth;
 	/* Not a lie about a dma-buf: this image genuinely has no DRM modifier,
 	 * because it was never allocated through DRM. */
 	image->modifier = DRM_FORMAT_MOD_INVALID;
@@ -81,9 +83,9 @@ struct avk_image *avk_upload_image_create(struct avk_device *dev,
 
 	VkImageCreateInfo info = {
 		.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-		.imageType = VK_IMAGE_TYPE_2D,
+		.imageType = depth > 1 ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D,
 		.format = fmt->vk,
-		.extent = { width, height, 1 },
+		.extent = { width, height, depth },
 		.mipLevels = 1,
 		.arrayLayers = 1,
 		.samples = VK_SAMPLE_COUNT_1_BIT,
@@ -137,6 +139,17 @@ struct avk_image *avk_upload_image_create(struct avk_device *dev,
 error:
 	avk_image_destroy(dev, image);
 	return NULL;
+}
+
+struct avk_image *avk_upload_image_create(struct avk_device *dev,
+		uint32_t drm_format, uint32_t width, uint32_t height,
+		enum avk_image_origin origin) {
+	return upload_image_create(dev, drm_format, width, height, 1, origin);
+}
+
+struct avk_image *avk_upload_image_create_3d(struct avk_device *dev,
+		uint32_t drm_format, uint32_t dim, enum avk_image_origin origin) {
+	return upload_image_create(dev, drm_format, dim, dim, dim, origin);
 }
 
 static bool staging_ensure(struct avk_device *dev, struct avk_upload *up,
@@ -324,12 +337,20 @@ uint64_t avk_upload_image_write(struct avk_device *dev,
 		.bufferOffset = 0,
 		/* In PIXELS, not bytes -- the classic way to get a sheared image. */
 		.bufferRowLength = stride / bpp,
-		.bufferImageHeight = height,
+		/*
+		 * ROWS PER SLICE, which is the IMAGE's height and not the caller's row
+		 * count. The two are the same for every 2D caller (they hand over the
+		 * whole image) and differ by a factor of `depth` for M6C's cube, whose
+		 * dim*dim rows are dim slices of dim rows. Taking it from the image is
+		 * the reading that is right in both cases.
+		 */
+		.bufferImageHeight = image->extent.height,
 		.imageSubresource = {
 			.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
 			.layerCount = 1,
 		},
-		.imageExtent = { image->extent.width, image->extent.height, 1 },
+		.imageExtent = { image->extent.width, image->extent.height,
+			image->depth },
 	};
 	VkCopyBufferToImageInfo2 copy = {
 		.sType = VK_STRUCTURE_TYPE_COPY_BUFFER_TO_IMAGE_INFO_2,

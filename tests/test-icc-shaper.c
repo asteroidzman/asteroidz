@@ -76,7 +76,322 @@ static bool slurp(const char *path, void **data, size_t *size) {
  * wrong; the comparison was.
  */
 
+/*
+ * ── M6C GATE: THE cLUT FORM, ON THE CPU ───────────────────────────────────
+ *
+ * G1 above answers "does the matrix+curve reduction reproduce lcms2". This
+ * answers the same question for the OTHER form, and it is a separate function
+ * because it is NOT display-specific: it runs off the synthesised cLUT profile
+ * and must therefore run on any machine, including the ones where G1 skips.
+ *
+ * WHAT IT CANNOT ESTABLISH, said here rather than discovered later: the
+ * compositor samples the cube through wlr_color_transform_eval, and this
+ * rebuilds the equivalent lcms2 transform by hand -- linear-sRGB source, the
+ * profile as destination, relative colorimetric -- because the test binary
+ * deliberately does not link wlroots. If wlroots ever changed the source
+ * profile it builds from (render/color_lcms2.c), this gate would keep passing
+ * against the old meaning. contrib/m6b-icc-drive-test.sh covers that seam, by
+ * running a real compositor.
+ */
+static const cmsCIExyY G_SRGB_WP = { 0.3127, 0.3291, 1 };
+static const cmsCIExyYTRIPLE G_SRGB_PRIM = {
+	.Red = { 0.64, 0.33, 1 }, .Green = { 0.3, 0.6, 1 },
+	.Blue = { 0.15, 0.06, 1 },
+};
+
+/* wlroots' source profile: sRGB primaries, GAMMA-1.0 TRCs. The gamma is the
+ * whole domain statement -- it is what makes the transform's input axis linear
+ * light rather than sRGB code. */
+static cmsHPROFILE linear_srgb_profile(void) {
+	cmsToneCurve *g1 = cmsBuildGamma(0, 1);
+	if (g1 == NULL) {
+		return NULL;
+	}
+	cmsToneCurve *tf[3] = { g1, g1, g1 };
+	cmsHPROFILE h = cmsCreateRGBProfile(&G_SRGB_WP, &G_SRGB_PRIM, tf);
+	cmsFreeToneCurve(g1);
+	return h;
+}
+
+struct clut_cargo {
+	cmsHTRANSFORM t;
+	/* AZ_BREAK_CLUT_DOMAIN's CPU twin: build the cube as though its input axis
+	 * were the sRGB-ENCODED value. Nothing else changes. */
+	bool encoded_domain;
+	/* The layout falsifier: fill the cube with the channels transposed. */
+	bool transposed;
+};
+
+static float srgb_ieotf(float v) {
+	if (v <= 0.0031308f) {
+		return v * 12.92f;
+	}
+	return 1.055f * powf(v, 1.0f / 2.4f) - 0.055f;
+}
+
+static void clut_eval_icc(void *user, const float in[3], float out[3]) {
+	struct clut_cargo *c = user;
+	float x[3] = { in[0], in[1], in[2] };
+	if (c->encoded_domain) {
+		for (int i = 0; i < 3; i++) {
+			x[i] = srgb_ieotf(x[i]);
+		}
+	}
+	cmsDoTransform(c->t, x, out, 1);
+	if (c->transposed) {
+		float tmp = out[0];
+		out[0] = out[2];
+		out[2] = tmp;
+	}
+}
+
+/* Deliberately asymmetric per channel, so a transposed grid cannot look right.
+ * out = (r, g/2, b/4) has a different slope on every axis. */
+static void clut_eval_slopes(void *user, const float in[3], float out[3]) {
+	(void)user;
+	out[0] = in[0];
+	out[1] = in[1] * 0.5f;
+	out[2] = in[2] * 0.25f;
+}
+
+static void gate_clut(void) {
+	printf("== M6C: the cLUT form, against lcms2 ==\n");
+
+	/* ── the grid's LAYOUT, before anything that depends on it ─────────── */
+	{
+		struct az_icc_clut *c = az_icc_clut_build(9, clut_eval_slopes, NULL);
+		ok(c != NULL, "a cube builds");
+		if (c == NULL) {
+			return;
+		}
+		/*
+		 * ON a grid point, so this is a lookup and not an interpolation: the
+		 * question here is purely "did r, g and b land on the axes they were
+		 * written to". A symmetric evaluator would answer yes to a cube filled
+		 * B-fastest, which is the mistake this exists to catch -- and the one a
+		 * picture would show as a plausible colour cast.
+		 */
+		float in[3] = { 1.0f, 1.0f, 1.0f };
+		float out[3];
+		az_icc_clut_apply(c, in, out);
+		ok(fabsf(out[0] - 1.0f) < 1e-3f && fabsf(out[1] - 0.5f) < 1e-3f
+			&& fabsf(out[2] - 0.25f) < 1e-3f,
+			"R, G and B land on their own axes (1.0 -> 1, 0.5, 0.25)");
+		/*
+		 * ── AND THE WARP, WHICH THE BUILDER AND THE READER MUST AGREE ON ──
+		 *
+		 * Sample 4 of a 9-cube holds the transform at (4/8)^2 = 0.25, so
+		 * reading the cube at 0.25 must land exactly on it -- sqrt(0.25)*8 = 4
+		 * -- and return the evaluator's own answer with no interpolation at
+		 * all.
+		 *
+		 * A READER THAT FORGOT THE WARP would index 0.25*8 = 2 and take sample
+		 * 2, which holds (2/8)^2 = 0.0625: 0.19 away on the R axis. That is the
+		 * discrimination this assertion has, and it is the reason the check is
+		 * a specific number at a specific point rather than "close to right".
+		 */
+		float on[3] = { 0.25f, 0.25f, 0.25f };
+		az_icc_clut_apply(c, on, out);
+		ok(fabsf(out[0] - 0.25f) < 1e-3f && fabsf(out[1] - 0.125f) < 1e-3f
+			&& fabsf(out[2] - 0.0625f) < 1e-3f,
+			"the builder's warp and the reader's index are the same warp");
+		az_icc_clut_free(c);
+	}
+
+	/* ── the cube built from the synthesised cLUT profile ──────────────── */
+	const char *dir = getenv("TMPDIR");
+	char path[512];
+	snprintf(path, sizeof(path), "%s/az-m6c-clut.icc",
+		dir != NULL ? dir : "/tmp");
+	if (!make_clut(path)) {
+		ok(false, "PREMISE: the synthetic cLUT profile is written");
+		return;
+	}
+	void *data = NULL;
+	size_t size = 0;
+	if (!slurp(path, &data, &size)) {
+		ok(false, "PREMISE: the synthetic cLUT profile reads back");
+		return;
+	}
+
+	/*
+	 * THE PREMISE THAT PUTS THIS FILE ON THE cLUT PATH AT ALL. If the profile
+	 * reduced, the compositor would carry it as a matrix and a curve and none
+	 * of what follows would ever run.
+	 */
+	struct az_icc_shaper sh;
+	ok(az_icc_load_shaper(data, size, true, &sh) == AZ_ICC_REJECT_CLUT,
+		"PREMISE: this profile does NOT reduce -- it is the cLUT path or "
+		"nothing");
+
+	cmsHPROFILE dst = cmsOpenProfileFromMem(data, (cmsUInt32Number)size);
+	cmsHPROFILE lin = linear_srgb_profile();
+	cmsHTRANSFORM t = (dst != NULL && lin != NULL)
+		? cmsCreateTransform(lin, TYPE_RGB_FLT, dst, TYPE_RGB_FLT,
+			INTENT_RELATIVE_COLORIMETRIC, cmsFLAGS_NOCACHE)
+		: NULL;
+	ok(t != NULL, "lcms2 builds the linear->ICC transform wlroots would");
+	if (t == NULL) {
+		free(data);
+		return;
+	}
+
+	struct clut_cargo cargo = { .t = t };
+	struct az_icc_clut *cube = az_icc_clut_build(AZ_ICC_CLUT_DIM,
+		clut_eval_icc, &cargo);
+	ok(cube != NULL, "the 65-cube builds from it");
+	if (cube == NULL) {
+		free(data);
+		return;
+	}
+
+	/*
+	 * OFF-GRID SAMPLES, and not by accident. A cube evaluated at its own grid
+	 * points is a table lookup and would agree with itself whatever the
+	 * interpolation did. 17^3 over [0,1] lands between the 33 grid's samples
+	 * everywhere except the even indices, which is where trilinear error lives.
+	 *
+	 * NOT A NEUTRAL RAMP either, for G1's reason one level up: this profile's
+	 * primaries are wide and its gamma is 2.6, and both of those are far more
+	 * visible off the neutral axis.
+	 */
+	const int N = 17;
+	double worst_agree = 0.0, worst_ident = 0.0;
+	for (int ri = 0; ri < N; ri++) {
+		for (int gi = 0; gi < N; gi++) {
+			for (int bi = 0; bi < N; bi++) {
+				float in[3] = {
+					(float)ri / (N - 1) * 0.97f + 0.011f,
+					(float)gi / (N - 1) * 0.97f + 0.011f,
+					(float)bi / (N - 1) * 0.97f + 0.011f,
+				};
+				float ref[3], got[3];
+				cmsDoTransform(t, in, ref, 1);
+				az_icc_clut_apply(cube, in, got);
+				for (int c = 0; c < 3; c++) {
+					double d = fabs((double)got[c] - (double)ref[c]);
+					if (d > worst_agree) {
+						worst_agree = d;
+					}
+					/* What the same scene value would have been on an
+					 * unprofiled output: a plain sRGB encode. */
+					double e = fabs((double)ref[c]
+						- (double)srgb_ieotf(in[c]));
+					if (e > worst_ident) {
+						worst_ident = e;
+					}
+				}
+			}
+		}
+	}
+	printf("  the profile moves the grid by up to %.1f codes away from a "
+		"plain sRGB encode\n", worst_ident * 255.0);
+	ok(worst_ident * 255.0 > 20.0,
+		"PREMISE: the cLUT profile is measurably NON-IDENTITY (>20 codes)");
+	/*
+	 * 2.0 CODES, AND THE NUMBER IS THE MEASUREMENT'S. A 65-cube on a squared
+	 * index carries 1.60 codes of worst-case trilinear error against lcms2 on
+	 * this profile (az_icc.h has the table); the threshold is that plus room
+	 * for the 16-bit quantisation and this sweep's own grid. It is NOT the 1D
+	 * curve's 0.01 and cannot be: a cube of a gamma-2.6 transform is an
+	 * approximation, and pretending otherwise here would make the gate fail on
+	 * arithmetic that is working as designed.
+	 */
+	printf("  65-cube + trilinear vs lcms2's own transform: worst %.2f "
+		"codes\n", worst_agree * 255.0);
+	ok(worst_agree * 255.0 < 2.0,
+		"the cube reproduces lcms2's transform off-grid (<2 codes)");
+
+	/*
+	 * ── FALSIFIER: THE DOMAIN ─────────────────────────────────────────────
+	 *
+	 * The same table, sampled along the sRGB-ENCODED axis instead of the linear
+	 * one. This is AZ_BREAK_CLUT_DOMAIN's arithmetic, measured here without a
+	 * GPU so that the number the renderer's fixture expects to see is
+	 * established first.
+	 *
+	 * It has to be LARGE. sRGB encoding and linear light agree only at 0 and 1,
+	 * and the whole point of the domain being invisible is that the picture
+	 * stays smooth -- so a small delta here would mean the fixture that follows
+	 * cannot tell the two apart either.
+	 */
+	{
+		struct clut_cargo bad = { .t = t, .encoded_domain = true };
+		struct az_icc_clut *wrong = az_icc_clut_build(AZ_ICC_CLUT_DIM,
+			clut_eval_icc, &bad);
+		ok(wrong != NULL, "BREAK: the wrong-domain cube builds");
+		double w = 0.0;
+		for (int i = 0; wrong != NULL && i < 512; i++) {
+			float in[3] = {
+				(float)((i * 37) % 97) / 96.0f,
+				(float)((i * 53) % 89) / 88.0f,
+				(float)((i * 71) % 83) / 82.0f,
+			};
+			float good[3], got[3];
+			az_icc_clut_apply(cube, in, good);
+			az_icc_clut_apply(wrong, in, got);
+			for (int c = 0; c < 3; c++) {
+				double d = fabs((double)got[c] - (double)good[c]);
+				if (d > w) {
+					w = d;
+				}
+			}
+		}
+		printf("  FALSIFIER sampled in the ENCODED domain: worst %.1f codes\n",
+			w * 255.0);
+		ok(w * 255.0 > 20.0, "BREAK: the wrong colour domain is DETECTED");
+		az_icc_clut_free(wrong);
+	}
+
+	/*
+	 * ── FALSIFIER: THE LAYOUT ─────────────────────────────────────────────
+	 *
+	 * R and B exchanged on the way in. A cube whose axes are transposed reads
+	 * as a colour cast and nothing else -- no banding, no artefact -- which is
+	 * exactly why it needs a falsifier rather than an inspection.
+	 */
+	{
+		struct clut_cargo bad = { .t = t, .transposed = true };
+		struct az_icc_clut *wrong = az_icc_clut_build(AZ_ICC_CLUT_DIM,
+			clut_eval_icc, &bad);
+		double w = 0.0;
+		for (int i = 0; wrong != NULL && i < 512; i++) {
+			float in[3] = {
+				(float)((i * 37) % 97) / 96.0f,
+				(float)((i * 53) % 89) / 88.0f,
+				(float)((i * 71) % 83) / 82.0f,
+			};
+			float good[3], got[3];
+			az_icc_clut_apply(cube, in, good);
+			az_icc_clut_apply(wrong, in, got);
+			for (int c = 0; c < 3; c++) {
+				double d = fabs((double)got[c] - (double)good[c]);
+				if (d > w) {
+					w = d;
+				}
+			}
+		}
+		printf("  FALSIFIER R and B exchanged: worst %.1f codes\n", w * 255.0);
+		ok(w * 255.0 > 20.0, "BREAK: a transposed cube is DETECTED");
+		az_icc_clut_free(wrong);
+	}
+
+	az_icc_clut_free(cube);
+	cmsDeleteTransform(t);
+	cmsCloseProfile(dst);
+	cmsCloseProfile(lin);
+	free(data);
+	remove(path);
+}
+
 int main(void) {
+	/*
+	 * M6C FIRST, because it is machine-independent and G1 below is not. Running
+	 * it after the skip would make it unreachable on every machine without
+	 * FI32U.icm -- which is every machine but this desk.
+	 */
+	gate_clut();
+
 	printf("== G1: ICC matrix-shaper ingest ==\n");
 
 	void *data = NULL;
@@ -87,7 +402,9 @@ int main(void) {
 		 * checks nothing on every other machine. */
 		printf("  SKIP %s not present -- this gate is display-specific\n",
 			PROFILE);
-		return 77;
+		/* But a cLUT failure is NOT display-specific and must not be swallowed
+		 * by G1's skip: 77 tells meson "nothing ran", which would be a lie. */
+		return failures ? 1 : 77;
 	}
 
 	/*

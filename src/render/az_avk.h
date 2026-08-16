@@ -1138,6 +1138,16 @@ struct az_avk_output {
 	struct avk_encode_lut encode_lut;
 
 	/*
+	 * M6C. THE OUTPUT'S MEASURED CUBE, for the profiles that do not reduce to a
+	 * matrix and a curve. Exactly one of this and `encode_lut` is ever
+	 * populated for a given output, because exactly one of the two forms is
+	 * derived -- but both slots exist unconditionally so that a profile
+	 * CHANGING form (a cLUT file replacing a matrix-shaper one) is two serials
+	 * moving rather than a union being reinterpreted mid-flight.
+	 */
+	struct avk_encode_clut encode_clut;
+
+	/*
 	 * M4F.2C.4c forensics. Per OUTPUT, because "frame 41" has to mean the same
 	 * thing in the log and in the fixture, and the renderer's own frame counter
 	 * is shared by every output using its VkFormat.
@@ -1651,6 +1661,11 @@ static void az_avk_output_finish(struct az_avk_output *out) {
 		 * for exactly as long as it is sampling the intermediate. */
 		avk_encode_lut_finish(&out->encode_lut, out->slot->renderer.dev,
 			&out->slot->renderer.retire);
+		/* M6C. And the cube, on identical terms -- 2.1MB rather than 2KB, which
+		 * is a reason to release it and not a reason to release it differently.
+		 */
+		avk_encode_clut_finish(&out->encode_clut, out->slot->renderer.dev,
+			&out->slot->renderer.retire);
 	}
 	free(out);
 }
@@ -1919,7 +1934,7 @@ static struct az_lum_domain az_avk_lum_of(
  * than by arguing about a struct.
  */
 static struct avk_encode_params az_avk_encode_params(const Monitor *m,
-		struct avk_image *lut) {
+		struct avk_image *lut, const struct avk_encode_clut *clut) {
 	struct avk_encode_params p = {0};
 	const struct az_output_color_state *s = &m->color_state;
 	for (int i = 0; i < 9; i++) {
@@ -1947,11 +1962,24 @@ static struct avk_encode_params az_avk_encode_params(const Monitor *m,
 	 */
 	p.tf = s->encode_tf == AZ_TF_PQ ? AVK_ENCODE_TF_PQ
 		: s->encode_tf == AZ_TF_LUT1D ? AVK_ENCODE_TF_LUT1D
+		: s->encode_tf == AZ_TF_CLUT3D ? AVK_ENCODE_TF_CLUT3D
 		: AVK_ENCODE_TF_SRGB;
 	/* Only for the variant that samples it. Left NULL for the analytic curves
 	 * so that a caller passing one by mistake cannot leave a stale image
 	 * descriptor bound to a pass that was never going to read it. */
 	p.lut = p.tf == AVK_ENCODE_TF_LUT1D ? lut : NULL;
+	/*
+	 * M6C, on the same terms, and the dim travels WITH the image rather than
+	 * being read from az_output_color_state: C3 knows there is a table and
+	 * deliberately does not know how big it is, which is what keeps Vulkan out
+	 * of that header. The renderer object that holds the cube is the only thing
+	 * that can answer, and it is the same object the sample will come from.
+	 */
+	if (p.tf == AVK_ENCODE_TF_CLUT3D && clut != NULL) {
+		p.clut = clut->image;
+		p.clut_dim = clut->dim;
+		p.clut_encoded_domain = clut->domain_break;
+	}
 	return p;
 }
 
@@ -3105,18 +3133,18 @@ static bool az_avk_output_supported(Monitor *m,
 			if (color_transform != NULL
 					|| m->color_state.path == AZ_OUTPUT_PATH_FALLBACK) {
 				/*
-				 * M6B/G3b. The old wording said "that is M6", which is no longer
-				 * a reason -- this IS M6, and a matrix-shaper profile is carried
-				 * by the encode pass now. Reaching here with a profile means the
-				 * profile did not REDUCE: a cLUT (A2B/B2A) transform, which the
-				 * matrix+curve form cannot express. Naming that is the whole
-				 * value of the line; "it is a later milestone" would now send
-				 * someone looking for work that is already done.
+				 * M6C. Both profile forms are carried now -- matrix-shaper as a
+				 * 3x3 and 256 taps (G2), everything else as a 65-cube -- so the
+				 * old wording ("cannot express as a matrix and a curve") would
+				 * send someone looking for work that is done. Reaching here with
+				 * a profile means NEITHER form could be built: the file did not
+				 * parse, or the transform would not evaluate. That is the thing
+				 * worth naming.
 				 */
 				wlr_log(WLR_INFO, "AVK: %s has a colour transform this renderer "
-					"cannot express as a matrix and a curve (a cLUT profile); "
-					"SceneFX drives this output so the profile is still applied",
-					output->name);
+					"could reduce to neither a matrix-shaper nor a 3D table; "
+					"refusing the output rather than showing uncharacterised "
+					"colour on a display someone measured", output->name);
 			} else {
 				wlr_log(WLR_INFO, "AVK: %s is presenting HDR but the M5 output "
 					"encode pass is not enabled (AZ_M5_PATH_B=1); refusing "
@@ -4305,7 +4333,27 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 				return false;
 			}
 		}
-		out->slot->renderer.encode_params = az_avk_encode_params(m, lut);
+		/*
+		 * M6C. The cube, on exactly the terms above: uploaded only when the
+		 * profile's serial has moved, and its absence REFUSES THE FRAME rather
+		 * than encoding without it.
+		 *
+		 * The refusal matters more here than it did for the curve, because there
+		 * is no second renderer left to fall back to: encoding a calibrated
+		 * display with the sRGB analytic would be plausible, permanent and
+		 * silent, where a refused frame is loud.
+		 */
+		if (m->color_state.encode_tf == AZ_TF_CLUT3D) {
+			if (m->icc_clut == NULL || avk_encode_clut_get(&out->encode_clut,
+					out->slot->renderer.dev, &avk.importer.upload_ring,
+					&out->slot->renderer.retire, m->icc_clut->rgb,
+					m->icc_clut->dim, m->icc_serial) == NULL) {
+				avk.fallback_frames++;
+				return false;
+			}
+		}
+		out->slot->renderer.encode_params = az_avk_encode_params(m, lut,
+			&out->encode_clut);
 	}
 	/*
 	 * DECODE IS ON FOR BOTH PATHS, and it has to be: the two paths differ only

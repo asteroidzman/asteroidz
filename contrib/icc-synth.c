@@ -1,11 +1,19 @@
 /*
  * Synthesise ICC profiles that this machine does not otherwise have.
  *
- * M6B/G3b needs a cLUT display profile to prove that AVK's refusal is real, and
- * there is no such profile on this desk -- the only one that exists is
- * matrix-shaper (FI32U.icm), which is exactly why D2 refuses cLUT by
- * classification and defers the rest. A falsifier that cannot be run is not a
- * falsifier, so the profile is generated.
+ * M6B/G3b needed a cLUT display profile to prove that AVK's refusal was real,
+ * and there is no such profile on this desk -- the only one that exists is
+ * matrix-shaper (FI32U.icm). A falsifier that cannot be run is not a falsifier,
+ * so the profile is generated.
+ *
+ * M6C NEEDS THE SAME PROFILE TO WORK, not merely to be refused, and that
+ * changed what it has to contain: an A2B0 that describes a real display and a
+ * B2A0 without which lcms2 would silently transform through the colorants
+ * instead. See make_clut(). It is still the only cLUT profile this machine has,
+ * and it is now the only thing exercising the cLUT ENCODE path as well as the
+ * classification, which is worth knowing when reading a gate that uses it: it
+ * proves the pipeline carries a cLUT profile correctly, not that any particular
+ * colorimeter's output is handled.
  *
  * THE cLUT PROFILE CARRIES COLORANTS AND TRCs TOO, and that is the whole point
  * of it. A cLUT profile with no colorants would be refused by any reading of
@@ -52,103 +60,176 @@ static bool write_colorants_and_trc(cmsHPROFILE h) {
 }
 
 /*
- * A deliberately NON-TRIVIAL cLUT: it swaps green and blue.
+ * ── THE DISPLAY THE cLUT ACTUALLY DESCRIBES ──────────────────────────────
  *
- * An identity cLUT would make "the profile was applied" and "the profile was
- * ignored" produce the same picture, which is the F15 coincidence in profile
- * form. If anything ever does start honouring these tags, a channel swap is
- * impossible to mistake for either.
+ * M6C needs this profile to DRIVE an output, not merely to be refused, so its
+ * A2B0/B2A0 have to describe a real, invertible display rather than being a
+ * shape. They describe this one: wide primaries and a gamma of 2.6.
+ *
+ * DELIBERATELY FAR FROM THE COLORANTS ABOVE. The colorants say "sRGB-ish, gamma
+ * 2.2" and the tables say "wide gamut, gamma 2.6", and the distance between the
+ * two IS the test: a reader that ignores the cLUT and believes the colorants
+ * produces a picture that is smooth, plausible and tens of codes wrong. A
+ * profile whose two readings agreed would be green whichever one was used.
  */
-static void clut_fill(cmsUInt16Number *table, int grid) {
-	int i = 0;
-	for (int r = 0; r < grid; r++) {
-		for (int g = 0; g < grid; g++) {
-			for (int b = 0; b < grid; b++) {
-				cmsUInt16Number rv = (cmsUInt16Number)
-					(r * 65535 / (grid - 1));
-				cmsUInt16Number gv = (cmsUInt16Number)
-					(g * 65535 / (grid - 1));
-				cmsUInt16Number bv = (cmsUInt16Number)
-					(b * 65535 / (grid - 1));
-				table[i++] = rv;
-				table[i++] = bv; /* swapped, on purpose */
-				table[i++] = gv;
-			}
-		}
+static cmsHPROFILE make_ref_display(void) {
+	cmsCIExyY wp = { 0.3127, 0.3290, 1.0 };
+	cmsCIExyYTRIPLE prim = {
+		.Red   = { 0.68, 0.32, 1.0 },
+		.Green = { 0.20, 0.70, 1.0 },
+		.Blue  = { 0.15, 0.05, 1.0 },
+	};
+	cmsToneCurve *g26 = cmsBuildGamma(0, 2.6);
+	if (g26 == NULL) {
+		return NULL;
 	}
+	cmsToneCurve *trc[3] = { g26, g26, g26 };
+	cmsHPROFILE h = cmsCreateRGBProfile(&wp, &prim, trc);
+	cmsFreeToneCurve(g26);
+	return h;
 }
 
-static bool make_clut(const char *path) {
-	cmsHPROFILE h = cmsCreateProfilePlaceholder(0);
-	if (h == NULL) {
-		return false;
-	}
-	cmsSetProfileVersion(h, 4.3);
-	cmsSetDeviceClass(h, cmsSigDisplayClass);
-	cmsSetColorSpace(h, cmsSigRgbData);
-	cmsSetPCS(h, cmsSigXYZData);
-	cmsSetHeaderRenderingIntent(h, INTENT_RELATIVE_COLORIMETRIC);
+/* cmsStageSampleCLut16bit's callback: `cargo` is the transform being tabulated,
+ * so the table is lcms2's own answer sampled on a grid rather than arithmetic
+ * written twice. */
+static cmsInt32Number sample_through(const cmsUInt16Number In[],
+		cmsUInt16Number Out[], void *cargo) {
+	cmsDoTransform((cmsHTRANSFORM)cargo, In, Out, 1);
+	return 1;
+}
 
-	const int grid = 9;
-	const size_t n = (size_t)grid * grid * grid * 3;
-	cmsUInt16Number *table = calloc(n, sizeof(*table));
-	if (table == NULL) {
-		cmsCloseProfile(h);
-		return false;
-	}
-	clut_fill(table, grid);
-
-	/*
-	 * INPUT CURVES, CLUT, OUTPUT CURVES -- all three, in that order.
-	 *
-	 * A pipeline holding only a CLUT will not serialise: the ICC lut types this
-	 * becomes (mft2 / mAB) define the curve stages as part of the structure, and
-	 * lcms2 refuses to write a pipeline it cannot express rather than inventing
-	 * the missing pieces. The curves are identities; the CLUT is the subject.
-	 */
-	cmsToneCurve *ident[3];
+/*
+ * One A2B/B2A pipeline: identity curves, a CLUT sampled through `xform`,
+ * identity curves.
+ *
+ * All three stages, in that order, because the ICC lut types this becomes (mft2
+ * / mAB) define the curve stages as part of the structure and lcms2 refuses to
+ * write a pipeline it cannot express rather than inventing the missing pieces.
+ */
+static cmsPipeline *lut_pipeline(int grid, cmsHTRANSFORM xform) {
+	cmsToneCurve *ident[3] = { NULL, NULL, NULL };
 	for (int i = 0; i < 3; i++) {
 		ident[i] = cmsBuildGamma(0, 1.0);
 	}
 	cmsPipeline *pipe = cmsPipelineAlloc(0, 3, 3);
 	cmsStage *pre = cmsStageAllocToneCurves(0, 3, ident);
-	cmsStage *clut = cmsStageAllocCLut16bit(0, grid, 3, 3, table);
+	cmsStage *clut = cmsStageAllocCLut16bit(0, grid, 3, 3, NULL);
 	cmsStage *post = cmsStageAllocToneCurves(0, 3, ident);
-	/* cmsBool: nonzero is success. */
 	bool ok = pipe != NULL && pre != NULL && clut != NULL && post != NULL
+		&& cmsStageSampleCLut16bit(clut, sample_through, xform, 0) != 0
 		&& cmsPipelineInsertStage(pipe, cmsAT_END, pre) != 0
 		&& cmsPipelineInsertStage(pipe, cmsAT_END, clut) != 0
 		&& cmsPipelineInsertStage(pipe, cmsAT_END, post) != 0;
 	for (int i = 0; i < 3; i++) {
-		cmsFreeToneCurve(ident[i]);
+		if (ident[i] != NULL) {
+			cmsFreeToneCurve(ident[i]);
+		}
 	}
-	free(table);
 	if (!ok) {
 		if (pipe != NULL) {
 			cmsPipelineFree(pipe);
 		}
-		cmsCloseProfile(h);
-		return false;
+		return NULL;
+	}
+	return pipe;
+}
+
+static bool make_clut(const char *path) {
+	/*
+	 * ── BOTH DIRECTIONS, AND B2A0 IS THE ONE THAT MATTERS ────────────────
+	 *
+	 * A2B0 alone was enough while this profile existed only to be REFUSED: any
+	 * reader classifying it sees the tag and stops. It is not enough for a
+	 * reader that has to USE it. lcms2 builds a transform INTO a profile from
+	 * its PCS2Device tags -- B2A1, falling back to B2A0 -- and falls back to the
+	 * colorants when it finds neither. So a profile with A2B0 and no B2A0 would
+	 * be classified as a cLUT and then quietly transformed through its
+	 * matrix-shaper fallback: the cLUT path would look tested and would have
+	 * exercised a matrix.
+	 */
+	cmsHPROFILE ref = make_ref_display();
+	cmsHPROFILE lab = cmsCreateLab4Profile(NULL);
+	cmsHPROFILE h = cmsCreateProfilePlaceholder(0);
+	cmsHTRANSFORM a2b = NULL, b2a = NULL;
+	cmsPipeline *pipe_a2b = NULL, *pipe_b2a = NULL;
+	bool ok = false;
+	if (ref == NULL || lab == NULL || h == NULL) {
+		goto out;
+	}
+
+	cmsSetProfileVersion(h, 4.3);
+	cmsSetDeviceClass(h, cmsSigDisplayClass);
+	cmsSetColorSpace(h, cmsSigRgbData);
+	/* Lab, which is what real cLUT display profiles use and what lcms2 writes
+	 * an mAB tag against without any encoding of our own. */
+	cmsSetPCS(h, cmsSigLabData);
+	cmsSetHeaderRenderingIntent(h, INTENT_RELATIVE_COLORIMETRIC);
+
+	/* 33 on both, matching the cube AVK samples. A coarser grid here would put
+	 * the profile's own quantisation inside the tolerance of every gate that
+	 * uses it, which is a fixture measuring its own fixture. */
+	const int grid = 33;
+	a2b = cmsCreateTransform(ref, TYPE_RGB_16, lab, TYPE_Lab_16,
+		INTENT_RELATIVE_COLORIMETRIC, cmsFLAGS_NOCACHE);
+	b2a = cmsCreateTransform(lab, TYPE_Lab_16, ref, TYPE_RGB_16,
+		INTENT_RELATIVE_COLORIMETRIC, cmsFLAGS_NOCACHE);
+	if (a2b == NULL || b2a == NULL) {
+		goto out;
+	}
+	pipe_a2b = lut_pipeline(grid, a2b);
+	pipe_b2a = lut_pipeline(grid, b2a);
+	if (pipe_a2b == NULL || pipe_b2a == NULL) {
+		goto out;
 	}
 
 	cmsCIEXYZ d50 = *cmsD50_XYZ();
 #define STEP(expr) do { if (!(expr)) { \
 		fprintf(stderr, "icc-synth: failed at %s\n", #expr); \
-		cmsPipelineFree(pipe); cmsCloseProfile(h); return false; } } while (0)
+		goto out; } } while (0)
 	STEP(cmsWriteTag(h, cmsSigMediaWhitePointTag, &d50));
 	/* THE COLORANTS GO IN TOO. See the file header: a cLUT profile that omitted
-	 * them would be refused by any implementation, including a wrong one. */
+	 * them would be refused by an implementation that merely failed to find a
+	 * matrix, and would prove nothing about classification. */
 	STEP(write_colorants_and_trc(h));
-	STEP(cmsWriteTag(h, cmsSigAToB0Tag, pipe));
+	STEP(cmsWriteTag(h, cmsSigAToB0Tag, pipe_a2b));
+	STEP(cmsWriteTag(h, cmsSigBToA0Tag, pipe_b2a));
 	STEP(cmsMD5computeID(h));
 	STEP(cmsSaveProfileToFile(h, path));
 #undef STEP
 	ok = true;
-	cmsPipelineFree(pipe);
-	cmsCloseProfile(h);
+
+out:
+	if (pipe_a2b != NULL) {
+		cmsPipelineFree(pipe_a2b);
+	}
+	if (pipe_b2a != NULL) {
+		cmsPipelineFree(pipe_b2a);
+	}
+	if (a2b != NULL) {
+		cmsDeleteTransform(a2b);
+	}
+	if (b2a != NULL) {
+		cmsDeleteTransform(b2a);
+	}
+	if (h != NULL) {
+		cmsCloseProfile(h);
+	}
+	if (lab != NULL) {
+		cmsCloseProfile(lab);
+	}
+	if (ref != NULL) {
+		cmsCloseProfile(ref);
+	}
 	return ok;
 }
 
+/*
+ * The other two makers exist for az_icc_load_shaper's OTHER refusals, and a
+ * consumer that only wants the cLUT profile does not want them: an unused
+ * static function is a warning, and warnings that are expected are warnings
+ * nobody reads. tests/test-avk-render.c defines AZ_ICC_SYNTH_CLUT_ONLY.
+ */
+#ifndef AZ_ICC_SYNTH_CLUT_ONLY
 static bool make_gray(const char *path) {
 	cmsToneCurve *g22 = cmsBuildGamma(0, 2.2);
 	cmsHPROFILE h = cmsCreateGrayProfile(cmsD50_xyY(), g22);
@@ -174,6 +255,7 @@ static bool make_input(const char *path) {
 	cmsCloseProfile(h);
 	return ok;
 }
+#endif /* AZ_ICC_SYNTH_CLUT_ONLY */
 
 /*
  * The three makers are also compiled straight into tests/test-icc-shaper.c,

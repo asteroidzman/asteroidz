@@ -35,6 +35,21 @@
 #include "render/color/az_color_ref.h"
 /* M6B/G2: the profile reduction the encode pass is checked against. */
 #include "render/color/az_icc.h"
+/*
+ * M6C. lcms2 and the synthesised cLUT profile, because no cLUT profile exists
+ * on this desk and the cLUT encode path would otherwise be untested code that
+ * has only ever been reasoned about. Compiled in rather than shelled out to,
+ * so the gate has no build-order dependency on a separate tool.
+ */
+#include <lcms2.h>
+#define AZ_ICC_SYNTH_NO_MAIN
+#define AZ_ICC_SYNTH_CLUT_ONLY
+#include "../contrib/icc-synth.c"
+
+/* az_icc_clut_build's evaluator: `user` is the lcms2 transform. */
+static void clut_eval_through(void *user, const float in[3], float out[3]) {
+	cmsDoTransform((cmsHTRANSFORM)user, in, out, 1);
+}
 
 static int failures = 0;
 static int checks = 0;
@@ -1542,6 +1557,331 @@ static void test_path_b_lut_encode(struct harness *h) {
 
 	avk_encode_lut_finish(&lut, h->dev, &fp->retire);
 	avk_encode_intermediate_finish(&work, h->dev, &fp->retire);
+}
+
+/*
+ * ── M6C GATE: THE cLUT ENCODE, ON THE GPU ─────────────────────────────────
+ *
+ * The cube's twin of G2 above, and it asks the same shaped question: does the
+ * CLUT3D encode variant reproduce az_icc_clut_apply, the CPU reference that
+ * test-icc-shaper already checked against lcms2 itself? Two links, each checked
+ * against an implementation that is not the other one.
+ *
+ * NOT DISPLAY-SPECIFIC, unlike G2. The profile is synthesised (contrib/
+ * icc-synth.c) because no cLUT profile exists on this desk, which means this
+ * gate runs everywhere -- and means it proves the pipeline carries A cLUT
+ * profile, not that any particular colorimeter's output is handled.
+ *
+ * ── THE THREE THINGS THAT WOULD PASS WITHOUT MEASURING ANYTHING ──────────
+ *
+ * 1. An identity cube. The picture would be correct-looking whether or not the
+ *    sample happened. AZ_BREAK_CLUT_IDENTITY is that mistake, deliberately, and
+ *    the gate must go red on it.
+ * 2. The wrong DOMAIN. Sampling the cube with the sRGB-encoded value instead of
+ *    the linear one produces a smooth, plausible, entirely wrong picture.
+ *    AZ_BREAK_CLUT_DOMAIN is that mistake.
+ * 3. Neutral patches. This profile's character is wide primaries and gamma 2.6;
+ *    a grey ramp would understate it, exactly as G1 measured one level down.
+ *    The patches below are saturated and mixed.
+ *
+ * ── AND ONE THING THIS GATE PROVABLY CANNOT CATCH ────────────────────────
+ *
+ * A cube whose BUILD transposes its axes. Measured: swapping r and b in
+ * az_icc_clut_build's index leaves this file at 135/135, because
+ * az_icc_clut_apply reads the same array the same way and the GPU samples the
+ * same texels -- the reference and the subject are transposed together, so
+ * their agreement is undisturbed.
+ *
+ * That is the right division and not a hole: this gate answers "does the shader
+ * SAMPLE the table correctly" (a shader-side transpose IS caught -- 152 codes),
+ * and test-icc-shaper's lcms2 comparison answers "was the table BUILT
+ * correctly", where the same perturbation goes red. Neither could do the
+ * other's job, and believing this one did would be exactly the coincidence the
+ * project keeps rediscovering.
+ */
+static void test_path_b_clut_encode(struct harness *h) {
+	printf("M6C: the cLUT encode against az_icc_clut_apply\n");
+
+	const char *tmp = getenv("TMPDIR");
+	char path[512];
+	snprintf(path, sizeof(path), "%s/az-m6c-gpu.icc",
+		tmp != NULL ? tmp : "/tmp");
+	if (!make_clut(path)) {
+		CHECK(false, "M6C: the synthetic cLUT profile is written");
+		return;
+	}
+	void *data = NULL;
+	size_t size = 0;
+	bool got_it = g2_slurp(path, &data, &size);
+	remove(path);
+	if (!got_it) {
+		CHECK(false, "M6C: the synthetic cLUT profile reads back");
+		return;
+	}
+
+	/* PREMISE: this really is the path under test. A profile that reduced
+	 * would be carried as a matrix and a curve and none of this would run. */
+	struct az_icc_shaper unused;
+	CHECK(az_icc_load_shaper(data, size, true, &unused) == AZ_ICC_REJECT_CLUT,
+		"PREMISE: the profile does NOT reduce -- CLUT3D or nothing");
+
+	/* The transform wlroots builds: linear sRGB primaries in, device code out.
+	 * Rebuilt here rather than linked, because this binary has no wlroots; the
+	 * seam is covered by contrib/m6b-icc-drive-test.sh. */
+	cmsToneCurve *g1 = cmsBuildGamma(0, 1);
+	cmsToneCurve *tf[3] = { g1, g1, g1 };
+	cmsCIExyY wp = { 0.3127, 0.3291, 1 };
+	cmsCIExyYTRIPLE prim = {
+		.Red = { 0.64, 0.33, 1 }, .Green = { 0.3, 0.6, 1 },
+		.Blue = { 0.15, 0.06, 1 },
+	};
+	cmsHPROFILE lin = cmsCreateRGBProfile(&wp, &prim, tf);
+	cmsFreeToneCurve(g1);
+	cmsHPROFILE dst = cmsOpenProfileFromMem(data, (cmsUInt32Number)size);
+	free(data);
+	cmsHTRANSFORM t = (lin != NULL && dst != NULL)
+		? cmsCreateTransform(lin, TYPE_RGB_FLT, dst, TYPE_RGB_FLT,
+			INTENT_RELATIVE_COLORIMETRIC, cmsFLAGS_NOCACHE)
+		: NULL;
+	CHECK(t != NULL, "M6C: lcms2 builds the linear->ICC transform");
+	if (t == NULL) {
+		return;
+	}
+	struct az_icc_clut *cube = az_icc_clut_build(AZ_ICC_CLUT_DIM,
+		clut_eval_through, t);
+	CHECK(cube != NULL, "M6C: the cube builds");
+	if (cube == NULL) {
+		return;
+	}
+
+	/*
+	 * THE DERIVE TABLE IS PART OF THE GATE, exactly as it is for G2: building
+	 * the params by hand would pass on a C3 that never chooses CLUT3D, which is
+	 * precisely what this milestone changes.
+	 */
+	struct az_output_desc desc = {
+		.bits_per_channel = 8,
+		.has_icc = true,
+		.scene_ref_nits = 203.0f,
+		.scanout_srgb_view_ok = true,
+		.icc_clut = cube,
+	};
+	struct az_output_color_state state = az_output_color_derive(&desc);
+	CHECK(state.path == AZ_OUTPUT_PATH_B_ENCODE
+			&& state.encode_tf == AZ_TF_CLUT3D,
+		"PREMISE: C3 puts a cLUT-profiled SDR output on Path B with CLUT3D "
+		"(path=%d tf=%d)", (int)state.path, (int)state.encode_tf);
+	if (state.encode_tf != AZ_TF_CLUT3D) {
+		az_icc_clut_free(cube);
+		return;
+	}
+
+	struct avk_renderer *fp = fp16_renderer(h);
+	if (fp == NULL) {
+		CHECK(false, "M6C: FP16 renderer initialises");
+		az_icc_clut_free(cube);
+		return;
+	}
+	struct avk_encode_intermediate work = {0};
+	struct avk_image *inter = avk_encode_intermediate_get(&work, h->dev,
+		&fp->retire, VK_FORMAT_R16G16B16A16_SFLOAT, W, H);
+	if (inter == NULL) {
+		CHECK(false, "M6C: intermediate allocates");
+		az_icc_clut_free(cube);
+		return;
+	}
+
+	/* Through the same call the compositor makes. A gate on an upload path the
+	 * product does not use is a gate on nothing. */
+	struct avk_encode_clut lut = {0};
+	struct avk_image *lut_img = avk_encode_clut_get(&lut, h->dev, &fp->ring,
+		&fp->retire, cube->rgb, cube->dim, 1);
+	CHECK(lut_img != NULL, "M6C: the cube uploads as a 3D image");
+	if (lut_img == NULL) {
+		avk_encode_intermediate_finish(&work, h->dev, &fp->retire);
+		az_icc_clut_free(cube);
+		return;
+	}
+	CHECK(lut_img->depth == cube->dim && lut_img->extent.width == cube->dim,
+		"M6C: and it is a VOLUME, not a plane (%ux%ux%u)",
+		lut_img->extent.width, lut_img->extent.height, lut_img->depth);
+	CHECK(avk_encode_clut_get(&lut, h->dev, &fp->ring, &fp->retire, cube->rgb,
+			cube->dim, 1) == lut_img,
+		"M6C: an unchanged serial re-uses the image rather than re-uploading");
+
+	struct avk_encode_params params = {0};
+	for (int i = 0; i < 9; i++) {
+		params.matrix[i] = state.matrix[i];
+	}
+	params.knee = 1.0f;
+	params.peak = state.peak_scene;
+	params.anchor = state.ref_nits / 10000.0f;
+	/* Dither OFF: ADR-011's noise is +-half a code by design and this gate's
+	 * whole tolerance is one code. */
+	params.dither_q = 0.0f;
+	params.tf = AVK_ENCODE_TF_CLUT3D;
+	params.clut = lut_img;
+	params.clut_dim = lut.dim;
+
+	static const float vals[][3] = {
+		{ 0.90f, 0.10f, 0.05f },
+		{ 0.10f, 0.80f, 0.20f },
+		{ 0.05f, 0.15f, 0.85f },
+		{ 0.60f, 0.35f, 0.10f },
+		{ 0.20f, 0.05f, 0.40f },
+		{ 0.02f, 0.03f, 0.01f },
+		{ 0.50f, 0.50f, 0.50f },
+	};
+	const int nv = (int)(sizeof(vals) / sizeof(vals[0]));
+
+	struct avk_scene scene;
+	avk_scene_init(&scene);
+	pixman_region32_union_rect(&scene.damage, &scene.damage, 0, 0, W, H);
+	scene.has_clear = true;
+	scene.clear_color[3] = 1.0f;
+	for (int i = 0; i < nv; i++) {
+		struct avk_cmd *c = avk_scene_add(&scene, AVK_CMD_RECT);
+		c->dst = (struct avk_box){ i * 8, 0, 8, 8 };
+		for (int ch = 0; ch < 3; ch++) {
+			c->color[ch] = vals[i][ch];
+		}
+		c->color[3] = 1.0f;
+	}
+	fp->encode_intermediate = inter;
+	fp->encode_params = params;
+	fp->encode_full_frame = true;
+	bool ok = render_with(h, fp, &scene);
+	fp->encode_intermediate = NULL;
+	fp->encode_full_frame = false;
+	avk_scene_finish(&scene);
+
+	if (!ok) {
+		CHECK(false, "M6C: frame renders");
+	} else {
+		int worst = 0, worst_i = -1, premise = 0;
+		for (int i = 0; i < nv; i++) {
+			float lin_v[3] = { vals[i][0], vals[i][1], vals[i][2] };
+			float want_f[3];
+			az_icc_clut_apply(cube, lin_v, want_f);
+			uint32_t p = px(h, (uint32_t)(i * 8 + 4), 4);
+			int got[3] = { r_of(p), g_of(p), b_of(p) };
+			for (int ch = 0; ch < 3; ch++) {
+				int want = (int)(want_f[ch] * 255.0f + 0.5f);
+				int d = got[ch] - want;
+				if (d < 0) { d = -d; }
+				if (d > worst) { worst = d; worst_i = i; }
+				double v = (double)lin_v[ch];
+				double srgb = v <= 0.0031308 ? v * 12.92
+					: 1.055 * pow(v, 1.0 / 2.4) - 0.055;
+				int plain = (int)(srgb * 255.0 + 0.5);
+				int e = want - plain;
+				if (e < 0) { e = -e; }
+				if (e > premise) { premise = e; }
+			}
+			printf("  ---- scene %.2f/%.2f/%.2f -> want %3d/%3d/%3d  "
+				"got %3d/%3d/%3d\n", (double)vals[i][0], (double)vals[i][1],
+				(double)vals[i][2],
+				(int)(want_f[0] * 255.0f + 0.5f),
+				(int)(want_f[1] * 255.0f + 0.5f),
+				(int)(want_f[2] * 255.0f + 0.5f),
+				got[0], got[1], got[2]);
+		}
+		printf("  the profile moves these patches by up to %d codes away from "
+			"a plain sRGB encode\n", premise);
+		CHECK(premise > 10,
+			"PREMISE: the cLUT is measurably non-identity ON THIS FIXTURE "
+			"(%d codes)", premise);
+		CHECK(worst <= 1,
+			"M6C: the CLUT3D encode matches az_icc_clut_apply (worst %d codes "
+			"at patch %d)", worst, worst_i);
+	}
+
+	/*
+	 * ── THE TWO FALSIFIERS ────────────────────────────────────────────────
+	 *
+	 * Run in-process, because a break this file cannot observe is a break this
+	 * file only documents. They are separate on purpose: one falsifies the
+	 * cube's CONTENTS with the domain correct, the other falsifies the DOMAIN
+	 * with the contents correct. A single break doing both could not tell you
+	 * which of the two the gate is sensitive to -- and the domain is the one
+	 * this project has got wrong before.
+	 */
+	for (int arm = 0; ok && arm < 2; arm++) {
+		const char *env = arm == 0 ? "AZ_BREAK_CLUT_IDENTITY"
+			: "AZ_BREAK_CLUT_DOMAIN";
+		setenv(env, "1", 1);
+		/* A FRESH object: avk_encode_clut_get returns early on an unchanged
+		 * serial and would never reach the getenv. That early return is the
+		 * product behaviour -- a break toggled mid-session takes effect at the
+		 * next profile change -- and it is why the fixture cannot simply
+		 * re-call on the same struct. */
+		struct avk_encode_clut broke = {0};
+		struct avk_image *broke_img = avk_encode_clut_get(&broke, h->dev,
+			&fp->ring, &fp->retire, cube->rgb, cube->dim, 1);
+		unsetenv(env);
+		CHECK(broke_img != NULL, "BREAK: %s uploads", env);
+		if (broke_img == NULL) {
+			continue;
+		}
+		CHECK(arm == 0 ? !broke.domain_break : broke.domain_break,
+			"PREMISE: %s latched the right half of the break", env);
+
+		struct avk_scene sc;
+		avk_scene_init(&sc);
+		pixman_region32_union_rect(&sc.damage, &sc.damage, 0, 0, W, H);
+		sc.has_clear = true;
+		sc.clear_color[3] = 1.0f;
+		for (int i = 0; i < nv; i++) {
+			struct avk_cmd *c = avk_scene_add(&sc, AVK_CMD_RECT);
+			c->dst = (struct avk_box){ i * 8, 0, 8, 8 };
+			for (int ch = 0; ch < 3; ch++) {
+				c->color[ch] = vals[i][ch];
+			}
+			c->color[3] = 1.0f;
+		}
+		params.clut = broke_img;
+		params.clut_dim = broke.dim;
+		params.clut_encoded_domain = broke.domain_break;
+		fp->encode_intermediate = inter;
+		fp->encode_params = params;
+		fp->encode_full_frame = true;
+		bool ok2 = render_with(h, fp, &sc);
+		fp->encode_intermediate = NULL;
+		fp->encode_full_frame = false;
+		avk_scene_finish(&sc);
+
+		int worst = 0;
+		if (ok2) {
+			for (int i = 0; i < nv; i++) {
+				float lin_v[3] = { vals[i][0], vals[i][1], vals[i][2] };
+				float want_f[3];
+				az_icc_clut_apply(cube, lin_v, want_f);
+				uint32_t p = px(h, (uint32_t)(i * 8 + 4), 4);
+				int got[3] = { r_of(p), g_of(p), b_of(p) };
+				for (int ch = 0; ch < 3; ch++) {
+					int d = got[ch] - (int)(want_f[ch] * 255.0f + 0.5f);
+					if (d < 0) { d = -d; }
+					if (d > worst) { worst = d; }
+				}
+			}
+		}
+		printf("  ---- %s: worst %d codes from the measured cube\n", env,
+			worst);
+		CHECK(ok2 && worst > 20, "BREAK: %s is DETECTED (%d codes)", env,
+			worst);
+		avk_encode_clut_finish(&broke, h->dev, &fp->retire);
+		/* Put the good table back before the next arm reads it. */
+		params.clut = lut_img;
+		params.clut_dim = lut.dim;
+		params.clut_encoded_domain = false;
+	}
+
+	avk_encode_clut_finish(&lut, h->dev, &fp->retire);
+	avk_encode_intermediate_finish(&work, h->dev, &fp->retire);
+	az_icc_clut_free(cube);
+	cmsDeleteTransform(t);
+	cmsCloseProfile(dst);
+	cmsCloseProfile(lin);
 }
 
 static void test_solid_colour_domain(struct harness *h) {
@@ -3099,6 +3439,7 @@ int main(void) {
 	test_path_b_sdr_gate(&h);
 	test_path_b_pq_encode(&h);
 	test_path_b_lut_encode(&h);
+	test_path_b_clut_encode(&h);
 	test_solid_colour_domain(&h);
 	test_c7_decode_path(&h);
 	test_blend_domain(&h);

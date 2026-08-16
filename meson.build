@@ -242,8 +242,13 @@ icc_synth = executable('icc-synth', 'contrib/icc-synth.c',
                        build_by_default : false)
 
 test_output_color = executable('test-output-color',
-                               'tests/test-output-color.c',
-                               dependencies : [az_color_dep],
+                               # M6C: the table's cLUT rows build a real
+                               # az_icc_clut rather than faking one, so the
+                               # struct the derivation reads is the struct the
+                               # renderer will be handed.
+                               ['tests/test-output-color.c',
+                                'src/render/color/az_icc.c'],
+                               dependencies : [az_color_dep, lcms2_dep, libm],
                                build_by_default : false)
 test('output-color', test_output_color, timeout : 30)
 

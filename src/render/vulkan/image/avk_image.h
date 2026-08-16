@@ -45,6 +45,18 @@ struct avk_image {
 
 	VkFormat format;
 	VkExtent2D extent;
+	/*
+	 * SLICES. 1 for every image in this renderer but one: M6C's cLUT, which is
+	 * a dim^3 cube sampled as a sampler3D.
+	 *
+	 * A field rather than a second image type, because everything else about a
+	 * 3D image here is identical to a 2D one -- same allocation, same upload,
+	 * same descriptor type, same layout transitions -- and the only two places
+	 * that must know are the create info's extent and the view type. Both read
+	 * this. Set by avk_image_alloc() to 1, so a caller that forgets it gets a
+	 * plane rather than an invalid extent.
+	 */
+	uint32_t depth;
 	uint64_t modifier;
 	uint32_t drm_format;
 	uint32_t plane_count;

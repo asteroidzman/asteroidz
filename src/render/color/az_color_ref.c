@@ -138,6 +138,17 @@ static double eotf(enum az_tf tf, double e) {
 		 * premultiply divide can push it out of range and the invariant is
 		 * per-decode, not per-curve. */
 		return e < 0.0 ? 0.0 : (e > 1.0 ? 1.0 : e);
+	/*
+	 * OUTPUT-ONLY ENCODES, WITH NO CLOSED FORM AND NO DECODE.
+	 *
+	 * A measured curve and a measured cube are tables, and no SOURCE ever
+	 * declares either -- they exist only as the last step of the encode pass.
+	 * Listed rather than left to fall through so that a future transfer
+	 * function is a compile warning here instead of a silent identity, which is
+	 * what these two were until M6C made the omission visible.
+	 */
+	case AZ_TF_LUT1D:
+	case AZ_TF_CLUT3D:
 	case AZ_TF_COUNT:
 		break;
 	}
@@ -156,6 +167,11 @@ static double ieotf(enum az_tf tf, double o) {
 		return (double)az_pq_ieotf((float)o);
 	case AZ_TF_LINEAR_EXT:
 		return o < 0.0 ? 0.0 : (o > 1.0 ? 1.0 : o);
+	/* See eotf() above: tables, not formulae, and the CPU reference has no
+	 * profile to consult. az_icc_apply and az_icc_clut_apply ARE the reference
+	 * for those two, and the GPU gates compare against them directly. */
+	case AZ_TF_LUT1D:
+	case AZ_TF_CLUT3D:
 	case AZ_TF_COUNT:
 		break;
 	}

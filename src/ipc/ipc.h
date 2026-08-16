@@ -385,12 +385,19 @@ static cJSON *build_monitor_json(Monitor *m) {
 	 * these two answer the one that is not, and that a headless fixture has no
 	 * other way to ask. `color_encode_tf` reading "lut1d" is AVK carrying the
 	 * profile itself; "srgb" with a path of "fallback" is SceneFX carrying it.
+	 *
+	 * M6C adds the third answer: "clut3d" is AVK carrying a profile that does
+	 * NOT reduce to a matrix and a curve, as a 65-cube. `icc_shaper` and
+	 * `icc_clut` are mutually exclusive by construction and both false with no
+	 * profile, so the three states are distinguishable from these two booleans
+	 * without consulting the path.
 	 */
 	cJSON_AddStringToObject(resp, "color_path",
 							az_output_path_name(m->color_state.path));
 	cJSON_AddStringToObject(resp, "color_encode_tf",
 							az_tf_name(m->color_state.encode_tf));
 	cJSON_AddBoolToObject(resp, "icc_shaper", m->icc_shaper_ok);
+	cJSON_AddBoolToObject(resp, "icc_clut", m->icc_clut != NULL);
 	cJSON_AddNumberToObject(resp, "sdr_luminance",
 							config.sdr_reference_luminance > 0
 								? config.sdr_reference_luminance

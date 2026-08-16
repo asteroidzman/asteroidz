@@ -182,6 +182,16 @@ ICC outputs return `path = FALLBACK` (AVK keeps refusing, ADR-000).
 > code, neither being a colour-management question. SDR + a profile that does
 > not reduce (cLUT) keeps `FALLBACK`. HDR + profile is unaffected — D3 decides
 > `hdr` first and the profile is inert there.
+>
+> **AMENDED 2026-08-16 (M6C).** The inputs gain `icc_clut` — the same profile
+> sampled onto a 65³ grid, or NULL — offered only when `icc_shaper` is NULL and
+> under the same caller obligation. SDR + cLUT now returns `path = B-encode`,
+> `encode_tf = AZ_TF_CLUT3D`, and **the identity matrix**: the cube already
+> contains the colorant transform, so filling the matrix by analogy with the
+> `LUT1D` branch would apply the gamut conversion twice. `FALLBACK` survives
+> only for a profile that yields neither form. The interlock covers `CLUT3D`
+> alongside `LUT1D`, and `az_output_color_transform()` withholds the wlroots
+> transform for both, so exactly one renderer applies the profile.
 
 **FORMAT.** `src/render/az_output_color.h` (header, pure function +
 struct), no Vulkan objects in it — the Path-B intermediate image handle

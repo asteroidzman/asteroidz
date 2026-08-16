@@ -67,8 +67,32 @@
  * built from it.
  */
 #define AZ_ENCODE_TF_LUT1D 2
+/*
+ * M6C. A measured display carried as a CUBE, for the profiles that do not
+ * reduce to a matrix and a curve at all.
+ *
+ * ── WHY THIS IS A SECOND MODULE AND NOT A FOURTH BRANCH ──────────────────
+ *
+ * The 1D table is a sampler2D and this is a sampler3D, and they sit on the same
+ * descriptor set because the renderer's shared texture layout has exactly one
+ * binding. Two declarations of one binding would both be STATICALLY USED --
+ * that is a property of the SPIR-V and specialisation does not remove it, which
+ * this file already learned the hard way (see avk_output_encode.c on
+ * VUID-vkCmdDraw-None-08600). Whichever variant then ran would be drawing with
+ * a view whose type does not match the sampler that is not looking at it:
+ * VUID-vkCmdDraw-viewType-07752.
+ *
+ * So the SAME SOURCE is compiled twice, with AZ_ENCODE_CLUT defined for the
+ * second. One file, one step order, two modules, and the set-1 declaration in
+ * each module matches the only image that module is ever bound.
+ */
+#define AZ_ENCODE_TF_CLUT3D 3
 layout(constant_id = 0) const int AZ_ENCODE_TF = AZ_ENCODE_TF_SRGB;
+#ifdef AZ_ENCODE_CLUT
+layout(set = 1, binding = 0) uniform sampler3D az_encode_clut;
+#else
 layout(set = 1, binding = 0) uniform sampler2D az_encode_lut;
+#endif
 
 /*
  * The table is sampled on a SQUARED index -- tap i holds the curve at
@@ -88,6 +112,30 @@ float az_encode_lut_u(float linear) {
 		/ float(AZ_ENCODE_LUT_TAPS);
 }
 
+#ifdef AZ_ENCODE_CLUT
+/*
+ * ── THE CUBE'S COORDINATE ────────────────────────────────────────────────
+ *
+ * A SQUARED INDEX ON EVERY AXIS, exactly like the 1D table above and for
+ * exactly its reason: sample i holds the transform at (i/(dim-1))^2, because an
+ * encode curve has infinite slope at zero and a grid uniform in linear light
+ * cannot track it there. Measured for the synthetic cLUT profile, worst error
+ * against lcms2 over a 41^3 off-grid sweep: 13.82 codes at a uniform 33 (which
+ * is what wlroots samples), 1.60 at this. See AZ_ICC_CLUT_DIM, where the whole
+ * table of alternatives lives -- and note that this sqrt MUST match
+ * az_icc_clut_index(), because the CPU reference and this shader are one
+ * function, not two approximations of it.
+ *
+ * The half-texel offset is just as load-bearing: with LINEAR filtering, sample
+ * i sits at (i + 0.5)/dim, so a bare 0..1 coordinate would land half a cell
+ * short at both ends and skew the whole cube.
+ */
+vec3 az_encode_clut_uvw(vec3 linear, float dim) {
+	vec3 idx = sqrt(clamp(linear, vec3(0.0), vec3(1.0)));
+	return (idx * (dim - 1.0) + 0.5) / dim;
+}
+#endif
+
 /*
  * 64 bytes: three matrix rows with a scalar riding in each w, plus one vec4.
  * Deliberately not push.glsl's block -- see output_encode.vert.
@@ -104,7 +152,9 @@ layout(push_constant) uniform Encode {
 	vec4 misc; /* x: dither quantum, peak-to-peak, in electrical units;
 	            * yz: this target's origin in output pixels, so the dither
 	            *     pattern stays anchored to the OUTPUT raster and cannot
-	            *     phase-shift; w: unused                                */
+	            *     phase-shift; w: M6C's cube edge, in samples -- NEGATIVE
+	            *     under AZ_BREAK_CLUT_DOMAIN, which is the only thing in
+	            *     this shader that is not the product's behaviour     */
 } epc;
 
 #define AZ_ENC_KNEE epc.row0.w
@@ -112,6 +162,7 @@ layout(push_constant) uniform Encode {
 #define AZ_ENC_ANCHOR epc.row2.w
 #define AZ_ENC_DITHER epc.misc.x
 #define AZ_ENC_ORIGIN epc.misc.yz
+#define AZ_ENC_CLUT_DIM epc.misc.w
 
 layout(set = 0, binding = 0) uniform sampler2D scene;
 
@@ -145,6 +196,37 @@ void main() {
 	 *    it -- the profile's TRC already IS this display's transfer function,
 	 *    so applying sRGB as well would encode twice. */
 	vec3 e;
+#ifdef AZ_ENCODE_CLUT
+	/*
+	 * ── M6C: THE CUBE, SAMPLED IN THE LINEAR DOMAIN ───────────────────────
+	 *
+	 * `v` here is SCENE-LINEAR light, clamped to [0,1], and that is exactly the
+	 * table's input axis: wlroots builds the transform from an lcms2 source
+	 * profile with GAMMA-1.0 TRCs, so its domain is linear and its range is
+	 * device code. Sampling it with an sRGB-encoded value instead would be the
+	 * same table read along the wrong axis -- a picture that is smooth,
+	 * plausible, and wrong everywhere except at 0 and 1. AZ_BREAK_CLUT_DOMAIN
+	 * below IS that mistake, made deliberately, so the fixture can be shown to
+	 * notice it.
+	 *
+	 * AND THE MATRIX HAS ALREADY BEEN APPLIED -- as the IDENTITY. The cube
+	 * contains the colorant transform itself, so C3 derives the identity for
+	 * this path (az_output_color.h) and step 3 above is a no-op rather than a
+	 * step that was skipped. A 709->device matrix here would be the gamut
+	 * conversion done twice.
+	 *
+	 * The dither at step 6 still applies, unchanged: the cube's OUTPUT is
+	 * electrical, which is the domain the dither has always been in.
+	 */
+	if (AZ_ENC_CLUT_DIM < 0.0) {
+		/* AZ_BREAK_CLUT_DOMAIN: sample where the ENCODED value would put us. */
+		e = texture(az_encode_clut,
+			az_encode_clut_uvw(az_srgb_ieotf(v), -AZ_ENC_CLUT_DIM)).rgb;
+	} else {
+		e = texture(az_encode_clut,
+			az_encode_clut_uvw(v, AZ_ENC_CLUT_DIM)).rgb;
+	}
+#else
 	if (AZ_ENCODE_TF == AZ_ENCODE_TF_LUT1D) {
 		e.r = texture(az_encode_lut, vec2(az_encode_lut_u(v.r), 0.5)).r;
 		e.g = texture(az_encode_lut, vec2(az_encode_lut_u(v.g), 0.5)).g;
@@ -154,6 +236,7 @@ void main() {
 	} else {
 		e = az_srgb_ieotf(v);
 	}
+#endif
 
 	/* 6. dither. On the ELECTRICAL value, at the target's quantum, RGB only.
 	 *    Dithering the scene instead would be an amplitude correct at one grey

@@ -47,9 +47,10 @@ struct avk_cmd_ring;
  * set creation per frame" true by construction rather than by discipline.
  */
 
-/* Pipelines are built per (format, tf). Two scanout formats and two curves is
- * the whole space this renderer can reach; the extra room is so that a mixed
- * multi-output desktop cannot silently start recompiling on the frame path. */
+/* Pipelines are built per (format, tf). Two scanout formats and FOUR curves --
+ * M6C makes it four -- is the whole space this renderer can reach, so 8 of
+ * these 12 slots is the ceiling; the rest is so that a mixed multi-output
+ * desktop cannot silently start recompiling on the frame path. */
 #define AVK_ENCODE_MAX_VARIANTS 12
 
 /*
@@ -64,6 +65,13 @@ enum avk_encode_tf {
 	AVK_ENCODE_TF_SRGB = 0,
 	AVK_ENCODE_TF_PQ = 1,
 	AVK_ENCODE_TF_LUT1D = 2,
+	/*
+	 * M6C. The one variant that is a different SHADER MODULE and not only a
+	 * different specialisation: its set-1 declaration is a sampler3D. See
+	 * output_encode.frag for why a fourth branch in one module would be
+	 * VUID-vkCmdDraw-viewType-07752 rather than a tidier design.
+	 */
+	AVK_ENCODE_TF_CLUT3D = 3,
 };
 
 /* Taps in the measured curve. Must match AZ_ICC_CURVE_TAPS and the shader's
@@ -95,6 +103,19 @@ enum avk_encode_tf {
  *            and guaranteed live for the frame; NULL for the analytic curves,
  *            where the spec constant compiles the sample out entirely so the
  *            descriptor is never statically used.
+ * clut       M6C's cube, when tf is CLUT3D, on the same terms. A SEPARATE
+ *            field from `lut` and not a union: the two are sampled by two
+ *            different modules with two different view types, and a single
+ *            slot would make "the wrong one is set" a thing the record path
+ *            could not notice.
+ * clut_dim   the cube's edge in samples. Zero is refused rather than defaulted,
+ *            because a wrong dim is a smoothly wrong picture: the coordinate
+ *            mapping is (v*(dim-1) + 0.5)/dim, so a dim that disagrees with the
+ *            image reads the table at a steadily drifting offset.
+ * clut_encoded_domain  AZ_BREAK_CLUT_DOMAIN, plumbed from the object that read
+ *            the environment (off the frame path) rather than read here. Makes
+ *            the pass sample the cube with the ENCODED value instead of the
+ *            linear one -- the domain error this whole path is at risk of.
  */
 struct avk_encode_params {
 	float matrix[9];
@@ -105,6 +126,9 @@ struct avk_encode_params {
 	float origin_x, origin_y;
 	enum avk_encode_tf tf;
 	struct avk_image *lut;
+	struct avk_image *clut;
+	uint32_t clut_dim;
+	bool clut_encoded_domain;
 };
 
 /* Must match the block in shader/src/output_encode.frag exactly. */
@@ -112,7 +136,8 @@ struct avk_encode_push {
 	float row0[4]; /* xyz matrix row 0, w knee   */
 	float row1[4]; /* xyz matrix row 1, w peak   */
 	float row2[4]; /* xyz matrix row 2, w anchor */
-	float misc[4]; /* x dither quantum, yz origin, w unused */
+	float misc[4]; /* x dither quantum, yz origin, w the cLUT edge (negated
+	                * under the domain break) */
 };
 _Static_assert(sizeof(struct avk_encode_push) == 64,
 	"the encode push block must match output_encode.frag");
@@ -127,6 +152,11 @@ struct avk_output_encode {
 	struct avk_device *dev;
 	VkPipelineLayout layout;
 	VkShaderModule vert, frag;
+	/* M6C: the same source with AZ_ENCODE_CLUT defined. One pipeline layout
+	 * serves both -- a descriptor set layout carries a descriptor TYPE and not
+	 * an image dimensionality, so a combined image sampler is a combined image
+	 * sampler whether the view behind it is 2D or 3D. */
+	VkShaderModule frag_clut;
 
 	/*
 	 * SET 1 -- THE MEASURED CURVE -- OWNS NOTHING HERE, deliberately.
@@ -270,6 +300,55 @@ struct avk_image *avk_encode_lut_get(struct avk_encode_lut *l,
 /* Same retire contract as the intermediate: NULL `retire` only from teardown,
  * with the device idle. */
 void avk_encode_lut_finish(struct avk_encode_lut *l, struct avk_device *dev,
+	struct avk_retire_queue *retire);
+
+/*
+ * ── M6C: THE cLUT, AS A VOLUME ────────────────────────────────────────────
+ *
+ * One dim x dim x dim RGBA16-UNORM image per output holding az_icc_clut's grid,
+ * sampled trilinearly. Everything the 1D curve's object says applies here word
+ * for word -- per output because a display profile is; written only when the
+ * profile's serial moves because a table is not a picture; sixteen bits because
+ * the pass dithers against one output code -- so the differences are the only
+ * things worth stating:
+ *
+ * R16G16B16A16_UNORM AND NOT R32G32B32A32_SFLOAT, which is what wlroots uses.
+ * The cube MUST be filtered linearly (trilinear interpolation is the whole
+ * mechanism, not an optimisation), and Vulkan requires
+ * SAMPLED_IMAGE_FILTER_LINEAR of the 16-bit UNORM format and does NOT require
+ * it of the 32-bit float one. Choosing the format that is guaranteed to filter
+ * is choosing the one that cannot silently fall back to point sampling on some
+ * other GPU -- which would look like mild banding rather than like a bug.
+ *
+ * 65^3 x 8 bytes is 2.1MB per profiled output, once.
+ *
+ * `dim` is held alongside the image because the shader's coordinate mapping
+ * needs it and reading it back off the image would be reading it off
+ * `extent.width`, which is the same number for the wrong reason.
+ */
+struct avk_encode_clut {
+	struct avk_image *image;
+	uint64_t serial; /* the profile revision `image` holds; 0 = empty */
+	uint32_t dim;
+	/* AZ_BREAK_CLUT_DOMAIN, latched when the table was built so that the frame
+	 * path never reads the environment. The pass reads it from the params. */
+	bool domain_break;
+};
+
+/*
+ * The cube image for `grid`, uploaded if `serial` differs from what is held.
+ *
+ * `grid` is 3 * dim^3 samples, R varying fastest -- az_icc_clut's layout, which
+ * is a buffer-to-3D-image copy's layout. NULL on failure, with the same reading
+ * as the 1D curve's: "do not encode with CLUT3D this frame", never "encode
+ * without a table".
+ */
+struct avk_image *avk_encode_clut_get(struct avk_encode_clut *l,
+	struct avk_device *dev, struct avk_cmd_ring *ring,
+	struct avk_retire_queue *retire, const uint16_t *grid, uint32_t dim,
+	uint64_t serial);
+
+void avk_encode_clut_finish(struct avk_encode_clut *l, struct avk_device *dev,
 	struct avk_retire_queue *retire);
 
 /* With `retire` non-NULL the image is destroyed once the GPU passes its own

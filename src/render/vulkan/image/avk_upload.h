@@ -72,6 +72,22 @@ struct avk_image *avk_upload_image_create(struct avk_device *dev,
 	enum avk_image_origin origin);
 
 /*
+ * The same, as a dim x dim x dim VOLUME. M6C's cLUT and nothing else.
+ *
+ * Separate from the 2D creator rather than a depth argument on it, because the
+ * two have different callers and different failure modes: every 2D caller is a
+ * client buffer whose extent is not ours to choose, and this one is a cube whose
+ * edge is a compile-time constant. A shared signature would put a `1` at forty
+ * call sites to serve one.
+ *
+ * avk_upload_image_write() then works unchanged -- pass `stride` = one row of
+ * the cube and `height` = dim*dim rows, and the copy takes its image extent from
+ * the image itself.
+ */
+struct avk_image *avk_upload_image_create_3d(struct avk_device *dev,
+	uint32_t drm_format, uint32_t dim, enum avk_image_origin origin);
+
+/*
  * Copy `height` rows of `stride` bytes from `pixels` into `image`, on `ring`.
  *
  * `waits` is passed through to the submission, which is how the caller keeps

@@ -147,6 +147,14 @@ architectural-completeness spend ADR-612's GPU half was rejected for; the
 honest accounting above shows its cost was never the objection and demand is
 the only test it fails.
 
+> **SUPERSEDED IN PART, 2026-08-16 (M6C).** D2's *reduction* is unchanged and
+> still refuses cLUT by classification. What changed is the consequence: a
+> refused reduction no longer means `FALLBACK`, because removing SceneFX makes
+> `FALLBACK` an abort and a colorimeter's own output is a cLUT profile. Such a
+> profile is now sampled onto a 65³ cube and carried by the same encode pass.
+> D2's stated revival condition ("a real cLUT profile for a connected display
+> existing on this machine") was overtaken by that, not met.
+
 **D2 — Ingest: lcms2, matrix-shaper class only; cLUT profiles keep
 FALLBACK.** A new pure-CPU unit (`src/render/color/az_icc.{h,c}` shape, C1's
 discipline: no Vulkan, no wlroots types) uses lcms2 — already in the

@@ -54,6 +54,14 @@ enum az_tf {
 	 * closed form. Only ever an OUTPUT encode: no source declares it.
 	 */
 	AZ_TF_LUT1D,
+	/*
+	 * M6C. A measured display carried as a 3D table instead of a matrix and a
+	 * curve, for the profiles that do not reduce to those -- a cLUT (A2B/B2A)
+	 * profile. Like LUT1D it is only ever an OUTPUT encode, and unlike LUT1D it
+	 * carries the GAMUT as well, which is why the state that names it also
+	 * derives the identity matrix. See az_icc.h.
+	 */
+	AZ_TF_CLUT3D,
 	AZ_TF_COUNT,
 };
 
@@ -65,6 +73,7 @@ static inline const char *az_tf_name(enum az_tf tf) {
 	case AZ_TF_BT1886:     return "bt1886";
 	case AZ_TF_PQ:         return "pq";
 	case AZ_TF_LUT1D:      return "lut1d";
+	case AZ_TF_CLUT3D:     return "clut3d";
 	case AZ_TF_LINEAR_EXT: return "linear-ext";
 	case AZ_TF_COUNT:      break;
 	}

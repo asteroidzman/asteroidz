@@ -14,6 +14,18 @@
 
 #include "output_encode_vert.spv.h"
 #include "output_encode_frag.spv.h"
+#include "output_encode_clut_frag.spv.h"
+
+/* For object names and log lines only. */
+static const char *encode_tf_name(enum avk_encode_tf tf) {
+	switch (tf) {
+	case AVK_ENCODE_TF_SRGB:   return "srgb";
+	case AVK_ENCODE_TF_PQ:     return "pq";
+	case AVK_ENCODE_TF_LUT1D:  return "lut1d";
+	case AVK_ENCODE_TF_CLUT3D: return "clut3d";
+	}
+	return "?";
+}
 
 static VkShaderModule encode_module(struct avk_device *dev,
 		const uint32_t *code, size_t size, const char *name) {
@@ -86,7 +98,10 @@ bool avk_output_encode_init(struct avk_output_encode *enc,
 		sizeof(output_encode_vert_spv), "output_encode.vert");
 	enc->frag = encode_module(dev, output_encode_frag_spv,
 		sizeof(output_encode_frag_spv), "output_encode.frag");
-	if (enc->vert == VK_NULL_HANDLE || enc->frag == VK_NULL_HANDLE) {
+	enc->frag_clut = encode_module(dev, output_encode_clut_frag_spv,
+		sizeof(output_encode_clut_frag_spv), "output_encode.frag [clut]");
+	if (enc->vert == VK_NULL_HANDLE || enc->frag == VK_NULL_HANDLE
+			|| enc->frag_clut == VK_NULL_HANDLE) {
 		avk_output_encode_finish(enc);
 		return false;
 	}
@@ -115,6 +130,10 @@ void avk_output_encode_finish(struct avk_output_encode *enc) {
 	if (enc->frag != VK_NULL_HANDLE) {
 		vkDestroyShaderModule(dev->dev, enc->frag, NULL);
 		enc->frag = VK_NULL_HANDLE;
+	}
+	if (enc->frag_clut != VK_NULL_HANDLE) {
+		vkDestroyShaderModule(dev->dev, enc->frag_clut, NULL);
+		enc->frag_clut = VK_NULL_HANDLE;
 	}
 	if (enc->layout != VK_NULL_HANDLE) {
 		vkDestroyPipelineLayout(dev->dev, enc->layout, NULL);
@@ -152,7 +171,14 @@ static VkPipeline encode_build(struct avk_output_encode *enc, VkFormat format,
 		{
 			.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
 			.stage = VK_SHADER_STAGE_FRAGMENT_BIT,
-			.module = enc->frag,
+			/*
+			 * M6C is the one variant that changes the MODULE. The spec constant
+			 * is still supplied -- the module still declares it -- and is still
+			 * the honest value, so a dump of this pipeline says CLUT3D rather
+			 * than leaving a 0 that reads as sRGB.
+			 */
+			.module = tf_in == AVK_ENCODE_TF_CLUT3D ? enc->frag_clut
+				: enc->frag,
 			.pName = "main",
 			.pSpecializationInfo = &spec,
 		},
@@ -240,9 +266,8 @@ static VkPipeline encode_build(struct avk_output_encode *enc, VkFormat format,
 	AVK_LIVE_INC(dev, pipelines);
 	enc->compiles++;
 	avk_device_name_object(dev, VK_OBJECT_TYPE_PIPELINE, (uint64_t)pipeline,
-		"avk pipeline output_encode %s fmt=%d",
-		tf_in == AVK_ENCODE_TF_LUT1D ? "lut1d"
-			: tf_in == AVK_ENCODE_TF_PQ ? "pq" : "srgb", (int)format);
+		"avk pipeline output_encode %s fmt=%d", encode_tf_name(tf_in),
+		(int)format);
 	return pipeline;
 }
 
@@ -265,8 +290,7 @@ VkPipeline avk_output_encode_pipeline(struct avk_output_encode *enc,
 		 */
 		avk_log(AVK_ERROR, "avk encode: %d pipeline variants already built; "
 			"no room for format %d %s", AVK_ENCODE_MAX_VARIANTS, (int)format,
-			tf == AVK_ENCODE_TF_LUT1D ? "lut1d"
-				: tf == AVK_ENCODE_TF_PQ ? "pq" : "srgb");
+			encode_tf_name(tf));
 		return VK_NULL_HANDLE;
 	}
 	VkPipeline pipeline = encode_build(enc, format, tf);
@@ -373,9 +397,25 @@ void avk_output_encode_record(VkCommandBuffer cb, void *user) {
 	 * driver does eliminate the branch; the pass was illegal regardless.
 	 */
 	VkDescriptorSet lut_set = set;
-	if (p->params.tf == AVK_ENCODE_TF_LUT1D) {
-		lut_set = p->params.lut != NULL
-			? avk_pipelines_texture_set(p->pipes, p->params.lut, true)
+	if (p->params.tf == AVK_ENCODE_TF_LUT1D
+			|| p->params.tf == AVK_ENCODE_TF_CLUT3D) {
+		/*
+		 * M6C shares this branch, and shares LINEAR with it for a stronger
+		 * reason than the 1D curve has: trilinear interpolation IS how a 65-cube
+		 * describes a continuous transform. NEAREST here would quantise the
+		 * whole display characterisation to 33 steps per axis, which is visible
+		 * banding rather than a rounding error.
+		 *
+		 * The cube ALSO needs its dim to be non-zero, checked here rather than
+		 * defaulted: (v*(dim-1) + 0.5)/dim with the wrong dim reads the table at
+		 * a drifting offset, which is a smooth and entirely plausible picture.
+		 */
+		struct avk_image *table = p->params.tf == AVK_ENCODE_TF_CLUT3D
+			? p->params.clut : p->params.lut;
+		bool usable = table != NULL && (p->params.tf != AVK_ENCODE_TF_CLUT3D
+			|| p->params.clut_dim >= 2);
+		lut_set = usable
+			? avk_pipelines_texture_set(p->pipes, table, true)
 			: VK_NULL_HANDLE;
 		if (lut_set == VK_NULL_HANDLE) {
 			/* REFUSE THE PASS. The variant's sample would read an unwritten
@@ -410,6 +450,18 @@ void avk_output_encode_record(VkCommandBuffer cb, void *user) {
 	pc.misc[0] = p->params.dither_q;
 	pc.misc[1] = p->params.origin_x;
 	pc.misc[2] = p->params.origin_y;
+	/*
+	 * M6C. The cube's edge, and its SIGN is AZ_BREAK_CLUT_DOMAIN -- the shader
+	 * samples with the sRGB-encoded value instead of the linear one when it is
+	 * negative. A sign rather than a second float because the block is exactly
+	 * 64 bytes and this was its last spare scalar; a sign rather than a
+	 * specialisation constant because a break must be switchable without
+	 * recompiling a pipeline, and a break nobody can run is not a falsifier.
+	 */
+	pc.misc[3] = (float)p->params.clut_dim;
+	if (p->params.clut_encoded_domain) {
+		pc.misc[3] = -pc.misc[3];
+	}
 	vkCmdPushConstants(cb, p->enc->layout,
 		VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
 		sizeof(pc), &pc);
@@ -714,6 +766,168 @@ void avk_encode_lut_finish(struct avk_encode_lut *l, struct avk_device *dev,
 	struct avk_image *img = l->image;
 	l->image = NULL;
 	l->serial = 0;
+	if (img == NULL) {
+		return;
+	}
+	if (retire != NULL) {
+		avk_retire_push(retire, dev, img->last_use, avk_image_destroy, img);
+	} else {
+		avk_image_destroy(dev, img);
+	}
+}
+
+/* ── M6C: the cLUT ────────────────────────────────────────────────────────── */
+
+struct avk_image *avk_encode_clut_get(struct avk_encode_clut *l,
+		struct avk_device *dev, struct avk_cmd_ring *ring,
+		struct avk_retire_queue *retire, const uint16_t *grid, uint32_t dim,
+		uint64_t serial) {
+	if (l == NULL || dev == NULL || ring == NULL || grid == NULL || dim < 2) {
+		return NULL;
+	}
+	/* Serial 0 means "no profile", refused rather than uploaded, for the 1D
+	 * curve's reason: an all-zero cube is a picture (black) and would therefore
+	 * not look like a missing profile. */
+	if (serial == 0) {
+		return NULL;
+	}
+	if (l->image != NULL && l->serial == serial && l->dim == dim) {
+		return l->image;
+	}
+	/* A profile whose cube changed SHAPE is a different image, not a different
+	 * upload. Retired against its own last use, slot cleared first, exactly as
+	 * the intermediate does when the output's extent changes. */
+	if (l->image != NULL && l->dim != dim) {
+		struct avk_image *old = l->image;
+		l->image = NULL;
+		l->serial = 0;
+		l->dim = 0;
+		if (retire != NULL) {
+			avk_retire_push(retire, dev, old->last_use, avk_image_destroy, old);
+		} else {
+			avk_image_destroy(dev, old);
+		}
+	}
+
+	if (l->image == NULL) {
+		/* Same format and the same reason as the 1D curve: ABGR16161616 is
+		 * VK_FORMAT_R16G16B16A16_UNORM, whose DRM name is memory order
+		 * ascending, so R is written first and lands in the shader's .r. */
+		l->image = avk_upload_image_create_3d(dev, DRM_FORMAT_ABGR16161616,
+			dim, AVK_IMAGE_OWNED);
+		if (l->image == NULL) {
+			return NULL;
+		}
+		l->dim = dim;
+		avk_device_name_object(dev, VK_OBJECT_TYPE_IMAGE,
+			(uint64_t)l->image->image, "avk encode clut");
+	}
+
+	/*
+	 * ── BREAK: AZ_BREAK_CLUT_IDENTITY ─────────────────────────────────────
+	 *
+	 * Upload the identity cube -- out = in, device code equal to scene linear --
+	 * instead of the profile's. Every stage still runs: the CLUT3D module is
+	 * compiled, the 3D view exists, the descriptor is bound, the trilinear
+	 * sample is taken. Only the characterisation is absent, which is exactly
+	 * the failure a green fixture would otherwise be hiding.
+	 *
+	 * THE IDENTITY IS ON THE WARPED AXIS: sample i holds (i/(dim-1))^2, not
+	 * i/(dim-1), because the shader indexes with sqrt. Writing the linear ramp
+	 * here would be a break that ALSO silently tests the index warp -- a
+	 * different question with its own measurement (13.82 codes at a uniform 33,
+	 * recorded in az_icc.h), and one this break must not be able to answer by
+	 * accident.
+	 *
+	 * ── BREAK: AZ_BREAK_CLUT_DOMAIN ───────────────────────────────────────
+	 *
+	 * Latched here rather than read on the frame path, and it changes nothing
+	 * about the table: the pass samples the RIGHT cube with the WRONG value.
+	 * Splitting the two breaks this way is deliberate -- one falsifies the
+	 * contents, the other falsifies the domain, and a single break that did both
+	 * could not tell you which of them the fixture is sensitive to.
+	 */
+	const bool break_identity = getenv("AZ_BREAK_CLUT_IDENTITY") != NULL;
+	l->domain_break = getenv("AZ_BREAK_CLUT_DOMAIN") != NULL;
+
+	size_t texels = (size_t)dim * dim * dim;
+	uint16_t *staging_texels = calloc(texels * 4, sizeof(uint16_t));
+	if (staging_texels == NULL) {
+		return NULL;
+	}
+	for (size_t i = 0; i < texels; i++) {
+		if (break_identity) {
+			/* Recover r,g,b from the flat index: R fastest, then G, then B. */
+			uint32_t r = (uint32_t)(i % dim);
+			uint32_t g = (uint32_t)((i / dim) % dim);
+			uint32_t b = (uint32_t)(i / ((size_t)dim * dim));
+			const float last = (float)(dim - 1);
+			const uint32_t idx[3] = { r, g, b };
+			for (int ch = 0; ch < 3; ch++) {
+				float x = (float)idx[ch] / last;
+				staging_texels[i * 4 + ch] =
+					(uint16_t)(x * x * 65535.0f + 0.5f);
+			}
+		} else {
+			staging_texels[i * 4 + 0] = grid[i * 3 + 0];
+			staging_texels[i * 4 + 1] = grid[i * 3 + 1];
+			staging_texels[i * 4 + 2] = grid[i * 3 + 2];
+		}
+		/* Opaque. Nothing reads it; a zero alpha in a sampled image is the kind
+		 * of thing a later reader would have to go and check. */
+		staging_texels[i * 4 + 3] = 65535;
+	}
+
+	struct avk_upload *staging = calloc(1, sizeof(*staging));
+	if (staging == NULL) {
+		free(staging_texels);
+		return NULL;
+	}
+	AVK_LIVE_INC(dev, avk_uploads);
+	/* Ordered behind whatever last sampled it, for the 1D curve's reason: a
+	 * profile change on a running desktop overwrites a texture that frames still
+	 * in flight are reading. */
+	VkSemaphoreSubmitInfo wait = {
+		.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+		.semaphore = dev->timeline,
+		.value = l->image->last_use,
+		.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+	};
+	uint32_t wait_count = l->image->last_use > 0 ? 1 : 0;
+	/* One row of the cube, and dim*dim rows of them. The copy takes the SLICE
+	 * height and the depth from the image itself (avk_upload.c), which is what
+	 * makes one write path serve a plane and a volume. */
+	uint64_t timeline = avk_upload_image_write(dev, ring, staging, l->image,
+		staging_texels, dim * 4 * (uint32_t)sizeof(uint16_t), dim * dim,
+		&wait, wait_count);
+	free(staging_texels);
+	if (timeline == 0) {
+		avk_upload_retire(dev, staging);
+		/* Image kept, serial NOT advanced: the next frame tries again rather
+		 * than encoding through a cube that was never written. */
+		return NULL;
+	}
+	if (retire != NULL) {
+		avk_retire_push(retire, dev, timeline, avk_upload_retire, staging);
+	} else {
+		avk_upload_retire(dev, staging);
+	}
+	l->image->content_seq++;
+	l->serial = serial;
+	avk_log(AVK_DEBUG, "avk encode: uploaded a %u^3 cLUT (%zu KB, serial "
+		"%" PRIu64 ")", dim, texels * 8 / 1024, serial);
+	return l->image;
+}
+
+void avk_encode_clut_finish(struct avk_encode_clut *l, struct avk_device *dev,
+		struct avk_retire_queue *retire) {
+	if (l == NULL) {
+		return;
+	}
+	struct avk_image *img = l->image;
+	l->image = NULL;
+	l->serial = 0;
+	l->dim = 0;
 	if (img == NULL) {
 		return;
 	}

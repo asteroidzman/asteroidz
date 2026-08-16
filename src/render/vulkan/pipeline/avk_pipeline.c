@@ -692,7 +692,15 @@ VkDescriptorSet avk_pipelines_texture_set(struct avk_pipelines *pipes,
 		VkImageViewCreateInfo view_info = {
 			.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
 			.image = image->image,
-			.viewType = VK_IMAGE_VIEW_TYPE_2D,
+			/*
+			 * M6C. The view type has to MATCH THE IMAGE, not the caller's
+			 * expectation: a 2D view of a 3D image is invalid, and a sampler3D
+			 * fed a 2D view is VUID-vkCmdDraw-viewType-07752 -- which
+			 * validation reports and which, without the layer, is a picture
+			 * built from whatever the driver did instead.
+			 */
+			.viewType = image->depth > 1 ? VK_IMAGE_VIEW_TYPE_3D
+				: VK_IMAGE_VIEW_TYPE_2D,
 			.format = image->format,
 			.subresourceRange = {
 				.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,

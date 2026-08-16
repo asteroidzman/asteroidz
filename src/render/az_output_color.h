@@ -119,6 +119,20 @@ struct az_output_desc {
 	 * from the one renderer that was still applying it.
 	 */
 	const struct az_icc_shaper *icc_shaper;
+	/*
+	 * M6C. The SAME profile in the form that does not reduce -- a 3D table --
+	 * or NULL. Offered only when `icc_shaper` is NULL: a profile that reduces
+	 * to a matrix and a curve is carried that way, and the two forms are not
+	 * alternatives to choose between per frame (see az_icc.h for why the
+	 * cheaper, better-resolved form wins whenever it exists).
+	 *
+	 * Its presence is what turns D2's old FALLBACK into Path B. NULL WHENEVER
+	 * AVK IS NOT GOING TO DRIVE THE OUTPUT, exactly as `icc_shaper` is and for
+	 * exactly the same reason: choosing a table only AVK can sample for an
+	 * output SceneFX is about to render strips the profile from the one
+	 * renderer that was still applying it.
+	 */
+	const struct az_icc_clut *icc_clut;
 };
 
 /*
@@ -163,7 +177,9 @@ static inline void az_output_color_set_identity(float m[9]) {
  *   HDR             -> B, PQ       always B; PQ is an output encoding only, and
  *                                  a profile on an HDR output is inert (D3)
  *   ICC + shaper    -> B, LUT1D    the display's own measured curve (G2)
- *   ICC, no shaper  -> FALLBACK    cLUT: AVK cannot carry it, SceneFX can
+ *   ICC + clut      -> B, CLUT3D   the profiles that do not reduce (M6C)
+ *   ICC, neither    -> FALLBACK    unreadable, or refused before either form
+ *                                  could be built
  *   10-bit SDR      -> B, sRGB     no hardware encode at 10 bits
  *   8-bit, probed   -> A, sRGB     hardware decode and encode, free
  *   8-bit, no view  -> B, sRGB     the probe's only consequence
@@ -274,11 +290,46 @@ az_output_color_derive(const struct az_output_desc *o) {
 			return s;
 		}
 		/*
-		 * A profile AVK cannot reduce -- cLUT, or unreadable. FALLBACK, and
-		 * still SceneFX's output: rendering a calibrated display's colour
-		 * UNMANAGED would be worse than declining it, because the operator
-		 * asked for characterised output and would get uncharacterised output
-		 * that looks plausible.
+		 * ── M6C: A PROFILE THAT DOES NOT REDUCE IS A TABLE, NOT A REFUSAL ─
+		 *
+		 * This branch used to be the end of the line -- FALLBACK, SceneFX
+		 * drives the output, the profile still applied by somebody. That was
+		 * true and safe for as long as there WAS a somebody. With SceneFX gone
+		 * a refusal is an abort, so an operator who profiles their display with
+		 * a colorimeter -- which produces a cLUT profile, that being the whole
+		 * point of measuring rather than assuming -- could not start the
+		 * compositor at all.
+		 *
+		 * THE MATRIX IS THE IDENTITY, AND THAT IS THE LOAD-BEARING LINE.
+		 *
+		 * The cube already contains the colorant transform: its input axis is
+		 * scene-linear BT.709 and its output is device code (az_icc.h). Filling
+		 * this matrix with the profile's 709->device would apply the gamut
+		 * conversion twice -- once here and once inside the table -- and produce
+		 * a picture that is wrong in exactly the way a calibrated display is
+		 * supposed to fix. The encode pass reads this field unconditionally, so
+		 * the identity is a value it must be given rather than a step it skips.
+		 *
+		 * peak_scene and dither_q are the shaper path's, for the shaper path's
+		 * reasons, and sdr_saturation is left out for the shaper path's reason
+		 * too: a taste control multiplied into a measurement produces output
+		 * that is neither characterised nor honestly uncharacterised.
+		 */
+		if (o->icc_clut != NULL) {
+			s.path = AZ_OUTPUT_PATH_B_ENCODE;
+			s.encode_tf = AZ_TF_CLUT3D;
+			az_output_color_set_identity(s.matrix);
+			s.peak_scene = 1.0f;
+			s.dither_q = quantum;
+			return s;
+		}
+		/*
+		 * Neither form could be built -- an unreadable file, or one refused
+		 * before either reduction was attempted. FALLBACK, which with no second
+		 * renderer left is a refusal to drive the output: rendering a
+		 * calibrated display's colour UNMANAGED would be worse, because the
+		 * operator asked for characterised output and would get uncharacterised
+		 * output that looks plausible.
 		 */
 		s.path = AZ_OUTPUT_PATH_FALLBACK;
 		s.encode_tf = AZ_TF_SRGB;
@@ -313,9 +364,15 @@ az_output_color_derive(const struct az_output_desc *o) {
  *
  * and only the second may be lifted. They are different questions:
  *
- *   an ICC / 3D-LUT transform  is ADR-000 scope: M6. AVK has no LUT stage and
- *                              must keep refusing, forever as far as M5 knows.
- *                              C3 already says so by deriving FALLBACK.
+ *   an ICC / 3D-LUT transform  a transform STILL HELD BY wlroots, i.e. one this
+ *                              renderer is not applying itself. M6B/G2 and M6C
+ *                              between them absorbed both profile forms, and
+ *                              az_output_color_transform() withholds the
+ *                              wlroots transform for exactly the outputs whose
+ *                              state says AVK is carrying it -- so reaching
+ *                              here with one still means the profile has
+ *                              another owner, and two owners is two
+ *                              transforms on one pixel.
  *
  *   an image description       means the output is presenting HDR. AVK can now
  *                              drive that -- but ONLY through the C6 encode
@@ -339,7 +396,8 @@ static inline bool az_output_may_drive(const struct az_output_color_state *s,
 	if (s == NULL) {
 		return false;
 	}
-	/* M6. Not a colour-path question -- AVK has nowhere to put a LUT. */
+	/* A profile with an owner that is not this renderer; or a state that has
+	 * already said AVK is not driving this output. */
 	if (has_color_transform || s->path == AZ_OUTPUT_PATH_FALLBACK) {
 		return false;
 	}
@@ -361,8 +419,12 @@ static inline bool az_output_may_drive(const struct az_output_color_state *s,
 	 * into the scan-out buffer with no profile applied AND no profile left for
 	 * SceneFX to apply, because C3 took the output off FALLBACK to say AVK
 	 * would handle it. Refusing hands it back, profile intact.
+	 *
+	 * M6C: CLUT3D is the same sentence with a bigger table. The two forms
+	 * differ in what the encode pass samples and in nothing else that matters
+	 * here, so they are one branch rather than two that could drift apart.
 	 */
-	if (s->encode_tf == AZ_TF_LUT1D) {
+	if (s->encode_tf == AZ_TF_LUT1D || s->encode_tf == AZ_TF_CLUT3D) {
 		return s->path == AZ_OUTPUT_PATH_B_ENCODE && encode_pass_enabled;
 	}
 	/*

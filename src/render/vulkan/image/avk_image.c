@@ -111,6 +111,12 @@ struct avk_image *avk_image_alloc(struct avk_device *dev) {
 		return NULL;
 	}
 	image->dev = dev;
+	/* Every image is 2D unless it says otherwise. Set HERE rather than left at
+	 * calloc's zero so that "depth" is never ambiguous between "one slice" and
+	 * "nobody filled this in" -- a 0 reaching a VkImageCreateInfo is an invalid
+	 * extent, and a 0 reaching the view-type choice below would be a 2D view of
+	 * a 3D image. */
+	image->depth = 1;
 	image->life = AVK_IMAGE_LIVE;
 	image->id = ++dev->next_object_id;
 	AVK_LIVE_INC(dev, avk_images);

@@ -699,6 +699,15 @@ something else to wake it.
 | `set_output_hdr,<output>,<0\|1>` | This display's HDR **baseline** — see below. |
 | `set_output_icc,<output>,<path>` | ICC profile for SDR output; empty clears it. |
 
+`get all-monitors` reports which renderer is applying a profile and how, which
+is not answerable from `icc_profile` alone: `color_path` / `color_encode_tf`
+plus two mutually exclusive booleans. `icc_shaper` true means AVK reduced the
+profile to a 3×3 and a 256-tap curve (`color_encode_tf` reads `lut1d`);
+`icc_clut` true means it did not reduce and is carried as a 65³ 3D table
+(`clut3d`) — which is what a colorimeter's own output looks like. Both false
+with a profile configured and `color_path` reading `fallback` means AVK could
+build neither form and is refusing the output.
+
 `set_output_mode_transform` exists as a separate dispatch rather than as an
 optional third argument to `set_output_mode` because the point of it is the
 single commit. Two dispatches produce two frames, each with one field pending;

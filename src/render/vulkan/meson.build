@@ -34,6 +34,11 @@ glslang = find_program('glslangValidator')
 avk_embed = find_program('shader/embed.py')
 
 avk_shader_headers = []
+# [source, symbol, extra glslang args]. The third element is what lets ONE
+# source produce two modules: M6C's cLUT variant is output_encode.frag compiled
+# with AZ_ENCODE_CLUT defined, so that set 1 is declared as a sampler3D there
+# and a sampler2D everywhere else. Two files would be two copies of ADR-008's
+# step order to keep in step; see the comment in output_encode.frag.
 foreach shader : [['quad.vert', 'quad_vert_spv'],
                   # P2: the same quad with its four corners placed
                   # independently, for primitives that are not axis-aligned.
@@ -54,10 +59,17 @@ foreach shader : [['quad.vert', 'quad_vert_spv'],
                   # guaranteed minimum and is already dual-purpose across four
                   # pipelines.
                   ['output_encode.vert', 'output_encode_vert_spv'],
-                  ['output_encode.frag', 'output_encode_frag_spv']]
-  spv = custom_target(shader[0] + '.spv',
+                  ['output_encode.frag', 'output_encode_frag_spv'],
+                  # M6C: the same source, one define apart.
+                  ['output_encode.frag', 'output_encode_clut_frag_spv',
+                   '-DAZ_ENCODE_CLUT=1', 'output_encode_clut.frag']]
+  # The output basename, so the two output_encode.frag variants do not collide
+  # in the build directory.
+  base = shader.length() > 3 ? shader[3] : shader[0]
+  extra = shader.length() > 2 ? [shader[2]] : []
+  spv = custom_target(base + '.spv',
     input : 'shader/src' / shader[0],
-    output : shader[0] + '.spv',
+    output : base + '.spv',
     # Every include, listed: push.glsl in particular is the single declaration
     # of the push-constant block, so a change to it must rebuild all four.
     depend_files : files('shader/src/rounded.glsl',
@@ -73,11 +85,11 @@ foreach shader : [['quad.vert', 'quad_vert_spv'],
                          # SPIR-V with the old curve embedded.
                          'shader/src/color.glsl'),
     command : [glslang, '-V', '--target-env', 'vulkan1.3',
-               '-I' + meson.current_source_dir() / 'shader/src',
+               '-I' + meson.current_source_dir() / 'shader/src'] + extra + [
                '@INPUT@', '-o', '@OUTPUT@'])
   avk_shader_headers += custom_target(shader[1] + '.h',
     input : spv,
-    output : shader[0].split('.')[0] + '_' + shader[0].split('.')[1] + '.spv.h',
+    output : base.split('.')[0] + '_' + base.split('.')[1] + '.spv.h',
     command : [avk_embed, '@INPUT@', '@OUTPUT@', shader[1]])
 endforeach
 

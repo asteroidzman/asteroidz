@@ -1240,6 +1240,21 @@ struct Monitor {
 	struct az_icc_shaper icc_shaper;
 	bool icc_shaper_ok;
 	enum az_icc_reject icc_reject;
+	/*
+	 * ── M6C. THE SAME PROFILE AGAIN, FOR THE ONES THAT DO NOT REDUCE ──────
+	 *
+	 * Built ONLY when `icc_shaper_ok` is false, and built by evaluating
+	 * `icc_transform` itself on a 65-cube -- so AVK and SceneFX sample the same
+	 * numbers from the same lcms2 transform rather than two readings of one
+	 * file. That is why this is derived from the wlroots object and the shaper
+	 * is derived from the bytes: the shaper is a REDUCTION and has to be
+	 * checkable against lcms2 independently, and this is a SAMPLING and has to
+	 * be identical to it.
+	 *
+	 * Heap, because it is 1.6MB and there are as many of these as there are
+	 * monitors. Freed on every load and on destroy; NULL is the ordinary state.
+	 */
+	struct az_icc_clut *icc_clut;
 	uint64_t icc_serial;
 	struct wlr_scene_optimized_blur *blur;
 	float cursor_zoom;		 /* output magnification, 1.0 = off */
@@ -4769,6 +4784,15 @@ void cleanupmon(struct wl_listener *listener, void *data) {
 	for (uint32_t ti = 0; ti <= LENGTH(tags); ti++)
 		free(m->pertag->names[ti]);
 
+	/*
+	 * M6C. The cube is this monitor's, 1.6MB of it, and az_avk_output_finish()
+	 * above has already released the GPU copy -- so nothing can still be
+	 * sampling it. Freed here rather than in mon_load_icc_profile's clear path
+	 * because a monitor going away never passes through that.
+	 */
+	az_icc_clut_free(m->icc_clut);
+	m->icc_clut = NULL;
+
 	free(m->pertag);
 	free(m);
 }
@@ -5853,6 +5877,20 @@ bool apply_rule_to_state(Monitor *m, const ConfigMonitorRule *rule,
 /* Load an ICC profile as the output's color transform. It is applied by
  * the renderer in SDR mode only: with HDR active the BT.2020/PQ image
  * description drives the pipeline instead. */
+/*
+ * M6C. az_icc_clut_build's evaluator, and the only wlroots in the cLUT path.
+ *
+ * wlr_color_transform_eval maps LINEAR sRGB-primaries values to the profile's
+ * DEVICE encoding -- wlroots builds the lcms2 transform from a source profile
+ * with gamma-1.0 TRCs (render/color_lcms2.c), which is what makes the input
+ * axis linear. That is the domain contract az_icc.h states and the encode pass
+ * relies on; it is stated in three places on purpose, because it is the one
+ * thing that cannot be noticed by looking at the picture.
+ */
+static void mon_icc_clut_eval(void *user, const float in[3], float out[3]) {
+	wlr_color_transform_eval(user, out, in);
+}
+
 void mon_load_icc_profile(Monitor *m, const char *path) {
 	char *data;
 	long size;
@@ -5869,6 +5907,8 @@ void mon_load_icc_profile(Monitor *m, const char *path) {
 			 * longer configured. */
 			m->icc_shaper_ok = false;
 			m->icc_reject = AZ_ICC_OK;
+			az_icc_clut_free(m->icc_clut);
+			m->icc_clut = NULL;
 			m->icc_serial++;
 		}
 		return;
@@ -5923,11 +5963,31 @@ void mon_load_icc_profile(Monitor *m, const char *path) {
 	m->icc_shaper_ok = rc == AZ_ICC_OK;
 	if (m->icc_shaper_ok)
 		m->icc_shaper = shaper;
+	/*
+	 * ── M6C: THE CUBE, ONLY WHEN THE REDUCTION FAILED ─────────────────────
+	 *
+	 * Built here, once per load, and NOT for a profile that reduced. The
+	 * matrix-shaper form is measured, cheaper and better resolved (az_icc.h),
+	 * so building both would be 1.6MB and 274625 lcms2 evaluations spent to have
+	 * a second answer nothing would consult.
+	 *
+	 * 35937 evaluations is tens of milliseconds. It happens on a monitor rule
+	 * change and on nothing else -- the same event that reallocates swapchains
+	 * and re-derives every output's colour state.
+	 */
+	az_icc_clut_free(m->icc_clut);
+	m->icc_clut = NULL;
+	if (!m->icc_shaper_ok)
+		m->icc_clut = az_icc_clut_build(AZ_ICC_CLUT_DIM, mon_icc_clut_eval,
+				transform);
 	m->icc_serial++;
 	snprintf(m->icc_path, sizeof(m->icc_path), "%s", path);
-	wlr_log(WLR_INFO, "loaded ICC profile %s for output %s (AVK shaper: %s)",
+	wlr_log(WLR_INFO, "loaded ICC profile %s for output %s "
+			"(AVK carries it as %s; reduction: %s)",
 			path, m->wlr_output->name,
-			m->icc_shaper_ok ? "matrix+curve" : az_icc_reject_name(rc));
+			m->icc_shaper_ok ? "a matrix and a curve"
+			: m->icc_clut ? "a 3D table" : "NOTHING -- the output is refused",
+			az_icc_reject_name(rc));
 }
 
 /* The sole fullscreen client visible on m, if there's exactly one -- used to
@@ -6017,6 +6077,15 @@ static void mon_derive_color_state(Monitor *m,
 		.icc_shaper = (m->icc_shaper_ok && az_avk_is_active()
 				&& az_avk_encode_pass_enabled(NULL))
 			? &m->icc_shaper : NULL,
+		/*
+		 * M6C, gated on exactly the same two conditions and for exactly the
+		 * same reason: offering a table only AVK can sample to an output AVK is
+		 * not driving would take the profile away from the renderer that was
+		 * applying it and hand it to nobody.
+		 */
+		.icc_clut = (m->icc_clut != NULL && az_avk_is_active()
+				&& az_avk_encode_pass_enabled(NULL))
+			? m->icc_clut : NULL,
 	};
 	struct az_output_color_state prev = m->color_state;
 	m->color_state = az_output_color_derive(&desc);

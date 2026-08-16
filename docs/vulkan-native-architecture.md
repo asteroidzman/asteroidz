@@ -513,7 +513,8 @@ once:
 
 | condition | why | lands in |
 |---|---|---|
-| ICC transform or an output image description | AVK does no colour management | M6 |
+| a colour transform still owned by wlroots | two owners would be two transforms on one pixel; M6B/M6C carry both profile forms in the encode pass instead, and `az_output_color_transform()` withholds the wlroots object for exactly those outputs | done |
+| an output image description with the encode pass off | scene-linear values into a PQ buffer is worse than a fallback | M5.6 |
 | output magnification (`cursor_zoom`) | not implemented | later |
 | a visible software cursor and no hardware cursor plane | the only wlroots API for it takes a `wlr_render_pass` | M3 follow-up |
 
@@ -3240,8 +3241,11 @@ function and nothing else.
 ### What M5 does not do
 
 - **HLG decode.** ADR-000 scope; no source has asked.
-- **ICC / 3D-LUT outputs.** M6. C3 derives `FALLBACK` and the interlock refuses
-  them by name.
+- **ICC / 3D-LUT outputs.** Was M6, and is now done: M6B/G2 carries a
+  matrix-shaper profile as a 3×3 and a 256-tap curve, M6C carries everything
+  else as a 65³ 3D LUT sampled in the encode pass. C3 derives `B-encode` with
+  `lut1d` or `clut3d` for both, and `FALLBACK` only for a profile that would
+  neither parse nor evaluate.
 - **`OPAQUE_SRGB`**, C7's `_SRGB`-view sampling fast path — declined, not
   deferred: an optimisation with no measurement behind it.
 - **Path A by default.** Correct and qualified, still opt-in, because it changes
