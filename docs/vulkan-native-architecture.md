@@ -2814,9 +2814,15 @@ Firefox and two terminals. The numbers being *lower* than the qualified run is a
 lighter scene, not a faster renderer. The correctness columns are the result
 here; the percentiles are not.
 
-### The log appends across boots, and it nearly reversed this conclusion
+### The log appended across boots, and it nearly reversed this conclusion
 
-`~/.local/state/asteroidz/asteroidz.log` accumulates, and timestamps restart at
+> **Fixed.** Each boot now rotates the previous session to `asteroidz.log.old`
+> and truncates, so the live log holds exactly one session. This account is
+> kept because the *habit* it argues for — two independent readings of one
+> fact — is what caught the error, and that outlives the logging change. It
+> also still applies to `.old` and to any log that is appended to.
+
+`~/.local/state/asteroidz/asteroidz.log` accumulated, and timestamps restart at
 `00:00:00.x` every session. Grepping for the instance line and taking the first
 match returned `validation=off` — the *previous* boot. The current boot's line
 was 500 lines further down and said the opposite.

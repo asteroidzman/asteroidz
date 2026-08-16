@@ -2364,7 +2364,14 @@ loaded**, and the current session's log contains **0 VUID, 0 SYNC-HAZARD, 0
 ERROR and 0 WARN**. That is stronger than the headless result: validation
 cleanliness on the real KMS path, with real client dma-bufs and real scan-out.
 
-Note that the log **accumulates across sessions** — `~/.local/state/asteroidz/
+> **Fixed at the source.** The log no longer accumulates: each boot renames
+> the previous session to `asteroidz.log.old` and truncates, so the live file
+> is one session by construction. The scoping below is no longer needed for a
+> live log, and is kept because it still applies to `.old`, to a log copied off
+> a machine, and to any harness log a run appends to. The failure it describes
+> happened twice.
+
+The log used to **accumulate across sessions** — `~/.local/state/asteroidz/
 asteroidz.log` is where stderr is dup2'd, and its timestamps are per-session
 uptime. Grepping the whole file found 6 VUID hits from an older run and briefly
 looked like a regression. Scope to the last `renderer ready for VkFormat` line:

@@ -12851,16 +12851,27 @@ static void init_persistent_log(void) {
 	if (!path)
 		return;
 
-	struct stat st;
-	if (stat(path, &st) == 0 && st.st_size > 5 * 1024 * 1024) {
-		char *old_path = string_printf("%s.old", path);
-		if (old_path) {
-			rename(path, old_path);
-			free(old_path);
-		}
+	/*
+	 * One session per file, always.
+	 *
+	 * This used to append, and rotate only past 5MB. The result was a log
+	 * holding many boots with nothing but a relative timestamp to separate
+	 * them -- and since those restart at 00:00:00 every session, `grep`
+	 * followed by `head` reads whichever boot happens to come first, which is
+	 * almost never the one being investigated. Two separate diagnoses have
+	 * been made against the wrong session that way.
+	 *
+	 * The previous session is kept as .old rather than discarded: when a
+	 * session dies the interesting log is the one that just ended, and the
+	 * next boot is exactly when somebody comes looking for it.
+	 */
+	char *old_path = string_printf("%s.old", path);
+	if (old_path) {
+		rename(path, old_path);
+		free(old_path);
 	}
 
-	int32_t fd = open(path, O_WRONLY | O_CREAT | O_APPEND, 0644);
+	int32_t fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
 	free(path);
 	if (fd < 0)
 		return;
