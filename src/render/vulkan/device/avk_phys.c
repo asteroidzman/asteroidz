@@ -51,8 +51,6 @@ static const struct ext_flag device_extensions[] = {
 		CAP_OFFSET(memory_budget), false },
 	{ VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME,
 		CAP_OFFSET(calibrated_timestamps), false },
-	{ VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME,
-		CAP_OFFSET(external_memory_host), false },
 	{ VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME,
 		CAP_OFFSET(pipeline_executable_properties), false },
 };

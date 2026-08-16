@@ -254,15 +254,9 @@ struct az_avk {
 	 * the wait is what stops that from becoming corruption. */
 	uint64_t shm_staging_waits;
 	uint64_t shm_staging_wait_ns_max, shm_staging_wait_ns_sum;
-	/* Pools imported as device memory, and the generations served from them
-	 * without a memcpy anywhere. shm_host_bytes is what was NOT copied. */
 	/* Frames that showed the previous generation instead of blocking, and the
 	 * microseconds of event loop that decision gave back. */
 	uint64_t shm_stale_frames;
-	uint64_t shm_stale_saved_ns;
-	uint64_t shm_host_imports;
-	uint64_t shm_host_uploads;
-	uint64_t shm_host_bytes;
 	/* Buffers the walker asked to resolve, and nodes it discarded before
 	 * asking because they cannot touch this output at all. */
 	uint64_t buffer_resolve_attempts;
@@ -536,6 +530,10 @@ struct az_avk_buffer {
 	 * question this file can answer.
 	 */
 	struct wl_list pool_link;  /* az_avk_surface.pool */
+	/* The head of the pool this entry is in, so its SIBLINGS can be found.
+	 * A pointer to the list rather than to the surface because az_avk_surface
+	 * is declared far below this and the frame path needs the walk here. */
+	struct wl_list *pool_head;
 	struct wlr_buffer *buffer;
 	struct avk_image *image;
 
@@ -574,33 +572,12 @@ struct az_avk_buffer {
 	struct avk_upload upload[2];
 	uint32_t upload_slot;   /* the slot the LAST copy used */
 
-	/*
-	 * ── THE CLIENT'S POOL, READ WHERE IT LIES ────────────────────────────
-	 *
-	 * The pool mapping imported as VkDeviceMemory (VK_EXT_external_memory_host)
-	 * with a VkBuffer bound to it, so vkCmdCopyBufferToImage2 reads the pages
-	 * the client drew into and no memcpy happens at all.
-	 *
-	 * This exists because the copy was the whole problem. One Firefox surface
-	 * committed 56MB per generation; at the ~1GB/s a 56MB block streams at,
-	 * that is 52ms of memcpy, and the frame needed the pixels so the frame
-	 * waited for it. 179 of those in one session came to 9.2 seconds of
-	 * blocked frames, and the session moved 17GB in under two minutes.
-	 *
-	 * VK_NULL_HANDLE means this buffer takes the copy path: the extension is
-	 * absent, the pool would not import, or nothing mappable was there in the
-	 * first place. `host_tried` keeps that decision from being retaken every
-	 * generation.
-	 */
 	/* A frame drew this buffer's PREVIOUS generation rather than wait for the
 	 * copy in flight. Whoever settles that copy owes a repaint, because the
 	 * damage that would have caused one was consumed by the frame that
 	 * skipped. */
 	bool drew_stale;
-	VkDeviceMemory host_memory;
-	VkBuffer host_buffer;
-	VkDeviceSize host_offset;   /* this buffer's first row inside the import */
-	bool host_tried;
+
 
 	/* Set once nothing worked, so the failure is diagnosed once instead of
 	 * once per frame for as long as the window is open. */
@@ -747,24 +724,6 @@ static void az_avk_buffer_destroy(struct az_avk_buffer *entry) {
 		avk_retire_push(&avk.importer.retire, avk.device, entry->image->last_use,
 			avk_image_destroy, entry->image);
 		entry->image = NULL;
-	}
-	/*
-	 * The imported pool. Destroyed here rather than retired: every submission
-	 * that read it also took a wlr_buffer_lock, and this destructor runs at
-	 * n_locks == 0, so the GPU is provably done with it.
-	 *
-	 * The memory is IMPORTED, so vkFreeMemory releases the driver's handle on
-	 * the pages and does not unmap them; az_shm_source_finish() below owns the
-	 * mmap and must run after this.
-	 */
-	if (entry->host_buffer != VK_NULL_HANDLE) {
-		vkDestroyBuffer(avk.device->dev, entry->host_buffer, NULL);
-		entry->host_buffer = VK_NULL_HANDLE;
-	}
-	if (entry->host_memory != VK_NULL_HANDLE) {
-		vkFreeMemory(avk.device->dev, entry->host_memory, NULL);
-		AVK_LIVE_DEC(avk.device, device_memory);
-		entry->host_memory = VK_NULL_HANDLE;
 	}
 	/* BOTH slots. Retiring only the one the last copy used would leak the
 	 * other and, worse, destroy nothing while the GPU may still be reading
@@ -1273,244 +1232,8 @@ static bool az_avk_shm_job_settle(struct az_avk_buffer *entry, bool block) {
  * That is the right answer on its merits as well: those are four bytes and a
  * few kilobytes respectively, and a worker thread has nothing to offer them.
  */
-/*
- * Give a client its buffer back once the GPU has finished reading it.
- *
- * The staging path never needed this: it took a copy, so the client could have
- * the buffer back the instant the memcpy returned. Reading the pool in place
- * inverts that -- the GPU is reading memory the client will draw into again the
- * moment wl_buffer.release reaches it -- so the lock is held until the
- * submission that read it has passed on the timeline.
- *
- * This is what dmabuf clients have always lived with, and it is the cost the
- * zero-copy path pays: a client can be throttled by the compositor's read.
- */
-static void az_avk_shm_host_release(struct avk_device *dev, void *data) {
-	(void)dev;
-	wlr_buffer_unlock((struct wlr_buffer *)data);
-}
-
-/*
- * Import this buffer's pool as device memory. Once per buffer, ever.
- *
- * Returns VK_NULL_HANDLE when this buffer has to be copied instead, which is
- * not a failure and is not logged as one: a single-pixel buffer has no pool, a
- * pool whose offset is not 4-byte aligned cannot be a bufferOffset, and a
- * driver may simply not accept the pointer.
- */
-static VkBuffer az_avk_shm_host_import(struct az_avk_buffer *entry,
-		uint32_t *stride_out, uint32_t *format_out) {
-	if (entry->host_tried) {
-		if (entry->host_buffer != VK_NULL_HANDLE) {
-			*stride_out = entry->shm_source.stride;
-			*format_out = entry->shm_source.format;
-		}
-		return entry->host_buffer;
-	}
-	entry->host_tried = true;
-
-	/*
-	 * Every refusal below names itself, once per session.
-	 *
-	 * The first version of this returned VK_NULL_HANDLE silently on the
-	 * grounds that falling back to a copy is not a failure. That is true and
-	 * it made the feature undiagnosable: the first verification run showed
-	 * zero imports and 1312MB still copied, with nothing anywhere to say
-	 * which of seven conditions had declined. A fallback that cannot explain
-	 * itself is indistinguishable from a fallback that is never reached.
-	 */
-	static bool said_why = false;
-#define AZ_HOST_IMPORT_NO(reason) do { \
-		if (!said_why) { \
-			said_why = true; \
-			wlr_log(WLR_INFO, "AVK: client SHM pools will be copied, not read " \
-				"in place: %s", (reason)); \
-		} \
-		return VK_NULL_HANDLE; \
-	} while (0)
-
-	struct avk_device *dev = avk.device;
-	if (dev == NULL || !dev->caps.external_memory_host
-			|| dev->api.vkGetMemoryHostPointerPropertiesEXT == NULL) {
-		AZ_HOST_IMPORT_NO("VK_EXT_external_memory_host is not available");
-	}
-	if (az_avk_env_flag("AZ_AVK_NO_HOST_IMPORT")) {
-		/* Break test: force every SHM buffer down the copy path in a binary
-		 * that can import, so the two can be compared without swapping
-		 * builds. */
-		AZ_HOST_IMPORT_NO("AZ_AVK_NO_HOST_IMPORT is set");
-	}
-	uint32_t stride = 0, format = 0;
-	if (az_shm_source_get(&entry->shm_source, entry->buffer, &stride,
-			&format) == NULL) {
-		/* Not logged through the macro: this is the ordinary answer for a
-		 * single-pixel buffer or a dma-buf, not a property of the machine. */
-		return VK_NULL_HANDLE;
-	}
-
-	if (!entry->shm_source.writable) {
-		AZ_HOST_IMPORT_NO("the pool is sealed read-only, so it cannot be "
-			"imported as device memory");
-	}
-
-	const VkDeviceSize align = dev->imported_host_alignment;
-	void *base = entry->shm_source.base;
-	if (align == 0 || ((uintptr_t)base % align) != 0) {
-		AZ_HOST_IMPORT_NO("the pool mapping is not aligned for import");
-	}
-	/* bufferOffset must be a multiple of 4 and of the texel size; both hold
-	 * for a 4-byte pixel whenever the pool offset itself does. */
-	if ((entry->shm_source.offset % 4) != 0) {
-		AZ_HOST_IMPORT_NO("the pool offset is not a valid bufferOffset");
-	}
-	/* mmap already rounded the mapping up to page granularity, so rounding the
-	 * import up to the alignment cannot reach a page that is not mapped. */
-	VkDeviceSize size = (entry->shm_source.size + align - 1) & ~(align - 1);
-
-	VkMemoryHostPointerPropertiesEXT host_props = {
-		.sType = VK_STRUCTURE_TYPE_MEMORY_HOST_POINTER_PROPERTIES_EXT,
-	};
-	if (dev->api.vkGetMemoryHostPointerPropertiesEXT(dev->dev,
-			VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT, base,
-			&host_props) != VK_SUCCESS) {
-		AZ_HOST_IMPORT_NO("the driver would not accept the host pointer");
-	}
-
-	VkExternalMemoryBufferCreateInfo ext_info = {
-		.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO,
-		.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT,
-	};
-	VkBufferCreateInfo binfo = {
-		.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-		.pNext = &ext_info,
-		.size = size,
-		.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-		.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-	};
-	VkBuffer buf = VK_NULL_HANDLE;
-	if (vkCreateBuffer(dev->dev, &binfo, NULL, &buf) != VK_SUCCESS) {
-		AZ_HOST_IMPORT_NO("vkCreateBuffer refused an imported-memory buffer");
-	}
-	VkMemoryRequirements req;
-	vkGetBufferMemoryRequirements(dev->dev, buf, &req);
-
-	uint32_t type_index = 0;
-	if (!avk_find_memory_type(dev, req.memoryTypeBits & host_props.memoryTypeBits,
-			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, &type_index)) {
-		vkDestroyBuffer(dev->dev, buf, NULL);
-		AZ_HOST_IMPORT_NO("no host-visible memory type accepts the pointer");
-	}
-
-	VkImportMemoryHostPointerInfoEXT import_info = {
-		.sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_HOST_POINTER_INFO_EXT,
-		.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT,
-		.pHostPointer = base,
-	};
-	VkMemoryAllocateInfo alloc = {
-		.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-		.pNext = &import_info,
-		.allocationSize = size,
-		.memoryTypeIndex = type_index,
-	};
-	VkDeviceMemory mem = VK_NULL_HANDLE;
-	VkResult ares = vkAllocateMemory(dev->dev, &alloc, NULL, &mem);
-	if (ares != VK_SUCCESS) {
-		vkDestroyBuffer(dev->dev, buf, NULL);
-		static char why[128];
-		snprintf(why, sizeof(why),
-			"vkAllocateMemory refused the imported pointer (VkResult %d, "
-			"type %u, %" PRIu64 " bytes)", (int)ares, type_index,
-			(uint64_t)size);
-		AZ_HOST_IMPORT_NO(why);
-	}
-	if (vkBindBufferMemory(dev->dev, buf, mem, 0) != VK_SUCCESS) {
-		vkFreeMemory(dev->dev, mem, NULL);
-		vkDestroyBuffer(dev->dev, buf, NULL);
-		AZ_HOST_IMPORT_NO("vkBindBufferMemory refused the imported memory");
-	}
-#undef AZ_HOST_IMPORT_NO
-
-	AVK_LIVE_INC(dev, device_memory);
-	entry->host_memory = mem;
-	entry->host_buffer = buf;
-	entry->host_offset = (VkDeviceSize)entry->shm_source.offset;
-	avk.shm_host_imports++;
-	*stride_out = stride;
-	*format_out = format;
-	return buf;
-}
-
-/*
- * Bring the image up to date by reading the client's pool directly.
- *
- * Returns false if this buffer cannot be served that way, in which case the
- * caller falls through to the copy path exactly as before.
- */
-static bool az_avk_shm_upload_host(struct az_avk_buffer *entry) {
-	uint32_t stride = 0, format = 0;
-	VkBuffer src = az_avk_shm_host_import(entry, &stride, &format);
-	if (src == VK_NULL_HANDLE) {
-		return false;
-	}
-	if (entry->image == NULL && !az_avk_shm_image_create(entry, format)) {
-		return false;
-	}
-
-	avk.shm_committed_pixels +=
-		(uint64_t)entry->buffer->width * (uint64_t)entry->buffer->height;
-
-	struct avk_upload_plan plan;
-	enum az_shm_plan_result res = az_avk_shm_plan(entry, stride, &plan);
-	if (res == AZ_SHM_PLAN_NOTHING) {
-		avk.shm_upload_skips++;
-		entry->uploaded_generation = entry->content_generation;
-		return true;
-	}
-	if (res == AZ_SHM_PLAN_FAILED) {
-		return false;
-	}
-
-	VkSemaphoreSubmitInfo wait;
-	uint32_t wait_count = az_avk_shm_wait(entry, &wait);
-	uint64_t timeline = avk_upload_submit_host(&avk.importer.upload_ring, src,
-		entry->host_offset, entry->image, &plan, &wait, wait_count);
-	if (timeline == 0) {
-		return false;
-	}
-
-	/* Held until the GPU has read it -- see az_avk_shm_host_release(). */
-	wlr_buffer_lock(entry->buffer);
-	avk_retire_push(&avk.importer.retire, avk.device, timeline,
-		az_avk_shm_host_release, entry->buffer);
-
-	az_avk_shm_account(entry, &plan);
-	pixman_region32_clear(&entry->pending_damage);
-	entry->pending_full = false;
-	entry->uploaded_generation = entry->content_generation;
-	avk.shm_host_uploads++;
-	avk.shm_host_bytes += plan.bytes;
-	return true;
-}
-
 static bool az_avk_shm_job_start(struct az_avk_buffer *entry) {
-	if (entry->job != NULL || entry->failed) {
-		return false;
-	}
-	/*
-	 * Nothing to defer if nothing is copied. The zero-copy path costs only
-	 * command recording, so it happens here on the event loop rather than
-	 * being handed to a worker that would have no bytes to move.
-	 *
-	 * BEFORE the image==NULL test, not after: this path creates the image
-	 * itself, and testing for one first made the whole feature unreachable
-	 * from the commit handler -- a buffer is always seen for the first time
-	 * with no image, and by the time it had one the deferred copy had already
-	 * been started.
-	 */
-	if (az_avk_shm_upload_host(entry)) {
-		return false;
-	}
-	if (entry->image == NULL) {
+	if (entry->job != NULL || entry->image == NULL || entry->failed) {
 		return false;
 	}
 	if (!az_avk_shm_async_enabled()) {
@@ -1695,12 +1418,50 @@ out:
  * healthy system: a client that commits in the same dispatch round as the
  * frame gives the worker no time at all.
  */
-static bool az_avk_shm_bring_current(struct az_avk_buffer *entry) {
-	/* Reading the pool in place needs no job and no wait, so it is tried
-	 * before anything is joined. */
-	if (entry->job == NULL && az_avk_shm_upload_host(entry)) {
-		return entry->image != NULL;
+/*
+ * The newest generation this surface has actually got onto the GPU, other than
+ * `entry`'s own.
+ *
+ * A client that allocates a FRESH wl_buffer per generation -- which GDK does,
+ * at 56MB a time -- gives every commit a buffer with no image and no uploaded
+ * generation, so "draw the previous generation instead of waiting" had nothing
+ * to draw and waited anyway. That was half the remaining stalls: 56 frames took
+ * the non-blocking path while 109 joins still blocked.
+ *
+ * The previous generation is not gone, though. It is on a sibling buffer in the
+ * same surface's pool, already uploaded, and the same size -- so it is exactly
+ * the frame-old-but-correct image the blocking path was waiting to replace.
+ *
+ * Dimensions are checked rather than assumed: a surface that resized has
+ * siblings of the old size, and drawing one would be a stretched window rather
+ * than a stale one.
+ */
+static struct avk_image *az_avk_shm_sibling_image(
+		const struct az_avk_buffer *entry) {
+	if (entry->pool_head == NULL) {
+		return NULL;
 	}
+	struct avk_image *best = NULL;
+	uint64_t best_gen = 0;
+	struct az_avk_buffer *sib;
+	wl_list_for_each(sib, entry->pool_head, pool_link) {
+		if (sib == entry || sib->image == NULL || sib->uploaded_generation == 0
+				|| sib->buffer == NULL) {
+			continue;
+		}
+		if (sib->buffer->width != entry->buffer->width
+				|| sib->buffer->height != entry->buffer->height) {
+			continue;
+		}
+		if (sib->uploaded_generation >= best_gen) {
+			best_gen = sib->uploaded_generation;
+			best = sib->image;
+		}
+	}
+	return best;
+}
+
+static struct avk_image *az_avk_shm_bring_current(struct az_avk_buffer *entry) {
 	if (entry->job != NULL) {
 		/*
 		 * ── THE FRAME DOES NOT WAIT FOR A COPY ───────────────────────────
@@ -1720,24 +1481,31 @@ static bool az_avk_shm_bring_current(struct az_avk_buffer *entry) {
 		 * The image having NO content is the one case that must still wait:
 		 * there is nothing to draw, and drawing nothing is a black window.
 		 */
-		if (!avk_upload_job_done(entry->job) && entry->image != NULL
-				&& entry->uploaded_generation > 0) {
-			entry->drew_stale = true;
-			avk.shm_stale_frames++;
-			return true;
+		if (!avk_upload_job_done(entry->job)) {
+			struct avk_image *stale = (entry->image != NULL
+				&& entry->uploaded_generation > 0)
+					? entry->image : az_avk_shm_sibling_image(entry);
+			if (stale != NULL) {
+				entry->drew_stale = true;
+				avk.shm_stale_frames++;
+				return stale;
+			}
+			/* Nothing anywhere on this surface has ever reached the GPU. There
+			 * is no previous frame to show, and showing nothing is a black
+			 * window, so this one waits. */
 		}
 		az_avk_shm_job_settle(entry, true);
 		if (entry->uploaded_generation == entry->content_generation) {
-			return entry->image != NULL;
+			return entry->image;
 		}
 		/* A newer generation landed while that one was in flight. Nothing is
 		 * in flight for it, so it is this thread's to do. */
 	}
 	if (!az_avk_upload_shm(entry)) {
-		return false;
+		return NULL;
 	}
 	entry->uploaded_generation = entry->content_generation;
-	return true;
+	return entry->image;
 }
 
 /*
@@ -1885,10 +1653,9 @@ static struct avk_image *az_avk_image_for_buffer_ex(struct wlr_buffer *buffer,
 				avk.shm_upload_skips++;
 				return entry->image;
 			}
-			if (!az_avk_shm_bring_current(entry)) {
-				return NULL;
-			}
-			return entry->image;
+			/* May be a SIBLING's image -- the previous generation of the
+			 * same surface -- when this buffer's copy is still in flight. */
+			return az_avk_shm_bring_current(entry);
 		}
 		return entry->image;
 	}
@@ -5612,6 +5379,7 @@ static void az_avk_pool_add(struct az_avk_surface *as,
 		wl_list_init(&entry->pool_link);
 	}
 	wl_list_insert(&as->pool, &entry->pool_link);
+	entry->pool_head = &as->pool;
 }
 
 /*
@@ -6201,14 +5969,6 @@ static cJSON *az_avk_stats_json(void) {
 		(double)(avk.shm_staging_wait_ns_max / 1000));
 	cJSON_AddNumberToObject(o, "shm_stale_frames",
 		(double)avk.shm_stale_frames);
-	cJSON_AddNumberToObject(o, "shm_stale_saved_ms",
-		(double)(avk.shm_stale_saved_ns / 1000000));
-	cJSON_AddNumberToObject(o, "shm_host_imports",
-		(double)avk.shm_host_imports);
-	cJSON_AddNumberToObject(o, "shm_host_uploads",
-		(double)avk.shm_host_uploads);
-	cJSON_AddNumberToObject(o, "shm_host_bytes_saved",
-		(double)avk.shm_host_bytes);
 	{
 		uint64_t packed = 0, stolen = 0;
 		avk_upload_worker_counts(avk.upload_worker, &packed, &stolen);
@@ -7671,10 +7431,7 @@ static void az_avk_stats_reset(void) {
 	avk.shm_async_join_waits = 0;
 	avk.shm_async_join_ns_max = 0;
 	avk.shm_staging_waits = 0;
-	avk.shm_host_uploads = 0;
 	avk.shm_stale_frames = 0;
-	avk.shm_stale_saved_ns = 0;
-	avk.shm_host_bytes = 0;
 	avk.shm_staging_wait_ns_max = avk.shm_staging_wait_ns_sum = 0;
 	avk.shm_async_join_ns_sum = 0;
 	avk.buffer_resolve_attempts = 0;

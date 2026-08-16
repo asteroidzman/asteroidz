@@ -557,50 +557,6 @@ uint64_t avk_upload_submit_packed(struct avk_device *dev,
 	return timeline;
 }
 
-/*
- * Copy into the image from the CLIENT'S OWN pool, imported as device memory.
- *
- * No memcpy happens anywhere: the GPU reads the pages the client drew into.
- * The regions therefore address the source's real layout -- full rows of
- * `stride` bytes at the buffer's offset within the pool -- rather than the
- * tightly repacked staging the other path builds.
- *
- * The caller must keep the client's wl_buffer locked until this submission
- * completes. With staging that was unnecessary, because the bytes had already
- * been taken; here the GPU is reading memory the client will draw into again
- * the moment it is released.
- */
-uint64_t avk_upload_submit_host(struct avk_cmd_ring *ring, VkBuffer src,
-		VkDeviceSize src_offset, struct avk_image *image,
-		const struct avk_upload_plan *plan,
-		const VkSemaphoreSubmitInfo *waits, uint32_t wait_count) {
-	VkBufferImageCopy2 regions[AVK_UPLOAD_MAX_REGIONS];
-	for (uint32_t i = 0; i < plan->rect_count; i++) {
-		const struct avk_upload_rect *r = &plan->rects[i];
-		regions[i] = (VkBufferImageCopy2){
-			.sType = VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2,
-			/* Where this rectangle's first row actually is in the client's
-			 * pool. Every region reads the same unpacked source, so unlike the
-			 * staging path there are no per-region offsets to have computed. */
-			.bufferOffset = src_offset
-				+ (VkDeviceSize)r->y * plan->stride
-				+ (VkDeviceSize)r->x * plan->bpp,
-			.bufferRowLength = plan->stride / plan->bpp,
-			/* 0 means "derive from imageExtent.height", which is exactly right
-			 * for a 2D slice and avoids restating the rectangle's height. */
-			.bufferImageHeight = 0,
-			.imageSubresource = {
-				.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-				.layerCount = 1,
-			},
-			.imageOffset = { (int32_t)r->x, (int32_t)r->y, 0 },
-			.imageExtent = { r->width, r->height, 1 },
-		};
-	}
-	return submit_copy(ring, src, image, regions, plan->rect_count,
-		plan->full, waits, wait_count);
-}
-
 uint64_t avk_upload_image_write(struct avk_device *dev,
 		struct avk_cmd_ring *ring, struct avk_upload *up,
 		struct avk_image *image, const void *pixels, uint32_t stride,

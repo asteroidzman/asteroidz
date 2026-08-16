@@ -187,7 +187,7 @@ struct avk_device *avk_device_create(struct avk_instance *inst, int drm_fd) {
 	}
 
 	/* ── extensions to enable ──────────────────────────────────────────── */
-	const char *exts[10];
+	const char *exts[8];
 	uint32_t ext_count = 0;
 	exts[ext_count++] = VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME;
 	exts[ext_count++] = VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME;
@@ -202,9 +202,6 @@ struct avk_device *avk_device_create(struct avk_instance *inst, int drm_fd) {
 	}
 	if (dev->caps.calibrated_timestamps) {
 		exts[ext_count++] = VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME;
-	}
-	if (dev->caps.external_memory_host) {
-		exts[ext_count++] = VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME;
 	}
 
 	/* ── features to enable ────────────────────────────────────────────── */
@@ -264,40 +261,6 @@ struct avk_device *avk_device_create(struct avk_instance *inst, int drm_fd) {
 		vkGetDeviceProcAddr(dev->dev, "vkGetSemaphoreFdKHR");
 	dev->api.vkImportSemaphoreFdKHR = (PFN_vkImportSemaphoreFdKHR)
 		vkGetDeviceProcAddr(dev->dev, "vkImportSemaphoreFdKHR");
-	if (dev->caps.external_memory_host) {
-		dev->api.vkGetMemoryHostPointerPropertiesEXT =
-			(PFN_vkGetMemoryHostPointerPropertiesEXT)vkGetDeviceProcAddr(
-				dev->dev, "vkGetMemoryHostPointerPropertiesEXT");
-		/*
-		 * The alignment a host pointer must satisfy to be imported. It is
-		 * queried rather than assumed to be the page size: the spec only
-		 * guarantees it is a power of two, and an import at a smaller
-		 * alignment is invalid usage the validation layer will not always
-		 * be present to catch.
-		 */
-		VkPhysicalDeviceExternalMemoryHostPropertiesEXT host_props = {
-			.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_MEMORY_HOST_PROPERTIES_EXT,
-		};
-		VkPhysicalDeviceProperties2 props2 = {
-			.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
-			.pNext = &host_props,
-		};
-		vkGetPhysicalDeviceProperties2(dev->phys, &props2);
-		dev->imported_host_alignment =
-			host_props.minImportedHostPointerAlignment;
-		if (dev->api.vkGetMemoryHostPointerPropertiesEXT == NULL
-				|| dev->imported_host_alignment == 0) {
-			avk_log(AVK_ERROR, "VK_EXT_external_memory_host was enabled but is "
-				"unusable; client SHM buffers will be copied instead of read "
-				"in place");
-			dev->api.vkGetMemoryHostPointerPropertiesEXT = NULL;
-			dev->caps.external_memory_host = false;
-		} else {
-			avk_log(AVK_INFO, "client SHM pools can be read in place "
-				"(host pointer import, %" PRIu64 "-byte alignment)",
-				(uint64_t)dev->imported_host_alignment);
-		}
-	}
 	if (dev->api.vkGetSemaphoreFdKHR == NULL ||
 			dev->api.vkImportSemaphoreFdKHR == NULL) {
 		avk_log(AVK_ERROR, "VK_KHR_external_semaphore_fd was enabled but its "
