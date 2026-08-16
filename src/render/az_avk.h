@@ -261,6 +261,7 @@ struct az_avk {
 	 * siblings to ask about), or the pool held nothing usable. Split because
 	 * 336 frames found a previous generation and 307 did not, and those two
 	 * have different causes and different fixes. */
+	uint64_t shm_stale_from_surface;
 	uint64_t shm_stale_no_pool;
 	uint64_t shm_stale_no_sibling;
 	uint64_t shm_stale_pool_size_sum, shm_stale_pool_samples;
@@ -541,6 +542,10 @@ struct az_avk_buffer {
 	 * A pointer to the list rather than to the surface because az_avk_surface
 	 * is declared far below this and the frame path needs the walk here. */
 	struct wl_list *pool_head;
+	/* The surface this buffer belongs to. Only ever used through the two
+	 * accessors below, because az_avk_surface is declared much further down
+	 * and the frame path needs the answer up here. */
+	struct az_avk_surface *as;
 	struct wlr_buffer *buffer;
 	struct avk_image *image;
 
@@ -692,6 +697,17 @@ struct az_avk_buffer {
 	uint64_t stat_lookups;
 };
 
+struct az_avk_surface;
+/*
+ * The last image this surface successfully got onto the GPU, whatever buffer
+ * carried it -- kept alive by the surface itself, so it survives that buffer
+ * being destroyed. Defined below az_avk_surface; declared here because the
+ * frame path is above it.
+ */
+static struct avk_image *az_avk_surface_last_good(struct az_avk_buffer *entry);
+static void az_avk_surface_note_good(struct az_avk_buffer *entry);
+static void az_avk_surface_adopt_image(struct az_avk_buffer *entry);
+
 static void az_avk_buffer_destroy(struct az_avk_buffer *entry) {
 	/*
 	 * ── A COPY IN FLIGHT OUTRANKS EVERYTHING ELSE HERE ───────────────────
@@ -723,6 +739,10 @@ static void az_avk_buffer_destroy(struct az_avk_buffer *entry) {
 	 * pages a worker is copying out of is the use-after-free this whole file is
 	 * arranged to avoid. */
 	az_shm_source_finish(&entry->shm_source);
+	/* If this is the image its surface is keeping as the last known good one,
+	 * the surface takes ownership instead and the retire below is skipped --
+	 * the whole point is that it outlives this buffer. */
+	az_avk_surface_adopt_image(entry);
 	if (entry->image != NULL) {
 		/* Retired against the timeline, not freed: a frame that sampled this
 		 * image may still be in flight, and vkDestroyImage on an image the GPU
@@ -1211,6 +1231,7 @@ static bool az_avk_shm_job_settle(struct az_avk_buffer *entry, bool block) {
 	if (ok) {
 		az_avk_shm_account(entry, &entry->job->plan);
 		entry->uploaded_generation = entry->job_generation;
+		az_avk_surface_note_good(entry);
 	} else {
 		/* The pixels are in staging and nothing carried them across. The
 		 * generation is NOT marked uploaded and the next attempt is forced
@@ -1410,6 +1431,7 @@ static bool az_avk_upload_shm(struct az_avk_buffer *entry) {
 		az_avk_shm_account(entry, &plan);
 		pixman_region32_clear(&entry->pending_damage);
 		entry->pending_full = false;
+		az_avk_surface_note_good(entry);
 	}
 
 out:
@@ -1473,9 +1495,22 @@ static struct avk_image *az_avk_shm_sibling_image(
 	 * nothing means the siblings are all unuploaded too, and the copies are
 	 * simply not keeping up. */
 	if (best == NULL) {
-		avk.shm_stale_no_sibling++;
-		avk.shm_stale_pool_size_sum += seen;
-		avk.shm_stale_pool_samples++;
+		/*
+		 * No LIVE sibling has one. That is the ordinary case for a client
+		 * which allocates a fresh buffer per generation and destroys the old
+		 * one immediately: the pool is full of buffers that are all still
+		 * being copied, and the generation that finished has already gone.
+		 *
+		 * The image it produced has not gone, because the surface kept it.
+		 */
+		best = az_avk_surface_last_good((struct az_avk_buffer *)entry);
+		if (best == NULL) {
+			avk.shm_stale_no_sibling++;
+			avk.shm_stale_pool_size_sum += seen;
+			avk.shm_stale_pool_samples++;
+		} else {
+			avk.shm_stale_from_surface++;
+		}
 	}
 	return best;
 }
@@ -5378,7 +5413,93 @@ struct az_avk_surface {
 	/* Every buffer this surface has committed and that AVK still caches an
 	 * image for. See az_avk_buffer.pool_link for why the list has to exist. */
 	struct wl_list pool;      /* az_avk_buffer.pool_link */
+
+	/*
+	 * ── SOMETHING TO DRAW WHILE A COPY IS IN FLIGHT ──────────────────────
+	 *
+	 * The last image this surface actually got onto the GPU. A frame that
+	 * finds this surface's newest buffer still being copied draws this rather
+	 * than blocking for up to 51ms.
+	 *
+	 * Per SURFACE and not per buffer, because per buffer was not enough: a
+	 * client that allocates a fresh buffer every generation and destroys the
+	 * old one leaves a pool in which every entry is either brand new or still
+	 * copying. Measured live, that was every remaining stall --
+	 * shm_stale_no_sibling and shm_async_join_waits were both exactly 41, of
+	 * which 37 ran past 30ms, against a pool three deep every time.
+	 *
+	 * `owned` is the ownership handover. While the buffer that produced this
+	 * image is alive the image belongs to its entry and this is only a
+	 * borrowed pointer; when that entry is destroyed it hands the image over
+	 * instead of retiring it, and from then on this surface retires it. Two
+	 * owners would be a double destroy of a driver object, which is a double
+	 * free of the driver's host memory.
+	 */
+	struct avk_image *last_good;
+	bool owns_last_good;
+	uint32_t last_good_width, last_good_height;
 };
+
+/* The image to draw when this buffer's own generation is not ready. NULL if
+ * the surface has never completed an upload, or did so at another size --
+ * drawing that would be a stretched window rather than a stale one. */
+static struct avk_image *az_avk_surface_last_good(struct az_avk_buffer *entry) {
+	struct az_avk_surface *as = entry->as;
+	if (as == NULL || as->last_good == NULL || entry->buffer == NULL) {
+		return NULL;
+	}
+	if (as->last_good_width != (uint32_t)entry->buffer->width
+			|| as->last_good_height != (uint32_t)entry->buffer->height) {
+		return NULL;
+	}
+	return as->last_good;
+}
+
+/* Record a completed upload as this surface's fallback. */
+static void az_avk_surface_note_good(struct az_avk_buffer *entry) {
+	struct az_avk_surface *as = entry->as;
+	if (as == NULL || entry->image == NULL || entry->buffer == NULL) {
+		return;
+	}
+	if (as->last_good == entry->image) {
+		return;
+	}
+	/* Only if this surface owns the outgoing one. If a live entry still owns
+	 * it, that entry retires it when it goes. */
+	if (as->owns_last_good && as->last_good != NULL) {
+		avk_retire_push(&avk.importer.retire, avk.device,
+			as->last_good->last_use, avk_image_destroy, as->last_good);
+	}
+	as->last_good = entry->image;
+	as->owns_last_good = false;
+	as->last_good_width = (uint32_t)entry->buffer->width;
+	as->last_good_height = (uint32_t)entry->buffer->height;
+}
+
+/*
+ * The entry is going away. If it owns the surface's fallback image, the
+ * surface takes it over and the caller must not retire it.
+ */
+static void az_avk_surface_adopt_image(struct az_avk_buffer *entry) {
+	struct az_avk_surface *as = entry->as;
+	if (as == NULL || entry->image == NULL || as->last_good != entry->image) {
+		return;
+	}
+	as->owns_last_good = true;
+	/* Cleared so az_avk_buffer_destroy()'s retire is skipped: exactly one
+	 * owner, and it is now the surface. */
+	entry->image = NULL;
+}
+
+/* Give up the fallback. Called when the surface itself goes. */
+static void az_avk_surface_drop_last_good(struct az_avk_surface *as) {
+	if (as->owns_last_good && as->last_good != NULL) {
+		avk_retire_push(&avk.importer.retire, avk.device,
+			as->last_good->last_use, avk_image_destroy, as->last_good);
+	}
+	as->last_good = NULL;
+	as->owns_last_good = false;
+}
 
 /*
  * Bring `entry` into `as`'s pool, moving it out of any pool it was in.
@@ -5399,6 +5520,7 @@ static void az_avk_pool_add(struct az_avk_surface *as,
 	}
 	wl_list_insert(&as->pool, &entry->pool_link);
 	entry->pool_head = &as->pool;
+	entry->as = as;
 }
 
 /*
@@ -5601,7 +5723,14 @@ static void az_avk_surface_destroy(struct wl_listener *listener, void *data) {
 	wl_list_for_each_safe(entry, tmp, &as->pool, pool_link) {
 		wl_list_remove(&entry->pool_link);
 		wl_list_init(&entry->pool_link);
+		/* And the POINTERS to this surface, not just the link. Both outlive
+		 * it otherwise: pool_head into a list head inside `as`, and `as`
+		 * itself. Either one read afterwards is a use-after-free reached from
+		 * the frame path, which is the worst place to find one. */
+		entry->pool_head = NULL;
+		entry->as = NULL;
 	}
+	az_avk_surface_drop_last_good(as);
 	free(as);
 }
 
@@ -5988,6 +6117,8 @@ static cJSON *az_avk_stats_json(void) {
 		(double)(avk.shm_staging_wait_ns_max / 1000));
 	cJSON_AddNumberToObject(o, "shm_stale_frames",
 		(double)avk.shm_stale_frames);
+	cJSON_AddNumberToObject(o, "shm_stale_from_surface",
+		(double)avk.shm_stale_from_surface);
 	cJSON_AddNumberToObject(o, "shm_stale_no_pool",
 		(double)avk.shm_stale_no_pool);
 	cJSON_AddNumberToObject(o, "shm_stale_no_sibling",
@@ -7458,6 +7589,7 @@ static void az_avk_stats_reset(void) {
 	avk.shm_async_join_ns_max = 0;
 	avk.shm_staging_waits = 0;
 	avk.shm_stale_frames = 0;
+	avk.shm_stale_from_surface = 0;
 	avk.shm_stale_no_pool = 0;
 	avk.shm_stale_no_sibling = 0;
 	avk.shm_stale_pool_size_sum = avk.shm_stale_pool_samples = 0;
