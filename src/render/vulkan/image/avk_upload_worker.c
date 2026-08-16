@@ -138,8 +138,15 @@ static void *worker_main(void *data) {
 		pthread_mutex_unlock(&w->lock);
 
 		/* THE ONLY WORK THIS THREAD DOES, and the only reason it exists. */
+		/* Read BEFORE the pack: storing JOB_DONE below lets a waiter free the
+		 * job, so reading plan through it afterwards is a use-after-free that
+		 * only appears under a race. */
 		uint64_t pack_t0 = now_ns();
 		uint64_t pack_bytes = job->plan.bytes;
+		uint32_t pack_rects = job->plan.rect_count;
+		uint32_t pack_stride = job->plan.stride;
+		uint32_t pack_rows = job->plan.height;
+		bool pack_full = job->plan.full;
 		avk_upload_pack(&job->plan, job->src, job->dst);
 		uint64_t pack_ns = now_ns() - pack_t0;
 
@@ -154,6 +161,29 @@ static void *worker_main(void *data) {
 		w->pack_bytes += pack_bytes;
 		if (pack_ns > w->pack_ns_max) {
 			w->pack_ns_max = pack_ns;
+		}
+		/*
+		 * THE OUTLIER, described rather than averaged.
+		 *
+		 * The mean pack is ~5.7ms and the worst is ~57ms, and a mean cannot
+		 * tell which of several possible shapes the slow one had: a huge
+		 * buffer, a plan of many narrow rectangles whose row-by-row copy is
+		 * nearly all per-call overhead, or ordinary bytes moving at a
+		 * fraction of memcpy speed because something else owns the memory
+		 * bus. Those have different fixes, and the frame that stalls is
+		 * always one of these -- never the average.
+		 *
+		 * 20ms is chosen against the 6.9ms frame budget: past three frames,
+		 * this copy is why something visibly stuttered.
+		 */
+		if (pack_ns > 20000000ull) {
+			avk_log(AVK_ERROR,
+				"slow upload pack: %.1fms for %.2fMB in %u rect(s) %s "
+				"= %.0fMB/s (stride %u, %u rows)",
+				(double)pack_ns / 1e6, (double)pack_bytes / 1e6,
+				pack_rects, pack_full ? "whole" : "partial",
+				(double)pack_bytes * 1000.0 / (double)pack_ns,
+				pack_stride, pack_rows);
 		}
 		pthread_cond_broadcast(&w->finished);
 		notify(w);
