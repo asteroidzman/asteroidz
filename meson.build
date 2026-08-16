@@ -562,6 +562,17 @@ if build_vulkan
   # scissor decision. Needs no GPU -- it is rectangle arithmetic over the same
   # level_extent()/texel_span() the passes use, and the point is that a wrong
   # denominator fails HERE rather than becoming a performance conclusion.
+  # The SHM upload's plan/pack split, which is what let the client memcpy move
+  # off the event loop. No GPU: the plan reads a struct avk_image's format and
+  # extent and nothing else, so a stack image is a complete fixture -- and a
+  # copy that shears is caught here rather than in a screenshot someone happens
+  # to look closely at.
+  test_avk_upload_pack = executable('test-avk-upload-pack',
+                                    'tests/test-avk-upload-pack.c',
+                                    dependencies : [avk_dep],
+                                    build_by_default : false)
+  test('avk-upload-pack', test_avk_upload_pack, timeout : 30)
+
   test_avk_blur_work = executable('test-avk-blur-work',
                                   'tests/test-avk-blur-work.c',
                                   dependencies : [avk_dep, libm],
