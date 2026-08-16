@@ -1,22 +1,28 @@
 #!/usr/bin/env bash
 # avk-gradient-border-test.sh -- the BORDER gradient, which had no coverage.
 #
-# ── WHY THIS IS A SEPARATE FILE FROM avk-gradient-test.sh ────────────────
+# ── WHY THIS IS THE ONLY GRADIENT FIXTURE IN contrib/ ────────────────────
 #
 # asteroidz has exactly two gradient consumers: the overview vignette and
-# client_set_border_fill(). avk-gradient-test.sh covers the vignette against
-# the GLES reference, and states plainly that it cannot touch the border --
-# because at the time it was written, `border_gradient 1` made the compositor
-# unresponsive within seconds. wlr_scene_rect_set_gradient() had no dirty
-# check while being called from the per-frame path, so a focused window with a
-# gradient border re-damaged itself forever: ~54 MB/s of heap and 100% of a
-# core, on both renderers.
+# client_set_border_fill(). The vignette had a fixture of its own,
+# avk-gradient-test.sh, which compared it against the same scene rendered by
+# SceneFX -- and it never once scored anything, because a headless overview
+# does not create its vignettes (guarded by m->ov_main_wp, overview.h;
+# gradient_draws reads 0 with the overview open). With SceneFX gone it had no
+# reference arm either, so it was deleted rather than given an oracle for a
+# scene that cannot be produced. See docs/regression-testing.md.
 #
-# That is fixed in subprojects/asteroidz-scenefx now, and the consequence is
-# that the border gradient became testable and nobody went back for it. On a
-# headless run avk-gradient-test.sh reports 0/0 assertions and skips, so the
-# renderer's most-used gradient path -- the one an actual desktop turns on --
-# has been carried entirely by tests/test-avk-gradient.c's unit comparison.
+# That leaves the border gradient -- the one an actual desktop turns on -- and
+# it went untested for a different reason: `border_gradient 1` used to make
+# the compositor unresponsive within seconds. wlr_scene_rect_set_gradient()
+# had no dirty check while being called from the per-frame path, so a focused
+# window with a gradient border re-damaged itself forever: ~54 MB/s of heap
+# and 100% of a core. That is fixed in subprojects/asteroidz-scenefx now, the
+# border gradient became testable, and nobody went back for it until this.
+#
+# Nothing here needs a second renderer: the control is the SAME build with the
+# gradient turned off. tests/test-avk-gradient.c carries the arithmetic, a CPU
+# model of gradient.frag at every count, angle, origin and mode.
 #
 # ── WHAT IS ASSERTED ─────────────────────────────────────────────────────
 #

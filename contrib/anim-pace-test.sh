@@ -87,22 +87,11 @@ run_case() { # run_case NAME WORKLOAD_FN
 	HL_OUTPUTS="$OUTS"
 	HL_HZ1="$HZ1"
 	HL_HZ2="$HZ2"
-	# ASTEROIDZ_RENDERER=avk by default, and the default is the one to use.
-	# Without it the compositor composites through scenefx/GLES, which has an
-	# entirely different blur damage path (apply_blur_region and the
-	# saved-pixels compensation) from the one the live session runs. A pacing
-	# run on the wrong renderer measures a compositor the user does not have;
-	# the first pass of this investigation did exactly that and its damage
-	# figures were discarded.
-	#
-	# PACE_RENDERER=wlr exists for ONE question: does GLES pay the same cost
-	# for the same transition, or does it avoid it. That question cannot be
-	# asked without running the other renderer, and it has to be asked before
-	# any claim that the transition's cost is architectural -- both renderers
-	# are downstream of the same tagining/tagouting animation, so if GLES is
-	# cheaper the cost is AVK's and not the architecture's. Damage figures from
-	# a wlr run remain uncomparable to an avk one; only pacing is.
-	HL_ENV="ASTEROIDZ_RENDERER=${PACE_RENDERER:-avk} AZ_PACE=1 ${HL_EXTRA_ENV:-}"
+	# PACE_RENDERER used to select between AVK and the SceneFX/GLES path, to
+	# ask whether GLES paid the same cost for the same transition -- if it did
+	# not, the cost was AVK's rather than the architecture's. There is nothing
+	# left to ask it of: SceneFX is gone and AVK composites every frame.
+	HL_ENV="ASTEROIDZ_RENDERER=avk AZ_PACE=1 ${HL_EXTRA_ENV:-}"
 	export HL_OUTDIR HL_OUTPUTS HL_HZ1 HL_HZ2 HL_ENV
 
 	hl_start "$(blur_cfg)

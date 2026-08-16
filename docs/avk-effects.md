@@ -863,8 +863,12 @@ gradient the compositor can actually draw are closed:
   confirmed: with the overview open, rects go 41 → 153 and **not one of them
   carries `has_gradient`**.
 
-`contrib/avk-gradient-test.sh` is written and skips with that reason rather
-than scoring anything. It claims no coverage.
+`contrib/avk-gradient-test.sh` was written for this, skipped with that reason
+for its whole life, and has been **removed**: its oracle was a second renderer
+that no longer exists, and the scene it wanted is unreachable headlessly. The
+gradient is covered by `tests/test-avk-gradient.c` (a CPU model of
+`gradient.frag`) and `contrib/avk-gradient-border-test.sh` (a self-consistent
+pixel oracle on the border gradient).
 
 **And it nearly reported a pass.** The fixture's edge-darkening premise
 measured 21.0 on both engines with no gradient anywhere on screen — the
@@ -2649,9 +2653,8 @@ order-of-magnitude bounds and why no threshold was chosen before the data.
 The **gradient scene is a stress case, not a calm one**: `border_gradient 1`
 triggers a known repaint storm — `client_set_border_fill()` has no dirty check,
 so it damages the border node every tick — which reproduces on both renderers
-and on pre-M4C builds and is documented in `contrib/avk-gradient-test.sh`. It is
-used anyway because it is the only way to get gradients into the renderer
-headlessly. Both binaries storm identically, so the comparison holds; the
+and on pre-M4C builds. It is used anyway because it is the only way to get
+gradients into the renderer headlessly. Both binaries storm identically, so the comparison holds; the
 absolute numbers should be read knowing that.
 
 ### Cross-output independence
@@ -2694,9 +2697,11 @@ HEADLESS   border 118   shadow 28   crossoutput 18   frame 17   idle-convergence
 VALIDATION 0 VUID   0 SYNC-HAZARD   0 leaked objects
 ```
 
-`avk-gradient-test.sh` reports **0/0 and says so**: a headless overview creates
-no vignettes and `border_gradient` storms, so the suite claims no coverage
-rather than manufacturing a pass. Pre-existing, unchanged by M4E.
+`avk-gradient-test.sh` reported **0/0 and said so**: a headless overview creates
+no vignettes, so the suite claimed no coverage rather than manufacturing a
+pass. It has since been removed outright — with SceneFX gone its comparison had
+no reference arm either. See the M4C section above for what carries the
+gradient now.
 
 ### Breaks
 
@@ -5312,7 +5317,7 @@ From measurements. Anything not measured says so.
 | `DITHER_DOMAIN` | **PASS** | attachment-anchored, 20 075 px beyond the geometry floor, sub-step; partial == full at 0° and 180° |
 | `VULKAN_VALIDATION` | **PASS** | 0 VUID and 0 SYNC-HAZARD lines across every seam run after the `last_use` fix, including `BREAK=poison` at 90° and 270° |
 | `PERFORMANCE` | **PASS** | 20/20 against `2e13a9a`: one pass, two barrier calls, no attachment recreation, p50 unchanged on three scenes |
-| `REGRESSION_MATRIX` | **PASS** | 22 unit suites, 20 headless suites; one documented no-coverage skip (`avk-gradient-test`) |
+| `REGRESSION_MATRIX` | **PASS** | 22 unit suites, 20 headless suites; one documented no-coverage skip (`avk-gradient-test`, since removed) |
 | `LIVE_ACCEPTANCE` | **NOT RUN** | headless only, by instruction |
 | `NO_INSTALL` | **HELD** | `/usr/bin/asteroidz` is still M4E |
 

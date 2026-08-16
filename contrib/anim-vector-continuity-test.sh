@@ -92,9 +92,7 @@ run_case() { # run_case NAME [EXTRA_ENV...] -> echoes the trace path
 	HL_OUTDIR="$dir"
 	HL_OUTPUTS=1
 	HL_HZ1=144
-	# avk is the renderer the live session runs; the animation engine is shared
-	# but there is no reason to measure the one nobody uses.
-	HL_ENV="ASTEROIDZ_RENDERER=${VC_RENDERER:-avk} AZ_PACE=1 $*"
+	HL_ENV="ASTEROIDZ_RENDERER=avk AZ_PACE=1 $*"
 	export HL_OUTDIR HL_OUTPUTS HL_HZ1 HL_ENV
 
 	hl_start "effects { blur { enable 0 }; shadow { enable 0 } }

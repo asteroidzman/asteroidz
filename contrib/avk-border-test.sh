@@ -3,8 +3,10 @@
 #
 # WHAT THIS EXISTS TO CATCH
 #
-# A window border in SceneFX is ONE filled rect with the window's interior cut
-# out of it, and BOTH edges of that ring are rounded: the outside at the
+# A window border in the scene graph is ONE filled rect with the window's
+# interior cut out of it (wlr_scene_rect_set_clipped_region, a fork extension
+# that outlived the SceneFX renderer), and BOTH edges of that ring are rounded:
+# the outside at the
 # window's radius, the inside at the radius apply_border() computed for the
 # client underneath. AVK carried the inner box but not its radii, so the ring's
 # outside was an arc and its inside was a square. On each corner's diagonal the
@@ -64,7 +66,6 @@ set -u
 
 CURRENT_TEST="avk-border"
 BREAK="${BREAK:-}"
-ENGINE="${ENGINE:-avk}"
 CASES="${CASES:-base square bw1 bw2 bw4 near over small big titlebar scale15 scale15tb rr90 rr180 rr270 opacity unfocused}"
 
 REPAINT="$(dirname "$0")/wlrepaint/wlrepaint"
@@ -108,7 +109,7 @@ case_params() {
 }
 
 [ -n "$BREAK" ] && echo "*** BREAK=$BREAK -- this build is deliberately wrong ***"
-echo "engine=$ENGINE cases: $CASES"
+echo "cases: $CASES"
 
 run_case() {
 	local name="$1"
@@ -118,11 +119,7 @@ run_case() {
 	OUTDIR="${TMPDIR:-/tmp}/asteroidz-border-$name-$$"
 	HL_OUTDIR="$OUTDIR"
 	HL_SCALE1="$scale"
-	if [ "$ENGINE" = gles ]; then
-		HL_ENV="ASTEROIDZ_RENDERER=wlr"
-	else
-		HL_ENV="ASTEROIDZ_RENDERER=avk"
-	fi
+	HL_ENV="ASTEROIDZ_RENDERER=avk"
 	[ "$BREAK" = border-square-inner ] && HL_ENV="$HL_ENV AZ_AVK_BORDER_SQUARE_INNER=1"
 	[ -n "${VKDEBUG:-}" ] && HL_ENV="$HL_ENV ASTEROIDZ_VK_DEBUG=1 VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT"
 	[ "${FULLDRAW:-0}" = 1 ] && HL_ENV="$HL_ENV AZ_AVK_FULL_DAMAGE=1"
@@ -212,7 +209,7 @@ layout {
 	# radius legitimately gets a square inner cut and rounded_border_draws stays
 	# 0 -- that is the reference behaviour (GEZERO clamps; there is no unsigned
 	# underflow to worry about), not a renderer that stopped rounding.
-	if [ "$ENGINE" != gles ] && [ $((radius - bw - 1)) -gt 0 ]; then
+	if [ $((radius - bw - 1)) -gt 0 ]; then
 		rb=$(hl_get "get avk-stats" | jq -r '.rounded_border_draws // 0')
 		hl_assert "$name: the rounded-border path was taken ($rb draws)" \
 			"$([ "${rb:-0}" -gt 0 ] && echo true || echo false)" "true"

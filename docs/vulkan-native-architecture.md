@@ -465,8 +465,9 @@ and `contrib/regression/`. New Vulkan-core tests are plain binaries under
   - **M3b, the compositor.** `src/render/az_output.h` (the single build seam,
     used by all four callers), `src/render/az_avk.h` (the scene walker, the
     buffer cache, the per-output swapchain), and the `ASTEROIDZ_RENDERER=avk`
-    switch. `contrib/avk-frame-test.sh` boots a real compositor twice and
-    compares the frames; see §5.4b for what it does and does not cover.
+    switch. `contrib/avk-frame-test.sh` boots a real compositor and checks
+    the frame against the compositor's own reported geometry; see §5.4b for
+    what it does and does not cover.
 - M4-M10: not started
 
 ## Pre-existing test failures (not caused by this work)
@@ -484,10 +485,17 @@ stays clean; deliberately not fixed as part of the renderer migration.
 ## 5.4b What M3b built, and what it refuses to do
 
 `ASTEROIDZ_RENDERER=avk` is read once in `setup()`, independently of
-`WLR_RENDERER`. The pairing that proves the two are unrelated is
-`WLR_RENDERER=vulkan ASTEROIDZ_RENDERER=avk`: a Vulkan-composited desktop with
-GLES2 sitting alongside, touching no part of composition. That is what
-`contrib/avk-frame-test.sh` runs.
+`WLR_RENDERER`. wlroots still needs a renderer for the things it does that are
+not compositing — shm formats, the allocator, `wl_drm`, screencopy — and none of
+those is a frame reaching the screen.
+
+It is no longer selectable, though. `az_create_renderer()` forces Vulkan and
+`az_require_vulkan_renderer()` aborts if the result is GLES2 or pixman, so the
+session entries carry no `WLR_RENDERER` at all: a GL context cannot exist in
+this process, whatever the environment says.
+`contrib/avk-frame-test.sh` asserts that the log names it as a *compatibility*
+renderer, deliberately without pinning which one: pinning the name made that
+line a hostage to an unrelated default.
 
 The frame path, in one sentence: `az_output_build_frame()` (src/render/
 az_output.h) replaces the four scattered `wlr_scene_output_build_state()` calls
@@ -625,14 +633,22 @@ the only way to test it at all.
 
 ### Two bugs this cost, both worth remembering
 
-1. **Borders are one rect with the interior clipped out.** SceneFX draws a
-   window border as a single filled rect carrying a `clipped_region` that
-   removes the window's inside — that is how a rounded border gets a rounded
-   inner edge. A walker that ignores the clip fills the whole window with the
-   border colour, and since the border sits *above* the surface in the scene,
-   every window renders as a flat block. It looked like a texture bug for far
-   longer than it should have. `AVK_NO_BORDER_CLIP=1` puts it back, and
-   `BREAK=border contrib/avk-frame-test.sh` must fail.
+1. **Borders are one rect with the interior clipped out.** The scene graph
+   carries a window border as a single filled rect with a `clipped_region`
+   that removes the window's inside — that is how a rounded border gets a
+   rounded inner edge. A walker that ignores the clip fills the whole window
+   with the border colour, and where the border sits *above* the surface in
+   the scene, the window renders as a flat block. It looked like a texture bug
+   for far longer than it should have. `AVK_NO_BORDER_CLIP=1` puts it back,
+   and `BREAK=border contrib/avk-frame-test.sh` must fail.
+
+   **Where the border sits above the surface**, and that qualifier is load
+   bearing. The scene walk emits the *unfocused* window's border rect after its
+   content and the *focused* window's before it, so with the clip removed the
+   first fills over its surface and the second fills under it, invisibly. The
+   break therefore falsifies the fixture's claims on one of the two windows
+   only. Read off `AVK_SCENE_DUMP` rather than assumed, and recorded in the
+   fixture header so a future reader does not conclude the break has rotted.
 2. **A white screen on both monitors, from a diagnostic left switched off.**
    Imported buffers are acquired from `VK_QUEUE_FAMILY_FOREIGN_EXT` and
    released back. While testing whether the *acquire* mattered, the *release*
@@ -2328,9 +2344,10 @@ Three instruments, each tried and each measured to be incapable:
    consistent with ~80 µs of record per frame. The work is on the GPU.
 
 Establishing it needs the SceneFX path instrumented, which buys a comparison
-against a renderer asteroidz no longer uses. **Declined.**
-`contrib/avk-gles-floor.sh` is kept and kept FAILING its own premise, as the
-record of why rather than as a gate. Do not relax the premise to make it green.
+against a renderer asteroidz no longer uses. **Declined**, and then made
+impossible: SceneFX is gone, so both arms of that fixture would run AVK.
+`contrib/avk-gles-floor.sh` has been **removed**; this section is the record of
+why, and it is the only record needed. Do not write another one.
 
 Two artefacts of that chase, recorded so they are not rediscovered:
 `utime+stime` from `/proc/<pid>/stat` is in 10 ms ticks and read `0.01` for both
@@ -2342,7 +2359,7 @@ the kind of number that gets quoted as a renderer property.
 
 ## 5.11 The AVK suite register
 
-`contrib/avk-suite.sh` holds a disposition for all 65 suites (required / perf /
+`contrib/avk-suite.sh` holds a disposition for all 80 suites (required / perf /
 live / manual) and fails on two conditions: a registered suite that is absent or
 not executable, and a discovered `avk-*.sh` with no disposition. The second is
 the half that keeps working — a static list decays the moment somebody adds a

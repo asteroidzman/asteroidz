@@ -42,7 +42,6 @@ set -u
 
 CURRENT_TEST="avk-crossoutput-border"
 BREAK="${BREAK:-}"
-ENGINE="${ENGINE:-avk}"
 RADIUS="${RADIUS:-40}"
 BORDER="${BORDER:-6}"
 
@@ -62,17 +61,13 @@ RIGHT_LOCAL=$((RIGHT_EDGE - W1))       # its right outer border, output-2 local
 
 OUTDIR="${TMPDIR:-/tmp}/asteroidz-xout-$$"
 HL_OUTDIR="$OUTDIR"
-if [ "$ENGINE" = gles ]; then
-	HL_ENV="ASTEROIDZ_RENDERER=wlr"
-else
-	HL_ENV="ASTEROIDZ_RENDERER=avk"
-fi
+HL_ENV="ASTEROIDZ_RENDERER=avk"
 [ "$BREAK" = border-owner-monitor-clip ] && \
 	HL_ENV="$HL_ENV AZ_BORDER_OWNER_MONITOR_CLIP=1"
 export HL_OUTDIR HL_ENV
 
 [ -n "$BREAK" ] && echo "*** BREAK=$BREAK -- this build is deliberately wrong ***"
-echo "engine=$ENGINE radius=$RADIUS border=$BORDER"
+echo "radius=$RADIUS border=$BORDER"
 echo "outputs: HEADLESS-1 0..$W1, HEADLESS-2 $W1.."
 echo "window: $WIN_X,$WIN_Y ${WIN_W}x${WIN_H} -> right outer edge at $RIGHT_EDGE (output-2 local $RIGHT_LOCAL)"
 
@@ -277,19 +272,17 @@ hl_assert "output 2's border is unchanged by releasing the drag" \
 	"$(within "$d2" "$r2" 40)" "true"
 
 # ── DAMAGE: a cross-output border must not cost a full-output redraw ────────
-if [ "$ENGINE" != gles ]; then
-	XF=$(hl_get "get avk-stats" | jq -r '.full_redraw_frames')
-	XP=$(hl_get "get avk-stats" | jq -r '.partial_redraw_frames')
-	echo "  redraws so far: full=$XF partial=$XP"
-	hl_assert "a window spanning two outputs still redraws partially" \
-		"$([ "${XP:-0}" -gt "${XF:-0}" ] && echo true || echo false)" "true"
-	hl_assert "no CPU sync wait was introduced" \
-		"$(hl_get "get avk-stats" | jq -r '.cpu_sync_waits')" "0"
-	hl_assert "no fallback frame was introduced" \
-		"$(hl_get "get avk-stats" | jq -r '.fallback_frames')" "0"
-	hl_assert "no target-state violation was introduced" \
-		"$(hl_get "get avk-stats" | jq -r '.target_state_violations')" "0"
-fi
+XF=$(hl_get "get avk-stats" | jq -r '.full_redraw_frames')
+XP=$(hl_get "get avk-stats" | jq -r '.partial_redraw_frames')
+echo "  redraws so far: full=$XF partial=$XP"
+hl_assert "a window spanning two outputs still redraws partially" \
+	"$([ "${XP:-0}" -gt "${XF:-0}" ] && echo true || echo false)" "true"
+hl_assert "no CPU sync wait was introduced" \
+	"$(hl_get "get avk-stats" | jq -r '.cpu_sync_waits')" "0"
+hl_assert "no fallback frame was introduced" \
+	"$(hl_get "get avk-stats" | jq -r '.fallback_frames')" "0"
+hl_assert "no target-state violation was introduced" \
+	"$(hl_get "get avk-stats" | jq -r '.target_state_violations')" "0"
 
 # ── SCROLLER PRESERVATION: the case the cropping was written for ────────────
 #

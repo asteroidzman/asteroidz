@@ -48,8 +48,7 @@ fi
 #                  `border_gradient 1` triggers a known repaint storm
 #                  (client_set_border_fill() has no dirty check, so it damages
 #                  the border node every tick); it reproduces on both renderers
-#                  and on pre-M4C builds and is documented in
-#                  contrib/avk-gradient-test.sh. It is used here anyway,
+#                  and on pre-M4C builds. It is used here anyway,
 #                  because it is the only way to get gradients into the
 #                  renderer headlessly -- which makes this scene a stress case
 #                  rather than a calm one, and its absolute numbers should be

@@ -61,8 +61,6 @@
 #               Do not make it pass by weakening what it expects.
 #   FULLDRAW=1  redraw every frame whole. A DIAGNOSTIC, never a fix: it
 #               separates "the geometry is wrong" from "the damage is wrong".
-#   ENGINE=gles the SceneFX/GLES path, to decide whether any of this predates
-#               AVK at all.
 #   BREAK=damage-hole   AZ_AVK_DAMAGE_HOLE over the window's top-left corner:
 #               a region acknowledged and never redrawn. This fixture MUST fail
 #               against it, and a green run of it is a suite failure.
@@ -80,7 +78,6 @@ BREAK="${BREAK:-}"
 RADIUS="${RADIUS:-40}"
 BORDER="${BORDER:-0}"
 FULLDRAW="${FULLDRAW:-0}"
-ENGINE="${ENGINE:-avk}"
 SHOTS="${SHOTS:-6}"
 FG_W="${FG_W:-700}"
 FG_H="${FG_H:-500}"
@@ -97,11 +94,7 @@ BG_Y="${BG_Y:-200}"
 
 OUTDIR="${TMPDIR:-/tmp}/asteroidz-persist-$$"
 HL_OUTDIR="$OUTDIR"
-if [ "$ENGINE" = gles ]; then
-	HL_ENV="ASTEROIDZ_RENDERER=wlr"
-else
-	HL_ENV="ASTEROIDZ_RENDERER=avk"
-fi
+HL_ENV="ASTEROIDZ_RENDERER=avk"
 case "$BREAK" in
 	rounded-clip)
 		HL_ENV="$HL_ENV AZ_ROUNDED_OFF=1" ;;
@@ -131,10 +124,7 @@ REPAINT="$HL_REPO/contrib/wlrepaint/wlrepaint"
 [ -x "$REPAINT" ] || { echo "not built -- run: cd contrib/wlrepaint && make" >&2; exit 1; }
 
 echo "binary: $HL_ASTEROIDZ"
-echo "engine=$ENGINE radius=$RADIUS border=$BORDER fulldraw=$FULLDRAW break=${BREAK:-none}"
-if [ "$FULLDRAW" = 1 ] && [ "$ENGINE" = gles ]; then
-	echo "  note: AZ_AVK_FULL_DAMAGE is an AVK switch and does nothing here"
-fi
+echo "radius=$RADIUS border=$BORDER fulldraw=$FULLDRAW break=${BREAK:-none}"
 
 # Shadows and blur OFF, deliberately. Both paint OUTSIDE and AROUND a window's
 # box, so either one turns "which pixels near the corner are background" into a
@@ -437,22 +427,20 @@ if [ "$BORDER" -gt 0 ]; then
 	fi
 fi
 
-if [ "$ENGINE" != gles ]; then
-	echo
-	echo "-- premise: these frames were PARTIAL redraws --"
-	# Load-bearing for what this fixture is allowed to conclude. A corner that
-	# survives a scene redrawn whole every frame proves nothing about damage,
-	# and "the corner is clean under partial damage" is the entire claim.
-	FULL=$(hl_get "get avk-stats" | jq -r '.full_redraw_frames')
-	PART=$(hl_get "get avk-stats" | jq -r '.partial_redraw_frames')
-	echo "  full $FULL / partial $PART"
-	if [ "$FULLDRAW" = 1 ]; then
-		hl_assert "FULLDRAW=1 really did force whole-frame redraws" \
-			"$([ "$PART" -eq 0 ] && echo true || echo false)" "true"
-	else
-		hl_assert "most frames were partial redraws" \
-			"$([ "$PART" -gt "$FULL" ] && echo true || echo false)" "true"
-	fi
+echo
+echo "-- premise: these frames were PARTIAL redraws --"
+# Load-bearing for what this fixture is allowed to conclude. A corner that
+# survives a scene redrawn whole every frame proves nothing about damage,
+# and "the corner is clean under partial damage" is the entire claim.
+FULL=$(hl_get "get avk-stats" | jq -r '.full_redraw_frames')
+PART=$(hl_get "get avk-stats" | jq -r '.partial_redraw_frames')
+echo "  full $FULL / partial $PART"
+if [ "$FULLDRAW" = 1 ]; then
+	hl_assert "FULLDRAW=1 really did force whole-frame redraws" \
+		"$([ "$PART" -eq 0 ] && echo true || echo false)" "true"
+else
+	hl_assert "most frames were partial redraws" \
+		"$([ "$PART" -gt "$FULL" ] && echo true || echo false)" "true"
 fi
 
 echo

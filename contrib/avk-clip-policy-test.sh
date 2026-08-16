@@ -30,7 +30,6 @@ set -u
 
 CURRENT_TEST="avk-clip-policy"
 BREAK="${BREAK:-}"
-ENGINE="${ENGINE:-avk}"
 CASES="${CASES:-overflow resizegrab}"
 
 REPAINT="$(dirname "$0")/wlrepaint/wlrepaint"
@@ -43,8 +42,7 @@ FOCUS=0xc66b25ff
 start() {
 	OUTDIR="${TMPDIR:-/tmp}/asteroidz-clip-$1-$$"
 	HL_OUTDIR="$OUTDIR"
-	if [ "$ENGINE" = gles ]; then HL_ENV="ASTEROIDZ_RENDERER=wlr"
-	else HL_ENV="ASTEROIDZ_RENDERER=avk"; fi
+	HL_ENV="ASTEROIDZ_RENDERER=avk"
 	[ "$BREAK" = border-owner-monitor-clip ] && \
 		HL_ENV="$HL_ENV AZ_BORDER_OWNER_MONITOR_CLIP=1"
 	export HL_OUTDIR HL_ENV

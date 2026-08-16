@@ -1,19 +1,27 @@
 #!/usr/bin/env bash
-# avk-final-matrix.sh -- the qualification matrix, and the GLES floor.
+# avk-final-matrix.sh -- the qualification matrix.
 #
-# One fixture, six scenarios, two renderers. Everything else in contrib/
-# measures a mechanism; this measures whether the compositor makes its deadline
-# doing the things a desktop actually does, and whether AVK is at least as fast
-# as the renderer it replaces on the same work.
+# One fixture, five scenarios. Everything else in contrib/ measures a
+# mechanism; this measures whether the compositor makes its deadline doing the
+# things a desktop actually does.
+#
+# ── THE GLES FLOOR IS GONE, AND WAS NEVER ESTABLISHED ────────────────────
+#
+# This fixture used to run every scenario twice -- once on AVK, once on the
+# SceneFX/wlroots path -- and report the ratio as a floor: "AVK is at least as
+# fast as the renderer it replaces". That comparison is unavailable now, and it
+# was already declined on evidence before it became impossible: GPU timestamps
+# are an AVK instrument and the GLES arm emitted a neatly formatted
+# `NO TRACE ROWS` for every scenario. See docs/vulkan-native-architecture.md
+# for the four instruments that were tried and what each of them turned out to
+# be describing. Do not reintroduce a ratio column; there is nothing to divide.
 #
 # ── WHAT A BUDGET NUMBER MEANS HERE, AND WHERE IT DOES NOT ───────────────
 #
 # HEADLESS ABSOLUTE MICROSECONDS ARE NOT BUDGET EVIDENCE. The fixture GPU idles
 # near 50MHz and a frame that takes 15ms here takes a fraction of that on a
-# clocked display. So the headless run reports two things that DO transfer:
-#
-#   - the AVK/GLES RATIO, which is two renderers on one machine at one clock
-#   - the SHAPE: p99/p50, and whether the tail is continuous or bimodal
+# clocked display. What the headless run reports that DOES transfer is the
+# SHAPE: p99/p50, and whether the tail is continuous or bimodal.
 #
 # The over-budget columns are printed headless too, and they are labelled as
 # meaningless there. They mean something only in live mode (HL_LIVE=1), where
@@ -25,9 +33,8 @@
 # over another is not a comparison, and this milestone has produced two
 # retracted results that way -- once by mixing two outputs with different
 # budgets into one distribution, once by comparing cohorts with unequal
-# animation counts. So: every scenario runs the same number of actions in both
-# renderers, each renderer's frames are counted separately, and nothing is
-# aggregated across scenarios.
+# animation counts. So: every scenario runs the same number of actions, its
+# frames are counted separately, and nothing is aggregated across scenarios.
 #
 # ── CONSECUTIVE MISSES, NOT JUST A COUNT ─────────────────────────────────
 #
@@ -48,7 +55,7 @@ ACTIONS="${ACTIONS:-16}"
 # The DP-1 frame interval. Live mode should override it to the real one.
 BUDGET_US="${BUDGET_US:-6944}"
 SCENARIOS="${SCENARIOS:-idle move resize tag multiblur}"
-RENDERERS="${RENDERERS:-avk gles}"
+RENDERERS="avk"
 
 # titlebar off: its text does not render identically run to run, which is worth
 # 2,574 px of noise to any capture comparison. Nothing here compares captures,
@@ -80,8 +87,7 @@ run_scenario() { # run_scenario RENDERER SCENARIO
 	local dir="$OUTDIR/$rend-$sc"
 	mkdir -p "$dir"
 	HL_OUTDIR="$dir"; HL_WIDTH="$W"; HL_HEIGHT="$H"; HL_SCALE1="$SCALE"
-	if [ "$rend" = gles ]; then HL_ENV="ASTEROIDZ_RENDERER=wlr"
-	else HL_ENV="ASTEROIDZ_RENDERER=avk"; fi
+	HL_ENV="ASTEROIDZ_RENDERER=avk"
 	HL_ENV="$HL_ENV AZ_SHADOW_DITHER_AMP=0"
 	export HL_OUTDIR HL_ENV HL_WIDTH HL_HEIGHT HL_SCALE1
 	hl_start "$CFG" >/dev/null 2>&1
@@ -197,26 +203,6 @@ for s in scen:
                  waits if waits is not None else "-"))
     print()
 
-if len(rends) == 2:
-    print("  ── THE FLOOR: AVK against GLES, same machine, same workload ──")
-    print("  %-10s %10s %10s %8s   %s" % ("scenario","AVK p50","GLES p50","ratio","verdict"))
-    allpass = True
-    for s in scen:
-        a, g = table.get((s,"avk"), []), table.get((s,"gles"), [])
-        if not a or not g:
-            print("  %-10s %10s %10s %8s   %s" % (s,"-","-","-","NO DATA"))
-            allpass = False
-            continue
-        pa, pg = pct(a,.50), pct(g,.50)
-        # AVK >= GLES means AVK is not SLOWER. 1.10 of tolerance, because two
-        # renderers on one idling GPU do not repeat to the microsecond and a
-        # verdict that flips on noise is not a floor.
-        ok = pa <= pg * 1.10
-        allpass = allpass and ok
-        print("  %-10s %10.0f %10.0f %8.2fx   %s"
-              % (s, pa, pg, (pa/pg if pg else 0), "PASS" if ok else "FAIL"))
-    print()
-    print("  GLES FLOOR: %s" % ("PASS" if allpass else "FAIL"))
 PY
 echo
 echo "logs: $OUTDIR"

@@ -166,31 +166,47 @@ The scene is also the first to need `shadows_blur_background 1` and
 blur draws the cached wallpaper rather than sampling live, so it never picks the
 neighbour up — the same fault, invisible to a test that leaves the default on.
 
-`contrib/avk-frame-test.sh` is the eighth, and the only one that compares two
-*renderers* rather than two settings. It boots a real compositor twice with the
-same config and the same clients — once on SceneFX, once on asteroidz's own
-Vulkan engine (`ASTEROIDZ_RENDERER=avk`) — and asserts the frames agree.
+`contrib/avk-frame-test.sh` is the eighth. It **used to** compare two
+*renderers* — the same scene rendered by SceneFX and by AVK, asserting the two
+frames agreed. That oracle expired with SceneFX. The reference arm's last act
+was to fail two assertions by rendering every window as a flat block of
+titlebar colour, which is exactly the symptom the fixture exists to catch,
+reported against the oracle instead of the subject.
+
+It now boots **once**, and its oracle is arithmetic, computed from the
+compositor's own reported geometry:
 
 ```bash
-ASTEROIDZ=build-vk/asteroidz bash contrib/avk-frame-test.sh
-BREAK=border ASTEROIDZ=build-vk/asteroidz bash contrib/avk-frame-test.sh  # must FAIL
+bash contrib/avk-frame-test.sh
+BREAK=border   bash contrib/avk-frame-test.sh  # must FAIL
+BREAK=noborder bash contrib/avk-frame-test.sh  # must FAIL
+BREAK=hole     bash contrib/avk-frame-test.sh  # must FAIL
+BREAK=wrapper  bash contrib/avk-frame-test.sh  # must FAIL
 ```
 
-The critical detail is that it leaves `WLR_RENDERER=gles2`. If the two switches
-were coupled the test would be comparing the Vulkan renderer against itself;
-composited by Vulkan *while* wlroots holds GLES2 is the entire claim.
+`get all-clients` gives each window's box and `borderpx` is pinned in the
+fixture's own config; the surface rectangle and the border ring follow exactly.
+Twenty assertions, every one of them an exact pixel count or an exact zero,
+with no tolerance anywhere — at `border_radius 0` with effects off, every edge
+in the frame is on an integer coordinate. The claims are: each window's own
+colour fills its surface rect and appears nowhere else; the ring is painted all
+the way round with no wallpaper showing through it; no trim colour is painted
+inside the surface (the original defect, stated directly rather than as a pixel
+count copied off another renderer); and every pixel outside every window is
+exactly the wallpaper.
 
-The assertions are on named colours at named places, because the obvious weaker
-version — "AVK produced a frame" — passed on the build where every window
-rendered as a flat block of its own border colour. `BREAK=border` puts that bug
-back and the run must fail; it is the only break switch here that breaks
-anything, and the header comment says why the other one does not.
+Each of those has a falsifier and each falsifier's reach is written down in the
+fixture header — including that `BREAK=border` reaches the **unfocused window
+only**, because the scene walk emits its border rect after its content and the
+focused window's before, so with the clip gone the first fills over its surface
+and the second fills under it. That was read off `AVK_SCENE_DUMP`, not
+inferred. One assertion ("the window's own colour appears nowhere outside it")
+has **no** falsifier and claims no coverage: `AZ_BREAK_AVK_QUAD_SWAP_CORNERS`
+was tried for it and the suite came back 20/20.
 
-One difference is deliberately not asserted equal: effects, which the scene
-config turns off because they are M4. The wallpaper used to be the other one and
-is now asserted to the exact pixel — see
-[`docs/vulkan-native-architecture.md`](./vulkan-native-architecture.md) §5.4c
-for why it was missing and what fixed it.
+Effects stay off, but no longer because they were M4 — because shadow, blur and
+a corner radius each paint outside a window's box and would turn "is this pixel
+wallpaper" into a judgement call. They have their own fixtures.
 
 `contrib/avk-sync-test.sh` is the ninth, and it asserts on nothing you can see.
 
@@ -248,7 +264,6 @@ drawn is not.
 
 ```bash
 bash contrib/avk-crossoutput-border-test.sh
-ENGINE=gles bash contrib/avk-crossoutput-border-test.sh
 BREAK=border-owner-monitor-clip bash contrib/avk-crossoutput-border-test.sh  # must FAIL
 ```
 
@@ -350,7 +365,6 @@ That is what a user reports as flicker.
 cd contrib/wlrepaint && make          # once
 ASTEROIDZ=build/asteroidz bash contrib/avk-rounded-persist-test.sh
 BREAK=damage-hole ASTEROIDZ=build/asteroidz bash contrib/avk-rounded-persist-test.sh  # must FAIL
-ENGINE=gles       ASTEROIDZ=build/asteroidz bash contrib/avk-rounded-persist-test.sh
 BORDER=6          ASTEROIDZ=build/asteroidz bash contrib/avk-rounded-persist-test.sh
 BREAK=border-square-inner BORDER=6 ASTEROIDZ=build/asteroidz bash contrib/avk-rounded-persist-test.sh  # must FAIL
 ```
@@ -404,31 +418,32 @@ The suite also asserts the gradient is still *drawn* and still a *ramp*: a
 dirty check that suppressed every write into oblivion would also converge to
 zero frames, and would be a worse bug than the one being fixed.
 
-`contrib/avk-gradient-test.sh` (M4C) is written and **currently skips**, and
-that is the honest state rather than a placeholder. It would be the only place
-AVK's gradients meet the GLES reference itself rather than a reading of it —
-`tests/test-avk-gradient.c` is far stricter, but it compares AVK to a C
-transcription of `gradient.frag`, and a transcription can be wrong the same way
-twice.
+`contrib/avk-gradient-test.sh` (M4C) **is gone.** It compared AVK's overview
+vignette against the same scene rendered by SceneFX, and both halves of that
+have expired: SceneFX no longer exists as a renderer, and the vignette it
+wanted to measure is never created headlessly — it is guarded by the overview
+wallpaper node, and with the overview open, rects go 41 → 153 with **not one**
+carrying `has_gradient`. Re-measured on the AVK-only build: `gradient_draws`
+reads 0 with the overview closed *and* open. The fixture skipped with 0/0 for
+its entire life and had no oracle left to restore.
 
-```bash
-bash contrib/avk-gradient-test.sh      # skips, with the reason
-```
+The gradient coverage it was meant to provide is carried by two things that do
+not need a second renderer:
 
-Both routes to a gradient the compositor can actually draw are closed. Setting
-`border_gradient 1` makes the compositor unresponsive within seconds — a
-pre-existing bug, on both renderers and on a pre-M4C build, so `grim` and
-`amsg` both time out and nothing can be captured. The overview vignette is
-never created headlessly: it is guarded by the overview wallpaper node, and
-with the overview open, rects go 41 → 153 with **not one** carrying
-`has_gradient`. Both are traced in `docs/avk-effects.md`.
+- `tests/test-avk-gradient.c` — a CPU model. It compares AVK against an
+  independent C transcription of `gradient.frag` at every count, angle, origin
+  and mode. Stricter than the pixel comparison ever was, with the known
+  weakness that a transcription can be wrong the same way twice.
+- `contrib/avk-gradient-border-test.sh` — the pixel oracle, on the gradient an
+  actual desktop turns on. Self-consistent (off arm vs on arm, same build),
+  with three falsifiers of its own including the repaint-storm one.
 
-The fixture nearly reported a pass anyway. Its edge-darkening premise measured
-21.0 on **both** engines with no gradient on screen at all — the overview dims
-its own background, that dimming is a plain rect, and the two renderers agree
-about it exactly. Only the `gradient_draws == 0` counter caught it. A premise
-that a non-gradient satisfies is not a premise, which is why the script now
-stops at that counter instead of scoring the comparison below it.
+The deleted fixture nearly reported a pass, and the reason is worth keeping:
+its edge-darkening premise measured 21.0 on **both** engines with no gradient
+on screen at all — the overview dims its own background, that dimming is a
+plain rect, and the two renderers agreed about it exactly. Only the
+`gradient_draws == 0` counter caught it. A premise that a non-gradient
+satisfies is not a premise.
 
 `contrib/avk-border-test.sh` (M4B) is the border's own suite: seventeen
 configurations of radius, border width, output scale, transform, opacity and
@@ -438,7 +453,6 @@ the client's edge is CONTINUOUS.
 ```bash
 bash contrib/avk-border-test.sh                              # all cases
 CASES="base scale15 titlebar" bash contrib/avk-border-test.sh
-ENGINE=gles  bash contrib/avk-border-test.sh                 # the reference
 BREAK=border-square-inner bash contrib/avk-border-test.sh    # must FAIL
 VKDEBUG=1    bash contrib/avk-border-test.sh                 # + sync validation
 BORDER_DEBUG=1 CASES=base bash contrib/avk-border-test.sh    # log the geometry
