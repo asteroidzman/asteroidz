@@ -45,6 +45,26 @@
  *   modifier that is renderable but not samplable would be a promise the
  *   sampler cannot keep.
  *
+ *   Pairs that are importable only up to some SIZE. This one cost a live
+ *   session. On this Navi31, RADV reports the displayable-DCC modifiers --
+ *   the two- and three-plane `...,DCC,DCC_MAX_COMPRESSED_BLOCK=128B,...`
+ *   ones -- as importable, and then answers
+ *   vkGetPhysicalDeviceImageFormatProperties2 with maxExtent 2560x2560 while
+ *   every other modifier for the same format answers 16384x16384. Advertising
+ *   them is a promise with a size condition attached, and linux-dmabuf
+ *   feedback has nowhere to put a size: the tranche is a list of
+ *   format/modifier pairs and nothing else. So a client reads the feedback,
+ *   picks a pair it was told about, allocates at the size of the output, and
+ *   the import fails. AVK then drops the draw command, and what the user sees
+ *   is the wallpaper where the window should be -- no crash, no protocol
+ *   error, no black rectangle, just an absent window.
+ *
+ *   That is exactly what a nested gamescope does the moment Steam launches a
+ *   title: the Big Picture UI is small enough to import, the game switches
+ *   the outer swapchain to the full output size in 10-bit, and the window
+ *   vanishes. Nothing about it is specific to gamescope -- it is specific to
+ *   any client that believes the feedback and then fills the screen.
+ *
  *   Formats whose colour handling is not implemented. See az_dmabuf_advertise
  *   below: import capability and correct interpretation are separate claims,
  *   and only the second one is a promise to the user.
@@ -81,36 +101,109 @@ static bool az_dmabuf_format_advertisable(const struct avk_drm_format *fmt,
 
 /*
  * The composition set: every format/modifier pair AVK has proved it can
- * import and sample.
+ * import and sample AT ANY SIZE THE DEVICE ALLOWS.
+ *
+ * `required` is the extent the promise has to hold up to -- the caller passes
+ * the device's own maxImageDimension2D, because that is the largest image a
+ * client could legally ask its allocator for and the protocol gives the
+ * compositor no way to say "but not that big". A smaller bar would only move
+ * the cliff: it would still be a size the feedback cannot express, and the
+ * failure at that size is still an invisible window.
  *
  * Returns false having logged, and leaves `out` finished, on failure. A
  * compositor that cannot describe its own capabilities must not fall back to
  * describing someone else's.
  */
 static uint32_t az_dmabuf_withheld_pairs;
+static uint32_t az_dmabuf_size_restricted_pairs;
+
+/*
+ * BREAK SWITCH: advertise size-restricted pairs, as the compositor did before
+ * this rule existed.
+ *
+ * A test that never saw the defect is not a test. With this set, a nested
+ * gamescope going full-screen at 10-bit gets its buffer refused and its window
+ * disappears -- which is what the live session did, and what the fixture below
+ * this comment reproduces without a GPU.
+ */
+static bool az_dmabuf_advertise_size_restricted(void) {
+	if (getenv("AZ_DMABUF_ADVERTISE_SIZE_RESTRICTED") == NULL) {
+		return false;
+	}
+	wlr_log(WLR_ERROR, "AZ_DMABUF_ADVERTISE_SIZE_RESTRICTED=1 -- pairs that "
+		"cannot be imported at full size will be advertised anyway");
+	return true;
+}
 
 static bool az_dmabuf_composition_formats(const struct avk_format_table *table,
-		struct wlr_drm_format_set *out) {
+		VkExtent2D required, struct wlr_drm_format_set *out) {
 	*out = (struct wlr_drm_format_set){0};
+	const bool allow_restricted = az_dmabuf_advertise_size_restricted();
 
 	uint32_t pairs = 0, skipped_formats = 0, skipped_pairs = 0;
+	az_dmabuf_size_restricted_pairs = 0;
 	for (uint32_t i = 0; i < table->count; i++) {
 		const struct avk_format_caps *caps = &table->formats[i];
 		const char *why_not = NULL;
+		char name[64];
+		avk_drm_format_name(caps->format->drm, name, sizeof(name));
 		if (!az_dmabuf_format_advertisable(caps->format, &why_not)) {
-			char name[64];
-			avk_drm_format_name(caps->format->drm, name, sizeof(name));
 			wlr_log(WLR_INFO, "dmabuf: not advertising %s -- %s", name, why_not);
 			skipped_formats++;
 			skipped_pairs += caps->texture_mod_count;
 			continue;
 		}
+		/*
+		 * TWO PASSES, because "drop the restricted pairs" and "drop the
+		 * format" are different answers and only the first one is wanted.
+		 * A format whose every modifier is size-restricted still has to be
+		 * advertised -- withholding XRGB8888 entirely would break every
+		 * client on the machine to fix one of them -- but it is advertised
+		 * knowingly, and says so.
+		 */
+		uint32_t restricted = 0, usable = 0;
 		for (uint32_t m = 0; m < caps->texture_mod_count; m++) {
-			uint64_t mod = caps->texture_mods[m].modifier;
+			const struct avk_modifier_caps *mc = &caps->texture_mods[m];
+			if (mc->modifier == DRM_FORMAT_MOD_INVALID) {
+				continue;
+			}
+			if (mc->max_extent.width < required.width
+					|| mc->max_extent.height < required.height) {
+				restricted++;
+			} else {
+				usable++;
+			}
+		}
+		const bool keep_restricted = allow_restricted || usable == 0;
+		if (restricted > 0 && usable == 0) {
+			wlr_log(WLR_ERROR, "dmabuf: every modifier for %s is importable "
+				"only below %ux%u; advertising them anyway because withholding "
+				"the format outright would be worse -- a client that allocates "
+				"larger than that will not be composited", name,
+				required.width, required.height);
+		}
+		for (uint32_t m = 0; m < caps->texture_mod_count; m++) {
+			const struct avk_modifier_caps *mc = &caps->texture_mods[m];
+			uint64_t mod = mc->modifier;
 			/* Belt and braces: the table cannot contain it, and if it ever
 			 * did, this is the line that stops it reaching a client. */
 			if (mod == DRM_FORMAT_MOD_INVALID) {
 				continue;
+			}
+			bool too_small = mc->max_extent.width < required.width
+				|| mc->max_extent.height < required.height;
+			if (too_small) {
+				az_dmabuf_size_restricted_pairs++;
+				if (!keep_restricted) {
+					char mod_name[80];
+					avk_drm_modifier_name(mod, mod_name, sizeof(mod_name));
+					wlr_log(WLR_INFO, "dmabuf: not advertising %s with %s -- "
+						"importable only up to %ux%u, and the protocol has "
+						"nowhere to say so", name, mod_name,
+						mc->max_extent.width, mc->max_extent.height);
+					skipped_pairs++;
+					continue;
+				}
 			}
 			if (!wlr_drm_format_set_add(out, caps->format->drm, mod)) {
 				wlr_log(WLR_ERROR, "dmabuf: failed to build the composition "
@@ -136,9 +229,11 @@ static bool az_dmabuf_composition_formats(const struct avk_format_table *table,
 	wlr_log(WLR_INFO, "dmabuf: composition set from AVK: %zu formats, %"
 		PRIu32 " format/modifier pairs advertised; %" PRIu32 " formats / %"
 		PRIu32 " pairs importable but withheld (see the lines above), out of "
-		"%" PRIu32 " texture pairs AVK probed",
+		"%" PRIu32 " texture pairs AVK probed; %" PRIu32 " pairs are importable "
+		"only below %ux%u",
 		out->len, pairs, skipped_formats, skipped_pairs,
-		table->texture_pair_count);
+		table->texture_pair_count, az_dmabuf_size_restricted_pairs,
+		required.width, required.height);
 	az_dmabuf_withheld_pairs = skipped_pairs;
 	return true;
 }

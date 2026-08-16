@@ -1699,9 +1699,53 @@ compositor knows its capabilities" with nothing AVK-specific in it.
 | `DRM_FORMAT_MOD_INVALID` | a fallback to cope with, not a modifier to ask a client for. The GBM on this driver cannot recover implicit modifiers, so an implicit buffer takes the copy path — advertising it would request that deliberately |
 | render-only modifiers | client content is sampled; `texture_mods` is the right array |
 | NV12, YU12, P010 | importable, but range/matrix/transfer are not implemented (M5). Advertising them would advertise a bug |
+| size-restricted pairs | importable, but only below some extent — see below |
 
-Live: 123 advertised + 15 withheld = 138 probed, and the test asserts that
-equation so an unexplained gap fails rather than passing quietly.
+Live on Navi31: 81 advertised + 57 withheld = 138 probed, and the test asserts
+that equation so an unexplained gap fails rather than passing quietly.
+
+### A pair that is importable only up to a size is not importable
+
+RADV reports the displayable-DCC modifiers — the two- and three-plane
+`...,DCC,DCC_MAX_COMPRESSED_BLOCK=128B,...` ones — as importable, and then
+answers `vkGetPhysicalDeviceImageFormatProperties2` with
+
+```text
+maxExtent  2560x2560     the DCC modifiers        (42 of 138 pairs here)
+maxExtent  16384x16384   every other modifier for the same format
+```
+
+linux-dmabuf feedback is a list of format/modifier pairs and nothing else.
+There is no field for a size. So advertising one of those pairs tells a client
+something that stops being true at a size the *client* picks — and the client
+picks the size of the output.
+
+What happens then is worse than an error. `avk_dmabuf_import()` refuses the
+buffer, `az_avk_build_frame()` drops the draw command, and the pixels behind
+the window show through: no crash, no protocol error, no black rectangle, just
+a window that is not there. The multi-plane copy fallback does not apply
+either — `import_by_copy()` is single-plane only, and every restricted pair
+here has two or three planes.
+
+**Found live**, and this is the shape it takes in practice: a nested gamescope
+running Steam. The Big Picture UI is small enough to import; the moment Steam
+launches a title gamescope switches its outer swapchain to the full output size
+in 10-bit and picks `AB30:0x0200000028a6bb04` — a pair it was told about — and
+the game's window disappears from the desktop while every process involved
+stays alive and healthy.
+
+So the bar is now the device's own `maxImageDimension2D`: a pair is advertised
+only if it is importable at any size the device would let a client ask for.
+Not the largest output — feedback is built at start-up, before any output
+exists, and the user can plug in a bigger monitor afterwards.
+
+A format whose *every* modifier is restricted is still advertised, loudly:
+withholding `XRGB8888` outright would break every client on the machine to fix
+one of them.
+
+`AZ_DMABUF_ADVERTISE_SIZE_RESTRICTED=1` restores the old behaviour, and both
+`tests/test-dmabuf-feedback.c` and `contrib/avk-dmabuf-feedback-test.sh` are
+red under it.
 
 ### What this did NOT change, measured
 

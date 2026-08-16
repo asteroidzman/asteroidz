@@ -66,8 +66,22 @@ static struct wlr_linux_dmabuf_v1 *az_dmabuf_create_from_avk(
 		return NULL;
 	}
 
+	/*
+	 * The size the advertisement has to hold up to.
+	 *
+	 * The device's own 2D limit, not the largest output: feedback is built
+	 * once, at start-up, before any output exists and long before the user
+	 * plugs in a bigger monitor -- and a client is entitled to allocate any
+	 * size the device permits regardless of what is on screen. Anything
+	 * smaller here would be a bar that a later output could walk past.
+	 */
+	const VkExtent2D required = {
+		.width = avk.device->caps.max_image_dimension_2d,
+		.height = avk.device->caps.max_image_dimension_2d,
+	};
 	struct wlr_drm_format_set composition;
-	if (!az_dmabuf_composition_formats(&avk.importer.table, &composition)) {
+	if (!az_dmabuf_composition_formats(&avk.importer.table, required,
+			&composition)) {
 		return NULL;
 	}
 
@@ -167,6 +181,34 @@ static cJSON *az_dmabuf_feedback_json(void) {
 		(double)az_dmabuf_withheld_pairs);
 	cJSON_AddNumberToObject(o, "avk_texture_pairs_probed",
 		(double)avk.importer.table.texture_pair_count);
+	/*
+	 * How many of AVK's importable pairs carry a size condition the protocol
+	 * cannot express. Reported rather than asserted, so a test can check the
+	 * rule -- "none of these is in advertised_composition" -- against the set
+	 * clients were actually told about.
+	 */
+	cJSON_AddNumberToObject(o, "size_restricted_pairs",
+		(double)az_dmabuf_size_restricted_pairs);
+	cJSON_AddNumberToObject(o, "required_extent",
+		(double)avk.device->caps.max_image_dimension_2d);
+	cJSON *restricted = cJSON_CreateArray();
+	for (uint32_t i = 0; i < avk.importer.table.count; i++) {
+		const struct avk_format_caps *caps = &avk.importer.table.formats[i];
+		for (uint32_t m = 0; m < caps->texture_mod_count; m++) {
+			const struct avk_modifier_caps *mc = &caps->texture_mods[m];
+			if (mc->max_extent.width >= avk.device->caps.max_image_dimension_2d
+					&& mc->max_extent.height
+						>= avk.device->caps.max_image_dimension_2d) {
+				continue;
+			}
+			char pair[110], name[64];
+			avk_drm_format_name(caps->format->drm, name, sizeof(name));
+			snprintf(pair, sizeof(pair), "%s:0x%016" PRIx64 ":%ux%u", name,
+				mc->modifier, mc->max_extent.width, mc->max_extent.height);
+			cJSON_AddItemToArray(restricted, cJSON_CreateString(pair));
+		}
+	}
+	cJSON_AddItemToObject(o, "avk_size_restricted", restricted);
 	az_dmabuf_add_format_set(o, "advertised_composition",
 		&az_dmabuf_advertised.composition);
 

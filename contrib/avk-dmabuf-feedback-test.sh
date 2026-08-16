@@ -21,6 +21,23 @@
 #   scanout ⊆ AVK ∩ KMS            no impossible intersection
 #   main_device == AVK's DRM node  not the compatibility renderer's
 #   withheld pairs are accounted   every omission has a logged reason
+#   advertised ∩ size-restricted   empty: a pair that stops being importable
+#                                  at some size is a promise the protocol has
+#                                  no field to qualify
+#
+# THE SIZE RULE, AND WHY IT IS HERE
+#
+# RADV reports the displayable-DCC modifiers as importable and then answers
+# maxExtent 2560x2560 for them, while every other modifier for the same format
+# answers 16384x16384. A client reads the feedback, picks one, allocates at the
+# size of the output, and AVK refuses the import -- so the draw command is
+# dropped and the window is not on screen at all. That is what a nested
+# gamescope did the moment Steam launched a title: the Big Picture UI imported
+# fine, the game switched the outer swapchain to full-size 10-bit, and the
+# window vanished with no crash and no protocol error.
+#
+# BREAK=dmabuf-advertise-restricted puts those pairs back and this fixture must
+# go red on the intersection assertion.
 #
 # WHY THE BREAK IS NOT ENOUGH ON ITS OWN
 #
@@ -44,6 +61,8 @@ HL_OUTDIR="$OUTDIR"
 HL_OUTPUTS=2
 HL_ENV="ASTEROIDZ_RENDERER=avk"
 [ "$BREAK" = dmabuf-feedback-gles ] && HL_ENV="$HL_ENV AZ_DMABUF_FEEDBACK_GLES=1"
+[ "$BREAK" = dmabuf-advertise-restricted ] && \
+	HL_ENV="$HL_ENV AZ_DMABUF_ADVERTISE_SIZE_RESTRICTED=1"
 export HL_OUTDIR HL_OUTPUTS HL_ENV
 
 echo "binary under test: $HL_ASTEROIDZ"
@@ -101,14 +120,35 @@ for o in d["outputs"]:
     if not sc <= (imp & kms):
         worst = "false"
 print("scanout", worst)
+
+# The size rule. avk_size_restricted entries carry their extent as a third
+# field; strip it back to format:modifier to compare against what was
+# advertised.
+restricted = set(":".join(p.split(":")[:2]) for p in d.get("avk_size_restricted", []))
+leaked = adv & restricted
+print("sizerule", "true" if not leaked else "false", len(leaked), len(restricted))
 PY
 read -r _ SUBSET NBAD < <(grep "^subset" "$OUTDIR/checks.txt")
 read -r _ MODINV < <(grep "^modinvalid" "$OUTDIR/checks.txt")
 read -r _ SCAN < <(grep "^scanout" "$OUTDIR/checks.txt")
+read -r _ SIZERULE NLEAK NRESTRICT < <(grep "^sizerule" "$OUTDIR/checks.txt")
 
 hl_assert "every advertised pair is one AVK can import ($NBAD bad)" "$SUBSET" "true"
 hl_assert "DRM_FORMAT_MOD_INVALID is never advertised" "$MODINV" "true"
 hl_assert "every scanout pair is AVK-importable AND KMS-scannable" "$SCAN" "true"
+
+# THE PREMISE FIRST. On a GPU that reports no size-restricted pair at all the
+# assertion below is vacuous, and a green run would mean nothing -- say so
+# instead of counting it as coverage.
+echo "  $NRESTRICT importable pairs carry a size restriction; $NLEAK advertised"
+if [ "$NRESTRICT" -eq 0 ]; then
+	echo "  (this GPU reports no size-restricted pair; the size rule is NOT"
+	echo "   exercised here -- tests/test-dmabuf-feedback covers it"
+	echo "   synthetically, and that is where it is actually asserted)"
+else
+	hl_assert "no size-restricted pair reaches a client ($NLEAK leaked)" \
+		"$SIZERULE" "true"
+fi
 
 # The main device must be AVK's own DRM node. Read it back from the log, which
 # names the device AVK actually selected, rather than assuming they agree.

@@ -68,15 +68,29 @@ int main(void) {
 	/* ── the AVK set: A, B, C -- plus MOD_INVALID, which no driver reports
 	 * but which must be filtered even if one ever did, and a YCbCr format
 	 * that is importable but whose colour handling is not implemented. ── */
+	/*
+	 * BIG is "importable at any size the device allows"; the bar the model is
+	 * given below is exactly BIG. Stating it on every modifier is not
+	 * ceremony: a zeroed max_extent means "importable up to 0x0", and a test
+	 * that left it zero would be asserting against a table in which nothing is
+	 * advertisable at all.
+	 */
+	const VkExtent2D BIG = { 16384, 16384 };
 	struct avk_modifier_caps rgb_mods[] = {
-		{ .modifier = MOD_A }, { .modifier = MOD_B }, { .modifier = MOD_C },
-		{ .modifier = DRM_FORMAT_MOD_INVALID },
+		{ .modifier = MOD_A, .max_extent = BIG },
+		{ .modifier = MOD_B, .max_extent = BIG },
+		{ .modifier = MOD_C, .max_extent = BIG },
+		{ .modifier = DRM_FORMAT_MOD_INVALID, .max_extent = BIG },
 	};
-	struct avk_modifier_caps ycbcr_mods[] = { { .modifier = MOD_A } };
+	struct avk_modifier_caps ycbcr_mods[] = {
+		{ .modifier = MOD_A, .max_extent = BIG },
+	};
 	/* Render-only modifiers must not leak into the composition set: client
 	 * content is sampled, and this is the array that would be used if the
 	 * wrong field were read. */
-	struct avk_modifier_caps render_only[] = { { .modifier = MOD_D } };
+	struct avk_modifier_caps render_only[] = {
+		{ .modifier = MOD_D, .max_extent = BIG },
+	};
 
 	struct avk_format_caps formats[] = {
 		{ .format = &fmt_rgb, .texture_mods = rgb_mods, .texture_mod_count = 4,
@@ -89,7 +103,7 @@ int main(void) {
 	};
 
 	struct wlr_drm_format_set out;
-	CHECK(az_dmabuf_composition_formats(&table, &out),
+	CHECK(az_dmabuf_composition_formats(&table, BIG, &out),
 		"the model produces a set from AVK's table");
 
 	/* THE ASSERTION THIS FILE EXISTS FOR. C is advertised because AVK has it;
@@ -125,8 +139,87 @@ int main(void) {
 		.formats = none, .count = 1, .texture_pair_count = 1,
 	};
 	struct wlr_drm_format_set empty;
-	CHECK(!az_dmabuf_composition_formats(&only_ycbcr, &empty),
+	CHECK(!az_dmabuf_composition_formats(&only_ycbcr, BIG, &empty),
 		"a table with nothing advertisable is refused, not sent as an empty set");
+
+	/*
+	 * ── SIZE-RESTRICTED PAIRS ───────────────────────────────────────────
+	 *
+	 * The live defect, reduced to a table. On Navi31 the displayable-DCC
+	 * modifiers report maxExtent 2560x2560 while every other modifier for the
+	 * same format reports 16384x16384. linux-dmabuf feedback is a list of
+	 * format/modifier pairs with no size field, so advertising one of those is
+	 * telling a client something that stops being true at a size the client
+	 * chooses -- and a nested gamescope chooses the size of the output the
+	 * moment Steam starts a game. The import then fails, AVK drops the draw,
+	 * and the window is simply not there.
+	 *
+	 * MOD_C stands in for the DCC pair. It must not be advertised, and A and B
+	 * must survive: withholding the restricted pair is the fix, withholding
+	 * the format is not.
+	 */
+	printf("size-restricted modifiers\n");
+	struct avk_modifier_caps mixed_mods[] = {
+		{ .modifier = MOD_A, .max_extent = BIG },
+		{ .modifier = MOD_B, .max_extent = BIG },
+		{ .modifier = MOD_C, .max_extent = { 2560, 2560 } },
+	};
+	struct avk_format_caps mixed_fmt[] = {
+		{ .format = &fmt_rgb, .texture_mods = mixed_mods,
+		  .texture_mod_count = 3 },
+	};
+	struct avk_format_table mixed = {
+		.formats = mixed_fmt, .count = 1, .texture_pair_count = 3,
+	};
+	struct wlr_drm_format_set mixed_out;
+	CHECK(az_dmabuf_composition_formats(&mixed, BIG, &mixed_out),
+		"a table with a size-restricted pair still produces a set");
+	CHECK(!wlr_drm_format_set_has(&mixed_out, DRM_FORMAT_XRGB8888, MOD_C),
+		"a pair importable only below the required extent is NOT advertised");
+	CHECK(wlr_drm_format_set_has(&mixed_out, DRM_FORMAT_XRGB8888, MOD_A) &&
+		wlr_drm_format_set_has(&mixed_out, DRM_FORMAT_XRGB8888, MOD_B),
+		"the unrestricted pairs of the same format survive");
+	CHECK(az_dmabuf_size_restricted_pairs == 1,
+		"the restricted pair is counted, not silently dropped (got %" PRIu32 ")",
+		az_dmabuf_size_restricted_pairs);
+	wlr_drm_format_set_finish(&mixed_out);
+
+	/*
+	 * A format with NOTHING but restricted modifiers is the one case where
+	 * withholding is worse than advertising: dropping XRGB8888 outright would
+	 * take every client on the machine down to fix one. It is advertised, and
+	 * the log says so.
+	 */
+	struct avk_modifier_caps small_only[] = {
+		{ .modifier = MOD_A, .max_extent = { 2560, 2560 } },
+	};
+	struct avk_format_caps small_fmt[] = {
+		{ .format = &fmt_rgb, .texture_mods = small_only,
+		  .texture_mod_count = 1 },
+	};
+	struct avk_format_table small = {
+		.formats = small_fmt, .count = 1, .texture_pair_count = 1,
+	};
+	struct wlr_drm_format_set small_out;
+	CHECK(az_dmabuf_composition_formats(&small, BIG, &small_out),
+		"a format whose every modifier is restricted is still advertised");
+	CHECK(wlr_drm_format_set_has(&small_out, DRM_FORMAT_XRGB8888, MOD_A),
+		"...with the restricted modifier, because the alternative is no format");
+	wlr_drm_format_set_finish(&small_out);
+
+	/*
+	 * THE BREAK. With the switch set the model must go back to advertising
+	 * the restricted pair -- if this passes, the assertions above are checking
+	 * something that was never conditional and the fixture proves nothing.
+	 */
+	setenv("AZ_DMABUF_ADVERTISE_SIZE_RESTRICTED", "1", 1);
+	struct wlr_drm_format_set broken_out;
+	CHECK(az_dmabuf_composition_formats(&mixed, BIG, &broken_out),
+		"break: the model still produces a set");
+	CHECK(wlr_drm_format_set_has(&broken_out, DRM_FORMAT_XRGB8888, MOD_C),
+		"break: AZ_DMABUF_ADVERTISE_SIZE_RESTRICTED=1 restores the defect");
+	wlr_drm_format_set_finish(&broken_out);
+	unsetenv("AZ_DMABUF_ADVERTISE_SIZE_RESTRICTED");
 
 	/* ── the device: AVK's node, whatever the compatibility renderer uses ─ */
 	printf("main device selection\n");

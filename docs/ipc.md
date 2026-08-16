@@ -430,10 +430,13 @@ on trust:
 ```json
 { "source": "avk",                 // or "wlr_renderer" in GLES mode
   "main_device": "226:128",        // AVK's DRM node, not the renderer's
-  "advertised_pairs": 123, "withheld_pairs": 15,
+  "advertised_pairs": 81, "withheld_pairs": 57,
   "avk_texture_pairs_probed": 138,
+  "size_restricted_pairs": 42,     // importable, but not at every size
+  "required_extent": 16384,        // the size the promise must hold up to
   "advertised_composition": ["XR24 (0x34325258):0x0200000028a01b04", ...],
   "avk_importable":         [...],  // rebuilt from the table, not a copy
+  "avk_size_restricted":    ["AB30 (0x30334241):0x0200000028a6bb04:2560x2560"],
   "outputs": [{"name":"DP-1","kms_scanout":[...],"advertised_scanout":[...]}] }
 ```
 
@@ -444,7 +447,16 @@ advertised_composition  ⊆  avk_importable
 advertised_scanout      ⊆  avk_importable ∩ kms_scanout
 advertised + withheld   =  avk_texture_pairs_probed
 DRM_FORMAT_MOD_INVALID  ∉  advertised_composition
+avk_size_restricted     ∩  advertised_composition  =  ∅
 ```
+
+`avk_size_restricted` entries carry the extent as a third field. A pair listed
+there is one the driver says it can import and then refuses above some size —
+on Navi31 that is every displayable-DCC modifier, importable only to
+2560x2560. Feedback has no size field, so such a pair is a promise that breaks
+the moment a client fills the screen: the import fails, the draw is dropped,
+and the window is simply absent. They are withheld; see
+`docs/vulkan-native-architecture.md` §5.5.
 
 `avk_importable` is rebuilt from the format table at query time rather than
 copied from what was advertised — otherwise the subset check would be
