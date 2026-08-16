@@ -257,6 +257,13 @@ struct az_avk {
 	/* Frames that showed the previous generation instead of blocking, and the
 	 * microseconds of event loop that decision gave back. */
 	uint64_t shm_stale_frames;
+	/* Why a frame blocked anyway: the buffer was never pooled (so it has no
+	 * siblings to ask about), or the pool held nothing usable. Split because
+	 * 336 frames found a previous generation and 307 did not, and those two
+	 * have different causes and different fixes. */
+	uint64_t shm_stale_no_pool;
+	uint64_t shm_stale_no_sibling;
+	uint64_t shm_stale_pool_size_sum, shm_stale_pool_samples;
 	/* Buffers the walker asked to resolve, and nodes it discarded before
 	 * asking because they cannot touch this output at all. */
 	uint64_t buffer_resolve_attempts;
@@ -1439,12 +1446,15 @@ out:
 static struct avk_image *az_avk_shm_sibling_image(
 		const struct az_avk_buffer *entry) {
 	if (entry->pool_head == NULL) {
+		avk.shm_stale_no_pool++;
 		return NULL;
 	}
 	struct avk_image *best = NULL;
 	uint64_t best_gen = 0;
+	uint32_t seen = 0;
 	struct az_avk_buffer *sib;
 	wl_list_for_each(sib, entry->pool_head, pool_link) {
+		seen++;
 		if (sib == entry || sib->image == NULL || sib->uploaded_generation == 0
 				|| sib->buffer == NULL) {
 			continue;
@@ -1457,6 +1467,15 @@ static struct avk_image *az_avk_shm_sibling_image(
 			best_gen = sib->uploaded_generation;
 			best = sib->image;
 		}
+	}
+	/* How big the pool was when the answer was no. A pool of one is a client
+	 * whose old buffers are already gone; a pool of many that still yields
+	 * nothing means the siblings are all unuploaded too, and the copies are
+	 * simply not keeping up. */
+	if (best == NULL) {
+		avk.shm_stale_no_sibling++;
+		avk.shm_stale_pool_size_sum += seen;
+		avk.shm_stale_pool_samples++;
 	}
 	return best;
 }
@@ -5969,6 +5988,13 @@ static cJSON *az_avk_stats_json(void) {
 		(double)(avk.shm_staging_wait_ns_max / 1000));
 	cJSON_AddNumberToObject(o, "shm_stale_frames",
 		(double)avk.shm_stale_frames);
+	cJSON_AddNumberToObject(o, "shm_stale_no_pool",
+		(double)avk.shm_stale_no_pool);
+	cJSON_AddNumberToObject(o, "shm_stale_no_sibling",
+		(double)avk.shm_stale_no_sibling);
+	cJSON_AddNumberToObject(o, "shm_stale_pool_avg",
+		(double)(avk.shm_stale_pool_samples
+			? avk.shm_stale_pool_size_sum / avk.shm_stale_pool_samples : 0));
 	{
 		uint64_t packed = 0, stolen = 0;
 		avk_upload_worker_counts(avk.upload_worker, &packed, &stolen);
@@ -7432,6 +7458,9 @@ static void az_avk_stats_reset(void) {
 	avk.shm_async_join_ns_max = 0;
 	avk.shm_staging_waits = 0;
 	avk.shm_stale_frames = 0;
+	avk.shm_stale_no_pool = 0;
+	avk.shm_stale_no_sibling = 0;
+	avk.shm_stale_pool_size_sum = avk.shm_stale_pool_samples = 0;
 	avk.shm_staging_wait_ns_max = avk.shm_staging_wait_ns_sum = 0;
 	avk.shm_async_join_ns_sum = 0;
 	avk.buffer_resolve_attempts = 0;
