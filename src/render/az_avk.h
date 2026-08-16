@@ -42,7 +42,6 @@
 #include "vulkan/dmabuf/avk_dmabuf.h"
 #include "vulkan/effect/avk_blur_cache.h"
 #include "vulkan/image/avk_upload.h"
-#include "vulkan/image/avk_upload_worker.h"
 #include "vulkan/scene/avk_render.h"
 #include "vulkan/scene/avk_scene.h"
 #include "vulkan/sync/avk_sync.h"
@@ -209,41 +208,6 @@ struct az_avk {
 	 * uploads are worth on this workload. */
 	uint64_t shm_damage_pixels;
 	uint64_t shm_committed_pixels;
-
-	/*
-	 * ── HOW LONG A CLIENT'S COMMIT HELD THE EVENT LOOP ───────────────────
-	 *
-	 * The frame path has counters for the interval it is not in poll(). The
-	 * CLIENT REQUEST path had none, and that is where the block actually was:
-	 * a wl_shm commit ran a synchronous memcpy of the client's buffer --
-	 * 6.5 MB on the window that produced this, 26.5 GB in one session, ~27%
-	 * of all perf samples -- inside az_avk_surface_commit(), while libinput's
-	 * fds went unread and libinput reported "event processing lagging behind
-	 * by 47-53ms" on the pointer AND the keyboard.
-	 *
-	 * `shm_commit_ns_*` is the commit handler itself, call to return: THE
-	 * number this work exists to collapse.
-	 *
-	 * `shm_copy_ns_*` is main-thread time inside the pixel copy WHEREVER it
-	 * happens -- the commit handler, the frame path, or a join that had to
-	 * wait for the worker. Kept separately because moving the copy from the
-	 * commit handler to the frame handler would improve the first number
-	 * while blocking the loop for exactly as long, and that would be a lie
-	 * this file has no business telling.
-	 */
-	uint64_t shm_commit_ns_max, shm_commit_ns_sum, shm_commit_samples;
-	uint64_t shm_commit_over_5ms;
-	uint64_t shm_copy_ns_max, shm_copy_ns_sum, shm_copy_samples;
-
-	/* Copies handed to the worker, copies the main thread still did itself,
-	 * and joins that actually had to wait (with what the waiting cost). A
-	 * join that never waits is the steady state; one that waits is the worker
-	 * not having finished before the frame needed the pixels. */
-	uint64_t shm_async_jobs;
-	uint64_t shm_async_bytes;
-	uint64_t shm_sync_copies;
-	uint64_t shm_async_joins, shm_async_join_waits;
-	uint64_t shm_async_join_ns_max, shm_async_join_ns_sum;
 	/* Buffers the walker asked to resolve, and nodes it discarded before
 	 * asking because they cannot touch this output at all. */
 	uint64_t buffer_resolve_attempts;
@@ -295,20 +259,6 @@ struct az_avk {
 	uint64_t shm_upload_bytes;
 	uint64_t client_images_cached;   /* live entries, not a total */
 	uint64_t output_targets;         /* live imported scan-out images */
-
-	/*
-	 * The thread that does the SHM memcpy, and the entries with a copy
-	 * currently in flight on it.
-	 *
-	 * NULL when the thread could not be started or AZ_AVK_SYNC_UPLOAD=1 asked
-	 * for the old behaviour. Both cases must work, so nothing below may assume
-	 * a worker exists -- the synchronous path stays the fallback rather than
-	 * becoming dead code, which is also what makes the A/B measurable in one
-	 * binary.
-	 */
-	struct avk_upload_worker *upload_worker;
-	struct wl_list shm_jobs;              /* az_avk_buffer.job_link */
-	struct wl_event_source *upload_source;
 
 	/*
 	 * The cursor, which is its own composition problem.
@@ -573,36 +523,6 @@ struct az_avk_buffer {
 	pixman_region32_t pending_damage;
 	bool pending_full;
 
-	/*
-	 * ── THE COPY THAT IS HAPPENING SOMEWHERE ELSE ────────────────────────
-	 *
-	 * Non-NULL while a worker thread is copying this buffer's pixels into
-	 * `upload`'s staging. The job carries the plan built at commit time, so
-	 * `job_generation` -- not content_generation -- is what the image will
-	 * hold once it settles; a commit landing while the job runs bumps the
-	 * generation past it and is owed a second job.
-	 *
-	 * While a job is in flight this entry holds TWO things it must give back:
-	 * a wlr_buffer_lock() and an open wlr_buffer_begin_data_ptr_access().
-	 * Both are load-bearing, for different reasons:
-	 *
-	 *   the LOCK, because wlr_compositor unlocks surface->current.buffer
-	 *   immediately after emitting the commit signal -- deliberately, so a
-	 *   wl_shm buffer can be released to the client the moment the compositor
-	 *   has copied it. Without the lock the client is free to draw into the
-	 *   memory the worker is reading, and the tearing would look like a
-	 *   client bug.
-	 *
-	 *   the ACCESS, because wlroots installs its SIGBUS handler for the
-	 *   duration and threads the registration onto an _Atomic global
-	 *   (types/wlr_shm.c). That is what makes a client shrinking its pool
-	 *   under the worker recoverable rather than a compositor crash -- and it
-	 *   is why the copy may leave the main thread at all.
-	 */
-	struct avk_upload_job *job;
-	uint64_t job_generation;
-	struct wl_list job_link;   /* az_avk.shm_jobs */
-
 	/* Per-source accounting, so "which surface is uploading the most" is a
 	 * question with an answer instead of a guess. Cheap: five counters on an
 	 * object that already exists, and read only over IPC. */
@@ -614,33 +534,6 @@ struct az_avk_buffer {
 };
 
 static void az_avk_buffer_destroy(struct az_avk_buffer *entry) {
-	/*
-	 * ── A COPY IN FLIGHT OUTRANKS EVERYTHING ELSE HERE ───────────────────
-	 *
-	 * The worker may be reading the client's mapping and writing this entry's
-	 * staging buffer; freeing either underneath it is a use-after-free with a
-	 * second thread as the accused.
-	 *
-	 * This should be unreachable, and by construction rather than by luck: a
-	 * job holds a wlr_buffer_lock(), so the addon path (which runs from
-	 * wlr_buffer_destroy, at n_locks == 0) cannot see one, and the teardown
-	 * path drains every job before it walks this list. It is handled anyway,
-	 * and handled WITHOUT giving the lock back here -- the unlock is deferred
-	 * to the very end, past the free, because releasing the last reference to
-	 * a buffer from inside its own entry's destructor re-enters this function.
-	 */
-	struct wlr_buffer *unlock_after = NULL;
-	if (entry->job != NULL) {
-		wlr_log(WLR_ERROR, "AVK: a buffer with a SHM copy in flight is being "
-			"destroyed; waiting for the copy rather than freeing under it");
-		avk_upload_worker_finish(avk.upload_worker, entry->job);
-		wlr_buffer_end_data_ptr_access(entry->buffer);
-		wl_list_remove(&entry->job_link);
-		wl_list_init(&entry->job_link);
-		free(entry->job);
-		entry->job = NULL;
-		unlock_after = entry->buffer;
-	}
 	if (entry->image != NULL) {
 		/* Retired against the timeline, not freed: a frame that sampled this
 		 * image may still be in flight, and vkDestroyImage on an image the GPU
@@ -682,11 +575,6 @@ static void az_avk_buffer_destroy(struct az_avk_buffer *entry) {
 		avk.client_images_cached--;
 	}
 	free(entry);
-	/* Last, and after the free on purpose: this may be the reference that
-	 * destroys the buffer, which would come straight back here. */
-	if (unlock_after != NULL) {
-		wlr_buffer_unlock(unlock_after);
-	}
 }
 
 static void az_avk_buffer_addon_destroy(struct wlr_addon *addon) {
@@ -766,81 +654,32 @@ static void az_avk_attribs_from_wlr(struct avk_dmabuf_attributes *dst,
 }
 
 /*
- * ── WHERE THE COPY RUNS, AND WHY IT IS NOT HERE ──────────────────────────
+ * Upload a CPU-backed buffer into its cached image, allocating the image on
+ * first sight.
  *
- * A wl_shm client's pixels reach the GPU by being copied out of the client's
- * mapping into staging, and the copy is real work: 6.5 MB per repaint from a
- * 1637x1160 Qt window, 26.5 GB in one session, memcpy at ~27% of all perf
- * samples with the compositor at 30% of a core while the mouse moved.
+ * Re-uploaded on every frame that draws it. wlroots gives no content-change
+ * signal for a wlr_buffer that a client keeps re-committing, and inventing one
+ * by comparing pixels would cost more than the copy. This is a real AVK-mode
+ * cost on SHM surfaces and it is logged as one rather than hidden.
  *
- * Doing it on the compositor's thread is what made that a LATENCY bug rather
- * than a throughput one. The whole time it runs the event loop is not in
- * poll(), so libinput's fds are not read, and libinput says so:
+ * The awkward case, and the reason this function can succeed without reading
+ * anything: wlroots wraps a client's buffer in a wlr_client_buffer, uploads it
+ * into a wlr_texture, and then lets the client have the original back. Once
+ * that happens the wlr_client_buffer answers "not a dma-buf" AND "not
+ * CPU-readable" -- the only surviving copy of the pixels is inside a
+ * wlr_texture, which is precisely the object this renderer may not touch.
  *
- *     USB Gaming Mouse: client bug: event processing lagging behind by 47-53ms
- *     Cherry Corded Device: ... lagging behind by 30ms
+ * A statically-drawn surface -- a wallpaper, a menu, an icon -- hits that on
+ * its second frame and every frame after. Failing there would blank exactly
+ * the content that never changes. So: upload while the source is readable,
+ * and keep the image we already have when it is not. That is correct for
+ * static content and stale-by-at-most-nothing for it, because content that
+ * does not change cannot go stale.
  *
- * Pointer AND keyboard, so not a device. The frame path was not the cause and
- * is not blamed here: its own handler counters read 4.8 ms worst case with
- * zero CPU sync waits while input was 53 ms late. The block was in the client
- * request path.
- *
- * There is no smaller copy available. That client reports 96.6% of its
- * surface as damaged per repaint (shm_damage_pixels vs shm_committed_pixels),
- * so the damage-rectangle path below is already doing everything it can; the
- * bytes have to move. And "tell the client to use dma-buf" is not a fix: wl_shm
- * is core protocol, any client may use it, and a compositor that stalls input
- * on it is broken regardless of what the client chose.
- *
- * So the copy moves to a worker thread (vulkan/image/avk_upload_worker.h) and
- * the main thread keeps only what must stay on one thread:
- *
- *   at COMMIT   decide what to copy, size staging, lock the buffer, open its
- *               data-ptr access, post the job. Microseconds.
- *   on the WORKER   the memcpy, and nothing else.
- *   at SETTLE   record the barriers and the copy, submit, close the access,
- *               unlock the buffer. Microseconds, and it happens either from
- *               the worker's eventfd -- the loop is in poll() anyway -- or
- *               from the frame that needs the pixels, whichever comes first.
- *
- * WHAT ORDERS THE GPU IS UNCHANGED. The submission still carries a timeline
- * wait on image->last_use and the same read-before-write barrier, still on the
- * main thread and therefore still in submission order against the frames. That
- * matters for more than tidiness: AZ_AVK_UNSAFE_REUSE exists to strip that
- * ordering, and a change that quietly removed the ordering along with the wait
- * would leave the break switch testing nothing.
+ * The real fix is to stop wlroots uploading client buffers at all -- see
+ * "SHM surfaces and the wlr_client_buffer problem" in
+ * docs/vulkan-native-architecture.md.
  */
-
-/* Whether a copy may leave this thread at all. */
-static bool az_avk_shm_async_enabled(void) {
-	/*
-	 * AZ_AVK_SYNC_UPLOAD=1 puts the copy back on the event loop.
-	 *
-	 * Not a fallback and not an escape hatch: it is the BEFORE arm of the
-	 * measurement. The same binary, the same fixture and the same client, with
-	 * the only difference being which thread runs memcpy -- which is the only
-	 * way a before/after number on this is worth anything.
-	 */
-	return avk.upload_worker != NULL && !az_avk_env_flag("AZ_AVK_SYNC_UPLOAD");
-}
-
-static uint64_t az_avk_now_ns(void) {
-	struct timespec ts;
-	clock_gettime(CLOCK_MONOTONIC, &ts);
-	return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
-}
-
-/* Main-thread nanoseconds spent moving client pixels, wherever they were
- * spent. The number that must collapse, and the one a "fix" that merely moved
- * the block from one handler to another could not fake. */
-static void az_avk_note_copy_ns(uint64_t ns) {
-	avk.shm_copy_samples++;
-	avk.shm_copy_ns_sum += ns;
-	if (ns > avk.shm_copy_ns_max) {
-		avk.shm_copy_ns_max = ns;
-	}
-}
-
 /*
  * Record what changed in a generation that has not been uploaded yet.
  *
@@ -859,316 +698,6 @@ static void az_avk_note_source_damage(struct az_avk_buffer *entry,
 		(pixman_region32_t *)damage);
 }
 
-/* The GPU-side image for a CPU buffer, on first sight. Its own function
- * because both the synchronous path and the commit path need it before they
- * can plan anything, and duplicating it is how the two would come to disagree
- * about is_shm -- which decides whether the entry keeps a staging buffer at
- * all. */
-static bool az_avk_shm_image_create(struct az_avk_buffer *entry,
-		uint32_t format) {
-	entry->image = avk_upload_image_create(avk.device, format,
-		(uint32_t)entry->buffer->width, (uint32_t)entry->buffer->height,
-		AVK_IMAGE_OWNED);
-	if (entry->image == NULL) {
-		return false;
-	}
-	entry->is_shm = true;
-	if (!avk.warned_shm) {
-		avk.warned_shm = true;
-		wlr_log(WLR_INFO, "AVK: a client is using CPU (SHM) buffers; these "
-			"are copied to the GPU whenever the client changes them");
-	}
-	return true;
-}
-
-enum az_shm_plan_result {
-	AZ_SHM_PLAN_FULL,      /* the whole buffer */
-	AZ_SHM_PLAN_REGIONS,   /* only what the client said changed */
-	AZ_SHM_PLAN_NOTHING,   /* the client reported no damage: believe it */
-	AZ_SHM_PLAN_FAILED,
-};
-
-/*
- * What this generation owes the GPU, as a plan.
- *
- * Extracted so the synchronous path and the worker path decide identically.
- * They used to be one function, and the moment they were not, "the async path
- * ignores AZ_AVK_SOURCE_FULL" became a bug two break switches could not see.
- */
-static enum az_shm_plan_result az_avk_shm_plan(struct az_avk_buffer *entry,
-		uint32_t stride, struct avk_upload_plan *plan) {
-	/*
-	 * Whole buffer, or only the rectangles the client says it changed?
-	 *
-	 * Full whenever the answer is not certain: a first upload, a generation
-	 * whose damage nobody reported, or more rectangles than the packed-copy
-	 * path takes. One full upload for a generation is a correct answer and is
-	 * still nothing like one per frame.
-	 */
-	bool want_full = entry->pending_full
-		|| az_avk_env_flag("AZ_AVK_SOURCE_FULL");
-	int rect_count = 0;
-	const pixman_box32_t *boxes = want_full ? NULL
-		: pixman_region32_rectangles(&entry->pending_damage, &rect_count);
-
-	if (!want_full && rect_count == 0) {
-		/* A generation whose client reported no damage at all changed no
-		 * pixels. wlroots' own texture path copies nothing here too. */
-		return AZ_SHM_PLAN_NOTHING;
-	}
-
-	if (!want_full && rect_count <= AZ_AVK_MAX_DAMAGE_RECTS) {
-		struct avk_upload_rect rects[AZ_AVK_MAX_DAMAGE_RECTS];
-		uint32_t n = 0;
-		for (int i = 0; i < rect_count; i++) {
-			/* Clamped to the buffer, always. wlroots clips buffer_damage to
-			 * the committed buffer bounds, but this copy reads a client's
-			 * mapping and a rectangle that escaped that would read past it. */
-			int32_t x1 = boxes[i].x1 < 0 ? 0 : boxes[i].x1;
-			int32_t y1 = boxes[i].y1 < 0 ? 0 : boxes[i].y1;
-			int32_t x2 = boxes[i].x2 > entry->buffer->width
-				? entry->buffer->width : boxes[i].x2;
-			int32_t y2 = boxes[i].y2 > entry->buffer->height
-				? entry->buffer->height : boxes[i].y2;
-			if (x2 <= x1 || y2 <= y1) {
-				continue;
-			}
-			if (az_avk_env_flag("AZ_AVK_OMIT_REGION") && i == rect_count - 1
-					&& rect_count > 1) {
-				/* Break test: drop one rectangle and leave the rest. */
-				continue;
-			}
-			rects[n++] = (struct avk_upload_rect){
-				.x = (uint32_t)x1, .y = (uint32_t)y1,
-				.width = (uint32_t)(x2 - x1), .height = (uint32_t)(y2 - y1),
-			};
-		}
-		if (n > 0 && avk_upload_plan_regions(plan, entry->image, stride,
-				(uint32_t)entry->buffer->height, rects, n)) {
-			return AZ_SHM_PLAN_REGIONS;
-		}
-		/* The partial path declined; fall through and do it whole rather than
-		 * leaving the image holding a stale generation. */
-	}
-
-	if (!avk_upload_plan_full(plan, entry->image, stride,
-			(uint32_t)entry->buffer->height)) {
-		return AZ_SHM_PLAN_FAILED;
-	}
-	return AZ_SHM_PLAN_FULL;
-}
-
-/* The ordering that keeps an upload behind the frames still sampling the
- * image. One place, so the sync path and the worker path cannot differ -- and
- * so AZ_AVK_UNSAFE_REUSE strips it from both. */
-static uint32_t az_avk_shm_wait(const struct az_avk_buffer *entry,
-		VkSemaphoreSubmitInfo *wait) {
-	*wait = (VkSemaphoreSubmitInfo){
-		.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
-		.semaphore = avk.device->timeline,
-		.value = entry->image->last_use,
-		.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-	};
-	if (az_avk_env_flag("AZ_AVK_UNSAFE_REUSE")) {
-		/* Break test: overwrite the image with no ordering against the frames
-		 * still sampling it. The copy races the fragment shader reading the
-		 * previous generation, which synchronisation validation reports as a
-		 * write-after-read hazard -- and which, without validation, shows up
-		 * as an occasional torn surface that looks like a client bug. */
-		return 0;
-	}
-	return entry->image->last_use > 0 ? 1 : 0;
-}
-
-/* Book-keeping for one completed upload, whichever path performed it. */
-static void az_avk_shm_account(struct az_avk_buffer *entry,
-		const struct avk_upload_plan *plan) {
-	avk.shm_uploads++;
-	avk.shm_upload_bytes += plan->bytes;
-	entry->stat_upload_bytes += plan->bytes;
-	if (plan->full) {
-		avk.shm_full_uploads++;
-		entry->stat_full_uploads++;
-		avk.shm_damage_pixels +=
-			(uint64_t)entry->buffer->width * (uint64_t)entry->buffer->height;
-	} else {
-		avk.shm_partial_uploads++;
-		entry->stat_partial_uploads++;
-		uint64_t damage_px = 0;
-		for (uint32_t i = 0; i < plan->rect_count; i++) {
-			damage_px += (uint64_t)plan->rects[i].width
-				* (uint64_t)plan->rects[i].height;
-		}
-		avk.shm_damage_pixels += damage_px;
-	}
-	/* The image now holds different pixels behind the same identity -- see
-	 * avk_image.content_seq. A partial upload counts: a wallpaper that changed
-	 * only where it differs is still a new wallpaper. */
-	entry->image->content_seq++;
-}
-
-/* Give back everything a job was holding on the client's behalf. */
-static void az_avk_shm_job_release(struct az_avk_buffer *entry) {
-	wlr_buffer_end_data_ptr_access(entry->buffer);
-	wl_list_remove(&entry->job_link);
-	wl_list_init(&entry->job_link);
-	free(entry->job);
-	entry->job = NULL;
-	/* Last, because it may be the reference that keeps the buffer -- and this
-	 * entry with it -- alive. */
-	wlr_buffer_unlock(entry->buffer);
-}
-
-/*
- * Finish a copy that is in flight and put it on the GPU.
- *
- * `block` is the difference between "the worker says it is done" (the eventfd
- * drain, which must never wait) and "a frame needs these pixels now" (the
- * lookup, which has no choice). Returns true if the entry now holds
- * job_generation; false if nothing was settled.
- */
-static bool az_avk_shm_job_settle(struct az_avk_buffer *entry, bool block) {
-	if (entry->job == NULL) {
-		return false;
-	}
-	if (!block && !avk_upload_job_done(entry->job)) {
-		return false;
-	}
-
-	avk.shm_async_joins++;
-	uint64_t waited = avk_upload_worker_finish(avk.upload_worker, entry->job);
-	if (waited > 0) {
-		avk.shm_async_join_waits++;
-		avk.shm_async_join_ns_sum += waited;
-		if (waited > avk.shm_async_join_ns_max) {
-			avk.shm_async_join_ns_max = waited;
-		}
-		az_avk_note_copy_ns(waited);
-	}
-
-	VkSemaphoreSubmitInfo wait;
-	uint32_t wait_count = az_avk_shm_wait(entry, &wait);
-	bool ok = avk_upload_submit_packed(avk.device, &avk.importer.upload_ring,
-		&entry->upload, entry->image, &entry->job->plan, &wait,
-		wait_count) != 0;
-	if (ok) {
-		az_avk_shm_account(entry, &entry->job->plan);
-		entry->uploaded_generation = entry->job_generation;
-	} else {
-		/* The pixels are in staging and nothing carried them across. The
-		 * generation is NOT marked uploaded and the next attempt is forced
-		 * whole, because the damage that described it has already been
-		 * consumed by the plan that failed. */
-		entry->pending_full = true;
-	}
-	az_avk_shm_job_release(entry);
-	return ok;
-}
-
-/*
- * Hand this entry's outstanding damage to the worker.
- *
- * Called from the commit handler, where the client's mapping is guaranteed to
- * hold the committed content and where -- until this change -- the memcpy
- * happened. Returns true if a job is now in flight.
- */
-static bool az_avk_shm_job_start(struct az_avk_buffer *entry) {
-	if (entry->job != NULL || entry->image == NULL || entry->failed) {
-		return false;
-	}
-	if (!az_avk_shm_async_enabled()) {
-		return false;
-	}
-
-	void *data = NULL;
-	uint32_t format = 0;
-	size_t stride = 0;
-	if (!wlr_buffer_begin_data_ptr_access(entry->buffer,
-			WLR_BUFFER_DATA_PTR_ACCESS_READ, &data, &format, &stride)) {
-		/* Not readable right now. The synchronous path knows how to explain
-		 * that; this one just declines and lets it. */
-		return false;
-	}
-
-	avk.shm_committed_pixels +=
-		(uint64_t)entry->buffer->width * (uint64_t)entry->buffer->height;
-
-	struct avk_upload_plan plan;
-	enum az_shm_plan_result res = az_avk_shm_plan(entry, (uint32_t)stride,
-		&plan);
-	if (res == AZ_SHM_PLAN_NOTHING) {
-		avk.shm_upload_skips++;
-		entry->uploaded_generation = entry->content_generation;
-		wlr_buffer_end_data_ptr_access(entry->buffer);
-		return false;
-	}
-	if (res == AZ_SHM_PLAN_FAILED) {
-		wlr_buffer_end_data_ptr_access(entry->buffer);
-		return false;
-	}
-	if (!avk_upload_staging_ensure(avk.device, &entry->upload,
-			avk.importer.upload_ring.retire, plan.total)) {
-		wlr_buffer_end_data_ptr_access(entry->buffer);
-		return false;
-	}
-
-	struct avk_upload_job *job = calloc(1, sizeof(*job));
-	if (job == NULL) {
-		wlr_buffer_end_data_ptr_access(entry->buffer);
-		return false;
-	}
-	job->plan = plan;
-	job->src = data;
-	job->dst = entry->upload.mapped;
-	job->user = entry;
-
-	/*
-	 * The damage is cleared HERE, not when the copy lands.
-	 *
-	 * The plan already carries it. A commit arriving while the job runs unions
-	 * its own damage into an empty region, which is then exactly what is still
-	 * owed -- and the alternative, clearing on completion, would throw that
-	 * newer damage away and freeze the surface on the generation the job
-	 * happened to catch.
-	 */
-	pixman_region32_clear(&entry->pending_damage);
-	entry->pending_full = false;
-	entry->job = job;
-	entry->job_generation = entry->content_generation;
-	/* Both released in az_avk_shm_job_release(); see the comment on
-	 * az_avk_buffer.job for why each is necessary. */
-	wlr_buffer_lock(entry->buffer);
-	wl_list_insert(&avk.shm_jobs, &entry->job_link);
-	avk.shm_async_jobs++;
-	avk.shm_async_bytes += plan.bytes;
-	avk_upload_worker_post(avk.upload_worker, job);
-	return true;
-}
-
-/*
- * Upload a CPU-backed buffer into its cached image, allocating the image on
- * first sight, ON THIS THREAD.
- *
- * The fallback and the BEFORE arm both. Everything the worker path does is
- * here too, in the same order, with the memcpy in the middle instead of on
- * another thread -- which is the point: the two paths share the plan, the
- * ordering and the accounting, so what differs between them is only which
- * thread pays for the bytes.
- *
- * The awkward case, and the reason this function can succeed without reading
- * anything: wlroots wraps a client's buffer in a wlr_client_buffer, uploads it
- * into a wlr_texture, and then lets the client have the original back. Once
- * that happens the wlr_client_buffer answers "not a dma-buf" AND "not
- * CPU-readable" -- the only surviving copy of the pixels is inside a
- * wlr_texture, which is precisely the object this renderer may not touch.
- *
- * A statically-drawn surface -- a wallpaper, a menu, an icon -- hits that on
- * its second frame and every frame after. Failing there would blank exactly
- * the content that never changes. So: upload while the source is readable,
- * and keep the image we already have when it is not. That is correct for
- * static content and stale-by-at-most-nothing for it, because content that
- * does not change cannot go stale.
- */
 static bool az_avk_upload_shm(struct az_avk_buffer *entry) {
 	void *data = NULL;
 	uint32_t format = 0;
@@ -1197,43 +726,130 @@ static bool az_avk_upload_shm(struct az_avk_buffer *entry) {
 
 	bool ok = false;
 	if (entry->image == NULL) {
-		if (!az_avk_shm_image_create(entry, format)) {
+		entry->image = avk_upload_image_create(avk.device, format,
+			(uint32_t)entry->buffer->width, (uint32_t)entry->buffer->height,
+			AVK_IMAGE_OWNED);
+		if (entry->image == NULL) {
 			goto out;
+		}
+		entry->is_shm = true;
+		if (!avk.warned_shm) {
+			avk.warned_shm = true;
+			wlr_log(WLR_INFO, "AVK: a client is using CPU (SHM) buffers; "
+				"these are re-uploaded on every frame that draws them");
 		}
 	}
 
-	avk.shm_committed_pixels +=
-		(uint64_t)entry->buffer->width * (uint64_t)entry->buffer->height;
+	/* The upload must not overwrite pixels a frame in flight is still
+	 * sampling. One timeline wait on that frame's value costs the GPU an
+	 * ordering edge and the CPU nothing. */
+	VkSemaphoreSubmitInfo wait = {
+		.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+		.semaphore = avk.device->timeline,
+		.value = entry->image->last_use,
+		.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+	};
+	uint32_t wait_count = entry->image->last_use > 0 ? 1 : 0;
+	if (az_avk_env_flag("AZ_AVK_UNSAFE_REUSE")) {
+		/* Break test: overwrite the image with no ordering against the frames
+		 * still sampling it. The copy races the fragment shader reading the
+		 * previous generation, which synchronisation validation reports as a
+		 * write-after-read hazard -- and which, without validation, shows up
+		 * as an occasional torn surface that looks like a client bug. */
+		wait_count = 0;
+	}
 
-	struct avk_upload_plan plan;
-	enum az_shm_plan_result res = az_avk_shm_plan(entry, (uint32_t)stride,
-		&plan);
-	if (res == AZ_SHM_PLAN_NOTHING) {
+	/*
+	 * Whole buffer, or only the rectangles the client says it changed?
+	 *
+	 * Full whenever the answer is not certain: a first upload, a generation
+	 * whose damage nobody reported, or more rectangles than the packed-copy
+	 * path takes. One full upload for a generation is a correct answer and is
+	 * still nothing like one per frame.
+	 */
+	uint64_t committed_px =
+		(uint64_t)entry->buffer->width * (uint64_t)entry->buffer->height;
+	avk.shm_committed_pixels += committed_px;
+
+	bool want_full = entry->pending_full
+		|| az_avk_env_flag("AZ_AVK_SOURCE_FULL");
+	int rect_count = 0;
+	const pixman_box32_t *boxes = want_full ? NULL
+		: pixman_region32_rectangles(&entry->pending_damage, &rect_count);
+
+	if (!want_full && rect_count == 0) {
+		/* A generation whose client reported no damage at all changed no
+		 * pixels. wlroots' own texture path copies nothing here too. */
 		wlr_buffer_end_data_ptr_access(entry->buffer);
 		avk.shm_upload_skips++;
 		return true;
 	}
-	if (res == AZ_SHM_PLAN_FAILED) {
-		goto out;
-	}
-	if (!avk_upload_staging_ensure(avk.device, &entry->upload,
-			avk.importer.upload_ring.retire, plan.total)) {
-		goto out;
+
+	if (!want_full && rect_count <= AZ_AVK_MAX_DAMAGE_RECTS) {
+		struct avk_upload_rect rects[AZ_AVK_MAX_DAMAGE_RECTS];
+		uint32_t n = 0;
+		uint64_t damage_px = 0;
+		for (int i = 0; i < rect_count; i++) {
+			/* Clamped to the buffer, always. wlroots clips buffer_damage to
+			 * the committed buffer bounds, but this copy reads a client's
+			 * mapping and a rectangle that escaped that would read past it. */
+			int32_t x1 = boxes[i].x1 < 0 ? 0 : boxes[i].x1;
+			int32_t y1 = boxes[i].y1 < 0 ? 0 : boxes[i].y1;
+			int32_t x2 = boxes[i].x2 > entry->buffer->width
+				? entry->buffer->width : boxes[i].x2;
+			int32_t y2 = boxes[i].y2 > entry->buffer->height
+				? entry->buffer->height : boxes[i].y2;
+			if (x2 <= x1 || y2 <= y1) {
+				continue;
+			}
+			if (az_avk_env_flag("AZ_AVK_OMIT_REGION") && i == rect_count - 1
+					&& rect_count > 1) {
+				/* Break test: drop one rectangle and leave the rest. */
+				continue;
+			}
+			rects[n++] = (struct avk_upload_rect){
+				.x = (uint32_t)x1, .y = (uint32_t)y1,
+				.width = (uint32_t)(x2 - x1), .height = (uint32_t)(y2 - y1),
+			};
+			damage_px += (uint64_t)(x2 - x1) * (uint64_t)(y2 - y1);
+		}
+		uint64_t copied = 0;
+		if (n > 0 && avk_upload_image_write_regions(avk.device,
+				&avk.importer.upload_ring, &entry->upload, entry->image, data,
+				(uint32_t)stride, (uint32_t)entry->buffer->height, rects, n,
+				&copied, &wait, wait_count) != 0) {
+			avk.shm_uploads++;
+			avk.shm_partial_uploads++;
+			avk.shm_upload_bytes += copied;
+			entry->stat_partial_uploads++;
+			entry->stat_upload_bytes += copied;
+			avk.shm_damage_pixels += damage_px;
+			/* The image now holds different pixels behind the same identity --
+			 * see avk_image.content_seq. A partial upload counts: a wallpaper
+			 * that changed only where it differs is still a new wallpaper. */
+			entry->image->content_seq++;
+			ok = true;
+			goto uploaded;
+		}
+		/* The partial path declined; fall through and do it whole rather than
+		 * leaving the image holding a stale generation. */
 	}
 
-	/* THE BLOCK. Timed rather than described, because a claim about how long
-	 * the event loop is held is worth nothing without the number. */
-	uint64_t t0 = az_avk_now_ns();
-	avk_upload_pack(&plan, data, entry->upload.mapped);
-	az_avk_note_copy_ns(az_avk_now_ns() - t0);
-	avk.shm_sync_copies++;
-
-	VkSemaphoreSubmitInfo wait;
-	uint32_t wait_count = az_avk_shm_wait(entry, &wait);
-	ok = avk_upload_submit_packed(avk.device, &avk.importer.upload_ring,
-		&entry->upload, entry->image, &plan, &wait, wait_count) != 0;
+	ok = avk_upload_image_write(avk.device, &avk.importer.upload_ring,
+		&entry->upload, entry->image, data, (uint32_t)stride,
+		(uint32_t)entry->buffer->height, &wait, wait_count) != 0;
 	if (ok) {
-		az_avk_shm_account(entry, &plan);
+		avk.shm_uploads++;
+		avk.shm_full_uploads++;
+		avk.shm_upload_bytes += (uint64_t)stride * entry->buffer->height;
+		avk.shm_damage_pixels += committed_px;
+		entry->stat_full_uploads++;
+		entry->stat_upload_bytes += (uint64_t)stride * entry->buffer->height;
+		entry->image->content_seq++;
+	}
+
+uploaded:
+	if (ok) {
 		pixman_region32_clear(&entry->pending_damage);
 		entry->pending_full = false;
 	}
@@ -1244,109 +860,14 @@ out:
 }
 
 /*
- * Bring an entry's image up to its committed content, whatever it takes.
- *
- * The frame path's entry point, and the one place that decides between joining
- * a copy already in flight and doing one here. Both outcomes are possible on a
- * healthy system: a client that commits in the same dispatch round as the
- * frame gives the worker no time at all.
- */
-static bool az_avk_shm_bring_current(struct az_avk_buffer *entry) {
-	if (entry->job != NULL) {
-		az_avk_shm_job_settle(entry, true);
-		if (entry->uploaded_generation == entry->content_generation) {
-			return entry->image != NULL;
-		}
-		/* A newer generation landed while that one was in flight. Nothing is
-		 * in flight for it, so it is this thread's to do. */
-	}
-	if (!az_avk_upload_shm(entry)) {
-		return false;
-	}
-	entry->uploaded_generation = entry->content_generation;
-	return true;
-}
-
-/*
- * Settle every copy the worker has finished. Never waits.
- *
- * Driven by the worker's eventfd, so the submission happens in the dispatch
- * round the copy completed in and the client gets its buffer back without
- * waiting for a frame. Also called at the top of a frame, because an eventfd
- * that fires while the loop is busy elsewhere would otherwise leave the pixels
- * sitting in staging until the next wakeup.
- */
-static void az_avk_shm_drain(void) {
-	/*
-	 * Rescanned from the head rather than walked, even with the _safe form of
-	 * the macro.
-	 *
-	 * Settling a job gives back the wlr_buffer_lock() it was holding, and that
-	 * unlock can destroy the buffer -- which destroys its entry, and could in
-	 * principle destroy another entry with it. `_safe` protects the CURRENT
-	 * element and the NEXT one; it does not protect a cursor from an element
-	 * two along being freed. The list is one entry per surface with a copy in
-	 * flight, so the rescan is over single digits.
-	 */
-	bool progress = true;
-	while (progress) {
-		progress = false;
-		struct az_avk_buffer *entry;
-		wl_list_for_each(entry, &avk.shm_jobs, job_link) {
-			if (entry->job != NULL && avk_upload_job_done(entry->job)) {
-				az_avk_shm_job_settle(entry, false);
-				progress = true;
-				break;
-			}
-		}
-	}
-}
-
-/* Settle everything, waiting. For teardown and for the paths that must not
- * leave a client's buffer locked behind them. */
-static void az_avk_shm_drain_blocking(void) {
-	/* Always the head, for the reason in az_avk_shm_drain(). Terminates
-	 * because settling removes that entry from this list. */
-	while (!wl_list_empty(&avk.shm_jobs)) {
-		struct wl_list *node = avk.shm_jobs.next;
-		struct az_avk_buffer *entry = wl_container_of(node, entry, job_link);
-		az_avk_shm_job_settle(entry, true);
-		if (avk.shm_jobs.next == node) {
-			/* Cannot happen -- settling with block=true always releases -- but
-			 * a list this loop cannot shorten would hang the compositor at
-			 * shutdown, and that is not a thing to leave to an argument. The
-			 * comparison is of pointers only; `entry` may already be freed. */
-			wlr_log(WLR_ERROR, "AVK: an in-flight SHM copy would not settle");
-			break;
-		}
-	}
-}
-
-static int az_avk_upload_worker_readable(int fd, uint32_t mask, void *data) {
-	(void)mask;
-	(void)data;
-	uint64_t count = 0;
-	while (read(fd, &count, sizeof(count)) < 0 && errno == EINTR) {
-		/* retry */
-	}
-	az_avk_shm_drain();
-	return 0;
-}
-
-/*
  * The avk_image for a wlr_buffer, importing it on first sight.
  *
  * Returns NULL when the buffer cannot be represented on the GPU at all, having
  * said why. The caller drops the command rather than drawing black -- a black
  * rectangle where a window should be is the failure mode this whole subsystem
  * exists to remove, and reproducing it in the new path would be absurd.
- *
- * `async` says the caller is the COMMIT handler, which is the one caller that
- * is holding up the event loop and the one that may hand the copy to the
- * worker. Every other caller is the frame, which needs the pixels now.
  */
-static struct avk_image *az_avk_image_for_buffer_ex(struct wlr_buffer *buffer,
-		bool async) {
+static struct avk_image *az_avk_image_for_buffer(struct wlr_buffer *buffer) {
 	struct wlr_addon *addon = wlr_addon_find(&buffer->addons, &avk,
 		&az_avk_buffer_addon_impl);
 	struct az_avk_buffer *entry = NULL;
@@ -1381,14 +902,14 @@ static struct avk_image *az_avk_image_for_buffer_ex(struct wlr_buffer *buffer,
 				return entry->image;
 			}
 			if (entry->uploaded_generation == entry->content_generation
-					&& entry->job == NULL
 					&& !az_avk_env_flag("AZ_AVK_UPLOAD_ON_LOOKUP")) {
 				avk.shm_upload_skips++;
 				return entry->image;
 			}
-			if (!az_avk_shm_bring_current(entry)) {
+			if (!az_avk_upload_shm(entry)) {
 				return NULL;
 			}
+			entry->uploaded_generation = entry->content_generation;
 			return entry->image;
 		}
 		return entry->image;
@@ -1403,9 +924,6 @@ static struct avk_image *az_avk_image_for_buffer_ex(struct wlr_buffer *buffer,
 	/* Empty means "in no pool"; az_avk_pool_add() and the destroy path both
 	 * rely on being able to ask. */
 	wl_list_init(&entry->pool_link);
-	/* Likewise for the in-flight-copy list: a zeroed wl_list is not an empty
-	 * one, and wl_list_remove() on it writes through a NULL. */
-	wl_list_init(&entry->job_link);
 	pixman_region32_init(&entry->pending_damage);
 	/* Nothing is on the GPU yet, so the first upload is necessarily whole. */
 	entry->pending_full = true;
@@ -1427,44 +945,9 @@ static struct avk_image *az_avk_image_for_buffer_ex(struct wlr_buffer *buffer,
 	}
 	case AZ_BUFFER_DATA_PTR:
 		/* Generation 1 is "the contents as they were when we first saw this
-		 * buffer". Copying it is the one copy that is caused by a lookup, and
-		 * it has to be: there is nothing on the GPU yet. */
+		 * buffer". Uploading it here is the one upload that is caused by a
+		 * lookup, and it has to be: there is nothing on the GPU yet. */
 		entry->content_generation = 1;
-		if (async) {
-			/*
-			 * FIRST SIGHT IS THE HOT PATH FOR THE CLIENT THAT PRODUCED THIS
-			 * BUG, and it took a perf trace to notice.
-			 *
-			 * A client that reuses one wl_buffer takes the "already ours"
-			 * branch of the commit handler, which costs nothing; the copy then
-			 * happens at frame time. A client that presents a buffer AVK has
-			 * not seen -- which Qt does, continuously -- lands here instead,
-			 * inside the commit handler, and paid for the whole 7.6 MB there.
-			 * That is the call chain the profile showed:
-			 * wl_signal_emit_mutable -> az_avk_surface_commit ->
-			 * az_avk_image_for_buffer -> az_avk_upload_shm -> memcpy.
-			 *
-			 * So the async path has to cover it. The image is created empty
-			 * and the copy is posted; the generation is deliberately NOT
-			 * marked uploaded, so the frame that eventually samples this
-			 * buffer settles the job first.
-			 */
-			void *data = NULL;
-			uint32_t format = 0;
-			size_t stride = 0;
-			if (wlr_buffer_begin_data_ptr_access(buffer,
-					WLR_BUFFER_DATA_PTR_ACCESS_READ, &data, &format,
-					&stride)) {
-				bool made = az_avk_shm_image_create(entry, format);
-				wlr_buffer_end_data_ptr_access(buffer);
-				if (made && az_avk_shm_job_start(entry)) {
-					break;
-				}
-			}
-			/* Nothing was posted -- unreadable, unknown format, or the worker
-			 * declined. Fall through to the copy on this thread rather than
-			 * leaving an image with no contents. */
-		}
 		if (!az_avk_upload_shm(entry)) {
 			entry->image = NULL;
 		} else {
@@ -1489,11 +972,6 @@ static struct avk_image *az_avk_image_for_buffer_ex(struct wlr_buffer *buffer,
 	}
 	avk.buffer_imports++;
 	return entry->image;
-}
-
-/* The frame path's spelling: it needs the pixels now, so it never defers. */
-static struct avk_image *az_avk_image_for_buffer(struct wlr_buffer *buffer) {
-	return az_avk_image_for_buffer_ex(buffer, false);
 }
 
 /* ── output targets ─────────────────────────────────────────────────────── */
@@ -4245,16 +3723,6 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 	struct timespec frame_t0;
 	clock_gettime(CLOCK_MONOTONIC, &frame_t0);
 
-	/*
-	 * Anything the worker finished but the loop has not noticed yet.
-	 *
-	 * Belt to the eventfd's braces, and it earns its place: the eventfd only
-	 * fires when the loop reaches poll(), and a busy dispatch round can put a
-	 * frame in front of it. Settling here means this frame samples the newest
-	 * pixels rather than joining the copy a few lines later.
-	 */
-	az_avk_shm_drain();
-
 	struct wlr_output *output = m->wlr_output;
 	struct az_avk_output *out = m->avk;
 	if (out == NULL) {
@@ -5135,8 +4603,12 @@ static void az_avk_pool_note_damage(struct az_avk_surface *as,
 	}
 }
 
-static void az_avk_surface_commit_inner(struct az_avk_surface *as,
-		struct wlr_buffer *buffer) {
+static void az_avk_surface_commit(struct wl_listener *listener, void *data) {
+	struct az_avk_surface *as = wl_container_of(listener, as, commit);
+	struct wlr_buffer *buffer = as->surface->current.buffer;
+	if (buffer == NULL) {
+		return;
+	}
 	struct wlr_addon *addon = wlr_addon_find(&buffer->addons, &avk,
 		&az_avk_buffer_addon_impl);
 	if (addon != NULL) {
@@ -5191,26 +4663,10 @@ static void az_avk_surface_commit_inner(struct az_avk_surface *as,
 			 * own recently-changed pixels while a single-buffer test client
 			 * passed. */
 			az_avk_pool_note_damage(as, &as->surface->buffer_damage);
-			/*
-			 * And START THE COPY, rather than doing it.
-			 *
-			 * This is the moment the client's mapping is guaranteed to hold
-			 * the committed content -- wlr_compositor unlocks
-			 * surface->current.buffer as soon as this signal returns -- so it
-			 * is the moment the copy has to be *begun*. It is not the moment
-			 * it has to be *finished*, and treating those as the same thing is
-			 * what put a 6.5 MB memcpy on the event loop.
-			 *
-			 * Declining is normal and costs nothing: an entry with a copy
-			 * already in flight keeps its damage and gets a second job when
-			 * that one settles, and a build with no worker falls through to
-			 * the frame path exactly as before.
-			 */
-			az_avk_shm_job_start(entry);
 		}
 		return;
 	}
-	if (az_avk_image_for_buffer_ex(buffer, true) != NULL) {
+	if (az_avk_image_for_buffer(buffer) != NULL) {
 		addon = wlr_addon_find(&buffer->addons, &avk,
 			&az_avk_buffer_addon_impl);
 		if (addon != NULL) {
@@ -5222,38 +4678,6 @@ static void az_avk_surface_commit_inner(struct az_avk_surface *as,
 			}
 		}
 		avk.commit_imports++;
-	}
-}
-
-/*
- * ── THE MEASUREMENT ──────────────────────────────────────────────────────
- *
- * Call to return, around the whole handler, because that is the interval the
- * compositor is not in poll() on account of this client -- which is precisely
- * what libinput was complaining about, and which nothing in the compositor
- * could see. A fix without this number is a story.
- *
- * Timed here rather than inside the copy so it keeps counting whatever else
- * this handler grows: an instrument that measures only the thing it was built
- * for stops being an instrument the moment the cost moves.
- */
-static void az_avk_surface_commit(struct wl_listener *listener, void *data) {
-	(void)data;
-	struct az_avk_surface *as = wl_container_of(listener, as, commit);
-	struct wlr_buffer *buffer = as->surface->current.buffer;
-	if (buffer == NULL) {
-		return;
-	}
-	uint64_t t0 = az_avk_now_ns();
-	az_avk_surface_commit_inner(as, buffer);
-	uint64_t ns = az_avk_now_ns() - t0;
-	avk.shm_commit_samples++;
-	avk.shm_commit_ns_sum += ns;
-	if (ns > avk.shm_commit_ns_max) {
-		avk.shm_commit_ns_max = ns;
-	}
-	if (ns > 5000000ULL) {
-		avk.shm_commit_over_5ms++;
 	}
 }
 
@@ -5347,22 +4771,6 @@ static bool az_avk_new_surface_attached = false;
  * before wl_display_destroy(), which is earlier than az_avk_finish().
  */
 static void az_avk_detach(void) {
-	/*
-	 * The upload worker's event source goes HERE, not in az_avk_finish().
-	 *
-	 * cleanup() calls this before wl_display_destroy() and az_avk_finish()
-	 * after it, and wl_event_source_remove() on a loop that no longer exists
-	 * is a use-after-free -- the kind that survives long enough to be blamed
-	 * on whatever runs next. The copies are settled at the same time, while
-	 * wlroots is still whole: each one holds a client buffer lock and an open
-	 * data-ptr access, and giving those back after the display has gone would
-	 * be giving them back to freed objects.
-	 */
-	az_avk_shm_drain_blocking();
-	if (avk.upload_source != NULL) {
-		wl_event_source_remove(avk.upload_source);
-		avk.upload_source = NULL;
-	}
 	if (az_avk_new_surface_attached) {
 		wl_list_remove(&az_avk_new_surface_listener.link);
 		az_avk_new_surface_attached = false;
@@ -5432,44 +4840,6 @@ static bool az_avk_init(int drm_fd) {
 	/* From here on, "this buffer has new pixels" is an event rather than an
 	 * assumption made once per frame. */
 	wlr_scene_set_buffer_content_observer(az_avk_scene_content_notify, NULL);
-
-	/*
-	 * ── THE COPY THREAD ──────────────────────────────────────────────────
-	 *
-	 * Optional in the strongest sense: if the thread or the eventfd cannot be
-	 * had, or if the event source cannot be added, every copy simply happens
-	 * on this thread and the compositor is exactly as correct (and exactly as
-	 * laggy) as it was before. A latency optimisation that can fail a startup
-	 * is not worth having.
-	 *
-	 * The eventfd is what makes a completed copy cheap to notice: the loop is
-	 * in poll() anyway, so the submission lands in the same dispatch round
-	 * instead of waiting for the next frame to come looking.
-	 */
-	wl_list_init(&avk.shm_jobs);
-	if (az_avk_env_flag("AZ_AVK_SYNC_UPLOAD")) {
-		wlr_log(WLR_INFO, "AZ_AVK_SYNC_UPLOAD=1 -- client SHM buffers are "
-			"copied on the event loop, which is what makes libinput report "
-			"lag; this is the BEFORE arm of that measurement");
-	} else {
-		avk.upload_worker = avk_upload_worker_create();
-		if (avk.upload_worker != NULL) {
-			avk.upload_source = wl_event_loop_add_fd(
-				wl_display_get_event_loop(dpy),
-				avk_upload_worker_fd(avk.upload_worker), WL_EVENT_READABLE,
-				az_avk_upload_worker_readable, NULL);
-			if (avk.upload_source == NULL) {
-				wlr_log(WLR_ERROR, "AVK: the upload worker's completion fd "
-					"could not be watched; copying on the event loop instead");
-				avk_upload_worker_destroy(avk.upload_worker);
-				avk.upload_worker = NULL;
-			}
-		}
-		if (avk.upload_worker == NULL) {
-			wlr_log(WLR_ERROR, "AVK: no upload worker; client SHM buffers "
-				"will be copied on the event loop");
-		}
-	}
 
 	avk.active = true;
 	return true;
@@ -5641,55 +5011,6 @@ static cJSON *az_avk_stats_json(void) {
 		(double)avk.shm_damage_pixels);
 	cJSON_AddNumberToObject(o, "shm_committed_pixels",
 		(double)avk.shm_committed_pixels);
-	/*
-	 * ── HOW LONG A CLIENT HELD THE EVENT LOOP ────────────────────────────
-	 *
-	 * shm_commit_us_max is the headline: the longest a single wl_surface
-	 * commit kept the compositor out of poll(). shm_copy_us_max is the same
-	 * question asked of the copy alone, wherever it ran, so that moving the
-	 * block from one handler to another cannot look like fixing it.
-	 *
-	 * shm_async_* say whether the copy actually went anywhere: jobs handed to
-	 * the worker, and how often a frame arrived before the worker had
-	 * finished and had to wait for it. Zero jobs with a nonzero copy time is
-	 * the synchronous arm; many jobs with join_waits near zero is the working
-	 * state; many jobs with join_waits equal to the job count means the copy
-	 * is being started too late to overlap with anything.
-	 */
-	cJSON_AddBoolToObject(o, "shm_async_upload", az_avk_shm_async_enabled());
-	cJSON_AddNumberToObject(o, "shm_commit_us_max",
-		(double)(avk.shm_commit_ns_max / 1000));
-	cJSON_AddNumberToObject(o, "shm_commit_us_avg",
-		(double)(avk.shm_commit_samples
-			? avk.shm_commit_ns_sum / avk.shm_commit_samples / 1000 : 0));
-	cJSON_AddNumberToObject(o, "shm_commit_samples",
-		(double)avk.shm_commit_samples);
-	cJSON_AddNumberToObject(o, "shm_commit_over_5ms",
-		(double)avk.shm_commit_over_5ms);
-	cJSON_AddNumberToObject(o, "shm_copy_us_max",
-		(double)(avk.shm_copy_ns_max / 1000));
-	cJSON_AddNumberToObject(o, "shm_copy_us_total",
-		(double)(avk.shm_copy_ns_sum / 1000));
-	cJSON_AddNumberToObject(o, "shm_copy_samples",
-		(double)avk.shm_copy_samples);
-	cJSON_AddNumberToObject(o, "shm_async_jobs", (double)avk.shm_async_jobs);
-	cJSON_AddNumberToObject(o, "shm_async_bytes", (double)avk.shm_async_bytes);
-	cJSON_AddNumberToObject(o, "shm_sync_copies", (double)avk.shm_sync_copies);
-	cJSON_AddNumberToObject(o, "shm_async_joins", (double)avk.shm_async_joins);
-	cJSON_AddNumberToObject(o, "shm_async_join_waits",
-		(double)avk.shm_async_join_waits);
-	cJSON_AddNumberToObject(o, "shm_async_join_us_max",
-		(double)(avk.shm_async_join_ns_max / 1000));
-	{
-		uint64_t packed = 0, stolen = 0;
-		avk_upload_worker_counts(avk.upload_worker, &packed, &stolen);
-		/* Jobs the posting thread had to pack itself because the worker had
-		 * not started them. Not a failure -- it is strictly better than
-		 * waiting for a busy worker -- but a rising number means one thread is
-		 * no longer enough. */
-		cJSON_AddNumberToObject(o, "shm_worker_packed", (double)packed);
-		cJSON_AddNumberToObject(o, "shm_worker_stolen", (double)stolen);
-	}
 	cJSON_AddNumberToObject(o, "buffer_resolve_attempts",
 		(double)avk.buffer_resolve_attempts);
 	cJSON_AddNumberToObject(o, "nodes_output_culled_before_resolve",
@@ -7102,20 +6423,6 @@ static void az_avk_stats_reset(void) {
 	avk.shm_upload_skips = 0;
 	avk.shm_damage_pixels = 0;
 	avk.shm_committed_pixels = 0;
-	avk.shm_commit_ns_max = 0;
-	avk.shm_commit_ns_sum = 0;
-	avk.shm_commit_samples = 0;
-	avk.shm_commit_over_5ms = 0;
-	avk.shm_copy_ns_max = 0;
-	avk.shm_copy_ns_sum = 0;
-	avk.shm_copy_samples = 0;
-	avk.shm_async_jobs = 0;
-	avk.shm_async_bytes = 0;
-	avk.shm_sync_copies = 0;
-	avk.shm_async_joins = 0;
-	avk.shm_async_join_waits = 0;
-	avk.shm_async_join_ns_max = 0;
-	avk.shm_async_join_ns_sum = 0;
 	avk.buffer_resolve_attempts = 0;
 	avk.nodes_output_culled_before_resolve = 0;
 	avk.blur_nodes_seen = 0;
@@ -7294,23 +6601,6 @@ static void az_avk_log_stats(void) {
 		" avk.nodes_output_culled_before_resolve=%" PRIu64,
 		avk.shm_damage_pixels, avk.shm_committed_pixels,
 		avk.buffer_resolve_attempts, avk.nodes_output_culled_before_resolve);
-	/* The block, in the log as well as over IPC: a session that felt laggy
-	 * should be diagnosable from what it left behind rather than only from a
-	 * counter someone thought to read while it was running. */
-	wlr_log(WLR_INFO, "avk.shm_async_upload=%s avk.shm_commit_us_max=%" PRIu64
-		" avk.shm_commit_us_avg=%" PRIu64 " avk.shm_commit_over_5ms=%" PRIu64
-		" avk.shm_copy_us_max=%" PRIu64 " avk.shm_copy_us_total=%" PRIu64,
-		az_avk_shm_async_enabled() ? "yes" : "no",
-		avk.shm_commit_ns_max / 1000,
-		avk.shm_commit_samples
-			? avk.shm_commit_ns_sum / avk.shm_commit_samples / 1000 : 0,
-		avk.shm_commit_over_5ms, avk.shm_copy_ns_max / 1000,
-		avk.shm_copy_ns_sum / 1000);
-	wlr_log(WLR_INFO, "avk.shm_async_jobs=%" PRIu64 " avk.shm_sync_copies=%"
-		PRIu64 " avk.shm_async_join_waits=%" PRIu64
-		" avk.shm_async_join_us_max=%" PRIu64, avk.shm_async_jobs,
-		avk.shm_sync_copies, avk.shm_async_join_waits,
-		avk.shm_async_join_ns_max / 1000);
 	wlr_log(WLR_INFO, "avk.commit_imports=%" PRIu64 " avk.late_imports=%" PRIu64
 		" avk.cache_hits=%" PRIu64 " avk.cache_misses=%" PRIu64,
 		avk.commit_imports, avk.late_imports, avk.cache_hits,
@@ -7392,21 +6682,6 @@ static void az_avk_finish(void) {
 		return;
 	}
 	az_avk_log_stats();
-
-	/*
-	 * The worker goes FIRST, and it goes by settling rather than by killing.
-	 *
-	 * Every job in flight owns a client buffer lock, an open data-ptr access
-	 * and a staging buffer, and it is holding them on behalf of an entry the
-	 * loop below is about to destroy. Stopping the thread without draining
-	 * would leak all three; destroying the entries without stopping the thread
-	 * would free memory it is writing.
-	 */
-	az_avk_shm_drain_blocking();
-	if (avk.upload_worker != NULL) {
-		avk_upload_worker_destroy(avk.upload_worker);
-		avk.upload_worker = NULL;
-	}
 
 	/*
 	 * Submissions stop, THEN the GPU is waited for, THEN anything is

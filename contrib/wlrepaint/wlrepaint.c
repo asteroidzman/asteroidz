@@ -75,21 +75,6 @@
  *                    quarter-second apart straddle a flip, slow enough that the
  *                    fixture is not itself the load being measured)
  *   --buffers N      pool size (default 2, max 4)
- *   --churn          allocate a FRESH wl_buffer for every generation instead
- *                    of rotating the pool, and destroy the one from two
- *                    generations ago.
- *
- *                    Not a stress test -- it is what Qt/KDE clients actually
- *                    do, and it selects a completely different path in the
- *                    compositor. A compositor caches a client's buffer by
- *                    identity, so a rotated pool is imported twice and then
- *                    only re-copied when it changes, while a churning client
- *                    presents something unseen at EVERY commit and pays for
- *                    the whole buffer inside the commit handler. That is the
- *                    call chain the AVK input-lag bug was traced along
- *                    (wl_signal_emit_mutable -> az_avk_surface_commit ->
- *                    az_avk_image_for_buffer -> memcpy), and a fixture using
- *                    a rotated pool cannot reach it at all.
  */
 #define _POSIX_C_SOURCE 200809L
 #include <errno.h>
@@ -123,9 +108,6 @@ struct slot {
 	struct wl_buffer *buffer;
 	uint32_t *pixels;
 	bool busy;
-	/* Where this slot starts in the pool. Only --churn needs it, to create a
-	 * fresh wl_buffer over the same memory every generation. */
-	size_t offset;
 };
 static struct slot slots[MAX_BUFFERS];
 
@@ -142,11 +124,6 @@ static bool flat = false;
 static bool fixed_size = false;
 static bool want_ssd = false;
 static bool have_solid = false;
-static bool churn = false;
-/* Kept alive only for --churn, which creates a new wl_buffer from it every
- * generation. Without it the pool object is destroyed as soon as the slots
- * exist, because a wl_buffer outlives the pool it came from. */
-static struct wl_shm_pool *pool_obj;
 static uint32_t solid = 0xff202020u;
 static bool configured;
 static bool frame_done = true;
@@ -292,15 +269,10 @@ static int alloc_pool(void) {
 			(int32_t)(one * (size_t)i), width, height, (int32_t)stride,
 			WL_SHM_FORMAT_ARGB8888);
 		slots[i].pixels = (uint32_t *)(map + one * (size_t)i);
-		slots[i].offset = one * (size_t)i;
 		slots[i].busy = false;
 		wl_buffer_add_listener(slots[i].buffer, &buffer_listener, &slots[i]);
 	}
-	if (churn) {
-		pool_obj = pool;
-	} else {
-		wl_shm_pool_destroy(pool);
-	}
+	wl_shm_pool_destroy(pool);
 	close(fd);
 	return 0;
 }
@@ -326,10 +298,6 @@ static uint8_t *retired_map;
 static size_t retired_map_size;
 
 static void retire_pool(void) {
-	if (pool_obj != NULL) {
-		wl_shm_pool_destroy(pool_obj);
-		pool_obj = NULL;
-	}
 	for (int i = 0; i < MAX_BUFFERS; i++) {
 		if (retired_buffers[i] != NULL) {
 			wl_buffer_destroy(retired_buffers[i]);
@@ -398,8 +366,6 @@ int main(int argc, char **argv) {
 			nbuffers = atoi(argv[++i]);
 			if (nbuffers < 2) nbuffers = 2;
 			if (nbuffers > MAX_BUFFERS) nbuffers = MAX_BUFFERS;
-		} else if (strcmp(argv[i], "--churn") == 0) {
-			churn = true;
 		} else {
 			fprintf(stderr, "wlrepaint: unknown option %s\n", argv[i]);
 			return 1;
@@ -522,24 +488,6 @@ int main(int argc, char **argv) {
 			break;
 		}
 		repaint(s, gen);
-
-		if (churn) {
-			/*
-			 * A wl_buffer the compositor has never seen, over the same pixels.
-			 *
-			 * The point is the IDENTITY, not the memory: a compositor caches a
-			 * client's buffer by wl_buffer, so a rotated pool warms up after
-			 * two generations and every later commit is a cache hit, while
-			 * this presents something unknown at every single commit. Both are
-			 * legal, both are common, and they exercise different code -- see
-			 * the --churn note at the top.
-			 */
-			wl_buffer_destroy(s->buffer);
-			s->buffer = wl_shm_pool_create_buffer(pool_obj,
-				(int32_t)s->offset, width, height, (int32_t)stride,
-				WL_SHM_FORMAT_ARGB8888);
-			wl_buffer_add_listener(s->buffer, &buffer_listener, s);
-		}
 
 		struct wl_callback *cb = wl_surface_frame(surface);
 		wl_callback_add_listener(cb, &frame_listener, NULL);
