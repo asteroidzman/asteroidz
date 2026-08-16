@@ -36,6 +36,10 @@
  * one another. Everything below that says `att` or `pres` means one of these,
  * and nothing below is allowed to mean both. */
 #include "az_extent.h"
+/* AVK's own mapping of a client's wl_shm pool, and the SIGBUS guard over it.
+ * The worker thread reads through this and never through
+ * wlr_buffer_begin_data_ptr_access() -- see the header for why that matters. */
+#include "az_shm_source.h"
 #include "vulkan/avk.h"
 #include "vulkan/device/avk_device.h"
 #include "vulkan/device/avk_instance.h"
@@ -582,26 +586,27 @@ struct az_avk_buffer {
 	 * hold once it settles; a commit landing while the job runs bumps the
 	 * generation past it and is owed a second job.
 	 *
-	 * While a job is in flight this entry holds TWO things it must give back:
-	 * a wlr_buffer_lock() and an open wlr_buffer_begin_data_ptr_access().
-	 * Both are load-bearing, for different reasons:
+	 * While a job is in flight this entry holds ONE thing it must give back: a
+	 * wlr_buffer_lock(). wlr_compositor unlocks surface->current.buffer
+	 * immediately after emitting the commit signal -- deliberately, so a wl_shm
+	 * buffer can be released to the client the moment the compositor has copied
+	 * it. Without the lock the client is free to draw into the memory the worker
+	 * is reading, and the tearing would look like a client bug.
 	 *
-	 *   the LOCK, because wlr_compositor unlocks surface->current.buffer
-	 *   immediately after emitting the commit signal -- deliberately, so a
-	 *   wl_shm buffer can be released to the client the moment the compositor
-	 *   has copied it. Without the lock the client is free to draw into the
-	 *   memory the worker is reading, and the tearing would look like a
-	 *   client bug.
-	 *
-	 *   the ACCESS, because wlroots installs its SIGBUS handler for the
-	 *   duration and threads the registration onto an _Atomic global
-	 *   (types/wlr_shm.c). That is what makes a client shrinking its pool
-	 *   under the worker recoverable rather than a compositor crash -- and it
-	 *   is why the copy may leave the main thread at all.
+	 * IT DOES NOT HOLD wlr_buffer_begin_data_ptr_access(), and that is the
+	 * whole correction to this design. That access is a plain bool with no
+	 * nesting, and wlroots and SceneFX both take one on a client's committed
+	 * buffer at moments we do not control -- see az_shm_source.h, which is where
+	 * the pixels come from instead.
 	 */
 	struct avk_upload_job *job;
 	uint64_t job_generation;
 	struct wl_list job_link;   /* az_avk.shm_jobs */
+
+	/* AVK's own mapping of this buffer's wl_shm pool: what a deferred copy
+	 * reads. Made on first deferred use and kept for the buffer's life, because
+	 * a client's fd, offset and stride never change under it. */
+	struct az_shm_source shm_source;
 
 	/* Per-source accounting, so "which surface is uploading the most" is a
 	 * question with an answer instead of a guess. Cheap: five counters on an
@@ -634,13 +639,16 @@ static void az_avk_buffer_destroy(struct az_avk_buffer *entry) {
 		wlr_log(WLR_ERROR, "AVK: a buffer with a SHM copy in flight is being "
 			"destroyed; waiting for the copy rather than freeing under it");
 		avk_upload_worker_finish(avk.upload_worker, entry->job);
-		wlr_buffer_end_data_ptr_access(entry->buffer);
 		wl_list_remove(&entry->job_link);
 		wl_list_init(&entry->job_link);
 		free(entry->job);
 		entry->job = NULL;
 		unlock_after = entry->buffer;
 	}
+	/* After the job has been finished above, and never before: unmapping the
+	 * pages a worker is copying out of is the use-after-free this whole file is
+	 * arranged to avoid. */
+	az_shm_source_finish(&entry->shm_source);
 	if (entry->image != NULL) {
 		/* Retired against the timeline, not freed: a frame that sampled this
 		 * image may still be in flight, and vkDestroyImage on an image the GPU
@@ -1007,9 +1015,10 @@ static void az_avk_shm_account(struct az_avk_buffer *entry,
 	entry->image->content_seq++;
 }
 
-/* Give back everything a job was holding on the client's behalf. */
+/* Give back everything a job was holding on the client's behalf. The mapping is
+ * NOT one of them: it belongs to the entry, not to the job, and outlives every
+ * copy this buffer will ever be part of (az_shm_source.h). */
 static void az_avk_shm_job_release(struct az_avk_buffer *entry) {
-	wlr_buffer_end_data_ptr_access(entry->buffer);
 	wl_list_remove(&entry->job_link);
 	wl_list_init(&entry->job_link);
 	free(entry->job);
@@ -1068,9 +1077,19 @@ static bool az_avk_shm_job_settle(struct az_avk_buffer *entry, bool block) {
 /*
  * Hand this entry's outstanding damage to the worker.
  *
- * Called from the commit handler, where the client's mapping is guaranteed to
- * hold the committed content and where -- until this change -- the memcpy
- * happened. Returns true if a job is now in flight.
+ * Called from the commit handler, where the client's content is guaranteed to
+ * be the committed one and where -- until this change -- the memcpy happened.
+ * Returns true if a job is now in flight.
+ *
+ * The pixels come from AVK's OWN mapping of the client's pool, not from
+ * wlr_buffer_begin_data_ptr_access(): that access is a plain bool that other
+ * code takes on the same buffer inside the same commit signal, and holding it
+ * across this function's return aborted the compositor. See az_shm_source.h.
+ *
+ * A buffer that is not a wl_shm pool buffer -- a wp_single_pixel_buffer_v1, one
+ * of the compositor's own -- has no fd to map, so it is simply not deferred.
+ * That is the right answer on its merits as well: those are four bytes and a
+ * few kilobytes respectively, and a worker thread has nothing to offer them.
  */
 static bool az_avk_shm_job_start(struct az_avk_buffer *entry) {
 	if (entry->job != NULL || entry->image == NULL || entry->failed) {
@@ -1080,13 +1099,13 @@ static bool az_avk_shm_job_start(struct az_avk_buffer *entry) {
 		return false;
 	}
 
-	void *data = NULL;
 	uint32_t format = 0;
-	size_t stride = 0;
-	if (!wlr_buffer_begin_data_ptr_access(entry->buffer,
-			WLR_BUFFER_DATA_PTR_ACCESS_READ, &data, &format, &stride)) {
-		/* Not readable right now. The synchronous path knows how to explain
-		 * that; this one just declines and lets it. */
+	uint32_t stride = 0;
+	const void *data = az_shm_source_get(&entry->shm_source, entry->buffer,
+		&stride, &format);
+	if (data == NULL) {
+		/* Not a mappable wl_shm buffer. The synchronous path handles it,
+		 * exactly as it did before any of this existed. */
 		return false;
 	}
 
@@ -1094,27 +1113,22 @@ static bool az_avk_shm_job_start(struct az_avk_buffer *entry) {
 		(uint64_t)entry->buffer->width * (uint64_t)entry->buffer->height;
 
 	struct avk_upload_plan plan;
-	enum az_shm_plan_result res = az_avk_shm_plan(entry, (uint32_t)stride,
-		&plan);
+	enum az_shm_plan_result res = az_avk_shm_plan(entry, stride, &plan);
 	if (res == AZ_SHM_PLAN_NOTHING) {
 		avk.shm_upload_skips++;
 		entry->uploaded_generation = entry->content_generation;
-		wlr_buffer_end_data_ptr_access(entry->buffer);
 		return false;
 	}
 	if (res == AZ_SHM_PLAN_FAILED) {
-		wlr_buffer_end_data_ptr_access(entry->buffer);
 		return false;
 	}
 	if (!avk_upload_staging_ensure(avk.device, &entry->upload,
 			avk.importer.upload_ring.retire, plan.total)) {
-		wlr_buffer_end_data_ptr_access(entry->buffer);
 		return false;
 	}
 
 	struct avk_upload_job *job = calloc(1, sizeof(*job));
 	if (job == NULL) {
-		wlr_buffer_end_data_ptr_access(entry->buffer);
 		return false;
 	}
 	job->plan = plan;
@@ -1135,8 +1149,9 @@ static bool az_avk_shm_job_start(struct az_avk_buffer *entry) {
 	entry->pending_full = false;
 	entry->job = job;
 	entry->job_generation = entry->content_generation;
-	/* Both released in az_avk_shm_job_release(); see the comment on
-	 * az_avk_buffer.job for why each is necessary. */
+	/* Released in az_avk_shm_job_release(); see the comment on
+	 * az_avk_buffer.job for why the lock is necessary and the data-ptr access
+	 * is not. */
 	wlr_buffer_lock(entry->buffer);
 	wl_list_insert(&avk.shm_jobs, &entry->job_link);
 	avk.shm_async_jobs++;
@@ -5447,6 +5462,15 @@ static bool az_avk_init(int drm_fd) {
 	 * instead of waiting for the next frame to come looking.
 	 */
 	wl_list_init(&avk.shm_jobs);
+	/*
+	 * BEFORE ANY CLIENT CAN CONNECT, and therefore before wlroots has had cause
+	 * to install its own SIGBUS handler. That ordering is the whole argument
+	 * for why the two compose: wlroots saves whatever handler it finds and
+	 * chains to it for addresses it does not recognise, so it must find ours.
+	 * Install it later and wlroots would eventually restore SIG_DFL over us.
+	 * See az_shm_source.h.
+	 */
+	az_shm_guard_install();
 	if (az_avk_env_flag("AZ_AVK_SYNC_UPLOAD")) {
 		wlr_log(WLR_INFO, "AZ_AVK_SYNC_UPLOAD=1 -- client SHM buffers are "
 			"copied on the event loop, which is what makes libinput report "
@@ -7396,11 +7420,10 @@ static void az_avk_finish(void) {
 	/*
 	 * The worker goes FIRST, and it goes by settling rather than by killing.
 	 *
-	 * Every job in flight owns a client buffer lock, an open data-ptr access
-	 * and a staging buffer, and it is holding them on behalf of an entry the
-	 * loop below is about to destroy. Stopping the thread without draining
-	 * would leak all three; destroying the entries without stopping the thread
-	 * would free memory it is writing.
+	 * Every job in flight owns a client buffer lock and a staging buffer, and
+	 * it is reading a mapping the loop below is about to unmap. Stopping the
+	 * thread without draining would leak the first two; destroying the entries
+	 * without stopping the thread would pull the third out from under it.
 	 */
 	az_avk_shm_drain_blocking();
 	if (avk.upload_worker != NULL) {

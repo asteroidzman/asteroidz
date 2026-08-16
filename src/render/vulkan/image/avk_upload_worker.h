@@ -32,15 +32,18 @@
  * and submitting -- and none of that is measurable next to the memcpy.
  *
  * WHAT KEEPS THE CLIENT'S PIXELS ALIVE while the worker reads them is the
- * caller's job and not this file's: the buffer must be locked and its data-ptr
- * access held for the whole life of the job. See az_avk_shm_job_start().
+ * caller's job and not this file's. It is NOT
+ * wlr_buffer_begin_data_ptr_access(): that is a plain bool with no nesting, and
+ * other code -- wlr_buffer_is_opaque() from inside the very same commit signal,
+ * a renderer uploading a cursor -- takes one on a client's committed buffer at
+ * moments the caller does not control. Holding it across the commit handler's
+ * return aborted a live session on the first kitty window.
  *
- * SIGBUS is already handled correctly across threads, and that was checked
- * rather than assumed: wlroots installs a process-wide SIGBUS handler in
- * wlr_buffer_begin_data_ptr_access() and threads its registrations onto an
- * `_Atomic` global (types/wlr_shm.c). A client that shrinks its pool while the
- * worker is reading it therefore lands in the same recovery path it would have
- * landed in on the main thread.
+ * The caller instead maps the client's wl_shm pool privately and keeps a
+ * wlr_buffer_lock() for the life of the job, and carries its own SIGBUS guard
+ * over that mapping so a client truncating its pool under this thread reads
+ * zeroes rather than killing the compositor. See src/render/az_shm_source.h and
+ * az_avk_shm_job_start().
  *
  * COMPLETION reaches the event loop through an eventfd rather than a poll or a
  * timer: the loop is already in poll(), so a completed copy costs one wakeup
