@@ -57,6 +57,16 @@ struct avk_caps {
 	bool external_fence_fd;
 	bool memory_budget;
 	bool calibrated_timestamps;
+	/*
+	 * Can a plain host pointer be imported as VkDeviceMemory?
+	 *
+	 * This is what lets a client's wl_shm pool be read by the GPU where it
+	 * already lives, instead of being memcpy'd into staging first. On the
+	 * machine this was written for, one 56MB shm buffer cost 52ms of memcpy
+	 * per generation -- blocking the frame, because the pixels were needed
+	 * that frame -- and 17GB of copying in under two minutes.
+	 */
+	bool external_memory_host;
 	bool sampler_ycbcr_conversion;
 	bool pipeline_executable_properties;
 
@@ -128,6 +138,10 @@ struct avk_caps {
 struct avk_device_api {
 	PFN_vkGetSemaphoreFdKHR vkGetSemaphoreFdKHR;
 	PFN_vkImportSemaphoreFdKHR vkImportSemaphoreFdKHR;
+	/* NULL unless caps.external_memory_host; the NULL check is the one test
+	 * the import path makes. */
+	PFN_vkGetMemoryHostPointerPropertiesEXT
+		vkGetMemoryHostPointerPropertiesEXT;
 };
 
 /*
@@ -172,6 +186,12 @@ struct avk_device {
 	VkDevice dev;
 	struct avk_caps caps;
 	struct avk_device_api api;
+
+	/* Alignment a host pointer must satisfy to be imported as device memory.
+	 * Zero unless caps.external_memory_host survived its own probe. Queried
+	 * rather than assumed to be the page size: the spec promises only that it
+	 * is a power of two. */
+	VkDeviceSize imported_host_alignment;
 
 	VkQueue graphics_queue;
 

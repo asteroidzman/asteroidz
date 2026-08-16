@@ -218,6 +218,24 @@ uint64_t avk_upload_submit_packed(struct avk_device *dev,
 	const struct avk_upload_plan *plan,
 	const VkSemaphoreSubmitInfo *waits, uint32_t wait_count);
 
+/*
+ * Copy into `image` straight out of a client's own wl_shm pool, imported as
+ * device memory -- no memcpy on any thread.
+ *
+ * `src` is a VkBuffer bound to the imported pool and `src_offset` is where this
+ * buffer's first row starts inside it. The plan's rectangles and stride are
+ * read; its packed offsets are not, because nothing was packed.
+ *
+ * The caller MUST keep the client's wl_buffer locked until the returned
+ * timeline point is reached. The staging path did not need that -- it had
+ * already taken a copy of the bytes -- but here the GPU reads memory the client
+ * draws into again as soon as it is released.
+ */
+uint64_t avk_upload_submit_host(struct avk_cmd_ring *ring, VkBuffer src,
+	VkDeviceSize src_offset, struct avk_image *image,
+	const struct avk_upload_plan *plan,
+	const VkSemaphoreSubmitInfo *waits, uint32_t wait_count);
+
 /* Release the staging buffer. Does NOT wait for the GPU -- retire it. */
 void avk_upload_finish(struct avk_device *dev, struct avk_upload *up);
 

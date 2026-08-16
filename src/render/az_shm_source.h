@@ -93,6 +93,17 @@ struct az_shm_source {
 	uint32_t format;
 	struct az_shm_source *_Atomic next;   /* az_shm_sources, when registered */
 	bool registered;
+	/*
+	 * Whether the mapping is PROT_WRITE as well as PROT_READ.
+	 *
+	 * Nothing here ever writes through it, and the Vulkan buffer bound to it is
+	 * TRANSFER_SRC only. It is asked for because the driver will not import a
+	 * read-only file mapping as device memory: vkAllocateMemory answers
+	 * VK_ERROR_INVALID_EXTERNAL_HANDLE. A client that sealed its pool with
+	 * F_SEAL_WRITE gets a read-only mapping and the copy path, which is the
+	 * correct outcome rather than a failure.
+	 */
+	bool writable;
 };
 
 /* Needs to be lock-free: it is read from a signal handler. */
@@ -198,7 +209,22 @@ static const void *az_shm_source_get(struct az_shm_source *src,
 	 * else. wlroots has already checked this span fits the pool. */
 	size_t size = (size_t)attrs.offset
 		+ (size_t)attrs.stride * (size_t)buffer->height;
-	void *base = mmap(NULL, size, PROT_READ, MAP_SHARED, attrs.fd, 0);
+	/*
+	 * Read-write FIRST, and read-only as the fallback.
+	 *
+	 * Not because anything writes: this file never does, and the GPU buffer
+	 * bound to the mapping is TRANSFER_SRC. It is what makes the mapping
+	 * importable as Vulkan device memory, which is what removes the copy
+	 * entirely. A pool sealed with F_SEAL_WRITE refuses PROT_WRITE with EPERM
+	 * and lands on the second call, keeping the copy path for that client.
+	 */
+	bool writable = true;
+	void *base = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED,
+		attrs.fd, 0);
+	if (base == MAP_FAILED) {
+		writable = false;
+		base = mmap(NULL, size, PROT_READ, MAP_SHARED, attrs.fd, 0);
+	}
 	if (base == MAP_FAILED) {
 		wlr_log_errno(WLR_DEBUG, "AVK: cannot map a client's shm pool; its "
 			"copies will stay on the event loop");
@@ -210,6 +236,7 @@ static const void *az_shm_source_get(struct az_shm_source *src,
 	src->offset = (size_t)attrs.offset;
 	src->stride = (uint32_t)attrs.stride;
 	src->format = attrs.format;
+	src->writable = writable;
 
 	/* Registered before the address is ever handed out, so a fault can never
 	 * reach an address the handler does not know about. */

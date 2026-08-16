@@ -423,15 +423,24 @@ void avk_upload_pack(const struct avk_upload_plan *plan, const void *src,
 	}
 }
 
-uint64_t avk_upload_submit_packed(struct avk_device *dev,
-		struct avk_cmd_ring *ring, struct avk_upload *up,
-		struct avk_image *image, const struct avk_upload_plan *plan,
+/*
+ * Barriers, copy, barriers, submit -- for a source buffer somebody else chose.
+ *
+ * Both upload paths end here: the one that memcpys into staging, and the one
+ * that reads the client's own pool in place. They differ ONLY in which buffer
+ * the bytes come from and how the regions address it, and that difference is
+ * built by the callers. Anything else -- the read-before-write barrier, the
+ * transition back to SHADER_READ_ONLY, the timeline point the image records --
+ * is identical, and identical is not something to maintain in two places.
+ */
+static uint64_t submit_copy(struct avk_cmd_ring *ring, VkBuffer src,
+		struct avk_image *image, const VkBufferImageCopy2 *regions,
+		uint32_t region_count, bool full,
 		const VkSemaphoreSubmitInfo *waits, uint32_t wait_count) {
-	(void)dev;
-	if (plan->rect_count == 0) {
+	if (region_count == 0) {
 		return 0;
 	}
-	if (!plan->full && image->layout == VK_IMAGE_LAYOUT_UNDEFINED) {
+	if (!full && image->layout == VK_IMAGE_LAYOUT_UNDEFINED) {
 		/* UNDEFINED discards the contents, which for a partial update would
 		 * throw away every pixel outside the damaged rectangles. A partial
 		 * update into an image nothing has written yet is a caller bug. */
@@ -478,43 +487,12 @@ uint64_t avk_upload_submit_packed(struct avk_device *dev,
 	};
 	vkCmdPipelineBarrier2(cb, &dep);
 
-	VkBufferImageCopy2 regions[AVK_UPLOAD_MAX_REGIONS];
-	for (uint32_t i = 0; i < plan->rect_count; i++) {
-		const struct avk_upload_rect *r = &plan->rects[i];
-		regions[i] = (VkBufferImageCopy2){
-			.sType = VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2,
-			.bufferOffset = plan->offsets[i],
-			/* In PIXELS, not bytes -- the classic way to get a sheared image.
-			 * The whole-image plan keeps the SOURCE stride because it copied
-			 * the padding too; the region plan packed rows tightly, so its row
-			 * length is each rectangle's own width. */
-			.bufferRowLength = plan->full ? plan->stride / plan->bpp : r->width,
-			/*
-			 * ROWS PER SLICE, which is the IMAGE's height and not the caller's
-			 * row count. The two are the same for every 2D caller -- it hands
-			 * over the whole image -- and differ by a factor of `depth` for
-			 * M6C's cube, whose dim*dim rows are dim slices of dim rows.
-			 * Taking it from the image is the reading that is right in both
-			 * cases; taking it from the plan shears the cube.
-			 */
-			.bufferImageHeight = plan->full ? image->extent.height : r->height,
-			.imageSubresource = {
-				.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-				.layerCount = 1,
-			},
-			.imageOffset = { (int32_t)r->x, (int32_t)r->y, 0 },
-			/* depth from the IMAGE for the same reason: 1 for every surface,
-			 * `dim` for the cube. A partial region is always 2D. */
-			.imageExtent = { r->width, r->height,
-				plan->full ? image->depth : 1 },
-		};
-	}
 	VkCopyBufferToImageInfo2 copy = {
 		.sType = VK_STRUCTURE_TYPE_COPY_BUFFER_TO_IMAGE_INFO_2,
-		.srcBuffer = up->buffer,
+		.srcBuffer = src,
 		.dstImage = image->image,
 		.dstImageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-		.regionCount = plan->rect_count,
+		.regionCount = region_count,
 		.pRegions = regions,
 	};
 	vkCmdCopyBufferToImage2(cb, &copy);
@@ -536,8 +514,91 @@ uint64_t avk_upload_submit_packed(struct avk_device *dev,
 
 	image->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 	image->last_use = timeline;
-	up->last_use = timeline;
 	return timeline;
+}
+
+uint64_t avk_upload_submit_packed(struct avk_device *dev,
+		struct avk_cmd_ring *ring, struct avk_upload *up,
+		struct avk_image *image, const struct avk_upload_plan *plan,
+		const VkSemaphoreSubmitInfo *waits, uint32_t wait_count) {
+	(void)dev;
+	VkBufferImageCopy2 regions[AVK_UPLOAD_MAX_REGIONS];
+	for (uint32_t i = 0; i < plan->rect_count; i++) {
+		const struct avk_upload_rect *r = &plan->rects[i];
+		regions[i] = (VkBufferImageCopy2){
+			.sType = VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2,
+			.bufferOffset = plan->offsets[i],
+			/* In PIXELS, not bytes -- the classic way to get a sheared image.
+			 * The whole-image plan keeps the SOURCE stride because it copied
+			 * the padding too; the region plan packed rows tightly, so its row
+			 * length is each rectangle's own width. */
+			.bufferRowLength = plan->full ? plan->stride / plan->bpp : r->width,
+			/*
+			 * ROWS PER SLICE, which is the IMAGE's height and not the caller's
+			 * row count. The two are the same for every 2D caller -- it hands
+			 * over the whole image -- and differ by a factor of `depth` for
+			 * M6C's cube, whose dim*dim rows are dim slices of dim rows.
+			 */
+			.bufferImageHeight = plan->full ? image->extent.height : r->height,
+			.imageSubresource = {
+				.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+				.layerCount = 1,
+			},
+			.imageOffset = { (int32_t)r->x, (int32_t)r->y, 0 },
+			.imageExtent = { r->width, r->height,
+				plan->full ? image->depth : 1 },
+		};
+	}
+	uint64_t timeline = submit_copy(ring, up->buffer, image, regions,
+		plan->rect_count, plan->full, waits, wait_count);
+	if (timeline != 0) {
+		up->last_use = timeline;
+	}
+	return timeline;
+}
+
+/*
+ * Copy into the image from the CLIENT'S OWN pool, imported as device memory.
+ *
+ * No memcpy happens anywhere: the GPU reads the pages the client drew into.
+ * The regions therefore address the source's real layout -- full rows of
+ * `stride` bytes at the buffer's offset within the pool -- rather than the
+ * tightly repacked staging the other path builds.
+ *
+ * The caller must keep the client's wl_buffer locked until this submission
+ * completes. With staging that was unnecessary, because the bytes had already
+ * been taken; here the GPU is reading memory the client will draw into again
+ * the moment it is released.
+ */
+uint64_t avk_upload_submit_host(struct avk_cmd_ring *ring, VkBuffer src,
+		VkDeviceSize src_offset, struct avk_image *image,
+		const struct avk_upload_plan *plan,
+		const VkSemaphoreSubmitInfo *waits, uint32_t wait_count) {
+	VkBufferImageCopy2 regions[AVK_UPLOAD_MAX_REGIONS];
+	for (uint32_t i = 0; i < plan->rect_count; i++) {
+		const struct avk_upload_rect *r = &plan->rects[i];
+		regions[i] = (VkBufferImageCopy2){
+			.sType = VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2,
+			/* Where this rectangle's first row actually is in the client's
+			 * pool. Every region reads the same unpacked source, so unlike the
+			 * staging path there are no per-region offsets to have computed. */
+			.bufferOffset = src_offset
+				+ (VkDeviceSize)r->y * plan->stride
+				+ (VkDeviceSize)r->x * plan->bpp,
+			.bufferRowLength = plan->stride / plan->bpp,
+			/* 0 means "derive from imageExtent.height", which is exactly right
+			 * for a 2D slice and avoids restating the rectangle's height. */
+			.bufferImageHeight = 0,
+			.imageSubresource = {
+				.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+				.layerCount = 1,
+			},
+			.imageOffset = { (int32_t)r->x, (int32_t)r->y, 0 },
+			.imageExtent = { r->width, r->height, 1 },
+		};
+	}
+	return submit_copy(ring, src, image, regions, plan->rect_count,
+		plan->full, waits, wait_count);
 }
 
 uint64_t avk_upload_image_write(struct avk_device *dev,
