@@ -412,14 +412,25 @@ static cJSON *build_surface_intent_json(struct wlr_surface *s,
 	 * you can see whether it got VRR and whether it may tear. Both are read
 	 * from the same predicates the commit path uses.
 	 */
-	if (ic != NULL) {
+	{
 		cJSON *pc = cJSON_AddObjectToObject(o, "presentation");
 		bool pc_ruled = false;
 		enum az_present_class klass = az_present_class_of(ic, &pc_ruled);
 		cJSON_AddStringToObject(pc, "class", az_present_class_name(klass));
+		/*
+		 * EVERY SURFACE ANSWERS, including layer-shell ones, which used to get
+		 * no `presentation` object at all. A missing key reads as "unknown",
+		 * and the truth for a layer surface is known and structural: window
+		 * rules match app-id and title and it has neither, wp-content-type is
+		 * a toplevel concern, so it is desktop-ui and cannot be otherwise.
+		 * Saying that is better than omitting it -- and a null also made
+		 * `select(.presentation.class != "desktop-ui")` match every panel,
+		 * which is how this was noticed.
+		 */
 		cJSON_AddStringToObject(pc, "class_from",
-			pc_ruled ? "window-rule" : "derived");
-		cJSON_AddBoolToObject(pc, "fullscreen", ic->isfullscreen);
+			ic == NULL ? "layer-shell" : (pc_ruled ? "window-rule" : "derived"));
+		cJSON_AddBoolToObject(pc, "fullscreen",
+			ic != NULL && ic->isfullscreen);
 		/*
 		 * TWO TEARING FIELDS, because there are two questions and reporting
 		 * only the second was wrong.
@@ -438,12 +449,12 @@ static cJSON *build_surface_intent_json(struct wlr_surface *s,
 		cJSON_AddBoolToObject(pc, "tearing_eligible",
 			client_tearing_eligible(ic));
 		cJSON_AddBoolToObject(pc, "tearing_active",
-			ic->mon != NULL && selmon != NULL && selmon->sel == ic
-				&& check_tearing_frame_allow(ic->mon));
+			ic != NULL && ic->mon != NULL && selmon != NULL
+				&& selmon->sel == ic && check_tearing_frame_allow(ic->mon));
 		/* VRR is genuinely per-output, and is named so it cannot be read as a
 		 * property of this window. */
 		cJSON_AddBoolToObject(pc, "output_vrr_active",
-			ic->mon != NULL && ic->mon->is_vrr_opening);
+			in.mon != NULL && in.mon->is_vrr_opening);
 	}
 
 	cJSON *rn = cJSON_AddObjectToObject(o, "render");
