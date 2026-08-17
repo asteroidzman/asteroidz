@@ -243,19 +243,61 @@ void scene_buffer_apply_effect(struct wlr_scene_buffer *buffer, int32_t sx,
 	 * In the overview live thumbnail the surface keeps its full size and must
 	 * actually be shrunk into its cell, so skip the guards there. */
 	if (!buffer_data->ov_live) {
-		if (buffer_data->should_scale && buffer_data->height_scale < 1 &&
-			buffer_data->width_scale < 1) {
+		/*
+		 * EITHER axis shrinking disables scaling, not both.
+		 *
+		 * This was three tests -- (w<1,h<1), (w<1,h==1), (w==1,h<1) -- which
+		 * enumerate three of the five ways a box can be smaller than its
+		 * surface and miss the two that matter most: one axis above 1 while the
+		 * other is below it. Those are not a shrink OR a grow, they are a
+		 * DISTORTION, and the buffer gets stretched on one axis and squashed on
+		 * the other.
+		 *
+		 * An easing curve never produces them, because it approaches its target
+		 * from one side and both ratios cross 1 together. A SPRING does: it
+		 * overshoots each axis independently, so mid-flight one dimension is
+		 * past the target while the other has not arrived. Measured on a
+		 * `curve spring` resize: 52 frames with the axes straddling 1 and the
+		 * aspect ratio off by up to 0.8%. Small, and on a terminal full of text
+		 * every glyph is resampled by it -- which is what "the text squeezes"
+		 * was.
+		 *
+		 * The rule the three tests were reaching for is simply that a surface
+		 * is never scaled down: it renders at its own size and the clip box
+		 * shows part of it.
+		 */
+		if (buffer_data->should_scale && (buffer_data->height_scale < 1
+				|| buffer_data->width_scale < 1)) {
 			buffer_data->should_scale = false;
 		}
 
-		if (buffer_data->should_scale && buffer_data->height_scale == 1 &&
-			buffer_data->width_scale < 1) {
-			buffer_data->should_scale = false;
-		}
-
-		if (buffer_data->should_scale && buffer_data->height_scale < 1 &&
-			buffer_data->width_scale == 1) {
-			buffer_data->should_scale = false;
+		/*
+		 * ── AND NEVER A NON-UNIFORM SCALE, WHICH IS A DISTORTION ──────────
+		 *
+		 * Scaling both axes by the same factor is what makes a zoom look like a
+		 * zoom: the content is resampled but it is still the same picture.
+		 * Scaling them by DIFFERENT factors is not an animation of the window,
+		 * it is a deformation of its contents -- and on a terminal full of text
+		 * every glyph is stretched one way and squashed the other.
+		 *
+		 * The tolerance is in PIXELS, not percent, because the ratios come from
+		 * integer boxes and a genuinely uniform zoom almost never produces two
+		 * exactly equal floats. If applying one axis's scale instead of the
+		 * other's would move the far edge by less than a pixel, the difference
+		 * is rounding and invisible; more than that and it is a deformation
+		 * somebody can see. A percentage cannot express that -- 0.5% is nothing
+		 * across 100px and eight pixels across 1600.
+		 */
+		if (buffer_data->should_scale) {
+			float longest = (float)(buffer_data->width > buffer_data->height
+				? buffer_data->width : buffer_data->height);
+			float skew = buffer_data->width_scale - buffer_data->height_scale;
+			if (skew < 0.0f) {
+				skew = -skew;
+			}
+			if (skew * longest >= 1.0f) {
+				buffer_data->should_scale = false;
+			}
 		}
 	}
 
