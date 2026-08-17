@@ -5407,6 +5407,33 @@ void reapply_monitor_rules(void) {
 			mon_derive_color_state(m, &state);
 			wlr_output_layout_add(output_layout, m->wlr_output, mx, my);
 			wlr_output_commit_state(m->wlr_output, &state);
+			/*
+			 * ── AND TELL THE CLIENTS, WHICH THIS PATH DID NOT ─────────────
+			 *
+			 * The three writes above -- hdr_max_luminance, hdr_min_luminance,
+			 * hdr_max_fall -- are direct inputs to az_preferred_resolve() and
+			 * are hashed into its identity, so a reload that edits
+			 * `max-luminance 400` to `max-luminance 1000` changes the answer
+			 * for every surface on this output. Nothing announced it.
+			 *
+			 * hdr_resolve() above does not cover this. It announces when the
+			 * HDR STATE flips, and returns early when the effective value did
+			 * not move -- which is exactly the case here: the display was HDR
+			 * before the reload and is HDR after it, only brighter. A
+			 * luminance-only edit therefore reached the connector and no
+			 * client, leaving every wp-cm and frog client tone-mapping for the
+			 * ceiling that was configured at startup.
+			 *
+			 * AFTER the commit, not before: the announcement must describe the
+			 * state the output is actually in, which is the same ordering
+			 * rendermon() states at length for the pending-change path.
+			 *
+			 * Costs nothing when nothing moved. Both frontends compare
+			 * az_preferred's identity before emitting, so a reload that did
+			 * not touch a luminance produces zero protocol traffic.
+			 */
+			mon_send_preferred_descriptions(m);
+			frog_send_preferred_metadata_all(m);
 		}
 
 		wlr_output_state_finish(&state);
@@ -5676,6 +5703,10 @@ void config_apply_live(void) {
 	reset_blur_params();
 	wlr_scene_set_sdr_reference_luminance(scene,
 										  config.sdr_reference_luminance);
+	/* The same gap set_sdr_luminance had, on the reload's own write of the
+	 * same global: the scene was told and no client was. See that dispatch for
+	 * why this value has no other route to a wp-cm client. */
+	mon_send_preferred_descriptions_all();
 	wlr_scene_set_sdr_saturation(scene, config.sdr_saturation);
 	asteroidz_text_node_set_icon_theme(config.icon_theme);
 

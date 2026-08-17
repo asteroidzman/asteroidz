@@ -203,6 +203,16 @@ static void frog_surface_set_hdr_metadata(
 	fs->data.max_cll = max_cll;
 	fs->data.max_fall = max_fall;
 	frog_surface_apply(fs);
+	/*
+	 * frog's metadata is NOT double-buffered -- there is no commit to latch it
+	 * at -- so the request itself is the moment it changes, and this is where
+	 * the connector has to be reconsidered. gamescope is the client that
+	 * matters here and it is the one that changes these values mid-stream.
+	 *
+	 * Gated on an actual difference inside; a re-declaration of the same
+	 * numbers arms nothing.
+	 */
+	mon_content_metadata_changed(fs->surface);
 }
 
 static const struct frog_color_managed_surface_interface frog_surface_impl = {
@@ -285,6 +295,31 @@ static void frog_factory_get_color_managed_surface(
 	struct wl_client *client, struct wl_resource *resource,
 	struct wl_resource *surface_resource, uint32_t id) {
 	struct wlr_surface *surface = wlr_surface_from_resource(surface_resource);
+
+	/*
+	 * ── A SECOND frog SURFACE ON ONE wl_surface KILLED THE SESSION ────────
+	 *
+	 * wlr_addon_init() is not tolerant of a duplicate (owner, impl) pair: it
+	 * `assert(0 && "Can't have two addons of the same type with the same
+	 * owner")`. This tree builds with buildtype=debug and b_ndebug=false --
+	 * that is the binary the live session runs -- so a client calling
+	 * get_color_managed_surface twice for one wl_surface aborted the whole
+	 * compositor. The Arch package uses arch-meson (-Db_ndebug=true), where
+	 * the assert compiles out and wlr_addon_find instead returns the list
+	 * head, so the second object SILENTLY SHADOWS the first: two builds, two
+	 * completely different failures, neither of them an error the client sees.
+	 *
+	 * wp-cm has had this guard from the start (az_wpcm_get_surface). frog is
+	 * an older protocol and names no surface_exists error, so the generic
+	 * implementation error is the honest way to say it -- the client asked for
+	 * something the compositor cannot represent, and it should learn that
+	 * rather than be told nothing or be taken down with us.
+	 */
+	if (wlr_addon_find(&surface->addons, NULL, &frog_surface_addon_impl)) {
+		wl_client_post_implementation_error(client,
+			"a frog colour-managed surface already exists for this wl_surface");
+		return;
+	}
 
 	FrogColorSurface *fs = calloc(1, sizeof(*fs));
 	if (!fs) {

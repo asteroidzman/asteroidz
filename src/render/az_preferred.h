@@ -81,13 +81,41 @@ static inline Monitor *az_surface_effective_output(struct wlr_surface *surface) 
 		}
 		return selmon;
 	}
-	Client *c;
-	wl_list_for_each(c, &clients, link) {
-		if (client_surface(c) == surface) {
-			return c->mon;
-		}
+	/*
+	 * ── EVERY SURFACE ROLE, NOT JUST TOPLEVELS ────────────────────────────
+	 *
+	 * This used to walk `clients` comparing client_surface(c) == surface, and
+	 * client_surface() returns a toplevel's OWN wl_surface and nothing else.
+	 * So a layer-shell surface, a subsurface, an xdg popup or an XWayland
+	 * override-redirect window resolved to NULL -- and NULL here means "no
+	 * preferred display", which both frontends correctly render as silence.
+	 * frog's send returned false and wp-cm's get_preferred fell through to the
+	 * hard-coded sRGB/203 default, permanently.
+	 *
+	 * That is not a corner: asteroidz-bar's own wallpaper backdrop is a
+	 * LAYER-SHELL wp-cm client that renders HDR10, and it was being told
+	 * "sRGB, 203 nits" on a PQ/BT.2020 DP-1 for the life of the session.
+	 *
+	 * toplevel_from_wlr_surface() already answers this for the whole
+	 * compositor -- it resolves through wlr_surface_get_root_surface(), walks
+	 * an xdg popup up to its parent toplevel, and hands back a Client OR a
+	 * LayerSurface. Both carry the `mon` the layout assigned, so the answer
+	 * still comes from setmon() and still agrees with where borders are drawn.
+	 *
+	 * Roles with no output of their own -- a drag icon, a session-lock
+	 * surface, an unassigned xdg_surface -- come back as -1 and still resolve
+	 * to NULL, which is the correct answer for them rather than a gap.
+	 */
+	Client *c = NULL;
+	LayerSurface *l = NULL;
+	int32_t type = toplevel_from_wlr_surface(surface, &c, &l);
+	if (type < 0) {
+		return NULL;
 	}
-	return NULL;
+	if (type == LayerShell) {
+		return l != NULL ? l->mon : NULL;
+	}
+	return c != NULL ? c->mon : NULL;
 }
 
 /*

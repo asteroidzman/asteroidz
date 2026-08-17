@@ -794,6 +794,21 @@ int32_t set_sdr_luminance(const Arg *arg) {
 										  config.sdr_reference_luminance);
 	wlr_log(WLR_INFO, "SDR reference luminance: %.0f cd/m2",
 			config.sdr_reference_luminance);
+	/*
+	 * ── AND SAY SO. THE SCENE WAS THE ONLY THING BEING TOLD. ─────────────
+	 *
+	 * config.sdr_reference_luminance IS the SDR branch of
+	 * az_preferred_resolve() -- max_luminance and max_fall both come from it,
+	 * and it is hashed into the identity -- and it is the `reference` argument
+	 * of wp-cm's luminances event, which has no other source anywhere in the
+	 * protocol. Moving it changed what every SDR surface should be told and
+	 * told none of them: clients kept the value they were handed at startup
+	 * for the rest of the session.
+	 *
+	 * Global, so every output: there is no monitor to scope this to. Surfaces
+	 * on an HDR output reach the identity comparison, match, and emit nothing.
+	 */
+	mon_send_preferred_descriptions_all();
 	printstatus(IPC_WATCH_ARRANGGE);
 	return 0;
 }

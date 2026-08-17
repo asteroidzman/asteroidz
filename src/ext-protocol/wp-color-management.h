@@ -85,13 +85,93 @@ static void az_wpcm_desc_handle_destroy(struct wl_client *c,
 }
 
 /*
+ * ── THE PRIMARY COLOUR VOLUME'S LUMINANCE RANGE, PER TRANSFER FUNCTION ────
+ *
+ * wlroots derives this with wlr_color_transfer_function_get_default_luminance(),
+ * which is PRIVATE -- it is in wlroots' internal render/color.h and appears in
+ * no installed header -- so the table is restated here rather than the tree
+ * being reached into or wlroots patched to export it. Three entries, because
+ * three transfer functions is all this compositor ever describes anything with.
+ *
+ * These are the values of the ENCODING, not of any panel: the range PQ or
+ * BT.1886 content is authored against. The display's own ceiling is a different
+ * question and rides the target_* events below.
+ */
+static struct wlr_color_luminances az_wpcm_default_luminances(uint32_t tf) {
+	switch (tf) {
+	case WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_ST2084_PQ:
+		return (struct wlr_color_luminances){
+			.min = 0.005f, .max = 10000.0f, .reference = 203.0f };
+	case WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_BT1886:
+		return (struct wlr_color_luminances){
+			.min = 0.01f, .max = 100.0f, .reference = 100.0f };
+	default: {
+		/*
+		 * SDR -- and the reference white is CONFIG'S, not wlroots' hard-coded
+		 * 80. config.sdr_reference_luminance is the number this compositor
+		 * actually composites SDR content against; the scene is handed the
+		 * very same value through wlr_scene_set_sdr_reference_luminance(). It
+		 * is also the one quantity in this protocol that has no other home:
+		 * `reference` appears in no other event, so a compositor that never
+		 * sends `luminances` never tells a client its SDR white level at all.
+		 *
+		 * max == reference for SDR because that IS what an SDR volume's
+		 * maximum is; the two are one number wearing two hats, not a
+		 * coincidence being exploited.
+		 */
+		float ref = config.sdr_reference_luminance > 0
+			? config.sdr_reference_luminance : 203.0f;
+		return (struct wlr_color_luminances){
+			.min = 0.2f, .max = ref, .reference = ref };
+	}
+	}
+}
+
+/* CIE 1931 xy in the protocol's units: 1/1000000 of the coordinate, for six
+ * decimals of precision. Both coordinate events use it and neither should be
+ * spelling the conversion out a second time. */
+static void az_wpcm_send_primaries_coords(struct wl_resource *info,
+		const struct wlr_color_primaries *p, bool target) {
+	int32_t rx = (int32_t)(p->red.x * 1000000.0f);
+	int32_t ry = (int32_t)(p->red.y * 1000000.0f);
+	int32_t gx = (int32_t)(p->green.x * 1000000.0f);
+	int32_t gy = (int32_t)(p->green.y * 1000000.0f);
+	int32_t bx = (int32_t)(p->blue.x * 1000000.0f);
+	int32_t by = (int32_t)(p->blue.y * 1000000.0f);
+	int32_t wx = (int32_t)(p->white.x * 1000000.0f);
+	int32_t wy = (int32_t)(p->white.y * 1000000.0f);
+	if (target) {
+		wp_image_description_info_v1_send_target_primaries(info,
+			rx, ry, gx, gy, bx, by, wx, wy);
+	} else {
+		wp_image_description_info_v1_send_primaries(info,
+			rx, ry, gx, gy, bx, by, wx, wy);
+	}
+}
+
+/*
  * get_information. THE POINT OF THE WHOLE EXERCISE IS IN HERE.
  *
  * wlroots' implementation sends the transfer function, the primaries and the
  * transfer function's DEFAULT luminances, and carries two literal TODOs where
- * the mastering values belong. This sends the real ones: the display's own
+ * the mastering values belong. This sends the real ones too: the display's own
  * max/min luminance, its max FALL, and its mastering primaries -- the numbers
  * the operator wrote in monitors.kdl and which frog has always carried.
+ *
+ * ── EVERY MANDATORY EVENT, NOT A SUBSET ──────────────────────────────────
+ *
+ * The interface's own description is explicit that a PARAMETRIC description
+ * must send primaries, at least one of tf_power/tf_named, luminances,
+ * target_primaries and target_luminance -- and that only target_max_cll and
+ * target_max_fall are conditional. This used to send tf_named, primaries_named
+ * and the two conditional ones, gating target_primaries and target_luminance on
+ * has_* flags that are false for most descriptions. Three of the five mandatory
+ * events therefore never went out.
+ *
+ * `luminances` was the worst of them, because it was a REGRESSION rather than a
+ * gap: wlroots sent it, native ownership dropped it, and its `reference`
+ * argument -- the SDR white level -- appears nowhere else in the protocol. That
+ * number stopped reaching any client at all.
  */
 static void az_wpcm_desc_get_information(struct wl_client *client,
 		struct wl_resource *resource, uint32_t id) {
@@ -105,31 +185,72 @@ static void az_wpcm_desc_get_information(struct wl_client *client,
 	}
 	wl_resource_set_implementation(info, NULL, NULL, NULL);
 
-	if (d->data.tf_named != 0) {
-		wp_image_description_info_v1_send_tf_named(info, d->data.tf_named);
-	}
-	if (d->data.primaries_named != 0) {
+	/*
+	 * THE COORDINATE FORM, FROM THE NAMED ONE. wlr_color_primaries_from_named()
+	 * is public (wlr/render/color.h) and is the same table wlroots' own
+	 * implementation serializes from, so the two paths cannot disagree about
+	 * what BT.2020's green is.
+	 *
+	 * _to_wlr() ABORTS on a protocol value with no wlroots entry -- the hazard
+	 * this file already carries three comments about -- but everything reaching
+	 * here came out of _from_wlr() or was validated against az_wpcm_caps, which
+	 * is built from wlroots enums. It round-trips by construction.
+	 */
+	struct wlr_color_primaries primaries;
+	bool have_primaries = d->data.primaries_named != 0;
+	if (have_primaries) {
+		wlr_color_primaries_from_named(&primaries,
+			wlr_color_manager_v1_primaries_to_wlr(d->data.primaries_named));
+		az_wpcm_send_primaries_coords(info, &primaries, false);
 		wp_image_description_info_v1_send_primaries_named(info,
 			d->data.primaries_named);
 	}
-	if (d->data.has_mastering_display_primaries) {
-		const struct wlr_color_primaries *p =
-			&d->data.mastering_display_primaries;
-		/* The protocol's units are 1/1000000 of the CIE 1931 xy value. */
-		wp_image_description_info_v1_send_target_primaries(info,
-			(int32_t)(p->red.x * 1000000.0f), (int32_t)(p->red.y * 1000000.0f),
-			(int32_t)(p->green.x * 1000000.0f), (int32_t)(p->green.y * 1000000.0f),
-			(int32_t)(p->blue.x * 1000000.0f), (int32_t)(p->blue.y * 1000000.0f),
-			(int32_t)(p->white.x * 1000000.0f), (int32_t)(p->white.y * 1000000.0f));
+	if (d->data.tf_named != 0) {
+		wp_image_description_info_v1_send_tf_named(info, d->data.tf_named);
 	}
+
+	struct wlr_color_luminances lum =
+		az_wpcm_default_luminances(d->data.tf_named);
+	/* min in 1/10000 cd/m2; max and reference unscaled. The asymmetry is the
+	 * protocol's, and it is the same one frog uses. */
+	wp_image_description_info_v1_send_luminances(info,
+		(uint32_t)(lum.min * 10000.0f + 0.5f),
+		(uint32_t)lum.max, (uint32_t)lum.reference);
+
+	/*
+	 * ── target_primaries: THE MASTERING SET, OR THE ENCODING'S OWN ────────
+	 *
+	 * Mandatory, so there is no branch in which saying nothing is correct. The
+	 * mastering primaries are the right answer WHEN THE DISPLAY DECLARED SOME;
+	 * an output that declared none has a target volume identical to its own
+	 * primary volume, which is exactly what the named set describes.
+	 *
+	 * The alternative -- keep gating on has_mastering_display_primaries -- is
+	 * what shipped, and combined with that flag being set unconditionally one
+	 * layer up it meant every HDR output reported its target primaries as eight
+	 * zeros: a claim that the display can show nothing at all. Falling back to
+	 * the encoding's primaries is a true statement where eight zeros was a
+	 * false one, and silence would be a protocol violation.
+	 */
+	if (d->data.has_mastering_display_primaries) {
+		az_wpcm_send_primaries_coords(info,
+			&d->data.mastering_display_primaries, true);
+	} else if (have_primaries) {
+		az_wpcm_send_primaries_coords(info, &primaries, true);
+	}
+
+	/* Mandatory as well; the mastering range when the display stated one, the
+	 * transfer function's own otherwise. */
 	if (d->data.has_mastering_luminance) {
-		/* min in 1/10000 cd/m2, max in cd/m2 -- the protocol's own units, and
-		 * the same asymmetry frog uses. Getting this wrong is invisible on a
-		 * display whose floor is 0, which is most of them. */
 		wp_image_description_info_v1_send_target_luminance(info,
 			(uint32_t)(d->data.mastering_luminance.min * 10000.0f + 0.5f),
 			(uint32_t)d->data.mastering_luminance.max);
+	} else {
+		wp_image_description_info_v1_send_target_luminance(info,
+			(uint32_t)(lum.min * 10000.0f + 0.5f), (uint32_t)lum.max);
 	}
+
+	/* These two ARE conditional -- "may send, if applicable". */
 	if (d->data.max_cll != 0) {
 		wp_image_description_info_v1_send_target_max_cll(info, d->data.max_cll);
 	}
@@ -408,15 +529,39 @@ static const struct wlr_surface_synced_impl az_wpcm_synced_impl = {
 
 static const struct wlr_addon_interface az_wpcm_surface_addon_impl;
 
+/*
+ * ── THE OBJECT'S LIFETIME BELONGS TO THE RESOURCE, NOT TO THE ADDON ──────
+ *
+ * It used to belong to the addon: the addon's destroy freed the whole struct,
+ * and the resource's destroy only nulled a back-pointer. Two things followed,
+ * and both were bugs.
+ *
+ * The protocol says destroying a wp_color_management_surface_v1 "does the same
+ * as unset_image_description". Nothing did. The addon stayed on
+ * surface->addons with `current.has` still true, so
+ * az_wpcm_surface_image_description() kept serving the last committed
+ * description for the entire remaining life of the wl_surface -- an
+ * unset that never unset.
+ *
+ * Worse, az_wpcm_get_surface() raises SURFACE_EXISTS when it finds that addon.
+ * So a client doing the ORDINARY thing -- destroy the colour-management
+ * surface, create a fresh one to reset its colour state -- was killed with a
+ * protocol error for a wl_surface that no longer had a live colour object at
+ * all.
+ *
+ * Now the addon is finished wherever the pairing ends, and the struct is freed
+ * exactly once, by the resource. The surface-going-first path stays inert: the
+ * client may still hold the object and may still call destroy on it.
+ */
 static void az_wpcm_surface_addon_destroy(struct wlr_addon *addon) {
 	AzWpcmSurface *s = wl_container_of(addon, s, addon);
 	wlr_addon_finish(&s->addon);
 	wlr_surface_synced_finish(&s->synced);
+	/* THE INERT MARKER, and the only one. The resource stays alive and keeps
+	 * pointing at `s`, so a request arriving after this can tell the
+	 * difference between "inert" and "freed" -- which a NULL user_data could
+	 * not, because it is also what a resource that never had one looks like. */
 	s->surface = NULL;
-	if (s->resource != NULL) {
-		wl_resource_set_user_data(s->resource, NULL);
-	}
-	free(s);
 }
 
 static const struct wlr_addon_interface az_wpcm_surface_addon_impl = {
@@ -428,8 +573,17 @@ static void az_wpcm_surface_set(struct wl_client *c, struct wl_resource *r,
 		struct wl_resource *desc_resource, uint32_t render_intent) {
 	(void)c;
 	AzWpcmSurface *s = wl_resource_get_user_data(r);
-	if (s == NULL) {
-		return; /* the surface went away; the resource is inert */
+	/*
+	 * THE PROTOCOL NAMES AN ERROR FOR THIS AND IT WAS BEING SWALLOWED. The
+	 * request used to return silently, which tells a client its call was
+	 * accepted -- the one thing that is not true. `inert` exists so a client
+	 * that raced its own wl_surface destruction learns it did, instead of
+	 * waiting forever for a state change nothing will ever apply.
+	 */
+	if (s == NULL || s->surface == NULL) {
+		wl_resource_post_error(r, WP_COLOR_MANAGEMENT_SURFACE_V1_ERROR_INERT,
+			"the wl_surface is gone; this object is inert");
+		return;
 	}
 	bool ok = false;
 	for (size_t i = 0; i < LENGTH(az_cm_render_intents); i++) {
@@ -451,7 +605,9 @@ static void az_wpcm_surface_set(struct wl_client *c, struct wl_resource *r,
 static void az_wpcm_surface_unset(struct wl_client *c, struct wl_resource *r) {
 	(void)c;
 	AzWpcmSurface *s = wl_resource_get_user_data(r);
-	if (s == NULL) {
+	if (s == NULL || s->surface == NULL) {
+		wl_resource_post_error(r, WP_COLOR_MANAGEMENT_SURFACE_V1_ERROR_INERT,
+			"the wl_surface is gone; this object is inert");
 		return;
 	}
 	s->pending.has = false;
@@ -472,9 +628,25 @@ static const struct wp_color_management_surface_v1_interface
 
 static void az_wpcm_surface_resource_destroy(struct wl_resource *r) {
 	AzWpcmSurface *s = wl_resource_get_user_data(r);
-	if (s != NULL) {
-		s->resource = NULL;
+	if (s == NULL) {
+		return;
 	}
+	if (s->surface != NULL) {
+		/*
+		 * "Destroy ... and do the same as unset_image_description." Taking the
+		 * addon off the surface IS the unset: az_wpcm_surface_image_description
+		 * finds nothing, the scene's one fallback slot falls through to frog,
+		 * and get_surface can hand this wl_surface a fresh colour object
+		 * instead of killing the client with SURFACE_EXISTS.
+		 *
+		 * wlr_addon_finish() unlinks without invoking the destroy callback, so
+		 * this does not re-enter az_wpcm_surface_addon_destroy.
+		 */
+		wlr_addon_finish(&s->addon);
+		wlr_surface_synced_finish(&s->synced);
+		s->surface = NULL;
+	}
+	free(s);
 }
 
 /* The scene's fallback asks this for a surface's colour description. Returns
@@ -514,10 +686,38 @@ az_cm_surface_description(struct wlr_surface *surface) {
 
 typedef struct {
 	struct wl_resource *resource;
-	struct wlr_surface *surface;
+	struct wlr_surface *surface; /* NULL once the wl_surface is destroyed */
+	struct wlr_addon addon;      /* on surface->addons, OWNED BY THIS OBJECT */
 	struct wl_list link;      /* az_wpcm_feedbacks */
 	uint64_t sent_identity;   /* az_preferred's, 0 = never sent */
 } AzWpcmFeedback;
+
+/*
+ * ── A FEEDBACK OBJECT HAS TO LEARN ITS SURFACE DIED ──────────────────────
+ *
+ * It held a bare wlr_surface pointer and installed nothing -- no addon, no
+ * destroy listener -- so a destroyed wl_surface left every feedback object for
+ * it pointing at freed memory forever. Not a use-after-free, because the
+ * pointer is only ever compared; but a new wl_surface landing at the same
+ * address inherits another surface's feedback objects, and they start
+ * receiving preferred_changed for a surface their client never asked about.
+ *
+ * frog gets this right one file over (frog_surface_addon_destroy) and the fix
+ * is that pattern. The one difference is the OWNER: several feedback objects
+ * for one wl_surface are legal -- the protocol names no surface_exists error
+ * here -- so each keys its addon on ITSELF. Keying on NULL like frog does
+ * would make the second one trip wlroots' duplicate-addon assert.
+ */
+static void az_wpcm_feedback_addon_destroy(struct wlr_addon *addon) {
+	AzWpcmFeedback *fb = wl_container_of(addon, fb, addon);
+	wlr_addon_finish(&fb->addon);
+	fb->surface = NULL;
+}
+
+static const struct wlr_addon_interface az_wpcm_feedback_addon_impl = {
+	.name = "az_wpcm_feedback",
+	.destroy = az_wpcm_feedback_addon_destroy,
+};
 
 static struct wl_list az_wpcm_feedbacks;
 static bool az_wpcm_feedbacks_init = false;
@@ -539,7 +739,15 @@ static void az_wpcm_data_from_preferred(const struct az_preferred *pref,
 			.min = pref->min_luminance,
 			.max = pref->max_luminance,
 		},
-		.max_cll = (uint32_t)pref->max_luminance,
+		/*
+		 * NO max_cll. It used to be filled from the DISPLAY's peak luminance,
+		 * and max_cll is a CONTENT light level -- the brightest pixel in the
+		 * material -- not a property of the panel showing it. A preferred
+		 * description describes what the compositor would like to receive, and
+		 * the compositor has no content to state a light level for; wlroots
+		 * sends none here either. The display's ceiling is already stated,
+		 * correctly, as the target luminance.
+		 */
 		.max_fall = (uint32_t)pref->max_fall,
 	};
 	/* Through _from_wlr(), never a protocol constant: see az_cm_caps.h. The
@@ -551,8 +759,16 @@ static void az_wpcm_data_from_preferred(const struct az_preferred *pref,
 static void az_wpcm_feedback_get_preferred(struct wl_client *client,
 		struct wl_resource *r, uint32_t id) {
 	AzWpcmFeedback *fb = wl_resource_get_user_data(r);
+	/* Inert, and the protocol names the error. Distinct from "alive but on no
+	 * output", which is handled below and is not an error at all. */
+	if (fb == NULL || fb->surface == NULL) {
+		wl_resource_post_error(r,
+			WP_COLOR_MANAGEMENT_SURFACE_FEEDBACK_V1_ERROR_INERT,
+			"the wl_surface is gone; this object is inert");
+		return;
+	}
 	struct az_preferred pref;
-	az_preferred_resolve(fb != NULL ? fb->surface : NULL, &pref);
+	az_preferred_resolve(fb->surface, &pref);
 	struct wlr_image_description_v1_data data;
 	if (pref.identity == 0) {
 		/* Not on an output. Answer the SDR default rather than failing: a
@@ -585,6 +801,12 @@ static void az_wpcm_feedback_resource_destroy(struct wl_resource *r) {
 	AzWpcmFeedback *fb = wl_resource_get_user_data(r);
 	if (fb == NULL) {
 		return;
+	}
+	if (fb->surface != NULL) {
+		/* Off the surface too, or the addon outlives the struct it is
+		 * embedded in and the wl_surface's destroy walk reads freed memory. */
+		wlr_addon_finish(&fb->addon);
+		fb->surface = NULL;
 	}
 	/* OFF THE REGISTRY BEFORE THE FREE. The reverse order leaves a freed node
 	 * linked, and the next walk of the list reads it -- the exact ordering
@@ -671,10 +893,29 @@ static void az_wpcm_output_get_description(struct wl_client *client,
 			od->transfer_function);
 		data.primaries_named = wlr_color_manager_v1_primaries_from_wlr(
 			od->primaries);
-		/* wlr_output_image_description carries no has_* flags -- a zero max
+		/*
+		 * wlr_output_image_description carries no has_* flags -- a zero max
 		 * IS the "unset" signal, which is why this tests the value rather than
-		 * a companion boolean that does not exist. */
-		data.has_mastering_display_primaries = true;
+		 * a companion boolean that does not exist.
+		 *
+		 * AND THE SAME REASONING APPLIES ONE FIELD UP. This flag was set
+		 * unconditionally, and mon_state_apply_color() never writes
+		 * .mastering_display_primaries on an output's image description at all
+		 * -- the string does not occur in asteroidz.c -- so it is always the
+		 * zero-initialised struct. Every HDR output was therefore reporting a
+		 * target colour volume of eight zeros: a white point at (0,0) and three
+		 * primaries on top of it, which describes a display that can show
+		 * nothing. Gate it on the value, exactly as the luminance below is.
+		 *
+		 * A description with the flag false is not silent on the wire:
+		 * get_information falls back to the encoding's own primaries, which is
+		 * the true statement for a display that declared no mastering set.
+		 */
+		data.has_mastering_display_primaries =
+			od->mastering_display_primaries.red.x > 0.0f
+			|| od->mastering_display_primaries.green.x > 0.0f
+			|| od->mastering_display_primaries.blue.x > 0.0f
+			|| od->mastering_display_primaries.white.x > 0.0f;
 		data.mastering_display_primaries = od->mastering_display_primaries;
 		if (od->mastering_luminance.max > 0.0) {
 			data.has_mastering_luminance = true;
@@ -815,7 +1056,8 @@ static void az_wpcm_get_surface_feedback(struct wl_client *client,
 		wl_client_post_no_memory(client);
 		return;
 	}
-	fb->surface = wlr_surface_from_resource(surface_resource);
+	struct wlr_surface *surface = wlr_surface_from_resource(surface_resource);
+	fb->surface = surface;
 	fb->resource = wl_resource_create(client,
 		&wp_color_management_surface_feedback_v1_interface,
 		wl_resource_get_version(resource), id);
@@ -826,6 +1068,10 @@ static void az_wpcm_get_surface_feedback(struct wl_client *client,
 	}
 	wl_resource_set_implementation(fb->resource, &az_wpcm_feedback_impl, fb,
 		az_wpcm_feedback_resource_destroy);
+	/* Owner = fb, so several feedback objects can coexist on one wl_surface --
+	 * see az_wpcm_feedback_addon_destroy for why that is not frog's NULL. */
+	wlr_addon_init(&fb->addon, &surface->addons, fb,
+		&az_wpcm_feedback_addon_impl);
 	wl_list_insert(&az_wpcm_feedbacks, &fb->link);
 }
 

@@ -1285,6 +1285,22 @@ struct Monitor {
 	 * change into the next regular frame's own commit. */
 	bool hdr_pending_change;
 
+	/*
+	 * THE CONTENT METADATA CURRENTLY FOLDED INTO THIS CONNECTOR.
+	 *
+	 * mon_state_apply_color() overrides the panel's own HDR10 static metadata
+	 * with the sole fullscreen client's declared values, and nothing used to
+	 * notice when those values CHANGED without the fullscreen state changing
+	 * with them -- mpv advancing from a 1000-nit title to a 4000-nit one left
+	 * the connector describing 1000 for as long as it stayed fullscreen.
+	 *
+	 * An identity rather than a boolean, so "did this change" is answered by
+	 * comparing the numbers that actually reach the connector rather than by a
+	 * flag somebody has to remember to clear. The comparison is what keeps this
+	 * from being a modeset storm: see mon_content_metadata_changed().
+	 */
+	uint64_t content_metadata_identity;
+
 	/* AVK's per-output state: its own swapchain and the renderer built for
 	 * this output's colour format. NULL unless ASTEROIDZ_RENDERER=avk, and
 	 * still NULL on an output AVK has decided it cannot render correctly --
@@ -1510,6 +1526,33 @@ static void setmon(Client *c, Monitor *m, uint32_t newtags, bool focus);
 static void surface_send_preferred_description(struct wlr_surface *surface,
 	Monitor *m);
 static void mon_send_preferred_descriptions(Monitor *m);
+/* The frog half of the same statement. Declared here because the config
+ * reload -- parse_config.h, included well before the protocol frontends -- has
+ * to re-announce through both of them when a monitor rule changes a mastering
+ * value, and a resend through only one frontend is the drift az_preferred.h
+ * exists to prevent. */
+static void frog_send_preferred_metadata_all(Monitor *m);
+/* Every output's surfaces, for a change that is not scoped to one display:
+ * config.sdr_reference_luminance is global and feeds every SDR answer. */
+static void mon_send_preferred_descriptions_all(void);
+/* A surface changed the HDR10 static metadata it declares. Defined beside
+ * mon_hdr_scanout_candidate, called from the xdg commit handler and from frog's
+ * own setter -- both of which come earlier in this file, or in a header
+ * included earlier. */
+static void mon_content_metadata_changed(struct wlr_surface *surface);
+/*
+ * How many times a content-metadata change has armed a connector update.
+ *
+ * Here rather than beside the code that increments it because ipc.h is
+ * included well before that point and `get cm-stats` reports it. It is the one
+ * counter that BOUNDS THE COST of the arming path: the flag it sets is folded
+ * in with allow_reconfiguration, which in this wlroots means a blocking full
+ * modeset, and a live session once logged 58 spurious ones with libinput
+ * complaining of 42-51ms of lag inside the densest burst. A number that can be
+ * read from outside is the difference between "arming is gated" as a claim and
+ * as a measurement.
+ */
+static uint64_t az_content_metadata_arms = 0;
 static void setpsel(struct wl_listener *listener, void *data);
 static void setsel(struct wl_listener *listener, void *data);
 static void setup(void);
@@ -5315,6 +5358,21 @@ void commitnotify(struct wl_listener *listener, void *data) {
 		return;
 	}
 
+	/*
+	 * wp-cm's set_image_description is DOUBLE-BUFFERED surface state -- it
+	 * lands through wlr_surface_synced, which wlroots applies before it emits
+	 * events.commit -- so the commit is the first moment the new metadata is
+	 * readable, and this is the only hook that sees it. Cheap and gated three
+	 * ways; see mon_content_metadata_changed() for why a per-frame call site
+	 * does not become a per-frame modeset.
+	 *
+	 * Before the animation early-outs below deliberately: a client mid-tag
+	 * animation is still the thing on screen, and its colour volume is not an
+	 * animation property.
+	 */
+	if (c && !c->iskilling)
+		mon_content_metadata_changed(client_surface(c));
+
 	if (!c || c->iskilling || c->animation.tagouting || c->animation.tagouted ||
 		c->animation.tagining)
 		return;
@@ -6018,6 +6076,128 @@ static Client *mon_hdr_scanout_candidate(Monitor *m) {
 	return candidate;
 }
 
+/*
+ * ── THE HDR10 STATIC METADATA THIS OUTPUT WILL PRESENT ────────────────────
+ *
+ * The panel's own rule, overridden by the sole fullscreen client's declared
+ * metadata when it has some -- that is what the content was actually graded
+ * for, and a tone-mapper can use it more accurately than a value derived from
+ * the display's ceiling alone.
+ *
+ * Extracted from mon_state_apply_color() so that "what would we fold in" can be
+ * asked WITHOUT building an output state and committing it. The identity it
+ * returns is over exactly the four values that reach the connector, so a
+ * comparison against m->content_metadata_identity answers "has the picture
+ * changed" and nothing wider: a repaint, a damage event, or a commit that
+ * restates the same metadata all hash equal.
+ *
+ * ── real wp-color-management FIRST, frog ONLY AS A FALLBACK ──────────────
+ *
+ * This mirrors the scene's own precedence. az_cm_surface_description() is the
+ * same one slot the scene consults, so the scanout path and the composited path
+ * cannot disagree about what a surface is. NOT wlroots'
+ * wlr_surface_get_image_description_v1_data(): that reads the addon wlroots'
+ * own wp-cm implementation attaches, and under native ownership that
+ * implementation does not exist, so it returns NULL forever.
+ */
+static uint64_t mon_content_metadata(Monitor *m, double *out_min,
+		double *out_max, double *out_cll, double *out_fall) {
+	double mastering_min = m->hdr_min_luminance;
+	double mastering_max = m->hdr_max_luminance;
+	double max_cll = m->hdr_max_luminance;
+	double max_fall = m->hdr_max_fall;
+
+	Client *candidate = mon_hdr_scanout_candidate(m);
+	struct wlr_surface *candidate_surface =
+		candidate ? client_surface(candidate) : NULL;
+	const struct wlr_image_description_v1_data *content_desc =
+		candidate_surface ? az_cm_surface_description(candidate_surface) : NULL;
+	if (content_desc && content_desc->tf_named ==
+			WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_ST2084_PQ) {
+		if (content_desc->has_mastering_luminance) {
+			mastering_min = content_desc->mastering_luminance.min;
+			mastering_max = content_desc->mastering_luminance.max;
+		}
+		if (content_desc->max_cll > 0)
+			max_cll = content_desc->max_cll;
+		if (content_desc->max_fall > 0)
+			max_fall = content_desc->max_fall;
+	}
+	*out_min = mastering_min;
+	*out_max = mastering_max;
+	*out_cll = max_cll;
+	*out_fall = max_fall;
+
+	/* FNV-1a over the four, the same construction az_preferred uses and for
+	 * the same reason: the values are floats that a struct comparison would
+	 * have to spell out field by field, and this is the shape already proven
+	 * here. Never 0 -- that is the "never computed" value on a fresh Monitor,
+	 * and it must not collide with a real answer. */
+	uint64_t h = 1469598103934665603ULL;
+	az_preferred_mix(&h, out_min, sizeof(*out_min));
+	az_preferred_mix(&h, out_max, sizeof(*out_max));
+	az_preferred_mix(&h, out_cll, sizeof(*out_cll));
+	az_preferred_mix(&h, out_fall, sizeof(*out_fall));
+	return h != 0 ? h : 1;
+}
+
+/*
+ * ── A CLIENT CHANGED ITS CONTENT METADATA. DOES THE CONNECTOR CARE? ───────
+ *
+ * mon_state_apply_color() folds a fullscreen client's declared HDR10 metadata
+ * into the connector, but the only two writers of hdr_pending_change were a
+ * fullscreen TRANSITION and hdr_resolve(). Neither fires when a client that is
+ * already fullscreen changes the numbers -- mpv advancing to the next file in a
+ * playlist without leaving fullscreen -- so the connector kept describing the
+ * previous title's mastering values, and no wp-cm output client was told
+ * anything either.
+ *
+ * ── AND THIS IS WHY IT IS NOT A MODESET STORM ────────────────────────────
+ *
+ * The flag is folded in with allow_reconfiguration, which in this wlroots means
+ * .modeset = true: a BLOCKING full modeset whether or not the mode changed. The
+ * comment on client_pending_fullscreen_state() records what happens when that
+ * is armed carelessly -- 58 of them in one session, in bursts of eight in 1.3
+ * seconds, with libinput complaining of 42-51ms of lag inside the densest
+ * burst. Content metadata arrives on EVERY COMMIT of a client that sets it,
+ * which is every frame of a video, so arming unconditionally here would be
+ * strictly worse than the defect it fixes.
+ *
+ * Three gates, cheapest first:
+ *   1. the output is not in HDR              -- nothing folds content metadata
+ *   2. this surface is not the scanout candidate for its own output
+ *   3. the four values hash to what the connector already carries
+ *
+ * (3) is the load-bearing one and it is why this is an identity rather than a
+ * boolean: a client committing a thousand frames with unchanged metadata
+ * reaches it a thousand times and arms zero modesets, and that is a property
+ * that can be read off the counter rather than argued about.
+ */
+static void mon_content_metadata_changed(struct wlr_surface *surface) {
+	if (surface == NULL) {
+		return;
+	}
+	Monitor *m = az_surface_effective_output(surface);
+	if (m == NULL || m->wlr_output == NULL || !m->hdr) {
+		return;
+	}
+	/* OUTPUT-SCOPED. A background window changing its mastering metadata must
+	 * not touch the connector -- only what is actually being scanned out can
+	 * describe what the display is showing. */
+	Client *candidate = mon_hdr_scanout_candidate(m);
+	if (candidate == NULL || client_surface(candidate) != surface) {
+		return;
+	}
+	double min, max, cll, fall;
+	uint64_t identity = mon_content_metadata(m, &min, &max, &cll, &fall);
+	if (identity == m->content_metadata_identity) {
+		return;
+	}
+	m->hdr_pending_change = true;
+	az_content_metadata_arms++;
+	wlr_output_schedule_frame(m->wlr_output);
+}
+
 /* Apply the color pipeline of an output: an optional 10-bit framebuffer
  * (bitdepth:10 rule, implied by HDR to avoid PQ banding) and an optional
  * HDR mode (BT.2020 primaries with the PQ transfer function). Falls back
@@ -6139,52 +6319,16 @@ void mon_state_apply_color(Monitor *m, struct wlr_output_state *state) {
 			 * actually graded for, which the panel's tone-mapper can use
 			 * more accurately than a value derived purely from its own
 			 * ceiling. */
-			double mastering_min = m->hdr_min_luminance;
-			double mastering_max = m->hdr_max_luminance;
-			double max_cll = m->hdr_max_luminance;
-			double max_fall = m->hdr_max_fall;
-
-			/* real wp-color-management first, frog only as a fallback --
-			 * mirrors surface.c's own precedence (frog_surface_image_
-			 * description is a wlr_scene_set_surface_color_description_
-			 * fallback callback, only ever consulted when a surface has no
-			 * genuine wp-cm description of its own). Without this, a
-			 * fullscreen client using real wp-cm instead of frog (anything
-			 * that isn't gamescope) would never get its metadata forwarded
-			 * here despite scenefx's composited-path fix already handling
-			 * both uniformly. */
-			Client *candidate = mon_hdr_scanout_candidate(m);
-			struct wlr_surface *candidate_surface =
-				candidate ? client_surface(candidate) : NULL;
+			double mastering_min, mastering_max, max_cll, max_fall;
 			/*
-			 * THROUGH THE MULTIPLEXER, not wlroots' surface accessor.
-			 *
-			 * wlr_surface_get_image_description_v1_data() reads the addon
-			 * wlroots' own wp-cm implementation attaches -- and under native
-			 * ownership that implementation does not exist, so it returns NULL
-			 * forever. Every wp-cm client's mastering metadata would silently
-			 * stop reaching the scanout path, which is exactly the case this
-			 * block was added to fix.
-			 *
-			 * az_cm_surface_description() answers from native wp-cm first, then
-			 * frog -- the same one slot the scene consults, so the scanout path
-			 * and the composited path cannot disagree about what a surface is.
+			 * THE SAME RESOLVER mon_content_metadata_changed() ASKS. Sharing
+			 * it is what makes the arming decision honest: the identity it
+			 * compares against is recorded here, from the values that are
+			 * about to be handed to the connector, so "unchanged" cannot mean
+			 * "unchanged according to a second, drifting copy of this logic".
 			 */
-			const struct wlr_image_description_v1_data *content_desc =
-				candidate_surface
-					? az_cm_surface_description(candidate_surface)
-					: NULL;
-			if (content_desc && content_desc->tf_named ==
-									 WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_ST2084_PQ) {
-				if (content_desc->has_mastering_luminance) {
-					mastering_min = content_desc->mastering_luminance.min;
-					mastering_max = content_desc->mastering_luminance.max;
-				}
-				if (content_desc->max_cll > 0)
-					max_cll = content_desc->max_cll;
-				if (content_desc->max_fall > 0)
-					max_fall = content_desc->max_fall;
-			}
+			m->content_metadata_identity = mon_content_metadata(m,
+				&mastering_min, &mastering_max, &max_cll, &max_fall);
 
 			const struct wlr_output_image_description image_description = {
 				.primaries = WLR_COLOR_NAMED_PRIMARIES_BT2020,
@@ -10490,77 +10634,32 @@ static void surface_send_preferred_description(struct wlr_surface *surface,
 		return;
 	}
 	/*
-	 * ── NEVER NULL. wlroots DEREFERENCES THIS. ────────────────────────────
+	 * ── WHAT IS LOGGED IS WHAT IS SENT ────────────────────────────────────
 	 *
-	 * `wlr_color_manager_v1_set_surface_preferred_image_description` reads
-	 * `*data` unconditionally -- both in its equality test and in the
-	 * assignment -- so passing NULL to mean "the default" is a null dereference
-	 * in the compositor, taken the moment any wp-cm client holds a feedback
-	 * object on an SDR output. It reads like an optional argument and is not
-	 * one.
+	 * This function used to build a full wlr_image_description_v1_data here --
+	 * an SDR default, or the output's HDR values -- log it under AZ_DEBUG_CM,
+	 * and then never use it. It was the argument to
+	 * `wlr_color_manager_v1_set_surface_preferred_image_description`, and when
+	 * native wp-cm took ownership the call went away while its argument stayed.
 	 *
-	 * So the SDR case is stated EXPLICITLY: sRGB transfer, sRGB primaries.
-	 * That is also the better answer on its own terms -- "this output is sRGB"
-	 * is a fact a client can act on, where silence is merely an absence a
-	 * client has to guess about.
+	 * That left a diagnostic that DISAGREED with the wire. az_wpcm_send_
+	 * preferred() re-resolves through az_preferred_resolve() and serializes its
+	 * own struct, so the log printed the output's max_cll where the wire
+	 * carried the monitor rule's max_luminance. A log whose numbers are not the
+	 * numbers sent is worse than no log: it is a confident wrong answer, and
+	 * the first thing anyone reaches for when the picture is wrong.
+	 *
+	 * The shared policy is now the only source, and it is the same one both
+	 * frontends serialize.
 	 */
-	/*
-	 * ── AND EVERY PROTOCOL VALUE COMES FROM A wlroots ENUM ────────────────
-	 *
-	 * Not written as a protocol constant, for the reason the color-manager
-	 * setup in this file already states at length: _to_wlr() ABORTS on a
-	 * protocol value with no matching wlroots entry, and wlroots calls it on
-	 * this data the moment a client asks the description for its information.
-	 *
-	 * WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_SRGB is exactly such a value. It
-	 * exists in the protocol, it is the obvious constant to reach for, and
-	 * wlroots maps its own WLR_..._SRGB to COMPOUND_POWER_2_4 instead -- so
-	 * _to_wlr(WP_..._SRGB) falls through to abort(). Hard-coding it killed the
-	 * compositor the first time a wp-cm client called get_information, which is
-	 * how this comment came to be written.
-	 */
-	struct wlr_image_description_v1_data sdr = {
-		.tf_named = wlr_color_manager_v1_transfer_function_from_wlr(
-			WLR_COLOR_TRANSFER_FUNCTION_SRGB),
-		.primaries_named = wlr_color_manager_v1_primaries_from_wlr(
-			WLR_COLOR_NAMED_PRIMARIES_SRGB),
-	};
-	const struct wlr_image_description_v1_data *data = &sdr;
-	struct wlr_image_description_v1_data hdr;
-	if (m != NULL && m->wlr_output != NULL
-			&& m->wlr_output->image_description != NULL) {
-		const struct wlr_output_image_description *od =
-			m->wlr_output->image_description;
-		hdr = (struct wlr_image_description_v1_data){
-			/* Through _from_wlr() as well. These two happen to round-trip, but
-			 * "happens to" is not a property to rely on twice in one function
-			 * when the other case already proved it can be false. */
-			.tf_named = wlr_color_manager_v1_transfer_function_from_wlr(
-				WLR_COLOR_TRANSFER_FUNCTION_ST2084_PQ),
-			.primaries_named = wlr_color_manager_v1_primaries_from_wlr(
-				WLR_COLOR_NAMED_PRIMARIES_BT2020),
-			/* The output's OWN numbers, so a client is told what this display
-			 * actually claims rather than what the protocol permits. Zero means
-			 * unset in both structs, which is why the has_* flag is derived
-			 * from the value rather than set unconditionally: declaring a
-			 * mastering luminance of 0 is a claim, and a false one. */
-			.has_mastering_luminance = od->mastering_luminance.max > 0.0f,
-			.mastering_luminance = {
-				.min = od->mastering_luminance.min,
-				.max = od->mastering_luminance.max,
-			},
-			.max_cll = od->max_cll,
-			.max_fall = od->max_fall,
-		};
-		data = &hdr;
-	}
 	if (getenv("AZ_DEBUG_CM") != NULL) {
-		wlr_log(WLR_INFO, "D6: surface %p tf=%u primaries=%u minlum=%f "
-			"maxlum=%f cll=%u fall=%u", (void *)surface, data->tf_named,
-			data->primaries_named,
-			data->has_mastering_luminance ? data->mastering_luminance.min : -1.0,
-			data->has_mastering_luminance ? data->mastering_luminance.max : -1.0,
-			data->max_cll, data->max_fall);
+		wlr_log(WLR_INFO, "D6: surface %p mon=%s hdr=%d bt2020=%d "
+			"minlum=%.4f maxlum=%.0f maxfall=%.0f identity=%" PRIu64,
+			(void *)surface,
+			m != NULL && m->wlr_output != NULL && m->wlr_output->name != NULL
+				? m->wlr_output->name : "-",
+			pref.hdr, pref.bt2020, pref.min_luminance, pref.max_luminance,
+			pref.max_fall, pref.identity);
 	}
 	/*
 	 * ONE POLICY, TWO SERIALIZERS -- and here is the second one. The feedback
@@ -10589,6 +10688,25 @@ static void mon_send_preferred_descriptions(Monitor *m) {
 		if (s != NULL && s->mapped) {
 			surface_send_preferred_description(s, m);
 		}
+	}
+}
+
+/*
+ * ── A CHANGE THAT IS NOT SCOPED TO ONE OUTPUT ─────────────────────────────
+ *
+ * config.sdr_reference_luminance is global and is the SDR branch of
+ * az_preferred_resolve(), so moving it changes what EVERY surface on EVERY
+ * non-HDR output should be told. There is no monitor to scope the walk to.
+ *
+ * Cheap for the same reason the per-output version is: the identity comparison
+ * inside each frontend decides whether anything actually goes on the wire, so
+ * surfaces on an HDR output reach here, compare equal, and cost one hash.
+ */
+static void mon_send_preferred_descriptions_all(void) {
+	Monitor *m;
+	wl_list_for_each(m, &mons, link) {
+		mon_send_preferred_descriptions(m);
+		frog_send_preferred_metadata_all(m);
 	}
 }
 

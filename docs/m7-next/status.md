@@ -253,8 +253,17 @@ announce the description the output is about to leave).
 
 | | |
 |---|---|
-| wired | `preferred: set tf=14 primaries=1 … have=11100` |
+| wired | `preferred: set tf=14 primaries=1 minlum=2000 maxlum=203 reflum=203 maxcll=0 maxfall=203 have=11101` |
 | broken (`AZ_BREAK_CM_NO_PREFERRED`) | `preferred: none` |
+
+The mask read `have=11100` until 2026-08-17. Two digits moved, and both are
+fixes rather than drift: position 3 is `luminances`, which asteroidz had
+**stopped sending entirely** when native wp-cm took ownership — a regression
+against wlroots, and the only event carrying `reference`, the SDR white level
+(`reflum=203`, `config.sdr_reference_luminance`). Position 4 is
+`target_max_cll`, now deliberately absent: it was being filled from the
+*display's* peak luminance, and max_cll is a **content** light level that a
+preferred description has no business claiming.
 
 `tf=14` **is** sRGB: wlroots maps its own `WLR_..._SRGB` to the protocol's
 `COMPOUND_POWER_2_4`, not to the protocol's `SRGB`. Asserting 14 asserts that
@@ -283,6 +292,11 @@ running session read
 
 which is ST2084_PQ / BT.2020. A wp-cm client now learns the display is HDR
 instead of being told the SDR default, which is the defect D6 exists for.
+
+**This reading is wlroots', not asteroidz's** — it predates `a5334182`, where
+native wp-cm took ownership of the protocol. It is kept because the finding
+below is about wlroots and is still true of it; it is not evidence about the
+implementation now in the tree.
 
 **BUT THE MASTERING VALUES DO NOT REACH THE CLIENT, AND THAT IS UPSTREAM.** The
 same reading shows `minlum=50 maxlum=10000 reflum=203, maxcll=0 maxfall=0` --
@@ -696,12 +710,46 @@ the two are not comparable quantities and the 4× limit is generous by
 construction. It is a smoke test for gross corruption, not a claim that the
 frame is identical.
 
-**The wp-cm half moved and returned**: `DP-1 true 400` → `DP-1 false 280` →
-`DP-1 true 400`, identity `2357112514714281158` ↔ `908963075078007682`, with
-the surface's output never drifting. The wire carried
-`tf=3 primaries=35400,14600 maxlum=400 minlum=4000 maxfall=250` in HDR and
-`tf=2 primaries=32000,16500 maxlum=280 minlum=2000 maxfall=280` in SDR — the
-operator's own rule values, on the path that can carry them.
+**The shared preferred-colour policy moved and returned**: `DP-1 true 400` →
+`DP-1 false 280` → `DP-1 true 400`, identity `2357112514714281158` ↔
+`908963075078007682`, with the surface's output never drifting. That part
+stands: it is `az_preferred_resolve`'s own answer and it is what the run
+measured.
+
+**THE WIRE VALUES QUOTED HERE ARE FROG'S, NOT wp-cm's — CORRECTED 2026-08-17.**
+This section used to present
+
+    tf=3 primaries=35400,14600 maxlum=400 minlum=4000 maxfall=250
+
+as evidence that "the wp-cm half moved and returned". It is not a wp-cm line.
+It is `contrib/wlcm`'s **frog** printer (`wlcm.c`, `frog_preferred`), and three
+things say so independently:
+
+- `tf=3` is `FROG_COLOR_MANAGED_SURFACE_TRANSFER_FUNCTION_ST2084_PQ`. On the
+  wp-cm side PQ is `11`, which is what this document's own live HDR reading
+  above quotes.
+- the primaries are in **frog's** 1/50000 CIE xy units (`35400,14600` is
+  BT.2020 red, straight out of `frog_surface_send_preferred_metadata`'s
+  literals). wp-cm's coordinate events are in 1/1000000.
+- `minlum=4000` is frog's 1/10000 encoding of the rule's `0.4`.
+
+It could not have been the wp-cm line, because `wlcm` sources `minlum`/
+`maxlum`/`reflum` from `wp_image_description_info_v1.luminances` — **an event
+asteroidz did not send at all** until 2026-08-17. Every wp-cm reading in this
+section was structurally incapable of carrying a mastering value.
+
+**And native wp-cm was never running for this measurement.** The G6 live run
+was against source `a210adb4`, which is **eight commits before** native wp-cm
+ownership landed in `a5334182`. So every wp-cm number in this section describes
+**wlroots' 0.20.2 implementation**, not asteroidz's. Native wp-cm has never been
+exercised live, and nothing in this document should be read as evidence that it
+has been.
+
+What the run does establish is that the frog path carried the operator's rule
+values correctly across an HDR↔SDR transition — `maxlum=400 minlum=4000
+maxfall=250` in HDR and `tf=2 primaries=32000,16500 maxlum=280 minlum=2000
+maxfall=280` in SDR — and that the shared policy behind both frontends moved
+and returned without the surface's output drifting.
 
 ## The FIRST attempt — CONTAMINATED, NOT EVIDENCE
 

@@ -37,6 +37,7 @@ description: Control asteroidz programmatically using amsg.
 | `get all-clients` | Returns a JSON array of all active clients. |
 | `get all-monitors` | Returns a JSON array of all connected monitors. |
 | `get avk-stats` | Returns the native Vulkan engine's live counters (see below). |
+| `get cm-stats` | Colour-management send counters: how much each protocol frontend has actually put on the wire, and how often declared content metadata armed a connector update (see below). |
 | `get all-tags` | Returns a JSON object containing the status of all tags. |
 | `get last_open_surface [<mon>]` | Returns the last focused surface name for a monitor,if the mon not set, it will get current monitor. |
 | `get bar-config` | Returns the resolved theme -- palette, font, border and corner metrics -- for an out-of-process bar. |
@@ -461,6 +462,61 @@ and the window is simply absent. They are withheld; see
 `avk_importable` is rebuilt from the format table at query time rather than
 copied from what was advertised — otherwise the subset check would be
 comparing a set with itself.
+
+### `get cm-stats`
+
+What the two colour-management frontends have actually **sent**, and what the
+content-metadata path has actually **cost**.
+
+```bash
+amsg get cm-stats
+```
+
+```json
+{
+  "wpcm_preferred_sends": 3,
+  "frog_metadata_sends": 3,
+  "content_metadata_arms": 0,
+  "wpcm_native": true
+}
+```
+
+| Field | Meaning |
+| :--- | :--- |
+| `wpcm_preferred_sends` | `preferred_changed` / `preferred_changed2` events emitted to `wp_color_management_surface_feedback_v1` objects. |
+| `frog_metadata_sends` | `preferred_metadata` events emitted to `frog_color_managed_surface` objects. |
+| `content_metadata_arms` | Times a client changing its declared HDR10 static metadata armed a connector update. |
+| `wpcm_native` | Whether asteroidz's own `wp_color_manager_v1` global is the one answering. |
+
+**Why the send counts exist.** "The client is showing the right colours" and
+"the client was never told anything and is reporting the state it assumed at
+startup" are the same picture on screen and completely unrelated defects. From
+outside the compositor there is no other way to tell them apart: the answer
+lives in a protocol object, and only a client holds one. Both counters were
+already being incremented internally and **read by nothing**, which is why they
+could not settle the question they were written for.
+
+Both are gated on `az_preferred`'s identity, so they count *changes announced*,
+not *opportunities to announce*. An HDR toggle on another monitor, a hotplug
+elsewhere, or a layout change that did not move a surface all leave them flat —
+that is the intended reading, not a missed send.
+
+**Why `content_metadata_arms` is a cost counter.** A fullscreen client's
+declared mastering values are folded into the connector's image description,
+and picking up a change to them requires arming `hdr_pending_change` — which is
+folded in with `allow_reconfiguration`, meaning a **blocking full modeset**.
+Content metadata arrives on *every commit* of a client that sets it, so arming
+unconditionally would be far worse than the staleness it fixes: a live session
+once logged 58 spurious modesets, in bursts of eight in 1.3 seconds, with
+libinput reporting 42–51 ms of input lag inside the densest burst.
+
+Arming is therefore gated three ways — the output must be in HDR, the surface
+must be the sole fullscreen scanout candidate *for its own output*, and the four
+values that reach the connector must hash differently from the ones already
+there. A client committing frame after frame with unchanged metadata must leave
+this counter **flat**; a client that genuinely changes its mastering values
+moves it by one. That is the whole safety argument for the path, and this field
+is what makes it checkable rather than merely asserted.
 
 ### `get avk-stats`
 

@@ -1045,6 +1045,37 @@ static void handle_command(int client_fd, const char *cmd_raw) {
 		resp = cJSON_CreateObject();
 		cJSON_AddStringToObject(resp, "source", "wlr_renderer");
 #endif
+	} else if (strcmp(cmd, "get cm-stats") == 0) {
+		/*
+		 * ── THE COLOUR-MANAGEMENT SEND COUNTERS ──────────────────────────
+		 *
+		 * Both protocol frontends already counted what they emitted and
+		 * NOTHING READ EITHER NUMBER: az_wpcm_preferred_sends and
+		 * frog_metadata_sends were incremented and never referenced again.
+		 * A counter with no reader cannot answer the question it was written
+		 * for, which is the one an oracle actually needs -- "was this client
+		 * told, or is it reporting the state it assumed at startup?" Those are
+		 * the same picture and unrelated defects, and only a send count tells
+		 * them apart from outside the compositor.
+		 *
+		 * `content_metadata_arms` is the third and is a COST counter rather
+		 * than a coverage one: it counts how many times a client changing its
+		 * declared HDR10 metadata armed a connector update, each of which is a
+		 * blocking modeset. Unchanged metadata re-committed on every frame
+		 * must leave it flat; that is the entire safety argument for arming
+		 * that path at all, and it is checkable here rather than only
+		 * reasoned about.
+		 */
+		resp = cJSON_CreateObject();
+		cJSON_AddNumberToObject(resp, "wpcm_preferred_sends",
+								(double)az_wpcm_preferred_sends);
+		cJSON_AddNumberToObject(resp, "frog_metadata_sends",
+								(double)frog_metadata_sends);
+		cJSON_AddNumberToObject(resp, "content_metadata_arms",
+								(double)az_content_metadata_arms);
+		/* Which implementation is answering, so a reader cannot mistake a
+		 * zero for "native wp-cm is not the one running". */
+		cJSON_AddBoolToObject(resp, "wpcm_native", az_wpcm_global != NULL);
 	} else if (strcmp(cmd, "get all-tags") == 0) {
 		resp = build_all_tags_response();
 	} else if (strcmp(cmd, "get bar-config") == 0) {
