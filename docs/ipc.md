@@ -536,6 +536,7 @@ Each entry in `surfaces` carries:
 | field | meaning |
 |---|---|
 | `role` | `toplevel`, `xwayland` or `layer` |
+| `app_id` | what a window rule matches on — empty for layer surfaces, which carry a namespace and cannot take window rules |
 | `output` | the effective output, `c->mon`/`l->mon` — empty when on none |
 | `buffer` | `attached`, dimensions, `kind` (dmabuf/shm), fourcc `format`, and `modifier` for dmabuf |
 | `source.tagged` | **read this first.** False means the client declared nothing |

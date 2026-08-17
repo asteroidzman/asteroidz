@@ -323,6 +323,16 @@ static cJSON *build_surface_intent_json(struct wlr_surface *s,
 	cJSON *o = cJSON_CreateObject();
 	cJSON_AddStringToObject(o, "role", role);
 	cJSON_AddStringToObject(o, "name", name != NULL ? name : "");
+	/*
+	 * THE APP-ID, because it is what a rule MATCHES ON and the title is not.
+	 * The dump reported only the title, so reading "this window classed wrong"
+	 * and writing the rule to fix it needed a second query against
+	 * `get all-clients`. A diagnostic that tells you there is a problem but not
+	 * the identifier you need to act on is half a diagnostic. Empty for layer
+	 * surfaces, which have a namespace instead and cannot carry window rules.
+	 */
+	cJSON_AddStringToObject(o, "app_id",
+		ic != NULL && client_get_appid(ic) != NULL ? client_get_appid(ic) : "");
 	cJSON_AddStringToObject(o, "output",
 		in.mon != NULL && in.mon->wlr_output != NULL
 			? in.mon->wlr_output->name : "");
