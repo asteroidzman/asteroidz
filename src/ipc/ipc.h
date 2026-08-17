@@ -546,9 +546,17 @@ static cJSON *build_surface_intent_json(struct wlr_surface *s,
 	if (ic != NULL && in.mon != NULL) {
 		Client *cand = NULL;
 		sv = az_scanout_eligible(in.mon, NULL, &cand);
-		/* Eligible, but for a DIFFERENT window: say so rather than letting
-		 * this surface inherit another's verdict. */
-		if (cand != ic) {
+		/*
+		 * Eligible, but for a DIFFERENT window: say so rather than letting this
+		 * surface inherit another's verdict.
+		 *
+		 * `cand != NULL` matters. When there is no candidate at all the
+		 * evaluator has already said something precise -- no-candidate, or
+		 * not-visible -- and overwriting that because NULL != ic threw the
+		 * precise answer away. That is what made not-visible unreachable the
+		 * first time it existed.
+		 */
+		if (cand != NULL && cand != ic) {
 			sv = AZ_SCANOUT_NO_CANDIDATE;
 		}
 	}

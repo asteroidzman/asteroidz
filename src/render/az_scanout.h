@@ -40,6 +40,12 @@ enum az_scanout_verdict {
 	AZ_SCANOUT_ACCEPTED = 0,
 	/* No single fullscreen client owns this output. */
 	AZ_SCANOUT_NO_CANDIDATE,
+	/* A fullscreen client exists on this output but is not on screen -- its tag
+	 * is not the visible one. Split from NO_CANDIDATE because the two look
+	 * identical in a dump and are not the same problem: this one is answered by
+	 * switching to the tag, and it misled the operator and me three times
+	 * before it had its own name. */
+	AZ_SCANOUT_NOT_VISIBLE,
 	/* The `no-scanout` window rule. Kept because it is the operator's
 	 * documented escape from a driver bug -- see the gamescope note below. */
 	AZ_SCANOUT_RULE_DISABLED,
@@ -84,6 +90,7 @@ static inline const char *az_scanout_verdict_name(enum az_scanout_verdict v) {
 	switch (v) {
 	case AZ_SCANOUT_ACCEPTED:            return "accepted";
 	case AZ_SCANOUT_NO_CANDIDATE:        return "no-candidate";
+	case AZ_SCANOUT_NOT_VISIBLE:         return "not-visible";
 	case AZ_SCANOUT_RULE_DISABLED:       return "rule-disabled";
 	case AZ_SCANOUT_NO_BUFFER:           return "no-buffer";
 	case AZ_SCANOUT_NOT_DMABUF:          return "not-dmabuf";
@@ -94,6 +101,8 @@ static inline const char *az_scanout_verdict_name(enum az_scanout_verdict v) {
 	case AZ_SCANOUT_TONE_MAP_REQUIRED:   return "tone-map-required";
 	case AZ_SCANOUT_MODESET_PENDING:     return "modeset-pending";
 	case AZ_SCANOUT_KMS_REFUSED:         return "kms-refused";
+	case AZ_SCANOUT_PRIVACY_SHIELD:      return "privacy-shield";
+	case AZ_SCANOUT_NOT_EVALUATED:       return "not-evaluated";
 	case AZ_SCANOUT_VERDICT_COUNT:       break;
 	}
 	return "?";
@@ -107,6 +116,9 @@ static inline const char *az_scanout_verdict_why(enum az_scanout_verdict v) {
 		return "the client's buffer went straight to the display";
 	case AZ_SCANOUT_NO_CANDIDATE:
 		return "no single fullscreen window owns this output";
+	case AZ_SCANOUT_NOT_VISIBLE:
+		return "a fullscreen window is on this output but its tag is not the "
+		       "one being shown; switch to it and ask again";
 	case AZ_SCANOUT_RULE_DISABLED:
 		return "a no-scanout window rule forbids it for this client";
 	case AZ_SCANOUT_NO_BUFFER:
@@ -183,6 +195,19 @@ static inline enum az_scanout_verdict az_scanout_eligible(Monitor *m,
 	 */
 	Client *c = mon_hdr_scanout_candidate(m);
 	if (c == NULL) {
+		/*
+		 * Distinguish "nothing is fullscreen here" from "something is, but it
+		 * is on a hidden tag". mon_hdr_scanout_candidate() requires VISIBLEON,
+		 * so both arrive here identically -- and the second is the common case
+		 * when someone leaves a game to type a query about the game.
+		 */
+		Client *fc;
+		wl_list_for_each(fc, &clients, link) {
+			if (fc->isfullscreen && !fc->isminimized && !fc->iskilling
+					&& fc->mon == m) {
+				return AZ_SCANOUT_NOT_VISIBLE;
+			}
+		}
 		return AZ_SCANOUT_NO_CANDIDATE;
 	}
 	if (out_c != NULL) {
