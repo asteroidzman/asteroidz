@@ -3405,28 +3405,20 @@ static bool apply_blur_region(struct wlr_scene_node *node, struct blur_data *blu
 	return should_compensate_blur;
 }
 
-bool wlr_scene_output_commit(struct wlr_scene_output *scene_output,
-		const struct wlr_scene_output_state_options *options) {
-	if (!wlr_scene_output_needs_frame(scene_output)) {
-		return true;
-	}
-
-	bool ok = false;
-	struct wlr_output_state state;
-	wlr_output_state_init(&state);
-	if (!wlr_scene_output_build_state(scene_output, &state, options)) {
-		goto out;
-	}
-
-	ok = wlr_output_commit_state(scene_output->output, &state);
-	if (!ok) {
-		goto out;
-	}
-
-out:
-	wlr_output_state_finish(&state);
-	return ok;
-}
+/*
+ * wlr_scene_output_commit() and wlr_scene_output_build_state() are GONE.
+ *
+ * Absorbing the scene graph deleted the render half, build_state included, but
+ * left commit() calling it. The call did not fail to link: libwlroots exports a
+ * wlr_scene_output_build_state() of its own, so the symbol resolved there and
+ * the binary carried a `U wlr_scene_output_build_state` -- our scene_output,
+ * built by our code, handed to wlroots' renderer for compositing. Nothing
+ * called commit() (az_output_build_frame() is the only frame path), so it never
+ * ran; it was a live symbol waiting for a caller.
+ *
+ * AVK builds and commits every frame. There is no second implementation to fall
+ * back to and no reason to keep an entry point into one.
+ */
 
 static void scene_output_state_attempt_gamma(struct wlr_scene_output *scene_output,
 		struct wlr_output_state *state) {

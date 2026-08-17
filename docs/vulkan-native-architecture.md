@@ -445,6 +445,28 @@ already links lcms2 for its own ICC ingest and the stub would have silently
 downgraded ICC handling that works today. `subprojects/asteroidz-scenefx` is
 deleted, 124 files. Build targets went 160 → 132.
 
+Deleting the render half left one loose end, closed immediately after. Removing
+`wlr_scene_output_build_state()` did not remove its caller: `wlr_scene_output_commit()`
+survived, and the build did not fail, because **libwlroots exports a
+`wlr_scene_output_build_state()` of its own**. The symbol resolved there and the
+binary carried a `U wlr_scene_output_build_state` — a function that would have
+handed our `scene_output`, built by our code, to a renderer that is not ours.
+Nothing called it (`az_output_build_frame()` is the only frame path), so it never
+ran; a link-alive entry point into a second compositor, waiting for a caller.
+`wlr_scene_output_commit()`, both declarations, and the already-orphaned
+`custom_wlr_scene_output_commit()` in `tearing.h` are deleted.
+
+Three scene symbols still resolve into libwlroots — `wlr_scene_layer_surface_v1_create`,
+`wlr_scene_layer_surface_v1_configure`, `wlr_scene_drag_icon_create`. These are
+**not** a consequence of the absorption: scenefx never carried
+`types/scene/layer_shell_v1.c` or `drag_icon.c` either, so they have always come
+from wlroots. They are sound for a checkable reason rather than an assumed one:
+`wlr_scene_node`, `wlr_scene_tree` and `wlr_scene_layer_surface_v1` are
+byte-identical to wlroots 0.20's, and the fork's one divergence — `view_scale` in
+`wlr_scene_surface` — is reached only through symbols this executable exports and
+therefore interposes. That identity is a standing condition on any wlroots
+version bump, not a permanent fact.
+
 The Vulkan renderer must not pull EGL/GLES: verifiable by `ldd`, by Meson
 dependency output, and by a source-include check in CI.
 

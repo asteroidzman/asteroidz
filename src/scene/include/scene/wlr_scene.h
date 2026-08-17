@@ -1236,20 +1236,16 @@ struct wlr_scene_output_state_options {
  */
 bool wlr_scene_output_needs_frame(struct wlr_scene_output *scene_output);
 
-/**
- * Render and commit an output.
+/*
+ * No wlr_scene_output_commit() and no wlr_scene_output_build_state(): this
+ * scene graph does not render. AVK walks the tree and builds every frame
+ * itself, via az_output_build_frame(). Declaring either here would resolve
+ * against libwlroots' own copies and hand our scene_output to a renderer that
+ * is not ours.
  */
-bool wlr_scene_output_commit(struct wlr_scene_output *scene_output,
-	const struct wlr_scene_output_state_options *options);
 
 /**
- * Render and populate given output state.
- */
-bool wlr_scene_output_build_state(struct wlr_scene_output *scene_output,
-	struct wlr_output_state *state, const struct wlr_scene_output_state_options *options);
-
-/**
- * Retrieve the duration in nanoseconds between the last wlr_scene_output_commit() call and the end
+ * Retrieve the duration in nanoseconds between the last frame's commit and the end
  * of its operations, including those on the GPU that may have finished after the call returned.
  *
  * Returns -1 if the duration is unavailable.
@@ -1258,9 +1254,9 @@ int64_t wlr_scene_timer_get_duration_ns(struct wlr_scene_timer *timer);
 void wlr_scene_timer_finish(struct wlr_scene_timer *timer);
 
 /**
- * Call wlr_surface_send_frame_done() on all surfaces in the scene rendered by
- * wlr_scene_output_commit() for which wlr_scene_surface.primary_output
- * matches the given scene_output.
+ * Call wlr_surface_send_frame_done() on all surfaces in the scene rendered for
+ * this output, for which wlr_scene_surface.primary_output matches the given
+ * scene_output.
  */
 void wlr_scene_output_send_frame_done(struct wlr_scene_output *scene_output,
 	struct timespec *now);

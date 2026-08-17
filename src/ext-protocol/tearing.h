@@ -98,67 +98,6 @@ bool check_tearing_frame_allow(Monitor *m) {
 	return c->force_tearing == STATE_ENABLED;
 }
 
-bool custom_wlr_scene_output_commit(struct wlr_scene_output *scene_output,
-									struct wlr_output_state *state) {
-	struct wlr_output *wlr_output = scene_output->output;
-	Monitor *m = wlr_output->data;
-
-	// check whether a frame is needed
-	if (!wlr_scene_output_needs_frame(scene_output)) {
-		wlr_log(WLR_DEBUG, "No frame needed for output %s", wlr_output->name);
-		return true;
-	}
-
-	// build the output state
-	struct az_frame_options frame_options = {
-		.color_transform = az_output_color_transform(m),
-	};
-	if (!az_output_build_frame(m, state, &frame_options)) {
-		wlr_log(WLR_ERROR, "Failed to build output state for %s",
-				wlr_output->name);
-		return false;
-	}
-
-	// test the tearing page flip
-	if (state->tearing_page_flip) {
-		if (!wlr_output_test_state(wlr_output, state)) {
-			state->tearing_page_flip = false;
-		}
-	}
-
-	// attempt to commit
-	bool committed = wlr_output_commit_state(wlr_output, state);
-
-	// if tearing page flip is enabled but the commit fails, retry with it disabled
-	if (!committed && state->tearing_page_flip) {
-		wlr_log(WLR_DEBUG, "Retrying commit without tearing for %s",
-				wlr_output->name);
-		state->tearing_page_flip = false;
-		committed = wlr_output_commit_state(wlr_output, state);
-	}
-
-	// handle state cleanup
-	if (committed) {
-		wlr_log(WLR_DEBUG, "Successfully committed output %s",
-				wlr_output->name);
-		if (state == &m->pending) {
-			wlr_output_state_finish(&m->pending);
-			wlr_output_state_init(&m->pending);
-		}
-	} else {
-		wlr_log(WLR_ERROR, "Failed to commit output %s", wlr_output->name);
-		az_output_commit_failed(m);
-		// clean up state even on commit failure, to avoid buildup
-		if (state == &m->pending) {
-			wlr_output_state_finish(&m->pending);
-			wlr_output_state_init(&m->pending);
-		}
-		return false;
-	}
-
-	return true;
-}
-
 void apply_tear_state(Monitor *m) {
 	if (!wlr_scene_output_needs_frame(m->scene_output)) {
 		return;
