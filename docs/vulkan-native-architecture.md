@@ -201,7 +201,7 @@ asteroidz's GPU architecture.*
 | `wlr_scene` as the renderer's instruction format | **REPLACE** — §5.4 |
 | SHM upload path | **REPLACE** — persistent staging ring, damage-region-only (§5.2) |
 | screencopy / `ext-image-copy-capture` protocol plumbing | **KEEP**; readback **REPLACE** (§5.7) |
-| privacy shield / `shield_when_capture` | **KEEP** — compositor policy, renderer-independent |
+| privacy shield / `privacy_shield` | **KEEP** — compositor policy, renderer-independent |
 | tags, layouts, scroller, overview, scratchpads, swallowing, animations, rules, IPC, hot reload, restart, GlobalShortcuts | **KEEP, UNTOUCHED** — this is a renderer migration |
 
 ---

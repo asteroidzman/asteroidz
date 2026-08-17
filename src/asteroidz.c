@@ -70,7 +70,7 @@
 #include <wlr/types/wlr_ext_image_capture_source_v1.h>
 #include <wlr/types/wlr_ext_image_copy_capture_v1.h>
 /* privacy shield: count live capture sessions to know when to cover
- * shield_when_capture surfaces */
+ * privacy_shield surfaces */
 #include <wlr/types/wlr_fixes.h>
 #include <wlr/types/wlr_fractional_scale_v1.h>
 #include <wlr/types/wlr_gamma_control_v1.h>
@@ -716,7 +716,7 @@ struct Client {
 	int32_t noscanout;
 	int32_t vrr_only_fullscreen;
 	int32_t force_hdr;
-	int32_t shield_when_capture;
+	int32_t privacy_shield;
 	int32_t isnoradius;
 	int32_t isnoanimation;
 	int32_t isopensilent;
@@ -920,7 +920,7 @@ typedef struct {
 	bool dirty;
 	int32_t noblur;
 	int32_t forceblur;
-	int32_t shield_when_capture;
+	int32_t privacy_shield;
 	struct wlr_scene_rect *shield;
 	int32_t noanim;
 	int32_t noshadow;
@@ -3387,7 +3387,7 @@ static void apply_rule_properties(Client *c, const ConfigWinRule *r) {
 	APPLY_INT_PROP(c, r, noscanout);
 	APPLY_INT_PROP(c, r, vrr_only_fullscreen);
 	APPLY_INT_PROP(c, r, force_hdr);
-	APPLY_INT_PROP(c, r, shield_when_capture);
+	APPLY_INT_PROP(c, r, privacy_shield);
 	APPLY_INT_PROP(c, r, ispinned);
 	APPLY_INT_PROP(c, r, isnoradius);
 	APPLY_INT_PROP(c, r, isnoanimation);
@@ -5160,7 +5160,7 @@ void maplayersurfacenotify(struct wl_listener *listener, void *data) {
 	l->forceshadow = 0;
 	l->shadow = NULL;
 	l->shadow_blur = NULL;
-	l->shield_when_capture = 0;
+	l->privacy_shield = 0;
 	l->need_output_flush = true;
 
 	// apply layer rules
@@ -5173,7 +5173,7 @@ void maplayersurfacenotify(struct wl_listener *listener, void *data) {
 			r = &config.layer_rules[ji];
 			APPLY_INT_PROP(l, r, noblur);
 			APPLY_INT_PROP(l, r, forceblur);
-			APPLY_INT_PROP(l, r, shield_when_capture);
+			APPLY_INT_PROP(l, r, privacy_shield);
 			APPLY_INT_PROP(l, r, noanim);
 			APPLY_INT_PROP(l, r, noshadow);
 			APPLY_INT_PROP(l, r, forceshadow);
@@ -11790,7 +11790,7 @@ void refresh_shielded_surfaces(void) {
 	Monitor *m = NULL;
 
 	wl_list_for_each(c, &clients, link) {
-		if (c->shield_when_capture && !c->iskilling && c->mon &&
+		if (c->privacy_shield && !c->iskilling && c->mon &&
 			VISIBLEON(c, c->mon)) {
 			arrange(c->mon, false, false);
 		}
@@ -11800,7 +11800,7 @@ void refresh_shielded_surfaces(void) {
 			continue;
 		for (size_t i = 0; i < 4; i++) {
 			wl_list_for_each(l, &m->layers[i], link) {
-				if (l->shield_when_capture)
+				if (l->privacy_shield)
 					layer_draw_shield(l);
 			}
 		}

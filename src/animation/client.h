@@ -1827,7 +1827,7 @@ void client_draw_shield(Client *c, struct wlr_box clip_box) {
 		clip_box.height = c->animation.current.height - 2 * (int32_t)c->bw;
 	}
 
-	if (active_capture_count > 0 && c->shield_when_capture) {
+	if (active_capture_count > 0 && c->privacy_shield) {
 		int32_t shield_x =
 			clip_box.x - surface_relative_geom.x + (int32_t)c->bw;
 		int32_t shield_y =
@@ -3242,7 +3242,7 @@ void init_fadeout_client(Client *c) {
 		return;
 	}
 
-	if (c->shield_when_capture && active_capture_count > 0) {
+	if (c->privacy_shield && active_capture_count > 0) {
 		return;
 	}
 

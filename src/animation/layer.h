@@ -15,7 +15,7 @@ void layer_actual_size(LayerSurface *l, int32_t *width, int32_t *height) {
 		 * separately). A content-fit popup that changes its own content
 		 * size in place (e.g. switching tabs to a taller/shorter panel)
 		 * just commits a differently sized buffer without renegotiating,
-		 * so this stays stale -- the shadow (and shield_when_capture, the
+		 * so this stays stale -- the shadow (and privacy_shield, the
 		 * other caller) then gets drawn around empty space instead of the
 		 * real visible content. Prefer the real committed buffer size when
 		 * there is one. */
@@ -176,7 +176,7 @@ void layer_draw_shield(LayerSurface *l) {
 	if (!l->mapped || !l->shield)
 		return;
 
-	if (active_capture_count > 0 && l->shield_when_capture) {
+	if (active_capture_count > 0 && l->privacy_shield) {
 		layer_actual_size(l, &width, &height);
 		if (width <= 0 || height <= 0) {
 			wlr_scene_node_set_enabled(&l->shield->node, false);

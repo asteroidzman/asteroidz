@@ -75,7 +75,7 @@ typedef struct {
 	int32_t isnotitlebar;
 	int32_t vrr_only_fullscreen;
 	int32_t force_hdr;
-	int32_t shield_when_capture;
+	int32_t privacy_shield;
 	int32_t ispinned;
 	int32_t isnoradius;
 	int32_t isnoanimation;
@@ -217,7 +217,7 @@ typedef struct {
 	char *animation_type_close;
 	int32_t noblur;
 	int32_t forceblur; // opt this layer into blur even with blur_layer=0
-	int32_t shield_when_capture; // cover this layer during captures
+	int32_t privacy_shield; // cover this layer during captures
 	int32_t noanim;
 	int32_t noshadow;
 	int32_t forceshadow; // opt this layer into a shadow (exclusive_zone -1 popups)
@@ -2748,7 +2748,7 @@ bool parse_option(Config *config, char *key, char *value) {
 		rule->noshadow = -1;
 		rule->forceshadow = -1;
 		rule->forceblur = -1;
-		rule->shield_when_capture = -1;
+		rule->privacy_shield = -1;
 
 		bool parse_error = false;
 		char *token = strtok(value, ",");
@@ -2772,8 +2772,8 @@ bool parse_option(Config *config, char *key, char *value) {
 					rule->noblur = CLAMP_INT(atoi(val), 0, 1);
 				} else if (strcmp(key, "forceblur") == 0) {
 					rule->forceblur = atoi(val);
-				} else if (strcmp(key, "shield_when_capture") == 0) {
-					rule->shield_when_capture = atoi(val);
+				} else if (strcmp(key, "privacy_shield") == 0) {
+					rule->privacy_shield = atoi(val);
 				} else if (strcmp(key, "noanim") == 0) {
 					rule->noanim = CLAMP_INT(atoi(val), 0, 1);
 				} else if (strcmp(key, "noshadow") == 0) {
@@ -2822,7 +2822,7 @@ bool parse_option(Config *config, char *key, char *value) {
 		rule->isnotitlebar = -1;
 		rule->vrr_only_fullscreen = -1;
 		rule->force_hdr = -1;
-		rule->shield_when_capture = -1;
+		rule->privacy_shield = -1;
 		rule->ispinned = -1;
 		rule->isnoradius = -1;
 		rule->isnoanimation = -1;
@@ -2934,8 +2934,8 @@ bool parse_option(Config *config, char *key, char *value) {
 					rule->vrr_only_fullscreen = atoi(val);
 				} else if (strcmp(key, "force_hdr") == 0) {
 					rule->force_hdr = atoi(val);
-				} else if (strcmp(key, "shield_when_capture") == 0) {
-					rule->shield_when_capture = atoi(val);
+				} else if (strcmp(key, "privacy_shield") == 0) {
+					rule->privacy_shield = atoi(val);
 				} else if (strcmp(key, "ispinned") == 0) {
 					rule->ispinned = atoi(val);
 				} else if (strcmp(key, "isnoshadow") == 0) {

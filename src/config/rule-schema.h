@@ -31,7 +31,7 @@
  *
  * Writing it turned up drift that had been there a while: six fields the parser
  * accepts were in no documentation at all (force_hdr, isnotitlebar, nofocus,
- * noscanout, shield_when_capture, vrr_only_fullscreen), and `single_scratchpad`
+ * noscanout, privacy_shield, vrr_only_fullscreen), and `single_scratchpad`
  * was documented as a window rule the parser has never accepted.
  */
 
@@ -401,11 +401,11 @@ static const RuleField rule_schema[] = {
  "Switch the output to HDR while this window is on it. The way to run HDR for "
  "one player without an HDR desktop.",
  RULE_TRISTATE, offsetof(ConfigWinRule, force_hdr), 0, 1, NULL, 0},
-{"shield_when_capture", "shield-when-capture", "performance",
+{"privacy_shield", "privacy-shield", "performance",
  "Hide from captures",
  "Cover this window with an opaque shield while a screen capture is running, so "
  "it does not appear in recordings or shares.",
- RULE_TRISTATE, offsetof(ConfigWinRule, shield_when_capture), 0, 1, NULL, 0},
+ RULE_TRISTATE, offsetof(ConfigWinRule, privacy_shield), 0, 1, NULL, 0},
 };
 /* clang-format on */
 

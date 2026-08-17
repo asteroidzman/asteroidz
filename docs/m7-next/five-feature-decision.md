@@ -59,7 +59,7 @@ Four facts found in the tree carry most of this document's weight:
 | single frame seam | `az_output_build_frame()`, `az_output_color_transform()` | src/render/az_output.h |
 | structured refusal precedent | `refused_why` in `az_avk_output_supported()` (az_avk.h:4893) | src/render/az_avk.h |
 | diagnostics channel | `amsg get avk-stats` → `az_avk_stats_json()` (src/ipc/ipc.h:801) | src/ipc/ |
-| capture protocol backbone | `wlr_ext_image_copy_capture_manager_v1` + session listener, `wlr_screencopy_manager_v1`, `active_capture_count`, `shield_when_capture` | src/asteroidz.c:1799-1801, 11070-11071 |
+| capture protocol backbone | `wlr_ext_image_copy_capture_manager_v1` + session listener, `wlr_screencopy_manager_v1`, `active_capture_count`, `privacy_shield` | src/asteroidz.c:1799-1801, 11070-11071 |
 | capture readback precedent | `az_avk_capture_frame()` (test capture), `screenshot_ui rawhdr` readback | az_avk.h:4602, src/dispatch/bind_define.h:3232 |
 | scanout raw material (orphaned) | `scene_entry_try_direct_scanout()`, `color_management_is_scanout_allowed()`, `wlr_scene_buffer_set_prevent_scanout()` | src/scene/wlr_scene.c |
 | HDR10 metadata forwarding | `mon_hdr_scanout_candidate()`, `mon_content_metadata()`, identity-gated modeset | src/asteroidz.c:6023-6152 |
@@ -451,7 +451,7 @@ beside it. Vulkan Video encode: one audit work item measuring zero-copy
 complexity on RADV, build only if the audit says cheap — demand on this
 machine is real (hdr-record.sh exists because the operator records HDR) but
 the encoder half is not yet shown to need to live in the compositor.
-Permissions ride the existing screencopy/portal path and `shield_when_capture`;
+Permissions ride the existing screencopy/portal path and `privacy_shield`;
 AVK owning the image grants nothing.
 
 **D7 — Numbering: the five-feature program is M11–M14; M7 and M8 stand; M9
