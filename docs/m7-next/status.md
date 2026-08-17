@@ -113,12 +113,26 @@ The milestone defined in `decision.md`. This records what is closed, what it
 measured, and what is not closed. Measurements are quoted from the runs that
 produced them, not from the plan that asked for them.
 
-**Suite state at `aa17a47a`** — the only currently valid counts:
+**Suite state at `38ab5f0f`** — the only currently valid counts:
 
 | | |
 |---|---|
-| AVK required set | **51/51 fixtures, 961/961 assertions**, zero `FAIL` |
+| AVK required set | **59/59 fixtures, 1097/1097 assertions**, zero `FAIL` |
 | regression suite | **557/557** |
+
+> **These counts describe a different renderer from the ones they replace.**
+> `contrib/lib/headless.sh` defaulted `WLR_RENDERER` to gles2 and never set
+> `ASTEROIDZ_RENDERER`, so `az_renderer` stayed `AZ_RENDERER_WLR` and every
+> fixture that did not set it itself composited through **SceneFX** — a path
+> production cannot reach, because an AVK session aborts rather than
+> compositing with it. The regression suite was validating a renderer that
+> does not run.
+>
+> It surfaced as two effects failures reading `not-darker-0` and
+> `baseline-not-flat-172`, which look like shadow bugs and are not: under AVK
+> the same three assertions pass with nothing else changed. The harness now
+> defaults to `avk`. The earlier `51/51, 961/961` and `557/557` figures were
+> therefore partly measurements of SceneFX, and are not comparable to these.
 
 Counted from the run logs, not read off the summary lines. That distinction is
 not pedantry here: an earlier attempt at this same qualification invoked
