@@ -44,10 +44,24 @@ client supplied a surface of its own instead, and then there is no shape to
 name. The cursor is drawn by the compositor and does not appear in a
 screenshot, so this is the only way to check it from outside the client.
 .TP
+\fBget surface\-intent\fR
+Return, for every surface \(em toplevels, XWayland windows and layer\-shell
+surfaces alike \(em what the compositor believes its colour is and what it is
+doing to it: the buffer it has attached, whether the client declared any
+colorimetry at all, the resolved luminance domain, what the surface is told its
+display prefers, and whether it reached the screen by composition or direct
+scanout. Each output's colour path and presentation state is reported alongside,
+so a disagreement between what a display is and what a surface was told is
+visible by comparison rather than by inference. Everything is read from the
+structures production uses; nothing is recomputed for display. See
+\fBdocs/ipc.md\fR for the fields, and for what this deliberately does not yet
+report.
+.TP
 \fBget avk\-stats\fR
-Return live counters for the native Vulkan renderer, or
-\fB{"backend":"scenefx","active":false}\fR when \fBASTEROIDZ_RENDERER=avk\fR
-is not in effect. \fBamsg dispatch reset_avk_stats\fR zeroes the accumulating
+Return live counters for the native Vulkan renderer. \fBbackend\fR is always
+\fBavk\fR: there is no second renderer and no inactive state, since
+\fBaz_output_build_frame()\fR aborts rather than fall back.
+\fBamsg dispatch reset_avk_stats\fR zeroes the accumulating
 counters in place, so a workload can be benchmarked without restarting the
 compositor that is running it. Counters this build does not yet collect are
 reported as JSON \fBnull\fR rather than \fB0\fR \(em a zero is a

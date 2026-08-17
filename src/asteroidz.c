@@ -23,6 +23,9 @@
 /* Early, because the animation and overview code below asks what buffer a
  * surface is showing and must not answer it with a renderer wrapper. */
 #include "render/az_output_color.h"
+/* The one wlroots-colour -> az_lum_source_desc translation, shared by the
+ * renderer's per-buffer path and the inspector's per-surface one. */
+#include "render/az_source_desc.h"
 #include "render/color/az_icc.h"
 #include "render/az_surface.h"
 #include <signal.h>
@@ -2663,6 +2666,9 @@ static int32_t capture_output(const Arg *arg) {
 #include "ext-protocol/az_cm_caps.h"
 #include "ext-protocol/frog-color-management.h"
 #include "ext-protocol/wp-color-management.h"
+/* M11. The per-surface intent snapshot, after the colour frontends because it
+ * reads the same description multiplexer they register. */
+#include "render/az_intent.h"
 #include "fetch/fetch.h"
 #include "ipc/ipc.h"
 #include "ipc/portals.h"

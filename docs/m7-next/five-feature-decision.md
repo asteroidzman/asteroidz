@@ -223,6 +223,24 @@ section reusing `az_output_path_name()`/`az_tf_name()`. No overlays yet:
 overlays are M13+ options, the dump is the milestone. The inspector reads
 production structs; it re-derives nothing.
 
+> **M11 BUILT 2026-08-17.** (a) F10 closed. (b) `az_intent.h` —
+> `az_surface_intent_resolve()`, a pure resolver in the `az_preferred_resolve()`
+> shape, storing nothing. (c) `amsg get surface-intent`, covering toplevels,
+> XWayland and layer-shell surfaces, plus the output section. One extraction
+> came out of it that was not in the plan: the wlroots-colour → `az_lum_source_desc`
+> switch lived inside the renderer's `az_avk_lum_of()`, keyed on a scene buffer
+> the inspector cannot reach. It is now `az_source_desc.h`, read by both — the
+> alternative was a second copy of the translation, which is how the protocol
+> frontends drifted before `az_preferred.h` existed.
+>
+> Headless: 10/10, including that the dump's colour path agrees with the
+> compositor's own log rather than being recomputed, and that a surface's
+> identity is stable while it merely renders. **Gap stated rather than papered
+> over: no headless client tags a surface**, so every surface in that run was
+> untagged — the branch that reads a real PQ description is exercised only by
+> the live line below, and "correct" and "always reports untagged" are
+> indistinguishable in the headless run.
+
 **D4 — M12: luminance domain classes, in scene-linear, with continuity
 qualification (Feature 2's remains) closing it.** The class enum — SDR_UI,
 SDR_NORMAL, SDR_EXTENDED (reserved, unpopulated on this machine), HDR_CONTENT

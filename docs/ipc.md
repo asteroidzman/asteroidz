@@ -37,6 +37,7 @@ description: Control asteroidz programmatically using amsg.
 | `get all-clients` | Returns a JSON array of all active clients. |
 | `get all-monitors` | Returns a JSON array of all connected monitors. |
 | `get avk-stats` | Returns the native Vulkan engine's live counters (see below). |
+| `get surface-intent` | Returns, per surface, what the compositor believes its colour is and what it is doing to it — plus each output's colour and presentation state (see below). |
 | `get cm-stats` | Colour-management send counters: how much each protocol frontend has actually put on the wire, and how often declared content metadata armed a connector update (see below). |
 | `get all-tags` | Returns a JSON object containing the status of all tags. |
 | `get last_open_surface [<mon>]` | Returns the last focused surface name for a monitor,if the mon not set, it will get current monitor. |
@@ -518,10 +519,59 @@ this counter **flat**; a client that genuinely changes its mastering values
 moves it by one. That is the whole safety argument for the path, and this field
 is what makes it checkable rather than merely asserted.
 
+### `get surface-intent`
+
+M11. What the compositor believes each surface *is*, and what it is doing to
+it. One structured answer, assembled from production state — the same structs
+the renderer and the protocol frontends read — so it reports decisions rather
+than reconstructing them.
+
+```bash
+amsg get surface-intent | jq
+amsg get surface-intent | jq '.surfaces[] | select(.source.tagged)'
+```
+
+Each entry in `surfaces` carries:
+
+| field | meaning |
+|---|---|
+| `role` | `toplevel`, `xwayland` or `layer` |
+| `output` | the effective output, `c->mon`/`l->mon` — empty when on none |
+| `buffer` | `attached`, dimensions, `kind` (dmabuf/shm), fourcc `format`, and `modifier` for dmabuf |
+| `source.tagged` | **read this first.** False means the client declared nothing |
+| `source.transfer` / `.primaries` | what the client declared, or `(untagged)` |
+| `source.max_cll_nits` | content light level, 0 = absent (PQ sources only) |
+| `domain` | the resolved recipe: transfer, primaries, linear `scale` into scene units, `content_peak_scene` (0 = unknown, never "black") |
+| `preferred` | what this surface is *told* its display prefers, via both protocol frontends |
+| `render.direct_scanout` | whether the surface bypassed composition |
+| `render.scanout_why` | why it did not |
+| `identity` | hash of the decisions above — not the timing counters, so it is stable while a window merely renders |
+
+`outputs` carries the state those surfaces were resolved *against*: `hdr`,
+`icc`, the colour `path` (`A-direct-srgb` / `B-encode` / `fallback`),
+`encode_transfer`, `ref_nits`, `peak_scene`, `dither_q`, and the presenter's
+`present_regime`, periods and signed error series.
+
+Two things this deliberately does not do. It reports **no luminance class**
+(`SDR_UI`, `HDR_CONTENT`, …) and **no presentation class** (`GAME`, `VIDEO`,
+…): those are M12's and M13's, and an enum whose every value would be `unset`
+is a slot pretending to be an answer. And `render.direct_scanout` is presently
+always false with a structural reason, because at this commit AVK genuinely has
+no direct-scanout path — `scene_entry_try_direct_scanout()` has no caller. That
+is a true statement about the compositor and is better said than omitted.
+
+Reading it: `err_mean_ns` is reported alongside `err_count` because a mean over
+zero samples is not a small error. And `source.tagged` is first in the object
+for the same reason it is emphasised here — essentially every surface on a real
+desktop is untagged, and reading `srgb`/`bt709` without it invites the
+conclusion that a client declared sRGB when in fact it declared nothing and
+ADR-004 answered on its behalf.
+
 ### `get avk-stats`
 
-Live counters for the AVK renderer, which is the only renderer. Returns
-`{"backend":"scenefx","active":false}` when AVK is not the renderer.
+Live counters for the AVK renderer, which is the only renderer. `backend` is
+always `avk`: there is no second renderer to report, and no inactive state —
+`az_output_build_frame()` aborts rather than fall back.
 
 ```bash
 amsg get avk-stats | jq

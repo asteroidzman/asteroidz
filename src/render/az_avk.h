@@ -164,7 +164,10 @@ struct az_avk_renderer_slot {
 };
 
 struct az_avk {
-	/* Whether ASTEROIDZ_RENDERER asked for AVK at all. */
+	/* Always true since AVK became the only renderer; kept because init still
+	 * reads it to tell "asked for and failed" from "never asked", and the
+	 * failure is a hard error either way. There is no env var behind it any
+	 * more -- ASTEROIDZ_RENDERER is gone. */
 	bool requested;
 	/* Whether the engine actually came up. Requested-but-failed is a hard
 	 * error at startup, not a silent downgrade -- see az_avk_init(). */
@@ -3038,64 +3041,12 @@ static inline void az_avk_scene_rgb(bool linear, const float in[4],
  */
 static struct az_lum_domain az_avk_lum_of(
 		const struct wlr_scene_buffer *buf, float scene_ref_nits) {
-	struct az_lum_source_desc src = { .tagged = false };
-	if (buf != NULL) {
-		switch (buf->transfer_function) {
-		case WLR_COLOR_TRANSFER_FUNCTION_SRGB:
-			src.tagged = true; src.tf = AZ_TF_SRGB; break;
-		case WLR_COLOR_TRANSFER_FUNCTION_GAMMA22:
-			/*
-			 * ── GAMMA22 IS WHAT UNTAGGED LOOKS LIKE FROM HERE ─────────────
-			 *
-			 * scenefx's surface adapter, copying wlroots 0.20.2, initialises
-			 * `tf` to GAMMA22 and only overwrites it when the surface carries
-			 * an image description (surface.c:304). So a surface that has said
-			 * NOTHING about its colour arrives here indistinguishable from one
-			 * that explicitly declared a 2.2 power curve -- and on a real
-			 * desktop essentially every surface is the former.
-			 *
-			 * ADR-004 decides that untagged is piecewise-sRGB BT.709, so that
-			 * is what this returns. It is not a guess about the client: it is
-			 * the ADR's answer applied to the only information available.
-			 *
-			 * IT IS ALSO WHAT MAKES PATH A EXIST. Path A's encode is the
-			 * hardware's _SRGB attachment conversion and cannot be selected --
-			 * so a source decoded with 2.2 and encoded with sRGB cannot round
-			 * trip through it. Measured: a flat grey wallpaper at 128 came back
-			 * as 129 on every pixel of the display, which is exactly
-			 * srgb_ieotf(gamma22_eotf(128/255)) = 128.95. Treating untagged as
-			 * sRGB makes the pair exact; leaving it as 2.2 makes Path A wrong
-			 * for the entire desktop.
-			 *
-			 * The cost of being wrong the other way -- a client that genuinely
-			 * meant 2.2 and is decoded as sRGB -- is bounded by the difference
-			 * between the two curves, about one code in the midtones, and it
-			 * applies only to a client that declared 2.2 through a protocol
-			 * that this cannot see it used. See F12.
-			 */
-			break;
-		case WLR_COLOR_TRANSFER_FUNCTION_BT1886:
-			src.tagged = true; src.tf = AZ_TF_BT1886; break;
-		case WLR_COLOR_TRANSFER_FUNCTION_ST2084_PQ:
-			src.tagged = true; src.tf = AZ_TF_PQ; break;
-		case WLR_COLOR_TRANSFER_FUNCTION_EXT_LINEAR:
-			src.tagged = true; src.tf = AZ_TF_LINEAR_EXT; break;
-		default:
-			/* Includes 0, which is what an untagged surface carries. */
-			break;
-		}
-		if (src.tagged) {
-			src.primaries =
-				buf->primaries == WLR_COLOR_NAMED_PRIMARIES_BT2020
-					? AZ_PRIM_BT2020 : AZ_PRIM_BT709;
-			/* max_cll is cd/m2 and 0 means absent, which is the same
-			 * convention az_lum_source_desc uses -- no translation. */
-			src.max_cll = (float)buf->max_cll;
-		}
-	}
-	if (!az_lum_source_valid(&src)) {
-		src = (struct az_lum_source_desc){ .tagged = false };
-	}
+	/* The translation lives in az_source_desc.h so the inspector reads the same
+	 * one; see the note there for why it is not written twice. */
+	struct az_lum_source_desc src = buf != NULL
+		? az_source_desc_from_wlr(buf->transfer_function, buf->primaries,
+			buf->max_cll)
+		: (struct az_lum_source_desc){ .tagged = false };
 	struct az_lum_rules rules = az_lum_rules_default();
 	return az_lum_resolve(&src, &rules, scene_ref_nits);
 }

@@ -304,6 +304,89 @@ static cJSON *build_client_json(Client *c) {
 	return obj;
 }
 
+/*
+ * ── M11: WHAT IS BEING DONE TO ONE SURFACE ────────────────────────────────
+ *
+ * Serializes az_surface_intent_resolve()'s snapshot. Everything here is read
+ * from production state; nothing is recomputed for display, which is the whole
+ * contract of the inspector (see az_intent.h).
+ *
+ * `role` and `name` are the caller's, because a wl_surface does not know
+ * whether it is a toplevel or a panel and the answer matters to whoever is
+ * reading.
+ */
+static cJSON *build_surface_intent_json(struct wlr_surface *s,
+		const char *role, const char *name) {
+	struct az_surface_intent in;
+	az_surface_intent_resolve(s, &in);
+
+	cJSON *o = cJSON_CreateObject();
+	cJSON_AddStringToObject(o, "role", role);
+	cJSON_AddStringToObject(o, "name", name != NULL ? name : "");
+	cJSON_AddStringToObject(o, "output",
+		in.mon != NULL && in.mon->wlr_output != NULL
+			? in.mon->wlr_output->name : "");
+	cJSON_AddNumberToObject(o, "identity", (double)in.identity);
+
+	cJSON *b = cJSON_AddObjectToObject(o, "buffer");
+	cJSON_AddBoolToObject(b, "attached", in.has_buffer);
+	if (in.has_buffer) {
+		cJSON_AddNumberToObject(b, "width", in.buf_width);
+		cJSON_AddNumberToObject(b, "height", in.buf_height);
+		cJSON_AddStringToObject(b, "kind",
+			in.buf_dmabuf ? "dmabuf" : (in.buf_shm ? "shm" : "other"));
+		/* fourcc as its four characters: a bare 875713112 is unreadable, and
+		 * this is a diagnostic before it is data. */
+		char fourcc[5] = {
+			(char)(in.buf_format & 0xff), (char)((in.buf_format >> 8) & 0xff),
+			(char)((in.buf_format >> 16) & 0xff),
+			(char)((in.buf_format >> 24) & 0xff), 0 };
+		cJSON_AddStringToObject(b, "format", in.buf_format ? fourcc : "");
+		if (in.buf_dmabuf) {
+			char mod[32];
+			snprintf(mod, sizeof(mod), "0x%016" PRIx64, in.buf_modifier);
+			cJSON_AddStringToObject(b, "modifier", mod);
+		}
+	}
+
+	/*
+	 * SOURCE. `tagged` is the load-bearing field and it is reported first:
+	 * essentially every surface on a real desktop is untagged, and reading
+	 * "srgb/bt709" without it invites the conclusion that a client declared
+	 * sRGB when in fact it declared nothing and ADR-004 answered for it.
+	 */
+	cJSON *src = cJSON_AddObjectToObject(o, "source");
+	cJSON_AddBoolToObject(src, "tagged", in.src.tagged);
+	cJSON_AddStringToObject(src, "transfer",
+		in.src.tagged ? az_tf_name(in.src.tf) : "(untagged)");
+	cJSON_AddStringToObject(src, "primaries",
+		in.src.tagged ? az_primaries_name(in.src.primaries) : "(untagged)");
+	cJSON_AddNumberToObject(src, "max_cll_nits", in.src.max_cll);
+
+	cJSON *dom = cJSON_AddObjectToObject(o, "domain");
+	cJSON_AddStringToObject(dom, "transfer", az_tf_name(in.domain.tf));
+	cJSON_AddStringToObject(dom, "primaries",
+		az_primaries_name(in.domain.primaries));
+	cJSON_AddNumberToObject(dom, "scale", in.domain.scale);
+	/* 0 means UNKNOWN, never "this source is black" -- az_lum.h's contract. */
+	cJSON_AddNumberToObject(dom, "content_peak_scene", in.domain.content_peak);
+	cJSON_AddBoolToObject(dom, "hdr_transfer", az_lum_tf_is_hdr(in.domain.tf));
+
+	cJSON *pr = cJSON_AddObjectToObject(o, "preferred");
+	cJSON_AddBoolToObject(pr, "hdr", in.pref.hdr);
+	cJSON_AddBoolToObject(pr, "bt2020", in.pref.bt2020);
+	cJSON_AddNumberToObject(pr, "max_luminance", in.pref.max_luminance);
+	cJSON_AddNumberToObject(pr, "min_luminance", in.pref.min_luminance);
+	cJSON_AddNumberToObject(pr, "max_fall", in.pref.max_fall);
+	cJSON_AddNumberToObject(pr, "identity", (double)in.pref.identity);
+
+	cJSON *rn = cJSON_AddObjectToObject(o, "render");
+	cJSON_AddBoolToObject(rn, "direct_scanout", in.scanout);
+	cJSON_AddStringToObject(rn, "scanout_why", in.scanout_why);
+
+	return o;
+}
+
 // Available output modes, for a config UI's resolution/refresh picker.
 // refresh is wlroots-native millihertz (divide by 1000 for Hz).
 static cJSON *build_modes_json(Monitor *m) {
@@ -837,6 +920,92 @@ static void handle_command(int client_fd, const char *cmd_raw) {
 				}
 				cJSON_AddItemToObject(resp, "tag_cost", tc);
 			}
+		}
+	} else if (strcmp(cmd, "get surface-intent") == 0) {
+		/*
+		 * ── M11. THE ONE AUTHORITATIVE ANSWER TO "WHAT IS THIS WINDOW?" ────
+		 *
+		 * Deliberately NOT folded into `get all-clients`: that is a window-
+		 * manager view (geometry, tags, focus) consumed by the bar on every
+		 * arrange, and colour/presentation state has a different audience and a
+		 * different cost. Deliberately NOT folded into `avk-stats` either --
+		 * those are the renderer's aggregate counters, and these are per-surface
+		 * facts that are not counters at all.
+		 *
+		 * LAYER SURFACES ARE INCLUDED, and that is not completeness for its own
+		 * sake: asteroidz-bar's own wallpaper backdrop is a layer-shell wp-cm
+		 * client rendering HDR10, and it was the surface that proved the
+		 * preferred-description defect M6B fixed. A dump that showed only
+		 * toplevels would have been blind to it.
+		 */
+		resp = cJSON_CreateObject();
+		cJSON *arr = cJSON_AddArrayToObject(resp, "surfaces");
+		Client *ic;
+		wl_list_for_each(ic, &clients, link) {
+			struct wlr_surface *s = client_surface(ic);
+			if (s == NULL)
+				continue;
+			cJSON_AddItemToArray(arr, build_surface_intent_json(s,
+				client_is_x11(ic) ? "xwayland" : "toplevel",
+				client_get_title(ic)));
+		}
+		Monitor *im;
+		wl_list_for_each(im, &mons, link) {
+			for (size_t li = 0; li < LENGTH(im->layers); li++) {
+				LayerSurface *l;
+				wl_list_for_each(l, &im->layers[li], link) {
+					if (l->layer_surface == NULL
+							|| l->layer_surface->surface == NULL)
+						continue;
+					cJSON_AddItemToArray(arr, build_surface_intent_json(
+						l->layer_surface->surface, "layer",
+						l->layer_surface->namespace != NULL
+							? l->layer_surface->namespace : ""));
+				}
+			}
+		}
+		/*
+		 * THE OUTPUT HALF. The same numbers the surfaces above were resolved
+		 * against -- reported once here rather than repeated per surface, so a
+		 * disagreement between "what the output is" and "what a surface was
+		 * told" is visible by comparison instead of by inference.
+		 */
+		cJSON *outs = cJSON_AddArrayToObject(resp, "outputs");
+		Monitor *om;
+		wl_list_for_each(om, &mons, link) {
+			if (om->wlr_output == NULL)
+				continue;
+			cJSON *e = cJSON_CreateObject();
+			cJSON_AddStringToObject(e, "name", om->wlr_output->name);
+			cJSON_AddBoolToObject(e, "enabled", om->wlr_output->enabled);
+			cJSON_AddBoolToObject(e, "hdr", om->hdr > 0);
+			cJSON_AddBoolToObject(e, "icc", om->icc_transform != NULL);
+			cJSON_AddStringToObject(e, "path",
+				az_output_path_name(om->color_state.path));
+			cJSON_AddStringToObject(e, "encode_transfer",
+				az_tf_name(om->color_state.encode_tf));
+			cJSON_AddNumberToObject(e, "ref_nits", om->color_state.ref_nits);
+			cJSON_AddNumberToObject(e, "peak_scene",
+				om->color_state.peak_scene);
+			cJSON_AddNumberToObject(e, "dither_q", om->color_state.dither_q);
+			cJSON_AddStringToObject(e, "present_regime",
+				az_present_regime_name(om->presenter.regime));
+			cJSON_AddNumberToObject(e, "nominal_period_ns",
+				(double)om->presenter.nominal_period_ns);
+			cJSON_AddNumberToObject(e, "period_ns",
+				(double)az_presenter_period_ns(om));
+			/* Signed, and a mean over a count that may be 0 -- both reported,
+			 * because a mean with no samples is not a small error. */
+			cJSON_AddNumberToObject(e, "err_count",
+				(double)om->presenter.err_count);
+			cJSON_AddNumberToObject(e, "err_mean_ns",
+				om->presenter.err_count > 0
+					? (double)(om->presenter.err_sum_ns
+						/ (int64_t)om->presenter.err_count) : 0);
+			cJSON_AddNumberToObject(e, "misses", (double)om->presenter.misses);
+			cJSON_AddNumberToObject(e, "prediction_exceeded",
+				(double)om->presenter.prediction_exceeded);
+			cJSON_AddItemToArray(outs, e);
 		}
 	} else if (strcmp(cmd, "get presentation") == 0) {
 		/*
