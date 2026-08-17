@@ -546,6 +546,11 @@ Each entry in `surfaces` carries:
 | `luminance.sdr_white_scale`, `.hdr_gain` | the multipliers actually applied, so the class's effect is visible rather than implied |
 | `domain` | the resolved recipe: transfer, primaries, linear `scale` into scene units, `content_peak_scene` (0 = unknown, never "black") |
 | `preferred` | what this surface is *told* its display prefers, via both protocol frontends |
+| `presentation.class` | `desktop-ui` / `game` / `video` |
+| `presentation.class_from` | `derived` (from wp-content-type) or `window-rule` |
+| `presentation.tearing_eligible` | does **this window** ask to tear |
+| `presentation.tearing_active` | is the compositor **actually** tearing its output now — additionally requires this window to be focused and the global setting to permit it |
+| `presentation.output_vrr_active` | VRR state of its output, named so it cannot be read as a property of the window |
 | `render.direct_scanout` | whether the surface bypassed composition |
 | `render.scanout_why` | why it did not |
 | `identity` | hash of the decisions above — not the timing counters, so it is stable while a window merely renders |

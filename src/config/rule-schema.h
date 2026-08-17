@@ -117,6 +117,14 @@ static const RuleGroup rule_groups[] = {
  * that function is the parser the compositor actually uses, and this table is
  * only what a config UI offers. A member here that it cannot parse would be a
  * pickable option that silently does nothing. */
+/* M13. Spellings are az_present_class_name()'s, and must stay in step with it
+ * for the same reason rule_luminance_domain does. */
+static const RuleEnumMember rule_presentation_class[] = {
+	{"desktop-ui", "Smooth, predictable pacing. The default."},
+	{"game", "Lowest latency: tearing if asked, VRR when fullscreen."},
+	{"video", "Cadence fidelity. Never tears."},
+};
+
 static const RuleEnumMember rule_luminance_domain[] = {
 	{"sdr-ui", "Desktop furniture: hold white at 203 cd/m2."},
 	{"sdr-normal", "Ordinary SDR content at the desktop reference."},
@@ -283,6 +291,16 @@ static const RuleField rule_schema[] = {
  * multiplies one class of source on its way into the scene, so raising one
  * window's SDR white touches that window and nothing else on the screen,
  * including the same window's own shadow and the wallpaper behind it. */
+{"presentation_class", "presentation-class", "performance",
+ "Presentation class",
+ "What this window's frames are FOR, which decides WHEN they appear -- never "
+ "what they look like. 'game' takes lowest latency: tearing if the client "
+ "asks, VRR when fullscreen. 'video' takes cadence fidelity and never tears. "
+ "'desktop-ui' is the default: smooth, predictable pacing. Unset derives it "
+ "from wp-content-type, which is the client saying what it is. Colour "
+ "management, HDR and synchronisation are never traded away by any of them.",
+ RULE_ENUM, offsetof(ConfigWinRule, presentation_class), RULE_NOCLAMP,
+ RULE_NOCLAMP, rule_presentation_class, LENGTH(rule_presentation_class)},
 {"luminance_domain", "luminance-domain", "visuals", "Luminance domain",
  "What this window's content is FOR, which is a different question from how "
  "it is encoded: a terminal and a film are both sRGB and should not share a "

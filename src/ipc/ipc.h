@@ -316,7 +316,7 @@ static cJSON *build_client_json(Client *c) {
  * reading.
  */
 static cJSON *build_surface_intent_json(struct wlr_surface *s,
-		const char *role, const char *name) {
+		const char *role, const char *name, Client *ic) {
 	struct az_surface_intent in;
 	az_surface_intent_resolve(s, &in);
 
@@ -405,6 +405,46 @@ static cJSON *build_surface_intent_json(struct wlr_surface *s,
 	cJSON_AddNumberToObject(pr, "max_fall", in.pref.max_fall);
 	snprintf(ident, sizeof(ident), "0x%016" PRIx64, in.pref.identity);
 	cJSON_AddStringToObject(pr, "identity", ident);
+
+	/*
+	 * M13. The presentation class and what it actually bought, which is the
+	 * half a class name alone does not tell you: "game" is only interesting if
+	 * you can see whether it got VRR and whether it may tear. Both are read
+	 * from the same predicates the commit path uses.
+	 */
+	if (ic != NULL) {
+		cJSON *pc = cJSON_AddObjectToObject(o, "presentation");
+		bool pc_ruled = false;
+		enum az_present_class klass = az_present_class_of(ic, &pc_ruled);
+		cJSON_AddStringToObject(pc, "class", az_present_class_name(klass));
+		cJSON_AddStringToObject(pc, "class_from",
+			pc_ruled ? "window-rule" : "derived");
+		cJSON_AddBoolToObject(pc, "fullscreen", ic->isfullscreen);
+		/*
+		 * TWO TEARING FIELDS, because there are two questions and reporting
+		 * only the second was wrong.
+		 *
+		 * `tearing_eligible` is this WINDOW's answer: does it ask to tear.
+		 * `tearing_active` is the COMPOSITOR's answer for its output right
+		 * now, which additionally requires this window to be the focused one
+		 * and the global setting to permit it.
+		 *
+		 * The first version printed check_tearing_frame_allow() on every row.
+		 * That function reads selmon->sel and ignores which window is being
+		 * asked about, so every row carried the FOCUSED window's answer --
+		 * a global dressed as a per-surface fact, which is the one thing an
+		 * inspector must never do.
+		 */
+		cJSON_AddBoolToObject(pc, "tearing_eligible",
+			client_tearing_eligible(ic));
+		cJSON_AddBoolToObject(pc, "tearing_active",
+			ic->mon != NULL && selmon != NULL && selmon->sel == ic
+				&& check_tearing_frame_allow(ic->mon));
+		/* VRR is genuinely per-output, and is named so it cannot be read as a
+		 * property of this window. */
+		cJSON_AddBoolToObject(pc, "output_vrr_active",
+			ic->mon != NULL && ic->mon->is_vrr_opening);
+	}
 
 	cJSON *rn = cJSON_AddObjectToObject(o, "render");
 	cJSON_AddBoolToObject(rn, "direct_scanout", in.scanout);
@@ -973,7 +1013,7 @@ static void handle_command(int client_fd, const char *cmd_raw) {
 				continue;
 			cJSON_AddItemToArray(arr, build_surface_intent_json(s,
 				client_is_x11(ic) ? "xwayland" : "toplevel",
-				client_get_title(ic)));
+				client_get_title(ic), ic));
 		}
 		Monitor *im;
 		wl_list_for_each(im, &mons, link) {
@@ -983,10 +1023,13 @@ static void handle_command(int client_fd, const char *cmd_raw) {
 					if (l->layer_surface == NULL
 							|| l->layer_surface->surface == NULL)
 						continue;
+					/* NULL: a layer surface is not a Client and has no
+					 * presentation class -- window rules match app-id and
+					 * title, and it has neither. */
 					cJSON_AddItemToArray(arr, build_surface_intent_json(
 						l->layer_surface->surface, "layer",
 						l->layer_surface->namespace != NULL
-							? l->layer_surface->namespace : ""));
+							? l->layer_surface->namespace : "", NULL));
 				}
 			}
 		}

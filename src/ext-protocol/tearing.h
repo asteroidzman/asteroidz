@@ -58,68 +58,120 @@ void handle_tearing_new_object(struct wl_listener *listener, void *data) {
 	wl_signal_add(&new_tearing_control->events.destroy, &controller->destroy);
 }
 
+/*
+ * ── DOES THIS CLIENT ASK TO TEAR? ─────────────────────────────────────────
+ *
+ * M13. Per-client and nothing else: no focus in it, no output, no global
+ * setting. Extracted because check_tearing_frame_allow() answers a different
+ * question -- "is the compositor going to tear THIS frame" -- which depends on
+ * which window is focused, and the inspector needs the per-window half to
+ * report anything truthful about a window that is not currently focused.
+ *
+ * VIDEO NEVER TEARS, in both modes. It used to be excluded only in the
+ * fullscreen-only mode: with `allow_tearing 1` a video client that set a
+ * tearing hint would tear, despite the comment two lines away saying video
+ * players must never. Unifying the two branches fixes that, and it is a
+ * behaviour change rather than a refactor -- stated here because it is one.
+ *
+ * An explicit force_tearing still wins over everything, including VIDEO: it is
+ * the operator overriding the classification on purpose.
+ */
+static inline bool client_tearing_eligible(Client *c) {
+	if (c == NULL) {
+		return false;
+	}
+	if (c->force_tearing != STATE_UNSPECIFIED) {
+		return c->force_tearing == STATE_ENABLED;
+	}
+	enum az_present_class pc = az_present_class_of(c, NULL);
+	if (pc == AZ_PRESENT_CLASS_VIDEO) {
+		return false;
+	}
+	/* A tearing hint is the client asking through the protocol; GAME is the
+	 * class asking on its behalf. Either counts as a request. */
+	return c->tearing_hint || pc == AZ_PRESENT_CLASS_GAME;
+}
+
 bool check_tearing_frame_allow(Monitor *m) {
 	/* never allow tearing when disabled */
 	if (!config.allow_tearing) {
 		return false;
 	}
 
-	Client *c = selmon->sel;
+	Client *c = selmon != NULL ? selmon->sel : NULL;
 
 	/* tearing is only allowed for the output with the active client */
 	if (!c || c->mon != m) {
 		return false;
 	}
 
-	/* allow tearing for any window when requested or forced; surfaces
-	 * tagged as games via content-type-v1 count as a request */
-	if (config.allow_tearing == TEARING_ENABLED) {
-		if (c->force_tearing == STATE_UNSPECIFIED) {
-			return c->tearing_hint || client_content_type_is_game(c);
-		} else {
-			return c->force_tearing == STATE_ENABLED;
-		}
-	}
-
-	/* remaining tearing options apply only to full-screen windows */
-	if (!c->isfullscreen) {
+	/* TEARING_FULLSCREEN_ONLY additionally requires fullscreen; TEARING_ENABLED
+	 * allows any window that asks. */
+	if (config.allow_tearing != TEARING_ENABLED && !c->isfullscreen) {
 		return false;
 	}
 
-	if (c->force_tearing == STATE_UNSPECIFIED) {
-		/* only tear for windows that ask for it (tearing hint or a game
-		 * content-type); video players like mpv must never tear */
-		if (client_content_type_is_video(c))
-			return false;
-		return c->tearing_hint || client_content_type_is_game(c);
-	}
-
-	/* honor tearing as requested by action */
-	return c->force_tearing == STATE_ENABLED;
+	return client_tearing_eligible(c);
 }
 
+/*
+ * ── A TORN FRAME, BUILT BY AVK ────────────────────────────────────────────
+ *
+ * M13. This aborted. Since 13254aad removed the SceneFX composition it could no
+ * longer route to, `allow_tearing` plus any window that asked to tear killed
+ * the compositor -- a crash reachable from configuration alone, and M13's GAME
+ * class widens who reaches it, since a game no longer needs a per-app rule.
+ *
+ * The abort was the honest thing to leave at the time: the old path composited
+ * every torn frame on SceneFX's GLES renderer even in an AVK session, silently,
+ * and only for the applications a rule marked force_tearing -- exactly the ones
+ * being watched for frame-timing problems. Deleting it beat leaving it.
+ *
+ * What replaces it is the ordinary AVK frame with one bit set. There is no
+ * second renderer and no separate tearing pipeline: az_output_build_frame() is
+ * the same seam every other frame goes through, and `tearing_page_flip` asks
+ * the backend to flip without waiting for vblank.
+ *
+ * THE FLIP IS TESTED BEFORE IT IS COMMITTED, and refused gracefully. Not every
+ * state is tearable -- a modeset, a format change, or a backend without
+ * immediate flips will reject it -- and a torn frame that cannot be torn should
+ * be presented on the next vblank, not dropped. Losing the tear is a latency
+ * regression; losing the frame is a visible stall.
+ */
 void apply_tear_state(Monitor *m) {
+	if (m == NULL || m->wlr_output == NULL || m->scene_output == NULL) {
+		return;
+	}
 	if (!wlr_scene_output_needs_frame(m->scene_output)) {
 		return;
 	}
-	/*
-	 * ── THE TEARING PATH NEVER WENT THROUGH AVK ──────────────────────────
-	 *
-	 * This used to call wlr_scene_output_build_state() directly, so every torn
-	 * frame was composited by SceneFX on wlroots' GLES renderer even in an AVK
-	 * session -- silently, and only for the applications a window rule marks
-	 * force_tearing, which are exactly the ones being watched for frame-timing
-	 * problems.
-	 *
-	 * AVK implements no tearing page flip, and there is no longer a second
-	 * compositor to route this to, so the SceneFX path that used to follow is
-	 * gone rather than merely unreachable. Implementing a tearing page flip in
-	 * AVK is what makes force_tearing work again; nothing else will.
-	 */
-	wlr_log(WLR_ERROR,
-		"tearing is not implemented by AVK and %s asked for a torn frame. "
-		"Remove force_tearing from the window rule, or implement a tearing "
-		"page flip in AVK.",
-		m->wlr_output != NULL ? m->wlr_output->name : "(output)");
-	abort();
+
+	struct wlr_output_state state;
+	wlr_output_state_init(&state);
+	struct az_frame_options frame_options = {
+		.color_transform = az_output_color_transform(m),
+	};
+	if (!az_output_build_frame(m, &state, &frame_options)) {
+		wlr_log(WLR_ERROR, "tearing: failed to build frame for %s",
+			m->wlr_output->name);
+		wlr_output_state_finish(&state);
+		return;
+	}
+
+	state.tearing_page_flip = true;
+	if (!wlr_output_test_state(m->wlr_output, &state)) {
+		/* Present it on the vblank instead. Once per state change rather than
+		 * per frame would be quieter, but a torn frame silently not tearing is
+		 * exactly the kind of thing that gets measured and disbelieved. */
+		wlr_log(WLR_DEBUG, "tearing: %s refused a torn flip; presenting synced",
+			m->wlr_output->name);
+		state.tearing_page_flip = false;
+	}
+
+	if (!wlr_output_commit_state(m->wlr_output, &state)) {
+		wlr_log(WLR_ERROR, "tearing: failed to commit frame for %s",
+			m->wlr_output->name);
+		az_output_commit_failed(m);
+	}
+	wlr_output_state_finish(&state);
 }

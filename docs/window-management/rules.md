@@ -108,6 +108,7 @@ global setting is off.
 | `sdr_white_scale` / `sdr-white-scale` | float | `0` – `10` | Multiply this window's SDR white. `1.0` is unchanged, `1.5` makes an SDR application 50% brighter on an HDR output. `0` leaves it alone. No effect on HDR (PQ or scRGB) content |
 | `hdr_gain` / `hdr-gain` | float | `0` – `10` | Multiply this window's HDR content. `1.0` is unchanged, `0.5` halves the absolute luminance of a PQ video. `0` leaves it alone. No effect on SDR content |
 | `luminance_domain` / `luminance-domain` | enum | `sdr-ui`, `sdr-normal`, `sdr-extended`, `hdr-content` | What this window's content is *for*. Unset derives it from what the client declared |
+| `presentation_class` / `presentation-class` | enum | `desktop-ui`, `game`, `video` | What this window's *frames* are for — when they should appear. Unset derives it from `wp-content-type` |
 
 > **These rules did nothing before 2026-08-17.** `sdr_white_scale` and
 > `hdr_gain` were parsed, validated and stored on the window, and read by no
@@ -150,6 +151,39 @@ one — a typo does not silently become a policy.
 
 `amsg get surface-intent` reports each window's class, whether it was derived
 or ruled, and the multipliers actually applied.
+
+## Presentation classes
+
+Where a luminance domain says what content *is*, a presentation class says when
+its frames should **appear**. The two are independent: a class never changes how
+a window looks.
+
+| class | wants | effect |
+|---|---|---|
+| `desktop-ui` | smoothness, predictable cadence | the default; presentation-time animation, never tears |
+| `game` | lowest practical latency | may tear when `allow-tearing` permits; VRR while fullscreen |
+| `video` | cadence fidelity | never tears, so a film cannot be torn to save latency it does not need |
+
+Unset derives from `wp-content-type` — the client declaring what it is, which is
+the honest signal. **Classification never uses executable names:** an app-id list
+guesses intent from identity and is wrong for everything not on it.
+
+**Fullscreen is not evidence of class.** A fullscreen browser is not a game.
+Fullscreen gates whether some policies *apply* — VRR is pointless for a windowed
+game sharing an output with a blinking cursor — but never decides what the
+content is.
+
+```kdl
+// a game that does not set wp-content-type
+window-rule { match app-id=^gamescope$; presentation-class "game" }
+```
+
+A `game` window gets VRR while fullscreen without needing `vrr-only-fullscreen`
+named per application; that rule still works and still means what it meant.
+
+**No class disables colour management, HDR, or explicit synchronisation.** A
+class chooses *when* a frame appears, never what is in it — a fast wrong pixel
+is still wrong.
 
 `sdr_white_scale` and `hdr_gain` are **per window on purpose, and there is no
 global equivalent of either**. On an HDR output every SDR application is

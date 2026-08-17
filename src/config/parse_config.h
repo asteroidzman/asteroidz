@@ -119,6 +119,8 @@ typedef struct {
 	float hdr_gain;
 	/* M12: the luminance class, spelled as a string; "" is unset. */
 	char luminance_domain[16];
+	/* M13: the presentation class, likewise. */
+	char presentation_class[16];
 	float scroller_proportion_single;
 	uint32_t passmod;
 	xkb_keysym_t keysym;
@@ -2859,6 +2861,7 @@ bool parse_option(Config *config, char *key, char *value) {
 		rule->sdr_white_scale = 0.0f;
 		rule->hdr_gain = 0.0f;
 		rule->luminance_domain[0] = '\0';
+		rule->presentation_class[0] = '\0';
 		rule->scroller_proportion_single = 0.0f;
 		rule->scroller_proportion = 0;
 
@@ -2956,6 +2959,9 @@ bool parse_option(Config *config, char *key, char *value) {
 					rule->unfocused_opacity = atof(val);
 				} else if (strcmp(key, "focused_opacity") == 0) {
 					rule->focused_opacity = atof(val);
+				} else if (strcmp(key, "presentation_class") == 0) {
+					snprintf(rule->presentation_class,
+						sizeof(rule->presentation_class), "%s", val);
 				} else if (strcmp(key, "luminance_domain") == 0) {
 					snprintf(rule->luminance_domain,
 						sizeof(rule->luminance_domain), "%s", val);

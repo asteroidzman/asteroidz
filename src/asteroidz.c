@@ -768,6 +768,8 @@ struct Client {
 	/* M12: the luminance class this window was given by rule, as a string;
 	 * NULL or "" means none was, and the class is derived from the source. */
 	const char *luminance_domain;
+	/* M13: the presentation class by rule; NULL/"" means derive it. */
+	const char *presentation_class;
 	char oldmonname[128];
 	uint32_t oldmontags; /* tagset oldmonname's monitor had active when this
 						  * client landed there; used to restore the client
@@ -3382,6 +3384,7 @@ static void apply_rule_properties(Client *c, const ConfigWinRule *r) {
 	APPLY_FLOAT_PROP(c, r, hdr_gain);
 
 	APPLY_STRING_PROP(c, r, luminance_domain);
+	APPLY_STRING_PROP(c, r, presentation_class);
 	APPLY_STRING_PROP(c, r, animation_type_open);
 	APPLY_STRING_PROP(c, r, animation_type_close);
 }
@@ -7996,6 +7999,7 @@ void init_client_properties(Client *c) {
 	c->sdr_white_scale = 1.0f;
 	c->hdr_gain = 1.0f;
 	c->luminance_domain = NULL;
+	c->presentation_class = NULL;
 	c->nofocus = 0;
 	c->nofadein = 0;
 	c->nofadeout = 0;
@@ -11831,16 +11835,33 @@ void check_vrr_enable(Client *c) {
 	 * monitor as possibly-NULL -- and the guard above only rejects the case
 	 * where selmon is ALSO gone, so a running session with an unplaced client
 	 * walked straight into it. */
-	if (VISIBLEON(c, m) && c->vrr_only_fullscreen && c->isfullscreen &&
-		!m->is_vrr_opening) {
+	/*
+	 * ── M13: A GAME GETS VRR WITHOUT NEEDING A RULE PER GAME ──────────────
+	 *
+	 * vrr_only_fullscreen still means exactly what it meant, and a rule that
+	 * sets it still works. What is generalised is the OTHER way in: a window
+	 * whose presentation class is GAME -- because it said so through
+	 * wp-content-type, or because a presentation-class rule says so -- wants
+	 * VRR fullscreen for the same reason, and having to name every game in the
+	 * config was the gap.
+	 *
+	 * STILL GATED ON FULLSCREEN, for both. A windowed game shares the output
+	 * with a blinking cursor and a clock, and letting it drive the refresh rate
+	 * makes everything else on that display stutter. Fullscreen is what makes
+	 * "this client's cadence is the output's cadence" true.
+	 */
+	bool wants_vrr = c->isfullscreen
+		&& (c->vrr_only_fullscreen
+			|| az_present_class_of(c, NULL) == AZ_PRESENT_CLASS_GAME);
+
+	if (VISIBLEON(c, m) && wants_vrr && !m->is_vrr_opening) {
 		commit_vrr_state(m, true);
 		return;
 	}
 
 	if (!m->is_vrr_opening && m->vrr_global_enable) {
 		commit_vrr_state(m, true);
-	} else if (m->is_vrr_opening && !m->vrr_global_enable &&
-			   !(c->vrr_only_fullscreen && c->isfullscreen)) {
+	} else if (m->is_vrr_opening && !m->vrr_global_enable && !wants_vrr) {
 		commit_vrr_state(m, false);
 	}
 }
