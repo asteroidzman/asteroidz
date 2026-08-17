@@ -927,6 +927,8 @@ typedef struct {
 	int32_t forceshadow;
 	char *animation_type_open;
 	char *animation_type_close;
+	/* M12/M13: the luminance class by rule; NULL means derive it. */
+	const char *luminance_domain;
 	bool need_output_flush;
 	bool being_unmapped;
 } LayerSurface;
@@ -5161,6 +5163,7 @@ void maplayersurfacenotify(struct wl_listener *listener, void *data) {
 	l->shadow = NULL;
 	l->shadow_blur = NULL;
 	l->privacy_shield = 0;
+	l->luminance_domain = NULL;
 	l->need_output_flush = true;
 
 	// apply layer rules
@@ -5179,6 +5182,7 @@ void maplayersurfacenotify(struct wl_listener *listener, void *data) {
 			APPLY_INT_PROP(l, r, forceshadow);
 			APPLY_STRING_PROP(l, r, animation_type_open);
 			APPLY_STRING_PROP(l, r, animation_type_close);
+			APPLY_STRING_PROP(l, r, luminance_domain);
 		}
 	}
 

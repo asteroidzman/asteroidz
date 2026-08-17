@@ -152,6 +152,19 @@ one — a typo does not silently become a policy.
 `amsg get surface-intent` reports each window's class, whether it was derived
 or ruled, and the multipliers actually applied.
 
+**Layer surfaces get a class too**, through `layerrule` rather than a window
+rule — they match a namespace, not an app-id, so a window rule can never reach
+them. A bar and a wallpaper are the most chrome-like surfaces on a desktop and
+were the only ones with no way to say so:
+
+```kdl
+layerrule layer_name:asteroidz-bar-.*,luminance_domain:sdr-ui
+```
+
+They carry the **class only**. `sdr-white-scale` and `hdr-gain` stay window-rule
+properties: a layer surface has no per-window luminance lever, and inventing one
+would be two spellings for the same thing.
+
 ## Presentation classes
 
 Where a luminance domain says what content *is*, a presentation class says when

@@ -218,6 +218,9 @@ typedef struct {
 	int32_t noblur;
 	int32_t forceblur; // opt this layer into blur even with blur_layer=0
 	int32_t privacy_shield; // cover this layer during captures
+	/* M12/M13: the luminance class, spelled as a string; NULL is unset. A bar
+	 * or a wallpaper is desktop chrome and had no way to say so. */
+	char *luminance_domain;
 	int32_t noanim;
 	int32_t noshadow;
 	int32_t forceshadow; // opt this layer into a shadow (exclusive_zone -1 popups)
@@ -2749,6 +2752,7 @@ bool parse_option(Config *config, char *key, char *value) {
 		rule->forceshadow = -1;
 		rule->forceblur = -1;
 		rule->privacy_shield = -1;
+		rule->luminance_domain = NULL;
 
 		bool parse_error = false;
 		char *token = strtok(value, ",");
@@ -2774,6 +2778,8 @@ bool parse_option(Config *config, char *key, char *value) {
 					rule->forceblur = atoi(val);
 				} else if (strcmp(key, "privacy_shield") == 0) {
 					rule->privacy_shield = atoi(val);
+				} else if (strcmp(key, "luminance_domain") == 0) {
+					rule->luminance_domain = strdup(val);
 				} else if (strcmp(key, "noanim") == 0) {
 					rule->noanim = CLAMP_INT(atoi(val), 0, 1);
 				} else if (strcmp(key, "noshadow") == 0) {
@@ -4563,6 +4569,8 @@ void free_config(void) {
 				free((void *)config.layer_rules[i].animation_type_open);
 			if (config.layer_rules[i].animation_type_close)
 				free((void *)config.layer_rules[i].animation_type_close);
+			if (config.layer_rules[i].luminance_domain)
+				free((void *)config.layer_rules[i].luminance_domain);
 		}
 		free(config.layer_rules);
 		config.layer_rules = NULL;

@@ -393,8 +393,14 @@ static cJSON *build_surface_intent_json(struct wlr_surface *s,
 	 */
 	cJSON *lc = cJSON_AddObjectToObject(o, "luminance");
 	cJSON_AddStringToObject(lc, "class", az_lum_class_name(in.lum_class));
+	/* WHICH KIND of rule, because they are different files and different
+	 * matchers: a window rule matches app-id and title, a layerrule matches a
+	 * namespace, and a reader told "window-rule" about a bar would go looking
+	 * in the wrong half of the config. Layer surfaces are serialized with no
+	 * Client, which is exactly the distinction. */
 	cJSON_AddStringToObject(lc, "class_from",
-		in.lum_class_from_rule ? "window-rule" : "derived");
+		!in.lum_class_from_rule ? "derived"
+			: (ic != NULL ? "window-rule" : "layer-rule"));
 	cJSON_AddNumberToObject(lc, "sdr_white_scale", in.lum_rules.sdr_white_scale);
 	cJSON_AddNumberToObject(lc, "hdr_gain", in.lum_rules.hdr_gain);
 
