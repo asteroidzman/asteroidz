@@ -267,38 +267,74 @@ effects {
 
 ### Dumping a blur's source
 
-A backdrop blur's *source* is a scratch image that never reaches the screen: the
-scene so far, copied aside and then patched to keep the shadowed window out of
-it. Every question about a halo around a floating window — is the hole filled,
-with what, does the fill reach far enough — is a question about that image, and
-a screenshot cannot answer any of them, because the blur has already averaged
-the evidence away by the time anything is visible.
+A backdrop blur's *source* is an image that never reaches the screen: the scene
+so far, replayed into a scratch image the chain then samples. Every question
+about a halo around a floating window — is the hole filled, with what, does the
+fill reach far enough, *is that wallpaper the current wallpaper* — is a question
+about that image, and a screenshot cannot answer any of them, because the blur
+has already averaged the evidence away by the time anything is visible.
 
-So it can be written out. Vulkan only; the GLES path patches the hole in a
-shader with no equivalent image to read back.
+So it can be written out. The facility is AVK's
+(`src/render/vulkan/scene/avk_blur_dump.h`), which is the renderer this
+compositor composites with.
 
 ```sh
-# at startup, before anything else has drawn
-FX_BLUR_DUMP=/tmp/blur FX_BLUR_DUMP_FRAMES=3 asteroidz
+# at startup, before anything else has drawn — for a harness, which has no
+# session to dispatch into yet
+AZ_BLUR_DUMP=/tmp/blur AZ_BLUR_DUMP_FRAMES=3 asteroidz
 
-# or on a session that is already running, which is the point:
-# a restart severs every client, which is a steep price for three frames
-amsg dispatch 'dump_blur_source,/tmp/blur,3'
+# or on a session that is already running, which is usually the point: the
+# artefact is on screen now, and a restart severs every client
+amsg dispatch 'dump_blur_source,/tmp/blur'
 amsg dispatch dump_blur_source          # no argument disarms
 ```
 
-Each armed frame writes `/tmp/blur-<n>-staged.pam` (the source as copied, hole
-still full of the window) and `/tmp/blur-<n>-patched.pam` (after the fill), plus
-a `.txt` sidecar giving the blur region and the excluded box in screen
-coordinates so a measurement taken in the crop can be stated on screen. PAM
-rather than PNG because the source is premultiplied and the alpha is part of the
-evidence; ImageMagick reads it.
+The dispatch takes `<prefix>` or `<prefix>,<frames>`, but **over IPC the comma
+is the wire format's own argument separator**, so only the prefix arrives and
+the count stays at its default of three. A frame count other than three has to
+come from a keybind's argument, where the whole string reaches the dispatch, or
+from `AZ_BLUR_DUMP_FRAMES`. That is not new to this facility — every dispatch
+that takes a string argument is parsed the same way.
 
-It stops on its own after the requested frames. It has to: each armed frame ends
-in a full device wait, so leaving it on turns a session into a slideshow.
+Each armed frame writes one `.pam` per blur source it found, plus a `.txt`
+sidecar per image:
 
-`contrib/blur-exclusion-test.sh` is this facility as an assertion — that no
-pixel of a window survives anywhere in its own shadow's blur source.
+| file | what it holds |
+| :--- | :--- |
+| `/tmp/blur-<n>-live<k>.pam` | the scene prefix the blur node at command index `k` is about to sample |
+| `/tmp/blur-<n>-cache-plain.pam` | the monitor background cache, after its replay and before the chain blurs it in place |
+| `/tmp/blur-<n>-cache-dark.pam` | the same for the darkened image the shadow backdrops sample |
+
+A `cache-*` file is **absent on a frame that hit the cache**, and that absence
+is a finding rather than a gap: nothing rebuilt, so what is on screen came from
+an image built some earlier frame. `AZ_BLUR_CACHE_ALWAYS_DIRTY=1` forces a
+rebuild every frame when the source itself is what you want to look at.
+
+There is only one `live` stage per node, because AVK's source is the scene
+prefix — commands `[0, k)` — so the window is not in its own source and there is
+nothing to patch out of it. (SceneFX's `fx_vk` captured a *staged* and a
+*patched* image for exactly that reason; the AVK dump has no equivalent pair.)
+
+The sidecar gives the crop's `capture` box and the blur's `write` box in output
+coordinates, so a measurement taken in the image can be stated on screen and the
+window located inside the crop without guessing. Pixels outside the region the
+frame actually rebuilt are undefined — the transient is `loadOp DONT_CARE` and
+nothing samples them — so a fringe of transparent black in a `live` dump is the
+design, not a defect.
+
+PAM rather than PNG because the source is premultiplied and the alpha is part of
+the evidence: a hole filled with something fully transparent is identical to one
+filled correctly once alpha has been thrown away. ImageMagick reads it, and so
+does a twenty-line parser. A 10-bit output's source is shifted down to 8 bits and
+the sidecar says so.
+
+It stops on its own after the requested frames — three by default, clamped to
+1–60. It has to: each armed frame waits for its own submission before reading it
+back, so leaving it on turns a session into a slideshow.
+
+`contrib/blur-exclusion-test.sh` is the *SceneFX* facility as an assertion —
+that no pixel of a window survives anywhere in its own shadow's blur source. It
+asserts a stage AVK does not have.
 
 ---
 

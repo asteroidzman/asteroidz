@@ -21,6 +21,18 @@
 # staged source to a .pam. Vulkan only: the dump is a Vulkan facility, and the
 # GLES path patches the hole in a shader with no equivalent image to read back.
 #
+# SCENEFX ONLY, AND ON ITS WAY OUT. Everything above describes fx_vk. AVK --
+# the renderer this compositor actually composites with -- has no exclusion
+# stage to assert: its blur source is the scene PREFIX, commands [0, k) for the
+# blur at index k, so the window is not in its own source and there is nothing
+# to patch out. This script therefore tests a renderer that is being removed
+# from the build, and is expected to go with it.
+#
+# AVK's own source dump is AZ_BLUR_DUMP / `amsg dispatch dump_blur_source`
+# (src/render/vulkan/scene/avk_blur_dump.h). It writes the same kind of .pam for
+# a different set of stages: one per live blur node, plus the monitor background
+# cache's source on any frame that rebuilt it.
+#
 # Calibrated against the unfixed renderer: 30800 of 30800 hole pixels within
 # tolerance of the window's colour on a 220x140 window, 0 after.
 set -u

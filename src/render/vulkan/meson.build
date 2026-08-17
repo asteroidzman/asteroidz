@@ -120,6 +120,7 @@ avk_sources = files(
   'pipeline/avk_gradient.c',
   'pipeline/avk_output_encode.c',
   'pipeline/avk_pipeline.c',
+  'scene/avk_blur_dump.c',
   'scene/avk_oracle.c',
   'scene/avk_render.c',
   'scene/avk_scene.c',

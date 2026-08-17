@@ -1,5 +1,6 @@
 #include "avk_oracle.h"
 
+#include "avk_blur_dump.h"
 #include "../device/avk_device.h"
 #include "../image/avk_upload.h"
 
@@ -241,10 +242,34 @@ bool avk_oracle_tap(struct avk_oracle *o, struct avk_graph *graph,
 		uint32_t resource, struct avk_image *image, struct avk_box box,
 		enum avk_oracle_tap_kind kind, size_t cmd_index,
 		const pixman_region32_t *mask) {
-	/* PREFIX and BLUR belong to the oracle; OUTPUT is also what a bare capture
-	 * needs, and arming that must not drag in the reference render. */
-	bool want = kind == AVK_TAP_OUTPUT
-		? (o->enabled || o->capture_armed) : o->enabled;
+	/*
+	 * WHO WANTS THIS TAP. Three diagnostics share one readback path and each
+	 * one must be able to run without dragging the others in:
+	 *
+	 *   OUTPUT   the oracle's boundary 3, and also what a bare capture_output
+	 *            needs -- arming that must not start a reference render.
+	 *   PREFIX   the oracle's boundary 1, and also the blur SOURCE the dump
+	 *            exists to write.
+	 *   BLUR     boundary 2 only. The dump is about the source; capturing the
+	 *            result as well would double a stall for a picture the screen
+	 *            already shows.
+	 *   CACHE    the dump only. See the enum.
+	 */
+	bool want;
+	switch (kind) {
+	case AVK_TAP_OUTPUT:
+		want = o->enabled || o->capture_armed;
+		break;
+	case AVK_TAP_PREFIX:
+		want = o->enabled || avk_blur_dump_armed();
+		break;
+	case AVK_TAP_CACHE:
+		want = avk_blur_dump_armed();
+		break;
+	default:
+		want = o->enabled;
+		break;
+	}
 	if (!want || box.width <= 0 || box.height <= 0) {
 		return false;
 	}

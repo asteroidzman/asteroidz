@@ -3,11 +3,13 @@
 #include "avk_render.h"
 
 #include <stdlib.h>
+#include "avk_blur_dump.h"
 #include "../effect/avk_blur_cache.h"
 #include "../debug/avk_debug.h"
 
 #include <inttypes.h>
 #include <math.h>
+#include <stdio.h>
 #include <string.h>
 #include <time.h>
 
@@ -2053,6 +2055,27 @@ static bool az_blur_cache_rebuild(struct avk_renderer *renderer,
 	if (!avk_render_declare_segment(graph, seg, r_dst)) {
 		return false;
 	}
+	/*
+	 * THE CACHE'S OWN BLUR SOURCE, between the replay and the chain that blurs
+	 * it in place -- which is the only moment this image holds a source at all.
+	 * One frame later it holds the blurred result and the question "what was
+	 * cached, and was it the current wallpaper" can no longer be asked of it.
+	 *
+	 * Nothing is declared when the dump is not armed, and a frame that HIT the
+	 * cache never reaches this function -- so an armed run with no cache-* file
+	 * is saying the pixels came from an earlier frame's rebuild.
+	 */
+	if (avk_blur_dump_armed()) {
+		const struct avk_box tap_box = { 0, 0, (int32_t)cw, (int32_t)ch };
+		if (avk_oracle_tap(&renderer->oracle, graph, r_dst, dst, tap_box,
+				AVK_TAP_CACHE, (size_t)kind, NULL)) {
+			char tag[32];
+			snprintf(tag, sizeof(tag), "cache-%s",
+				avk_blur_cache_kind_name(kind));
+			avk_blur_dump_note(AVK_TAP_CACHE, (size_t)kind, tag,
+				renderer->format, bounds, bounds);
+		}
+	}
 	/* This is the frame's first blur work when it runs at all: it is declared
 	 * before every consumer chain, so BLUR_BEGIN belongs to it. */
 	const bool first_blur_work = !*blur_begin_marked;
@@ -3081,12 +3104,15 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 			renderer->stats.blur_darken_passes++;
 		}
 
-		/* TRANSFER_SRC only under the oracle: the pool keys on usage, so
-		 * adding it unconditionally would give every normal run a differently
-		 * keyed pool from the one the milestone measured. */
+		/* TRANSFER_SRC only under the oracle or an armed blur dump -- the two
+		 * things that read this image back: the pool keys on usage, so adding
+		 * it unconditionally would give every normal run a differently keyed
+		 * pool from the one the milestone measured. Arming the dump mid-session
+		 * therefore acquires from a second pool key, which costs one allocation
+		 * and is the price of the capture. */
 		VkImageUsageFlags prefix_usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
 			| VK_IMAGE_USAGE_SAMPLED_BIT;
-		if (renderer->oracle.enabled) {
+		if (renderer->oracle.enabled || avk_blur_dump_armed()) {
 			prefix_usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
 		}
 		struct avk_image *prefix = avk_transient_acquire(&renderer->transients,
@@ -3190,7 +3216,14 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 		const struct avk_box tap_box = {
 			0, 0, rg.capture.width, rg.capture.height,
 		};
-		if (renderer->oracle.enabled) {
+		/*
+		 * THE SAME TAP SERVES THE BLUR SOURCE DUMP, and it is the same image at
+		 * the same instant: the scene prefix this chain is about to sample. The
+		 * dump does not want a mask -- it is writing a picture, not comparing
+		 * two -- but the mask is what the oracle compares over, so it is built
+		 * whenever the oracle is on and the dump simply ignores it.
+		 */
+		if (renderer->oracle.enabled || avk_blur_dump_armed()) {
 			/*
 			 * The mask is what production CLAIMS: prefix_rebuild for the source
 			 * and result_region for the blur, both translated out of output
@@ -3202,9 +3235,16 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 			pixman_region32_init(&m);
 			pixman_region32_copy(&m, &d->prefix_rebuild);
 			pixman_region32_translate(&m, -rg.capture.x, -rg.capture.y);
-			avk_oracle_tap(&renderer->oracle, graph, r_prefix, prefix, tap_box,
-				AVK_TAP_PREFIX, i, &m);
+			bool tapped = avk_oracle_tap(&renderer->oracle, graph, r_prefix,
+				prefix, tap_box, AVK_TAP_PREFIX, i,
+				renderer->oracle.enabled ? &m : NULL);
 			pixman_region32_fini(&m);
+			if (tapped && avk_blur_dump_armed()) {
+				char tag[32];
+				snprintf(tag, sizeof(tag), "live%zu", i);
+				avk_blur_dump_note(AVK_TAP_PREFIX, i, tag, renderer->format,
+					rg.capture, rg.write);
+			}
 		}
 
 		/* The chain writes its final upsample back into the prefix transient:
@@ -3555,6 +3595,28 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 	/* Backpressure stalls in the command ring are the only CPU waits the
 	 * frame path can incur, so they are reported as exactly that. */
 	renderer->stats.cpu_sync_waits = renderer->ring.stalls;
+
+	/*
+	 * ── THE BLUR SOURCE DUMP'S OWN WAIT ───────────────────────────────────
+	 *
+	 * DIAGNOSTIC ONLY, and it is a real stall: the taps declared above copied
+	 * into host-visible memory and reading that memory before the submission
+	 * lands shows the PREVIOUS frame's contents -- which is not nothing, it is
+	 * a plausible wrong picture. So the frame is waited for.
+	 *
+	 * After the timing block deliberately, so the wait is not counted as record
+	 * time and cannot make an armed run look like a renderer regression. It is
+	 * bounded by the arming's frame budget and disarms itself when that is
+	 * spent; see avk_blur_dump.h.
+	 */
+	if (avk_blur_dump_armed()) {
+		if (avk_device_timeline_wait(renderer->dev, value, 2000000000ULL)) {
+			avk_blur_dump_write(&renderer->oracle);
+		} else {
+			avk_log(AVK_ERROR, "avk blur dump: frame %" PRIu64 " did not "
+				"complete; nothing written", value);
+		}
+	}
 	return value;
 }
 

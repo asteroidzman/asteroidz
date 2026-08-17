@@ -421,18 +421,24 @@ targets a window other than the focused one \- see \fBdispatch\fR above.
 .PP
 One of them does not drive the session but looks at it.
 \fBdump_blur_source\fR,\fIprefix\fR[,\fIframes\fR] writes the next few frames'
-backdrop\-blur SOURCE images \- the scratch copy of the scene a window's shadow
-is about to blur, before and after the window's own box is patched out of it \-
-to \fIprefix\fR\-<n>\-staged.pam and \fIprefix\fR\-<n>\-patched.pam, each with a
-.txt sidecar giving the blur region and the excluded box in screen coordinates.
-With no argument it disarms; it also stops on its own after \fIframes\fR
-(default 3).
+backdrop\-blur SOURCE images \- the scene replay a window's shadow is about to
+blur, before it blurs it. One \fIprefix\fR\-<n>\-live<k>.pam per blur node, where
+<k> is its command index, plus \fIprefix\fR\-<n>\-cache\-plain.pam and
+\fIprefix\fR\-<n>\-cache\-dark.pam on any frame that rebuilt the monitor
+background blur cache; each has a .txt sidecar giving the crop and the blur's
+write box in output coordinates. With no argument it disarms; it also stops on
+its own after \fIframes\fR (1\-60, default 3).
+.PP
+Note that \fIframes\fR cannot be given over IPC: the comma is this protocol's own
+argument separator, so only \fIprefix\fR arrives and the count stays at 3. Use a
+keybind argument, or \fIAZ_BLUR_DUMP_FRAMES\fR with \fIAZ_BLUR_DUMP\fR to arm at
+startup instead.
 .PP
 It exists because that image never reaches the screen and the blur averages away
 whatever was wrong with it, so the artefact and its cause never appear in the
-same screenshot. Vulkan only. Each armed frame ends in a full device wait, so it
-stutters by design, and it writes wherever it is pointed with the compositor's
-privileges. See \fBdocs/visuals/effects.md\fR.
+same screenshot. Each armed frame waits for its own submission before reading it
+back, so it stutters by design, and it writes wherever it is pointed with the
+compositor's privileges. See \fBdocs/visuals/effects.md\fR.
 .\" BEGIN GENERATED DISPATCHES
 .TP
 \fBkill_client\fR

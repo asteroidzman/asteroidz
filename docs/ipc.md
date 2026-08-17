@@ -473,6 +473,7 @@ amsg dispatch reset_avk_stats     # zero the counters without restarting
 amsg dispatch dump_scene          # log the next frame's scene and commands
 amsg dispatch damage_all          # repaint everything (the damage oracle)
 amsg dispatch capture_output      # write each output's next frame to a PPM
+amsg dispatch 'dump_blur_source,/tmp/blur'   # write the next frames' blur SOURCES
 ```
 
 `dump_scene` writes one line per scene node and one per emitted AVK command,
@@ -526,6 +527,29 @@ wants a canonical comparison inverse-transforms it first.
 Like `damage_all` it damages the output, because a settled desktop renders no
 frame and an armed capture would never fire. It is a test tool: the capture path
 waits for the GPU, which the render path never does.
+
+`dump_blur_source` writes the next few frames' backdrop-blur **sources** — the
+scene replay a blur is about to sample, before it samples it. It answers the one
+class of question a screenshot cannot: what a shadow is spreading, and whether
+the background a blur used is the current one. Full detail, including what each
+file holds, is in
+[effects](./visuals/effects.md#dumping-a-blurs-source); the interface is:
+
+```text
+dump_blur_source,<prefix>            arm, three frames
+dump_blur_source                     disarm
+```
+
+`<prefix>,<frames>` is accepted by the dispatch, but over IPC the comma is the
+wire format's own argument separator, so only the prefix survives and the count
+stays at three; a different count comes from a keybind argument or
+`AZ_BLUR_DUMP_FRAMES`. Frames are clamped to 1–60.
+
+Like `damage_all` and `capture_output` it damages every output, because a
+settled desktop never redraws and nothing would be captured. It disarms itself
+when the budget is spent, and that is not tidiness: each armed frame waits for
+its own submission before reading the image back, so a forgotten arming would be
+a permanent stutter.
 
 The blur damage counters (`blur_source_damage_pixels`,
 `blur_output_damage_pixels`, `blur_prefix_rebuild_pixels`, and the

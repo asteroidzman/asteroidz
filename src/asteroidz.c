@@ -12,12 +12,20 @@
 #include <limits.h>
 #include <linux/input-event-codes.h>
 #include <math.h>
-/* The scenefx VULKAN renderer is never created -- wlr_renderer_autocreate()
- * replaced fx_renderer_create() -- but one diagnostic still lives in it:
- * fx_vk_blur_debug_arm(), behind `amsg dispatch dump_blur_source`, which
- * writes the image a blur is about to sample. That is the only reason this
- * header remains; fx_renderer.h went with the renderer itself. */
+/*
+ * NOTHING IN THIS TREE CALLS INTO THE SCENEFX VULKAN RENDERER ANY MORE.
+ *
+ * It was never created -- wlr_renderer_autocreate() replaced
+ * fx_renderer_create() -- and the last symbol pinning it into the build was
+ * fx_vk_blur_debug_arm(), behind `amsg dispatch dump_blur_source`. That
+ * diagnostic is now AVK's own (render/vulkan/scene/avk_blur_dump.h), so this
+ * header has zero remaining callers and can go with the renderer selection.
+ */
 #include <scenefx/render/fx_renderer/fx_vk_renderer.h>
+/* The blur source dump, whose dispatch lives in dispatch/bind_define.h -- which
+ * is included long before render/az_avk.h, so its one AVK header comes in
+ * here. It depends on nothing of the compositor's. */
+#include "render/vulkan/scene/avk_blur_dump.h"
 #include <scenefx/types/fx/blur_data.h>
 #include <scenefx/types/fx/clipped_region.h>
 #include <scenefx/types/wlr_scene.h>

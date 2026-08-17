@@ -66,8 +66,8 @@ measured 22.2 against 20.5 and could not tell the builds apart.
 `contrib/blur-exclusion-test.sh` is the third. It asserts that no pixel of a
 window survives anywhere in its own shadow's backdrop-blur source — the scratch
 image the blur samples, which covers the window because a shadow is the window
-plus its spread. It reads that image directly, through the `FX_BLUR_DUMP`
-facility (see [effects](./visuals/effects.md#dumping-a-blurs-source)), instead of
+plus its spread. It reads that image directly, through SceneFX's `FX_BLUR_DUMP`
+facility, instead of
 looking for the consequence on screen, because whether the consequence is
 *visible* depends on the window's size, its colour against the backdrop and the
 blur's reach. The two shadow scenes in `contrib/regression/tests/effects.sh`
@@ -76,10 +76,17 @@ happen to sit where it is not: both passed on a build whose fill left 7575 of
 patches the hole in a shader, with no equivalent image to read back.
 
 It also has to run its own compositor, because the dump is armed from the
-environment at startup and every module in `run.sh` shares one instance. (It can
-be armed at runtime too — `amsg dispatch dump_blur_source` — but that only helps
-a compositor that already has the dispatch, which is to say not the one you are
-trying to diagnose after a fix.)
+environment at startup and every module in `run.sh` shares one instance.
+
+**It asserts a stage AVK does not have.** AVK composites this session, and its
+blur source is the scene *prefix* — the commands below the blur node — so the
+window is never in its own source and there is no fill to check. The exclusion
+invariant belongs to SceneFX's `fx_vk`, which is on its way out of the build,
+and this script goes with it. AVK's equivalent facility is `AZ_BLUR_DUMP` /
+`amsg dispatch dump_blur_source` (see
+[effects](./visuals/effects.md#dumping-a-blurs-source)); it writes the same kind
+of image for a different set of stages — one per live blur node, plus the
+monitor background cache's own source on any frame that rebuilt it.
 
 `contrib/shadow-darken-test.sh` is the fourth, and it exists because of what the
 other three could not see. A blur is an average, and averaging bright detail

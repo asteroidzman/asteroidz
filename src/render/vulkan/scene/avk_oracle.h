@@ -78,6 +78,16 @@ enum avk_oracle_tap_kind {
 	AVK_TAP_PREFIX = 0,
 	AVK_TAP_BLUR,
 	AVK_TAP_OUTPUT,
+	/*
+	 * The monitor background blur CACHE image, after its prefix replay and
+	 * before the chain blurs it in place. `cmd_index` is the cache kind.
+	 *
+	 * Not an oracle boundary and never compared: it belongs to the blur source
+	 * dump (avk_blur_dump.h), which is the only thing that asks for it, and it
+	 * is recorded only while that is armed so the oracle's slot budget and
+	 * readback size are exactly what they were.
+	 */
+	AVK_TAP_CACHE,
 	AVK_TAP_KIND_COUNT,
 };
 
