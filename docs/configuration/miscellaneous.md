@@ -152,3 +152,49 @@ This is why the option is **off by default**.
 | `tag_carousel` | `0` | Enable tag carousel (cycling through tags). |
 | `drag_tile_refresh_interval` | `8.0` | Interval (1.0–16.0) to refresh tiled window resize during drag. Too small may cause application lag. |
 | `drag_floating_refresh_interval` | `8.0` | Interval (1.0–16.0) to refresh floating window resize during drag. Too small may cause application lag. |
+
+## GPU
+
+| Setting | Default | Description |
+| :--- | :--- | :--- |
+| `gpu` | *(empty)* | Which GPU to drive, as a DRM node (`/dev/dri/card1`) or a PCI address (`0000:03:00.0`). Empty lets wlroots choose. |
+
+```kdl
+gpu "0000:03:00.0"
+```
+
+**Only relevant with more than one GPU.** On a single-GPU machine there is
+nothing to choose and this should stay empty.
+
+Left empty, wlroots picks the DRM device by `boot_vga` and udev enumeration
+order, promoting the "primary" device to the front. That is a heuristic, an
+ordering, and a startup race stacked together: a device that cannot be opened is
+skipped silently, so a discrete card whose driver has not finished coming up
+leaves the integrated one first in the list. A machine with two AMD GPUs has been
+observed compositing on the integrated one while both displays hung off the
+discrete card — every frame then crosses PCIe to reach the screen. Correct
+behaviour from the renderer, which always renders on the device it presents on,
+and a bad outcome.
+
+Naming the device replaces all of that with a fact.
+
+**A PCI address is the better spelling.** `cardN` numbering depends on probe
+order and can move between boots; a PCI address does not. Find yours with
+`lspci | grep -i vga`, or check which card your displays are on:
+
+```bash
+for c in /sys/class/drm/card*-*/status; do
+  [ "$(cat "$c")" = connected ] && echo "$(basename "$(dirname "$c")")"
+done
+```
+
+**A wrong value costs the preference, not the session.** An address matching no
+card, or a node that cannot be opened, logs the reason and lets wlroots choose —
+there is no way to fix a config file from a desktop that will not start.
+
+`WLR_DRM_DEVICES` in the environment wins over this setting: someone who set it
+is debugging exactly this question, and a config file silently overriding the
+environment is how a debugging session stops meaning anything.
+
+`amsg get avk-stats | jq -r '.physical_device, .drm_device'` reports the GPU
+actually in use.

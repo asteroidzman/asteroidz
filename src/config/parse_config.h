@@ -229,6 +229,10 @@ typedef struct {
 typedef struct {
 	int32_t animations;
 	int32_t layer_animations;
+	/* M13B follow-up: which DRM device to drive, e.g. "/dev/dri/card1" or a
+	 * PCI address like "0000:03:00.0". Empty = let wlroots choose. Applied by
+	 * setting WLR_DRM_DEVICES before the backend is created. */
+	char gpu[64];
 	char animation_type_open[10];
 	char animation_type_close[10];
 	char layer_animation_type_open[10];
@@ -1665,6 +1669,8 @@ bool parse_option(Config *config, char *key, char *value) {
 		config->animations = atoi(value);
 	} else if (strcmp(key, "layer_animations") == 0) {
 		config->layer_animations = atoi(value);
+	} else if (strcmp(key, "gpu") == 0) {
+		snprintf(config->gpu, sizeof(config->gpu), "%s", value);
 	} else if (strcmp(key, "animation_type_open") == 0) {
 		snprintf(config->animation_type_open,
 				 sizeof(config->animation_type_open), "%.9s",

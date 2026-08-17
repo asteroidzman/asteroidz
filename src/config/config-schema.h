@@ -535,6 +535,20 @@ static const ConfigOption config_schema[] = {
 	 "animations", "window-open", "Duration",
 	 "How long a window takes to open, in milliseconds.", OPT_INT,
 	 offsetof(Config, animation_duration_open), 0, 1, 3000, NULL, 0, "400", 0},
+	/* M13B follow-up. A NAME rather than a policy: wlroots picks the DRM
+	 * device by `boot_vga` and udev enumeration order, which is a heuristic
+	 * plus an ordering plus whatever raced at boot. On a machine with two GPUs
+	 * that has been observed landing on the integrated one while both displays
+	 * hang off the discrete card -- correct behaviour from AVK, which renders
+	 * where it presents, and a bad outcome. Writing the device down replaces
+	 * all of that with a fact. */
+	{"gpu", "gpu", "misc", "", "GPU",
+	 "Which GPU to drive, as a DRM node (/dev/dri/card1) or a PCI address "
+	 "(0000:03:00.0). Empty lets wlroots choose, which on a multi-GPU machine "
+	 "is not always the card your displays are connected to. "
+	 "`amsg get avk-stats` reports the one in use.", OPT_STRING,
+	 offsetof(Config, gpu), sizeof(((Config *)0)->gpu), SCHEMA_NOCLAMP,
+	 SCHEMA_NOCLAMP, NULL, 0, "", 0},
 	{"animation_type_open", "animations/window-open/type", "animations",
 	 "window-open", "Type",
 	 "Which opening animation to use.", OPT_STRING,

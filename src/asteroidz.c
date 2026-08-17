@@ -11024,6 +11024,69 @@ void setup(void) {
 	 * doesn't meet your needs. The backend uses the renderer, for example,
 	 * to fall back to software cursors if the backend does not support
 	 * hardware cursors (some older GPUs don't). */
+	/*
+	 * ── WHICH GPU, IF THE OPERATOR SAID ───────────────────────────────────
+	 *
+	 * wlroots picks the DRM device by `boot_vga` and udev enumeration order,
+	 * swapping the "primary" to index 0 (backend/session/session.c). That is a
+	 * heuristic, plus an ordering, plus whatever raced at boot -- and a device
+	 * that fails to open is silently skipped, so a discrete card whose driver
+	 * has not finished coming up leaves the integrated one at index 0. This
+	 * machine has been observed rendering on the iGPU with both displays on the
+	 * discrete card: correct behaviour from AVK, which renders where it
+	 * presents, and a bad outcome.
+	 *
+	 * `gpu` replaces all of that with a name. WLR_DRM_DEVICES is wlroots' own
+	 * documented override and it is checked before any enumeration happens, so
+	 * this needs no patch and no fallback logic of ours.
+	 *
+	 * AN EXISTING WLR_DRM_DEVICES WINS. Someone who set it on the command line
+	 * is debugging exactly this, and a config file silently overriding the
+	 * environment is how a debugging session stops meaning anything.
+	 */
+	if (config.gpu[0] != '\0' && getenv("WLR_DRM_DEVICES") == NULL) {
+		char node[128];
+		if (config.gpu[0] == '/') {
+			snprintf(node, sizeof(node), "%s", config.gpu);
+		} else {
+			/* A PCI address: resolve it to whichever card claims it, so the
+			 * operator can write the stable identifier rather than a cardN
+			 * whose number depends on probe order. */
+			node[0] = '\0';
+			for (int i = 0; i < 8; i++) {
+				char link[128], real[PATH_MAX];
+				snprintf(link, sizeof(link), "/sys/class/drm/card%d/device", i);
+				ssize_t n = readlink(link, real, sizeof(real) - 1);
+				if (n <= 0) {
+					continue;
+				}
+				real[n] = '\0';
+				const char *base = strrchr(real, '/');
+				if (base != NULL && strcmp(base + 1, config.gpu) == 0) {
+					snprintf(node, sizeof(node), "/dev/dri/card%d", i);
+					break;
+				}
+			}
+			if (node[0] == '\0') {
+				wlr_log(WLR_ERROR, "gpu \"%s\": no DRM card has that PCI "
+					"address; letting wlroots choose", config.gpu);
+			}
+		}
+		if (node[0] != '\0') {
+			if (access(node, R_OK | W_OK) != 0) {
+				/* Not fatal. A wrong `gpu` should cost the preference, not the
+				 * session -- there is no way to fix a config from a desktop
+				 * that will not start. */
+				wlr_log(WLR_ERROR, "gpu \"%s\" -> %s: %s; letting wlroots "
+					"choose", config.gpu, node, strerror(errno));
+			} else {
+				setenv("WLR_DRM_DEVICES", node, 1);
+				wlr_log(WLR_INFO, "gpu: driving %s (from `gpu %s`)", node,
+					config.gpu);
+			}
+		}
+	}
+
 	if (!(backend = wlr_backend_autocreate(event_loop, &session)))
 		die("couldn't create backend");
 
