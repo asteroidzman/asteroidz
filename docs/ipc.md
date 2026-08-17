@@ -547,10 +547,26 @@ Each entry in `surfaces` carries:
 | `render.scanout_why` | why it did not |
 | `identity` | hash of the decisions above — not the timing counters, so it is stable while a window merely renders |
 
+`identity` is a **hex string**, not a number, and that is not cosmetic: it is a
+64-bit FNV-1a hash, JSON numbers are doubles, and everything above 2⁵³ rounds.
+The first live run printed `1.6541738727388557E+19`, which is not the hash and
+cannot round-trip — a consumer comparing the rounded value for change would
+silently miss any change that survived rounding, which is the one job the field
+has.
+
 `outputs` carries the state those surfaces were resolved *against*: `hdr`,
 `icc`, the colour `path` (`A-direct-srgb` / `B-encode` / `fallback`),
 `encode_transfer`, `ref_nits`, `peak_scene`, `dither_q`, and the presenter's
 `present_regime`, periods and signed error series.
+
+**A profile that is loaded is not necessarily applied**, so `icc` (present) and
+`icc_applied` (carried by the encode pass) are separate fields, and `icc_why`
+explains any gap between them. On an HDR output the profile is deliberately
+inert — M6B/D3, since the connector presents its own image description and
+stacking an SDR characterisation on top would put two transforms on one pixel.
+DP-1 with a profile and `hdr 1` therefore reads `icc: true`, `icc_applied:
+false`, `encode_transfer: pq`. That is correct, and it is stated rather than
+left to be inferred from the transfer function.
 
 Two things this deliberately does not do. It reports **no luminance class**
 (`SDR_UI`, `HDR_CONTENT`, …) and **no presentation class** (`GAME`, `VIDEO`,

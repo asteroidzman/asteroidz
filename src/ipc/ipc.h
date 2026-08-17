@@ -326,7 +326,18 @@ static cJSON *build_surface_intent_json(struct wlr_surface *s,
 	cJSON_AddStringToObject(o, "output",
 		in.mon != NULL && in.mon->wlr_output != NULL
 			? in.mon->wlr_output->name : "");
-	cJSON_AddNumberToObject(o, "identity", (double)in.identity);
+	/*
+	 * IDENTITY IS A STRING, and that is not cosmetic.
+	 *
+	 * It is a 64-bit FNV-1a hash. JSON numbers are doubles, so everything above
+	 * 2^53 is rounded -- the first live run printed 1.6541738727388557E+19,
+	 * which is not the hash and cannot round-trip. A consumer comparing the
+	 * rounded value for change would silently miss any change that survives
+	 * rounding, which is exactly the job this field exists to do.
+	 */
+	char ident[24];
+	snprintf(ident, sizeof(ident), "0x%016" PRIx64, in.identity);
+	cJSON_AddStringToObject(o, "identity", ident);
 
 	cJSON *b = cJSON_AddObjectToObject(o, "buffer");
 	cJSON_AddBoolToObject(b, "attached", in.has_buffer);
@@ -378,7 +389,8 @@ static cJSON *build_surface_intent_json(struct wlr_surface *s,
 	cJSON_AddNumberToObject(pr, "max_luminance", in.pref.max_luminance);
 	cJSON_AddNumberToObject(pr, "min_luminance", in.pref.min_luminance);
 	cJSON_AddNumberToObject(pr, "max_fall", in.pref.max_fall);
-	cJSON_AddNumberToObject(pr, "identity", (double)in.pref.identity);
+	snprintf(ident, sizeof(ident), "0x%016" PRIx64, in.pref.identity);
+	cJSON_AddStringToObject(pr, "identity", ident);
 
 	cJSON *rn = cJSON_AddObjectToObject(o, "render");
 	cJSON_AddBoolToObject(rn, "direct_scanout", in.scanout);
@@ -979,7 +991,32 @@ static void handle_command(int client_fd, const char *cmd_raw) {
 			cJSON_AddStringToObject(e, "name", om->wlr_output->name);
 			cJSON_AddBoolToObject(e, "enabled", om->wlr_output->enabled);
 			cJSON_AddBoolToObject(e, "hdr", om->hdr > 0);
-			cJSON_AddBoolToObject(e, "icc", om->icc_transform != NULL);
+			/*
+			 * ── A PROFILE THAT IS LOADED IS NOT NECESSARILY APPLIED ────────
+			 *
+			 * M6B/D3: on an HDR output the profile is deliberately INERT. The
+			 * connector carries its own image description, so applying an SDR
+			 * characterisation on top would put two transforms on one pixel.
+			 *
+			 * Reporting only `icc: true` next to `encode_transfer: pq` -- which
+			 * is what the first live run did -- makes a reader infer the
+			 * profile is in the pipeline. Requiring that inference is the exact
+			 * failure this inspector exists to remove, so the applied/not
+			 * distinction and its reason are stated.
+			 */
+			bool icc_present = om->icc_transform != NULL;
+			bool icc_applied = om->color_state.encode_tf == AZ_TF_LUT1D
+				|| om->color_state.encode_tf == AZ_TF_CLUT3D;
+			cJSON_AddBoolToObject(e, "icc", icc_present);
+			cJSON_AddBoolToObject(e, "icc_applied", icc_applied);
+			if (icc_present && !icc_applied) {
+				cJSON_AddStringToObject(e, "icc_why",
+					om->hdr > 0
+						? "inert: the output presents its own HDR image "
+						  "description, and two transforms on one pixel is "
+						  "worse than none (M6B/D3)"
+						: "loaded but not carried by the encode pass");
+			}
 			cJSON_AddStringToObject(e, "path",
 				az_output_path_name(om->color_state.path));
 			cJSON_AddStringToObject(e, "encode_transfer",
