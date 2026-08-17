@@ -695,6 +695,24 @@ struct az_avk_buffer {
 	 * a client's fd, offset and stride never change under it. */
 	struct az_shm_source shm_source;
 
+	/*
+	 * The buffer's dimensions, COPIED at import rather than read back through
+	 * entry->buffer when the stats are serialised.
+	 *
+	 * The stats path used to dereference the client's wlr_buffer at an
+	 * arbitrary later moment, and a live reading of it once produced
+	 * `height: 21861` -- 0x5565, the high half of a heap pointer, i.e. a read
+	 * through freed-and-reused memory. That was never reproduced and
+	 * inspection found no path by which an entry outlives its buffer (the
+	 * addon that destroys it is attached to the buffer itself), so this does
+	 * not claim to fix a lifetime bug.
+	 *
+	 * It removes the question. A diagnostic counter has no business holding a
+	 * client pointer across time; the two numbers it wanted are immutable for
+	 * a buffer's whole life and cost eight bytes to keep.
+	 */
+	uint32_t src_width, src_height;
+
 	/* Per-source accounting, so "which surface is uploading the most" is a
 	 * question with an answer instead of a guess. Cheap: five counters on an
 	 * object that already exists, and read only over IPC. */
@@ -1752,6 +1770,8 @@ static struct avk_image *az_avk_image_for_buffer_ex(struct wlr_buffer *buffer,
 	entry->pending_full = true;
 	wlr_addon_init(&entry->addon, &buffer->addons, &avk,
 		&az_avk_buffer_addon_impl);
+	entry->src_width = (uint32_t)buffer->width;
+	entry->src_height = (uint32_t)buffer->height;
 	wl_list_insert(&avk.buffers, &entry->link);
 	avk.client_images_cached++;
 
@@ -6630,8 +6650,8 @@ static cJSON *az_avk_stats_json(void) {
 			char id[32];
 			snprintf(id, sizeof(id), "%p", (void *)top[i]->buffer);
 			cJSON_AddStringToObject(src, "buffer", id);
-			cJSON_AddNumberToObject(src, "width", top[i]->buffer->width);
-			cJSON_AddNumberToObject(src, "height", top[i]->buffer->height);
+			cJSON_AddNumberToObject(src, "width", top[i]->src_width);
+			cJSON_AddNumberToObject(src, "height", top[i]->src_height);
 			cJSON_AddBoolToObject(src, "from_surface_commit",
 				top[i]->taken_at_commit);
 			cJSON_AddNumberToObject(src, "generations",
