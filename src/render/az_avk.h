@@ -57,6 +57,13 @@
 #include <linux/dma-buf.h>
 #include <wlr/backend.h>
 #include <wlr/render/drm_syncobj.h>
+#include <wlr/types/wlr_linux_drm_syncobj_v1.h>
+
+/* Most client acquire fences one frame will wait on. Beyond this the frame
+ * would be submitted under-synchronised, so the overflow is counted rather
+ * than silently ignored. */
+#define AZ_AVK_MAX_ACQUIRE 32
+
 #include <wlr/render/swapchain.h>
 #include <wlr/util/addon.h>
 #include <wlr/util/transform.h>
@@ -413,6 +420,43 @@ struct az_avk {
 	/* The output being recorded right now, so a decision taken deep in the
 	 * walk can say WHICH output it was taken for. NULL outside a build. */
 	struct wlr_output *frame_output;
+	/*
+	 * ── CLIENT ACQUIRE FENCES FOR THIS FRAME ─────────────────────────────
+	 *
+	 * AVK sampled every client's dma-buf with no producer->consumer ordering
+	 * at all: no explicit acquire point, and no implicit dma-buf fence
+	 * either. It waits for the display engine before overwriting its OWN
+	 * targets (az_avk_target_acquire) -- that machinery was simply never
+	 * pointed at client buffers.
+	 *
+	 * The consequence is a compositor that may read a client's buffer while
+	 * the client's GPU work is still writing it. That is the defect the
+	 * per-app `no-scanout` window rule has been standing in front of, and it
+	 * is not gamescope-specific: it applies to every dma-buf client.
+	 *
+	 * Fences are collected during the walk and imported just before submit,
+	 * because importing is per-submission: a sync_file import is consumed by
+	 * the wait that uses it.
+	 */
+	int frame_acquire_fds[AZ_AVK_MAX_ACQUIRE];
+	uint32_t frame_acquire_count;
+	/*
+	 * Surfaces this frame sampled that use explicit sync, so each can be told
+	 * WHEN the read finished. Collected even when the surface attached no
+	 * acquire fence: releasing is owed either way, and wlroots' default -- to
+	 * signal the release point at the client's next commit, ungated by any
+	 * GPU work -- tells a client its buffer is free while the compositor is
+	 * still reading it.
+	 */
+	struct wlr_surface *frame_surfaces[AZ_AVK_MAX_ACQUIRE];
+	uint32_t frame_surface_count;
+	uint64_t release_points_set, release_points_dropped;
+	/* Acquire fences waited on, dropped because the pool was full, and
+	 * surfaces that had an explicit acquire point rather than an implicit
+	 * fence. A rising `dropped` means AZ_AVK_MAX_ACQUIRE is too small and
+	 * frames are being submitted under-synchronised. */
+	uint64_t acquire_waits, acquire_explicit, acquire_implicit;
+	uint64_t acquire_dropped, acquire_import_fails;
 	/* Distributions, because the mean is the wrong statistic for a deadline.
 	 * 20us buckets over 512 gives 10.2ms of exact resolution, which brackets
 	 * the 6.944ms budget at 144Hz with room to see the tail. */
@@ -549,6 +593,10 @@ struct az_avk_buffer {
 	 * accessors below, because az_avk_surface is declared much further down
 	 * and the frame path needs the answer up here. */
 	struct az_avk_surface *as;
+	/* The frame number this buffer's acquire fence was already taken for.
+	 * A buffer resolved twice in one frame -- two outputs, or a cache hit
+	 * after the walk revisits it -- must not consume its fence twice. */
+	uint64_t acquire_frame;
 	struct wlr_buffer *buffer;
 	struct avk_image *image;
 
@@ -731,6 +779,9 @@ struct az_avk_surface;
  * frame path is above it.
  */
 static struct avk_image *az_avk_surface_last_good(struct az_avk_buffer *entry);
+/* The wlr_surface this buffer was committed by, or NULL. Needed to reach the
+ * explicit-sync state, which hangs off the surface and not the buffer. */
+static struct wlr_surface *az_avk_surface_wlr(struct az_avk_buffer *entry);
 static void az_avk_surface_note_good(struct az_avk_buffer *entry);
 static void az_avk_surface_adopt_image(struct az_avk_buffer *entry);
 
@@ -1694,6 +1745,82 @@ static int az_avk_upload_worker_readable(int fd, uint32_t mask, void *data) {
 }
 
 /*
+ * Take this client buffer's acquire fence, once per frame.
+ *
+ * Explicit first: a client using wp_linux_drm_syncobj_v1 states an acquire
+ * timeline point and deliberately attaches NO implicit fence to the dma-buf,
+ * so reading the dma-buf's fences would find nothing and the wait would be
+ * silently skipped -- the exact failure this protocol exists to make
+ * impossible. Implicit second, for every client that does not use it.
+ *
+ * The fd is owned from here until the frame imports it.
+ */
+static void az_avk_collect_acquire(struct az_avk_buffer *entry) {
+	if (entry == NULL || entry->is_shm || avk.frame_output == NULL) {
+		return;
+	}
+	/* Once per frame per buffer: the same buffer resolves again on a second
+	 * output and on every cache hit, and a sync_file may be waited on once. */
+	if (entry->acquire_frame == avk.frames + 1) {
+		return;
+	}
+	entry->acquire_frame = avk.frames + 1;
+
+	int fence = -1;
+	bool explicit_point = false;
+	struct wlr_surface *surface = az_avk_surface_wlr(entry);
+	if (surface != NULL) {
+		struct wlr_linux_drm_syncobj_surface_v1_state *st =
+			wlr_linux_drm_syncobj_v1_get_surface_state(surface);
+		if (st != NULL) {
+			/* Owed a release point whether or not it stated an acquire one. */
+			if (avk.frame_surface_count < AZ_AVK_MAX_ACQUIRE) {
+				avk.frame_surfaces[avk.frame_surface_count++] = surface;
+			} else {
+				avk.release_points_dropped++;
+			}
+		}
+		if (st != NULL && st->acquire_timeline != NULL) {
+			fence = wlr_drm_syncobj_timeline_export_sync_file(
+				st->acquire_timeline, st->acquire_point);
+			explicit_point = true;
+		}
+	}
+	if (fence < 0 && !explicit_point) {
+		struct wlr_dmabuf_attributes dmabuf;
+		if (wlr_buffer_get_dmabuf(entry->buffer, &dmabuf)
+				&& dmabuf.n_planes >= 1) {
+			/* As a READER: we want whatever wrote it to be finished. Asking
+			 * as a writer would also return other readers' fences, which we
+			 * have no reason to wait for. */
+			if (!avk_sync_dmabuf_fences(dmabuf.fd[0], DMA_BUF_SYNC_READ,
+					&fence)) {
+				fence = -1;
+			}
+		}
+	}
+	if (fence < 0) {
+		/* Nothing to wait for: no fence on the buffer means nothing is
+		 * writing it. Not an error and not counted as one. */
+		return;
+	}
+	if (avk.frame_acquire_count >= AZ_AVK_MAX_ACQUIRE) {
+		/* Said out loud rather than dropped quietly: past this point the
+		 * frame is submitted without waiting for a client that is still
+		 * drawing, which is the very thing this exists to prevent. */
+		avk.acquire_dropped++;
+		close(fence);
+		return;
+	}
+	avk.frame_acquire_fds[avk.frame_acquire_count++] = fence;
+	if (explicit_point) {
+		avk.acquire_explicit++;
+	} else {
+		avk.acquire_implicit++;
+	}
+}
+
+/*
  * The avk_image for a wlr_buffer, importing it on first sight.
  *
  * Returns NULL when the buffer cannot be represented on the GPU at all, having
@@ -1750,6 +1877,7 @@ static struct avk_image *az_avk_image_for_buffer_ex(struct wlr_buffer *buffer,
 			 * same surface -- when this buffer's copy is still in flight. */
 			return az_avk_shm_bring_current(entry);
 		}
+		az_avk_collect_acquire(entry);
 		return entry->image;
 	}
 	avk.cache_misses++;
@@ -1849,6 +1977,10 @@ static struct avk_image *az_avk_image_for_buffer_ex(struct wlr_buffer *buffer,
 		return NULL;
 	}
 	avk.buffer_imports++;
+	/* A first-sight buffer needs its acquire fence as much as a cached one --
+	 * more so, since a client's very first frame is the one most likely to be
+	 * still in flight when the compositor reaches for it. */
+	az_avk_collect_acquire(entry);
 	return entry->image;
 }
 
@@ -2440,6 +2572,38 @@ static bool az_avk_present_handover(struct az_avk_output *out,
 				return false;
 			}
 			close(fence);
+			/*
+			 * ── TELL EACH CLIENT WHEN THE READ ACTUALLY FINISHED ─────────
+			 *
+			 * in_timeline @ in_point is this frame's render completion --
+			 * the moment the compositor stopped reading the client buffers
+			 * it sampled. That is exactly the release point those clients
+			 * are owed.
+			 *
+			 * Without this wlroots signals the release point at the client's
+			 * NEXT COMMIT, gated by nothing: a client is told its buffer is
+			 * free while the GPU is still reading it, and a client that
+			 * believes the protocol immediately draws over the pixels being
+			 * sampled. Advertising wp_linux_drm_syncobj_v1 and then doing
+			 * that is worse than not advertising it, because the client
+			 * stops attaching implicit fences once it sees the global.
+			 */
+			for (uint32_t i = 0; i < avk.frame_surface_count; i++) {
+				struct wlr_linux_drm_syncobj_surface_v1_state *st =
+					wlr_linux_drm_syncobj_v1_get_surface_state(
+						avk.frame_surfaces[i]);
+				if (st == NULL) {
+					continue;
+				}
+				if (wlr_linux_drm_syncobj_v1_state_add_release_point(st,
+						out->in_timeline, out->in_point,
+						wl_display_get_event_loop(dpy))) {
+					avk.release_points_set++;
+				} else {
+					avk.release_points_dropped++;
+				}
+			}
+			avk.frame_surface_count = 0;
 			wlr_output_state_set_wait_timeline(state, out->in_timeline,
 				out->in_point);
 		}
@@ -4608,6 +4772,12 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 	/* Zeroed here so what accumulates below belongs to THIS frame. */
 	avk.frame_join_ns = 0;
 	avk.frame_output = m->wlr_output;
+	/* Any fence left from a frame that bailed out before submitting is closed
+	 * here: it belongs to a submission that never happened. */
+	for (uint32_t i = 0; i < avk.frame_acquire_count; i++) {
+		close(avk.frame_acquire_fds[i]);
+	}
+	avk.frame_acquire_count = 0;
 
 	/*
 	 * Anything the worker finished but the loop has not noticed yet.
@@ -4813,8 +4983,9 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 	}
 	struct avk_image *target = target_rec->image;
 
-	/* Is the display engine still reading it? */
-	VkSemaphoreSubmitInfo waits[2];
+	/* Is the display engine still reading it? Plus one slot per client
+	 * acquire fence collected during the walk below. */
+	VkSemaphoreSubmitInfo waits[2 + AZ_AVK_MAX_ACQUIRE];
 	uint32_t wait_count = 0;
 	if (!az_avk_target_acquire(out, target_rec, buffer, waits, &wait_count)) {
 		wlr_log(WLR_ERROR, "AVK: %s's swapchain handed back a target the "
@@ -5259,6 +5430,35 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 	 */
 	out->slot->renderer.decode_enabled = path_a || path_b;
 	out->slot->renderer.encode_srgb = path_a;
+	/*
+	 * ── WAIT FOR THE CLIENTS THIS FRAME IS ABOUT TO READ ─────────────────
+	 *
+	 * Imported here rather than when collected, because a sync_file import is
+	 * consumed by the submission that waits on it: importing at collection
+	 * time would tie a fence to a frame that might still bail out below.
+	 *
+	 * A failed import is NOT skipped quietly. Dropping the wait would submit
+	 * a frame that reads a buffer the client is still drawing into, which is
+	 * indistinguishable from the corruption this whole path exists to remove
+	 * -- so it is counted and named.
+	 */
+	for (uint32_t i = 0; i < avk.frame_acquire_count; i++) {
+		VkSemaphore sem = avk_sync_import_sync_file(&out->sync,
+			avk.frame_acquire_fds[i]);
+		if (sem == VK_NULL_HANDLE) {
+			avk.acquire_import_fails++;
+			continue;
+		}
+		waits[wait_count++] = (VkSemaphoreSubmitInfo){
+			.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+			.semaphore = sem,
+			.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+		};
+		avk.acquire_waits++;
+	}
+	/* Owned by the import now (or closed by the failure above). */
+	avk.frame_acquire_count = 0;
+
 	uint64_t timeline = avk_render_frame(&out->slot->renderer, target, &scene,
 		waits, wait_count, signals, 1);
 	/*
@@ -5531,6 +5731,10 @@ static void az_avk_surface_adopt_image(struct az_avk_buffer *entry) {
 	/* Cleared so az_avk_buffer_destroy()'s retire is skipped: exactly one
 	 * owner, and it is now the surface. */
 	entry->image = NULL;
+}
+
+static struct wlr_surface *az_avk_surface_wlr(struct az_avk_buffer *entry) {
+	return entry->as != NULL ? entry->as->surface : NULL;
 }
 
 /* Give up the fallback. Called when the surface itself goes. */
@@ -6157,6 +6361,22 @@ static cJSON *az_avk_stats_json(void) {
 		(double)avk.shm_staging_waits);
 	cJSON_AddNumberToObject(o, "shm_staging_wait_us_max",
 		(double)(avk.shm_staging_wait_ns_max / 1000));
+	/* Explicit-sync participation, so "is this actually running" is a reading
+	 * and not a belief. acquire_dropped and release_points_dropped must be 0:
+	 * each one is a frame submitted, or a buffer released, without the
+	 * ordering the protocol promises. */
+	cJSON_AddNumberToObject(o, "acquire_waits", (double)avk.acquire_waits);
+	cJSON_AddNumberToObject(o, "acquire_explicit",
+		(double)avk.acquire_explicit);
+	cJSON_AddNumberToObject(o, "acquire_implicit",
+		(double)avk.acquire_implicit);
+	cJSON_AddNumberToObject(o, "acquire_dropped", (double)avk.acquire_dropped);
+	cJSON_AddNumberToObject(o, "acquire_import_fails",
+		(double)avk.acquire_import_fails);
+	cJSON_AddNumberToObject(o, "release_points_set",
+		(double)avk.release_points_set);
+	cJSON_AddNumberToObject(o, "release_points_dropped",
+		(double)avk.release_points_dropped);
 	cJSON_AddNumberToObject(o, "shm_stale_frames",
 		(double)avk.shm_stale_frames);
 	cJSON_AddNumberToObject(o, "shm_stale_from_surface",
@@ -7630,6 +7850,9 @@ static void az_avk_stats_reset(void) {
 	avk.shm_async_join_waits = 0;
 	avk.shm_async_join_ns_max = 0;
 	avk.shm_staging_waits = 0;
+	avk.acquire_waits = avk.acquire_explicit = avk.acquire_implicit = 0;
+	avk.acquire_dropped = avk.acquire_import_fails = 0;
+	avk.release_points_set = avk.release_points_dropped = 0;
 	avk.shm_stale_frames = 0;
 	avk.shm_stale_from_surface = 0;
 	avk.shm_stale_no_pool = 0;

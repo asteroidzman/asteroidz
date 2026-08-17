@@ -45,7 +45,17 @@
  * reasoning turned out to be wrong, because an invariant nothing checks is a
  * comment.
  */
-#define AVK_SYNC_WAIT_SLOTS (AVK_FRAMES_IN_FLIGHT * 2)
+/*
+ * Raised from FRAMES_IN_FLIGHT*2 when client buffers started contributing
+ * waits. Two per frame covered the display engine's fence and nothing else;
+ * a frame now waits on an acquire fence for every client surface it samples,
+ * so the per-frame draw on this pool is bounded by AZ_AVK_MAX_ACQUIRE rather
+ * than by 1. The reuse argument is unchanged -- a slot is safe once the
+ * command ring has come all the way round -- but it only holds while
+ * SLOTS/FRAMES_IN_FLIGHT stays above the most any single frame takes, which
+ * is what reuse_hazards exists to catch if this is ever sized wrong.
+ */
+#define AVK_SYNC_WAIT_SLOTS (AVK_FRAMES_IN_FLIGHT * 40)
 
 struct avk_sync_slot {
 	VkSemaphore semaphore;
