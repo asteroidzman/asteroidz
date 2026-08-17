@@ -431,8 +431,25 @@ what M13 adds is per-class policy over a capability that demonstrably works.
 > wedge may have been intermittent or conditional on an HDR transition happening
 > at the same moment, and a single clean pass cannot distinguish "fixed" from
 > "not triggered". What it does establish is that the path is not wedged by
-> construction. The gamescope arm — a fullscreen game scanning out, with the
-> explicit-sync race the acquire fence now addresses — remains untested.
+> construction.
+>
+> **THE GAMESCOPE ARM PASSED, 2026-08-17.** gamescope with `--hdr-enabled`
+> declares pq/bt2020, matches DP-1's connector, reaches `accepted`, and scans out
+> at **101.6 frames/sec** — 22449 → 23262 frames in eight seconds, zero
+> composition. Operator: no artifacts, looked clean. That is the explicit-sync
+> race answered: the RGB pixel noise the per-app no-scanout rule existed to
+> prevent did not occur through exactly the continuous activity that used to
+> produce it, and the acquire fence is what stands where the workaround stood.
+>
+> It required the tearing fold-in landed hours earlier: `tearing_active=true` on
+> that surface, so before that fix the frame path never asked and this would have
+> read `frames=0` indefinitely.
+>
+> A finding about this display, not the code: scanout needs HDR **on** *and* the
+> client declaring HDR. Without `--hdr-enabled` gamescope's SDR content cannot go
+> to an HDR connector (`tone-map-required`); with HDR off, DP-1's ICC profile
+> stops being inert and refuses instead (`output-icc`). Both refusals are correct
+> and they close the gap from opposite sides.
 
 **M13 IS CLOSED.** A, B, and the cadence question answered by measurement and
 declined.
