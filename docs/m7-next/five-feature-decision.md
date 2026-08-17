@@ -259,6 +259,28 @@ Feature-2 live drag: a window dragged DP-1↔HDMI-A-1, and a straddling window,
 observed for reference-white/hue jumps; any discontinuity found is a finding
 against the derive table, not a new subsystem.
 
+> **M12 BUILD HALF VERIFIED LIVE 2026-08-17**, on DP-1 at reference 280.
+>
+> - mpv playing HDR: `hdr-content`, `class_from: derived`, scale 35.714 =
+>   10000/280 — the automatic derivation, with no rule written. This is the
+>   branch no headless run could reach: nothing in `contrib/` tags a surface.
+> - kitty with `luminance-domain "sdr-ui"`: `class_from: window-rule`, scale
+>   0.725 = 203/280 — BT.2408 diffuse white held against a brighter desktop
+>   reference.
+> - Fourteen other surfaces — terminals, both wallpapers, both bars and their
+>   panels — all `sdr-normal` / `derived` / scale 1. The "untagged defaults to
+>   SDR_NORMAL" decision, doing what it was chosen for: had the default been
+>   SDR_UI, all fourteen would have dimmed on an upgrade nobody asked for.
+>
+> An earlier reading showed mpv as `sdr-normal`/1 and looked like a regression;
+> it was mpv not playing. Worth recording because the inspector was correct and
+> the instinct to distrust it first was wrong — the check that settled it was
+> that the M12 commit's diff touches no line of the source-reading path.
+>
+> **STILL OPEN: the continuity qualification** (Feature 2's remains, D1/D4) —
+> the DP-1↔HDMI-A-1 drag and the straddling window. Nothing headless
+> substitutes for it, and M12 does not close until it is watched.
+
 **D5 — M13: presentation classes and the scanout revival.** DESKTOP_UI is
 M6A's default, named. GAME and VIDEO become values in the intent snapshot,
 classified from content-type/fullscreen/rule (never executable names), and
