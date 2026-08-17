@@ -68,6 +68,9 @@ enum az_scanout_verdict {
 	 * controller cannot read, a plane constraint, a bandwidth limit. The one
 	 * verdict that requires KMS to answer. */
 	AZ_SCANOUT_KMS_REFUSED,
+	/* A capture is running and this window asked to be hidden from captures.
+	 * The shield is COMPOSITED, and scanout does not composite. */
+	AZ_SCANOUT_CAPTURE_SHIELD,
 	AZ_SCANOUT_VERDICT_COUNT,
 };
 
@@ -125,6 +128,9 @@ static inline const char *az_scanout_verdict_why(enum az_scanout_verdict v) {
 	case AZ_SCANOUT_KMS_REFUSED:
 		return "the display controller refused the buffer (modifier, plane "
 		       "or bandwidth)";
+	case AZ_SCANOUT_CAPTURE_SHIELD:
+		return "a capture is running and this window asked to be hidden from "
+		       "captures; the shield is composited and scanout is not";
 	case AZ_SCANOUT_VERDICT_COUNT:
 		break;
 	}
@@ -176,6 +182,26 @@ static inline enum az_scanout_verdict az_scanout_eligible(Monitor *m,
 	}
 	if (c->noscanout) {
 		return AZ_SCANOUT_RULE_DISABLED;
+	}
+	/*
+	 * ── THE SHIELD IS COMPOSITED, AND SCANOUT DOES NOT COMPOSITE ──────────
+	 *
+	 * shield_when_capture covers a window with an opaque scene rect while a
+	 * capture is running. That rect is drawn by the composition pass -- so
+	 * scanning the client's own buffer out instead would put the very content
+	 * the shield exists to hide onto the display, and into the capture reading
+	 * that display.
+	 *
+	 * This is not a theoretical hole: nothing else in the eligibility test
+	 * looks at the scene graph, so a shield node is invisible to every other
+	 * check here. It is caught by name or not at all.
+	 *
+	 * Scoped to the CANDIDATE. A shielded window somewhere behind a fullscreen
+	 * one is already invisible, and refusing scanout for it would trade the
+	 * feature away for a leak that cannot happen.
+	 */
+	if (active_capture_count > 0 && c->shield_when_capture) {
+		return AZ_SCANOUT_CAPTURE_SHIELD;
 	}
 
 	/*
