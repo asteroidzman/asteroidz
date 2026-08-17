@@ -269,6 +269,12 @@ struct az_avk {
 	 * 336 frames found a previous generation and 307 did not, and those two
 	 * have different causes and different fixes. */
 	uint64_t shm_stale_from_surface;
+	/* Debts paid on TWO OR MORE outputs at once. Zero is the shape of the
+	 * single-slot `stale_output` defect: a surface spanning a monitor edge
+	 * owes both outputs a repaint and only ever got one. Non-zero only if a
+	 * spanning surface actually drew stale, so a fixture must assert that
+	 * premise too. AZ_BREAK_STALE_ONE_OUTPUT forces it back to zero. */
+	uint64_t shm_stale_multi_output_repaints;
 	uint64_t shm_stale_no_pool;
 	uint64_t shm_stale_no_sibling;
 	uint64_t shm_stale_pool_size_sum, shm_stale_pool_samples;
@@ -787,7 +793,8 @@ struct az_avk_surface;
  * being destroyed. Defined below az_avk_surface; declared here because the
  * frame path is above it.
  */
-static struct avk_image *az_avk_surface_last_good(struct az_avk_buffer *entry);
+static struct avk_image *az_avk_surface_last_good(struct az_avk_buffer *entry,
+	uint64_t *generation);
 /* The wlr_surface this buffer was committed by, or NULL. Needed to reach the
  * explicit-sync state, which hangs off the surface and not the buffer. */
 static struct wlr_surface *az_avk_surface_wlr(struct az_avk_buffer *entry);
@@ -1534,8 +1541,9 @@ out:
  * frame gives the worker no time at all.
  */
 /*
- * The newest generation this surface has actually got onto the GPU, other than
- * `entry`'s own.
+ * The NEWEST generation this surface has actually got onto the GPU, wherever it
+ * lives -- `entry`'s own image, a sibling in the same pool, or the fallback the
+ * surface kept.
  *
  * A client that allocates a FRESH wl_buffer per generation -- which GDK does,
  * at 56MB a time -- gives every commit a buffer with no image and no uploaded
@@ -1547,56 +1555,81 @@ out:
  * same surface's pool, already uploaded, and the same size -- so it is exactly
  * the frame-old-but-correct image the blocking path was waiting to replace.
  *
+ * EVERY CANDIDATE IS RANKED BY GENERATION, INCLUDING THE ENTRY'S OWN, and that
+ * is the whole point of this function rather than an implementation detail.
+ * `entry` is a buffer the client RECYCLED: whatever image it still holds is
+ * from the last time this particular buffer was used, which for an N-buffered
+ * client is a full pool rotation back and not one frame. Preferring it because
+ * it happened to be attached to the entry in hand -- which is what this code
+ * did -- draws content OLDER than a sibling that is sitting right there and
+ * newer. On a wallpaper surface the two generations are entirely different
+ * pictures, so the previous wallpaper flickered back through after the new one
+ * was already up. Anything that reintroduces a "use this one because it is
+ * ours" shortcut brings that back.
+ *
  * Dimensions are checked rather than assumed: a surface that resized has
  * siblings of the old size, and drawing one would be a stretched window rather
  * than a stale one.
  */
-static struct avk_image *az_avk_shm_sibling_image(
-		const struct az_avk_buffer *entry) {
-	if (entry->pool_head == NULL) {
-		avk.shm_stale_no_pool++;
+static struct avk_image *az_avk_shm_newest_image(struct az_avk_buffer *entry) {
+	if (entry->buffer == NULL) {
 		return NULL;
 	}
 	struct avk_image *best = NULL;
 	uint64_t best_gen = 0;
+
+	/* A candidate, not the answer. See above. */
+	if (entry->image != NULL && entry->uploaded_generation > 0) {
+		best = entry->image;
+		best_gen = entry->uploaded_generation;
+	}
+
 	uint32_t seen = 0;
-	struct az_avk_buffer *sib;
-	wl_list_for_each(sib, entry->pool_head, pool_link) {
-		seen++;
-		if (sib == entry || sib->image == NULL || sib->uploaded_generation == 0
-				|| sib->buffer == NULL) {
-			continue;
+	if (entry->pool_head != NULL) {
+		struct az_avk_buffer *sib;
+		wl_list_for_each(sib, entry->pool_head, pool_link) {
+			seen++;
+			if (sib == entry || sib->image == NULL
+					|| sib->uploaded_generation == 0
+					|| sib->buffer == NULL) {
+				continue;
+			}
+			if (sib->buffer->width != entry->buffer->width
+					|| sib->buffer->height != entry->buffer->height) {
+				continue;
+			}
+			if (sib->uploaded_generation > best_gen) {
+				best_gen = sib->uploaded_generation;
+				best = sib->image;
+			}
 		}
-		if (sib->buffer->width != entry->buffer->width
-				|| sib->buffer->height != entry->buffer->height) {
-			continue;
-		}
-		if (sib->uploaded_generation >= best_gen) {
-			best_gen = sib->uploaded_generation;
-			best = sib->image;
-		}
+	} else if (best == NULL) {
+		avk.shm_stale_no_pool++;
+	}
+
+	/*
+	 * The surface's own fallback, which outlives the pool: a client that
+	 * allocates a fresh buffer per generation and destroys the old one leaves a
+	 * pool full of buffers that are all still being copied, and the generation
+	 * that finished has already gone. The image it produced has not gone,
+	 * because the surface kept it.
+	 *
+	 * Ranked like everything else, so it wins only when it is genuinely newer.
+	 */
+	uint64_t lg_gen = 0;
+	struct avk_image *lg = az_avk_surface_last_good(entry, &lg_gen);
+	if (lg != NULL && (best == NULL || lg_gen > best_gen)) {
+		avk.shm_stale_from_surface++;
+		return lg;
 	}
 	/* How big the pool was when the answer was no. A pool of one is a client
 	 * whose old buffers are already gone; a pool of many that still yields
 	 * nothing means the siblings are all unuploaded too, and the copies are
 	 * simply not keeping up. */
 	if (best == NULL) {
-		/*
-		 * No LIVE sibling has one. That is the ordinary case for a client
-		 * which allocates a fresh buffer per generation and destroys the old
-		 * one immediately: the pool is full of buffers that are all still
-		 * being copied, and the generation that finished has already gone.
-		 *
-		 * The image it produced has not gone, because the surface kept it.
-		 */
-		best = az_avk_surface_last_good((struct az_avk_buffer *)entry);
-		if (best == NULL) {
-			avk.shm_stale_no_sibling++;
-			avk.shm_stale_pool_size_sum += seen;
-			avk.shm_stale_pool_samples++;
-		} else {
-			avk.shm_stale_from_surface++;
-		}
+		avk.shm_stale_no_sibling++;
+		avk.shm_stale_pool_size_sum += seen;
+		avk.shm_stale_pool_samples++;
 	}
 	return best;
 }
@@ -1613,10 +1646,17 @@ static struct avk_image *az_avk_shm_bring_current(struct az_avk_buffer *entry) {
 		 * 9.2 seconds of blocked event loop. libinput reported the same
 		 * numbers back as input lag.
 		 *
-		 * If the image already holds a generation, that generation is a
-		 * frame old and correct-as-of-then, which is a far better answer than
-		 * a compositor that stops for three vblanks. The copy lands on the
-		 * worker's eventfd and the settle repaints -- see `drew_stale`.
+		 * If the surface has a generation on the GPU anywhere, drawing the
+		 * NEWEST one is a far better answer than a compositor that stops for
+		 * three vblanks. The copy lands on the worker's eventfd and the settle
+		 * repaints -- see `drew_stale`.
+		 *
+		 * Newest, not nearest. An earlier version took whatever image the entry
+		 * in hand already had, reasoning that it was "a frame old and
+		 * correct-as-of-then". It is not a frame old: the entry is a RECYCLED
+		 * client buffer, so its image is a full pool rotation behind, and that
+		 * shortcut drew content older than a sibling standing right next to it.
+		 * See az_avk_shm_newest_image().
 		 *
 		 * The image having NO content is the one case that must still wait:
 		 * there is nothing to draw, and drawing nothing is a black window.
@@ -1627,9 +1667,7 @@ static struct avk_image *az_avk_shm_bring_current(struct az_avk_buffer *entry) {
 			 * generation. Diagnostic only -- it puts the copy back on the
 			 * critical path, which is the whole thing this avoids. It exists
 			 * so "did a capture catch a stale frame" is answerable. */
-			struct avk_image *stale = (entry->image != NULL
-				&& entry->uploaded_generation > 0)
-					? entry->image : az_avk_shm_sibling_image(entry);
+			struct avk_image *stale = az_avk_shm_newest_image(entry);
 			if (stale != NULL) {
 				entry->drew_stale = true;
 				entry->stale_output = avk.frame_output;
@@ -1711,13 +1749,52 @@ static void az_avk_shm_drain(void) {
 					 * how often a copy outruns a frame on that one output.
 					 */
 					Monitor *dm;
+					uint32_t paid = 0;
+					/* AZ_BREAK_STALE_ONE_OUTPUT: pay only the output
+					 * recorded last, which is the defect this rule
+					 * replaced. The break exists so the fixture can be
+					 * seen to fail. */
+					const bool one_only =
+						az_avk_env_flag("AZ_BREAK_STALE_ONE_OUTPUT");
 					wl_list_for_each(dm, &mons, link) {
 						if (dm->scene_output == NULL || dm->wlr_output == NULL
-								|| !dm->wlr_output->enabled
-								|| dm->wlr_output != entry->stale_output) {
+								|| !dm->wlr_output->enabled) {
 							continue;
 						}
 						if (entry->stale_box_valid) {
+							/*
+							 * EVERY OUTPUT THE RECTANGLE COVERS, which is not
+							 * the same as "the output that drew it".
+							 *
+							 * `stale_output` is ONE pointer, and one entry can
+							 * draw stale on several outputs in a single frame
+							 * cycle -- a surface straddling a monitor edge does
+							 * it every time. The later draw overwrote the
+							 * earlier, so the first output's repaint debt was
+							 * dropped and its pixels stayed as they were until
+							 * something unrelated damaged them. A wallpaper
+							 * covering both monitors came back on one of them
+							 * and stayed until a window closed over it: the
+							 * content was never wrong, it was simply never
+							 * asked for again.
+							 *
+							 * Layout coords on both sides, so this intersection
+							 * is the whole test for "did this output show it",
+							 * and an output the surface never reached takes
+							 * nothing.
+							 */
+							if (one_only && dm->wlr_output != entry->stale_output) {
+								continue;
+							}
+							if (entry->stale_box.x >= dm->m.x + dm->m.width
+									|| entry->stale_box.y
+										>= dm->m.y + dm->m.height
+									|| entry->stale_box.x
+										+ entry->stale_box.width <= dm->m.x
+									|| entry->stale_box.y
+										+ entry->stale_box.height <= dm->m.y) {
+								continue;
+							}
 							/*
 							 * The rectangle it was drawn at, in this output's
 							 * buffer pixels: layout coords less the output's
@@ -1741,13 +1818,28 @@ static void az_avk_shm_drain(void) {
 							wlr_damage_ring_add_box(
 								&dm->scene_output->damage_ring, &b);
 						} else {
-							/* No box was recorded -- the node had no layout
-							 * coords. Falling back to the whole output is
-							 * correct and merely expensive. */
+							/*
+							 * No box was recorded -- the node had no layout
+							 * coords, so there is no rectangle to intersect and
+							 * no way to tell which outputs showed it. Whole
+							 * output, and ONLY the one recorded: without a box
+							 * this is the every-monitor damage that
+							 * avk-crossoutput-border-test.sh exists to catch, so
+							 * it stays narrow at the cost of being incomplete on
+							 * the rare surface that has no coords AND spans two
+							 * outputs.
+							 */
+							if (dm->wlr_output != entry->stale_output) {
+								continue;
+							}
 							wlr_damage_ring_add_whole(
 								&dm->scene_output->damage_ring);
 						}
 						wlr_output_schedule_frame(dm->wlr_output);
+						paid++;
+					}
+					if (paid >= 2) {
+						avk.shm_stale_multi_output_repaints++;
 					}
 					entry->stale_box_valid = false;
 				}
@@ -5742,12 +5834,19 @@ struct az_avk_surface {
 	struct avk_image *last_good;
 	bool owns_last_good;
 	uint32_t last_good_width, last_good_height;
+	/* Which generation `last_good` holds, so it can be COMPARED against the
+	 * other candidates rather than only used when they are absent. An image
+	 * without its generation cannot be ranked, and an unrankable fallback is
+	 * how a stale picture wins over a fresh one. */
+	uint64_t last_good_generation;
 };
 
-/* The image to draw when this buffer's own generation is not ready. NULL if
- * the surface has never completed an upload, or did so at another size --
- * drawing that would be a stretched window rather than a stale one. */
-static struct avk_image *az_avk_surface_last_good(struct az_avk_buffer *entry) {
+/* The image to draw when this buffer's own generation is not ready, and which
+ * generation it holds. NULL if the surface has never completed an upload, or
+ * did so at another size -- drawing that would be a stretched window rather
+ * than a stale one. */
+static struct avk_image *az_avk_surface_last_good(struct az_avk_buffer *entry,
+		uint64_t *generation) {
 	struct az_avk_surface *as = entry->as;
 	if (as == NULL || as->last_good == NULL || entry->buffer == NULL) {
 		return NULL;
@@ -5755,6 +5854,9 @@ static struct avk_image *az_avk_surface_last_good(struct az_avk_buffer *entry) {
 	if (as->last_good_width != (uint32_t)entry->buffer->width
 			|| as->last_good_height != (uint32_t)entry->buffer->height) {
 		return NULL;
+	}
+	if (generation != NULL) {
+		*generation = as->last_good_generation;
 	}
 	return as->last_good;
 }
@@ -5778,6 +5880,7 @@ static void az_avk_surface_note_good(struct az_avk_buffer *entry) {
 	as->owns_last_good = false;
 	as->last_good_width = (uint32_t)entry->buffer->width;
 	as->last_good_height = (uint32_t)entry->buffer->height;
+	as->last_good_generation = entry->uploaded_generation;
 }
 
 /*
@@ -6443,6 +6546,8 @@ static cJSON *az_avk_stats_json(void) {
 		(double)avk.shm_stale_frames);
 	cJSON_AddNumberToObject(o, "shm_stale_from_surface",
 		(double)avk.shm_stale_from_surface);
+	cJSON_AddNumberToObject(o, "shm_stale_multi_output_repaints",
+		(double)avk.shm_stale_multi_output_repaints);
 	cJSON_AddNumberToObject(o, "shm_stale_no_pool",
 		(double)avk.shm_stale_no_pool);
 	cJSON_AddNumberToObject(o, "shm_stale_no_sibling",
@@ -7917,6 +8022,7 @@ static void az_avk_stats_reset(void) {
 	avk.release_points_set = avk.release_points_dropped = 0;
 	avk.shm_stale_frames = 0;
 	avk.shm_stale_from_surface = 0;
+	avk.shm_stale_multi_output_repaints = 0;
 	avk.shm_stale_no_pool = 0;
 	avk.shm_stale_no_sibling = 0;
 	avk.shm_stale_pool_size_sum = avk.shm_stale_pool_samples = 0;

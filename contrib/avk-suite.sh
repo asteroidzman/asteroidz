@@ -72,6 +72,7 @@ avk-border-test.sh                 required
 avk-capture-layout-test.sh         required
 avk-clip-policy-test.sh            required
 avk-crossoutput-border-test.sh     required
+avk-stale-multioutput-test.sh      required
 avk-crossoutput-round-test.sh      required
 avk-cursor-content-test.sh         required
 avk-cursor-hide-test.sh            required

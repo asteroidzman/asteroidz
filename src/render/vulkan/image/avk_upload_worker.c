@@ -49,6 +49,8 @@ struct avk_upload_worker {
 	 * Written under `lock`, which the worker retakes after the pack anyway.
 	 */
 	uint64_t pack_ns_max, pack_ns_sum, pack_count, pack_bytes;
+	/* Test-only: microseconds to stall after each pack. See the use site. */
+	uint64_t slow_us;
 };
 
 /*
@@ -148,6 +150,26 @@ static void *worker_main(void *data) {
 		uint32_t pack_rows = job->plan.height;
 		bool pack_full = job->plan.full;
 		avk_upload_pack(&job->plan, job->src, job->dst);
+		/*
+		 * AZ_AVK_SLOW_UPLOAD_US -- test hook, and the mirror of
+		 * AZ_AVK_NO_STALE: that one forbids the stale path, this one
+		 * guarantees it. A copy only goes late when it loses a race, and
+		 * headless it never does -- a fixture written for the late-copy
+		 * path measured 1202 commits and ONE stale frame, which is not
+		 * something to assert on. Stalling the worker makes the condition
+		 * this code is written for actually occur, instead of hoping the
+		 * machine is slow today.
+		 *
+		 * AFTER the pack, so the pixels are correct and only their ARRIVAL
+		 * is late. Delaying the copy itself would test a different thing.
+		 */
+		if (w->slow_us > 0) {
+			struct timespec ts = {
+				.tv_sec = (time_t)(w->slow_us / 1000000),
+				.tv_nsec = (long)(w->slow_us % 1000000) * 1000L,
+			};
+			nanosleep(&ts, NULL);
+		}
 		uint64_t pack_ns = now_ns() - pack_t0;
 
 		atomic_store_explicit(&job->state, AVK_UPLOAD_JOB_DONE,
@@ -196,6 +218,15 @@ struct avk_upload_worker *avk_upload_worker_create(void) {
 	struct avk_upload_worker *w = calloc(1, sizeof(*w));
 	if (w == NULL) {
 		return NULL;
+	}
+	const char *slow = getenv("AZ_AVK_SLOW_UPLOAD_US");
+	if (slow != NULL) {
+		long long v = atoll(slow);
+		/* Capped: this stalls a real thread, and a fixture that mistypes a
+		 * zero should be slow, not hung. */
+		if (v > 0) {
+			w->slow_us = (uint64_t)(v > 100000 ? 100000 : v);
+		}
 	}
 	w->notify_fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
 	if (w->notify_fd < 0) {

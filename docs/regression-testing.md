@@ -2518,3 +2518,54 @@ What to read afterwards, and what each answer means:
 
 **Assert the premise.** A run where `shm_worker_pack_us_max` is small never
 provoked anything, and every assertion below it passes for free.
+
+## A late copy owes a repaint to every output it was drawn on
+
+`avk-stale-multioutput-test.sh`, and three ways it was green while testing
+nothing. All three were caught by assertions, not by inspection, which is the
+only reason the fixture is worth keeping.
+
+When a `wl_shm` client's copy has not finished, AVK draws the newest generation
+it already holds and records that the frame owes a repaint once the copy lands.
+The debt lived in `entry->stale_output`, **one** `wlr_output *`. A surface
+straddling a monitor edge draws stale on both outputs in the same frame cycle,
+so the second draw overwrote the first and one output was never repainted. Its
+pixels stayed as they were indefinitely — until something unrelated damaged
+them. Live, that was a wallpaper reappearing on one monitor after a wallpaper
+change and staying there until a window was closed over it.
+
+The symptom pointed away from the cause for most of a session. Every stale draw
+in the trace read `0 behind`: the content was always the correct generation, so
+every content-side theory was a dead end. What named it was "closing a window
+fixes it" — meaning the pixels were right and simply never asked for again.
+
+### The two hooks it needs
+
+| | |
+|---|---|
+| `AZ_AVK_SLOW_UPLOAD_US` | stall the upload worker this many microseconds after each pack, capped at 100000. The mirror of `AZ_AVK_NO_STALE`: that one forbids the stale path, this one guarantees it. **Not a break** — it makes a real condition occur on demand |
+| `AZ_BREAK_STALE_ONE_OUTPUT` | the falsifier. Restores single-output payment. Must drive `shm_stale_multi_output_repaints` to 0 while the premises stay true |
+
+### Three vacuous versions, and what each assertion said
+
+1. **A copy that never went late.** 1600x1000 packs in under a millisecond, so
+   1202 commits produced **0 stale frames** and the claim was green on a scene
+   that never reached the code. The premise assertion is what said so, and
+   `AZ_AVK_SLOW_UPLOAD_US` is the answer — not a bigger window, which only
+   changes the odds.
+2. **Placement dispatches that silently did nothing.** The fixture said
+   `togglefloating` and `move:X,Y`. Neither exists: the IPC names are
+   `toggle_floating` and `move_window,<x>,<y>`, and `hl_dispatch` swallows an
+   unknown name without a word. The window never left its tile, so 624 stale
+   draws produced a debt on one output because there only ever *was* one
+   output. Fixed by reading the geometry back and asserting it straddles the
+   seam — `amsg` dispatch names are not C function names, and this project has
+   now lost time to that twice.
+3. **A loader stealing the placement.** `move_window` acts on the focused
+   window, so spawning the load clients before positioning the spanner would
+   place a loader instead. The spanner is positioned first, deliberately.
+
+With all three fixed: 1250 stale frames, 207 multi-output repaints, window
+spanning 120..2040 across a seam at 1920. Under the break, on the same build and
+the same scene: 1175 stale frames, **0** multi-output repaints, and the ordinary
+assertion goes red. That difference is the coverage.
