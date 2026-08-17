@@ -72,7 +72,6 @@
 
 #include <wlr/render/drm_format_set.h>
 
-#ifdef AZ_HAVE_VULKAN
 
 /*
  * Should this format be advertised at all?
@@ -264,6 +263,5 @@ static bool az_dmabuf_main_device(struct avk_device *dev, dev_t *out) {
 }
 
 
-#endif /* AZ_HAVE_VULKAN */
 
 #endif /* AZ_DMABUF_MODEL_H */

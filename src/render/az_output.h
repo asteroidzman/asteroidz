@@ -15,21 +15,6 @@
  * doing with the resulting wlr_output_state.
  */
 
-enum az_renderer_backend {
-	/* SceneFX on top of wlroots' renderer. The known-good path, and still the
-	 * default. */
-	AZ_RENDERER_WLR,
-	/* asteroidz's own Vulkan engine, src/render/vulkan/. */
-	AZ_RENDERER_AVK,
-};
-
-static enum az_renderer_backend az_renderer = AZ_RENDERER_WLR;
-
-/* For the callers included before this header; see asteroidz.c. */
-static bool az_renderer_is_avk(void) {
-	return az_renderer == AZ_RENDERER_AVK;
-}
-
 struct az_frame_options {
 	/* The colour transform the frame should be built with, exactly as the
 	 * caller would have put it in wlr_scene_output_state_options. */
@@ -50,44 +35,33 @@ struct az_frame_options {
  */
 static inline bool az_output_build_frame(Monitor *m,
 		struct wlr_output_state *state, const struct az_frame_options *opts) {
-#ifdef AZ_HAVE_VULKAN
-	if (az_renderer == AZ_RENDERER_AVK &&
-			az_avk_build_frame(m, state, opts->color_transform)) {
+	if (az_avk_build_frame(m, state, opts->color_transform)) {
 		return true;
 	}
 	/*
-	 * ── IN AN AVK SESSION, REACHING SceneFX IS FATAL ─────────────────────
+	 * ── THERE IS NOWHERE ELSE FOR A FRAME TO COME FROM ───────────────────
 	 *
 	 * az_avk_build_frame() aborts on an output it REFUSES, naming the reason.
-	 * It also returns false without refusing anything -- when AVK is not
-	 * active, or the monitor has no scene output -- and control then arrives
-	 * here, where SceneFX composites the frame on wlroots' GLES renderer and
-	 * the desktop looks fine.
+	 * It also returns false without refusing anything -- AVK inactive, or the
+	 * monitor has no scene output -- and control arrives here.
 	 *
-	 * That second path is the one worth closing, because it has no diagnostic
-	 * at all: not a warning, not a counter, just a frame that came from the
-	 * other renderer. An AVK session that composites with GL is either a bug
-	 * or a state nobody intended, and both are best investigated at the frame
-	 * that did it.
+	 * This used to fall through to SceneFX on wlroots' GLES renderer, and the
+	 * desktop looked fine, which is exactly what made it worth closing: no
+	 * warning, no counter, just a frame that quietly came from the other
+	 * renderer. That renderer is now gone from the build entirely, so the
+	 * question is settled by construction rather than by this check -- but the
+	 * check stays, because "AVK declined and nobody noticed" is still a bug and
+	 * this is the frame that would prove it.
 	 *
-	 * No escape variable here either, for the same reason it is absent in
-	 * az_avk.h: a switch that turns the fallback back on is the fallback.
+	 * No escape variable, for the same reason it is absent in az_avk.h: a
+	 * switch that turns the fallback back on is the fallback.
 	 */
-	if (az_renderer == AZ_RENDERER_AVK) {
-		wlr_log(WLR_ERROR,
-			"AVK session reached the SceneFX/GLES compositor for %s "
-			"(avk active=%d, scene_output=%p) -- this compositor does not "
-			"composite with GL.",
-			m->wlr_output != NULL ? m->wlr_output->name : "(output)",
-			(int)avk.active, (void *)m->scene_output);
-		abort();
-	}
-#endif
-	struct wlr_scene_output_state_options scene_options = {
-		.color_transform = opts->color_transform,
-	};
-	return wlr_scene_output_build_state(m->scene_output, state,
-		&scene_options);
+	wlr_log(WLR_ERROR,
+		"AVK declined to build a frame for %s (active=%d, scene_output=%p) "
+		"and there is no other compositor to fall back to.",
+		m->wlr_output != NULL ? m->wlr_output->name : "(output)",
+		(int)avk.active, (void *)m->scene_output);
+	abort();
 }
 
 /*

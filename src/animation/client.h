@@ -3286,10 +3286,6 @@ void init_fadeout_client(Client *c) {
 	 * it exists.
 	 */
 	bool want_shatter = close_type && strcmp(close_type, "shatter") == 0;
-	if (want_shatter && !az_renderer_is_avk()) {
-		want_shatter = false;
-		want_fall = true;
-	}
 
 	/* Both builders can decline (a zero-sized window, a failed allocation), in
 	 * which case the plain whole-window snapshot below still gives the close a

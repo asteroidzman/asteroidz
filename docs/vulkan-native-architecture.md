@@ -423,9 +423,24 @@ and `contrib/regression/`. New Vulkan-core tests are plain binaries under
 
 ## 8. Build system
 
-`-Drenderers=vulkan,gles2` (default during migration), narrowing to
-`-Drenderer=vulkan`. The Vulkan renderer must not pull EGL/GLES: verifiable by
-`ldd`, by Meson dependency output, and by a source-include check in CI.
+**There is no renderer option any more.** `-Drenderers` is deleted, AVK is
+always built, and `AZ_HAVE_VULKAN` is gone with it — a macro that is always
+defined is not a configuration. The migration this section planned for is over:
+AVK carries the desktop, so the GLES recovery path it used to select between was
+removed rather than left switchable.
+
+What remains of scenefx is built `-Drenderers=gles2`, and that is a floor rather
+than a preference. scenefx's scene graph — the part asteroidz actually uses — is
+coupled to scenefx's own renderer: `types/scene/wlr_scene.c` calls
+`fx_render_pass_try_get`, `fx_gles_render_pass` and `fx_offscreen_buffers`
+directly, so an empty renderer list fails to build the very thing being kept.
+Untangling that is the scenefx-absorption project, not a build flag. fx_vk could
+go because every call into it from the scene graph sits behind
+`#ifdef FX_HAS_VULKAN`; dropping it took the binary from 5.10 MB to 4.31 MB and
+`fx_vk_*` symbols from 156 to 0.
+
+The Vulkan renderer must not pull EGL/GLES: verifiable by `ldd`, by Meson
+dependency output, and by a source-include check in CI.
 
 ## 9. Risks
 
@@ -464,8 +479,8 @@ and `contrib/regression/`. New Vulkan-core tests are plain binaries under
     this path, enforced by `check-vulkan-isolation.py`.
   - **M3b, the compositor.** `src/render/az_output.h` (the single build seam,
     used by all four callers), `src/render/az_avk.h` (the scene walker, the
-    buffer cache, the per-output swapchain), and the `ASTEROIDZ_RENDERER=avk`
-    switch. `contrib/avk-frame-test.sh` boots a real compositor and checks
+    buffer cache, the per-output swapchain). The `ASTEROIDZ_RENDERER=avk`
+    switch this milestone added has since been removed — see §8. `contrib/avk-frame-test.sh` boots a real compositor and checks
     the frame against the compositor's own reported geometry; see §5.4b for
     what it does and does not cover.
 - M4-M10: not started
@@ -484,10 +499,13 @@ stays clean; deliberately not fixed as part of the renderer migration.
 
 ## 5.4b What M3b built, and what it refuses to do
 
-`ASTEROIDZ_RENDERER=avk` is read once in `setup()`, independently of
-`WLR_RENDERER`. wlroots still needs a renderer for the things it does that are
-not compositing — shm formats, the allocator, `wl_drm`, screencopy — and none of
-those is a frame reaching the screen.
+`ASTEROIDZ_RENDERER` **no longer exists**; AVK initialises unconditionally in
+`setup()` and failing to start is fatal, because there is nothing to fall back
+to. What has not changed is the separation it was there to demonstrate: wlroots
+still needs a renderer for the things it does that are not compositing — shm
+formats, the allocator, `wl_drm`, screencopy — and none of those is a frame
+reaching the screen. `WLR_RENDERER` still selects that one and still has no
+bearing on who composites.
 
 It is no longer selectable, though. `az_create_renderer()` forces Vulkan and
 `az_require_vulkan_renderer()` aborts if the result is GLES2 or pixman, so the

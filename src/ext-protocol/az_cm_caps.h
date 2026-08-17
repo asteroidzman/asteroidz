@@ -85,8 +85,7 @@ static const enum wp_color_manager_v1_render_intent az_cm_render_intents[] = {
 
 static void az_cm_caps_build(struct az_cm_caps *out, struct wlr_renderer *drw) {
 	*out = (struct az_cm_caps){0};
-#ifdef AZ_HAVE_VULKAN
-	if (az_renderer == AZ_RENDERER_AVK) {
+	{
 		size_t n = 0, m = 0;
 		for (size_t i = 0; i < LENGTH(az_cm_avk_wlr_tfs); i++) {
 			az_cm_avk_tfs[n++] =
@@ -107,7 +106,6 @@ static void az_cm_caps_build(struct az_cm_caps *out, struct wlr_renderer *drw) {
 				"nothing and is not asked)", n, m);
 		return;
 	}
-#endif
 	out->tfs = wlr_color_manager_v1_transfer_function_list_from_renderer(
 		drw, &out->tf_len);
 	out->primaries = wlr_color_manager_v1_primaries_list_from_renderer(

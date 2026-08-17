@@ -256,6 +256,6 @@ You will need to build `wlroots` and asteroidz's `scenefx` fork manually as well
 
    Both pin `WLR_RENDERER=vulkan` on purpose, and that is not a contradiction:
    wlroots still needs a renderer for shm formats, the allocator and
-   screencopy, none of which are composition. The switch that decides who
-   draws the desktop is `ASTEROIDZ_RENDERER=avk`, which is independent of it.
+   screencopy, none of which are composition. Who draws the desktop is not a
+   choice at all — AVK does, always — and `WLR_RENDERER` has no bearing on it.
    See [`docs/vulkan-native-architecture.md`](./vulkan-native-architecture.md).

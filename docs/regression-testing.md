@@ -1388,11 +1388,13 @@ python3 contrib/pace-analyse.py TRACE --since=$(...)   # monotonic ns
 
 **Three traps this fixture had to be built around.**
 
-`ASTEROIDZ_RENDERER=avk` is not optional. Without it the compositor composites
-through scenefx/GLES, whose blur damage path (`apply_blur_region` and the
-saved-pixels compensation) is not the one the live session runs. The first pass
-of the pacing work ran on the wrong renderer and its damage figures were
-discarded.
+**The renderer used to be selectable, and this fixture was built when it was.**
+`ASTEROIDZ_RENDERER=avk` is now ignored: AVK composites unconditionally and
+scenefx's renderers are gone from the build. The trap is recorded because it
+cost real work — the first pass of the pacing work ran through scenefx/GLES,
+whose blur damage path (`apply_blur_region` and the saved-pixels compensation)
+is not the one the live session runs, and its damage figures were discarded.
+Fixtures still setting that variable in `HL_ENV` are harmless no-ops.
 
 **The nominal refresh is not the observed refresh.** The headless backend's
 frame timer is whole milliseconds, so `HL_HZ1=144` free-runs at 1000/6 =

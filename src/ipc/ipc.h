@@ -665,8 +665,9 @@ static void handle_command(int client_fd, const char *cmd_raw) {
 																 : "drm");
 		const char *sess = getenv("DESKTOP_SESSION");
 		cJSON_AddStringToObject(resp, "session", sess ? sess : "");
-		const char *rend = getenv("ASTEROIDZ_RENDERER");
-		cJSON_AddStringToObject(resp, "renderer", rend ? rend : "");
+		/* One renderer, named rather than selected -- kept in the payload
+		 * because instance reports parse it. */
+		cJSON_AddStringToObject(resp, "renderer", "avk");
 		/* The precondition an M6B live gate needs, from the instance itself
 		 * rather than from whichever process happened to answer. */
 		cJSON_AddBoolToObject(resp, "validation_enabled",
@@ -797,7 +798,6 @@ static void handle_command(int client_fd, const char *cmd_raw) {
 		resp = cJSON_CreateObject();
 		cJSON_AddItemToObject(resp, "monitors", arr);
 	} else if (strcmp(cmd, "get avk-stats") == 0) {
-#ifdef AZ_HAVE_VULKAN
 		resp = az_avk_stats_json();
 		/*
 		 * P4. The last completed tag transition, attached here rather than
@@ -838,11 +838,6 @@ static void handle_command(int client_fd, const char *cmd_raw) {
 				cJSON_AddItemToObject(resp, "tag_cost", tc);
 			}
 		}
-#else
-		resp = cJSON_CreateObject();
-		cJSON_AddStringToObject(resp, "backend", "scenefx");
-		cJSON_AddBoolToObject(resp, "active", false);
-#endif
 	} else if (strcmp(cmd, "get presentation") == 0) {
 		/*
 		 * M6A.1. WHAT PRESENTATION ACTUALLY DID, per output.
@@ -1039,12 +1034,7 @@ static void handle_command(int client_fd, const char *cmd_raw) {
 			cJSON_AddItemToArray(arr, e);
 		}
 	} else if (strcmp(cmd, "get dmabuf-feedback") == 0) {
-#ifdef AZ_HAVE_VULKAN
 		resp = az_dmabuf_feedback_json();
-#else
-		resp = cJSON_CreateObject();
-		cJSON_AddStringToObject(resp, "source", "wlr_renderer");
-#endif
 	} else if (strcmp(cmd, "get cm-stats") == 0) {
 		/*
 		 * ── THE COLOUR-MANAGEMENT SEND COUNTERS ──────────────────────────

@@ -12,16 +12,6 @@
 #include <limits.h>
 #include <linux/input-event-codes.h>
 #include <math.h>
-/*
- * NOTHING IN THIS TREE CALLS INTO THE SCENEFX VULKAN RENDERER ANY MORE.
- *
- * It was never created -- wlr_renderer_autocreate() replaced
- * fx_renderer_create() -- and the last symbol pinning it into the build was
- * fx_vk_blur_debug_arm(), behind `amsg dispatch dump_blur_source`. That
- * diagnostic is now AVK's own (render/vulkan/scene/avk_blur_dump.h), so this
- * header has zero remaining callers and can go with the renderer selection.
- */
-#include <scenefx/render/fx_renderer/fx_vk_renderer.h>
 /* The blur source dump, whose dispatch lives in dispatch/bind_define.h -- which
  * is included long before render/az_avk.h, so its one AVK header comes in
  * here. It depends on nothing of the compositor's. */
@@ -1302,7 +1292,7 @@ struct Monitor {
 	uint64_t content_metadata_identity;
 
 	/* AVK's per-output state: its own swapchain and the renderer built for
-	 * this output's colour format. NULL unless ASTEROIDZ_RENDERER=avk, and
+	 * this output's colour format. NULL under AVK, which is always, and
 	 * still NULL on an output AVK has decided it cannot render correctly --
 	 * see az_avk_output_supported() in src/render/az_avk.h. */
 	struct az_avk_output *avk;
@@ -1648,7 +1638,6 @@ static double find_animation_curve_at(double t, int32_t type);
 /* render/az_output.h owns the renderer selector and is included AFTER
  * animation/client.h, which asks the question -- the same reason
  * find_animation_curve_at is declared up here. */
-static bool az_renderer_is_avk(void);
 /* animation/common.h is included AFTER animation/client.h, which uses these --
  * the same reason find_animation_curve_at is declared here. */
 static struct dvec2 calculate_spring_curve_at_v(double t, double v0);
@@ -2318,7 +2307,6 @@ static uint64_t az_pointer_notify_internal;
 #include "render/az_cursor.h"
 /* The rendering seam, before anything that builds a frame: ext-protocol's
  * tearing path is one of az_output_build_frame()'s four callers. */
-#ifdef AZ_HAVE_VULKAN
 #include "present/az_presenter_impl.h"
 
 /*
@@ -2411,7 +2399,6 @@ static inline uint64_t az_frame_sample_ns(Monitor *m) {
 #include "render/az_avk.h"
 #include "present/az_tag_cost.h"
 #include "render/az_dmabuf_caps.h"
-#endif
 #include "render/az_output.h"
 
 /*
@@ -2422,10 +2409,8 @@ static inline uint64_t az_frame_sample_ns(Monitor *m) {
  */
 static int32_t reset_avk_stats(const Arg *arg) {
 	(void)arg;
-#ifdef AZ_HAVE_VULKAN
 	az_avk_stats_reset();
 	wlr_log(WLR_INFO, "AVK: statistics reset");
-#endif
 	return 0;
 }
 /*
@@ -2522,9 +2507,7 @@ static int32_t reset_presentation(const Arg *arg) {
 static int32_t set_frame_trace(const Arg *arg) {
 	bool on = arg != NULL && arg->i != 0;
 	az_tagtrace_runtime = on ? 1 : 0;
-#ifdef AZ_HAVE_VULKAN
 	az_avk_set_frame_trace(on);
-#endif
 	wlr_log(WLR_INFO, "frame trace %s", on ? "ON" : "off");
 	return 0;
 }
@@ -2541,13 +2524,9 @@ static int32_t set_frame_trace(const Arg *arg) {
  * DIAGNOSTIC: several lines per frame on a populated desktop.
  */
 static int32_t set_blur_chain_trace(const Arg *arg) {
-#ifdef AZ_HAVE_VULKAN
 	bool on = arg != NULL && arg->i != 0;
 	az_avk_set_blur_chain_trace(on);
 	wlr_log(WLR_INFO, "AVK: blur chain trace %s", on ? "ON" : "off");
-#else
-	(void)arg;
-#endif
 	return 0;
 }
 /*
@@ -2561,13 +2540,9 @@ static int32_t set_blur_chain_trace(const Arg *arg) {
  * different sets of animations.
  */
 static int32_t set_blur_cache(const Arg *arg) {
-#ifdef AZ_HAVE_VULKAN
 	bool on = arg != NULL && arg->i != 0;
 	az_avk_set_blur_cache(on);
 	wlr_log(WLR_INFO, "AVK: monitor background blur cache %s", on ? "ON" : "off");
-#else
-	(void)arg;
-#endif
 	return 0;
 }
 /*
@@ -2583,25 +2558,17 @@ static int32_t set_blur_cache(const Arg *arg) {
  * than silently starving the plain image on a session nobody meant to break.
  */
 static int32_t set_blur_cache_starve(const Arg *arg) {
-#ifdef AZ_HAVE_VULKAN
 	int v = arg != NULL ? arg->i : 0;
 	az_avk_set_blur_cache_starve(v - 1);
 	wlr_log(WLR_INFO, "AVK: blur cache starve -> %s",
 		v == 1 ? "plain" : v == 2 ? "dark" : "none");
-#else
-	(void)arg;
-#endif
 	return 0;
 }
 static int32_t set_blur_rect_cap(const Arg *arg) {
-#ifdef AZ_HAVE_VULKAN
 	int cap = arg != NULL ? arg->i : 0;
 	avk_render_set_damage_rect_cap(cap);
 	wlr_log(WLR_INFO, "AVK: blur damage rectangle cap -> %d%s", cap,
 		cap >= 1 ? "" : " (default)");
-#else
-	(void)arg;
-#endif
 	return 0;
 }
 /*
@@ -2613,11 +2580,9 @@ static int32_t set_blur_rect_cap(const Arg *arg) {
  */
 static int32_t dump_scene(const Arg *arg) {
 	(void)arg;
-#ifdef AZ_HAVE_VULKAN
 	az_avk_dump_armed = true;
 	wlr_log(WLR_INFO, "AVK: the next frame's scene and command stream will be "
 		"logged");
-#endif
 	return 0;
 }
 
@@ -3208,7 +3173,7 @@ void gpureset(struct wl_listener *listener, void *data) {
 	 * associates with it.
 	 */
 	wlr_compositor_set_renderer(compositor,
-		az_renderer == AZ_RENDERER_AVK ? NULL : drw);
+		NULL);
 
 	wl_list_for_each(m, &mons, link) {
 		wlr_output_init_render(m->wlr_output, alloc, drw);
@@ -4617,12 +4582,10 @@ void cleanup(void) {
 
 	destroykeyboardgroup(&kb_group->destroy, NULL);
 
-#ifdef AZ_HAVE_VULKAN
 	/* BEFORE the backend, because destroying the outputs destroys AVK's
 	 * per-output synchronisation objects, and the last frame's submission
 	 * still refers to them. See az_avk_quiesce(). */
 	az_avk_quiesce();
-#endif
 
 	/* If it's not destroyed manually it will cause a use-after-free of
 	 * wlr_seat. Destroy it until it's fixed in the wlroots side */
@@ -4636,11 +4599,9 @@ void cleanup(void) {
 	dwl_im_relay_finish(dwl_input_method_relay);
 	dwl_input_method_relay = NULL;
 
-#ifdef AZ_HAVE_VULKAN
 	/* Before the display: wlr_compositor asserts that its new_surface signal
 	 * has no listeners left when it is torn down. */
 	az_avk_detach();
-#endif
 	az_surface_detach();
 
 	wl_display_destroy(dpy);
@@ -4648,7 +4609,6 @@ void cleanup(void) {
 	   destroyed) to avoid destroying them with an invalid scene output. */
 	wlr_scene_node_destroy(&scene->tree.node);
 
-#ifdef AZ_HAVE_VULKAN
 	/* After the scene and the outputs, because both of them hand images back
 	 * on the way down and az_avk_finish() must be the last owner standing.
 	 *
@@ -4657,7 +4617,6 @@ void cleanup(void) {
 	 * buried inside avk_device_destroy(), the very last call. Every resource
 	 * freed before it was freed with no wait in front of it at all. */
 	az_avk_finish();
-#endif
 
 	asteroidz_text_global_finish();
 	wlr_log(WLR_INFO, "CLEANUP_END");
@@ -4687,14 +4646,12 @@ void cleanupmon(struct wl_listener *listener, void *data) {
 
 	m->iscleanuping = true;
 
-#ifdef AZ_HAVE_VULKAN
 	/* First: destroying the swapchain destroys its buffers, and each of those
 	 * carries the addon that retires this output's target image. Leaving it
 	 * until after the output is gone would mean rendering into a swapchain
 	 * sized for a monitor that no longer exists. */
 	az_avk_output_finish(m->avk);
 	m->avk = NULL;
-#endif
 
 	/* Before the scene nodes below are torn down: the bar owns scene buffers
 	 * and heap-allocated hit-test tags parented to this monitor's tree. */
@@ -8422,7 +8379,7 @@ static void cursor_zoom_apply(Monitor *m) {
 	 * in AVK; until that exists, "asteroidz cannot do this" is a better answer
 	 * than a dead desktop.
 	 */
-	if (az_renderer == AZ_RENDERER_AVK && m->cursor_zoom > 1.0f) {
+	if (m->cursor_zoom > 1.0f) {
 		static bool warned = false;
 		if (!warned) {
 			warned = true;
@@ -9108,12 +9065,8 @@ static void render_monitor(Monitor *m) {
 	/* P4. The blur chain's rebuild counter before this pass; the delta after
 	 * it is what this output's frame cost the chain. See az_tag_cost.h. */
 	uint64_t tag_cost_prefix0 = 0, tag_cost_reb0 = 0, tag_cost_hit0 = 0;
-#ifdef AZ_HAVE_VULKAN
-	if (az_renderer_is_avk()) {
-		tag_cost_prefix0 = az_avk_blur_prefix_px();
-		az_avk_blur_cache_counts(&tag_cost_reb0, &tag_cost_hit0);
-	}
-#endif
+	tag_cost_prefix0 = az_avk_blur_prefix_px();
+	az_avk_blur_cache_counts(&tag_cost_reb0, &tag_cost_hit0);
 	/* M-8: the arm instant. This is the moment ADR-605's `t_pipe` is measured
 	 * FROM -- a VRR predictor asks "if I start now, when does it light up?",
 	 * and the answer has to include this frame's own render, not just the
@@ -9576,15 +9529,11 @@ skip:
 			}
 		}
 		uint64_t prefix_d = 0, reb_d = 0, hit_d = 0;
-#ifdef AZ_HAVE_VULKAN
-		if (az_renderer_is_avk()) {
-			uint64_t px = az_avk_blur_prefix_px(), reb = 0, hit = 0;
-			az_avk_blur_cache_counts(&reb, &hit);
-			prefix_d = px > tag_cost_prefix0 ? px - tag_cost_prefix0 : 0;
-			reb_d = reb > tag_cost_reb0 ? reb - tag_cost_reb0 : 0;
-			hit_d = hit > tag_cost_hit0 ? hit - tag_cost_hit0 : 0;
-		}
-#endif
+		uint64_t px = az_avk_blur_prefix_px(), reb = 0, hit = 0;
+		az_avk_blur_cache_counts(&reb, &hit);
+		prefix_d = px > tag_cost_prefix0 ? px - tag_cost_prefix0 : 0;
+		reb_d = reb > tag_cost_reb0 ? reb - tag_cost_reb0 : 0;
+		hit_d = hit > tag_cost_hit0 ? hit - tag_cost_hit0 : 0;
 		az_tag_cost_frame(in_tag, az_pace_now_ns(), dur_ms, pace_committed,
 			(uint64_t)pace_damage_px, prefix_d, reb_d, hit_d);
 	}
@@ -10999,48 +10948,37 @@ void setup(void) {
 	if (!(alloc = wlr_allocator_autocreate(backend, drw)))
 		die("couldn't create allocator");
 
-	/* ── which engine composites ──────────────────────────────────────────
+	/* ── the engine that composites ──────────────────────────────────────
 	 *
-	 * ASTEROIDZ_RENDERER selects asteroidz's own renderer, and it is
-	 * deliberately independent of WLR_RENDERER. wlroots still needs a
-	 * renderer for the things it does that are not compositing -- shm
-	 * formats, the allocator, screencopy -- and which one that is has no
-	 * bearing on whether AVK builds the frame. The pair
-	 * `WLR_RENDERER=gles2 ASTEROIDZ_RENDERER=avk` is the test that proves it:
-	 * a Vulkan-composited desktop with GLES2 sitting alongside, touching none
-	 * of it. */
-	const char *renderer_env = getenv("ASTEROIDZ_RENDERER");
-	if (renderer_env != NULL && strcmp(renderer_env, "avk") == 0) {
-#ifdef AZ_HAVE_VULKAN
-		avk.requested = true;
-		/* The renderer's DRM node, not the backend's: this is the device the
-		 * allocator allocates output buffers on, and AVK has to be on the
-		 * same one to import them without a copy. */
-		int32_t avk_fd = wlr_renderer_get_drm_fd(drw);
-		if (avk_fd < 0)
-			avk_fd = wlr_backend_get_drm_fd(backend);
-		if (avk_fd < 0)
-			wlr_log(WLR_ERROR, "ASTEROIDZ_RENDERER=avk: no DRM node to bind "
-					"to; AVK will pick a device on its own, which is only "
-					"appropriate in tests");
-		if (!az_avk_init(avk_fd))
-			die("ASTEROIDZ_RENDERER=avk was requested and the Vulkan engine "
-				"could not start");
-		az_renderer = AZ_RENDERER_AVK;
-		wlr_log(WLR_INFO, "Asteroidz rendering backend: AVK native Vulkan");
-		wlr_log(WLR_INFO, "wlroots compatibility renderer: %s -- protocols, "
-				"allocation and screencopy only, no part of composition",
-				getenv("WLR_RENDERER") ? getenv("WLR_RENDERER")
-									   : "GLES2 (default)");
-#else
-		die("ASTEROIDZ_RENDERER=avk was requested, but this build was "
-			"configured with -Drenderers=gles2");
-#endif
-	} else if (renderer_env != NULL && strcmp(renderer_env, "wlr") != 0) {
-		die("ASTEROIDZ_RENDERER must be 'avk' or 'wlr'");
-	} else {
-		wlr_log(WLR_INFO, "Asteroidz rendering backend: SceneFX on wlroots");
-	}
+	 * AVK, unconditionally. There is no selection here any more: the GLES
+	 * recovery path it used to choose between is gone from the build, and a
+	 * switch with one position is not a switch.
+	 *
+	 * It remains deliberately independent of WLR_RENDERER. wlroots still needs
+	 * a renderer for the things that are not compositing -- shm formats, the
+	 * allocator, screencopy -- and which one that is has no bearing on whether
+	 * AVK builds the frame. `WLR_RENDERER=gles2` still yields a
+	 * Vulkan-composited desktop with GLES2 sitting alongside, touching none of
+	 * it, and that remains the test that proves the separation.
+	 */
+	avk.requested = true;
+	/* The renderer's DRM node, not the backend's: this is the device the
+	 * allocator allocates output buffers on, and AVK has to be on the same one
+	 * to import them without a copy. */
+	int32_t avk_fd = wlr_renderer_get_drm_fd(drw);
+	if (avk_fd < 0)
+		avk_fd = wlr_backend_get_drm_fd(backend);
+	if (avk_fd < 0)
+		wlr_log(WLR_ERROR, "AVK: no DRM node to bind to; a device will be "
+				"picked instead, which is only appropriate in tests");
+	if (!az_avk_init(avk_fd))
+		die("the Vulkan engine could not start, and there is no other "
+			"renderer to fall back to");
+	wlr_log(WLR_INFO, "Asteroidz rendering backend: AVK native Vulkan");
+	wlr_log(WLR_INFO, "wlroots compatibility renderer: %s -- protocols, "
+			"allocation and screencopy only, no part of composition",
+			getenv("WLR_RENDERER") ? getenv("WLR_RENDERER")
+								   : "GLES2 (default)");
 
 	/*
 	 * linux-dmabuf, built AFTER the engine is chosen, because what a client
@@ -11056,8 +10994,7 @@ void setup(void) {
 	 */
 	if (wlr_renderer_get_texture_formats(drw, WLR_BUFFER_CAP_DMABUF)) {
 		struct wlr_linux_dmabuf_v1 *linux_dmabuf = NULL;
-#ifdef AZ_HAVE_VULKAN
-		if (az_renderer == AZ_RENDERER_AVK && !az_dmabuf_break_use_gles()) {
+		if (!az_dmabuf_break_use_gles()) {
 			linux_dmabuf = az_dmabuf_create_from_avk(dpy);
 			if (linux_dmabuf == NULL) {
 				die("AVK is compositing but could not describe its own "
@@ -11066,7 +11003,6 @@ void setup(void) {
 					"buffers AVK may not be able to import");
 			}
 		}
-#endif
 		if (linux_dmabuf == NULL) {
 			linux_dmabuf =
 				wlr_linux_dmabuf_v1_create_with_renderer(dpy, 5, drw);
@@ -11107,36 +11043,29 @@ void setup(void) {
 	 * split between two ownership models.
 	 */
 	struct wlr_renderer *compositor_renderer = drw;
-#ifdef AZ_HAVE_VULKAN
 	/* AZ_AVK_COMPOSITOR_RENDERER=1 puts the wrapper topology back in AVK mode,
 	 * so the test that proves AVK does not depend on wlroots' texture upload
 	 * can be run against a build where it must fail. Without a break switch
 	 * that assertion is unfalsifiable: the wallpaper renders, and nothing
 	 * shows whether it renders *because* of the topology or in spite of it. */
 	const char *force_wrapper = getenv("AZ_AVK_COMPOSITOR_RENDERER");
-	if (az_renderer == AZ_RENDERER_AVK &&
-			(force_wrapper == NULL || force_wrapper[0] != '1')) {
+	if (force_wrapper == NULL || force_wrapper[0] != '1') {
 		compositor_renderer = NULL;
 		wlr_log(WLR_INFO, "wl_compositor renderer: none -- client buffers are "
 				"imported by AVK, not uploaded by wlroots");
 	}
-#endif
 	compositor = wlr_compositor_create(dpy, 6, compositor_renderer);
 	/* Track what buffer each surface is showing, in BOTH renderer modes --
 	 * see src/render/az_surface.h for why wlr_surface.buffer is not that. */
 	wl_signal_add(&compositor->events.new_surface, &az_new_surface_listener);
 	az_new_surface_attached = true;
-#ifdef AZ_HAVE_VULKAN
-	if (az_renderer == AZ_RENDERER_AVK) {
-		/* AVK takes ownership of a client's content at commit, which is the
-		 * only moment it is guaranteed to be valid -- see the comment above
-		 * az_avk_surface_commit(). Registered immediately after the global is
-		 * created, so no surface can exist without the hook. */
-		wl_signal_add(&compositor->events.new_surface,
-					  &az_avk_new_surface_listener);
-		az_avk_new_surface_attached = true;
-	}
-#endif
+	/* AVK takes ownership of a client's content at commit, which is the
+	 * only moment it is guaranteed to be valid -- see the comment above
+	 * az_avk_surface_commit(). Registered immediately after the global is
+	 * created, so no surface can exist without the hook. */
+	wl_signal_add(&compositor->events.new_surface,
+				  &az_avk_new_surface_listener);
+	az_avk_new_surface_attached = true;
 	wlr_export_dmabuf_manager_v1_create(dpy);
 	wlr_screencopy_manager_v1_create(dpy);
 	struct wlr_ext_image_copy_capture_manager_v1 *img_copy_mgr =

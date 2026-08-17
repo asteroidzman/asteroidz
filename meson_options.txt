@@ -1,15 +1,5 @@
 option('xwayland', type : 'feature', value : 'enabled')
 
-# Which rendering architectures to build. See
-# docs/vulkan-native-architecture.md -- 'vulkan' is asteroidz's own Vulkan
-# engine (src/render/vulkan), NOT wlroots' Vulkan renderer and not fx_vk.
-#
-# Both are on during the migration: GLES is the recovery path that keeps a
-# working desktop available at every milestone. The target end state is
-# 'vulkan' alone.
-option('renderers', type : 'array', choices : ['gles2', 'vulkan'],
-       value : ['gles2', 'vulkan'],
-       description : 'Rendering architectures to build')
 option('asan', type : 'boolean', value : false)
 # Tracy profiler support, compiled out entirely when off (the macros in
 # scenefx's include/render/tracy.h expand to nothing without TRACY_ENABLE).

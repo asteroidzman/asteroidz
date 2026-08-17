@@ -520,7 +520,7 @@ is what makes it checkable rather than merely asserted.
 
 ### `get avk-stats`
 
-Live counters for the AVK renderer (`ASTEROIDZ_RENDERER=avk`). Returns
+Live counters for the AVK renderer, which is the only renderer. Returns
 `{"backend":"scenefx","active":false}` when AVK is not the renderer.
 
 ```bash

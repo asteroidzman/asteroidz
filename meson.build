@@ -32,14 +32,10 @@ cc = meson.get_compiler('c')
 # recovery path and stays selectable, while the asteroidz-owned Vulkan engine
 # grows underneath it. The end state is -Drenderer=vulkan with GLES demoted;
 # until then, dropping either one has to be something you asked for.
-build_vulkan = get_option('renderers').contains('vulkan')
-build_gles2 = get_option('renderers').contains('gles2')
-if not build_vulkan and not build_gles2
-  error('-Drenderers needs at least one of gles2, vulkan')
-endif
-if build_vulkan
-  subdir('src/render/vulkan')
-endif
+# AVK is the only renderer. There is no option because there is no choice:
+# a build without it is a compositor that cannot draw, and the GLES recovery
+# path it used to select was removed once AVK carried the desktop.
+subdir('src/render/vulkan')
 
 libm = cc.find_library('m')
 libdrm = dependency('libdrm')
@@ -76,12 +72,20 @@ libscenefx_proj = subproject(
   default_options: [
     'default_library=static',
     'examples=false',
-    # Must match what the asteroidz-scenefx package built: its PKGBUILD passes
-    # -Drenderers=gles2,vulkan. The subproject default is 'auto', which is
-    # GLES2 ONLY -- taking it would quietly drop fx_vk, i.e. the renderer
-    # WLR_RENDERER=vulkan actually selects, and the failure would surface as a
-    # missing renderer at runtime rather than as a build error.
-    'renderers=gles2,vulkan',
+    # GLES2 ONLY -- and that is the floor, not a preference.
+    #
+    # scenefx's SCENE GRAPH is what asteroidz needs from this subproject; AVK
+    # composites every frame and scenefx's renderers never run. They cannot be
+    # dropped outright, though: types/scene/wlr_scene.c calls into the renderer
+    # directly (fx_render_pass_try_get, fx_gles_render_pass,
+    # fx_offscreen_buffers), so -Drenderers= fails to build the very scene
+    # graph we are keeping. Untangling that is the scenefx-absorption project,
+    # not a build flag.
+    #
+    # fx_vk CAN go, because every call into it from the scene graph is behind
+    # #ifdef FX_HAS_VULKAN -- which is ~9.5k lines of a Vulkan renderer that
+    # could never execute next to AVK's own.
+    'renderers=gles2',
     'tracy_enable=' + (get_option('tracy') ? 'true' : 'false'),
   ],
 )
@@ -293,10 +297,7 @@ asteroidz_deps = [
     gdkpixbuf_dep,
     libsystemd_dep,
 ]
-if build_vulkan
-  asteroidz_deps += avk_dep
-  c_args += '-DAZ_HAVE_VULKAN'
-endif
+asteroidz_deps += avk_dep
 
 asteroidz_exe = executable('asteroidz',
   'src/asteroidz.c',
@@ -392,288 +393,286 @@ test('anim-shatter', test_anim_shatter, timeout : 60)
 # 'vulkan' is in -Drenderers, which it is by default; the compositor does not
 # use it yet (that is M3), so this is a library plus its tests and nothing in
 # asteroidz.c links against it.
-if build_vulkan
-  test('avk-isolation', find_program('tests/check-vulkan-isolation.py'))
+test('avk-isolation', find_program('tests/check-vulkan-isolation.py'))
 
-  # A real GPU test: it opens a render node, creates a device, drives the
-  # command ring and the retire queue. Exits 77 (skip) where there is no GPU,
-  # so a build machine without DRM reports "skipped" rather than a red X for
-  # hardware it does not have.
-  test_avk_core = executable('test-avk-core', 'tests/test-avk-core.c',
-                             dependencies : [avk_dep],
-                             build_by_default : false)
-  test('avk-core', test_avk_core, timeout : 60)
+# A real GPU test: it opens a render node, creates a device, drives the
+# command ring and the retire queue. Exits 77 (skip) where there is no GPU,
+# so a build machine without DRM reports "skipped" rather than a red X for
+# hardware it does not have.
+test_avk_core = executable('test-avk-core', 'tests/test-avk-core.c',
+                           dependencies : [avk_dep],
+                           build_by_default : false)
+test('avk-core', test_avk_core, timeout : 60)
 
-  # The capability model, driven with SYNTHETIC format sets. The live test
-  # cannot cover the rule this protects: on a machine whose GLES and Vulkan
-  # tables overlap, advertising the wrong one still passes every subset check,
-  # which is exactly how the shipped bug survived M3.5. Here the two sets are
-  # made to disagree on purpose, so "which engine did the answer come from" has
-  # an observable consequence that does not depend on this GPU or this Mesa.
-  test_dmabuf_feedback = executable('test-dmabuf-feedback',
-                                    'tests/test-dmabuf-feedback.c',
-                                    dependencies : [avk_dep, wlroots_dep],
-                                    include_directories : include_directories('src'),
-                                    c_args : ['-DWLR_USE_UNSTABLE', '-DAZ_HAVE_VULKAN'],
-                                    build_by_default : false)
-  test('dmabuf-feedback', test_dmabuf_feedback, timeout : 30)
+# The capability model, driven with SYNTHETIC format sets. The live test
+# cannot cover the rule this protects: on a machine whose GLES and Vulkan
+# tables overlap, advertising the wrong one still passes every subset check,
+# which is exactly how the shipped bug survived M3.5. Here the two sets are
+# made to disagree on purpose, so "which engine did the answer come from" has
+# an observable consequence that does not depend on this GPU or this Mesa.
+test_dmabuf_feedback = executable('test-dmabuf-feedback',
+                                  'tests/test-dmabuf-feedback.c',
+                                  dependencies : [avk_dep, wlroots_dep],
+                                  include_directories : include_directories('src'),
+                                  c_args : ['-DWLR_USE_UNSTABLE'],
+                                  build_by_default : false)
+test('dmabuf-feedback', test_dmabuf_feedback, timeout : 30)
 
-  # Corner permutation under output transforms. A rotated output cannot be
-  # built in the headless fixture (monitorrule's key:value format is not
-  # emittable from harness KDL), so the production helper is driven directly
-  # rather than leaving the invariant untested.
-  test_corner_permute = executable('test-corner-permute',
-                                   'tests/test-corner-permute.c',
-                                   dependencies : [wlroots_dep, wayland_server_dep],
-                                   include_directories : include_directories('src'),
-                                   c_args : ['-DWLR_USE_UNSTABLE'],
-                                   build_by_default : false)
-  test('corner-permute', test_corner_permute, timeout : 30)
-
-  # The rectangle/region contract every rotated-output quantity depends on.
-  # Needs no GPU: the mapping is pure integer arithmetic, and the point is that
-  # a change to it fails HERE rather than as a rotated desktop nobody can
-  # capture.
-  test_transform_math = executable('test-transform-math',
-                                   'tests/test-transform-math.c',
-                                   dependencies : [wlroots_dep, wayland_server_dep,
-                                                   pixman_dep],
-                                   include_directories : include_directories('src'),
-                                   c_args : ['-DWLR_USE_UNSTABLE'],
-                                   build_by_default : false)
-  test('transform-math', test_transform_math, timeout : 30)
-
-  # The attachment/presentation extent contract, and the old conflated
-  # implementation run through the same predicate so that the contract is shown
-  # to reject it. This is where M4F.2C.4d's defect becomes a failing test
-  # instead of a rotated desktop nobody can capture.
-  test_extent_space = executable('test-extent-space',
-                                 'tests/test-extent-space.c',
+# Corner permutation under output transforms. A rotated output cannot be
+# built in the headless fixture (monitorrule's key:value format is not
+# emittable from harness KDL), so the production helper is driven directly
+# rather than leaving the invariant untested.
+test_corner_permute = executable('test-corner-permute',
+                                 'tests/test-corner-permute.c',
                                  dependencies : [wlroots_dep, wayland_server_dep],
                                  include_directories : include_directories('src'),
                                  c_args : ['-DWLR_USE_UNSTABLE'],
                                  build_by_default : false)
-  test('extent-space', test_extent_space, timeout : 30)
+test('corner-permute', test_corner_permute, timeout : 30)
 
-  # The one that reproduces the blank-window class: a real GBM buffer whose
-  # modifier is thrown away before import, which is what wl_drm and
-  # modifier-less Electron/Chromium hand over.
-  test_avk_dmabuf = executable('test-avk-dmabuf', 'tests/test-avk-dmabuf.c',
-                               dependencies : [avk_dep],
-                               build_by_default : false)
-  test('avk-dmabuf', test_avk_dmabuf, timeout : 60)
-
-  # M3: AVK composites a scene snapshot and the pixels are read back and
-  # compared. These assert on the framebuffer, not on functions returning
-  # true -- a renderer with the wrong blend state or a mis-folded transform
-  # succeeds at every call it makes and draws the wrong picture.
-  # az_color_ref.c is linked in for M5's Path-B tests: the PQ encode is
-  # compared against C4's CPU reference, which was written from the ADRs rather
-  # than from the shader. A second copy of the shader's own arithmetic would be
-  # a tautology.
-  test_avk_render = executable('test-avk-render',
-                               ['tests/test-avk-render.c',
-                                'src/render/color/az_color_ref.c',
-                                # M6B/G2: the gate compares the LUT1D encode
-                                # against az_icc_apply, the same reduction G1
-                                # checked against lcms2.
-                                'src/render/color/az_icc.c'],
-                               dependencies : [avk_dep, az_color_dep, lcms2_dep,
-                                               libm],
-                               build_by_default : false)
-  test('avk-render', test_avk_render, timeout : 60)
-
-  # M4C: gradients. Separate from avk-render because a gradient is a NUMERICAL
-  # claim -- which band, starting where, out of how many -- and the fixtures
-  # need a bigger target and their own colour scheme to say so exactly.
-  # libm: the fixtures carry an independent CPU implementation of the
-  # reference gradient formula, trigonometry and all, as the oracle AVK's
-  # output is compared against.
-  test_avk_gradient = executable('test-avk-gradient',
-                                 'tests/test-avk-gradient.c',
-                                 dependencies : [avk_dep, libm],
+# The rectangle/region contract every rotated-output quantity depends on.
+# Needs no GPU: the mapping is pure integer arithmetic, and the point is that
+# a change to it fails HERE rather than as a rotated desktop nobody can
+# capture.
+test_transform_math = executable('test-transform-math',
+                                 'tests/test-transform-math.c',
+                                 dependencies : [wlroots_dep, wayland_server_dep,
+                                                 pixman_dep],
+                                 include_directories : include_directories('src'),
+                                 c_args : ['-DWLR_USE_UNSTABLE'],
                                  build_by_default : false)
-  test('avk-gradient', test_avk_gradient, timeout : 120)
+test('transform-math', test_transform_math, timeout : 30)
 
-  # M4D.P: GPU timestamps. Half of this runs with no GPU at all -- the wrap
-  # and masking arithmetic is tested on constructed values, because this
-  # machine's 64 valid bits make masking the identity and a real wrap would
-  # take centuries.
-  test_avk_timestamp = executable('test-avk-timestamp',
-                                  'tests/test-avk-timestamp.c',
-                                  dependencies : [avk_dep],
-                                  build_by_default : false)
-  test('avk-timestamp', test_avk_timestamp, timeout : 120)
+# The attachment/presentation extent contract, and the old conflated
+# implementation run through the same predicate so that the contract is shown
+# to reject it. This is where M4F.2C.4d's defect becomes a failing test
+# instead of a rotated desktop nobody can capture.
+test_extent_space = executable('test-extent-space',
+                               'tests/test-extent-space.c',
+                               dependencies : [wlroots_dep, wayland_server_dep],
+                               include_directories : include_directories('src'),
+                               c_args : ['-DWLR_USE_UNSTABLE'],
+                               build_by_default : false)
+test('extent-space', test_extent_space, timeout : 30)
 
-  # M4E: the render graph. Asserts on the barriers the graph ACTUALLY EMITTED
-  # -- it records them as it emits them -- rather than on a re-derivation from
-  # the same rules the implementation used, which could not fail. The usage
-  # table is restated independently in the test for the same reason.
-  test_avk_graph = executable('test-avk-graph',
-                              'tests/test-avk-graph.c',
-                              dependencies : [avk_dep],
-                              build_by_default : false)
-  test('avk-graph', test_avk_graph, timeout : 120)
-
-  # M4E.2: the transient pool. Asserts on `unsafe_reuses` -- a counter the
-  # pool increments as it commits the violation -- rather than on whether
-  # corruption happened to appear, which is the only way a lifetime rule can
-  # be checked deterministically.
-  test_avk_transient = executable('test-avk-transient',
-                                  'tests/test-avk-transient.c',
-                                  dependencies : [avk_dep],
-                                  build_by_default : false)
-  test('avk-transient', test_avk_transient, timeout : 180)
-
-  # M4E.4: a synthetic multipass frame -- render into a transient, then sample
-  # it. The effect has no visual purpose and is deliberately NOT shipped: M4E
-  # is architecture, and a user-visible "M4E effect" would be a feature nobody
-  # asked for that has to be maintained forever. What it proves is the write ->
-  # sample dependency, transient reuse, and deterministic pixels.
-  test_avk_multipass = executable('test-avk-multipass',
-                                  'tests/test-avk-multipass.c',
-                                  dependencies : [avk_dep],
-                                  build_by_default : false)
-  test('avk-multipass', test_avk_multipass, timeout : 180)
-
-  # M4F.3/.5: what vkCmdPipelineBarrier2 actually costs, and why. Isolates one
-  # variable at a time -- barriers per call, queue-family transfer, DCC vs
-  # non-DCC modifier, image size, layout pair -- on the same device in the same
-  # process, because a live compositor varies in all of them at once and can
-  # only ever produce another hypothesis.
-  test_avk_barrier_cost = executable('test-avk-barrier-cost',
-                                     'tests/test-avk-barrier-cost.c',
-                                     dependencies : [avk_dep],
-                                     build_by_default : false)
-  test('avk-barrier-cost', test_avk_barrier_cost, timeout : 180)
-
-  # M4F.1/.10/.11: the dual-Kawase blur. Every PRIMARY fixture has high spatial
-  # frequency -- a 1px checkerboard, an impulse, a hard edge, thin lines --
-  # because blurring a flat field returns the same flat field whatever the
-  # kernel does, so a flat fixture passes for a blur that samples the wrong
-  # level, uses the wrong step, or runs no passes at all. libm for the
-  # statistics.
-  test_avk_blur = executable('test-avk-blur', 'tests/test-avk-blur.c',
-                             dependencies : [avk_dep, libm],
+# The one that reproduces the blank-window class: a real GBM buffer whose
+# modifier is thrown away before import, which is what wl_drm and
+# modifier-less Electron/Chromium hand over.
+test_avk_dmabuf = executable('test-avk-dmabuf', 'tests/test-avk-dmabuf.c',
+                             dependencies : [avk_dep],
                              build_by_default : false)
-  test('avk-blur', test_avk_blur, timeout : 180)
+test('avk-dmabuf', test_avk_dmabuf, timeout : 60)
 
-  # M4F.2D: actual vs REQUIRED blur-pass work, the denominator of the per-level
-  # scissor decision. Needs no GPU -- it is rectangle arithmetic over the same
-  # level_extent()/texel_span() the passes use, and the point is that a wrong
-  # denominator fails HERE rather than becoming a performance conclusion.
-  # The SHM upload's plan/pack split, which is what let the client memcpy move
-  # off the event loop. No GPU: the plan reads a struct avk_image's format and
-  # extent and nothing else, so a stack image is a complete fixture -- and a
-  # copy that shears is caught here rather than in a screenshot someone happens
-  # to look closely at.
-  test_avk_upload_pack = executable('test-avk-upload-pack',
-                                    'tests/test-avk-upload-pack.c',
-                                    dependencies : [avk_dep],
-                                    build_by_default : false)
-  test('avk-upload-pack', test_avk_upload_pack, timeout : 30)
+# M3: AVK composites a scene snapshot and the pixels are read back and
+# compared. These assert on the framebuffer, not on functions returning
+# true -- a renderer with the wrong blend state or a mis-folded transform
+# succeeds at every call it makes and draws the wrong picture.
+# az_color_ref.c is linked in for M5's Path-B tests: the PQ encode is
+# compared against C4's CPU reference, which was written from the ADRs rather
+# than from the shader. A second copy of the shader's own arithmetic would be
+# a tautology.
+test_avk_render = executable('test-avk-render',
+                             ['tests/test-avk-render.c',
+                              'src/render/color/az_color_ref.c',
+                              # M6B/G2: the gate compares the LUT1D encode
+                              # against az_icc_apply, the same reduction G1
+                              # checked against lcms2.
+                              'src/render/color/az_icc.c'],
+                             dependencies : [avk_dep, az_color_dep, lcms2_dep,
+                                             libm],
+                             build_by_default : false)
+test('avk-render', test_avk_render, timeout : 60)
 
-  test_avk_blur_work = executable('test-avk-blur-work',
-                                  'tests/test-avk-blur-work.c',
-                                  dependencies : [avk_dep, libm],
-                                  build_by_default : false)
-  test('avk-blur-work', test_avk_blur_work, timeout : 30)
-
-  # M4F.2A.1: segmented composition. Proves that any contiguous command range
-  # renders into any regional target with identical pixels -- on PIXELS, because
-  # a struct-inspection test would pass for a renderer that silently restarted
-  # every gradient at the transient's edge.
-  test_avk_segment = executable('test-avk-segment', 'tests/test-avk-segment.c',
-                                dependencies : [avk_dep],
-                                build_by_default : false)
-  test('avk-segment', test_avk_segment, timeout : 180)
-
-  # M4F.2A.2: a blur's source is the current-frame scene PREFIX. Proved on
-  # pixels against independently constructed references -- scenes containing
-  # only what should have contributed -- so the prefix path is never its own
-  # oracle. The background is dark and high-frequency and the foreground is
-  # near-white, so contamination is tens of codes rather than a subtle shift.
-  test_avk_blur_scene = executable('test-avk-blur-scene',
-                                   'tests/test-avk-blur-scene.c',
-                                   dependencies : [avk_dep],
-                                   build_by_default : false)
-  test('avk-blur-scene', test_avk_blur_scene, timeout : 240)
-
-  # M5/C2: every command carries a VALID luminance domain. avk_scene_add()
-  # memsets, so a field nobody fills defaults to zero -- and a scale of zero is
-  # a black surface, not a neutral default. Four command sites would each have
-  # had to remember; the default lives in one place and this asserts it for
-  # every type, including ones added after it was written.
-  test_lum_command = executable('test-lum-command',
-                                'tests/test-lum-command.c',
-                                dependencies : [avk_dep],
-                                build_by_default : false)
-  test('lum-command', test_lum_command)
-
-  # M4F.2A.3: the blur node's MATERIAL. darken is checked against a CPU minimum
-  # of two SEPARATELY MEASURED renders (clamp off, and no blur node at all), so
-  # the production shader is never its own oracle; the soft edge is checked
-  # against a real shadow's coverage profile at the same sigma, which is the
-  # invariant the feature exists for rather than a restatement of the shader.
-  test_avk_blur_material = executable('test-avk-blur-material',
-                                      'tests/test-avk-blur-material.c',
-                                      dependencies : [avk_dep],
-                                      build_by_default : false)
-  test('avk-blur-material', test_avk_blur_material, timeout : 240)
-
-  # M4F.2B: a partially damaged frame must contain the same pixels as a
-  # completely redrawn one. The forced-full path borrows nothing from the
-  # partial one -- it is the same scene and the same current-frame prefix
-  # architecture given full damage -- so a difference is a damage bug and can
-  # be nothing else. The two breaks are set on the renderer directly, so one
-  # process renders the same scene correct and broken and diffs the pictures.
-  test_avk_blur_damage = executable('test-avk-blur-damage',
-                                    'tests/test-avk-blur-damage.c',
-                                    dependencies : [avk_dep],
-                                    build_by_default : false)
-  test('avk-blur-damage', test_avk_blur_damage, timeout : 300)
-
-  # M4F.2A.3: every command kind states what it samples. No GPU -- the resolver
-  # is pure -- and no synchronisation claim: Vulkan validation stays the oracle
-  # for barriers. This only has to notice an omission earlier than that would.
-  test_avk_cmd_uses = executable('test-avk-cmd-uses',
-                                 'tests/test-avk-cmd-uses.c',
-                                 dependencies : [avk_dep],
-                                 build_by_default : false)
-  test('avk-cmd-uses', test_avk_cmd_uses, timeout : 30)
-
-  # M4D: shadows. libm because the fixtures carry an independent CPU
-  # transcription of the reference's erf-and-four-samples formula, which is
-  # what AVK's readback is compared against -- not GLES, and not AVK's own
-  # shader.
-  # M5/C5: the colour capability predicates, driven with SYNTHETIC feature
-  # sets. No device: this machine's RADV answers yes to every question these
-  # ask, so a live test would pass for a predicate that returned true
-  # unconditionally -- and the interesting answers are the PARTIAL ones no
-  # single GPU can be made to produce on demand.
-  test_avk_color_caps = executable('test-avk-color-caps',
-                                   'tests/test-avk-color-caps.c',
-                                   dependencies : [vulkan_dep],
-                                   include_directories : include_directories('src'),
-                                   build_by_default : false)
-  test('avk-color-caps', test_avk_color_caps, timeout : 30)
-
-  test_avk_shadow = executable('test-avk-shadow',
-                               'tests/test-avk-shadow.c',
+# M4C: gradients. Separate from avk-render because a gradient is a NUMERICAL
+# claim -- which band, starting where, out of how many -- and the fixtures
+# need a bigger target and their own colour scheme to say so exactly.
+# libm: the fixtures carry an independent CPU implementation of the
+# reference gradient formula, trigonometry and all, as the oracle AVK's
+# output is compared against.
+test_avk_gradient = executable('test-avk-gradient',
+                               'tests/test-avk-gradient.c',
                                dependencies : [avk_dep, libm],
                                build_by_default : false)
-  test('avk-shadow', test_avk_shadow, timeout : 120)
+test('avk-gradient', test_avk_gradient, timeout : 120)
 
-  # asteroidz-avk-probe: run the engine on real hardware and say what it can
-  # do. Installed, because until AVK renders the desktop (M3b) this is the
-  # only way to exercise it on the machine it will eventually run on -- and it
-  # touches nothing the compositor owns, so it is safe to run in a live
-  # session.
-  executable('asteroidz-avk-probe', 'tools/avk-probe.c',
-             dependencies : [avk_dep, dependency('cairo')],
-             install : true,
-             c_args : c_args)
-endif
+# M4D.P: GPU timestamps. Half of this runs with no GPU at all -- the wrap
+# and masking arithmetic is tested on constructed values, because this
+# machine's 64 valid bits make masking the identity and a real wrap would
+# take centuries.
+test_avk_timestamp = executable('test-avk-timestamp',
+                                'tests/test-avk-timestamp.c',
+                                dependencies : [avk_dep],
+                                build_by_default : false)
+test('avk-timestamp', test_avk_timestamp, timeout : 120)
+
+# M4E: the render graph. Asserts on the barriers the graph ACTUALLY EMITTED
+# -- it records them as it emits them -- rather than on a re-derivation from
+# the same rules the implementation used, which could not fail. The usage
+# table is restated independently in the test for the same reason.
+test_avk_graph = executable('test-avk-graph',
+                            'tests/test-avk-graph.c',
+                            dependencies : [avk_dep],
+                            build_by_default : false)
+test('avk-graph', test_avk_graph, timeout : 120)
+
+# M4E.2: the transient pool. Asserts on `unsafe_reuses` -- a counter the
+# pool increments as it commits the violation -- rather than on whether
+# corruption happened to appear, which is the only way a lifetime rule can
+# be checked deterministically.
+test_avk_transient = executable('test-avk-transient',
+                                'tests/test-avk-transient.c',
+                                dependencies : [avk_dep],
+                                build_by_default : false)
+test('avk-transient', test_avk_transient, timeout : 180)
+
+# M4E.4: a synthetic multipass frame -- render into a transient, then sample
+# it. The effect has no visual purpose and is deliberately NOT shipped: M4E
+# is architecture, and a user-visible "M4E effect" would be a feature nobody
+# asked for that has to be maintained forever. What it proves is the write ->
+# sample dependency, transient reuse, and deterministic pixels.
+test_avk_multipass = executable('test-avk-multipass',
+                                'tests/test-avk-multipass.c',
+                                dependencies : [avk_dep],
+                                build_by_default : false)
+test('avk-multipass', test_avk_multipass, timeout : 180)
+
+# M4F.3/.5: what vkCmdPipelineBarrier2 actually costs, and why. Isolates one
+# variable at a time -- barriers per call, queue-family transfer, DCC vs
+# non-DCC modifier, image size, layout pair -- on the same device in the same
+# process, because a live compositor varies in all of them at once and can
+# only ever produce another hypothesis.
+test_avk_barrier_cost = executable('test-avk-barrier-cost',
+                                   'tests/test-avk-barrier-cost.c',
+                                   dependencies : [avk_dep],
+                                   build_by_default : false)
+test('avk-barrier-cost', test_avk_barrier_cost, timeout : 180)
+
+# M4F.1/.10/.11: the dual-Kawase blur. Every PRIMARY fixture has high spatial
+# frequency -- a 1px checkerboard, an impulse, a hard edge, thin lines --
+# because blurring a flat field returns the same flat field whatever the
+# kernel does, so a flat fixture passes for a blur that samples the wrong
+# level, uses the wrong step, or runs no passes at all. libm for the
+# statistics.
+test_avk_blur = executable('test-avk-blur', 'tests/test-avk-blur.c',
+                           dependencies : [avk_dep, libm],
+                           build_by_default : false)
+test('avk-blur', test_avk_blur, timeout : 180)
+
+# M4F.2D: actual vs REQUIRED blur-pass work, the denominator of the per-level
+# scissor decision. Needs no GPU -- it is rectangle arithmetic over the same
+# level_extent()/texel_span() the passes use, and the point is that a wrong
+# denominator fails HERE rather than becoming a performance conclusion.
+# The SHM upload's plan/pack split, which is what let the client memcpy move
+# off the event loop. No GPU: the plan reads a struct avk_image's format and
+# extent and nothing else, so a stack image is a complete fixture -- and a
+# copy that shears is caught here rather than in a screenshot someone happens
+# to look closely at.
+test_avk_upload_pack = executable('test-avk-upload-pack',
+                                  'tests/test-avk-upload-pack.c',
+                                  dependencies : [avk_dep],
+                                  build_by_default : false)
+test('avk-upload-pack', test_avk_upload_pack, timeout : 30)
+
+test_avk_blur_work = executable('test-avk-blur-work',
+                                'tests/test-avk-blur-work.c',
+                                dependencies : [avk_dep, libm],
+                                build_by_default : false)
+test('avk-blur-work', test_avk_blur_work, timeout : 30)
+
+# M4F.2A.1: segmented composition. Proves that any contiguous command range
+# renders into any regional target with identical pixels -- on PIXELS, because
+# a struct-inspection test would pass for a renderer that silently restarted
+# every gradient at the transient's edge.
+test_avk_segment = executable('test-avk-segment', 'tests/test-avk-segment.c',
+                              dependencies : [avk_dep],
+                              build_by_default : false)
+test('avk-segment', test_avk_segment, timeout : 180)
+
+# M4F.2A.2: a blur's source is the current-frame scene PREFIX. Proved on
+# pixels against independently constructed references -- scenes containing
+# only what should have contributed -- so the prefix path is never its own
+# oracle. The background is dark and high-frequency and the foreground is
+# near-white, so contamination is tens of codes rather than a subtle shift.
+test_avk_blur_scene = executable('test-avk-blur-scene',
+                                 'tests/test-avk-blur-scene.c',
+                                 dependencies : [avk_dep],
+                                 build_by_default : false)
+test('avk-blur-scene', test_avk_blur_scene, timeout : 240)
+
+# M5/C2: every command carries a VALID luminance domain. avk_scene_add()
+# memsets, so a field nobody fills defaults to zero -- and a scale of zero is
+# a black surface, not a neutral default. Four command sites would each have
+# had to remember; the default lives in one place and this asserts it for
+# every type, including ones added after it was written.
+test_lum_command = executable('test-lum-command',
+                              'tests/test-lum-command.c',
+                              dependencies : [avk_dep],
+                              build_by_default : false)
+test('lum-command', test_lum_command)
+
+# M4F.2A.3: the blur node's MATERIAL. darken is checked against a CPU minimum
+# of two SEPARATELY MEASURED renders (clamp off, and no blur node at all), so
+# the production shader is never its own oracle; the soft edge is checked
+# against a real shadow's coverage profile at the same sigma, which is the
+# invariant the feature exists for rather than a restatement of the shader.
+test_avk_blur_material = executable('test-avk-blur-material',
+                                    'tests/test-avk-blur-material.c',
+                                    dependencies : [avk_dep],
+                                    build_by_default : false)
+test('avk-blur-material', test_avk_blur_material, timeout : 240)
+
+# M4F.2B: a partially damaged frame must contain the same pixels as a
+# completely redrawn one. The forced-full path borrows nothing from the
+# partial one -- it is the same scene and the same current-frame prefix
+# architecture given full damage -- so a difference is a damage bug and can
+# be nothing else. The two breaks are set on the renderer directly, so one
+# process renders the same scene correct and broken and diffs the pictures.
+test_avk_blur_damage = executable('test-avk-blur-damage',
+                                  'tests/test-avk-blur-damage.c',
+                                  dependencies : [avk_dep],
+                                  build_by_default : false)
+test('avk-blur-damage', test_avk_blur_damage, timeout : 300)
+
+# M4F.2A.3: every command kind states what it samples. No GPU -- the resolver
+# is pure -- and no synchronisation claim: Vulkan validation stays the oracle
+# for barriers. This only has to notice an omission earlier than that would.
+test_avk_cmd_uses = executable('test-avk-cmd-uses',
+                               'tests/test-avk-cmd-uses.c',
+                               dependencies : [avk_dep],
+                               build_by_default : false)
+test('avk-cmd-uses', test_avk_cmd_uses, timeout : 30)
+
+# M4D: shadows. libm because the fixtures carry an independent CPU
+# transcription of the reference's erf-and-four-samples formula, which is
+# what AVK's readback is compared against -- not GLES, and not AVK's own
+# shader.
+# M5/C5: the colour capability predicates, driven with SYNTHETIC feature
+# sets. No device: this machine's RADV answers yes to every question these
+# ask, so a live test would pass for a predicate that returned true
+# unconditionally -- and the interesting answers are the PARTIAL ones no
+# single GPU can be made to produce on demand.
+test_avk_color_caps = executable('test-avk-color-caps',
+                                 'tests/test-avk-color-caps.c',
+                                 dependencies : [vulkan_dep],
+                                 include_directories : include_directories('src'),
+                                 build_by_default : false)
+test('avk-color-caps', test_avk_color_caps, timeout : 30)
+
+test_avk_shadow = executable('test-avk-shadow',
+                             'tests/test-avk-shadow.c',
+                             dependencies : [avk_dep, libm],
+                             build_by_default : false)
+test('avk-shadow', test_avk_shadow, timeout : 120)
+
+# asteroidz-avk-probe: run the engine on real hardware and say what it can
+# do. Installed, because until AVK renders the desktop (M3b) this is the
+# only way to exercise it on the machine it will eventually run on -- and it
+# touches nothing the compositor owns, so it is safe to run in a live
+# session.
+executable('asteroidz-avk-probe', 'tools/avk-probe.c',
+           dependencies : [avk_dep, dependency('cairo')],
+           install : true,
+           c_args : c_args)
 
 # Runs from the source root so the corpus case can open assets/config.kdl --
 # editing the config we actually ship is the closest thing to editing the

@@ -14,7 +14,6 @@
 
 #include "az_dmabuf_model.h"
 
-#ifdef AZ_HAVE_VULKAN
 
 /* Kept so `amsg get dmabuf-feedback` can report what was advertised without
  * rebuilding it, and so the subset invariants can be checked against the
@@ -264,6 +263,5 @@ static void az_dmabuf_caps_finish(void) {
 	az_dmabuf_advertised.active = false;
 }
 
-#endif /* AZ_HAVE_VULKAN */
 
 #endif /* AZ_DMABUF_CAPS_H */
