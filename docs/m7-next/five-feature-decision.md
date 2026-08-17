@@ -277,9 +277,27 @@ against the derive table, not a new subsystem.
 > the instinct to distrust it first was wrong — the check that settled it was
 > that the M12 commit's diff touches no line of the source-reading path.
 >
-> **STILL OPEN: the continuity qualification** (Feature 2's remains, D1/D4) —
-> the DP-1↔HDMI-A-1 drag and the straddling window. Nothing headless
-> substitutes for it, and M12 does not close until it is watched.
+> **THE STRADDLING CASE, WATCHED 2026-08-17.** One surface spanning both
+> outputs: a single domain (scale 35.714, `hdr-content`) against two
+> independently derived mappings — HDMI-A-1 `A-direct-srgb`/srgb/`peak_scene`
+> 1.0, DP-1 `B-encode`/pq/`peak_scene` 1.4286. Nothing interpolated and nothing
+> sampled from one output onto the other, which is Feature 2's founding
+> invariant shown rather than argued. Operator: highlights roll off smoothly on
+> both halves, no clipping.
+>
+> **WHAT THAT DOES AND DOES NOT PROVE.** mpv's `content_peak_scene` is 1.4286
+> and DP-1's `peak_scene` is *also* 1.4286 — both are 400/280, the content's
+> MaxCLL and the panel rule's max-luminance coinciding. So on DP-1 the rolloff
+> is an IDENTITY, and a smooth DP-1 half is what would be seen whether the curve
+> worked or was absent. Only the HDMI-A-1 half is evidence: there the same
+> highlights compressed 1.4286 → 1.0, ~30% off peak, without flattening. Had
+> the content's MaxCLL been below 400, both halves would have been no-ops and
+> the whole observation would have proven nothing — the equal-by-coincidence
+> trap again, and this time it was avoided by the panel's ceiling rather than by
+> design.
+>
+> Both outputs run `ref_nits` 280, so an SDR source's scale — which carries no
+> reference term (ADR-003) — is identical across the seam by construction.
 
 **D5 — M13: presentation classes and the scanout revival.** DESKTOP_UI is
 M6A's default, named. GAME and VIDEO become values in the intent snapshot,
