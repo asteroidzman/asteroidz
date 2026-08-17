@@ -254,7 +254,9 @@ static const ConfigOption config_schema[] = {
 	 "Titlebars",
 	 "A server-side titlebar on tiled windows. It reserves real space -- the "
 	 "window does not grow to compensate, so enabling this shrinks the usable "
-	 "content area.",
+	 "content area. Monocle draws its tab strip regardless, since a stack of "
+	 "windows drawn on top of one another needs one; that does not extend to a "
+	 "floating window on a monocle tag, which follows this setting.",
 	 OPT_BOOL, offsetof(Config, enable_titlebar), 0, 0, 1, NULL, 0, "0", 0},
 	/* There is deliberately no titlebar height here. It is DERIVED in
 	 * override_config() from the theme font's line height plus theme/padding/y,

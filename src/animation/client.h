@@ -10,6 +10,34 @@ void set_rect_size(struct wlr_scene_rect *rect, int32_t width, int32_t height) {
 	wlr_scene_rect_set_size(rect, GEZERO(width), GEZERO(height));
 }
 
+/*
+ * IS A TITLEBAR WANTED ON THIS CLIENT AT ALL?
+ *
+ * Two reasons one can be, and only one of them is the operator's:
+ * `enable_titlebar`, which applies everywhere, and monocle, which needs tabs as
+ * LAYOUT FURNITURE -- a stack of windows drawn on top of one another is
+ * unnavigable without something naming the ones underneath.
+ *
+ * That second reason belongs to the STACK, not to the tag. A floating window on
+ * a monocle tag is not in the stack: it is drawn over it, in front of it,
+ * already fully visible, and nothing about it needs naming. Deriving the answer
+ * from `is_monocle_layout(c->mon)` alone gave every floating window on a
+ * monocle tag a titlebar with `titlebar { enable 0 }` set -- the operator
+ * turned titlebars off and monocle turned them back on for windows the layout
+ * was not managing.
+ *
+ * Shared because the answer is consumed three times -- here for corner
+ * squaring, in client_draw_titlebar() for the tab itself, and in
+ * get_border_color() for the pill colour underneath it -- and the three
+ * disagreeing is exactly how a window ends up squaring its top corners against
+ * a titlebar that was never drawn.
+ */
+static inline bool client_titlebar_wanted(Client *c) {
+	return c && c->mon &&
+		   (config.enable_titlebar ||
+			(is_monocle_layout(c->mon) && ISFAKETILED(c)));
+}
+
 enum corner_location set_client_corner_location(Client *c) {
 	enum corner_location current_corner_location = CORNER_LOCATION_ALL;
 	bool ov = c->mon && c->mon->isoverview;
@@ -77,7 +105,7 @@ enum corner_location set_client_corner_location(Client *c) {
 	 * per-window tab, in contrast, only exists for server-decorated windows */
 	bool seg_row = !ov && is_monocle_layout(c->mon) &&
 				   c->mon->visible_fake_tiling_clients > 1 && ISFAKETILED(c);
-	if ((config.enable_titlebar || is_monocle_layout(c->mon)) &&
+	if (client_titlebar_wanted(c) &&
 		c->titlebar_node && !c->isfullscreen &&
 		(seg_row ||
 		 (client_wants_ssd(c) && !client_no_titlebar(c) &&
@@ -992,12 +1020,14 @@ void client_draw_titlebar(Client *c) {
 	 * segments itself (see client_draw_monocle_titlebar_segment, called from
 	 * monocle() in horizontal.h) rather than one compact per-window tab.
 	 * Only fake-TILED windows join the segment row; a floating window on a
-	 * monocle tag keeps its own per-window tab below. */
+	 * monocle tag falls through to the per-window tab below, which it gets
+	 * only if titlebars are enabled -- monocle's own reason for a tab does not
+	 * extend to a window the layout is not stacking (client_titlebar_wanted). */
 	if (!c->mon->isoverview && is_monocle_layout(c->mon) &&
 		c->mon->visible_fake_tiling_clients > 1 && ISFAKETILED(c))
 		return;
 
-	bool titlebar_wanted = config.enable_titlebar || is_monocle_layout(c->mon);
+	bool titlebar_wanted = client_titlebar_wanted(c);
 	bool ov = c->mon->isoverview;
 	/* Draw the titlebar for tiled AND floating windows, incl. in the overview
 	 * (scaled to the shrunk window). In the overview draw ONLY for windows on the

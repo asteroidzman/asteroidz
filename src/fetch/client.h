@@ -400,10 +400,12 @@ float *get_border_color(Client *c) {
 	/* an inactive window sitting under a titlebar should read as one piece
 	 * with it, so match the titlebar's own inactive pill color instead of
 	 * the generic border color. */
+	/* ISFAKETILED stays alongside client_titlebar_wanted(): the pill match is
+	 * for a window sitting UNDER the bar, and a floating window with titlebars
+	 * on carries its tab with it rather than tucking beneath one. */
 	bool has_titlebar = c->titlebar_node && c->mon && client_wants_ssd(c) &&
 					   !client_no_titlebar(c) &&
-					   (config.enable_titlebar || is_monocle_layout(c->mon)) &&
-					   ISFAKETILED(c);
+					   client_titlebar_wanted(c) && ISFAKETILED(c);
 	float *inactive_color =
 		has_titlebar ? config.theme.bg_color : config.bordercolor;
 
