@@ -370,6 +370,35 @@ what M13 adds is per-class policy over a capability that demonstrably works.
 > existing check attached to it, and schema changes must run `-S` and
 > `check-rule-schema.py` before install.
 >
+> **VIDEO CADENCE: MEASURED, AND NOT NEEDED ON THIS HARDWARE.** Live on DP-1
+> with a 23.976fps film: mpv commits at **23.9377 Hz** over 622 samples (0.16%
+> off nominal, dropping nothing), and `get presentation` counts **240 presented
+> frames in 10 seconds — exactly 24.0/s**. The compositor already paces to the
+> content; DP-1's global VRR is doing precisely what the VIDEO class would have
+> been built to do. No mechanism is warranted here, and the class keeps its one
+> real effect: never tear.
+>
+> Revival condition, so this does not run forever: a fixed-refresh output
+> carrying video where `presents_per_frame` is a non-integer, or an operator
+> complaint about judder with a capture. HDMI-A-1 at 60Hz is the candidate —
+> 23.976 into 60 is 2.5 presentations per frame and no compositor-side
+> scheduling fixes that; only a mode change does.
+>
+> **THE INSTRUMENT PRODUCED A CONFIDENT WRONG ANSWER FIRST, AND ALMOST WON.**
+> Its `vblanks_per_frame` divided the client's commit interval by the panel's
+> observed *vblank* period. Under VRR those are unrelated: the panel free-runs
+> while the compositor commits sparsely. It read 4.517 on a perfectly-paced
+> film, which was written up as "refutes the hypothesis with real data" and as
+> justification for building cadence scheduling. `get presentation` — counting
+> frames that actually reached the screen — said 24.0/s and settled it the other
+> way. Now `presents_per_frame` divides by `presented_hz`, where 1.0 means the
+> compositor is pacing to the client, and `presented_hz` is ABSENT rather than
+> zero where the backend gives no timing, which is every headless output.
+>
+> The lesson is the M12 one again in a new place: a metric that cannot be wrong
+> in an obvious way is more dangerous than a missing one. This one survived
+> because a second, independent counter disagreed with it.
+>
 > **M13B, the scanout revival, is not started.**
 
 **D6 — M14: the capture stream.** A stream API first, not an encoder:

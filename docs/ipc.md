@@ -551,6 +551,9 @@ Each entry in `surfaces` carries:
 | `presentation.class_from` | `derived` (from wp-content-type), `window-rule`, or `layer-shell` — a layer surface can carry neither a rule nor a content type, so `desktop-ui` is structural for it rather than a guess |
 | `presentation.tearing_eligible` | does **this window** ask to tear |
 | `presentation.tearing_active` | is the compositor **actually** tearing its output now — additionally requires this window to be focused and the global setting to permit it |
+| `presentation.vblank_hz` | the panel's scan rate |
+| `presentation.presented_hz` | how often a frame actually reached the screen — **not the same as `vblank_hz` under VRR**, where the panel free-runs faster than the compositor commits |
+| `presentation.presents_per_frame` | presentations per committed client frame; **1.0 means the compositor is pacing to the client**, which is what VRR following a video looks like |
 | `presentation.output_vrr_active` | VRR state of its output, named so it cannot be read as a property of the window |
 | `render.direct_scanout` | whether the surface bypassed composition |
 | `render.scanout_why` | why it did not |

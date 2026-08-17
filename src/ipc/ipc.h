@@ -480,16 +480,49 @@ static cJSON *build_surface_intent_json(struct wlr_surface *s,
 				(double)ic->commit_interval_n);
 		}
 		if (in.mon != NULL) {
-			uint64_t per = az_presenter_period_ns(in.mon);
-			cJSON_AddNumberToObject(pc, "output_hz",
-				per > 0 ? 1.0e9 / (double)per : 0.0);
-			/* Vblanks per committed frame: 6.006 for 23.976 into 144Hz, which
-			 * is the number that says why it cannot be even. */
-			if (per > 0 && ic != NULL && ic->commit_interval_n > 0) {
+			/*
+			 * ── TWO RATES, AND DIVIDING BY THE WRONG ONE LIES ──────────────
+			 *
+			 * `vblank_hz` is the panel's scan rate, from the presenter's
+			 * observed period. `presented_hz` is how often a frame actually
+			 * REACHED the screen. On a fixed output they are the same number.
+			 * UNDER VRR THEY ARE NOT: the panel can free-run far faster than
+			 * the compositor commits.
+			 *
+			 * This shipped dividing the client's commit interval by the vblank
+			 * period and calling it "vblanks_per_frame". On DP-1 playing a
+			 * 23.976fps film it read 4.5, which was taken as evidence that VRR
+			 * was NOT following the content and that cadence work was needed.
+			 * `get presentation` then showed 240 presented frames in 10
+			 * seconds -- exactly 24/s, exactly the content -- so VRR was
+			 * following it perfectly and the metric was measuring the panel's
+			 * scan rate against the film's frame rate, which is a ratio of two
+			 * unrelated things.
+			 *
+			 * A number that produces a confident wrong conclusion is worse than
+			 * no number. The ratio is now against `presented_hz`, where 1.0
+			 * means "one presentation per committed frame" -- the thing the
+			 * question was actually asking.
+			 */
+			uint64_t vb = az_presenter_period_ns(in.mon);
+			cJSON_AddNumberToObject(pc, "vblank_hz",
+				vb > 0 ? 1.0e9 / (double)vb : 0.0);
+			/*
+			 * ABSENT, NOT ZERO, when the backend has given no presentation
+			 * timing -- which is every headless output. A reported 0 reads as
+			 * "nothing reached the screen", which is a different and wrong
+			 * claim; the absence of the key says "not measured here".
+			 */
+			uint64_t pres = in.mon->present_interval_ns;
+			if (pres > 0) {
+				cJSON_AddNumberToObject(pc, "presented_hz",
+					1.0e9 / (double)pres);
+			}
+			if (pres > 0 && ic != NULL && ic->commit_interval_n > 0) {
 				double mean_ns = (double)ic->commit_interval_sum_ns
 					/ (double)ic->commit_interval_n;
-				cJSON_AddNumberToObject(pc, "vblanks_per_frame",
-					mean_ns / (double)per);
+				cJSON_AddNumberToObject(pc, "presents_per_frame",
+					mean_ns / (double)pres);
 			}
 		}
 		cJSON_AddBoolToObject(pc, "output_vrr_active",
