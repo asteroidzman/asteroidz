@@ -347,6 +347,29 @@ what M13 adds is per-class policy over a capability that demonstrably works.
 > unverified; a headless output has no adaptive sync and no fullscreen game has
 > been run since.
 >
+> **VERIFIED LIVE 2026-08-17.** mpv `video (derived)` — the automatic path
+> reaches real clients. gamescope does NOT declare wp-content-type, so games
+> need a rule in practice; with `presentation-class "game"` on the game, the
+> live dump reads `game fs=true vrr=true`, which closes the VRR generalisation:
+> a GAME window fullscreen gets adaptive sync without `vrr-only-fullscreen`
+> named per application.
+>
+> **A SEGFAULT REACHED THE LIVE SESSION, AND A CHECK THAT WOULD HAVE CAUGHT IT
+> WAS ALREADY IN THE TREE.** `rule_format()` dereferences every RULE_ENUM field
+> as a `const char *`; M12's `luminance_domain` and M13A's `presentation_class`
+> were declared `char[16]`, so it read the value's own first eight characters as
+> a pointer. Latent until a rule set one — an all-zero array reads as NULL —
+> then fatal on any IPC read of the window rules, which something on the desktop
+> does periodically.
+>
+> `asteroidz -S` writes every field through the real parser and reads it back
+> through `rule_format`. Run against the pre-fix build it dumps core; it was
+> never run. Every smoke passed because all of them read these fields through
+> the RENDERER and none through the IPC surface that formats them. The lesson is
+> not "write more fixtures" — it is that adding a row to `rule_schema[]` has an
+> existing check attached to it, and schema changes must run `-S` and
+> `check-rule-schema.py` before install.
+>
 > **M13B, the scanout revival, is not started.**
 
 **D6 — M14: the capture stream.** A stream API first, not an encoder:
