@@ -241,7 +241,21 @@ static inline enum az_scanout_verdict az_scanout_eligible(Monitor *m,
 	 * output's transfer function; scanout has no encode pass, so anything the
 	 * encode pass was carrying is a refusal.
 	 */
-	if (m->icc_transform != NULL) {
+	/*
+	 * ── A LOADED PROFILE IS NOT AN APPLIED PROFILE ────────────────────────
+	 *
+	 * This tested `m->icc_transform != NULL` and was wrong for the operator's
+	 * own display. DP-1 carries an ICC profile AND runs HDR, and M6B/D3 makes
+	 * the profile INERT there -- the connector presents its own image
+	 * description, so stacking an SDR characterisation on top would be two
+	 * transforms on one pixel. Its encode_tf is PQ, not LUT1D.
+	 *
+	 * So the question is not "is a profile loaded" but "is the encode pass
+	 * carrying one", because the encode pass is the thing scanout skips. Same
+	 * predicate the inspector prints as `icc_applied`.
+	 */
+	if (m->color_state.encode_tf == AZ_TF_LUT1D
+			|| m->color_state.encode_tf == AZ_TF_CLUT3D) {
 		return AZ_SCANOUT_OUTPUT_ICC;
 	}
 	/*
