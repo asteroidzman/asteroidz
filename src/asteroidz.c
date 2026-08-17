@@ -12786,6 +12786,30 @@ void commitx11(struct wl_listener *listener, void *data) {
 	Client *c = wl_container_of(listener, c, commmitx11);
 	struct wlr_surface_state *state = &c->surface.xwayland->surface->current;
 
+	/*
+	 * ── F10: AN XWAYLAND SURFACE'S COLOUR VOLUME CHANGES ON COMMIT TOO ────
+	 *
+	 * wp-cm is a wl_surface protocol, so an XWayland client's Wayland surface
+	 * can carry an image description exactly like an xdg one -- and commit is
+	 * the first moment the double-buffered state is readable, which is why
+	 * commitnotify() calls this. There are two commit listeners in this
+	 * compositor and only the xdg one had the call, so an XWayland client that
+	 * changed its mastering metadata mid-stream never re-armed the connector:
+	 * DP-1 kept describing the volume from whenever the last xdg client last
+	 * committed, or from map.
+	 *
+	 * The preferred-description half of the handshake was never missing here.
+	 * That is sent from mapnotify() and setmon(), both of which XWayland
+	 * already shares, so this one call is the whole of the gap.
+	 *
+	 * Same gate and same placement as commitnotify(): before any early-out,
+	 * because a client mid-animation is still the thing on screen and its
+	 * colour volume is not an animation property.
+	 */
+	if (c && !c->iskilling) {
+		mon_content_metadata_changed(client_surface(c));
+	}
+
 	/* Compared in X11's space, for the same reason as the short circuit in
 	 * client_set_size: state->width is the surface's own pixel count and
 	 * xwayland->x/y are X coordinates, while c->geom is logical. In logical
