@@ -421,10 +421,21 @@ what M13 adds is per-class policy over a capability that demonstrably works.
 > in one day of reimplementing past an existing answer; the other was
 > `asteroidz -S`.
 >
-> **The hazards are live again for the first time since they were worked around**,
-> and mpv — the application with the recorded KMS-wedge on scanout *transition* —
-> is the one now scanning out. The dangerous direction is scanout → composition:
-> tagging away, or leaving fullscreen. Not yet exercised.
+> **THE TRANSITION HAZARD DID NOT REPRODUCE.** mpv — the application with the
+> recorded KMS wedge on scanout *transition* — was tagged away from and back
+> while scanning out. No wedge, and scanout re-engaged on its own: 1483 → 1610
+> frames in five seconds after the round-trip. The dangerous direction, scanout →
+> composition → scanout, works.
+>
+> That is ONE round-trip, not a soak, and the honest scope is that: the recorded
+> wedge may have been intermittent or conditional on an HDR transition happening
+> at the same moment, and a single clean pass cannot distinguish "fixed" from
+> "not triggered". What it does establish is that the path is not wedged by
+> construction. The gamescope arm — a fullscreen game scanning out, with the
+> explicit-sync race the acquire fence now addresses — remains untested.
+
+**M13 IS CLOSED.** A, B, and the cadence question answered by measurement and
+declined.
 
 
 **D6 — M14: the capture stream.** A stream API first, not an encoder:
