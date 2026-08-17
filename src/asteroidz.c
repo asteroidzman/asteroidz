@@ -1000,6 +1000,13 @@ struct Monitor {
 	 * against reality (audit G5).
 	 */
 	uint64_t present_interval_ns;
+	/* M13B: the last frame's scanout verdict (enum az_scanout_verdict) and how
+	 * many frames went straight to the display. The verdict is kept per output
+	 * rather than per client because it answers a question about the OUTPUT --
+	 * "did this display composite this frame" -- and because a refusal often
+	 * has no client to hang it on. */
+	int32_t scanout_verdict;
+	uint64_t scanout_frames;
 	/*
 	 * CADENCE, FROM PRESENTATION RATHER THAN FROM GPU TIMING.
 	 *
@@ -1553,6 +1560,9 @@ static void mon_send_preferred_descriptions_all(void);
  * own setter -- both of which come earlier in this file, or in a header
  * included earlier. */
 static void mon_content_metadata_changed(struct wlr_surface *surface);
+/* M13B: the scanout evaluation needs it and is included before it is defined,
+ * same as above. One definition of "what covers this output". */
+static Client *mon_hdr_scanout_candidate(Monitor *m);
 /*
  * How many times a content-metadata change has armed a connector update.
  *
@@ -2692,6 +2702,9 @@ static int32_t capture_output(const Arg *arg) {
 /* M11. The per-surface intent snapshot, after the colour frontends because it
  * reads the same description multiplexer they register. */
 #include "render/az_intent.h"
+/* M13B: direct scanout eligibility and the attempt. Before ipc.h, which prints
+ * the verdict, and before rendermon, which acts on it. */
+#include "render/az_scanout.h"
 #include "fetch/fetch.h"
 #include "ipc/ipc.h"
 #include "ipc/portals.h"
@@ -9422,6 +9435,52 @@ static void render_monitor(Monitor *m) {
 		struct az_frame_options frame_options = {
 			.color_transform = az_output_color_transform(m),
 		};
+		/*
+		 * ── M13B: TRY THE DISPLAY FIRST ───────────────────────────────────
+		 *
+		 * A fullscreen client whose buffer IS this output's picture does not
+		 * need compositing -- it needs handing to the display. The attempt
+		 * costs one KMS test when it is eligible at all, and eligibility is
+		 * decided from compositor state before any test happens, so an
+		 * ordinary desktop frame pays a candidate lookup and nothing more.
+		 *
+		 * The verdict is recorded either way, because "why is my game not
+		 * scanning out" is the question this milestone exists to answer, and
+		 * an answer only available when the answer is yes is not one.
+		 */
+		enum az_scanout_verdict sv = AZ_SCANOUT_NO_CANDIDATE;
+		bool scanned_out = az_scanout_try(m, &state, &sv);
+		m->scanout_verdict = (int32_t)sv;
+		if (scanned_out) {
+			m->scanout_frames++;
+			if (!wlr_output_commit_state(m->wlr_output, &state)) {
+				wlr_log(WLR_ERROR, "scanout: commit failed on %s",
+					m->wlr_output->name);
+				az_output_commit_failed(m);
+			}
+			wlr_output_state_finish(&state);
+			/*
+			 * ── THE DAMAGE IS SETTLED HERE, OR THE OUTPUT NEVER SLEEPS ────
+			 *
+			 * wlr_scene_output_needs_frame() is true while
+			 * pending_commit_damage is non-empty, and it is the COMPOSITION
+			 * path that normally empties it. Skipping composition without
+			 * clearing it leaves the output permanently needing a frame: the
+			 * compositor would re-scan-out at the panel's maximum rate forever,
+			 * including with the game paused and nothing changing.
+			 *
+			 * Clearing outright rather than subtracting is right for scanout
+			 * specifically: the whole output was replaced by the client's
+			 * buffer, so there is no partial region left owing.
+			 */
+			pixman_region32_clear(&m->scene_output->pending_commit_damage);
+			/* The scene still owes frame-done to everything it would have
+			 * drawn: a client that never hears back stops rendering. */
+			struct timespec sdone;
+			clock_gettime(CLOCK_MONOTONIC, &sdone);
+			wlr_scene_output_send_frame_done(m->scene_output, &sdone);
+			goto scanout_done;
+		}
 		if (az_output_build_frame(m, &state, &frame_options)) {
 			/* The damage this frame actually committed, in output-buffer
 			 * pixels, before wlr_output_state_finish() frees the region.
@@ -9537,6 +9596,8 @@ static void render_monitor(Monitor *m) {
 					m->wlr_output->name);
 		}
 		wlr_output_state_finish(&state);
+scanout_done:
+		;
 	}
 
 	AZ_ZONE_END(az_commit);

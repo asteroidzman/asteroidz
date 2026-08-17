@@ -33,10 +33,10 @@
  * derived FROM. An enum whose every value is UNSET would be a slot pretending
  * to be an answer.
  *
- * Direct scanout is reported as not happening, with a reason, because at HEAD
- * it genuinely never happens: scene_entry_try_direct_scanout() has no caller.
- * That is a true statement about this compositor and it is better said than
- * omitted -- M13 revives the path and replaces the constant with a real one.
+ * Direct scanout is NOT here either, and for a different reason: M13B made it
+ * real, and its verdict is per-surface-and-per-output rather than a property of
+ * the surface alone. It is evaluated in the serializer, which has the Client,
+ * against az_scanout_eligible() -- the same function the frame path calls.
  */
 
 #include <stdbool.h>
@@ -88,10 +88,6 @@ struct az_surface_intent {
 	uint64_t misses;
 	uint64_t prediction_exceeded;
 
-	/* ── render path ───────────────────────────────────────────────────── */
-	bool scanout;
-	const char *scanout_why;     /* never NULL */
-
 	/*
 	 * THE IDENTITY OF EVERYTHING ABOVE THAT IS A DECISION.
 	 *
@@ -103,24 +99,9 @@ struct az_surface_intent {
 	uint64_t identity;
 };
 
-/*
- * WHY SCANOUT DID NOT HAPPEN.
- *
- * One constant today, and the reason is structural rather than per-surface:
- * AVK composes every frame and the scene's scanout decision function is
- * unreachable. M13 turns this into the real per-surface enum the brief asks
- * for ("modifier not scanout-capable", "HDR source needs compositor tone
- * mapping", ...). Naming it now, in the place that will carry it, keeps the
- * inspector's shape stable across that change.
- */
-#define AZ_SCANOUT_WHY_NOT_IMPLEMENTED \
-	"composition always: AVK has no direct-scanout path (M13)"
-
 static inline void az_surface_intent_resolve(struct wlr_surface *surface,
 		struct az_surface_intent *out) {
 	*out = (struct az_surface_intent){0};
-	out->scanout = false;
-	out->scanout_why = AZ_SCANOUT_WHY_NOT_IMPLEMENTED;
 	out->domain = az_lum_domain_untagged();
 	if (surface == NULL) {
 		return;
@@ -217,7 +198,6 @@ static inline void az_surface_intent_resolve(struct wlr_surface *surface,
 	az_preferred_mix(&h, &out->ocs.path, sizeof(out->ocs.path));
 	az_preferred_mix(&h, &out->ocs.encode_tf, sizeof(out->ocs.encode_tf));
 	az_preferred_mix(&h, &out->pref.identity, sizeof(out->pref.identity));
-	az_preferred_mix(&h, &out->scanout, sizeof(out->scanout));
 	az_preferred_mix(&h, &out->buf_format, sizeof(out->buf_format));
 	az_preferred_mix(&h, &out->buf_modifier, sizeof(out->buf_modifier));
 	out->identity = h != 0 ? h : 1;

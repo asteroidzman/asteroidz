@@ -530,8 +530,27 @@ static cJSON *build_surface_intent_json(struct wlr_surface *s,
 	}
 
 	cJSON *rn = cJSON_AddObjectToObject(o, "render");
-	cJSON_AddBoolToObject(rn, "direct_scanout", in.scanout);
-	cJSON_AddStringToObject(rn, "scanout_why", in.scanout_why);
+	/*
+	 * M13B. The verdict for THIS surface, evaluated now from production state
+	 * -- not the output's last-frame verdict, which would answer about
+	 * whichever window happened to be fullscreen. Free: everything but
+	 * KMS_REFUSED is decidable without touching the display.
+	 */
+	enum az_scanout_verdict sv = AZ_SCANOUT_NO_CANDIDATE;
+	if (ic != NULL && in.mon != NULL) {
+		Client *cand = NULL;
+		sv = az_scanout_eligible(in.mon, NULL, &cand);
+		/* Eligible, but for a DIFFERENT window: say so rather than letting
+		 * this surface inherit another's verdict. */
+		if (cand != ic) {
+			sv = AZ_SCANOUT_NO_CANDIDATE;
+		}
+	}
+	cJSON_AddBoolToObject(rn, "direct_scanout",
+		ic != NULL && in.mon != NULL && sv == AZ_SCANOUT_ACCEPTED
+			&& in.mon->scanout_verdict == (int32_t)AZ_SCANOUT_ACCEPTED);
+	cJSON_AddStringToObject(rn, "scanout", az_scanout_verdict_name(sv));
+	cJSON_AddStringToObject(rn, "scanout_why", az_scanout_verdict_why(sv));
 
 	return o;
 }
@@ -1182,6 +1201,13 @@ static void handle_command(int client_fd, const char *cmd_raw) {
 			cJSON_AddNumberToObject(e, "misses", (double)om->presenter.misses);
 			cJSON_AddNumberToObject(e, "prediction_exceeded",
 				(double)om->presenter.prediction_exceeded);
+			/* M13B: what this OUTPUT did last frame, and how often it has
+			 * skipped composition entirely. */
+			cJSON_AddStringToObject(e, "scanout_last",
+				az_scanout_verdict_name(
+					(enum az_scanout_verdict)om->scanout_verdict));
+			cJSON_AddNumberToObject(e, "scanout_frames",
+				(double)om->scanout_frames);
 			cJSON_AddItemToArray(outs, e);
 		}
 	} else if (strcmp(cmd, "get presentation") == 0) {
