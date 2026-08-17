@@ -113,18 +113,20 @@ static const RuleGroup rule_groups[] = {
 	 "Tearing, scan-out and variable refresh for this window."},
 };
 
-/* M12. Spellings are az_lum_class_name()'s, and must stay in step with it:
- * that function is the parser the compositor actually uses, and this table is
- * only what a config UI offers. A member here that it cannot parse would be a
- * pickable option that silently does nothing. */
 /* M13. Spellings are az_present_class_name()'s, and must stay in step with it
  * for the same reason rule_luminance_domain does. */
 static const RuleEnumMember rule_presentation_class[] = {
 	{"desktop-ui", "Smooth, predictable pacing. The default."},
 	{"game", "Lowest latency: tearing if asked, VRR when fullscreen."},
-	{"video", "Cadence fidelity. Never tears."},
+	/* Not "cadence fidelity": that is what the class is for and not what it
+	 * does yet. See az_present_intent.h. */
+	{"video", "Never tears."},
 };
 
+/* M12. Spellings are az_lum_class_name()'s, and must stay in step with it:
+ * that function is the parser the compositor actually uses, and this table is
+ * only what a config UI offers. A member here that it cannot parse would be a
+ * pickable option that silently does nothing. */
 static const RuleEnumMember rule_luminance_domain[] = {
 	{"sdr-ui", "Desktop furniture: hold white at 203 cd/m2."},
 	{"sdr-normal", "Ordinary SDR content at the desktop reference."},
@@ -295,7 +297,7 @@ static const RuleField rule_schema[] = {
  "Presentation class",
  "What this window's frames are FOR, which decides WHEN they appear -- never "
  "what they look like. 'game' takes lowest latency: tearing if the client "
- "asks, VRR when fullscreen. 'video' takes cadence fidelity and never tears. "
+ "asks, VRR when fullscreen. 'video' never tears. "
  "'desktop-ui' is the default: smooth, predictable pacing. Unset derives it "
  "from wp-content-type, which is the client saying what it is. Colour "
  "management, HDR and synchronisation are never traded away by any of them.",

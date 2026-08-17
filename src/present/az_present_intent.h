@@ -15,9 +15,19 @@
  *               is named here rather than changed.
  *   GAME        lowest practical latency: tearing where the client asks for it,
  *               VRR where the display supports it, minimal queue depth.
- *   VIDEO       cadence fidelity. 23.976fps content is not arbitrary desktop
- *               animation and must not be paced like it; never tears, because
- *               a torn frame in a film is a worse artifact than a late one.
+ *   VIDEO       never tears, because a torn frame in a film is a worse
+ *               artifact than a late one.
+ *
+ *               CADENCE-FOLLOWING IS NOT IMPLEMENTED. The intent -- present
+ *               23.976fps content at the presenter opportunity nearest the
+ *               client's target rather than pacing it like desktop animation
+ *               -- is what this class is FOR, and it is not what this class
+ *               currently DOES. Classification and the no-tear rule landed
+ *               first because they are what the tearing path needed; the
+ *               cadence half is M13's remaining presenter work. Said here
+ *               rather than implied, because a class that names an intent it
+ *               does not yet act on is exactly the kind of thing that gets
+ *               believed.
  *
  * ── CLASSIFICATION USES INTENT, NEVER EXECUTABLE NAMES ────────────────────
  *

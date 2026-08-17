@@ -162,7 +162,7 @@ a window looks.
 |---|---|---|
 | `desktop-ui` | smoothness, predictable cadence | the default; presentation-time animation, never tears |
 | `game` | lowest practical latency | may tear when `allow-tearing` permits; VRR while fullscreen |
-| `video` | cadence fidelity | never tears, so a film cannot be torn to save latency it does not need |
+| `video` | cadence fidelity | **today: never tears.** Cadence-following presentation is the intent of this class and is not yet implemented — see below |
 
 Unset derives from `wp-content-type` — the client declaring what it is, which is
 the honest signal. **Classification never uses executable names:** an app-id list
@@ -184,6 +184,18 @@ named per application; that rule still works and still means what it meant.
 **No class disables colour management, HDR, or explicit synchronisation.** A
 class chooses *when* a frame appears, never what is in it — a fast wrong pixel
 is still wrong.
+
+### What `video` does not do yet
+
+`video` currently means one thing: never tear. The reason the class exists —
+presenting 23.976fps content at the presentation opportunity nearest the
+client's target, instead of pacing it like desktop animation — is **not
+implemented**. Classifying a window as `video` today buys you the no-tear
+guarantee and nothing else.
+
+It is documented rather than quietly omitted because a class that names an
+intent it does not act on is the kind of thing that gets believed and then
+measured against.
 
 `sdr_white_scale` and `hdr_gain` are **per window on purpose, and there is no
 global equivalent of either**. On an HDR output every SDR application is

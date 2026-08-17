@@ -320,6 +320,35 @@ target and gets no compositor-specific hack. VRR is not built, it is audited:
 DP-1 already runs `vrr 1` with the presenter's VRR regime measured live —
 what M13 adds is per-class policy over a capability that demonstrably works.
 
+> **M13A LANDED 2026-08-17 — classification, tearing, VRR. NOT cadence.**
+>
+> Built: the three classes, derived from wp-content-type with a
+> `presentation-class` window rule overriding; tearing routed through the class
+> instead of reading wp-content-type in a second place; VRR generalised so a
+> GAME window gets it fullscreen without `vrr-only-fullscreen` named per app.
+>
+> **A crash was found and fixed on the way, not by this milestone's design but
+> by its first fixture.** `allow_tearing` plus any window asking to tear called
+> `apply_tear_state()`, which has aborted since 13254aad removed the SceneFX
+> composition it routed to — a crash reachable from configuration alone, which
+> M13 would have widened since a game no longer needs a rule to be classed as
+> one. Tearing now goes through `az_output_build_frame()` with
+> `tearing_page_flip`, tested and downgraded to a synced present if refused.
+>
+> **VIDEO's cadence-following is NOT implemented**, and the first version of
+> this text, the rule help and the enum member all said it was. Today `video`
+> means exactly one thing: never tear. Presenting 23.976fps content at the
+> opportunity nearest the client's target is the reason the class exists and is
+> M13's remaining presenter work. Corrected in every place that claimed it.
+>
+> Live: mpv reports `video (derived)` — so the automatic path does reach real
+> clients, and the video-never-tears fix was live rather than theoretical, since
+> mpv was in the class that could tear under `allow_tearing 1`. VRR remains
+> unverified; a headless output has no adaptive sync and no fullscreen game has
+> been run since.
+>
+> **M13B, the scanout revival, is not started.**
+
 **D6 — M14: the capture stream.** A stream API first, not an encoder:
 ext-image-copy-capture sessions backed by AVK stage taps, with the stage
 **named in the API** — SCENE_LINEAR (the Path-B working image), SDR_APPEARANCE
