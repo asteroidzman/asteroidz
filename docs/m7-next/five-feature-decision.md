@@ -438,6 +438,31 @@ what M13 adds is per-class policy over a capability that demonstrably works.
 declined.
 
 
+> **M14 IS FUTURE WORK, NOT CANCELLED — deferred 2026-08-17 with its ground
+> audited.** What the audit established, so the next attempt does not re-derive
+> it:
+>
+> - **The demand is real and the current path is genuinely bad.**
+>   `contrib/hdr-record.sh` records HDR at **1 frame per second**, and says why in
+>   its own header: `screenshot_ui,rawhdr` freezes the output and does a full
+>   readback per call, and a faster poll "already made a real system nearly
+>   unresponsive once". HDR recording today is a slideshow by necessity.
+> - **Most of the plumbing exists.** ext-image-copy-capture sessions are wired
+>   (asteroidz.c:1833), `active_capture_count` and the privacy shield work, and
+>   `az_avk_capture_frame()` does readback. What is missing is a STREAM with
+>   named stages.
+> - **M13B changed the problem.** A scanned-out frame has no composited image to
+>   tap, so the stream must either force composition for its duration or read the
+>   client buffer and SAY which it did. That is a new contract, not an
+>   implementation detail.
+> - **It is the largest remaining build and the only one with no cheap live
+>   check.** Verifying it needs a capture client consuming frames, and none
+>   exists in `contrib/`. Every other milestone this program shipped was checked
+>   with one `amsg` query.
+>
+> The audit already paid for itself: it found that direct scanout defeated
+> `privacy_shield`, a hole M13B had opened hours earlier (177b158e).
+
 **D6 — M14: the capture stream.** A stream API first, not an encoder:
 ext-image-copy-capture sessions backed by AVK stage taps, with the stage
 **named in the API** — SCENE_LINEAR (the Path-B working image), SDR_APPEARANCE
