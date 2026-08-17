@@ -1,13 +1,3 @@
 option('xwayland', type : 'feature', value : 'enabled')
 
 option('asan', type : 'boolean', value : false)
-# Tracy profiler support, compiled out entirely when off.
-#
-# ON_DEMAND: no data is gathered and no queue is filled until a viewer
-# actually attaches, so an enabled build can be the daily driver and profiled
-# when something looks wrong, rather than a separate build you have to
-# reproduce the problem under.
-#
-# Build profiling runs as --buildtype=debugoptimized.
-option('tracy', type : 'boolean', value : false,
-       description : 'Enable Tracy profiler instrumentation')

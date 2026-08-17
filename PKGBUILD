@@ -31,11 +31,7 @@ source=("git+$url.git#tag=$pkgver")
 sha256sums=('SKIP')
 
 build() {
-  # -Dtracy=false is the default and is stated anyway: an accidental profiling
-  # build would try to fetch subprojects/tracy.wrap from the network, which a
-  # clean-chroot build cannot do and should not want to.
   arch-meson "$pkgname" build \
-    -Dtracy=false \
     -Db_lto=true
   meson compile -C build
 }

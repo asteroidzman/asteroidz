@@ -172,11 +172,8 @@ fi
 cd "$SRC/asteroidz"
 # The scene graph is asteroidz source now (src/scene/), so there is no
 # separate library to fetch or keep in version lockstep.
-#
-# -Dtracy=false is the default and is stated anyway: a profiling build tries to
-# fetch a subproject over the network.
 meson setup build --wipe --prefix="$PREFIX" --sysconfdir=/etc \
-	--buildtype=debugoptimized -Db_lto=true -Dtracy=false
+	--buildtype=debugoptimized -Db_lto=true
 meson compile -C build -j "$JOBS"
 
 # The schema self-check, before installing rather than after. It drives the real

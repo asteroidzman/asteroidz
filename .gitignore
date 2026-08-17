@@ -21,10 +21,6 @@ contrib/wlbgeffect/ext-background-effect-v1-client-protocol.h
 contrib/wlsandbox/wlsandbox
 contrib/x11check/x11check
 
-# meson downloads the tracy client into subprojects/tracy (see
-# subprojects/tracy.wrap). The wrap and its packagefiles patch are tracked;
-# the checkout -- which is its own git clone -- is not.
-/subprojects/tracy/
 /subprojects/.wraplock
 
 # makepkg builds in place. `pkg/` is its staging root and the .zst is the

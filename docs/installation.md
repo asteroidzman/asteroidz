@@ -236,10 +236,14 @@ You will need to build `wlroots` manually as well.
    ```
 
    `-Dprefix=/usr` is not optional in practice: the bar's icon search path is
-   Build options: `-Dxwayland=disabled` drops X11 support, and `-Dtracy=true` builds
-   with [Tracy](https://github.com/wolfpld/tracy) profiler instrumentation —
-   off by default, and it fetches the Tracy client over the network, so it is
-   not suitable for an offline or clean-chroot build.
+   Build options: `-Dxwayland=disabled` drops X11 support.
+
+   There is no profiler build option. Tracy instrumentation was removed in
+   0.25.1: its client came from the SceneFX subproject, so it stopped building
+   the moment that subproject was deleted, and what it measured is covered by
+   `amsg get avk-stats` (GPU and CPU percentiles, timing histograms that name
+   outlier frames), the presenter's error series, and `AZ_PACE`. The build no
+   longer fetches anything over the network.
 
    This installs the `asteroidz` binary, the `amsg` IPC tool, two wayland
    session entries, and the GlobalShortcuts portal definition.

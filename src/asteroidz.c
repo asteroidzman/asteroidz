@@ -131,7 +131,6 @@
 #include <xcb/xcb_icccm.h>
 #endif
 #include "common/pace.h"
-#include "common/tracy.h"
 #include "common/util.h"
 #include "draw/text-node.h"
 #include "draw/ufo-node.h"
@@ -9179,8 +9178,6 @@ static void render_monitor(Monitor *m) {
 	/* Opened after the early returns so a bailed-out frame doesn't show up as
 	 * a zero-cost render -- those are not frames, and counting them would drag
 	 * the visible distribution toward zero. */
-	AZ_ZONE(az_render, "render_monitor");
-	AZ_ZONE_TEXT(az_render, m->wlr_output->name);
 
 	frame_allow_tearing = check_tearing_frame_allow(m);
 
@@ -9197,7 +9194,6 @@ static void render_monitor(Monitor *m) {
 	 * layer/client animation ticks, fadeouts, cursor zoom, overview chrome.
 	 * render_dur_ms lumps it in with the commit, so a frame that misses its
 	 * deadline gives no clue which half was responsible. */
-	AZ_ZONE(az_animate, "animate");
 	az_pace_mon = m->wlr_output->name;
 	az_frame_reach_reset();
 
@@ -9285,9 +9281,6 @@ static void render_monitor(Monitor *m) {
 		if (!config.animations && !grabc && c->configure_serial &&
 			client_is_rendered_on_mon(c, m)) {
 			monitor_check_skip_frame_timeout(m);
-			/* jumps past the commit, so close the zone here or it never
-			 * closes -- Tracy requires them balanced on every path */
-			AZ_ZONE_END(az_animate);
 			goto skip;
 		}
 	}
@@ -9320,13 +9313,11 @@ static void render_monitor(Monitor *m) {
 		az_frame_reach_all = true;
 	}
 
-	AZ_ZONE_END(az_animate);
 
 	/* The commit: build the output state and hand it to the backend. On the
 	 * ordinary path this is wlr_scene_output_commit, which is where scenefx's
 	 * own zones (fx_pass, and the frame mark itself) live -- so this zone is
 	 * the seam between asteroidz's frame and the renderer's. */
-	AZ_ZONE(az_commit, "commit");
 
 	// only build and commit state when a frame is actually needed
 	if (config.allow_tearing && frame_allow_tearing) {
@@ -9617,7 +9608,6 @@ scanout_done:
 		;
 	}
 
-	AZ_ZONE_END(az_commit);
 
 skip:
 	// send the frame-done notification
@@ -9653,7 +9643,6 @@ skip:
 	 * estimator deliberately throws the distribution away to keep the peak;
 	 * plotting the real value is how you find out whether that peak is one
 	 * pathological frame or the shape of the whole run. */
-	AZ_PLOT(AZ_PLOT_RENDER_MS, dur_ms);
 	/* needed=0 committed=0 is the frame that cost a wakeup and produced
 	 * nothing -- the shape of a scheduler that keeps asking for frames after
 	 * the motion has stopped. It is invisible in every present-side metric,
@@ -9696,7 +9685,6 @@ skip:
 		pace_damage_ext.x2 - pace_damage_ext.x1,
 		pace_damage_ext.y2 - pace_damage_ext.y1,
 		(unsigned long long)az_pace_now_ns());
-	AZ_ZONE_END(az_render);
 }
 
 /*
@@ -9928,7 +9916,6 @@ void rendermon(struct wl_listener *listener, void *data) {
 				 * slipped looks normal, the cost was the deadline it blew. As
 				 * a plot the misses line up against the frac they happened at,
 				 * which is what says whether the loop is tuned too tight. */
-				AZ_PLOT_INT(AZ_PLOT_LATE_SLIP, 1);
 				m->render_late_frac *= config.render_late_backoff;
 				/* Never cut below the point where a deferral can still be
 				 * ARMED. Arming requires delay_ms >= 1.0 below; miss it and
@@ -9981,9 +9968,6 @@ void rendermon(struct wl_listener *listener, void *data) {
 		 * is cut to 0.6x on a slip, and delay is clamped by the render cost.
 		 * Whether it is settling or oscillating is a question about the shape
 		 * over time, which a log line per frame cannot answer. */
-		AZ_PLOT(AZ_PLOT_LATE_FRAC, m->render_late_frac);
-		AZ_PLOT(AZ_PLOT_LATE_DELAY, delay_ms);
-		AZ_PLOT_INT(AZ_PLOT_LATE_SLIP, 0);
 
 		if (delay_ms >= 1.0) {
 			wl_event_source_timer_update(m->render_timer, (int)delay_ms);
@@ -11541,10 +11525,6 @@ void setup(void) {
 	 * wildly different scales, which is unreadable for a control loop. Step
 	 * (not smoothed) is the honest shape: these values change at discrete
 	 * frames, they do not interpolate between them. */
-	AZ_PLOT_CONFIG(AZ_PLOT_RENDER_MS, TracyPlotFormatNumber, 0, 1, 0x00E5C8);
-	AZ_PLOT_CONFIG(AZ_PLOT_LATE_FRAC, TracyPlotFormatNumber, 1, 0, 0xFFC24B);
-	AZ_PLOT_CONFIG(AZ_PLOT_LATE_DELAY, TracyPlotFormatNumber, 1, 0, 0x7FB2FF);
-	AZ_PLOT_CONFIG(AZ_PLOT_LATE_SLIP, TracyPlotFormatNumber, 1, 1, 0xFF4B4B);
 
 	/* create text_input-, and input_method-protocol relevant globals */
 	input_method_manager = wlr_input_method_manager_v2_create(dpy);

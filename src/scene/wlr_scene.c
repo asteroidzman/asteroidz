@@ -19,7 +19,6 @@
 #include <wlr/util/transform.h>
 
 #include "render/color.h"
-#include "render/tracy.h"
 #include <scene/fx/blur_data.h>
 #include <scene/fx/clipped_region.h>
 #include <scene/wlr_scene.h>
@@ -2791,11 +2790,6 @@ static void scene_output_handle_commit(struct wl_listener *listener, void *data)
 			!wl_list_empty(&scene_output->damage_highlight_regions)) {
 		wlr_output_schedule_frame(scene_output->output);
 	}
-
-	TRACY_WHEN_CONNECTED({
-		// Queue a new frame as soon as possible when profiling
-		wlr_output_schedule_frame(scene_output->output);
-	})
 
 	// Next time the output is enabled, try to re-apply the gamma LUT
 	if (scene_output->scene->gamma_control_manager_v1 &&

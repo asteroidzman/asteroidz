@@ -2068,8 +2068,6 @@ static void asteroid_break_next_tick(Client *c, double t) {
 	 * baked in per tick. That is the most expensive thing asteroidz does per
 	 * frame and, until now, the least measured; the fragment count is attached
 	 * because cost scales with it and it is what a budget would be spent on. */
-	AZ_ZONE(az_rocks, "asteroid tick");
-	AZ_ZONE_VALUE(az_rocks, br->nfrags);
 	double travel = 1.0 - (1.0 - t) * (1.0 - t);
 	/* Hold full opacity briefly so the break is legible, then go. */
 	double alpha = t < 0.25 ? 1.0 : 1.0 - (t - 0.25) / 0.75;
@@ -2108,7 +2106,6 @@ static void asteroid_break_next_tick(Client *c, double t) {
 		wlr_scene_node_set_enabled(&f->node->node, true);
 		ast_frag_render(f, br->color, alpha, f->angle + f->spin * t, cx, cy);
 	}
-	AZ_ZONE_END(az_rocks);
 }
 
 static void asteroid_break_destroy(AsteroidBreak *br) {

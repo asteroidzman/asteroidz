@@ -42,31 +42,15 @@ libdrm = dependency('libdrm')
 xcb = dependency('xcb', required : get_option('xwayland'))
 xlibs = dependency('xcb-icccm', required : get_option('xwayland'))
 wayland_server_dep = dependency('wayland-server',version: '>=1.23.1')
-# >= 0.20.2, not 0.20.0. The vendored scenefx reads wlr_surface_output.suspended,
-# which 0.20.0 does not have -- so a build against it got 116 files in and then
-# failed with a struct-member error, which is a poor way to learn a version
-# requirement. Caught at configure time now.
+# >= 0.20.2, not 0.20.0. The absorbed scene graph (src/scene/) reads
+# wlr_surface_output.suspended, which 0.20.0 does not have -- so a build against
+# it got 116 files in and then failed with a struct-member error, which is a poor
+# way to learn a version requirement. Caught at configure time now.
 wlroots_dep = dependency('wlroots-0.20',version: '>=0.20.2')
 xkbcommon_dep = dependency('xkbcommon')
 libinput_dep = dependency('libinput',version: '>=1.27.1')
 libwayland_client_dep = dependency('wayland-client')
 pcre2_dep = dependency('libpcre2-8')
-# asteroidz-scenefx lives in-tree at subprojects/asteroidz-scenefx (git
-# subtree, full history -- `git subtree pull --prefix=subprojects/asteroidz-
-# scenefx scenefx-src main` to track it). asteroidz cannot run without it, so
-# it is built as a static subproject and linked in rather than resolved as an
-# external package: one binary, no libasteroidz-scenefx-0.5.so to keep in sync
-# with it, and -- the reason this was done -- ONE Tracy client in the process
-# instead of a private static copy inside the library that asteroidz's own
-# instrumentation could not reach.
-#
-# default_library=static is forced here rather than left to the top-level
-# option so a shared asteroidz build doesn't silently produce a .so that has
-# to be installed alongside; nothing else consumes this copy.
-#
-# `version:` intentionally omitted: the constraint would be checked against
-# the .pc Version field, which mirrors asteroidz's own release tag -- with the
-# source in-tree the two can no longer disagree, so there is nothing to assert.
 # The scene graph lives in src/scene/ now. It was scenefx's, and scenefx is
 # gone: AVK composites every frame, so the renderer that graph was coupled to
 # had no work to do, and the coupling was the only reason the dependency
@@ -148,21 +132,6 @@ if xcb.found() and xlibs.found()
   c_args += '-DXWAYLAND'
 endif
 
-if get_option('tracy')
-  # The subproject sets these with add_project_arguments, which is scoped to
-  # ITS targets only -- without repeating them here every TRACY_* macro in the
-  # header asteroidz includes expands to nothing and the build looks fine while
-  # collecting no asteroidz zones at all.
-  #
-  # ON_DEMAND matches the subproject: no data is gathered, and no queue is
-  # filled, until a viewer actually attaches -- so an enabled build can be run
-  # as the daily driver and profiled when something looks wrong, rather than
-  # being a separate build you have to reproduce the problem under.
-  c_args += ['-DTRACY_ENABLE', '-DTRACY_ON_DEMAND']
-  if get_option('buildtype') != 'debugoptimized'
-    warning('Profiling builds should set --buildtype=debugoptimized')
-  endif
-endif
 
 # define link args
 link_args = []
