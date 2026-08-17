@@ -402,6 +402,34 @@ policy (the backend's VRR already works; nothing more is built on assumption).
   dragged to HDMI-A-1 and back, and straddling, with no visible reference-white
   or hue jump beyond the panels' physical difference; the dump names each
   surface's class and why.
+
+> **CLOSED 2026-08-17.** Every clause met, live. The dead rules are live, the
+> class derives and overrides, the straddling case holds, and the drag shows no
+> jump on SDR windows with mpv's diffuse content holding across the boundary.
+>
+> **The evidence is not of equal weight, and the record should not pretend it
+> is.**
+>
+> *Strong.* mpv's diffuse content holding across the drag crosses two genuinely
+> different output paths — `B-encode`/PQ on DP-1, `A-direct-srgb`/sRGB on
+> HDMI-A-1 — and lands at the same apparent brightness. That is decode →
+> scene-linear → per-output encode agreeing with itself through two different
+> encodes, which is the whole architecture in one observation. Also strong:
+> HDMI-A-1 compressing 1.4286 → 1.0 without flattening.
+>
+> *Weak, by construction.* "No jump on SDR windows" could hardly have failed.
+> `sdr_reference_luminance` is a single global, so both outputs necessarily
+> report `ref_nits` 280, and an SDR source's scale carries no reference term
+> (ADR-003). The observation confirms nothing was violated; it could not have
+> discovered a violation. A real test would need per-output references, which do
+> not exist and are not proposed — recording the limit is cheaper than building
+> the capability to test it.
+>
+> *Untravelled.* `AZ_LUM_CLASS_SDR_EXTENDED` derives from BT.2020 primaries with
+> an SDR transfer, a combination nothing on this machine has produced. Live code
+> on a path never walked; its rules are the default, so the exposure is a name
+> in a dump and no luminance change.
+
 - **M13**: a fullscreen game classified GAME with VRR active and the dump
   showing scanout ACCEPTED (or the named reason it is not); gamescope runs a
   Proton title without artifacts through the tag-away/tag-back mpv sequence
