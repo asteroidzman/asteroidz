@@ -12,6 +12,10 @@ wayland_scanner_client = generator(
 
 wayland_xmls = [
 	wl_protocol_dir + '/stable/xdg-shell/xdg-shell.xml',
+	# For the scene graph in src/scene/, which needs
+	# ZWP_LINUX_DMABUF_FEEDBACK_V1_TRANCHE_FLAGS_SCANOUT when it builds dmabuf
+	# feedback tranches. scenefx generated this itself; the graph is ours now.
+	wl_protocol_dir + '/stable/linux-dmabuf/linux-dmabuf-v1.xml',
 	wl_protocol_dir + '/unstable/pointer-constraints/pointer-constraints-unstable-v1.xml',
 	wl_protocol_dir + '/staging/cursor-shape/cursor-shape-v1.xml',
 	wl_protocol_dir + '/stable/tablet/tablet-v2.xml',

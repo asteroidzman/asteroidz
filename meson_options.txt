@@ -1,13 +1,13 @@
 option('xwayland', type : 'feature', value : 'enabled')
 
 option('asan', type : 'boolean', value : false)
-# Tracy profiler support, compiled out entirely when off (the macros in
-# scenefx's include/render/tracy.h expand to nothing without TRACY_ENABLE).
-# Turning this on also builds the in-tree asteroidz-scenefx with tracy_enable,
-# so both halves of the frame report into the SAME client -- asteroidz's own
-# zones land inside the frames scenefx already marks.
+# Tracy profiler support, compiled out entirely when off.
 #
-# Build profiling runs as --buildtype=debugoptimized; scenefx warns if you
-# don't, and an -O0 trace measures the wrong program.
+# ON_DEMAND: no data is gathered and no queue is filled until a viewer
+# actually attaches, so an enabled build can be the daily driver and profiled
+# when something looks wrong, rather than a separate build you have to
+# reproduce the problem under.
+#
+# Build profiling runs as --buildtype=debugoptimized.
 option('tracy', type : 'boolean', value : false,
        description : 'Enable Tracy profiler instrumentation')

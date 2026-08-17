@@ -16,9 +16,9 @@
  * is included long before render/az_avk.h, so its one AVK header comes in
  * here. It depends on nothing of the compositor's. */
 #include "render/vulkan/scene/avk_blur_dump.h"
-#include <scenefx/types/fx/blur_data.h>
-#include <scenefx/types/fx/clipped_region.h>
-#include <scenefx/types/wlr_scene.h>
+#include <scene/fx/blur_data.h>
+#include <scene/fx/clipped_region.h>
+#include <scene/wlr_scene.h>
 #include "common/corner_location.h"
 /* Early, because the animation and overview code below asks what buffer a
  * surface is showing and must not answer it with a renderer wrapper. */

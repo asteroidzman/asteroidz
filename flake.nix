@@ -2,10 +2,6 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     flake-parts.url = "github:hercules-ci/flake-parts";
-    scenefx = {
-      url = "github:asteroidzman/asteroidz-scenefx";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
   };
 
   outputs = {
@@ -29,9 +25,7 @@
         ...
       }: let
         inherit (pkgs) callPackage ;
-        asteroidz = callPackage ./nix {
-          inherit (inputs.scenefx.packages.${pkgs.stdenv.hostPlatform.system}) scenefx;
-        };
+        asteroidz = callPackage ./nix { };
         shellOverride = old: {
           nativeBuildInputs = old.nativeBuildInputs ++ [];
           buildInputs = old.buildInputs ++ [];

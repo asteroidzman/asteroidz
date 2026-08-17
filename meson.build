@@ -67,29 +67,10 @@ pcre2_dep = dependency('libpcre2-8')
 # `version:` intentionally omitted: the constraint would be checked against
 # the .pc Version field, which mirrors asteroidz's own release tag -- with the
 # source in-tree the two can no longer disagree, so there is nothing to assert.
-libscenefx_proj = subproject(
-  'asteroidz-scenefx',
-  default_options: [
-    'default_library=static',
-    'examples=false',
-    # GLES2 ONLY -- and that is the floor, not a preference.
-    #
-    # scenefx's SCENE GRAPH is what asteroidz needs from this subproject; AVK
-    # composites every frame and scenefx's renderers never run. They cannot be
-    # dropped outright, though: types/scene/wlr_scene.c calls into the renderer
-    # directly (fx_render_pass_try_get, fx_gles_render_pass,
-    # fx_offscreen_buffers), so -Drenderers= fails to build the very scene
-    # graph we are keeping. Untangling that is the scenefx-absorption project,
-    # not a build flag.
-    #
-    # fx_vk CAN go, because every call into it from the scene graph is behind
-    # #ifdef FX_HAS_VULKAN -- which is ~9.5k lines of a Vulkan renderer that
-    # could never execute next to AVK's own.
-    'renderers=gles2',
-    'tracy_enable=' + (get_option('tracy') ? 'true' : 'false'),
-  ],
-)
-libscenefx_dep = libscenefx_proj.get_variable('scenefx')
+# The scene graph lives in src/scene/ now. It was scenefx's, and scenefx is
+# gone: AVK composites every frame, so the renderer that graph was coupled to
+# had no work to do, and the coupling was the only reason the dependency
+# survived. See src/scene/wlr_scene.c.
 pixman_dep = dependency('pixman-1')
 # M6B/D2: ICC matrix-shaper ingest. Already in the dependency closure via
 # wlroots' colour management; named explicitly so the ingest unit can be built
@@ -142,6 +123,10 @@ c_args = [
   '-g',
   '-Wno-unused-function',
   '-DWLR_USE_UNSTABLE',
+  # The scene graph came from scenefx, which set these on its own targets. It
+  # is our source now, so we set them: without WLR_PRIVATE= the wlroots headers
+  # hide the struct internals the graph reaches into.
+  '-DWLR_PRIVATE=',
   '-D_POSIX_C_SOURCE=200809L',
   '-DVERSION="@0@"'.format(version_with_hash),
   '-DSYSCONFDIR="@0@"'.format(sysconfdir),
@@ -284,7 +269,6 @@ asteroidz_deps = [
     libdrm,
     xcb,
     xlibs,
-    libscenefx_dep,
     wayland_server_dep,
     wlroots_dep,
     xkbcommon_dep,
@@ -296,6 +280,7 @@ asteroidz_deps = [
     pangocairo_dep,
     gdkpixbuf_dep,
     libsystemd_dep,
+    lcms2_dep,
 ]
 asteroidz_deps += avk_dep
 
@@ -308,8 +293,33 @@ asteroidz_exe = executable('asteroidz',
   'src/draw/text-node.c',
   'src/draw/ufo-node.c',
   'src/ext-protocol/wlr_ext_workspace_v1.c',
+  'src/scene/wlr_scene.c',
+  'src/scene/surface.c',
+  'src/scene/subsurface_tree.c',
+  'src/scene/xdg_shell.c',
+  'src/scene/linked_node.c',
+  # scenefx's util/, which the graph uses for array growth, env parsing and
+  # timespec maths. Three small files, brought along rather than reimplemented.
+  'src/scene/array.c',
+  'src/scene/env.c',
+  'src/scene/time.c',
+  'src/scene/matrix.c',
+  # The graph's own value types and the two helpers it links against:
+  # colour-transform composition and the output's pending image description.
+  'src/scene/clipped_region.c',
+  'src/scene/blur_data.c',
+  'src/scene/color.c',
+  # The lcms2 backing, not color_fallback.c: asteroidz already links lcms2 for
+  # its own ICC ingest, so taking the stub would silently downgrade ICC
+  # handling that currently works.
+  'src/scene/color_lcms2.c',
+  'src/scene/output.c',
   wayland_sources,
   dependencies : asteroidz_deps,
+  # src/scene/include carries the scene graph's own headers (<scene/wlr_scene.h>
+  # and friends). It used to arrive through the scenefx subproject's dependency;
+  # the graph is ours now, so the path is ours to state.
+  include_directories : include_directories('src', 'src/scene/include'),
   install : true,
   c_args : c_args,
   link_args : link_args,

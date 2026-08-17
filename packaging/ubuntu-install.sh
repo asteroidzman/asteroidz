@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Install asteroidz on Ubuntu 26.04 from source.
 #
-# Ubuntu packages neither wlroots 0.20 nor the asteroidz-scenefx fork, so this
-# builds and installs all three (wlroots -> asteroidz-scenefx -> asteroidz) into
+# Ubuntu does not package wlroots 0.20, so this builds and installs both
+# (wlroots -> asteroidz) into
 # /usr. Mirrors packaging/deb/build.sh, minus the .deb/fpm packaging step.
 #
 # Usage:   ./ubuntu-install.sh
@@ -13,8 +13,6 @@
 set -euo pipefail
 
 WLROOTS_TAG="${WLROOTS_TAG:-0.20.1}"
-SCENEFX_REPO="${SCENEFX_REPO:-https://github.com/asteroidzman/asteroidz-scenefx.git}"
-SCENEFX_REF="${SCENEFX_REF:-main}"
 ASTEROIDZ_REPO="${ASTEROIDZ_REPO:-https://github.com/asteroidzman/asteroidz.git}"
 ASTEROIDZ_REF="${ASTEROIDZ_REF:-main}"
 ASTEROIDZ_SRC="${ASTEROIDZ_SRC:-}"          # set to a local checkout to skip cloning
@@ -58,12 +56,6 @@ git clone --depth 1 --branch "$WLROOTS_TAG" \
   https://gitlab.freedesktop.org/wlroots/wlroots.git "$WORK/wlroots"
 build_install "$WORK/wlroots" \
   --buildtype=release -Dexamples=false -Dwerror=false -Dxwayland=enabled
-
-# --- 2. asteroidz-scenefx ----------------------------------------------------
-log "Building asteroidz-scenefx ($SCENEFX_REF)"
-git clone --depth 1 --branch "$SCENEFX_REF" "$SCENEFX_REPO" "$WORK/scenefx"
-build_install "$WORK/scenefx" \
-  --buildtype=release -Db_lto=true -Drenderers=gles2,vulkan -Dexamples=false
 
 # --- 3. asteroidz ------------------------------------------------------------
 log "Building asteroidz ($ASTEROIDZ_REF)"

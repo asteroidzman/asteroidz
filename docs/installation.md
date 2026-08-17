@@ -197,7 +197,7 @@ part-way can be fixed and the script run again. `ASTEROIDZ_TAG`, `BAR_TAG`,
 > - `gdk-pixbuf`
 > - `vulkan-icd-loader`, `vulkan-headers`, `glslang` (for the experimental Vulkan renderer)
 
-You will need to build `wlroots` and asteroidz's `scenefx` fork manually as well.
+You will need to build `wlroots` manually as well.
 
 1. **Build wlroots**
    asteroidz currently tracks wlroots 0.20 (check `meson.build` for the exact
@@ -211,7 +211,7 @@ You will need to build `wlroots` and asteroidz's `scenefx` fork manually as well
    sudo ninja -C build install
    ```
 
-   **0.20.2, not 0.20.0.** `asteroidz-scenefx` reads
+   **0.20.2, not 0.20.0.** The scene graph reads
    `wlr_surface_output.suspended`, which arrived after the `.0` release — against
    0.20.0 the build gets a hundred files in and then fails on a struct member.
    `meson.build` requires `>=0.20.2` so this is caught at configure time now.
@@ -223,11 +223,10 @@ You will need to build `wlroots` and asteroidz's `scenefx` fork manually as well
    silently if they are not. Check the feature summary meson prints.
 
 2. **Build asteroidz**
-   There is no separate scenefx step. The effects library —
-   `asteroidz-scenefx`, asteroidz's own fork, not upstream `wlrfx/scenefx` —
-   lives in this repository at `subprojects/asteroidz-scenefx` and is built
-   and linked **statically** as part of the compositor. Nothing to install
-   alongside, no `libasteroidz-scenefx-0.5.so` to keep in version step.
+   There is no scenefx step at all any more, and no subproject. The scene
+   graph that used to come from `asteroidz-scenefx` is asteroidz source now,
+   in `src/scene/` — so there is nothing to install alongside, no
+   `libasteroidz-scenefx-0.5.so`, and no ABI marker to keep in version step.
 
    ```bash
    git clone https://github.com/asteroidzman/asteroidz.git

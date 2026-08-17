@@ -25,28 +25,22 @@ wlr_buffer  ──────────────────────�
   │                                                      │
   │  wlr_client_buffer / wlr_texture_from_buffer         │ import
   ▼                                                      │
-wlr_texture  ◄── fx_vk_texture ◄── fx_vulkan_import_dmabuf
-  │                                    (texture.c:504)
+avk_image  ◄── az_avk_image_for_buffer ◄── AVK's own dmabuf import
+  │            (src/render/az_avk.h)
   ▼
-wlr_scene node tree  (scenefx types/scene/wlr_scene.c, 4322 lines)
+wlr_scene node tree  (src/scene/wlr_scene.c, 3654 lines -- ASTEROIDZ SOURCE)
   │      asteroidz builds this: layers[NUM_LAYERS], per-client
   │      scene trees, shadow trees, blur nodes, text nodes, ufo nodes
-  ▼
-wlr_scene_output_build_state()          wlr_scene.c:3667
-  │      damage accumulation, direct-scanout attempt, node culling
   │
-  ├─► wlr_renderer_begin_buffer_pass()  wlr_scene.c:3913   ◄══ THE SEAM
-  │        │
-  │        ▼
-  │   fx_render_pass (scenefx)  ── or ──  fx_vk_render_pass
-  │        │   fx_pass.c 1876 ln              pass.c 3418 ln
-  │        │   GLES2 + EGL                    Vulkan
-  │        ▼
-  │   wlr_render_pass_add_texture / _add_rect  (the wlroots vocabulary)
-  │   fx_render_pass_add_blur / _box_shadow / _rounded_rect (the scenefx
-  │   vocabulary, only reachable by downcasting the wlr_render_pass)
-  │        │
-  │        ▼
+  │      Was scenefx's. Absorbed, and its RENDER HALF deleted with it:
+  │      wlr_scene_output_build_state(), scene_entry_render() and the
+  │      scene_pass_* helpers (1,233 lines) were unreachable once AVK
+  │      began building every frame. There is no seam here any more,
+  │      because there is no second renderer to seam against.
+  ▼
+az_avk_build_frame()                    src/render/az_output.h
+  │      AVK walks the tree itself: damage, culling, direct scanout
+  ▼
   │   GPU work → output buffer (wlr_swapchain, wlr_allocator/gbm)
   │
   ▼
@@ -429,15 +423,27 @@ defined is not a configuration. The migration this section planned for is over:
 AVK carries the desktop, so the GLES recovery path it used to select between was
 removed rather than left switchable.
 
-What remains of scenefx is built `-Drenderers=gles2`, and that is a floor rather
-than a preference. scenefx's scene graph — the part asteroidz actually uses — is
-coupled to scenefx's own renderer: `types/scene/wlr_scene.c` calls
-`fx_render_pass_try_get`, `fx_gles_render_pass` and `fx_offscreen_buffers`
-directly, so an empty renderer list fails to build the very thing being kept.
-Untangling that is the scenefx-absorption project, not a build flag. fx_vk could
-go because every call into it from the scene graph sits behind
-`#ifdef FX_HAS_VULKAN`; dropping it took the binary from 5.10 MB to 4.31 MB and
-`fx_vk_*` symbols from 156 to 0.
+**There is no scenefx either.** It was a subproject built `-Drenderers=gles2`,
+and that floor existed because scenefx's scene graph was coupled to scenefx's
+own renderer — `types/scene/wlr_scene.c` called `fx_render_pass_try_get`,
+`fx_gles_render_pass` and `fx_offscreen_buffers` directly, so an empty renderer
+list failed to build the very thing being kept.
+
+That coupling is cut by deleting the render path rather than porting it. AVK
+walks the tree and builds every frame itself, so the graph's own renderer half —
+`wlr_scene_output_build_state`, `scene_entry_render` and the `scene_pass_*`
+helpers, 1,233 lines — was unreachable in an asteroidz session once
+`az_output_build_frame()` began aborting. Deleting it removed every `fx_*` call
+site, and the remainder is ordinary tree, damage and geometry code with no
+renderer in it at all.
+
+The graph now lives in `src/scene/`: 4,864 lines across the five scene sources,
+5,852 with scenefx's small `util/`, its value types (`blur_data`,
+`clipped_region`) and the colour-transform helpers the graph links against —
+taken with the `lcms2` backing rather than `color_fallback.c`, since asteroidz
+already links lcms2 for its own ICC ingest and the stub would have silently
+downgraded ICC handling that works today. `subprojects/asteroidz-scenefx` is
+deleted, 124 files. Build targets went 160 → 132.
 
 The Vulkan renderer must not pull EGL/GLES: verifiable by `ldd`, by Meson
 dependency output, and by a source-include check in CI.

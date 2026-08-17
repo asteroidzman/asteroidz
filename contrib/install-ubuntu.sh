@@ -16,7 +16,7 @@ set -euo pipefail
 
 ASTEROIDZ_TAG="${ASTEROIDZ_TAG:-0.24.0}"
 BAR_TAG="${BAR_TAG:-0.4.0}"
-# 0.20.2, not 0.20.0. asteroidz-scenefx reads wlr_surface_output.suspended, which
+# 0.20.2, not 0.20.0. The scene graph reads wlr_surface_output.suspended, which
 # arrived after the .0 release -- and 0.20.0 otherwise looks like a perfectly good
 # match, right up to a struct-member error a hundred files into the build.
 WLROOTS_TAG="${WLROOTS_TAG:-0.20.2}"
@@ -170,7 +170,7 @@ else
 	git -C "$SRC/asteroidz" checkout --quiet "$ASTEROIDZ_TAG"
 fi
 cd "$SRC/asteroidz"
-# asteroidz-scenefx is vendored in-tree and linked statically, so there is no
+# The scene graph is asteroidz source now (src/scene/), so there is no
 # separate library to fetch or keep in version lockstep.
 #
 # -Dtracy=false is the default and is stated anyway: a profiling build tries to

@@ -6,7 +6,7 @@
 #include <pango/pangocairo.h>
 #include <stdbool.h>
 #include <stdint.h>
-#include <scenefx/types/wlr_scene.h>
+#include <scene/wlr_scene.h>
 #include "../common/corner_location.h"
 
 /* The compositor-native UI theme (config.theme, KDL block `theme {}`):
