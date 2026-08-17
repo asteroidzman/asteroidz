@@ -399,7 +399,33 @@ what M13 adds is per-class policy over a capability that demonstrably works.
 > in an obvious way is more dangerous than a missing one. This one survived
 > because a second, independent counter disagreed with it.
 >
-> **M13B, the scanout revival, is not started.**
+> **M13B LANDED AND VERIFIED LIVE 2026-08-17.** DP-1 presenting a fullscreen mpv:
+> `accepted`, and `scanout_frames` climbing 774 → 902 in five seconds (~25.6/s,
+> the film's own cadence). Every frame going straight to the display with no
+> composition pass. The first time this compositor has bypassed composition at
+> all; `fallback_frames` 0 and no crash.
+>
+> Every refusal carries a verdict and a sentence, which was the point: the scene
+> version returned `SCANOUT_INELIGIBLE` from eleven places. The acquire fence is
+> attached, which is what the gamescope no-scanout rule was working around.
+>
+> **Three bugs, and two of them ignored an answer that already existed.**
+> The effects check tested the per-window OVERRIDE flags (`isnoradius`,
+> `isnoshadow`) rather than whether an effect is drawn — with no rule set they
+> read as "enabled" and refused every candidate forever. The scanout path did not
+> clear `pending_commit_damage`, so the output would have re-scanned-out at
+> maximum rate with the content paused. And the ICC check tested whether a
+> profile was LOADED rather than whether the encode pass CARRIES one —
+> refusing DP-1, whose profile is inert under HDR, using a distinction M11 had
+> already added to the inspector as `icc_applied` and documented. That is twice
+> in one day of reimplementing past an existing answer; the other was
+> `asteroidz -S`.
+>
+> **The hazards are live again for the first time since they were worked around**,
+> and mpv — the application with the recorded KMS-wedge on scanout *transition* —
+> is the one now scanning out. The dangerous direction is scanout → composition:
+> tagging away, or leaving fullscreen. Not yet exercised.
+
 
 **D6 — M14: the capture stream.** A stream API first, not an encoder:
 ext-image-copy-capture sessions backed by AVK stage taps, with the stage
