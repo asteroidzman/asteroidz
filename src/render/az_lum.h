@@ -38,6 +38,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <string.h>
 
 /* The electrical encoding of a source. M5's set; HLG is one more value when
  * ADR-000's scope moves, which is the reason this is an enum and not a bool
@@ -207,6 +208,123 @@ static inline struct az_lum_domain az_lum_domain_untagged(void) {
 		.content_peak = 0.0f,
 	};
 	return d;
+}
+
+/*
+ * ── M12: WHAT LUMINANCE ROLE DOES THIS CONTENT HAVE? ──────────────────────
+ *
+ * A transfer function says how a source is ENCODED. It does not say what the
+ * content is FOR, and on an HDR output those are different questions: a
+ * terminal and a film are both sRGB-encoded and should not share a white.
+ *
+ * The class is a NAMED DEFAULT for az_lum_rules, not a second mechanism. It
+ * resolves to the same two multipliers the per-window rules already set, so
+ * there is exactly one thing the pipeline applies and one place it is applied
+ * (az_lum_resolve, post-EOTF, pre-matrix, in scene-linear). Nothing here is a
+ * post-encode brightness knob, and nothing here is per-frame.
+ */
+enum az_lum_class {
+	/* Conventional SDR content at the scene reference. THE DEFAULT, and the
+	 * reason is below. */
+	AZ_LUM_CLASS_SDR_NORMAL = 0,
+	/* Desktop furniture: terminal, panel, launcher. Restrained white. */
+	AZ_LUM_CLASS_SDR_UI,
+	/* Wide-gamut SDR -- photography, BT.2020-primaries SDR sources. */
+	AZ_LUM_CLASS_SDR_EXTENDED,
+	/* HDR video, HDR games, HDR stills: absolute luminance semantics. */
+	AZ_LUM_CLASS_HDR_CONTENT,
+	AZ_LUM_CLASS_COUNT,
+};
+
+static inline const char *az_lum_class_name(enum az_lum_class c) {
+	switch (c) {
+	case AZ_LUM_CLASS_SDR_NORMAL:   return "sdr-normal";
+	case AZ_LUM_CLASS_SDR_UI:       return "sdr-ui";
+	case AZ_LUM_CLASS_SDR_EXTENDED: return "sdr-extended";
+	case AZ_LUM_CLASS_HDR_CONTENT:  return "hdr-content";
+	case AZ_LUM_CLASS_COUNT:        break;
+	}
+	return "?";
+}
+
+/* Unlike az_tf_name(), this one IS a parser: a window rule spells the class as
+ * a string. Returns false for anything unrecognised, and the caller keeps the
+ * derived class -- a typo in a rule must not silently become a policy. */
+static inline bool az_lum_class_from_name(const char *s,
+		enum az_lum_class *out) {
+	if (s == NULL || *s == '\0' || out == NULL) {
+		return false;
+	}
+	for (int i = 0; i < (int)AZ_LUM_CLASS_COUNT; i++) {
+		if (strcmp(s, az_lum_class_name((enum az_lum_class)i)) == 0) {
+			*out = (enum az_lum_class)i;
+			return true;
+		}
+	}
+	return false;
+}
+
+/* ITU-R BT.2408 diffuse white: what SDR_UI's white means in absolute terms,
+ * independent of where the user put the scene reference. */
+#define AZ_LUM_UI_WHITE_NITS 203.0f
+
+/*
+ * THE DERIVATION, and the one judgement in it stated plainly.
+ *
+ * Order: an explicit rule wins, then what the source declared, then the
+ * default. What is NOT here is any attempt to tell a terminal from a film by
+ * inspection -- nothing in any protocol distinguishes them, and guessing would
+ * mean occasionally dimming a movie because it was untagged.
+ *
+ * SO UNTAGGED DEFAULTS TO SDR_NORMAL, NOT SDR_UI. That is a deviation from the
+ * obvious reading of "UI should be restrained", and it is deliberate: SDR_UI as
+ * the default would silently dim every ordinary window on an HDR output the
+ * moment this shipped, for every user, with no rule written. The project's own
+ * standard -- automatic semantics must never be REQUIRED for correct operation
+ * -- cuts the other way here: the safe automatic answer is the one that changes
+ * nothing, and SDR_UI is opt-in per window.
+ *
+ * BT.2020 primaries with an SDR transfer IS derivable, and is the one automatic
+ * non-default answer: that is wide-gamut SDR by construction.
+ */
+static inline enum az_lum_class az_lum_class_derive(
+		const struct az_lum_source_desc *src, bool rule_set,
+		enum az_lum_class rule_class) {
+	if (rule_set) {
+		return rule_class;
+	}
+	if (src != NULL && src->tagged && az_lum_source_valid(src)) {
+		if (az_lum_tf_is_hdr(src->tf)) {
+			return AZ_LUM_CLASS_HDR_CONTENT;
+		}
+		if (src->primaries == AZ_PRIM_BT2020) {
+			return AZ_LUM_CLASS_SDR_EXTENDED;
+		}
+	}
+	return AZ_LUM_CLASS_SDR_NORMAL;
+}
+
+/*
+ * THE CLASS AS RULES. One conversion, so the class cannot grow a second
+ * pipeline of its own.
+ *
+ * SDR_UI targets AZ_LUM_UI_WHITE_NITS absolute, which is why the scale is
+ * reference-relative: at the 203 default it is exactly 1.0 and costs nothing,
+ * and at the operator's 280 it is 0.725.
+ *
+ * IT NEVER EXCEEDS 1.0. With the reference below 203 the UI is already dimmer
+ * than the target, and amplifying it would make "restrained" mean "brighter
+ * than normal content" -- a class named for restraint must not brighten.
+ */
+static inline struct az_lum_rules az_lum_class_rules(enum az_lum_class c,
+		float scene_ref_nits) {
+	struct az_lum_rules r = az_lum_rules_default();
+	if (c == AZ_LUM_CLASS_SDR_UI) {
+		const float ref = az_lum_ref_nits(scene_ref_nits);
+		float s = AZ_LUM_UI_WHITE_NITS / ref;
+		r.sdr_white_scale = s < 1.0f ? s : 1.0f;
+	}
+	return r;
 }
 
 /*

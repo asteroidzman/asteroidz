@@ -541,6 +541,9 @@ Each entry in `surfaces` carries:
 | `source.tagged` | **read this first.** False means the client declared nothing |
 | `source.transfer` / `.primaries` | what the client declared, or `(untagged)` |
 | `source.max_cll_nits` | content light level, 0 = absent (PQ sources only) |
+| `luminance.class` | `sdr-ui` / `sdr-normal` / `sdr-extended` / `hdr-content` |
+| `luminance.class_from` | `derived` or `window-rule` — different facts, and only the second survives the client changing its mind |
+| `luminance.sdr_white_scale`, `.hdr_gain` | the multipliers actually applied, so the class's effect is visible rather than implied |
 | `domain` | the resolved recipe: transfer, primaries, linear `scale` into scene units, `content_peak_scene` (0 = unknown, never "black") |
 | `preferred` | what this surface is *told* its display prefers, via both protocol frontends |
 | `render.direct_scanout` | whether the surface bypassed composition |

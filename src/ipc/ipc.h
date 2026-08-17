@@ -374,6 +374,20 @@ static cJSON *build_surface_intent_json(struct wlr_surface *s,
 		in.src.tagged ? az_primaries_name(in.src.primaries) : "(untagged)");
 	cJSON_AddNumberToObject(src, "max_cll_nits", in.src.max_cll);
 
+	/*
+	 * M12. The class, and WHERE IT CAME FROM -- because "hdr-content" derived
+	 * from a PQ description and "hdr-content" because someone wrote a rule are
+	 * different facts, and only the second survives the client changing its
+	 * mind. The applied multipliers are reported beside it so the class's
+	 * effect is visible rather than implied.
+	 */
+	cJSON *lc = cJSON_AddObjectToObject(o, "luminance");
+	cJSON_AddStringToObject(lc, "class", az_lum_class_name(in.lum_class));
+	cJSON_AddStringToObject(lc, "class_from",
+		in.lum_class_from_rule ? "window-rule" : "derived");
+	cJSON_AddNumberToObject(lc, "sdr_white_scale", in.lum_rules.sdr_white_scale);
+	cJSON_AddNumberToObject(lc, "hdr_gain", in.lum_rules.hdr_gain);
+
 	cJSON *dom = cJSON_AddObjectToObject(o, "domain");
 	cJSON_AddStringToObject(dom, "transfer", az_tf_name(in.domain.tf));
 	cJSON_AddStringToObject(dom, "primaries",

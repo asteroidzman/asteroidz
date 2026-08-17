@@ -113,6 +113,17 @@ static const RuleGroup rule_groups[] = {
 	 "Tearing, scan-out and variable refresh for this window."},
 };
 
+/* M12. Spellings are az_lum_class_name()'s, and must stay in step with it:
+ * that function is the parser the compositor actually uses, and this table is
+ * only what a config UI offers. A member here that it cannot parse would be a
+ * pickable option that silently does nothing. */
+static const RuleEnumMember rule_luminance_domain[] = {
+	{"sdr-ui", "Desktop furniture: hold white at 203 cd/m2."},
+	{"sdr-normal", "Ordinary SDR content at the desktop reference."},
+	{"sdr-extended", "Wide-gamut SDR, e.g. photography."},
+	{"hdr-content", "HDR video, games and stills: absolute luminance."},
+};
+
 static const RuleEnumMember rule_anim_open[] = {
 	{"zoom", "Grow from the centre."},
 	{"slide", "Slide in from an edge."},
@@ -272,6 +283,15 @@ static const RuleField rule_schema[] = {
  * multiplies one class of source on its way into the scene, so raising one
  * window's SDR white touches that window and nothing else on the screen,
  * including the same window's own shadow and the wallpaper behind it. */
+{"luminance_domain", "luminance-domain", "visuals", "Luminance domain",
+ "What this window's content is FOR, which is a different question from how "
+ "it is encoded: a terminal and a film are both sRGB and should not share a "
+ "white on an HDR display. Unset derives it from what the client declared -- "
+ "HDR content is recognised automatically, and so is wide-gamut SDR. "
+ "'sdr-ui' is the one that cannot be derived and must be asked for: it holds "
+ "the window's white at 203 cd/m2 however bright the desktop reference is.",
+ RULE_ENUM, offsetof(ConfigWinRule, luminance_domain), RULE_NOCLAMP,
+ RULE_NOCLAMP, rule_luminance_domain, LENGTH(rule_luminance_domain)},
 {"sdr_white_scale", "sdr-white-scale", "visuals", "SDR white scale",
  "Multiply this window's SDR white. 1.0 is unchanged; 1.5 makes an SDR "
  "application 50% brighter on an HDR output without touching anything else. "

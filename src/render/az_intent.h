@@ -64,6 +64,11 @@ struct az_surface_intent {
 	struct az_lum_source_desc src;   /* tagged/tf/primaries/max_cll */
 	struct az_lum_domain domain;     /* az_lum_resolve() of the above */
 
+	/* ── M12: the luminance class, and where it came from ──────────────── */
+	enum az_lum_class lum_class;
+	bool lum_class_from_rule;  /* false = derived from what the client said */
+	struct az_lum_rules lum_rules;  /* the multipliers actually applied */
+
 	/* ── output colour, copied from the output's derived state ─────────── */
 	bool have_output;
 	struct az_output_color_state ocs;
@@ -190,8 +195,15 @@ static inline void az_surface_intent_resolve(struct wlr_surface *surface,
 		out->prediction_exceeded = m->presenter.prediction_exceeded;
 	}
 
-	struct az_lum_rules rules = az_lum_rules_default();
-	out->domain = az_lum_resolve(&out->src, &rules, ref);
+	/*
+	 * THE SAME FUNCTION THE RENDERER CALLS, not a copy of its reasoning. If
+	 * this recomputed the precedence, the inspector would eventually report a
+	 * policy the renderer had stopped applying -- and an inspector that can
+	 * disagree with production is worse than none.
+	 */
+	out->lum_rules = az_lum_rules_for_surface(surface, &out->src, ref,
+		&out->lum_class, &out->lum_class_from_rule);
+	out->domain = az_lum_resolve(&out->src, &out->lum_rules, ref);
 
 	/* ── identity: the decisions, never the counters ───────────────────── */
 	uint64_t h = 1469598103934665603ULL;
@@ -200,6 +212,8 @@ static inline void az_surface_intent_resolve(struct wlr_surface *surface,
 	az_preferred_mix(&h, name, strlen(name));
 	az_preferred_mix(&h, &out->src, sizeof(out->src));
 	az_preferred_mix(&h, &out->domain, sizeof(out->domain));
+	az_preferred_mix(&h, &out->lum_class, sizeof(out->lum_class));
+	az_preferred_mix(&h, &out->lum_rules, sizeof(out->lum_rules));
 	az_preferred_mix(&h, &out->ocs.path, sizeof(out->ocs.path));
 	az_preferred_mix(&h, &out->ocs.encode_tf, sizeof(out->ocs.encode_tf));
 	az_preferred_mix(&h, &out->pref.identity, sizeof(out->pref.identity));

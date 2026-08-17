@@ -107,6 +107,49 @@ global setting is off.
 | `isnotitlebar` / `no-titlebar` | integer | `0` / `1` | Draw no titlebar for this window, whatever the global titlebar setting is |
 | `sdr_white_scale` / `sdr-white-scale` | float | `0` – `10` | Multiply this window's SDR white. `1.0` is unchanged, `1.5` makes an SDR application 50% brighter on an HDR output. `0` leaves it alone. No effect on HDR (PQ or scRGB) content |
 | `hdr_gain` / `hdr-gain` | float | `0` – `10` | Multiply this window's HDR content. `1.0` is unchanged, `0.5` halves the absolute luminance of a PQ video. `0` leaves it alone. No effect on SDR content |
+| `luminance_domain` / `luminance-domain` | enum | `sdr-ui`, `sdr-normal`, `sdr-extended`, `hdr-content` | What this window's content is *for*. Unset derives it from what the client declared |
+
+> **These rules did nothing before 2026-08-17.** `sdr_white_scale` and
+> `hdr_gain` were parsed, validated and stored on the window, and read by no
+> part of the renderer — the config accepted them and the picture never
+> changed. They are live as of M12. If you wrote either of them earlier and
+> concluded it had no effect, you were right, and it does now.
+
+## Luminance domains
+
+A transfer function says how a source is *encoded*. It does not say what the
+content is *for*, and on an HDR display those come apart: a terminal and a film
+are both sRGB and should not share a white.
+
+| domain | for | effect |
+|---|---|---|
+| `sdr-ui` | terminal, panel, launcher — desktop furniture | holds white at 203 cd/m², however bright the desktop reference is |
+| `sdr-normal` | ordinary SDR applications | the desktop reference; changes nothing |
+| `sdr-extended` | wide-gamut SDR, e.g. photography | reserved; no luminance change yet |
+| `hdr-content` | HDR video, games, stills | absolute luminance semantics |
+
+**You rarely need to write one.** HDR content is recognised automatically from
+the image description a client attaches, and so is wide-gamut SDR (BT.2020
+primaries with an SDR transfer). The one that *cannot* be derived is `sdr-ui`:
+nothing in any protocol distinguishes a terminal from a film, so asking for a
+restrained white is a decision you make, not one the compositor guesses.
+
+Untagged windows stay `sdr-normal` deliberately. Defaulting them to `sdr-ui`
+would dim every ordinary window on an HDR output the moment you upgraded, with
+no rule written — so the automatic answer is the one that changes nothing.
+
+```kdl
+// hold the terminal's white at 203 even though the desktop reference is 280
+window-rule { match app-id=kitty; luminance-domain "sdr-ui" }
+```
+
+Precedence, most specific first: an explicit `sdr-white-scale` or `hdr-gain`
+beats a `luminance-domain`, which beats the domain derived from what the client
+declared. A `luminance-domain` the compositor cannot parse keeps the derived
+one — a typo does not silently become a policy.
+
+`amsg get surface-intent` reports each window's class, whether it was derived
+or ruled, and the multipliers actually applied.
 
 `sdr_white_scale` and `hdr_gain` are **per window on purpose, and there is no
 global equivalent of either**. On an HDR output every SDR application is

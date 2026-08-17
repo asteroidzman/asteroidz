@@ -3029,16 +3029,45 @@ static inline void az_avk_scene_rgb(bool linear, const float in[4],
  * still get pixels on the screen -- ADR-004 -- and az_lum_resolve() implements
  * what untagged means in one place.
  *
- * RULES ARE THE DEFAULTS HERE, and that is a KNOWN GAP rather than a decision:
- * C2's per-window `sdr-white-scale` and `hdr-gain` are resolved onto the
- * Client, and this walk has no way to reach one -- it reads scenefx structs
- * only, deliberately, which is what keeps a renderer header free of compositor
- * types. Threading them needs either a resolved domain stored on the scene
- * buffer (a scenefx change) or a client lookup in the walk (a layering
- * change); the first is the better shape and neither is needed until C7 makes
- * the domain load-bearing. Until then every source resolves as though no rule
- * were set, which is exactly what happens today.
+ * ── M12: THE PER-WINDOW RULES ARE LIVE, VIA A CLIENT LOOKUP ───────────────
+ *
+ * They were not. `sdr-white-scale` and `hdr-gain` were parsed, schema-
+ * registered, documented, resolved onto the Client by APPLY_FLOAT_PROP -- and
+ * read by nothing. Two configurable levers that did exactly nothing, which is
+ * worse than an absent feature: the config accepted them and the picture never
+ * changed.
+ *
+ * M5/C2 left this open and named two ways to close it, preferring a resolved
+ * domain stored on the scene buffer. THAT IS THE ONE NOT TAKEN, and the reason
+ * is subsurfaces. A window is not one buffer: a client with subsurfaces has
+ * several, and a rule set on the one the compositor happens to know about
+ * would leave the rest of the same window at a different luminance -- a
+ * visibly split window, which is a worse failure than the gap it replaces.
+ * Resolving from the buffer's surface goes through
+ * wlr_surface_get_root_surface(), so every subsurface of a window answers with
+ * that window's rule, for free.
+ *
+ * THE COST IS BOUNDED AND WAS CHECKED, not assumed. Per textured buffer per
+ * frame: one addon lookup (wlr_scene_surface_try_from_buffer) and a handful of
+ * pointer derefs with a shallow popup walk. No list is scanned -- the earlier
+ * objection to a "client lookup in the walk" was a layering objection, and the
+ * layering is what changed when the scene graph became ours.
  */
+static struct az_lum_rules az_avk_rules_of(const struct wlr_scene_buffer *buf,
+		const struct az_lum_source_desc *src, float scene_ref_nits) {
+	struct wlr_surface *surface = NULL;
+	if (buf != NULL) {
+		struct wlr_scene_surface *ss =
+			wlr_scene_surface_try_from_buffer((struct wlr_scene_buffer *)buf);
+		if (ss != NULL) {
+			surface = ss->surface;
+		}
+	}
+	/* The precedence lives in az_lum_rules.h so the inspector reports what
+	 * this applies rather than recomputing it. */
+	return az_lum_rules_for_surface(surface, src, scene_ref_nits, NULL, NULL);
+}
+
 static struct az_lum_domain az_avk_lum_of(
 		const struct wlr_scene_buffer *buf, float scene_ref_nits) {
 	/* The translation lives in az_source_desc.h so the inspector reads the same
@@ -3047,7 +3076,7 @@ static struct az_lum_domain az_avk_lum_of(
 		? az_source_desc_from_wlr(buf->transfer_function, buf->primaries,
 			buf->max_cll)
 		: (struct az_lum_source_desc){ .tagged = false };
-	struct az_lum_rules rules = az_lum_rules_default();
+	struct az_lum_rules rules = az_avk_rules_of(buf, &src, scene_ref_nits);
 	return az_lum_resolve(&src, &rules, scene_ref_nits);
 }
 

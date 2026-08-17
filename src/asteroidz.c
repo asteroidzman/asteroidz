@@ -765,6 +765,9 @@ struct Client {
 	 * without either having to know about the other. */
 	float sdr_white_scale;
 	float hdr_gain;
+	/* M12: the luminance class this window was given by rule, as a string;
+	 * NULL or "" means none was, and the class is derived from the source. */
+	const char *luminance_domain;
 	char oldmonname[128];
 	uint32_t oldmontags; /* tagset oldmonname's monitor had active when this
 						  * client landed there; used to restore the client
@@ -2399,6 +2402,9 @@ static inline uint64_t az_frame_sample_ns(Monitor *m) {
 	}
 	return t;
 }
+/* M12: the one luminance-rule precedence, between client.h (it reads a rule
+ * off Client) and the renderer that applies it. */
+#include "render/az_lum_rules.h"
 #include "render/az_avk.h"
 #include "present/az_tag_cost.h"
 #include "render/az_dmabuf_caps.h"
@@ -3375,6 +3381,7 @@ static void apply_rule_properties(Client *c, const ConfigWinRule *r) {
 	APPLY_FLOAT_PROP(c, r, sdr_white_scale);
 	APPLY_FLOAT_PROP(c, r, hdr_gain);
 
+	APPLY_STRING_PROP(c, r, luminance_domain);
 	APPLY_STRING_PROP(c, r, animation_type_open);
 	APPLY_STRING_PROP(c, r, animation_type_close);
 }
@@ -7988,6 +7995,7 @@ void init_client_properties(Client *c) {
 	 * either 1.0 or something a rule said about that window. */
 	c->sdr_white_scale = 1.0f;
 	c->hdr_gain = 1.0f;
+	c->luminance_domain = NULL;
 	c->nofocus = 0;
 	c->nofadein = 0;
 	c->nofadeout = 0;
