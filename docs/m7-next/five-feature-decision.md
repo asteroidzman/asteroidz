@@ -329,6 +329,34 @@ policy (the backend's VRR already works; nothing more is built on assumption).
   description, domain and mastering values, the terminal's untagged default,
   DP-1's LUT-carrying encode state and HDMI-A-1's Path A — and an XWayland
   wp-cm test client's metadata change visibly propagates (F10 closed).
+
+> **CLOSED 2026-08-17**, with one correction to this line and one gap left open.
+>
+> **"DP-1's LUT-carrying encode state" was wrong, and this document contradicted
+> itself.** D3 makes an ICC profile INERT on an HDR output — the connector
+> presents its own image description, and stacking an SDR characterisation on
+> top is two transforms on one pixel. So DP-1 with `hdr 1` carries no LUT and
+> never will; it reads `path: B-encode`, `encode_transfer: pq`, `icc: true`,
+> `icc_applied: false`. The acceptance line was written against an expectation
+> the decision section had already refused three sections earlier. Live output
+> is correct; the gate was not.
+>
+> Live, on DP-1 and HDMI-A-1: mpv tagged `pq`/`bt2020`, `max_cll` 400, on a
+> 10-bit `AB30` dmabuf; `domain.scale` 35.714 = 10000/280 against the operator's
+> `sdr_reference_luminance` of 280; `peak_scene` 1.4286 = 400/280; preferred
+> carrying the rule's real 400/0.4/250 rather than a default; HDMI-A-1 on
+> `A-direct-srgb`; DP-1 in VRR with **0 misses** and 66 `prediction_exceeded`,
+> which is ADR-605's distinction holding in the field.
+>
+> **Still unverified: the XWayland half.** F10's code path is closed and the
+> commit path runs, but no XWayland client carrying a wp-cm description has been
+> observed propagating a metadata change live — headless cannot (the callee
+> needs an HDR output and scanout candidacy), and no such client was to hand.
+> It is a narrower claim than "F10 closed" and is recorded as the narrower one.
+>
+> Two defects the dump found in itself on first live use are at `a38f3cd5`: a
+> 64-bit identity emitted as a JSON double (lossy above 2^53), and a loaded
+> profile reported without saying whether it was applied.
 - **M12**: on DP-1, HDR mpv beside an SDR_UI terminal with the terminal's
   white at the restrained anchor and highlights untouched; the same window
   dragged to HDMI-A-1 and back, and straddling, with no visible reference-white
