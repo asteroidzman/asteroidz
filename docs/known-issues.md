@@ -4,49 +4,54 @@ Open defects with what has been established and, as importantly, what has been
 *ruled out*. The point of this file is that the next attempt starts where the
 last one stopped instead of re-deriving it.
 
-## Tag-in animation sometimes does not run
+## FIXED — tag-in animation sometimes did not run
 
-**Symptom (operator, 2026-08-17).** Switching tags — 2 → 1 on DP-1 — sometimes
-animates and sometimes does not. When it does not, kitty windows appear
-"squished against the edge of the screen". Intermittent; no known trigger.
+Reported 2026-08-17, fixed the same day. Kept because four hypotheses were
+falsified before the real one, and because the instrument that finally answered
+it is the reusable part.
 
-**Context.** DP-1 tag 1 is monocle, tag 2 is scroller, and the kitty windows
-live on the scroller tag. A scroller legitimately parks windows partly off-strip
-at negative x, so "squished against the edge" is very likely the *normal*
-appearance of a scrolled window — seen abruptly because the slide-in did not
-play, rather than damage in its own right.
+**Symptom.** Switching tags sometimes animated and sometimes did not; when it
+half-ran it "fell short". Intermittent, no known trigger.
 
-**Most plausible mechanism, NOT demonstrated.** `set_tagin_animation()`
-(src/animation/tag.h) early-returns when `c->animation.running` is already true,
-leaving the window with no slide. The configured spring (`damping 0.8`,
-`frequency 10`) converges at ~40% of its duration but the animation stays marked
-running for longer, so a tag switch arriving inside that window would silently
-skip the slide. This fits the intermittency. It has not been proven.
+**Cause.** A tag switch arranges twice in the same event-loop pass, so a segment
+gets replaced before it has ever been ticked. `client_commit()` classified that
+as a RETARGET — on `c->animation.running` alone — and a retarget anchors its
+clock at `last_sample_ns`, which for an unsampled segment still holds the last
+tick of the *previous, long-finished* animation. The new slide therefore started
+however long the window had been sitting still ago. Measured on a 600ms slide:
+first tick at `t_ms=1062`, `lin=1.0`, window at its target in one frame, no
+slide drawn. A shorter idle gave `t_ms=465` — the curve starts 78% along, which
+is what "falls short" was. 32% of slides teleported.
 
-### Ruled out — do not re-check these
+A retarget is a segment that was *interrupted*, not merely one that was
+replaced, so `retargeting` now also requires `last_sample_ns > time_started_ns`.
 
-1. **Character-cell quantisation.** kitty's buffer is pixel-exact for its box:
-   1796x2031 for a 1201x1358 logical box at scale 1.5 with a 2px border.
-2. **The animation start position.** Two fixes were written against
-   `set_tagin_animation()`'s off-screen `animainit_geom` — placing hidden
-   windows at their current position, then at their layout position. Neither
-   changed the outcome. Both were reverted.
-3. **A corrupted `c->geom`.** `resize()` was instrumented to log any call with
-   `geo.x < -100`. Across the full reproduction attempt it never fired once, so
-   nothing is writing an off-screen geometry through that path.
-4. **The first "reproduction" was invalid and must not be reused.** It put the
-   test windows on the SCROLLER tag and found one at x=-1480, which is a scroller
-   parking a window off-strip — correct behaviour reported as a bug. Repeating it
-   with the windows on the monocle tag shows both correctly at x=10 after six
-   round-trips, with zero off-screen writes.
+**Why geometry could never have found it.** A slide that never plays leaves
+every window exactly where a slide that played perfectly leaves it. Three of the
+four failed hypotheses were geometry hypotheses. The animation CLOCK is the only
+witness: `AZ_PACE=1`, take each `anim start action=4` with a non-zero span, and
+read `t_ms` on its first `anim tick`. A few ms is healthy; hundreds is the bug.
 
-### What a next attempt should do
+### Falsified along the way — do not re-derive
 
-Reproduce against the layout the operator actually uses: a **scroller** tag with
-several windows, switched away from and back to, asking whether the slide RAN —
-not where the windows ended up. Geometry is the wrong instrument here, because
-the resting positions are legitimately off-screen; the question is whether the
-animation played at all.
+1. **Character-cell quantisation.** kitty's buffer is pixel-exact for its box.
+2. **The animation start position.** Two fixes written against
+   `set_tagin_animation()`'s off-screen `animainit_geom`; neither changed
+   anything, both reverted.
+3. **A corrupted `c->geom`.** `resize()` instrumented for `geo.x < -100`; never
+   fired once.
+4. **`set_tagin_animation()`'s `running` early-return.** The leading suspect for
+   a day. It is not wrong — it hands the in-flight position to the new segment,
+   which is right. What was wrong is the clock that position was pinned to.
+5. **The first reproduction itself.** It put windows on a SCROLLER tag and read
+   x=-1480 as a stranding, when a scroller parks windows off-strip by design.
+
+### Still open, benign
+
+A tag switch emits two `anim start`s per client one frame apart (83 of 250 in a
+20-round-trip run were superseded before their first tick). Harmless now that a
+replaced-but-unsampled segment restarts cleanly, but the second arrange is
+redundant work.
 
 ## Spring duration is coupled to spring frequency
 

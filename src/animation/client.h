@@ -3427,7 +3427,36 @@ void client_commit(Client *c) {
 			c->animation.current.width, c->animation.current.height,
 			(unsigned long long)az_pace_now_ns());
 
-		bool retargeting = c->animation.running && c->animation.last_sample_ns;
+		/*
+		 * A RETARGET IS A SEGMENT THAT WAS INTERRUPTED, NOT MERELY ONE THAT WAS
+		 * REPLACED.
+		 *
+		 * Everything a retarget does -- seeding `initial` with the position the
+		 * old curve had reached, seeding the spring with the speed it had, and
+		 * anchoring the new clock at `last_sample_ns` -- describes a segment
+		 * that was EVALUATED at least once. `running` alone does not say that.
+		 * A second arrange in the same event-loop pass replaces a segment that
+		 * has never been ticked, and then `last_sample_ns` still holds the last
+		 * tick of the PREVIOUS, long-finished animation.
+		 *
+		 * Anchoring there starts the new clock in the past by however long the
+		 * window sat still. Measured on a tag switch (AZ_PACE, four clients,
+		 * two arranges one frame apart): the first tick of a 600ms slide read
+		 * t_ms=1062, lin=1.0 -- the window teleported to its target in one
+		 * frame and no slide was drawn at all. A shorter idle gives t_ms=465,
+		 * which starts the curve 78% of the way along: the same defect seen as
+		 * an animation that "falls short" rather than one that never runs. Both
+		 * are intermittent for the same reason -- what decides which you get is
+		 * how long ago the window last moved, which nothing in a tag switch
+		 * controls.
+		 *
+		 * `time_started_ns` below still holds the OLD segment's start, so this
+		 * comparison is exactly "has the running segment been sampled since it
+		 * began". An unsampled one has no reached position to continue from and
+		 * no instant to continue at, so it is a fresh start.
+		 */
+		bool retargeting = c->animation.running
+			&& c->animation.last_sample_ns > c->animation.time_started_ns;
 		/*
 		 * ── VELOCITY CONTINUITY, AND WHAT ONE SCALAR CAN CARRY ────────────
 		 *
