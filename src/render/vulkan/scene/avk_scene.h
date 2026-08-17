@@ -399,7 +399,12 @@ struct avk_cmd {
 	 */
 	struct az_lum_domain lum;
 
-	/* reserved for M4F */
+	/* Set on every AVK_CMD_BLUR. M4F is implemented and this is no longer
+	 * "reserved": it marks a command whose destination is a blur composite
+	 * rather than a texture. It used to gate a once-per-renderer warning that
+	 * blur was unimplemented -- which kept firing at ERROR level long after
+	 * blur worked, telling anyone reading the log that a feature they could see
+	 * on screen did not exist. */
 	bool has_blur;
 };
 

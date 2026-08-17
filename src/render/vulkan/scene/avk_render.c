@@ -1249,15 +1249,6 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 	for (size_t i = begin; i < end; i++) {
 		const struct avk_cmd *cmd = &scene->cmds[i];
 
-		if (cmd->has_blur && !renderer->warned_unimplemented_effect) {
-			/* Loud once, and still loud: a compositor that quietly renders an
-			 * incomplete desktop is worse than one that says so. Shadows came
-			 * off this list in M4D; blur goes when M4F lands. */
-			avk_log(AVK_WARN, "avk: this scene asks for blur, which is not "
-				"implemented yet -- rendering without it (M4F)");
-			renderer->warned_unimplemented_effect = true;
-		}
-
 		pixman_region32_t region;
 		/* Decided in pass one, where what covers this command was known. The
 		 * fallback recomputes it unculled, and is only reached when the

@@ -1217,9 +1217,6 @@ struct avk_renderer {
 
 	struct avk_renderer_stats stats;
 
-	/* Said once per renderer rather than once per frame: a command asking for
-	 * an effect M3 does not implement is worth exactly one warning. */
-	bool warned_unimplemented_effect;
 };
 
 /*
