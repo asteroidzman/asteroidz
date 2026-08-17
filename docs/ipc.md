@@ -556,7 +556,7 @@ Each entry in `surfaces` carries:
 | `presentation.presents_per_frame` | presentations per committed client frame; **1.0 means the compositor is pacing to the client**, which is what VRR following a video looks like |
 | `presentation.output_vrr_active` | VRR state of its output, named so it cannot be read as a property of the window |
 | `render.direct_scanout` | whether this surface's buffer actually went to the display last frame |
-| `render.scanout` | the verdict: `accepted`, `no-candidate`, `rule-disabled`, `no-buffer`, `not-dmabuf`, `geometry`, `transform-mismatch`, `effects-active`, `output-icc`, `tone-map-required`, `modeset-pending`, `kms-refused` |
+| `render.scanout` | the verdict: `accepted`, `no-candidate`, `rule-disabled`, `no-buffer`, `not-dmabuf`, `geometry`, `transform-mismatch`, `effects-active`, `output-icc`, `tone-map-required`, `modeset-pending`, `kms-refused`, `privacy-shield`, `not-evaluated` |
 | `render.scanout_why` | the same verdict as a sentence — every refusal has a reason, which is the point |
 | `identity` | hash of the decisions above — not the timing counters, so it is stable while a window merely renders |
 
@@ -571,7 +571,9 @@ has.
 `icc`, the colour `path` (`A-direct-srgb` / `B-encode` / `fallback`),
 `encode_transfer`, `ref_nits`, `peak_scene`, `dither_q`, and the presenter's
 `present_regime`, periods and signed error series, plus `scanout_last` (the
-output's verdict for its last frame) and `scanout_frames` (how many frames have
+output's verdict for its last frame — `not-evaluated` when that frame took a
+path which does not consider scanout, such as a screenshot capture, rather than
+repeating an older verdict) and `scanout_frames` (how many frames have
 skipped composition entirely).
 
 **A profile that is loaded is not necessarily applied**, so `icc` (present) and

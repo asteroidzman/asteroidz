@@ -148,14 +148,35 @@ void apply_tear_state(Monitor *m) {
 
 	struct wlr_output_state state;
 	wlr_output_state_init(&state);
-	struct az_frame_options frame_options = {
-		.color_transform = az_output_color_transform(m),
-	};
-	if (!az_output_build_frame(m, &state, &frame_options)) {
-		wlr_log(WLR_ERROR, "tearing: failed to build frame for %s",
-			m->wlr_output->name);
-		wlr_output_state_finish(&state);
-		return;
+
+	/*
+	 * ── A TORN FRAME CAN SCAN OUT TOO ─────────────────────────────────────
+	 *
+	 * M13B shipped with these mutually exclusive: rendermon takes the tearing
+	 * branch before the branch that tries scanout, and returns. So a window
+	 * that tears never scanned out -- and a tearing fullscreen game is exactly
+	 * the case that most wants it. Both want the same thing, latency, and
+	 * getting one silently cost the other.
+	 *
+	 * Scanout first, because it is the cheaper frame: if the client's buffer IS
+	 * the picture, there is nothing to composite and the torn flip carries that
+	 * buffer directly.
+	 */
+	enum az_scanout_verdict sv = AZ_SCANOUT_NOT_EVALUATED;
+	bool scanned_out = az_scanout_try(m, &state, &sv);
+	m->scanout_verdict = (int32_t)sv;
+	if (scanned_out) {
+		m->scanout_frames++;
+	} else {
+		struct az_frame_options frame_options = {
+			.color_transform = az_output_color_transform(m),
+		};
+		if (!az_output_build_frame(m, &state, &frame_options)) {
+			wlr_log(WLR_ERROR, "tearing: failed to build frame for %s",
+				m->wlr_output->name);
+			wlr_output_state_finish(&state);
+			return;
+		}
 	}
 
 	state.tearing_page_flip = true;
@@ -174,4 +195,14 @@ void apply_tear_state(Monitor *m) {
 		az_output_commit_failed(m);
 	}
 	wlr_output_state_finish(&state);
+
+	/* Same debt the composition path settles: scanout leaves the scene's
+	 * pending damage untouched, and an output that never stops needing a frame
+	 * re-scans-out at the panel's maximum rate forever. */
+	if (scanned_out) {
+		pixman_region32_clear(&m->scene_output->pending_commit_damage);
+		struct timespec sdone;
+		clock_gettime(CLOCK_MONOTONIC, &sdone);
+		wlr_scene_output_send_frame_done(m->scene_output, &sdone);
+	}
 }

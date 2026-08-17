@@ -71,6 +71,12 @@ enum az_scanout_verdict {
 	/* A capture is running and privacy-shield is set on this window. The
 	 * shield is COMPOSITED, and scanout does not composite. */
 	AZ_SCANOUT_PRIVACY_SHIELD,
+	/* THE FRAME PATH DID NOT ASK. Distinct from every refusal above, which are
+	 * answers; this one means no question was put. An output whose last frame
+	 * took a branch that never evaluates scanout must say so rather than
+	 * report whatever the last evaluating frame concluded -- a stale verdict
+	 * presented as current is how a diagnostic starts lying. */
+	AZ_SCANOUT_NOT_EVALUATED,
 	AZ_SCANOUT_VERDICT_COUNT,
 };
 
@@ -131,6 +137,8 @@ static inline const char *az_scanout_verdict_why(enum az_scanout_verdict v) {
 	case AZ_SCANOUT_PRIVACY_SHIELD:
 		return "a capture is running and privacy-shield is set on this window; "
 		       "the shield is composited and scanout is not";
+	case AZ_SCANOUT_NOT_EVALUATED:
+		return "this frame took a path that does not consider scanout";
 	case AZ_SCANOUT_VERDICT_COUNT:
 		break;
 	}

@@ -1562,9 +1562,12 @@ static void mon_send_preferred_descriptions_all(void);
  * own setter -- both of which come earlier in this file, or in a header
  * included earlier. */
 static void mon_content_metadata_changed(struct wlr_surface *surface);
-/* M13B: the scanout evaluation needs it and is included before it is defined,
- * same as above. One definition of "what covers this output". */
+/* M13B: the scanout evaluation needs these and is included before either is
+ * defined, same as above. One definition of "what covers this output", and one
+ * of "what colour did this surface declare". */
 static Client *mon_hdr_scanout_candidate(Monitor *m);
+static const struct wlr_image_description_v1_data *az_cm_surface_description(
+	struct wlr_surface *surface);
 /*
  * How many times a content-metadata change has armed a connector update.
  *
@@ -2694,6 +2697,10 @@ static int32_t capture_output(const Arg *arg) {
 	return 0;
 }
 
+/* M13B: direct scanout eligibility and the attempt. BEFORE ext-protocol/all.h
+ * because tearing.h is inside it and a torn frame can scan out too -- see the
+ * note in apply_tear_state(). */
+#include "render/az_scanout.h"
 #include "ext-protocol/all.h"
 /* M6B/D6. The ONE preferred-colour policy, before either protocol frontend
  * that serializes it -- so neither can invent its own. */
@@ -2704,9 +2711,6 @@ static int32_t capture_output(const Arg *arg) {
 /* M11. The per-surface intent snapshot, after the colour frontends because it
  * reads the same description multiplexer they register. */
 #include "render/az_intent.h"
-/* M13B: direct scanout eligibility and the attempt. Before ipc.h, which prints
- * the verdict, and before rendermon, which acts on it. */
-#include "render/az_scanout.h"
 #include "fetch/fetch.h"
 #include "ipc/ipc.h"
 #include "ipc/portals.h"
@@ -9179,6 +9183,15 @@ static void render_monitor(Monitor *m) {
 	AZ_ZONE_TEXT(az_render, m->wlr_output->name);
 
 	frame_allow_tearing = check_tearing_frame_allow(m);
+
+	/*
+	 * M13B: every frame starts having answered nothing about scanout. The
+	 * branches below that consider it overwrite this; the ones that cannot --
+	 * a screenshot capture, which needs composited pixels by definition, and a
+	 * folded HDR state change -- leave it, so the dump says "not-evaluated"
+	 * instead of repeating whatever the last evaluating frame decided.
+	 */
+	m->scanout_verdict = (int32_t)AZ_SCANOUT_NOT_EVALUATED;
 
 	/* Everything from here to the commit is asteroidz's own per-frame work --
 	 * layer/client animation ticks, fadeouts, cursor zoom, overview chrome.
