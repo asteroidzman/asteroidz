@@ -43,7 +43,18 @@
 #                          it -- MESA_VK_TRACE and FX_VK_VALIDATION both looked
 #                          like they were being ignored by the driver when in
 #                          fact they never arrived.
-#   HL_RENDERER            gles2 (default) or vulkan. gles2 is the default
+#   HL_AZ_RENDERER         avk (default). Which engine COMPOSITES. Unset, this
+#                          used to leave az_renderer at AZ_RENDERER_WLR, so
+#                          every fixture that did not set it itself was
+#                          testing SceneFX -- a path production cannot reach,
+#                          because an AVK session aborts rather than
+#                          compositing with it. The effects module was
+#                          measuring shadows drawn by the wrong renderer.
+#   HL_RENDERER            vulkan (default). Which renderer WLROOTS uses for
+#                          shm, the allocator and screencopy -- not
+#                          composition. The default was gles2, which the
+#                          compositor overrode to vulkan at startup anyway, so
+#                          the value only ever misled a reader
 #                          because it is the one renderer present on every
 #                          machine that runs this suite, so results are
 #                          comparable; set vulkan to exercise the fx_vk path
@@ -306,7 +317,8 @@ EOF
 		${HL_DBUS_ADDR:+DBUS_SESSION_BUS_ADDRESS="$HL_DBUS_ADDR"} \
 		WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 \
 		WLR_HEADLESS_OUTPUTS="$HL_OUTPUTS" \
-		WLR_RENDERER="${HL_RENDERER:-gles2}" \
+		WLR_RENDERER="${HL_RENDERER:-vulkan}" \
+		ASTEROIDZ_RENDERER="${HL_AZ_RENDERER:-avk}" \
 		${HL_ENV:-} \
 		"$HL_ASTEROIDZ" -c "$HL_CONFIG" > "$HL_OUTDIR/comp-stdout.log" 2>&1 &
 	HL_COMP_PID=$!

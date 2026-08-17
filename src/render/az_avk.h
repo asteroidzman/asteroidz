@@ -420,6 +420,9 @@ struct az_avk {
 	/* The output being recorded right now, so a decision taken deep in the
 	 * walk can say WHICH output it was taken for. NULL outside a build. */
 	struct wlr_output *frame_output;
+	/* Set by the stale decision, consumed by the walker one step later --
+	 * the only place that knows both the entry and where it is being drawn. */
+	struct az_avk_buffer *frame_stale_entry;
 	/*
 	 * ── CLIENT ACQUIRE FENCES FOR THIS FRAME ─────────────────────────────
 	 *
@@ -645,6 +648,12 @@ struct az_avk_buffer {
 	 * fully instead of partially, which avk-crossoutput-border-test.sh
 	 * measures directly (it wants partial > full, and got 115 against 174). */
 	struct wlr_output *stale_output;
+	/* Where it was drawn, in LAYOUT coordinates, so the repaint owed for a
+	 * late copy can be that rectangle instead of the whole output. A box
+	 * rather than the scene node it came from: a node pointer would dangle,
+	 * four ints cannot. */
+	struct wlr_box stale_box;
+	bool stale_box_valid;
 
 
 	/* Set once nothing worked, so the failure is diagnosed once instead of
@@ -1612,13 +1621,20 @@ static struct avk_image *az_avk_shm_bring_current(struct az_avk_buffer *entry) {
 		 * The image having NO content is the one case that must still wait:
 		 * there is nothing to draw, and drawing nothing is a black window.
 		 */
-		if (!avk_upload_job_done(entry->job)) {
+		if (!avk_upload_job_done(entry->job)
+				&& !az_avk_env_flag("AZ_AVK_NO_STALE")) {
+			/* AZ_AVK_NO_STALE: block instead of showing a previous
+			 * generation. Diagnostic only -- it puts the copy back on the
+			 * critical path, which is the whole thing this avoids. It exists
+			 * so "did a capture catch a stale frame" is answerable. */
 			struct avk_image *stale = (entry->image != NULL
 				&& entry->uploaded_generation > 0)
 					? entry->image : az_avk_shm_sibling_image(entry);
 			if (stale != NULL) {
 				entry->drew_stale = true;
 				entry->stale_output = avk.frame_output;
+				entry->stale_box_valid = false;
+				avk.frame_stale_entry = entry;
 				avk.shm_stale_frames++;
 				return stale;
 			}
@@ -1701,10 +1717,39 @@ static void az_avk_shm_drain(void) {
 								|| dm->wlr_output != entry->stale_output) {
 							continue;
 						}
-						wlr_damage_ring_add_whole(
-							&dm->scene_output->damage_ring);
+						if (entry->stale_box_valid) {
+							/*
+							 * The rectangle it was drawn at, in this output's
+							 * buffer pixels: layout coords less the output's
+							 * origin, times its scale.
+							 *
+							 * Whole-output damage here cost a real regression
+							 * twice. avk-crossoutput-border-test.sh caught it
+							 * across outputs (partial 115 against full 174)
+							 * and avk-rounded-persist-test.sh caught what was
+							 * left on a single output (partial 171 against
+							 * full 196) -- a late copy was making every frame
+							 * a full redraw.
+							 */
+							double sc = dm->wlr_output->scale;
+							struct wlr_box b = {
+								.x = (int)((entry->stale_box.x - dm->m.x) * sc),
+								.y = (int)((entry->stale_box.y - dm->m.y) * sc),
+								.width = (int)(entry->stale_box.width * sc) + 1,
+								.height = (int)(entry->stale_box.height * sc) + 1,
+							};
+							wlr_damage_ring_add_box(
+								&dm->scene_output->damage_ring, &b);
+						} else {
+							/* No box was recorded -- the node had no layout
+							 * coords. Falling back to the whole output is
+							 * correct and merely expensive. */
+							wlr_damage_ring_add_whole(
+								&dm->scene_output->damage_ring);
+						}
 						wlr_output_schedule_frame(dm->wlr_output);
 					}
+					entry->stale_box_valid = false;
 				}
 				progress = true;
 				break;
@@ -3629,7 +3674,24 @@ static void az_avk_walk_node(struct az_avk_walk *walk,
 		}
 
 		avk.buffer_resolve_attempts++;
+		avk.frame_stale_entry = NULL;
 		struct avk_image *image = az_avk_image_for_buffer(buf->buffer);
+		if (avk.frame_stale_entry != NULL) {
+			/* That resolve returned a PREVIOUS generation. The repaint it
+			 * owes is this rectangle and not the output -- see
+			 * az_avk_shm_drain(). Layout coordinates, converted per output
+			 * when the debt is paid. */
+			int nx = 0, ny = 0;
+			if (wlr_scene_node_coords(&buf->node, &nx, &ny)) {
+				avk.frame_stale_entry->stale_box = (struct wlr_box){
+					.x = nx, .y = ny,
+					.width = buf->dst_width, .height = buf->dst_height,
+				};
+				avk.frame_stale_entry->stale_box_valid =
+					buf->dst_width > 0 && buf->dst_height > 0;
+			}
+			avk.frame_stale_entry = NULL;
+		}
 		if (image == NULL) {
 			/* Already logged, in full, by the importer. Dropping the command
 			 * leaves whatever is behind the window visible, which is at least
