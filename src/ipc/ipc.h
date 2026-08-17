@@ -463,6 +463,35 @@ static cJSON *build_surface_intent_json(struct wlr_surface *s,
 				&& selmon->sel == ic && check_tearing_frame_allow(ic->mon));
 		/* VRR is genuinely per-output, and is named so it cannot be read as a
 		 * property of this window. */
+		/*
+		 * WHAT THE CLIENT COMMITS AT, beside what the output presents at.
+		 * Reported as Hz because that is the unit the question is asked in
+		 * ("is this 23.976 content arriving as 23.976"), and the two numbers
+		 * are only interesting together: a 23.976Hz client on a 144Hz fixed
+		 * output cannot be presented evenly, and seeing both is what makes
+		 * that visible rather than inferred.
+		 */
+		if (ic != NULL && ic->commit_interval_n > 0) {
+			double mean_ns = (double)ic->commit_interval_sum_ns
+				/ (double)ic->commit_interval_n;
+			cJSON_AddNumberToObject(pc, "commit_hz",
+				mean_ns > 0.0 ? 1.0e9 / mean_ns : 0.0);
+			cJSON_AddNumberToObject(pc, "commit_samples",
+				(double)ic->commit_interval_n);
+		}
+		if (in.mon != NULL) {
+			uint64_t per = az_presenter_period_ns(in.mon);
+			cJSON_AddNumberToObject(pc, "output_hz",
+				per > 0 ? 1.0e9 / (double)per : 0.0);
+			/* Vblanks per committed frame: 6.006 for 23.976 into 144Hz, which
+			 * is the number that says why it cannot be even. */
+			if (per > 0 && ic != NULL && ic->commit_interval_n > 0) {
+				double mean_ns = (double)ic->commit_interval_sum_ns
+					/ (double)ic->commit_interval_n;
+				cJSON_AddNumberToObject(pc, "vblanks_per_frame",
+					mean_ns / (double)per);
+			}
+		}
 		cJSON_AddBoolToObject(pc, "output_vrr_active",
 			in.mon != NULL && in.mon->is_vrr_opening);
 	}

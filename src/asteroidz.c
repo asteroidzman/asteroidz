@@ -770,6 +770,21 @@ struct Client {
 	const char *luminance_domain;
 	/* M13: the presentation class by rule; NULL/"" means derive it. */
 	const char *presentation_class;
+	/*
+	 * M13: HOW FAST THIS CLIENT COMMITS, which is not how fast the output
+	 * presents. A 23.976fps film on a 144Hz panel is the case the VIDEO class
+	 * exists for, and the first question about it -- is the content's cadence
+	 * even reaching the compositor cleanly -- had no instrument. Two adds and a
+	 * subtract per commit; no allocation, nothing per frame.
+	 *
+	 * Kept as sum/count rather than an EMA so the mean is a mean: an EMA of a
+	 * cadence that alternates 5 and 7 vblanks reports the average and hides
+	 * that it never once hit 6.
+	 */
+	uint64_t commit_count;
+	uint64_t commit_last_ns;
+	uint64_t commit_interval_sum_ns;
+	uint64_t commit_interval_n;
 	char oldmonname[128];
 	uint32_t oldmontags; /* tagset oldmonname's monitor had active when this
 						  * client landed there; used to restore the client
@@ -5291,6 +5306,38 @@ void commitlayersurfacenotify(struct wl_listener *listener, void *data) {
 	}
 }
 
+
+/*
+ * ── M13: RECORD WHAT CADENCE A CLIENT IS COMMITTING AT ────────────────────
+ *
+ * Called from BOTH commit listeners -- the xdg one and commitx11 -- because
+ * there are two and forgetting the second is exactly what F10 was. A video
+ * player under XWayland is not a hypothetical.
+ *
+ * The FIRST commit establishes a timestamp and no interval: an interval needs
+ * two commits, and counting the gap between "client mapped" and "first frame"
+ * as a cadence would report every client as impossibly slow for its first
+ * sample.
+ */
+static void client_note_commit(Client *c) {
+	if (c == NULL || c->iskilling) {
+		return;
+	}
+	uint64_t now = az_pace_now_ns();
+	if (c->commit_last_ns != 0 && now > c->commit_last_ns) {
+		uint64_t d = now - c->commit_last_ns;
+		/* A gap longer than a second is a client that stopped and started --
+		 * a paused video, a window uncovered -- not a cadence. Including it
+		 * would drag the mean toward a number nothing ever presented at. */
+		if (d < 1000000000ull) {
+			c->commit_interval_sum_ns += d;
+			c->commit_interval_n++;
+		}
+	}
+	c->commit_last_ns = now;
+	c->commit_count++;
+}
+
 void commitnotify(struct wl_listener *listener, void *data) {
 	Client *c = wl_container_of(listener, c, commit);
 	struct wlr_box *new_geo;
@@ -5345,6 +5392,7 @@ void commitnotify(struct wl_listener *listener, void *data) {
 	 */
 	if (c && !c->iskilling)
 		mon_content_metadata_changed(client_surface(c));
+	client_note_commit(c);
 
 	if (!c || c->iskilling || c->animation.tagouting || c->animation.tagouted ||
 		c->animation.tagining)
@@ -8000,6 +8048,10 @@ void init_client_properties(Client *c) {
 	c->hdr_gain = 1.0f;
 	c->luminance_domain = NULL;
 	c->presentation_class = NULL;
+	c->commit_count = 0;
+	c->commit_last_ns = 0;
+	c->commit_interval_sum_ns = 0;
+	c->commit_interval_n = 0;
 	c->nofocus = 0;
 	c->nofadein = 0;
 	c->nofadeout = 0;
@@ -12844,6 +12896,7 @@ void commitx11(struct wl_listener *listener, void *data) {
 	if (c && !c->iskilling) {
 		mon_content_metadata_changed(client_surface(c));
 	}
+	client_note_commit(c);
 
 	/* Compared in X11's space, for the same reason as the short circuit in
 	 * client_set_size: state->width is the surface's own pixel count and
