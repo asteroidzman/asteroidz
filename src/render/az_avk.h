@@ -2186,6 +2186,7 @@ static struct avk_image *az_avk_image_for_buffer_ex(struct wlr_buffer *buffer,
 	wl_list_insert(&avk.buffers, &entry->link);
 	avk.client_images_cached++;
 
+	uint64_t resolve_start_ns = az_avk_now_ns();
 	struct az_buffer_source source;
 	az_buffer_get_source(buffer, &source);
 	switch (source.kind) {
@@ -2249,6 +2250,23 @@ static struct avk_image *az_avk_image_for_buffer_ex(struct wlr_buffer *buffer,
 			buffer->height);
 		entry->image = NULL;
 		break;
+	}
+
+	{
+		/*
+		 * WHICH BRANCH, WHEN IT IS SLOW. The walk's resolve was timed as a
+		 * whole and came out owning a 38ms frame; standalone, creating the
+		 * 59MB image it builds takes 0.02ms, so the cost is not the creation
+		 * and the breakdown has to say what it is instead.
+		 */
+		uint64_t resolve_us = (az_avk_now_ns() - resolve_start_ns) / 1000;
+		if (resolve_us > 5000) {
+			avk_log(AVK_ERROR, "slow resolve: %s %dx%d took %" PRIu64
+				"us (async=%d)",
+				source.kind == AZ_BUFFER_DMABUF ? "dmabuf"
+					: source.kind == AZ_BUFFER_DATA_PTR ? "shm" : "none",
+				buffer->width, buffer->height, resolve_us, (int)async);
+		}
 	}
 
 	if (entry->image == NULL) {
