@@ -52,7 +52,9 @@ colorimetry at all, the resolved luminance domain, what the surface is told its
 display prefers, and whether it reached the screen by composition or direct
 scanout. Each output's colour path and presentation state is reported alongside,
 so a disagreement between what a display is and what a surface was told is
-visible by comparison rather than by inference. Everything is read from the
+visible by comparison rather than by inference \(em including what the torn\-flip
+path did with the frames it was handed, since a display that refuses an
+immediate flip does so at commit time, where no test can see it coming. Everything is read from the
 structures production uses; nothing is recomputed for display. See
 \fBdocs/ipc.md\fR for the fields, and for what this deliberately does not yet
 report.
