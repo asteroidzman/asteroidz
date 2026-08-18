@@ -3,6 +3,7 @@
 #include "avk_command.h"
 
 #include <inttypes.h>
+#include <time.h>
 #include <string.h>
 
 /* One second. Not a real timeout in the sense of "this might legitimately take
@@ -75,6 +76,12 @@ void avk_cmd_ring_finish(struct avk_cmd_ring *ring) {
 		}
 	}
 	ring->dev = NULL;
+}
+
+static uint64_t avk_now_ns_dbg(void) {
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
 }
 
 VkCommandBuffer avk_cmd_ring_begin(struct avk_cmd_ring *ring) {
@@ -184,8 +191,23 @@ uint64_t avk_cmd_ring_submit(struct avk_cmd_ring *ring,
 
 	/* No fence. The timeline is the fence, and passing one here would be a
 	 * second thing to poll and a second thing to reset. */
+	/*
+	 * TIMED. A 42x41 upload measured 30ms inside "submit", with the ring's own
+	 * backpressure wait never once firing, which leaves the driver call
+	 * itself. vkQueueSubmit2 is not supposed to block; when it does, it is the
+	 * kernel's submission path, and that is worth naming rather than guessing
+	 * at from the outside.
+	 */
+	uint64_t submit_t0 = avk_now_ns_dbg();
 	res = vkQueueSubmit2(ring->dev->graphics_queue, 1, &submit,
 		VK_NULL_HANDLE);
+	{
+		uint64_t submit_us = (avk_now_ns_dbg() - submit_t0) / 1000;
+		if (submit_us > 5000) {
+			avk_log(AVK_ERROR, "vkQueueSubmit2 blocked for %" PRIu64
+				"us (%u wait semaphore(s))", submit_us, wait_count);
+		}
+	}
 	ring->recording = -1;
 	if (res != VK_SUCCESS) {
 		avk_check(res, "vkQueueSubmit2");
