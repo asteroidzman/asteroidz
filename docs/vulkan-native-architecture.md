@@ -1001,6 +1001,34 @@ that fixture's own premise, since it had been resting on the fault cost to get
 past its 1ms threshold. It now sizes its client to blow that threshold on
 bandwidth alone.
 
+### The cache can only recycle what somebody gives back
+
+Staging was released when its `wl_buffer` was destroyed, and that made every
+headless measurement of the cache look perfect while the live desktop still
+stuttered. `contrib/wlrepaint --churn` presents a fresh buffer every frame and
+drops the old one, so the pool is refilled continuously: 293 reclaims in one
+run, zero slow packs across ten tag round-trips. Firefox **keeps** its old
+buffers. Live, the same counters read 7 reclaims, 68 allocations, 79 cached
+entries, and `retire_entries_live` at **0** — nothing had been released, so
+there was nothing to hand out, and each new buffer faulted its own 56MB.
+
+That is also the shape of the symptom the operator reported: not slowness while
+scrolling, but a hitch on tag and focus changes — the moments that make a
+client produce new buffers.
+
+So `az_avk_shm_staging_reap()` takes the scratch space back from entries that
+have stopped drawing (one second), through the retire queue, which is what
+makes it safe. It runs once per frame and, more importantly, **on demand** in
+`az_avk_shm_staging_take()` just before an allocation of 4MB or more — because
+per frame is too late in the case that matters: the allocation happens in a
+commit handler and the frame that would have reaped comes after it.
+
+The idle test is wall-clock, not frames. The first version counted frames and
+could not see idleness at all: a desktop with nothing moving produces no
+frames, so an entry that stopped drawing ten seconds ago still read as "used
+one frame ago". Measured with a second 56MB client arriving while the first
+holds its buffers: allocations by the newcomer **4 → 1**, slow packs **2 → 0**.
+
 ### Damage belongs to the surface, not to the buffer that carried it
 
 The cache holds one image per `wl_buffer`, so it is tempting to apply a

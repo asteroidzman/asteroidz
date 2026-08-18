@@ -263,6 +263,8 @@ struct az_avk {
 	 * a nonzero count means uploads are outrunning the transfer queue, and
 	 * the wait is what stops that from becoming corruption. */
 	uint64_t shm_staging_waits;
+	/* Staging buffers handed back by az_avk_shm_staging_reap(). */
+	uint64_t shm_staging_reaped;
 	uint64_t shm_staging_wait_ns_max, shm_staging_wait_ns_sum;
 	/* Frames that showed the previous generation instead of blocking, and the
 	 * microseconds of event loop that decision gave back. */
@@ -646,6 +648,22 @@ struct az_avk_buffer {
 	 */
 	struct avk_upload upload[2];
 	uint32_t upload_slot;   /* the slot the LAST copy used */
+	/*
+	 * The frame this entry last copied anything, so idle staging can be given
+	 * back. See az_avk_shm_staging_reap(): staging used to be held until the
+	 * wl_buffer was destroyed, and a client that keeps its old buffers alive
+	 * -- Firefox does -- therefore held one staging buffer per buffer it had
+	 * ever drawn, forever, while every NEW buffer had to allocate and fault a
+	 * fresh one. Measured live: 79 cached entries, 68 allocations, and a
+	 * retire queue with nothing in it to recycle.
+	 *
+	 * CLOCK_MONOTONIC, not a frame count. The first version counted frames and
+	 * could not see idleness at all: a desktop with nothing moving produces no
+	 * frames, so an entry that stopped drawing ten seconds ago still read as
+	 * "used one frame ago" -- and the reap then ran only once the NEXT client
+	 * was already allocating.
+	 */
+	uint64_t upload_ns;
 
 	/* A frame drew this buffer's PREVIOUS generation rather than wait for the
 	 * copy in flight. Whoever settles that copy owes a repaint, because the
@@ -1198,6 +1216,8 @@ static uint32_t az_avk_shm_wait(const struct az_avk_buffer *entry,
  * failed attempt leaves the alternation where it was rather than skipping a
  * slot and landing back on the one the GPU is reading.
  */
+static void az_avk_shm_staging_reap(void);
+
 static struct avk_upload *az_avk_shm_staging_take(struct az_avk_buffer *entry,
 		VkDeviceSize size, uint32_t *slot_out) {
 	uint32_t slot = entry->upload_slot ^ 1u;
@@ -1211,6 +1231,24 @@ static struct avk_upload *az_avk_shm_staging_take(struct az_avk_buffer *entry,
 		slot = 0;
 	}
 	struct avk_upload *up = &entry->upload[slot];
+
+	/*
+	 * ── ASK THE IDLE ENTRIES BEFORE FAULTING A NEW ONE ────────────────────
+	 *
+	 * This slot has no buffer and the one wanted is big enough that creating
+	 * it means a page fault per page -- 52ms for 56MB, on the thread that
+	 * copies. Meanwhile a client that stopped drawing a second ago may be
+	 * sitting on exactly such a buffer, doing nothing with it.
+	 *
+	 * On demand rather than only per frame, because per frame is too late in
+	 * the case that matters: the allocation happens in a commit handler, and
+	 * the frame that would have reaped comes after it. The reap pushes to the
+	 * retire queue and avk_upload_staging_ensure() drains that queue on a
+	 * cache miss, so the buffer is in the cache by the time it looks.
+	 */
+	if (up->buffer == VK_NULL_HANDLE && size >= (4u << 20)) {
+		az_avk_shm_staging_reap();
+	}
 
 	/*
 	 * Wait only if this slot is genuinely still in flight. Alternating makes
@@ -1340,6 +1378,65 @@ static bool az_avk_shm_job_settle(struct az_avk_buffer *entry, bool block) {
 }
 
 /*
+ * ── GIVE BACK THE STAGING OF ENTRIES THAT HAVE STOPPED DRAWING ────────────
+ *
+ * Staging was released only when its wl_buffer was destroyed. That is fine for
+ * a client that presents a fresh buffer every frame and drops the old one --
+ * contrib/wlrepaint --churn does, which is why every headless measurement of
+ * the warm-buffer cache looked perfect. Real clients keep their old buffers:
+ * measured on a live desktop, 79 cached entries, 68 staging allocations, and
+ * `retire_entries_live` sitting at 0 -- nothing had been released, so the cache
+ * had nothing to hand out and every new buffer faulted a fresh 56MB of it.
+ *
+ * An entry that has not copied anything for a second is not about to. Its
+ * staging goes back through the retire queue, which is what puts it in the
+ * cache and what guarantees the GPU is finished with it. The entry keeps its
+ * image and its damage; only the scratch space goes.
+ *
+ * A second is chosen against how clients actually rotate: a pool of two or
+ * three buffers touches each one every few frames, so this can only reach the
+ * ones that have genuinely stopped.
+ */
+#define AZ_AVK_STAGING_IDLE_NS 1000000000ull
+
+static void az_avk_shm_staging_reap(void) {
+	if (avk.device == NULL) {
+		return;
+	}
+	uint64_t now = az_avk_now_ns();
+	struct az_avk_buffer *entry;
+	wl_list_for_each(entry, &avk.buffers, link) {
+		if (!entry->is_shm || entry->job != NULL) {
+			continue;
+		}
+		if (entry->upload_ns == 0
+				|| now - entry->upload_ns < AZ_AVK_STAGING_IDLE_NS) {
+			continue;
+		}
+		for (size_t s = 0; s < 2; s++) {
+			struct avk_upload *up = &entry->upload[s];
+			if (up->buffer == VK_NULL_HANDLE) {
+				continue;
+			}
+			struct avk_upload *held = calloc(1, sizeof(*held));
+			if (held == NULL) {
+				/* Keep it on the entry rather than destroy it here: the GPU
+				 * may still be reading, and that is what the queue is for. */
+				continue;
+			}
+			AVK_LIVE_INC(avk.device, avk_uploads);
+			*held = *up;
+			memset(up, 0, sizeof(*up));
+			avk.shm_staging_reaped++;
+			avk_retire_push(&avk.importer.retire, avk.device, held->last_use,
+				avk_upload_retire, held);
+		}
+		/* Stamped so a still-idle entry is not walked into every frame. */
+		entry->upload_ns = now;
+	}
+}
+
+/*
  * Hand this entry's outstanding damage to the worker.
  *
  * Called from the commit handler, where the client's content is guaranteed to
@@ -1419,6 +1516,7 @@ static bool az_avk_shm_job_start(struct az_avk_buffer *entry) {
 	 * az_avk_shm_staging_take() on why a failed attempt must not advance it. */
 	entry->job_slot = slot;
 	entry->upload_slot = slot;
+	entry->upload_ns = az_avk_now_ns();
 	/* Released in az_avk_shm_job_release(); see the comment on
 	 * az_avk_buffer.job for why the lock is necessary and the data-ptr access
 	 * is not. */
@@ -1511,6 +1609,7 @@ static bool az_avk_upload_shm(struct az_avk_buffer *entry) {
 		goto out;
 	}
 	entry->upload_slot = slot;
+	entry->upload_ns = az_avk_now_ns();
 
 	/* THE BLOCK. Timed rather than described, because a claim about how long
 	 * the event loop is held is worth nothing without the number. */
@@ -5685,6 +5784,7 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 	out->last_submit_ns = submit_ns_now;
 
 	avk_renderer_collect(&out->slot->renderer);
+	az_avk_shm_staging_reap();
 	avk_dmabuf_importer_collect(&avk.importer);
 
 	wlr_output_state_set_buffer(state, buffer);
@@ -6506,6 +6606,8 @@ static cJSON *az_avk_stats_json(void) {
 		(double)avk.shm_staging_waits);
 	cJSON_AddNumberToObject(o, "shm_staging_wait_us_max",
 		(double)(avk.shm_staging_wait_ns_max / 1000));
+	cJSON_AddNumberToObject(o, "shm_staging_reaped",
+		(double)avk.shm_staging_reaped);
 	/*
 	 * WARM VERSUS FAULTED. A staging buffer costs a page fault per page the
 	 * first time it is written, and for a 56MB buffer that is 52ms inside the
