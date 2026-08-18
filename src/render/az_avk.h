@@ -1596,6 +1596,15 @@ static bool az_avk_shm_job_start(struct az_avk_buffer *entry) {
  * does not change cannot go stale.
  */
 static bool az_avk_upload_shm(struct az_avk_buffer *entry) {
+	/*
+	 * Timed step by step because the whole of it came out at 30ms for a 42x41
+	 * buffer -- seven kilobytes. That is not copying, it is waiting, and the
+	 * candidates fail differently: mapping the client's memory, taking a
+	 * staging slot (which can wait on the GPU), the copy itself (measured at
+	 * 8us across 113 of them), and the submit.
+	 */
+	uint64_t t_map = 0, t_take = 0, t_pack = 0, t_submit = 0;
+	uint64_t step_t0 = az_avk_now_ns();
 	void *data = NULL;
 	uint32_t format = 0;
 	size_t stride = 0;
@@ -1647,7 +1656,11 @@ static bool az_avk_upload_shm(struct az_avk_buffer *entry) {
 	 * GPU-read and it is the path a single-pixel or unmappable buffer always
 	 * takes -- the two paths are not allowed to differ about this. */
 	uint32_t slot = 0;
+	t_map = az_avk_now_ns() - step_t0;
+	step_t0 = az_avk_now_ns();
 	struct avk_upload *up = az_avk_shm_staging_take(entry, plan.total, &slot);
+	t_take = az_avk_now_ns() - step_t0;
+	step_t0 = az_avk_now_ns();
 	if (up == NULL) {
 		goto out;
 	}
@@ -1660,11 +1673,20 @@ static bool az_avk_upload_shm(struct az_avk_buffer *entry) {
 	avk_upload_pack(&plan, data, up->mapped);
 	az_avk_note_copy_ns(az_avk_now_ns() - t0);
 	avk.shm_sync_copies++;
+	t_pack = az_avk_now_ns() - step_t0;
+	step_t0 = az_avk_now_ns();
 
 	VkSemaphoreSubmitInfo wait;
 	uint32_t wait_count = az_avk_shm_wait(entry, &wait);
 	ok = avk_upload_submit_packed(avk.device, &avk.importer.upload_ring,
 		up, entry->image, &plan, &wait, wait_count) != 0;
+	t_submit = az_avk_now_ns() - step_t0;
+	if (t_map + t_take + t_pack + t_submit > 5000000ull) {
+		avk_log(AVK_ERROR, "slow sync upload of %dx%d: map %" PRIu64
+			"us + take %" PRIu64 "us + pack %" PRIu64 "us + submit %" PRIu64
+			"us", entry->buffer->width, entry->buffer->height,
+			t_map / 1000, t_take / 1000, t_pack / 1000, t_submit / 1000);
+	}
 	if (ok) {
 		az_avk_shm_account(entry, &plan);
 		pixman_region32_clear(&entry->pending_damage);
