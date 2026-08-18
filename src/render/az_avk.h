@@ -6518,6 +6518,8 @@ static cJSON *az_avk_stats_json(void) {
 	if (avk.device != NULL) {
 		cJSON_AddNumberToObject(o, "staging_reused",
 			(double)avk.device->staging_reused);
+		cJSON_AddNumberToObject(o, "staging_reclaimed",
+			(double)avk.device->staging_reclaimed);
 		cJSON_AddNumberToObject(o, "staging_created",
 			(double)avk.device->staging_created);
 	}

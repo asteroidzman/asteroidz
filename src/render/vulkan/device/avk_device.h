@@ -220,6 +220,10 @@ struct avk_device {
 	uint32_t staging_cache_count;
 	VkDeviceSize staging_cache_bytes;
 	uint64_t staging_reused;    /* allocations served warm */
+	/* Served warm only after draining the retire queue on the spot: the
+	 * buffer was already finished with, and the miss was the queue's
+	 * collection order rather than a shortage. */
+	uint64_t staging_reclaimed;
 	uint64_t staging_created;   /* allocations that had to fault */
 };
 

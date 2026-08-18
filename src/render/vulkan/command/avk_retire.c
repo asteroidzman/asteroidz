@@ -105,6 +105,28 @@ bool avk_retire_push(struct avk_retire_queue *q, struct avk_device *dev,
 	return true;
 }
 
+size_t avk_retire_collect_fn(struct avk_retire_queue *q,
+		struct avk_device *dev, avk_retire_fn only) {
+	if (q->len == 0) {
+		return 0;
+	}
+	uint64_t reached = avk_device_timeline_value(dev);
+	size_t kept = 0;
+	size_t ran = 0;
+	for (size_t i = 0; i < q->len; i++) {
+		if (q->entries[i].fn == only
+				&& q->entries[i].timeline_value <= reached) {
+			q->entries[i].fn(dev, q->entries[i].data);
+			AVK_LIVE_DEC(dev, retire_entries);
+			ran++;
+		} else {
+			q->entries[kept++] = q->entries[i];
+		}
+	}
+	q->len = kept;
+	return ran;
+}
+
 size_t avk_retire_collect(struct avk_retire_queue *q, struct avk_device *dev) {
 	if (q->len == 0) {
 		return 0;

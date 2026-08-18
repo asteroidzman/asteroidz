@@ -86,4 +86,18 @@ bool avk_retire_push(struct avk_retire_queue *q, struct avk_device *dev,
  * blocks; call it once per frame. */
 size_t avk_retire_collect(struct avk_retire_queue *q, struct avk_device *dev);
 
+/*
+ * Run only the finished entries whose destructor is `only`, leaving the rest
+ * queued. Returns how many ran.
+ *
+ * For a caller that needs ONE kind of resource back and is not the frame path:
+ * the staging allocator asks for its own buffers when its cache is empty,
+ * inside a client's commit handler, where running every pending destructor
+ * would move the frame path's cleanup onto the commit and cost most of a
+ * millisecond -- measured at 804us, against 120us for the same handler
+ * without it. avk-shm-latency-test.sh asserts on exactly that number.
+ */
+size_t avk_retire_collect_fn(struct avk_retire_queue *q,
+	struct avk_device *dev, avk_retire_fn only);
+
 #endif /* AVK_RETIRE_H */

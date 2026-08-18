@@ -181,7 +181,6 @@ static bool staging_cache_take(struct avk_device *dev, struct avk_upload *out,
 		}
 	}
 	if (best == UINT32_MAX) {
-		dev->staging_created++;
 		return false;
 	}
 	struct avk_upload *hit = dev->staging_cache[best];
@@ -194,7 +193,6 @@ static bool staging_cache_take(struct avk_device *dev, struct avk_upload *out,
 	 * previous life. Carrying it forward would order the next copy behind a
 	 * point that has already passed -- harmless, and still a lie. */
 	out->last_use = 0;
-	dev->staging_reused++;
 	return true;
 }
 
@@ -272,8 +270,35 @@ bool avk_upload_staging_ensure(struct avk_device *dev, struct avk_upload *up,
 	/* Warm first. A hit skips the create, the allocate, the map AND the page
 	 * faults, which are the expensive one. */
 	if (staging_cache_take(dev, up, size)) {
+		dev->staging_reused++;
 		return true;
 	}
+
+	/*
+	 * ── AN EMPTY CACHE MAY ONLY BE AN DRAINED-TOO-LATE CACHE ──────────────
+	 *
+	 * A client that presents a fresh wl_buffer every frame does exactly one
+	 * take and one put per frame, and the put arrives through the retire
+	 * queue -- so whether the take hits depends entirely on whether that
+	 * queue happened to be collected first. Measured live on Firefox: 90% of
+	 * takes hit and the other 10% were this, one 52ms fault every nine
+	 * seconds for a buffer that was already sitting in the queue, finished
+	 * with, waiting to be handed back.
+	 *
+	 * Only the staging destructors, though. This runs inside a client's
+	 * commit handler, and collecting the whole queue there moves the frame
+	 * path's cleanup onto the commit: worst-case commit went from 120us to
+	 * 804us, which avk-shm-latency-test.sh asserts on and which is the exact
+	 * event-loop blocking the async upload path exists to prevent. Asking for
+	 * the one kind of resource this allocator owns is a walk of a short list.
+	 */
+	if (retire != NULL
+			&& avk_retire_collect_fn(retire, dev, avk_upload_retire) > 0
+			&& staging_cache_take(dev, up, size)) {
+		dev->staging_reclaimed++;
+		return true;
+	}
+	dev->staging_created++;
 
 	VkBufferCreateInfo info = {
 		.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,

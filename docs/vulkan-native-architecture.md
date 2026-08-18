@@ -972,9 +972,29 @@ precisely the condition that makes reuse safe. Best fit rather than first fit,
 so a 4MB surface does not consume the 56MB buffer a browser is about to want
 back.
 
+One take and one put per frame is a coin flip, though, and the cache alone
+left about one miss in ten: the put arrives through the retire queue, so
+whether the take finds anything depends on whether that queue happened to be
+collected first — and it is not: the frame path collects it, after the commit
+handler has already asked. `avk_upload_staging_ensure()` therefore drains it on
+a miss and looks again, and `staging_reclaimed` counts the buffers that
+recovers: ones already finished with, sitting in the queue, waiting to be
+handed back.
+
+**Only the staging destructors**, via `avk_retire_collect_fn()`. The first
+version collected the whole queue and `avk-shm-latency-test.sh` failed on it —
+worst-case commit went from 120µs to 804µs, because collecting there moves the
+frame path's cleanup into a client's commit handler, which is the precise
+event-loop blocking the async upload path exists to prevent. Total work on the
+loop is unchanged by that move, which is why it is easy to argue is harmless
+and why the fixture asserts on the commit specifically. Filtered to one
+destructor it is a walk of a short list: 96µs.
+
 Measured over `contrib/wlrepaint --churn --fixed --size 5128x2734`: slow packs
-per run **37 → 2**, the two survivors being the genuine first touch of each
-size. On the synchronous fallback path, where the copy runs in the commit
+per run **37 → 2 → 1**, the survivor being the genuine first touch. The other
+144 allocations in that run are 0.0–1.4MB subsurface buffers, a few dozen pages
+each, which is why the count of allocations and the count of expensive ones
+have nothing to do with each other. On the synchronous fallback path, where the copy runs in the commit
 handler, `avk-shm-latency-test.sh` moved from a worst-case **9,916µs** block of
 the event loop to **636µs** at the same 8.3MB buffer size — which then falsified
 that fixture's own premise, since it had been resting on the fault cost to get
