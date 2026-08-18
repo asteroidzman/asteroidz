@@ -265,6 +265,8 @@ struct az_avk {
 	uint64_t shm_staging_waits;
 	/* Staging buffers handed back by az_avk_shm_staging_reap(). */
 	uint64_t shm_staging_reaped;
+	/* ...and by az_avk_shm_staging_release(), as each copy is submitted. */
+	uint64_t shm_staging_returned;
 	uint64_t shm_staging_wait_ns_max, shm_staging_wait_ns_sum;
 	/* Frames that showed the previous generation instead of blocking, and the
 	 * microseconds of event loop that decision gave back. */
@@ -1218,6 +1220,42 @@ static uint32_t az_avk_shm_wait(const struct az_avk_buffer *entry,
  */
 static void az_avk_shm_staging_reap(void);
 
+/*
+ * ── STAGING IS SCRATCH SPACE, NOT STATE ───────────────────────────────────
+ *
+ * Give the slot back the moment its copy is submitted. Everything after that
+ * belongs to the GPU, and the retire queue already knows how to wait for it --
+ * which is also what puts the buffer in the warm cache for whoever needs one
+ * next.
+ *
+ * It used to be held by the entry until its wl_buffer was destroyed, and that
+ * is the wrong lifetime for the client this path exists for. Firefox presents
+ * a NEW buffer per frame during activity and keeps the old ones, so every
+ * frame was a new entry wanting its own 56MB, six of them inside 280ms on one
+ * tag switch, each faulting its own pages: six 52ms copies where the pool
+ * needed to hold two. Holding scratch space per buffer also held it for the
+ * 57 buffers nobody was drawing.
+ */
+static void az_avk_shm_staging_release(struct az_avk_buffer *entry,
+		uint32_t slot) {
+	struct avk_upload *up = &entry->upload[slot];
+	if (up->buffer == VK_NULL_HANDLE || avk.device == NULL) {
+		return;
+	}
+	struct avk_upload *held = calloc(1, sizeof(*held));
+	if (held == NULL) {
+		/* Keep it on the entry rather than destroy it here: the GPU may still
+		 * be reading, and the queue is what knows when it is not. */
+		return;
+	}
+	AVK_LIVE_INC(avk.device, avk_uploads);
+	*held = *up;
+	memset(up, 0, sizeof(*up));
+	avk.shm_staging_returned++;
+	avk_retire_push(&avk.importer.retire, avk.device, held->last_use,
+		avk_upload_retire, held);
+}
+
 static struct avk_upload *az_avk_shm_staging_take(struct az_avk_buffer *entry,
 		VkDeviceSize size, uint32_t *slot_out) {
 	uint32_t slot = entry->upload_slot ^ 1u;
@@ -1373,6 +1411,7 @@ static bool az_avk_shm_job_settle(struct az_avk_buffer *entry, bool block) {
 		 * consumed by the plan that failed. */
 		entry->pending_full = true;
 	}
+	az_avk_shm_staging_release(entry, entry->job_slot);
 	az_avk_shm_job_release(entry);
 	return ok;
 }
@@ -1628,6 +1667,7 @@ static bool az_avk_upload_shm(struct az_avk_buffer *entry) {
 		entry->pending_full = false;
 		az_avk_surface_note_good(entry);
 	}
+	az_avk_shm_staging_release(entry, slot);
 
 out:
 	wlr_buffer_end_data_ptr_access(entry->buffer);
@@ -6608,6 +6648,8 @@ static cJSON *az_avk_stats_json(void) {
 		(double)(avk.shm_staging_wait_ns_max / 1000));
 	cJSON_AddNumberToObject(o, "shm_staging_reaped",
 		(double)avk.shm_staging_reaped);
+	cJSON_AddNumberToObject(o, "shm_staging_returned",
+		(double)avk.shm_staging_returned);
 	/*
 	 * WARM VERSUS FAULTED. A staging buffer costs a page fault per page the
 	 * first time it is written, and for a 56MB buffer that is 52ms inside the

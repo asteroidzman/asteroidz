@@ -203,7 +203,7 @@ static bool staging_cache_put(struct avk_device *dev, struct avk_upload *up) {
 	}
 	/* 256MB is two 4K browser windows' worth. Past that, holding system RAM
 	 * against a copy that may never come back is the worse trade. */
-	if (dev->staging_cache_count >= 4
+	if (dev->staging_cache_count >= 8
 			|| dev->staging_cache_bytes + up->size > (256u << 20)) {
 		return false;
 	}

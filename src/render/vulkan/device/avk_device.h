@@ -216,7 +216,11 @@ struct avk_device {
 	 * that makes reuse safe -- this cache adds no new ordering rule, it only
 	 * declines to throw away what that queue hands back.
 	 */
-	struct avk_upload *staging_cache[4];
+	/* Eight, and the cap below is the one that binds: four 56MB buffers is
+	 * 224MB, and a desktop with two such clients wants more slots than
+	 * buffers. The count and the array must agree -- they briefly did not,
+	 * which is a write past the end of a struct member. */
+	struct avk_upload *staging_cache[8];
 	uint32_t staging_cache_count;
 	VkDeviceSize staging_cache_bytes;
 	uint64_t staging_reused;    /* allocations served warm */

@@ -1016,7 +1016,24 @@ That is also the shape of the symptom the operator reported: not slowness while
 scrolling, but a hitch on tag and focus changes — the moments that make a
 client produce new buffers.
 
-So `az_avk_shm_staging_reap()` takes the scratch space back from entries that
+The reap alone was not enough, because a second is an age. Live, one tag
+switch produced **six 56MB allocations inside 280ms** — a client presenting a
+new buffer per frame at 20fps, each frame a new entry wanting its own staging
+while the previous ones were still in flight. Nothing was idle; there was
+simply nothing to share.
+
+So staging is given back the moment its copy is **submitted**
+(`az_avk_shm_staging_release()`). Everything after that instant belongs to the
+GPU, which is exactly what the retire queue exists to wait for, and what puts
+the buffer back in the warm cache. The per-entry pair of slots existed to stop
+the host writing a buffer the GPU was reading; taking a fresh one from the pool
+each time is strictly stronger, and `shm_staging_waits` stays at 0.
+
+Measured with a client presenting a fresh 56MB buffer every frame: 236 commits,
+**2** staging buffers created, 1 slow pack, 221 reuses.
+
+`az_avk_shm_staging_reap()` stays as the second line: it takes the scratch back
+from entries that
 have stopped drawing (one second), through the retire queue, which is what
 makes it safe. It runs once per frame and, more importantly, **on demand** in
 `az_avk_shm_staging_take()` just before an allocation of 4MB or more — because
