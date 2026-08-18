@@ -429,6 +429,10 @@ struct az_avk {
 	 * every frame.
 	 */
 	uint64_t frame_record_us;
+	/* Per frame: time inside az_avk_image_for_buffer() and how many of those
+	 * resolves had to build a new image. Zeroed at the top of each frame. */
+	uint64_t frame_resolve_ns;
+	uint64_t frame_resolve_creates;
 	uint64_t frame_join_ns;
 	/* The output being recorded right now, so a decision taken deep in the
 	 * walk can say WHICH output it was taken for. NULL outside a build. */
@@ -3886,7 +3890,15 @@ static void az_avk_walk_node(struct az_avk_walk *walk,
 
 		avk.buffer_resolve_attempts++;
 		avk.frame_stale_entry = NULL;
+		/* The one call in the walk that can do unbounded work: it imports a
+		 * dma-buf or creates an image, and a 5128x2734 client buffer is a
+		 * 56MB allocation. Timed so a slow walk says whether it was here. */
+		uint64_t resolve_t0 = az_avk_now_ns();
+		uint64_t creates_before = avk.cache_misses;
 		struct avk_image *image = az_avk_image_for_buffer(buf->buffer);
+		avk.frame_resolve_ns += az_avk_now_ns() - resolve_t0;
+		avk.frame_resolve_creates +=
+			avk.cache_misses - creates_before;
 		if (avk.frame_stale_entry != NULL) {
 			/* That resolve returned a PREVIOUS generation. The repaint it
 			 * owes is this rectangle and not the output -- see
@@ -5054,6 +5066,8 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 	 * stalls at all, and m5_encode_compiles has been 1 all session.
 	 */
 	struct timespec ts_drain = frame_t0, ts_acq = frame_t0, ts_walk = frame_t0;
+	avk.frame_resolve_ns = 0;
+	avk.frame_resolve_creates = 0;
 	/* Zeroed here so what accumulates below belongs to THIS frame. */
 	avk.frame_join_ns = 0;
 	avk.frame_output = m->wlr_output;
@@ -5917,6 +5931,9 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 				? output->name : "(output)", us,
 			AZ_US(frame_t0, ts_drain), AZ_US(ts_drain, ts_acq),
 			AZ_US(ts_acq, ts_walk), AZ_US(ts_walk, frame_t1));
+		avk_log(AVK_ERROR, "  of which resolving client buffers: %" PRIu64
+			"us over %" PRIu64 " resolve(s) that built a new image",
+			avk.frame_resolve_ns / 1000, avk.frame_resolve_creates);
 #undef AZ_US
 	}
 	az_avk_hist_add(&avk.cpu_frame_hist, us, AZ_AVK_CPU_BUCKET_US);
