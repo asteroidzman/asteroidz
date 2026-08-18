@@ -225,6 +225,26 @@ window-rule { match title=vkcube; force_tearing 1 }
 | **ENABLED** (1) | Not Allowed | Allowed | Only fullscreen allowed |
 | **DISABLED** (2) | Not Allowed | Not Allowed | Not Allowed |
 
+### When a Torn Flip Does Not Tear
+
+A torn frame that cannot be torn is presented on the next vblank, never
+dropped: losing the tear costs latency, losing the frame is a visible stall.
+There are two ways to be refused, and only one of them can be predicted.
+
+- The backend's **test** rejects the state — a modeset, a format change, a
+  backend with no immediate flips. Asteroidz sees this before committing and
+  commits synced.
+- The **commit** is rejected with `EBUSY`, on a state the test had just
+  accepted. The kernel's async check also asks whether the previous flip on
+  that plane has finished in hardware, and a torn frame is submitted without
+  waiting for vblank, so overlapping the previous one is a normal consequence
+  of running fast. Asteroidz retries the same frame synced.
+
+`amsg get surface-intent` reports both per output, as `tear_test_refused` and
+`tear_busy_synced`, beside `tear_torn` (the tear happened) and `tear_dropped`
+(the frame was lost). A rising `tear_busy_synced` is a rate, not a fault; a
+rising `tear_dropped` is frames on the floor.
+
 ### Graphics Card Compatibility
 
 > **Warning:** Some graphics cards require setting the `WLR_DRM_NO_ATOMIC` environment variable before asteroidz starts to successfully enable tearing.

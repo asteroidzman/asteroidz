@@ -1222,6 +1222,17 @@ static void handle_command(int client_fd, const char *cmd_raw) {
 					(enum az_scanout_verdict)om->scanout_verdict));
 			cJSON_AddNumberToObject(e, "scanout_frames",
 				(double)om->scanout_frames);
+			/* What the torn-flip path did, per outcome. `tear_busy_synced` is
+			 * the one no test can predict: the state was tearable and the
+			 * previous flip simply had not finished, so the frame went out on
+			 * the vblank instead of being dropped. */
+			cJSON_AddNumberToObject(e, "tear_torn", (double)om->tear_torn);
+			cJSON_AddNumberToObject(e, "tear_test_refused",
+				(double)om->tear_test_refused);
+			cJSON_AddNumberToObject(e, "tear_busy_synced",
+				(double)om->tear_busy_synced);
+			cJSON_AddNumberToObject(e, "tear_dropped",
+				(double)om->tear_dropped);
 			cJSON_AddItemToArray(outs, e);
 		}
 	} else if (strcmp(cmd, "get presentation") == 0) {

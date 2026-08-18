@@ -1009,6 +1009,23 @@ struct Monitor {
 	int32_t scanout_verdict;
 	uint64_t scanout_frames;
 	/*
+	 * WHAT THE TORN-FLIP PATH DID WITH THE FRAMES IT WAS HANDED.
+	 *
+	 * `tear_torn` landed as an immediate flip. `tear_test_refused` never asked
+	 * for one, because the backend's test said this state is not tearable.
+	 * `tear_busy_synced` asked, was refused AT COMMIT TIME -- which no test can
+	 * predict, see apply_tear_state() -- and landed on the vblank instead.
+	 * `tear_dropped` did not land at all.
+	 *
+	 * Counted rather than logged per frame: one session on DP-1 produced 24943
+	 * commit refusals in forty minutes, an 8MB log, and no number anywhere that
+	 * said what fraction of frames that was.
+	 */
+	uint64_t tear_torn;
+	uint64_t tear_test_refused;
+	uint64_t tear_busy_synced;
+	uint64_t tear_dropped;
+	/*
 	 * CADENCE, FROM PRESENTATION RATHER THAN FROM GPU TIMING.
 	 *
 	 * The vblank-sequence delta between one presented frame and the next: 1
@@ -9460,11 +9477,17 @@ static void render_monitor(Monitor *m) {
 		bool scanned_out = az_scanout_try(m, &state, &sv);
 		m->scanout_verdict = (int32_t)sv;
 		if (scanned_out) {
-			m->scanout_frames++;
-			if (!wlr_output_commit_state(m->wlr_output, &state)) {
+			bool landed = wlr_output_commit_state(m->wlr_output, &state);
+			if (!landed) {
 				wlr_log(WLR_ERROR, "scanout: commit failed on %s",
 					m->wlr_output->name);
 				az_output_commit_failed(m);
+			} else {
+				/* Counted where it lands, not where it is attempted: a
+				 * scanout_frames that includes frames the display refused
+				 * reads as "the fast path is working" while the screen
+				 * stutters. */
+				m->scanout_frames++;
 			}
 			wlr_output_state_finish(&state);
 			/*
@@ -9481,12 +9504,19 @@ static void render_monitor(Monitor *m) {
 			 * specifically: the whole output was replaced by the client's
 			 * buffer, so there is no partial region left owing.
 			 */
-			pixman_region32_clear(&m->scene_output->pending_commit_damage);
-			/* The scene still owes frame-done to everything it would have
-			 * drawn: a client that never hears back stops rendering. */
-			struct timespec sdone;
-			clock_gettime(CLOCK_MONOTONIC, &sdone);
-			wlr_scene_output_send_frame_done(m->scene_output, &sdone);
+			/* And only when it landed. A failed commit that clears the
+			 * damage anyway forgets a picture nobody saw, and the frame-done
+			 * below tells the client the display is finished with a buffer it
+			 * never took. See the same guard in apply_tear_state(). */
+			if (landed) {
+				pixman_region32_clear(
+					&m->scene_output->pending_commit_damage);
+				/* The scene still owes frame-done to everything it would have
+				 * drawn: a client that never hears back stops rendering. */
+				struct timespec sdone;
+				clock_gettime(CLOCK_MONOTONIC, &sdone);
+				wlr_scene_output_send_frame_done(m->scene_output, &sdone);
+			}
 			goto scanout_done;
 		}
 		if (az_output_build_frame(m, &state, &frame_options)) {

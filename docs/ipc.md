@@ -574,7 +574,25 @@ has.
 output's verdict for its last frame — `not-evaluated` when that frame took a
 path which does not consider scanout, such as a screenshot capture, rather than
 repeating an older verdict) and `scanout_frames` (how many frames have
-skipped composition entirely).
+skipped composition entirely — counted where they *landed*, so a display that
+refuses the commit does not inflate the fast path).
+
+Four counters say what the torn-flip path did with the frames it was handed:
+
+| field | meaning |
+| --- | --- |
+| `tear_torn` | landed as an immediate flip — the tear actually happened |
+| `tear_test_refused` | never asked: the backend's test said this state is not tearable |
+| `tear_busy_synced` | asked, was refused **at commit time**, and landed on the vblank instead |
+| `tear_dropped` | did not land at all |
+
+`tear_busy_synced` is the one no test can predict. The kernel's async check
+also asks whether the *previous* flip on that plane has finished in hardware,
+and a torn frame is submitted without waiting for vblank, so overlapping it is
+a normal consequence of going fast rather than a broken state — `EBUSY`, on a
+state `wlr_output_test_state()` had just accepted. A rising `tear_busy_synced`
+means frames are arriving faster than the display retires them, not that
+anything is wrong; a rising `tear_dropped` means frames are being lost.
 
 **A profile that is loaded is not necessarily applied**, so `icc` (present) and
 `icc_applied` (carried by the encode pass) are separate fields, and `icc_why`

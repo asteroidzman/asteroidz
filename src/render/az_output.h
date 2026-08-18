@@ -78,6 +78,27 @@ static inline bool az_output_build_frame(Monitor *m,
  * This did nothing while AVK redrew everything every frame, which is exactly
  * why it is easy to leave out and hard to find afterwards.
  */
+/*
+ * ── LOUD ONCE, THEN ONCE A DECADE ─────────────────────────────────────────
+ *
+ * True at 1, 10, 100, 1000 ... and false in between, for a counter that is
+ * incremented once per occurrence. A per-frame wlr_log() of a condition that
+ * recurs at frame rate is not a diagnostic: it is a denial of service against
+ * the log it is written to, and the one that motivated this wrote 8MB in forty
+ * minutes while hiding its own rate inside the timestamps.
+ *
+ * The first occurrence is still loud, because "it never happens" and "it
+ * happens constantly and nobody said" are the two failures worth avoiding, and
+ * the exact count lives in the counter the caller already keeps.
+ */
+static inline bool az_log_decade(uint64_t n) {
+	uint64_t d = 1;
+	while (d < n) {
+		d *= 10;
+	}
+	return d == n;
+}
+
 static inline void az_output_commit_failed(Monitor *m) {
 	if (m->scene_output != NULL) {
 		wlr_damage_ring_add_whole(&m->scene_output->damage_ring);

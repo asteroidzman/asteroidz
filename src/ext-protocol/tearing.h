@@ -165,9 +165,7 @@ void apply_tear_state(Monitor *m) {
 	enum az_scanout_verdict sv = AZ_SCANOUT_NOT_EVALUATED;
 	bool scanned_out = az_scanout_try(m, &state, &sv);
 	m->scanout_verdict = (int32_t)sv;
-	if (scanned_out) {
-		m->scanout_frames++;
-	} else {
+	if (!scanned_out) {
 		struct az_frame_options frame_options = {
 			.color_transform = az_output_color_transform(m),
 		};
@@ -179,27 +177,89 @@ void apply_tear_state(Monitor *m) {
 		}
 	}
 
+	bool asked_torn = true;
 	state.tearing_page_flip = true;
 	if (!wlr_output_test_state(m->wlr_output, &state)) {
-		/* Present it on the vblank instead. Once per state change rather than
-		 * per frame would be quieter, but a torn frame silently not tearing is
-		 * exactly the kind of thing that gets measured and disbelieved. */
-		wlr_log(WLR_DEBUG, "tearing: %s refused a torn flip; presenting synced",
-			m->wlr_output->name);
+		/* Present it on the vblank instead. A torn frame silently not tearing
+		 * is exactly the kind of thing that gets measured and disbelieved, so
+		 * it is still said out loud -- but by a counter plus a decade of log
+		 * lines, not by one line per frame. */
+		asked_torn = false;
 		state.tearing_page_flip = false;
+		m->tear_test_refused++;
+		if (az_log_decade(m->tear_test_refused)) {
+			wlr_log(WLR_DEBUG, "tearing: %s refused a torn flip; presenting "
+				"synced (%" PRIu64 " so far)",
+				m->wlr_output->name, m->tear_test_refused);
+		}
 	}
 
-	if (!wlr_output_commit_state(m->wlr_output, &state)) {
-		wlr_log(WLR_ERROR, "tearing: failed to commit frame for %s",
-			m->wlr_output->name);
+	bool landed = wlr_output_commit_state(m->wlr_output, &state);
+
+	/*
+	 * ── A TEST THAT PASSED IS NOT A COMMIT THAT WILL ──────────────────────
+	 *
+	 * The test above answers "is this state tearable", and the kernel's async
+	 * check asks a second question it cannot: is the PREVIOUS flip on this
+	 * plane finished in hardware. If it is not, an immediate flip comes back
+	 * EBUSY -- and since a torn frame is submitted without waiting for vblank,
+	 * that overlap is a normal consequence of going fast, not a broken state.
+	 * wlroots documents exactly this gap: a passing wlr_output_test_state()
+	 * promises only that the commit can still fail "due to a runtime error".
+	 *
+	 * So retry the same frame synced, which is what the refusal path above
+	 * already does for the case a test CAN see. Losing the tear is a latency
+	 * regression; losing the frame is a visible stall -- this file has said so
+	 * since it was written, and then dropped 24943 frames in one session for
+	 * want of these four lines. The state is untouched by a failed commit
+	 * (wlr_output_commit_state() is atomic), so it can simply go again.
+	 */
+	if (!landed && asked_torn) {
+		state.tearing_page_flip = false;
+		landed = wlr_output_commit_state(m->wlr_output, &state);
+		if (landed) {
+			m->tear_busy_synced++;
+			if (az_log_decade(m->tear_busy_synced)) {
+				wlr_log(WLR_DEBUG, "tearing: %s refused the torn flip at "
+					"commit; presented synced (%" PRIu64 " so far)",
+					m->wlr_output->name, m->tear_busy_synced);
+			}
+		}
+	}
+
+	bool torn = landed && state.tearing_page_flip;
+	if (!landed) {
+		m->tear_dropped++;
+		if (az_log_decade(m->tear_dropped)) {
+			wlr_log(WLR_ERROR, "tearing: failed to commit frame for %s "
+				"(%" PRIu64 " dropped)",
+				m->wlr_output->name, m->tear_dropped);
+		}
 		az_output_commit_failed(m);
+	} else {
+		if (torn) {
+			m->tear_torn++;
+		}
+		if (scanned_out) {
+			m->scanout_frames++;
+		}
 	}
 	wlr_output_state_finish(&state);
 
-	/* Same debt the composition path settles: scanout leaves the scene's
+	/*
+	 * Same debt the composition path settles: scanout leaves the scene's
 	 * pending damage untouched, and an output that never stops needing a frame
-	 * re-scans-out at the panel's maximum rate forever. */
-	if (scanned_out) {
+	 * re-scans-out at the panel's maximum rate forever.
+	 *
+	 * ONLY WHEN THE FRAME LANDED. Settling it for a commit that failed pays a
+	 * debt out of a frame nobody saw: the damage is forgotten, so the dropped
+	 * picture is never redrawn, and frame-done tells the client its buffer is
+	 * finished with when the display never took it. A client that tracks its
+	 * own buffer lifetimes -- gamescope does, and says "compositor released us
+	 * but we were not acquired" when the accounting disagrees -- is entitled to
+	 * be confused by that.
+	 */
+	if (landed && scanned_out) {
 		pixman_region32_clear(&m->scene_output->pending_commit_damage);
 		struct timespec sdone;
 		clock_gettime(CLOCK_MONOTONIC, &sdone);
