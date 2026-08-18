@@ -91,6 +91,7 @@ VkCommandBuffer avk_cmd_ring_begin(struct avk_cmd_ring *ring) {
 		return VK_NULL_HANDLE;
 	}
 
+	uint64_t begin_t0 = avk_now_ns_dbg();
 	uint32_t index = ring->next;
 	struct avk_cmd_slot *slot = &ring->slots[index];
 
@@ -110,7 +111,10 @@ VkCommandBuffer avk_cmd_ring_begin(struct avk_cmd_ring *ring) {
 		}
 	}
 
+	uint64_t t_backpressure = avk_now_ns_dbg() - begin_t0;
+	uint64_t reset_t0 = avk_now_ns_dbg();
 	VkResult res = vkResetCommandPool(ring->dev->dev, slot->pool, 0);
+	uint64_t t_reset = avk_now_ns_dbg() - reset_t0;
 	if (res != VK_SUCCESS) {
 		avk_check(res, "vkResetCommandPool");
 		return VK_NULL_HANDLE;
@@ -120,10 +124,24 @@ VkCommandBuffer avk_cmd_ring_begin(struct avk_cmd_ring *ring) {
 		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
 		.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
 	};
+	uint64_t begin_cb_t0 = avk_now_ns_dbg();
 	res = vkBeginCommandBuffer(slot->cb, &begin_info);
 	if (res != VK_SUCCESS) {
 		avk_check(res, "vkBeginCommandBuffer");
 		return VK_NULL_HANDLE;
+	}
+	{
+		/* The submit step of a 42x41 upload measures 30ms with vkQueueSubmit2
+		 * accounting for none of it and the backpressure wait never firing.
+		 * Everything before the submit is this function. */
+		uint64_t t_begin_cb = avk_now_ns_dbg() - begin_cb_t0;
+		uint64_t total_us = (avk_now_ns_dbg() - begin_t0) / 1000;
+		if (total_us > 5000) {
+			avk_log(AVK_ERROR, "cmd_ring_begin blocked for %" PRIu64
+				"us: backpressure %" PRIu64 "us + resetPool %" PRIu64
+				"us + beginCB %" PRIu64 "us", total_us,
+				t_backpressure / 1000, t_reset / 1000, t_begin_cb / 1000);
+		}
 	}
 
 	ring->recording = (int)index;
