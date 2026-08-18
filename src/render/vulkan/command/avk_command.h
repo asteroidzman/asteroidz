@@ -27,9 +27,21 @@
  * cannot do.
  */
 
-/* The upload ring runs deeper than the frame ring; see the comment on
- * avk_cmd_ring.slots. */
-#define AVK_CMD_RING_MAX_SLOTS 16
+/*
+ * The upload ring runs deeper than the frame ring; see the comment on
+ * avk_cmd_ring.slots.
+ *
+ * Sixteen was not enough and the reason is worth writing down: uploads average
+ * 0.11 per frame on this desk, so the ring cannot wrap on volume -- it wraps
+ * in BURSTS. Every small wl_shm surface on the bar redraws at once when a tag
+ * or focus changes, twenty-odd of them inside a frame or two, and the ring
+ * then waits on a submission the GPU has not reached. A mean of a tenth of an
+ * upload per frame says nothing at all about that.
+ *
+ * A slot is a command pool and one buffer, so depth is cheap and the cap is
+ * set by the burst rather than by the average.
+ */
+#define AVK_CMD_RING_MAX_SLOTS 64
 
 struct avk_cmd_slot {
 	VkCommandPool pool;
