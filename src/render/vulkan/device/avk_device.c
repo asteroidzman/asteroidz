@@ -394,6 +394,10 @@ void avk_device_destroy(struct avk_device *dev) {
 	 * being called on its own, as the tests and the device-loss path do. */
 	avk_device_wait_idle(dev);
 
+	/* The warm staging buffers are AVK's, not a subsystem's, and the census
+	 * below must see zero. */
+	avk_staging_cache_drain(dev);
+
 	/* The device's own two children go first, so that what the census below
 	 * reports is what AVK's SUBSYSTEMS still hold. Counting the device's own
 	 * timeline semaphore as an outstanding object would put a permanent 1 in

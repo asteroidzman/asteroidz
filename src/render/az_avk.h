@@ -6506,6 +6506,21 @@ static cJSON *az_avk_stats_json(void) {
 		(double)avk.shm_staging_waits);
 	cJSON_AddNumberToObject(o, "shm_staging_wait_us_max",
 		(double)(avk.shm_staging_wait_ns_max / 1000));
+	/*
+	 * WARM VERSUS FAULTED. A staging buffer costs a page fault per page the
+	 * first time it is written, and for a 56MB buffer that is 52ms inside the
+	 * copy -- 1.1GB/s where the same memcpy runs at 14GB/s once the pages
+	 * exist. `staging_created` is how many allocations paid it;
+	 * `staging_reused` is how many were served warm from the device's cache.
+	 * A client that presents a fresh wl_buffer every frame drove the first of
+	 * these once per frame before that cache existed.
+	 */
+	if (avk.device != NULL) {
+		cJSON_AddNumberToObject(o, "staging_reused",
+			(double)avk.device->staging_reused);
+		cJSON_AddNumberToObject(o, "staging_created",
+			(double)avk.device->staging_created);
+	}
 	/* Explicit-sync participation, so "is this actually running" is a reading
 	 * and not a belief. acquire_dropped and release_points_dropped must be 0:
 	 * each one is a frame submitted, or a buffer released, without the

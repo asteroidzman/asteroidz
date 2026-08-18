@@ -152,6 +152,86 @@ struct avk_image *avk_upload_image_create_3d(struct avk_device *dev,
 	return upload_image_create(dev, drm_format, dim, dim, dim, origin);
 }
 
+/*
+ * ── THE WARM-BUFFER CACHE ─────────────────────────────────────────────────
+ *
+ * See the fields on struct avk_device for why this exists at all. Two rules
+ * and nothing else:
+ *
+ *   - only buffers the retire queue has handed back go in, so every buffer in
+ *     here is one the GPU has finished reading. The cache invents no ordering
+ *     of its own.
+ *   - best fit, not first fit. A 4MB surface taking the 56MB buffer a browser
+ *     just released would leave the browser to fault a fresh one on its next
+ *     frame, which is the cost this cache exists to avoid.
+ */
+static bool staging_cache_take(struct avk_device *dev, struct avk_upload *out,
+		VkDeviceSize size) {
+	if (dev == NULL) {
+		return false;
+	}
+	uint32_t best = UINT32_MAX;
+	for (uint32_t i = 0; i < dev->staging_cache_count; i++) {
+		if (dev->staging_cache[i]->size < size) {
+			continue;
+		}
+		if (best == UINT32_MAX
+				|| dev->staging_cache[i]->size < dev->staging_cache[best]->size) {
+			best = i;
+		}
+	}
+	if (best == UINT32_MAX) {
+		dev->staging_created++;
+		return false;
+	}
+	struct avk_upload *hit = dev->staging_cache[best];
+	dev->staging_cache_bytes -= hit->size;
+	dev->staging_cache[best] = dev->staging_cache[dev->staging_cache_count - 1];
+	dev->staging_cache_count--;
+	*out = *hit;
+	free(hit);
+	/* The timeline point belonged to the submission that read it in its
+	 * previous life. Carrying it forward would order the next copy behind a
+	 * point that has already passed -- harmless, and still a lie. */
+	out->last_use = 0;
+	dev->staging_reused++;
+	return true;
+}
+
+/* True when the cache took ownership; the caller must not destroy it then. */
+static bool staging_cache_put(struct avk_device *dev, struct avk_upload *up) {
+	if (dev == NULL || up->buffer == VK_NULL_HANDLE || up->mapped == NULL) {
+		return false;
+	}
+	/* 256MB is two 4K browser windows' worth. Past that, holding system RAM
+	 * against a copy that may never come back is the worse trade. */
+	if (dev->staging_cache_count >= 4
+			|| dev->staging_cache_bytes + up->size > (256u << 20)) {
+		return false;
+	}
+	struct avk_upload *keep = calloc(1, sizeof(*keep));
+	if (keep == NULL) {
+		return false;
+	}
+	*keep = *up;
+	dev->staging_cache[dev->staging_cache_count++] = keep;
+	dev->staging_cache_bytes += keep->size;
+	return true;
+}
+
+void avk_staging_cache_drain(struct avk_device *dev) {
+	if (dev == NULL) {
+		return;
+	}
+	for (uint32_t i = 0; i < dev->staging_cache_count; i++) {
+		avk_upload_finish(dev, dev->staging_cache[i]);
+		free(dev->staging_cache[i]);
+		dev->staging_cache[i] = NULL;
+	}
+	dev->staging_cache_count = 0;
+	dev->staging_cache_bytes = 0;
+}
+
 bool avk_upload_staging_ensure(struct avk_device *dev, struct avk_upload *up,
 		struct avk_retire_queue *retire, VkDeviceSize size) {
 	if (up->buffer != VK_NULL_HANDLE && up->size >= size) {
@@ -189,6 +269,12 @@ bool avk_upload_staging_ensure(struct avk_device *dev, struct avk_upload *up,
 		avk_upload_finish(dev, up);
 	}
 
+	/* Warm first. A hit skips the create, the allocate, the map AND the page
+	 * faults, which are the expensive one. */
+	if (staging_cache_take(dev, up, size)) {
+		return true;
+	}
+
 	VkBufferCreateInfo info = {
 		.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
 		.size = size,
@@ -209,6 +295,22 @@ bool avk_upload_staging_ensure(struct avk_device *dev, struct avk_upload *up,
 			| VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, &type)) {
 		avk_log(AVK_ERROR, "staging: no host-visible coherent memory type");
 		goto error;
+	}
+	{
+		/* WHICH memory, said once per allocation. A staging buffer that lands
+		 * in device-local host-visible memory is written across PCIe, and the
+		 * copy into it runs at a fraction of what the same memcpy manages into
+		 * system RAM -- a difference invisible in every other number this
+		 * renderer reports. */
+		VkPhysicalDeviceMemoryProperties mp;
+		vkGetPhysicalDeviceMemoryProperties(dev->phys, &mp);
+		VkMemoryPropertyFlags f = mp.memoryTypes[type].propertyFlags;
+		avk_log(AVK_INFO, "staging: %.1fMB in memory type %u (heap %u, "
+			"flags 0x%x%s%s%s)", (double)reqs.size / 1e6, type,
+			mp.memoryTypes[type].heapIndex, (unsigned)f,
+			(f & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) ? " device-local" : "",
+			(f & VK_MEMORY_PROPERTY_HOST_CACHED_BIT) ? " host-cached" : "",
+			(f & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) ? " host-coherent" : "");
 	}
 	VkMemoryAllocateInfo alloc = {
 		.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
@@ -234,6 +336,11 @@ bool avk_upload_staging_ensure(struct avk_device *dev, struct avk_upload *up,
 		goto error;
 	}
 	up->size = reqs.size;
+	if (getenv("AZ_AVK_PREFAULT_STAGING") != NULL) {
+		/* DIAGNOSTIC: pay the first-touch faults here instead of in the copy,
+		 * to prove that is what the copy is paying for. */
+		memset(up->mapped, 0, (size_t)reqs.size);
+	}
 	return true;
 
 error:
@@ -620,7 +727,11 @@ void avk_upload_finish(struct avk_device *dev, struct avk_upload *up) {
 
 void avk_upload_retire(struct avk_device *dev, void *upload) {
 	struct avk_upload *up = upload;
-	avk_upload_finish(dev, up);
+	/* Reached only when the GPU is done with this buffer, which is the whole
+	 * licence the cache needs. */
+	if (!staging_cache_put(dev, up)) {
+		avk_upload_finish(dev, up);
+	}
 	AVK_LIVE_DEC(dev, avk_uploads);
 	free(up);
 }

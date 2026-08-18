@@ -199,7 +199,33 @@ struct avk_device {
 	/* Ownership violations detected rather than crashed on. Every one of
 	 * these is a bug; zero is the only correct value. */
 	uint64_t lifecycle_violations;
+
+	/*
+	 * ── STAGING BUFFERS ARE EXPENSIVE THE FIRST TIME THEY ARE TOUCHED ────
+	 *
+	 * Not to allocate -- to *fault*. A freshly mapped 56MB staging buffer is
+	 * 13691 pages the process has never touched, and the first memcpy into it
+	 * takes every one of those faults inline: measured at 52ms for a copy
+	 * that runs in 4ms once the pages exist, which is 1.1GB/s against
+	 * 14GB/s. A client that presents a fresh wl_buffer every frame allocated
+	 * a fresh staging buffer every frame and paid it every frame.
+	 *
+	 * So a retired staging buffer is kept rather than freed, and the next
+	 * allocation of a size that fits takes it warm. The retire queue already
+	 * guarantees the GPU is finished with it, which is exactly the condition
+	 * that makes reuse safe -- this cache adds no new ordering rule, it only
+	 * declines to throw away what that queue hands back.
+	 */
+	struct avk_upload *staging_cache[4];
+	uint32_t staging_cache_count;
+	VkDeviceSize staging_cache_bytes;
+	uint64_t staging_reused;    /* allocations served warm */
+	uint64_t staging_created;   /* allocations that had to fault */
 };
+
+/* Free every staging buffer the cache is holding. Shutdown only: the live
+ * object census runs immediately afterwards and must see zero. */
+void avk_staging_cache_drain(struct avk_device *dev);
 
 /* Both no-ops when dev is NULL, because a failed create unwinds through paths
  * that may not have one yet. */

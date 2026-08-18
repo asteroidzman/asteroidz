@@ -936,6 +936,51 @@ only the bytes changing between commits. It is the only client in the tree that
 does this, and `BREAK=identity` freezes it on red while every other assertion in
 the suite still passes.
 
+### A staging buffer is expensive the first time it is touched
+
+Not to allocate — to *fault*. `vkAllocateMemory` plus `vkMapMemory` for a 56MB
+staging buffer returns quickly and hands back a mapping the process has never
+touched, so the first `memcpy` into it takes a page fault on all 13,691 of its
+pages, inline, on the thread doing the copy. Measured on a 5128x2734 `wl_shm`
+window: **52ms for the copy, 1.08GB/s**, where the same bytes into the same
+buffer once warm run at **14GB/s**.
+
+Every misleading thing about this is worth recording, because each one cost
+time:
+
+- The pack log said `1072MB/s`, which reads as a bandwidth problem. It is not.
+- A standalone benchmark of the identical copy — same 56MB, same Vulkan memory
+  type, same memfd source — ran at 23.9GB/s and could not reproduce it. The
+  benchmark's source stayed in this machine's 96MB L3 and its staging buffer
+  had already been written once.
+- `AZ_AVK_PACK_CONTROL` then showed the two halves separately: client shm →
+  heap at 14.5GB/s, heap → staging at 17.6GB/s, and the two together at
+  1.08GB/s. Each mapping is fine; only the pairing is slow — which is not a
+  property any allocation has, and is the signature of the controls running
+  *after* the pack had already faulted the pages in.
+
+The staging lives in `struct az_avk_buffer`, one pair of slots per `wl_buffer`,
+so a client that presents a fresh `wl_buffer` every frame allocated fresh
+staging every frame and paid the faults every frame. Firefox on `wl_shm` does
+exactly that; so does `contrib/wlrepaint --churn`.
+
+`struct avk_device` therefore keeps retired staging buffers instead of freeing
+them, and hands them to the next allocation that fits. It adds **no ordering
+rule of its own**: buffers enter the cache only through `avk_upload_retire()`,
+which the retire queue calls when the GPU has finished reading, and that is
+precisely the condition that makes reuse safe. Best fit rather than first fit,
+so a 4MB surface does not consume the 56MB buffer a browser is about to want
+back.
+
+Measured over `contrib/wlrepaint --churn --fixed --size 5128x2734`: slow packs
+per run **37 → 2**, the two survivors being the genuine first touch of each
+size. On the synchronous fallback path, where the copy runs in the commit
+handler, `avk-shm-latency-test.sh` moved from a worst-case **9,916µs** block of
+the event loop to **636µs** at the same 8.3MB buffer size — which then falsified
+that fixture's own premise, since it had been resting on the fault cost to get
+past its 1ms threshold. It now sizes its client to blow that threshold on
+bandwidth alone.
+
 ### Damage belongs to the surface, not to the buffer that carried it
 
 The cache holds one image per `wl_buffer`, so it is tempting to apply a

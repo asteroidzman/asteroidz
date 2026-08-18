@@ -2555,6 +2555,17 @@ fixes it" — meaning the pixels were right and simply never asked for again.
 | `AZ_AVK_SLOW_UPLOAD_US` | stall the upload worker this many microseconds after each pack, capped at 100000. The mirror of `AZ_AVK_NO_STALE`: that one forbids the stale path, this one guarantees it. **Not a break** — it makes a real condition occur on demand |
 | `AZ_BREAK_STALE_ONE_OUTPUT` | the falsifier. Restores single-output payment. Must drive `shm_stale_multi_output_repaints` to 0 while the premises stay true |
 
+### Two hooks for the copy itself
+
+Both are diagnostics rather than breaks, and both exist because the copy that
+was 13x too slow looked exactly like a copy that was the right speed on a busy
+machine.
+
+| | |
+|---|---|
+| `AZ_AVK_PACK_CONTROL` | after any pack that trips the slow-pack log, time three more copies of the same size on the same thread at the same instant: heap→heap, client shm→heap, heap→staging. The first says whether the MOMENT is slow; the other two say which MAPPING is. This is what showed 14.5GB/s and 17.6GB/s for the two halves of a copy that ran at 1.08GB/s together — each mapping fine, the pairing not — which is the signature of first-touch faults rather than bandwidth. It re-runs the real pack afterwards, so the frame stays correct |
+| `AZ_AVK_PREFAULT_STAGING` | write every page of a staging buffer at allocation instead of leaving the first copy to fault them. Not a fix — it only moves 52ms from the worker thread to the event loop — but it is the proof: with it set, every slow pack disappears. Keep it as the falsifier for the warm-buffer cache: if that cache regresses, this switch masks the symptom, which is how you tell this cause from any other |
+
 ### Three vacuous versions, and what each assertion said
 
 1. **A copy that never went late.** 1600x1000 packs in under a millisecond, so

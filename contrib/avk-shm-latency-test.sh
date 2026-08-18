@@ -160,8 +160,8 @@ read_arm() { # read_arm NAME -> sets A_* globals
 # ── scenario 1: a client that presents a new buffer every commit ───────────
 # The reported call chain. The copy lands INSIDE az_avk_surface_commit().
 echo "== churning buffers: the copy is in the commit handler =="
-run_arm churn-sync  sync  --churn --size 1600x1100 --hold-ms 0 --title churnA
-run_arm churn-async async --churn --size 1600x1100 --hold-ms 0 --title churnB
+run_arm churn-sync  sync  --churn --fixed --size 3200x2200 --hold-ms 0 --title churnA
+run_arm churn-async async --churn --fixed --size 3200x2200 --hold-ms 0 --title churnB
 
 read_arm churn-sync
 S_COMMIT_MAX="$A_COMMIT_MAX"; S_COMMIT_AVG="$A_COMMIT_AVG"
@@ -190,6 +190,22 @@ print('true' if s>0 and c > 0.5*s and c < 2.0*s else 'false')")" "true"
 # THE OTHER PREMISE: that the slow arm is actually slow. If the synchronous
 # commit handler does not block here, this fixture cannot see the bug and
 # nothing it says about the fix means anything.
+#
+# THE SIZE IS PART OF THIS ASSERTION. At 1600x1100 the synchronous arm used to
+# block for 9916us -- but most of that was not the copy. A fresh wl_buffer got
+# a fresh staging buffer, and the first memcpy into it took a page fault on
+# every one of its pages; the warm-buffer cache on struct avk_device removed
+# that, and the same arm then blocked for 636us, which is under the threshold
+# below. The premise was resting on an allocation artefact.
+#
+# So the surface is sized to blow the threshold on BANDWIDTH alone: ~28MB per
+# buffer at the ~13GB/s this machine copies at is ~2.2ms, comfortably past
+# 1ms, and it stays that way however cheap the allocation becomes.
+#
+# --fixed, or the size is a fiction: without it wlrepaint follows its configure
+# and paints its TILE, so --size sets only the first buffer and every one after
+# it is the output's size. The first attempt at this raised --size alone, the
+# arm went on copying 8.3MB, and the number moved by noise.
 hl_assert "the synchronous arm really does block the loop (${S_COMMIT_MAX}us)" \
 	"$([ "${S_COMMIT_MAX:-0}" -gt 1000 ] && echo true || echo false)" "true"
 
