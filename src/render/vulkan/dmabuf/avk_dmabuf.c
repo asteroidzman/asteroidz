@@ -162,7 +162,8 @@ bool avk_dmabuf_importer_init(struct avk_dmabuf_importer *importer,
 	importer->gbm_recovers_modifiers = probe_modifier_recovery(importer);
 
 	avk_retire_init(&importer->retire, "importer");
-	if (!avk_cmd_ring_init(&importer->upload_ring, dev, "avk upload")) {
+	if (!avk_cmd_ring_init(&importer->upload_ring, dev, "avk upload",
+			AVK_CMD_RING_MAX_SLOTS)) {
 		avk_format_table_finish(&importer->table);
 		if (importer->gbm != NULL) {
 			gbm_device_destroy(importer->gbm);

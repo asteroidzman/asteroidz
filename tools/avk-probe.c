@@ -128,7 +128,7 @@ static struct avk_image *make_image(struct avk_device *dev, uint32_t w,
 static bool staged_copy(struct avk_device *dev, VkBuffer buffer,
 		struct avk_image *image, uint32_t w, uint32_t h, bool to_image) {
 	struct avk_cmd_ring ring;
-	if (!avk_cmd_ring_init(&ring, dev, "probe")) {
+	if (!avk_cmd_ring_init(&ring, dev, "probe", AVK_FRAMES_IN_FLIGHT)) {
 		return false;
 	}
 	VkCommandBuffer cb = avk_cmd_ring_begin(&ring);

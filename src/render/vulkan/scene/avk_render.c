@@ -66,7 +66,7 @@ bool avk_renderer_init(struct avk_renderer *renderer, struct avk_device *dev,
 	if (!avk_pipelines_init(&renderer->pipes, dev, format)) {
 		return false;
 	}
-	if (!avk_cmd_ring_init(&renderer->ring, dev, "avk frame")) {
+	if (!avk_cmd_ring_init(&renderer->ring, dev, "avk frame", AVK_FRAMES_IN_FLIGHT)) {
 		avk_pipelines_finish(&renderer->pipes);
 		return false;
 	}

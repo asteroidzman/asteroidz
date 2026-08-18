@@ -27,6 +27,10 @@
  * cannot do.
  */
 
+/* The upload ring runs deeper than the frame ring; see the comment on
+ * avk_cmd_ring.slots. */
+#define AVK_CMD_RING_MAX_SLOTS 16
+
 struct avk_cmd_slot {
 	VkCommandPool pool;
 	VkCommandBuffer cb;
@@ -37,7 +41,21 @@ struct avk_cmd_slot {
 
 struct avk_cmd_ring {
 	struct avk_device *dev;
-	struct avk_cmd_slot slots[AVK_FRAMES_IN_FLIGHT];
+	/*
+	 * ── HOW DEEP, AND WHY IT IS NOT ALWAYS THE FRAME COUNT ────────────────
+	 *
+	 * A ring that records once per frame wants exactly as many slots as there
+	 * are frames in flight. The UPLOAD ring does not record once per frame: a
+	 * desktop with a dozen small wl_shm surfaces records a dozen times in one
+	 * frame, wraps inside that frame, and then waits on a submission the GPU
+	 * has not reached -- for as long as the GPU is behind, which on a 4K HDR
+	 * output with a browser on it was measured at 5 to 34ms, paid by whichever
+	 * upload happened to be next. 61 of those in 52 seconds.
+	 *
+	 * So depth is per ring, and the frame ring keeps the frame count.
+	 */
+	struct avk_cmd_slot slots[AVK_CMD_RING_MAX_SLOTS];
+	uint32_t slot_count;
 	uint32_t next;
 	int recording;   /* index of the slot being recorded, or -1 */
 
@@ -54,8 +72,10 @@ struct avk_cmd_ring {
 	struct avk_retire_queue *retire;
 };
 
+/* `slots` is clamped to [1, AVK_CMD_RING_MAX_SLOTS]. Pass
+ * AVK_FRAMES_IN_FLIGHT for a ring that records once per frame. */
 bool avk_cmd_ring_init(struct avk_cmd_ring *ring, struct avk_device *dev,
-	const char *name);
+	const char *name, uint32_t slots);
 void avk_cmd_ring_finish(struct avk_cmd_ring *ring);
 
 /*

@@ -6736,6 +6736,18 @@ static cJSON *az_avk_stats_json(void) {
 	cJSON_AddNumberToObject(o, "shm_staging_returned",
 		(double)avk.shm_staging_returned);
 	/*
+	 * THE COUNTER THAT WAS NOT VISIBLE. The upload ring blocks when its next
+	 * slot is still in flight, and it has always counted that -- but only
+	 * logged it at AVK_DEBUG, which is filtered, so a grep for the message
+	 * found nothing and the mechanism was crossed off the list twice. Nonzero
+	 * means uploads are wrapping the ring inside a frame and paying for the
+	 * GPU's backlog on the frame thread.
+	 */
+	cJSON_AddNumberToObject(o, "upload_ring_stalls",
+		(double)avk.importer.upload_ring.stalls);
+	cJSON_AddNumberToObject(o, "upload_ring_slots",
+		(double)avk.importer.upload_ring.slot_count);
+	/*
 	 * WARM VERSUS FAULTED. A staging buffer costs a page fault per page the
 	 * first time it is written, and for a 56MB buffer that is 52ms inside the
 	 * copy -- 1.1GB/s where the same memcpy runs at 14GB/s once the pages

@@ -216,7 +216,7 @@ static struct avk_image *create_image(struct avk_transient_pool *pool,
 		 * the frame path entirely.
 		 */
 		struct avk_cmd_ring ring;
-		if (avk_cmd_ring_init(&ring, dev, "transient-poison")) {
+		if (avk_cmd_ring_init(&ring, dev, "transient-poison", AVK_FRAMES_IN_FLIGHT)) {
 			VkCommandBuffer cb = avk_cmd_ring_begin(&ring);
 			if (cb != VK_NULL_HANDLE) {
 				VkImageMemoryBarrier2 b = {

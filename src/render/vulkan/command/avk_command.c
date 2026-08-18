@@ -13,12 +13,14 @@
 #define AVK_SLOT_WAIT_NS (1000ULL * 1000ULL * 1000ULL)
 
 bool avk_cmd_ring_init(struct avk_cmd_ring *ring, struct avk_device *dev,
-		const char *name) {
+		const char *name, uint32_t slots) {
 	memset(ring, 0, sizeof(*ring));
 	ring->dev = dev;
 	ring->recording = -1;
 
-	for (uint32_t i = 0; i < AVK_FRAMES_IN_FLIGHT; i++) {
+	ring->slot_count = slots < 1 ? 1
+		: (slots > AVK_CMD_RING_MAX_SLOTS ? AVK_CMD_RING_MAX_SLOTS : slots);
+	for (uint32_t i = 0; i < ring->slot_count; i++) {
 		VkCommandPoolCreateInfo pool_info = {
 			.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
 			/* TRANSIENT, and deliberately NOT RESET_COMMAND_BUFFER: buffers
@@ -65,7 +67,7 @@ void avk_cmd_ring_finish(struct avk_cmd_ring *ring) {
 	if (ring->dev == NULL) {
 		return;
 	}
-	for (uint32_t i = 0; i < AVK_FRAMES_IN_FLIGHT; i++) {
+	for (uint32_t i = 0; i < ring->slot_count; i++) {
 		/* Destroying the pool frees its buffers; freeing them first would be
 		 * legal but pointless. */
 		if (ring->slots[i].pool != VK_NULL_HANDLE) {
