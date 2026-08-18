@@ -5042,6 +5042,18 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 
 	struct timespec frame_t0;
 	clock_gettime(CLOCK_MONOTONIC, &frame_t0);
+	/*
+	 * ── WHICH PART OF `record` ────────────────────────────────────────────
+	 *
+	 * The frame-stall line splits a slow frame into record/join/commit, and
+	 * for a 43ms frame with join=0 that says only "the renderer", which is
+	 * 800 lines of it. These four stamps name the part: draining the client
+	 * copies, acquiring the output target, walking the scene, and recording
+	 * the passes. Each of the first three has been guessed at and each guess
+	 * was wrong -- transient image creation runs at 2.2 per frame with no
+	 * stalls at all, and m5_encode_compiles has been 1 all session.
+	 */
+	struct timespec ts_drain = frame_t0, ts_acq = frame_t0, ts_walk = frame_t0;
 	/* Zeroed here so what accumulates below belongs to THIS frame. */
 	avk.frame_join_ns = 0;
 	avk.frame_output = m->wlr_output;
@@ -5061,6 +5073,7 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 	 * pixels rather than joining the copy a few lines later.
 	 */
 	az_avk_shm_drain();
+	clock_gettime(CLOCK_MONOTONIC, &ts_drain);
 
 	struct wlr_output *output = m->wlr_output;
 	struct az_avk_output *out = m->avk;
@@ -5270,6 +5283,7 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 
 	/* ── the snapshot ───────────────────────────────────────────────────── */
 	struct avk_scene scene;
+	clock_gettime(CLOCK_MONOTONIC, &ts_acq);
 	avk_scene_init(&scene);
 
 	/*
@@ -5561,6 +5575,7 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 	 * windows, the lock screen and the overview alike. A cursor drawn under
 	 * any of them is a cursor the user cannot find. */
 	az_avk_emit_cursors(&walk, output);
+	clock_gettime(CLOCK_MONOTONIC, &ts_walk);
 
 	/* The extra signal is the frame's completion as something exportable: a
 	 * timeline semaphore cannot become a sync_file, so a binary one rides
@@ -5890,6 +5905,19 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 	avk.frame_record_us = us;
 	if (us > avk.cpu_frame_us_max) {
 		avk.cpu_frame_us_max = us;
+	}
+	if (us > 20000) {
+		/* Same 20ms the slow-pack log uses: past three frames, this is why
+		 * something visibly stuttered. */
+#define AZ_US(a, b) ((uint64_t)(((b).tv_sec - (a).tv_sec) * 1000000 \
+	+ ((b).tv_nsec - (a).tv_nsec) / 1000))
+		avk_log(AVK_ERROR, "slow record on %s: %" PRIu64 "us = drain %" PRIu64
+			"us + acquire %" PRIu64 "us + walk %" PRIu64 "us + passes %"
+			PRIu64 "us", output != NULL && output->name != NULL
+				? output->name : "(output)", us,
+			AZ_US(frame_t0, ts_drain), AZ_US(ts_drain, ts_acq),
+			AZ_US(ts_acq, ts_walk), AZ_US(ts_walk, frame_t1));
+#undef AZ_US
 	}
 	az_avk_hist_add(&avk.cpu_frame_hist, us, AZ_AVK_CPU_BUCKET_US);
 	if (output_px > 0) {
