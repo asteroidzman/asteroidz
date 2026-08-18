@@ -235,6 +235,24 @@ bool avk_upload_staging_ensure(struct avk_device *dev, struct avk_upload *up,
 	if (up->buffer != VK_NULL_HANDLE && up->size >= size) {
 		return true;
 	}
+
+	/*
+	 * ── ROUND UP, SO A RESIZE IS NOT A NEW BUFFER ─────────────────────────
+	 *
+	 * Allocating exactly what was asked for makes every change of window size
+	 * a fresh allocation, and a fresh allocation of this size is 13691 page
+	 * faults taken inside the copy. The two stalls left in a whole session
+	 * were exactly that: 56.58MB and then 56.08MB, one window resized by
+	 * sixteen rows, each faulting its own buffer.
+	 *
+	 * A 4MB granularity puts both of those in the same bucket, so the second
+	 * one reuses the first. The waste is bounded by the granularity and the
+	 * copy still writes only the bytes the plan describes.
+	 */
+	if (size >= (4u << 20)) {
+		const VkDeviceSize grain = 4u << 20;
+		size = (size + grain - 1) & ~(grain - 1);
+	}
 	/*
 	 * Grow, never shrink: a window that resizes back and forth should not
 	 * reallocate on every wobble.
