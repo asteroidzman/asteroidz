@@ -585,6 +585,7 @@ Four counters say what the torn-flip path did with the frames it was handed:
 | `tear_test_refused` | never asked: the backend's test said this state is not tearable |
 | `tear_busy_synced` | asked, was refused **at commit time**, and landed on the vblank instead |
 | `tear_dropped` | did not land at all |
+| `tear_backoff` | not attempted: the display refused one less than an eighth of a frame ago |
 
 `tear_busy_synced` is the one no test can predict. The kernel's async check
 also asks whether the *previous* flip on that plane has finished in hardware,

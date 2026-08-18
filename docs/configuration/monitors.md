@@ -240,10 +240,16 @@ There are two ways to be refused, and only one of them can be predicted.
   waiting for vblank, so overlapping the previous one is a normal consequence
   of running fast. Asteroidz retries the same frame synced.
 
-`amsg get surface-intent` reports both per output, as `tear_test_refused` and
-`tear_busy_synced`, beside `tear_torn` (the tear happened) and `tear_dropped`
-(the frame was lost). A rising `tear_busy_synced` is a rate, not a fault; a
-rising `tear_dropped` is frames on the floor.
+These refusals arrive in bursts a fraction of a frame long rather than singly,
+so one of them parks the torn path for an eighth of a frame (`tear_backoff`
+counts the frames that spared) instead of asking again inside a window where
+the answer cannot change.
+
+`amsg get surface-intent` reports all of it per output: `tear_torn` (the tear
+happened), `tear_test_refused`, `tear_busy_synced`, `tear_backoff` and
+`tear_dropped` (the frame was lost). On a 4K HDR display driving a fullscreen
+gamescope session, a healthy run is ~37,800 torn flips against ~44 drops — a
+rising `tear_dropped` *ratio* is the number to watch, not its raw value.
 
 ### Graphics Card Compatibility
 

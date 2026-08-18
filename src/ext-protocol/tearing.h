@@ -146,6 +146,31 @@ void apply_tear_state(Monitor *m) {
 		return;
 	}
 
+	/*
+	 * ── DO NOT ARGUE WITH A BUSY CRTC ─────────────────────────────────────
+	 *
+	 * The refusals below do not arrive singly. They arrive in bursts of a
+	 * dozen inside one millisecond, because a torn frame is not paced by
+	 * vblank at all: the flip event for an immediate flip is delivered at
+	 * flip time, wlroots calls the output ready, and the compositor is back
+	 * here with the next frame while the kernel is still finishing the
+	 * previous commit. Every attempt inside that window is an ioctl with no
+	 * chance of succeeding, plus a line of backend log each.
+	 *
+	 * So when one is refused, leave the display alone for an eighth of a
+	 * frame -- about 0.9ms at 144Hz, which is the observed length of a burst,
+	 * and a latency cost this path only pays on the 0.1% of frames that were
+	 * being thrown away anyway.
+	 */
+	struct timespec bnow;
+	clock_gettime(CLOCK_MONOTONIC, &bnow);
+	uint64_t now_ns =
+		(uint64_t)bnow.tv_sec * 1000000000ull + (uint64_t)bnow.tv_nsec;
+	if (m->tear_busy_until_ns > now_ns) {
+		m->tear_backoff++;
+		return;
+	}
+
 	struct wlr_output_state state;
 	wlr_output_state_init(&state);
 
@@ -229,6 +254,8 @@ void apply_tear_state(Monitor *m) {
 
 	bool torn = landed && state.tearing_page_flip;
 	if (!landed) {
+		uint64_t period = az_presenter_period_ns(m);
+		m->tear_busy_until_ns = now_ns + (period > 0 ? period / 8 : 1000000);
 		m->tear_dropped++;
 		if (az_log_decade(m->tear_dropped)) {
 			wlr_log(WLR_ERROR, "tearing: failed to commit frame for %s "

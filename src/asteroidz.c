@@ -1025,6 +1025,12 @@ struct Monitor {
 	uint64_t tear_test_refused;
 	uint64_t tear_busy_synced;
 	uint64_t tear_dropped;
+	/* How long to leave a busy CRTC alone, and how many frames that spared.
+	 * See the backoff in apply_tear_state(): the refusals arrive in bursts a
+	 * fraction of a frame long, and asking again inside one is free of any
+	 * chance of succeeding. */
+	uint64_t tear_busy_until_ns;
+	uint64_t tear_backoff;
 	/*
 	 * CADENCE, FROM PRESENTATION RATHER THAN FROM GPU TIMING.
 	 *

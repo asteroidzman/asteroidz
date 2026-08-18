@@ -1233,6 +1233,8 @@ static void handle_command(int client_fd, const char *cmd_raw) {
 				(double)om->tear_busy_synced);
 			cJSON_AddNumberToObject(e, "tear_dropped",
 				(double)om->tear_dropped);
+			cJSON_AddNumberToObject(e, "tear_backoff",
+				(double)om->tear_backoff);
 			cJSON_AddItemToArray(outs, e);
 		}
 	} else if (strcmp(cmd, "get presentation") == 0) {
