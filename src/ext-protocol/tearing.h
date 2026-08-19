@@ -146,31 +146,6 @@ void apply_tear_state(Monitor *m) {
 		return;
 	}
 
-	/*
-	 * ── DO NOT ARGUE WITH A BUSY CRTC ─────────────────────────────────────
-	 *
-	 * The refusals below do not arrive singly. They arrive in bursts of a
-	 * dozen inside one millisecond, because a torn frame is not paced by
-	 * vblank at all: the flip event for an immediate flip is delivered at
-	 * flip time, wlroots calls the output ready, and the compositor is back
-	 * here with the next frame while the kernel is still finishing the
-	 * previous commit. Every attempt inside that window is an ioctl with no
-	 * chance of succeeding, plus a line of backend log each.
-	 *
-	 * So when one is refused, leave the display alone for an eighth of a
-	 * frame -- about 0.9ms at 144Hz, which is the observed length of a burst,
-	 * and a latency cost this path only pays on the 0.1% of frames that were
-	 * being thrown away anyway.
-	 */
-	struct timespec bnow;
-	clock_gettime(CLOCK_MONOTONIC, &bnow);
-	uint64_t now_ns =
-		(uint64_t)bnow.tv_sec * 1000000000ull + (uint64_t)bnow.tv_nsec;
-	if (m->tear_busy_until_ns > now_ns) {
-		m->tear_backoff++;
-		return;
-	}
-
 	struct wlr_output_state state;
 	wlr_output_state_init(&state);
 
@@ -202,14 +177,12 @@ void apply_tear_state(Monitor *m) {
 		}
 	}
 
-	bool asked_torn = true;
 	state.tearing_page_flip = true;
 	if (!wlr_output_test_state(m->wlr_output, &state)) {
 		/* Present it on the vblank instead. A torn frame silently not tearing
 		 * is exactly the kind of thing that gets measured and disbelieved, so
 		 * it is still said out loud -- but by a counter plus a decade of log
 		 * lines, not by one line per frame. */
-		asked_torn = false;
 		state.tearing_page_flip = false;
 		m->tear_test_refused++;
 		if (az_log_decade(m->tear_test_refused)) {
@@ -222,40 +195,26 @@ void apply_tear_state(Monitor *m) {
 	bool landed = wlr_output_commit_state(m->wlr_output, &state);
 
 	/*
-	 * ── A TEST THAT PASSED IS NOT A COMMIT THAT WILL ──────────────────────
+	 * ── WHY THE FRAME IS DROPPED RATHER THAN RETRIED ──────────────────────
 	 *
-	 * The test above answers "is this state tearable", and the kernel's async
-	 * check asks a second question it cannot: is the PREVIOUS flip on this
-	 * plane finished in hardware. If it is not, an immediate flip comes back
-	 * EBUSY -- and since a torn frame is submitted without waiting for vblank,
-	 * that overlap is a normal consequence of going fast, not a broken state.
-	 * wlroots documents exactly this gap: a passing wlr_output_test_state()
-	 * promises only that the commit can still fail "due to a runtime error".
+	 * A commit refused with EBUSY can be committed again without the tearing
+	 * bit and it lands -- 2004 of them did. That was this file's first answer
+	 * and it is withdrawn, because of what the state contains on this path:
+	 * with direct scanout it is the CLIENT's buffer plus the acquire fence
+	 * that orders the flip against the client's own GPU writes. Committing it
+	 * a second time replays that, and the operator saw RGB flashing in
+	 * gamescope on the build that did -- on the same games, same scanout, same
+	 * tearing that had been clean the night before.
 	 *
-	 * So retry the same frame synced, which is what the refusal path above
-	 * already does for the case a test CAN see. Losing the tear is a latency
-	 * regression; losing the frame is a visible stall -- this file has said so
-	 * since it was written, and then dropped 24943 frames in one session for
-	 * want of these four lines. The state is untouched by a failed commit
-	 * (wlr_output_commit_state() is atomic), so it can simply go again.
+	 * Losing the tear is a latency regression and losing the frame is a
+	 * visible stall, both of which this file has said. Presenting a buffer the
+	 * client may still be writing is worse than either, and a retry that is
+	 * safe has to build a fresh state rather than reuse this one. Until it
+	 * does, the frame is dropped and counted.
 	 */
-	if (!landed && asked_torn) {
-		state.tearing_page_flip = false;
-		landed = wlr_output_commit_state(m->wlr_output, &state);
-		if (landed) {
-			m->tear_busy_synced++;
-			if (az_log_decade(m->tear_busy_synced)) {
-				wlr_log(WLR_DEBUG, "tearing: %s refused the torn flip at "
-					"commit; presented synced (%" PRIu64 " so far)",
-					m->wlr_output->name, m->tear_busy_synced);
-			}
-		}
-	}
 
 	bool torn = landed && state.tearing_page_flip;
 	if (!landed) {
-		uint64_t period = az_presenter_period_ns(m);
-		m->tear_busy_until_ns = now_ns + (period > 0 ? period / 8 : 1000000);
 		m->tear_dropped++;
 		if (az_log_decade(m->tear_dropped)) {
 			wlr_log(WLR_ERROR, "tearing: failed to commit frame for %s "
