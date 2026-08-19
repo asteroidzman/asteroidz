@@ -606,6 +606,10 @@ struct Client {
 	 * none of that arithmetic has to know where the tree currently lives. */
 	struct wlr_scene_tree *shadow_tree;
 	struct wlr_scene_blur *blur_node;
+	/* What client_update_blur() last decided from; see the note there on why
+	 * deciding once at map time was not enough. */
+	uint64_t blur_decision_sig;
+	bool blur_decision_valid;
 	struct wlr_scene_tree *scene_surface;
 	struct wlr_scene_tree *overview_scene_surface;
 	struct asteroidz_jump_label_node *jump_label_node;
@@ -5385,6 +5389,17 @@ void commitnotify(struct wl_listener *listener, void *data) {
 	Client *c = wl_container_of(listener, c, commit);
 	struct wlr_box *new_geo;
 
+	/*
+	 * Whether this window needs a backdrop blur node depends on what it has
+	 * declared opaque and how big its window geometry is, and a client sends
+	 * both AFTER it maps and again whenever it is resized. Deciding at map
+	 * time only is deciding before the client has said anything.
+	 * client_update_blur() early-outs on an unchanged signature.
+	 */
+	if (c->mon != NULL && c->scene != NULL) {
+		client_update_blur(c);
+	}
+
 	if (c->surface.xdg->initial_commit) {
 		// xdg client will first enter this before mapnotify
 		init_client_properties(c);
@@ -7964,10 +7979,44 @@ void client_update_blur(Client *c) {
 	struct background_effect_surface *effect;
 	bool want;
 
+	/*
+	 * ── THE DECISION HAS TO FOLLOW THE CLIENT, NOT PRECEDE IT ─────────────
+	 *
+	 * This ran once, from mapnotify(), and never again. At map a client has
+	 * committed almost nothing: Firefox sends set_window_geometry and
+	 * set_opaque_region on the commits AFTER that, and sends a NEW opaque
+	 * region every time it is resized. So the one evaluation that ever
+	 * happened saw a window with no declared opacity, created a blur node
+	 * behind it, and no later commit could take it away -- which made every
+	 * refinement of the opacity test below unreachable in practice.
+	 *
+	 * It is called per commit now. The signature is what the decision reads:
+	 * if none of it moved, there is nothing to decide again.
+	 */
+	if (c != NULL && client_surface(c) != NULL) {
+		struct wlr_surface *sw = client_surface(c);
+		const pixman_box32_t *oe = pixman_region32_extents(&sw->opaque_region);
+		uint64_t sig = (uint64_t)sw->current.width * 31
+			+ (uint64_t)sw->current.height * 131
+			+ (uint64_t)(oe->x2 - oe->x1) * 7919
+			+ (uint64_t)(oe->y2 - oe->y1) * 104729
+			+ (uint64_t)pixman_region32_n_rects(&sw->opaque_region) * 15485863
+			+ (uint64_t)(c->isfloating ? 1 : 0)
+			+ (uint64_t)(c->noblur ? 2 : 0)
+			+ (uint64_t)(c->iskilling ? 4 : 0)
+			+ (uint64_t)(config.blur ? 8 : 0);
+		if (c->blur_decision_valid && c->blur_decision_sig == sig) {
+			return;
+		}
+		c->blur_decision_sig = sig;
+		c->blur_decision_valid = true;
+	}
+
 	/* the scene tree only exists once the client is mapped; a client may
 	 * commit an effect region before that */
 	if (!c || !c->scene || !c->scene_surface)
 		return;
+
 
 	effect = background_effect_try_from_surface(client_surface(c));
 	want = config.blur && !c->noblur && !c->iskilling;
