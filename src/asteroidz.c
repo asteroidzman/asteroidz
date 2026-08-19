@@ -1447,6 +1447,8 @@ static void toggle_hotarea(int32_t x_root, int32_t y_root); // trigger hot corne
 static void maplayersurfacenotify(struct wl_listener *listener, void *data);
 static void commitlayersurfacenotify(struct wl_listener *listener, void *data);
 static void commitnotify(struct wl_listener *listener, void *data);
+
+
 static void createdecoration(struct wl_listener *listener, void *data);
 static void createidleinhibitor(struct wl_listener *listener, void *data);
 static void createkeyboard(struct wlr_keyboard *keyboard);
@@ -11144,6 +11146,91 @@ static void asteroidz_log_callback(enum wlr_log_importance verbosity,
 		fprintf(stderr, "%s %s\n", verbosity_headers[c], msg);
 	}
 }
+/*
+ * ── prefer-no-csd HAS TO REACH THE PROTOCOL THE CLIENT ACTUALLY USES ──────
+ *
+ * misc/prefer-no-csd decides client_wants_ssd(), so the compositor draws a
+ * titlebar and border for a client that never bound xdg-decoration. It said
+ * nothing to the client, and the two protocols are not interchangeable:
+ * Firefox binds org_kde_kwin_server_decoration and never binds
+ * zxdg_decoration_manager_v1, so it asked for client-side decorations there,
+ * wlroots echoed its request back, and it drew a full-window CPU frame with a
+ * shadow margin -- underneath the titlebar asteroidz was already drawing.
+ *
+ * In that protocol the compositor decides: the client requests, the server
+ * sends `mode`, and the server may send it at any time. This answers a
+ * client-side request with SERVER when the operator has asked for no CSD,
+ * which is what Plasma does and why Firefox is server-decorated there with no
+ * browser setting at all.
+ *
+ * The event is posted directly because wlroots vendors this protocol without
+ * installing its header. org_kde_kwin_server_decoration is version 1 and has
+ * exactly one event, `mode`, so its opcode is 0 and cannot move.
+ */
+#define AZ_KDE_DECORATION_EVENT_MODE 0
+
+typedef struct {
+	struct wlr_server_decoration *deco;
+	struct wl_listener mode;
+	struct wl_listener destroy;
+} KdeDecoration;
+
+static void kde_decoration_enforce(KdeDecoration *kd) {
+	Client *c = NULL;
+
+	if (!config.prefer_no_csd || kd->deco->resource == NULL) {
+		return;
+	}
+	if (kd->deco->mode == WLR_SERVER_DECORATION_MANAGER_MODE_SERVER) {
+		return;
+	}
+	/* The per-window escape hatch, same one client_wants_ssd() honours. The
+	 * surface may not be a toplevel yet, in which case there is no rule to
+	 * find and the global preference stands. */
+	if (kd->deco->surface != NULL) {
+		toplevel_from_wlr_surface(kd->deco->surface, &c, NULL);
+	}
+	if (c != NULL && c->allow_csd) {
+		return;
+	}
+	/*
+	 * wlroots' own handler has already stored the client's request and echoed
+	 * it. Overriding the event without overriding the state leaves the two
+	 * disagreeing, and a client that asks repeatedly gets whichever answer
+	 * happened to be sent last.
+	 */
+	kd->deco->mode = WLR_SERVER_DECORATION_MANAGER_MODE_SERVER;
+	wl_resource_post_event(kd->deco->resource, AZ_KDE_DECORATION_EVENT_MODE,
+		WLR_SERVER_DECORATION_MANAGER_MODE_SERVER);
+}
+
+static void kde_decoration_mode(struct wl_listener *listener, void *data) {
+	KdeDecoration *kd = wl_container_of(listener, kd, mode);
+	kde_decoration_enforce(kd);
+}
+
+static void kde_decoration_destroy(struct wl_listener *listener, void *data) {
+	KdeDecoration *kd = wl_container_of(listener, kd, destroy);
+	wl_list_remove(&kd->mode.link);
+	wl_list_remove(&kd->destroy.link);
+	free(kd);
+}
+
+static void kde_decoration_new(struct wl_listener *listener, void *data) {
+	struct wlr_server_decoration *deco = data;
+	KdeDecoration *kd = ecalloc(1, sizeof(*kd));
+
+	kd->deco = deco;
+	LISTEN(&deco->events.mode, &kd->mode, kde_decoration_mode);
+	LISTEN(&deco->events.destroy, &kd->destroy, kde_decoration_destroy);
+	/* A client that never requests anything keeps the manager's default,
+	 * which is already SERVER; one that requests immediately is answered
+	 * here. */
+	kde_decoration_enforce(kd);
+}
+
+static struct wl_listener kde_new_decoration = { .notify = kde_decoration_new };
+
 
 void setup(void) {
 
@@ -11633,9 +11720,13 @@ void setup(void) {
 	wlr_scene_node_set_enabled(&locked_bg->node, false);
 
 	/* Use decoration protocols to negotiate server-side decorations */
-	wlr_server_decoration_manager_set_default_mode(
-		wlr_server_decoration_manager_create(dpy),
-		WLR_SERVER_DECORATION_MANAGER_MODE_SERVER);
+	{
+		struct wlr_server_decoration_manager *kde_deco =
+			wlr_server_decoration_manager_create(dpy);
+		wlr_server_decoration_manager_set_default_mode(kde_deco,
+			WLR_SERVER_DECORATION_MANAGER_MODE_SERVER);
+		wl_signal_add(&kde_deco->events.new_decoration, &kde_new_decoration);
+	}
 	xdg_decoration_mgr = wlr_xdg_decoration_manager_v1_create(dpy);
 	wl_signal_add(&xdg_decoration_mgr->events.new_toplevel_decoration,
 				  &new_xdg_decoration);
