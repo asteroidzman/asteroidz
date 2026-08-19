@@ -15,9 +15,6 @@ void avk_scene_finish(struct avk_scene *scene) {
 		if (scene->cmds[i].has_clip) {
 			pixman_region32_fini(&scene->cmds[i].clip);
 		}
-		if (scene->cmds[i].has_opaque) {
-			pixman_region32_fini(&scene->cmds[i].opaque);
-		}
 	}
 	free(scene->cmds);
 	free(scene->gradient_colors);
@@ -60,14 +57,6 @@ struct avk_cmd *avk_scene_add(struct avk_scene *scene, enum avk_cmd_type type) {
 	 */
 	cmd->lum = az_lum_domain_untagged();
 	return cmd;
-}
-
-bool avk_cmd_set_opaque(struct avk_cmd *cmd, const pixman_region32_t *region) {
-	if (!cmd->has_opaque) {
-		pixman_region32_init(&cmd->opaque);
-		cmd->has_opaque = true;
-	}
-	return pixman_region32_copy(&cmd->opaque, (pixman_region32_t *)region);
 }
 
 bool avk_cmd_set_clip(struct avk_cmd *cmd, const pixman_region32_t *region) {

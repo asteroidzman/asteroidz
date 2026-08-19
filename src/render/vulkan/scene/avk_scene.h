@@ -209,25 +209,6 @@ struct avk_cmd {
 	pixman_region32_t clip;
 	bool has_clip;
 
-	/*
-	 * ── WHAT THE CLIENT SAYS IS OPAQUE, IN OUTPUT PIXELS ──────────────────
-	 *
-	 * The pixel format is not the answer. az_cmd_opaque_region() used to ask
-	 * only whether the image had an alpha channel, and an ARGB surface can be
-	 * -- and usually is -- opaque over almost all of itself. Firefox presents
-	 * AR24 and declares an opaque region covering its whole window; so does
-	 * every other client that composites its own rounded corners.
-	 *
-	 * Treating those as never-occluding means everything underneath is drawn:
-	 * blur included, under a browser that hides it completely. wl_surface's
-	 * opaque_region is the protocol's answer to exactly this question and the
-	 * scene already tracks it; this carries it as far as the culling.
-	 *
-	 * Empty means "the client said nothing", not "nothing is opaque".
-	 */
-	pixman_region32_t opaque;
-	bool has_opaque;
-
 	float opacity;
 
 	/* AVK_CMD_RECT: straight (non-premultiplied) RGBA, premultiplied by AVK
@@ -572,8 +553,6 @@ struct avk_cmd *avk_scene_add(struct avk_scene *scene, enum avk_cmd_type type);
 
 /* Set a command's clip region. Copies, so the caller's region can go away. */
 bool avk_cmd_set_clip(struct avk_cmd *cmd, const pixman_region32_t *region);
-/* The client's opaque region, already in output pixels. */
-bool avk_cmd_set_opaque(struct avk_cmd *cmd, const pixman_region32_t *region);
 
 /*
  * Give `cmd` a gradient fill, copying `count` colours (4 floats each,
