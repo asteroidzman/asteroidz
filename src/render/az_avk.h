@@ -4057,6 +4057,41 @@ static void az_avk_walk_node(struct az_avk_walk *walk,
 		cmd->dst = (struct avk_box){ dst.x, dst.y, dst.width, dst.height };
 		cmd->image = image;
 		cmd->opacity = buf->opacity;
+		/*
+		 * The client's own answer to "what of this is opaque", mapped into
+		 * output pixels the same way the destination was. Without it the
+		 * culling has only the pixel format to go on, and an ARGB window --
+		 * which is most of them -- occludes nothing, so the blur underneath
+		 * an opaque browser is drawn in full.
+		 *
+		 * Each rectangle is shrunk by a pixel after mapping. Over-claiming
+		 * here deletes pixels that should have been drawn, and a rounding
+		 * error at a scaled edge is exactly how that would happen; a pixel of
+		 * slack costs nothing the culling cares about.
+		 */
+		if (pixman_region32_not_empty(&buf->opaque_region)) {
+			pixman_region32_t op;
+			pixman_region32_init(&op);
+			int nr = 0;
+			const pixman_box32_t *ob =
+				pixman_region32_rectangles(&buf->opaque_region, &nr);
+			for (int i = 0; i < nr; i++) {
+				struct wlr_box obox;
+				az_avk_box_to_output(walk, lx + ob[i].x1, ly + ob[i].y1,
+					ob[i].x2 - ob[i].x1, ob[i].y2 - ob[i].y1, &obox);
+				if (obox.width <= 2 || obox.height <= 2) {
+					continue;
+				}
+				pixman_region32_union_rect(&op, &op, obox.x + 1, obox.y + 1,
+					(unsigned)(obox.width - 2), (unsigned)(obox.height - 2));
+			}
+			pixman_region32_intersect_rect(&op, &op, dst.x, dst.y,
+				(unsigned)dst.width, (unsigned)dst.height);
+			if (pixman_region32_not_empty(&op)) {
+				avk_cmd_set_opaque(cmd, &op);
+			}
+			pixman_region32_fini(&op);
+		}
 		/* M5/C2. Carried, not yet consumed -- see avk_cmd.lum. */
 		cmd->lum = az_avk_lum_of(buf, walk->scene_ref_nits);
 		/* Rounding belongs to the DESTINATION geometry, not the source: a
