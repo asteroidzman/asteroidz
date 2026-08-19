@@ -12,12 +12,29 @@ bool client_wants_ssd(Client *c) {
 	if (c->force_ssd) /* window rule: decorate even decoration-oblivious apps
 					   * (SDL/GLFW games etc. that bind neither protocol) */
 		return true;
-	if (!c->decoration)
+	if (!c->decoration) {
+		/*
+		 * A client that negotiated over org_kde_kwin_server_decoration is NOT
+		 * decoration-oblivious, even though it never bound xdg-decoration --
+		 * and Firefox is exactly that: it asks there, insists on client-side
+		 * when refused, and draws its own frame regardless. Decorating it as
+		 * though it had said nothing puts a compositor titlebar on top of the
+		 * one it drew itself.
+		 *
+		 * So take it at its word. prefer-no-csd still states the preference
+		 * once (see kde_decoration_enforce), and still decorates clients that
+		 * genuinely never said anything -- which is what the option was for.
+		 */
+		if (c->kde_decoration_mode ==
+				WLR_SERVER_DECORATION_MANAGER_MODE_CLIENT) {
+			return false;
+		}
 		/* never bound xdg-decoration: CSD by default; misc/prefer-no-csd
 		 * decorates these too (allow_csd rule stays the escape hatch).
 		 * NB: apps that paint their own header regardless (GTK headerbars)
 		 * will show both -- the compositor can't stop client-side paint. */
 		return config.prefer_no_csd && !c->allow_csd;
+	}
 	if (!c->allow_csd)
 		return true;
 	return c->decoration->requested_mode ==

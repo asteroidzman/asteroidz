@@ -606,6 +606,13 @@ struct Client {
 	 * none of that arithmetic has to know where the tree currently lives. */
 	struct wlr_scene_tree *shadow_tree;
 	struct wlr_scene_blur *blur_node;
+	/*
+	 * What this client asked for over org_kde_kwin_server_decoration, or 0 if
+	 * it never asked. Firefox negotiates there and never binds
+	 * xdg-decoration, so without this it looks decoration-oblivious to
+	 * client_wants_ssd() and gets compositor chrome on top of its own.
+	 */
+	uint32_t kde_decoration_mode;
 	/* What client_update_blur() last decided from; see the note there on why
 	 * deciding once at map time was not enough. */
 	uint64_t blur_decision_sig;
@@ -11171,6 +11178,7 @@ static void asteroidz_log_callback(enum wlr_log_importance verbosity,
 
 typedef struct {
 	struct wlr_server_decoration *deco;
+	bool stated;   /* the compositor's preference has been sent once */
 	struct wl_listener mode;
 	struct wl_listener destroy;
 } KdeDecoration;
@@ -11178,12 +11186,45 @@ typedef struct {
 static void kde_decoration_enforce(KdeDecoration *kd) {
 	Client *c = NULL;
 
-	if (!config.prefer_no_csd || kd->deco->resource == NULL) {
+	if (kd->deco->resource == NULL) {
+		return;
+	}
+	/*
+	 * RECORD IT EVEN WHEN NOT OVERRIDING. A client that negotiates here and
+	 * never binds xdg-decoration is invisible to client_wants_ssd(), which
+	 * then treats it as decoration-oblivious and draws chrome on top of the
+	 * chrome it draws itself.
+	 */
+	if (kd->deco->surface != NULL) {
+		toplevel_from_wlr_surface(kd->deco->surface, &c, NULL);
+	}
+	if (c != NULL) {
+		c->kde_decoration_mode = kd->deco->mode;
+	}
+	if (!config.prefer_no_csd) {
 		return;
 	}
 	if (kd->deco->mode == WLR_SERVER_DECORATION_MANAGER_MODE_SERVER) {
 		return;
 	}
+	/*
+	 * ── SAY IT ONCE ───────────────────────────────────────────────────────
+	 *
+	 * The first version answered every request. Firefox re-asserts
+	 * client-side whenever it is told otherwise, so the two sides traded the
+	 * same two messages five times in a row and the browser wedged: it was
+	 * still arguing about its titlebar instead of loading pages.
+	 *
+	 * The compositor's preference is stated once per decoration object. A
+	 * client that accepts it stops asking; one that insists is telling us it
+	 * will draw its own regardless, and the honest response is to believe it
+	 * -- which is what recording the mode above lets client_wants_ssd() do,
+	 * so it does not end up decorated twice.
+	 */
+	if (kd->stated) {
+		return;
+	}
+	kd->stated = true;
 	/* The per-window escape hatch, same one client_wants_ssd() honours. The
 	 * surface may not be a toplevel yet, in which case there is no rule to
 	 * find and the global preference stands. */

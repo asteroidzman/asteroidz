@@ -854,6 +854,8 @@ static bool avk_render_reserve_regions(struct avk_renderer *renderer,
 static bool az_cmd_opaque_region(const struct avk_renderer *renderer,
 		const struct avk_cmd *cmd,
 		const struct avk_box *bounds, pixman_region32_t *out) {
+	const pixman_region32_t *client_opaque = NULL;
+
 	/*
 	 * AZ_AVK_OCCLUDE_ALL=1 -- THE BREAK, and it is the one that matters.
 	 *
