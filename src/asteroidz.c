@@ -7935,6 +7935,31 @@ void locksession(struct wl_listener *listener, void *data) {
  * keep one node per client, placed below its surface tree. Geometry is kept
  * in sync with the surface in apply_border(). A client-supplied
  * ext-background-effect-v1 region refines the config-driven default. */
+/*
+ * The opaque area of a surface AND everything it composes from, in the
+ * toplevel's coordinates.
+ *
+ * A client's own opaque_region describes that surface alone. For a client
+ * whose content is a SUBSURFACE the toplevel is the client-side decoration
+ * frame -- transparent by construction, since it carries the drop shadow and
+ * the rounded corners -- and asking it whether the window is opaque gets the
+ * answer "not at all" for a window that is opaque everywhere it has pixels.
+ */
+static void client_accumulate_opaque(struct wlr_surface *s, int sx, int sy,
+		void *data) {
+	pixman_region32_t *out = data;
+	pixman_region32_t r;
+	pixman_region32_init(&r);
+	pixman_region32_copy(&r, &s->opaque_region);
+	/* Clipped to the surface's own extent first: opaque_region is client
+	 * input and is not required to fit inside the surface. */
+	pixman_region32_intersect_rect(&r, &r, 0, 0, s->current.width,
+		s->current.height);
+	pixman_region32_translate(&r, sx, sy);
+	pixman_region32_union(out, out, &r);
+	pixman_region32_fini(&r);
+}
+
 void client_update_blur(Client *c) {
 	struct background_effect_surface *effect;
 	bool want;
@@ -7954,14 +7979,71 @@ void client_update_blur(Client *c) {
 	struct wlr_surface *wls = client_surface(c);
 	if (want && wls != NULL && (!effect || !effect->has_region) &&
 			c->focused_opacity >= 1.0f && c->unfocused_opacity >= 1.0f) {
+		/*
+		 * ── THE WINDOW, NOT THE SURFACE ───────────────────────────────────
+		 *
+		 * xdg_surface.set_window_geometry is the client saying which part of
+		 * its surface is the window and which part is decoration it drew
+		 * around it. Firefox says (20, 20, 3816, 2136) on a 3856x2176
+		 * surface: a 20px drop-shadow margin on every side.
+		 *
+		 * Testing the whole SURFACE for opacity therefore asks whether the
+		 * client's own drop shadow is opaque. It is not -- a shadow is a
+		 * gradient to nothing -- so the test never fired, and an opaque
+		 * browser kept a backdrop blur whose only visible effect was blur
+		 * showing through that shadow and through any strip the content had
+		 * not repainted yet during a resize. Which is the "glowing blurred
+		 * band" this check exists to prevent, arriving by the one route it
+		 * did not cover.
+		 */
+		struct wlr_box wgeo = { 0, 0, wls->current.width,
+			wls->current.height };
+		if (!client_is_x11(c) && c->surface.xdg != NULL
+				&& c->surface.xdg->geometry.width > 0
+				&& c->surface.xdg->geometry.height > 0) {
+			wgeo = c->surface.xdg->geometry;
+		}
 		pixman_region32_t whole;
-		pixman_region32_init_rect(&whole, 0, 0, wls->current.width,
-								  wls->current.height);
+		pixman_region32_init_rect(&whole, wgeo.x, wgeo.y, wgeo.width,
+								  wgeo.height);
+		/*
+		 * The WHOLE surface tree, not just the toplevel. Firefox is the case
+		 * that made this necessary: its xdg_toplevel is a transparent CSD
+		 * frame and every pixel of page content is a dma-buf subsurface
+		 * underneath it, so the toplevel's own opaque_region is nearly empty
+		 * and this test kept a blur node behind an opaque browser. Resizing
+		 * made it visible -- the frame grows before the content does, and the
+		 * strip between them showed the desktop blurred, which is the same
+		 * "glowing blurred band" this check was added to stop.
+		 */
+		pixman_region32_t opaque;
+		pixman_region32_init(&opaque);
+		wlr_surface_for_each_surface(wls, client_accumulate_opaque, &opaque);
 		pixman_region32_t uncovered;
 		pixman_region32_init(&uncovered);
-		pixman_region32_subtract(&uncovered, &whole, &wls->opaque_region);
-		if (!pixman_region32_not_empty(&uncovered))
-			want = false; /* opaque everywhere -> blur invisible */
+		pixman_region32_subtract(&uncovered, &whole, &opaque);
+		pixman_region32_fini(&opaque);
+		/*
+		 * ROUNDED CORNERS ARE NOT A TRANSLUCENT INTERIOR. Firefox's opaque
+		 * region insets its top and bottom bands by 8px on each side, so
+		 * even against the window geometry a few hundred pixels of corner
+		 * remain uncovered. A window whose interior is opaque everywhere
+		 * except its corners has no backdrop to show, and the allowance is
+		 * expressed against the window's own area so it cannot grow into
+		 * one: a genuinely glassy client leaves the whole interior
+		 * uncovered, not a percent of it.
+		 */
+		uint64_t geo_px = (uint64_t)wgeo.width * (uint64_t)wgeo.height;
+		uint64_t open_px = 0;
+		int nrects = 0;
+		const pixman_box32_t *ur =
+			pixman_region32_rectangles(&uncovered, &nrects);
+		for (int i = 0; i < nrects; i++) {
+			open_px += (uint64_t)(ur[i].x2 - ur[i].x1)
+				* (uint64_t)(ur[i].y2 - ur[i].y1);
+		}
+		if (geo_px > 0 && open_px * 100 < geo_px)
+			want = false; /* opaque but for its corners -> blur invisible */
 		pixman_region32_fini(&uncovered);
 		pixman_region32_fini(&whole);
 	}
