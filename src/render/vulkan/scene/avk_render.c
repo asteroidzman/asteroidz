@@ -878,11 +878,32 @@ static bool az_cmd_opaque_region(const struct avk_renderer *renderer,
 	}
 	switch (cmd->type) {
 	case AVK_CMD_TEXTURE:
-		/* has_alpha is the format's answer, and the X formats' fourth channel
-		 * means nothing -- which is why the draw forces params[1] to 0 for
-		 * them. Same source of truth here. */
-		if (cmd->image == NULL || cmd->image->has_alpha) {
+		if (cmd->image == NULL) {
 			return false;
+		}
+		/*
+		 * has_alpha is the FORMAT's answer, and for an ARGB surface it is the
+		 * wrong question: the channel exists, and the client has told us where
+		 * it does not use it. wl_surface.set_opaque_region is that statement,
+		 * and a client which makes it -- Firefox over its whole window, every
+		 * toolkit that rounds its own corners -- was occluding nothing here,
+		 * so everything beneath was drawn. Blur included.
+		 *
+		 * Rounding is the one case the region cannot answer for: the corners
+		 * are cut by the shader after the fact, so a region that covers them
+		 * would claim pixels the draw does not write.
+		 */
+		if (cmd->image->has_alpha) {
+			bool rounded = cmd->corners[0] > 0.0f || cmd->corners[1] > 0.0f
+				|| cmd->corners[2] > 0.0f || cmd->corners[3] > 0.0f;
+			if (!cmd->has_opaque || rounded) {
+				return false;
+			}
+			pixman_region32_init(out);
+			pixman_region32_copy(out, (pixman_region32_t *)&cmd->opaque);
+			pixman_region32_intersect_rect(out, out, bounds->x, bounds->y,
+				(unsigned)bounds->width, (unsigned)bounds->height);
+			return pixman_region32_not_empty(out);
 		}
 		break;
 	case AVK_CMD_RECT:
