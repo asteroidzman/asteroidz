@@ -315,6 +315,29 @@ static cJSON *build_client_json(Client *c) {
  * whether it is a toplevel or a panel and the answer matters to whoever is
  * reading.
  */
+struct intent_walk {
+	cJSON *arr;
+	const char *name;
+	Client *client;
+	const char *toplevel_role;
+};
+
+static cJSON *build_surface_intent_json(struct wlr_surface *s,
+		const char *role, const char *name, Client *ic);
+
+/* One entry per surface the client actually presents, subsurfaces included;
+ * see the call site for what reporting only the toplevel got wrong. */
+static void intent_add_surface(struct wlr_surface *s, int sx, int sy,
+		void *data) {
+	(void)sx;
+	(void)sy;
+	struct intent_walk *w = data;
+	const char *role = wlr_subsurface_try_from_wlr_surface(s) != NULL
+		? "subsurface" : w->toplevel_role;
+	cJSON_AddItemToArray(w->arr,
+		build_surface_intent_json(s, role, w->name, w->client));
+}
+
 static cJSON *build_surface_intent_json(struct wlr_surface *s,
 		const char *role, const char *name, Client *ic) {
 	struct az_surface_intent in;
@@ -1127,9 +1150,33 @@ static void handle_command(int client_fd, const char *cmd_raw) {
 			struct wlr_surface *s = client_surface(ic);
 			if (s == NULL)
 				continue;
-			cJSON_AddItemToArray(arr, build_surface_intent_json(s,
-				client_is_x11(ic) ? "xwayland" : "toplevel",
-				client_get_title(ic), ic));
+			/*
+			 * ── SUBSURFACES TOO, OR THIS LIES ABOUT WHOLE CLIENTS ─────────
+			 *
+			 * This used to report a client's toplevel surface and stop, and
+			 * for a client whose content is a SUBSURFACE that is not a
+			 * partial answer, it is the wrong one.
+			 *
+			 * Firefox is exactly that client: its xdg_toplevel carries only
+			 * the client-side decoration frame, drawn on the CPU into wl_shm,
+			 * while every frame of actual page content goes to a dma-buf
+			 * subsurface underneath it. Reporting the toplevel alone made
+			 * Firefox read as a pure wl_shm client -- 5128x2734 of it -- and
+			 * a whole investigation into "why does Firefox not use dma-buf"
+			 * followed from a line of output that was never true. A protocol
+			 * trace showed 183 dma-buf attaches on the subsurface the
+			 * inspector did not know existed.
+			 *
+			 * wlr_surface_for_each_surface() walks the surface and its
+			 * subsurface tree in the order they compose.
+			 */
+			struct intent_walk walk = {
+				.arr = arr,
+				.name = client_get_title(ic),
+				.client = ic,
+				.toplevel_role = client_is_x11(ic) ? "xwayland" : "toplevel",
+			};
+			wlr_surface_for_each_surface(s, intent_add_surface, &walk);
 		}
 		Monitor *im;
 		wl_list_for_each(im, &mons, link) {
