@@ -392,28 +392,24 @@ void scene_buffer_apply_effect(struct wlr_scene_buffer *buffer, int32_t sx,
 							 ? surface_height
 							 : buffer_data->height_scale * surface_height;
 
-		/*
-		 * ── AN OVERFLOWING SURFACE IS CLAMPED, WHATEVER ITS ROLE ──────────
-		 *
-		 * This used to clamp a TOPLEVEL and return outright for a
-		 * SUBSURFACE, which left a growing subsurface with no destination
-		 * size at all: it kept whatever size it last had while the frame
-		 * animated to the new one. For a client whose content IS a
-		 * subsurface -- Firefox, whose xdg_toplevel carries only the
-		 * decoration frame -- that is a hole between the border and the page
-		 * for as long as the client takes to repaint, which at 4K is several
-		 * frames and very visible while dragging a corner.
-		 *
-		 * There is no reason the answer differs by role. In both cases the
-		 * surface is momentarily larger than the box it is being drawn into,
-		 * and in both cases the box is what the compositor is presenting.
-		 */
-		if (surface_width > buffer_data->width) {
+		if (surface_width > buffer_data->width &&
+			wlr_subsurface_try_from_wlr_surface(surface) == NULL) {
 			surface_width = buffer_data->width;
 		}
 
-		if (surface_height > buffer_data->height) {
+		if (surface_height > buffer_data->height &&
+			wlr_subsurface_try_from_wlr_surface(surface) == NULL) {
 			surface_height = buffer_data->height;
+		}
+
+		if (surface_width > buffer_data->width &&
+			wlr_subsurface_try_from_wlr_surface(surface) != NULL) {
+			return;
+		}
+
+		if (surface_height > buffer_data->height &&
+			wlr_subsurface_try_from_wlr_surface(surface) != NULL) {
+			return;
 		}
 
 		if (surface_height > 0 && surface_width > 0) {
