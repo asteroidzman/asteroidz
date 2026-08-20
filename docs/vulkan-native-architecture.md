@@ -2560,17 +2560,33 @@ the kind of number that gets quoted as a renderer property.
 
 ## 5.11 The AVK suite register
 
-`contrib/avk-suite.sh` holds a disposition for all 80 suites (required / perf /
-live / manual) and fails on two conditions: a registered suite that is absent or
-not executable, and a discovered `avk-*.sh` with no disposition. The second is
-the half that keeps working — a static list decays the moment somebody adds a
-file.
+`contrib/avk-suite.sh` holds a disposition for **every** `.sh` in `contrib/`
+(required / perf / live / manual / tool) and fails on three conditions: a
+registered suite that is absent or not executable, a discovered script with no
+disposition, and a `required` suite whose exit status cannot carry a failure.
 
 It exists because `avk-blur-required-test.sh` shipped without its executable bit
 and nobody noticed: nothing enumerated these suites, and a suite that cannot
 execute is indistinguishable from a suite that was not run. The first audit
-found **three** non-executable suites, not one. Both halves were falsified
+found **three** non-executable suites, not one. All three halves were falsified
 before being trusted.
+
+**The glob was the decaying part.** It began as `avk-*.sh`, was widened to a
+list of fixture families, and a list of families decays exactly the way a list
+of files does — 21 scripts sat outside the last one, unrun for weeks. Working
+that backlog found four fixtures asserting stages the renderer no longer has,
+one that printed `FAIL` and exited 0, and one that reproduced a teardown
+segfault nothing in the required set drove. So the glob is now `*.sh`, and the
+scripts that are not fixtures at all — packaging, installation, recording — get
+the `tool` disposition rather than an exemption. A script with no disposition is
+not "probably fine"; it is a script nobody has decided anything about.
+
+**Three status idioms, not one.** The third check used to require `hl_summary`,
+which rejected the two other ways a fixture in this tree carries its verdict: a
+`[ "$FAIL" = 0 ]` counter as the last line, and a trailing python heredoc whose
+status becomes the script's. The heredoc form is accepted only when the block
+contains a non-zero exit — `popup-blur-test.sh` ended in one that printed
+`FAIL ...` and fell off its end, reporting success while two assertions failed.
 
 ### 5.10a The matrix, re-measured on a config that parses
 
@@ -2753,6 +2769,10 @@ false of `asteroidz-avk.desktop`, which is the session actually running:
 asteroidz-avk.desktop        env WLR_RENDERER=vulkan ASTEROIDZ_RENDERER=avk asteroidz
 asteroidz-avk-debug.desktop  env WLR_RENDERER=vulkan ASTEROIDZ_RENDERER=avk ASTEROIDZ_VK_DEBUG=1 asteroidz
 ```
+
+(As the files stood then. `ASTEROIDZ_RENDERER` has since been dropped from
+both; `ASTEROIDZ_VK_DEBUG` is now the only thing separating the two sessions,
+which is what this section is about.)
 
 Verified after the restart: `GDMSESSION=asteroidz-avk`, no `ASTEROIDZ_VK_DEBUG`
 in `/proc/<pid>/environ`, `validation_enabled=false`. **So the P3 live matrix's

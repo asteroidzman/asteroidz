@@ -63,27 +63,20 @@ about 16. Counting mid-tones instead does not separate the two — the backgroun
 borders and icon supply plenty either way, and the first version of this
 measured 22.2 against 20.5 and could not tell the builds apart.
 
-`contrib/blur-exclusion-test.sh` is the third. It asserts that no pixel of a
-window survives anywhere in its own shadow's backdrop-blur source — the scratch
-image the blur samples, which covers the window because a shadow is the window
-plus its spread. It reads that image directly, through SceneFX's `FX_BLUR_DUMP`
-facility, instead of
-looking for the consequence on screen, because whether the consequence is
-*visible* depends on the window's size, its colour against the backdrop and the
-blur's reach. The two shadow scenes in `contrib/regression/tests/effects.sh`
-happen to sit where it is not: both passed on a build whose fill left 7575 of
-30800 hole pixels holding the window's own colour. Vulkan only — the GLES path
-patches the hole in a shader, with no equivalent image to read back.
+The third was `contrib/blur-exclusion-test.sh`, **removed with the renderer it
+asserted**. It read a shadow's backdrop-blur source image directly, through
+SceneFX's `FX_BLUR_DUMP`, and asserted that no pixel of the window survived
+anywhere in it — because whether the halo is *visible* depends on the window's
+size, its colour against the backdrop and the blur's reach, and the two shadow
+scenes in `contrib/regression/tests/effects.sh` happen to sit where it is not:
+both passed on a build whose fill left 7575 of 30800 hole pixels holding the
+window's own colour.
 
-It also has to run its own compositor, because the dump is armed from the
-environment at startup and every module in `run.sh` shares one instance.
-
-**It asserts a stage AVK does not have.** AVK composites this session, and its
-blur source is the scene *prefix* — the commands below the blur node — so the
-window is never in its own source and there is no fill to check. The exclusion
-invariant belongs to SceneFX's `fx_vk`, which is on its way out of the build,
-and this script goes with it. AVK's equivalent facility is `AZ_BLUR_DUMP` /
-`amsg dispatch dump_blur_source` (see
+AVK has no such stage. Its blur source is the scene *prefix* — the commands
+below the blur node — so the window is never in its own source, there is no
+fill, and the invariant is structural rather than asserted. The script's own
+header said it would go with `fx_vk`, and it has. AVK's equivalent facility is
+`AZ_BLUR_DUMP` / `amsg dispatch dump_blur_source` (see
 [effects](./visuals/effects.md#dumping-a-blurs-source)); it writes the same kind
 of image for a different set of stages — one per live blur node, plus the
 monitor background cache's own source on any frame that rebuilt it.
@@ -106,37 +99,52 @@ The lesson is worth more than the test. A scene built to be *easy to measure* �
 flat colours, no texture — can be systematically blind to a whole class of
 fault, and it will keep passing while looking like real coverage.
 
-`contrib/shadow-exclude-clamp-test.sh` is the fifth, and it covers the clamp's
-own blind spot: the clamp takes a minimum against the unblurred source, and
-inside the window box the shadow excluded there is no unblurred source, only the
-synthetic fill the exclusion left behind. Clamping against a fabrication drags
-the region toward the fabrication's darkest structure, which is invisible behind
-an opaque window and a dark window-shaped patch through a translucent one — so
-the scene here puts a 15%-opaque terminal over the fine-lines wallpaper.
+The fifth was `contrib/shadow-exclude-clamp-test.sh`, **removed for the same
+reason as the third**. It covered the clamp's own blind spot under SceneFX: the
+clamp takes a minimum against the unblurred source, and inside the window box
+the shadow excluded there was no unblurred source, only the synthetic fill the
+exclusion left behind. Clamping against a fabrication drags the region toward
+the fabrication's darkest structure — invisible behind an opaque window, a dark
+window-shaped patch through a translucent one.
 
-Its shape is different from the other four: the assertion is about *two*
-renderings of one scene, which no single capture can make, so the script
-re-invokes itself and runs the compositor twice — once normally, once with
-`FX_BLUR_NO_DARKEN_CLAMP=1`. Inside the hole the two captures must agree; below
-the window they must not, and that second check is not decoration. Run against a
-binary predating the environment hook, the clamp stayed on for both captures,
-the two images were identical inside the hole, and the real assertion passed for
-entirely the wrong reason. A test whose premise can silently stop holding needs
-that premise asserted next to it.
+Under AVK there is no fill to clamp against. `sample_exclude` exists in the
+scene structure but AVK's live path ignores it (`avk_render.c`, "sample_exclude
+is NOT a disqualification"), because prefix capture already keeps the window out
+of its own source. The defect class is structurally absent, so the assertion
+could no longer fail on its subject.
+
+Its second lesson outlived it, and is why the fixtures around it are built the
+way they are. The script rendered one scene twice — clamp on, clamp off — and
+run against a binary predating the environment hook the clamp stayed on for
+*both* captures: the two images agreed inside the hole and the real assertion
+passed for entirely the wrong reason. A test whose premise can silently stop
+holding needs that premise asserted next to it.
 
 
-`contrib/shadow-hole-visible-test.sh` is the sixth, and it covers what all five
-of the others share: they use opaque windows. A shadow's backdrop blur fills the
+The sixth was `contrib/shadow-hole-visible-test.sh`, **removed with the third
+and the fifth**, and it covered what all five of the others shared: they use
+opaque windows. A shadow's backdrop blur fills the
 excluded window box with a fabrication — a stretched strip, a mirrored band —
 and behind an opaque window that is unobservable by construction. Through a
 terminal at 0.98 opacity it is two percent of every pixel, which is how it was
 found: on a real desktop, not here.
 
-It renders one scene twice, with `shadows_blur_background` on and off, and
-asserts that inside the window the two are identical (the blur must contribute
-nothing there) while the shadow band outside them differs (which proves the
-feature was running). Measured: 70.0 levels of change inside the window before
-the composite was clipped, 0.011 after, with the band at 4.56 in both.
+It rendered one scene twice, with `shadows_blur_background` on and off, and
+asserted that inside the window the two are identical (the fabricated fill must
+contribute nothing there) while the shadow band outside them differs (which
+proves the feature was running). Measured: 70.0 levels of change inside the
+window before the composite was clipped, 0.011 after, with the band at 4.56 in
+both.
+
+**Its premise inverted under AVK.** The fix it guarded lived entirely in
+`asteroidz-scenefx`, which is no longer in the build. AVK fabricates no fill, so
+what shows through a translucent window there is the *real* blurred backdrop —
+and a real backdrop is allowed to differ between blur on and blur off. Run
+against AVK the fixture failed honestly (8.539 levels inside the window, premise
+holding at 4.781 in the band) while asserting something that should no longer be
+true. It was removed rather than re-aimed: "does a translucent window look right
+over a blurred shadow backdrop" is a question for the eye, not for this
+measurement.
 
 Two earlier versions of this measurement were wrong in instructive ways.
 Correlating what shows through the window against the bare wallpaper is
@@ -147,6 +155,25 @@ detail in the centre and left the shadow band over a flat field, where a blur
 returns the field unchanged and nothing can be detected at all — the premise
 check caught it and refused to certify the scene.
 
+
+`contrib/blur-sync-validation.sh` sits outside the numbered set, registered
+`manual` because it needs `vulkan-validation-layers` installed and gates
+nothing. It is the only fixture in the tree that asks Vulkan's
+*synchronization* validation about the blur cache: the twenty-odd fixtures that
+read `validation_errors` are reading the ordinary layer, which does not see a
+missing barrier. It changes the wallpaper three times — the trigger that marks
+the per-monitor cache dirty and makes it re-render mid-session, on a queue that
+is already busy — and counts `SYNC-HAZARD` reports. Zero on the current build.
+
+Its guard is the interesting part. A run where sync validation silently failed
+to come up reports zero hazards and looks exactly like a pass, so the script
+refuses to certify one: it asserts `sync_validation=on` from
+`avk_instance_log_caps` and exits 2, INCONCLUSIVE, if it cannot find it. That
+guard used to look for a string (`validation layer enabled`) that nothing ever
+logged, so it fired on every run and the script could only ever exit 2 — inert
+for as long as it was in the tree, and indistinguishable from a missing package.
+`SYNC_ENV=` runs the same scene with validation off and must reach that exit,
+which is how the guard itself is kept honest.
 
 `contrib/shadow-tiled-neighbour-test.sh` is the seventh, and it is the first to
 put two windows on screen at once. Every other shadow scene here renders a
@@ -218,8 +245,8 @@ wallpaper" into a judgement call. They have their own fixtures.
 `contrib/avk-sync-test.sh` is the ninth, and it asserts on nothing you can see.
 
 ```bash
-ASTEROIDZ=build-vk/asteroidz bash contrib/avk-sync-test.sh
-BREAK=presentsync ASTEROIDZ=build-vk/asteroidz bash contrib/avk-sync-test.sh  # must FAIL
+bash contrib/avk-sync-test.sh
+BREAK=presentsync bash contrib/avk-sync-test.sh  # must FAIL
 ```
 
 The question it answers is whether a finished frame reaches the display with a
@@ -238,9 +265,9 @@ by nothing but a person reading `amsg get avk-stats` on a display.
 — but of the same renderer against itself with damage tracking turned off.
 
 ```bash
-ASTEROIDZ=build-vk/asteroidz bash contrib/avk-damage-test.sh
-BREAK=preserve ASTEROIDZ=build-vk/asteroidz bash contrib/avk-damage-test.sh  # must FAIL
-BREAK=stale    ASTEROIDZ=build-vk/asteroidz bash contrib/avk-damage-test.sh  # must FAIL
+bash contrib/avk-damage-test.sh
+BREAK=preserve bash contrib/avk-damage-test.sh  # must FAIL
+BREAK=stale    bash contrib/avk-damage-test.sh  # must FAIL
 ```
 
 `AZ_AVK_FULL_DAMAGE=1` produces the reference, because a frame that redraws
@@ -546,9 +573,9 @@ purpose-built client behind it.
 
 ```bash
 cd contrib/wlreuse && make            # once
-ASTEROIDZ=build-vk/asteroidz bash contrib/avk-shm-cache-test.sh
-BREAK=lookup   ASTEROIDZ=build-vk/asteroidz bash contrib/avk-shm-cache-test.sh  # must FAIL
-BREAK=identity ASTEROIDZ=build-vk/asteroidz bash contrib/avk-shm-cache-test.sh  # must FAIL
+bash contrib/avk-shm-cache-test.sh
+BREAK=lookup   bash contrib/avk-shm-cache-test.sh  # must FAIL
+BREAK=identity bash contrib/avk-shm-cache-test.sh  # must FAIL
 ```
 
 It asks whether a CPU-backed buffer is uploaded because its pixels changed or
@@ -673,10 +700,10 @@ covers.
 ```bash
 cd contrib/wlcursor && make           # once
 cd contrib/wlshot   && make           # once
-ASTEROIDZ=build-vk/asteroidz bash contrib/avk-cursor-test.sh
-BREAK=cursor-texture ASTEROIDZ=build-vk/asteroidz bash contrib/avk-cursor-test.sh  # must FAIL
-BREAK=cursor-command ASTEROIDZ=build-vk/asteroidz bash contrib/avk-cursor-test.sh  # must FAIL
-BREAK=cursor-damage  ASTEROIDZ=build-vk/asteroidz bash contrib/avk-cursor-test.sh  # must FAIL
+bash contrib/avk-cursor-test.sh
+BREAK=cursor-texture bash contrib/avk-cursor-test.sh  # must FAIL
+BREAK=cursor-command bash contrib/avk-cursor-test.sh  # must FAIL
+BREAK=cursor-damage  bash contrib/avk-cursor-test.sh  # must FAIL
 ```
 
 The three breaks fail on different assertions, which is the point of having
@@ -721,9 +748,9 @@ passes every pixel-count assertion ever written.
 everything before it ran the cursor at scale 1.
 
 ```bash
-ASTEROIDZ=build-vk/asteroidz bash contrib/avk-cursor-content-test.sh
-BREAK=cursor-generation ASTEROIDZ=build-vk/asteroidz bash contrib/avk-cursor-content-test.sh  # must FAIL
-BREAK=cursor-hotspot    ASTEROIDZ=build-vk/asteroidz bash contrib/avk-cursor-content-test.sh  # must FAIL
+bash contrib/avk-cursor-content-test.sh
+BREAK=cursor-generation bash contrib/avk-cursor-content-test.sh  # must FAIL
+BREAK=cursor-hotspot    bash contrib/avk-cursor-content-test.sh  # must FAIL
 ```
 
 It found a real bug on its first run. `wlr_cursor_set_buffer()` takes the
@@ -758,9 +785,9 @@ confirmation that cursor damage is tight rather than a full-output repaint.
 differential.
 
 ```bash
-ASTEROIDZ=build-vk/asteroidz bash contrib/avk-cursor-hide-test.sh
-BREAK=cursor-command    ASTEROIDZ=build-vk/asteroidz bash contrib/avk-cursor-hide-test.sh  # must FAIL
-BREAK=cursor-generation ASTEROIDZ=build-vk/asteroidz bash contrib/avk-cursor-hide-test.sh  # must FAIL
+bash contrib/avk-cursor-hide-test.sh
+BREAK=cursor-command    bash contrib/avk-cursor-hide-test.sh  # must FAIL
+BREAK=cursor-generation bash contrib/avk-cursor-hide-test.sh  # must FAIL
 ```
 
 "The cursor went away" has four failure modes and three of them survive a
@@ -793,9 +820,9 @@ client that keeps **one** buffer.
 
 ```bash
 cd contrib/wlrotate && make           # once
-ASTEROIDZ=build-vk/asteroidz bash contrib/avk-shm-rotate-test.sh
-BREAK=one-buffer  ASTEROIDZ=build-vk/asteroidz bash contrib/avk-shm-rotate-test.sh  # must FAIL
-BREAK=source-full ASTEROIDZ=build-vk/asteroidz bash contrib/avk-shm-rotate-test.sh  # must FAIL
+bash contrib/avk-shm-rotate-test.sh
+BREAK=one-buffer  bash contrib/avk-shm-rotate-test.sh  # must FAIL
+BREAK=source-full bash contrib/avk-shm-rotate-test.sh  # must FAIL
 ```
 
 `wl_surface.damage_buffer` states what changed since the previous **commit of
@@ -845,8 +872,8 @@ live desktop during M3.5E, and it is the clearest example in this document of
 why "reproduce the crash" is sometimes the wrong goal.
 
 ```bash
-ASTEROIDZ=build-vk/asteroidz bash contrib/avk-cursor-lifetime-test.sh
-BREAK=cursor-stale-xcursor ASTEROIDZ=build-vk/asteroidz bash contrib/avk-cursor-lifetime-test.sh  # must FAIL
+bash contrib/avk-cursor-lifetime-test.sh
+BREAK=cursor-stale-xcursor bash contrib/avk-cursor-lifetime-test.sh  # must FAIL
 ```
 
 M3.5E stage 1 kept the resolved `struct wlr_xcursor *` as durable cursor
@@ -891,9 +918,9 @@ what AVK can import, and `BREAK=dmabuf-feedback-gles` restores the shipped
 behaviour of describing the GLES compatibility renderer instead.
 
 ```bash
-ASTEROIDZ=build-vk/asteroidz bash contrib/avk-dmabuf-feedback-test.sh
-BREAK=dmabuf-feedback-gles ASTEROIDZ=build-vk/asteroidz bash contrib/avk-dmabuf-feedback-test.sh  # must FAIL
-meson test -C build-vk dmabuf-feedback
+bash contrib/avk-dmabuf-feedback-test.sh
+BREAK=dmabuf-feedback-gles bash contrib/avk-dmabuf-feedback-test.sh  # must FAIL
+meson test -C build dmabuf-feedback
 ```
 
 The break fails, but be clear about **why**: it fails because the reported
@@ -964,9 +991,9 @@ weaker, it goes blind — and it keeps printing "ok".
 `contrib/avk-cursor-owner-test.sh` covers the defect those three hid.
 
 ```bash
-ASTEROIDZ=build-vk/asteroidz bash contrib/avk-cursor-owner-test.sh
-BREAK=wlroots-move-resize ASTEROIDZ=build-vk/asteroidz bash contrib/avk-cursor-owner-test.sh  # must FAIL
-BREAK=wlroots-xcursor     ASTEROIDZ=build-vk/asteroidz bash contrib/avk-cursor-owner-test.sh  # must FAIL
+bash contrib/avk-cursor-owner-test.sh
+BREAK=wlroots-move-resize bash contrib/avk-cursor-owner-test.sh  # must FAIL
+BREAK=wlroots-xcursor     bash contrib/avk-cursor-owner-test.sh  # must FAIL
 ```
 
 Seven call sites bypassed `az_cursor_set_xcursor()` for wlroots' own, which
@@ -1246,7 +1273,6 @@ code is a property of a quantised format, not of half-floats.
 
 ```text
 contrib/avk-oracle-test.sh   10   premise + control; MODE=fixture adds 180 deg
-contrib/avk-oracle-runs.sh   --   the same trigger N times, one row per run
 ```
 
 ```sh
@@ -1255,9 +1281,6 @@ MODE=fixture bash contrib/avk-oracle-test.sh
 MODE=transforms bash contrib/avk-oracle-test.sh
 bash contrib/avk-transform-test.sh
 ./build/test-transform-math
-RUNS=30 bash contrib/avk-oracle-runs.sh
-RUNS=4 ORACLE_EXTRA_ENV=AZ_SCENE_HALO_DAMAGE_RAW=1 \
-	bash contrib/avk-oracle-runs.sh                    # must find divergences
 SEAM_RR1=2 BREAK=halo-damage-raw bash contrib/avk-blur-seam-test.sh  # must FAIL
 ```
 
@@ -1286,13 +1309,14 @@ The prefix and blur taps compare only the region production **claims**:
 `prefix_rebuild` and `result_region`. Comparing the whole capture reports a
 difference for every pixel the design leaves undefined, which is most of it.
 
-`avk-oracle-runs.sh` runs the minimal trigger repeatedly — two adjacent outputs,
+`avk-oracle-runs.sh` ran that minimal trigger repeatedly — two adjacent outputs,
 the first rotated 180°, a blurred window straddling the seam, and a new window
-appearing on the *second* output at the join — and prints per run: stale pixels
+appearing on the *second* output at the join — reporting per run the stale pixels
 after the interaction, the static control, the first divergent frame, the buffer
-slot, the halo-record count and the boundary classification. Three consecutive
-runs cannot tell determinism from luck at a 2-in-3 failure rate; that mistake was
-already made once and had to be retracted.
+slot, the halo-record count and the boundary classification. It was removed once
+the transform work closed; `avk-oracle-test.sh` is the assertion that remains.
+Its lesson does not go with it: three consecutive runs cannot tell determinism
+from luck at a 2-in-3 failure rate, and that mistake was made once and retracted.
 
 ### The transform pixel oracle
 
@@ -1403,12 +1427,13 @@ python3 contrib/pace-analyse.py TRACE --since=$(...)   # monotonic ns
 **Three traps this fixture had to be built around.**
 
 **The renderer used to be selectable, and this fixture was built when it was.**
-`ASTEROIDZ_RENDERER=avk` is now ignored: AVK composites unconditionally and
+`ASTEROIDZ_RENDERER=avk` no longer exists: AVK composites unconditionally and
 scenefx's renderers are gone from the build. The trap is recorded because it
 cost real work — the first pass of the pacing work ran through scenefx/GLES,
 whose blur damage path (`apply_blur_region` and the saved-pixels compensation)
 is not the one the live session runs, and its damage figures were discarded.
-Fixtures still setting that variable in `HL_ENV` are harmless no-ops.
+The fixtures carried the dead variable in `HL_ENV` for a while afterwards,
+where it read as a renderer pin and was a no-op; it has been removed.
 
 **The nominal refresh is not the observed refresh.** The headless backend's
 frame timer is whole milliseconds, so `HL_HZ1=144` free-runs at 1000/6 =

@@ -482,10 +482,11 @@ Installation depends on your distribution and environment.
 
 ## 🚀 Running
 
-The Vulkan renderer is the primary renderer.
+AVK, the compositor's own Vulkan renderer, is the only renderer; there is
+nothing to select.
 
 ```bash
-ASTEROIDZ_RENDERER=avk asteroidz
+asteroidz
 ```
 
 Your display, input, wallpaper, appearance, and other compositor settings are controlled through the Asteroidz configuration.
@@ -497,9 +498,7 @@ Your display, input, wallpaper, appearance, and other compositor settings are co
 Developers debugging Vulkan behavior can enable the validation path:
 
 ```bash
-ASTEROIDZ_RENDERER=avk \
-ASTEROIDZ_VK_DEBUG=1 \
-asteroidz
+ASTEROIDZ_VK_DEBUG=1 asteroidz
 ```
 
 Validation mode is intended for debugging and testing rather than normal performance measurements.

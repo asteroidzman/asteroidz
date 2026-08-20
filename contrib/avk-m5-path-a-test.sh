@@ -73,7 +73,7 @@ run() { # run NAME [EXTRA_ENV...]
 	# so with no layer loaded it reads 0 whatever the frame did -- and this
 	# fixture asserted it that way for a whole milestone while Path A attached
 	# an _SRGB view to pipelines declaring the UNORM twin, twenty VUIDs a run.
-	HL_ENV="ASTEROIDZ_RENDERER=avk ASTEROIDZ_VK_DEBUG=1 AZ_SHADOW_DITHER_AMP=0 AZ_AVK_CAPTURE_DIR=$cdir $*"
+	HL_ENV="ASTEROIDZ_VK_DEBUG=1 AZ_SHADOW_DITHER_AMP=0 AZ_AVK_CAPTURE_DIR=$cdir $*"
 	export HL_OUTDIR HL_ENV HL_WIDTH HL_HEIGHT HL_SCALE1
 	# TO A FILE, not to /dev/null. hl_start refuses to continue on a rejected
 	# config or a missing helper and says which -- and sending that to

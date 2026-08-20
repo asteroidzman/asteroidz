@@ -93,7 +93,7 @@ run_transform() {
 	#
 	# ASTEROIDZ_AVK_FORCE_SOFTWARE_CURSOR=1 takes the same lock screencopy's
 	# overlay_cursor takes, so AVK composites the cursor into every frame.
-	HL_ENV="ASTEROIDZ_RENDERER=avk AZ_SHADOW_DITHER_AMP=0 \
+	HL_ENV="AZ_SHADOW_DITHER_AMP=0 \
 ASTEROIDZ_AVK_FORCE_SOFTWARE_CURSOR=1 AZ_AVK_CAPTURE_DIR=$cdir $extra $envextra"
 	export HL_WIDTH HL_HEIGHT HL_RR1 HL_ENV
 	hl_start "$FLAT"

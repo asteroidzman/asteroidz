@@ -85,7 +85,7 @@ effects { blur { enable 0 } }"
 OUTDIR="${TMPDIR:-/tmp}/asteroidz-avk-cursor-$$"
 HL_OUTDIR="$OUTDIR"
 HL_WIDTH=1280 HL_HEIGHT=720
-HL_ENV="ASTEROIDZ_RENDERER=avk"
+HL_ENV=""
 [ "$BREAK" = cursor-texture ] && HL_ENV="$HL_ENV AZ_CURSOR_LEGACY_SURFACE=1"
 [ "$BREAK" = cursor-command ] && HL_ENV="$HL_ENV AZ_AVK_NO_CURSOR=1"
 [ "$BREAK" = cursor-damage ] && HL_ENV="$HL_ENV AZ_AVK_FULL_DAMAGE=1"

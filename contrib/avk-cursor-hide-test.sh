@@ -87,7 +87,7 @@ effects { blur { enable 0 } }"
 OUTDIR="${TMPDIR:-/tmp}/asteroidz-avk-cursorhide-$$"
 HL_OUTDIR="$OUTDIR"
 HL_WIDTH=1280 HL_HEIGHT=720
-HL_ENV="ASTEROIDZ_RENDERER=avk"
+HL_ENV=""
 [ "$BREAK" = cursor-command ] && HL_ENV="$HL_ENV AZ_AVK_NO_CURSOR=1"
 [ "$BREAK" = cursor-generation ] && HL_ENV="$HL_ENV AZ_AVK_CACHE_BY_IDENTITY=1"
 export HL_OUTDIR HL_WIDTH HL_HEIGHT HL_ENV

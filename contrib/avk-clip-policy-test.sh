@@ -42,7 +42,7 @@ FOCUS=0xc66b25ff
 start() {
 	OUTDIR="${TMPDIR:-/tmp}/asteroidz-clip-$1-$$"
 	HL_OUTDIR="$OUTDIR"
-	HL_ENV="ASTEROIDZ_RENDERER=avk"
+	HL_ENV=""
 	[ "$BREAK" = border-owner-monitor-clip ] && \
 		HL_ENV="$HL_ENV AZ_BORDER_OWNER_MONITOR_CLIP=1"
 	export HL_OUTDIR HL_ENV

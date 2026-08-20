@@ -732,7 +732,7 @@ portal_install_dir = join_paths(prefix, 'share/xdg-desktop-portal')
 # advertising a second-class configuration.
 #
 # The AVK sessions set WLR_RENDERER=vulkan deliberately rather than leaving it
-# unset. ASTEROIDZ_RENDERER is independent of it -- wlroots still needs a
+# unset. It has nothing to do with composition -- wlroots still needs a
 # renderer for shm formats, the allocator and screencopy, none of which are
 # composition -- and it used to be pinned to gles2 for exactly that reason.
 #

@@ -49,7 +49,7 @@ effects { blur { enable 0 } }"
 OUTDIR="${TMPDIR:-/tmp}/asteroidz-avk-sync-$$"
 HL_OUTDIR="$OUTDIR"
 HL_WIDTH=1280 HL_HEIGHT=720
-HL_ENV="ASTEROIDZ_RENDERER=avk"
+HL_ENV=""
 [ "$BREAK" = presentsync ] && HL_ENV="$HL_ENV AZ_AVK_NO_PRESENT_SYNC=1"
 export HL_OUTDIR HL_WIDTH HL_HEIGHT HL_ENV
 

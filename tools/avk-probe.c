@@ -2,9 +2,9 @@
  * asteroidz-avk-probe -- run the Vulkan engine on this machine and say what
  * happened.
  *
- * AVK does composite the desktop now (ASTEROIDZ_RENDERER=avk), but switching
- * a session over is a much bigger thing to do than asking whether the engine
- * works here at all. This tool answers the smaller question without touching
+ * AVK composites the desktop unconditionally, but starting a session is a
+ * much bigger thing to do than asking whether the engine works here at all.
+ * This tool answers the smaller question without touching
  * the running compositor: it opens a render node, builds a device, imports
  * buffers the way a client's would be imported, composites a frame, and writes
  * it out as a PNG you can look at.
@@ -663,9 +663,8 @@ int main(int argc, char **argv) {
 	printf("\n");
 	if (failures == 0) {
 		printf("\033[32mAVK works on this machine.\033[0m\n");
-		printf("To let it render your desktop, start a session with "
-			"ASTEROIDZ_RENDERER=avk.\nThat is independent of WLR_RENDERER, and "
-			"without it nothing changes.\n");
+		printf("It is what renders your desktop whenever asteroidz runs; "
+			"there is nothing to enable.\n");
 		return 0;
 	}
 	printf("\033[31m%d check(s) failed.\033[0m\n", failures);

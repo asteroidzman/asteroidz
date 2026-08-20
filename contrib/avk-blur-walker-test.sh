@@ -108,7 +108,7 @@ HL_WIDTH=1280 HL_HEIGHT=800
 # is precisely how a break stops breaking. The claims stay strict; the cache's
 # own correctness has three fixtures of its own (avk-blur-cache-test,
 # -dirty, -multi).
-HL_ENV="ASTEROIDZ_RENDERER=avk ASTEROIDZ_VK_DEBUG=1 AZ_BLUR_CACHE=0"
+HL_ENV="ASTEROIDZ_VK_DEBUG=1 AZ_BLUR_CACHE=0"
 case "$BREAK" in
 scene-after) HL_ENV="$HL_ENV AZ_BLUR_SCENE_AFTER=1" ;;
 no-darken)   HL_ENV="$HL_ENV AZ_BLUR_IGNORE_DARKEN=1" ;;
@@ -412,7 +412,7 @@ hl_stop
 
 # ── 6. the direct path ─────────────────────────────────────────────────────
 
-HL_ENV="ASTEROIDZ_RENDERER=avk ASTEROIDZ_VK_DEBUG=1 AZ_BLUR_CACHE=0"
+HL_ENV="ASTEROIDZ_VK_DEBUG=1 AZ_BLUR_CACHE=0"
 export HL_ENV
 hl_start "$NOBLUR_KDL"
 hl_reset_spawn_colors

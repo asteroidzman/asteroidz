@@ -39,6 +39,9 @@
 #              batch: see the standing rule about live-mode testing.
 #   manual     an investigation kept because it can be re-run, not because it
 #              is part of any gate.
+#   tool       not a fixture at all -- packaging, installation, recording. It
+#              asserts nothing and gates nothing; it has a disposition only so
+#              that everything in contrib/ has one.
 set -u
 
 cd "$(dirname "$0")" || exit 1
@@ -114,18 +117,31 @@ avk-blur-count-matrix.sh           perf
 avk-blur-up0-ab.sh                 perf
 avk-blur-up0-test.sh               perf
 avk-cohort-test.sh                 perf
-avk-decoration-cost.sh             perf
-avk-frame-phase-profile.sh         perf
 avk-graph-perf.sh                  perf
 avk-idle-convergence-test.sh       perf
-avk-prefix-share.sh                perf
 avk-rect-cap-test.sh               perf
-avk-tag-ledger.sh                  perf
 avk-blur-cache-live-ab.sh          live
 avk-software-cursor-acceptance.sh  live
 avk-transform-live-test.sh         live
-avk-oracle-runs.sh                 manual
-avk-transform-classify.sh          manual
+blur-sync-validation.sh            manual
+check-shader-derivatives.sh        required
+signal-exit-test.sh                required
+titlebar-sharpness-test.sh         required
+border-color-space-test.sh         required
+shadow-darken-test.sh              required
+shadow-tiled-neighbour-test.sh     required
+popup-blur-test.sh                 required
+m4g-motion-test.sh                 required
+blur-scale-test.sh                 required
+blur-bitdepth-test.sh              required
+anim-pace-test.sh                  perf
+anim-test.sh                       manual
+smoke.sh                           manual
+render-matrix-test.sh              manual
+live-visual-tour.sh                live
+aur-publish-local.sh               tool
+install-ubuntu.sh                  tool
+hdr-record.sh                      tool
 xw-scale-test.sh                   required
 xw-mixed-test.sh                   required
 "
@@ -155,13 +171,19 @@ done
 # with no disposition is not "probably fine": it is a suite nobody has decided
 # whether to gate on.
 #
-# The glob covers every fixture FAMILY, not just avk-*. It used to be avk-*.sh
-# alone, which meant the m6a-*, m6b-* and amsg-* fixtures could be added and go
-# unregistered indefinitely -- decay in exactly the half written to prevent it,
-# and invisible for the same reason everything else here is: an unregistered
-# suite and a suite that passes look identical from outside.
+# The glob is every .sh in this directory. It used to be avk-*.sh alone, then a
+# list of fixture families -- and a list of families decays the same way a list
+# of files does. Twenty-one scripts sat outside the last one: four asserted
+# stages the renderer no longer has, one printed FAIL and exited 0, and one
+# reproduced a teardown segfault nothing else drove. None of that was visible,
+# for the reason everything here is invisible: an unregistered suite and a suite
+# that passes look identical from outside.
+#
+# Everything gets a disposition, including the scripts that are not fixtures --
+# that is what `tool` is for. A script with no disposition is not "probably
+# fine": it is a script nobody has decided anything about.
 UNREG=""
-for f in avk-*.sh m6a-*.sh m6b-*.sh amsg-*.sh cm-*.sh xw-*.sh; do
+for f in *.sh; do
 	[ "$f" = "avk-suite.sh" ] && continue
 	[ -e "$f" ] || continue
 	[ -n "$(reg_disp "$f")" ] || UNREG="$UNREG $f"
@@ -183,23 +205,39 @@ done
 # its status: `hl_summary` as the last effective line, or an explicit `exit`.
 # perf, live and manual suites measure rather than assert and are exempt by
 # disposition, which is what the disposition is for.
+# There are three idioms in this tree, not one, and requiring hl_summary
+# rejected two of them. What matters is not which idiom a fixture uses but
+# whether its LAST EFFECTIVE LINE carries the verdict into the exit status:
+#
+#   hl_summary                 the harness idiom
+#   [ "$FAIL" = 0 ]            the counter idiom, most of the shadow/blur set
+#   a python heredoc           the block's status becomes the script's -- but
+#                              ONLY if the block can produce a failing one
+#
+# That last one is why this is not a formality. popup-blur-test.sh ended in a
+# heredoc that printed "FAIL ..." and fell off its end, so it exited 0 while
+# reporting two failed assertions -- avk-blur-walker-test.sh's defect arriving
+# by a different route. A heredoc ending is accepted only when the block
+# contains a non-zero exit.
 NOSTATUS=""
 for n in $(reg_names); do
 	[ "$(reg_disp "$n")" = required ] || continue
 	[ -f "$n" ] || continue
-	grep -q 'hl_summary' "$n" || { NOSTATUS="$NOSTATUS $n(no-summary)"; continue; }
 	last="$(grep -vE '^[[:space:]]*(#|$)' "$n" | tail -1)"
 	case "$last" in
-		*hl_summary*|exit*|*"exit \"\$"*) ;;
-		*) NOSTATUS="$NOSTATUS $n";;
+		*hl_summary*|exit*|*"exit \"\$"*) continue ;;
+		*'[ "$FAIL"'*) continue ;;
+		[A-Z][A-Z]*)
+			grep -qE 'SystemExit\(1|sys\.exit\(1' "$n" && continue ;;
 	esac
+	NOSTATUS="$NOSTATUS $n"
 done
 
-for d in required perf live manual; do
+for d in required perf live manual tool; do
 	c=$(echo "$REGISTER" | awk -v d="$d" '$2==d' | wc -l)
 	printf "  %-9s %2d\n" "$d" "$c"
 done
-echo "  discovered $(ls avk-*.sh m6a-*.sh m6b-*.sh amsg-*.sh cm-*.sh 2>/dev/null | grep -cv '^avk-suite.sh$')"
+echo "  discovered $(ls *.sh 2>/dev/null | grep -cv '^avk-suite.sh$')"
 echo
 
 if [ -n "$MISSING" ]; then
@@ -221,7 +259,7 @@ if [ -n "$UNREG" ]; then
 fi
 if [ -n "$NOSTATUS" ]; then
 	# A suite that cannot fail is a suite that is not being run, one level up.
-	echo "  REQUIRED BUT CANNOT REPORT FAILURE (end with hl_summary or exit \$?):"
+	echo "  REQUIRED BUT CANNOT REPORT FAILURE (end with hl_summary, [ \"\$FAIL\" = 0 ], or a heredoc that exits non-zero):"
 	for n in $NOSTATUS; do echo "    $n"; done
 	FAIL=1
 fi

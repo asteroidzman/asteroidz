@@ -5314,9 +5314,10 @@ void commitlayersurfacenotify(struct wl_listener *listener, void *data) {
 	 * multi-tab settings panel switching to a shorter tab, which commits a
 	 * new buffer without ever going through this function's animation path)
 	 * never got another draw pass, leaving the shadow/shadow_blur frozen at
-	 * whatever size they were the first time -- reproduced headlessly via
-	 * contrib/waybar-popup-test.sh (waybar-display's Display -> Wallpaper
-	 * tab switch). Flush on every commit for a visible top/overlay layer
+	 * whatever size they were the first time -- reproduced headlessly against
+	 * a waybar CFFI popup that switched to a shorter tab (that harness has
+	 * since gone with the waybar bar; see git 38be85fa). Flush on every commit
+	 * for a visible top/overlay layer
 	 * regardless of the animation config; only the MOVE-animation trigger
 	 * below still needs layer_animations and an actual geometry change. */
 	if (l->mapped &&

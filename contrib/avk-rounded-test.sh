@@ -35,7 +35,7 @@ SCALE="${HL_SCALE1:-1.0}"
 
 OUTDIR="${TMPDIR:-/tmp}/asteroidz-rounded-$$"
 HL_OUTDIR="$OUTDIR"
-HL_ENV="ASTEROIDZ_RENDERER=avk"
+HL_ENV=""
 case "$BREAK" in
 	rounded-clip)          HL_ENV="$HL_ENV AZ_ROUNDED_OFF=1" ;;
 	rounded-single-radius) HL_ENV="$HL_ENV AZ_ROUNDED_SINGLE_RADIUS=1" ;;

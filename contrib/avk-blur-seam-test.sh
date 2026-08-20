@@ -71,7 +71,7 @@ HL_RR2="${SEAM_RR2:-0}"
 # The second output starts where the first one ENDS, logically. With scale 1
 # that is HL_WIDTH; the default would leave a gap at any other scale.
 HL_X2="${SEAM_X2:-800}"
-HL_ENV="ASTEROIDZ_RENDERER=avk ASTEROIDZ_VK_DEBUG=1 ${SEAM_EXTRA_ENV:-}"
+HL_ENV="ASTEROIDZ_VK_DEBUG=1 ${SEAM_EXTRA_ENV:-}"
 case "$BREAK" in
 source-clip)     HL_ENV="$HL_ENV AZ_BLUR_SOURCE_OUTPUT_CLIP=1" ;;
 halo-damage-raw) HL_ENV="$HL_ENV AZ_SCENE_HALO_DAMAGE_RAW=1" ;;
@@ -505,7 +505,7 @@ fi
 
 keep_log seam
 hl_stop
-HL_ENV="ASTEROIDZ_RENDERER=avk ASTEROIDZ_VK_DEBUG=1 ${SEAM_EXTRA_ENV:-}"
+HL_ENV="ASTEROIDZ_VK_DEBUG=1 ${SEAM_EXTRA_ENV:-}"
 export HL_ENV
 hl_start "effects { shadow { blur-background 0 }; blur { enable 0 } }"
 hl_spawn_kitty plain >/dev/null; hl_wait_client_count 1 60

@@ -23,12 +23,11 @@
 #
 # ── WHAT THE FIXTURE HAS TO GET RIGHT ────────────────────────────────────
 #
-# THE RENDERER. shatter needs AVK: its fragments rotate, and rotation is an
-# AVK_CMD_TEXTURE_QUAD, which the SceneFX path does not have. On that path the
-# close silently becomes `fall` -- the same pixels, no rotation -- so a run on
-# the wrong renderer measures a DIFFERENT ANIMATION and passes for the wrong
-# reason. ASTEROIDZ_RENDERER=avk, and the premise below asserts a shatter
-# actually ran by looking for its trace lines.
+# THE ANIMATION ACTUALLY RAN. shatter's fragments rotate, and rotation is an
+# AVK_CMD_TEXTURE_QUAD. If the close silently degrades to `fall` -- the same
+# pixels, no rotation -- the run measures a DIFFERENT ANIMATION and passes for
+# the wrong reason. The premise below asserts a shatter really ran by looking
+# for its trace lines.
 #
 # THE NOMINAL RATE IS NOT THE OBSERVED RATE. The headless backend's frame timer
 # is whole milliseconds, so 144 free-runs at 1000/6 = 166.7Hz and 60 at
@@ -65,7 +64,7 @@ run_case() { # run_case NAME [EXTRA_ENV...] -> echoes the log dir
 	HL_OUTPUTS="${SHATTER_OUTS:-2}"
 	HL_HZ1=144
 	HL_HZ2=60
-	HL_ENV="ASTEROIDZ_RENDERER=avk AZ_PACE=1 $*"
+	HL_ENV="AZ_PACE=1 $*"
 	export HL_OUTDIR HL_OUTPUTS HL_HZ1 HL_HZ2 HL_ENV
 
 	hl_start "effects { blur { enable 0 }; shadow { enable 0 } }

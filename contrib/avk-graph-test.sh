@@ -39,7 +39,7 @@ BREAK="${BREAK:-}"
 
 OUTDIR="${HL_FIXED_OUTDIR:-${TMPDIR:-/tmp}/asteroidz-graph-$$}"
 HL_OUTDIR="$OUTDIR"
-HL_ENV="ASTEROIDZ_RENDERER=avk"
+HL_ENV=""
 [ "$BREAK" = graph-missing-write-read ] && HL_ENV="$HL_ENV AZ_GRAPH_NO_WRITE_READ=1"
 export HL_OUTDIR HL_ENV
 

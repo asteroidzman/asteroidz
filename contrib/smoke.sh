@@ -49,7 +49,7 @@ OUTDIR="${TMPDIR:-/tmp}/asteroidz-smoke-$$"
 mkdir -p "$OUTDIR"
 LOG="$OUTDIR/state/asteroidz/asteroidz.log"
 HL_OUTDIR="$OUTDIR"
-HL_ENV="ASTEROIDZ_RENDERER=avk"
+HL_ENV=""
 export HL_OUTDIR HL_ENV
 
 REPAINT="$(cd "$(dirname "$0")" && pwd)/wlrepaint/wlrepaint"

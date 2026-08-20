@@ -91,7 +91,7 @@ run_case() { # run_case NAME WORKLOAD_FN
 	# ask whether GLES paid the same cost for the same transition -- if it did
 	# not, the cost was AVK's rather than the architecture's. There is nothing
 	# left to ask it of: SceneFX is gone and AVK composites every frame.
-	HL_ENV="ASTEROIDZ_RENDERER=avk AZ_PACE=1 ${HL_EXTRA_ENV:-}"
+	HL_ENV="AZ_PACE=1 ${HL_EXTRA_ENV:-}"
 	export HL_OUTDIR HL_OUTPUTS HL_HZ1 HL_HZ2 HL_ENV
 
 	hl_start "$(blur_cfg)

@@ -263,7 +263,7 @@ if [ "$MODE" = "baseline" ]; then
 		shadow) CFG="$(noblur_cfg 1)" ;;
 		*)      CFG="$(noblur_cfg 0)" ;;
 		esac
-		HL_ENV="ASTEROIDZ_RENDERER=avk"
+		HL_ENV=""
 		export HL_ENV
 		hl_start "$CFG"
 		hl_reset_spawn_colors 2>/dev/null || true
@@ -301,7 +301,7 @@ if [ "$MODE" = "matrix" ]; then
 	echo
 	echo "── uncached blur, by blur count ──────────────────────────────────────"
 	for N in ${COUNTS:-1 2 4 8}; do
-		HL_ENV="ASTEROIDZ_RENDERER=avk"
+		HL_ENV=""
 		export HL_ENV
 		hl_start "$(blur_cfg "${LEVELS:-3}" "${RADIUS:-5}")"
 		for i in $(seq 1 "$N"); do
@@ -332,7 +332,7 @@ if [ "$MODE" = "params" ]; then
 		# shellcheck disable=SC2086
 		set -- $SPEC
 		LV="$1"; RD="$2"; SC="$3"
-		HL_ENV="ASTEROIDZ_RENDERER=avk"
+		HL_ENV=""
 		HL_SCALE1="$SC"
 		export HL_ENV HL_SCALE1
 		hl_start "$(blur_cfg "$LV" "$RD")"
@@ -385,7 +385,7 @@ if [ "$MODE" = "workloads" ]; then
 		medium) PULSE_GEOM="128x96@100,80:400" ;;
 		large)  PULSE_GEOM="360x260@20,20:400" ;;
 		esac
-		HL_ENV="ASTEROIDZ_RENDERER=avk"
+		HL_ENV=""
 		export HL_ENV
 		hl_start "$(blur_cfg "${LEVELS:-3}" "${RADIUS:-5}")"
 

@@ -96,7 +96,7 @@ segment() { # segment N
 	local dir="$OUTDIR/n$n"
 	mkdir -p "$dir"
 	HL_OUTDIR="$dir"
-	HL_ENV="ASTEROIDZ_RENDERER=avk AZ_TS_TRACE=1 ${HL_EXTRA_ENV:-}"
+	HL_ENV="AZ_TS_TRACE=1 ${HL_EXTRA_ENV:-}"
 	export HL_OUTDIR HL_ENV
 	hl_start "$CFG" >/dev/null 2>&1
 

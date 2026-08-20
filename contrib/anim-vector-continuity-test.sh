@@ -92,7 +92,7 @@ run_case() { # run_case NAME [EXTRA_ENV...] -> echoes the trace path
 	HL_OUTDIR="$dir"
 	HL_OUTPUTS=1
 	HL_HZ1=144
-	HL_ENV="ASTEROIDZ_RENDERER=avk AZ_PACE=1 $*"
+	HL_ENV="AZ_PACE=1 $*"
 	export HL_OUTDIR HL_OUTPUTS HL_HZ1 HL_ENV
 
 	hl_start "effects { blur { enable 0 }; shadow { enable 0 } }

@@ -50,7 +50,7 @@ effects { blur { enable 0 } }"
 OUTDIR="${TMPDIR:-/tmp}/asteroidz-avk-domains-$$"
 HL_OUTDIR="$OUTDIR"
 HL_WIDTH=1280 HL_HEIGHT=720
-HL_ENV="ASTEROIDZ_RENDERER=avk"
+HL_ENV=""
 # Two outputs, side by side. Without a second one the cull below is not merely
 # untested, it is unreachable.
 HL_OUTPUTS=2

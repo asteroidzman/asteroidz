@@ -104,7 +104,7 @@ echo "── premise: the oracle can fail ────────────�
 # precisely a region wrongly believed to be up to date. The production frame
 # must therefore differ from a full render of the same snapshot.
 HL_OUTPUTS=1
-HL_ENV="ASTEROIDZ_RENDERER=avk AZ_FRAME_ORACLE=1 AZ_AVK_DAMAGE_HOLE=300,200,120,90"
+HL_ENV="AZ_FRAME_ORACLE=1 AZ_AVK_DAMAGE_HOLE=300,200,120,90"
 export HL_OUTPUTS HL_ENV
 hl_start "$BLUR_CFG"
 exercise 120
@@ -142,7 +142,7 @@ echo "── control: a clean single output ────────────
 # down as one (docs/vulkan-native-architecture.md, the M4I cache section). It is
 # not this fixture's, and leaving it here made this fixture permanently red
 # while measuring nothing about damage.
-HL_ENV="ASTEROIDZ_RENDERER=avk AZ_FRAME_ORACLE=1 AZ_BLUR_CACHE=0"
+HL_ENV="AZ_FRAME_ORACLE=1 AZ_BLUR_CACHE=0"
 export HL_ENV
 hl_start "$BLUR_CFG"
 exercise 120
@@ -167,7 +167,7 @@ if [ "$MODE" = "fixture" ]; then
 	# Two outputs, the second adjacent, output 1 rotated 180, and a blurred
 	# window straddling the seam so the source halo is live.
 	HL_OUTPUTS=2 HL_RR1="${ORACLE_RR1:-2}" HL_RR2="${ORACLE_RR2:-0}" HL_X2=800
-	HL_ENV="ASTEROIDZ_RENDERER=avk AZ_FRAME_ORACLE=1 ${ORACLE_EXTRA_ENV:-}"
+	HL_ENV="AZ_FRAME_ORACLE=1 ${ORACLE_EXTRA_ENV:-}"
 	export HL_OUTPUTS HL_RR1 HL_RR2 HL_X2 HL_ENV
 	hl_start "$BLUR_CFG"
 	exercise 600
@@ -221,7 +221,7 @@ if [ "$MODE" = "transforms" ]; then
 		*)       LW=800; LH=600 ;;
 		esac
 		HL_RR1=$RR
-		HL_ENV="ASTEROIDZ_RENDERER=avk AZ_FRAME_ORACLE=1 ${ORACLE_EXTRA_ENV:-}"
+		HL_ENV="AZ_FRAME_ORACLE=1 ${ORACLE_EXTRA_ENV:-}"
 		export HL_OUTPUTS HL_RR1 HL_ENV
 		hl_start "$BLUR_CFG"
 		hl_reset_spawn_colors

@@ -72,7 +72,7 @@ echo
 run_arm() { # run_arm <name> <extra env>
 	local name="$1" extra="$2"
 	HL_OUTDIR="$OUTDIR/$name"; mkdir -p "$HL_OUTDIR"
-	HL_ENV="ASTEROIDZ_RENDERER=avk $extra"
+	HL_ENV="$extra"
 	export HL_OUTDIR HL_ENV
 	export WLBGEFFECT_SSD=1
 	hl_start "layout { titlebar { enable 0 } }" >"$HL_OUTDIR/start.log" 2>&1

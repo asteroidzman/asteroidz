@@ -72,7 +72,7 @@ capture() {
 	local cdir="$OUTDIR/cap-$name"
 	mkdir -p "$cdir"
 	HL_WIDTH=800 HL_HEIGHT=600 HL_RR1="$rr"
-	HL_ENV="ASTEROIDZ_RENDERER=avk AZ_AVK_CAPTURE_DIR=$cdir $extra"
+	HL_ENV="AZ_AVK_CAPTURE_DIR=$cdir $extra"
 	[ -n "$AMP" ] && HL_ENV="$HL_ENV AZ_SHADOW_DITHER_AMP=$AMP"
 	export HL_WIDTH HL_HEIGHT HL_RR1 HL_ENV
 	hl_start "$SHADOWED"

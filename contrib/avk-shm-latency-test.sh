@@ -110,7 +110,7 @@ run_arm() { # run_arm NAME sync|async <wlrepaint args...>
 	# Validation on in every arm, not only a break arm: this change moves a
 	# write to an image frames may still be sampling onto a different thread,
 	# and no screenshot can see that hazard. Only the layer can.
-	HL_ENV="ASTEROIDZ_RENDERER=avk ASTEROIDZ_VK_DEBUG=1"
+	HL_ENV="ASTEROIDZ_VK_DEBUG=1"
 	local want_sync=0
 	[ "$mode" = sync ] && want_sync=1
 	[ "$BREAK" = sync-both ] && want_sync=1

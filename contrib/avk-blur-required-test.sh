@@ -88,7 +88,7 @@ shot() {
 	# So the cache is off, not because it is wrong but because it is not what
 	# this fixture measures. The premises stay: if the chain still does not run
 	# with the cache off, that is a real failure and not a configuration.
-	HL_ENV="ASTEROIDZ_RENDERER=avk AZ_TRANSIENT_POISON=1 AZ_BLUR_CACHE=0 \
+	HL_ENV="AZ_TRANSIENT_POISON=1 AZ_BLUR_CACHE=0 \
 AZ_AVK_CAPTURE_DIR=$cdir $extra"
 	export HL_ENV
 	hl_start "$CFG"

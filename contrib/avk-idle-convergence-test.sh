@@ -95,7 +95,7 @@ wait_clients() { # wait_clients <n> [tries]
 start() { # start <gradient 0|1> <duration_ms>
 	OUTDIR="${TMPDIR:-/tmp}/asteroidz-idle-$1-$2-$$"
 	HL_OUTDIR="$OUTDIR"
-	HL_ENV="ASTEROIDZ_RENDERER=avk"
+	HL_ENV=""
 	[ "$BREAK" = gradient-noop-damage ] && \
 		HL_ENV="$HL_ENV AZ_GRADIENT_NOOP_DAMAGE=1"
 	export HL_OUTDIR HL_ENV

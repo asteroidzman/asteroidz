@@ -63,7 +63,7 @@ shot() { # shot W H RR -> NAME
 	local extra=""
 	[ "$BREAK" = "skew" ] && extra="AZ_AVK_CAPTURE_ROW_SKEW=1"
 	HL_WIDTH="$w" HL_HEIGHT="$h" HL_RR1="$rr"
-	HL_ENV="ASTEROIDZ_RENDERER=avk AZ_SHADOW_DITHER_AMP=0 \
+	HL_ENV="AZ_SHADOW_DITHER_AMP=0 \
 AZ_AVK_CAPTURE_DIR=$cdir $extra"
 	export HL_WIDTH HL_HEIGHT HL_RR1 HL_ENV
 	hl_start "$FLAT"

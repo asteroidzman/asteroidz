@@ -146,7 +146,7 @@ WALLPAPER="#808080"
 BASE="${TMPDIR:-/tmp}/asteroidz-avk-frame-$$"
 HL_OUTDIR="$BASE/avk"
 HL_WIDTH=1280 HL_HEIGHT=720
-HL_ENV="ASTEROIDZ_RENDERER=avk"
+HL_ENV=""
 case "$BREAK" in
 	border)   HL_ENV="$HL_ENV AVK_NO_BORDER_CLIP=1" ;;
 	noborder) HL_ENV="$HL_ENV AZ_AVK_SKIP_DRAW=border" ;;

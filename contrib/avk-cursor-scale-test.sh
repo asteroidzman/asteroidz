@@ -78,7 +78,7 @@ output HEADLESS-1 { scale $SCALE }"
 OUTDIR="${TMPDIR:-/tmp}/asteroidz-avk-cursorscale-$$"
 HL_OUTDIR="$OUTDIR"
 HL_WIDTH=1280 HL_HEIGHT=720
-HL_ENV="ASTEROIDZ_RENDERER=avk"
+HL_ENV=""
 [ "$BREAK" = xcursor-one-scale ] && HL_ENV="$HL_ENV AZ_CURSOR_ONE_SCALE=1"
 [ "$BREAK" = xcursor-guard ] && HL_ENV="$HL_ENV AZ_CURSOR_NO_PUSH_CHECK=1"
 export HL_OUTDIR HL_WIDTH HL_HEIGHT HL_ENV

@@ -56,7 +56,7 @@ effects { blur { enable 0 } }"
 OUTDIR="${TMPDIR:-/tmp}/asteroidz-avk-shmcache-$$"
 HL_OUTDIR="$OUTDIR"
 HL_WIDTH=1280 HL_HEIGHT=720
-HL_ENV="ASTEROIDZ_RENDERER=avk"
+HL_ENV=""
 # BOTH, and the second is not redundant -- this break silently stopped breaking
 # anything when D.1 Phase 2 landed. AZ_AVK_UPLOAD_ON_LOOKUP restores the
 # unconditional upload CALL, but Phase 2 made the copy damage-driven, so the

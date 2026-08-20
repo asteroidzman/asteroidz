@@ -65,7 +65,7 @@ run_case() { # run_case NAME BLUR -> echoes the dir
 	HL_OUTDIR="$dir"
 	HL_OUTPUTS=1
 	HL_HZ1=144
-	HL_ENV="ASTEROIDZ_RENDERER=avk AZ_PACE=1"
+	HL_ENV="AZ_PACE=1"
 	export HL_OUTDIR HL_OUTPUTS HL_HZ1 HL_ENV
 
 	hl_start "$(blur_cfg "$blur")

@@ -96,7 +96,7 @@ run() { # run NAME [ICC_PATH]
 	# ASTEROIDZ_VK_DEBUG=1: validation_errors is a counter nothing can
 	# increment without the layer, so asserting it without this is asserting a
 	# tautology (F14). The premise is checked from validation_enabled below.
-	HL_ENV="ASTEROIDZ_RENDERER=avk ASTEROIDZ_VK_DEBUG=1"
+	HL_ENV="ASTEROIDZ_VK_DEBUG=1"
 	export HL_OUTDIR HL_ENV HL_WIDTH HL_HEIGHT HL_SCALE1
 	hl_start "$CFG_BASE
 $extra" >"$dir/hl_start.log" 2>&1

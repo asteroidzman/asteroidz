@@ -85,7 +85,7 @@ run() { # run NAME [EXTRA_ENV...]
 	# W1/1.5 wide in logical space. The harness default of HL_WIDTH would leave a
 	# gap, and a gap is a layout with no seam in it.
 	HL_X2=$(( W1 * 10 / 15 ))
-	HL_ENV="ASTEROIDZ_RENDERER=avk AZ_SHADOW_DITHER_AMP=0 AZ_BLUR_CHAIN_TRACE=1 $*"
+	HL_ENV="AZ_SHADOW_DITHER_AMP=0 AZ_BLUR_CHAIN_TRACE=1 $*"
 	export HL_OUTDIR HL_OUTPUTS HL_WIDTH HL_HEIGHT HL_SCALE1 HL_WIDTH2 \
 		HL_HEIGHT2 HL_SCALE2 HL_X2 HL_ENV
 

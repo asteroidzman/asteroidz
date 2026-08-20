@@ -54,7 +54,7 @@ REPAINT="$(dirname "$0")/wlrepaint/wlrepaint"
 
 OUTDIR="${TMPDIR:-/tmp}/asteroidz-shadow-$$"
 HL_OUTDIR="$OUTDIR"
-HL_ENV="ASTEROIDZ_RENDERER=avk"
+HL_ENV=""
 [ "$BREAK" = shadow-symmetric ] && HL_ENV="$HL_ENV AZ_SHADOW_SYMMETRIC=1"
 export HL_OUTDIR HL_ENV
 

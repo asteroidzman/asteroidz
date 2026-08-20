@@ -114,7 +114,7 @@ run_case() { # run_case NAME <wlreuse args...>
 	# writes an image that frames in flight are still sampling, and that
 	# hazard is invisible to a screenshot -- synchronisation validation is the
 	# only thing in the suite that can see it at all.
-	HL_ENV="ASTEROIDZ_RENDERER=avk ASTEROIDZ_VK_DEBUG=1"
+	HL_ENV="ASTEROIDZ_VK_DEBUG=1"
 	[ "$BREAK" = source-full ] && HL_ENV="$HL_ENV AZ_AVK_SOURCE_FULL=1"
 	[ "$BREAK" = omit-region ] && HL_ENV="$HL_ENV AZ_AVK_OMIT_REGION=1"
 	[ "$BREAK" = unsafe-reuse ] && HL_ENV="$HL_ENV AZ_AVK_UNSAFE_REUSE=1 AVK_UNSAFE_REUSE=1"

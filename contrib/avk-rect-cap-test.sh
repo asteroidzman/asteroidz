@@ -87,7 +87,7 @@ capture() { # capture NAME [CAP]
 	local dir="$OUTDIR/$name" cdir="$OUTDIR/$name-cap"
 	mkdir -p "$dir" "$cdir"
 	HL_OUTDIR="$dir"; HL_WIDTH="$W"; HL_HEIGHT="$H"; HL_SCALE1="$SCALE"
-	HL_ENV="ASTEROIDZ_RENDERER=avk AZ_SHADOW_DITHER_AMP=0 AZ_AVK_CAPTURE_DIR=$cdir"
+	HL_ENV="AZ_SHADOW_DITHER_AMP=0 AZ_AVK_CAPTURE_DIR=$cdir"
 	[ -n "$cap" ] && HL_ENV="$HL_ENV AZ_BLUR_DAMAGE_MAX_RECTS=$cap"
 	export HL_OUTDIR HL_ENV HL_WIDTH HL_HEIGHT HL_SCALE1
 	hl_start "$CFG" >/dev/null 2>&1

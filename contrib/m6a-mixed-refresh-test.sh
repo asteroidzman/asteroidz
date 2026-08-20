@@ -47,7 +47,7 @@ measure() { # measure HZ1 HZ2 [env...] -> milliseconds
 	local dir="$OUTDIR/hz$hz1-$hz2"
 	mkdir -p "$dir"
 	HL_OUTDIR="$dir"; HL_OUTPUTS=2; HL_HZ1="$hz1"; HL_HZ2="$hz2"
-	HL_ENV="ASTEROIDZ_RENDERER=avk $*"
+	HL_ENV="$*"
 	export HL_OUTDIR HL_OUTPUTS HL_HZ1 HL_HZ2 HL_ENV
 	hl_start "$CFG" >/dev/null 2>&1
 	sleep 2

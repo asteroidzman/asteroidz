@@ -80,7 +80,7 @@ unfocused_opacity 0.9"
 OUTDIR="${TMPDIR:-/tmp}/asteroidz-avk-blur-damage-$$"
 HL_OUTDIR="$OUTDIR"
 HL_WIDTH=1280 HL_HEIGHT=800
-HL_ENV="ASTEROIDZ_RENDERER=avk ASTEROIDZ_VK_DEBUG=1"
+HL_ENV="ASTEROIDZ_VK_DEBUG=1"
 case "$BREAK" in
 poison) HL_ENV="$HL_ENV AZ_TRANSIENT_POISON=1" ;;
 esac

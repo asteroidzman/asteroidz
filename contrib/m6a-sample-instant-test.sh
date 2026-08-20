@@ -31,7 +31,7 @@ arm() { # arm TAG [env...]
 	local dir="$OUTDIR/$tag"
 	mkdir -p "$dir"
 	HL_OUTDIR="$dir"
-	HL_ENV="ASTEROIDZ_RENDERER=avk $*"
+	HL_ENV="$*"
 	export HL_OUTDIR HL_ENV
 	hl_start "$CFG" >/dev/null 2>&1
 	sleep 2

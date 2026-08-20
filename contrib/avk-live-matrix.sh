@@ -47,7 +47,7 @@ START_TAG="$(amsg get all-monitors | jq -r \
 # the Vulkan validation layer's callback. There are two AVK session files and
 # only one loads it:
 #
-#   asteroidz-avk.desktop        ... ASTEROIDZ_RENDERER=avk asteroidz
+#   asteroidz-avk.desktop        ... asteroidz
 #   asteroidz-avk-debug.desktop  ... ASTEROIDZ_VK_DEBUG=1 asteroidz
 #
 # An earlier run of this matrix reported "0 VUID" from the PLAIN session, where

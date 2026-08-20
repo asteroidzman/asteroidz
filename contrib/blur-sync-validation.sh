@@ -12,19 +12,25 @@
 # where the hazard happens to win. An HDR sibling adds work and shifts the
 # timing further. `optimized 0` removes the cache, and with it the copies.
 #
-# The copies live in copy_effect_image/copy_effect_image_region: plain
-# vkCmdCopyImage between GENERAL-layout images. GENERAL confers no ordering, so
-# each one needs barriers on both sides, against three different stages -- the
-# graphics pass that wrote the scene image, the compute dispatches that blur
-# it, and the fragment shaders that sample the result.
+# The copies live in AVK's per-monitor blur cache: plain vkCmdCopyImage between
+# images the compositor owns. A copy confers no ordering of its own, so each one
+# needs barriers on both sides, against three different stages -- the graphics
+# pass that wrote the scene image, the compute dispatches that blur it, and the
+# fragment shaders that sample the result.
+#
+# The same class of bug has been found here twice. The report above is the fx_vk
+# one; AVK's own optimized-blur corruption (fixed in 0.20.5) was an
+# unsynchronised vkCmdCopyImage in this cache, and scale, bit depth and the
+# dirty flag were all chased first. This is the instrument that would have named
+# it directly.
 #
 # Rather than argue about which of those are covered, ask Vulkan. The
 # synchronization validation layer reports read-after-write and write-after-
 # write hazards directly, and it does not care how busy the queue happens to
 # be, so it finds them on a headless instance that never shows the artifact.
 #
-# RESULT, on the copies as they stood: 4 hazards, 2 READ-AFTER-WRITE and 2
-# WRITE-AFTER-WRITE, one of them naming vkCmdCopyImage outright --
+# RESULT, on fx_vk's copies as they stood when this was written: 4 hazards, 2
+# READ-AFTER-WRITE and 2 WRITE-AFTER-WRITE, one naming vkCmdCopyImage outright --
 #
 #   vkQueueSubmit2KHR(): WRITE_AFTER_WRITE hazard detected. vkCmdCopyImage
 #   ... writes to VkImage 0x78, which was previously written during an image
@@ -33,26 +39,26 @@
 # -- and 0 after adding barriers on both sides of both copy helpers. That is
 # the whole argument for the fix, and re-running this is how to keep it true.
 #
-# Usage: contrib/blur-sync-validation.sh
+# Usage: contrib/blur-sync-validation.sh   (registered `manual` in avk-suite.sh:
+#        it needs vulkan-validation-layers installed and gates nothing)
 # Exit:  0 no hazards, 1 hazards found, 2 could not run (no layer / no vulkan)
 set -u
 
 REPO="${ASTEROIDZ_REPO:-$HOME/asteroidz}"
 export HL_RENDERER=vulkan
 
-# Two separate switches, and neither is the one you would guess:
-#
-#   FX_VK_VALIDATION=1     the RENDERER's own flag. fx_vk decides at instance
-#                          creation whether to request the layer at all, so
-#                          setting VK_INSTANCE_LAYERS from outside does
-#                          nothing -- the layer loads and then has no work.
-#   VK_LAYER_VALIDATE_SYNC=1
-#                          sync validation is a validation FEATURE, off even
-#                          with the layer active. The old spelling
-#                          (VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_
-#                          SYNCHRONIZATION_VALIDATION_EXT) is deprecated and
-#                          the layer says so instead of doing it.
-export HL_ENV="FX_VK_VALIDATION=1 VK_LAYER_VALIDATE_SYNC=1"
+# ONE switch, and it is not the one you would guess. The renderer decides at
+# instance creation whether to request the validation layer at all, so setting
+# VK_INSTANCE_LAYERS from outside does nothing -- the layer loads and then has
+# no work. Sync validation is a validation FEATURE rather than the layer itself,
+# but AVK turns it on for you: with validation enabled it sets `validate_sync`
+# through VkLayerSettingEXT (avk_instance.c), so VK_LAYER_VALIDATE_SYNC=1 is not
+# needed here and its absence is not a hole. fx_vk did not do that, which is why
+# earlier revisions of this script set it by hand.
+# SYNC_ENV= runs the same scene with validation OFF, which must reach the
+# INCONCLUSIVE exit below and not a pass. That is the break for the guard:
+# the previous one could not be exercised because it never held.
+export HL_ENV="${SYNC_ENV-ASTEROIDZ_VK_DEBUG=1}"
 
 if [ ! -f /usr/share/vulkan/explicit_layer.d/VkLayer_khronos_validation.json ]; then
 	echo "  --   VK_LAYER_KHRONOS_validation is not installed (vulkan-validation-layers)"
@@ -108,12 +114,18 @@ done
 sleep 2
 
 echo
-# Did the layer actually come up? A run where it silently failed to load
-# reports zero hazards and looks exactly like a pass, which is the one result
-# this script must never produce by accident. asteroidz logs a line of its own
-# when it succeeds in requesting it.
-if ! grep -qi "validation layer enabled" "$COMPLOG" 2>/dev/null; then
-	echo "  --   the validation layer never came up"
+# Did SYNC validation actually come up? A run where it silently failed reports
+# zero hazards and looks exactly like a pass, which is the one result this
+# script must never produce by accident. Assert the feature, not the layer:
+# validation can be on with `validate_sync` off, and then every hazard below is
+# invisible. avk_instance_log_caps prints the state of both.
+#
+# The string this used to look for -- "validation layer enabled" -- was never
+# logged by anything, so this guard fired on every run and the script could
+# only ever exit 2. It was inert for as long as it was in the tree.
+if ! grep -q "sync_validation=on" "$COMPLOG" 2>/dev/null; then
+	echo "  --   sync validation never came up:"
+	grep -o "debug_utils=.*gpu_assisted=[a-z]*" "$COMPLOG" 2>/dev/null | tail -1 | sed 's/^/       /'
 	echo "  --   INCONCLUSIVE, not a pass"
 	exit 2
 fi

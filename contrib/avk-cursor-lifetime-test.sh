@@ -60,7 +60,7 @@ BREAK="${BREAK:-}"
 OUTDIR="${TMPDIR:-/tmp}/asteroidz-cursor-life-$$"
 HL_OUTDIR="$OUTDIR"
 HL_OUTPUTS=2
-HL_ENV="ASTEROIDZ_RENDERER=avk"
+HL_ENV=""
 [ "$BREAK" = cursor-stale-xcursor ] && HL_ENV="$HL_ENV AZ_CURSOR_STALE_XCURSOR=1"
 # Mixed scales, set where they actually take effect. This used to be two
 # `monitorrule { scale N }` blocks, which parse as key:value pairs and so were

@@ -113,7 +113,7 @@ run_case() { # run_case NAME
 	local name="$1"
 	HL_OUTDIR="$BASE/$name"
 	HL_WIDTH=1280 HL_HEIGHT=720
-	HL_ENV="ASTEROIDZ_RENDERER=avk"
+	HL_ENV=""
 	[ "$name" = noclip ] && HL_ENV="$HL_ENV AZ_AVK_NO_VISIBLE_CLIP=1"
 	[ "$BREAK" = no-repair ] && HL_ENV="$HL_ENV AZ_AVK_NO_VISIBLE_REPAIR=1"
 	[ "$BREAK" = no-clip ] && HL_ENV="$HL_ENV AZ_AVK_NO_VISIBLE_CLIP=1"
@@ -187,7 +187,7 @@ run_frame_case() { # run_frame_case NAME
 	local name="$1"
 	HL_OUTDIR="$BASE/$name"
 	HL_WIDTH=1280 HL_HEIGHT=720
-	HL_ENV="ASTEROIDZ_RENDERER=avk"
+	HL_ENV=""
 	[ "$name" = frame-noclip ] && HL_ENV="$HL_ENV AZ_AVK_NO_VISIBLE_CLIP=1"
 	[ "$BREAK" = no-repair ] && HL_ENV="$HL_ENV AZ_AVK_NO_VISIBLE_REPAIR=1"
 	[ "$BREAK" = no-clip ] && HL_ENV="$HL_ENV AZ_AVK_NO_VISIBLE_CLIP=1"
@@ -230,7 +230,7 @@ run_churn_case() { # run_churn_case NAME
 	local name="$1"
 	HL_OUTDIR="$BASE/$name"
 	HL_WIDTH=1280 HL_HEIGHT=720
-	HL_ENV="ASTEROIDZ_RENDERER=avk"
+	HL_ENV=""
 	[ "$name" = churn-noclip ] && HL_ENV="$HL_ENV AZ_AVK_NO_VISIBLE_CLIP=1"
 	[ "$BREAK" = no-repair ] && HL_ENV="$HL_ENV AZ_AVK_NO_VISIBLE_REPAIR=1"
 	[ "$BREAK" = no-clip ] && HL_ENV="$HL_ENV AZ_AVK_NO_VISIBLE_CLIP=1"

@@ -71,7 +71,7 @@ TF_GAMMA22=2               # scenefx's default -- the other writer
 export WLBGEFFECT_SSD=1
 HL_OUTPUTS=2
 HL_OUTDIR="$OUTDIR"; HL_WIDTH=1920; HL_HEIGHT=1080
-HL_ENV="ASTEROIDZ_RENDERER=avk ${AZ_CM_BREAK:-}"
+HL_ENV="${AZ_CM_BREAK:-}"
 export HL_OUTPUTS HL_OUTDIR HL_ENV HL_WIDTH HL_HEIGHT
 hl_start "layout { titlebar { enable 0 } }" >"$OUTDIR/hl_start.log" 2>&1
 sleep 2

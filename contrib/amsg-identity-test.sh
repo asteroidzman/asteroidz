@@ -45,7 +45,7 @@ echo
 
 # ── instance A: the "target". validation ON. ─────────────────────────────
 HL_OUTDIR="$OUTDIR/A"; mkdir -p "$HL_OUTDIR"
-HL_ENV="ASTEROIDZ_RENDERER=avk ASTEROIDZ_VK_DEBUG=1"
+HL_ENV="ASTEROIDZ_VK_DEBUG=1"
 export HL_OUTDIR HL_ENV
 hl_start "" >"$OUTDIR/A.log" 2>&1
 # THE HARNESS'S OWN SOCKET, IN THE HARNESS'S OWN RUNTIME DIR.
@@ -75,7 +75,7 @@ B_LOG="$OUTDIR/B.log"
 env -i PATH="$PATH" HOME="$HOME" \
 	XDG_RUNTIME_DIR="$RT" \
 	WLR_BACKENDS=headless WLR_RENDERER=pixman \
-	ASTEROIDZ_RENDERER=avk \
+	\
 	"$BIN" >"$B_LOG" 2>&1 &
 B_PID=$!
 sleep 4

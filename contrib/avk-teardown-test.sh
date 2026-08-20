@@ -123,7 +123,7 @@ run_cycle() { # run_cycle CONFIG N
 
 	HL_OUTDIR="$dir"
 	HL_OUTPUTS=2
-	HL_ENV="ASTEROIDZ_RENDERER=avk ASTEROIDZ_VK_DEBUG=1"
+	HL_ENV="ASTEROIDZ_VK_DEBUG=1"
 	[ "$cfg" = cursor-software ] && \
 		HL_ENV="$HL_ENV ASTEROIDZ_AVK_FORCE_SOFTWARE_CURSOR=1"
 	[ "$BREAK" = destroy-before-idle ] && HL_ENV="$HL_ENV AZ_AVK_NO_TEARDOWN_IDLE=1"

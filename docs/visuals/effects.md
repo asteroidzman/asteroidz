@@ -123,7 +123,17 @@ arcs are kept, because past a rounded corner the backdrop genuinely is visible
 and the blur still belongs there.
 
 Every shadow scene in the suite used opaque windows, so none of them could see
-any of this; `contrib/shadow-hole-visible-test.sh` is the one that can.
+any of this; `contrib/shadow-hole-visible-test.sh` was the one that could.
+
+That fix, and its fixture, were **SceneFX**. The change lived entirely in
+`asteroidz-scenefx` (`render/fx_renderer/vulkan/pass.c` and
+`types/scene/wlr_scene.c`), and that subproject is no longer part of the build.
+AVK never fabricates the fill in the first place — its blur source is the scene
+prefix, so there is no hole — and what shows through a translucent window is the
+real blurred backdrop rather than a stretch of invented pixels. The fixture was
+removed once its subject was gone; it had been asserting that the region must be
+*identical* with the shadow's backdrop blur on and off, which is true of a
+fabrication that must never be drawn and false of a real backdrop that may be.
 
 **A tiled window's shadow is below every tiled window, not just its own.** A
 shadow used to sit at the bottom of its own client's scene tree, which is only
@@ -233,12 +243,13 @@ So the clamp is skipped inside that box, and the plain blur stands there. It is
 the same principle as the clamp itself, applied in the other direction: a
 minimum is only meaningful against something true.
 
-`contrib/shadow-exclude-clamp-test.sh` asserts it, and needs two renderings of
-one scene to do so — inside the hole they must agree, below the window they must
-not, the second being what proves the clamp was running at all. `FX_BLUR_NO_
-DARKEN_CLAMP=1` turns the clamp off for a process so that comparison can be
-made; it exists for that test and is not otherwise useful. Measured: 9 levels of
-difference inside the hole through a 15%-opaque window before the fix, 0 after.
+All of that is SceneFX. AVK never fills a hole, because its blur source is the
+scene prefix and the window is not in it, so there is nothing to clamp against
+and `sample_exclude` is ignored on the live path. The fixture that asserted the
+carve-out (`contrib/shadow-exclude-clamp-test.sh`, measuring 9 levels of
+difference inside the hole through a 15%-opaque window before the fix and 0
+after) was removed with the stage it covered. AVK's clamp itself is live and has
+its own break switch, `AZ_BLUR_IGNORE_DARKEN`.
 
 The first attempt substituted the unblurred wallpaper snapshot there instead,
 on the reasoning that the wallpaper is what lies under everything. It is, but a
@@ -332,9 +343,9 @@ It stops on its own after the requested frames — three by default, clamped to
 1–60. It has to: each armed frame waits for its own submission before reading it
 back, so leaving it on turns a session into a slideshow.
 
-`contrib/blur-exclusion-test.sh` is the *SceneFX* facility as an assertion —
-that no pixel of a window survives anywhere in its own shadow's blur source. It
-asserts a stage AVK does not have.
+The *SceneFX* facility had its own assertion, `contrib/blur-exclusion-test.sh`
+— that no pixel of a window survived anywhere in its own shadow's blur source.
+It covered a stage AVK does not have, and was removed along with it.
 
 ---
 

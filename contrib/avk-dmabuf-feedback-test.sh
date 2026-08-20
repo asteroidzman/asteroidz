@@ -59,7 +59,7 @@ BREAK="${BREAK:-}"
 OUTDIR="${TMPDIR:-/tmp}/asteroidz-dmabuf-fb-$$"
 HL_OUTDIR="$OUTDIR"
 HL_OUTPUTS=2
-HL_ENV="ASTEROIDZ_RENDERER=avk"
+HL_ENV=""
 [ "$BREAK" = dmabuf-feedback-gles ] && HL_ENV="$HL_ENV AZ_DMABUF_FEEDBACK_GLES=1"
 [ "$BREAK" = dmabuf-advertise-restricted ] && \
 	HL_ENV="$HL_ENV AZ_DMABUF_ADVERTISE_SIZE_RESTRICTED=1"

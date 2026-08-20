@@ -80,7 +80,7 @@ cohort() { # cohort NWINDOWS
 	local dir="$OUTDIR/w$n"
 	mkdir -p "$dir"
 	HL_OUTDIR="$dir"; HL_WIDTH="$W"; HL_HEIGHT="$H"; HL_SCALE1="$SCALE"
-	HL_ENV="ASTEROIDZ_RENDERER=avk"
+	HL_ENV=""
 	export HL_OUTDIR HL_ENV HL_WIDTH HL_HEIGHT HL_SCALE1
 	hl_start "$CFG" >/dev/null 2>&1
 	local i=0

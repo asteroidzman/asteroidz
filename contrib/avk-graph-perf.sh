@@ -23,7 +23,7 @@ set -u
 CURRENT_TEST="avk-graph-perf"
 OUTDIR="${TMPDIR:-/tmp}/asteroidz-graphperf-$$"
 HL_OUTDIR="$OUTDIR"
-HL_ENV="ASTEROIDZ_RENDERER=avk"
+HL_ENV=""
 export HL_OUTDIR HL_ENV
 
 PREGRAPH="${ASTEROIDZ_PREGRAPH:-}"

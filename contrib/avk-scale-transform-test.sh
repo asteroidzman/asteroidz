@@ -61,7 +61,7 @@ shot() { # shot NAME MODE_W MODE_H RR SCALE [EXTRA_ENV]
 	local cdir="$OUTDIR/cap-$name"
 	mkdir -p "$cdir"
 	HL_WIDTH="$mw" HL_HEIGHT="$mh" HL_RR1="$rr" HL_SCALE1="$sc"
-	HL_ENV="ASTEROIDZ_RENDERER=avk AZ_SHADOW_DITHER_AMP=0 \
+	HL_ENV="AZ_SHADOW_DITHER_AMP=0 \
 AZ_AVK_CAPTURE_DIR=$cdir $extra"
 	export HL_WIDTH HL_HEIGHT HL_RR1 HL_SCALE1 HL_ENV
 	hl_start "$FLAT"
@@ -140,7 +140,7 @@ for S in 1.25 1.5; do
 	for T in 0 1 5; do
 		SN="${S//./_}"
 		HL_WIDTH=800 HL_HEIGHT=600 HL_RR1="$T" HL_SCALE1="$S"
-		HL_ENV="ASTEROIDZ_RENDERER=avk AZ_FRAME_ORACLE=1 AZ_SHADOW_DITHER_AMP=0"
+		HL_ENV="AZ_FRAME_ORACLE=1 AZ_SHADOW_DITHER_AMP=0"
 		export HL_WIDTH HL_HEIGHT HL_RR1 HL_SCALE1 HL_ENV
 		hl_start "$FLAT"
 		hl_reset_spawn_colors 2>/dev/null || true

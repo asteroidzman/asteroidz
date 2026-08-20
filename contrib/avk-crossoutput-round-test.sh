@@ -58,7 +58,7 @@ BREAK="${BREAK:-}"
 OUTDIR="${TMPDIR:-/tmp}/asteroidz-xround-$$"
 mkdir -p "$OUTDIR"
 HL_OUTDIR="$OUTDIR"
-HL_ENV="ASTEROIDZ_RENDERER=avk"
+HL_ENV=""
 [ "$BREAK" = owner-monitor-bound ] && \
 	HL_ENV="$HL_ENV AZ_CORNER_OWNER_MONITOR_BOUND=1"
 

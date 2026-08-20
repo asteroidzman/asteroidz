@@ -97,7 +97,7 @@ if [ "$MODE" = "all" ] || [ "$MODE" = "oracle" ]; then
 	echo
 	echo "── 1. every transition, under the frame oracle ───────────────────────"
 	HL_WIDTH=800 HL_HEIGHT=600 HL_RR1=0
-	HL_ENV="ASTEROIDZ_RENDERER=avk AZ_FRAME_ORACLE=1 AZ_SHADOW_DITHER_AMP=0"
+	HL_ENV="AZ_FRAME_ORACLE=1 AZ_SHADOW_DITHER_AMP=0"
 	export HL_WIDTH HL_HEIGHT HL_RR1 HL_ENV
 	hl_start "$FLAT"
 	spawn_fixture osq
@@ -145,7 +145,7 @@ if [ "$MODE" = "all" ] || [ "$MODE" = "pixel" ]; then
 	LIVEDIR="$OUTDIR/cap-live"
 	mkdir -p "$LIVEDIR"
 	HL_WIDTH=800 HL_HEIGHT=600 HL_RR1=0
-	HL_ENV="ASTEROIDZ_RENDERER=avk AZ_SHADOW_DITHER_AMP=0 \
+	HL_ENV="AZ_SHADOW_DITHER_AMP=0 \
 AZ_AVK_CAPTURE_DIR=$LIVEDIR"
 	export HL_WIDTH HL_HEIGHT HL_RR1 HL_ENV
 	hl_start "$FLAT"
@@ -161,7 +161,7 @@ AZ_AVK_CAPTURE_DIR=$LIVEDIR"
 		SDIR="$OUTDIR/cap-static-$T"
 		mkdir -p "$SDIR"
 		HL_WIDTH=800 HL_HEIGHT=600 HL_RR1=$T
-		HL_ENV="ASTEROIDZ_RENDERER=avk AZ_SHADOW_DITHER_AMP=0 \
+		HL_ENV="AZ_SHADOW_DITHER_AMP=0 \
 AZ_AVK_CAPTURE_DIR=$SDIR"
 		export HL_WIDTH HL_HEIGHT HL_RR1 HL_ENV
 		hl_start "$FLAT"
@@ -195,7 +195,7 @@ if [ "$MODE" = "all" ] || [ "$MODE" = "modeset" ]; then
 	MDIR="$OUTDIR/cap-modeset"
 	mkdir -p "$MDIR"
 	HL_WIDTH=800 HL_HEIGHT=600 HL_RR1=0
-	HL_ENV="ASTEROIDZ_RENDERER=avk AZ_FRAME_ORACLE=1 AZ_SHADOW_DITHER_AMP=0 \
+	HL_ENV="AZ_FRAME_ORACLE=1 AZ_SHADOW_DITHER_AMP=0 \
 AZ_AVK_CAPTURE_DIR=$MDIR"
 	export HL_WIDTH HL_HEIGHT HL_RR1 HL_ENV
 	hl_start "$FLAT"

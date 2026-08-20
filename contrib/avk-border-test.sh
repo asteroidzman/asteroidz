@@ -119,7 +119,7 @@ run_case() {
 	OUTDIR="${TMPDIR:-/tmp}/asteroidz-border-$name-$$"
 	HL_OUTDIR="$OUTDIR"
 	HL_SCALE1="$scale"
-	HL_ENV="ASTEROIDZ_RENDERER=avk"
+	HL_ENV=""
 	[ "$BREAK" = border-square-inner ] && HL_ENV="$HL_ENV AZ_AVK_BORDER_SQUARE_INNER=1"
 	[ -n "${VKDEBUG:-}" ] && HL_ENV="$HL_ENV ASTEROIDZ_VK_DEBUG=1 VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT"
 	[ "${FULLDRAW:-0}" = 1 ] && HL_ENV="$HL_ENV AZ_AVK_FULL_DAMAGE=1"
@@ -412,7 +412,7 @@ run_damage() {
 	OUTDIR="${TMPDIR:-/tmp}/asteroidz-border-damage-$$"
 	HL_OUTDIR="$OUTDIR"
 	HL_SCALE1=1
-	HL_ENV="ASTEROIDZ_RENDERER=avk"
+	HL_ENV=""
 	[ "$BREAK" = border-square-inner ] && HL_ENV="$HL_ENV AZ_AVK_BORDER_SQUARE_INNER=1"
 	# THESE FOUR ASSERTIONS ARE NOT FALSIFIED, and that is recorded rather than
 	# glossed. The obvious break -- AZ_AVK_DAMAGE_HOLE over the band the window

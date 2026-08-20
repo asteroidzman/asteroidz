@@ -3,6 +3,6 @@ Encoding=UTF-8
 Name=Asteroidz (AVK native Vulkan)
 DesktopNames=asteroidz;wlroots
 Comment=asteroidz WM composited by its own Vulkan engine. Effects, HDR and display profiles; partial damage and occlusion culling.
-Exec=env ASTEROIDZ_RENDERER=avk asteroidz
+Exec=asteroidz
 Icon=asteroidz
 Type=Application

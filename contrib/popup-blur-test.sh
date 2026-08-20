@@ -133,7 +133,7 @@ def contrast(x0, x1, y0, y1):
 found = panels(100)
 if len(found) < 2:
     print(f"FAIL both popups are on screen (found {len(found)})")
-    raise SystemExit(0)
+    raise SystemExit(1)
 
 (ba, bb), (ca, cb) = found[0], found[1]
 blurred = contrast(ba + 12, bb - 12, 95, 175)
@@ -141,13 +141,22 @@ control = contrast(ca + 12, cb - 12, 95, 175)
 print(f"asked-for-blur {ba}..{bb}: stripe contrast {blurred}")
 print(f"control        {ca}..{cb}: stripe contrast {control}")
 
+# Every FAIL below must reach the exit status. This script used to print them
+# and exit 0 -- the same defect avk-suite.sh's third check was written for,
+# arriving by a different route: a python heredoc that falls off its end.
+bad = 0
+
 if blurred < control / 2:
     print("PASS a popup that asks for blur gets it")
 else:
     print("FAIL a popup that asks for blur gets it")
+    bad += 1
 
 if control > 150:
     print("PASS a popup that does not ask keeps its background sharp")
 else:
     print("FAIL a popup that does not ask keeps its background sharp")
+    bad += 1
+
+raise SystemExit(1 if bad else 0)
 PY

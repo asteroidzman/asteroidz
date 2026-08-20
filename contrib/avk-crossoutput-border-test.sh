@@ -61,7 +61,7 @@ RIGHT_LOCAL=$((RIGHT_EDGE - W1))       # its right outer border, output-2 local
 
 OUTDIR="${TMPDIR:-/tmp}/asteroidz-xout-$$"
 HL_OUTDIR="$OUTDIR"
-HL_ENV="ASTEROIDZ_RENDERER=avk"
+HL_ENV=""
 [ "$BREAK" = border-owner-monitor-clip ] && \
 	HL_ENV="$HL_ENV AZ_BORDER_OWNER_MONITOR_CLIP=1"
 export HL_OUTDIR HL_ENV

@@ -75,7 +75,7 @@ snap() { hl_get "get avk-stats" | jq -r "$JQ | to_entries |
 	map(\"\(.key)=\(.value)\") | join(\" \")" 2>/dev/null; }
 
 HL_OUTDIR="$OUTDIR"; HL_WIDTH=1920; HL_HEIGHT=1080; HL_SCALE1=1
-HL_ENV="ASTEROIDZ_RENDERER=avk ASTEROIDZ_VK_DEBUG=1"
+HL_ENV="ASTEROIDZ_VK_DEBUG=1"
 export HL_OUTDIR HL_ENV HL_WIDTH HL_HEIGHT HL_SCALE1
 hl_start "$CFG" >"$OUTDIR/hl_start.log" 2>&1
 sleep 2

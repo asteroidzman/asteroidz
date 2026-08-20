@@ -31,7 +31,7 @@ CURRENT_TEST="avk-rounded-alpha"
 BREAK="${BREAK:-}"
 OUTDIR="${TMPDIR:-/tmp}/asteroidz-rnd-alpha-$$"
 HL_OUTDIR="$OUTDIR"
-HL_ENV="ASTEROIDZ_RENDERER=avk"
+HL_ENV=""
 [ "$BREAK" = rounded-clip ] && HL_ENV="$HL_ENV AZ_ROUNDED_OFF=1"
 export HL_OUTDIR HL_ENV
 

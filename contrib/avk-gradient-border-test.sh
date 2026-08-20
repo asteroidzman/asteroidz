@@ -79,7 +79,7 @@ run() { # run NAME ENABLE [EXTRA_ENV...]
 	local dir="$OUTDIR/$name" cdir="$OUTDIR/$name-cap"
 	mkdir -p "$dir" "$cdir"
 	HL_OUTDIR="$dir"; HL_WIDTH="$W"; HL_HEIGHT="$H"
-	HL_ENV="ASTEROIDZ_RENDERER=avk AZ_AVK_CAPTURE_DIR=$cdir $*"
+	HL_ENV="AZ_AVK_CAPTURE_DIR=$cdir $*"
 	export HL_OUTDIR HL_ENV HL_WIDTH HL_HEIGHT
 	hl_start "$(grad_cfg "$en")" >/dev/null 2>&1
 	hl_spawn_wlbgeffect gb 300 gb >/dev/null

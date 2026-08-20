@@ -121,7 +121,7 @@ segment() { # segment KIND MODE TAG
 	large)  pulse="360x260@20,20:300:40" ;;
 	esac
 	HL_SCALE1="$SCALE"
-	HL_ENV="ASTEROIDZ_RENDERER=avk $(mode_env "$mode")"
+	HL_ENV="$(mode_env "$mode")"
 	export HL_ENV HL_SCALE1
 	hl_start "$CFG"
 	if [ -n "$pulse" ]; then

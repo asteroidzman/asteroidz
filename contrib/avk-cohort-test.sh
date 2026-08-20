@@ -54,7 +54,7 @@ KEYS='
 # run KIND TAG [EXTRA_ENV] -> one stats line
 run() {
 	local kind="$1" tag="$2" extra="${3:-}"
-	HL_ENV="ASTEROIDZ_RENDERER=avk $extra"
+	HL_ENV="$extra"
 	export HL_ENV
 	hl_start "$CFG"
 	if [ "$kind" = sparse ]; then

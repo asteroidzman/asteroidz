@@ -94,7 +94,7 @@ BG_Y="${BG_Y:-200}"
 
 OUTDIR="${TMPDIR:-/tmp}/asteroidz-persist-$$"
 HL_OUTDIR="$OUTDIR"
-HL_ENV="ASTEROIDZ_RENDERER=avk"
+HL_ENV=""
 case "$BREAK" in
 	rounded-clip)
 		HL_ENV="$HL_ENV AZ_ROUNDED_OFF=1" ;;

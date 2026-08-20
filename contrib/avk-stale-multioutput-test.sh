@@ -68,7 +68,7 @@ HL_OUTDIR="$OUTDIR"
 # clipped build gives 1468 and 175. The mechanism is intact -- the fixture had
 # stopped being able to reach it, which is not the same thing and is worth the
 # distinction being written down rather than the number quietly changed.
-HL_ENV="ASTEROIDZ_RENDERER=avk AZ_AVK_SLOW_UPLOAD_US=${SLOW_US:-30000}"
+HL_ENV="AZ_AVK_SLOW_UPLOAD_US=${SLOW_US:-30000}"
 [ "$BREAK" = stale-one-output ] && \
 	HL_ENV="$HL_ENV AZ_BREAK_STALE_ONE_OUTPUT=1"
 export HL_OUTDIR HL_ENV

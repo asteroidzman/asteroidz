@@ -41,7 +41,7 @@ gt() { ASTEROIDZ_INSTANCE_SIGNATURE="$HL_SIG" timeout 6 amsg $* 2>/dev/null; }
 
 OUTDIR="${TMPDIR:-/tmp}/asteroidz-gradxo-$$"
 HL_OUTDIR="$OUTDIR"
-HL_ENV="ASTEROIDZ_RENDERER=avk"
+HL_ENV=""
 [ "$BREAK" = gradient-noop-damage ] && HL_ENV="$HL_ENV AZ_GRADIENT_NOOP_DAMAGE=1"
 export HL_OUTDIR HL_ENV
 

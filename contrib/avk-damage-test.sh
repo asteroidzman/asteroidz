@@ -58,7 +58,7 @@ run_backend() { # run_backend MODE OUTDIR
 	local mode="$1" outdir="$2"
 	HL_OUTDIR="$outdir"
 	HL_WIDTH=1280 HL_HEIGHT=720
-	HL_ENV="ASTEROIDZ_RENDERER=avk"
+	HL_ENV=""
 	if [ "$mode" = full ] || [ "$BREAK" = stale ]; then
 		HL_ENV="$HL_ENV AZ_AVK_FULL_DAMAGE=1"
 	fi

@@ -51,7 +51,7 @@ run() { # run NAME [EXTRA_ENV]
 	local dir="$OUTDIR/$name"
 	mkdir -p "$dir"
 	HL_OUTDIR="$dir"; HL_WIDTH=1920; HL_HEIGHT=1080; HL_SCALE1=1
-	HL_ENV="ASTEROIDZ_RENDERER=avk $extra_env"
+	HL_ENV="$extra_env"
 	export HL_OUTDIR HL_ENV HL_WIDTH HL_HEIGHT HL_SCALE1
 	hl_start "$CFG" >"$dir/hl_start.log" 2>&1
 	sleep 2

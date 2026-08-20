@@ -64,7 +64,7 @@ capture() { # capture NAME [EXTRA_ENV]
 	# The dither is noise keyed to fragment position and would differ between
 	# two runs for reasons that have nothing to do with occlusion. Off, in both
 	# cohorts, so a difference is a difference.
-	HL_ENV="ASTEROIDZ_RENDERER=avk AZ_SHADOW_DITHER_AMP=0 \
+	HL_ENV="AZ_SHADOW_DITHER_AMP=0 \
 AZ_AVK_CAPTURE_DIR=$cdir $extra"
 	export HL_OUTDIR HL_ENV HL_WIDTH HL_HEIGHT HL_SCALE1
 	hl_start "$CFG" >/dev/null 2>&1
