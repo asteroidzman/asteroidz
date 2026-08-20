@@ -18,6 +18,13 @@
 #   uncovered   the same client goes QUIET and the window above it is closed.
 #               What is on screen must be the generation the client last
 #               committed -- which it committed while nothing could see it.
+#   churn       a client that allocates a FRESH wl_buffer for every redraw, so
+#               every clipped copy is a partial write into an image that has
+#               never been written. The copy path refuses exactly that -- it
+#               has to, because leaving UNDEFINED may discard the whole image
+#               -- unless the plan says there is nothing there to lose. This is
+#               not an edge case: Firefox is a churning client at 54.5MB a
+#               redraw, so it is every copy the subsystem exists to shrink.
 #   frame       THE SHAPE THIS EXISTS FOR, with nothing covering the window at
 #               all: a 1024x1024 shm parent with an opaque subsurface over most
 #               of it. Nothing is hidden, the client is fully on screen, and
@@ -36,6 +43,12 @@
 #                     pass. The uncovered window shows the last colour it
 #                     committed while VISIBLE, which is a different colour, and
 #                     that is the whole point of the fixture.
+#   BREAK=refuse      AZ_AVK_REFUSE_UNDEFINED_PARTIAL=1 -- the pre-fix build in
+#                     one switch: the copy path declines every clipped FIRST
+#                     write. A churning client then saves nothing and says
+#                     nothing about it beyond a line in the log, which is how
+#                     this survived a session of looking at counters that were
+#                     all going the right way.
 #   BREAK=no-clip     AZ_AVK_NO_VISIBLE_CLIP=1 -- the control arm. Nothing is
 #                     clipped, so the saving assertions fail and every pixel
 #                     assertion passes. It is also run unconditionally below as
@@ -52,6 +65,8 @@ command -v python3 >/dev/null || { echo "avk-visible-clip-test: needs python3"; 
 python3 -c "import PIL" 2>/dev/null || { echo "avk-visible-clip-test: needs python3-pillow"; exit 1; }
 WLREUSE="$(dirname "$0")/wlreuse/wlreuse"
 [ -x "$WLREUSE" ] || { echo "avk-visible-clip-test: wlreuse not built -- run: cd contrib/wlreuse && make" >&2; exit 1; }
+WLREPAINT="$(dirname "$0")/wlrepaint/wlrepaint"
+[ -x "$WLREPAINT" ] || { echo "avk-visible-clip-test: wlrepaint not built -- run: cd contrib/wlrepaint && make" >&2; exit 1; }
 
 # No blur, no shadow, no rounding: each of them is a reason az_cmd_opaque_region
 # declines to treat a window as an occluder, and a fixture in which nothing
@@ -102,6 +117,7 @@ run_case() { # run_case NAME
 	[ "$name" = noclip ] && HL_ENV="$HL_ENV AZ_AVK_NO_VISIBLE_CLIP=1"
 	[ "$BREAK" = no-repair ] && HL_ENV="$HL_ENV AZ_AVK_NO_VISIBLE_REPAIR=1"
 	[ "$BREAK" = no-clip ] && HL_ENV="$HL_ENV AZ_AVK_NO_VISIBLE_CLIP=1"
+	[ "$BREAK" = refuse ] && HL_ENV="$HL_ENV AZ_AVK_REFUSE_UNDEFINED_PARTIAL=1"
 	export HL_OUTDIR HL_WIDTH HL_HEIGHT HL_ENV
 	HL_SPAWN_COLOR_IDX=0
 
@@ -175,6 +191,7 @@ run_frame_case() { # run_frame_case NAME
 	[ "$name" = frame-noclip ] && HL_ENV="$HL_ENV AZ_AVK_NO_VISIBLE_CLIP=1"
 	[ "$BREAK" = no-repair ] && HL_ENV="$HL_ENV AZ_AVK_NO_VISIBLE_REPAIR=1"
 	[ "$BREAK" = no-clip ] && HL_ENV="$HL_ENV AZ_AVK_NO_VISIBLE_CLIP=1"
+	[ "$BREAK" = refuse ] && HL_ENV="$HL_ENV AZ_AVK_REFUSE_UNDEFINED_PARTIAL=1"
 	export HL_OUTDIR HL_WIDTH HL_HEIGHT HL_ENV
 	HL_SPAWN_COLOR_IDX=0
 
@@ -192,6 +209,48 @@ run_frame_case() { # run_frame_case NAME
 	hl_get "get avk-stats" > "$HL_OUTDIR/stats.json"
 	hl_screenshot framed
 	kill "$pid" 2>/dev/null
+	hl_stop
+}
+
+# ── a client that never presents the same buffer twice ─────────────────────
+#
+# wlrepaint --churn allocates a fresh wl_buffer per generation, so AVK has a
+# brand-new VkImage every time and every clipped copy is a partial write into an
+# image whose layout is still UNDEFINED. That is refused by the copy path unless
+# the plan states there is nothing outside the rectangles to lose.
+#
+# NOTHING COVERS IT. The buffer is 1024x2048 and the window it is drawn into is
+# about 700 rows tall, so two thirds of every generation is off the bottom of
+# its own window and can never be sampled. An occluder was the obvious way to
+# build this and it does not work: a fully hidden window gets no frame
+# callbacks, so a callback-driven client stops committing and BOTH arms copy
+# nothing. Overflow keeps the client drawing while most of what it draws stays
+# invisible, which is the same question asked in a way the fixture can answer.
+run_churn_case() { # run_churn_case NAME
+	local name="$1"
+	HL_OUTDIR="$BASE/$name"
+	HL_WIDTH=1280 HL_HEIGHT=720
+	HL_ENV="ASTEROIDZ_RENDERER=avk"
+	[ "$name" = churn-noclip ] && HL_ENV="$HL_ENV AZ_AVK_NO_VISIBLE_CLIP=1"
+	[ "$BREAK" = no-repair ] && HL_ENV="$HL_ENV AZ_AVK_NO_VISIBLE_REPAIR=1"
+	[ "$BREAK" = no-clip ] && HL_ENV="$HL_ENV AZ_AVK_NO_VISIBLE_CLIP=1"
+	[ "$BREAK" = refuse ] && HL_ENV="$HL_ENV AZ_AVK_REFUSE_UNDEFINED_PARTIAL=1"
+	export HL_OUTDIR HL_WIDTH HL_HEIGHT HL_ENV
+	HL_SPAWN_COLOR_IDX=0
+
+	hl_start "$SCENE_KDL"
+	hl_dispatch set_option,animations,0 1
+	"$WLREPAINT" --title churner --size 1024x2048 --fixed --churn \
+		--hold-ms 120 > "$HL_OUTDIR/churner.log" 2>&1 &
+	local ch=$!
+	HL_SPAWNED_PIDS+=("$ch")
+	hl_wait_client_count 1 60
+	sleep 2
+	hl_dispatch reset_avk_stats 0.3
+	sleep 5
+	hl_get "get avk-stats" > "$HL_OUTDIR/stats.json"
+	hl_screenshot churn
+	kill "$ch" 2>/dev/null
 	hl_stop
 }
 
@@ -274,6 +333,34 @@ hl_assert "the copy shrank to the part that is not covered" \
 	"$([ "${FB:-999999999}" -lt $(( ${FNB:-0} / 2 )) ] && echo true || echo false)" "true"
 hl_assert "and nothing had to be repaired after the fact" \
 	"$([ "${FREPF:-1}" -eq 0 ] && echo true || echo false)" "true"
+
+echo
+echo "── 5. a client that never presents the same buffer twice ─────────────"
+echo "== churn =="
+run_churn_case churn
+echo "== churn control: AZ_AVK_NO_VISIBLE_CLIP=1 =="
+run_churn_case churn-noclip
+
+CB="$(field "$BASE/churn/stats.json" shm_upload_bytes)"
+CNB="$(field "$BASE/churn-noclip/stats.json" shm_upload_bytes)"
+CSUB="$(field "$BASE/churn/stats.json" shm_submit_failed)"
+CSAVE="$(field "$BASE/churn/stats.json" visible_saved_px)"
+echo "  control $CNB B vs production $CB B, $CSAVE px saved, $CSUB submit failures"
+hl_assert "PREMISE: the churning client copied a great deal unclipped" \
+	"$([ "${CNB:-0}" -gt 40000000 ] && echo true || echo false)" "true"
+# Two thirds of the buffer is below its own window, so a copy that stops at
+# what can be seen is about a third of one that does not.
+hl_assert "a fresh image on every redraw is still clipped" \
+	"$([ "${CB:-999999999}" -lt $(( ${CNB:-0} / 2 )) ] && echo true || echo false)" "true"
+hl_assert "and the copy path refused none of them" \
+	"$([ "${CSUB:-1}" -eq 0 ] && echo true || echo false)" "true"
+# The point of the whole cohort: a partial first write must still SHOW.
+CHURN_BG="$(count_colour "$BASE/churn/churn.png" "#808080")"
+CHURN_BG_N="$(count_colour "$BASE/churn-noclip/churn.png" "#808080")"
+echo "  wallpaper still showing: $CHURN_BG px clipped, $CHURN_BG_N px unclipped"
+hl_assert "and the window is on screen, not a hole where one should be" \
+	"$([ "${CHURN_BG:-0}" -le $(( ${CHURN_BG_N:-0} + 2000 )) ] \
+		&& echo true || echo false)" "true"
 
 echo
 echo "logs: $BASE"

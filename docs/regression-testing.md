@@ -2585,6 +2585,7 @@ machine.
 | | |
 |---|---|
 | `AZ_AVK_NO_VISIBLE_CLIP` | the control arm. Nothing is clipped to visibility and every copy is the size it always was. Both `avk-visible-clip-test.sh` cohorts run with and without it, because "we saved bytes" needs something to be smaller than |
+| `AZ_AVK_REFUSE_UNDEFINED_PARTIAL` | refuse every clipped FIRST copy, which is what the copy path did before it was told when there is nothing to preserve. A churning client then saves nothing and is not drawn |
 | `AZ_AVK_NO_VISIBLE_REPAIR` | **the break that matters.** Clip the copies and then decline to repair what the clip got wrong. Every cost assertion still passes — fewer bytes, the same counters — and a window that becomes visible shows whatever its image was allocated with. A suite that cannot tell this build from the real one is asserting on cost and calling it correctness |
 
 The counters are `visible_clipped`, `visible_saved_px`, `plan_no_hint`, and
@@ -2604,11 +2605,25 @@ number for all of them is a number nobody can act on:
 | `visible_repair_nothing` | the plan said there was nothing to copy while the visibility pass said otherwise. The two disagree, which is a bug in one of them |
 | `visible_repair_short` | the copy happened and did not cover the shortfall. Likewise |
 
-**No headless fixture has produced a non-zero one.** The live desktop has:
-1142 frames across two outputs at mixed scale, with animations, tag switches and
-fullscreen toggles, gave 312 repairs and zero failures. The live session gave
-109 failures in half an hour, which is why the breakdown exists rather than a
-single counter — the reproduction is the instrument.
+The breakdown is what found the bug. Every live failure was `repair_short`, and
+the one-line description the first of them now prints named it in one field:
+`submit=2`. `submit_copy()` refuses a partial write into an image whose layout
+is still `UNDEFINED`, and a client that allocates a fresh `wl_buffer` per redraw
+has a brand-new image on every one — so every clipped first copy was refused.
+The plan now says when there is nothing outside the rectangles to lose.
+
+`BREAK=refuse` (`AZ_AVK_REFUSE_UNDEFINED_PARTIAL=1`) is that build in one
+switch, and it is the arm to read if this ever regresses:
+
+| | clipped | refused |
+|---|---|---|
+| bytes copied | 122.9 MB | **60.0 MB** |
+| submit failures | 0 | 59 |
+| wallpaper visible | 208896 px | **921600 px** |
+
+The broken build copies half as much and the window is **not on screen at all**.
+A cohort asserting only on bytes would have called that an improvement, which is
+why the last row is an assertion and not a note.
 
 ### Three vacuous versions, and what each assertion said
 

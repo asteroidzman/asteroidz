@@ -3555,3 +3555,31 @@ eight — the one it committed while nothing could see it — and it gets there
 through exactly one repair. `BREAK=no-repair` clips the copies and declines to
 repair them: every cost assertion still passes and the window comes back showing
 generation one.
+
+### The copy path refused the case this was built for
+
+`submit_copy()` declines a partial write into an image whose layout is still
+`VK_IMAGE_LAYOUT_UNDEFINED`, because the transition out of `UNDEFINED` may
+discard the image and everything outside the rectangles would be lost. That is
+correct whenever there was something there — and it is exactly wrong for the
+first copy into an image the compositor is deliberately filling in part.
+
+It is not an edge case. A client that allocates a fresh `wl_buffer` for every
+redraw gets a brand-new `VkImage` every time, so **every** clipped copy it makes
+is a partial write into an `UNDEFINED` image. Firefox is that client, at 54.5 MB
+a redraw. The refusal was silent apart from one log line, the entry fell back to
+a whole upload on its next commit, and the saving quietly did not happen for the
+client the whole subsystem exists for.
+
+`avk_upload_plan.no_prior_contents` is the caller saying it has nothing to lose
+there, set from `az_avk_buffer.uploaded` being empty — the record that already
+exists for precisely this question. The guard still catches the bug it was
+written for, because only a caller that can answer for its own image sets it.
+
+**What found it.** Not a fixture — none reproduced it, including one at the
+client's exact 5128x2788 dimensions. `visible_repair_failed` split three ways
+said the copy ran and came up short, which ruled out an unreadable source and a
+declining plan; then the first short repair of a session described itself, and
+`submit=2` in that line named the function. The lesson is the one the M3.5D.1
+work already recorded: a counter that lumps causes together is a number nobody
+can act on.

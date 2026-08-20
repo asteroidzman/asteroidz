@@ -1334,6 +1334,25 @@ static enum az_shm_plan_result az_avk_shm_plan(struct az_avk_buffer *entry,
 		}
 		if (n > 0 && avk_upload_plan_regions(plan, entry->image, stride,
 				(uint32_t)entry->buffer->height, rects, n)) {
+			/*
+			 * NOTHING TO LOSE OUTSIDE THE RECTANGLES, and the copy path needs
+			 * telling. It refuses a partial write into an image whose layout is
+			 * still UNDEFINED, because the transition out of UNDEFINED may
+			 * discard everything -- correct whenever there was something there.
+			 * `uploaded` is the record of whether there was, and an empty one
+			 * means this is the image's first copy and the rest of it is
+			 * deliberately undefined.
+			 *
+			 * This is not an edge case, it is THE case: a client that allocates
+			 * a fresh wl_buffer for every redraw gets a brand-new image every
+			 * time, so every one of its clipped copies is a partial write into
+			 * an UNDEFINED image. Firefox does exactly that at 54.5MB a redraw.
+			 * Without this the copy was refused, the entry fell back to a whole
+			 * upload on its next commit, and the saving quietly did not happen
+			 * for the client the whole subsystem was built for.
+			 */
+			plan->no_prior_contents =
+				!pixman_region32_not_empty(&entry->uploaded);
 			/* EXACTLY what the copy will carry, taken from the rectangles the
 			 * plan was built from rather than from `want` -- the clamp and the
 			 * break switch above can both drop one, and an `uploaded` that

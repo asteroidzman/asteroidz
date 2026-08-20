@@ -179,6 +179,28 @@ struct avk_upload_plan {
 	 * bufferRowLength -- see the note on avk_upload_image_write_regions().
 	 */
 	bool full;
+
+	/*
+	 * THE CALLER HAS NO PRIOR CONTENTS TO PRESERVE.
+	 *
+	 * A partial copy into an image whose layout is still UNDEFINED is normally
+	 * a caller bug: the transition out of UNDEFINED may discard the image, so
+	 * everything outside the rectangles would be lost. submit_copy() refuses
+	 * it, and has to.
+	 *
+	 * But "lost" presumes there was something there. A compositor that copies
+	 * only what can be SEEN of a client's buffer creates images that are
+	 * deliberately incomplete and keeps its own record of which texels are
+	 * real -- see az_avk_buffer.uploaded -- so for the FIRST copy into such an
+	 * image there is nothing to discard and the refusal is simply wrong. It is
+	 * also the exact case that matters: a client which allocates a fresh
+	 * wl_buffer for every redraw, which is what Firefox does at 54.5MB a time,
+	 * has a brand-new image on every single one.
+	 *
+	 * Set only by a caller that can say so about its own image, so the guard
+	 * still catches the bug it was written for.
+	 */
+	bool no_prior_contents;
 };
 
 /* Plan a whole-image copy. False when the format or the stride makes the copy

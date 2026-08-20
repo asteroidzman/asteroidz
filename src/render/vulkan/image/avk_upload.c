@@ -585,15 +585,24 @@ void avk_upload_pack(const struct avk_upload_plan *plan, const void *src,
  */
 static uint64_t submit_copy(struct avk_cmd_ring *ring, VkBuffer src,
 		struct avk_image *image, const VkBufferImageCopy2 *regions,
-		uint32_t region_count, bool full,
+		uint32_t region_count, bool full, bool no_prior_contents,
 		const VkSemaphoreSubmitInfo *waits, uint32_t wait_count) {
 	if (region_count == 0) {
 		return 0;
 	}
-	if (!full && image->layout == VK_IMAGE_LAYOUT_UNDEFINED) {
+	/* AZ_AVK_REFUSE_UNDEFINED_PARTIAL=1 restores the refusal unconditionally.
+	 * It is the pre-fix build in one switch: the copy path declines every
+	 * clipped first write, so a client that allocates a fresh wl_buffer per
+	 * redraw -- the one this whole subsystem is for -- saves nothing and says
+	 * nothing about it except a line in the log. */
+	if (!full && image->layout == VK_IMAGE_LAYOUT_UNDEFINED
+			&& (!no_prior_contents
+				|| getenv("AZ_AVK_REFUSE_UNDEFINED_PARTIAL") != NULL)) {
 		/* UNDEFINED discards the contents, which for a partial update would
 		 * throw away every pixel outside the damaged rectangles. A partial
-		 * update into an image nothing has written yet is a caller bug. */
+		 * update into an image nothing has written yet is a caller bug --
+		 * UNLESS the caller says it has nothing to lose there, which is a real
+		 * case and not an escape hatch: see avk_upload_plan.no_prior_contents. */
 		avk_log(AVK_ERROR, "upload: a partial update of an image with no "
 			"previous contents would discard everything outside the damage");
 		return 0;
@@ -700,7 +709,8 @@ uint64_t avk_upload_submit_packed(struct avk_device *dev,
 		};
 	}
 	uint64_t timeline = submit_copy(ring, up->buffer, image, regions,
-		plan->rect_count, plan->full, waits, wait_count);
+		plan->rect_count, plan->full, plan->no_prior_contents, waits,
+		wait_count);
 	if (timeline != 0) {
 		up->last_use = timeline;
 	}
