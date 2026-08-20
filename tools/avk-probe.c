@@ -573,6 +573,213 @@ out:
 
 /* ── main ───────────────────────────────────────────────────────────────── */
 
+/*
+ * ── VIDEO ENCODE ──────────────────────────────────────────────────────────
+ *
+ * M14 wants HDR screen capture built into the compositor rather than bolted
+ * beside it, and the argument for that is entirely about where the image
+ * already is: AVK composites into a VkImage on this device, so an encoder on
+ * the same device can read it without a readback, a dmabuf export or a colour
+ * conversion. Every other capture path on this machine is trying to obtain a
+ * copy of something the compositor is already holding.
+ *
+ * That argument only survives if the driver can actually encode what we hold.
+ * vulkaninfo lists profile NAMES, which is not the same as saying an encoder
+ * will accept a 10-bit image of a given format as its input picture, and
+ * writing a thousand lines of video-session code against a guess is how a
+ * milestone discovers in week two that its premise was wrong.
+ *
+ * So this asks the driver directly, and prints what it says.
+ */
+static const char *video_fmt_name(VkFormat f) {
+	switch (f) {
+	case VK_FORMAT_G8_B8R8_2PLANE_420_UNORM: return "NV12 (8-bit 4:2:0)";
+	case VK_FORMAT_G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16:
+		return "P010 (10-bit 4:2:0)";
+	case VK_FORMAT_G12X4_B12X4R12X4_2PLANE_420_UNORM_3PACK16:
+		return "P012 (12-bit 4:2:0)";
+	case VK_FORMAT_A2B10G10R10_UNORM_PACK32: return "A2B10G10R10 (RGB 10-bit)";
+	case VK_FORMAT_A2R10G10B10_UNORM_PACK32: return "A2R10G10B10 (RGB 10-bit)";
+	case VK_FORMAT_R8G8B8A8_UNORM: return "R8G8B8A8 (RGB 8-bit)";
+	case VK_FORMAT_B8G8R8A8_UNORM: return "B8G8R8A8 (RGB 8-bit)";
+	default: return NULL;
+	}
+}
+
+/* One codec's answer: can it encode, at what size, and from which images. */
+static void probe_encode_profile(struct avk_instance *inst,
+		struct avk_device *dev, const char *label,
+		const void *codec_profile, void *codec_caps,
+		VkVideoCodecOperationFlagBitsKHR op,
+		VkVideoComponentBitDepthFlagBitsKHR depth) {
+	PFN_vkGetPhysicalDeviceVideoCapabilitiesKHR get_caps =
+		(PFN_vkGetPhysicalDeviceVideoCapabilitiesKHR)vkGetInstanceProcAddr(
+			inst->instance, "vkGetPhysicalDeviceVideoCapabilitiesKHR");
+	PFN_vkGetPhysicalDeviceVideoFormatPropertiesKHR get_fmts =
+		(PFN_vkGetPhysicalDeviceVideoFormatPropertiesKHR)vkGetInstanceProcAddr(
+			inst->instance, "vkGetPhysicalDeviceVideoFormatPropertiesKHR");
+	if (get_caps == NULL || get_fmts == NULL) {
+		bad("%s: VK_KHR_video_queue query entry points are missing", label);
+		return;
+	}
+
+	VkVideoProfileInfoKHR profile = {
+		.sType = VK_STRUCTURE_TYPE_VIDEO_PROFILE_INFO_KHR,
+		.pNext = (void *)codec_profile,
+		.videoCodecOperation = op,
+		.chromaSubsampling = VK_VIDEO_CHROMA_SUBSAMPLING_420_BIT_KHR,
+		.lumaBitDepth = depth,
+		.chromaBitDepth = depth,
+	};
+	/* The codec-specific capabilities struct is NOT optional. The driver
+	 * writes its codec limits into it, and RADV segfaults rather than
+	 * skipping it when it is absent -- which is how the first version of this
+	 * probe died, one line after reporting the encode queue. */
+	VkVideoEncodeCapabilitiesKHR enc_caps = {
+		.sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_CAPABILITIES_KHR,
+		.pNext = codec_caps,
+	};
+	VkVideoCapabilitiesKHR caps = {
+		.sType = VK_STRUCTURE_TYPE_VIDEO_CAPABILITIES_KHR,
+		.pNext = &enc_caps,
+	};
+	VkResult r = get_caps(dev->phys, &profile, &caps);
+	if (r != VK_SUCCESS) {
+		bad("%s: not supported (VkResult %d)", label, (int)r);
+		return;
+	}
+	ok("%s: up to %ux%u, %u DPB slot(s), %u ref(s)", label,
+		caps.maxCodedExtent.width, caps.maxCodedExtent.height,
+		caps.maxDpbSlots, caps.maxActiveReferencePictures);
+	printf("      picture alignment %ux%u, bitstream offset align %llu\n",
+		caps.pictureAccessGranularity.width,
+		caps.pictureAccessGranularity.height,
+		(unsigned long long)caps.minBitstreamBufferOffsetAlignment);
+	printf("      rate control modes:%s%s%s\n",
+		(enc_caps.rateControlModes
+			& VK_VIDEO_ENCODE_RATE_CONTROL_MODE_DISABLED_BIT_KHR)
+			? " disabled" : "",
+		(enc_caps.rateControlModes
+			& VK_VIDEO_ENCODE_RATE_CONTROL_MODE_CBR_BIT_KHR) ? " CBR" : "",
+		(enc_caps.rateControlModes
+			& VK_VIDEO_ENCODE_RATE_CONTROL_MODE_VBR_BIT_KHR) ? " VBR" : "");
+
+	/* The input picture format is the whole question for a compositor: it
+	 * decides whether AVK's own image can be handed over as-is, or has to be
+	 * converted into a YUV plane pair first. */
+	VkVideoProfileListInfoKHR list = {
+		.sType = VK_STRUCTURE_TYPE_VIDEO_PROFILE_LIST_INFO_KHR,
+		.profileCount = 1,
+		.pProfiles = &profile,
+	};
+	VkPhysicalDeviceVideoFormatInfoKHR fmt_info = {
+		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VIDEO_FORMAT_INFO_KHR,
+		.pNext = &list,
+		.imageUsage = VK_IMAGE_USAGE_VIDEO_ENCODE_SRC_BIT_KHR,
+	};
+	uint32_t n = 0;
+	if (get_fmts(dev->phys, &fmt_info, &n, NULL) != VK_SUCCESS || n == 0) {
+		bad("%s: reports no input picture format at all", label);
+		return;
+	}
+	VkVideoFormatPropertiesKHR *props = calloc(n, sizeof(*props));
+	if (props == NULL)
+		return;
+	for (uint32_t i = 0; i < n; i++)
+		props[i].sType = VK_STRUCTURE_TYPE_VIDEO_FORMAT_PROPERTIES_KHR;
+	if (get_fmts(dev->phys, &fmt_info, &n, props) == VK_SUCCESS) {
+		for (uint32_t i = 0; i < n; i++) {
+			const char *name = video_fmt_name(props[i].format);
+			/* The same format appears several times with different tiling and
+			 * image type. Printing the format alone makes that look like a
+			 * repeated line rather than three distinct answers. */
+			printf("      input picture  %-24s %s, type %u\n",
+				name ? name : "(a format this probe does not name)",
+				props[i].imageTiling == VK_IMAGE_TILING_LINEAR ? "linear"
+					: props[i].imageTiling == VK_IMAGE_TILING_OPTIMAL
+					? "optimal" : "modifier",
+				(unsigned)props[i].imageType);
+		}
+	}
+	free(props);
+}
+
+static void report_video_encode(struct avk_instance *inst,
+		struct avk_device *dev) {
+	printf("\n\033[1mVideo encode\033[0m\n");
+
+	/* A device without an encode queue cannot encode no matter what profiles
+	 * it claims, so this is asked first and separately. */
+	uint32_t qf_count = 0;
+	vkGetPhysicalDeviceQueueFamilyProperties(dev->phys, &qf_count, NULL);
+	VkQueueFamilyProperties *qf = calloc(qf_count, sizeof(*qf));
+	if (qf == NULL)
+		return;
+	vkGetPhysicalDeviceQueueFamilyProperties(dev->phys, &qf_count, qf);
+	int encode_family = -1;
+	for (uint32_t i = 0; i < qf_count; i++) {
+		if (qf[i].queueFlags & VK_QUEUE_VIDEO_ENCODE_BIT_KHR) {
+			encode_family = (int)i;
+			break;
+		}
+	}
+	free(qf);
+	if (encode_family < 0) {
+		bad("no queue family can encode video");
+		return;
+	}
+	ok("queue family %d encodes video", encode_family);
+
+	VkVideoEncodeAV1ProfileInfoKHR av1 = {
+		.sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_AV1_PROFILE_INFO_KHR,
+		.stdProfile = STD_VIDEO_AV1_PROFILE_MAIN,
+	};
+	VkVideoEncodeAV1CapabilitiesKHR av1_caps = {
+		.sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_AV1_CAPABILITIES_KHR,
+	};
+	probe_encode_profile(inst, dev, "AV1 Main, 10-bit", &av1, &av1_caps,
+		VK_VIDEO_CODEC_OPERATION_ENCODE_AV1_BIT_KHR,
+		VK_VIDEO_COMPONENT_BIT_DEPTH_10_BIT_KHR);
+
+	VkVideoEncodeH265ProfileInfoKHR h265 = {
+		.sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_H265_PROFILE_INFO_KHR,
+		.stdProfileIdc = STD_VIDEO_H265_PROFILE_IDC_MAIN_10,
+	};
+	VkVideoEncodeH265CapabilitiesKHR h265_caps = {
+		.sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_H265_CAPABILITIES_KHR,
+	};
+	probe_encode_profile(inst, dev, "H.265 Main 10, 10-bit", &h265, &h265_caps,
+		VK_VIDEO_CODEC_OPERATION_ENCODE_H265_BIT_KHR,
+		VK_VIDEO_COMPONENT_BIT_DEPTH_10_BIT_KHR);
+
+	/* If the driver will convert RGB for us, the compositor hands over its own
+	 * composited image and no colour-conversion pass exists to get wrong. */
+	uint32_t ext_count = 0;
+	vkEnumerateDeviceExtensionProperties(dev->phys, NULL, &ext_count, NULL);
+	VkExtensionProperties *exts = calloc(ext_count, sizeof(*exts));
+	if (exts == NULL)
+		return;
+	vkEnumerateDeviceExtensionProperties(dev->phys, NULL, &ext_count, exts);
+	bool rgb_conv = false;
+	for (uint32_t i = 0; i < ext_count; i++) {
+		if (strcmp(exts[i].extensionName,
+				"VK_VALVE_video_encode_rgb_conversion") == 0)
+			rgb_conv = true;
+	}
+	free(exts);
+	/* Present is not the same as usable. The encode-SRC query above ran
+	 * WITHOUT this extension enabled on a device, and answered P010 only --
+	 * so as things stand the encoder wants a YUV plane pair, and whether
+	 * AVK's own RGB image can be handed over instead is a question about
+	 * enabling this and asking again, not something its presence settles. */
+	if (rgb_conv)
+		ok("VK_VALVE_video_encode_rgb_conversion is present (not enabled "
+			"here, so the formats above are the plain answer)");
+	else
+		printf("  --  no VK_VALVE_video_encode_rgb_conversion: an RGB->YUV "
+			"pass would be ours to write\n");
+}
+
 static void usage(const char *argv0) {
 	printf("usage: %s [-o output.png] [-n /dev/dri/renderDNNN]\n\n"
 		"Runs asteroidz's Vulkan engine (AVK) on this machine and reports\n"
@@ -655,6 +862,7 @@ int main(int argc, char **argv) {
 	}
 
 	report_composition(dev, png_path);
+	report_video_encode(inst, dev);
 
 	avk_device_destroy(dev);
 	avk_instance_destroy(inst);
