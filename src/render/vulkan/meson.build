@@ -67,7 +67,11 @@ foreach shader : [['quad.vert', 'quad_vert_spv'],
                   ['output_encode.frag', 'output_encode_frag_spv'],
                   # M6C: the same source, one define apart.
                   ['output_encode.frag', 'output_encode_clut_frag_spv',
-                   '-DAZ_ENCODE_CLUT=1', 'output_encode_clut.frag']]
+                   '-DAZ_ENCODE_CLUT=1', 'output_encode_clut.frag'],
+                  # M14A: the only compute shader in the engine. RGB -> P010
+                  # for the video encoder, because the driver extension that
+                  # would have taken RGB directly does not work on this Mesa.
+                  ['rgb_to_p010.comp', 'rgb_to_p010_comp_spv']]
   # The output basename, so the two output_encode.frag variants do not collide
   # in the build directory.
   base = shader.length() > 3 ? shader[3] : shader[0]

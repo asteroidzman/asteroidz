@@ -1,0 +1,92 @@
+#version 450
+
+/*
+ * RGB -> P010, for the video encoder.
+ *
+ * The encoder wants a 10-bit YUV 4:2:0 plane pair. The driver advertises an
+ * extension that would take our RGB directly, and on this Mesa it does not
+ * work -- see docs/known-issues.md -- so the conversion is ours, which means
+ * the colour matrix is ours to get right rather than the driver's.
+ *
+ * BT.2020 NON-CONSTANT LUMINANCE, which is what HDR10 specifies. The matrix is
+ * applied to the ENCODED (PQ) signal, not to linear light: that is what
+ * "non-constant luminance" means, and it is why this shader does no transfer
+ * function of its own. AVK's HDR scanout image is already PQ-encoded, so the
+ * values arriving here are exactly the ones the matrix is defined over.
+ *
+ * FULL RANGE. AVK's composited image is full-range RGB and the encoder is told
+ * the same, so 0 maps to 0 and 1 maps to 1023 rather than to 64..940. Narrowing
+ * here would crush both ends of the scale for nothing.
+ *
+ * ── THE 10-IN-16 PACKING ──────────────────────────────────────────────────
+ *
+ * P010 stores each 10-bit sample in the HIGH bits of a 16-bit word, with the
+ * low 6 zero. Writing v/1023 to a UNORM r16 image would store v<<6 only if the
+ * hardware happened to round that way, so the shift is done explicitly:
+ * quantise to 10 bits, multiply by 64, and divide by 65535 to land on the
+ * exact 16-bit code. Getting this wrong is not visible as corruption -- it is
+ * visible as a picture that is slightly too dark, which is far worse.
+ */
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0, rgb10_a2) uniform readonly image2D src;
+layout(set = 0, binding = 1, r16)      uniform writeonly image2D plane_y;
+layout(set = 0, binding = 2, rg16)     uniform writeonly image2D plane_uv;
+
+layout(push_constant) uniform Push {
+	ivec2 size;   /* luma extent */
+} push;
+
+/* 10 bits, in the top of a 16-bit UNORM word. 1023 << 6 == 65472. */
+float pack10(float v) {
+	return floor(clamp(v, 0.0, 1.0) * 1023.0 + 0.5) * 64.0 / 65535.0;
+}
+
+float luma(vec3 c) {
+	return dot(c, vec3(0.2627, 0.6780, 0.0593));
+}
+
+void main() {
+	/* One invocation per chroma sample, which is one 2x2 luma block: the
+	 * chroma planes are half resolution in both axes and a thread per luma
+	 * sample would have three of every four doing nothing but a redundant
+	 * chroma write. */
+	ivec2 uv_pos = ivec2(gl_GlobalInvocationID.xy);
+	ivec2 uv_size = (push.size + 1) / 2;
+	if (uv_pos.x >= uv_size.x || uv_pos.y >= uv_size.y) {
+		return;
+	}
+	ivec2 base = uv_pos * 2;
+
+	vec3 sum = vec3(0.0);
+	int taken = 0;
+	for (int dy = 0; dy < 2; dy++) {
+		for (int dx = 0; dx < 2; dx++) {
+			ivec2 p = base + ivec2(dx, dy);
+			/* The coded extent is the image extent rounded up to the
+			 * encoder's granularity, so the last block of a picture whose
+			 * size is not a multiple of two can hang over the edge. Clamping
+			 * repeats the edge sample rather than reading outside, which
+			 * returns zero and would draw a black seam down the right and
+			 * bottom of every unaligned capture. */
+			ivec2 c = min(p, push.size - 1);
+			vec3 rgb = imageLoad(src, c).rgb;
+			imageStore(plane_y, p, vec4(pack10(luma(rgb)), 0.0, 0.0, 0.0));
+			sum += rgb;
+			taken++;
+		}
+	}
+
+	/* Chroma from the average of the block. Averaging the RGB and converting
+	 * once is not the same as converting four times and averaging, but the
+	 * difference is below the quantiser at 10 bits and this is one pass
+	 * rather than four. */
+	vec3 avg = sum / float(taken);
+	float y = luma(avg);
+	/* BT.2020 NCL: Cb and Cr are the blue and red differences, scaled so that
+	 * they span [-0.5, 0.5], then offset to unsigned. */
+	float cb = (avg.b - y) / 1.8814 + 0.5;
+	float cr = (avg.r - y) / 1.4746 + 0.5;
+	imageStore(plane_uv, uv_pos, vec4(pack10(cb), pack10(cr), 0.0, 0.0));
+}

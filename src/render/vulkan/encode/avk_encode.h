@@ -62,14 +62,12 @@ struct avk_encoder {
 	 * of them. */
 	VkVideoProfileInfoKHR profile;
 	VkVideoEncodeH265ProfileInfoKHR h265_profile;
-	VkVideoEncodeProfileRgbConversionInfoVALVE rgb_profile;
 	VkVideoProfileListInfoKHR profile_list;
 
 	/* What the driver said it could do, kept for the same reason. */
 	VkVideoCapabilitiesKHR caps;
 	VkVideoEncodeCapabilitiesKHR encode_caps;
 	VkVideoEncodeH265CapabilitiesKHR h265_caps;
-	VkVideoEncodeRgbConversionCapabilitiesVALVE rgb_caps;
 
 	VkFormat dpb_format;
 	VkFormat src_format;
@@ -93,14 +91,34 @@ struct avk_encoder {
 	VkCommandPool cmd_pool;
 	VkCommandBuffer cmd;
 	VkFence fence;
+
+	/* The encoder's own input picture, in the only format it will accept.
+	 * The caller's RGB image is converted into this rather than handed over
+	 * -- see the shader for why the driver's own conversion is not used. */
+	VkImage p010_image;
+	VkDeviceMemory p010_memory;
+	VkImageView p010_view;      /* whole image, for the encoder */
+	VkImageView p010_y_view;    /* plane 0 as R16, for the compute write */
+	VkImageView p010_uv_view;   /* plane 1 as R16G16, likewise */
+
+	VkDescriptorSetLayout conv_set_layout;
+	VkDescriptorPool conv_pool;
+	VkDescriptorSet conv_set;
+	VkPipelineLayout conv_pipeline_layout;
+	VkPipeline conv_pipeline;
+	VkCommandPool conv_cmd_pool;   /* on the graphics family */
+	VkCommandBuffer conv_cmd;
+	VkFence conv_fence;
 };
 
 /*
  * Encode one image as a single IDR picture.
  *
- * `src` must be in VK_FORMAT_A2R10G10B10_UNORM_PACK32 at the encoder's size,
- * created with VK_IMAGE_USAGE_VIDEO_ENCODE_SRC_BIT_KHR and the encoder's
- * profile list in its pNext, and readable from the encode queue family.
+ * `src_view` must be a VK_FORMAT_A2R10G10B10_UNORM_PACK32 view of an image at
+ * the encoder's coded size, created with VK_IMAGE_USAGE_STORAGE_BIT and
+ * readable by the graphics/compute family. It is converted to P010 by a
+ * compute pass and the result is what the encoder reads, so the source needs
+ * no video usage flags and no profile in its pNext.
  *
  * On success *out is a malloc'd Annex B bitstream -- parameter sets followed
  * by the coded picture -- and the caller owns it.
@@ -108,10 +126,6 @@ struct avk_encoder {
 bool avk_encoder_encode_still(struct avk_encoder *enc, VkImage src,
 	VkImageView src_view, VkImageLayout src_layout,
 	void **out, size_t *out_len);
-
-/* The profile list, for a caller creating an image this encoder will read. */
-const VkVideoProfileListInfoKHR *avk_encoder_profile_list(
-	const struct avk_encoder *enc);
 
 /*
  * Create an encoder for one output size. Returns NULL and logs the reason if

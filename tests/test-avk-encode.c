@@ -88,11 +88,8 @@ struct source {
 
 static bool make_source(struct avk_device *dev, struct avk_encoder *enc,
 		struct source *out) {
-	uint32_t families[2] = {dev->caps.graphics_family,
-		dev->caps.video_encode_family};
 	VkImageCreateInfo info = {
 		.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-		.pNext = avk_encoder_profile_list(enc),
 		.imageType = VK_IMAGE_TYPE_2D,
 		.format = VK_FORMAT_A2R10G10B10_UNORM_PACK32,
 		.extent = {enc->coded_width, enc->coded_height, 1},
@@ -100,11 +97,9 @@ static bool make_source(struct avk_device *dev, struct avk_encoder *enc,
 		.arrayLayers = 1,
 		.samples = VK_SAMPLE_COUNT_1_BIT,
 		.tiling = VK_IMAGE_TILING_OPTIMAL,
-		.usage = VK_IMAGE_USAGE_VIDEO_ENCODE_SRC_BIT_KHR
+		.usage = VK_IMAGE_USAGE_STORAGE_BIT
 			| VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-		.sharingMode = VK_SHARING_MODE_CONCURRENT,
-		.queueFamilyIndexCount = 2,
-		.pQueueFamilyIndices = families,
+		.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
 		.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
 	};
 	if (vkCreateImage(dev->dev, &info, NULL, &out->image) != VK_SUCCESS) {
@@ -189,6 +184,15 @@ static bool make_source(struct avk_device *dev, struct avk_encoder *enc,
 	VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
 	vkCmdClearColorImage(cmd, out->image,
 		VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &colour, 1, &range);
+	/* GENERAL, because the conversion reads it as a storage image. */
+	VkImageMemoryBarrier to_general = to_dst;
+	to_general.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+	to_general.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+	to_general.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+	to_general.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+		VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, NULL, 0, NULL, 1,
+		&to_general);
 	vkEndCommandBuffer(cmd);
 	VkSubmitInfo submit = {
 		.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
@@ -213,6 +217,131 @@ static void destroy_source(struct avk_device *dev, struct source *s) {
 	if (s->memory != VK_NULL_HANDLE) {
 		vkFreeMemory(dev->dev, s->memory, NULL);
 	}
+}
+
+
+/*
+ * Read one pixel of the encoder's converted P010 image back.
+ *
+ * A multi-planar image cannot be copied in one go, so the two planes are
+ * copied separately by aspect. Only the centre sample is needed -- this exists
+ * to answer "did the conversion produce the right numbers", not to inspect a
+ * picture.
+ */
+static bool readback_p010(struct avk_device *dev, struct avk_encoder *enc,
+		uint16_t *y, uint16_t *cb, uint16_t *cr) {
+	VkDeviceSize size = 4096;
+	VkBufferCreateInfo binfo = {
+		.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+		.size = size,
+		.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+	};
+	VkBuffer buf;
+	if (vkCreateBuffer(dev->dev, &binfo, NULL, &buf) != VK_SUCCESS) {
+		return false;
+	}
+	VkMemoryRequirements req;
+	vkGetBufferMemoryRequirements(dev->dev, buf, &req);
+	VkPhysicalDeviceMemoryProperties mp;
+	vkGetPhysicalDeviceMemoryProperties(dev->phys, &mp);
+	uint32_t type = UINT32_MAX;
+	for (uint32_t i = 0; i < mp.memoryTypeCount; i++) {
+		if ((req.memoryTypeBits & (1u << i))
+				&& (mp.memoryTypes[i].propertyFlags
+					& VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
+				&& (mp.memoryTypes[i].propertyFlags
+					& VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+			type = i;
+			break;
+		}
+	}
+	if (type == UINT32_MAX) {
+		return false;
+	}
+	VkMemoryAllocateInfo ma = {
+		.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+		.allocationSize = req.size,
+		.memoryTypeIndex = type,
+	};
+	VkDeviceMemory mem;
+	if (vkAllocateMemory(dev->dev, &ma, NULL, &mem) != VK_SUCCESS
+			|| vkBindBufferMemory(dev->dev, buf, mem, 0) != VK_SUCCESS) {
+		return false;
+	}
+	VkCommandPoolCreateInfo cp = {
+		.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+		.queueFamilyIndex = dev->caps.graphics_family,
+	};
+	VkCommandPool pool;
+	if (vkCreateCommandPool(dev->dev, &cp, NULL, &pool) != VK_SUCCESS) {
+		return false;
+	}
+	VkCommandBuffer cmd;
+	VkCommandBufferAllocateInfo ca = {
+		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+		.commandPool = pool,
+		.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+		.commandBufferCount = 1,
+	};
+	vkAllocateCommandBuffers(dev->dev, &ca, &cmd);
+	VkCommandBufferBeginInfo bi = {
+		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+		.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+	};
+	vkBeginCommandBuffer(cmd, &bi);
+	/* The encode left it in VIDEO_ENCODE_SRC; a transfer read needs
+	 * TRANSFER_SRC. */
+	VkImageMemoryBarrier to_src = {
+		.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+		.oldLayout = VK_IMAGE_LAYOUT_VIDEO_ENCODE_SRC_KHR,
+		.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+		.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+		.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+		.image = enc->p010_image,
+		.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+		.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+	};
+	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+		VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &to_src);
+	VkBufferImageCopy regions[2] = {
+		{
+			.bufferOffset = 0,
+			.imageSubresource = {VK_IMAGE_ASPECT_PLANE_0_BIT, 0, 0, 1},
+			.imageOffset = {1920, 1080, 0},
+			.imageExtent = {1, 1, 1},
+		},
+		{
+			.bufferOffset = 256,
+			.imageSubresource = {VK_IMAGE_ASPECT_PLANE_1_BIT, 0, 0, 1},
+			.imageOffset = {960, 540, 0},
+			.imageExtent = {1, 1, 1},
+		},
+	};
+	vkCmdCopyImageToBuffer(cmd, enc->p010_image,
+		VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buf, 2, regions);
+	vkEndCommandBuffer(cmd);
+	VkSubmitInfo si = {
+		.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+		.commandBufferCount = 1,
+		.pCommandBuffers = &cmd,
+	};
+	vkQueueSubmit(dev->graphics_queue, 1, &si, VK_NULL_HANDLE);
+	vkQueueWaitIdle(dev->graphics_queue);
+
+	void *map = NULL;
+	bool ok = vkMapMemory(dev->dev, mem, 0, VK_WHOLE_SIZE, 0, &map)
+		== VK_SUCCESS;
+	if (ok) {
+		const uint16_t *p = map;
+		*y = p[0];
+		*cb = p[128];      /* byte 256 */
+		*cr = p[129];
+		vkUnmapMemory(dev->dev, mem);
+	}
+	vkDestroyCommandPool(dev->dev, pool, NULL);
+	vkDestroyBuffer(dev->dev, buf, NULL);
+	vkFreeMemory(dev->dev, mem, NULL);
+	return ok;
 }
 
 /* H.265 NAL header: two bytes, type is bits 1..6 of the first. */
@@ -266,9 +395,12 @@ int main(void) {
 		/* The whole architectural claim of M14A: the encoder takes the format
 		 * AVK already renders an HDR output in, so the composited image is
 		 * handed over rather than converted. */
-		CHECK(enc->src_format == VK_FORMAT_A2R10G10B10_UNORM_PACK32,
-			"the encode source format is A2R10G10B10 -- AVK's own HDR "
-			"render format (got %d)", (int)enc->src_format);
+		/* The driver's RGB-input path does not work (known-issues.md), so
+		 * the encoder's input is P010 and the conversion is ours. */
+		CHECK(enc->src_format
+				== VK_FORMAT_G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16,
+			"the encode source format is P010 (got %d)",
+			(int)enc->src_format);
 
 		/* ── the encode itself ──────────────────────────────────────── */
 		struct source src = {0};
@@ -276,7 +408,25 @@ int main(void) {
 			void *stream = NULL;
 			size_t len = 0;
 			bool encoded = avk_encoder_encode_still(enc, src.image, src.view,
-				VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &stream, &len);
+				VK_IMAGE_LAYOUT_GENERAL, &stream, &len);
+
+			/* THE BISECT. Two things can put a wrong picture in the
+			 * bitstream: a conversion that wrote the wrong P010, or an
+			 * encode that did not read it. Reading the converted image back
+			 * separates them, and without that separation the next hour is
+			 * spent guessing. Expected for RGB(0.25,0.55,0.85) under BT.2020
+			 * NCL full range: Y 500, Cb 708, Cr 346, in the top 10 bits of
+			 * each 16-bit word. */
+			uint16_t y0 = 0, cb0 = 0, cr0 = 0;
+			if (readback_p010(dev, enc, &y0, &cb0, &cr0)) {
+				printf("  converted P010 centre: Y=%u Cb=%u Cr=%u "
+					"(expected 500 708 346)\n", y0 >> 6, cb0 >> 6, cr0 >> 6);
+				CHECK(abs((int)(y0 >> 6) - 500) <= 4,
+					"the conversion wrote the right luma");
+				CHECK(abs((int)(cb0 >> 6) - 708) <= 4
+						&& abs((int)(cr0 >> 6) - 346) <= 4,
+					"the conversion wrote the right chroma");
+			}
 			CHECK(encoded, "one 3840x2160 IDR picture encodes");
 			if (encoded) {
 				const uint8_t *b = stream;

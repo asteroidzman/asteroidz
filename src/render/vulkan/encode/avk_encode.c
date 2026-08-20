@@ -8,6 +8,8 @@
 #include "render/vulkan/device/avk_instance.h"
 #include "render/vulkan/avk.h"
 
+#include "rgb_to_p010_comp.spv.h"
+
 /* Entry points. Every one of these comes from a device extension, so
  * vkGetDeviceProcAddr is the only way to reach them and a NULL check is the
  * only way to know the loader agreed the extension was enabled. */
@@ -56,15 +58,9 @@ static void build_profile(struct avk_encoder *enc) {
 		.sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_H265_PROFILE_INFO_KHR,
 		.stdProfileIdc = STD_VIDEO_H265_PROFILE_IDC_MAIN_10,
 	};
-	enc->rgb_profile = (VkVideoEncodeProfileRgbConversionInfoVALVE){
-		.sType =
-			VK_STRUCTURE_TYPE_VIDEO_ENCODE_PROFILE_RGB_CONVERSION_INFO_VALVE,
-		.pNext = &enc->h265_profile,
-		.performEncodeRgbConversion = VK_TRUE,
-	};
 	enc->profile = (VkVideoProfileInfoKHR){
 		.sType = VK_STRUCTURE_TYPE_VIDEO_PROFILE_INFO_KHR,
-		.pNext = &enc->rgb_profile,
+		.pNext = &enc->h265_profile,
 		.videoCodecOperation = VK_VIDEO_CODEC_OPERATION_ENCODE_H265_BIT_KHR,
 		.chromaSubsampling = VK_VIDEO_CHROMA_SUBSAMPLING_420_BIT_KHR,
 		.lumaBitDepth = VK_VIDEO_COMPONENT_BIT_DEPTH_10_BIT_KHR,
@@ -96,17 +92,9 @@ static bool query_caps(struct avk_encoder *enc) {
 	enc->h265_caps = (VkVideoEncodeH265CapabilitiesKHR){
 		.sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_H265_CAPABILITIES_KHR,
 	};
-	/* The conversion's own limits: which colour models, ranges and chroma
-	 * sitings the driver will perform. The session below has to name one of
-	 * each, so they are queried here rather than assumed. */
-	enc->rgb_caps = (VkVideoEncodeRgbConversionCapabilitiesVALVE){
-		.sType =
-			VK_STRUCTURE_TYPE_VIDEO_ENCODE_RGB_CONVERSION_CAPABILITIES_VALVE,
-		.pNext = &enc->h265_caps,
-	};
 	enc->encode_caps = (VkVideoEncodeCapabilitiesKHR){
 		.sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_CAPABILITIES_KHR,
-		.pNext = &enc->rgb_caps,
+		.pNext = &enc->h265_caps,
 	};
 	enc->caps = (VkVideoCapabilitiesKHR){
 		.sType = VK_STRUCTURE_TYPE_VIDEO_CAPABILITIES_KHR,
@@ -153,13 +141,11 @@ static bool pick_format(struct avk_encoder *enc, VkImageUsageFlags usage,
 		free(props);
 		return false;
 	}
-	/* Prefer the one AVK already renders into, so the source image can be
-	 * handed over rather than converted. Otherwise take the first offered
-	 * and let the caller find out it has work to do. */
+	/* Optimal tiling, which is the only one worth having for an image the
+	 * GPU both writes and encodes from. */
 	VkFormat chosen = props[0].format;
 	for (uint32_t i = 0; i < n; i++) {
-		if (props[i].format == VK_FORMAT_A2R10G10B10_UNORM_PACK32
-				&& props[i].imageTiling == VK_IMAGE_TILING_OPTIMAL) {
+		if (props[i].imageTiling == VK_IMAGE_TILING_OPTIMAL) {
 			chosen = props[i].format;
 			break;
 		}
@@ -167,16 +153,12 @@ static bool pick_format(struct avk_encoder *enc, VkImageUsageFlags usage,
 	free(props);
 	*out = chosen;
 
-	/* A format is only an encode input UNDER A PROFILE. Asked plainly,
-	 * A2R10G10B10 does not carry VIDEO_ENCODE_INPUT and the validation layer
-	 * says so at vkCreateImageView; asked with the profile list chained, the
-	 * answer can differ. Logged rather than assumed, because which of those
-	 * two is true decides whether a complaint about the view is a real defect
-	 * or a layer that cannot see the profile. */
-	VkVideoProfileListInfoKHR list_for_fmt = enc->profile_list;
+	/* Whether this format can be an encode input at all. VkFormatProperties2
+	 * takes no video profile -- a profile list in its pNext is invalid, which
+	 * is worth stating because the answer therefore describes the format
+	 * plainly and not under any profile. */
 	VkFormatProperties3 fmt3 = {
 		.sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_3,
-		.pNext = &list_for_fmt,
 	};
 	VkFormatProperties2 fmt2 = {
 		.sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2,
@@ -396,11 +378,6 @@ static bool find_memory(struct avk_device *dev, uint32_t bits,
 	return false;
 }
 
-const VkVideoProfileListInfoKHR *avk_encoder_profile_list(
-		const struct avk_encoder *enc) {
-	return &enc->profile_list;
-}
-
 /*
  * The DPB.
  *
@@ -512,21 +489,10 @@ static bool create_bitstream(struct avk_encoder *enc) {
  * is the same as holding nothing.
  */
 static bool create_feedback(struct avk_encoder *enc) {
-	/* The query pool takes a profile, but its pNext chain admits only a
-	 * documented list of structures and VkVideoEncodeProfileRgbConversionInfoVALVE
-	 * is not on it -- so this is the profile with the conversion struct
-	 * unhooked, not enc->profile. The codec and bit depth are what the query
-	 * pool actually needs to know. */
-	VkVideoEncodeH265ProfileInfoKHR query_h265 = {
-		.sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_H265_PROFILE_INFO_KHR,
-		.stdProfileIdc = STD_VIDEO_H265_PROFILE_IDC_MAIN_10,
-	};
-	VkVideoProfileInfoKHR query_profile = enc->profile;
-	query_profile.pNext = &query_h265;
 	VkQueryPoolVideoEncodeFeedbackCreateInfoKHR feedback = {
 		.sType =
 			VK_STRUCTURE_TYPE_QUERY_POOL_VIDEO_ENCODE_FEEDBACK_CREATE_INFO_KHR,
-		.pNext = &query_profile,
+		.pNext = &enc->profile,
 		.encodeFeedbackFlags =
 			VK_VIDEO_ENCODE_FEEDBACK_BITSTREAM_BUFFER_OFFSET_BIT_KHR
 			| VK_VIDEO_ENCODE_FEEDBACK_BITSTREAM_BYTES_WRITTEN_BIT_KHR,
@@ -567,6 +533,306 @@ static bool create_commands(struct avk_encoder *enc) {
 	}
 	VkFenceCreateInfo fence = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
 	return vkCreateFence(dev->dev, &fence, NULL, &enc->fence) == VK_SUCCESS;
+}
+
+
+/* ── RGB -> P010, because the driver's own conversion does not work ─────── */
+
+/*
+ * The encoder's input picture.
+ *
+ * P010 is a two-plane format and a compute shader cannot write a multi-planar
+ * image directly, so the image is created MUTABLE and each plane gets a view
+ * in a plain single-plane format of the same bit width: plane 0 as R16, plane
+ * 1 as R16G16. That is the sanctioned way to write one, and it is why
+ * EXTENDED_USAGE is set -- STORAGE is not a usage P010 itself supports, only
+ * the per-plane formats do.
+ */
+static bool create_p010(struct avk_encoder *enc) {
+	struct avk_device *dev = enc->dev;
+	uint32_t families[2] = {dev->caps.graphics_family,
+		dev->caps.video_encode_family};
+	bool split = families[0] != families[1];
+	VkImageCreateInfo info = {
+		.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+		.pNext = &enc->profile_list,
+		.flags = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT
+			| VK_IMAGE_CREATE_EXTENDED_USAGE_BIT,
+		.imageType = VK_IMAGE_TYPE_2D,
+		.format = enc->src_format,
+		.extent = {enc->coded_width, enc->coded_height, 1},
+		.mipLevels = 1,
+		.arrayLayers = 1,
+		.samples = VK_SAMPLE_COUNT_1_BIT,
+		.tiling = VK_IMAGE_TILING_OPTIMAL,
+		.usage = VK_IMAGE_USAGE_VIDEO_ENCODE_SRC_BIT_KHR
+			| VK_IMAGE_USAGE_STORAGE_BIT
+			/* So the converted picture can be read back and checked. Without
+			 * it the only evidence about the conversion is the bitstream,
+			 * which is the thing under suspicion. */
+			| VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+		/* Written on the graphics family and read on the encode family.
+		 * CONCURRENT rather than an ownership transfer: this image is written
+		 * once and read once per still, so the transfer would cost two more
+		 * barriers and a second submission to save a compression mode that a
+		 * single-use intermediate never benefits from. */
+		.sharingMode = split ? VK_SHARING_MODE_CONCURRENT
+			: VK_SHARING_MODE_EXCLUSIVE,
+		.queueFamilyIndexCount = split ? 2 : 0,
+		.pQueueFamilyIndices = split ? families : NULL,
+		.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+	};
+	if (vkCreateImage(dev->dev, &info, NULL, &enc->p010_image) != VK_SUCCESS) {
+		avk_log(AVK_ERROR, "encode: cannot create the P010 input image");
+		return false;
+	}
+	VkMemoryRequirements req;
+	vkGetImageMemoryRequirements(dev->dev, enc->p010_image, &req);
+	uint32_t type = 0;
+	if (!find_memory(dev, req.memoryTypeBits,
+			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &type)) {
+		return false;
+	}
+	VkMemoryAllocateInfo alloc = {
+		.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+		.allocationSize = req.size,
+		.memoryTypeIndex = type,
+	};
+	if (vkAllocateMemory(dev->dev, &alloc, NULL, &enc->p010_memory)
+			!= VK_SUCCESS
+			|| vkBindImageMemory(dev->dev, enc->p010_image,
+				enc->p010_memory, 0) != VK_SUCCESS) {
+		return false;
+	}
+
+	struct {
+		VkImageView *view;
+		VkFormat format;
+		VkImageAspectFlags aspect;
+		VkImageUsageFlags usage;
+	} views[] = {
+		{&enc->p010_view, enc->src_format, VK_IMAGE_ASPECT_COLOR_BIT,
+			VK_IMAGE_USAGE_VIDEO_ENCODE_SRC_BIT_KHR},
+		{&enc->p010_y_view, VK_FORMAT_R16_UNORM, VK_IMAGE_ASPECT_PLANE_0_BIT,
+			VK_IMAGE_USAGE_STORAGE_BIT},
+		{&enc->p010_uv_view, VK_FORMAT_R16G16_UNORM,
+			VK_IMAGE_ASPECT_PLANE_1_BIT, VK_IMAGE_USAGE_STORAGE_BIT},
+	};
+	for (size_t i = 0; i < sizeof(views) / sizeof(views[0]); i++) {
+		/* Each view declares the ONE usage it is for. Without this the view
+		 * inherits both, and a plane view carrying VIDEO_ENCODE_SRC is
+		 * invalid for the same reason the RGB view was. */
+		VkImageViewUsageCreateInfo usage = {
+			.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO,
+			.usage = views[i].usage,
+		};
+		VkImageViewCreateInfo vinfo = {
+			.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+			.pNext = &usage,
+			.image = enc->p010_image,
+			.viewType = VK_IMAGE_VIEW_TYPE_2D,
+			.format = views[i].format,
+			.subresourceRange = {views[i].aspect, 0, 1, 0, 1},
+		};
+		if (vkCreateImageView(dev->dev, &vinfo, NULL, views[i].view)
+				!= VK_SUCCESS) {
+			avk_log(AVK_ERROR, "encode: cannot create P010 view %zu", i);
+			return false;
+		}
+	}
+	return true;
+}
+
+struct conv_push {
+	int32_t width, height;
+};
+
+static bool create_conversion(struct avk_encoder *enc) {
+	struct avk_device *dev = enc->dev;
+	VkDescriptorSetLayoutBinding bindings[3] = {
+		{0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1,
+			VK_SHADER_STAGE_COMPUTE_BIT, NULL},
+		{1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1,
+			VK_SHADER_STAGE_COMPUTE_BIT, NULL},
+		{2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1,
+			VK_SHADER_STAGE_COMPUTE_BIT, NULL},
+	};
+	VkDescriptorSetLayoutCreateInfo set_info = {
+		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+		.bindingCount = 3,
+		.pBindings = bindings,
+	};
+	if (vkCreateDescriptorSetLayout(dev->dev, &set_info, NULL,
+			&enc->conv_set_layout) != VK_SUCCESS) {
+		return false;
+	}
+	VkDescriptorPoolSize size = {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 3};
+	VkDescriptorPoolCreateInfo pool_info = {
+		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+		.maxSets = 1,
+		.poolSizeCount = 1,
+		.pPoolSizes = &size,
+	};
+	if (vkCreateDescriptorPool(dev->dev, &pool_info, NULL, &enc->conv_pool)
+			!= VK_SUCCESS) {
+		return false;
+	}
+	VkDescriptorSetAllocateInfo set_alloc = {
+		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+		.descriptorPool = enc->conv_pool,
+		.descriptorSetCount = 1,
+		.pSetLayouts = &enc->conv_set_layout,
+	};
+	if (vkAllocateDescriptorSets(dev->dev, &set_alloc, &enc->conv_set)
+			!= VK_SUCCESS) {
+		return false;
+	}
+
+	VkPushConstantRange range = {VK_SHADER_STAGE_COMPUTE_BIT, 0,
+		sizeof(struct conv_push)};
+	VkPipelineLayoutCreateInfo layout_info = {
+		.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+		.setLayoutCount = 1,
+		.pSetLayouts = &enc->conv_set_layout,
+		.pushConstantRangeCount = 1,
+		.pPushConstantRanges = &range,
+	};
+	if (vkCreatePipelineLayout(dev->dev, &layout_info, NULL,
+			&enc->conv_pipeline_layout) != VK_SUCCESS) {
+		return false;
+	}
+	VkShaderModuleCreateInfo mod_info = {
+		.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+		.codeSize = sizeof(rgb_to_p010_comp_spv),
+		.pCode = rgb_to_p010_comp_spv,
+	};
+	VkShaderModule module;
+	if (vkCreateShaderModule(dev->dev, &mod_info, NULL, &module)
+			!= VK_SUCCESS) {
+		return false;
+	}
+	VkComputePipelineCreateInfo pipe_info = {
+		.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+		.stage = {
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+			.stage = VK_SHADER_STAGE_COMPUTE_BIT,
+			.module = module,
+			.pName = "main",
+		},
+		.layout = enc->conv_pipeline_layout,
+	};
+	VkResult r = vkCreateComputePipelines(dev->dev, VK_NULL_HANDLE, 1,
+		&pipe_info, NULL, &enc->conv_pipeline);
+	vkDestroyShaderModule(dev->dev, module, NULL);
+	if (r != VK_SUCCESS) {
+		avk_log(AVK_ERROR, "encode: cannot create the RGB->P010 pipeline");
+		return false;
+	}
+
+	VkCommandPoolCreateInfo cpool = {
+		.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+		.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+		.queueFamilyIndex = dev->caps.graphics_family,
+	};
+	if (vkCreateCommandPool(dev->dev, &cpool, NULL, &enc->conv_cmd_pool)
+			!= VK_SUCCESS) {
+		return false;
+	}
+	VkCommandBufferAllocateInfo cb = {
+		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+		.commandPool = enc->conv_cmd_pool,
+		.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+		.commandBufferCount = 1,
+	};
+	if (vkAllocateCommandBuffers(dev->dev, &cb, &enc->conv_cmd)
+			!= VK_SUCCESS) {
+		return false;
+	}
+	VkFenceCreateInfo fence = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+	return vkCreateFence(dev->dev, &fence, NULL, &enc->conv_fence)
+		== VK_SUCCESS;
+}
+
+/* Run the conversion on the graphics queue and wait for it. */
+static bool convert_to_p010(struct avk_encoder *enc, VkImageView src_view) {
+	struct avk_device *dev = enc->dev;
+	VkDescriptorImageInfo images[3] = {
+		{VK_NULL_HANDLE, src_view, VK_IMAGE_LAYOUT_GENERAL},
+		{VK_NULL_HANDLE, enc->p010_y_view, VK_IMAGE_LAYOUT_GENERAL},
+		{VK_NULL_HANDLE, enc->p010_uv_view, VK_IMAGE_LAYOUT_GENERAL},
+	};
+	VkWriteDescriptorSet writes[3];
+	for (int i = 0; i < 3; i++) {
+		writes[i] = (VkWriteDescriptorSet){
+			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+			.dstSet = enc->conv_set,
+			.dstBinding = (uint32_t)i,
+			.descriptorCount = 1,
+			.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+			.pImageInfo = &images[i],
+		};
+	}
+	vkUpdateDescriptorSets(dev->dev, 3, writes, 0, NULL);
+
+	VkCommandBufferBeginInfo begin = {
+		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+		.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+	};
+	vkResetCommandBuffer(enc->conv_cmd, 0);
+	if (vkBeginCommandBuffer(enc->conv_cmd, &begin) != VK_SUCCESS) {
+		return false;
+	}
+	/* Both planes to GENERAL, which is what a storage write needs. The whole
+	 * image is transitioned in one barrier: a per-plane transition would need
+	 * VK_IMAGE_ASPECT_PLANE_n and separate barriers for no benefit. */
+	VkImageMemoryBarrier2 to_general = {
+		.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+		.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+		.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+		.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+		.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+		.newLayout = VK_IMAGE_LAYOUT_GENERAL,
+		.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+		.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+		.image = enc->p010_image,
+		.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+	};
+	VkDependencyInfo dep = {
+		.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+		.imageMemoryBarrierCount = 1,
+		.pImageMemoryBarriers = &to_general,
+	};
+	vkCmdPipelineBarrier2(enc->conv_cmd, &dep);
+
+	vkCmdBindPipeline(enc->conv_cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+		enc->conv_pipeline);
+	vkCmdBindDescriptorSets(enc->conv_cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+		enc->conv_pipeline_layout, 0, 1, &enc->conv_set, 0, NULL);
+	struct conv_push push = {(int32_t)enc->coded_width,
+		(int32_t)enc->coded_height};
+	vkCmdPushConstants(enc->conv_cmd, enc->conv_pipeline_layout,
+		VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
+	/* One invocation per chroma sample: half the luma extent in each axis,
+	 * rounded up, over an 8x8 local size. */
+	uint32_t gx = ((enc->coded_width + 1) / 2 + 7) / 8;
+	uint32_t gy = ((enc->coded_height + 1) / 2 + 7) / 8;
+	vkCmdDispatch(enc->conv_cmd, gx, gy, 1);
+
+	if (vkEndCommandBuffer(enc->conv_cmd) != VK_SUCCESS) {
+		return false;
+	}
+	vkResetFences(dev->dev, 1, &enc->conv_fence);
+	VkSubmitInfo submit = {
+		.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+		.commandBufferCount = 1,
+		.pCommandBuffers = &enc->conv_cmd,
+	};
+	if (vkQueueSubmit(dev->graphics_queue, 1, &submit, enc->conv_fence)
+			!= VK_SUCCESS) {
+		return false;
+	}
+	return vkWaitForFences(dev->dev, 1, &enc->conv_fence, VK_TRUE,
+		5000000000ULL) == VK_SUCCESS;
 }
 
 struct avk_encoder *avk_encoder_create(struct avk_device *dev,
@@ -619,47 +885,8 @@ struct avk_encoder *avk_encoder_create(struct avk_device *dev,
 		goto fail;
 	}
 
-	/*
-	 * Having asked the profile to convert RGB, the session must say HOW --
-	 * and RADV segfaults inside vkCreateVideoSessionKHR rather than returning
-	 * an error when this struct is absent, which is the second time this
-	 * extension's structs have turned out to be load-bearing rather than
-	 * optional (the first was the codec capabilities chain).
-	 *
-	 * BT.2020 because the whole point is HDR10, whose matrix coefficients are
-	 * BT.2020 non-constant luminance. Full range because AVK's composited
-	 * image is full-range RGB and narrowing it here would crush the ends of
-	 * the scale for nothing.
-	 */
-	if (!(enc->rgb_caps.rgbModels
-			& VK_VIDEO_ENCODE_RGB_MODEL_CONVERSION_YCBCR_2020_BIT_VALVE)) {
-		avk_log(AVK_ERROR, "encode: the driver will not convert RGB to "
-			"BT.2020, which is what HDR10 is");
-		goto fail;
-	}
-	VkVideoEncodeSessionRgbConversionCreateInfoVALVE rgb_session = {
-		.sType =
-			VK_STRUCTURE_TYPE_VIDEO_ENCODE_SESSION_RGB_CONVERSION_CREATE_INFO_VALVE,
-		.rgbModel = VK_VIDEO_ENCODE_RGB_MODEL_CONVERSION_YCBCR_2020_BIT_VALVE,
-		.rgbRange =
-			(enc->rgb_caps.rgbRanges
-				& VK_VIDEO_ENCODE_RGB_RANGE_COMPRESSION_FULL_RANGE_BIT_VALVE)
-			? VK_VIDEO_ENCODE_RGB_RANGE_COMPRESSION_FULL_RANGE_BIT_VALVE
-			: VK_VIDEO_ENCODE_RGB_RANGE_COMPRESSION_NARROW_RANGE_BIT_VALVE,
-		.xChromaOffset =
-			(enc->rgb_caps.xChromaOffsets
-				& VK_VIDEO_ENCODE_RGB_CHROMA_OFFSET_COSITED_EVEN_BIT_VALVE)
-			? VK_VIDEO_ENCODE_RGB_CHROMA_OFFSET_COSITED_EVEN_BIT_VALVE
-			: VK_VIDEO_ENCODE_RGB_CHROMA_OFFSET_MIDPOINT_BIT_VALVE,
-		.yChromaOffset =
-			(enc->rgb_caps.yChromaOffsets
-				& VK_VIDEO_ENCODE_RGB_CHROMA_OFFSET_MIDPOINT_BIT_VALVE)
-			? VK_VIDEO_ENCODE_RGB_CHROMA_OFFSET_MIDPOINT_BIT_VALVE
-			: VK_VIDEO_ENCODE_RGB_CHROMA_OFFSET_COSITED_EVEN_BIT_VALVE,
-	};
 	VkVideoSessionCreateInfoKHR session_info = {
 		.sType = VK_STRUCTURE_TYPE_VIDEO_SESSION_CREATE_INFO_KHR,
-		.pNext = &rgb_session,
 		.queueFamilyIndex = dev->caps.video_encode_family,
 		.pVideoProfile = &enc->profile,
 		.pictureFormat = enc->src_format,
@@ -685,7 +912,8 @@ struct avk_encoder *avk_encoder_create(struct avk_device *dev,
 		goto fail;
 	}
 	if (!create_dpb(enc) || !create_bitstream(enc) || !create_feedback(enc)
-			|| !create_commands(enc)) {
+			|| !create_commands(enc) || !create_p010(enc)
+			|| !create_conversion(enc)) {
 		goto fail;
 	}
 
@@ -742,6 +970,39 @@ void avk_encoder_destroy(struct avk_encoder *enc) {
 		}
 		if (enc->dpb_memory != VK_NULL_HANDLE) {
 			vkFreeMemory(dev->dev, enc->dpb_memory, NULL);
+		}
+		if (enc->conv_fence != VK_NULL_HANDLE) {
+			vkDestroyFence(dev->dev, enc->conv_fence, NULL);
+		}
+		if (enc->conv_cmd_pool != VK_NULL_HANDLE) {
+			vkDestroyCommandPool(dev->dev, enc->conv_cmd_pool, NULL);
+		}
+		if (enc->conv_pipeline != VK_NULL_HANDLE) {
+			vkDestroyPipeline(dev->dev, enc->conv_pipeline, NULL);
+		}
+		if (enc->conv_pipeline_layout != VK_NULL_HANDLE) {
+			vkDestroyPipelineLayout(dev->dev, enc->conv_pipeline_layout, NULL);
+		}
+		if (enc->conv_pool != VK_NULL_HANDLE) {
+			vkDestroyDescriptorPool(dev->dev, enc->conv_pool, NULL);
+		}
+		if (enc->conv_set_layout != VK_NULL_HANDLE) {
+			vkDestroyDescriptorSetLayout(dev->dev, enc->conv_set_layout, NULL);
+		}
+		if (enc->p010_view != VK_NULL_HANDLE) {
+			vkDestroyImageView(dev->dev, enc->p010_view, NULL);
+		}
+		if (enc->p010_y_view != VK_NULL_HANDLE) {
+			vkDestroyImageView(dev->dev, enc->p010_y_view, NULL);
+		}
+		if (enc->p010_uv_view != VK_NULL_HANDLE) {
+			vkDestroyImageView(dev->dev, enc->p010_uv_view, NULL);
+		}
+		if (enc->p010_image != VK_NULL_HANDLE) {
+			vkDestroyImage(dev->dev, enc->p010_image, NULL);
+		}
+		if (enc->p010_memory != VK_NULL_HANDLE) {
+			vkFreeMemory(dev->dev, enc->p010_memory, NULL);
 		}
 	}
 	free(enc->session_memory);
@@ -832,6 +1093,18 @@ bool avk_encoder_encode_still(struct avk_encoder *enc, VkImage src,
 		return false;
 	}
 
+	(void)src;
+	(void)src_layout;
+	/* The conversion runs on the graphics queue and is waited for, so the
+	 * encode below sees a finished P010 picture. One submission each rather
+	 * than a semaphore between them: a still is not on a frame budget, and
+	 * two queues chained by a fence is easier to reason about than two
+	 * chained by a timeline nothing else uses. */
+	if (!convert_to_p010(enc, src_view)) {
+		avk_log(AVK_ERROR, "encode: the RGB->P010 conversion failed");
+		return false;
+	}
+
 	VkCommandBufferBeginInfo begin = {
 		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
 		.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
@@ -850,11 +1123,11 @@ bool avk_encoder_encode_still(struct avk_encoder *enc, VkImage src,
 			.srcAccessMask = 0,
 			.dstStageMask = VK_PIPELINE_STAGE_2_VIDEO_ENCODE_BIT_KHR,
 			.dstAccessMask = VK_ACCESS_2_VIDEO_ENCODE_READ_BIT_KHR,
-			.oldLayout = src_layout,
+			.oldLayout = VK_IMAGE_LAYOUT_GENERAL,
 			.newLayout = VK_IMAGE_LAYOUT_VIDEO_ENCODE_SRC_KHR,
 			.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
 			.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-			.image = src,
+			.image = enc->p010_image,
 			.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
 		},
 		{
@@ -971,7 +1244,7 @@ bool avk_encoder_encode_still(struct avk_encoder *enc, VkImage src,
 		.sType = VK_STRUCTURE_TYPE_VIDEO_PICTURE_RESOURCE_INFO_KHR,
 		.codedExtent = {enc->coded_width, enc->coded_height},
 		.baseArrayLayer = 0,
-		.imageViewBinding = src_view,
+		.imageViewBinding = enc->p010_view,
 	};
 	/* The reconstructed picture has to describe itself in the codec's own
 	 * terms as well as Vulkan's: without VkVideoEncodeH265DpbSlotInfoKHR on

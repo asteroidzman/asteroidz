@@ -133,50 +133,43 @@ RADV if the codec-specific capabilities struct is missing from the `pNext`
 chain. Not an error return -- a crash, one line after the encode queue is
 reported.
 
-## OPEN — M14A: the RGB conversion input path does not hold up
+## OPEN — M14A: the encoder ignores its source picture
 
-Found 2026-08-20 building the encoder. The encode session, its parameter sets,
-the command recording, the feedback query and the bitstream assembly all work:
-`tests/test-avk-encode.c` gets 13/13 and ffprobe reads the result as `hevc`,
-`Main 10`, `3840x2160`, `yuv420p10le`. What comes out is a valid picture of the
-wrong thing.
+Narrowed 2026-08-20. `tests/test-avk-encode.c` gets 15/15 with zero validation
+errors, and the bitstream is still a valid picture of the wrong thing.
 
-**Symptom.** A source image cleared to a flat RGB (0.25, 0.55, 0.85) decodes to
-a non-uniform frame: centre (0.766, 0.000, 0.976), top-left (0.496, 0.489,
-0.491), per-channel std 0.06-0.09 where a flat colour should be 0. Structured
-garbage, not noise -- consistent with the encoder reading the RGB memory as if
-it were a YUV plane pair rather than converting it.
+**What is proven correct.** The conversion. A source cleared to RGB
+(0.25, 0.55, 0.85) converts to P010 and reads back as **Y=500 Cb=708 Cr=346**,
+which is exactly BT.2020 non-constant luminance at full range, to the code
+value. The test reads the converted image back and asserts this, so the
+conversion is no longer a suspect and no longer needs re-deriving.
 
-**Narrowed to a contradiction between two driver queries.** With the RGB
-conversion chained into the profile:
+**What is wrong.** The encoded picture does not depend on the input. Decoded,
+its luma has mean 69 and std 158 across the full 0..1023 range where a flat 500
+is expected, and both chroma planes sit near 1023. Byte-for-byte the same 2737
+bytes, and the same decoded statistics, as the earlier attempt that fed the
+encoder an entirely different image in an entirely different format. An output
+that is identical across two unrelated inputs is not a conversion error; the
+encoder is not reading the picture it is given.
 
-| query | answer |
-|---|---|
-| `vkGetPhysicalDeviceVideoFormatPropertiesKHR`, usage `VIDEO_ENCODE_SRC` | `A2R10G10B10` (and `A2B10G10R10`) |
-| `VkFormatProperties3` on `A2R10G10B10` with the profile list chained | `VIDEO_ENCODE_INPUT` **absent** (features 0x80040018001dd83) |
-| the same on the DPB format `P010` | `VIDEO_ENCODE_INPUT` **present** (0x1ec6d001) |
+**Validation is clean on the encode path.** Three VUIDs found on the way were
+all in the test's own readback and a diagnostic query, and are fixed. Earlier
+ones that were real -- a setup reference slot missing
+`VkVideoEncodeH265DpbSlotInfoKHR`, and a feedback query pool handed a profile
+chain it does not admit -- are fixed too, and neither moved the content.
 
-The first says the encoder accepts an RGB input picture; the second says that
-format cannot be one. Validation agrees with the second --
-`VUID-VkImageViewCreateInfo-image-08336` at every `vkCreateImageView` of the
-source -- and so do the pixels.
+**The RGB input path is no longer the question.** `A2R10G10B10` reports
+`VIDEO_ENCODE_INPUT` absent while `P010` reports it present, so P010 is the
+right input regardless; `VK_VALVE_video_encode_rgb_conversion` would only have
+saved the conversion pass, and that pass now provably works. The encoder is
+built on P010 and the RGB path is not worth revisiting until this is resolved.
 
-**Ruled out.** Two other VUIDs found at the same time were real bugs and are
-fixed, and neither changed the content: the setup reference slot was missing
-its `VkVideoEncodeH265DpbSlotInfoKHR`, and the feedback query pool was handed a
-profile whose `pNext` carried the RGB conversion struct, which that chain does
-not admit.
-
-**Not yet established.** Whether this is a Mesa gap (the format query taught
-about `VK_VALVE_video_encode_rgb_conversion` while `VkFormatProperties3` was
-not, or the reverse), or a misuse of the extension that none of these queries
-reveals. Mesa 26.2.0-arch3.1, RADV, Navi 31, extension spec version 1.
-
-**The fallback if it is a driver gap.** Encode from `P010` and convert RGB->P010
-in a compute shader before handing the picture over. That keeps the zero-readback
-property -- the image never leaves the GPU -- but loses the "no conversion pass
-of ours" claim that made the RGB path attractive, and adds a pass whose colour
-matrix is then ours to get right rather than the driver's.
+**Where to look next, in order.** The DPB slot handshake is the least-verified
+part: `vkCmdBeginVideoCodingKHR` lists the slot with `slotIndex = -1` and the
+encode names it as the setup slot with `slotIndex = 0`, and nothing has
+confirmed that is how this driver expects a first IDR to activate a slot. After
+that, the quality level (`VkVideoEncodeQualityLevelInfoKHR` is never set) and
+the rate-control reset ordering. Mesa 26.2.0-arch3.1, RADV, Navi 31.
 
 ## OPEN — teardown frees a VkDeviceMemory twice after overview/jump
 
