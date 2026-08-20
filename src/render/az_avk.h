@@ -285,6 +285,10 @@ struct az_avk {
 	/* Which KIND of failure; see the repair loop for why one number was not
 	 * enough. */
 	uint64_t repair_unreadable, repair_nothing, repair_short;
+	/* Where inside the copy it went wrong, counted where it happens rather
+	 * than inferred from what did not change afterwards. */
+	uint64_t shm_plan_failed, shm_staging_unavailable, shm_submit_failed;
+	bool warned_repair_short;
 	/* Times wlroots had taken a CPU buffer back before we could read it. */
 	uint64_t shm_source_unreadable;
 	uint64_t shm_staging_wait_ns_max, shm_staging_wait_ns_sum;
@@ -1823,6 +1827,9 @@ static bool az_avk_upload_shm(struct az_avk_buffer *entry) {
 	struct avk_upload_plan plan;
 	enum az_shm_plan_result res = az_avk_shm_plan(entry, (uint32_t)stride,
 		&plan);
+	if (res == AZ_SHM_PLAN_FAILED) {
+		avk.shm_plan_failed++;
+	}
 	if (res == AZ_SHM_PLAN_NOTHING) {
 		wlr_buffer_end_data_ptr_access(entry->buffer);
 		avk.shm_upload_skips++;
@@ -1854,6 +1861,7 @@ static bool az_avk_upload_shm(struct az_avk_buffer *entry) {
 	t_take = az_avk_now_ns() - step_t0;
 	step_t0 = az_avk_now_ns();
 	if (up == NULL) {
+		avk.shm_staging_unavailable++;
 		goto out;
 	}
 	entry->upload_slot = slot;
@@ -1872,6 +1880,9 @@ static bool az_avk_upload_shm(struct az_avk_buffer *entry) {
 	uint32_t wait_count = az_avk_shm_wait(entry, &wait);
 	ok = avk_upload_submit_packed(avk.device, &avk.importer.upload_ring,
 		up, entry->image, &plan, &wait, wait_count) != 0;
+	if (!ok) {
+		avk.shm_submit_failed++;
+	}
 	t_submit = az_avk_now_ns() - step_t0;
 	if (t_map + t_take + t_pack + t_submit > 5000000ull) {
 		avk_log(AVK_ERROR, "slow sync upload of %dx%d: map %" PRIu64
@@ -2759,6 +2770,40 @@ static void az_avk_frame_visibility(const struct avk_renderer *renderer,
 				avk.repair_nothing++;
 			} else {
 				avk.repair_short++;
+				/*
+				 * ONCE, IN FULL. This is the case no headless fixture has been
+				 * able to produce -- 1179 frames at the exact dimensions of the
+				 * client that motivated the whole subsystem gave none of them --
+				 * so the live session is the only place it can be described,
+				 * and a counter alone has already been shown not to be enough
+				 * to act on.
+				 */
+				if (!avk.warned_repair_short) {
+					avk.warned_repair_short = true;
+					const pixman_box32_t *e =
+						pixman_region32_extents(&entry->shortfall);
+					int nr = 0;
+					pixman_region32_rectangles(&entry->shortfall, &nr);
+					const pixman_region32_t *h = az_avk_surface_hint(entry->as,
+						entry->buffer->width, entry->buffer->height);
+					avk_log(AVK_ERROR, "repair came up short on a %dx%d buffer: "
+						"%d rect(s) still owed, extents %d,%d..%d,%d; "
+						"as=%s hint=%s gen=%" PRIu64 "/%" PRIu64 " job=%s "
+						"plan_failed=%" PRIu64 " staging=%" PRIu64
+						" submit=%" PRIu64,
+						entry->buffer->width, entry->buffer->height, nr,
+						e->x1, e->y1, e->x2, e->y2,
+						entry->as != NULL ? "yes" : "NO",
+						h != NULL ? "yes" : "NO",
+						entry->uploaded_generation, entry->content_generation,
+						entry->job != NULL ? "yes" : "no",
+						avk.shm_plan_failed, avk.shm_staging_unavailable,
+						avk.shm_submit_failed);
+				}
+				/* Whatever it was, do not leave the image short. The next
+				 * commit copies the whole buffer, which is a bounded cost and
+				 * the only answer that does not depend on knowing the cause. */
+				entry->pending_full = true;
 			}
 			continue;
 		}
@@ -7420,6 +7465,12 @@ static cJSON *az_avk_stats_json(void) {
 		(double)avk.repair_short);
 	cJSON_AddNumberToObject(o, "shm_source_unreadable",
 		(double)avk.shm_source_unreadable);
+	cJSON_AddNumberToObject(o, "shm_plan_failed",
+		(double)avk.shm_plan_failed);
+	cJSON_AddNumberToObject(o, "shm_staging_unavailable",
+		(double)avk.shm_staging_unavailable);
+	cJSON_AddNumberToObject(o, "shm_submit_failed",
+		(double)avk.shm_submit_failed);
 	/*
 	 * THE COUNTER THAT WAS NOT VISIBLE. The upload ring blocks when its next
 	 * slot is still in flight, and it has always counted that -- but only
