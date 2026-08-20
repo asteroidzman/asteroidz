@@ -2595,6 +2595,21 @@ approach the number of frames has a hint that is not working, however good the
 saving looks, and `visible_repair_failed` above zero means a texel was drawn
 that nothing ever copied.
 
+A failure is split three ways, because the three need different answers and one
+number for all of them is a number nobody can act on:
+
+| | |
+|---|---|
+| `visible_repair_unreadable` | wlroots had taken the client's buffer back; the pixels exist only in a texture this renderer may not touch. Nothing on this path can fix it |
+| `visible_repair_nothing` | the plan said there was nothing to copy while the visibility pass said otherwise. The two disagree, which is a bug in one of them |
+| `visible_repair_short` | the copy happened and did not cover the shortfall. Likewise |
+
+**No headless fixture has produced a non-zero one.** The live desktop has:
+1142 frames across two outputs at mixed scale, with animations, tag switches and
+fullscreen toggles, gave 312 repairs and zero failures. The live session gave
+109 failures in half an hour, which is why the breakdown exists rather than a
+single counter — the reproduction is the instrument.
+
 ### Three vacuous versions, and what each assertion said
 
 1. **A copy that never went late.** 1600x1000 packs in under a millisecond, so

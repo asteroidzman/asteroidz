@@ -282,6 +282,11 @@ struct az_avk {
 	uint64_t plan_no_hint;
 	uint64_t hint_epochs;
 	uint64_t repairs, repair_px, repair_deferred, repair_failed;
+	/* Which KIND of failure; see the repair loop for why one number was not
+	 * enough. */
+	uint64_t repair_unreadable, repair_nothing, repair_short;
+	/* Times wlroots had taken a CPU buffer back before we could read it. */
+	uint64_t shm_source_unreadable;
 	uint64_t shm_staging_wait_ns_max, shm_staging_wait_ns_sum;
 	/* Frames that showed the previous generation instead of blocking, and the
 	 * microseconds of event loop that decision gave back. */
@@ -1784,6 +1789,7 @@ static bool az_avk_upload_shm(struct az_avk_buffer *entry) {
 	size_t stride = 0;
 	if (!wlr_buffer_begin_data_ptr_access(entry->buffer,
 			WLR_BUFFER_DATA_PTR_ACCESS_READ, &data, &format, &stride)) {
+		avk.shm_source_unreadable++;
 		if (entry->image != NULL) {
 			if (!avk.warned_shm_source_gone) {
 				avk.warned_shm_source_gone = true;
@@ -2548,11 +2554,7 @@ static struct avk_image *az_avk_image_for_buffer(struct wlr_buffer *buffer) {
  * it would put the memcpy back on the frame path, which is the thing this
  * subsystem exists to have removed.
  */
-#define AZ_AVK_VIS_CANDIDATES 64
-
 struct az_avk_vis_pass {
-	struct az_avk_buffer *cand[AZ_AVK_VIS_CANDIDATES];
-	size_t count;
 	struct wlr_output *output;
 };
 
@@ -2625,10 +2627,16 @@ static void az_avk_vis_to_buffer(const struct avk_cmd *cmd,
 static void az_avk_vis_note(void *user, const struct avk_cmd *cmd,
 		const pixman_region32_t *visible) {
 	struct az_avk_vis_pass *pass = user;
-	struct az_avk_buffer *entry = NULL;
-	for (size_t i = 0; i < pass->count; i++) {
-		if (pass->cand[i]->image == cmd->image) {
-			entry = pass->cand[i];
+	struct az_avk_buffer *entry = NULL, *it;
+	/*
+	 * BY IMAGE, NOT BY BUFFER, and the difference is load-bearing: a frame
+	 * whose copy is still in flight draws a SIBLING's image -- the previous
+	 * generation of the same surface -- and it is that image's texels that are
+	 * about to be sampled. See az_avk_shm_bring_current().
+	 */
+	wl_list_for_each(it, &avk.buffers, link) {
+		if (it->is_shm && it->image == cmd->image) {
+			entry = it;
 			break;
 		}
 	}
@@ -2664,40 +2672,39 @@ static void az_avk_frame_visibility(const struct avk_renderer *renderer,
 	}
 	struct az_avk_vis_pass pass = {0};
 	pass.output = output;
-	struct az_avk_buffer *entry;
-	wl_list_for_each(entry, &avk.buffers, link) {
-		if (!entry->is_shm || entry->image == NULL || entry->buffer == NULL) {
-			continue;
-		}
-		if (pass.count == AZ_AVK_VIS_CANDIDATES) {
-			/* More CPU buffers on screen than this pass tracks. The ones left
-			 * out are not clipped and not repaired -- they are simply outside
-			 * the optimisation, which is the pre-existing behaviour. */
-			break;
-		}
-		pass.cand[pass.count++] = entry;
-	}
-	if (pass.count == 0) {
-		return;
-	}
+	struct az_avk_buffer *entry, *tmp;
+	bool any = false;
 	/*
 	 * SAID BEFORE LOOKING, not after. A surface no command draws is never
 	 * reported below, and a view that only ever grew could not express the
 	 * case worth the most -- nothing can see this at all.
+	 *
+	 * EVERY shm entry, with no cap. This used to snapshot the first 64, and
+	 * the ones past it were silently outside the whole mechanism: their
+	 * surfaces kept views from whichever earlier frame had had room for them,
+	 * so the plan clipped to a stale region and nothing repaired the
+	 * difference. A live desktop holds more than 64 cached client buffers, so
+	 * the cap was not a theoretical limit.
 	 */
-	for (size_t i = 0; i < pass.count; i++) {
-		az_avk_surface_begin_view(pass.cand[i]->as, output);
+	wl_list_for_each(entry, &avk.buffers, link) {
+		if (!entry->is_shm || entry->image == NULL || entry->buffer == NULL) {
+			continue;
+		}
+		any = true;
+		az_avk_surface_begin_view(entry->as, output);
 		/* And the shortfall with it: it is what THIS frame is about to sample
 		 * and does not have. Carried over, one that some ordinary commit-time
 		 * copy had already covered would go on asking for a synchronous upload
 		 * every frame for as long as the window was on screen. */
-		pixman_region32_clear(&pass.cand[i]->shortfall);
-		pass.cand[i]->has_shortfall = false;
+		pixman_region32_clear(&entry->shortfall);
+		entry->has_shortfall = false;
+	}
+	if (!any) {
+		return;
 	}
 	avk_scene_visibility(renderer, scene, bounds, az_avk_vis_note, &pass);
 
-	for (size_t i = 0; i < pass.count; i++) {
-		entry = pass.cand[i];
+	wl_list_for_each_safe(entry, tmp, &avk.buffers, link) {
 		if (!entry->has_shortfall) {
 			continue;
 		}
@@ -2726,13 +2733,33 @@ static void az_avk_frame_visibility(const struct avk_renderer *renderer,
 		/* The plan reads `uploaded` and the hint, both of which now describe
 		 * the shortfall, so the ordinary upload path is the repair -- there is
 		 * no second copy path to keep in step with this one. */
+		uint64_t reads_before = avk.shm_source_unreadable;
+		uint64_t skips_before = avk.shm_upload_skips;
 		az_avk_upload_shm(entry);
 		pixman_region32_subtract(&entry->shortfall, &entry->shortfall,
 			&entry->uploaded);
 		if (pixman_region32_not_empty(&entry->shortfall)) {
-			/* The source was unreadable or the copy failed. Say so rather than
-			 * quietly drawing whatever the allocation contained. */
+			/*
+			 * SAID OUT LOUD, AND SAID WHICH. "The copy did not happen" has
+			 * three causes that need different answers, and a single counter
+			 * for all of them is a number nobody can act on:
+			 *
+			 *   unreadable  wlroots has taken the client's buffer back and the
+			 *               pixels exist only in a texture this renderer may
+			 *               not touch. Nothing here can fix that.
+			 *   nothing     the plan decided there was nothing to copy while
+			 *               this pass says otherwise. The two disagree, which
+			 *               is a bug in one of them.
+			 *   short       the copy happened and did not cover it. Likewise.
+			 */
 			avk.repair_failed++;
+			if (avk.shm_source_unreadable != reads_before) {
+				avk.repair_unreadable++;
+			} else if (avk.shm_upload_skips != skips_before) {
+				avk.repair_nothing++;
+			} else {
+				avk.repair_short++;
+			}
 			continue;
 		}
 		avk.repairs++;
@@ -7385,6 +7412,14 @@ static cJSON *az_avk_stats_json(void) {
 		(double)avk.repair_deferred);
 	cJSON_AddNumberToObject(o, "visible_repair_failed",
 		(double)avk.repair_failed);
+	cJSON_AddNumberToObject(o, "visible_repair_unreadable",
+		(double)avk.repair_unreadable);
+	cJSON_AddNumberToObject(o, "visible_repair_nothing",
+		(double)avk.repair_nothing);
+	cJSON_AddNumberToObject(o, "visible_repair_short",
+		(double)avk.repair_short);
+	cJSON_AddNumberToObject(o, "shm_source_unreadable",
+		(double)avk.shm_source_unreadable);
 	/*
 	 * THE COUNTER THAT WAS NOT VISIBLE. The upload ring blocks when its next
 	 * slot is still in flight, and it has always counted that -- but only
