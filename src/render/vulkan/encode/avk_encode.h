@@ -73,7 +73,45 @@ struct avk_encoder {
 
 	VkFormat dpb_format;
 	VkFormat src_format;
+
+	/* The reconstructed picture. The encoder writes it whether or not
+	 * anything will reference it, so a still needs one even though it has no
+	 * second frame to predict from. */
+	VkImage dpb_image;
+	VkDeviceMemory dpb_memory;
+	VkImageView dpb_view;
+
+	/* Where the bitstream lands, and how the driver reports how much of it it
+	 * used. The buffer size is a guess by nature -- an encoder is not obliged
+	 * to tell you in advance -- so it is generous and the query says what was
+	 * actually written. */
+	VkBuffer bitstream;
+	VkDeviceMemory bitstream_memory;
+	VkDeviceSize bitstream_size;
+	VkQueryPool feedback;
+
+	VkCommandPool cmd_pool;
+	VkCommandBuffer cmd;
+	VkFence fence;
 };
+
+/*
+ * Encode one image as a single IDR picture.
+ *
+ * `src` must be in VK_FORMAT_A2R10G10B10_UNORM_PACK32 at the encoder's size,
+ * created with VK_IMAGE_USAGE_VIDEO_ENCODE_SRC_BIT_KHR and the encoder's
+ * profile list in its pNext, and readable from the encode queue family.
+ *
+ * On success *out is a malloc'd Annex B bitstream -- parameter sets followed
+ * by the coded picture -- and the caller owns it.
+ */
+bool avk_encoder_encode_still(struct avk_encoder *enc, VkImage src,
+	VkImageView src_view, VkImageLayout src_layout,
+	void **out, size_t *out_len);
+
+/* The profile list, for a caller creating an image this encoder will read. */
+const VkVideoProfileListInfoKHR *avk_encoder_profile_list(
+	const struct avk_encoder *enc);
 
 /*
  * Create an encoder for one output size. Returns NULL and logs the reason if
