@@ -896,16 +896,26 @@ static bool az_cmd_opaque_region(const struct avk_renderer *renderer,
 		 * would claim pixels the draw does not write.
 		 */
 		if (cmd->image->has_alpha) {
-			bool rounded = cmd->corners[0] > 0.0f || cmd->corners[1] > 0.0f
-				|| cmd->corners[2] > 0.0f || cmd->corners[3] > 0.0f;
-			if (!cmd->has_opaque || rounded) {
+			if (!cmd->has_opaque) {
 				return false;
 			}
-			pixman_region32_init(out);
-			pixman_region32_copy(out, (pixman_region32_t *)&cmd->opaque);
-			pixman_region32_intersect_rect(out, out, bounds->x, bounds->y,
-				(unsigned)bounds->width, (unsigned)bounds->height);
-			return pixman_region32_not_empty(out);
+			/*
+			 * CARRIED TO THE TAIL, NOT RETURNED WITH.
+			 *
+			 * The tail is not decoration: it rejects an annulus, shrinks by
+			 * the corner radius and intersects with cmd->clip. Returning here
+			 * skipped all three, so a CLIPPED command claimed to cover area it
+			 * does not paint -- and asteroidz clips client surfaces constantly
+			 * (every animation tick, every tag slide, scroller overflow).
+			 * What the over-claim erased was everything behind it: Firefox
+			 * stopped drawing pages, and the compositor got very fast doing
+			 * it.
+			 *
+			 * Rounding needs no test of its own for the same reason. The tail
+			 * insets by the radius, which is the exact answer where a boolean
+			 * was the conservative one.
+			 */
+			client_opaque = &cmd->opaque;
 		}
 		break;
 	case AVK_CMD_RECT:
@@ -967,12 +977,68 @@ static bool az_cmd_opaque_region(const struct avk_renderer *renderer,
 	pixman_region32_union(out, out, &vertical);
 	pixman_region32_fini(&vertical);
 
+	if (client_opaque != NULL) {
+		/* The client's own statement about itself, narrowed by everything the
+		 * compositor knows and never widening any of it. */
+		pixman_region32_intersect(out, out,
+			(pixman_region32_t *)client_opaque);
+	}
 	if (cmd->has_clip) {
 		pixman_region32_intersect(out, out, (pixman_region32_t *)&cmd->clip);
 	}
 	pixman_region32_intersect_rect(out, out, bounds->x, bounds->y,
 		(unsigned)bounds->width, (unsigned)bounds->height);
 	return pixman_region32_not_empty(out);
+}
+
+/*
+ * ── THE SAME QUESTION, ASKED FOR THE UPLOAD RATHER THAN THE DRAW ────────────
+ *
+ * See avk_scene_visibility() in avk_render.h for what this is for and how it
+ * differs from pass one below. It shares az_cmd_opaque_region() and
+ * command_region() with the draw deliberately: two implementations of "what is
+ * covered" that drifted apart would show up as a client whose pixels were not
+ * copied, which is the worst kind of rendering bug to trace back to a rule.
+ */
+void avk_scene_visibility(const struct avk_renderer *renderer,
+		const struct avk_scene *scene, const struct avk_box *bounds,
+		avk_visibility_fn fn, void *user) {
+	if (scene == NULL || fn == NULL || bounds == NULL || scene->len == 0) {
+		return;
+	}
+	pixman_region32_t occluded;
+	pixman_region32_init(&occluded);
+	for (size_t i = scene->len; i-- > 0; ) {
+		const struct avk_cmd *cmd = &scene->cmds[i];
+		if (cmd->type == AVK_CMD_BLUR) {
+			/*
+			 * A blur replays every command BELOW it into its own capture, so
+			 * whatever covers it up here does not cover them down there. The
+			 * accumulator is cleared rather than saved and restored: this pass
+			 * may over-report visibility and may never under-report it.
+			 */
+			pixman_region32_clear(&occluded);
+			continue;
+		}
+		if (cmd->image != NULL && (cmd->type == AVK_CMD_TEXTURE
+				|| cmd->type == AVK_CMD_TEXTURE_QUAD)) {
+			pixman_region32_t r;
+			command_region(cmd, NULL, bounds, false, &r);
+			if (!renderer->break_no_occlusion) {
+				pixman_region32_subtract(&r, &r, &occluded);
+			}
+			if (pixman_region32_not_empty(&r)) {
+				fn(user, cmd, &r);
+			}
+			pixman_region32_fini(&r);
+		}
+		pixman_region32_t op;
+		if (az_cmd_opaque_region(renderer, cmd, bounds, &op)) {
+			pixman_region32_union(&occluded, &occluded, &op);
+			pixman_region32_fini(&op);
+		}
+	}
+	pixman_region32_fini(&occluded);
 }
 
 /*

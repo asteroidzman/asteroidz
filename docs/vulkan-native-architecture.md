@@ -3456,3 +3456,102 @@ function and nothing else.
   deferred: an optimisation with no measurement behind it.
 - **Path A by default.** Correct and qualified, still opt-in, because it changes
   how every SDR pixel blends.
+
+## 5.24 A copy of what nothing can see
+
+`avk.shm_upload_bytes` was the compositor's largest recurring cost, and most of
+it was for pixels no draw would ever sample.
+
+The extreme case is a browser. Firefox's `xdg_toplevel` is its decoration frame
+— on this desktop a 5128x2788 `wl_shm` buffer, 54.5 MB — and the page is drawn
+into an opaque dma-buf **subsurface** covering all of it but a margin. Every
+redraw copied the whole frame to show a border. Thirteen redraws in two seconds
+while dragging the window is 709 MB.
+
+Three earlier attempts to remove it were the wrong shape and are recorded in
+`project_firefox_uses_shm_not_dmabuf`: Firefox is not falling back to shm (its
+content is dma-buf under asteroidz and under sway alike), the dmabuf feedback is
+correct, and KWin refuses server-side decorations exactly as asteroidz does, so
+there is no trick to copy. What is left is not to stop the client drawing it,
+but to stop copying it.
+
+### What decides
+
+Three pieces, and only the second is an optimisation:
+
+**`az_avk_buffer.uploaded`** — which texels of an image match the client's
+buffer, in buffer pixels. Empty on a fresh image, whole after a full copy, a
+region once copies are clipped. Damage subtracts from it, a copy adds to it.
+It turns "part of this image is undefined" from a contradiction into
+bookkeeping.
+
+**`az_avk_surface.views[]`** — what each output could see of a surface, in
+buffer pixels, written by `avk_scene_visibility()`. One view per output and
+REPLACED each frame rather than accumulated, because the two failure modes pull
+opposite ways: a single region would forget the other monitor (too small, and
+too small means a texel goes uncopied), while a region that only ever grew could
+never reach "nothing can see this", which is the case worth the most — a
+fullscreen window over a browser, a tag switched away from. A surface no command
+draws is never reported, so the clearing happens at the start of the frame
+rather than on the strength of a report that never comes.
+
+The views do **not** expire. An output that stopped rendering stopped because
+nothing changed, and its last answer is still true; dropping it makes the union
+smaller, which is the dangerous direction. Expiring them put the copies straight
+back for a window behind a fullscreen one.
+
+**`az_avk_frame_visibility()`** — the backstop, and the reason the above is
+allowed to be wrong. It runs after the walk has built the command list and
+before the frame is recorded, asks the renderer the same occlusion question the
+draw will ask, and compares the answer against `uploaded`. A difference is a
+texel this frame is about to sample and does not have; it is copied there and
+then, synchronously, before the draw. Empty on every frame where visibility did
+not grow, which is nearly all of them.
+
+Occlusion is a property of the frame, and the frame does not exist when the
+client commits — so the clip at commit time is necessarily a frame behind, and
+the repair is necessarily on the frame path. Waiting for visibility at commit
+would put the memcpy back where M3.5D.1 took it from.
+
+`avk_scene_visibility()` shares `az_cmd_opaque_region()` and `command_region()`
+with the draw deliberately. Two implementations of "what is covered" that drifted
+apart would show up as a client whose pixels were not copied. It differs from
+the draw's own pass in two stated ways: no damage clip (the question is "can this
+be sampled at all", not "does it need redrawing") and no segments — a blur
+replays the prefix behind it, so the accumulator is CLEARED at each blur going
+down. That over-reports visibility, which is the only safe direction.
+
+### Two other things this found
+
+**First sight had no surface.** `az_avk_image_for_buffer_ex()` planned and
+performed the first copy of a buffer before putting it in its surface's pool, so
+every first-sight buffer planned with no visibility at all. That is precisely the
+client the clip exists for: one that allocates a fresh `wl_buffer` per redraw
+never takes the "already ours" path. The pool insert moved ahead of the copy.
+
+**`7b045fb3` committed a declaration and not the fix.** Its message describes
+carrying the client's opaque region to the end of `az_cmd_opaque_region()` so it
+passes the annulus, corner and `cmd->clip` narrowing; the diff added only
+`const pixman_region32_t *client_opaque = NULL;`. The function still returned
+early, so a clipped ARGB command claimed to cover area it does not paint — the
+over-claim that blanked Firefox's pages, still live in `0.25.2`. The unused
+variable is what gave it away. The fix is now applied.
+
+### Measured
+
+`contrib/avk-visible-clip-test.sh`, 13/13:
+
+| scenario | control | clipped |
+|---|---|---|
+| a 1024x1024 client hidden by an opaque window | 25.2 MB | **0 B** |
+| a 1024x1024 frame under an opaque subsurface | 25.2 MB | **3.5 MB** |
+
+The second is the browser's shape. Of 1048576 buffer pixels, 136704 can be seen.
+
+The oracle is not the byte count. The client commits eight generations,
+alternating colour, is hidden after the third and goes **quiet** after the
+eighth; then the window above it is closed. What appears must be generation
+eight — the one it committed while nothing could see it — and it gets there
+through exactly one repair. `BREAK=no-repair` clips the copies and declines to
+repair them: every cost assertion still passes and the window comes back showing
+generation one.

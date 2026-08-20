@@ -27,6 +27,7 @@
  * Usage:
  *     wlreuse --colour RRGGBB [--colour RRGGBB ...] [--hold-ms N] [--size WxH]
  *            [--stride-pad N] [--damage WxH+X+Y] [--two-regions] [--no-damage]
+ *            [--opaque] [--title NAME]
  *
  * The later options serve the partial-upload path:
  *
@@ -44,6 +45,29 @@
  *                      packing limit this is damage it cannot represent, which
  *                      must become ONE full upload rather than a wrong partial
  *                      one.
+ *   --opaque           XRGB8888 instead of ARGB8888, plus a whole-surface
+ *                      wl_surface.set_opaque_region. Both, because the
+ *                      compositor's occlusion rule accepts either and a client
+ *                      that means "opaque" says both. This is the only way to
+ *                      build a fixture in which one of these windows genuinely
+ *                      HIDES another -- an ARGB surface with no opaque region
+ *                      is never an occluder, however solid its pixels look.
+ *   --title NAME       window title and app id, so a test with two of these
+ *                      can tell them apart.
+ *   --child WxH+X+Y    an OPAQUE wl_subsurface of that size at that offset
+ *                      inside the parent. This is the shape the whole
+ *                      visible-region optimisation exists for: a browser's
+ *                      decoration frame is one enormous wl_shm buffer with the
+ *                      page drawn into a subsurface covering everything but a
+ *                      margin, so nearly all of the parent's copy is for
+ *                      pixels the child hides. The child is drawn once and
+ *                      never again -- it is scenery, not a subject.
+ *   --generations N    commit N generations and then go QUIET, still holding
+ *                      the surface. A client that keeps committing repairs any
+ *                      mistake the compositor made about it on its next
+ *                      generation, which makes a whole class of compositor bug
+ *                      untestable: what the screen shows has to still be right
+ *                      when nobody is going to send anything again.
  *   --no-damage        commit a new generation and say nothing about what
  *                      changed. Per the protocol that means "nothing changed",
  *                      and the correct response is to upload nothing at all --
@@ -92,6 +116,13 @@ static int damage_w = 0, damage_h = 0, damage_x = 0, damage_y = 0;
 static bool two_regions = false;
 static bool no_damage = false;
 static int many_regions = 0;
+/* See --opaque: XRGB plus a whole-surface opaque region, which is what makes
+ * this client usable as an OCCLUDER rather than only as a subject. */
+static bool opaque = false;
+static const char *title = "wlreuse";
+static int max_generations = 0;   /* 0 = forever */
+static int child_w = 0, child_h = 0, child_x = 0, child_y = 0;
+static struct wl_subcompositor *subcompositor;
 static bool configured;
 static bool running = true;
 
@@ -110,6 +141,9 @@ static void registry_global(void *data, struct wl_registry *registry,
 		compositor = wl_registry_bind(registry, name, &wl_compositor_interface, 4);
 	} else if (strcmp(interface, wl_shm_interface.name) == 0) {
 		shm = wl_registry_bind(registry, name, &wl_shm_interface, 1);
+	} else if (strcmp(interface, wl_subcompositor_interface.name) == 0) {
+		subcompositor = wl_registry_bind(registry, name,
+			&wl_subcompositor_interface, 1);
 	} else if (strcmp(interface, xdg_wm_base_interface.name) == 0) {
 		wm_base = wl_registry_bind(registry, name, &xdg_wm_base_interface, 1);
 		xdg_wm_base_add_listener(wm_base, &wm_base_listener, NULL);
@@ -198,6 +232,18 @@ int main(int argc, char **argv) {
 			 * limit this is damage it cannot represent as regions, which has
 			 * to become one full upload rather than a wrong partial one. */
 			many_regions = atoi(argv[++i]);
+		} else if (strcmp(argv[i], "--generations") == 0 && i + 1 < argc) {
+			max_generations = atoi(argv[++i]);
+		} else if (strcmp(argv[i], "--child") == 0 && i + 1 < argc) {
+			if (sscanf(argv[++i], "%dx%d+%d+%d", &child_w, &child_h,
+					&child_x, &child_y) != 4) {
+				fprintf(stderr, "wlreuse: --child wants WxH+X+Y\n");
+				return 1;
+			}
+		} else if (strcmp(argv[i], "--opaque") == 0) {
+			opaque = true;
+		} else if (strcmp(argv[i], "--title") == 0 && i + 1 < argc) {
+			title = argv[++i];
 		} else if (strcmp(argv[i], "--no-damage") == 0) {
 			/* Commit a new generation without saying what changed. The
 			 * compositor has to fall back to one full upload. */
@@ -243,7 +289,8 @@ int main(int argc, char **argv) {
 	/* ONE pool, ONE buffer, for the whole lifetime of the process. */
 	struct wl_shm_pool *pool = wl_shm_create_pool(shm, fd, (int32_t)size);
 	buffer = wl_shm_pool_create_buffer(pool, 0, width, height,
-		(int32_t)stride, WL_SHM_FORMAT_ARGB8888);
+		(int32_t)stride, opaque ? WL_SHM_FORMAT_XRGB8888
+			: WL_SHM_FORMAT_ARGB8888);
 	wl_shm_pool_destroy(pool);
 	close(fd);
 
@@ -252,13 +299,33 @@ int main(int argc, char **argv) {
 	xdg_surface_add_listener(xdg_surface, &xdg_surface_listener, NULL);
 	toplevel = xdg_surface_get_toplevel(xdg_surface);
 	xdg_toplevel_add_listener(toplevel, &toplevel_listener, NULL);
-	xdg_toplevel_set_title(toplevel, "wlreuse");
-	xdg_toplevel_set_app_id(toplevel, "wlreuse");
+	xdg_toplevel_set_title(toplevel, title);
+	xdg_toplevel_set_app_id(toplevel, title);
+	if (opaque) {
+		/* The whole surface, re-stated on every configure below is
+		 * unnecessary: a region is double-buffered surface state and survives
+		 * until it is replaced. Stated once, before the first commit, so it is
+		 * in effect for the very first frame. */
+		struct wl_region *region = wl_compositor_create_region(compositor);
+		wl_region_add(region, 0, 0, 1 << 24, 1 << 24);
+		wl_surface_set_opaque_region(surface, region);
+		wl_region_destroy(region);
+	}
 	wl_surface_commit(surface);
 
 	while (!configured && wl_display_dispatch(display) != -1) {
 	}
 
+	/*
+	 * THE OPAQUE CHILD, drawn once.
+	 *
+	 * XRGB and a whole-surface opaque region, for the same reason --opaque
+	 * gives the occluder both: a compositor may reasonably decide occlusion
+	 * from either, and a client that means opaque says both. Committed after
+	 * the parent's first configure so it has somewhere to sit, and never
+	 * touched again -- everything that changes below happens in the parent,
+	 * underneath it, where nothing can see it.
+	 */
 	for (int generation = 0; running; generation++) {
 		uint32_t colour = colours[generation % colour_count];
 		bool partial = generation > 0 && damage_w > 0 && damage_h > 0;
@@ -338,6 +405,89 @@ int main(int argc, char **argv) {
 			colour & 0xffffffu);
 		fflush(stdout);
 
+		/*
+		 * THE CHILD IS CREATED AFTER THE PARENT HAS A BUFFER, not before.
+		 *
+		 * A subsurface of an unmapped parent is not mapped either, and this
+		 * client does not attach the parent's first buffer until here -- so a
+		 * child committed before the loop was created, acknowledged, and never
+		 * drawn. It cost an hour of looking at the compositor for it.
+		 */
+		if (generation == 0) {
+	if (child_w > 0 && child_h > 0 && subcompositor == NULL) {
+			fprintf(stderr, "wlreuse: --child asked for but no wl_subcompositor\n");
+			return 1;
+		}
+		if (child_w > 0 && child_h > 0) {
+			size_t cstride = (size_t)child_w * 4;
+			size_t csize = cstride * (size_t)child_h;
+			int cfd = anon_file(csize);
+			if (cfd < 0) {
+				fprintf(stderr, "wlreuse: child anon_file failed\n");
+				return 1;
+			}
+			uint32_t *cpix = mmap(NULL, csize, PROT_READ | PROT_WRITE,
+				MAP_SHARED, cfd, 0);
+			if (cpix == MAP_FAILED) {
+				fprintf(stderr, "wlreuse: child mmap failed: %s\n",
+					strerror(errno));
+				return 1;
+			}
+			for (size_t i = 0; i < csize / 4; i++) {
+				cpix[i] = 0xff202020u;
+			}
+			struct wl_shm_pool *cpool = wl_shm_create_pool(shm, cfd,
+				(int32_t)csize);
+			struct wl_buffer *cbuf = wl_shm_pool_create_buffer(cpool, 0,
+				child_w, child_h, (int32_t)cstride, WL_SHM_FORMAT_XRGB8888);
+			wl_shm_pool_destroy(cpool);
+			close(cfd);
+
+			struct wl_surface *child = wl_compositor_create_surface(compositor);
+			struct wl_subsurface *sub = wl_subcompositor_get_subsurface(
+				subcompositor, child, surface);
+			wl_subsurface_set_position(sub, child_x, child_y);
+			/* Desynchronised, like every real toolkit's content surface: a
+			 * synchronised child would only take effect on the parent's next
+			 * commit, which would tie the scenery to the subject. */
+			wl_subsurface_set_desync(sub);
+			struct wl_region *cregion = wl_compositor_create_region(compositor);
+			wl_region_add(cregion, 0, 0, child_w, child_h);
+			wl_surface_set_opaque_region(child, cregion);
+			wl_region_destroy(cregion);
+			wl_surface_attach(child, cbuf, 0, 0);
+			wl_surface_damage_buffer(child, 0, 0, child_w, child_h);
+			wl_surface_commit(child);
+			wl_surface_commit(surface);
+			wl_display_roundtrip(display);
+			/*
+			 * COMMITTED A SECOND TIME, AND THE REASON IS A COMPOSITOR BUG.
+			 *
+			 * asteroidz creates the scene node for a subsurface AFTER that
+			 * subsurface's first commit has been consumed, and on its
+			 * no-renderer path a client's buffer is reachable only during the
+			 * commit event that carried it -- so the first commit of a
+			 * late-created subsurface is dropped and the child is never drawn.
+			 * Traced with AZ_DEBUG_RECONFIG: seven surface_reconfigure calls
+			 * for the child, current.buffer NULL in every one, and no scene
+			 * commit for it at all. The same client under sway draws the child
+			 * on its first commit.
+			 *
+			 * A second commit is what every real toolkit does anyway, so this
+			 * is not a fiction -- but it IS a workaround, and it is here so
+			 * that the day the compositor is fixed, removing this line is the
+			 * test.
+			 */
+			wl_surface_attach(child, cbuf, 0, 0);
+			wl_surface_damage_buffer(child, 0, 0, child_w, child_h);
+			wl_surface_commit(child);
+			wl_display_roundtrip(display);
+			printf("wlreuse: child %dx%d at +%d+%d committed\n",
+				child_w, child_h, child_x, child_y);
+			fflush(stdout);
+		}
+		}
+
 		struct timespec ts = {
 			.tv_sec = hold_ms / 1000,
 			.tv_nsec = (long)(hold_ms % 1000) * 1000000L,
@@ -352,6 +502,21 @@ int main(int argc, char **argv) {
 		wl_display_flush(display);
 		wl_display_cancel_read(display);
 		wl_display_dispatch_pending(display);
+
+		if (max_generations > 0 && generation + 1 >= max_generations) {
+			/* QUIET, not gone. The surface stays mapped and the connection
+			 * stays open; nothing further is committed. What the compositor
+			 * shows from here on is entirely its own doing. */
+			printf("wlreuse: quiet after %d generations\n", max_generations);
+			fflush(stdout);
+			break;
+		}
+	}
+
+	while (running) {
+		if (wl_display_dispatch(display) == -1) {
+			break;
+		}
 	}
 
 	wl_display_disconnect(display);

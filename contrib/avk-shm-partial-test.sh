@@ -220,11 +220,21 @@ PARTIAL="$(field "$S" shm_partial_uploads)"
 SKIPS="$(field "$S" shm_upload_skips)"
 WHITE2="$(count_colour "$BASE/many/gen2.png" "#ffffff")"
 echo "  note: $FULLUP full / $PARTIAL partial uploads, $SKIPS skips, white $WHITE2"
-hl_assert "unrepresentable damage falls back to a full upload" \
-	"$([ "${FULLUP:-0}" -ge 1 ] && echo true || echo false)" "true"
-# The whole point of the fallback being per GENERATION rather than per frame.
+# ONE COPY FOR THE GENERATION, whichever shape it takes.
+#
+# This used to assert specifically that the fallback was a FULL upload, which
+# was the only correct answer while a plan could not be narrowed. It can be now:
+# with a visibility hint, damage the packer cannot represent collapses to the
+# BOUNDING BOX of the part that is visible, which is a superset of what is owed
+# and no larger than the buffer. That is a correct partial, so the assertion is
+# on the thing that was actually being protected -- one copy for the generation
+# rather than one per frame -- and the pixel check below is what would catch a
+# copy that dropped a rectangle.
+UPLOADS=$(( ${FULLUP:-0} + ${PARTIAL:-0} ))
+hl_assert "unrepresentable damage still produced a copy" \
+	"$([ "$UPLOADS" -ge 1 ] && echo true || echo false)" "true"
 hl_assert "but only once for that generation, not once per frame" \
-	"$([ "${FULLUP:-99}" -le 2 ] && echo true || echo false)" "true"
+	"$([ "$UPLOADS" -le 2 ] && echo true || echo false)" "true"
 hl_assert "and later frames reused the image" \
 	"$([ "${SKIPS:-0}" -gt 0 ] && echo true || echo false)" "true"
 hl_assert "with the pixels correct either way" \

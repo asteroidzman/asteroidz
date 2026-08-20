@@ -2297,6 +2297,9 @@ static struct wl_listener new_xdg_toplevel = {.notify = createnotify};
 static struct wl_listener new_xdg_popup = {.notify = createpopup};
 static struct wl_listener new_xdg_dialog = {.notify = createdialog};
 static struct wl_listener new_xdg_decoration = {.notify = createdecoration};
+/* Defined with kde_decoration_new(), far below; declared here so
+ * cleanuplisteners() can take it off its manager. */
+static struct wl_listener kde_new_decoration;
 static struct wl_listener new_layer_surface = {.notify = createlayersurface};
 static struct wl_listener output_mgr_apply = {.notify = outputmgrapply};
 static struct wl_listener output_mgr_test = {.notify = outputmgrtest};
@@ -4608,6 +4611,12 @@ void cleanuplisteners(void) {
 	wl_list_remove(&new_output.link);
 	wl_list_remove(&new_xdg_toplevel.link);
 	wl_list_remove(&new_xdg_decoration.link);
+	/* The KDE half of the same negotiation. Missing here, its manager's
+	 * new_decoration signal still held a listener at wl_display_destroy() and
+	 * wlroots asserts on exactly that -- so every shutdown aborted, and the
+	 * end-of-session statistics that abort took with it were read as an AVK
+	 * that had composited nothing. */
+	wl_list_remove(&kde_new_decoration.link);
 	wl_list_remove(&new_xdg_popup.link);
 	wl_list_remove(&new_xdg_dialog.link);
 	wl_list_remove(&new_layer_surface.link);

@@ -267,6 +267,21 @@ struct az_avk {
 	uint64_t shm_staging_reaped;
 	/* ...and by az_avk_shm_staging_release(), as each copy is submitted. */
 	uint64_t shm_staging_returned;
+	/*
+	 * ── THE VISIBLE-REGION CLIP, IN NUMBERS ──────────────────────────────
+	 *
+	 * `visible_saved_px` is the whole claim: source pixels a copy did not
+	 * carry because nothing could see them. `repairs` is what it costs when
+	 * the hint was too small -- a synchronous top-up on the frame path -- and
+	 * `repair_px` says whether those are slivers or whole windows. A build
+	 * where repairs approach the number of frames has a hint that is not
+	 * working, however good the saving looks.
+	 */
+	uint64_t visible_clipped;
+	uint64_t visible_saved_px;
+	uint64_t plan_no_hint;
+	uint64_t hint_epochs;
+	uint64_t repairs, repair_px, repair_deferred, repair_failed;
 	uint64_t shm_staging_wait_ns_max, shm_staging_wait_ns_sum;
 	/* Frames that showed the previous generation instead of blocking, and the
 	 * microseconds of event loop that decision gave back. */
@@ -751,6 +766,30 @@ struct az_avk_buffer {
 	bool pending_full;
 
 	/*
+	 * ── WHAT OF THIS IMAGE MATCHES THE CLIENT'S BUFFER ───────────────────
+	 *
+	 * In BUFFER pixels. Empty on a fresh image, whole after a full copy, and
+	 * a region once copies are clipped to what anything can see.
+	 *
+	 * It exists because "copy only the visible part" turns undefined image
+	 * contents from a contradiction into a bookkeeping problem: a texel
+	 * outside this region holds whatever the allocation came with, and the
+	 * frame path's job is to make sure nothing ever samples one. Damage
+	 * subtracts from it (those texels are now stale), a copy adds to it.
+	 *
+	 * `planned` is the region the copy in flight will add once it lands. Kept
+	 * on the entry rather than in the plan because the async path builds the
+	 * plan at commit and applies it at settle, and at settle the region has to
+	 * still be somewhere.
+	 */
+	pixman_region32_t uploaded;
+	pixman_region32_t planned;
+	/* Set by the frame's visibility pass: visible texels this image does not
+	 * have. Repaired before the draw that would have sampled them. */
+	pixman_region32_t shortfall;
+	bool has_shortfall;
+
+	/*
 	 * ── THE COPY THAT IS HAPPENING SOMEWHERE ELSE ────────────────────────
 	 *
 	 * Non-NULL while a worker thread is copying this buffer's pixels into
@@ -904,6 +943,9 @@ static void az_avk_buffer_destroy(struct az_avk_buffer *entry) {
 		wl_list_init(&entry->pool_link);
 	}
 	pixman_region32_fini(&entry->pending_damage);
+	pixman_region32_fini(&entry->uploaded);
+	pixman_region32_fini(&entry->planned);
+	pixman_region32_fini(&entry->shortfall);
 	wlr_addon_finish(&entry->addon);
 	wl_list_remove(&entry->link);
 	if (avk.client_images_cached > 0) {
@@ -1069,6 +1111,17 @@ static void az_avk_note_copy_ns(uint64_t ns) {
 	}
 }
 
+static uint64_t az_avk_region_area(const pixman_region32_t *region) {
+	int n = 0;
+	const pixman_box32_t *b = pixman_region32_rectangles(
+		(pixman_region32_t *)region, &n);
+	uint64_t area = 0;
+	for (int i = 0; i < n; i++) {
+		area += (uint64_t)(b[i].x2 - b[i].x1) * (uint64_t)(b[i].y2 - b[i].y1);
+	}
+	return area;
+}
+
 /*
  * Record what changed in a generation that has not been uploaded yet.
  *
@@ -1084,6 +1137,11 @@ static void az_avk_note_source_damage(struct az_avk_buffer *entry,
 		return;
 	}
 	pixman_region32_union(&entry->pending_damage, &entry->pending_damage,
+		(pixman_region32_t *)damage);
+	/* Those texels no longer match the client's buffer, so the image no longer
+	 * has them. Without this the visible-region clip would look at an
+	 * `uploaded` that says "already copied" and skip the redraw. */
+	pixman_region32_subtract(&entry->uploaded, &entry->uploaded,
 		(pixman_region32_t *)damage);
 }
 
@@ -1101,6 +1159,9 @@ static bool az_avk_shm_image_create(struct az_avk_buffer *entry,
 		return false;
 	}
 	entry->is_shm = true;
+	/* A brand-new allocation. Whatever the driver handed back is not this
+	 * client's pixels, and `uploaded` is the record of that. */
+	pixman_region32_clear(&entry->uploaded);
 	if (!avk.warned_shm) {
 		avk.warned_shm = true;
 		wlr_log(WLR_INFO, "AVK: a client is using CPU (SHM) buffers; these "
@@ -1123,6 +1184,11 @@ enum az_shm_plan_result {
  * They used to be one function, and the moment they were not, "the async path
  * ignores AZ_AVK_SOURCE_FULL" became a bug two break switches could not see.
  */
+/* Defined with struct az_avk_surface: the union of everything any output has
+ * been able to see of this surface at its current buffer size. */
+static const pixman_region32_t *az_avk_surface_hint(struct az_avk_surface *as,
+	int32_t width, int32_t height);
+
 static enum az_shm_plan_result az_avk_shm_plan(struct az_avk_buffer *entry,
 		uint32_t stride, struct avk_upload_plan *plan) {
 	/*
@@ -1135,13 +1201,99 @@ static enum az_shm_plan_result az_avk_shm_plan(struct az_avk_buffer *entry,
 	 */
 	bool want_full = entry->pending_full
 		|| az_avk_env_flag("AZ_AVK_SOURCE_FULL");
+
+	pixman_region32_clear(&entry->planned);
+
+	pixman_region32_t want;
+	pixman_region32_init(&want);
+	if (want_full) {
+		pixman_region32_union_rect(&want, &want, 0, 0,
+			(unsigned)entry->buffer->width, (unsigned)entry->buffer->height);
+	} else {
+		pixman_region32_copy(&want, &entry->pending_damage);
+		/*
+		 * PLUS WHATEVER THIS IMAGE NEVER RECEIVED.
+		 *
+		 * Once copies are clipped to what is visible, an image can be missing
+		 * texels that no damage will ever name again -- the client changed
+		 * them while they were covered, the copy skipped them, and the damage
+		 * was consumed. `uploaded` is the record of what the image actually
+		 * has, so the difference is added back here and clipped by the same
+		 * visibility below. Without it a window that is uncovered stays wrong
+		 * until the client happens to repaint that exact rectangle.
+		 */
+		pixman_region32_t missing;
+		pixman_region32_init_rect(&missing, 0, 0,
+			(unsigned)entry->buffer->width, (unsigned)entry->buffer->height);
+		pixman_region32_subtract(&missing, &missing, &entry->uploaded);
+		pixman_region32_union(&want, &want, &missing);
+		pixman_region32_fini(&missing);
+	}
+
+	/*
+	 * ── DO NOT COPY WHAT NOTHING CAN SEE ──────────────────────────────────
+	 *
+	 * A copy into a part of the image that no draw samples is bytes across the
+	 * PCIe bus and a page fault per page, for nothing. It is the compositor's
+	 * largest recurring cost and most of it can be waste: Firefox's decoration
+	 * frame is a 5128x2788 wl_shm buffer with its own opaque dma-buf
+	 * subsurface over everything but a 20px margin, so 54.5MB is copied to
+	 * show under a megabyte of border, thirteen times in two seconds while the
+	 * window is being dragged.
+	 *
+	 * THE HINT IS A FRAME OLD AND ONLY EVER GROWS. It is the union of what
+	 * every output could see of this surface since it took its current size,
+	 * so a surface on two monitors is covered by both and stale visibility can
+	 * only make this copy too large, never too small. What it cannot cover is
+	 * the moment visibility grows -- a window uncovered, a tag switched -- and
+	 * that is not left to the hint at all: the frame's own visibility pass
+	 * compares what it is about to draw against `uploaded` and repairs the
+	 * difference before the draw. See az_avk_frame_visibility().
+	 */
+	if (!az_avk_env_flag("AZ_AVK_NO_VISIBLE_CLIP")) {
+		const pixman_region32_t *hint = az_avk_surface_hint(entry->as,
+			entry->buffer->width, entry->buffer->height);
+		if (hint == NULL) {
+			avk.plan_no_hint++;
+		} else {
+			pixman_region32_t clipped;
+			pixman_region32_init(&clipped);
+			pixman_region32_intersect(&clipped, &want,
+				(pixman_region32_t *)hint);
+			/*
+			 * A region plan carries a fixed number of rectangles. The visible
+			 * area's bounding box is a superset of what is owed and still a
+			 * fraction of the buffer, so it is the safe simplification -- and
+			 * it is taken of the CLIPPED region, never of `want`.
+			 */
+			if (pixman_region32_n_rects(&clipped) > AZ_AVK_MAX_DAMAGE_RECTS) {
+				pixman_box32_t b = *pixman_region32_extents(&clipped);
+				pixman_region32_clear(&clipped);
+				pixman_region32_union_rect(&clipped, &clipped, b.x1, b.y1,
+					(unsigned)(b.x2 - b.x1), (unsigned)(b.y2 - b.y1));
+			}
+			if (!pixman_region32_equal(&clipped, &want)) {
+				avk.visible_clipped++;
+				avk.visible_saved_px += az_avk_region_area(&want)
+					- az_avk_region_area(&clipped);
+				pixman_region32_copy(&want, &clipped);
+				/* Clipped to visibility, a whole-buffer plan is a region
+				 * plan -- that is the entire point. */
+				want_full = false;
+			}
+			pixman_region32_fini(&clipped);
+		}
+	}
+
 	int rect_count = 0;
 	const pixman_box32_t *boxes = want_full ? NULL
-		: pixman_region32_rectangles(&entry->pending_damage, &rect_count);
+		: pixman_region32_rectangles(&want, &rect_count);
 
 	if (!want_full && rect_count == 0) {
+		pixman_region32_fini(&want);
 		/* A generation whose client reported no damage at all changed no
-		 * pixels. wlroots' own texture path copies nothing here too. */
+		 * pixels -- or whose every changed pixel is covered. wlroots' own
+		 * texture path copies nothing here too. */
 		return AZ_SHM_PLAN_NOTHING;
 	}
 
@@ -1173,17 +1325,38 @@ static enum az_shm_plan_result az_avk_shm_plan(struct az_avk_buffer *entry,
 		}
 		if (n > 0 && avk_upload_plan_regions(plan, entry->image, stride,
 				(uint32_t)entry->buffer->height, rects, n)) {
+			/* EXACTLY what the copy will carry, taken from the rectangles the
+			 * plan was built from rather than from `want` -- the clamp and the
+			 * break switch above can both drop one, and an `uploaded` that
+			 * claimed a texel the copy skipped is a stale pixel nothing would
+			 * ever go back for. */
+			for (uint32_t i = 0; i < n; i++) {
+				pixman_region32_union_rect(&entry->planned, &entry->planned,
+					(int)rects[i].x, (int)rects[i].y,
+					rects[i].width, rects[i].height);
+			}
+			pixman_region32_fini(&want);
 			return AZ_SHM_PLAN_REGIONS;
 		}
 		/* The partial path declined; fall through and do it whole rather than
 		 * leaving the image holding a stale generation. */
 	}
+	pixman_region32_fini(&want);
 
 	if (!avk_upload_plan_full(plan, entry->image, stride,
 			(uint32_t)entry->buffer->height)) {
 		return AZ_SHM_PLAN_FAILED;
 	}
+	pixman_region32_union_rect(&entry->planned, &entry->planned, 0, 0,
+		(unsigned)entry->buffer->width, (unsigned)entry->buffer->height);
 	return AZ_SHM_PLAN_FULL;
+}
+
+/* What a copy that has landed adds to the image. One place, so the synchronous
+ * path and the worker path cannot come to disagree about it. */
+static void az_avk_note_uploaded(struct az_avk_buffer *entry) {
+	pixman_region32_union(&entry->uploaded, &entry->uploaded, &entry->planned);
+	pixman_region32_clear(&entry->planned);
 }
 
 /* The ordering that keeps an upload behind the frames still sampling the
@@ -1406,6 +1579,7 @@ static bool az_avk_shm_job_settle(struct az_avk_buffer *entry, bool block) {
 		wait_count) != 0;
 	if (ok) {
 		az_avk_shm_account(entry, &entry->job->plan);
+		az_avk_note_uploaded(entry);
 		entry->uploaded_generation = entry->job_generation;
 		az_avk_surface_note_good(entry);
 	} else {
@@ -1646,6 +1820,18 @@ static bool az_avk_upload_shm(struct az_avk_buffer *entry) {
 	if (res == AZ_SHM_PLAN_NOTHING) {
 		wlr_buffer_end_data_ptr_access(entry->buffer);
 		avk.shm_upload_skips++;
+		/*
+		 * SATISFIED, not deferred -- and the asynchronous path has always said
+		 * so while this one did not. It mattered little while "nothing to
+		 * copy" meant only "the client reported no damage"; with the copies
+		 * clipped to what is visible it also means "everything that changed is
+		 * covered", which a partly hidden window can hit on every generation.
+		 * Left unsaid, the generation never matches and the frame path resolves
+		 * this entry the long way round for as long as the window stays
+		 * covered. What the image is actually holding is in `uploaded`, which
+		 * is the record that makes this safe to claim.
+		 */
+		entry->uploaded_generation = entry->content_generation;
 		return true;
 	}
 	if (res == AZ_SHM_PLAN_FAILED) {
@@ -1689,6 +1875,7 @@ static bool az_avk_upload_shm(struct az_avk_buffer *entry) {
 	}
 	if (ok) {
 		az_avk_shm_account(entry, &plan);
+		az_avk_note_uploaded(entry);
 		pixman_region32_clear(&entry->pending_damage);
 		entry->pending_full = false;
 		az_avk_surface_note_good(entry);
@@ -2125,6 +2312,12 @@ static void az_avk_collect_acquire(struct az_avk_buffer *entry) {
 	}
 }
 
+/* Defined with struct az_avk_surface. Declared here because first sight has to
+ * associate the buffer with its surface BEFORE the copy is planned -- see
+ * below. */
+static void az_avk_pool_add(struct az_avk_surface *as,
+	struct az_avk_buffer *entry);
+
 /*
  * The avk_image for a wlr_buffer, importing it on first sight.
  *
@@ -2138,7 +2331,7 @@ static void az_avk_collect_acquire(struct az_avk_buffer *entry) {
  * worker. Every other caller is the frame, which needs the pixels now.
  */
 static struct avk_image *az_avk_image_for_buffer_ex(struct wlr_buffer *buffer,
-		bool async) {
+		bool async, struct az_avk_surface *as) {
 	struct wlr_addon *addon = wlr_addon_find(&buffer->addons, &avk,
 		&az_avk_buffer_addon_impl);
 	struct az_avk_buffer *entry = NULL;
@@ -2199,12 +2392,28 @@ static struct avk_image *az_avk_image_for_buffer_ex(struct wlr_buffer *buffer,
 	 * one, and wl_list_remove() on it writes through a NULL. */
 	wl_list_init(&entry->job_link);
 	pixman_region32_init(&entry->pending_damage);
+	pixman_region32_init(&entry->uploaded);
+	pixman_region32_init(&entry->planned);
+	pixman_region32_init(&entry->shortfall);
 	/* Nothing is on the GPU yet, so the first upload is necessarily whole. */
 	entry->pending_full = true;
 	wlr_addon_init(&entry->addon, &buffer->addons, &avk,
 		&az_avk_buffer_addon_impl);
 	entry->src_width = (uint32_t)buffer->width;
 	entry->src_height = (uint32_t)buffer->height;
+	/*
+	 * INTO ITS SURFACE'S POOL BEFORE ANYTHING IS PLANNED.
+	 *
+	 * The copy below is clipped to what the surface's visibility hint says can
+	 * be seen, and the hint lives on the surface. Associating afterwards -- as
+	 * this did -- means every first-sight buffer plans with no surface and
+	 * therefore no clip, which is precisely the client the clip exists for: one
+	 * that allocates a FRESH wl_buffer for every redraw never takes the
+	 * "already ours" path at all.
+	 */
+	if (as != NULL) {
+		az_avk_pool_add(as, entry);
+	}
 	wl_list_insert(&avk.buffers, &entry->link);
 	avk.client_images_cached++;
 
@@ -2309,7 +2518,227 @@ static struct avk_image *az_avk_image_for_buffer_ex(struct wlr_buffer *buffer,
 
 /* The frame path's spelling: it needs the pixels now, so it never defers. */
 static struct avk_image *az_avk_image_for_buffer(struct wlr_buffer *buffer) {
-	return az_avk_image_for_buffer_ex(buffer, false);
+	/* No surface: the frame does not know which one it is walking, and a
+	 * buffer that reaches the frame without having been taken at commit is
+	 * already complained about (avk.late_imports). */
+	return az_avk_image_for_buffer_ex(buffer, false, NULL);
+}
+
+/*
+ * ── THE BACKSTOP: NOTHING SAMPLES A TEXEL THAT WAS NEVER COPIED ────────────
+ *
+ * The upload plan clips a copy to what the last frames could see. That is an
+ * optimisation and it is allowed to be wrong; this is what makes being wrong
+ * survivable.
+ *
+ * Run after the walk has built the command list and BEFORE the frame is
+ * recorded, it asks the renderer the same occlusion question the draw will ask
+ * (avk_scene_visibility) and compares the answer against `uploaded` -- what
+ * each image actually holds. A difference is a texel this frame is about to
+ * sample and does not have, and it is copied here, synchronously, before the
+ * draw that would have shown it.
+ *
+ * WHY IT IS NOT THE COST IT LOOKS LIKE. The difference is empty on every frame
+ * where visibility did not grow, which is almost all of them; when it is not
+ * empty it is the sliver that was just uncovered, not the buffer. The pass
+ * itself does not run at all unless some shm image is incomplete.
+ *
+ * WHY IT CANNOT BE DONE AT COMMIT INSTEAD. Occlusion is a property of the
+ * frame, and the frame has not been built when the client commits. Waiting for
+ * it would put the memcpy back on the frame path, which is the thing this
+ * subsystem exists to have removed.
+ */
+#define AZ_AVK_VIS_CANDIDATES 64
+
+struct az_avk_vis_pass {
+	struct az_avk_buffer *cand[AZ_AVK_VIS_CANDIDATES];
+	size_t count;
+	struct wlr_output *output;
+};
+
+/* Both defined with struct az_avk_surface. */
+static void az_avk_surface_begin_view(struct az_avk_surface *as,
+	struct wlr_output *output);
+static void az_avk_surface_note_visible(struct az_avk_surface *as,
+	struct wlr_output *output, int32_t width, int32_t height,
+	const pixman_region32_t *vis);
+
+/*
+ * A command's visible region, in the buffer's own pixels.
+ *
+ * The destination mapping is undone with cmd->src and cmd->dst, which is
+ * exactly what the shader samples with, and rounded OUTWARD: a visible texel
+ * left out is a stale pixel on screen, one copied needlessly is bytes.
+ *
+ * Anything the linear mapping does not describe -- a rotated quad, a buffer
+ * transform -- answers "the whole buffer". Not a special case to be filled in
+ * later: this may over-report and may never under-report, and the whole buffer
+ * is the safe over-report.
+ */
+static void az_avk_vis_to_buffer(const struct avk_cmd *cmd,
+		const pixman_region32_t *visible, int32_t bw, int32_t bh,
+		pixman_region32_t *out) {
+	pixman_region32_init(out);
+	if (cmd->type != AVK_CMD_TEXTURE || cmd->transform != AVK_TRANSFORM_NORMAL
+			|| cmd->dst.width <= 0 || cmd->dst.height <= 0
+			|| cmd->src.width <= 0.0 || cmd->src.height <= 0.0) {
+		pixman_region32_union_rect(out, out, 0, 0,
+			(unsigned)bw, (unsigned)bh);
+		return;
+	}
+	double sx = cmd->src.width / (double)cmd->dst.width;
+	double sy = cmd->src.height / (double)cmd->dst.height;
+	int n = 0;
+	const pixman_box32_t *b = pixman_region32_rectangles(
+		(pixman_region32_t *)visible, &n);
+	for (int i = 0; i < n; i++) {
+		double x1 = cmd->src.x + (double)(b[i].x1 - cmd->dst.x) * sx;
+		double y1 = cmd->src.y + (double)(b[i].y1 - cmd->dst.y) * sy;
+		double x2 = cmd->src.x + (double)(b[i].x2 - cmd->dst.x) * sx;
+		double y2 = cmd->src.y + (double)(b[i].y2 - cmd->dst.y) * sy;
+		int32_t ix1 = (int32_t)floor(x1), iy1 = (int32_t)floor(y1);
+		int32_t ix2 = (int32_t)ceil(x2), iy2 = (int32_t)ceil(y2);
+		/*
+		 * Margin, because a linear filter reads its neighbours: a fragment at
+		 * the edge of the visible area samples up to half a texel outside it,
+		 * and a seam of never-copied texels along that edge would be exactly
+		 * the artefact this whole mechanism must not produce.
+		 *
+		 * Measured in BUFFER texels and therefore scaled: a surface presented
+		 * at a third of its size has three texels to each output pixel, and a
+		 * fixed one-texel margin would cover a third of what it needs to.
+		 */
+		int32_t mx = (int32_t)ceil(sx > 1.0 ? sx : 1.0) + 1;
+		int32_t my = (int32_t)ceil(sy > 1.0 ? sy : 1.0) + 1;
+		ix1 -= mx; iy1 -= my; ix2 += mx; iy2 += my;
+		if (ix1 < 0) { ix1 = 0; }
+		if (iy1 < 0) { iy1 = 0; }
+		if (ix2 > bw) { ix2 = bw; }
+		if (iy2 > bh) { iy2 = bh; }
+		if (ix2 > ix1 && iy2 > iy1) {
+			pixman_region32_union_rect(out, out, ix1, iy1,
+				(unsigned)(ix2 - ix1), (unsigned)(iy2 - iy1));
+		}
+	}
+}
+
+static void az_avk_vis_note(void *user, const struct avk_cmd *cmd,
+		const pixman_region32_t *visible) {
+	struct az_avk_vis_pass *pass = user;
+	struct az_avk_buffer *entry = NULL;
+	for (size_t i = 0; i < pass->count; i++) {
+		if (pass->cand[i]->image == cmd->image) {
+			entry = pass->cand[i];
+			break;
+		}
+	}
+	if (entry == NULL || entry->buffer == NULL) {
+		return;
+	}
+	int32_t bw = entry->buffer->width, bh = entry->buffer->height;
+	if (bw <= 0 || bh <= 0) {
+		return;
+	}
+
+	pixman_region32_t vis;
+	az_avk_vis_to_buffer(cmd, visible, bw, bh, &vis);
+	az_avk_surface_note_visible(entry->as, pass->output, bw, bh, &vis);
+
+	/* What this draw will sample and this image does not have. */
+	pixman_region32_t missing;
+	pixman_region32_init(&missing);
+	pixman_region32_subtract(&missing, &vis, &entry->uploaded);
+	if (pixman_region32_not_empty(&missing)) {
+		pixman_region32_union(&entry->shortfall, &entry->shortfall, &missing);
+		entry->has_shortfall = true;
+	}
+	pixman_region32_fini(&missing);
+	pixman_region32_fini(&vis);
+}
+
+static void az_avk_frame_visibility(const struct avk_renderer *renderer,
+		const struct avk_scene *scene, const struct avk_box *bounds,
+		struct wlr_output *output) {
+	if (az_avk_env_flag("AZ_AVK_NO_VISIBLE_CLIP")) {
+		return;
+	}
+	struct az_avk_vis_pass pass = {0};
+	pass.output = output;
+	struct az_avk_buffer *entry;
+	wl_list_for_each(entry, &avk.buffers, link) {
+		if (!entry->is_shm || entry->image == NULL || entry->buffer == NULL) {
+			continue;
+		}
+		if (pass.count == AZ_AVK_VIS_CANDIDATES) {
+			/* More CPU buffers on screen than this pass tracks. The ones left
+			 * out are not clipped and not repaired -- they are simply outside
+			 * the optimisation, which is the pre-existing behaviour. */
+			break;
+		}
+		pass.cand[pass.count++] = entry;
+	}
+	if (pass.count == 0) {
+		return;
+	}
+	/*
+	 * SAID BEFORE LOOKING, not after. A surface no command draws is never
+	 * reported below, and a view that only ever grew could not express the
+	 * case worth the most -- nothing can see this at all.
+	 */
+	for (size_t i = 0; i < pass.count; i++) {
+		az_avk_surface_begin_view(pass.cand[i]->as, output);
+		/* And the shortfall with it: it is what THIS frame is about to sample
+		 * and does not have. Carried over, one that some ordinary commit-time
+		 * copy had already covered would go on asking for a synchronous upload
+		 * every frame for as long as the window was on screen. */
+		pixman_region32_clear(&pass.cand[i]->shortfall);
+		pass.cand[i]->has_shortfall = false;
+	}
+	avk_scene_visibility(renderer, scene, bounds, az_avk_vis_note, &pass);
+
+	for (size_t i = 0; i < pass.count; i++) {
+		entry = pass.cand[i];
+		if (!entry->has_shortfall) {
+			continue;
+		}
+		if (az_avk_env_flag("AZ_AVK_NO_VISIBLE_REPAIR")) {
+			/*
+			 * THE BREAK, and it is the one that matters here.
+			 *
+			 * Clip the copies and then decline to repair what the clip got
+			 * wrong. Everything the optimisation claims still holds -- fewer
+			 * bytes, the same counters -- and a window that becomes visible
+			 * shows whatever its image was allocated with. A suite that cannot
+			 * tell this build from the real one is asserting on cost and
+			 * calling it correctness.
+			 */
+			continue;
+		}
+		if (entry->job != NULL) {
+			/* A copy is already in flight into this image and the staging it
+			 * is reading is not ours to reuse. The hint has just grown to
+			 * include this region, so the plan that follows the settle covers
+			 * it; if it does not, this runs again next frame. */
+			avk.repair_deferred++;
+			continue;
+		}
+		uint64_t px = az_avk_region_area(&entry->shortfall);
+		/* The plan reads `uploaded` and the hint, both of which now describe
+		 * the shortfall, so the ordinary upload path is the repair -- there is
+		 * no second copy path to keep in step with this one. */
+		az_avk_upload_shm(entry);
+		pixman_region32_subtract(&entry->shortfall, &entry->shortfall,
+			&entry->uploaded);
+		if (pixman_region32_not_empty(&entry->shortfall)) {
+			/* The source was unreadable or the copy failed. Say so rather than
+			 * quietly drawing whatever the allocation contained. */
+			avk.repair_failed++;
+			continue;
+		}
+		avk.repairs++;
+		avk.repair_px += px;
+		entry->has_shortfall = false;
+	}
 }
 
 /* ── output targets ─────────────────────────────────────────────────────── */
@@ -5666,6 +6095,27 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 	az_avk_emit_cursors(&walk, output);
 	clock_gettime(CLOCK_MONOTONIC, &ts_walk);
 
+	/*
+	 * BEFORE THE RECORD, AND THAT IS THE WHOLE POINT. The command list is
+	 * complete, so what each image will be sampled for is now knowable; the
+	 * frame has not been recorded, so an image that is short of it can still
+	 * be topped up. See az_avk_frame_visibility().
+	 *
+	 * The same bounds the renderer will use, source halo included: a texture
+	 * kept only because a blur reads it is sampled there too, and bounds that
+	 * stopped at the output edge would call that part invisible.
+	 */
+	{
+		struct avk_box vis_bounds = scene.source_bounds;
+		if (vis_bounds.width <= 0 || vis_bounds.height <= 0) {
+			vis_bounds = (struct avk_box){
+				0, 0, (int32_t)att.width, (int32_t)att.height,
+			};
+		}
+		az_avk_frame_visibility(&out->slot->renderer, &scene, &vis_bounds,
+			output);
+	}
+
 	/* The extra signal is the frame's completion as something exportable: a
 	 * timeline semaphore cannot become a sync_file, so a binary one rides
 	 * alongside it purely to be turned into a file descriptor a moment later. */
@@ -6042,10 +6492,56 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
  * symptom, a missing wallpaper, and it would have produced others at random
  * for any client that draws once and lets go.
  */
+/* How many outputs one surface's visibility is tracked across. Four is two
+ * more than the desktop this was built on; a fifth output evicts the least
+ * recently rendered view, which costs a copy and not a pixel. */
+#define AZ_AVK_SURFACE_VIEWS 4
+
 struct az_avk_surface {
 	struct wlr_surface *surface;
 	struct wl_listener commit;
 	struct wl_listener destroy;
+
+	/*
+	 * ── WHAT OF THIS SURFACE ANYBODY HAS BEEN ABLE TO SEE ─────────────────
+	 *
+	 * In BUFFER pixels, ONE VIEW PER OUTPUT. Written by each frame's
+	 * visibility pass, read by the upload plan, and the reason a copy can be
+	 * smaller than the buffer: a client's decoration frame can be tens of
+	 * megabytes of wl_shm under an opaque subsurface covering all but its
+	 * border.
+	 *
+	 * PER OUTPUT, AND REPLACED RATHER THAN ACCUMULATED, because the two ways
+	 * of getting this wrong pull in opposite directions. A surface can be on
+	 * two monitors and each frame sees only its own, so a single region
+	 * written by whichever output rendered last would forget the other -- the
+	 * hint would be too small, and too small means a texel is not copied.
+	 * But a region that only ever GREW could never reach "nothing can see
+	 * this at all", which is the case worth the most: a fullscreen window over
+	 * a browser, a tag switched away from. A surface that is not drawn is not
+	 * NOTED, so the clearing has to happen at the start of the frame rather
+	 * than on the strength of a report that never comes.
+	 *
+	 * THE VIEWS DO NOT EXPIRE, which took a wrong turn to work out. An output
+	 * that has stopped rendering has stopped only because nothing changed, and
+	 * its last answer is still true; dropping it makes the union SMALLER, which
+	 * is the dangerous direction. A window left behind a fullscreen one is the
+	 * case: the frame that covered it recorded "none of this is visible" and
+	 * then no frame ran again for seconds, and expiring that view put the
+	 * copies straight back. The staleness that would matter is handled where it
+	 * can be handled -- the next frame's own pass repairs before it draws.
+	 */
+	struct az_avk_surface_view {
+		struct wlr_output *output;
+		pixman_region32_t vis;
+		/* The buffer size the region is stated in. A view for a size the
+		 * client has left describes nothing that can be intersected. */
+		int32_t width, height;
+		uint64_t ns;
+	} views[AZ_AVK_SURFACE_VIEWS];
+	/* Scratch for the union the plan reads. Owned here so the plan path does
+	 * not allocate. */
+	pixman_region32_t hint;
 	/* Every buffer this surface has committed and that AVK still caches an
 	 * image for. See az_avk_buffer.pool_link for why the list has to exist. */
 	struct wl_list pool;      /* az_avk_buffer.pool_link */
@@ -6140,6 +6636,105 @@ static void az_avk_surface_adopt_image(struct az_avk_buffer *entry) {
 
 static struct wlr_surface *az_avk_surface_wlr(struct az_avk_buffer *entry) {
 	return entry->as != NULL ? entry->as->surface : NULL;
+}
+
+/*
+ * The view this output writes, made ready to be written.
+ *
+ * CLEARED HERE AND NOT WHERE IT IS FILLED IN, which is the whole reason this
+ * function exists. A surface that no command draws is never reported to
+ * az_avk_surface_note_visible() at all, and a view that could only be replaced
+ * by a report would go on describing the last frame that could see it -- so a
+ * window behind a fullscreen one would keep being copied forever. The frame
+ * says "I am about to look" before it looks.
+ */
+static void az_avk_surface_begin_view(struct az_avk_surface *as,
+		struct wlr_output *output) {
+	if (as == NULL) {
+		return;
+	}
+	struct az_avk_surface_view *slot = NULL, *oldest = &as->views[0];
+	for (size_t i = 0; i < AZ_AVK_SURFACE_VIEWS; i++) {
+		if (as->views[i].output == output) {
+			slot = &as->views[i];
+			break;
+		}
+		if (as->views[i].output == NULL) {
+			slot = &as->views[i];
+			break;
+		}
+		if (as->views[i].ns < oldest->ns) {
+			oldest = &as->views[i];
+		}
+	}
+	if (slot == NULL) {
+		/* More outputs than views. The least recently rendered one loses its
+		 * place, which means its contribution is forgotten and copies for this
+		 * surface get larger -- never smaller. */
+		slot = oldest;
+	}
+	slot->output = output;
+	slot->ns = az_avk_now_ns();
+	slot->width = 0;
+	slot->height = 0;
+	pixman_region32_clear(&slot->vis);
+}
+
+/* Fold what one command could show into this output's view. `vis` is in BUFFER
+ * pixels; the caller has already undone the destination mapping. */
+static void az_avk_surface_note_visible(struct az_avk_surface *as,
+		struct wlr_output *output, int32_t width, int32_t height,
+		const pixman_region32_t *vis) {
+	if (as == NULL || width <= 0 || height <= 0) {
+		return;
+	}
+	for (size_t i = 0; i < AZ_AVK_SURFACE_VIEWS; i++) {
+		struct az_avk_surface_view *v = &as->views[i];
+		if (v->output != output) {
+			continue;
+		}
+		v->width = width;
+		v->height = height;
+		pixman_region32_union(&v->vis, &v->vis, (pixman_region32_t *)vis);
+		return;
+	}
+}
+
+/*
+ * What every output that is still rendering can see of this surface, together.
+ *
+ * NULL means "no opinion", and every caller reads that as "copy the whole
+ * thing". No opinion is the answer whenever the views cannot be trusted to be
+ * a complete account: no frame has looked recently, or one of them looked at a
+ * different buffer size and its region is stated in a raster this one is not.
+ */
+static const pixman_region32_t *az_avk_surface_hint(struct az_avk_surface *as,
+		int32_t width, int32_t height) {
+	if (as == NULL) {
+		return NULL;
+	}
+	bool any = false;
+	pixman_region32_clear(&as->hint);
+	for (size_t i = 0; i < AZ_AVK_SURFACE_VIEWS; i++) {
+		struct az_avk_surface_view *v = &as->views[i];
+		if (v->output == NULL) {
+			continue;
+		}
+		any = true;
+		if (v->width == 0 && v->height == 0) {
+			/* This output looked and saw none of it. A real answer, and the
+			 * valuable one: it is what a window behind a fullscreen one, or on
+			 * a tag that is not showing, looks like. */
+			continue;
+		}
+		if (v->width != width || v->height != height) {
+			/* Stated against a buffer the client has left. Nothing here can be
+			 * intersected with a region in this raster. */
+			return NULL;
+		}
+		pixman_region32_union(&as->hint, &as->hint, &v->vis);
+	}
+	return any ? &as->hint : NULL;
 }
 
 /* Give up the fallback. Called when the surface itself goes. */
@@ -6272,7 +6867,7 @@ static void az_avk_surface_commit_inner(struct az_avk_surface *as,
 		}
 		return;
 	}
-	if (az_avk_image_for_buffer_ex(buffer, true) != NULL) {
+	if (az_avk_image_for_buffer_ex(buffer, true, as) != NULL) {
 		addon = wlr_addon_find(&buffer->addons, &avk,
 			&az_avk_buffer_addon_impl);
 		if (addon != NULL) {
@@ -6382,6 +6977,10 @@ static void az_avk_surface_destroy(struct wl_listener *listener, void *data) {
 		entry->as = NULL;
 	}
 	az_avk_surface_drop_last_good(as);
+	for (size_t i = 0; i < AZ_AVK_SURFACE_VIEWS; i++) {
+		pixman_region32_fini(&as->views[i].vis);
+	}
+	pixman_region32_fini(&as->hint);
 	free(as);
 }
 
@@ -6395,6 +6994,10 @@ static void az_avk_new_surface(struct wl_listener *listener, void *data) {
 		return;
 	}
 	as->surface = surface;
+	for (size_t i = 0; i < AZ_AVK_SURFACE_VIEWS; i++) {
+		pixman_region32_init(&as->views[i].vis);
+	}
+	pixman_region32_init(&as->hint);
 	wl_list_init(&as->pool);
 	as->commit.notify = az_avk_surface_commit;
 	wl_signal_add(&surface->events.commit, &as->commit);
@@ -6770,6 +7373,18 @@ static cJSON *az_avk_stats_json(void) {
 		(double)avk.shm_staging_reaped);
 	cJSON_AddNumberToObject(o, "shm_staging_returned",
 		(double)avk.shm_staging_returned);
+	cJSON_AddNumberToObject(o, "visible_clipped",
+		(double)avk.visible_clipped);
+	cJSON_AddNumberToObject(o, "visible_saved_px",
+		(double)avk.visible_saved_px);
+	cJSON_AddNumberToObject(o, "plan_no_hint", (double)avk.plan_no_hint);
+	cJSON_AddNumberToObject(o, "hint_epochs", (double)avk.hint_epochs);
+	cJSON_AddNumberToObject(o, "visible_repairs", (double)avk.repairs);
+	cJSON_AddNumberToObject(o, "visible_repair_px", (double)avk.repair_px);
+	cJSON_AddNumberToObject(o, "visible_repair_deferred",
+		(double)avk.repair_deferred);
+	cJSON_AddNumberToObject(o, "visible_repair_failed",
+		(double)avk.repair_failed);
 	/*
 	 * THE COUNTER THAT WAS NOT VISIBLE. The upload ring blocks when its next
 	 * slot is still in flight, and it has always counted that -- but only

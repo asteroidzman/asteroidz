@@ -1445,6 +1445,37 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 	const VkSemaphoreSubmitInfo *wait, uint32_t wait_count,
 	const VkSemaphoreSubmitInfo *signal, uint32_t signal_count);
 
+/*
+ * ── WHICH TEXELS OF EACH IMAGE THIS FRAME WILL ACTUALLY SAMPLE ──────────────
+ *
+ * The same top-down opaque accumulation the draw uses, run over the whole
+ * command list and reported instead of drawn. The compositor asks so it can
+ * stop COPYING what nothing samples: a client's decoration frame can be tens of
+ * megabytes of wl_shm with an opaque subsurface over all but its border, and
+ * the copy of the covered part is pure cost.
+ *
+ * DIFFERENCES FROM THE DRAW'S OWN PASS, each deliberate:
+ *
+ *   no damage clip   the question is "can this ever be sampled this frame",
+ *                    not "does it need redrawing"; a command outside the
+ *                    damage still holds pixels the next frame may show.
+ *   no segments      a blur replays the prefix behind it, so everything below
+ *                    a blur is drawn again into its capture and cannot be
+ *                    treated as covered. The accumulator is CLEARED at each
+ *                    blur going down, which over-reports visibility -- the
+ *                    only safe direction, since under-reporting means not
+ *                    copying a pixel that is then shown.
+ *
+ * Reports AVK_CMD_TEXTURE and AVK_CMD_TEXTURE_QUAD commands with a non-empty
+ * region, in the same coordinates as cmd->dst.
+ */
+typedef void (*avk_visibility_fn)(void *user, const struct avk_cmd *cmd,
+	const pixman_region32_t *visible);
+
+void avk_scene_visibility(const struct avk_renderer *renderer,
+	const struct avk_scene *scene, const struct avk_box *bounds,
+	avk_visibility_fn fn, void *user);
+
 /* Retire whatever the GPU has finished with. Once per frame; never blocks. */
 void avk_renderer_collect(struct avk_renderer *renderer);
 

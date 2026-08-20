@@ -652,6 +652,20 @@ domains. `BREAK=unsafe-reuse` is documented in its own header as **NOT TESTED**
 rather than passing — it could not be made to fail observably, and saying so is
 better than a checklist that lies.
 
+`contrib/avk-visible-clip-test.sh` (`BREAK=no-repair`, `BREAK=no-clip`) asks the
+next question: not whether a copy carries the right bytes, but whether it should
+have happened at all. Its fixture is built so that the cost and the correctness
+can disagree — the client goes **quiet** after committing eight generations, of
+which the last five were hidden, and only then is the window above it closed.
+Nothing the client will ever send again can fix what appears. `BREAK=no-repair`
+passes every byte assertion in the file and shows the wrong picture, which is
+what that arm exists to demonstrate.
+
+The suite also carries the decoration-frame shape directly: an opaque
+`wl_subsurface` over most of a large `wl_shm` parent, nothing covering the
+window at all, and most of every copy still waste. A fixture built only out of
+overlapping windows cannot see that case, and it is the one real clients hit.
+
 `contrib/avk-cursor-test.sh` is the fourteenth, and it needed **two** new
 clients because the suite was structurally incapable of seeing the bug it
 covers.
@@ -2565,6 +2579,21 @@ machine.
 |---|---|
 | `AZ_AVK_PACK_CONTROL` | after any pack that trips the slow-pack log, time three more copies of the same size on the same thread at the same instant: heap→heap, client shm→heap, heap→staging. The first says whether the MOMENT is slow; the other two say which MAPPING is. This is what showed 14.5GB/s and 17.6GB/s for the two halves of a copy that ran at 1.08GB/s together — each mapping fine, the pairing not — which is the signature of first-touch faults rather than bandwidth. It re-runs the real pack afterwards, so the frame stays correct |
 | `AZ_AVK_PREFAULT_STAGING` | write every page of a staging buffer at allocation instead of leaving the first copy to fault them. Not a fix — it only moves 52ms from the worker thread to the event loop — but it is the proof: with it set, every slow pack disappears. Keep it as the falsifier for the warm-buffer cache: if that cache regresses, this switch masks the symptom, which is how you tell this cause from any other |
+
+### The two hooks for not copying it at all
+
+| | |
+|---|---|
+| `AZ_AVK_NO_VISIBLE_CLIP` | the control arm. Nothing is clipped to visibility and every copy is the size it always was. Both `avk-visible-clip-test.sh` cohorts run with and without it, because "we saved bytes" needs something to be smaller than |
+| `AZ_AVK_NO_VISIBLE_REPAIR` | **the break that matters.** Clip the copies and then decline to repair what the clip got wrong. Every cost assertion still passes — fewer bytes, the same counters — and a window that becomes visible shows whatever its image was allocated with. A suite that cannot tell this build from the real one is asserting on cost and calling it correctness |
+
+The counters are `visible_clipped`, `visible_saved_px`, `plan_no_hint`, and
+`visible_repairs` / `visible_repair_px` / `visible_repair_deferred` /
+`visible_repair_failed`. `visible_saved_px` is the whole claim; the repair
+counters are what it costs when the hint was too small. A build where repairs
+approach the number of frames has a hint that is not working, however good the
+saving looks, and `visible_repair_failed` above zero means a texel was drawn
+that nothing ever copied.
 
 ### Three vacuous versions, and what each assertion said
 
