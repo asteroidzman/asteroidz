@@ -4,6 +4,48 @@ Open defects with what has been established and, as importantly, what has been
 *ruled out*. The point of this file is that the next attempt starts where the
 last one stopped instead of re-deriving it.
 
+## M14 — what a capture client is actually offered
+
+Measured 2026-08-20 with `contrib/wlcapture`, the ext-image-copy-capture client
+M14's audit found was missing. Recorded here because the numbers change what M14
+has to build first.
+
+**The offer, headless 1920x1080:**
+
+```
+shm formats 1
+  shm       XRGB8888       8 bpc
+dmabuf formats 2
+  dmabuf    XRGB8888       8 bpc
+  dmabuf    ARGB8888       8 bpc
+shm depth   8 bpc max
+```
+
+Nothing above 8 bits per channel, in either family. "Portal capture forces the
+output down to SDR" is therefore not a portal defect and not a pipewire one: it
+is what this compositor advertises to any capture client.
+
+**Throughput is not the problem.** With a client repainting every frame,
+`wlcapture` took 30 frames in 1.64s — **17.7 fps**, against `hdr-record.sh`'s
+1 fps. ext-image-copy-capture is already a working stream. What the 1 fps
+measures is the `screenshot_ui` freeze-and-read-back path, exactly as the audit
+said, and not a ceiling on capture itself. (17.7 fps is a floor, not a maximum:
+the worst inter-frame gap was 101ms and the repainting client is the likely
+pacer, not the capture path.)
+
+**The offer is wlroots', not ours.** `asteroidz.c:11598` calls
+`wlr_ext_output_image_capture_source_manager_v1_create()`, and
+`wlr_ext_image_capture_source_v1` carries `shm_formats` and `dmabuf_formats` as
+its own fields. asteroidz's only involvement in a capture session today is
+`handle_image_copy_capture_new_session()`, which counts sessions for the privacy
+shield and nothing else. So D6's "sessions backed by AVK stage taps" is not an
+enhancement of the current path — it means asteroidz implementing its own
+capture source instead of registering wlroots'.
+
+**Not yet measured: the HDR output.** The headless backend refuses HDR (it
+reverts `m->hdr` on the next commit, see `contrib/regression/tests/hdr.sh`), so
+whether a real HDR output changes the offer needs a live run.
+
 ## OPEN — teardown frees a VkDeviceMemory twice after overview/jump
 
 Found 2026-08-20 by `contrib/render-matrix-test.sh`, which had never been run:
