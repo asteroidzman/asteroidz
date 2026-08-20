@@ -437,6 +437,13 @@ test('extent-space', test_extent_space, timeout : 30)
 # The one that reproduces the blank-window class: a real GBM buffer whose
 # modifier is thrown away before import, which is what wl_drm and
 # modifier-less Electron/Chromium hand over.
+# M14A: the encode session, which the driver can refuse. Skips (77) on a
+# device with no encode queue rather than reporting a pass for not running.
+test_avk_encode = executable('test-avk-encode', 'tests/test-avk-encode.c',
+                             dependencies : [avk_dep],
+                             build_by_default : false)
+test('avk-encode', test_avk_encode, timeout : 60)
+
 test_avk_dmabuf = executable('test-avk-dmabuf', 'tests/test-avk-dmabuf.c',
                              dependencies : [avk_dep],
                              build_by_default : false)
