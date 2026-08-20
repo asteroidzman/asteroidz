@@ -59,12 +59,33 @@ shield. D6's "sessions backed by AVK stage taps" therefore means implementing a
 capture source rather than registering wlroots' — but the reason to do it is now
 the *named stages and metadata*, not bit depth, because bit depth already works.
 
-**The open question this leaves.** `hdr-record.sh` exists because recording HDR
-needed `screenshot_ui,rawhdr` at 1 fps. If a client can pull `XRGB2101010` off
-DP-1 through ext-image-copy-capture at frame rate, that script's whole reason for
-being is gone and M14's demand is already met by a protocol nobody had a client
-for. Not yet tested: capturing actual frames live, and whether doing so trips the
-HDR-off/modeset behaviour that makes `grim` unusable on this output.
+**Frames pull live, at rate, without disturbing the display.** 60 frames off
+DP-1 in 3.62s — **16.3 fps** at 3840x2160 in `XRGB2101010`, no failures. The
+compositor log grew by **zero bytes** across the run and `hdr_enabled` was still
+true afterwards: no HDR transition, no modeset, no retrain. That is the opposite
+of `grim` on this output, which forces HDR off plus two modesets and a failed
+commit per capture.
+
+The pixels are genuinely 10-bit, not 8-bit widened. In one frame's red channel:
+536 distinct values, of which **401 are not multiples of 4**, and the low two
+bits are near-uniformly distributed (2.07M / 1.93M / 2.11M / 2.19M pixels across
+the four buckets). An 8-bit source shifted left by two would put every value on
+a multiple of 4 and leave those buckets empty. Range 0..629 of 1023, consistent
+with a PQ encoding whose desktop content sits well below peak. Decoded to a
+preview the frame is the desktop, right way up, right pitch, right channel
+order.
+
+**So `hdr-record.sh`'s reason for being is gone.** It records at 1 fps because
+`screenshot_ui,rawhdr` freezes the output per call. The same output will hand a
+client 10-bit HDR frames at sixteen times that rate, through a protocol that has
+been wired up the whole time and had no client to ask it. Replacing that script's
+source is a contrib change, not a compositor one.
+
+**One thing a recorder must handle:** consecutive captures can return identical
+content — frames 1 and 2 of a five-frame run differed by 0 pixels, the others by
+~100-150 (a clock and a cursor on an otherwise static desktop). Capture completes
+on presentation, so a duplicate means nothing new was presented; pacing has to
+come from `presentation_time`, not from counting `ready` events.
 
 ## OPEN — teardown frees a VkDeviceMemory twice after overview/jump
 
