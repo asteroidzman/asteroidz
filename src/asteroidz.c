@@ -8014,11 +8014,34 @@ void client_update_blur(Client *c) {
 	if (c != NULL && client_surface(c) != NULL) {
 		struct wlr_surface *sw = client_surface(c);
 		const pixman_box32_t *oe = pixman_region32_extents(&sw->opaque_region);
+		/*
+		 * THE CLIENT'S OWN BLUR REGION IS PART OF WHAT THIS DECIDES, and
+		 * leaving it out of the signature is not a missed optimisation, it is
+		 * the region never arriving. ext-background-effect's region reaches the
+		 * scene through wlr_scene_blur_set_region() at the bottom of this
+		 * function and nowhere else, so a client that declares or changes one
+		 * without also changing its size or its opaque region was answered
+		 * "nothing moved" and its region was dropped on the floor.
+		 *
+		 * Caught by avk-blur-walker-test at a release cut, as two failures that
+		 * both said the same thing: 0 blur nodes carried a clip, and a client's
+		 * deliberately two-rectangle region reached the command as 0 rectangles.
+		 */
+		struct background_effect_surface *sig_effect =
+			background_effect_try_from_surface(sw);
+		const pixman_box32_t *re = sig_effect != NULL
+			&& sig_effect->has_region
+			? pixman_region32_extents(&sig_effect->current_region) : NULL;
 		uint64_t sig = (uint64_t)sw->current.width * 31
 			+ (uint64_t)sw->current.height * 131
 			+ (uint64_t)(oe->x2 - oe->x1) * 7919
 			+ (uint64_t)(oe->y2 - oe->y1) * 104729
 			+ (uint64_t)pixman_region32_n_rects(&sw->opaque_region) * 15485863
+			+ (re != NULL ? (uint64_t)(re->x2 - re->x1) * 2038074743
+				+ (uint64_t)(re->y2 - re->y1) * 179424673
+				+ (uint64_t)pixman_region32_n_rects(
+					&sig_effect->current_region) * 32452843
+				+ 16 : 0)
 			+ (uint64_t)(c->isfloating ? 1 : 0)
 			+ (uint64_t)(c->noblur ? 2 : 0)
 			+ (uint64_t)(c->iskilling ? 4 : 0)

@@ -52,7 +52,23 @@ WIN_Y=0
 
 OUTDIR="${TMPDIR:-/tmp}/asteroidz-stale-mo-$$"
 HL_OUTDIR="$OUTDIR"
-HL_ENV="ASTEROIDZ_RENDERER=avk AZ_AVK_SLOW_UPLOAD_US=${SLOW_US:-4000}"
+# ── WHY THE STALL IS THIS LARGE ────────────────────────────────────────────
+#
+# 4000us was enough for as long as a client copy was the whole buffer. It is
+# not any more: AVK clips a copy to what can be SEEN of the buffer, and the
+# spanning window this fixture builds is 1900 rows tall on two 1080-row
+# outputs, so more than a third of every generation is below both screens and
+# is never copied at all. The copies stopped outranning the frames and the
+# whole run produced ONE stale frame -- the premise scraped through and the
+# claim then depended on that single frame happening to land on the spanning
+# surface, which it did not.
+#
+# Measured: 0.25.2 gave 1193 stale frames and 207 multi-output repaints at
+# 4000us; the same fixture on the clipped build gave 1 and 0. At 30000us the
+# clipped build gives 1468 and 175. The mechanism is intact -- the fixture had
+# stopped being able to reach it, which is not the same thing and is worth the
+# distinction being written down rather than the number quietly changed.
+HL_ENV="ASTEROIDZ_RENDERER=avk AZ_AVK_SLOW_UPLOAD_US=${SLOW_US:-30000}"
 [ "$BREAK" = stale-one-output ] && \
 	HL_ENV="$HL_ENV AZ_BREAK_STALE_ONE_OUTPUT=1"
 export HL_OUTDIR HL_ENV
