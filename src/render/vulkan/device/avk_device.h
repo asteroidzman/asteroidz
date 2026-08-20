@@ -102,6 +102,22 @@ struct avk_caps {
 	uint32_t transfer_family;
 	bool has_dedicated_compute_family;
 	uint32_t compute_family;
+	/* M14 video encode. A family with VIDEO_ENCODE, and the three extensions
+	 * an encode session needs. Kept as separate bools rather than one verdict
+	 * so a log line can name the piece that is missing: "no encode queue" and
+	 * "no H.265 encode extension" are different machines.
+	 *
+	 * video_encode_rgb is VK_VALVE_video_encode_rgb_conversion, and it is not
+	 * a convenience. Without it the encoder's input picture is P010 and the
+	 * compositor owes it an RGB->YUV pass; with it the encoder accepts
+	 * A2R10G10B10, which is the format AVK already renders an HDR output in,
+	 * and the driver performs the BT.2020 conversion HDR10 wants. */
+	bool video_queue;
+	bool video_encode_queue;
+	bool video_encode_h265;
+	bool video_encode_rgb;
+	bool has_video_encode_family;
+	uint32_t video_encode_family;
 
 	/* limits worth having to hand */
 	uint32_t max_image_dimension_2d;
@@ -174,6 +190,11 @@ struct avk_device {
 	struct avk_device_api api;
 
 	VkQueue graphics_queue;
+	/* Created only when the device can actually encode -- an unused VkQueue
+	 * would be infrastructure claiming to exist before anything drives it,
+	 * which is the same rule the transfer family is held to above. */
+	VkQueue encode_queue;
+	bool has_encode_queue;
 
 	/* The device's own DRM fd. OWNED: dup()ed from whatever was passed in, so
 	 * the caller's lifetime and ours are independent. Handing a renderer a

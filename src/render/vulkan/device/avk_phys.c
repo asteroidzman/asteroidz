@@ -51,6 +51,14 @@ static const struct ext_flag device_extensions[] = {
 		CAP_OFFSET(memory_budget), false },
 	{ VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME,
 		CAP_OFFSET(calibrated_timestamps), false },
+	{ VK_KHR_VIDEO_QUEUE_EXTENSION_NAME,
+		CAP_OFFSET(video_queue), false },
+	{ VK_KHR_VIDEO_ENCODE_QUEUE_EXTENSION_NAME,
+		CAP_OFFSET(video_encode_queue), false },
+	{ VK_KHR_VIDEO_ENCODE_H265_EXTENSION_NAME,
+		CAP_OFFSET(video_encode_h265), false },
+	{ VK_VALVE_VIDEO_ENCODE_RGB_CONVERSION_EXTENSION_NAME,
+		CAP_OFFSET(video_encode_rgb), false },
 	{ VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME,
 		CAP_OFFSET(pipeline_executable_properties), false },
 };
@@ -108,6 +116,14 @@ static void query_queue_families(VkPhysicalDevice phys, struct avk_caps *caps) {
 				&& !(flags & VK_QUEUE_GRAPHICS_BIT)) {
 			caps->has_dedicated_compute_family = true;
 			caps->compute_family = i;
+		}
+		/* Video encode is always its own family in practice, and nothing
+		 * else on the device can do it, so there is no "dedicated" question
+		 * to ask -- the first one that reports the bit is the one. */
+		if (!caps->has_video_encode_family
+				&& (flags & VK_QUEUE_VIDEO_ENCODE_BIT_KHR)) {
+			caps->has_video_encode_family = true;
+			caps->video_encode_family = i;
 		}
 	}
 

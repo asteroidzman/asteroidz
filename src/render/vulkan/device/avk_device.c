@@ -187,7 +187,7 @@ struct avk_device *avk_device_create(struct avk_instance *inst, int drm_fd) {
 	}
 
 	/* ── extensions to enable ──────────────────────────────────────────── */
-	const char *exts[8];
+	const char *exts[16];
 	uint32_t ext_count = 0;
 	exts[ext_count++] = VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME;
 	exts[ext_count++] = VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME;
@@ -202,6 +202,27 @@ struct avk_device *avk_device_create(struct avk_instance *inst, int drm_fd) {
 	}
 	if (dev->caps.calibrated_timestamps) {
 		exts[ext_count++] = VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME;
+	}
+
+	/* ── video encode (M14) ────────────────────────────────────────────
+	 *
+	 * All or nothing. A session needs the queue family, VK_KHR_video_queue,
+	 * VK_KHR_video_encode_queue and the codec's own extension; enabling a
+	 * subset buys nothing and leaves a half-capable device to be discovered
+	 * later, at session creation, by code that has already assumed it works.
+	 *
+	 * The RGB conversion extension is in the same bundle deliberately. Without
+	 * it the encoder's input picture is P010 and an RGB->YUV pass becomes the
+	 * compositor's to write and to get wrong; the whole reason encoding here
+	 * is cheap is that the encoder takes the composited image untouched. */
+	bool want_encode = dev->caps.has_video_encode_family
+		&& dev->caps.video_queue && dev->caps.video_encode_queue
+		&& dev->caps.video_encode_h265 && dev->caps.video_encode_rgb;
+	if (want_encode) {
+		exts[ext_count++] = VK_KHR_VIDEO_QUEUE_EXTENSION_NAME;
+		exts[ext_count++] = VK_KHR_VIDEO_ENCODE_QUEUE_EXTENSION_NAME;
+		exts[ext_count++] = VK_KHR_VIDEO_ENCODE_H265_EXTENSION_NAME;
+		exts[ext_count++] = VK_VALVE_VIDEO_ENCODE_RGB_CONVERSION_EXTENSION_NAME;
 	}
 
 	/* ── features to enable ────────────────────────────────────────────── */
@@ -221,24 +242,41 @@ struct avk_device *avk_device_create(struct avk_instance *inst, int drm_fd) {
 		.samplerYcbcrConversion =
 			dev->caps.sampler_ycbcr_conversion ? VK_TRUE : VK_FALSE,
 	};
+	VkPhysicalDeviceVideoEncodeRgbConversionFeaturesVALVE rgb_conv = {
+		.sType =
+			VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VIDEO_ENCODE_RGB_CONVERSION_FEATURES_VALVE,
+		.pNext = &vk11,
+		.videoEncodeRgbConversion = VK_TRUE,
+	};
 	VkPhysicalDeviceFeatures2 features = {
 		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
-		.pNext = &vk11,
+		.pNext = want_encode ? (void *)&rgb_conv : (void *)&vk11,
 	};
 
 	const float priority = 1.0f;
-	VkDeviceQueueCreateInfo queue_info = {
-		.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
-		.queueFamilyIndex = dev->caps.graphics_family,
-		.queueCount = 1,
-		.pQueuePriorities = &priority,
+	VkDeviceQueueCreateInfo queue_info[2] = {
+		{
+			.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+			.queueFamilyIndex = dev->caps.graphics_family,
+			.queueCount = 1,
+			.pQueuePriorities = &priority,
+		},
 	};
+	uint32_t queue_info_count = 1;
+	if (want_encode) {
+		queue_info[queue_info_count++] = (VkDeviceQueueCreateInfo){
+			.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+			.queueFamilyIndex = dev->caps.video_encode_family,
+			.queueCount = 1,
+			.pQueuePriorities = &priority,
+		};
+	}
 
 	VkDeviceCreateInfo device_info = {
 		.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
 		.pNext = &features,
-		.queueCreateInfoCount = 1,
-		.pQueueCreateInfos = &queue_info,
+		.queueCreateInfoCount = queue_info_count,
+		.pQueueCreateInfos = queue_info,
 		.enabledExtensionCount = ext_count,
 		.ppEnabledExtensionNames = exts,
 	};
@@ -251,6 +289,11 @@ struct avk_device *avk_device_create(struct avk_instance *inst, int drm_fd) {
 
 	vkGetDeviceQueue(dev->dev, dev->caps.graphics_family, 0,
 		&dev->graphics_queue);
+	if (want_encode) {
+		vkGetDeviceQueue(dev->dev, dev->caps.video_encode_family, 0,
+			&dev->encode_queue);
+		dev->has_encode_queue = dev->encode_queue != VK_NULL_HANDLE;
+	}
 
 	/* VK_KHR_external_semaphore_fd is always in the extension list above, so a
 	 * NULL here means the loader and the driver disagree about what was
@@ -297,6 +340,11 @@ struct avk_device *avk_device_create(struct avk_instance *inst, int drm_fd) {
 	avk_device_name_object(dev, VK_OBJECT_TYPE_QUEUE,
 		(uint64_t)dev->graphics_queue, "avk graphics queue (family %u)",
 		dev->caps.graphics_family);
+	if (dev->has_encode_queue) {
+		avk_device_name_object(dev, VK_OBJECT_TYPE_QUEUE,
+			(uint64_t)dev->encode_queue, "avk video encode queue (family %u)",
+			dev->caps.video_encode_family);
+	}
 
 	return dev;
 
@@ -530,6 +578,17 @@ void avk_device_log_caps(const struct avk_device *dev) {
 		c->graphics_family,
 		c->has_dedicated_transfer_family ? "yes" : "none",
 		c->has_dedicated_compute_family ? "yes" : "none");
+	/* M14. Named piece by piece for the same reason as the colour line: a
+	 * device with the queue but no RGB conversion is a different conversation
+	 * from one with no encode hardware at all. */
+	if (c->has_video_encode_family) {
+		avk_log(AVK_INFO, "avk caps: video encode family=%u video_queue=%d "
+			"encode_queue=%d h265=%d rgb_conversion=%d",
+			c->video_encode_family, c->video_queue, c->video_encode_queue,
+			c->video_encode_h265, c->video_encode_rgb);
+	} else {
+		avk_log(AVK_INFO, "avk caps: no video encode queue on this device");
+	}
 	/* M5/C5. One line, and it names the missing bit rather than just saying
 	 * no -- "fp16=0" on a device that supports the format for sampling but
 	 * not for blending is a completely different conversation from "fp16=0"
