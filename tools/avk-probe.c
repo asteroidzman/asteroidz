@@ -611,7 +611,7 @@ static void probe_encode_profile(struct avk_instance *inst,
 		struct avk_device *dev, const char *label,
 		const void *codec_profile, void *codec_caps,
 		VkVideoCodecOperationFlagBitsKHR op,
-		VkVideoComponentBitDepthFlagBitsKHR depth) {
+		VkVideoComponentBitDepthFlagBitsKHR depth, bool rgb_conversion) {
 	PFN_vkGetPhysicalDeviceVideoCapabilitiesKHR get_caps =
 		(PFN_vkGetPhysicalDeviceVideoCapabilitiesKHR)vkGetInstanceProcAddr(
 			inst->instance, "vkGetPhysicalDeviceVideoCapabilitiesKHR");
@@ -623,9 +623,21 @@ static void probe_encode_profile(struct avk_instance *inst,
 		return;
 	}
 
+	/* Asking for the conversion is what makes the driver answer with RGB
+	 * input formats; without this struct the same query returns the YUV
+	 * plane pair and nothing else. It goes in the PROFILE, not the query --
+	 * an encoder that converts is a different profile from one that does not. */
+	VkVideoEncodeProfileRgbConversionInfoVALVE rgb_info = {
+		.sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_PROFILE_RGB_CONVERSION_INFO_VALVE,
+		.pNext = codec_profile,
+		.performEncodeRgbConversion = VK_TRUE,
+	};
+	VkVideoEncodeRgbConversionCapabilitiesVALVE rgb_caps = {
+		.sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_RGB_CONVERSION_CAPABILITIES_VALVE,
+	};
 	VkVideoProfileInfoKHR profile = {
 		.sType = VK_STRUCTURE_TYPE_VIDEO_PROFILE_INFO_KHR,
-		.pNext = (void *)codec_profile,
+		.pNext = rgb_conversion ? (void *)&rgb_info : (void *)codec_profile,
 		.videoCodecOperation = op,
 		.chromaSubsampling = VK_VIDEO_CHROMA_SUBSAMPLING_420_BIT_KHR,
 		.lumaBitDepth = depth,
@@ -639,6 +651,10 @@ static void probe_encode_profile(struct avk_instance *inst,
 		.sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_CAPABILITIES_KHR,
 		.pNext = codec_caps,
 	};
+	if (rgb_conversion) {
+		rgb_caps.pNext = enc_caps.pNext;
+		enc_caps.pNext = &rgb_caps;
+	}
 	VkVideoCapabilitiesKHR caps = {
 		.sType = VK_STRUCTURE_TYPE_VIDEO_CAPABILITIES_KHR,
 		.pNext = &enc_caps,
@@ -663,6 +679,24 @@ static void probe_encode_profile(struct avk_instance *inst,
 			& VK_VIDEO_ENCODE_RATE_CONTROL_MODE_CBR_BIT_KHR) ? " CBR" : "",
 		(enc_caps.rateControlModes
 			& VK_VIDEO_ENCODE_RATE_CONTROL_MODE_VBR_BIT_KHR) ? " VBR" : "");
+	if (rgb_conversion) {
+		printf("      rgb models:%s%s%s  ranges:%s%s\n",
+			(rgb_caps.rgbModels
+				& VK_VIDEO_ENCODE_RGB_MODEL_CONVERSION_YCBCR_2020_BIT_VALVE)
+				? " BT.2020" : "",
+			(rgb_caps.rgbModels
+				& VK_VIDEO_ENCODE_RGB_MODEL_CONVERSION_YCBCR_709_BIT_VALVE)
+				? " BT.709" : "",
+			(rgb_caps.rgbModels
+				& VK_VIDEO_ENCODE_RGB_MODEL_CONVERSION_YCBCR_601_BIT_VALVE)
+				? " BT.601" : "",
+			(rgb_caps.rgbRanges
+				& VK_VIDEO_ENCODE_RGB_RANGE_COMPRESSION_FULL_RANGE_BIT_VALVE)
+				? " full" : "",
+			(rgb_caps.rgbRanges
+				& VK_VIDEO_ENCODE_RGB_RANGE_COMPRESSION_NARROW_RANGE_BIT_VALVE)
+				? " narrow" : "");
+	}
 
 	/* The input picture format is the whole question for a compositor: it
 	 * decides whether AVK's own image can be handed over as-is, or has to be
@@ -739,7 +773,7 @@ static void report_video_encode(struct avk_instance *inst,
 	};
 	probe_encode_profile(inst, dev, "AV1 Main, 10-bit", &av1, &av1_caps,
 		VK_VIDEO_CODEC_OPERATION_ENCODE_AV1_BIT_KHR,
-		VK_VIDEO_COMPONENT_BIT_DEPTH_10_BIT_KHR);
+		VK_VIDEO_COMPONENT_BIT_DEPTH_10_BIT_KHR, false);
 
 	VkVideoEncodeH265ProfileInfoKHR h265 = {
 		.sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_H265_PROFILE_INFO_KHR,
@@ -750,7 +784,7 @@ static void report_video_encode(struct avk_instance *inst,
 	};
 	probe_encode_profile(inst, dev, "H.265 Main 10, 10-bit", &h265, &h265_caps,
 		VK_VIDEO_CODEC_OPERATION_ENCODE_H265_BIT_KHR,
-		VK_VIDEO_COMPONENT_BIT_DEPTH_10_BIT_KHR);
+		VK_VIDEO_COMPONENT_BIT_DEPTH_10_BIT_KHR, false);
 
 	/* If the driver will convert RGB for us, the compositor hands over its own
 	 * composited image and no colour-conversion pass exists to get wrong. */
@@ -767,17 +801,54 @@ static void report_video_encode(struct avk_instance *inst,
 			rgb_conv = true;
 	}
 	free(exts);
-	/* Present is not the same as usable. The encode-SRC query above ran
-	 * WITHOUT this extension enabled on a device, and answered P010 only --
-	 * so as things stand the encoder wants a YUV plane pair, and whether
-	 * AVK's own RGB image can be handed over instead is a question about
-	 * enabling this and asking again, not something its presence settles. */
-	if (rgb_conv)
-		ok("VK_VALVE_video_encode_rgb_conversion is present (not enabled "
-			"here, so the formats above are the plain answer)");
-	else
+	if (!rgb_conv) {
 		printf("  --  no VK_VALVE_video_encode_rgb_conversion: an RGB->YUV "
 			"pass would be ours to write\n");
+		return;
+	}
+
+	/* Present is not the same as usable, and the question decides whether the
+	 * compositor hands the encoder its own composited image or has to convert
+	 * it into a YUV plane pair first. Two things have to hold: the device must
+	 * offer the feature, and the profile that asks for the conversion must
+	 * then admit an RGB input picture. */
+	VkPhysicalDeviceVideoEncodeRgbConversionFeaturesVALVE rgb_feat = {
+		.sType =
+			VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VIDEO_ENCODE_RGB_CONVERSION_FEATURES_VALVE,
+	};
+	VkPhysicalDeviceFeatures2 feats = {
+		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+		.pNext = &rgb_feat,
+	};
+	vkGetPhysicalDeviceFeatures2(dev->phys, &feats);
+	if (!rgb_feat.videoEncodeRgbConversion) {
+		bad("VK_VALVE_video_encode_rgb_conversion is advertised but its "
+			"feature bit is false");
+		return;
+	}
+	ok("VK_VALVE_video_encode_rgb_conversion: feature enabled by the device");
+
+	VkVideoEncodeAV1ProfileInfoKHR av1_rgb = {
+		.sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_AV1_PROFILE_INFO_KHR,
+		.stdProfile = STD_VIDEO_AV1_PROFILE_MAIN,
+	};
+	VkVideoEncodeAV1CapabilitiesKHR av1_rgb_caps = {
+		.sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_AV1_CAPABILITIES_KHR,
+	};
+	probe_encode_profile(inst, dev, "AV1 Main 10-bit, RGB input", &av1_rgb,
+		&av1_rgb_caps, VK_VIDEO_CODEC_OPERATION_ENCODE_AV1_BIT_KHR,
+		VK_VIDEO_COMPONENT_BIT_DEPTH_10_BIT_KHR, true);
+
+	VkVideoEncodeH265ProfileInfoKHR h265_rgb = {
+		.sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_H265_PROFILE_INFO_KHR,
+		.stdProfileIdc = STD_VIDEO_H265_PROFILE_IDC_MAIN_10,
+	};
+	VkVideoEncodeH265CapabilitiesKHR h265_rgb_caps = {
+		.sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_H265_CAPABILITIES_KHR,
+	};
+	probe_encode_profile(inst, dev, "H.265 Main 10, RGB input", &h265_rgb,
+		&h265_rgb_caps, VK_VIDEO_CODEC_OPERATION_ENCODE_H265_BIT_KHR,
+		VK_VIDEO_COMPONENT_BIT_DEPTH_10_BIT_KHR, true);
 }
 
 static void usage(const char *argv0) {

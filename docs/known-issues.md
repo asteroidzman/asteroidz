@@ -87,6 +87,52 @@ content — frames 1 and 2 of a five-frame run differed by 0 pixels, the others 
 on presentation, so a duplicate means nothing new was presented; pacing has to
 come from `presentation_time`, not from counting `ready` events.
 
+## M14A — the encoder takes AVK's own image, unconverted
+
+Settled 2026-08-20 with `asteroidz-avk-probe`, which now asks the driver instead
+of reading profile names out of `vulkaninfo`.
+
+RADV on Navi 31, encode queue on family 3:
+
+| | AV1 Main | H.265 Main 10 |
+|---|---|---|
+| max extent | 8192x4352 | 8192x4352 |
+| DPB slots | 9 | 17 |
+| picture alignment | 64x16 | 64x16 |
+| rate control | disabled, CBR, VBR | disabled, CBR, VBR |
+
+3840x2160 is inside the limit and lands exactly on the 64x16 alignment, so this
+display needs no padding pass.
+
+**The input format depends entirely on asking for the conversion.** Queried
+plainly, both codecs accept `P010` — a 10-bit YUV plane pair — and nothing else.
+Chain `VkVideoEncodeProfileRgbConversionInfoVALVE` with
+`performEncodeRgbConversion = VK_TRUE` into the *profile* and the same query
+answers:
+
+```
+rgb models: BT.2020 BT.709   ranges: full narrow
+input picture  A2B10G10R10 (RGB 10-bit)  optimal, linear, modifier
+input picture  A2R10G10B10 (RGB 10-bit)  optimal, linear, modifier
+```
+
+`A2R10G10B10_UNORM_PACK32` is `DRM_FORMAT_XRGB2101010` — the format AVK already
+renders an HDR output in, and the one DP-1's capture session already offers. So
+the encoder will take the composited image exactly as it stands: no readback, no
+dmabuf export, no RGB->YUV pass of ours, and the BT.2020 model HDR10 requires is
+one the driver performs itself.
+
+That is the whole architectural case for putting capture inside the compositor,
+and it now rests on a measurement rather than on an extension being present in a
+list. It is also a *profile* property, not a session flag: an encoder that
+converts is a different video profile from one that does not, and the format
+query answers differently for each.
+
+**A trap worth keeping.** `vkGetPhysicalDeviceVideoCapabilitiesKHR` segfaults on
+RADV if the codec-specific capabilities struct is missing from the `pNext`
+chain. Not an error return -- a crash, one line after the encode queue is
+reported.
+
 ## OPEN — teardown frees a VkDeviceMemory twice after overview/jump
 
 Found 2026-08-20 by `contrib/render-matrix-test.sh`, which had never been run:
