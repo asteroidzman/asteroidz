@@ -35,5 +35,5 @@ contrib/x11check/x11check
 /pkg/
 __pycache__/
 
-# /export dumps, kept out of the repo
-claude.md
+# the development guidelines, kept local rather than shipped
+CLAUDE.md
