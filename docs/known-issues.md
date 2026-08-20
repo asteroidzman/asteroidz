@@ -4,6 +4,49 @@ Open defects with what has been established and, as importantly, what has been
 *ruled out*. The point of this file is that the next attempt starts where the
 last one stopped instead of re-deriving it.
 
+## OPEN — teardown frees a VkDeviceMemory twice after overview/jump
+
+Found 2026-08-20 by `contrib/render-matrix-test.sh`, which had never been run:
+it sat outside `avk-suite.sh`'s discovery glob until the register was widened to
+every `.sh`.
+
+**Symptom.** After a session that opens the overview and jump mode, exit reaches
+`vkFreeMemory()` with a handle Vulkan does not recognise, then segfaults inside
+`vkDestroyDevice`. `AVK_TEARDOWN_END` and `CLEANUP_END` never print.
+
+```
+avk: validation: VUID-vkFreeMemory-memory-parameter: vkFreeMemory():
+     memory Invalid VkDeviceMemory Object 0x7740000000774
+avk: validation: UNASSIGNED-Threading-Info: vkFreeMemory():
+     Couldn't find VkDeviceMemory Object 0x7740000000774   (x2)
+
+#7  avk_device_destroy (dev=…)   ../src/render/vulkan/device/avk_device.c:425
+#8  az_avk_finish ()             ../src/render/az_avk.h:9348
+#9  cleanup ()                   ../src/asteroidz.c:4713
+#10 main ()                      ../src/asteroidz.c:13631
+```
+
+**Reproduce.** `bash contrib/render-matrix-test.sh` — 2 of 2 arms (SDR and HDR),
+exit 139 on both. Note it truncates `~/.local/state/asteroidz/asteroidz.log` to
+get a clean VUID count.
+
+**Established.**
+
+- The double free is real. The crash is *inside the validation layer*, which
+  corrupts its object map on the bad free and then walks it at device destroy —
+  so a session without `ASTEROIDZ_VK_DEBUG` does not visibly crash, but is
+  executing the same undefined behaviour.
+- AVK's own leak ledger reports `device_memory=0 … (all zero)` immediately
+  after. Its accounting does not see the second free, which is why nothing else
+  caught it.
+- `contrib/avk-teardown-test.sh` is `required` and passes. It never drives
+  overview or jump — zero matches for either — so the required set structurally
+  could not reach this path.
+
+**Not yet established.** Whether the trigger is overview, jump, or the tag/layout
+sequence around them; whether it predates 0.26.0; whether it reproduces without
+the validation layer.
+
 ## FIXED — tag-in animation sometimes did not run
 
 Reported 2026-08-17, fixed the same day. Kept because four hypotheses were
