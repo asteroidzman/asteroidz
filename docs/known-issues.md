@@ -8,43 +8,63 @@ last one stopped instead of re-deriving it.
 
 Measured 2026-08-20 with `contrib/wlcapture`, the ext-image-copy-capture client
 M14's audit found was missing. Recorded here because the numbers change what M14
-has to build first.
+has to build — twice, in opposite directions.
 
-**The offer, headless 1920x1080:**
+**The live HDR output offers 10 bits per channel.** DP-1, `hdr_enabled=true`:
 
 ```
+output      DP-1
+buffer      3840x2160
 shm formats 1
-  shm       XRGB8888       8 bpc
-dmabuf formats 2
-  dmabuf    XRGB8888       8 bpc
+  shm       XRGB2101010    10 bpc
+dmabuf formats 3
+  dmabuf    XRGB2101010    10 bpc
   dmabuf    ARGB8888       8 bpc
-shm depth   8 bpc max
+  dmabuf    XRGB8888       8 bpc
+shm depth   10 bpc max
 ```
 
-Nothing above 8 bits per channel, in either family. "Portal capture forces the
-output down to SDR" is therefore not a portal defect and not a pipewire one: it
-is what this compositor advertises to any capture client.
+So a capture client asking for shm on this output gets `XRGB2101010` at the
+panel's full 3840x2160 — not the 2560x1440 logical size, the physical one. The
+10-bit path already reaches capture clients, today, with no compositor change.
 
-**Throughput is not the problem.** With a client repainting every frame,
-`wlcapture` took 30 frames in 1.64s — **17.7 fps**, against `hdr-record.sh`'s
-1 fps. ext-image-copy-capture is already a working stream. What the 1 fps
-measures is the `screenshot_ui` freeze-and-read-back path, exactly as the audit
-said, and not a ceiling on capture itself. (17.7 fps is a floor, not a maximum:
-the worst inter-frame gap was 101ms and the repainting client is the likely
-pacer, not the capture path.)
+**The headless output offers 8, and that nearly became a false conclusion.**
+The same tool against a headless 1920x1080 output reports exactly one shm format,
+`XRGB8888`, and two 8 bpc dmabuf formats. Read alone that says "the compositor
+advertises nothing above 8 bpc, which is why portal capture is SDR" — and it is
+wrong. It is a property of an SDR headless output, not of the compositor. The
+headless backend also refuses HDR outright (it reverts `m->hdr` on the next
+commit, see `contrib/regression/tests/hdr.sh`), so this question cannot be
+answered headlessly at all, and an 8 bpc reading there is not evidence about
+anything else.
+
+**So "portal capture forces the output down to SDR" is not the compositor
+advertising 8 bpc.** Whatever forces it happens above this layer — in
+xdg-desktop-portal / pipewire's own negotiation — and that is where it has to be
+chased. The 2026-07-19 live observation stands; its cause does not.
+
+**Throughput is not the problem either.** With a client repainting every frame,
+`wlcapture` took 30 frames in 1.64s headless — **17.7 fps**, against
+`hdr-record.sh`'s 1 fps. ext-image-copy-capture is already a working stream. The
+1 fps measures the `screenshot_ui` freeze-and-read-back path, exactly as the
+audit said, and is not a ceiling on capture. (17.7 fps is a floor: worst gap
+101ms, and the repainting client is the likely pacer.)
 
 **The offer is wlroots', not ours.** `asteroidz.c:11598` calls
 `wlr_ext_output_image_capture_source_manager_v1_create()`, and
 `wlr_ext_image_capture_source_v1` carries `shm_formats` and `dmabuf_formats` as
-its own fields. asteroidz's only involvement in a capture session today is
+its own fields. asteroidz's whole involvement in a capture session today is
 `handle_image_copy_capture_new_session()`, which counts sessions for the privacy
-shield and nothing else. So D6's "sessions backed by AVK stage taps" is not an
-enhancement of the current path — it means asteroidz implementing its own
-capture source instead of registering wlroots'.
+shield. D6's "sessions backed by AVK stage taps" therefore means implementing a
+capture source rather than registering wlroots' — but the reason to do it is now
+the *named stages and metadata*, not bit depth, because bit depth already works.
 
-**Not yet measured: the HDR output.** The headless backend refuses HDR (it
-reverts `m->hdr` on the next commit, see `contrib/regression/tests/hdr.sh`), so
-whether a real HDR output changes the offer needs a live run.
+**The open question this leaves.** `hdr-record.sh` exists because recording HDR
+needed `screenshot_ui,rawhdr` at 1 fps. If a client can pull `XRGB2101010` off
+DP-1 through ext-image-copy-capture at frame rate, that script's whole reason for
+being is gone and M14's demand is already met by a protocol nobody had a client
+for. Not yet tested: capturing actual frames live, and whether doing so trips the
+HDR-off/modeset behaviour that makes `grim` unusable on this output.
 
 ## OPEN — teardown frees a VkDeviceMemory twice after overview/jump
 
