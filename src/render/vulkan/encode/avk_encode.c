@@ -332,6 +332,9 @@ static bool create_parameters(struct avk_encoder *enc,
 			.vui_parameters_present_flag = 1,
 			.sps_temporal_id_nesting_flag = 1,
 			.sps_sub_layer_ordering_info_present_flag = 1,
+			.conformance_window_flag =
+				(enc->coded_width != enc->width
+					|| enc->coded_height != enc->height) ? 1u : 0u,
 			.amp_enabled_flag = 1,
 			.sample_adaptive_offset_enabled_flag = 1,
 			.sps_temporal_mvp_enabled_flag = 0,
@@ -340,6 +343,23 @@ static bool create_parameters(struct avk_encoder *enc,
 		.chroma_format_idc = STD_VIDEO_H265_CHROMA_FORMAT_IDC_420,
 		.pic_width_in_luma_samples = enc->coded_width,
 		.pic_height_in_luma_samples = enc->coded_height,
+		/*
+		 * THE CONFORMANCE WINDOW, which is how the coded size stops being the
+		 * displayed size.
+		 *
+		 * A picture is coded at the encoder's alignment -- 1080 becomes 1088,
+		 * 1366 becomes 1408 -- and without this the decoder shows every
+		 * padded row and column. It does not look like corruption: ffprobe
+		 * reports the recording as 1920x1088 and the extra rows hold whatever
+		 * the conversion left there, which on a screen capture is a strip of
+		 * the picture's own edge repeated.
+		 *
+		 * The offsets are in CHROMA samples for 4:2:0, so a difference of
+		 * eight luma rows is four here. Halving twice, or not at all, is the
+		 * mistake this arithmetic invites.
+		 */
+		.conf_win_right_offset = (enc->coded_width - enc->width) / 2,
+		.conf_win_bottom_offset = (enc->coded_height - enc->height) / 2,
 		.sps_video_parameter_set_id = 0,
 		.sps_max_sub_layers_minus1 = 0,
 		.sps_seq_parameter_set_id = 0,

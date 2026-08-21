@@ -45,7 +45,7 @@ trap 'rm -rf "$WORK"' EXIT
 # rather than duplicating the setup keeps one description of how an encoder is
 # driven, which is the thing most likely to drift.
 if ! AVK_ENCODE_OUT="$WORK/still.h265" AVK_HEIF_OUT="$WORK/still.heic" \
-		AVK_VIDEO_OUT="$WORK/seq.h265" "$BIN" > "$WORK/unit.log" 2>&1; then
+		AVK_VIDEO_OUT="$WORK/seq.h265" AVK_MP4_OUT="$WORK/rec.mp4" "$BIN" > "$WORK/unit.log" 2>&1; then
 	if grep -q "^SKIP" "$WORK/unit.log"; then
 		sed -n 's/^SKIP: /  --   /p' "$WORK/unit.log"
 		echo "  --   INCONCLUSIVE, not a pass"
@@ -160,6 +160,38 @@ if [ "${2:-no}" = "yes" ] && [ "${1:-0}" -eq 10 ]; then
 	ok "and each picture differs from the last, in the order encoded ($3 -> $4)"
 else
 	bad "and each picture differs from the last, in the order encoded (frames ${1:-0}, monotonic ${2:-no})"
+fi
+
+# ── the container ───────────────────────────────────────────────────────────
+#
+# A recording is the mp4, not the elementary stream: the timing exists only
+# here, and so does the size a player will actually use.
+MP4="$(ffprobe -v error -show_entries \
+	stream=codec_name,width,height,pix_fmt,nb_frames,color_transfer,color_primaries \
+	-of default=noprint_wrappers=1:nokey=1 "$WORK/rec.mp4" 2>/dev/null \
+	| tr '\n' ' ')"
+case "$MP4" in
+	*hevc*) ok "the mp4 opens and holds an HEVC track" ;;
+	*) bad "the mp4 opens and holds an HEVC track (got: $MP4)" ;;
+esac
+# THE CODED SIZE MUST NOT LEAK. 1080 is coded as 1088 because the encoder
+# aligns to 16, and without a conformance window the file says 1088 and every
+# player shows eight rows of padding. The elementary stream looks correct
+# either way.
+case "$MP4" in
+	*"1920 1080"*) ok "and declares the DISPLAY size, not the coded one" ;;
+	*) bad "and declares the DISPLAY size, not the coded one (got: $MP4)" ;;
+esac
+case "$MP4" in
+	*smpte2084*bt2020*) ok "and carries its HDR colour in the container" ;;
+	*) bad "and carries its HDR colour in the container (got: $MP4)" ;;
+esac
+MP4N="$(ffprobe -v error -count_frames -show_entries stream=nb_read_frames \
+	-of csv=p=0 "$WORK/rec.mp4" 2>/dev/null | tr -d ',\r\n')"
+if [ "${MP4N:-0}" = "10" ]; then
+	ok "and decodes to all ten of its frames"
+else
+	bad "and decodes to all ten of its frames (got ${MP4N:-none})"
 fi
 
 echo

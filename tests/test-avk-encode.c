@@ -34,6 +34,7 @@
 #include "render/vulkan/device/avk_instance.h"
 #include "render/vulkan/encode/avk_encode.h"
 #include "render/vulkan/encode/avk_heif.h"
+#include "render/vulkan/encode/avk_mp4.h"
 
 static int failures = 0;
 static int checks = 0;
@@ -587,6 +588,23 @@ int main(void) {
 			if (vp != NULL) {
 				out = fopen(vp, "wb");
 			}
+			/* The container, fed the same packets. A recording is not the
+			 * elementary stream plus a wish -- the timing lives only here. */
+			struct avk_mp4 *mp4 = NULL;
+			const char *mp = getenv("AVK_MP4_OUT");
+			if (mp != NULL) {
+				struct avk_heif_colour mc = {
+					.primaries = 9, .transfer = 16, .matrix = 9,
+					.full_range = true, .has_mastering = true,
+					.master_x = {13250, 7500, 34000},
+					.master_y = {34500, 3000, 16000},
+					.white_x = 15635, .white_y = 16450,
+					.max_luminance = 10000000, .min_luminance = 1,
+					.max_cll = 1000, .max_fall = 400,
+				};
+				mp4 = avk_mp4_open(mp, 1920, 1080, 1000, &mc);
+				CHECK(mp4 != NULL, "an mp4 recording opens");
+			}
 			for (int i = 0; i < frames && all_ok; i++) {
 				/* A different picture every frame, so a P frame has real
 				 * residual to carry. */
@@ -626,7 +644,14 @@ int main(void) {
 				if (out != NULL) {
 					fwrite(pkt, plen, 1, out);
 				}
+				if (mp4 != NULL && !avk_mp4_add_sample(mp4, pkt, plen, 1000 / 30)) {
+					all_ok = false;
+				}
 				free(pkt);
+			}
+			if (mp4 != NULL) {
+				CHECK(avk_mp4_close(mp4),
+					"and closes with an index a player can read");
 			}
 			if (out != NULL) {
 				fclose(out);

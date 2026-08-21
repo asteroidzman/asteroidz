@@ -123,6 +123,7 @@ avk_sources = files(
   'image/avk_upload_worker.c',
   'encode/avk_encode.c',
   'encode/avk_heif.c',
+  'encode/avk_mp4.c',
   'pipeline/avk_gradient.c',
   'pipeline/avk_output_encode.c',
   'pipeline/avk_pipeline.c',
