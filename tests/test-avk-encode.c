@@ -733,6 +733,10 @@ int main(void) {
 				if (!all_ok) {
 					break;
 				}
+				if (pkt == NULL) {
+					/* pipelined: the first call has nothing to give back */
+					continue;
+				}
 				total += plen;
 				/* The first picture must carry its parameter sets and be an
 				 * IDR; the rest must not repeat them, or every frame is a
@@ -763,6 +767,21 @@ int main(void) {
 					all_ok = false;
 				}
 				free(pkt);
+			}
+			/* One picture is always outstanding. */
+			{
+				void *tail = NULL;
+				size_t tail_len = 0;
+				if (avk_encoder_drain(venc, &tail, &tail_len)) {
+					total += tail_len;
+					if (out != NULL) {
+						fwrite(tail, tail_len, 1, out);
+					}
+					if (mp4 != NULL) {
+						avk_mp4_add_sample(mp4, tail, tail_len, 1000 / 30);
+					}
+					free(tail);
+				}
 			}
 			if (mp4 != NULL) {
 				CHECK(avk_mp4_close(mp4),

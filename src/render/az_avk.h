@@ -3050,7 +3050,21 @@ struct az_avk_output {
 	 * decides which is worth building.
 	 */
 	int64_t rec_wait_ns, rec_convert_ns, rec_encode_ns, rec_write_ns;
+	int64_t rec_collect_ns;
 	int64_t rec_worst_ns;
+	/*
+	 * THE CAPTURE RATE, capped.
+	 *
+	 * A 4K picture takes about 21ms of encode, so the hardware tops out near
+	 * 48 pictures a second no matter what the display does. Asking for 144 of
+	 * them cannot work: the encode queue falls behind, the collect below stops
+	 * being free, and the compositor is back to waiting. Capping is what keeps
+	 * the encode inside the gap between captures, which is the condition the
+	 * whole pipelined design rests on.
+	 */
+	int64_t rec_interval_ns;
+	int64_t rec_next_ns;
+	uint64_t rec_skipped;
 	/* The scene output's halo-damage record count as of this output's last
 	 * frame, so "this frame took damage from the halo" is a delta rather than
 	 * a guess about a region's extents. */
@@ -5587,7 +5601,22 @@ static bool az_avk_record_open(Monitor *m, const char *path) {
 	avk_encoder_reset_sequence(out->rec_encoder);
 	out->rec_frames = 0;
 	out->rec_dropped = 0;
+	out->rec_skipped = 0;
 	out->rec_last_ns = 0;
+	/* 30 by default: comfortably inside what a 4K encode can sustain, and a
+	 * rate anything plays. AZ_RECORD_FPS moves it for a smaller output or a
+	 * faster panel. */
+	int64_t fps = 30;
+	const char *fps_env = getenv("AZ_RECORD_FPS");
+	if (fps_env != NULL) {
+		long v = strtol(fps_env, NULL, 10);
+		if (v >= 1 && v <= 240) {
+			fps = v;
+		}
+	}
+	out->rec_interval_ns = 1000000000 / fps;
+	out->rec_next_ns = 0;
+	out->rec_collect_ns = 0;
 	out->rec_wait_ns = 0;
 	out->rec_convert_ns = 0;
 	out->rec_encode_ns = 0;
@@ -5607,6 +5636,19 @@ static bool az_avk_record_close(Monitor *m) {
 	}
 	struct az_avk_output *out = m->avk;
 	out->recording = false;
+	/* One picture is always in flight -- take it, or the recording is a frame
+	 * short and the last thing on screen is missing from it. */
+	void *tail = NULL;
+	size_t tail_len = 0;
+	if (out->rec_encoder != NULL
+			&& avk_encoder_drain(out->rec_encoder, &tail, &tail_len)
+			&& out->rec_mp4 != NULL) {
+		if (avk_mp4_add_sample(out->rec_mp4, tail, tail_len, 33)) {
+			out->rec_frames++;
+		}
+		free(tail);
+	}
+
 	bool ok = false;
 	if (out->rec_frames == 0) {
 		wlr_log(WLR_ERROR, "record: %s captured no frames; discarding",
@@ -5625,14 +5667,17 @@ static bool az_avk_record_close(Monitor *m) {
 		double n = (double)out->rec_frames;
 		double budget = m->wlr_output->refresh > 0
 			? 1000000.0 / (double)m->wlr_output->refresh : 0.0;
-		wlr_log(WLR_INFO, "record: per frame: wait %.2fms convert %.2fms "
-			"encode %.2fms write %.2fms = %.2fms (worst %.2fms, budget "
-			"%.2fms)",
+		wlr_log(WLR_INFO, "record: per captured frame: wait %.2fms convert "
+			"%.2fms submit %.2fms collect %.2fms write %.2fms = %.2fms "
+			"(worst %.2fms, budget %.2fms, %llu frames skipped by the rate "
+			"cap)",
 			out->rec_wait_ns / n / 1e6, out->rec_convert_ns / n / 1e6,
-			out->rec_encode_ns / n / 1e6, out->rec_write_ns / n / 1e6,
+			out->rec_encode_ns / n / 1e6, out->rec_collect_ns / n / 1e6,
+			out->rec_write_ns / n / 1e6,
 			(out->rec_wait_ns + out->rec_convert_ns + out->rec_encode_ns
-				+ out->rec_write_ns) / n / 1e6,
-			out->rec_worst_ns / 1e6, budget);
+				+ out->rec_collect_ns + out->rec_write_ns) / n / 1e6,
+			out->rec_worst_ns / 1e6, budget,
+			(unsigned long long)out->rec_skipped);
 	}
 	out->rec_mp4 = NULL;
 	avk_encoder_destroy(out->rec_encoder);
@@ -5664,11 +5709,28 @@ static void az_avk_record_frame(struct az_avk_output *out, Monitor *m,
 	out->rec_wait_ns += t_waited - t_begin;
 	int64_t now = t_waited;
 
+	/* Below the target rate this frame is simply not captured, which is a
+	 * recording at 30fps of a desktop running at 144 rather than a recording
+	 * that stutters trying to be both. */
+	if (now < out->rec_next_ns) {
+		out->rec_skipped++;
+		return;
+	}
+	out->rec_next_ns = now + out->rec_interval_ns;
+
 	void *pkt = NULL;
 	size_t pkt_len = 0;
 	if (!avk_encoder_encode_frame(out->rec_encoder, target->image,
 			target->layout, 0, 0, false, &pkt, &pkt_len)) {
 		out->rec_dropped++;
+		return;
+	}
+	out->rec_collect_ns += out->rec_encoder->last_collect_ns;
+	if (pkt == NULL) {
+		/* The first capture of a recording submits and has nothing to hand
+		 * back yet. Not a drop: the picture is in flight. */
+		out->rec_convert_ns += out->rec_encoder->last_convert_ns;
+		out->rec_encode_ns += out->rec_encoder->last_encode_ns;
 		return;
 	}
 

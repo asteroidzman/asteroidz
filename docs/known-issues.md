@@ -235,12 +235,30 @@ data appended as it arrives, sample table held (sixteen bytes a frame), index
 written at close. `amsg dispatch record_start` / `record_stop` record the
 focused HDR output to `~/Videos/asteroidz_<output>_<timestamp>.mp4`.
 
-**What it costs, stated rather than hidden.** Every frame is waited for and
-encoded on the compositor's own thread, so recording makes frames later than not
-recording does. `record_stop` reports frames captured and dropped, which is the
-measurement that decides whether an asynchronous encode is worth building --
-that number is not yet known, because the path needs an HDR output and the
-headless backend refuses HDR.
+**What it cost, measured on DP-1 and then fixed.** The first recording:
+
+```
+per frame: wait 0.70ms convert 0.28ms encode 14.20ms write 0.01ms = 15.20ms
+           (worst 32.04ms, budget 6.94ms)   -- desktop ran at 19-27 fps
+```
+
+The encode was **91%** of it, and the file write 0.01ms -- so the worker thread
+that seemed the obvious fix would have bought nothing, and the answer was to
+stop waiting rather than to wait elsewhere. The encode is now COLLECTED AT THE
+START OF THE NEXT CAPTURE instead of immediately: submit, return, and take the
+picture a whole frame later when it has already finished.
+
+That only works while the gap between captures exceeds the encode, so the
+capture rate is capped -- 30fps by default, `AZ_RECORD_FPS` to change it. A 4K
+picture is ~21ms of encode, which is a ceiling near 48/sec whatever the display
+does; asking for 144 cannot work and the cap is what makes the deferral free
+rather than nominal. Frames above the cap are skipped and counted, which is a
+recording at 30fps of a 144Hz desktop rather than one stuttering trying to be
+both.
+
+`record_stop` reports the split per captured frame, including `collect` -- the
+time still left to wait when the picture was finally taken. Near zero means the
+encode overlapped the frame completely.
 
 **Sample durations are measured, not assumed.** A compositor renders when
 something changed, not on a cadence, so a recording timed at the output's

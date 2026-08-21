@@ -144,6 +144,15 @@ struct avk_encoder {
 	 * between these is what decides which wait is worth removing first. */
 	int64_t last_convert_ns;
 	int64_t last_encode_ns;
+	/* What was still left to wait for when the picture was collected, a whole
+	 * frame after it was submitted. Near zero means the encode overlapped the
+	 * frame completely, which is the point of collecting late. */
+	int64_t last_collect_ns;
+	/* A picture is in flight on the encode queue and its bitstream has not
+	 * been taken yet. Nothing may reuse the P010 image or the bitstream
+	 * buffer until it has. */
+	bool submitted;
+	uint32_t last_qp;
 
 	/*
 	 * ALL-INTRA, which is the default and currently the only correct mode.
@@ -241,9 +250,24 @@ bool avk_encoder_encode_still(struct avk_encoder *enc, VkImage src,
  * `force_key` starts a new IDR mid-sequence, which is what makes a recording
  * seekable and what a dropped frame recovers through.
  */
+/*
+ * Submit one picture, and return the PREVIOUS one.
+ *
+ * Pipelined deliberately: the encode is ~21ms of GPU time for a 4K picture and
+ * waiting for it made the compositor's frames three times later than its own
+ * budget. So a call submits this frame and hands back the frame before it,
+ * which has had the whole gap between the two to finish.
+ *
+ * *out is therefore NULL on the first call of a sequence, and one picture is
+ * always outstanding -- `avk_encoder_drain` takes it. A caller that forgets is
+ * a caller whose recording is one frame short.
+ */
 bool avk_encoder_encode_frame(struct avk_encoder *enc, VkImage src,
 	VkImageLayout src_layout, int32_t src_x, int32_t src_y, bool force_key,
 	void **out, size_t *out_len);
+
+/* Take the last submitted picture, if one is outstanding. */
+bool avk_encoder_drain(struct avk_encoder *enc, void **out, size_t *out_len);
 
 /* Forget the sequence: the next picture is an IDR again. */
 void avk_encoder_reset_sequence(struct avk_encoder *enc);

@@ -1490,10 +1490,9 @@ static uint8_t *encoded_parameters(struct avk_encoder *enc,
 	return buf;
 }
 
-static bool encode_picture(struct avk_encoder *enc, VkImage src,
-		VkImageLayout src_layout, int32_t src_x, int32_t src_y, bool key,
-		void **out, size_t *out_len) {
-	if (enc == NULL || out == NULL || out_len == NULL) {
+static bool submit_picture(struct avk_encoder *enc, VkImage src,
+		VkImageLayout src_layout, int32_t src_x, int32_t src_y, bool key) {
+	if (enc == NULL) {
 		return false;
 	}
 	struct avk_device *dev = enc->dev;
@@ -1678,6 +1677,7 @@ static bool encode_picture(struct avk_encoder *enc, VkImage src,
 	 * what the slice inherits. Visually near-transparent on a desktop still
 	 * and small enough that a 4K picture is a few megabytes. */
 	const uint32_t qp = 26;
+	enc->last_qp = qp;
 	VkVideoEncodeH265NaluSliceSegmentInfoKHR nalu = {
 		.sType =
 			VK_STRUCTURE_TYPE_VIDEO_ENCODE_H265_NALU_SLICE_SEGMENT_INFO_KHR,
@@ -1800,13 +1800,47 @@ static bool encode_picture(struct avk_encoder *enc, VkImage src,
 		avk_log(AVK_ERROR, "encode: vkQueueSubmit to the encode queue failed");
 		return false;
 	}
+	enc->last_encode_ns = now_ns() - t1;
+	enc->submitted = true;
+	return true;
+}
+
+/*
+ * Take the picture the last submission produced.
+ *
+ * SEPARATE FROM SUBMITTING, and that separation is the whole optimisation. The
+ * encode takes ~21ms of GPU time for a 4K picture and the compositor used to
+ * stand and wait for it, which made frames three times later than the output's
+ * own budget. Collected at the START of the next frame instead, the encode has
+ * had the entire gap between frames to finish -- so the wait below is normally
+ * already satisfied and returns at once.
+ *
+ * That only holds while the gap exceeds the encode, which is what the caller's
+ * frame-rate cap is for. Ask for frames faster than the hardware can encode
+ * them and this becomes the old blocking wait again, honestly and gradually
+ * rather than at a cliff.
+ */
+static bool collect_picture(struct avk_encoder *enc, void **out,
+		size_t *out_len) {
+	if (!enc->submitted) {
+		return false;
+	}
+	enc->submitted = false;
+	struct avk_device *dev = enc->dev;
+	struct encode_cmd_api api;
+	if (!load_cmd_api(dev, &api)) {
+		return false;
+	}
+	int64_t t_wait = now_ns();
 	if (vkWaitForFences(dev->dev, 1, &enc->fence, VK_TRUE, 5000000000ULL)
 			!= VK_SUCCESS) {
 		avk_log(AVK_ERROR, "encode: the encode did not finish within 5s");
 		return false;
 	}
-
-	enc->last_encode_ns = now_ns() - t1;
+	/* What the deferral actually saved: the time still left to wait once the
+	 * next frame came round. Near zero means the encode overlapped the frame
+	 * completely. */
+	enc->last_collect_ns = now_ns() - t_wait;
 
 	/* offset then bytes-written, in the order the flags were declared. */
 	uint32_t results[2] = {0, 0};
@@ -1856,7 +1890,8 @@ static bool encode_picture(struct avk_encoder *enc, VkImage src,
 	free(sei);
 
 	avk_log(AVK_INFO, "encode: %u bytes of picture + %zu of parameter sets "
-		"+ %zu of HDR10 SEI at QP %u", written, hdr_len, sei_len, qp);
+		"+ %zu of HDR10 SEI at QP %u", written, hdr_len, sei_len,
+		enc->last_qp);
 	*out = stream;
 	*out_len = hdr_len + sei_len + written;
 	return true;
@@ -1881,8 +1916,20 @@ bool avk_encoder_encode_still(struct avk_encoder *enc, VkImage src,
 		return false;
 	}
 	avk_encoder_reset_sequence(enc);
-	return encode_picture(enc, src, src_layout, src_x, src_y, true, out,
-		out_len);
+	/* A still has no next frame to hide the encode behind, so it submits and
+	 * collects in one go. The deferral is a recording's optimisation and
+	 * would only be latency here. */
+	if (!submit_picture(enc, src, src_layout, src_x, src_y, true)) {
+		return false;
+	}
+	return collect_picture(enc, out, out_len);
+}
+
+bool avk_encoder_drain(struct avk_encoder *enc, void **out, size_t *out_len) {
+	if (enc == NULL || !enc->submitted) {
+		return false;
+	}
+	return collect_picture(enc, out, out_len);
 }
 
 bool avk_encoder_encode_frame(struct avk_encoder *enc, VkImage src,
@@ -1897,8 +1944,18 @@ bool avk_encoder_encode_frame(struct avk_encoder *enc, VkImage src,
 	if (key) {
 		enc->poc = 0;
 	}
-	if (!encode_picture(enc, src, src_layout, src_x, src_y, key, out,
-			out_len)) {
+	/*
+	 * COLLECT FIRST, THEN SUBMIT. The order is the optimisation and it is
+	 * also the safety: the P010 image and the bitstream buffer are single
+	 * copies, so the previous picture must be taken out of them before this
+	 * one is written in.
+	 */
+	*out = NULL;
+	*out_len = 0;
+	if (enc->submitted) {
+		collect_picture(enc, out, out_len);
+	}
+	if (!submit_picture(enc, src, src_layout, src_x, src_y, key)) {
 		return false;
 	}
 	/* Advance only on success: a failed picture must not consume the slot the
