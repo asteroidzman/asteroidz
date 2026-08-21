@@ -856,7 +856,7 @@ static bool create_conversion(struct avk_encoder *enc) {
 
 /* Run the conversion on the graphics queue and wait for it. */
 static bool convert_to_p010(struct avk_encoder *enc, VkImage src,
-		VkImageLayout src_layout) {
+		VkImageLayout src_layout, int32_t src_x, int32_t src_y) {
 	VkImageView src_view = enc->rgb_view;
 	struct avk_device *dev = enc->dev;
 	VkDescriptorImageInfo images[3] = {
@@ -945,6 +945,7 @@ static bool convert_to_p010(struct avk_encoder *enc, VkImage src,
 	vkCmdPipelineBarrier2(enc->conv_cmd, &in_dep);
 	VkImageCopy copy = {
 		.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+		.srcOffset = {src_x, src_y, 0},
 		.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
 		.extent = {enc->width, enc->height, 1},
 	};
@@ -1392,7 +1393,8 @@ static uint8_t *encoded_parameters(struct avk_encoder *enc,
 }
 
 bool avk_encoder_encode_still(struct avk_encoder *enc, VkImage src,
-		VkImageLayout src_layout, void **out, size_t *out_len) {
+		VkImageLayout src_layout, int32_t src_x, int32_t src_y,
+		void **out, size_t *out_len) {
 	if (enc == NULL || out == NULL || out_len == NULL) {
 		return false;
 	}
@@ -1409,7 +1411,7 @@ bool avk_encoder_encode_still(struct avk_encoder *enc, VkImage src,
 	 * than a semaphore between them: a still is not on a frame budget, and
 	 * two queues chained by a fence is easier to reason about than two
 	 * chained by a timeline nothing else uses. */
-	if (!convert_to_p010(enc, src, src_layout)) {
+	if (!convert_to_p010(enc, src, src_layout, src_x, src_y)) {
 		avk_log(AVK_ERROR, "encode: the RGB->P010 conversion failed");
 		return false;
 	}

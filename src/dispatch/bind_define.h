@@ -3239,6 +3239,30 @@ static bool screenshot_ui_save_and_copy(struct wlr_buffer *frame, Monitor *m,
 		ok = cairo_surface_write_to_png(surf, path) == CAIRO_STATUS_SUCCESS;
 		if (ok) {
 			wlr_log(WLR_INFO, "screenshot_ui: saved %s", path);
+			/*
+			 * On an HDR output the PNG above is a tone-mapped 8-bit rendition
+			 * -- cairo cannot represent anything else, and that is the file
+			 * anyone pasting into a chat window wants. The original is not
+			 * recoverable from it, so the same selection is written again
+			 * beside it as a 10-bit HEIF: shareable copy and full-depth
+			 * original, from one keystroke and one frame.
+			 *
+			 * Best effort by design. A failure here must not cost the operator
+			 * the screenshot they actually asked for, so it is logged and the
+			 * PNG still counts as a success.
+			 */
+			if (m->hdr) {
+				char *hdr_path = screenshot_hdr_build_path(
+					m->wlr_output->name);
+				if (hdr_path != NULL) {
+					struct wlr_box px = {px_x, px_y, px_w, px_h};
+					if (az_avk_encode_hdr_still(frame, m, px, hdr_path)) {
+						wlr_log(WLR_INFO, "screenshot_ui: HDR original %s",
+							hdr_path);
+					}
+					free(hdr_path);
+				}
+			}
 			screenshot_ui_copy_to_clipboard(path);
 			screenshot_ui_notify(mode, px_w, px_h, path);
 		} else {

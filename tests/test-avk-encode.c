@@ -414,7 +414,7 @@ int main(void) {
 			void *stream = NULL;
 			size_t len = 0;
 			bool encoded = avk_encoder_encode_still(enc, src.image,
-				VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &stream, &len);
+				VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, 0, &stream, &len);
 
 			/* THE BISECT. Two things can put a wrong picture in the
 			 * bitstream: a conversion that wrote the wrong P010, or an

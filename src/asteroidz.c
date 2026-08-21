@@ -2254,6 +2254,11 @@ static int32_t dump_scene(const Arg *arg);
 static int32_t damage_all(const Arg *arg);
 static int32_t capture_output(const Arg *arg);
 static int32_t screenshot_hdr(const Arg *arg);
+/* Defined in render/az_avk.h, which is included after bind_define.h -- the
+ * screenshot UI needs it and the AVK import it uses is not visible there. */
+struct wlr_box;
+static bool az_avk_encode_hdr_still(struct wlr_buffer *frame, Monitor *m,
+	struct wlr_box px, const char *path);
 /* Same reason: reapply_cursor_style() lives in parse_config.h and destroys the
  * xcursor manager, which every borrowed cursor pointer depends on. Defined in
  * render/az_cursor.h, included later. */

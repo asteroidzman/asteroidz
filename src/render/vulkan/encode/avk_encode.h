@@ -160,18 +160,25 @@ struct avk_encoder {
 /*
  * Encode one image as a single IDR picture.
  *
- * `src` must be VK_FORMAT_A2R10G10B10_UNORM_PACK32, at least the encoder's
- * size, and created with VK_IMAGE_USAGE_TRANSFER_SRC_BIT -- which a scanout
- * target already is. `src_layout` is whatever it is in now; it is restored
- * before returning, because a caller's image is not the encoder's to leave in
- * a different state than it found it.
+ * `src` must be VK_FORMAT_A2R10G10B10_UNORM_PACK32 and created with
+ * VK_IMAGE_USAGE_TRANSFER_SRC_BIT -- which a scanout target already is.
+ * `src_layout` is whatever it is in now; it is restored before returning,
+ * because a caller's image is not the encoder's to leave in a different state
+ * than it found it.
+ *
+ * (src_x, src_y) is the top-left of the region to encode, and the region's
+ * size is the encoder's own -- so a selection is captured by building an
+ * encoder the size of the selection rather than by encoding the screen and
+ * cropping afterwards, which would encode ten times the pixels to throw most
+ * of them away.
  *
  * On success *out is a malloc'd Annex B bitstream -- parameter sets, the HDR10
  * SEI if the metadata is known, then the coded picture -- and the caller owns
  * it.
  */
 bool avk_encoder_encode_still(struct avk_encoder *enc, VkImage src,
-	VkImageLayout src_layout, void **out, size_t *out_len);
+	VkImageLayout src_layout, int32_t src_x, int32_t src_y,
+	void **out, size_t *out_len);
 
 /*
  * Create an encoder for one output size. Returns NULL and logs the reason if

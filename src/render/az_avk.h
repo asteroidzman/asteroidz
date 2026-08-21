@@ -5351,6 +5351,111 @@ static void az_avk_emit_cursors(struct az_avk_walk *walk,
  * frame anybody is waiting to see -- the arming dispatch damages the output to
  * force a fresh one.
  */
+/*
+ * The mastering metadata for one display.
+ *
+ * The luminance figures are the display's own, read from its EDID. The
+ * primaries are BT.2020's reference values, because this project's IPC has
+ * never exposed a panel's own chromaticity points -- the same fallback
+ * contrib/hdr-record.sh has to make, and the standard thing to do when a
+ * display's own are unavailable. The luminance is not a guess, and it is the
+ * half a tone-mapping player actually uses.
+ */
+static void az_avk_mastering_for(Monitor *m,
+		struct avk_encode_mastering *out) {
+	*out = (struct avk_encode_mastering){
+		.display_primaries_x = {8500, 6550, 35400},   /* G, B, R */
+		.display_primaries_y = {39850, 2300, 14600},
+		.white_point_x = 15635, .white_point_y = 16450,
+		.min_luminance = 1,
+	};
+	if (m->hdr_max_luminance > 0) {
+		out->max_luminance = (uint32_t)(m->hdr_max_luminance * 10000.0f);
+		out->max_content_light_level = (uint16_t)m->hdr_max_luminance;
+	}
+	if (m->hdr_min_luminance > 0) {
+		out->min_luminance = (uint32_t)(m->hdr_min_luminance * 10000.0f);
+	}
+	if (m->hdr_max_fall > 0) {
+		out->max_frame_average_light_level = (uint16_t)m->hdr_max_fall;
+	}
+}
+
+/*
+ * Encode a REGION of an already-captured frame as an HDR10 HEIF.
+ *
+ * This is the screenshot UI's path rather than the dispatch's: the UI has
+ * already frozen a frame and let the operator draw a rectangle on it, and what
+ * it wants is that rectangle at full depth. The frozen buffer is imported the
+ * same way a client's dma-buf is, so no copy back through the CPU happens on
+ * the way -- the picture goes from the buffer the output rendered, through the
+ * encoder, to a file.
+ *
+ * The encoder is built at the SELECTION's size, so a small region encodes a
+ * small number of pixels instead of encoding the screen and discarding most of
+ * it.
+ */
+static bool az_avk_encode_hdr_still(struct wlr_buffer *frame, Monitor *m,
+		struct wlr_box px, const char *path) {
+	if (frame == NULL || m == NULL || m->avk == NULL
+			|| m->avk->slot == NULL || path == NULL) {
+		return false;
+	}
+	if (px.width <= 0 || px.height <= 0) {
+		return false;
+	}
+	struct avk_renderer *r = &m->avk->slot->renderer;
+	struct avk_image *img = az_avk_image_for_buffer_ex(frame, false, NULL);
+	if (img == NULL) {
+		wlr_log(WLR_ERROR, "hdr still: cannot import the frozen frame");
+		return false;
+	}
+	if (img->format != VK_FORMAT_A2R10G10B10_UNORM_PACK32) {
+		wlr_log(WLR_ERROR, "hdr still: the frame is format %d, not the "
+			"10-bit format an HDR still needs", (int)img->format);
+		return false;
+	}
+	struct avk_encode_mastering mastering;
+	az_avk_mastering_for(m, &mastering);
+
+	struct avk_encoder *enc = avk_encoder_create(r->dev,
+		(uint32_t)px.width, (uint32_t)px.height, AVK_ENCODE_COLOUR_HDR10,
+		&mastering);
+	if (enc == NULL) {
+		return false;
+	}
+	void *stream = NULL;
+	size_t stream_len = 0;
+	bool ok = avk_encoder_encode_still(enc, img->image, img->layout,
+		px.x, px.y, &stream, &stream_len);
+	if (ok) {
+		struct avk_heif_colour colour = {
+			.primaries = 9, .transfer = 16, .matrix = 9, .full_range = true,
+		};
+		void *file = NULL;
+		size_t file_len = 0;
+		ok = avk_heif_wrap(stream, stream_len, (uint32_t)px.width,
+			(uint32_t)px.height, &colour, &file, &file_len);
+		if (ok) {
+			FILE *f = fopen(path, "wb");
+			ok = f != NULL && fwrite(file, file_len, 1, f) == 1;
+			if (f != NULL) {
+				fclose(f);
+			}
+			if (ok) {
+				wlr_log(WLR_INFO, "hdr still: %s (%zu bytes, %dx%d)", path,
+					file_len, px.width, px.height);
+			} else {
+				wlr_log(WLR_ERROR, "hdr still: cannot write %s", path);
+			}
+			free(file);
+		}
+		free(stream);
+	}
+	avk_encoder_destroy(enc);
+	return ok;
+}
+
 static void az_avk_hdr_shot(struct az_avk_output *out, Monitor *m,
 		struct avk_image *target, uint64_t timeline) {
 	struct avk_renderer *r = &out->slot->renderer;
@@ -5380,35 +5485,8 @@ static void az_avk_hdr_shot(struct az_avk_output *out, Monitor *m,
 		return;
 	}
 
-	/*
-	 * The mastering metadata. The luminance figures are the DISPLAY's own,
-	 * read from its EDID; the primaries are BT.2020's reference values,
-	 * because this project's IPC has never exposed a panel's own chromaticity
-	 * points -- the same fallback contrib/hdr-record.sh has to make, and the
-	 * standard thing to do when a display's own are unavailable. The
-	 * luminance is not a guess and it is the half a tone-mapping player
-	 * actually uses.
-	 */
-	struct avk_encode_mastering mastering = {
-		.display_primaries_x = {8500, 6550, 35400},   /* G, B, R */
-		.display_primaries_y = {39850, 2300, 14600},
-		.white_point_x = 15635, .white_point_y = 16450,
-		.min_luminance = 1,
-	};
-	if (m->hdr_max_luminance > 0) {
-		mastering.max_luminance =
-			(uint32_t)(m->hdr_max_luminance * 10000.0f);
-		mastering.max_content_light_level =
-			(uint16_t)m->hdr_max_luminance;
-	}
-	if (m->hdr_min_luminance > 0) {
-		mastering.min_luminance =
-			(uint32_t)(m->hdr_min_luminance * 10000.0f);
-	}
-	if (m->hdr_max_fall > 0) {
-		mastering.max_frame_average_light_level =
-			(uint16_t)m->hdr_max_fall;
-	}
+	struct avk_encode_mastering mastering;
+	az_avk_mastering_for(m, &mastering);
 
 	struct avk_encoder *enc = avk_encoder_create(r->dev,
 		target->extent.width, target->extent.height,
@@ -5421,7 +5499,7 @@ static void az_avk_hdr_shot(struct az_avk_output *out, Monitor *m,
 	void *stream = NULL;
 	size_t stream_len = 0;
 	bool ok = avk_encoder_encode_still(enc, target->image, target->layout,
-		&stream, &stream_len);
+		0, 0, &stream, &stream_len);
 	if (ok) {
 		struct avk_heif_colour colour = {
 			.primaries = 9, .transfer = 16, .matrix = 9, .full_range = true,
