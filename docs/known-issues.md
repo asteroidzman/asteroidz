@@ -424,3 +424,67 @@ An earlier measurement at `frequency 22` finished in 23% of its duration.
 
 `duration` is therefore an upper bound the spring may never reach. The lever is
 `frequency`; roughly 4-5 keeps it in motion for most of the configured time.
+
+## FIXED — the tearing branch presented 71 times per refresh
+
+Reported as "flashing steam games", with "it worked yesterday". Both halves
+were true and neither meant what it looked like.
+
+**Yesterday.** The installed package was `0.21.1.r32.g8cb208d`, 32 commits past
+a 2026-07-30 tag — roughly 2026-08-02. Direct scanout landed 2026-08-17
+(M13B, 40f67378). A torn flip needs the client buffer on the plane, so the
+tearing path is reachable only *through* scanout. Yesterday's compositor could
+not take it. A `yay` upgrade that morning crossed M13B and armed both at once.
+
+**The defect.** `render_monitor()` chains its content branches, and the comment
+above them says only to commit when a frame is needed. Every branch honoured
+that except the first:
+
+```c
+if (config.allow_tearing && frame_allow_tearing) {   // asked nothing
+    apply_tear_state(m);
+} else if (shotui.want_capture && ...) {
+} else if (m->hdr_pending_change) {
+} else if (wlr_scene_output_needs_frame(m->scene_output)) {   // the gate
+```
+
+Ungated it cannot settle. An async flip does not wait for vblank, so its
+completion re-arms the frame event almost immediately, and `apply_tear_state()`
+sends frame_done as soon as the commit lands — client renders, we flip, we say
+go, with no vblank anywhere in the loop and nothing else bounding it. The
+buffer flipped was overwhelmingly the one already on the plane.
+
+Measured on DP-1 at 144Hz, Warhammer under gamescope:
+
+| | scanout/s | torn/s |
+|---|---|---|
+| tearing on  | 10,300 | 10,300 |
+| tearing off | 141    | 0      |
+
+~71 tears per refresh: the scanout address changing 71 times mid-picture, which
+is what was seen as flashing. Gated, the same output paces at the panel rate.
+
+Sound as a predicate **only because** `apply_tear_state()` already clears
+`pending_commit_damage` on a landed scanout. Without that the flag would never
+fall and the gate would gate nothing.
+
+### Falsified along the way — do not re-derive
+
+- **Not the July acquire-fence race.** `project_gamescope_scanout_corruption`
+  and the operator's own config note both predicted that gamescope scanout
+  would return RGB noise from a missing explicit-sync wait. That hazard is real
+  and still untested, but it is not this: `az_scanout.h` does attach the
+  syncobj acquire point, and *flashing is not noise*. A `no-scanout 1` rule was
+  added on that theory and removed — it suppressed the symptom only by
+  suppressing tearing's precondition, at the cost of the latency scanout exists
+  to provide.
+- **Not a regression from the M14 capture work.** Nothing in the encode or
+  record path touches frame scheduling; the counters were flat before a game ran.
+
+### Not covered by a test
+
+The loop is a property of real async page flips. The headless backend refuses
+`tearing_page_flip` and presents synced, so a headless fixture would pass on
+the broken build — worth stating rather than writing a green test that proves
+nothing. A fixture needs either a DRM output or a fake backend that accepts an
+async flip and completes it off-vblank.

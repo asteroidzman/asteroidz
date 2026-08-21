@@ -9643,7 +9643,32 @@ static void render_monitor(Monitor *m) {
 	 * the seam between asteroidz's frame and the renderer's. */
 
 	// only build and commit state when a frame is actually needed
-	if (config.allow_tearing && frame_allow_tearing) {
+	/*
+	 * ── THE TEARING BRANCH ASKS THE SAME QUESTION AS ITS SIBLINGS ─────────
+	 *
+	 * It did not, and that is the whole of the "flashing steam games" defect.
+	 * Every other content branch below is gated on needs_frame; this one ran
+	 * on every frame event and flipped whatever buffer happened to be current
+	 * -- overwhelmingly the SAME buffer, already on the plane.
+	 *
+	 * Ungated it cannot settle, because a torn flip is asynchronous: it does
+	 * not wait for vblank, so its completion re-arms the frame event almost
+	 * immediately, and apply_tear_state() then sends frame_done the instant
+	 * the commit lands. Client renders, we flip, we say "go", client renders.
+	 * There is no vblank anywhere in that loop and nothing else bounds it.
+	 *
+	 * Measured on DP-1 at 144Hz with Warhammer under gamescope: 10,300 torn
+	 * flips a second, ~71 per refresh, the scanout address changing 71 times
+	 * mid-picture. Gating restores 141/s -- the panel rate. Tearing's whole
+	 * purpose is showing NEW content without waiting for vblank; re-flipping
+	 * unchanged pixels buys no latency and shreds the picture to pay for it.
+	 *
+	 * Safe as a predicate only because apply_tear_state() already clears
+	 * pending_commit_damage on a landed scanout. Without that the flag would
+	 * never fall and this would gate nothing.
+	 */
+	if (config.allow_tearing && frame_allow_tearing
+			&& wlr_scene_output_needs_frame(m->scene_output)) {
 		apply_tear_state(m);
 	} else if (shotui.want_capture && shotui.capture_mon == m) {
 		wlr_log(WLR_DEBUG, "screenshot_ui: fulfilling capture on %s",
