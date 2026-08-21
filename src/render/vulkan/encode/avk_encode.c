@@ -112,6 +112,25 @@ static bool query_caps(struct avk_encoder *enc) {
 		/* The block sizes the SPS has to agree with. A parameter set that
 		 * describes a geometry the encoder did not use produces a valid
 		 * bitstream that decodes to garbage, with nothing failing anywhere. */
+		/* stdSyntaxFlags is the driver saying which SPS/PPS/slice flags it
+		 * will honour. Setting one it does not honour writes a parameter set
+		 * describing a stream the encoder did not produce, and the decoder
+		 * desyncs inside the first coded block. */
+		avk_log(AVK_INFO, "encode: stdSyntaxFlags 0x%x (sao=%d transform_skip="
+			"%d/%d sign_hiding=%d slice_qp_delta=%d init_qp=%d)",
+			(unsigned)enc->h265_caps.stdSyntaxFlags,
+			!!(enc->h265_caps.stdSyntaxFlags
+	& VK_VIDEO_ENCODE_H265_STD_SAMPLE_ADAPTIVE_OFFSET_ENABLED_FLAG_SET_BIT_KHR),
+			!!(enc->h265_caps.stdSyntaxFlags
+	& VK_VIDEO_ENCODE_H265_STD_TRANSFORM_SKIP_ENABLED_FLAG_SET_BIT_KHR),
+			!!(enc->h265_caps.stdSyntaxFlags
+	& VK_VIDEO_ENCODE_H265_STD_TRANSFORM_SKIP_ENABLED_FLAG_UNSET_BIT_KHR),
+			!!(enc->h265_caps.stdSyntaxFlags
+	& VK_VIDEO_ENCODE_H265_STD_SIGN_DATA_HIDING_ENABLED_FLAG_SET_BIT_KHR),
+			!!(enc->h265_caps.stdSyntaxFlags
+	& VK_VIDEO_ENCODE_H265_STD_SLICE_QP_DELTA_BIT_KHR),
+			!!(enc->h265_caps.stdSyntaxFlags
+	& VK_VIDEO_ENCODE_H265_STD_INIT_QP_MINUS26_BIT_KHR));
 		avk_log(AVK_INFO, "encode: ctbSizes 0x%x transformBlockSizes 0x%x "
 			"maxLevelIdc %d qp %d..%d",
 			(unsigned)enc->h265_caps.ctbSizes,
@@ -391,7 +410,21 @@ static bool create_parameters(struct avk_encoder *enc,
 	StdVideoH265PictureParameterSet pps = {
 		.flags = {
 			.sign_data_hiding_enabled_flag = 0,
-			.cu_qp_delta_enabled_flag = 1,
+			/*
+			 * OFF, because rate control is disabled and every block is coded
+			 * at the slice QP -- there are no per-CU deltas to send.
+			 *
+			 * With it on, the PPS promises a syntax element the encoder does
+			 * not emit, and a decoder reads the next bits as one: it desyncs
+			 * inside the first coded block and every block after it is noise.
+			 * "The cu_qp_delta 32 is outside the valid range [-32, 31]".
+			 *
+			 * This survived every test in the tree because they all encode a
+			 * FLAT colour, and a picture with no residual has almost nothing
+			 * for the desync to corrupt. The first recording of a real
+			 * desktop was green.
+			 */
+			.cu_qp_delta_enabled_flag = 0,
 			.entropy_coding_sync_enabled_flag = 0,
 			.uniform_spacing_flag = 1,
 		},
@@ -1183,6 +1216,7 @@ struct avk_encoder *avk_encoder_create(struct avk_device *dev,
 	enc->width = width;
 	enc->height = height;
 	enc->colour = colour;
+	enc->all_intra = getenv("AZ_ENCODE_INTER") == NULL;
 	if (mastering != NULL) {
 		enc->mastering = *mastering;
 	}
@@ -1529,8 +1563,17 @@ static bool encode_picture(struct avk_encoder *enc, VkImage src,
 		.baseArrayLayer = 0,
 		.imageViewBinding = enc->dpb_view[ref_slot],
 	};
+	/*
+	 * The REFERENCE describes the PREVIOUS picture, not this one. For the
+	 * first P picture that previous one is the IDR, and calling it a P
+	 * picture describes a DPB entry that does not match what is in the slot.
+	 * The type was taken from whether the CURRENT picture is a key frame,
+	 * which is the one case where the two are guaranteed to differ.
+	 */
 	StdVideoEncodeH265ReferenceInfo ref_std = {
-		.pic_type = STD_VIDEO_H265_PICTURE_TYPE_P,
+		.pic_type = enc->frame_index == 1
+			? STD_VIDEO_H265_PICTURE_TYPE_IDR
+			: STD_VIDEO_H265_PICTURE_TYPE_P,
 		.PicOrderCntVal = enc->poc - 1,
 	};
 	VkVideoEncodeH265DpbSlotInfoKHR ref_h265 = {
@@ -1824,7 +1867,7 @@ bool avk_encoder_encode_frame(struct avk_encoder *enc, VkImage src,
 	}
 	/* The first picture of a sequence has nothing to predict from, so it is
 	 * an IDR whether or not one was asked for. */
-	bool key = force_key || enc->frame_index == 0;
+	bool key = force_key || enc->frame_index == 0 || enc->all_intra;
 	if (key) {
 		enc->poc = 0;
 	}

@@ -145,6 +145,22 @@ struct avk_encoder {
 	int64_t last_convert_ns;
 	int64_t last_encode_ns;
 
+	/*
+	 * ALL-INTRA, which is the default and currently the only correct mode.
+	 *
+	 * Inter prediction produces a stream that decodes to noise on detailed
+	 * content -- see docs/known-issues.md. A flat test picture hid it
+	 * completely, and the first recording of a real desktop was green. Every
+	 * frame is a key frame until that is understood: the files are several
+	 * times larger and every one of them is right, which is the correct way
+	 * round for a recording somebody keeps.
+	 *
+	 * All-intra is also what capture tools use deliberately -- it seeks
+	 * anywhere and cuts anywhere -- so this is a worse default, not a broken
+	 * one.
+	 */
+	bool all_intra;
+
 	uint64_t frame_index;
 	int32_t poc;
 	uint32_t dpb_slot;

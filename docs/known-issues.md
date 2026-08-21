@@ -263,6 +263,44 @@ and that only exists live.
 no bitrate target at all), and periodic key frames so a long recording is
 seekable.
 
+## OPEN — M14B: inter prediction decodes to noise on real content
+
+Found 2026-08-21, by recording a real desktop for the first time. The file was
+green. `ffmpeg`: *"The cu_qp_delta 113 is outside the valid range [-32, 31]"*,
+which is a decoder that has desynced and is reading residual bits as syntax.
+
+**Bisected.** A detailed single IDR decodes clean. A detailed sequence with P
+pictures does not. Flat content decodes clean either way. So it is inter
+prediction on content with real residual, and nothing else.
+
+**Ruled out, each by building it and re-measuring:** `cu_qp_delta_enabled_flag`,
+`sample_adaptive_offset_enabled_flag` with its slice flags, transform hierarchy
+depth 0 and 1, `amp_enabled_flag`, and the reference picture's `pic_type` (which
+described the previous picture as P when the first one is an IDR -- a real bug,
+fixed, and not this one).
+
+**The finding that reframes it.** The driver writes its OWN PPS and ignores the
+flags in `StdVideoH265PictureParameterSet`. Parsed out of the emitted stream:
+`cu_qp_delta_enabled_flag` is 1 and `dependent_slice_segments_enabled_flag` is
+1, and neither was set here. So every syntax flag bisected above was
+decorative, and whatever disagrees does so between the driver's own parameter
+sets and the slice header or picture info this code supplies.
+
+**What ships meanwhile: all-intra.** Every frame is a key frame. The files are
+several times larger and every one of them is right, which is the correct way
+round for a recording somebody keeps -- and all-intra is what capture tools
+choose deliberately, because it seeks and cuts anywhere. `AZ_ENCODE_INTER=1`
+reaches the broken path for whoever picks this up.
+
+**The lesson, which cost more than the bug.** Every test in the tree encoded a
+FLAT COLOUR. A flat picture has almost no residual, so a syntax desync has
+almost nothing to corrupt: the suite scored 24/24, ffprobe agreed on every
+header, and the first real desktop was green. `tests/test-avk-encode.c` now
+uploads a high-frequency pattern that moves each frame, and
+`contrib/avk-encode-test.sh` asserts the decoded detail survives -- luma std
+215 against a flat field's 0.6. This is the same trap
+`docs/known-issues.md` already records for the shadow tests, in a new place.
+
 ## OPEN — teardown frees a VkDeviceMemory twice after overview/jump
 
 Found 2026-08-20 by `contrib/render-matrix-test.sh`, which had never been run:
