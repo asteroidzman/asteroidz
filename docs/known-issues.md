@@ -185,9 +185,24 @@ is why the matrix coefficients are push constants derived from the same
 with one matrix and labelled with another is not obviously broken -- it is
 slightly wrong in the greens, and that survives review.
 
-Still outstanding for a *screenshot*: a container (the bitstream is raw Annex B),
-the mastering-display and content-light-level SEI that HDR10 tone mapping wants,
-and wiring the source to a real AVK frame rather than a cleared test image.
+**All three shipped.** The SEI, a HEIF container, and `amsg dispatch
+screenshot_hdr`, which arms every output currently running HDR and writes
+`~/Pictures/Screenshots/hdr_<output>_<timestamp>.heic` from the next finished
+frame. The encoder copies the scanout attachment into an image of its own
+because a colour attachment carries no STORAGE usage, converts, encodes and
+wraps -- and the picture never reaches the CPU on the way.
+
+An SDR output is declined rather than captured: its attachment is 8-bit, and a
+file claiming BT.2100 PQ over it would be worse than no file. The luminance in
+the mastering SEI is the display's own, from EDID; the primaries are BT.2020
+reference values, because nothing in this project exposes a panel's own
+chromaticity points -- the same fallback `hdr-record.sh` makes, and the standard
+one when a display's own are unavailable.
+
+**Not yet verified on real content.** Everything above is proven against a
+cleared test image and a headless run that correctly declines. Whether a real
+composited HDR desktop encodes to a picture that looks right needs the live
+display.
 
 ## OPEN — teardown frees a VkDeviceMemory twice after overview/jump
 

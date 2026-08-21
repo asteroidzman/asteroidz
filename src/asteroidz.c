@@ -2253,6 +2253,7 @@ static int32_t set_frame_trace(const Arg *arg);
 static int32_t dump_scene(const Arg *arg);
 static int32_t damage_all(const Arg *arg);
 static int32_t capture_output(const Arg *arg);
+static int32_t screenshot_hdr(const Arg *arg);
 /* Same reason: reapply_cursor_style() lives in parse_config.h and destroys the
  * xcursor manager, which every borrowed cursor pointer depends on. Defined in
  * render/az_cursor.h, included later. */
@@ -2732,6 +2733,53 @@ static int32_t capture_output(const Arg *arg) {
 		armed++;
 	}
 	wlr_log(WLR_INFO, "capture armed on %d output(s)", armed);
+	return 0;
+}
+
+/*
+ * `amsg dispatch screenshot_hdr` -- an HDR10 still of every HDR output.
+ *
+ * M14A. screenshot_ui's normal path tone maps to an 8-bit PNG because cairo
+ * cannot represent anything else, and its `rawhdr` mode writes headerless raw
+ * that only ffmpeg can read. This writes a HEIF the picture viewer opens, at
+ * the panel's own bit depth, with the colour and the display's luminance
+ * carried in the file.
+ *
+ * Like capture_output it damages the output and waits for the GPU: an output
+ * with nothing to redraw renders no frame, and an armed shot on a settled
+ * desktop would never fire.
+ */
+static int32_t screenshot_hdr(const Arg *arg) {
+	(void)arg;
+	Monitor *m;
+	int armed = 0;
+	wl_list_for_each(m, &mons, link) {
+		if (m->scene_output == NULL || m->avk == NULL
+				|| m->avk->slot == NULL) {
+			continue;
+		}
+		/* Only outputs actually running HDR. On an SDR output the attachment
+		 * is 8-bit and the result would be a file that claims BT.2100 PQ over
+		 * a picture that is neither. */
+		if (!m->hdr) {
+			wlr_log(WLR_INFO, "screenshot_hdr: %s is not in HDR, skipped",
+				m->wlr_output->name);
+			continue;
+		}
+		char *path = screenshot_hdr_build_path(m->wlr_output->name);
+		if (path == NULL) {
+			continue;
+		}
+		free(m->avk->hdr_shot_path);
+		m->avk->hdr_shot_path = path;
+		m->avk->hdr_shot_pending = true;
+		wlr_damage_ring_add_whole(&m->scene_output->damage_ring);
+		wlr_output_schedule_frame(m->wlr_output);
+		armed++;
+	}
+	if (armed == 0) {
+		wlr_log(WLR_ERROR, "screenshot_hdr: no output is in HDR");
+	}
 	return 0;
 }
 

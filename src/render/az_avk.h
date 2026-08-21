@@ -44,6 +44,8 @@
 #include "vulkan/device/avk_device.h"
 #include "vulkan/device/avk_instance.h"
 #include "vulkan/dmabuf/avk_dmabuf.h"
+#include "vulkan/encode/avk_encode.h"
+#include "vulkan/encode/avk_heif.h"
 #include "vulkan/effect/avk_blur_cache.h"
 #include "vulkan/image/avk_upload.h"
 #include "vulkan/image/avk_upload_worker.h"
@@ -3019,6 +3021,12 @@ struct az_avk_output {
 	/* Armed by `amsg dispatch capture_output`: write this output's next
 	 * finished attachment to disk, then disarm. */
 	bool capture_pending;
+	/* M14A. Armed by `amsg dispatch screenshot_hdr`: encode this output's
+	 * next finished attachment as an HDR10 HEIF still. Separate from
+	 * capture_pending because that one is a test instrument writing a PPM and
+	 * this one is a feature writing a picture the operator keeps. */
+	bool hdr_shot_pending;
+	char *hdr_shot_path;   /* owned, freed when the shot is taken */
 	/* The scene output's halo-damage record count as of this output's last
 	 * frame, so "this frame took damage from the halo" is a delta rather than
 	 * a guess about a region's extents. */
@@ -5325,6 +5333,129 @@ static void az_avk_emit_cursors(struct az_avk_walk *walk,
  * It is not on the render path: `capture_pending` is false in every normal
  * frame and the tap is not even declared.
  */
+
+/*
+ * ── AN HDR SCREENSHOT ──────────────────────────────────────────────────────
+ *
+ * M14A. The compositor already holds the finished frame on the GPU in the
+ * format an HDR encoder wants, which is the whole argument for encoding it
+ * here: every other capture path on this machine is trying to obtain a copy of
+ * this image, and either loses the HDR doing it (the portal flattens to 8-bit)
+ * or races the compositor for it (gpu-screen-recorder's raw-KMS path).
+ *
+ * The encoder is built per shot and thrown away. A screenshot is not on a
+ * frame budget, and a resident encoder would hold a video session, a DPB and a
+ * 64MB bitstream buffer open for the whole session against one keystroke.
+ *
+ * Like capture_pending, this waits for the GPU, so it must never be armed on a
+ * frame anybody is waiting to see -- the arming dispatch damages the output to
+ * force a fresh one.
+ */
+static void az_avk_hdr_shot(struct az_avk_output *out, Monitor *m,
+		struct avk_image *target, uint64_t timeline) {
+	struct avk_renderer *r = &out->slot->renderer;
+	if (!out->hdr_shot_pending || timeline == 0) {
+		return;
+	}
+	out->hdr_shot_pending = false;
+	char *path = out->hdr_shot_path;
+	out->hdr_shot_path = NULL;
+	if (path == NULL) {
+		return;
+	}
+	if (!avk_device_timeline_wait(r->dev, timeline, 2000000000ULL)) {
+		wlr_log(WLR_ERROR, "hdr shot: %s's frame did not complete",
+			m->wlr_output->name);
+		free(path);
+		return;
+	}
+	/* A2R10G10B10 is what an HDR output renders into. An SDR output is 8-bit
+	 * and would need a different conversion; refusing is better than encoding
+	 * an 8-bit picture into a container that says BT.2100 PQ. */
+	if (target->format != VK_FORMAT_A2R10G10B10_UNORM_PACK32) {
+		wlr_log(WLR_ERROR, "hdr shot: %s renders in format %d, not the "
+			"10-bit format an HDR still needs", m->wlr_output->name,
+			(int)target->format);
+		free(path);
+		return;
+	}
+
+	/*
+	 * The mastering metadata. The luminance figures are the DISPLAY's own,
+	 * read from its EDID; the primaries are BT.2020's reference values,
+	 * because this project's IPC has never exposed a panel's own chromaticity
+	 * points -- the same fallback contrib/hdr-record.sh has to make, and the
+	 * standard thing to do when a display's own are unavailable. The
+	 * luminance is not a guess and it is the half a tone-mapping player
+	 * actually uses.
+	 */
+	struct avk_encode_mastering mastering = {
+		.display_primaries_x = {8500, 6550, 35400},   /* G, B, R */
+		.display_primaries_y = {39850, 2300, 14600},
+		.white_point_x = 15635, .white_point_y = 16450,
+		.min_luminance = 1,
+	};
+	if (m->hdr_max_luminance > 0) {
+		mastering.max_luminance =
+			(uint32_t)(m->hdr_max_luminance * 10000.0f);
+		mastering.max_content_light_level =
+			(uint16_t)m->hdr_max_luminance;
+	}
+	if (m->hdr_min_luminance > 0) {
+		mastering.min_luminance =
+			(uint32_t)(m->hdr_min_luminance * 10000.0f);
+	}
+	if (m->hdr_max_fall > 0) {
+		mastering.max_frame_average_light_level =
+			(uint16_t)m->hdr_max_fall;
+	}
+
+	struct avk_encoder *enc = avk_encoder_create(r->dev,
+		target->extent.width, target->extent.height,
+		AVK_ENCODE_COLOUR_HDR10, &mastering);
+	if (enc == NULL) {
+		wlr_log(WLR_ERROR, "hdr shot: no encoder for %s", path);
+		free(path);
+		return;
+	}
+	void *stream = NULL;
+	size_t stream_len = 0;
+	bool ok = avk_encoder_encode_still(enc, target->image, target->layout,
+		&stream, &stream_len);
+	if (ok) {
+		struct avk_heif_colour colour = {
+			.primaries = 9, .transfer = 16, .matrix = 9, .full_range = true,
+		};
+		void *file = NULL;
+		size_t file_len = 0;
+		if (avk_heif_wrap(stream, stream_len, target->extent.width,
+				target->extent.height, &colour, &file, &file_len)) {
+			FILE *f = fopen(path, "wb");
+			if (f != NULL) {
+				ok = fwrite(file, file_len, 1, f) == 1;
+				fclose(f);
+				if (ok) {
+					wlr_log(WLR_INFO, "hdr shot: %s (%zu bytes, %ux%u)",
+						path, file_len, target->extent.width,
+						target->extent.height);
+				}
+			} else {
+				wlr_log(WLR_ERROR, "hdr shot: cannot write %s", path);
+				ok = false;
+			}
+			free(file);
+		} else {
+			ok = false;
+		}
+		free(stream);
+	}
+	if (!ok) {
+		wlr_log(WLR_ERROR, "hdr shot: %s failed", path);
+	}
+	avk_encoder_destroy(enc);
+	free(path);
+}
+
 static void az_avk_capture_frame(struct az_avk_output *out, Monitor *m,
 		struct avk_image *target, uint64_t timeline) {
 	struct avk_renderer *r = &out->slot->renderer;
@@ -6419,6 +6550,7 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 	/* After the frame's own damage has been taken, and before the snapshot is
 	 * released -- the reference render needs the same immutable scene. */
 	az_avk_capture_frame(out, m, target, timeline);
+	az_avk_hdr_shot(out, m, target, timeline);
 	az_avk_oracle_frame(out, m, target, &scene, buffer, &ring_damage,
 		&scene.damage, timeline);
 	/* Now: the reference render is done and nothing else this frame composites.

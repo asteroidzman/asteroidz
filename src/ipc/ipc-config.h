@@ -403,6 +403,11 @@ static const DispatchAction dispatch_actions[] = {
 	 "Write every output's next frame to AZ_AVK_CAPTURE_DIR as a PPM, read "
 	 "back from the actual Vulkan attachment (works at every output "
 	 "transform, unlike a screen-capture client)."},
+	{"screenshot_hdr", "",
+	 "Write an HDR10 HEIF still of every output currently running HDR, at "
+	 "the panel's own 10-bit depth, encoded on the GPU. Unlike the ordinary "
+	 "screenshot it is not tone mapped to 8 bits, and unlike screenshot_ui's "
+	 "rawhdr mode it is a file an image viewer opens."},
 	{"restart", "", "Restart the compositor in place."},
 	{"quit", "", "Exit."},
 	{"chvt", "int", "Switch virtual terminal."},

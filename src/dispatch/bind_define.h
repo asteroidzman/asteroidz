@@ -2954,6 +2954,36 @@ static void screenshot_ui_hover_window(double cx, double cy) {
 	screenshot_ui_update_label();
 }
 
+/* ~/Pictures/Screenshots/hdr_<output>_<timestamp>.heic. Same directory as the
+ * ordinary screenshot, because it is the same thing to the person taking it --
+ * the output's name is in the file because an HDR shot is per output and two
+ * of them in the same second is not a hypothetical on a multi-monitor desk. */
+char *screenshot_hdr_build_path(const char *output_name) {
+	const char *home = getenv("HOME");
+	if (!home || !*home)
+		home = "/tmp";
+	char *dir = string_printf("%s/Pictures/Screenshots", home);
+	if (!dir)
+		return NULL;
+	for (char *p = dir + 1; *p; p++) {
+		if (*p == '/') {
+			*p = '\0';
+			mkdir(dir, 0755);
+			*p = '/';
+		}
+	}
+	mkdir(dir, 0755);
+	time_t now = time(NULL);
+	struct tm tm_now;
+	localtime_r(&now, &tm_now);
+	char stamp[32];
+	strftime(stamp, sizeof(stamp), "%Y-%m-%d_%H-%M-%S", &tm_now);
+	char *path = string_printf("%s/hdr_%s_%s.heic", dir,
+		output_name ? output_name : "output", stamp);
+	free(dir);
+	return path;
+}
+
 /* ~/Pictures/Screenshots/screenshot_<timestamp>.png, matching the naming
  * used by the DMS shell's own screenshot tool */
 static char *screenshot_ui_build_path(void) {
