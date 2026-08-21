@@ -230,9 +230,38 @@ luma ramps in the order encoded. Falsified against the build with
 `pShortTermRefPicSet` removed -- the unit test still says 24/24, the fixture
 reports three failures.
 
-**Still to build for a recording:** a container that takes more than one sample
-(HEIF is a still), rate control other than fixed QP, a capture loop driving
-frames at the output's rate, and start/stop dispatches.
+**The container and the loop followed.** `avk_mp4` writes a real MP4 -- sample
+data appended as it arrives, sample table held (sixteen bytes a frame), index
+written at close. `amsg dispatch record_start` / `record_stop` record the
+focused HDR output to `~/Videos/asteroidz_<output>_<timestamp>.mp4`.
+
+**What it costs, stated rather than hidden.** Every frame is waited for and
+encoded on the compositor's own thread, so recording makes frames later than not
+recording does. `record_stop` reports frames captured and dropped, which is the
+measurement that decides whether an asynchronous encode is worth building --
+that number is not yet known, because the path needs an HDR output and the
+headless backend refuses HDR.
+
+**Sample durations are measured, not assumed.** A compositor renders when
+something changed, not on a cadence, so a recording timed at the output's
+nominal refresh plays back at the wrong speed whenever the desktop was idle.
+Each sample's duration is the interval since the previous frame, floored at 1ms
+and capped at 1s.
+
+**The file is unplayable until `record_stop`,** because an MP4's index lives at
+its end. An output torn down mid-recording -- unplugged, or the compositor
+exiting -- closes the file where it stands rather than abandoning it, so the
+worst case is a short recording and not an unopenable one. A compositor that is
+killed outright is still a lost file.
+
+**Not yet exercised on a real output.** The encoder and container are covered by
+`contrib/avk-encode-test.sh` against synthetic frames; the compositor glue that
+drives them is not, for the same reason `screenshot_hdr` is not -- it needs HDR,
+and that only exists live.
+
+**Still to build:** rate control other than fixed QP (a recording currently has
+no bitrate target at all), and periodic key frames so a long recording is
+seekable.
 
 ## OPEN — teardown frees a VkDeviceMemory twice after overview/jump
 

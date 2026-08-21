@@ -1491,6 +1491,10 @@ FuncType parse_func_name(char *func_name, Arg *arg, char *arg_value,
 		func = capture_output;
 	} else if (strcmp(func_name, "screenshot_hdr") == 0) {
 		func = screenshot_hdr;
+	} else if (strcmp(func_name, "record_start") == 0) {
+		func = record_start;
+	} else if (strcmp(func_name, "record_stop") == 0) {
+		func = record_stop;
 	} else if (strcmp(func_name, "reload_config") == 0) {
 		func = reload_config;
 	} else if (strcmp(func_name, "ufo") == 0) {

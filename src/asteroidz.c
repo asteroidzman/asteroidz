@@ -2254,6 +2254,11 @@ static int32_t dump_scene(const Arg *arg);
 static int32_t damage_all(const Arg *arg);
 static int32_t capture_output(const Arg *arg);
 static int32_t screenshot_hdr(const Arg *arg);
+static int32_t record_start(const Arg *arg);
+static int32_t record_stop(const Arg *arg);
+/* Both defined in render/az_avk.h, which is included after bind_define.h. */
+static bool az_avk_record_open(Monitor *m, const char *path);
+static bool az_avk_record_close(Monitor *m);
 /* Defined in render/az_avk.h, which is included after bind_define.h -- the
  * screenshot UI needs it and the AVK import it uses is not visible there. */
 struct wlr_box;
@@ -2784,6 +2789,75 @@ static int32_t screenshot_hdr(const Arg *arg) {
 	}
 	if (armed == 0) {
 		wlr_log(WLR_ERROR, "screenshot_hdr: no output is in HDR");
+	}
+	return 0;
+}
+
+/*
+ * `amsg dispatch record_start` / `record_stop` -- an HDR screen recording.
+ *
+ * M14B. One output, the focused one, because a recording is a thing with a
+ * beginning and an end and two of them running on one keybind is a surprise
+ * rather than a feature.
+ *
+ * IT COSTS FRAME TIME. Every frame is waited for and encoded on the
+ * compositor's own thread, so recording makes frames later than not recording
+ * does. The stop message reports the frames captured and dropped, which is the
+ * measurement that decides whether an asynchronous encode is worth building.
+ *
+ * The file is not playable until record_stop: the index lives at the end of an
+ * MP4, so a compositor killed mid-recording leaves one that cannot be opened.
+ */
+static int32_t record_start(const Arg *arg) {
+	(void)arg;
+	Monitor *m = selmon;
+	if (m == NULL || m->avk == NULL || m->avk->slot == NULL) {
+		wlr_log(WLR_ERROR, "record_start: no focused output");
+		return 0;
+	}
+	if (!m->hdr) {
+		/* The same refusal screenshot_hdr makes, for the same reason: an SDR
+		 * attachment is 8-bit and the recording would claim BT.2100 PQ over a
+		 * picture that is neither. */
+		wlr_log(WLR_ERROR, "record_start: %s is not in HDR",
+			m->wlr_output->name);
+		return 0;
+	}
+	if (m->avk->recording) {
+		wlr_log(WLR_ERROR, "record_start: %s is already recording",
+			m->wlr_output->name);
+		return 0;
+	}
+	char *path = record_build_path(m->wlr_output->name);
+	if (path == NULL) {
+		return 0;
+	}
+	if (az_avk_record_open(m, path)) {
+		/* A recording of a still desktop is a recording of nothing: an output
+		 * with no damage renders no frames, so the first one has to be asked
+		 * for the same way an armed capture asks. */
+		wlr_damage_ring_add_whole(&m->scene_output->damage_ring);
+		wlr_output_schedule_frame(m->wlr_output);
+	}
+	free(path);
+	return 0;
+}
+
+static int32_t record_stop(const Arg *arg) {
+	(void)arg;
+	Monitor *m;
+	int stopped = 0;
+	/* Every output, not just the focused one: focus can move while a
+	 * recording runs, and a stop that missed it would leave a file nothing
+	 * closes. */
+	wl_list_for_each(m, &mons, link) {
+		if (m->avk != NULL && m->avk->recording) {
+			az_avk_record_close(m);
+			stopped++;
+		}
+	}
+	if (stopped == 0) {
+		wlr_log(WLR_ERROR, "record_stop: nothing is recording");
 	}
 	return 0;
 }

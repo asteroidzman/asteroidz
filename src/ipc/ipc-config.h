@@ -408,6 +408,15 @@ static const DispatchAction dispatch_actions[] = {
 	 "the panel's own 10-bit depth, encoded on the GPU. Unlike the ordinary "
 	 "screenshot it is not tone mapped to 8 bits, and unlike screenshot_ui's "
 	 "rawhdr mode it is a file an image viewer opens."},
+	{"record_start", "",
+	 "Start an HDR10 screen recording of the focused output to "
+	 "~/Videos, encoded on the GPU at the panel's own 10-bit depth. Costs "
+	 "frame time: every frame is waited for and encoded on the compositor's "
+	 "thread."},
+	{"record_stop", "",
+	 "Stop every recording and write each file's index. An MP4 is not "
+	 "playable until this runs, so a compositor killed mid-recording leaves "
+	 "one that cannot be opened."},
 	{"restart", "", "Restart the compositor in place."},
 	{"quit", "", "Exit."},
 	{"chvt", "int", "Switch virtual terminal."},

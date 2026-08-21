@@ -46,6 +46,7 @@
 #include "vulkan/dmabuf/avk_dmabuf.h"
 #include "vulkan/encode/avk_encode.h"
 #include "vulkan/encode/avk_heif.h"
+#include "vulkan/encode/avk_mp4.h"
 #include "vulkan/effect/avk_blur_cache.h"
 #include "vulkan/image/avk_upload.h"
 #include "vulkan/image/avk_upload_worker.h"
@@ -3027,6 +3028,20 @@ struct az_avk_output {
 	 * this one is a feature writing a picture the operator keeps. */
 	bool hdr_shot_pending;
 	char *hdr_shot_path;   /* owned, freed when the shot is taken */
+	/*
+	 * M14B. A recording, held open across frames rather than fired once.
+	 *
+	 * The encoder and the container both carry state that only means anything
+	 * in sequence -- a DPB the next picture predicts from, a sample table the
+	 * index is built out of -- so both live for the whole recording and
+	 * neither can be rebuilt per frame.
+	 */
+	struct avk_encoder *rec_encoder;
+	struct avk_mp4 *rec_mp4;
+	bool recording;
+	uint64_t rec_frames;
+	int64_t rec_last_ns;   /* so a sample's duration is measured, not assumed */
+	uint64_t rec_dropped;
 	/* The scene output's halo-damage record count as of this output's last
 	 * frame, so "this frame took damage from the halo" is a delta rather than
 	 * a guess about a region's extents. */
@@ -3518,6 +3533,30 @@ static bool az_avk_present_handover(struct az_avk_output *out,
 static void az_avk_output_finish(struct az_avk_output *out) {
 	if (out == NULL) {
 		return;
+	}
+	/*
+	 * A recording is FINISHED, not abandoned.
+	 *
+	 * An MP4's index is written at close, so an output torn down mid-recording
+	 * -- unplugged, or the compositor exiting -- would otherwise leave a file
+	 * holding every frame and nothing able to open it. Closing here turns the
+	 * worst case from "the recording is lost" into "the recording stops where
+	 * the output did", which is what someone who pulled a cable expects.
+	 */
+	if (out->recording) {
+		out->recording = false;
+		if (out->rec_mp4 != NULL) {
+			if (out->rec_frames > 0) {
+				avk_mp4_close(out->rec_mp4);
+			} else {
+				avk_mp4_abort(out->rec_mp4);
+			}
+			out->rec_mp4 = NULL;
+		}
+		if (out->rec_encoder != NULL) {
+			avk_encoder_destroy(out->rec_encoder);
+			out->rec_encoder = NULL;
+		}
 	}
 	if (out->swapchain != NULL) {
 		wlr_swapchain_destroy(out->swapchain);
@@ -5479,6 +5518,155 @@ static bool az_avk_encode_hdr_still(struct wlr_buffer *frame, Monitor *m,
 	return ok;
 }
 
+/*
+ * ── A RECORDING, ONE FRAME AT A TIME ───────────────────────────────────────
+ *
+ * M14B. Called on every finished frame while a recording is open, from the
+ * same place the single HDR shot is taken.
+ *
+ * IT WAITS FOR THE GPU, and that is the honest cost of this design rather
+ * than an oversight. The frame has already been submitted; waiting for it is
+ * waiting for work that is running anyway, but it does hold the compositor's
+ * thread until the encode completes, so a recording makes frames later than
+ * not recording does. The counters below exist to say by how much rather than
+ * to argue it does not happen -- an asynchronous encode is a real change and
+ * belongs after the number is known, not before.
+ *
+ * A frame the encoder refuses is DROPPED and counted, not fatal: losing one
+ * frame of a recording is better than ending it, and a recording that quietly
+ * lost some is worse than one that says so at the end.
+ */
+/* Open a recording on one output. Returns false with a reason logged. */
+static bool az_avk_record_open(Monitor *m, const char *path) {
+	if (m == NULL || m->avk == NULL || m->avk->slot == NULL) {
+		return false;
+	}
+	struct az_avk_output *out = m->avk;
+	if (out->recording) {
+		wlr_log(WLR_ERROR, "record: %s is already recording",
+			m->wlr_output->name);
+		return false;
+	}
+	struct avk_renderer *r = &out->slot->renderer;
+	const struct az_attachment_extent att =
+		az_output_attachment_extent(m->wlr_output, NULL);
+	if (att.width <= 0 || att.height <= 0) {
+		return false;
+	}
+	struct avk_encode_mastering mastering;
+	az_avk_mastering_for(m, &mastering);
+	struct avk_heif_colour colour;
+	az_avk_heif_colour_for(&mastering, &colour);
+
+	out->rec_encoder = avk_encoder_create(r->dev, (uint32_t)att.width,
+		(uint32_t)att.height, AVK_ENCODE_COLOUR_HDR10, &mastering);
+	if (out->rec_encoder == NULL) {
+		wlr_log(WLR_ERROR, "record: no encoder for %s", m->wlr_output->name);
+		return false;
+	}
+	/* Milliseconds. Enough for any display rate, and legible in a debugger,
+	 * which a 90000-tick media timescale is not. */
+	out->rec_mp4 = avk_mp4_open(path, (uint32_t)att.width,
+		(uint32_t)att.height, 1000, &colour);
+	if (out->rec_mp4 == NULL) {
+		avk_encoder_destroy(out->rec_encoder);
+		out->rec_encoder = NULL;
+		return false;
+	}
+	avk_encoder_reset_sequence(out->rec_encoder);
+	out->rec_frames = 0;
+	out->rec_dropped = 0;
+	out->rec_last_ns = 0;
+	out->recording = true;
+	wlr_log(WLR_INFO, "record: %s -> %s (%dx%d)", m->wlr_output->name, path,
+		att.width, att.height);
+	return true;
+}
+
+/* Close it. A recording with no frames is removed rather than left as a file
+ * that opens to nothing. */
+static bool az_avk_record_close(Monitor *m) {
+	if (m == NULL || m->avk == NULL || !m->avk->recording) {
+		return false;
+	}
+	struct az_avk_output *out = m->avk;
+	out->recording = false;
+	bool ok = false;
+	if (out->rec_frames == 0) {
+		wlr_log(WLR_ERROR, "record: %s captured no frames; discarding",
+			m->wlr_output->name);
+		avk_mp4_abort(out->rec_mp4);
+	} else {
+		ok = avk_mp4_close(out->rec_mp4);
+		wlr_log(WLR_INFO, "record: %s stopped, %llu frames, %llu dropped",
+			m->wlr_output->name, (unsigned long long)out->rec_frames,
+			(unsigned long long)out->rec_dropped);
+	}
+	out->rec_mp4 = NULL;
+	avk_encoder_destroy(out->rec_encoder);
+	out->rec_encoder = NULL;
+	return ok;
+}
+
+static void az_avk_record_frame(struct az_avk_output *out, Monitor *m,
+		struct avk_image *target, uint64_t timeline) {
+	if (!out->recording || out->rec_encoder == NULL || out->rec_mp4 == NULL
+			|| timeline == 0) {
+		return;
+	}
+	struct avk_renderer *r = &out->slot->renderer;
+	if (!avk_device_timeline_wait(r->dev, timeline, 2000000000ULL)) {
+		out->rec_dropped++;
+		return;
+	}
+	if (target->format != VK_FORMAT_A2R10G10B10_UNORM_PACK32) {
+		out->rec_dropped++;
+		return;
+	}
+
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	int64_t now = (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec;
+
+	void *pkt = NULL;
+	size_t pkt_len = 0;
+	if (!avk_encoder_encode_frame(out->rec_encoder, target->image,
+			target->layout, 0, 0, false, &pkt, &pkt_len)) {
+		out->rec_dropped++;
+		return;
+	}
+
+	/*
+	 * The duration is MEASURED, from this frame to the last, rather than
+	 * assumed from the output's refresh. A compositor does not render on a
+	 * fixed cadence -- it renders when something changed -- so a recording
+	 * timed at the nominal rate plays back at the wrong speed whenever the
+	 * desktop was idle. The first frame has no predecessor and takes one
+	 * refresh interval as its guess.
+	 */
+	uint32_t duration = 33;
+	if (out->rec_last_ns != 0) {
+		int64_t delta = now - out->rec_last_ns;
+		if (delta < 1000000) {
+			delta = 1000000;          /* a millisecond floor: 0 stalls a player */
+		}
+		if (delta > 1000000000) {
+			delta = 1000000000;       /* and a second ceiling for a long idle */
+		}
+		duration = (uint32_t)(delta / 1000000);
+	} else if (m->wlr_output->refresh > 0) {
+		duration = (uint32_t)(1000000 / (uint32_t)m->wlr_output->refresh);
+	}
+	out->rec_last_ns = now;
+
+	if (!avk_mp4_add_sample(out->rec_mp4, pkt, pkt_len, duration)) {
+		out->rec_dropped++;
+	} else {
+		out->rec_frames++;
+	}
+	free(pkt);
+}
+
 static void az_avk_hdr_shot(struct az_avk_output *out, Monitor *m,
 		struct avk_image *target, uint64_t timeline) {
 	struct avk_renderer *r = &out->slot->renderer;
@@ -6651,6 +6839,7 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 	 * released -- the reference render needs the same immutable scene. */
 	az_avk_capture_frame(out, m, target, timeline);
 	az_avk_hdr_shot(out, m, target, timeline);
+	az_avk_record_frame(out, m, target, timeline);
 	az_avk_oracle_frame(out, m, target, &scene, buffer, &ring_damage,
 		&scene.damage, timeline);
 	/* Now: the reference render is done and nothing else this frame composites.
