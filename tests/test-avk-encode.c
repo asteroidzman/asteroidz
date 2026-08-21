@@ -83,7 +83,6 @@ static int open_render_node(void) {
 struct source {
 	VkImage image;
 	VkDeviceMemory memory;
-	VkImageView view;
 	VkCommandPool pool;
 };
 
@@ -98,7 +97,9 @@ static bool make_source(struct avk_device *dev, struct avk_encoder *enc,
 		.arrayLayers = 1,
 		.samples = VK_SAMPLE_COUNT_1_BIT,
 		.tiling = VK_IMAGE_TILING_OPTIMAL,
-		.usage = VK_IMAGE_USAGE_STORAGE_BIT
+		/* TRANSFER_SRC only, which is what a scanout target has and what the
+		 * encoder now asks for. */
+		.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT
 			| VK_IMAGE_USAGE_TRANSFER_DST_BIT,
 		.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
 		.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
@@ -133,17 +134,6 @@ static bool make_source(struct avk_device *dev, struct avk_encoder *enc,
 				!= VK_SUCCESS) {
 		return false;
 	}
-	VkImageViewCreateInfo vinfo = {
-		.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-		.image = out->image,
-		.viewType = VK_IMAGE_VIEW_TYPE_2D,
-		.format = VK_FORMAT_A2R10G10B10_UNORM_PACK32,
-		.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
-	};
-	if (vkCreateImageView(dev->dev, &vinfo, NULL, &out->view) != VK_SUCCESS) {
-		return false;
-	}
-
 	/* Clear it on the graphics queue, so the encoder is handed real content
 	 * rather than undefined memory -- an encoder fed garbage still produces a
 	 * bitstream, and the test would pass on it. */
@@ -194,15 +184,6 @@ static bool make_source(struct avk_device *dev, struct avk_encoder *enc,
 	VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
 	vkCmdClearColorImage(cmd, out->image,
 		VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &colour, 1, &range);
-	/* GENERAL, because the conversion reads it as a storage image. */
-	VkImageMemoryBarrier to_general = to_dst;
-	to_general.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-	to_general.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-	to_general.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-	to_general.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
-		VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, NULL, 0, NULL, 1,
-		&to_general);
 	vkEndCommandBuffer(cmd);
 	VkSubmitInfo submit = {
 		.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
@@ -217,9 +198,6 @@ static bool make_source(struct avk_device *dev, struct avk_encoder *enc,
 static void destroy_source(struct avk_device *dev, struct source *s) {
 	if (s->pool != VK_NULL_HANDLE) {
 		vkDestroyCommandPool(dev->dev, s->pool, NULL);
-	}
-	if (s->view != VK_NULL_HANDLE) {
-		vkDestroyImageView(dev->dev, s->view, NULL);
 	}
 	if (s->image != VK_NULL_HANDLE) {
 		vkDestroyImage(dev->dev, s->image, NULL);
@@ -435,8 +413,8 @@ int main(void) {
 		if (make_source(dev, enc, &src)) {
 			void *stream = NULL;
 			size_t len = 0;
-			bool encoded = avk_encoder_encode_still(enc, src.image, src.view,
-				VK_IMAGE_LAYOUT_GENERAL, &stream, &len);
+			bool encoded = avk_encoder_encode_still(enc, src.image,
+				VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &stream, &len);
 
 			/* THE BISECT. Two things can put a wrong picture in the
 			 * bitstream: a conversion that wrote the wrong P010, or an

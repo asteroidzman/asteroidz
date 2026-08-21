@@ -132,6 +132,15 @@ struct avk_encoder {
 	/* The encoder's own input picture, in the only format it will accept.
 	 * The caller's RGB image is converted into this rather than handed over
 	 * -- see the shader for why the driver's own conversion is not used. */
+	/* An owned RGB copy of whatever the caller hands over. A scanout image is
+	 * a colour attachment and does not carry STORAGE usage, so the conversion
+	 * cannot read it directly; one GPU-to-GPU copy into an image that does is
+	 * cheaper than requiring every caller to allocate differently, and keeps
+	 * the picture off the CPU either way. */
+	VkImage rgb_image;
+	VkDeviceMemory rgb_memory;
+	VkImageView rgb_view;
+
 	VkImage p010_image;
 	VkDeviceMemory p010_memory;
 	VkImageView p010_view;      /* whole image, for the encoder */
@@ -151,18 +160,18 @@ struct avk_encoder {
 /*
  * Encode one image as a single IDR picture.
  *
- * `src_view` must be a VK_FORMAT_A2R10G10B10_UNORM_PACK32 view of an image at
- * the encoder's coded size, created with VK_IMAGE_USAGE_STORAGE_BIT and
- * readable by the graphics/compute family. It is converted to P010 by a
- * compute pass and the result is what the encoder reads, so the source needs
- * no video usage flags and no profile in its pNext.
+ * `src` must be VK_FORMAT_A2R10G10B10_UNORM_PACK32, at least the encoder's
+ * size, and created with VK_IMAGE_USAGE_TRANSFER_SRC_BIT -- which a scanout
+ * target already is. `src_layout` is whatever it is in now; it is restored
+ * before returning, because a caller's image is not the encoder's to leave in
+ * a different state than it found it.
  *
- * On success *out is a malloc'd Annex B bitstream -- parameter sets followed
- * by the coded picture -- and the caller owns it.
+ * On success *out is a malloc'd Annex B bitstream -- parameter sets, the HDR10
+ * SEI if the metadata is known, then the coded picture -- and the caller owns
+ * it.
  */
 bool avk_encoder_encode_still(struct avk_encoder *enc, VkImage src,
-	VkImageView src_view, VkImageLayout src_layout,
-	void **out, size_t *out_len);
+	VkImageLayout src_layout, void **out, size_t *out_len);
 
 /*
  * Create an encoder for one output size. Returns NULL and logs the reason if

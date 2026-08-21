@@ -592,6 +592,57 @@ static bool create_commands(struct avk_encoder *enc) {
  * EXTENDED_USAGE is set -- STORAGE is not a usage P010 itself supports, only
  * the per-plane formats do.
  */
+/* The RGB copy the conversion reads. STORAGE because a compute shader loads
+ * from it, TRANSFER_DST because the caller's picture is copied into it. */
+static bool create_rgb(struct avk_encoder *enc) {
+	struct avk_device *dev = enc->dev;
+	VkImageCreateInfo info = {
+		.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+		.imageType = VK_IMAGE_TYPE_2D,
+		.format = VK_FORMAT_A2R10G10B10_UNORM_PACK32,
+		.extent = {enc->coded_width, enc->coded_height, 1},
+		.mipLevels = 1,
+		.arrayLayers = 1,
+		.samples = VK_SAMPLE_COUNT_1_BIT,
+		.tiling = VK_IMAGE_TILING_OPTIMAL,
+		.usage = VK_IMAGE_USAGE_STORAGE_BIT
+			| VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+		.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+		.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+	};
+	if (vkCreateImage(dev->dev, &info, NULL, &enc->rgb_image) != VK_SUCCESS) {
+		avk_log(AVK_ERROR, "encode: cannot create the RGB staging image");
+		return false;
+	}
+	VkMemoryRequirements req;
+	vkGetImageMemoryRequirements(dev->dev, enc->rgb_image, &req);
+	uint32_t type = 0;
+	if (!find_memory(dev, req.memoryTypeBits,
+			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &type)) {
+		return false;
+	}
+	VkMemoryAllocateInfo alloc = {
+		.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+		.allocationSize = req.size,
+		.memoryTypeIndex = type,
+	};
+	if (vkAllocateMemory(dev->dev, &alloc, NULL, &enc->rgb_memory)
+			!= VK_SUCCESS
+			|| vkBindImageMemory(dev->dev, enc->rgb_image, enc->rgb_memory, 0)
+				!= VK_SUCCESS) {
+		return false;
+	}
+	VkImageViewCreateInfo vinfo = {
+		.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+		.image = enc->rgb_image,
+		.viewType = VK_IMAGE_VIEW_TYPE_2D,
+		.format = VK_FORMAT_A2R10G10B10_UNORM_PACK32,
+		.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+	};
+	return vkCreateImageView(dev->dev, &vinfo, NULL, &enc->rgb_view)
+		== VK_SUCCESS;
+}
+
 static bool create_p010(struct avk_encoder *enc) {
 	struct avk_device *dev = enc->dev;
 	uint32_t families[2] = {dev->caps.graphics_family,
@@ -804,7 +855,9 @@ static bool create_conversion(struct avk_encoder *enc) {
 }
 
 /* Run the conversion on the graphics queue and wait for it. */
-static bool convert_to_p010(struct avk_encoder *enc, VkImageView src_view) {
+static bool convert_to_p010(struct avk_encoder *enc, VkImage src,
+		VkImageLayout src_layout) {
+	VkImageView src_view = enc->rgb_view;
 	struct avk_device *dev = enc->dev;
 	VkDescriptorImageInfo images[3] = {
 		{VK_NULL_HANDLE, src_view, VK_IMAGE_LAYOUT_GENERAL},
@@ -853,6 +906,83 @@ static bool convert_to_p010(struct avk_encoder *enc, VkImageView src_view) {
 		.pImageMemoryBarriers = &to_general,
 	};
 	vkCmdPipelineBarrier2(enc->conv_cmd, &dep);
+
+	/* The caller's picture into ours. Both layouts are restored on the way
+	 * out: the source goes back to what it was, because an image borrowed for
+	 * a screenshot must not come back in a different state, and the staging
+	 * copy goes to GENERAL for the compute read. */
+	VkImageMemoryBarrier2 in[2] = {
+		{
+			.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+			.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+			.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+			.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT,
+			.oldLayout = src_layout,
+			.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+			.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+			.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+			.image = src,
+			.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+		},
+		{
+			.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+			.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+			.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+			.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+			.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+			.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+			.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+			.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+			.image = enc->rgb_image,
+			.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+		},
+	};
+	VkDependencyInfo in_dep = {
+		.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+		.imageMemoryBarrierCount = 2,
+		.pImageMemoryBarriers = in,
+	};
+	vkCmdPipelineBarrier2(enc->conv_cmd, &in_dep);
+	VkImageCopy copy = {
+		.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+		.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+		.extent = {enc->width, enc->height, 1},
+	};
+	vkCmdCopyImage(enc->conv_cmd, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+		enc->rgb_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+	VkImageMemoryBarrier2 out_b[2] = {
+		{
+			.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+			.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+			.srcAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT,
+			.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+			.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+			.newLayout = src_layout,
+			.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+			.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+			.image = src,
+			.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+		},
+		{
+			.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+			.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+			.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+			.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+			.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+			.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+			.newLayout = VK_IMAGE_LAYOUT_GENERAL,
+			.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+			.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+			.image = enc->rgb_image,
+			.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+		},
+	};
+	VkDependencyInfo out_dep = {
+		.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+		.imageMemoryBarrierCount = 2,
+		.pImageMemoryBarriers = out_b,
+	};
+	vkCmdPipelineBarrier2(enc->conv_cmd, &out_dep);
 
 	vkCmdBindPipeline(enc->conv_cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
 		enc->conv_pipeline);
@@ -1085,8 +1215,8 @@ struct avk_encoder *avk_encoder_create(struct avk_device *dev,
 		goto fail;
 	}
 	if (!create_dpb(enc) || !create_bitstream(enc) || !create_feedback(enc)
-			|| !create_commands(enc) || !create_p010(enc)
-			|| !create_conversion(enc)) {
+			|| !create_commands(enc) || !create_rgb(enc)
+			|| !create_p010(enc) || !create_conversion(enc)) {
 		goto fail;
 	}
 
@@ -1177,6 +1307,15 @@ void avk_encoder_destroy(struct avk_encoder *enc) {
 		if (enc->p010_memory != VK_NULL_HANDLE) {
 			vkFreeMemory(dev->dev, enc->p010_memory, NULL);
 		}
+		if (enc->rgb_view != VK_NULL_HANDLE) {
+			vkDestroyImageView(dev->dev, enc->rgb_view, NULL);
+		}
+		if (enc->rgb_image != VK_NULL_HANDLE) {
+			vkDestroyImage(dev->dev, enc->rgb_image, NULL);
+		}
+		if (enc->rgb_memory != VK_NULL_HANDLE) {
+			vkFreeMemory(dev->dev, enc->rgb_memory, NULL);
+		}
 	}
 	free(enc->session_memory);
 	free(enc);
@@ -1253,8 +1392,7 @@ static uint8_t *encoded_parameters(struct avk_encoder *enc,
 }
 
 bool avk_encoder_encode_still(struct avk_encoder *enc, VkImage src,
-		VkImageView src_view, VkImageLayout src_layout,
-		void **out, size_t *out_len) {
+		VkImageLayout src_layout, void **out, size_t *out_len) {
 	if (enc == NULL || out == NULL || out_len == NULL) {
 		return false;
 	}
@@ -1266,14 +1404,12 @@ bool avk_encoder_encode_still(struct avk_encoder *enc, VkImage src,
 		return false;
 	}
 
-	(void)src;
-	(void)src_layout;
 	/* The conversion runs on the graphics queue and is waited for, so the
 	 * encode below sees a finished P010 picture. One submission each rather
 	 * than a semaphore between them: a still is not on a frame budget, and
 	 * two queues chained by a fence is easier to reason about than two
 	 * chained by a timeline nothing else uses. */
-	if (!convert_to_p010(enc, src_view)) {
+	if (!convert_to_p010(enc, src, src_layout)) {
 		avk_log(AVK_ERROR, "encode: the RGB->P010 conversion failed");
 		return false;
 	}
