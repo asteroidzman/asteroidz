@@ -180,7 +180,16 @@ static bool make_source(struct avk_device *dev, struct avk_encoder *enc,
 	};
 	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
 		VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &to_dst);
+	/* Overridable so two runs can differ in exactly one thing. Whether the
+	 * bitstream changes with the input is the difference between "the encoder
+	 * ignores its source" and "the encoder works and the parameter sets are
+	 * wrong", and those have nothing in common. */
 	VkClearColorValue colour = {.float32 = {0.25f, 0.55f, 0.85f, 1.0f}};
+	const char *cs = getenv("AVK_ENCODE_COLOUR");
+	if (cs != NULL) {
+		sscanf(cs, "%f,%f,%f", &colour.float32[0], &colour.float32[1],
+			&colour.float32[2]);
+	}
 	VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
 	vkCmdClearColorImage(cmd, out->image,
 		VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &colour, 1, &range);
@@ -392,6 +401,12 @@ int main(void) {
 		CHECK(enc->coded_width == 3840 && enc->coded_height == 2160,
 			"3840x2160 needs no padding (coded %ux%u)",
 			enc->coded_width, enc->coded_height);
+		/* The level must admit the picture. This driver reports maxLevelIdc
+		 * as 0 -- level 1.0, whose limit is 176x144 -- and writing that into
+		 * the stream is what made a correct picture decode as noise, with
+		 * nothing failing anywhere along the way. */
+		CHECK(enc->level_idc == STD_VIDEO_H265_LEVEL_IDC_5_1,
+			"a 4K picture declares level 5.1 (got %d)", (int)enc->level_idc);
 		/* The whole architectural claim of M14A: the encoder takes the format
 		 * AVK already renders an HDR output in, so the composited image is
 		 * handed over rather than converted. */

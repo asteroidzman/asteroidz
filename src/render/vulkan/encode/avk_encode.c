@@ -101,6 +101,17 @@ static bool query_caps(struct avk_encoder *enc) {
 		.pNext = &enc->encode_caps,
 	};
 	VkResult r = get_caps(dev->phys, &enc->profile, &enc->caps);
+	if (r == VK_SUCCESS) {
+		/* The block sizes the SPS has to agree with. A parameter set that
+		 * describes a geometry the encoder did not use produces a valid
+		 * bitstream that decodes to garbage, with nothing failing anywhere. */
+		avk_log(AVK_INFO, "encode: ctbSizes 0x%x transformBlockSizes 0x%x "
+			"maxLevelIdc %d qp %d..%d",
+			(unsigned)enc->h265_caps.ctbSizes,
+			(unsigned)enc->h265_caps.transformBlockSizes,
+			(int)enc->h265_caps.maxLevelIdc,
+			enc->h265_caps.minQp, enc->h265_caps.maxQp);
+	}
 	if (r != VK_SUCCESS) {
 		avk_log(AVK_ERROR, "encode: the driver rejects H.265 Main 10 with RGB "
 			"conversion (VkResult %d)", (int)r);
@@ -271,7 +282,13 @@ static bool create_parameters(struct avk_encoder *enc,
 			.general_frame_only_constraint_flag = 1,
 		},
 		.general_profile_idc = STD_VIDEO_H265_PROFILE_IDC_MAIN_10,
-		.general_level_idc = enc->h265_caps.maxLevelIdc,
+		/* NOT h265_caps.maxLevelIdc, which this driver reports as 0 --
+		 * LEVEL_IDC_1_0, whose limit is 176x144. Writing that into a stream
+		 * carrying 3840x2160 declares a picture the level forbids, and
+		 * nothing rejects it: the encoder encodes, the headers are written,
+		 * and the decoder is left to reconcile two things that cannot both be
+		 * true. The level is derived from the picture instead. */
+		.general_level_idc = enc->level_idc,
 	};
 	StdVideoH265DecPicBufMgr dpb_mgr = {
 		.max_latency_increase_plus1 = {1},
@@ -312,8 +329,11 @@ static bool create_parameters(struct avk_encoder *enc,
 		.log2_diff_max_min_luma_coding_block_size = 3,
 		.log2_min_luma_transform_block_size_minus2 = 0,
 		.log2_diff_max_min_luma_transform_block_size = 3,
-		.max_transform_hierarchy_depth_inter = 0,
-		.max_transform_hierarchy_depth_intra = 0,
+		/* A 64x64 CTB cannot hold a single 32x32 transform, so a depth of 0
+		 * asks for a TU tree that cannot describe the CTB the encoder is
+		 * using. One split is the minimum that is consistent. */
+		.max_transform_hierarchy_depth_inter = 1,
+		.max_transform_hierarchy_depth_intra = 1,
 		.pProfileTierLevel = &ptl,
 		.pDecPicBufMgr = &dpb_mgr,
 	};
@@ -867,6 +887,14 @@ struct avk_encoder *avk_encoder_create(struct avk_device *dev,
 	enc->coded_width = align_up(width, enc->caps.pictureAccessGranularity.width);
 	enc->coded_height =
 		align_up(height, enc->caps.pictureAccessGranularity.height);
+	/* H.265 levels, by luma sample count. 5.1 is the first that admits
+	 * 3840x2160; below that the picture is larger than the level allows. */
+	uint32_t samples = enc->coded_width * enc->coded_height;
+	enc->level_idc = samples <= 552960 ? STD_VIDEO_H265_LEVEL_IDC_3_1
+		: samples <= 2228224 ? STD_VIDEO_H265_LEVEL_IDC_4_1
+		: samples <= 8912896 ? STD_VIDEO_H265_LEVEL_IDC_5_1
+		: STD_VIDEO_H265_LEVEL_IDC_6_1;
+
 	if (enc->coded_width > enc->caps.maxCodedExtent.width
 			|| enc->coded_height > enc->caps.maxCodedExtent.height) {
 		avk_log(AVK_ERROR, "encode: %ux%u (coded %ux%u) exceeds the codec's "

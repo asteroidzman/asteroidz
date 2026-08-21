@@ -71,6 +71,7 @@ struct avk_encoder {
 
 	VkFormat dpb_format;
 	VkFormat src_format;
+	StdVideoH265LevelIdc level_idc;
 
 	/* The reconstructed picture. The encoder writes it whether or not
 	 * anything will reference it, so a still needs one even though it has no

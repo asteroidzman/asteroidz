@@ -133,43 +133,43 @@ RADV if the codec-specific capabilities struct is missing from the `pNext`
 chain. Not an error return -- a crash, one line after the encode queue is
 reported.
 
-## OPEN — M14A: the encoder ignores its source picture
+## FIXED — M14A: a correct picture that decoded as noise
 
-Narrowed 2026-08-20. `tests/test-avk-encode.c` gets 15/15 with zero validation
-errors, and the bitstream is still a valid picture of the wrong thing.
+Resolved 2026-08-21. The encoder was always reading its source and always
+encoding it correctly; the parameter sets described a stream that could not
+exist, and the decoder was left to reconcile them.
 
-**What is proven correct.** The conversion. A source cleared to RGB
-(0.25, 0.55, 0.85) converts to P010 and reads back as **Y=500 Cb=708 Cr=346**,
-which is exactly BT.2020 non-constant luminance at full range, to the code
-value. The test reads the converted image back and asserts this, so the
-conversion is no longer a suspect and no longer needs re-deriving.
+**The cause.** `VkVideoEncodeH265CapabilitiesKHR.maxLevelIdc` is **0** on this
+driver -- `STD_VIDEO_H265_LEVEL_IDC_1_0`, whose limit is 176x144 -- and it was
+copied straight into `general_level_idc`. Every 3840x2160 stream therefore
+declared level 1.0. Nothing rejects that: the encoder encodes, the headers are
+written, `ffprobe` reports `hevc / Main 10 / 3840x2160 / yuv420p10le`, and only
+the decoded samples are wrong. The level is derived from the luma sample count
+now. A second inconsistency went with it: `max_transform_hierarchy_depth` of 0
+asks for a TU tree that cannot describe the 64x64 CTB the encoder uses.
 
-**What is wrong.** The encoded picture does not depend on the input. Decoded,
-its luma has mean 69 and std 158 across the full 0..1023 range where a flat 500
-is expected, and both chroma planes sit near 1023. Byte-for-byte the same 2737
-bytes, and the same decoded statistics, as the earlier attempt that fed the
-encoder an entirely different image in an entirely different format. An output
-that is identical across two unrelated inputs is not a conversion error; the
-encoder is not reading the picture it is given.
+**Verified end to end.** A source cleared to RGB (0.25, 0.55, 0.85), encoded and
+decoded, comes back as Y 500 (std 0.62), Cb 706, Cr 346 against the 500/708/346
+that BT.2020 non-constant luminance at full range predicts -- exact to the
+quantiser at QP 26.
 
-**Validation is clean on the encode path.** Three VUIDs found on the way were
-all in the test's own readback and a diagnostic query, and are fixed. Earlier
-ones that were real -- a setup reference slot missing
-`VkVideoEncodeH265DpbSlotInfoKHR`, and a feedback query pool handed a profile
-chain it does not admit -- are fixed too, and neither moved the content.
+```sh
+AVK_ENCODE_OUT=/tmp/s.h265 ./build/test-avk-encode
+ffmpeg -i /tmp/s.h265 -frames:v 1 -pix_fmt yuv420p10le -f rawvideo /tmp/s.yuv
+```
 
-**The RGB input path is no longer the question.** `A2R10G10B10` reports
-`VIDEO_ENCODE_INPUT` absent while `P010` reports it present, so P010 is the
-right input regardless; `VK_VALVE_video_encode_rgb_conversion` would only have
-saved the conversion pass, and that pass now provably works. The encoder is
-built on P010 and the RGB path is not worth revisiting until this is resolved.
+**Two wrong turns worth keeping, because both were reasoning errors rather than
+coding ones.** The first: "the output is identical across two unrelated inputs,
+so the encoder ignores its source." Both runs cleared the source to the *same
+colour* -- identical output was exactly what a working encoder should produce.
+The bisect that settled it was one run with a different colour, and it took
+seconds. The second: the same class of mistake earlier, blaming the RGB input
+path on a stale test binary, because `test-avk-encode` is
+`build_by_default : false` and a plain `ninja -C build` never rebuilt it.
 
-**Where to look next, in order.** The DPB slot handshake is the least-verified
-part: `vkCmdBeginVideoCodingKHR` lists the slot with `slotIndex = -1` and the
-encode names it as the setup slot with `slotIndex = 0`, and nothing has
-confirmed that is how this driver expects a first IDR to activate a slot. After
-that, the quality level (`VkVideoEncodeQualityLevelInfoKHR` is never set) and
-the rate-control reset ordering. Mesa 26.2.0-arch3.1, RADV, Navi 31.
+The remaining gap for HDR10 is metadata, not pixels: the stream carries no VUI,
+so `color_primaries`, `color_transfer` and `color_space` all read `unknown` and
+a player has to guess BT.2020/PQ rather than be told.
 
 ## OPEN — teardown frees a VkDeviceMemory twice after overview/jump
 
