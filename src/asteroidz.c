@@ -12217,6 +12217,13 @@ void handlecursoractivity(void) {
 }
 
 int32_t hidecursor(void *data) {
+	/* Never while the screenshot overlay is up. cursor_hide_on_keypress fires
+	 * on the very keybind that opens it, so the pointer would go out at the
+	 * moment it becomes the only way to aim -- and every subsequent keystroke
+	 * (Escape, a mode switch) would put it out again. */
+	if (shotui.active) {
+		return 1;
+	}
 	az_cursor_hide();
 	cursor_hidden = true;
 	return 1;

@@ -2830,7 +2830,20 @@ static void screenshot_ui_layout_dim_and_border(void) {
 
 	const int32_t bw =
 		config.theme.border_width > 0 ? config.theme.border_width : 2;
-	bool have_sel = sw > 0 && sh > 0;
+	/*
+	 * The box is drawn for ANY selection, including a degenerate one.
+	 *
+	 * It used to be hidden unless both dimensions were positive, which is
+	 * every moment before the drag has moved and every click that does not
+	 * become a drag -- so the one indicator of where the corner has been
+	 * placed vanished precisely while it was being placed. A zero-size
+	 * selection still has a position, and showing it is what makes the
+	 * crosshair's anchor visible.
+	 */
+	if (sw < bw)
+		sw = bw;
+	if (sh < bw)
+		sh = bw;
 
 	wlr_scene_node_set_position(&shotui.border[0]->node, sx, sy);
 	wlr_scene_rect_set_size(shotui.border[0], sw, bw);
@@ -2845,7 +2858,7 @@ static void screenshot_ui_layout_dim_and_border(void) {
 	wlr_scene_rect_set_size(shotui.border[3], bw, sh);
 
 	for (int32_t i = 0; i < 4; i++)
-		wlr_scene_node_set_enabled(&shotui.border[i]->node, have_sel);
+		wlr_scene_node_set_enabled(&shotui.border[i]->node, true);
 }
 
 static void screenshot_ui_update_label(void) {
@@ -2862,10 +2875,33 @@ static void screenshot_ui_update_label(void) {
 	int32_t ly = shotui.sel.y - m->m.y - shotui.label->logical_height - 8;
 	if (ly < 0)
 		ly = shotui.sel.y - m->m.y + shotui.sel.height + 8;
+
+	/*
+	 * CLAMPED TO THE OUTPUT, both axes.
+	 *
+	 * The overlay's tree sits in a layer that spans the whole LAYOUT, so a
+	 * node positioned past this monitor's width does not clip -- it draws on
+	 * the monitor next door, over a live desktop that is not part of this
+	 * shot. Selecting near the right or bottom edge did exactly that: the
+	 * dimensions tooltip appeared on the other screen.
+	 */
+	const int32_t lw = shotui.label->logical_width;
+	const int32_t lh = shotui.label->logical_height;
+	if (lx + lw > m->m.width)
+		lx = m->m.width - lw;
+	if (lx < 0)
+		lx = 0;
+	if (ly + lh > m->m.height)
+		ly = m->m.height - lh;
+	if (ly < 0)
+		ly = 0;
 	wlr_scene_node_set_position(&shotui.label->scene_buffer->node, lx, ly);
 
-	bool have_sel = shotui.sel.width > 0 && shotui.sel.height > 0;
-	wlr_scene_node_set_enabled(&shotui.label->scene_buffer->node, have_sel);
+	/* Shown whenever the overlay is, not only once the selection has area.
+	 * A region drag starts at 0x0, and hiding the readout exactly while the
+	 * first corner is being placed removes it at the one moment it is being
+	 * looked for. */
+	wlr_scene_node_set_enabled(&shotui.label->scene_buffer->node, true);
 }
 
 static void screenshot_ui_update_selection(double cx, double cy) {
@@ -3427,13 +3463,26 @@ static void screenshot_ui_on_captured(Monitor *m, ScreenshotMode mode,
 	shotui.frame_node = wlr_scene_buffer_create(shotui.tree, frame);
 	wlr_scene_buffer_set_dest_size(shotui.frame_node, m->m.width, m->m.height);
 
-	/* border and label both pull from config.theme so the overlay matches
+	/* border, label and dim all pull from config.theme so the overlay matches
 	 * the native UI theme. The selection border uses the FOCUS accent
 	 * (focus_bg_color = the matugen primary, same accent as focused window
 	 * borders): theme.border_color is a legacy default the generated
 	 * colors.kdl never sets (theme border-width is 0), so it doesn't follow
-	 * the colour style. */
-	static const float dim_color[4] = {0.0f, 0.0f, 0.0f, 0.55f};
+	 * the colour style.
+	 *
+	 * The dim was flat black, which is not a theme -- on a light colour scheme
+	 * it reads as a different application's overlay dropped on top of the
+	 * desktop. Taking the theme's own background and darkening it keeps the
+	 * overlay recognisably part of this compositor: darkened rather than used
+	 * as-is, because the mask has to READ as unselected, and a light theme's
+	 * background at 55% would brighten the region it is meant to subdue. */
+	const float dim_mix = 0.35f;
+	const float dim_color[4] = {
+		config.theme.bg_color[0] * dim_mix,
+		config.theme.bg_color[1] * dim_mix,
+		config.theme.bg_color[2] * dim_mix,
+		0.55f,
+	};
 	for (int32_t i = 0; i < 4; i++) {
 		shotui.dim[i] = wlr_scene_rect_create(shotui.tree, 0, 0, dim_color);
 		shotui.border[i] = wlr_scene_rect_create(shotui.tree, 0, 0,
@@ -3462,6 +3511,15 @@ static void screenshot_ui_on_captured(Monitor *m, ScreenshotMode mode,
 	else
 		screenshot_ui_update_selection(cursor->x, cursor->y);
 
+	/* The keybind that opened this overlay was a keypress, so with
+	 * cursor_hide_on_keypress the pointer is already gone by the time we get
+	 * here -- and selecting a region with an invisible pointer is selecting
+	 * blind. Bring it back first, then give it the crosshair; the ordering
+	 * matters, because showing it afterwards would show the previous shape.
+	 * The overview does the same thing for the same reason. */
+	if (cursor_hidden) {
+		handlecursoractivity();
+	}
 	az_cursor_set_xcursor("crosshair");
 }
 
