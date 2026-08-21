@@ -8,11 +8,18 @@
  * work -- see docs/known-issues.md -- so the conversion is ours, which means
  * the colour matrix is ours to get right rather than the driver's.
  *
- * BT.2020 NON-CONSTANT LUMINANCE, which is what HDR10 specifies. The matrix is
- * applied to the ENCODED (PQ) signal, not to linear light: that is what
+ * NON-CONSTANT LUMINANCE, which is what both HDR10 and BT.709 specify. The
+ * matrix is applied to the ENCODED signal, not to linear light: that is what
  * "non-constant luminance" means, and it is why this shader does no transfer
- * function of its own. AVK's HDR scanout image is already PQ-encoded, so the
- * values arriving here are exactly the ones the matrix is defined over.
+ * function of its own. AVK's scanout image is already encoded -- PQ on an HDR
+ * output, sRGB on an SDR one -- so the values arriving here are exactly the
+ * ones the matrix is defined over.
+ *
+ * The coefficients arrive as push constants rather than being written in, so
+ * that this shader and the colour description in the stream's SPS cannot
+ * disagree. A picture converted with the BT.2020 matrix and labelled BT.709 is
+ * not obviously broken; it is slightly wrong in the greens, which is the kind
+ * of error that survives review.
  *
  * FULL RANGE. AVK's composited image is full-range RGB and the encoder is told
  * the same, so 0 maps to 0 and 1 maps to 1023 rather than to 64..940. Narrowing
@@ -35,7 +42,9 @@ layout(set = 0, binding = 1, r16)      uniform writeonly image2D plane_y;
 layout(set = 0, binding = 2, rg16)     uniform writeonly image2D plane_uv;
 
 layout(push_constant) uniform Push {
-	ivec2 size;   /* luma extent */
+	ivec2 size;        /* luma extent */
+	vec4 luma;         /* kr, kg, kb, unused */
+	vec2 cbcr_scale;   /* the Cb and Cr divisors for this matrix */
 } push;
 
 /* 10 bits, in the top of a 16-bit UNORM word. 1023 << 6 == 65472. */
@@ -44,7 +53,7 @@ float pack10(float v) {
 }
 
 float luma(vec3 c) {
-	return dot(c, vec3(0.2627, 0.6780, 0.0593));
+	return dot(c, push.luma.rgb);
 }
 
 void main() {
@@ -84,9 +93,9 @@ void main() {
 	 * rather than four. */
 	vec3 avg = sum / float(taken);
 	float y = luma(avg);
-	/* BT.2020 NCL: Cb and Cr are the blue and red differences, scaled so that
-	 * they span [-0.5, 0.5], then offset to unsigned. */
-	float cb = (avg.b - y) / 1.8814 + 0.5;
-	float cr = (avg.r - y) / 1.4746 + 0.5;
+	/* Cb and Cr are the blue and red differences, scaled so that they span
+	 * [-0.5, 0.5], then offset to unsigned. */
+	float cb = (avg.b - y) / push.cbcr_scale.x + 0.5;
+	float cr = (avg.r - y) / push.cbcr_scale.y + 0.5;
 	imageStore(plane_uv, uv_pos, vec4(pack10(cb), pack10(cr), 0.0, 0.0));
 }

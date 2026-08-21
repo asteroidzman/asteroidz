@@ -41,6 +41,17 @@
 
 struct avk_device;
 
+/*
+ * What the picture's colour actually is, which decides two things that must
+ * agree: the matrix the conversion applies, and the colour description written
+ * into the stream. A player reading the second while the first was different
+ * shows a picture that is wrong in a way nobody reports as a bug.
+ */
+enum avk_encode_colour {
+	AVK_ENCODE_COLOUR_SDR,     /* BT.709 primaries, sRGB transfer, BT.709 matrix */
+	AVK_ENCODE_COLOUR_HDR10,   /* BT.2020 primaries, PQ transfer, BT.2020 NCL */
+};
+
 struct avk_encoder {
 	struct avk_device *dev;   /* borrowed */
 
@@ -72,6 +83,7 @@ struct avk_encoder {
 	VkFormat dpb_format;
 	VkFormat src_format;
 	StdVideoH265LevelIdc level_idc;
+	enum avk_encode_colour colour;
 
 	/* The reconstructed picture. The encoder writes it whether or not
 	 * anything will reference it, so a still needs one even though it has no
@@ -134,7 +146,7 @@ bool avk_encoder_encode_still(struct avk_encoder *enc, VkImage src,
  * outside what the codec allows.
  */
 struct avk_encoder *avk_encoder_create(struct avk_device *dev,
-	uint32_t width, uint32_t height);
+	uint32_t width, uint32_t height, enum avk_encode_colour colour);
 
 void avk_encoder_destroy(struct avk_encoder *enc);
 

@@ -392,7 +392,7 @@ int main(void) {
 	/* The real display's size, because the alignment question only has a
 	 * right answer relative to a real one: 3840x2160 lands exactly on this
 	 * encoder's 64x16 granularity and 1366x768 does not. */
-	struct avk_encoder *enc = avk_encoder_create(dev, 3840, 2160);
+	struct avk_encoder *enc = avk_encoder_create(dev, 3840, 2160, AVK_ENCODE_COLOUR_HDR10);
 	CHECK(enc != NULL, "a 3840x2160 H.265 Main 10 session is created");
 	if (enc != NULL) {
 		CHECK(enc->session != VK_NULL_HANDLE, "the session handle is real");
@@ -492,7 +492,7 @@ int main(void) {
 	/* A size that does NOT land on the granularity has to be rounded up
 	 * rather than silently encoded at the wrong extent. 1366 is the width
 	 * that made this worth asserting: 1366/64 is not an integer. */
-	struct avk_encoder *odd = avk_encoder_create(dev, 1366, 768);
+	struct avk_encoder *odd = avk_encoder_create(dev, 1366, 768, AVK_ENCODE_COLOUR_HDR10);
 	CHECK(odd != NULL, "an unaligned 1366x768 session is created too");
 	if (odd != NULL) {
 		CHECK(odd->coded_width == 1408,

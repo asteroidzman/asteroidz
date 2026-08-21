@@ -305,8 +305,31 @@ static bool create_parameters(struct avk_encoder *enc,
 		.pDecPicBufMgr = &dpb_mgr,
 		.pProfileTierLevel = &ptl,
 	};
+	/*
+	 * The colour description. Without it every player has to guess, and the
+	 * guess is BT.709 SDR -- so an HDR10 picture is shown as though its PQ
+	 * signal were sRGB, which is not subtly wrong, it is unwatchable.
+	 *
+	 * The three numbers are the H.273 code points: 9 is BT.2020 primaries,
+	 * 16 is SMPTE ST 2084 (PQ), 9 again is BT.2020 non-constant luminance as
+	 * a matrix. video_full_range_flag says the samples span 0..1023 rather
+	 * than 64..940, which is what the conversion produces.
+	 */
+	StdVideoH265SequenceParameterSetVui vui = {
+		.flags = {
+			.video_signal_type_present_flag = 1,
+			.video_full_range_flag = 1,
+			.colour_description_present_flag = 1,
+		},
+		.video_format = 5,   /* unspecified */
+		.colour_primaries = enc->colour == AVK_ENCODE_COLOUR_HDR10 ? 9 : 1,
+		.transfer_characteristics =
+			enc->colour == AVK_ENCODE_COLOUR_HDR10 ? 16 : 13,
+		.matrix_coeffs = enc->colour == AVK_ENCODE_COLOUR_HDR10 ? 9 : 1,
+	};
 	StdVideoH265SequenceParameterSet sps = {
 		.flags = {
+			.vui_parameters_present_flag = 1,
 			.sps_temporal_id_nesting_flag = 1,
 			.sps_sub_layer_ordering_info_present_flag = 1,
 			.amp_enabled_flag = 1,
@@ -336,6 +359,7 @@ static bool create_parameters(struct avk_encoder *enc,
 		.max_transform_hierarchy_depth_intra = 1,
 		.pProfileTierLevel = &ptl,
 		.pDecPicBufMgr = &dpb_mgr,
+		.pSequenceParameterSetVui = &vui,
 	};
 	StdVideoH265PictureParameterSet pps = {
 		.flags = {
@@ -663,8 +687,14 @@ static bool create_p010(struct avk_encoder *enc) {
 	return true;
 }
 
+/* Must match the block in rgb_to_p010.comp. The padding is not decoration:
+ * a vec4 is 16-byte aligned in a push-constant block, so the two ints cannot
+ * simply be followed by floats. */
 struct conv_push {
 	int32_t width, height;
+	int32_t pad0, pad1;
+	float kr, kg, kb, pad2;
+	float cb_div, cr_div;
 };
 
 static bool create_conversion(struct avk_encoder *enc) {
@@ -828,8 +858,20 @@ static bool convert_to_p010(struct avk_encoder *enc, VkImageView src_view) {
 		enc->conv_pipeline);
 	vkCmdBindDescriptorSets(enc->conv_cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
 		enc->conv_pipeline_layout, 0, 1, &enc->conv_set, 0, NULL);
-	struct conv_push push = {(int32_t)enc->coded_width,
-		(int32_t)enc->coded_height};
+	/* The luma coefficients and the difference scalings that go with them.
+	 * BT.2020 and BT.709 differ in both, and the pair used here is the pair
+	 * named in the SPS -- see create_parameters. */
+	struct conv_push push = {
+		.width = (int32_t)enc->coded_width,
+		.height = (int32_t)enc->coded_height,
+	};
+	if (enc->colour == AVK_ENCODE_COLOUR_HDR10) {
+		push.kr = 0.2627f; push.kg = 0.6780f; push.kb = 0.0593f;
+		push.cb_div = 1.8814f; push.cr_div = 1.4746f;
+	} else {
+		push.kr = 0.2126f; push.kg = 0.7152f; push.kb = 0.0722f;
+		push.cb_div = 1.8556f; push.cr_div = 1.5748f;
+	}
 	vkCmdPushConstants(enc->conv_cmd, enc->conv_pipeline_layout,
 		VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
 	/* One invocation per chroma sample: half the luma extent in each axis,
@@ -856,7 +898,7 @@ static bool convert_to_p010(struct avk_encoder *enc, VkImageView src_view) {
 }
 
 struct avk_encoder *avk_encoder_create(struct avk_device *dev,
-		uint32_t width, uint32_t height) {
+		uint32_t width, uint32_t height, enum avk_encode_colour colour) {
 	if (dev == NULL || !dev->has_encode_queue) {
 		avk_log(AVK_ERROR, "encode: this device has no video encode queue");
 		return NULL;
@@ -875,6 +917,7 @@ struct avk_encoder *avk_encoder_create(struct avk_device *dev,
 	enc->dev = dev;
 	enc->width = width;
 	enc->height = height;
+	enc->colour = colour;
 
 	build_profile(enc);
 	if (!query_caps(enc)) {

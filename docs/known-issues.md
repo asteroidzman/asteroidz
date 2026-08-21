@@ -167,9 +167,27 @@ seconds. The second: the same class of mistake earlier, blaming the RGB input
 path on a stale test binary, because `test-avk-encode` is
 `build_by_default : false` and a plain `ninja -C build` never rebuilt it.
 
-The remaining gap for HDR10 is metadata, not pixels: the stream carries no VUI,
-so `color_primaries`, `color_transfer` and `color_space` all read `unknown` and
-a player has to guess BT.2020/PQ rather than be told.
+**The metadata followed.** The SPS now carries a VUI, so the stream says what it
+is instead of leaving a player to guess:
+
+```
+codec_name=hevc      profile=Main 10      level=153
+width=3840           height=2160          pix_fmt=yuv420p10le
+color_range=pc       color_space=bt2020nc
+color_transfer=smpte2084                  color_primaries=bt2020
+```
+
+Round trip: RGB (0.25, 0.55, 0.85) in, (0.2483, 0.5487, 0.8437) out -- within
+0.006, which is 10-bit quantisation plus 4:2:0 chroma at QP 26. That is only
+exact because the decoder inverted the BT.2020 matrix the shader applied, which
+is why the matrix coefficients are push constants derived from the same
+`enum avk_encode_colour` that writes the colour description. A picture converted
+with one matrix and labelled with another is not obviously broken -- it is
+slightly wrong in the greens, and that survives review.
+
+Still outstanding for a *screenshot*: a container (the bitstream is raw Annex B),
+the mastering-display and content-light-level SEI that HDR10 tone mapping wants,
+and wiring the source to a real AVK frame rather than a cleared test image.
 
 ## OPEN — teardown frees a VkDeviceMemory twice after overview/jump
 
