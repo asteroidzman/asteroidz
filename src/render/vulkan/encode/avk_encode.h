@@ -72,6 +72,10 @@ enum avk_encode_colour {
 	AVK_ENCODE_COLOUR_HDR10,   /* BT.2020 primaries, PQ transfer, BT.2020 NCL */
 };
 
+/* Two: one being written, one being referenced. A longer GOP would want more,
+ * but nothing here predicts from further back than the previous picture. */
+#define AVK_ENCODE_DPB_SLOTS 2
+
 struct avk_encoder {
 	struct avk_device *dev;   /* borrowed */
 
@@ -112,9 +116,33 @@ struct avk_encoder {
 	/* The reconstructed picture. The encoder writes it whether or not
 	 * anything will reference it, so a still needs one even though it has no
 	 * second frame to predict from. */
+	/*
+	 * The DPB, as ONE image with two array layers rather than two images.
+	 *
+	 * A still needs a single reconstructed picture; a sequence needs the
+	 * previous one kept while the next is written, so the two alternate. One
+	 * allocation with baseArrayLayer selecting between them is how the video
+	 * extensions expect a DPB to be laid out, and it means the slot index and
+	 * the layer index are the same number -- which removes the mapping most
+	 * likely to be got wrong.
+	 */
 	VkImage dpb_image;
 	VkDeviceMemory dpb_memory;
-	VkImageView dpb_view;
+	VkImageView dpb_view[AVK_ENCODE_DPB_SLOTS];
+
+	/*
+	 * Where in the sequence we are. A still resets these and never looks at
+	 * them again; a recording is entirely made of them.
+	 *
+	 * `frame_index` counts pictures, `poc` is the H.265 picture order count
+	 * the decoder reconstructs display order from, and `dpb_slot` is the
+	 * layer the NEXT picture will be reconstructed into -- so the one before
+	 * it, which the next P picture references, is the other one.
+	 */
+	uint64_t frame_index;
+	int32_t poc;
+	uint32_t dpb_slot;
+	bool session_reset;   /* the RESET control is a once-per-session thing */
 
 	/* Where the bitstream lands, and how the driver reports how much of it it
 	 * used. The buffer size is a guess by nature -- an encoder is not obliged
@@ -179,6 +207,24 @@ struct avk_encoder {
 bool avk_encoder_encode_still(struct avk_encoder *enc, VkImage src,
 	VkImageLayout src_layout, int32_t src_x, int32_t src_y,
 	void **out, size_t *out_len);
+
+/*
+ * One picture of a SEQUENCE.
+ *
+ * The first is an IDR and carries the parameter sets; the rest are P pictures
+ * predicting from the one before, and carry only themselves. So the caller
+ * must keep every packet in order -- unlike a still, a later frame is not a
+ * file on its own and cannot be decoded without the ones before it.
+ *
+ * `force_key` starts a new IDR mid-sequence, which is what makes a recording
+ * seekable and what a dropped frame recovers through.
+ */
+bool avk_encoder_encode_frame(struct avk_encoder *enc, VkImage src,
+	VkImageLayout src_layout, int32_t src_x, int32_t src_y, bool force_key,
+	void **out, size_t *out_len);
+
+/* Forget the sequence: the next picture is an IDR again. */
+void avk_encoder_reset_sequence(struct avk_encoder *enc);
 
 /*
  * Create an encoder for one output size. Returns NULL and logs the reason if

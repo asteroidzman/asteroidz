@@ -204,6 +204,36 @@ cleared test image and a headless run that correctly declines. Whether a real
 composited HDR desktop encodes to a picture that looks right needs the live
 display.
 
+## M14B — a sequence, and the test that could not see it was broken
+
+Added 2026-08-21. The encoder does video now: an IDR followed by P pictures
+predicting from the one before, with a two-layer DPB whose slot index and array
+layer are deliberately the same number. `I P P P P P P P P P`, 6226 bytes for
+ten 1080p frames against ~2700 for a single still, decoded luma ramping
+429 -> 594 in exactly the order encoded.
+
+**The bug worth keeping.** The first working version scored **24/24** on
+`tests/test-avk-encode.c` and decoded to **one frame**. `RefPicList0[0]` was set
+to the DPB slot index, which tells the ENCODER what to predict from and says
+nothing to a decoder -- the bitstream needs a short-term reference picture set
+in the slice header, and `pShortTermRefPicSet` was NULL. ffmpeg: *"zero refs for
+a frame with P or B slices"*, nine pictures dropped.
+
+Every property the C test could reach was correct. The NAL units were correctly
+typed, correctly ordered, one IDR and nine P frames, parameter sets on the first
+and not repeated after. The stream was undecodable.
+
+So `contrib/avk-encode-test.sh` exists beside it and its oracle is a decoder,
+not the bitstream's shape. It asserts what comes OUT: the still decodes to the
+colour that went in and is flat, the sequence decodes to ten pictures, and their
+luma ramps in the order encoded. Falsified against the build with
+`pShortTermRefPicSet` removed -- the unit test still says 24/24, the fixture
+reports three failures.
+
+**Still to build for a recording:** a container that takes more than one sample
+(HEIF is a still), rate control other than fixed QP, a capture loop driving
+frames at the output's rate, and start/stop dispatches.
+
 ## OPEN — teardown frees a VkDeviceMemory twice after overview/jump
 
 Found 2026-08-20 by `contrib/render-matrix-test.sh`, which had never been run:

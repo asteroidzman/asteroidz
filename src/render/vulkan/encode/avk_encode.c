@@ -439,7 +439,7 @@ static bool create_dpb(struct avk_encoder *enc) {
 		.format = enc->dpb_format,
 		.extent = {enc->coded_width, enc->coded_height, 1},
 		.mipLevels = 1,
-		.arrayLayers = 1,
+		.arrayLayers = AVK_ENCODE_DPB_SLOTS,
 		.samples = VK_SAMPLE_COUNT_1_BIT,
 		.tiling = VK_IMAGE_TILING_OPTIMAL,
 		.usage = VK_IMAGE_USAGE_VIDEO_ENCODE_DPB_BIT_KHR,
@@ -470,19 +470,27 @@ static bool create_dpb(struct avk_encoder *enc) {
 			!= VK_SUCCESS) {
 		return false;
 	}
-	VkImageViewCreateInfo view = {
-		.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-		.image = enc->dpb_image,
-		.viewType = VK_IMAGE_VIEW_TYPE_2D,
-		.format = enc->dpb_format,
-		.subresourceRange = {
-			.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-			.levelCount = 1,
-			.layerCount = 1,
-		},
-	};
-	return vkCreateImageView(dev->dev, &view, NULL, &enc->dpb_view)
-		== VK_SUCCESS;
+	/* One view per layer: a picture resource names a view and a layer, and
+	 * giving each slot its own view keeps the two from disagreeing. */
+	for (uint32_t i = 0; i < AVK_ENCODE_DPB_SLOTS; i++) {
+		VkImageViewCreateInfo view = {
+			.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+			.image = enc->dpb_image,
+			.viewType = VK_IMAGE_VIEW_TYPE_2D,
+			.format = enc->dpb_format,
+			.subresourceRange = {
+				.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+				.levelCount = 1,
+				.baseArrayLayer = i,
+				.layerCount = 1,
+			},
+		};
+		if (vkCreateImageView(dev->dev, &view, NULL, &enc->dpb_view[i])
+				!= VK_SUCCESS) {
+			return false;
+		}
+	}
+	return true;
 }
 
 static bool create_bitstream(struct avk_encoder *enc) {
@@ -1196,9 +1204,10 @@ struct avk_encoder *avk_encoder_create(struct avk_device *dev,
 		.pictureFormat = enc->src_format,
 		.maxCodedExtent = (VkExtent2D){enc->coded_width, enc->coded_height},
 		.referencePictureFormat = enc->dpb_format,
-		/* One slot and one reference: a still needs the reconstructed
-		 * picture the encoder writes and nothing beyond it. */
-		.maxDpbSlots = 1,
+		/* Two slots, one active reference: the picture being reconstructed
+		 * and the one before it that a P picture predicts from. A still uses
+		 * only the first and costs the second nothing but its allocation. */
+		.maxDpbSlots = AVK_ENCODE_DPB_SLOTS,
 		.maxActiveReferencePictures = 1,
 		.pStdHeaderVersion = &enc->caps.stdHeaderVersion,
 	};
@@ -1266,8 +1275,10 @@ void avk_encoder_destroy(struct avk_encoder *enc) {
 		if (enc->bitstream_memory != VK_NULL_HANDLE) {
 			vkFreeMemory(dev->dev, enc->bitstream_memory, NULL);
 		}
-		if (enc->dpb_view != VK_NULL_HANDLE) {
-			vkDestroyImageView(dev->dev, enc->dpb_view, NULL);
+		for (uint32_t i = 0; i < AVK_ENCODE_DPB_SLOTS; i++) {
+			if (enc->dpb_view[i] != VK_NULL_HANDLE) {
+				vkDestroyImageView(dev->dev, enc->dpb_view[i], NULL);
+			}
 		}
 		if (enc->dpb_image != VK_NULL_HANDLE) {
 			vkDestroyImage(dev->dev, enc->dpb_image, NULL);
@@ -1392,8 +1403,8 @@ static uint8_t *encoded_parameters(struct avk_encoder *enc,
 	return buf;
 }
 
-bool avk_encoder_encode_still(struct avk_encoder *enc, VkImage src,
-		VkImageLayout src_layout, int32_t src_x, int32_t src_y,
+static bool encode_picture(struct avk_encoder *enc, VkImage src,
+		VkImageLayout src_layout, int32_t src_x, int32_t src_y, bool key,
 		void **out, size_t *out_len) {
 	if (enc == NULL || out == NULL || out_len == NULL) {
 		return false;
@@ -1447,12 +1458,20 @@ bool avk_encoder_encode_still(struct avk_encoder *enc, VkImage src,
 			.srcAccessMask = 0,
 			.dstStageMask = VK_PIPELINE_STAGE_2_VIDEO_ENCODE_BIT_KHR,
 			.dstAccessMask = VK_ACCESS_2_VIDEO_ENCODE_WRITE_BIT_KHR,
-			.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+			/* UNDEFINED discards the contents, which is right exactly once.
+			 * On every later picture the other layer holds the reference the
+			 * encoder is about to predict from, and discarding it produces a
+			 * P picture predicted from nothing -- which still encodes, still
+			 * decodes, and is visibly wrong. */
+			.oldLayout = enc->session_reset
+				? VK_IMAGE_LAYOUT_VIDEO_ENCODE_DPB_KHR
+				: VK_IMAGE_LAYOUT_UNDEFINED,
 			.newLayout = VK_IMAGE_LAYOUT_VIDEO_ENCODE_DPB_KHR,
 			.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
 			.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
 			.image = enc->dpb_image,
-			.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+			.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0,
+				AVK_ENCODE_DPB_SLOTS},
 		},
 	};
 	VkDependencyInfo dep = {
@@ -1463,26 +1482,58 @@ bool avk_encoder_encode_still(struct avk_encoder *enc, VkImage src,
 	vkCmdPipelineBarrier2(enc->cmd, &dep);
 	vkCmdResetQueryPool(enc->cmd, enc->feedback, 0, 1);
 
+	/* This picture is reconstructed into `slot`; the one before it lives in
+	 * `ref_slot` and is what a P picture predicts from. */
+	const uint32_t slot = enc->dpb_slot;
+	const uint32_t ref_slot = (slot + 1) % AVK_ENCODE_DPB_SLOTS;
+
 	VkVideoPictureResourceInfoKHR dpb_resource = {
 		.sType = VK_STRUCTURE_TYPE_VIDEO_PICTURE_RESOURCE_INFO_KHR,
 		.codedExtent = {enc->coded_width, enc->coded_height},
 		.baseArrayLayer = 0,
-		.imageViewBinding = enc->dpb_view,
+		.imageViewBinding = enc->dpb_view[slot],
 	};
-	/* slotIndex -1 in BeginCoding means "reserve this slot, it is not active
-	 * yet". The same resource comes back with slotIndex 0 as the encode's
-	 * setup slot, which is what activates it. */
-	VkVideoReferenceSlotInfoKHR begin_slot = {
-		.sType = VK_STRUCTURE_TYPE_VIDEO_REFERENCE_SLOT_INFO_KHR,
-		.slotIndex = -1,
-		.pPictureResource = &dpb_resource,
+	VkVideoPictureResourceInfoKHR ref_resource = {
+		.sType = VK_STRUCTURE_TYPE_VIDEO_PICTURE_RESOURCE_INFO_KHR,
+		.codedExtent = {enc->coded_width, enc->coded_height},
+		.baseArrayLayer = 0,
+		.imageViewBinding = enc->dpb_view[ref_slot],
+	};
+	StdVideoEncodeH265ReferenceInfo ref_std = {
+		.pic_type = STD_VIDEO_H265_PICTURE_TYPE_P,
+		.PicOrderCntVal = enc->poc - 1,
+	};
+	VkVideoEncodeH265DpbSlotInfoKHR ref_h265 = {
+		.sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_H265_DPB_SLOT_INFO_KHR,
+		.pStdReferenceInfo = &ref_std,
+	};
+
+	/*
+	 * BeginCoding lists every slot the scope will touch. A slot that is not
+	 * yet active is named with slotIndex -1; the reference of a P picture is
+	 * named with its real index, because it has to be found. Getting this
+	 * backwards does not fail -- the encoder predicts from a slot holding
+	 * nothing and the picture comes out as noise that still decodes.
+	 */
+	VkVideoReferenceSlotInfoKHR begin_slots[2] = {
+		{
+			.sType = VK_STRUCTURE_TYPE_VIDEO_REFERENCE_SLOT_INFO_KHR,
+			.slotIndex = -1,
+			.pPictureResource = &dpb_resource,
+		},
+		{
+			.sType = VK_STRUCTURE_TYPE_VIDEO_REFERENCE_SLOT_INFO_KHR,
+			.pNext = &ref_h265,
+			.slotIndex = (int32_t)ref_slot,
+			.pPictureResource = &ref_resource,
+		},
 	};
 	VkVideoBeginCodingInfoKHR begin_coding = {
 		.sType = VK_STRUCTURE_TYPE_VIDEO_BEGIN_CODING_INFO_KHR,
 		.videoSession = enc->session,
 		.videoSessionParameters = enc->params,
-		.referenceSlotCount = 1,
-		.pReferenceSlots = &begin_slot,
+		.referenceSlotCount = key ? 1u : 2u,
+		.pReferenceSlots = begin_slots,
 	};
 	api.begin(enc->cmd, &begin_coding);
 
@@ -1494,21 +1545,32 @@ bool avk_encoder_encode_still(struct avk_encoder *enc, VkImage src,
 		.sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_RATE_CONTROL_INFO_KHR,
 		.rateControlMode = VK_VIDEO_ENCODE_RATE_CONTROL_MODE_DISABLED_BIT_KHR,
 	};
-	VkVideoCodingControlInfoKHR control = {
-		.sType = VK_STRUCTURE_TYPE_VIDEO_CODING_CONTROL_INFO_KHR,
-		.pNext = &rate,
-		.flags = VK_VIDEO_CODING_CONTROL_RESET_BIT_KHR
-			| VK_VIDEO_CODING_CONTROL_ENCODE_RATE_CONTROL_BIT_KHR,
-	};
-	api.control(enc->cmd, &control);
+	/* RESET is a session-lifetime thing, not a per-picture one: issuing it
+	 * again mid-sequence throws away the DPB the next P picture is about to
+	 * predict from. */
+	if (!enc->session_reset) {
+		VkVideoCodingControlInfoKHR control = {
+			.sType = VK_STRUCTURE_TYPE_VIDEO_CODING_CONTROL_INFO_KHR,
+			.pNext = &rate,
+			.flags = VK_VIDEO_CODING_CONTROL_RESET_BIT_KHR
+				| VK_VIDEO_CODING_CONTROL_ENCODE_RATE_CONTROL_BIT_KHR,
+		};
+		api.control(enc->cmd, &control);
+		enc->session_reset = true;
+	}
 
 	StdVideoEncodeH265SliceSegmentHeader slice_header = {
 		.flags = {
 			.first_slice_segment_in_pic_flag = 1,
 			.slice_sao_luma_flag = 1,
 			.slice_sao_chroma_flag = 1,
+			/* A P slice states its own reference count rather than
+			 * inheriting the PPS default, which is what lets one picture
+			 * reference exactly one. */
+			.num_ref_idx_active_override_flag = key ? 0u : 1u,
 		},
-		.slice_type = STD_VIDEO_H265_SLICE_TYPE_I,
+		.slice_type = key ? STD_VIDEO_H265_SLICE_TYPE_I
+			: STD_VIDEO_H265_SLICE_TYPE_P,
 		.slice_segment_address = 0,
 		.MaxNumMergeCand = 5,
 		.slice_qp_delta = 0,
@@ -1531,19 +1593,46 @@ bool avk_encoder_encode_still(struct avk_encoder *enc, VkImage src,
 		sizeof(ref_lists.RefPicList0));
 	memset(ref_lists.RefPicList1, STD_VIDEO_H265_NO_REFERENCE_PICTURE,
 		sizeof(ref_lists.RefPicList1));
+	if (!key) {
+		/* L0[0] is a DPB SLOT INDEX, not a picture order count. The two are
+		 * both small integers and are not interchangeable. */
+		ref_lists.RefPicList0[0] = (uint8_t)ref_slot;
+	}
+	StdVideoH265ShortTermRefPicSet rps = {
+		.num_negative_pics = 1,
+		.num_positive_pics = 0,
+		.delta_poc_s0_minus1 = {0},      /* delta -1: the previous picture */
+		.used_by_curr_pic_s0_flag = 1,   /* and this picture does use it */
+	};
 	StdVideoEncodeH265PictureInfo std_pic = {
 		.flags = {
-			.IrapPicFlag = 1,
+			.IrapPicFlag = key ? 1u : 0u,
 			.is_reference = 1,
 			.no_output_of_prior_pics_flag = 0,
 		},
-		.pic_type = STD_VIDEO_H265_PICTURE_TYPE_IDR,
+		.pic_type = key ? STD_VIDEO_H265_PICTURE_TYPE_IDR
+			: STD_VIDEO_H265_PICTURE_TYPE_P,
 		.sps_video_parameter_set_id = 0,
 		.pps_seq_parameter_set_id = 0,
 		.pps_pic_parameter_set_id = 0,
-		.PicOrderCntVal = 0,
+		/* An IDR resets the count; everything after it counts from there. */
+		.PicOrderCntVal = key ? 0 : enc->poc,
 		.TemporalId = 0,
 		.pRefLists = &ref_lists,
+		/* THE REFERENCE, AS THE BITSTREAM DECLARES IT.
+		 *
+		 * RefPicList0 above is a DPB slot index and tells the ENCODER what to
+		 * predict from. It says nothing to a decoder, which has no idea what
+		 * the encoder's slots were. The short-term reference picture set is
+		 * what travels in the slice header, and without it a decoder reports
+		 * "zero refs for a frame with P or B slices" and drops every picture
+		 * after the first -- while the NAL unit types still read as a correct
+		 * sequence of one IDR and nine P frames.
+		 *
+		 * One negative reference at delta -1: the picture immediately before
+		 * this one. delta_poc_s0_minus1 is the delta MINUS ONE, so 0 means 1.
+		 */
+		.pShortTermRefPicSet = key ? NULL : &rps,
 	};
 	VkVideoEncodeH265PictureInfoKHR h265_pic = {
 		.sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_H265_PICTURE_INFO_KHR,
@@ -1562,8 +1651,9 @@ bool avk_encoder_encode_still(struct avk_encoder *enc, VkImage src,
 	 * the setup slot the encode command is invalid, and the driver accepts it
 	 * anyway and writes a picture from whatever it made of the slot. */
 	StdVideoEncodeH265ReferenceInfo std_ref = {
-		.pic_type = STD_VIDEO_H265_PICTURE_TYPE_IDR,
-		.PicOrderCntVal = 0,
+		.pic_type = key ? STD_VIDEO_H265_PICTURE_TYPE_IDR
+			: STD_VIDEO_H265_PICTURE_TYPE_P,
+		.PicOrderCntVal = key ? 0 : enc->poc,
 		.TemporalId = 0,
 	};
 	VkVideoEncodeH265DpbSlotInfoKHR h265_slot = {
@@ -1573,7 +1663,7 @@ bool avk_encoder_encode_still(struct avk_encoder *enc, VkImage src,
 	VkVideoReferenceSlotInfoKHR setup_slot = {
 		.sType = VK_STRUCTURE_TYPE_VIDEO_REFERENCE_SLOT_INFO_KHR,
 		.pNext = &h265_slot,
-		.slotIndex = 0,
+		.slotIndex = (int32_t)slot,
 		.pPictureResource = &dpb_resource,
 	};
 	VkVideoEncodeInfoKHR encode_info = {
@@ -1584,6 +1674,8 @@ bool avk_encoder_encode_still(struct avk_encoder *enc, VkImage src,
 		.dstBufferRange = enc->bitstream_size,
 		.srcPictureResource = src_resource,
 		.pSetupReferenceSlot = &setup_slot,
+		.referenceSlotCount = key ? 0u : 1u,
+		.pReferenceSlots = key ? NULL : &begin_slots[1],
 	};
 
 	vkCmdBeginQuery(enc->cmd, enc->feedback, 0, 0);
@@ -1666,5 +1758,52 @@ bool avk_encoder_encode_still(struct avk_encoder *enc, VkImage src,
 		"+ %zu of HDR10 SEI at QP %u", written, hdr_len, sei_len, qp);
 	*out = stream;
 	*out_len = hdr_len + sei_len + written;
+	return true;
+}
+
+
+/* ── the two ways in ───────────────────────────────────────────────────── */
+
+void avk_encoder_reset_sequence(struct avk_encoder *enc) {
+	if (enc == NULL) {
+		return;
+	}
+	enc->frame_index = 0;
+	enc->poc = 0;
+	enc->dpb_slot = 0;
+}
+
+bool avk_encoder_encode_still(struct avk_encoder *enc, VkImage src,
+		VkImageLayout src_layout, int32_t src_x, int32_t src_y,
+		void **out, size_t *out_len) {
+	if (enc == NULL) {
+		return false;
+	}
+	avk_encoder_reset_sequence(enc);
+	return encode_picture(enc, src, src_layout, src_x, src_y, true, out,
+		out_len);
+}
+
+bool avk_encoder_encode_frame(struct avk_encoder *enc, VkImage src,
+		VkImageLayout src_layout, int32_t src_x, int32_t src_y,
+		bool force_key, void **out, size_t *out_len) {
+	if (enc == NULL) {
+		return false;
+	}
+	/* The first picture of a sequence has nothing to predict from, so it is
+	 * an IDR whether or not one was asked for. */
+	bool key = force_key || enc->frame_index == 0;
+	if (key) {
+		enc->poc = 0;
+	}
+	if (!encode_picture(enc, src, src_layout, src_x, src_y, key, out,
+			out_len)) {
+		return false;
+	}
+	/* Advance only on success: a failed picture must not consume the slot the
+	 * next one will reference, or the sequence predicts from a gap. */
+	enc->frame_index++;
+	enc->poc++;
+	enc->dpb_slot = (enc->dpb_slot + 1) % AVK_ENCODE_DPB_SLOTS;
 	return true;
 }

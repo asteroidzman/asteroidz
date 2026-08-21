@@ -106,6 +106,7 @@ avk-shadow-test.sh                 required
 avk-shm-cache-test.sh              required
 avk-shm-partial-test.sh            required
 avk-visible-clip-test.sh           required
+avk-encode-test.sh                 required
 avk-shm-latency-test.sh            perf
 avk-shm-rotate-test.sh             required
 avk-sync-test.sh                   required

@@ -332,6 +332,59 @@ static bool readback_p010(struct avk_device *dev, struct avk_encoder *enc,
 	return ok;
 }
 
+/*
+ * Re-clear the source to a new colour.
+ *
+ * A sequence of identical pictures is the one sequence that cannot tell a
+ * working P frame from a broken one: predicting perfectly from the previous
+ * picture and predicting from an empty slot both produce almost no residual.
+ * So each frame gets its own colour.
+ */
+static bool clear_source(struct avk_device *dev, struct source *s,
+		float r, float g, float b) {
+	VkCommandBuffer cmd;
+	VkCommandBufferAllocateInfo ca = {
+		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+		.commandPool = s->pool,
+		.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+		.commandBufferCount = 1,
+	};
+	if (vkAllocateCommandBuffers(dev->dev, &ca, &cmd) != VK_SUCCESS) {
+		return false;
+	}
+	VkCommandBufferBeginInfo bi = {
+		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+		.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+	};
+	vkBeginCommandBuffer(cmd, &bi);
+	VkImageMemoryBarrier to_dst = {
+		.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+		.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+		.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+		.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+		.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+		.image = s->image,
+		.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+		.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+	};
+	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+		VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &to_dst);
+	VkClearColorValue colour = {.float32 = {r, g, b, 1.0f}};
+	VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+	vkCmdClearColorImage(cmd, s->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+		&colour, 1, &range);
+	vkEndCommandBuffer(cmd);
+	VkSubmitInfo si = {
+		.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+		.commandBufferCount = 1,
+		.pCommandBuffers = &cmd,
+	};
+	vkQueueSubmit(dev->graphics_queue, 1, &si, VK_NULL_HANDLE);
+	vkQueueWaitIdle(dev->graphics_queue);
+	vkFreeCommandBuffers(dev->dev, s->pool, 1, &cmd);
+	return true;
+}
+
 /* H.265 NAL header: two bytes, type is bits 1..6 of the first. */
 static int nal_type(const uint8_t *p) { return (p[0] >> 1) & 0x3F; }
 
@@ -516,6 +569,85 @@ int main(void) {
 			destroy_source(dev, &src);
 		}
 		avk_encoder_destroy(enc);
+	}
+
+	/* ── a SEQUENCE, which is what a recording is ────────────────────── */
+	{
+		struct avk_encoder *venc = avk_encoder_create(dev, 1920, 1080,
+			AVK_ENCODE_COLOUR_HDR10, NULL);
+		CHECK(venc != NULL, "a 1920x1080 sequence encoder is created");
+		struct source vsrc = {0};
+		if (venc != NULL && make_source(dev, venc, &vsrc)) {
+			const int frames = 10;
+			size_t total = 0;
+			int keys = 0, inter = 0;
+			bool all_ok = true;
+			FILE *out = NULL;
+			const char *vp = getenv("AVK_VIDEO_OUT");
+			if (vp != NULL) {
+				out = fopen(vp, "wb");
+			}
+			for (int i = 0; i < frames && all_ok; i++) {
+				/* A different picture every frame, so a P frame has real
+				 * residual to carry. */
+				clear_source(dev, &vsrc, 0.1f + 0.08f * i, 0.5f,
+					0.9f - 0.06f * i);
+				void *pkt = NULL;
+				size_t plen = 0;
+				all_ok = avk_encoder_encode_frame(venc, vsrc.image,
+					VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, 0, false,
+					&pkt, &plen);
+				if (!all_ok) {
+					break;
+				}
+				total += plen;
+				/* The first picture must carry its parameter sets and be an
+				 * IDR; the rest must not repeat them, or every frame is a
+				 * key frame and nothing is being predicted. */
+				const uint8_t *b = pkt;
+				bool has_vps = false, has_idr = false, has_trail = false;
+				for (size_t k = 0; k + 5 < plen; k++) {
+					if (b[k] || b[k+1] || b[k+2] || b[k+3] != 1) {
+						continue;
+					}
+					int t = nal_type(b + k + 4);
+					if (t == 32) has_vps = true;
+					if (t == 19 || t == 20) has_idr = true;
+					if (t == 0 || t == 1) has_trail = true;
+				}
+				if (i == 0) {
+					CHECK(has_vps && has_idr,
+						"frame 0 is an IDR carrying its parameter sets");
+				} else if (has_idr) {
+					keys++;
+				} else if (has_trail) {
+					inter++;
+				}
+				if (out != NULL) {
+					fwrite(pkt, plen, 1, out);
+				}
+				free(pkt);
+			}
+			if (out != NULL) {
+				fclose(out);
+				printf("  wrote %s (%zu bytes, %d frames)\n", vp, total,
+					frames);
+			}
+			CHECK(all_ok, "all %d frames of the sequence encode", frames);
+			CHECK(inter == frames - 1,
+				"the other %d are predicted, not key frames (P %d, I %d)",
+				frames - 1, inter, keys);
+			/* A sequence of P frames must be far smaller than the same count
+			 * of IDRs, or prediction is not happening whatever the NAL types
+			 * say. */
+			CHECK(total < (size_t)frames * 2000,
+				"prediction actually shrinks the stream (%zu bytes for %d "
+				"frames)", total, frames);
+			destroy_source(dev, &vsrc);
+		}
+		if (venc != NULL) {
+			avk_encoder_destroy(venc);
+		}
 	}
 
 	/* A size that does NOT land on the granularity has to be rounded up
