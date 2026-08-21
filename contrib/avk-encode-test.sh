@@ -45,7 +45,8 @@ trap 'rm -rf "$WORK"' EXIT
 # rather than duplicating the setup keeps one description of how an encoder is
 # driven, which is the thing most likely to drift.
 if ! AVK_ENCODE_OUT="$WORK/still.h265" AVK_HEIF_OUT="$WORK/still.heic" \
-		AVK_VIDEO_OUT="$WORK/seq.h265" AVK_MP4_OUT="$WORK/rec.mp4" "$BIN" > "$WORK/unit.log" 2>&1; then
+		AVK_VIDEO_OUT="$WORK/seq.h265" AVK_MP4_OUT="$WORK/rec.mp4" \
+		AVK_ODD_HEIF_OUT="$WORK/odd.heic" "$BIN" > "$WORK/unit.log" 2>&1; then
 	if grep -q "^SKIP" "$WORK/unit.log"; then
 		sed -n 's/^SKIP: /  --   /p' "$WORK/unit.log"
 		echo "  --   INCONCLUSIVE, not a pass"
@@ -120,6 +121,21 @@ if command -v heif-info >/dev/null; then
 		*"MaxCLL"*) ok "and carries its HDR10 metadata as container boxes" ;;
 		*) bad "and carries its HDR10 metadata as container boxes" ;;
 	esac
+	# AN ODD-SIZED SELECTION, which is what a screenshot drag produces and
+	# what every other size here is not. The conformance window removes an
+	# even number of luma samples, so an odd width cannot be expressed and
+	# libheif refuses the whole file. Asked of libheif, not of our own
+	# assertions, because the refusal is libheif's.
+	ODD="$(heif-info "$WORK/odd.heic" 2>&1)"
+	case "$ODD" in
+		*"688x502"*) ok "an odd-sized selection rounds to an even 688x502" ;;
+		*) bad "an odd-sized selection rounds to an even 688x502" ;;
+	esac
+	if heif-convert "$WORK/odd.heic" "$WORK/odd.png" >/dev/null 2>&1; then
+		ok "and libheif decodes it rather than refusing the size"
+	else
+		bad "and libheif decodes it rather than refusing the size"
+	fi
 else
 	echo "  --   heif-info not installed; the container is not checked"
 fi

@@ -1213,8 +1213,33 @@ struct avk_encoder *avk_encoder_create(struct avk_device *dev,
 		return NULL;
 	}
 	enc->dev = dev;
-	enc->width = width;
-	enc->height = height;
+	/*
+	 * EVEN, ALWAYS.
+	 *
+	 * The coded size is the requested size rounded up to the encoder's
+	 * alignment, and the difference is removed by a conformance window whose
+	 * offsets are in CHROMA samples for 4:2:0 -- so it can only express an
+	 * EVEN crop. A 689-wide picture is coded at 704 and needs 15 columns
+	 * removed, which is 7.5 chroma units; truncated to 7 it removes 14, and
+	 * the decoder produces 690 while the container says 689.
+	 *
+	 * libheif refuses that outright ("Decoded image does not have the size
+	 * signaled in the file") and a screenshot of an odd-sized selection would
+	 * not open at all. One column narrower is imperceptible; a file that does
+	 * not open is not.
+	 *
+	 * Callers must use enc->width and enc->height for the container rather
+	 * than what they asked for, which is why they are read back rather than
+	 * only stored.
+	 */
+	enc->width = width & ~1u;
+	enc->height = height & ~1u;
+	if (enc->width == 0 || enc->height == 0) {
+		avk_log(AVK_ERROR, "encode: %ux%u is too small to encode", width,
+			height);
+		free(enc);
+		return NULL;
+	}
 	enc->colour = colour;
 	enc->all_intra = getenv("AZ_ENCODE_INTER") == NULL;
 	if (mastering != NULL) {
@@ -1229,9 +1254,10 @@ struct avk_encoder *avk_encoder_create(struct avk_device *dev,
 	/* The coded size is the source size rounded up to the encoder's own
 	 * granularity. Getting this wrong does not fail -- it encodes, and the
 	 * edge of the picture is whatever was in memory past the image. */
-	enc->coded_width = align_up(width, enc->caps.pictureAccessGranularity.width);
-	enc->coded_height =
-		align_up(height, enc->caps.pictureAccessGranularity.height);
+	enc->coded_width = align_up(enc->width,
+		enc->caps.pictureAccessGranularity.width);
+	enc->coded_height = align_up(enc->height,
+		enc->caps.pictureAccessGranularity.height);
 	/* H.265 levels, by luma sample count. 5.1 is the first that admits
 	 * 3840x2160; below that the picture is larger than the level allows. */
 	uint32_t samples = enc->coded_width * enc->coded_height;

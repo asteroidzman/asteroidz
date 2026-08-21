@@ -793,6 +793,62 @@ int main(void) {
 		}
 	}
 
+	/* ── an ODD-sized selection, which is what a drag produces ────────── */
+	{
+		/* 689x503 is a real selection from the screenshot UI, and it is the
+		 * shape that broke: the conformance window removes an EVEN number of
+		 * luma samples because its offsets are in chroma units, so an odd
+		 * width cannot be expressed and libheif refuses the file with
+		 * "Decoded image does not have the size signaled in the file". Every
+		 * other size in this test is even AND exactly aligned. */
+		struct avk_encoder *odd_sel = avk_encoder_create(dev, 689, 503,
+			AVK_ENCODE_COLOUR_HDR10, NULL);
+		CHECK(odd_sel != NULL, "an odd-sized 689x503 encoder is created");
+		if (odd_sel != NULL) {
+			CHECK(odd_sel->width == 688 && odd_sel->height == 502,
+				"and rounds to an even %ux%u", odd_sel->width,
+				odd_sel->height);
+			CHECK((odd_sel->coded_width - odd_sel->width) % 2 == 0
+					&& (odd_sel->coded_height - odd_sel->height) % 2 == 0,
+				"so the conformance window crops an exact number of chroma "
+				"samples (%u->%u, %u->%u)", odd_sel->width,
+				odd_sel->coded_width, odd_sel->height, odd_sel->coded_height);
+			struct source osrc = {0};
+			if (make_source(dev, odd_sel, &osrc)) {
+				fill_source_pattern(dev, &osrc, odd_sel->coded_width,
+					odd_sel->coded_height, 3);
+				void *st = NULL;
+				size_t sl = 0;
+				if (avk_encoder_encode_still(odd_sel, osrc.image,
+						VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, 0, &st,
+						&sl)) {
+					struct avk_heif_colour oc = {
+						.primaries = 9, .transfer = 16, .matrix = 9,
+						.full_range = true,
+					};
+					void *of = NULL;
+					size_t ofl = 0;
+					bool ow = avk_heif_wrap(st, sl, odd_sel->width,
+						odd_sel->height, &oc, &of, &ofl);
+					CHECK(ow, "and its HEIF is written");
+					const char *op = getenv("AVK_ODD_HEIF_OUT");
+					if (ow && op != NULL) {
+						FILE *of2 = fopen(op, "wb");
+						if (of2 != NULL) {
+							fwrite(of, ofl, 1, of2);
+							fclose(of2);
+							printf("  wrote %s (%zu bytes)\n", op, ofl);
+						}
+					}
+					free(of);
+					free(st);
+				}
+				destroy_source(dev, &osrc);
+			}
+			avk_encoder_destroy(odd_sel);
+		}
+	}
+
 	/* A size that does NOT land on the granularity has to be rounded up
 	 * rather than silently encoded at the wrong extent. 1366 is the width
 	 * that made this worth asserting: 1366/64 is not an integer. */

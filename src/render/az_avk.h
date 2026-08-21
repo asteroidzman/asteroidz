@@ -5505,8 +5505,10 @@ static bool az_avk_encode_hdr_still(struct wlr_buffer *frame, Monitor *m,
 		az_avk_heif_colour_for(&mastering, &colour);
 		void *file = NULL;
 		size_t file_len = 0;
-		ok = avk_heif_wrap(stream, stream_len, (uint32_t)px.width,
-			(uint32_t)px.height, &colour, &file, &file_len);
+		/* enc->width, not px.width: the encoder rounds to even and the
+		 * container must agree with the picture, not with the request. */
+		ok = avk_heif_wrap(stream, stream_len, enc->width, enc->height,
+			&colour, &file, &file_len);
 		if (ok) {
 			FILE *f = fopen(path, "wb");
 			ok = f != NULL && fwrite(file, file_len, 1, f) == 1;
@@ -5575,8 +5577,8 @@ static bool az_avk_record_open(Monitor *m, const char *path) {
 	}
 	/* Milliseconds. Enough for any display rate, and legible in a debugger,
 	 * which a 90000-tick media timescale is not. */
-	out->rec_mp4 = avk_mp4_open(path, (uint32_t)att.width,
-		(uint32_t)att.height, 1000, &colour);
+	out->rec_mp4 = avk_mp4_open(path, out->rec_encoder->width,
+		out->rec_encoder->height, 1000, &colour);
 	if (out->rec_mp4 == NULL) {
 		avk_encoder_destroy(out->rec_encoder);
 		out->rec_encoder = NULL;
@@ -5761,8 +5763,8 @@ static void az_avk_hdr_shot(struct az_avk_output *out, Monitor *m,
 		az_avk_heif_colour_for(&mastering, &colour);
 		void *file = NULL;
 		size_t file_len = 0;
-		if (avk_heif_wrap(stream, stream_len, target->extent.width,
-				target->extent.height, &colour, &file, &file_len)) {
+		if (avk_heif_wrap(stream, stream_len, enc->width, enc->height,
+				&colour, &file, &file_len)) {
 			FILE *f = fopen(path, "wb");
 			if (f != NULL) {
 				ok = fwrite(file, file_len, 1, f) == 1;
