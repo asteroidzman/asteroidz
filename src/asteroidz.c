@@ -10253,7 +10253,7 @@ static int render_timer_cb(void *data) {
 
 void requestdecorationmode(struct wl_listener *listener, void *data) {
 	Client *c = wl_container_of(listener, c, set_decoration_mode);
-	struct wlr_xdg_toplevel_decoration_v1 *deco = data;
+	(void)data;   /* the mode is decided from the client, not from the event */
 
 	if (c->surface.xdg->initialized) {
 		/* single source of truth: tell the client exactly what the drawing

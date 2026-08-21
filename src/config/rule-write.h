@@ -552,7 +552,7 @@ static bool rw_commit(RuleWriteBatch *b, RuleWriteKind kind) {
 			texts[f] = kdl_file_slurp(config_files[f]);
 			if (!texts[f]) {
 				snprintf(b->error, sizeof(b->error), "write-failed");
-				snprintf(b->detail, sizeof(b->detail), "cannot read %s: %s",
+				snprintf(b->detail, sizeof(b->detail), "cannot read %.110s: %.65s",
 						 config_files[f], strerror(errno));
 				rw_free_texts(texts, CONFIG_WRITE_MAX_FILES);
 				return false;
@@ -585,7 +585,7 @@ static bool rw_commit(RuleWriteBatch *b, RuleWriteKind kind) {
 			char err[256];
 			if (!kdl_parse(text, &doc, err, sizeof(err))) {
 				snprintf(b->error, sizeof(b->error), "would-not-parse");
-				snprintf(b->detail, sizeof(b->detail), "%s: %s",
+				snprintf(b->detail, sizeof(b->detail), "%.120s: %.65s",
 						 config_files[c->file], err);
 				rw_free_texts(texts, CONFIG_WRITE_MAX_FILES);
 				return false;
@@ -647,7 +647,7 @@ static bool rw_commit(RuleWriteBatch *b, RuleWriteKind kind) {
 			text = kdl_file_slurp(config_files[c->file]);
 			if (!text) {
 				snprintf(b->error, sizeof(b->error), "write-failed");
-				snprintf(b->detail, sizeof(b->detail), "cannot read %s",
+				snprintf(b->detail, sizeof(b->detail), "cannot read %.175s",
 						 config_files[c->file]);
 				rw_free_texts(texts, CONFIG_WRITE_MAX_FILES);
 				return false;
@@ -658,7 +658,7 @@ static bool rw_commit(RuleWriteBatch *b, RuleWriteKind kind) {
 		char err[256];
 		if (!kdl_parse(text, &doc, err, sizeof(err))) {
 			snprintf(b->error, sizeof(b->error), "would-not-parse");
-			snprintf(b->detail, sizeof(b->detail), "%s: %s",
+			snprintf(b->detail, sizeof(b->detail), "%.120s: %.65s",
 					 config_files[c->file], err);
 			rw_free_texts(texts, CONFIG_WRITE_MAX_FILES);
 			return false;
@@ -729,7 +729,7 @@ static bool rw_commit(RuleWriteBatch *b, RuleWriteKind kind) {
 		char err[256];
 		if (!kdl_parse(texts[f], &doc, err, sizeof(err))) {
 			snprintf(b->error, sizeof(b->error), "would-not-parse");
-			snprintf(b->detail, sizeof(b->detail), "%s: %s", config_files[f],
+			snprintf(b->detail, sizeof(b->detail), "%.120s: %.65s", config_files[f],
 					 err);
 			rw_free_texts(texts, CONFIG_WRITE_MAX_FILES);
 			return false;
@@ -742,7 +742,7 @@ static bool rw_commit(RuleWriteBatch *b, RuleWriteKind kind) {
 			continue;
 		if (!kdl_file_replace(config_files[f], texts[f], true)) {
 			snprintf(b->error, sizeof(b->error), "write-failed");
-			snprintf(b->detail, sizeof(b->detail), "%s: %s", config_files[f],
+			snprintf(b->detail, sizeof(b->detail), "%.120s: %.65s", config_files[f],
 					 strerror(errno));
 			rw_free_texts(texts, CONFIG_WRITE_MAX_FILES);
 			return false;

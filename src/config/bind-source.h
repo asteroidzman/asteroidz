@@ -146,10 +146,17 @@ static void bind_source_note(const char *kind, const char *mods,
 	} else {
 		/* No node: a legacy line, or a runtime set_option. Rebuild the chord so
 		 * a UI has something to show, and say it cannot be rewritten. */
+		/* Built in a local and copied, not written in place. chord, mods and
+		 * key are three members of one object, so snprintf's destination and
+		 * its arguments live in the same allocation -- which the compiler
+		 * cannot prove is not an overlap, and which the standard makes
+		 * undefined if it ever is. */
+		char chord[sizeof(b->chord)];
 		if (b->mods[0] && strcmp(b->mods, "none"))
-			snprintf(b->chord, sizeof(b->chord), "%s+%s", b->mods, b->key);
+			snprintf(chord, sizeof(chord), "%.40s+%.50s", b->mods, b->key);
 		else
-			snprintf(b->chord, sizeof(b->chord), "%s", b->key);
+			snprintf(chord, sizeof(chord), "%.90s", b->key);
+		memcpy(b->chord, chord, sizeof(b->chord));
 		b->file = -1;
 		b->editable = false;
 	}

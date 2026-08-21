@@ -178,7 +178,7 @@ static long readback_mismatches(struct avk_device *dev,
 	}
 
 	struct avk_cmd_ring ring;
-	if (!avk_cmd_ring_init(&ring, dev, "readback")) {
+	if (!avk_cmd_ring_init(&ring, dev, "readback", AVK_FRAMES_IN_FLIGHT)) {
 		goto out;
 	}
 	VkCommandBuffer cb = avk_cmd_ring_begin(&ring);
@@ -694,7 +694,7 @@ static void test_dmabuf_fences(struct avk_dmabuf_importer *importer,
 		gbm_bo_destroy(bo);
 		return;
 	}
-	if (!avk_cmd_ring_init(&ring, importer->dev, "dmabuf-sync-test")) {
+	if (!avk_cmd_ring_init(&ring, importer->dev, "dmabuf-sync-test", AVK_FRAMES_IN_FLIGHT)) {
 		CHECK(false, "ring initialises");
 		avk_sync_finish(&sync);
 		close_attribs(&attribs);

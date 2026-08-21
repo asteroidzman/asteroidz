@@ -1118,7 +1118,11 @@ ov_main_chrome:
 
 void overview_tags(Monitor *m) {
 	int32_t gappo = config.overviewgappo;
-	int32_t gappi = config.overviewgappi;
+	/* config.overviewgappi ("overview/gaps/inner") is READ BY NOTHING. It is
+	 * in the schema, it is documented, it parses, and no layout applies it --
+	 * setting it does nothing at all. Not silently dropped here: see
+	 * docs/known-issues.md, which is where the decision to implement it or
+	 * remove it belongs. */
 	uint32_t ntags = LENGTH(tags);
 	uint32_t cur_tag = get_tags_first_tag_num(m->ovbk_current_tagset);
 	if (cur_tag == 0 || cur_tag > ntags)

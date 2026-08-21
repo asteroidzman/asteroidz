@@ -281,13 +281,11 @@ static void az_presenter_present(Monitor *m,
 	 * THE ERROR SERIES, matched strictly on commit_seq. A latency attributed
 	 * to whatever happened to be in a slot looks plausible and is fiction.
 	 */
-	bool matched = false;
 	for (int i = 0; i < AZ_PRESENT_INFLIGHT; i++) {
 		struct az_present_inflight *s = &p->inflight[i];
 		if (!s->used || s->commit_seq != ev->commit_seq) {
 			continue;
 		}
-		matched = true;
 		if (p->clock == AZ_PRESENT_CLOCK_MONOTONIC && s->target_ns) {
 			int64_t err = (int64_t)when_ns - (int64_t)s->target_ns;
 			if (p->err_count == 0 || err < p->err_min_ns) {

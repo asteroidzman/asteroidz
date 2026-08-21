@@ -276,7 +276,7 @@ static bool readback(struct harness *h) {
 	vkBindBufferMemory(dev->dev, buffer, memory, 0);
 
 	struct avk_cmd_ring ring;
-	avk_cmd_ring_init(&ring, dev, "readback");
+	avk_cmd_ring_init(&ring, dev, "readback", AVK_FRAMES_IN_FLIGHT);
 	VkCommandBuffer cb = avk_cmd_ring_begin(&ring);
 
 	VkImageMemoryBarrier2 b = {

@@ -199,7 +199,7 @@ static bool stage(struct harness *h, struct avk_image *image,
 		vkUnmapMemory(dev->dev, memory);
 	}
 	struct avk_cmd_ring ring;
-	avk_cmd_ring_init(&ring, dev, "blur-scene-stage");
+	avk_cmd_ring_init(&ring, dev, "blur-scene-stage", AVK_FRAMES_IN_FLIGHT);
 	VkCommandBuffer cb = avk_cmd_ring_begin(&ring);
 	VkImageLayout want = to_device ? VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
 		: VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;

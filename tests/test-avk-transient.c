@@ -67,7 +67,7 @@ static bool harness_up(struct harness *h) {
 		return false;
 	}
 	avk_retire_init(&h->retire, "transient-test");
-	if (!avk_cmd_ring_init(&h->ring, h->dev, "transient-test")) {
+	if (!avk_cmd_ring_init(&h->ring, h->dev, "transient-test", AVK_FRAMES_IN_FLIGHT)) {
 		return false;
 	}
 	h->ring.retire = &h->retire;

@@ -152,7 +152,7 @@ static void az_dmabuf_add_format_set(cJSON *parent, const char *key,
 	for (size_t i = 0; i < set->len; i++) {
 		const struct wlr_drm_format *f = &set->formats[i];
 		for (size_t m = 0; m < f->len; m++) {
-			char pair[80], name[64];
+			char pair[96], name[64];
 			avk_drm_format_name(f->format, name, sizeof(name));
 			snprintf(pair, sizeof(pair), "%s:0x%016" PRIx64, name,
 				f->modifiers[m]);
@@ -218,7 +218,7 @@ static cJSON *az_dmabuf_feedback_json(void) {
 	for (uint32_t i = 0; i < avk.importer.table.count; i++) {
 		const struct avk_format_caps *caps = &avk.importer.table.formats[i];
 		for (uint32_t m = 0; m < caps->texture_mod_count; m++) {
-			char pair[80], name[64];
+			char pair[96], name[64];
 			avk_drm_format_name(caps->format->drm, name, sizeof(name));
 			snprintf(pair, sizeof(pair), "%s:0x%016" PRIx64, name,
 				caps->texture_mods[m].modifier);

@@ -206,7 +206,7 @@ static void test_command_ring(struct avk_device *dev) {
 	struct avk_cmd_ring ring;
 
 	printf("command ring\n");
-	CHECK(avk_cmd_ring_init(&ring, dev, "test"), "ring initialises");
+	CHECK(avk_cmd_ring_init(&ring, dev, "test", AVK_FRAMES_IN_FLIGHT), "ring initialises");
 
 	uint64_t before = avk_device_timeline_value(dev);
 	CHECK(before == 0, "a fresh device timeline is at 0 (was %" PRIu64 ")",
@@ -274,7 +274,7 @@ static void test_retire(struct avk_device *dev) {
 	struct avk_retire_queue q;
 
 	printf("deferred destruction\n");
-	if (!avk_cmd_ring_init(&ring, dev, "retire-test")) {
+	if (!avk_cmd_ring_init(&ring, dev, "retire-test", AVK_FRAMES_IN_FLIGHT)) {
 		CHECK(false, "ring initialises");
 		return;
 	}
@@ -363,7 +363,7 @@ static void test_sync(struct avk_device *dev) {
 		"an exportable completion semaphore exists");
 
 	struct avk_cmd_ring ring;
-	if (!avk_cmd_ring_init(&ring, dev, "sync-test")) {
+	if (!avk_cmd_ring_init(&ring, dev, "sync-test", AVK_FRAMES_IN_FLIGHT)) {
 		CHECK(false, "ring initialises");
 		avk_sync_finish(&sync);
 		return;

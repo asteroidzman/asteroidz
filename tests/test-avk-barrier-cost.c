@@ -388,7 +388,7 @@ int main(void) {
 	if (b.gbm == NULL) {
 		SKIP("no GBM device");
 	}
-	avk_cmd_ring_init(&b.ring, b.dev, "barrier-bench");
+	avk_cmd_ring_init(&b.ring, b.dev, "barrier-bench", AVK_FRAMES_IN_FLIGHT);
 
 	/* ── the images ─────────────────────────────────────────────────────── */
 	uint64_t mod_plain = 0, mod_dcc = 0;

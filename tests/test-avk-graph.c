@@ -434,7 +434,7 @@ static void test_write_then_read(struct harness *h) {
 	/* Compiled onto a throwaway command buffer: this test is about what the
 	 * graph decides, not about what the GPU does with it. */
 	struct avk_cmd_ring ring;
-	avk_cmd_ring_init(&ring, h->dev, "graph-test");
+	avk_cmd_ring_init(&ring, h->dev, "graph-test", AVK_FRAMES_IN_FLIGHT);
 	VkCommandBuffer cb = avk_cmd_ring_begin(&ring);
 	avk_graph_execute(g, cb, NULL, 0);
 	avk_cmd_ring_abandon(&ring);
@@ -488,7 +488,7 @@ static void test_break(struct harness *h) {
 	avk_graph_pass_end(&g);
 
 	struct avk_cmd_ring ring;
-	avk_cmd_ring_init(&ring, h->dev, "graph-break");
+	avk_cmd_ring_init(&ring, h->dev, "graph-break", AVK_FRAMES_IN_FLIGHT);
 	VkCommandBuffer cb = avk_cmd_ring_begin(&ring);
 	avk_graph_execute(&g, cb, NULL, 0);
 	avk_cmd_ring_abandon(&ring);
@@ -624,7 +624,7 @@ static void test_exit_state(struct harness *h) {
 	avk_graph_pass_end(&g);
 
 	struct avk_cmd_ring ring;
-	avk_cmd_ring_init(&ring, h->dev, "graph-exit");
+	avk_cmd_ring_init(&ring, h->dev, "graph-exit", AVK_FRAMES_IN_FLIGHT);
 	VkCommandBuffer cb = avk_cmd_ring_begin(&ring);
 	avk_graph_execute(&g, cb, NULL, 0);
 	avk_cmd_ring_abandon(&ring);

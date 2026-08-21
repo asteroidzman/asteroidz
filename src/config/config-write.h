@@ -342,7 +342,7 @@ static bool config_write_commit(ConfigWriteBatch *b) {
 		kdl_free(&doc);
 		if (!parses) {
 			snprintf(b->error, sizeof(b->error), "would-not-parse");
-			snprintf(b->detail, sizeof(b->detail), "%s: %s",
+			snprintf(b->detail, sizeof(b->detail), "%.120s: %.80s",
 					 config_files[b->staged[i].file], kdlerr);
 			return false;
 		}
@@ -356,7 +356,7 @@ static bool config_write_commit(ConfigWriteBatch *b) {
 		if (!kdl_file_replace(config_files[b->staged[i].file],
 							  b->staged[i].text, true)) {
 			snprintf(b->error, sizeof(b->error), "write-failed");
-			snprintf(b->detail, sizeof(b->detail), "%s: %s",
+			snprintf(b->detail, sizeof(b->detail), "%.120s: %.80s",
 					 config_files[b->staged[i].file], strerror(errno));
 			return false;
 		}

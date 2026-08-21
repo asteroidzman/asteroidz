@@ -2911,13 +2911,11 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 	enum avk_blur_cache_reason cache_reason[AVK_BLUR_CACHE_KINDS];
 	bool cache_ready[AVK_BLUR_CACHE_KINDS] = {false, false};
 	bool blur_begin_marked = false;
-	size_t cache_consumers = 0;
 	for (int k = 0; k < AVK_BLUR_CACHE_KINDS; k++) {
 		cache_reason[k] = AVK_BLUR_CACHE_NEVER_BUILT;
 		if (!cache_enabled) {
 			continue;
 		}
-		cache_consumers += want[k];
 		cache_reason[k] = avk_blur_cache_check(cache,
 			scene->blur_cache.generation, source_hash,
 			scene->blur_cache.bounds.x,
