@@ -3,6 +3,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "render/vulkan/device/avk_device.h"
 #include "render/vulkan/device/avk_instance.h"
@@ -39,6 +40,12 @@ static bool load_api(struct avk_device *dev, struct encode_api *api) {
 	return api->create_session && api->destroy_session
 		&& api->get_session_memory && api->bind_session_memory
 		&& api->create_params && api->destroy_params;
+}
+
+static int64_t now_ns(void) {
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec;
 }
 
 static uint32_t align_up(uint32_t v, uint32_t a) {
@@ -1442,10 +1449,13 @@ static bool encode_picture(struct avk_encoder *enc, VkImage src,
 	 * than a semaphore between them: a still is not on a frame budget, and
 	 * two queues chained by a fence is easier to reason about than two
 	 * chained by a timeline nothing else uses. */
+	int64_t t0 = now_ns();
 	if (!convert_to_p010(enc, src, src_layout, src_x, src_y)) {
 		avk_log(AVK_ERROR, "encode: the RGB->P010 conversion failed");
 		return false;
 	}
+	enc->last_convert_ns = now_ns() - t0;
+	int64_t t1 = now_ns();
 
 	VkCommandBufferBeginInfo begin = {
 		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
@@ -1726,6 +1736,8 @@ static bool encode_picture(struct avk_encoder *enc, VkImage src,
 		avk_log(AVK_ERROR, "encode: the encode did not finish within 5s");
 		return false;
 	}
+
+	enc->last_encode_ns = now_ns() - t1;
 
 	/* offset then bytes-written, in the order the flags were declared. */
 	uint32_t results[2] = {0, 0};

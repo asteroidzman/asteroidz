@@ -3042,6 +3042,15 @@ struct az_avk_output {
 	uint64_t rec_frames;
 	int64_t rec_last_ns;   /* so a sample's duration is measured, not assumed */
 	uint64_t rec_dropped;
+	/*
+	 * WHERE THE FRAME TIME GOES, split four ways, because "recording costs
+	 * frame time" is not a number and the four are fixed by different work.
+	 * The timeline wait may be removable outright; the two GPU waits want
+	 * pipelining; the write wants a worker thread. Which of them dominates
+	 * decides which is worth building.
+	 */
+	int64_t rec_wait_ns, rec_convert_ns, rec_encode_ns, rec_write_ns;
+	int64_t rec_worst_ns;
 	/* The scene output's halo-damage record count as of this output's last
 	 * frame, so "this frame took damage from the halo" is a delta rather than
 	 * a guess about a region's extents. */
@@ -5577,6 +5586,11 @@ static bool az_avk_record_open(Monitor *m, const char *path) {
 	out->rec_frames = 0;
 	out->rec_dropped = 0;
 	out->rec_last_ns = 0;
+	out->rec_wait_ns = 0;
+	out->rec_convert_ns = 0;
+	out->rec_encode_ns = 0;
+	out->rec_write_ns = 0;
+	out->rec_worst_ns = 0;
 	out->recording = true;
 	wlr_log(WLR_INFO, "record: %s -> %s (%dx%d)", m->wlr_output->name, path,
 		att.width, att.height);
@@ -5601,6 +5615,22 @@ static bool az_avk_record_close(Monitor *m) {
 		wlr_log(WLR_INFO, "record: %s stopped, %llu frames, %llu dropped",
 			m->wlr_output->name, (unsigned long long)out->rec_frames,
 			(unsigned long long)out->rec_dropped);
+		/*
+		 * THE MEASUREMENT. Per frame and split, against the output's own
+		 * budget -- a total says recording is expensive and this says which
+		 * part of it to fix.
+		 */
+		double n = (double)out->rec_frames;
+		double budget = m->wlr_output->refresh > 0
+			? 1000000.0 / (double)m->wlr_output->refresh : 0.0;
+		wlr_log(WLR_INFO, "record: per frame: wait %.2fms convert %.2fms "
+			"encode %.2fms write %.2fms = %.2fms (worst %.2fms, budget "
+			"%.2fms)",
+			out->rec_wait_ns / n / 1e6, out->rec_convert_ns / n / 1e6,
+			out->rec_encode_ns / n / 1e6, out->rec_write_ns / n / 1e6,
+			(out->rec_wait_ns + out->rec_convert_ns + out->rec_encode_ns
+				+ out->rec_write_ns) / n / 1e6,
+			out->rec_worst_ns / 1e6, budget);
 	}
 	out->rec_mp4 = NULL;
 	avk_encoder_destroy(out->rec_encoder);
@@ -5615,6 +5645,10 @@ static void az_avk_record_frame(struct az_avk_output *out, Monitor *m,
 		return;
 	}
 	struct avk_renderer *r = &out->slot->renderer;
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	int64_t t_begin = (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec;
+
 	if (!avk_device_timeline_wait(r->dev, timeline, 2000000000ULL)) {
 		out->rec_dropped++;
 		return;
@@ -5623,10 +5657,10 @@ static void az_avk_record_frame(struct az_avk_output *out, Monitor *m,
 		out->rec_dropped++;
 		return;
 	}
-
-	struct timespec ts;
 	clock_gettime(CLOCK_MONOTONIC, &ts);
-	int64_t now = (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec;
+	int64_t t_waited = (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec;
+	out->rec_wait_ns += t_waited - t_begin;
+	int64_t now = t_waited;
 
 	void *pkt = NULL;
 	size_t pkt_len = 0;
@@ -5659,12 +5693,23 @@ static void az_avk_record_frame(struct az_avk_output *out, Monitor *m,
 	}
 	out->rec_last_ns = now;
 
+	out->rec_convert_ns += out->rec_encoder->last_convert_ns;
+	out->rec_encode_ns += out->rec_encoder->last_encode_ns;
+
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	int64_t t_write = (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec;
 	if (!avk_mp4_add_sample(out->rec_mp4, pkt, pkt_len, duration)) {
 		out->rec_dropped++;
 	} else {
 		out->rec_frames++;
 	}
 	free(pkt);
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	int64_t t_end = (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec;
+	out->rec_write_ns += t_end - t_write;
+	if (t_end - t_begin > out->rec_worst_ns) {
+		out->rec_worst_ns = t_end - t_begin;
+	}
 }
 
 static void az_avk_hdr_shot(struct az_avk_output *out, Monitor *m,

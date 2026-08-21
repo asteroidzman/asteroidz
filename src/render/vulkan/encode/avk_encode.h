@@ -139,6 +139,12 @@ struct avk_encoder {
 	 * layer the NEXT picture will be reconstructed into -- so the one before
 	 * it, which the next P picture references, is the other one.
 	 */
+	/* How long the last picture spent in each of the two GPU waits. Kept
+	 * because "recording costs frame time" is a certainty and the split
+	 * between these is what decides which wait is worth removing first. */
+	int64_t last_convert_ns;
+	int64_t last_encode_ns;
+
 	uint64_t frame_index;
 	int32_t poc;
 	uint32_t dpb_slot;
