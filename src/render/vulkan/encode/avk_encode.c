@@ -897,8 +897,107 @@ static bool convert_to_p010(struct avk_encoder *enc, VkImageView src_view) {
 		5000000000ULL) == VK_SUCCESS;
 }
 
+/* ── HDR10 static metadata, as SEI NAL units ───────────────────────────── */
+
+/*
+ * Vulkan Video writes the parameter sets and the coded picture. It does not
+ * write SEI, so the two messages HDR10 is defined by are ours to assemble:
+ * mastering display colour volume (137) and content light level info (144).
+ *
+ * Both are short, fixed-layout, big-endian payloads. The only subtlety is that
+ * a NAL payload may not contain 00 00 00, 00 00 01, 00 00 02 or 00 00 03, so
+ * an escape byte is inserted -- a luminance of 0x00000100 would otherwise end
+ * the NAL unit early and take the rest of the picture with it.
+ */
+struct sei_writer {
+	uint8_t *buf;
+	size_t len, cap;
+	int zeros;
+};
+
+static void sei_raw(struct sei_writer *w, uint8_t b) {
+	if (w->len < w->cap) {
+		w->buf[w->len++] = b;
+	}
+}
+
+/* Payload bytes, with emulation prevention applied. */
+static void sei_byte(struct sei_writer *w, uint8_t b) {
+	if (w->zeros >= 2 && b <= 3) {
+		sei_raw(w, 0x03);
+		w->zeros = 0;
+	}
+	sei_raw(w, b);
+	w->zeros = (b == 0) ? w->zeros + 1 : 0;
+}
+
+static void sei_u16(struct sei_writer *w, uint16_t v) {
+	sei_byte(w, (uint8_t)(v >> 8));
+	sei_byte(w, (uint8_t)v);
+}
+
+static void sei_u32(struct sei_writer *w, uint32_t v) {
+	for (int i = 24; i >= 0; i -= 8) {
+		sei_byte(w, (uint8_t)(v >> i));
+	}
+}
+
+static bool mastering_known(const struct avk_encode_mastering *m) {
+	return m->max_luminance != 0 || m->white_point_x != 0
+		|| m->display_primaries_x[0] != 0;
+}
+
+/*
+ * Both messages as one prefix-SEI NAL unit, Annex B framed. NULL when there is
+ * nothing worth saying: a player believes an SEI, so guessed numbers are worse
+ * than none.
+ */
+static uint8_t *build_hdr_sei(const struct avk_encoder *enc, size_t *out_len) {
+	*out_len = 0;
+	if (enc->colour != AVK_ENCODE_COLOUR_HDR10
+			|| !mastering_known(&enc->mastering)) {
+		return NULL;
+	}
+	const struct avk_encode_mastering *m = &enc->mastering;
+	uint8_t *buf = malloc(128);
+	if (buf == NULL) {
+		return NULL;
+	}
+	struct sei_writer w = {.buf = buf, .cap = 128};
+	/* Start code, then the two-byte NAL header: type 39 (PREFIX_SEI_NUT),
+	 * layer 0, nuh_temporal_id_plus1 1. The header is not subject to
+	 * emulation prevention. */
+	sei_raw(&w, 0); sei_raw(&w, 0); sei_raw(&w, 0); sei_raw(&w, 1);
+	sei_raw(&w, (uint8_t)(39 << 1)); sei_raw(&w, 1);
+	w.zeros = 0;
+
+	/* mastering_display_colour_volume: 24 bytes, primaries in G, B, R. */
+	sei_byte(&w, 137);
+	sei_byte(&w, 24);
+	for (int i = 0; i < 3; i++) {
+		sei_u16(&w, m->display_primaries_x[i]);
+		sei_u16(&w, m->display_primaries_y[i]);
+	}
+	sei_u16(&w, m->white_point_x);
+	sei_u16(&w, m->white_point_y);
+	sei_u32(&w, m->max_luminance);
+	sei_u32(&w, m->min_luminance);
+
+	/* content_light_level_info: 4 bytes. */
+	sei_byte(&w, 144);
+	sei_byte(&w, 4);
+	sei_u16(&w, m->max_content_light_level);
+	sei_u16(&w, m->max_frame_average_light_level);
+
+	/* rbsp_trailing_bits: for a byte-aligned payload, one stop bit. */
+	sei_byte(&w, 0x80);
+	*out_len = w.len;
+	return buf;
+}
+
 struct avk_encoder *avk_encoder_create(struct avk_device *dev,
-		uint32_t width, uint32_t height, enum avk_encode_colour colour) {
+		uint32_t width, uint32_t height, enum avk_encode_colour colour,
+		const struct avk_encode_mastering *mastering) {
 	if (dev == NULL || !dev->has_encode_queue) {
 		avk_log(AVK_ERROR, "encode: this device has no video encode queue");
 		return NULL;
@@ -918,6 +1017,9 @@ struct avk_encoder *avk_encoder_create(struct avk_device *dev,
 	enc->width = width;
 	enc->height = height;
 	enc->colour = colour;
+	if (mastering != NULL) {
+		enc->mastering = *mastering;
+	}
 
 	build_profile(enc);
 	if (!query_caps(enc)) {
@@ -1394,6 +1496,10 @@ bool avk_encoder_encode_still(struct avk_encoder *enc, VkImage src,
 	if (hdr == NULL) {
 		return false;
 	}
+	/* After the parameter sets and before the picture, which is where a
+	 * prefix SEI belongs: it describes the pictures that follow it. */
+	size_t sei_len = 0;
+	uint8_t *sei = build_hdr_sei(enc, &sei_len);
 
 	void *mapped = NULL;
 	if (vkMapMemory(dev->dev, enc->bitstream_memory, 0, VK_WHOLE_SIZE, 0,
@@ -1401,20 +1507,26 @@ bool avk_encoder_encode_still(struct avk_encoder *enc, VkImage src,
 		free(hdr);
 		return false;
 	}
-	uint8_t *stream = malloc(hdr_len + written);
+	uint8_t *stream = malloc(hdr_len + sei_len + written);
 	if (stream == NULL) {
 		vkUnmapMemory(dev->dev, enc->bitstream_memory);
 		free(hdr);
+		free(sei);
 		return false;
 	}
 	memcpy(stream, hdr, hdr_len);
-	memcpy(stream + hdr_len, (const uint8_t *)mapped + offset, written);
+	if (sei_len > 0) {
+		memcpy(stream + hdr_len, sei, sei_len);
+	}
+	memcpy(stream + hdr_len + sei_len, (const uint8_t *)mapped + offset,
+		written);
 	vkUnmapMemory(dev->dev, enc->bitstream_memory);
 	free(hdr);
+	free(sei);
 
 	avk_log(AVK_INFO, "encode: %u bytes of picture + %zu of parameter sets "
-		"at QP %u", written, hdr_len, qp);
+		"+ %zu of HDR10 SEI at QP %u", written, hdr_len, sei_len, qp);
 	*out = stream;
-	*out_len = hdr_len + written;
+	*out_len = hdr_len + sei_len + written;
 	return true;
 }

@@ -33,6 +33,7 @@
 #include "render/vulkan/device/avk_device.h"
 #include "render/vulkan/device/avk_instance.h"
 #include "render/vulkan/encode/avk_encode.h"
+#include "render/vulkan/encode/avk_heif.h"
 
 static int failures = 0;
 static int checks = 0;
@@ -389,10 +390,22 @@ int main(void) {
 	}
 	printf("  encode queue on family %u\n", dev->caps.video_encode_family);
 
+	/* Display P3-ish primaries and 1000 nits, in the SEI's units: what a real
+	 * HDR monitor reports, rather than the BT.2020 reference values a script
+	 * has to guess when nothing exposes the panel's own. */
+	struct avk_encode_mastering mastering = {
+		.display_primaries_x = {13250, 7500, 34000},
+		.display_primaries_y = {34500, 3000, 16000},
+		.white_point_x = 15635, .white_point_y = 16450,
+		.max_luminance = 10000000, .min_luminance = 1,
+		.max_content_light_level = 1000,
+		.max_frame_average_light_level = 400,
+	};
+
 	/* The real display's size, because the alignment question only has a
 	 * right answer relative to a real one: 3840x2160 lands exactly on this
 	 * encoder's 64x16 granularity and 1366x768 does not. */
-	struct avk_encoder *enc = avk_encoder_create(dev, 3840, 2160, AVK_ENCODE_COLOUR_HDR10);
+	struct avk_encoder *enc = avk_encoder_create(dev, 3840, 2160, AVK_ENCODE_COLOUR_HDR10, &mastering);
 	CHECK(enc != NULL, "a 3840x2160 H.265 Main 10 session is created");
 	if (enc != NULL) {
 		CHECK(enc->session != VK_NULL_HANDLE, "the session handle is real");
@@ -473,6 +486,38 @@ int main(void) {
 				CHECK(found_idr,
 					"an IDR picture NAL unit follows the parameter sets");
 
+				/* The container. A raw elementary stream is not a file
+				 * anything opens, and a screenshot that needs ffmpeg
+				 * explained to it is not a screenshot. */
+				void *heif = NULL;
+				size_t heif_len = 0;
+				struct avk_heif_colour hc = {
+					.primaries = 9, .transfer = 16, .matrix = 9,
+					.full_range = true,
+				};
+				bool wrapped = avk_heif_wrap(stream, len, 3840, 2160, &hc,
+					&heif, &heif_len);
+				CHECK(wrapped, "the picture wraps as a HEIF still");
+				if (wrapped) {
+					const uint8_t *h = heif;
+					CHECK(heif_len > len,
+						"the container is larger than its payload "
+						"(%zu vs %zu)", heif_len, len);
+					CHECK(heif_len > 12 && memcmp(h + 4, "ftyp", 4) == 0
+							&& memcmp(h + 8, "heic", 4) == 0,
+						"it begins with an ftyp declaring heic");
+					const char *hp = getenv("AVK_HEIF_OUT");
+					if (hp != NULL) {
+						FILE *hf = fopen(hp, "wb");
+						if (hf != NULL) {
+							fwrite(heif, heif_len, 1, hf);
+							fclose(hf);
+							printf("  wrote %s (%zu bytes)\n", hp, heif_len);
+						}
+					}
+					free(heif);
+				}
+
 				const char *out_path = getenv("AVK_ENCODE_OUT");
 				if (out_path != NULL) {
 					FILE *f = fopen(out_path, "wb");
@@ -492,7 +537,7 @@ int main(void) {
 	/* A size that does NOT land on the granularity has to be rounded up
 	 * rather than silently encoded at the wrong extent. 1366 is the width
 	 * that made this worth asserting: 1366/64 is not an integer. */
-	struct avk_encoder *odd = avk_encoder_create(dev, 1366, 768, AVK_ENCODE_COLOUR_HDR10);
+	struct avk_encoder *odd = avk_encoder_create(dev, 1366, 768, AVK_ENCODE_COLOUR_HDR10, NULL);
 	CHECK(odd != NULL, "an unaligned 1366x768 session is created too");
 	if (odd != NULL) {
 		CHECK(odd->coded_width == 1408,

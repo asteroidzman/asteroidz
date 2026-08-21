@@ -47,6 +47,26 @@ struct avk_device;
  * into the stream. A player reading the second while the first was different
  * shows a picture that is wrong in a way nobody reports as a bug.
  */
+/*
+ * HDR10 static metadata: what the DISPLAY can do, not what the picture
+ * contains. A tone-mapping player uses it to decide how to fit the second into
+ * the first, so the numbers have to come from the monitor rather than from a
+ * standard's reference values -- which is exactly what contrib/hdr-record.sh
+ * has to fall back on today, because IPC never exposed them.
+ *
+ * Units are the ones the SEI itself uses: chromaticity in 0.00002 increments,
+ * luminance in 0.0001 cd/m2. Everything zero means unknown, and then nothing
+ * is written.
+ */
+struct avk_encode_mastering {
+	uint16_t display_primaries_x[3];   /* G, B, R -- the SEI's own order */
+	uint16_t display_primaries_y[3];
+	uint16_t white_point_x, white_point_y;
+	uint32_t max_luminance, min_luminance;
+	uint16_t max_content_light_level;
+	uint16_t max_frame_average_light_level;
+};
+
 enum avk_encode_colour {
 	AVK_ENCODE_COLOUR_SDR,     /* BT.709 primaries, sRGB transfer, BT.709 matrix */
 	AVK_ENCODE_COLOUR_HDR10,   /* BT.2020 primaries, PQ transfer, BT.2020 NCL */
@@ -84,6 +104,10 @@ struct avk_encoder {
 	VkFormat src_format;
 	StdVideoH265LevelIdc level_idc;
 	enum avk_encode_colour colour;
+	/* HDR10 static metadata, as the display reported it. Zero means "not
+	 * known", and then no SEI is written at all -- an SEI full of guessed
+	 * numbers is worse than its absence, because a player believes it. */
+	struct avk_encode_mastering mastering;
 
 	/* The reconstructed picture. The encoder writes it whether or not
 	 * anything will reference it, so a still needs one even though it has no
@@ -146,7 +170,8 @@ bool avk_encoder_encode_still(struct avk_encoder *enc, VkImage src,
  * outside what the codec allows.
  */
 struct avk_encoder *avk_encoder_create(struct avk_device *dev,
-	uint32_t width, uint32_t height, enum avk_encode_colour colour);
+	uint32_t width, uint32_t height, enum avk_encode_colour colour,
+	const struct avk_encode_mastering *mastering);
 
 void avk_encoder_destroy(struct avk_encoder *enc);
 
