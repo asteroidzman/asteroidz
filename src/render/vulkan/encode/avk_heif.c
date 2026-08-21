@@ -310,15 +310,44 @@ bool avk_heif_wrap(const uint8_t *annexb, size_t annexb_len,
 				u8(&f, colour->full_range ? 0x80 : 0x00);
 				box_close(&f, cl);
 			}
+			if (colour->has_mastering) {
+				/* mdcv and clli, the container's own HDR10 metadata. Both
+				 * duplicate the bitstream's SEI on purpose: a HEIF reader
+				 * inspects item properties and never parses the coded
+				 * picture, so a file carrying only the SEI reports no
+				 * mastering data at all. */
+				size_t md = box_open(&f, "mdcv");
+				for (int i = 0; i < 3; i++) {
+					u16(&f, colour->master_x[i]);
+					u16(&f, colour->master_y[i]);
+				}
+				u16(&f, colour->white_x);
+				u16(&f, colour->white_y);
+				u32(&f, colour->max_luminance);
+				u32(&f, colour->min_luminance);
+				box_close(&f, md);
+
+				size_t cli = box_open(&f, "clli");
+				u16(&f, colour->max_cll);
+				u16(&f, colour->max_fall);
+				box_close(&f, cli);
+			}
 			box_close(&f, co);
 
 			size_t ma = full_box_open(&f, "ipma", 0, 0);
 			u32(&f, 1);          /* entry_count */
 			u16(&f, 1);          /* item_ID */
-			u8(&f, 3);           /* association_count */
+			/* Property indices are 1-based into ipco, in the order written
+			 * above, and an association that names a property the box does
+			 * not contain is a file no reader will open. */
+			u8(&f, colour->has_mastering ? 5 : 3);
 			u8(&f, 0x80 | 1);    /* essential | hvcC */
 			u8(&f, 0x80 | 2);    /* essential | ispe */
 			u8(&f, 3);           /* colr, not essential */
+			if (colour->has_mastering) {
+				u8(&f, 4);       /* mdcv */
+				u8(&f, 5);       /* clli */
+			}
 			box_close(&f, ma);
 		}
 		box_close(&f, ip);

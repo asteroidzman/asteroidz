@@ -5361,6 +5361,30 @@ static void az_avk_emit_cursors(struct az_avk_walk *walk,
  * display's own are unavailable. The luminance is not a guess, and it is the
  * half a tone-mapping player actually uses.
  */
+/* The same numbers again, in the container's shape. One function so the box
+ * and the SEI cannot drift apart -- they describe the same display and a
+ * reader is entitled to consult either. */
+static void az_avk_heif_colour_for(const struct avk_encode_mastering *m,
+		struct avk_heif_colour *out) {
+	*out = (struct avk_heif_colour){
+		.primaries = 9, .transfer = 16, .matrix = 9, .full_range = true,
+	};
+	if (m->max_luminance == 0 && m->white_point_x == 0) {
+		return;
+	}
+	out->has_mastering = true;
+	for (int i = 0; i < 3; i++) {
+		out->master_x[i] = m->display_primaries_x[i];
+		out->master_y[i] = m->display_primaries_y[i];
+	}
+	out->white_x = m->white_point_x;
+	out->white_y = m->white_point_y;
+	out->max_luminance = m->max_luminance;
+	out->min_luminance = m->min_luminance;
+	out->max_cll = m->max_content_light_level;
+	out->max_fall = m->max_frame_average_light_level;
+}
+
 static void az_avk_mastering_for(Monitor *m,
 		struct avk_encode_mastering *out) {
 	*out = (struct avk_encode_mastering){
@@ -5429,9 +5453,8 @@ static bool az_avk_encode_hdr_still(struct wlr_buffer *frame, Monitor *m,
 	bool ok = avk_encoder_encode_still(enc, img->image, img->layout,
 		px.x, px.y, &stream, &stream_len);
 	if (ok) {
-		struct avk_heif_colour colour = {
-			.primaries = 9, .transfer = 16, .matrix = 9, .full_range = true,
-		};
+		struct avk_heif_colour colour;
+		az_avk_heif_colour_for(&mastering, &colour);
 		void *file = NULL;
 		size_t file_len = 0;
 		ok = avk_heif_wrap(stream, stream_len, (uint32_t)px.width,
@@ -5501,9 +5524,8 @@ static void az_avk_hdr_shot(struct az_avk_output *out, Monitor *m,
 	bool ok = avk_encoder_encode_still(enc, target->image, target->layout,
 		0, 0, &stream, &stream_len);
 	if (ok) {
-		struct avk_heif_colour colour = {
-			.primaries = 9, .transfer = 16, .matrix = 9, .full_range = true,
-		};
+		struct avk_heif_colour colour;
+		az_avk_heif_colour_for(&mastering, &colour);
 		void *file = NULL;
 		size_t file_len = 0;
 		if (avk_heif_wrap(stream, stream_len, target->extent.width,

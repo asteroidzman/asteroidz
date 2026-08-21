@@ -20,6 +20,7 @@ contrib/wlbgeffect/ext-background-effect-v1-protocol.c
 contrib/wlbgeffect/ext-background-effect-v1-client-protocol.h
 contrib/wlsandbox/wlsandbox
 contrib/wlcapture/wlcapture
+contrib/wlhdrview/wlhdrview
 contrib/x11check/x11check
 
 /subprojects/.wraplock

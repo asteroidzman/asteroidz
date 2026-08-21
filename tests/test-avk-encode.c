@@ -472,6 +472,12 @@ int main(void) {
 				struct avk_heif_colour hc = {
 					.primaries = 9, .transfer = 16, .matrix = 9,
 					.full_range = true,
+					.has_mastering = true,
+					.master_x = {13250, 7500, 34000},
+					.master_y = {34500, 3000, 16000},
+					.white_x = 15635, .white_y = 16450,
+					.max_luminance = 10000000, .min_luminance = 1,
+					.max_cll = 1000, .max_fall = 400,
 				};
 				bool wrapped = avk_heif_wrap(stream, len, 3840, 2160, &hc,
 					&heif, &heif_len);

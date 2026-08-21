@@ -39,6 +39,20 @@ struct avk_heif_colour {
 	uint16_t transfer;
 	uint16_t matrix;
 	bool full_range;
+	/* HDR10 static metadata, as CONTAINER boxes.
+	 *
+	 * The same numbers already ride in the bitstream as SEI, and that is not
+	 * enough: a HEIF reader looks at the item's properties, not inside the
+	 * coded picture. libheif reported "no mastering metadata" on a file whose
+	 * stream carried it, which is how a viewer ends up tone mapping against
+	 * defaults it had no need to guess. Zero means absent, and then no box is
+	 * written. */
+	bool has_mastering;
+	uint16_t master_x[3], master_y[3];   /* G, B, R in 0.00002 units */
+	uint16_t white_x, white_y;
+	uint32_t max_luminance;              /* 0.0001 cd/m2 */
+	uint32_t min_luminance;
+	uint16_t max_cll, max_fall;          /* cd/m2 */
 };
 
 /*
