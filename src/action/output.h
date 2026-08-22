@@ -366,6 +366,22 @@ static bool output_apply_change(Monitor *m, const struct output_change *ch) {
 		monitor_start_retrain(m, 50);
 		return false;
 	}
+	/*
+	 * ── THE THIRD PATH THAT CHANGED AN OUTPUT AND TOLD THE PRESENTER NOTHING
+	 *
+	 * az_presenter derives nominal_period_ns from the mode, once, at reset.
+	 * The wlr-output-management handler resets on any successful commit
+	 * carrying mode, scale or transform; this one -- set_output_mode and
+	 * set_output_scale, the compositor's own dispatches -- committed the same
+	 * kinds of change and reset nothing, so the predictor went on pacing
+	 * against the refresh rate the output used to have.
+	 *
+	 * Same shape as the adaptive-sync gap in commit_vrr_state(): an external
+	 * client reconfiguring the display was handled and the compositor doing it
+	 * itself was not.
+	 */
+	az_presenter_reset(m, AZ_PRESENT_RESET_MODE);
+
 	/* BOTH EXTENTS, because "the output is now 800x600" is only half an answer
 	 * on a rotated output and the half that is missing is the one the renderer
 	 * walks the scene through. */

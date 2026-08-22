@@ -488,3 +488,49 @@ The loop is a property of real async page flips. The headless backend refuses
 the broken build — worth stating rather than writing a green test that proves
 nothing. A fixture needs either a DRM output or a fake backend that accepts an
 async flip and completes it off-vblank.
+
+## FIXED — the compositor reconfigured its own outputs without telling the presenter
+
+`az_presenter` derives its whole timing model from the output exactly once, when
+its epoch is reset: `nominal_period_ns` from the mode, and the VRR-or-fixed
+`regime` from `adaptive_sync_status`. The reset code says so plainly, and adds
+that the regime "cannot go stale within an epoch" because "an adaptive-sync
+toggle arrives as a commit and a commit is itself a reset trigger".
+
+That is true of exactly one of the paths that reconfigure an output. The
+wlr-output-management handler (wlr-randr, DMS, the settings panel) resets on any
+successful commit carrying mode, scale, transform or adaptive sync. The
+compositor's own paths did not:
+
+| path | reconfigures | reset before |
+| --- | --- | --- |
+| `commit_vrr_state()` | adaptive sync | none — `AZ_PRESENT_RESET_ADAPTIVE_SYNC` was declared, given a name string, and never raised by any caller |
+| `output_apply_change()` | mode, scale | none — no `az_presenter_reset` existed anywhere under `src/action/` |
+
+**How it surfaced.** `set_output_vrr,DP-1,0` turned adaptive sync off in
+hardware — `amsg get "monitor DP-1"` reported `vrr: false` — while the presenter
+went on reporting `present_regime: vrr` with the epoch unchanged.
+
+**Why it stayed hidden.** DP-1 ran `vrr 1` in monitors.kdl, pinning adaptive
+sync on. The regime was decided at output creation and happened to stay correct
+forever, so a path that never fired could not be wrong. Switching to dynamic
+VRR — off for the desktop, on for a fullscreen game — makes that path fire on
+every fullscreen transition, at which point a stale regime means the pacing
+model disagrees with the display for the rest of the session.
+
+**Why the duplication existed.** `action/output.h` is included at
+`asteroidz.c:2414`; `commit_vrr_state` is defined at 12505 and
+`present/az_presenter_impl.h` is included at 2427. Neither was reachable, so
+`set_output_vrr` had grown its own copy of the VRR commit — and the copy is
+where the reset went missing. Both now forward-declare and call the shared code.
+
+Covered by `contrib/regression/tests/output.sh`
+(`test_a_scale_change_ends_the_presenter_timing_epoch`), which fails on the
+build before the fix: the epoch stays at 1.
+
+### Not covered
+
+The adaptive-sync reason specifically. A headless output is not
+adaptive-sync-capable — `contrib/regression/tests/vrr.sh` says as much and
+asserts wiring rather than value — so the toggle cannot be driven there. The
+scale path exercises the same reset mechanism and is what the test uses instead.

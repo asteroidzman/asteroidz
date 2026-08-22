@@ -137,3 +137,65 @@ test_an_output_with_no_block_is_applied_but_not_saved() {
 	hl_assert_true "and the compositor is still answering" \
 		"$([ -n "$(hl_get "get all-monitors")" ] && echo true || echo false)"
 }
+
+# The presenter derives its timing model -- nominal_period_ns, and the VRR-or-
+# fixed regime -- from the output, ONCE, when its epoch is reset. Anything that
+# reconfigures the output without ending that epoch leaves the predictor pacing
+# against a display that no longer exists.
+#
+# The wlr-output-management handler (wlr-randr, DMS) always reset. The
+# compositor's OWN dispatches did not, in two separate places: set_output_mode /
+# set_output_scale through output_apply_change(), and the adaptive-sync toggle
+# in commit_vrr_state(). Both were found the same night, from a stale
+# present_regime that reported "vrr" while the hardware reported adaptive sync
+# disabled.
+#
+# Written against the defect: on the build before the fix, epoch stays 1 here.
+test_a_scale_change_ends_the_presenter_timing_epoch() {
+	command -v jq >/dev/null || { echo "  (skip: jq not available)"; return 0; }
+	local name="$HL_MON" was e0 e1 m0 m1
+
+	_epoch() { hl_get "get surface-intent" \
+		| jq -r ".outputs[] | select(.name==\"$name\") | .epoch // 0"; }
+	# `// 0` because a reason absent from the histogram has never fired, which
+	# is not the same as the field being missing and must not read as null.
+	_mode_resets() { hl_get "get surface-intent" \
+		| jq -r ".outputs[] | select(.name==\"$name\") | .resets.mode // 0"; }
+
+	was="$(hl_get "get all-monitors" | jq -r ".monitors[] | select(.name==\"$name\") | .scale")"
+	e0="$(_epoch)"; m0="$(_mode_resets)"
+
+	# Scale rather than mode: it reaches the same output_apply_change() and a
+	# headless output has no mode list for set_output_mode to pick from.
+	hl_dispatch "set_output_scale,$name,2" 1
+	e1="$(_epoch)"; m1="$(_mode_resets)"
+
+	hl_assert_true "a scale change opens a new presenter epoch" \
+		"$([ "${e1:-0}" -gt "${e0:-0}" ] && echo true || echo false)"
+	hl_assert_true "and is counted against the 'mode' reset reason" \
+		"$([ "${m1:-0}" -gt "${m0:-0}" ] && echo true || echo false)"
+
+	hl_dispatch "set_output_scale,$name,$was" 1
+}
+
+# The instrument itself: three counters added the same night, all of which
+# answer "how often did this change" rather than "what is it now". A dump that
+# cannot express the difference is what let an intermittent blank go
+# unattributed for a whole session.
+test_the_output_dump_carries_its_change_counters() {
+	command -v jq >/dev/null || { echo "  (skip: jq not available)"; return 0; }
+	local o
+	o="$(hl_get "get surface-intent" | jq -r ".outputs[] | select(.name==\"$HL_MON\")")"
+
+	hl_assert_true "outputs[] carries scanout_changes" \
+		"$(echo "$o" | jq -r 'has("scanout_changes")')"
+	hl_assert_true "outputs[] carries hdr_state_commits" \
+		"$(echo "$o" | jq -r 'has("hdr_state_commits")')"
+	hl_assert_true "outputs[] carries the reset histogram" \
+		"$(echo "$o" | jq -r 'has("resets")')"
+	# create is raised when the output's presenter is first built, so any
+	# running output has at least one. A histogram that is merely present and
+	# always empty would pass the check above and mean nothing.
+	hl_assert_true "and the histogram has recorded the output's own creation" \
+		"$(echo "$o" | jq -r '(.resets.create // 0) > 0')"
+}

@@ -595,6 +595,29 @@ state `wlr_output_test_state()` had just accepted. A rising `tear_busy_synced`
 means frames are arriving faster than the display retires them, not that
 anything is wrong; a rising `tear_dropped` means frames are being lost.
 
+Three counters answer *how often something changed*, which a single-instant
+dump cannot. An intermittent fault lives entirely in that gap.
+
+| field | meaning |
+| --- | --- |
+| `scanout_changes` | how many times the evaluated verdict MOVED. `not-evaluated` is never stored, so the per-frame reset does not count as a change |
+| `hdr_state_commits` | how many times the pending colour state was committed. That commit sets `allow_reconfiguration`, making it a **blocking modeset** — on DP, a visible blank |
+| `resets` / `epoch` | the presenter's timing-reset histogram, keyed by reason (`create`, `mode`, `enable`, `scale-transform`, `adaptive-sync`, `request-state`, `session`, `dpms`), and the epoch each reset opens |
+
+Every reason in `resets` is an output reconfiguration, so the histogram is what
+a "why did my screen flash" question resolves against. Each reset is also
+logged as it happens, with its reason and the new epoch — not rate-limited by
+decade, because a reset cannot recur at frame rate and the decade limit would
+hide occurrences 2 through 9, which is the whole range an occasional fault
+lives in.
+
+`hdr_state_commits` deserves suspicion when it climbs. The blocking modeset is
+justified in `render_monitor()` as the right trade for "a deliberate, rare HDR
+change", but the flag has a second writer:
+`client_pending_fullscreen_state()` sets it on any fullscreen transition while
+the monitor is HDR, where `m->hdr` does not move at all. A modeset per
+fullscreen transition is a blank per fullscreen transition.
+
 **A profile that is loaded is not necessarily applied**, so `icc` (present) and
 `icc_applied` (carried by the encode pass) are separate fields, and `icc_why`
 explains any gap between them. On an HDR output the profile is deliberately

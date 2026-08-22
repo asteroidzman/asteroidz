@@ -1779,6 +1779,9 @@ static void disable_adaptive_sync(Monitor *m, struct wlr_output_state *state);
  * included long before the definition, and the dispatch had grown its own copy
  * of this commit as a result -- a copy that missed the presenter reset. */
 static bool commit_vrr_state(Monitor *m, bool enable);
+/* Same reason: present/az_presenter_impl.h is included after action/output.h,
+ * and output_apply_change() has to end the timing epoch it just invalidated. */
+static void az_presenter_reset(Monitor *m, enum az_present_reset_reason why);
 static Client *get_next_stack_client(Client *c, bool reverse);
 static void set_float_malposition(Client *tc);
 static void set_size_per(Monitor *m, Client *c);
