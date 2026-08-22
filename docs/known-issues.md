@@ -425,6 +425,41 @@ An earlier measurement at `frequency 22` finished in 23% of its duration.
 `duration` is therefore an upper bound the spring may never reach. The lever is
 `frequency`; roughly 4-5 keeps it in motion for most of the configured time.
 
+## CORRECTION (2026-08-22) — the entry below names the wrong mechanism
+
+The measurement in it is real and the diagnosis "tearing is the flashing" is
+real. **The stated cause and the fix are wrong**, and the entry is kept rather
+than rewritten because the way it was wrong is the useful part.
+
+It claims the tearing branch in `render_monitor()` "asked nothing" while its
+siblings were gated on `needs_frame`. `apply_tear_state()` **already opened with
+that exact test** — pre-existing, four lines in. The gate added in
+`render_monitor()` was a duplicate of a check the callee already performed, so it
+could not have changed anything.
+
+The 141/s that appeared to vindicate it came from setting `allow-tearing 0`,
+which was the experiment that PROVED the diagnosis. The fix was then written and
+shipped without ever re-measuring with tearing back on. It was a no-op, and the
+runaway returned the first time a game ran: 11,060 flips/sec.
+
+**The real cause.** `wlr_scene_output_needs_frame()` is the OR of three terms —
+`output->needs_frame`, `pending_commit_damage`, `gamma_lut_changed` — and
+`apply_tear_state()` clears only the second. Either of the others holds it true
+and the flip repeats with the buffer already on the plane.
+
+**The real fix** is not "is a frame needed" but "is there new content to tear
+to". gamescope committed at **100.98 Hz** against a **143.87 Hz** panel while the
+compositor flipped **11,060 times a second** — ~110 torn flips per commit, every
+one the same picture. `apply_tear_state()` now bounds itself on the scanout
+candidate's `commit_count`, counting skips in `tear_unchanged`. Scanout only: a
+composited torn frame can legitimately differ without a client commit.
+
+**The lesson, which is the reason this correction is this long:** the experiment
+that identifies a cause is not the experiment that verifies a fix. Turning the
+feature off proved tearing was responsible; only turning it back ON with the fix
+in place could have shown the fix worked. See
+[[feedback-tests-must-be-able-to-fail]] — the same failure, one level up.
+
 ## FIXED — the tearing branch presented 71 times per refresh
 
 Reported as "flashing steam games", with "it worked yesterday". Both halves

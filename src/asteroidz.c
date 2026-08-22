@@ -1058,6 +1058,15 @@ struct Monitor {
 	uint64_t tear_busy_until_ns;
 	uint64_t tear_backoff;
 	/*
+	 * THE LAST CLIENT COMMIT THIS OUTPUT TORE TO, and how many flips were
+	 * skipped because it had not moved. needs_frame cannot bound the torn
+	 * path: it reads output->needs_frame and gamma_lut_changed as well as the
+	 * damage apply_tear_state() clears, so any one of the other two holds it
+	 * true and the flip repeats with the same buffer already on the plane.
+	 */
+	uint64_t tear_last_commit;
+	uint64_t tear_unchanged;
+	/*
 	 * CADENCE, FROM PRESENTATION RATHER THAN FROM GPU TIMING.
 	 *
 	 * The vblank-sequence delta between one presented frame and the next: 1
@@ -9679,32 +9688,11 @@ static void render_monitor(Monitor *m) {
 	 * the seam between asteroidz's frame and the renderer's. */
 
 	// only build and commit state when a frame is actually needed
-	/*
-	 * ── THE TEARING BRANCH ASKS THE SAME QUESTION AS ITS SIBLINGS ─────────
-	 *
-	 * It did not, and that is the whole of the "flashing steam games" defect.
-	 * Every other content branch below is gated on needs_frame; this one ran
-	 * on every frame event and flipped whatever buffer happened to be current
-	 * -- overwhelmingly the SAME buffer, already on the plane.
-	 *
-	 * Ungated it cannot settle, because a torn flip is asynchronous: it does
-	 * not wait for vblank, so its completion re-arms the frame event almost
-	 * immediately, and apply_tear_state() then sends frame_done the instant
-	 * the commit lands. Client renders, we flip, we say "go", client renders.
-	 * There is no vblank anywhere in that loop and nothing else bounds it.
-	 *
-	 * Measured on DP-1 at 144Hz with Warhammer under gamescope: 10,300 torn
-	 * flips a second, ~71 per refresh, the scanout address changing 71 times
-	 * mid-picture. Gating restores 141/s -- the panel rate. Tearing's whole
-	 * purpose is showing NEW content without waiting for vblank; re-flipping
-	 * unchanged pixels buys no latency and shreds the picture to pay for it.
-	 *
-	 * Safe as a predicate only because apply_tear_state() already clears
-	 * pending_commit_damage on a landed scanout. Without that the flag would
-	 * never fall and this would gate nothing.
-	 */
-	if (config.allow_tearing && frame_allow_tearing
-			&& wlr_scene_output_needs_frame(m->scene_output)) {
+	/* apply_tear_state() opens with the same needs_frame test its siblings
+	 * are gated on, and bounds itself on new content besides -- see the note
+	 * there, and the correction in known-issues.md about an earlier gate here
+	 * that duplicated the first test and could not have bounded anything. */
+	if (config.allow_tearing && frame_allow_tearing) {
 		apply_tear_state(m);
 	} else if (shotui.want_capture && shotui.capture_mon == m) {
 		wlr_log(WLR_DEBUG, "screenshot_ui: fulfilling capture on %s",

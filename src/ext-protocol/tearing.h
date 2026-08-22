@@ -165,6 +165,41 @@ void apply_tear_state(Monitor *m) {
 	enum az_scanout_verdict sv = AZ_SCANOUT_NOT_EVALUATED;
 	bool scanned_out = az_scanout_try(m, &state, &sv);
 	az_scanout_record_verdict(m, sv);
+	/*
+	 * ── A TORN FLIP OF A BUFFER ALREADY ON THE PLANE SHOWS NOTHING NEW ────
+	 *
+	 * Tearing buys sub-vblank latency for NEW content. Re-flipping the buffer
+	 * the display is already scanning changes no pixel, and pays for that with
+	 * the scanout address moving mid-picture.
+	 *
+	 * needs_frame() cannot bound this, which is why the early-out above is not
+	 * enough and why an added duplicate of it in render_monitor() bounded
+	 * nothing. It is the OR of three terms -- output->needs_frame,
+	 * pending_commit_damage, gamma_lut_changed -- and this function clears only
+	 * the second. Either of the others holds it true and the flip repeats.
+	 *
+	 * Measured on DP-1, Warhammer under gamescope: the client committed at
+	 * 100.98Hz against a 143.87Hz panel while this path flipped 11,060 times a
+	 * second -- about 110 torn flips per commit, every one of them the same
+	 * picture. Bounding on the commit counter ties the flip rate to the rate
+	 * new frames actually arrive, which is the only rate tearing has a reason
+	 * to run at.
+	 *
+	 * SCANOUT ONLY. A composited torn frame can legitimately differ without a
+	 * client commit -- a cursor, an overlay, an animation -- and gating that on
+	 * the client's counter would freeze them.
+	 */
+	if (scanned_out) {
+		Client *cand = mon_hdr_scanout_candidate(m);
+		if (cand != NULL) {
+			if (cand->commit_count == m->tear_last_commit) {
+				m->tear_unchanged++;
+				wlr_output_state_finish(&state);
+				return;
+			}
+			m->tear_last_commit = cand->commit_count;
+		}
+	}
 	if (!scanned_out) {
 		struct az_frame_options frame_options = {
 			.color_transform = az_output_color_transform(m),
