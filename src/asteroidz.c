@@ -12699,57 +12699,80 @@ static bool commit_vrr_state(Monitor *m, bool enable) {
 	return ok;
 }
 
-/* dynamic VRR: follow focus. vrr_global_enable keeps it always on; a
- * vrr_only_fullscreen window rule turns it on while that client is
- * fullscreen; focusing nothing (empty tag) turns it back off. */
+/*
+ * ── WHICH WINDOW DECIDES, AND WHY IT IS NOT THE FOCUSED ONE ───────────────
+ *
+ * This followed keyboard focus, and that is the wrong owner for the question.
+ * Adaptive sync is a property of the OUTPUT: it should be on when something on
+ * that display wants its cadence to drive the refresh rate, and focus is not
+ * that. check_vrr_enable() is called with NULL whenever focus is cleared --
+ * a layer-shell surface taking the keyboard, a popup, a notification -- and
+ * with a non-game client whenever focus lands on one.
+ *
+ * Under a global `vrr 1` that never showed, because the global pinned it on and
+ * the toggle never changed the committed status. Under dynamic VRR it showed
+ * immediately: a live session logged 18 adaptive-sync resets during one game,
+ * in on/off pairs 7 to 16 seconds apart, each one a real modeset and each one a
+ * visible blank. The operator reported it as the display resetting while
+ * playing.
+ *
+ * So the answer comes from the output. A fullscreen GAME-class window stays
+ * fullscreen and visible while a popup borrows the keyboard, so the answer does
+ * not change and nothing is committed.
+ *
+ * STILL GATED ON FULLSCREEN. A windowed game shares the output with a blinking
+ * cursor and a clock, and letting it drive the refresh rate makes everything
+ * else on that display stutter. Fullscreen is what makes "this client's cadence
+ * is the output's cadence" true.
+ *
+ * `vrr_only_fullscreen` still means exactly what it meant. What M13 generalised
+ * is the other way in: a window whose presentation class is GAME -- because it
+ * said so through wp-content-type, or because a presentation-class rule says so
+ * -- wants VRR for the same reason, and naming every game in the config was the
+ * gap.
+ */
+static bool mon_wants_vrr(Monitor *m) {
+	if (m == NULL) {
+		return false;
+	}
+	if (m->vrr_global_enable) {
+		return true;
+	}
+	Client *c;
+	wl_list_for_each(c, &clients, link) {
+		if (c->mon != m || c->iskilling || c->isminimized) {
+			continue;
+		}
+		if (!c->isfullscreen || !VISIBLEON(c, m)) {
+			continue;
+		}
+		if (c->vrr_only_fullscreen
+				|| az_present_class_of(c, NULL) == AZ_PRESENT_CLASS_GAME) {
+			return true;
+		}
+	}
+	return false;
+}
+
+/*
+ * `c` now only says WHICH output to re-evaluate, and may be NULL: the decision
+ * itself is mon_wants_vrr()'s. Kept as the signature because every caller
+ * already has the client that just changed, and selmon is the right fallback
+ * when it has no monitor yet -- setfakefullscreen() calls this before the
+ * client is placed, and dereferencing c->mon there used to crash.
+ */
 void check_vrr_enable(Client *c) {
 	Monitor *m = c && c->mon ? c->mon : selmon;
 
-	if (!m || !m->wlr_output || !m->wlr_output->enabled)
-		return;
-
-	if (!c) {
-		if (m->is_vrr_opening && !m->vrr_global_enable)
-			commit_vrr_state(m, false);
+	if (!m || !m->wlr_output || !m->wlr_output->enabled) {
 		return;
 	}
 
-	/* m, not c->mon, for the rest of this function. The two are the same
-	 * whenever the client has a monitor; when it does not, m is the selmon
-	 * fallback resolved above and c->mon is NULL. Dereferencing c->mon here
-	 * crashed: setfakefullscreen() calls this before the client is placed --
-	 * the arrange(c->mon, ...) four lines below its call already treats that
-	 * monitor as possibly-NULL -- and the guard above only rejects the case
-	 * where selmon is ALSO gone, so a running session with an unplaced client
-	 * walked straight into it. */
-	/*
-	 * ── M13: A GAME GETS VRR WITHOUT NEEDING A RULE PER GAME ──────────────
-	 *
-	 * vrr_only_fullscreen still means exactly what it meant, and a rule that
-	 * sets it still works. What is generalised is the OTHER way in: a window
-	 * whose presentation class is GAME -- because it said so through
-	 * wp-content-type, or because a presentation-class rule says so -- wants
-	 * VRR fullscreen for the same reason, and having to name every game in the
-	 * config was the gap.
-	 *
-	 * STILL GATED ON FULLSCREEN, for both. A windowed game shares the output
-	 * with a blinking cursor and a clock, and letting it drive the refresh rate
-	 * makes everything else on that display stutter. Fullscreen is what makes
-	 * "this client's cadence is the output's cadence" true.
-	 */
-	bool wants_vrr = c->isfullscreen
-		&& (c->vrr_only_fullscreen
-			|| az_present_class_of(c, NULL) == AZ_PRESENT_CLASS_GAME);
-
-	if (VISIBLEON(c, m) && wants_vrr && !m->is_vrr_opening) {
-		commit_vrr_state(m, true);
-		return;
-	}
-
-	if (!m->is_vrr_opening && m->vrr_global_enable) {
-		commit_vrr_state(m, true);
-	} else if (m->is_vrr_opening && !m->vrr_global_enable && !wants_vrr) {
-		commit_vrr_state(m, false);
+	/* Compared against what the output IS, so a re-evaluation that reaches the
+	 * same answer commits nothing. Every focus change calls this. */
+	bool want = mon_wants_vrr(m);
+	if (want != m->is_vrr_opening) {
+		commit_vrr_state(m, want);
 	}
 }
 
