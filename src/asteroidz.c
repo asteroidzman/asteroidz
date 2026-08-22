@@ -1354,6 +1354,17 @@ struct Monitor {
 	 * backend. Instead, set this and let rendermon() fold the color-state
 	 * change into the next regular frame's own commit. */
 	bool hdr_pending_change;
+	/*
+	 * HOW OFTEN THE COLOUR-STATE COMMIT ACTUALLY RAN.
+	 *
+	 * That commit sets allow_reconfiguration, which makes it a blocking
+	 * MODESET -- justified in render_monitor() as the right trade for "a
+	 * deliberate, rare HDR change". Nothing measured whether it is rare. It is
+	 * also set by client_pending_fullscreen_state() on any fullscreen
+	 * transition while the monitor is HDR, where m->hdr does not move at all,
+	 * and a modeset per transition is a blank per transition.
+	 */
+	uint64_t hdr_state_commits;
 
 	/*
 	 * THE CONTENT METADATA CURRENTLY FOLDED INTO THIS CONNECTOR.
@@ -9749,6 +9760,14 @@ static void render_monitor(Monitor *m) {
 		 * trade: one blocking commit on a deliberate, rare HDR change beats a
 		 * guaranteed failure plus a retrain. */
 		state.allow_reconfiguration = true;
+		m->hdr_state_commits++;
+		/* By decade: if this is genuinely rare the first few lines are the
+		 * whole story, and if it is not, the count is the finding. */
+		if (az_log_decade(m->hdr_state_commits)) {
+			wlr_log(WLR_INFO, "HDR state commit on %s: blocking modeset, "
+				"hdr=%d (%" PRIu64 " so far)", m->wlr_output->name,
+				(int)m->hdr, m->hdr_state_commits);
+		}
 		mon_state_apply_color(m, &state);
 		mon_derive_color_state(m, &state);
 		struct az_frame_options frame_options = {

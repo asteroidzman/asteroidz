@@ -1271,6 +1271,8 @@ static void handle_command(int client_fd, const char *cmd_raw) {
 				(double)om->scanout_frames);
 			cJSON_AddNumberToObject(e, "scanout_changes",
 				(double)om->scanout_changes);
+			cJSON_AddNumberToObject(e, "hdr_state_commits",
+				(double)om->hdr_state_commits);
 			/* What the torn-flip path did, per outcome. `tear_busy_synced` is
 			 * the one no test can predict: the state was tearable and the
 			 * previous flip simply had not finished, so the frame went out on
