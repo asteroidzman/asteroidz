@@ -1775,6 +1775,10 @@ static bool check_trackpad_disabled(struct wlr_pointer *pointer);
 static uint32_t get_tag_status(uint32_t tag, Monitor *m);
 static void enable_adaptive_sync(Monitor *m, struct wlr_output_state *state);
 static void disable_adaptive_sync(Monitor *m, struct wlr_output_state *state);
+/* Declared up here so set_output_vrr() can reach it: action/output.h is
+ * included long before the definition, and the dispatch had grown its own copy
+ * of this commit as a result -- a copy that missed the presenter reset. */
+static bool commit_vrr_state(Monitor *m, bool enable);
 static Client *get_next_stack_client(Client *c, bool reverse);
 static void set_float_malposition(Client *tc);
 static void set_size_per(Monitor *m, Client *c);
@@ -12502,15 +12506,42 @@ static void hdr_resolve_all(void) {
 		hdr_resolve(m);
 }
 
-static void commit_vrr_state(Monitor *m, bool enable) {
+static bool commit_vrr_state(Monitor *m, bool enable) {
+	enum wlr_output_adaptive_sync_status before =
+		m->wlr_output->adaptive_sync_status;
 	struct wlr_output_state state;
 	wlr_output_state_init(&state);
 	if (enable)
 		enable_adaptive_sync(m, &state);
 	else
 		disable_adaptive_sync(m, &state);
-	wlr_output_commit_state(m->wlr_output, &state);
+	bool ok = wlr_output_commit_state(m->wlr_output, &state);
 	wlr_output_state_finish(&state);
+	/*
+	 * ── THE REGIME IS DECIDED ONCE PER EPOCH, SO THE EPOCH MUST END HERE ──
+	 *
+	 * az_presenter picks VRR-or-fixed from adaptive_sync_status at reset time
+	 * and never revisits it, on the stated grounds that "an adaptive-sync
+	 * toggle arrives as a commit and a commit is itself a reset trigger".
+	 * That is true of the wlr-output-management path, which resets on any
+	 * successful commit carrying adaptive sync -- and false of this one, the
+	 * compositor's OWN toggle, which reset nothing. AZ_PRESENT_RESET_ADAPTIVE_
+	 * SYNC was declared, given a name string, and never once raised.
+	 *
+	 * It went unnoticed while VRR was pinned on by a global: the regime was
+	 * decided at output creation and happened to stay right. Dynamic VRR --
+	 * off for the desktop, on for a fullscreen game -- makes this path fire on
+	 * every such transition, so a stale regime would mean the pacing model
+	 * disagrees with the display for the entire session.
+	 *
+	 * Gated on an ACTUAL change: a commit that re-states the status the output
+	 * already had must not burn an epoch, and check_vrr_enable() is called on
+	 * every focus change.
+	 */
+	if (ok && m->wlr_output->adaptive_sync_status != before) {
+		az_presenter_reset(m, AZ_PRESENT_RESET_ADAPTIVE_SYNC);
+	}
+	return ok;
 }
 
 /* dynamic VRR: follow focus. vrr_global_enable keeps it always on; a

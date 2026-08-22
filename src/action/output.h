@@ -586,15 +586,11 @@ int32_t set_output_vrr(const Arg *arg) {
 	if (!m || !m->wlr_output)
 		return 0;
 
-	struct wlr_output_state state;
-	wlr_output_state_init(&state);
-	if (arg->i)
-		enable_adaptive_sync(m, &state);
-	else
-		disable_adaptive_sync(m, &state);
 	m->vrr_global_enable = arg->i ? 1 : 0;
-	bool ok = wlr_output_commit_state(m->wlr_output, &state);
-	wlr_output_state_finish(&state);
+	/* The shared commit, not a second copy of it: this one resets the
+	 * presenter's epoch when the status actually moves, which the copy that
+	 * used to live here did not. */
+	bool ok = commit_vrr_state(m, arg->i != 0);
 	if (ok) {
 		printstatus(IPC_WATCH_ARRANGGE);
 		const char *keys[] = {"vrr"};
