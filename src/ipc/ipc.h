@@ -1262,6 +1262,21 @@ static void handle_command(int client_fd, const char *cmd_raw) {
 			cJSON_AddNumberToObject(e, "misses", (double)om->presenter.misses);
 			cJSON_AddNumberToObject(e, "prediction_exceeded",
 				(double)om->presenter.prediction_exceeded);
+			/* The reset histogram, by reason. Each reset is an output
+			 * reconfiguration; on DP that is a visible blank, so this is the
+			 * counter a "why did my screen flash" question resolves against. */
+			cJSON *rs = cJSON_CreateObject();
+			for (int32_t ri = 0; ri < (int32_t)AZ_PRESENT_RESET_COUNT; ri++) {
+				if (om->presenter.resets[ri] == 0) {
+					continue;
+				}
+				cJSON_AddNumberToObject(rs,
+					az_present_reset_reason_name(
+						(enum az_present_reset_reason)ri),
+					(double)om->presenter.resets[ri]);
+			}
+			cJSON_AddItemToObject(e, "resets", rs);
+			cJSON_AddNumberToObject(e, "epoch", (double)om->presenter.epoch);
 			/* M13B: what this OUTPUT did last frame, and how often it has
 			 * skipped composition entirely. */
 			cJSON_AddStringToObject(e, "scanout_last",

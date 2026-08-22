@@ -51,6 +51,26 @@ static void az_presenter_reset(Monitor *m, enum az_present_reset_reason why) {
 	memcpy(p->resets, carried, sizeof(carried));
 	if (why < AZ_PRESENT_RESET_COUNT) {
 		p->resets[why]++;
+		/*
+		 * EVERY REASON HERE IS AN OUTPUT RECONFIGURATION, and on DP a
+		 * reconfiguration is a blank the operator sees. The counter above was
+		 * written for "how often does this output reset its timing" and was
+		 * readable from nowhere -- not the IPC dump, not the log -- so a
+		 * user-visible flash had no counter anyone could point at.
+		 *
+		 * EVERY ONE, not the usual decade rate-limit. That limit exists for
+		 * conditions that recur at frame rate; a reset cannot, because each
+		 * one is a blocking reconfiguration. What the diagnosis needs is the
+		 * INSTANT of each, to sit beside "I just saw it flash" -- and a
+		 * decade limit would hide occurrences 2 through 9, which is the entire
+		 * range an occasional fault lives in.
+		 */
+		if (m->wlr_output != NULL) {
+			wlr_log(WLR_INFO, "presenter: %s reset by %s (%" PRIu64
+				" of that reason, epoch %" PRIu32 ")",
+				m->wlr_output->name, az_present_reset_reason_name(why),
+				p->resets[why], epoch);
+		}
 	}
 
 	p->sync = AZ_PRESENT_UNSYNCED;
