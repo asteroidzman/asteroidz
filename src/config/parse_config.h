@@ -108,6 +108,7 @@ typedef struct {
 	int32_t noswallow;
 	int32_t noblur;
 	int32_t noscanout;
+	int32_t xwayland_scale_one;
 	float focused_opacity;
 	float unfocused_opacity;
 	/* M5, ADR-006: the per-window luminance domain's two levers. 0 = unset,
@@ -2864,6 +2865,7 @@ bool parse_option(Config *config, char *key, char *value) {
 		rule->noswallow = -1;
 		rule->noblur = -1;
 		rule->noscanout = -1;
+		rule->xwayland_scale_one = -1;
 		rule->nofocus = -1;
 		rule->nofadein = -1;
 		rule->nofadeout = -1;
@@ -3016,6 +3018,8 @@ bool parse_option(Config *config, char *key, char *value) {
 					rule->noswallow = atoi(val);
 				} else if (strcmp(key, "noblur") == 0) {
 					rule->noblur = atoi(val);
+				} else if (strcmp(key, "xwayland_scale_one") == 0) {
+					rule->xwayland_scale_one = atoi(val);
 				} else if (strcmp(key, "noscanout") == 0) {
 					rule->noscanout = atoi(val);
 				} else if (strcmp(key, "scroller_proportion") == 0) {

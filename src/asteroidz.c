@@ -724,6 +724,8 @@ struct Client {
 	int32_t isnoshadow;
 	int32_t isnotitlebar;
 	int32_t noscanout;
+	/* -1 follows misc/xwayland-force-scale-one; 0/1 override it. */
+	int32_t xwayland_scale_one;
 	int32_t vrr_only_fullscreen;
 	int32_t force_hdr;
 	int32_t privacy_shield;
@@ -3631,6 +3633,7 @@ static void apply_rule_properties(Client *c, const ConfigWinRule *r,
 	APPLY_INT_PROP(c, r, isnoshadow);
 	APPLY_INT_PROP(c, r, isnotitlebar);
 	APPLY_INT_PROP(c, r, noscanout);
+	APPLY_INT_PROP(c, r, xwayland_scale_one);
 	APPLY_INT_PROP(c, r, vrr_only_fullscreen);
 	APPLY_INT_PROP(c, r, force_hdr);
 	APPLY_INT_PROP(c, r, privacy_shield);
@@ -4033,6 +4036,7 @@ static void client_reset_rule_properties(Client *c) {
 	c->isnoshadow = 0;
 	c->isnotitlebar = 0;
 	c->noscanout = 0;
+	c->xwayland_scale_one = -1;
 	c->vrr_only_fullscreen = 0;
 	c->force_hdr = 0;
 	c->privacy_shield = 0;
@@ -8613,6 +8617,7 @@ void init_client_properties(Client *c) {
 	c->isnoradius = 0;
 	c->isnoshadow = 0;
 	c->noscanout = 0;
+	c->xwayland_scale_one = -1;
 	c->ignore_maximize = 1;
 	c->ignore_minimize = 1;
 	c->iscustomsize = 0;
@@ -13541,7 +13546,37 @@ static Monitor *client_x11_monitor(Client *c) {
  * different scales are the reason this is per client at all.
  */
 static float client_x11_target_scale(Client *c) {
-	if (!config.xwayland_force_scale_one || !client_is_x11(c)) {
+	if (!client_is_x11(c)) {
+		return 1.0f;
+	}
+	/*
+	 * ── PER WINDOW, BECAUSE THE TRADE IS NOT THE SAME FOR EVERY WINDOW ────
+	 *
+	 * Xwayland sizes its X screen from the outputs' LOGICAL geometry and
+	 * wlroots 0.20 exposes no way to tell it otherwise, so a window sized in
+	 * DEVICE PIXELS overflows that screen by exactly the scale factor. X11
+	 * requires the pointer to be inside the root window, so every position
+	 * past the edge is clamped before the client is told -- on a 1.5x output
+	 * that is every click below logical y = height/1.5, roughly the bottom
+	 * third of any X11 window. See the screen_clamp arm in
+	 * contrib/xw-scale-test.sh, which asserts the clamped value on purpose.
+	 *
+	 * The trade is therefore native resolution against absolute pointer
+	 * accuracy in the outer 1/scale. A fullscreen game that grabs the pointer
+	 * uses relative motion and does not care, which is the case the option
+	 * exists for. Discord's mute and settings buttons sit at the bottom of a
+	 * tall window and care a great deal.
+	 *
+	 * Hyprland's force_zero_scaling has the same limitation -- hyprwm/Hyprland
+	 * #2566 reports the pointer "bound to the top left quadrant", which is
+	 * this clamp at scale 2 -- and is global-only, so there is no way to keep
+	 * it for a game and drop it for a chat client. This is that way.
+	 */
+	int32_t want = c->xwayland_scale_one;
+	if (want < 0) {
+		want = config.xwayland_force_scale_one;
+	}
+	if (!want) {
 		return 1.0f;
 	}
 	return x11_scale_of_mon(client_x11_monitor(c));

@@ -518,3 +518,43 @@ To change one of those for an existing window, close and reopen it.
 `monitor` and `tags` are placement, and follow the same rule: they apply when
 the window opens. A reload does not move existing windows between outputs or
 tags.
+
+## `xwayland-scale-one` — native-resolution X11, per window
+
+`misc/xwayland-force-scale-one` renders X11 windows at device resolution on a
+fractionally scaled output instead of magnifying a smaller buffer. It is sharp,
+and it has a cost that is not obvious.
+
+Xwayland sizes its X screen from the outputs' **logical** geometry, so a window
+sized in device pixels overflows that screen by exactly the scale factor. X11
+requires the pointer to be inside the root window, so any position past the edge
+is clamped before the client is told. On a 1.5x output that is every click below
+roughly the bottom third of the window — it lands short, silently, with a
+pixel-perfect picture. Controls along the bottom of a tall window become
+unreachable.
+
+There is no fix for that inside the compositor: wlroots 0.20 exposes no way to
+tell Xwayland a different screen size, Xwayland 24.1 has no `-scale`, and
+reporting the outputs at scale 1 to enlarge the X screen would take fractional
+scaling away from every Wayland client. Hyprland's equivalent
+(`xwayland:force_zero_scaling`) has the same limitation — see
+[hyprwm/Hyprland#2566](https://github.com/hyprwm/Hyprland/issues/2566), where the
+pointer is described as "bound to the top left quadrant", which is this clamp at
+scale 2.
+
+What can be done is to decide it per window, which the global option alone
+cannot:
+
+```kdl
+window-rule { match app-id=discord; xwayland-scale-one 0 }
+```
+
+The trade splits cleanly along how a window uses the pointer:
+
+| | keep it on | turn it off |
+| --- | --- | --- |
+| fullscreen games | ✅ grabs the pointer, uses **relative** motion, unaffected by the clamp | |
+| apps with controls near the bottom | | ✅ absolute pointer position must be right everywhere |
+
+Unset (the default) follows `misc/xwayland-force-scale-one`. Being an ordinary
+rule property it applies on a reload, so it can be tested without a restart.

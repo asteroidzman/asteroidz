@@ -387,6 +387,18 @@ static const RuleField rule_schema[] = {
  "Let this window's frames reach the screen without waiting for vblank. Lower "
  "latency, visible tearing.",
  RULE_TRISTATE, offsetof(ConfigWinRule, force_tearing), 0, 1, NULL, 0},
+{"xwayland_scale_one", "xwayland-scale-one", "appearance",
+ "Native-resolution XWayland",
+ "Override misc/xwayland-force-scale-one for this window. On a fractionally "
+ "scaled output it renders an X11 window at device resolution instead of "
+ "magnifying a smaller buffer. THE TRADE: Xwayland sizes its X screen from the "
+ "outputs' logical geometry, so a pixel-sized window overflows it and X11 "
+ "clamps the pointer to the screen edge -- on a 1.5x output every click below "
+ "roughly the bottom third of the window lands short. Worth it for a "
+ "fullscreen game, which grabs the pointer and uses relative motion; not worth "
+ "it for a window whose controls are along the bottom. Set 0 to opt a window "
+ "out.",
+ RULE_TRISTATE, offsetof(ConfigWinRule, xwayland_scale_one), 0, 1, NULL, 0},
 {"noscanout", "no-scanout", "performance", "No direct scan-out",
  "Keep this window out of direct scan-out and push it through the render pass. "
  "For clients whose buffers are not safe to hand straight to a KMS plane -- "

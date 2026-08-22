@@ -552,4 +552,60 @@ xwayland_force_scale_one 1" >/dev/null 2>&1
 
 screen_clamp_arm 1.25-screen-clamp 1.25
 
+# ── THE OPT-OUT, WHICH IS THE ONLY AVAILABLE ANSWER TO THAT CLAMP ──────────
+#
+# The arm above asserts a limitation with no fix inside this compositor:
+# Xwayland derives its X screen from the outputs' LOGICAL geometry, wlroots
+# 0.20 exposes no way to say otherwise, and Xwayland 24.1 has no -scale. It is
+# not ours alone -- Hyprland's force_zero_scaling clamps identically
+# (hyprwm/Hyprland #2566 describes the pointer "bound to the top left
+# quadrant", which is this at scale 2) and is global, so there it is all
+# windows or none.
+#
+# `xwayland-scale-one 0` takes one window out of it. Same output, same scale,
+# same global option ON -- and because the window is no longer sized in device
+# pixels it fits inside the X screen, so the click that clamped above is exact.
+#
+# THE ASSERTION IS THE UNCLAMPED VALUE, and it is the same pointer position the
+# clamp arm uses. Run against a build without the per-window override, this arm
+# reports 1535 863 and fails.
+optout_arm() { # optout_arm NAME SCALE
+	local name="$1" scale="$2"
+	wanted "$name" || return 0
+
+	echo
+	echo "── arm $name (output scale $scale) ──"
+	HL_SCALE1="$scale"; HL_ENV="$BREAKS"; export HL_SCALE1 HL_ENV
+	hl_start "$FLAT_BASE
+xwayland_force_scale_one 1
+window-rule { match title=xw$name; xwayland-scale-one 0 }" >/dev/null 2>&1
+	hl_xdisplay >/dev/null || {
+		hl_assert "$name: Xwayland came up" "no" "yes"; hl_stop >/dev/null 2>&1; return; }
+	hl_spawn_x11check "xw$name" 40 "x11-$name" >/dev/null
+	hl_wait_client_count 1 80 || {
+		hl_assert "$name: the X11 client mapped" "no" "yes"; hl_stop >/dev/null 2>&1; return; }
+	hl_dispatch "toggle_fullscreen" 1
+	hl_x11check_wait_configure 1536 864 "x11-$name" 50 || true
+
+	# PREMISE, and the whole point of the arm: the rule won over the global, so
+	# the window is sized in LOGICAL units and fits the X screen. Without this
+	# the click assertions below could pass for the wrong reason -- a window
+	# that never overflowed because the arm failed to go fullscreen at all.
+	hl_assert "$name: premise -- the rule beat the global; sized logically" \
+		"$(hl_x11check_last_configure "x11-$name")" "1536 864"
+
+	hl_move 900 500; sleep 0.3; hl_click 900 500; sleep 0.5
+	hl_assert "$name: inside the old screen, still exact" \
+		"$(hl_x11check_last_button "x11-$name")" "900 500"
+
+	# The position that clamped to 1535 863 with the option on.
+	hl_move 1450 800; sleep 0.3; hl_click 1450 800; sleep 0.5
+	hl_assert "$name: and where it used to clamp, the click now lands" \
+		"$(hl_x11check_last_button "x11-$name")" "1450 800"
+
+	hl_stop >/dev/null 2>&1
+}
+
+optout_arm 1.25-scale-one-optout 1.25
+
 hl_summary
