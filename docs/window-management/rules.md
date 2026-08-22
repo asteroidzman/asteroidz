@@ -484,3 +484,37 @@ misc {
     layerrule animation_type_open:slide,animation_type_close:fade,noblur:1,layer_name:wofi
 }
 ```
+
+## Changing a rule while windows are open
+
+`reload_config` re-applies window rules to clients that are **already mapped**,
+so editing a rule and reloading takes effect without a restart. Before 0.26 it
+did not: `apply_rule_properties()` ran only at map time, and roughly 36
+per-window properties — `no-scanout`, `force_tearing`, `force_hdr`, `no-blur`,
+the opacities, `presentation-class` among them — silently required restarting
+the compositor.
+
+Removing a property works too, which is worth stating because it does not fall
+out for free. A rule only *writes* a property it specifies, so re-running rules
+alone could add one and never take it away; each client is reset to its defaults
+first, and the matching rules are then applied over that.
+
+### What a reload deliberately does not re-apply
+
+Ten properties describe how a window **opened**, or state the user can change at
+runtime. Re-asserting them on every reload would undo the user's own actions,
+so they apply at map time only:
+
+| property | why |
+| --- | --- |
+| `float`, `open-fullscreen`, `open-fakefullscreen` | a decision about the map. Re-applying would drag a window the user had since tiled or un-fullscreened back again |
+| `open-silent`, `tag-silent` | describe the open *event*; there is no open event during a reload |
+| `scratchpad`, `global`, `unglobal`, `overlay`, `pinned` | the user toggles these at runtime, and a reload must not silently revert a live choice |
+
+To change one of those for an existing window, close and reopen it.
+
+### Monitor and tag assignment
+
+`monitor` and `tags` are placement, and follow the same rule: they apply when
+the window opens. A reload does not move existing windows between outputs or
+tags.

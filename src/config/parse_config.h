@@ -5752,6 +5752,9 @@ void config_apply_live(void) {
 
 	reapply_tagrule();
 	reapply_monitor_rules();
+	/* Window rules, on the clients that are already open. Before the border
+	 * repaint and the arrange() below, both of which read what this writes. */
+	reapply_window_rules();
 
 	/* re-paint existing clients' borders: colours live per-client and are
 	 * otherwise only refreshed on focus transitions, so a reload with a new

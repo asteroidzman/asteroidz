@@ -781,3 +781,61 @@ test_a_captured_chord_can_be_written_as_a_bind() {
 			&& echo true || echo false)"
 	_ri_restore
 }
+
+# A window rule changed at runtime must reach the windows that are ALREADY
+# open. It did not: apply_rule_properties() ran only from applyrules(),
+# applyrules() ran only at map, and config_apply_live() never re-ran window
+# rules -- so every one of ~36 per-window properties silently needed a restart.
+# Reported by the operator as "some of these flags don't reconfigure the
+# compositor live", after a no-scanout rule added live did nothing.
+#
+# vrr_only_fullscreen is the probe because it is a plain rule property that the
+# client JSON already reports, so the assertion reads the compositor's own state
+# rather than a side effect of it.
+test_a_rule_added_at_runtime_reaches_an_already_open_window() {
+	command -v jq >/dev/null || { echo "  (skip: jq not available)"; return 0; }
+	hl_spawn_kitty W1 >/dev/null
+	hl_wait_client_count 1
+	sleep 0.2
+
+	hl_assert_false "no matching rule yet, so the property is at its default" \
+		"$(hl_client_field W1 vrr_only_fullscreen)"
+
+	printf '\nwindow-rule { match title=W1; vrr_only_fullscreen 1 }\n' >> "$HL_CONFIG"
+	hl_dispatch "reload_config" 1
+	hl_assert_true "a rule added and reloaded reaches an already-open window" \
+		"$(hl_client_field W1 vrr_only_fullscreen)"
+
+	# THE HALF THAT NEEDS THE RESET. APPLY_INT_PROP only writes when a rule
+	# specifies a value, so re-running rules can add a property and never
+	# remove one. Without client_reset_rule_properties() this assertion fails
+	# while the one above passes -- which is the shape of a fix that looks
+	# complete and is half done.
+	sed -i '/vrr_only_fullscreen 1/d' "$HL_CONFIG"
+	hl_dispatch "reload_config" 1
+	hl_assert_false "and REMOVING the rule returns it to the default" \
+		"$(hl_client_field W1 vrr_only_fullscreen)"
+}
+
+# The other half of the design, and the more dangerous one to get wrong.
+# open-fullscreen means OPEN fullscreen -- it is a decision about the map, not
+# a property to re-assert forever. A reload that re-applied it would drag a
+# window the user had since un-fullscreened back, on every reload, which is a
+# worse bug than the one being fixed.
+test_a_reload_does_not_re_apply_placement_to_an_open_window() {
+	command -v jq >/dev/null || { echo "  (skip: jq not available)"; return 0; }
+	hl_spawn_kitty W1 >/dev/null
+	hl_wait_client_count 1
+	sleep 0.2
+
+	hl_assert_false "the window is not fullscreen to begin with" \
+		"$(hl_get "get all-clients" | jq -r '.clients[] | select(.title=="W1") | .fullscreen')"
+
+	printf '\nwindow-rule { match title=W1; open-fullscreen }\n' >> "$HL_CONFIG"
+	hl_dispatch "reload_config" 1
+	hl_assert_false "an open-fullscreen rule does NOT fullscreen it on reload" \
+		"$(hl_get "get all-clients" | jq -r '.clients[] | select(.title=="W1") | .fullscreen')"
+
+	sed -i '/open-fullscreen/d' "$HL_CONFIG"
+	hl_dispatch "reload_config" 1
+}

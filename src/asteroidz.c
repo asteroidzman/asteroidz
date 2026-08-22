@@ -2263,6 +2263,11 @@ static struct {
  * windows that are already open. */
 static void client_update_x11_scale(Client *c);
 #endif
+/* Same reason as client_update_x11_scale above: config/parse_config.h is
+ * included before this is defined, and config_apply_live() has to reach it.
+ * Re-applying window rules to already-mapped clients is what makes a rule
+ * change take effect without a restart. */
+static void reapply_window_rules(void);
 #include "config/preset.h"
 struct Pertag {
 	uint32_t curtag, prevtag;
@@ -3579,7 +3584,29 @@ int32_t scroller_edge_scroll_timeout(void *data) {
 	return 0;
 }
 
-static void apply_rule_properties(Client *c, const ConfigWinRule *r) {
+/*
+ * ── WHAT A RULE MEANS ON A WINDOW THAT IS ALREADY OPEN ────────────────────
+ *
+ * `live` is a config reload re-applying rules to mapped clients, and ten of
+ * these must not be re-applied there. They are not ongoing properties:
+ *
+ *   isfloating, isfullscreen, isfakefullscreen   how the window OPENED. A rule
+ *     saying open-fullscreen means open fullscreen, not "be fullscreen
+ *     forever" -- re-asserting it would drag a window the user had since
+ *     tiled back to fullscreen on every reload.
+ *   isopensilent, istagsilent                    describe the open EVENT, and
+ *     there is no open event to be silent about here.
+ *   isnamedscratchpad, isglobal, isunglobal,
+ *   isoverlay, ispinned                          the user toggles these at
+ *     runtime. A reload that reasserted the rule would silently undo a live
+ *     choice, which is worse than the rule not applying at all.
+ *
+ * Everything else IS an ongoing property -- noscanout, force_tearing,
+ * force_hdr, noblur, the opacities, presentation_class -- and those are the
+ * ones whose absence sent the operator to a restart.
+ */
+static void apply_rule_properties(Client *c, const ConfigWinRule *r,
+		bool live) {
 	APPLY_INT_PROP(c, r, isterm);
 	APPLY_INT_PROP(c, r, allow_csd);
 	APPLY_INT_PROP(c, r, force_ssd);
@@ -3591,9 +3618,15 @@ static void apply_rule_properties(Client *c, const ConfigWinRule *r) {
 	APPLY_INT_PROP(c, r, nofadein);
 	APPLY_INT_PROP(c, r, nofadeout);
 	APPLY_INT_PROP(c, r, no_force_center);
-	APPLY_INT_PROP(c, r, isfloating);
-	APPLY_INT_PROP(c, r, isfullscreen);
-	APPLY_INT_PROP(c, r, isfakefullscreen);
+	if (!live) {
+		APPLY_INT_PROP(c, r, isfloating);
+	}
+	if (!live) {
+		APPLY_INT_PROP(c, r, isfullscreen);
+	}
+	if (!live) {
+		APPLY_INT_PROP(c, r, isfakefullscreen);
+	}
 	APPLY_INT_PROP(c, r, isnoborder);
 	APPLY_INT_PROP(c, r, isnoshadow);
 	APPLY_INT_PROP(c, r, isnotitlebar);
@@ -3601,19 +3634,33 @@ static void apply_rule_properties(Client *c, const ConfigWinRule *r) {
 	APPLY_INT_PROP(c, r, vrr_only_fullscreen);
 	APPLY_INT_PROP(c, r, force_hdr);
 	APPLY_INT_PROP(c, r, privacy_shield);
-	APPLY_INT_PROP(c, r, ispinned);
+	if (!live) {
+		APPLY_INT_PROP(c, r, ispinned);
+	}
 	APPLY_INT_PROP(c, r, isnoradius);
 	APPLY_INT_PROP(c, r, isnoanimation);
-	APPLY_INT_PROP(c, r, isopensilent);
-	APPLY_INT_PROP(c, r, istagsilent);
-	APPLY_INT_PROP(c, r, isnamedscratchpad);
-	APPLY_INT_PROP(c, r, isglobal);
-	APPLY_INT_PROP(c, r, isoverlay);
+	if (!live) {
+		APPLY_INT_PROP(c, r, isopensilent);
+	}
+	if (!live) {
+		APPLY_INT_PROP(c, r, istagsilent);
+	}
+	if (!live) {
+		APPLY_INT_PROP(c, r, isnamedscratchpad);
+	}
+	if (!live) {
+		APPLY_INT_PROP(c, r, isglobal);
+	}
+	if (!live) {
+		APPLY_INT_PROP(c, r, isoverlay);
+	}
 	APPLY_INT_PROP(c, r, ignore_maximize);
 	APPLY_INT_PROP(c, r, ignore_minimize);
 	APPLY_INT_PROP(c, r, isnosizehint);
 	APPLY_INT_PROP(c, r, idleinhibit_when_focus);
-	APPLY_INT_PROP(c, r, isunglobal);
+	if (!live) {
+		APPLY_INT_PROP(c, r, isunglobal);
+	}
 	APPLY_INT_PROP(c, r, noblur);
 	APPLY_INT_PROP(c, r, allow_shortcuts_inhibit);
 
@@ -3729,7 +3776,7 @@ void applyrules(Client *c) {
 			continue;
 
 		// set general properties
-		apply_rule_properties(c, r);
+		apply_rule_properties(c, r, false);
 
 		// // set tags
 		if (r->tags > 0) {
@@ -3935,6 +3982,123 @@ void applyrules(Client *c) {
 	if (c->ispinned && c->scene) {
 		wlr_scene_node_raise_to_top(&c->scene->node);
 	}
+}
+
+/*
+ * ── A RULE CHANGE THAT DOES NOT NEED A RESTART ────────────────────────────
+ *
+ * Reported by the operator as "some of these flags don't reconfigure the
+ * compositor live". They were right, and it was not a small gap:
+ * apply_rule_properties() ran only from applyrules(), applyrules() ran only at
+ * map, and config_apply_live() -- which re-applies keyboard, pointer, cursor,
+ * blur, master, tag rules, monitor rules, border colours and X11 scale --
+ * never re-ran window rules at all. It cost a wrong diagnosis in this session:
+ * a `no-scanout 1` rule added live, reloaded, reported success, and did
+ * nothing.
+ *
+ * ── WHY THE RESET COMES FIRST ─────────────────────────────────────────────
+ *
+ * APPLY_INT_PROP is `if (rule->prop >= 0) obj->prop = rule->prop`. It only
+ * writes when a rule SPECIFIES a value, so re-running rules alone would let a
+ * property be added live and never removed -- delete `no-blur` from a rule,
+ * reload, and the window stays unblurred until it is closed. Resetting to the
+ * defaults first is what makes removal expressible.
+ *
+ * ── AND WHY NOT init_client_properties() ──────────────────────────────────
+ *
+ * That is the existing defaults function and it is NOT safe on a live client:
+ * it nulls overview_scene_surface, re-arms is_pending_open_animation, and
+ * zeroes float_geom -- which would discard every floating window's remembered
+ * geometry on every reload. It resets lifecycle state as well as rule state,
+ * and only the second half belongs here.
+ *
+ * Seven of these are reset by nothing at all today (force_hdr, privacy_shield,
+ * vrr_only_fullscreen, isnotitlebar, and both animation_type_*). That is
+ * harmless at map, where the client is freshly zeroed, and would be a silent
+ * hole here.
+ */
+static void client_reset_rule_properties(Client *c) {
+	c->isterm = 0;
+	c->allow_csd = 0;
+	c->force_ssd = 0;
+	c->force_fakemaximize = 0;
+	c->force_tiled_state = 1;
+	c->force_tearing = 0;
+	c->noswallow = 0;
+	c->nofocus = 0;
+	c->nofadein = 0;
+	c->nofadeout = 0;
+	c->no_force_center = 0;
+	c->isnoborder = 0;
+	c->isnoshadow = 0;
+	c->isnotitlebar = 0;
+	c->noscanout = 0;
+	c->vrr_only_fullscreen = 0;
+	c->force_hdr = 0;
+	c->privacy_shield = 0;
+	c->isnoradius = 0;
+	c->isnoanimation = 0;
+	/* Both default to 1, not 0. Zeroing them would quietly start honouring
+	 * maximize and minimize requests the compositor deliberately ignores. */
+	c->ignore_maximize = 1;
+	c->ignore_minimize = 1;
+	c->isnosizehint = 0;
+	c->idleinhibit_when_focus = 0;
+	c->noblur = 0;
+	c->allow_shortcuts_inhibit = SHORTCUTS_INHIBIT_ENABLE;
+	c->scroller_proportion = config.scroller_default_proportion;
+	c->scroller_proportion_single = 0.0f;
+	c->focused_opacity = config.focused_opacity;
+	c->unfocused_opacity = config.unfocused_opacity;
+	c->sdr_white_scale = 1.0f;
+	c->hdr_gain = 1.0f;
+	c->luminance_domain = NULL;
+	c->presentation_class = NULL;
+	c->animation_type_open = NULL;
+	c->animation_type_close = NULL;
+}
+
+/*
+ * Re-run the window rules over every mapped client.
+ *
+ * The same matcher applyrules() uses, so "which rules match this window"
+ * cannot drift between the map path and the reload path. Placement and tags
+ * are deliberately NOT redone -- see apply_rule_properties()'s `live` argument
+ * for which ten properties that excludes and why.
+ */
+static void reapply_window_rules(void) {
+	Client *c;
+	uint32_t i;
+	wl_list_for_each(c, &clients, link) {
+		struct wlr_surface *surface = client_surface(c);
+		if (surface == NULL || !surface->mapped || c->iskilling) {
+			continue;
+		}
+		const char *appid = client_get_appid(c);
+		const char *title = client_get_title(c);
+		if (appid == NULL) {
+			appid = broken;
+		}
+		if (title == NULL) {
+			title = broken;
+		}
+
+		client_reset_rule_properties(c);
+		for (i = 0; i < config.window_rules_count; i++) {
+			const ConfigWinRule *r = &config.window_rules[i];
+			if (!is_window_rule_matches(r, c, appid, title)) {
+				continue;
+			}
+			apply_rule_properties(c, r, true);
+		}
+
+		/* Properties the scene or the backend holds a COPY of have to be
+		 * pushed; a field write alone would leave the two disagreeing. */
+		client_set_prevent_scanout(c, c->noscanout);
+	}
+	/* Output-scoped and once, not per client: force_hdr is resolved by asking
+	 * each output whether any of its clients wants it. */
+	hdr_resolve_all();
 }
 
 void arrangelayer(Monitor *m, struct wl_list *list, struct wlr_box *usable_area,
