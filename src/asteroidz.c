@@ -2109,6 +2109,10 @@ static bool start_drag_window = false;
 static int32_t last_apply_drap_time = 0;
 
 static struct wlr_output_layout *output_layout;
+/* held so the global filter can name it: xdg-output is hidden from the
+ * Xwayland client so its X screen comes out in device pixels. See
+ * x11_root_wants_pixels(). */
+static struct wlr_xdg_output_manager_v1 *xdg_output_manager;
 static struct wlr_box sgeom;
 static struct wl_list mons;
 static Monitor *selmon;
@@ -12102,7 +12106,7 @@ void setup(void) {
 	 * arrangement of screens in a physical layout. */
 	output_layout = wlr_output_layout_create(dpy);
 	wl_signal_add(&output_layout->events.change, &layout_change);
-	wlr_xdg_output_manager_v1_create(dpy, output_layout);
+	xdg_output_manager = wlr_xdg_output_manager_v1_create(dpy, output_layout);
 
 	/* Configure a listener to be notified when new outputs are available on
 	 * the backend. */
@@ -13174,6 +13178,13 @@ void updatemons(struct wl_listener *listener, void *data) {
 	 * wl_pointer.motion event for the clients, it's only the image what
 	 * it's at the wrong position after all. */
 	wlr_cursor_move(cursor, NULL, 0, 0);
+
+#ifdef XWAYLAND
+	/* Xwayland's X screen is sized from the xdg-output it is given, and that
+	 * one is ours: it has to be resent when the layout, a mode or a scale
+	 * changes, or the X screen keeps the size the desktop used to be. */
+	x11_xdg_outputs_update();
+#endif
 
 	wlr_output_manager_v1_set_configuration(output_mgr, output_config);
 }

@@ -119,8 +119,13 @@ CLICK_X=900; CLICK_Y=500
 #                               the pixel gate must stay green -- that pairing
 #                               is the whole point, because the defect it
 #                               models is invisible on screen.
+#   AZ_BREAK_X11_ROOT_SIZE=1    let Xwayland see xdg-output again, so its
+#                               X screen goes back to the LOGICAL desktop:
+#                               the root-size gate and the click outside
+#                               the old screen must go red, and every gate
+#                               inside the old screen must stay green.
 BREAKS=""
-for v in AZ_BREAK_X11_VIEW_SCALE AZ_BREAK_X11_INPUT_SCALE; do
+for v in AZ_BREAK_X11_VIEW_SCALE AZ_BREAK_X11_INPUT_SCALE AZ_BREAK_X11_ROOT_SIZE; do
 	eval "val=\${$v:-}"
 	[ -n "$val" ] && BREAKS="$BREAKS $v=$val"
 done
@@ -475,44 +480,44 @@ tiled_arm 1.25-overview 1.25 "xwayland_force_scale_one 1" \
 	'hl_dispatch "toggle_overview" 1.5; hl_dispatch "toggle_overview" 1.5; sleep 1' \
 	skip-configure
 
-# ── THE X SCREEN IS A FIFTH BOUNDARY, AND IT IS NOT OURS TO CONVERT ──────
+# ── THE X SCREEN IS A FIFTH BOUNDARY, AND IT IS ONE WE CAN MOVE ──────────
 #
-# This arm asserts a DEFECT, on purpose, because the alternative is that
-# nobody finds out about it until a user does.
+# Xwayland sizes its X screen from what it is told the outputs are: 1536x864
+# for a 1920x1080 display at 1.25. This option sizes windows in DEVICE PIXELS,
+# so a fullscreen window used to be 1920x1080 inside a 1536x864 screen and
+# overflowed it by exactly the scale factor. X11 requires the pointer to be
+# inside the root window, so every position beyond the screen was clamped to
+# its edge before the client was told, and the client was told window-relative
+# coordinates derived from that clamped position:
 #
-# Xwayland sizes its X screen from the outputs' LOGICAL geometry: 1536x864 for
-# a 1920x1080 display at 1.25. This option sizes windows in DEVICE PIXELS, so
-# a fullscreen window is 1920x1080 inside a 1536x864 screen and overflows it
-# by exactly the scale factor. X11 requires the pointer to be inside the root
-# window, so every pointer position beyond the screen is clamped to its edge
-# before the client is told -- and the client is told window-relative
-# coordinates derived from that clamped position.
-#
-# Measured, at scale 1.25, fullscreen, option ON:
-#
-#     logical (600,400)  -> 750,500     correct
 #     logical (900,500)  -> 1125,625    correct
-#     logical (1300,700) -> 1535,863    CLAMPED (should be 1625,875)
 #     logical (1450,800) -> 1535,863    CLAMPED (should be 1812,1000)
 #
-# With the option off all four are exact. So the option trades pointer
-# accuracy in the outer 1/scale of a window for native resolution. Games that
-# lock or grab the pointer use relative motion and are unaffected, which is
-# the case the option is for; anything using absolute pointer position in that
-# band is not.
+# For a long time this arm asserted those clamped values, on the reasoning
+# that Xwayland derives the screen from the outputs' logical geometry and
+# wlroots 0.20 exposes no way to tell it otherwise. The second half of that
+# was wrong. RandR really is refused -- `xrandr --fb` against Xwayland returns
+# success and changes nothing -- but the screen size is not read from one
+# fixed source. xwayland-output.c writes xwl_output->width/height from
+# xdg-output's logical_size when that protocol is present and from
+# wl_output.mode when it is not, and output_get_new_size() reads nothing else;
+# wl_output.scale never enters the calculation. So hiding xdg-output from the
+# Xwayland client alone -- see xdg_output_visible_to() in
+# src/ext-protocol/modern.h -- gives it an X screen in device pixels, the same
+# unit its windows were already sized and positioned in, and takes fractional
+# scaling away from nobody.
 #
-# There is no fix available from inside this compositor. Xwayland derives the
-# screen from the wl_output/xdg_output logical geometry, wlroots 0.20 exposes
-# no way to tell Xwayland a different one, and reporting the outputs at scale
-# 1 to get a bigger X screen would take fractional scaling away from every
-# Wayland client. It is the one part of the design that cannot be expressed as
-# a conversion at a boundary the compositor owns.
-#
-# THE ASSERTION IS THE CLAMPED VALUE. That pins the limitation in place: if
-# somebody makes the X screen big enough, this arm goes red and the comment
-# above is what tells them it is red because the bug is FIXED.
-screen_clamp_arm() { # screen_clamp_arm NAME SCALE
-	local name="$1" scale="$2"
+# THE ASSERTIONS ARE THE UNCLAMPED VALUES, and the arm carries its own
+# falsifier: AZ_BREAK_X11_ROOT_SIZE=1 puts xdg-output back and restores the
+# clamp exactly, which is what the break arm below asserts. Without that pair
+# a green run here would be indistinguishable from an arm that stopped
+# reaching the overflow band at all.
+screen_arm() { # screen_arm NAME SCALE WANT_SCREEN WANT_FAR SCREEN_IS FAR_IS
+	local name="$1" scale="$2" want_screen="$3" want_far="$4"
+	# Named by the caller so a GREEN break arm still reads as the clamp it is.
+	# With one fixed wording the falsifier would print "sized in device pixels"
+	# while asserting the logical desktop, which is worse than no label.
+	local screen_is="$5" far_is="$6"
 	wanted "$name" || return 0
 
 	echo
@@ -530,45 +535,63 @@ xwayland_force_scale_one 1" >/dev/null 2>&1
 
 	local scr
 	scr="$(grep '^screen ' "$HL_OUTDIR/x11-$name.log" | head -1 | awk '{print $2, $3}')"
-	# PREMISE: the X screen really is smaller than the window. Without this
-	# the arm would "pass" on any layout where nothing overflows, asserting a
-	# clamp that never happened.
-	hl_assert "$name: premise -- the X screen is the LOGICAL desktop" "$scr" "1536 864"
-	hl_assert "$name: premise -- the window is larger than the X screen" \
+	hl_assert "$name: the X screen is $screen_is" "$scr" "$want_screen"
+	# PREMISE. Every click assertion below is about a window sized in pixels;
+	# if the window came out logical the far probe would land inside it by
+	# accident and the arm would pass while measuring nothing.
+	hl_assert "$name: premise -- the window is sized in device pixels" \
 		"$(hl_x11check_last_configure "x11-$name")" "1920 1080"
 
-	# Inside the screen: exact.
+	# Inside the OLD screen: exact either way, so this one gate must stay
+	# green even under the break. It separates "the root got bigger" from
+	# "the input path broke".
 	hl_move 900 500; sleep 0.3; hl_click 900 500; sleep 0.5
-	hl_assert "$name: inside the X screen, the click is exact" \
+	hl_assert "$name: inside the old X screen, the click is exact" \
 		"$(hl_x11check_last_button "x11-$name")" "1125 625"
 
-	# Outside it: clamped to the screen's last pixel. KNOWN LIMITATION.
+	# Past the old screen edge: 1450 x 1.25 = 1812, 800 x 1.25 = 1000. This is
+	# the band that used to clamp to 1535 863.
 	hl_move 1450 800; sleep 0.3; hl_click 1450 800; sleep 0.5
-	hl_assert "$name: outside it, the click clamps to the X screen edge" \
-		"$(hl_x11check_last_button "x11-$name")" "1535 863"
+	hl_assert "$name: past the old X screen edge, the click $far_is" \
+		"$(hl_x11check_last_button "x11-$name")" "$want_far"
 
 	hl_stop >/dev/null 2>&1
 }
 
-screen_clamp_arm 1.25-screen-clamp 1.25
+screen_arm 1.25-screen 1.25 "1920 1080" "1812 1000" \
+	"sized in device pixels" "still lands"
 
-# ── THE OPT-OUT, WHICH IS THE ONLY AVAILABLE ANSWER TO THAT CLAMP ──────────
+# THE FALSIFIER FOR THE ARM ABOVE. Same scale, same option, same probes --
+# only xdg-output is visible to Xwayland again, which is the state the clamp
+# was discovered in. It must report the LOGICAL screen and the clamped click,
+# and its inside-the-old-screen gate must still pass: an arm that went red
+# everywhere would prove the break broke the input path rather than the root
+# size. Run this against a build without xdg_output_visible_to() and it is the
+# arm above that is red instead.
+if [ -z "${AZ_BREAK_X11_ROOT_SIZE:-}" ]; then
+	( export AZ_BREAK_X11_ROOT_SIZE=1
+	  BREAKS="$BREAKS AZ_BREAK_X11_ROOT_SIZE=1"
+	  screen_arm 1.25-screen-clamped 1.25 "1536 864" "1535 863" \
+		"back to the logical desktop" "clamps to the edge again" )
+fi
+
+# ── THE OPT-OUT, WHICH IS NO LONGER ABOUT THE CLAMP ───────────────────────
 #
-# The arm above asserts a limitation with no fix inside this compositor:
-# Xwayland derives its X screen from the outputs' LOGICAL geometry, wlroots
-# 0.20 exposes no way to say otherwise, and Xwayland 24.1 has no -scale. It is
-# not ours alone -- Hyprland's force_zero_scaling clamps identically
-# (hyprwm/Hyprland #2566 describes the pointer "bound to the top left
-# quadrant", which is this at scale 2) and is global, so there it is all
-# windows or none.
+# This arm was written when the clamp above had no fix and taking one window
+# out of pixel sizing was the only way to reach its bottom third. The X screen
+# is device-sized now, so that is not what the option is for any more: it is
+# for a window that is better off in logical units whatever the screen size --
+# one that reads the X screen's DPI and sizes its own UI from it, or one whose
+# fonts a user simply prefers larger.
 #
-# `xwayland-scale-one 0` takes one window out of it. Same output, same scale,
-# same global option ON -- and because the window is no longer sized in device
-# pixels it fits inside the X screen, so the click that clamped above is exact.
-#
-# THE ASSERTION IS THE UNCLAMPED VALUE, and it is the same pointer position the
-# clamp arm uses. Run against a build without the per-window override, this arm
-# reports 1535 863 and fails.
+# It still has to keep working, and under a device-sized screen it is the
+# window rather than the screen that has changed shape: sized logically at
+# 1536x864 inside a 1920x1080 root, with no edge to clamp against from either
+# direction. THE ASSERTIONS ARE THE LOGICAL COORDINATES, unchanged, and they
+# are the same pointer positions the arm above probes in pixels -- which is
+# what makes the pair meaningful: identical input, two different correct
+# answers, decided by the rule alone. Run against a build without the
+# per-window override and this arm reports 1812 1000 and fails.
 optout_arm() { # optout_arm NAME SCALE
 	local name="$1" scale="$2"
 	wanted "$name" || return 0

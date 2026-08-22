@@ -196,10 +196,12 @@ int main(int argc, char **argv) {
 
 	/* The size of the X screen as this client sees it. Reported, never
 	 * asserted on here: it is what an X11 app that measures the display for
-	 * itself reads, it comes from Xwayland's own view of the wl_outputs rather
-	 * than from anything the compositor configures, and it is what makes a
-	 * window sized in device pixels overflow the screen it lives on. See the
-	 * 1.25-screen-clamp arm of contrib/xw-scale-test.sh. */
+	 * itself reads, and it comes from Xwayland's own view of the wl_outputs
+	 * rather than from anything the compositor configures directly. It used to
+	 * be the logical desktop, which is what made a window sized in device
+	 * pixels overflow the screen it lived on; it is the device-pixel desktop
+	 * now. The 1.25-screen and 1.25-screen-clamped arms of
+	 * contrib/xw-scale-test.sh assert both, off this line. */
 	printf("screen %d %d\n", screen->width_in_pixels,
 		   screen->height_in_pixels);
 

@@ -1718,17 +1718,24 @@ bit-exactness there would assert more than the option claims. `1.25-anim` and
 `1.25-overview` cover the two paths that write the scene buffer's destination
 size *themselves*, per frame: a wrong value there wins over the view scale,
 and only while something is moving, so a fixture measuring a still desktop
-cannot see it. `1.25-screen-clamp` asserts a defect on purpose — see below.
+cannot see it. `1.25-screen` and its falsifier cover the X screen itself — see below.
 
-**One arm asserts a limitation rather than a behaviour.** Xwayland sizes its X
-screen from the outputs' *logical* geometry, while this option sizes windows
-in device pixels, so a fullscreen window overflows the screen it lives on and
-X11 clamps the pointer to the root window. Measured at 1.25×: logical
-(900,500) arrives correctly at 1125,625, and logical (1450,800) arrives at
-1535,863 — the screen's last pixel — instead of 1812,1000. The
-`1.25-screen-clamp` arm claims those clamped values, with premises that the
-screen really is smaller than the window, so the limitation cannot quietly
-change. If it ever goes red, the X screen got big enough and the bug is fixed.
+**One pair of arms runs identical probes and expects two different answers.**
+Xwayland used to size its X screen from the outputs' *logical* geometry while
+this option sized windows in device pixels, so a fullscreen window overflowed
+the screen it lived on and X11 clamped the pointer to the root window: at
+1.25×, logical (1450,800) arrived at 1535,863 — the screen's last pixel —
+instead of 1812,1000. Hiding xdg-output from the Xwayland client gives it a
+device-pixel screen and removes that, so `1.25-screen` asserts 1920×1080 and
+1812,1000. On its own that arm cannot distinguish a fixed root from a probe
+that stopped reaching the overflow band, so `1.25-screen-clamped` re-runs it
+verbatim under `AZ_BREAK_X11_ROOT_SIZE=1`, which restores xdg-output and must
+reproduce 1536×864 and 1535,863. Both arms keep a green gate at logical
+(900,500) → 1125,625, which is correct either way: if that one goes red the
+break broke the input path rather than the root size. The arms take their
+assertion *labels* from their caller for the same reason — a falsifier
+printing "the X screen is sized in device pixels" in green while asserting the
+logical desktop would be worse than no label at all.
 
 **Both premises are load-bearing and both have been observed red.** A window
 that never painted has no greys, so a gate counting only those calls a blank
@@ -1776,13 +1783,16 @@ monitor was picked.
 logical x = 1536, so anything written against an origin of 0,0 would pass on
 one output and fail here — which is the same trap live multi-monitor runs hit.
 
-**The click probe on the second output is at logical 600, not 900, and the
-reason is a real limitation rather than a tuning choice.** That window sits at
-X 2304 and is 2880 wide, while the whole X screen is only 3456 — so it runs
-off the right of the X screen at local x = 1152 and X11 clamps the pointer to
-the root window. A probe past that point reports the screen edge no matter
-what the compositor sent. See the `1.25-screen-clamp` arm of
-`contrib/xw-scale-test.sh`, which asserts that clamping deliberately.
+**The click probe on the second output is at logical 900, and it used to be at
+600 because of a limitation rather than a tuning choice.** That window sits at
+X 2304 and is 2880 wide, and the whole X screen used to be only 3456 — so it
+ran off the right at local x = 1152 and X11 clamped the pointer to the root
+window, reporting 1151 where 1350 was expected. Xwayland now gets a
+device-pixel xdg-output of its own, which puts the second output's X zone at
+2304..5184 and leaves nothing to clamp against, so the probe sits in the band
+that used to be unreachable. It is the assertion no single-output fixture can
+make: the second output's zone *origin* has to be right, not just its scale.
+`AZ_BREAK_X11_ROOT_SIZE=1` is its falsifier and reproduces 1151 exactly.
 
 `AZ_BREAK_X11_MON_MIGRATE=1` is its falsifier: never re-evaluate the scale when
 a window changes monitor, so it keeps the units of the display it opened on.

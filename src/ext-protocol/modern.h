@@ -13,6 +13,10 @@
  *  - xdg-system-bell-v1: bell marks the client urgent
  */
 
+#ifdef XWAYLAND
+#include "xdg-output-unstable-v1-protocol.h"
+#endif
+
 static struct wlr_content_type_manager_v1 *content_type_manager;
 static struct wlr_ext_foreign_toplevel_list_v1 *ext_foreign_toplevel_list;
 static struct wlr_security_context_manager_v1 *security_context_manager;
@@ -146,6 +150,222 @@ static const char *const privileged_global_interfaces[] = {
 static bool frog_wp_color_manager_visible(const struct wl_client *client,
 										  const struct wl_global *global);
 
+/* ── THE X SCREEN IS SIZED BY WHAT XWAYLAND IS TOLD, NOT BY WHAT IT DRAWS ──
+ *
+ * xwayland_force_scale_one sizes X11 windows in DEVICE PIXELS, but Xwayland
+ * sizes its X screen from the outputs' LOGICAL geometry, so on a 1.5x output
+ * every window is 1.5x taller than the screen it lives in. X11 requires the
+ * pointer to be inside the root window, so every position past the edge is
+ * clamped before the client is told: the picture stays pixel-perfect and the
+ * bottom third of every X11 window becomes unclickable, every click landing
+ * on the same row. Discord's mute/deafen/settings row sits exactly there.
+ *
+ * There is no API to resize that screen. RandR is the obvious try and it is
+ * refused -- `xrandr --fb 3840x2160` against Xwayland returns success and
+ * changes nothing, because Xwayland owns the screen size and recomputes it
+ * from its Wayland outputs. Xwayland 24.1 has no -scale, and wlroots 0.20
+ * passes no extra argv to the server.
+ *
+ * WHAT DECIDES IT IS WHICH PROTOCOL XWAYLAND LEARNS THE OUTPUTS FROM.
+ * xwayland-output.c takes the size from xwl_output->width/height, and those
+ * are written by whichever source is present:
+ *
+ *   with xdg-output    xdg_output_handle_logical_size()  -> 2560x1440
+ *   without xdg-output output_handle_mode()              -> 3840x2160
+ *
+ * output_get_new_size() consults neither wl_output.scale nor anything else;
+ * output_handle_scale() only stores a field nothing reads for the screen.
+ *
+ * MERELY HIDING XDG-OUTPUT IS NOT ENOUGH, AND IT IS WRONG IN A WAY THAT ONLY
+ * A SECOND OUTPUT REVEALS. wlroots sends wl_output.geometry with x = 0, y = 0
+ * for every output -- a wl_output does not know its own place in the layout,
+ * and the position travels ONLY as xdg-output's logical_position. Take
+ * xdg-output away and Xwayland stacks every output at the origin: the X
+ * screen shrinks to the widest single mode instead of spanning the desktop,
+ * and windows on the second output overflow it far worse than before. The
+ * mon2 probe in contrib/xw-mixed-test.sh caught exactly that -- a click that
+ * should have landed at local x 900 came back 575, the screen's last pixel.
+ *
+ * So Xwayland gets an xdg-output of its own instead, bound to nobody else:
+ * the same protocol carrying the same two numbers, measured in device pixels
+ * rather than logical units. Position and size are both the monitor's logical
+ * box times x11_scale_of_mon(), which is the identical conversion
+ * client_x11_configure() uses to place the windows and client_x11_monitor()
+ * uses to attribute them -- so the screen, the windows in it and the zones
+ * that name them are finally all in one unit. Version 2 on purpose: at 3 the
+ * `done` event is deprecated and Xwayland waits for wl_output.done instead,
+ * which wlroots emits on a schedule of its own. Nothing else about the client
+ * changes: wl_output v4 still carries the output NAME, so RandR keeps
+ * reporting DP-1 rather than a generic XWAYLAND0.
+ *
+ * This is a property of the SERVER, not of a window, so it follows the global
+ * default rather than the per-window xwayland-scale-one rule, and it is
+ * decided when Xwayland binds its globals -- a reload cannot move it, only a
+ * restart. A window that opts OUT still works under a pixel-sized screen: it
+ * is sized and positioned in logical units, which simply makes it a smaller
+ * window in a larger root, with no edge to clamp against.
+ *
+ * BREAK: AZ_BREAK_X11_ROOT_SIZE=1 puts wlroots' own xdg-output back in front
+ * of Xwayland and withholds ours, which restores the clamp exactly and
+ * changes nothing else. It is what contrib/xw-scale-test.sh's root-size
+ * assertions are falsified against, and what contrib/xw-mixed-test.sh checks
+ * its own X-screen reasoning against.
+ */
+#ifdef XWAYLAND
+/* Defined with the other X11 boundaries in asteroidz.c, which is included
+ * after this file. The scale an X11 window on this monitor is measured in. */
+static float x11_scale_of_mon(Monitor *m);
+
+struct x11_xdg_output {
+	struct wl_resource *resource;
+	struct wlr_output *output;
+	struct wl_listener output_destroy;
+	struct wl_list link;
+};
+
+static struct wl_global *x11_xdg_output_manager;
+static struct wl_list x11_xdg_outputs;
+
+static void x11_xdg_output_send(struct x11_xdg_output *xo) {
+	Monitor *m = xo->output != NULL ? xo->output->data : NULL;
+	if (m == NULL)
+		return;
+
+	float s = x11_scale_of_mon(m);
+	zxdg_output_v1_send_logical_position(xo->resource,
+		(int32_t)lroundf((float)m->m.x * s),
+		(int32_t)lroundf((float)m->m.y * s));
+	zxdg_output_v1_send_logical_size(xo->resource,
+		(int32_t)lroundf((float)m->m.width * s),
+		(int32_t)lroundf((float)m->m.height * s));
+	zxdg_output_v1_send_done(xo->resource);
+}
+
+/* called from updatemons(), i.e. on every layout, mode or scale change */
+void x11_xdg_outputs_update(void) {
+	struct x11_xdg_output *xo;
+	wl_list_for_each(xo, &x11_xdg_outputs, link)
+		x11_xdg_output_send(xo);
+}
+
+static void x11_xdg_output_handle_output_destroy(struct wl_listener *listener,
+												 void *data) {
+	struct x11_xdg_output *xo = wl_container_of(listener, xo, output_destroy);
+	wl_list_remove(&xo->output_destroy.link);
+	wl_list_init(&xo->output_destroy.link);
+	xo->output = NULL;
+}
+
+static void x11_xdg_output_handle_resource_destroy(struct wl_resource *resource) {
+	struct x11_xdg_output *xo = wl_resource_get_user_data(resource);
+	wl_list_remove(&xo->output_destroy.link);
+	wl_list_remove(&xo->link);
+	free(xo);
+}
+
+static void x11_xdg_output_destroy(struct wl_client *client,
+								   struct wl_resource *resource) {
+	wl_resource_destroy(resource);
+}
+
+static const struct zxdg_output_v1_interface x11_xdg_output_impl = {
+	.destroy = x11_xdg_output_destroy,
+};
+
+static void x11_xdg_output_manager_get(struct wl_client *client,
+									   struct wl_resource *manager_resource,
+									   uint32_t id,
+									   struct wl_resource *output_resource) {
+	struct wlr_output *output = wlr_output_from_resource(output_resource);
+	struct x11_xdg_output *xo = ecalloc(1, sizeof(*xo));
+
+	xo->resource = wl_resource_create(client, &zxdg_output_v1_interface,
+									  wl_resource_get_version(manager_resource),
+									  id);
+	if (xo->resource == NULL) {
+		free(xo);
+		wl_client_post_no_memory(client);
+		return;
+	}
+	wl_resource_set_implementation(xo->resource, &x11_xdg_output_impl, xo,
+								   x11_xdg_output_handle_resource_destroy);
+
+	xo->output = output;
+	wl_list_init(&xo->output_destroy.link);
+	if (output != NULL) {
+		/* An output can outlive nothing here, but it can certainly die first:
+		 * a monitor unplugged while Xwayland holds an xdg_output for it would
+		 * otherwise leave a dangling pointer to read on the next update. */
+		xo->output_destroy.notify = x11_xdg_output_handle_output_destroy;
+		wl_signal_add(&output->events.destroy, &xo->output_destroy);
+	}
+	wl_list_insert(&x11_xdg_outputs, &xo->link);
+
+	if (output != NULL) {
+		zxdg_output_v1_send_name(xo->resource, output->name);
+		if (output->description != NULL)
+			zxdg_output_v1_send_description(xo->resource, output->description);
+	}
+	x11_xdg_output_send(xo);
+}
+
+static void x11_xdg_output_manager_destroy(struct wl_client *client,
+										   struct wl_resource *resource) {
+	wl_resource_destroy(resource);
+}
+
+static const struct zxdg_output_manager_v1_interface
+	x11_xdg_output_manager_impl = {
+		.destroy = x11_xdg_output_manager_destroy,
+		.get_xdg_output = x11_xdg_output_manager_get,
+};
+
+static void x11_xdg_output_manager_bind(struct wl_client *client, void *data,
+										uint32_t version, uint32_t id) {
+	struct wl_resource *resource = wl_resource_create(
+		client, &zxdg_output_manager_v1_interface, version, id);
+	if (resource == NULL) {
+		wl_client_post_no_memory(client);
+		return;
+	}
+	wl_resource_set_implementation(resource, &x11_xdg_output_manager_impl, NULL,
+								   NULL);
+}
+#endif
+
+static bool xdg_output_visible_to(const struct wl_client *client,
+								  const struct wl_global *global) {
+#ifdef XWAYLAND
+	bool wlroots_one = xdg_output_manager != NULL &&
+					   global == xdg_output_manager->global;
+	bool ours = x11_xdg_output_manager != NULL &&
+				global == x11_xdg_output_manager;
+	if (!wlroots_one && !ours)
+		return true;
+
+	/* ours is never for anyone else, whatever the option says */
+	bool is_xwayland = xwayland != NULL && xwayland->server != NULL &&
+					   client == xwayland->server->client;
+	if (!is_xwayland)
+		return !ours;
+
+	static int break_root_size = -1;
+	if (break_root_size < 0) {
+		const char *e = getenv("AZ_BREAK_X11_ROOT_SIZE");
+		break_root_size = e && *e && *e != '0';
+	}
+	/* off, or broken on purpose: Xwayland sees wlroots' logical one and none
+	 * of ours, which is the state the pointer clamp was found in */
+	if (!config.xwayland_force_scale_one || break_root_size)
+		return wlroots_one;
+	return ours;
+#else
+	(void)client;
+	(void)global;
+	return true;
+#endif
+}
+
 static bool security_context_global_filter(const struct wl_client *client,
 										   const struct wl_global *global,
 										   void *data) {
@@ -156,6 +376,8 @@ static bool security_context_global_filter(const struct wl_client *client,
 	/* the display has a single global-filter slot, so every per-client
 	 * visibility policy funnels through this one function */
 	if (!frog_wp_color_manager_visible(client, global))
+		return false;
+	if (!xdg_output_visible_to(client, global))
 		return false;
 
 	security_context = wlr_security_context_manager_v1_lookup_client(
@@ -201,6 +423,14 @@ void modern_protocols_init(struct wl_display *display,
 	wl_signal_add(&system_bell->events.ring, &system_bell_ring);
 
 	security_context_manager = wlr_security_context_manager_v1_create(display);
+#ifdef XWAYLAND
+	/* version 2: at 3 `done` is deprecated and Xwayland waits on
+	 * wl_output.done instead. See xdg_output_visible_to(). */
+	wl_list_init(&x11_xdg_outputs);
+	x11_xdg_output_manager =
+		wl_global_create(display, &zxdg_output_manager_v1_interface, 2, NULL,
+						 x11_xdg_output_manager_bind);
+#endif
 	wl_display_set_global_filter(display, security_context_global_filter,
 								 NULL);
 }

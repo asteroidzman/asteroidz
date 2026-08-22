@@ -72,9 +72,16 @@ export HL_OUTPUTS HL_WIDTH HL_HEIGHT HL_WIDTH2 HL_HEIGHT2 HL_SCALE1 HL_SCALE2 HL
 #                               most likely way to get this wrong -- and on
 #                               one output it is indistinguishable from
 #                               correct.
+#   AZ_BREAK_X11_ROOT_SIZE=1    let Xwayland see xdg-output again, so its X
+#                               screen goes back to the LOGICAL desktop. This
+#                               file's clamp reasoning was written under that
+#                               state, so it is how a claim here about the X
+#                               screen gets checked against the other one.
 BREAKS=""
 [ -n "${AZ_BREAK_X11_MON_MIGRATE:-}" ] &&
 	BREAKS="AZ_BREAK_X11_MON_MIGRATE=$AZ_BREAK_X11_MON_MIGRATE"
+[ -n "${AZ_BREAK_X11_ROOT_SIZE:-}" ] &&
+	BREAKS="$BREAKS AZ_BREAK_X11_ROOT_SIZE=$AZ_BREAK_X11_ROOT_SIZE"
 [ -n "$BREAKS" ] && echo "xw-mixed: BREAKS = $BREAKS"
 
 HL_ENV="$BREAKS"
@@ -171,22 +178,26 @@ cx2="$(hl_client_field xwmix x)"
 hl_assert "mon2: the window sits at the monitor's own origin" \
 	"$((cx2 - m2x))" "0"
 
-# Monitor-relative again: 600 logical INTO the second output is layout 2136.
+# Monitor-relative again: 900 logical INTO the second output is layout 2436.
 #
-# 600 AND NOT 900, AND THE REASON MATTERS. The X screen is the whole LOGICAL
-# desktop, 3456 wide; this window sits at X 2304 (1536 logical x 1.5) and is
-# 2880 wide, so it runs off the right of the X screen at local x = 1152. X11
-# clamps the pointer to the root window, so a probe past that point reports the
-# screen edge no matter what the compositor sent -- 900 logical did exactly
-# that on the first run of this file, reporting 1151 where 1350 was expected,
-# and it reads as a broken input transform rather than as what it is. See the
-# 1.25-screen-clamp arm in contrib/xw-scale-test.sh, which asserts that
-# limitation deliberately. 600 logical is 900 raw, comfortably inside.
-hl_move $((1536 + 600)) 400; sleep 0.3
-hl_click $((1536 + 600)) 400; sleep 0.5
+# 900 AND NOT 600, AND THE REASON MATTERS. This probe used to sit at 600 to
+# stay out of a clamp. The X screen was the whole LOGICAL desktop, 3456 wide,
+# while this window sits at X 2304 (1536 logical x 1.5) and is 2880 wide -- so
+# it ran off the right of the screen at local x = 1152, X11 clamped the pointer
+# to the root window, and 900 logical reported 1151 where 1350 was expected.
+# That reads as a broken input transform rather than as what it was.
+#
+# Xwayland is given its own device-pixel xdg-output now (xdg_output_visible_to()
+# in src/ext-protocol/modern.h), which puts the second output's X zone at
+# 2304..5184 and leaves nothing to clamp against. So the probe goes back where
+# it wanted to be, and it is the only assertion in this file that a
+# single-output fixture cannot make: the second output's zone ORIGIN has to be
+# right, not just its scale. Under AZ_BREAK_X11_ROOT_SIZE=1 it reports 1151.
+hl_move $((1536 + 900)) 400; sleep 0.3
+hl_click $((1536 + 900)) 400; sleep 0.5
 btn2="$(hl_x11check_last_button x11)"
-hl_assert "mon2: click x -> 900 at scale 1.5 (got '${btn2%% *}')" \
-	"$(near "${btn2%% *}" 900 3)" "yes"
+hl_assert "mon2: click x -> 1350 at scale 1.5 (got '${btn2%% *}')" \
+	"$(near "${btn2%% *}" 1350 3)" "yes"
 hl_assert "mon2: click y -> 600 at scale 1.5 (got '${btn2##* }')" \
 	"$(near "${btn2##* }" 600 3)" "yes"
 

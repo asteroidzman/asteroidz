@@ -16,6 +16,10 @@ wayland_xmls = [
 	# ZWP_LINUX_DMABUF_FEEDBACK_V1_TRANCHE_FLAGS_SCANOUT when it builds dmabuf
 	# feedback tranches. scenefx generated this itself; the graph is ours now.
 	wl_protocol_dir + '/stable/linux-dmabuf/linux-dmabuf-v1.xml',
+	# Xwayland is given its own xdg-output, in device pixels, so its X screen
+	# comes out the same size as the windows this compositor puts in it. See
+	# xdg_output_visible_to() in src/ext-protocol/modern.h.
+	wl_protocol_dir + '/unstable/xdg-output/xdg-output-unstable-v1.xml',
 	wl_protocol_dir + '/unstable/pointer-constraints/pointer-constraints-unstable-v1.xml',
 	wl_protocol_dir + '/staging/cursor-shape/cursor-shape-v1.xml',
 	wl_protocol_dir + '/stable/tablet/tablet-v2.xml',

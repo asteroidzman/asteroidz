@@ -523,38 +523,39 @@ tags.
 
 `misc/xwayland-force-scale-one` renders X11 windows at device resolution on a
 fractionally scaled output instead of magnifying a smaller buffer. It is sharp,
-and it has a cost that is not obvious.
+and it is on by default.
 
-Xwayland sizes its X screen from the outputs' **logical** geometry, so a window
-sized in device pixels overflows that screen by exactly the scale factor. X11
-requires the pointer to be inside the root window, so any position past the edge
-is clamped before the client is told. On a 1.5x output that is every click below
-roughly the bottom third of the window — it lands short, silently, with a
-pixel-perfect picture. Controls along the bottom of a tall window become
-unreachable.
+It used to come with a cost that made it unusable for some windows. Xwayland
+sized its X screen from the outputs' **logical** geometry, so a window sized in
+device pixels overflowed that screen by exactly the scale factor; X11 requires
+the pointer to be inside the root window, so every position past the edge was
+clamped before the client was told. On a 1.5x output that was every click below
+roughly the bottom third of the window, all landing on the same row, silently,
+with a pixel-perfect picture. Controls along the bottom of a tall window were
+unreachable — Discord's mute and deafen buttons being the case that found it.
 
-There is no fix for that inside the compositor: wlroots 0.20 exposes no way to
-tell Xwayland a different screen size, Xwayland 24.1 has no `-scale`, and
-reporting the outputs at scale 1 to enlarge the X screen would take fractional
-scaling away from every Wayland client. Hyprland's equivalent
-(`xwayland:force_zero_scaling`) has the same limitation — see
-[hyprwm/Hyprland#2566](https://github.com/hyprwm/Hyprland/issues/2566), where the
-pointer is described as "bound to the top left quadrant", which is this clamp at
-scale 2.
+That is fixed globally now: Xwayland is given a device-pixel X screen, so
+absolute pointer position is exact across the whole window whether the option
+is on or off. See
+[X11 windows on a fractional-scale display](../configuration/miscellaneous.md#x11-windows-on-a-fractional-scale-display)
+for how, and for the one thing it still costs. So **this rule is no longer
+about reaching the bottom of a window.**
 
-What can be done is to decide it per window, which the global option alone
-cannot:
+What it is for is a window that is better off measured in logical units
+regardless: one that reads the X screen's DPI and lays its own interface out
+from it, or one whose fixed-pixel UI simply comes out too small at device
+resolution.
 
 ```kdl
 window-rule { match app-id=discord; xwayland-scale-one 0 }
 ```
 
-The trade splits cleanly along how a window uses the pointer:
+The trade splits along how a window decides its own size:
 
 | | keep it on | turn it off |
 | --- | --- | --- |
-| fullscreen games | ✅ grabs the pointer, uses **relative** motion, unaffected by the clamp | |
-| apps with controls near the bottom | | ✅ absolute pointer position must be right everywhere |
+| fullscreen games | ✅ renders at the panel's real resolution | |
+| apps that size their UI in fixed pixels | | ✅ otherwise the interface comes out physically smaller |
 
 Unset (the default) follows `misc/xwayland-force-scale-one`. Being an ordinary
 rule property it applies on a reload, so it can be tested without a restart.
