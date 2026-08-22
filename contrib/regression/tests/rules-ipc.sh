@@ -828,13 +828,16 @@ test_a_reload_does_not_re_apply_placement_to_an_open_window() {
 	hl_wait_client_count 1
 	sleep 0.2
 
+	# hl_client_field, not a hand-rolled jq: the field is is_fullscreen, and
+	# asking for `.fullscreen` returned null to BOTH assertions -- including
+	# the premise, which is the only reason it was caught.
 	hl_assert_false "the window is not fullscreen to begin with" \
-		"$(hl_get "get all-clients" | jq -r '.clients[] | select(.title=="W1") | .fullscreen')"
+		"$(hl_client_field W1 is_fullscreen)"
 
 	printf '\nwindow-rule { match title=W1; open-fullscreen }\n' >> "$HL_CONFIG"
 	hl_dispatch "reload_config" 1
 	hl_assert_false "an open-fullscreen rule does NOT fullscreen it on reload" \
-		"$(hl_get "get all-clients" | jq -r '.clients[] | select(.title=="W1") | .fullscreen')"
+		"$(hl_client_field W1 is_fullscreen)"
 
 	sed -i '/open-fullscreen/d' "$HL_CONFIG"
 	hl_dispatch "reload_config" 1
