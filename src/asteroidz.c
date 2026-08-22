@@ -1018,6 +1018,21 @@ struct Monitor {
 	 * "did this display composite this frame" -- and because a refusal often
 	 * has no client to hang it on. */
 	int32_t scanout_verdict;
+	/*
+	 * THE LAST *EVALUATED* VERDICT, AND HOW OFTEN IT HAS MOVED.
+	 *
+	 * scanout_verdict alone answers "what is happening now" and nothing about
+	 * history, which is the one question an intermittent fault turns on. A
+	 * display that enters and leaves scanout repeatedly reconfigures its plane
+	 * every time it does, and the dump looks identical either way.
+	 *
+	 * NOT_EVALUATED is deliberately never stored here. render_monitor() resets
+	 * scanout_verdict to it at the top of every frame, so counting raw
+	 * assignments would report a change per frame forever and measure the
+	 * reset rather than the decision.
+	 */
+	int32_t scanout_last_eval;
+	uint64_t scanout_changes;
 	uint64_t scanout_frames;
 	/*
 	 * WHAT THE TORN-FLIP PATH DID WITH THE FRAMES IT WAS HANDED.
@@ -6671,6 +6686,9 @@ void createmon(struct wl_listener *listener, void *data) {
 	m->carousel_anim_dir = 0;
 
 	m->wlr_output = wlr_output;
+	/* ACCEPTED is 0, so a zeroed Monitor would claim it had already accepted
+	 * and swallow the first real transition. */
+	m->scanout_last_eval = (int32_t)AZ_SCANOUT_NOT_EVALUATED;
 	m->wlr_output->data = m;
 
 	wl_list_init(&m->dwl_ipc_outputs);
@@ -9806,7 +9824,7 @@ static void render_monitor(Monitor *m) {
 		 */
 		enum az_scanout_verdict sv = AZ_SCANOUT_NO_CANDIDATE;
 		bool scanned_out = az_scanout_try(m, &state, &sv);
-		m->scanout_verdict = (int32_t)sv;
+		az_scanout_record_verdict(m, sv);
 		if (scanned_out) {
 			bool landed = wlr_output_commit_state(m->wlr_output, &state);
 			if (!landed) {

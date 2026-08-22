@@ -164,7 +164,7 @@ void apply_tear_state(Monitor *m) {
 	 */
 	enum az_scanout_verdict sv = AZ_SCANOUT_NOT_EVALUATED;
 	bool scanned_out = az_scanout_try(m, &state, &sv);
-	m->scanout_verdict = (int32_t)sv;
+	az_scanout_record_verdict(m, sv);
 	if (!scanned_out) {
 		struct az_frame_options frame_options = {
 			.color_transform = az_output_color_transform(m),

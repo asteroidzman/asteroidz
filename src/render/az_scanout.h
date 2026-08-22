@@ -343,6 +343,35 @@ static inline enum az_scanout_verdict az_scanout_eligible(Monitor *m,
 }
 
 /*
+ * Store an EVALUATED verdict and notice when it moves.
+ *
+ * Two callers -- the composited path and the torn one -- and they must agree,
+ * because a display that alternates between them is exactly the thing this
+ * exists to catch. Entering and leaving scanout reconfigures the plane each
+ * time; on an HDR output it also moves the colour pipeline between the encode
+ * pass and the connector, and neither shows up in a single-instant dump.
+ *
+ * Logged by decade rather than per change: if the verdict is oscillating, one
+ * line per frame would be the flood and the counter is the measurement.
+ */
+static inline void az_scanout_record_verdict(Monitor *m,
+		enum az_scanout_verdict sv) {
+	m->scanout_verdict = (int32_t)sv;
+	if ((int32_t)sv == m->scanout_last_eval) {
+		return;
+	}
+	m->scanout_changes++;
+	if (az_log_decade(m->scanout_changes)) {
+		wlr_log(WLR_DEBUG, "scanout: %s %s -> %s (%" PRIu64 " changes)",
+			m->wlr_output->name,
+			az_scanout_verdict_name(
+				(enum az_scanout_verdict)m->scanout_last_eval),
+			az_scanout_verdict_name(sv), m->scanout_changes);
+	}
+	m->scanout_last_eval = (int32_t)sv;
+}
+
+/*
  * ── THE ATTEMPT ───────────────────────────────────────────────────────────
  *
  * Builds a candidate state, asks the backend, and on success leaves the
