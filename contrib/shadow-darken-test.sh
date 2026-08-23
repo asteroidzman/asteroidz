@@ -206,8 +206,7 @@ shadows_position_y 6
 gappoh 40
 gappov 40
 enable_titlebar 0
-borderpx 0
-window-rule { match title="DARKEN"; no-border; no-titlebar }
+borderpx 4
 EOF
 hl_dispatch "reload_config" 1
 hl_spawn_kitty DARKEN >/dev/null
@@ -225,6 +224,9 @@ SCALE="$(python3 -c "print($SW / float($HL_WIDTH))")"
 TOP="$(python3 -c "print(int($CY * $SCALE))")"
 BX0="$(python3 -c "print(int(($CX + $CW/3.0) * $SCALE))")"
 BX1="$(python3 -c "print(int(($CX + 2*$CW/3.0) * $SCALE))")"
+# A margin below the band so the BORDER -- drawn outside the window box,
+# bright, and indifferent to every shadow setting -- is never in it.
+BMARGIN="$(python3 -c "print(int(12 * $SCALE))")"
 
 # PREMISE. Outer gaps put wallpaper above the window; without it the band would
 # sit inside the window and no glow could ever be measured however bad it got.
@@ -234,7 +236,7 @@ else
 	bad "tiled: premise -- there is wallpaper above the window (only ${TOP:-0}px)"
 fi
 
-R="$(measure_above "$TPNG" "$BX0" "$BX1" 0 "$TOP")"
+R="$(measure_above "$TPNG" "$BX0" "$BX1" 0 $((TOP - BMARGIN)))"
 set -- $R; FAR2="$1"; UNDER_ON="$2"
 echo "  ..   dark rows above the window, clamp ON:  far $FAR2, under $UNDER_ON"
 
@@ -258,7 +260,7 @@ amsg_set() {
 amsg_set shadows_blur_background_darken 0
 sleep 1.5
 hl_screenshot tiled-nodarken
-R="$(measure_above "$HL_OUTDIR/tiled-nodarken.png" "$BX0" "$BX1" 0 "$TOP")"
+R="$(measure_above "$HL_OUTDIR/tiled-nodarken.png" "$BX0" "$BX1" 0 $((TOP - BMARGIN)))"
 set -- $R; UNDER_OFF="$2"
 echo "  ..   dark rows above the window, clamp OFF: under $UNDER_OFF"
 amsg_set shadows_blur_background_darken 1
@@ -283,7 +285,7 @@ fi
 amsg_set shadows_blur_background 0
 sleep 1.5
 hl_screenshot tiled-nobackdrop
-R="$(measure_above "$HL_OUTDIR/tiled-nobackdrop.png" "$BX0" "$BX1" 0 "$TOP")"
+R="$(measure_above "$HL_OUTDIR/tiled-nobackdrop.png" "$BX0" "$BX1" 0 $((TOP - BMARGIN)))"
 set -- $R; UNDER_NOBG="$2"
 amsg_set shadows_blur_background 1
 echo "  ..   dark rows above the window, backdrop blur OFF: under $UNDER_NOBG"

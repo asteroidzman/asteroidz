@@ -323,6 +323,38 @@ void layer_draw_shadow(LayerSurface *l) {
 		if (l->shadow_blur->width != blur_width ||
 			l->shadow_blur->height != blur_height)
 			wlr_scene_blur_set_size(l->shadow_blur, blur_width, blur_height);
+		/*
+		 * ── THE LAYER'S OWN BOX, KEPT OUT OF WHAT THIS BLUR SAMPLES ───────
+		 *
+		 * Client's shadow backdrop has always done this (client.h) and this
+		 * one never did. The blur's box is the shadow's -- the layer plus its
+		 * spread -- so the region it samples covers the layer itself, and the
+		 * scene image holds the PREVIOUS frame there because this node draws
+		 * beneath it. Without the exclusion the blur picks up the layer's own
+		 * pixels and spreads them outward: a halo in the layer's own colour,
+		 * a glow rather than a shadow on a dark backdrop.
+		 *
+		 * AND IT IS WHAT SWITCHES THE DARKEN CLAMP ON. AVK copies blur_darken
+		 * onto the draw command inside `if (blur->has_sample_exclude)` --
+		 * that flag is how a shadow's backdrop is told apart from any other
+		 * blur -- so a layer shadow, having never set one, has never had the
+		 * clamp applied. wlr_scene_blur_set_darken() above was setting a flag
+		 * that reached nothing.
+		 *
+		 * Found from the operator's own description: a glow over windows that
+		 * sat under one section of the bar, and only that section, because
+		 * each bar panel is its own layer surface with `forceshadow:1`.
+		 *
+		 * In the node's own coordinates, which start at the shadow box's
+		 * top-left corner -- hence the subtraction.
+		 */
+		struct wlr_box blur_exclude = {
+			.x = layer_box.x - (shadow_box.x + left_offset),
+			.y = layer_box.y - (shadow_box.y + top_offset),
+			.width = layer_box.width,
+			.height = layer_box.height,
+		};
+		wlr_scene_blur_set_sample_exclude(l->shadow_blur, &blur_exclude);
 		struct fx_corner_radii blur_radii = corner_radii_from_location(
 			config.border_radius, config.border_radius_location_default);
 		if (!fx_corner_radii_eq(l->shadow_blur->corners, blur_radii))
