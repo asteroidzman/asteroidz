@@ -605,6 +605,7 @@ dump cannot. An intermittent fault lives entirely in that gap.
 | `resets` / `epoch` | the presenter's timing-reset histogram, keyed by reason (`create`, `mode`, `enable`, `scale-transform`, `adaptive-sync`, `request-state`, `session`, `dpms`), and the epoch each reset opens |
 | `vrr_off_deferred` | how many times a "turn adaptive sync off" answer was HELD, waiting for the desktop's presentation rate to fall through the panel's floor |
 | `vrr_off_cancelled` | how many of those a returning game cancelled before that happened. Each one is a **pair** of modesets that did not happen |
+| `vrr_below_floor_max_ms` | the longest the desktop held adaptive sync below the panel's floor without being turned off. The number a reported blank gets correlated against |
 
 Every reason in `resets` is an output reconfiguration, so the histogram is what
 a "why did my screen flash" question resolves against. Each reset is also

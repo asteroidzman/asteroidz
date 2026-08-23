@@ -1297,6 +1297,11 @@ static void handle_command(int client_fd, const char *cmd_raw) {
 				(double)om->vrr_off_deferred);
 			cJSON_AddNumberToObject(e, "vrr_off_cancelled",
 				(double)om->vrr_off_cancelled);
+			/* The longest the desktop held adaptive sync below the panel's
+			 * floor without being turned off. If a blank is ever reported,
+			 * this is the number to correlate it against. */
+			cJSON_AddNumberToObject(e, "vrr_below_floor_max_ms",
+				(double)om->vrr_below_floor_max_ms);
 			/* What the torn-flip path did, per outcome. `tear_busy_synced` is
 			 * the one no test can predict: the state was tearable and the
 			 * previous flip simply had not finished, so the frame went out on

@@ -445,16 +445,41 @@ So the condition is the one that actually matters. VRR on the desktop is only
 harmful when the desktop presents **below the panel's refresh floor** — that is
 what makes an idle desktop at ~13fps blank, and it is the whole reason the
 desktop does not run VRR. A busy desktop with adaptive sync on is harmless for
-as long as it stays busy. The pending change therefore waits for a presentation
-interval longer than the floor allows:
+as long as it stays busy.
+
+Gating on the rate alone was still not enough, and the measurement said so: it
+fired 1.12s after a game gave up the output, because a desktop you have
+alt-tabbed away from goes static immediately — so a 12.8s excursion cost the
+same modeset pair as the fixed wait it replaced, only sooner. Being below the
+floor is not the same as being *harmed* by it.
+
+So adaptive sync is turned off once the desktop has been below the floor
+**continuously for 20 seconds**. A single frame at rate restarts that count,
+because keeping VRR is the cheap error.
 
 | | |
 | --- | --- |
-| alt-tab and keep working | rate stays up, VRR never drops — **no modesets, however long you are away** |
-| alt-tab and walk away | rate falls, VRR drops — one modeset, when it is actually needed |
+| alt-tab and come back | under 20s below the floor, VRR never drops — **no modesets** |
+| alt-tab and keep working | rate stays up, VRR never drops — no modesets, however long you are away |
+| alt-tab and walk away | below the floor and stays there, VRR drops — one modeset, when it is actually needed |
 
 It cannot oscillate, because nothing turns VRR back on while no game wants it:
 the desktop's own rate can only move the answer one way.
+
+**The 20 seconds is provisional, and it is not the fixed wait returning.** The
+wait that was removed was a guess about how long a *person* alt-tabs for, and
+no measurement of the machine could have chosen it. This is how long this
+*panel* tolerates running below its own floor — a display property like the
+48Hz, and a measurable one: leave adaptive sync on an idle desktop and time the
+first blank. That measurement has not been run, because it means deliberately
+provoking the fault. 20s covers every excursion measured so far (8.8, 9.3,
+12.8, 13.8) and is far short of the sustained idle the blanking was seen over.
+`vrr_below_floor_max_ms` in `amsg get surface-intent` records the longest
+stretch adaptive sync actually survived, so a blank that does happen has a
+number to be correlated against rather than a memory.
+
+A game's own slow frames are never counted toward this. Running below the floor
+with a game on the output is precisely what adaptive sync is for.
 
 The floor is 48Hz, read from the panel rather than assumed — DP-1 here is an
 AORUS FI32U whose EDID monitor-range descriptor says `vertical 48-144 Hz`.

@@ -224,6 +224,8 @@ test_the_output_dump_carries_the_vrr_debounce_counters() {
 		"$(echo "$o" | jq -r 'has("vrr_off_deferred")')"
 	hl_assert_true "outputs[] carries vrr_off_cancelled" \
 		"$(echo "$o" | jq -r 'has("vrr_off_cancelled")')"
+	hl_assert_true "outputs[] carries vrr_below_floor_max_ms" \
+		"$(echo "$o" | jq -r 'has("vrr_below_floor_max_ms")')"
 	# An output that never had VRR on can never have held an answer about
 	# turning it off. Zero here is a fact, not a default.
 	hl_assert "and nothing was deferred on an output that never had VRR" \

@@ -1303,6 +1303,8 @@ struct Monitor {
 	 */
 	bool vrr_off_wanted;         /* off is the answer; waiting for the rate */
 	uint64_t vrr_last_present_ns;
+	uint64_t vrr_below_floor_since_ns;  /* 0 = not currently below the floor */
+	uint64_t vrr_below_floor_max_ms;    /* longest stretch VRR actually survived */
 	uint64_t vrr_off_deferred;   /* off answers held for evidence */
 	uint64_t vrr_off_cancelled;  /* ...that a return cancelled: modesets saved */
 	/* DSC/link retrain: cycle through an alternate mode and back to fully
@@ -1952,7 +1954,7 @@ static void check_keep_idle_inhibit(Client *c);
 static void check_vrr_enable(Client *c);
 /* defined with the VRR policy further down; called from the presentation
  * path, which is above it */
-static void vrr_rate_gate(Monitor *m, uint64_t interval_ns);
+static void vrr_rate_gate(Monitor *m, uint64_t now_ns, uint64_t interval_ns);
 static int monitor_retrain_step(void *data);
 void monitor_start_retrain(Monitor *m, uint32_t delay_ms);
 static void hdr_resolve(Monitor *m);
@@ -2171,6 +2173,39 @@ static int32_t last_apply_drap_time = 0;
  */
 #define AZ_VRR_FLOOR_HZ 48
 #define AZ_VRR_FLOOR_INTERVAL_NS (1000000000ull / AZ_VRR_FLOOR_HZ)
+
+/*
+ * How long the desktop may sit BELOW that floor before adaptive sync is
+ * actually turned off.
+ *
+ * The rate gate alone was correct and did not fix what it was built for. It
+ * fired 1.12s after a game gave up the output, because a desktop somebody has
+ * alt-tabbed away from goes static immediately -- so a 12.8s excursion still
+ * cost a modeset going out and another coming back, the same pair as the fixed
+ * wait it replaced, just sooner.
+ *
+ * What the gate was missing is that being below the floor is not the same as
+ * being HARMED by it. The blanking this policy exists to prevent was occasional
+ * over a sustained idle desktop, not instant; the operator ran 12h42m clean
+ * once VRR was off. So a brief dip below the floor is not a reason to spend a
+ * modeset.
+ *
+ * THIS IS NOT THE FIXED WAIT COMING BACK, and the distinction is the whole
+ * argument: AZ_VRR_OFF_DEBOUNCE_MS was a guess about how long a PERSON
+ * alt-tabs for, and no measurement of the machine could ever have chosen it.
+ * This is how long this PANEL tolerates running below its own floor, which is
+ * a display property like the 48Hz itself and is measurable -- leave adaptive
+ * sync on an idle desktop and time the first blank.
+ *
+ * PROVISIONAL AT 20s, and labelled so rather than presented as derived. That
+ * measurement has not been run: it means deliberately provoking the fault on
+ * the operator's own display. 20s covers every excursion measured so far
+ * (8.8, 9.3, 12.8, 13.8) and is far short of the sustained idle the blanking
+ * was seen over. vrr_below_floor_max_ms records the longest stretch adaptive
+ * sync actually survived, so if a blank does happen there is a number to
+ * correlate it against instead of a memory.
+ */
+#define AZ_VRR_BELOW_FLOOR_SUSTAIN_NS 20000000000ull
 
 static struct wlr_output_layout *output_layout;
 /* held so the global filter can name it: xdg-output is hidden from the
@@ -10387,7 +10422,7 @@ static void presentmon(struct wl_listener *listener, void *data) {
 	 * "turn VRR off" answer waits here rather than on a clock.
 	 */
 	if (m->vrr_last_present_ns != 0 && when_ns > m->vrr_last_present_ns) {
-		vrr_rate_gate(m, when_ns - m->vrr_last_present_ns);
+		vrr_rate_gate(m, when_ns, when_ns - m->vrr_last_present_ns);
 	}
 	m->vrr_last_present_ns = when_ns;
 
@@ -12772,6 +12807,7 @@ static bool commit_vrr_state(Monitor *m, bool enable) {
 	 * set_output_vrr, which must not be undone by a gate armed before the
 	 * operator asked. */
 	m->vrr_off_wanted = false;
+	m->vrr_below_floor_since_ns = 0;
 
 	enum wlr_output_adaptive_sync_status before =
 		m->wlr_output->adaptive_sync_status;
@@ -12873,20 +12909,54 @@ static bool mon_wants_vrr(Monitor *m) {
  * arbitrarily long may have passed, and turning VRR off under a game that came
  * back is the exact failure this gate exists to prevent.
  */
-static void vrr_rate_gate(Monitor *m, uint64_t interval_ns) {
-	if (m == NULL || !m->vrr_off_wanted || !m->is_vrr_opening) {
+static void vrr_rate_gate(Monitor *m, uint64_t now_ns, uint64_t interval_ns) {
+	if (m == NULL || !m->is_vrr_opening) {
 		return;
 	}
-	if (interval_ns <= AZ_VRR_FLOOR_INTERVAL_NS) {
-		return;   /* still refreshing fast enough for VRR to be safe */
+	if (!m->vrr_off_wanted) {
+		/* A GAME'S OWN SLOW FRAMES ARE NOT THIS. Below the floor with a game
+		 * on the output is precisely what adaptive sync is for, and letting
+		 * that accumulate would prime the gate to fire the instant the game
+		 * later gave up the output. The stretch is only ever about a desktop
+		 * holding VRR nothing asked for. */
+		m->vrr_below_floor_since_ns = 0;
+		return;
 	}
+
+	if (interval_ns <= AZ_VRR_FLOOR_INTERVAL_NS) {
+		/* Fast enough again. One frame at rate is enough to say the desktop is
+		 * not the idle one the blanking was seen on, and keeping VRR is the
+		 * cheap error, so the stretch restarts from nothing. */
+		m->vrr_below_floor_since_ns = 0;
+		return;
+	}
+
+	if (m->vrr_below_floor_since_ns == 0) {
+		m->vrr_below_floor_since_ns = now_ns;
+		return;
+	}
+	uint64_t below_ns = now_ns - m->vrr_below_floor_since_ns;
+	uint64_t below_ms = below_ns / 1000000ull;
+	if (below_ms > m->vrr_below_floor_max_ms) {
+		m->vrr_below_floor_max_ms = below_ms;
+	}
+	if (below_ns < AZ_VRR_BELOW_FLOOR_SUSTAIN_NS) {
+		return;
+	}
+
 	if (!m->wlr_output || !m->wlr_output->enabled) {
 		return;
 	}
+	/* Re-asked rather than replayed: arbitrarily long may have passed, and
+	 * turning VRR off under a game that came back is the failure this exists
+	 * to prevent. */
 	if (mon_wants_vrr(m)) {
 		m->vrr_off_wanted = false;
 		return;
 	}
+	wlr_log(WLR_INFO,
+		"vrr: %s below its %dHz floor for %llums; turning adaptive sync off",
+		m->wlr_output->name, AZ_VRR_FLOOR_HZ, (unsigned long long)below_ms);
 	commit_vrr_state(m, false);
 }
 
