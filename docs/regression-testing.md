@@ -13,7 +13,36 @@ a change automatically.
 ```sh
 bash contrib/regression/run.sh              # every module
 bash contrib/regression/run.sh layouts tags  # just these modules
+
+bash contrib/avk-suite.sh --audit           # what exists, and its tier
+bash contrib/avk-suite.sh --run gate        # the routine correctness set
+bash contrib/avk-suite.sh --run deep        # a subsystem you actually touched
 ```
+
+`run.sh` starts **one** compositor and resets between cases, so running every
+module costs one startup. The AVK fixtures are the opposite — each owns its
+instance, several own three or four — which is why they are tiered.
+
+### The two correctness tiers, and why
+
+`--run gate` is one fixture per subsystem that current work can plausibly
+break: the blur cache and walker, both colour paths, cursor lifetime and
+ownership, the presentation sample instant, idle, damage, occlusion, rounded
+corners, the shadow clamp, XWayland scale, teardown, explicit sync, and the
+IPC identity. Sixteen fixtures, 31 compositor starts.
+
+`--run deep` is everything else — 56 fixtures that pin down a subsystem which
+has not moved in months. Run it when you touch that subsystem, or before a
+release.
+
+The single set this replaced was 72 fixtures and **100 compositor starts**,
+about fifty minutes, of which only 319 seconds was anything waiting. The rest
+was starting a compositor to re-prove something settled. That is a bad trade
+made once per change, and a suite too expensive to run is not a gate — it is a
+suite that gets skipped, which is strictly worse than a small one that runs.
+
+Milestones are retired (see [history](/docs/history)), and with them "must pass
+before a milestone closes" as a reason to run anything.
 
 There is a second, much faster layer beside it: `meson test -C build` runs unit
 tests for the pure helpers — the ones whose failure mode is not "the screen

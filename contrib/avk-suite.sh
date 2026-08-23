@@ -27,14 +27,25 @@
 # suite means a new one cannot arrive silently unclassified.
 #
 # This is deliberately not a test framework. It runs nothing by default and
-# holds no result state. `--run required` exists because a register that cannot
+# holds no result state. `--run gate` exists because a register that cannot
 # execute what it registers is the same problem one level up.
+#
+# WHY THERE ARE TWO CORRECTNESS TIERS. The old single `required` set was 72
+# fixtures and 100 compositor starts -- about fifty minutes, and only 319
+# seconds of that was waiting. Almost all of it was starting a compositor to
+# re-prove something that had not changed since the milestone that produced it.
+# A suite nobody can afford to run is not a gate.
 #
 # ── THE DISPOSITIONS ─────────────────────────────────────────────────────
 #
-#   required   correctness. Must pass before a milestone closes.
+#   gate       correctness, and cheap enough to run routinely. One fixture per
+#              subsystem that current work can plausibly break. `--run gate`.
+#   deep       correctness, for a subsystem that has not moved in months. Run
+#              it when you touch that subsystem, or before a release -- not on
+#              every change. Milestones are retired, and with them the habit of
+#              re-proving settled work; see docs/history.md.
 #   perf       measures rather than asserts. Prints numbers, has no verdict, so
-#              a green run of the required set does not depend on it.
+#              a green run of the gate set does not depend on it.
 #   live       needs the real session and the user watching. NEVER run from a
 #              batch: see the standing rule about live-mode testing.
 #   manual     an investigation kept because it can be re-run, not because it
@@ -48,70 +59,70 @@ cd "$(dirname "$0")" || exit 1
 
 # name                             disposition
 REGISTER="
-avk-blur-cache-dirty.sh            required
-avk-blur-cache-kinds.sh            required
-m6a-sample-instant-test.sh         required
-m6a-mixed-refresh-test.sh          required
-m6a-idle-test.sh                   required
-m6a-retarget-test.sh               required
-anim-vector-continuity-test.sh     required
-anim-shatter-test.sh               required
-tag-cost-test.sh                   required
-m6b-icc-drive-test.sh              required
-m6b-preferred-desc-test.sh         required
-m6b-transition-test.sh             required
-m6b-frog-metadata-test.sh          required
-amsg-identity-test.sh              required
-cm-two-writer-test.sh              required
-cm-native-caps-test.sh             required
+avk-blur-cache-dirty.sh            deep
+avk-blur-cache-kinds.sh            gate
+m6a-sample-instant-test.sh         gate
+m6a-mixed-refresh-test.sh          deep
+m6a-idle-test.sh                   gate
+m6a-retarget-test.sh               deep
+anim-vector-continuity-test.sh     deep
+anim-shatter-test.sh               deep
+tag-cost-test.sh                   deep
+m6b-icc-drive-test.sh              deep
+m6b-preferred-desc-test.sh         deep
+m6b-transition-test.sh             deep
+m6b-frog-metadata-test.sh          deep
+amsg-identity-test.sh              gate
+cm-two-writer-test.sh              deep
+cm-native-caps-test.sh             deep
 m6b-hdr-transition-live.sh         live
-avk-blur-cache-multi.sh            required
-avk-blur-cache-test.sh             required
-avk-blur-damage-test.sh            required
-avk-blur-required-test.sh          required
-avk-blur-seam-test.sh              required
-avk-blur-walker-test.sh            required
-avk-border-test.sh                 required
-avk-capture-layout-test.sh         required
-avk-clip-policy-test.sh            required
-avk-crossoutput-border-test.sh     required
-avk-stale-multioutput-test.sh      required
-avk-crossoutput-round-test.sh      required
-avk-cursor-content-test.sh         required
-avk-cursor-hide-test.sh            required
-avk-cursor-lifetime-test.sh        required
-avk-cursor-owner-test.sh           required
-avk-cursor-scale-test.sh           required
-avk-cursor-test.sh                 required
-avk-cursor-transform-test.sh       required
-avk-damage-domains-test.sh         required
-avk-damage-test.sh                 required
-avk-dither-domain-test.sh          required
-avk-dmabuf-feedback-test.sh        required
-avk-frame-test.sh                  required
-avk-gradient-border-test.sh        required
-avk-gradient-crossoutput-test.sh   required
-avk-m5-path-a-test.sh              required
-avk-m5-path-b-test.sh              required
+avk-blur-cache-multi.sh            deep
+avk-blur-cache-test.sh             deep
+avk-blur-damage-test.sh            deep
+avk-blur-required-test.sh          deep
+avk-blur-seam-test.sh              deep
+avk-blur-walker-test.sh            gate
+avk-border-test.sh                 deep
+avk-capture-layout-test.sh         deep
+avk-clip-policy-test.sh            deep
+avk-crossoutput-border-test.sh     deep
+avk-stale-multioutput-test.sh      deep
+avk-crossoutput-round-test.sh      deep
+avk-cursor-content-test.sh         deep
+avk-cursor-hide-test.sh            deep
+avk-cursor-lifetime-test.sh        gate
+avk-cursor-owner-test.sh           gate
+avk-cursor-scale-test.sh           deep
+avk-cursor-test.sh                 deep
+avk-cursor-transform-test.sh       deep
+avk-damage-domains-test.sh         deep
+avk-damage-test.sh                 gate
+avk-dither-domain-test.sh          deep
+avk-dmabuf-feedback-test.sh        deep
+avk-frame-test.sh                  deep
+avk-gradient-border-test.sh        deep
+avk-gradient-crossoutput-test.sh   deep
+avk-m5-path-a-test.sh              gate
+avk-m5-path-b-test.sh              gate
 avk-live-matrix.sh                 live
 avk-final-matrix.sh                perf
-avk-graph-test.sh                  required
-avk-occlusion-test.sh              required
-avk-oracle-test.sh                 required
-avk-rounded-alpha-test.sh          required
-avk-rounded-persist-test.sh        required
-avk-rounded-test.sh                required
-avk-scale-transform-test.sh        required
-avk-shadow-test.sh                 required
-avk-shm-cache-test.sh              required
-avk-shm-partial-test.sh            required
-avk-visible-clip-test.sh           required
-avk-encode-test.sh                 required
+avk-graph-test.sh                  deep
+avk-occlusion-test.sh              gate
+avk-oracle-test.sh                 deep
+avk-rounded-alpha-test.sh          deep
+avk-rounded-persist-test.sh        deep
+avk-rounded-test.sh                gate
+avk-scale-transform-test.sh        deep
+avk-shadow-test.sh                 deep
+avk-shm-cache-test.sh              deep
+avk-shm-partial-test.sh            deep
+avk-visible-clip-test.sh           deep
+avk-encode-test.sh                 deep
 avk-shm-latency-test.sh            perf
-avk-shm-rotate-test.sh             required
-avk-sync-test.sh                   required
-avk-teardown-test.sh               required
-avk-transform-test.sh              required
+avk-shm-rotate-test.sh             deep
+avk-sync-test.sh                   gate
+avk-teardown-test.sh               gate
+avk-transform-test.sh              deep
 avk-blur-role-split.sh             perf
 avk-blur-cost.sh                   perf
 avk-blur-count-matrix.sh           perf
@@ -125,16 +136,16 @@ avk-blur-cache-live-ab.sh          live
 avk-software-cursor-acceptance.sh  live
 avk-transform-live-test.sh         live
 blur-sync-validation.sh            manual
-check-shader-derivatives.sh        required
-signal-exit-test.sh                required
-titlebar-sharpness-test.sh         required
-border-color-space-test.sh         required
-shadow-darken-test.sh              required
-shadow-tiled-neighbour-test.sh     required
-popup-blur-test.sh                 required
-m4g-motion-test.sh                 required
-blur-scale-test.sh                 required
-blur-bitdepth-test.sh              required
+check-shader-derivatives.sh        deep
+signal-exit-test.sh                deep
+titlebar-sharpness-test.sh         deep
+border-color-space-test.sh         deep
+shadow-darken-test.sh              gate
+shadow-tiled-neighbour-test.sh     deep
+popup-blur-test.sh                 deep
+m4g-motion-test.sh                 deep
+blur-scale-test.sh                 deep
+blur-bitdepth-test.sh              deep
 anim-pace-test.sh                  perf
 anim-test.sh                       manual
 smoke.sh                           manual
@@ -143,12 +154,12 @@ live-visual-tour.sh                live
 aur-publish-local.sh               tool
 install-ubuntu.sh                  tool
 hdr-record.sh                      tool
-xw-scale-test.sh                   required
-xw-mixed-test.sh                   required
+xw-scale-test.sh                   gate
+xw-mixed-test.sh                   deep
 "
 
 WANT="${1:---audit}"
-FILTER="${2:-required}"
+FILTER="${2:-gate}"
 
 reg_names() { echo "$REGISTER" | awk 'NF {print $1}'; }
 reg_disp()  { echo "$REGISTER" | awk -v n="$1" '$1==n {print $2}'; }
@@ -222,7 +233,7 @@ done
 # contains a non-zero exit.
 NOSTATUS=""
 for n in $(reg_names); do
-	[ "$(reg_disp "$n")" = required ] || continue
+	[ "$(reg_disp "$n")" = "$FILTER" ] || continue
 	[ -f "$n" ] || continue
 	last="$(grep -vE '^[[:space:]]*(#|$)' "$n" | tail -1)"
 	case "$last" in
@@ -234,7 +245,7 @@ for n in $(reg_names); do
 	NOSTATUS="$NOSTATUS $n"
 done
 
-for d in required perf live manual tool; do
+for d in gate deep perf live manual tool; do
 	c=$(echo "$REGISTER" | awk -v d="$d" '$2==d' | wc -l)
 	printf "  %-9s %2d\n" "$d" "$c"
 done
@@ -273,7 +284,7 @@ if [ "$WANT" = "--audit" ]; then
 fi
 
 if [ "$WANT" != "--run" ]; then
-	echo "usage: $0 [--audit | --run [required|perf|manual]]" >&2
+	echo "usage: $0 [--audit | --run [gate|deep|perf|manual]]" >&2
 	exit 2
 fi
 if [ "$FAIL" != 0 ]; then
@@ -290,7 +301,7 @@ fi
 # ── /tmp IS A 24GB tmpfs AND THE SUITES FILL IT ──────────────────────────
 #
 # Every fixture writes captures to /tmp/asteroidz-<name>-<pid>/ and nothing ever
-# removed them. A 4K PPM is 24MB and a rawhdr frame is 33MB, so a full required
+# removed them. A 4K PPM is 24MB and a rawhdr frame is 33MB, so a full gate
 # run exhausts the tmpfs partway through -- and what that looks like is NOT a
 # disk error. Screenshots come back zero bytes so PIL reports "cannot identify
 # image file", premises fail for no visible reason, and eventually every command
