@@ -2853,10 +2853,22 @@ static int32_t screenshot_hdr(const Arg *arg) {
  * beginning and an end and two of them running on one keybind is a surprise
  * rather than a feature.
  *
- * IT COSTS FRAME TIME. Every frame is waited for and encoded on the
- * compositor's own thread, so recording makes frames later than not recording
- * does. The stop message reports the frames captured and dropped, which is the
- * measurement that decides whether an asynchronous encode is worth building.
+ * IT COSTS FRAME TIME, but no longer a frame's worth of it. The first version
+ * waited for the encode inline and cost 15.20ms per frame against a 6.94ms
+ * budget, running the desktop at 19-27fps. The encode was 91% of that and the
+ * file write 0.01ms, so a worker thread -- the obvious fix -- would have bought
+ * nothing; the answer was to stop waiting rather than to wait elsewhere.
+ * Since 98c8d534 the encode is COLLECTED AT THE START OF THE NEXT CAPTURE:
+ * submit, return, and take the picture a whole frame later when it has already
+ * finished. That only holds while the gap between captures exceeds the encode,
+ * which is why the capture rate is capped at 30fps (AZ_RECORD_FPS); a 4K
+ * picture is ~21ms of encode, a ceiling near 48/sec whatever the display does.
+ * Frames above the cap are skipped and counted.
+ *
+ * The stop message reports the per-frame split including `collect` -- the time
+ * still left to wait when the picture was finally taken, near zero when the
+ * encode overlapped the frame completely -- and how many samples were timed
+ * from presentation rather than readback.
  *
  * The file is not playable until record_stop: the index lives at the end of an
  * MP4, so a compositor killed mid-recording leaves one that cannot be opened.
@@ -10292,6 +10304,17 @@ static void presentmon(struct wl_listener *listener, void *data) {
 		clock_gettime(CLOCK_MONOTONIC, &pn);
 		az_presenter_present(m, ev,
 			(uint64_t)pn.tv_sec * 1000000000ull + (uint64_t)pn.tv_nsec);
+	}
+
+	/*
+	 * M14/D9. A recording's sample times come from here, not from the instant
+	 * the compositor read the picture back. Gated on the presenter having
+	 * established a MONOTONIC clock: the recorder's fallback stamp is
+	 * monotonic, and handing it a foreign-clock instant would make the two
+	 * incomparable without either of them looking wrong.
+	 */
+	if (m->avk != NULL && m->presenter.clock == AZ_PRESENT_CLOCK_MONOTONIC) {
+		az_avk_record_note_present(m->avk, when_ns);
 	}
 
 	if (m->present_clock == PRESENT_CLOCK_UNKNOWN) {

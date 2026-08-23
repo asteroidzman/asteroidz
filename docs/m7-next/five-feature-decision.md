@@ -455,8 +455,9 @@ what M13 adds is per-class policy over a capability that demonstrably works.
 declined.
 
 
-> **M14 IS FUTURE WORK, NOT CANCELLED — deferred 2026-08-17 with its ground
-> audited.** What the audit established, so the next attempt does not re-derive
+> **M14 WAS DEFERRED 2026-08-17 WITH ITS GROUND AUDITED. It is no longer
+> deferred — see "M14 reconciled" below for what was built against this and
+> what it changed.** What the audit established, so the next attempt does not re-derive
 > it:
 >
 > - **The demand is real and the current path is genuinely bad.**
@@ -495,6 +496,77 @@ machine is real (hdr-record.sh exists because the operator records HDR) but
 the encoder half is not yet shown to need to live in the compositor.
 Permissions ride the existing screencopy/portal path and `privacy_shield`;
 AVK owning the image grants nothing.
+
+## M14 reconciled — 2026-08-22
+
+D6 ordered **a stream API first, not an encoder**, and scoped Vulkan Video
+encode to *one audit work item, build only if the audit says cheap*; D8 listed
+"Vulkan Video encode beyond the M14 audit" as explicitly out. What was built
+between 2026-08-20 and 2026-08-21 is the opposite half. Recorded here rather
+than left to be re-derived.
+
+**Built, and not what D6 asked for first:**
+
+| | |
+| --- | --- |
+| Vulkan Video H.265 encoder | `src/render/vulkan/encode/` — 3,327 lines across `avk_encode.c`, `avk_mp4.c`, `avk_heif.c` |
+| A recording loop | `amsg dispatch record_start` / `record_stop`, one output, HDR only |
+| An MP4 container | real sample table, index written at close, so the file is unplayable until `record_stop` |
+| Encode off the frame path | collected at the start of the next capture; capture capped at 30fps (`AZ_RECORD_FPS`), frames above the cap skipped and counted |
+
+**Not built, and still D6's first deliverable:**
+
+- **The stream API with named stages.** No `SCENE_LINEAR`, no `SDR_APPEARANCE`,
+  no `HDR10` stage anywhere in the tree. asteroidz still registers wlroots'
+  `wlr_ext_output_image_capture_source_manager_v1`, and its whole involvement in
+  a capture session is `handle_image_copy_capture_new_session()` counting
+  sessions for the privacy shield.
+- **`rawhdr` retiring into it.** `screenshot_ui,rawhdr` and
+  `contrib/hdr-record.sh` still stand beside the recorder rather than being
+  replaced by it.
+
+**THE API FINDING THAT CHANGES D6'S DESIGN.** D6 said "ext-image-copy-capture
+sessions backed by AVK stage taps". That cannot be built the way it is written.
+`struct wlr_ext_image_capture_source_v1` carries a `const struct
+wlr_ext_image_capture_source_v1_interface *impl`, and **that interface is
+declared in no public wlroots header** — only the pointer to it is. So a
+compositor cannot implement a capture source of its own against wlroots 0.20's
+public API. The only public constructors are
+`wlr_ext_image_capture_source_v1_create_with_scene_node()` (a source from a
+scene node, which is a *scene* tap and not an AVK pipeline stage) and wlroots'
+own per-output manager. Naming AVK stages therefore needs either an
+asteroidz-native capture protocol implemented from scratch, or the source type
+vendored the way the scene graph was in `7899303d`. That is a real decision and
+it was not visible when D6 was written.
+
+**Two of D9's five M14 criteria have moved:**
+
+- *Each frame stamped with its presentation time* — **done**, and measured.
+  Sample durations came from the readback clock: the instant the timeline wait
+  returned, which is when the compositor got to the picture, not when the
+  display showed it. They now come from the presenter's own presentation
+  instant, carried across by `az_avk_record_note_present()`. One slot, not a
+  queue, because the encoder is exactly one capture deep. A frame whose
+  presentation never arrived falls back to the readback clock and is counted,
+  and `record_stop` reports the split — a criterion nobody measures is a
+  criterion nobody meets. Stamps of different origin are never subtracted from
+  each other.
+- *Frame path timing does not degrade while capturing* — **improved, not yet
+  demonstrated against the criterion.** 15.20ms/frame against a 6.94ms budget
+  became a deferred collect plus a rate cap. It has not been re-measured
+  against the presenter's error series, which is what the criterion asks for.
+
+The other three — an HDR10 stream a player renders, an SDR_APPEARANCE stream,
+the stage named in the session — all wait on the stream API.
+
+**What blocks a headless check.** `record_start` refuses an output that is not
+in HDR, and the headless backend refuses HDR outright (it reverts `m->hdr` on
+the next commit — `contrib/regression/tests/hdr.sh`). So nothing in `contrib/`
+can drive the recorder, and it never has. Lifting that refusal is not a test
+fix: it is the SDR_APPEARANCE stage, which has to encode SDR with the right VUI
+rather than claim BT.2100 PQ over a picture that is neither. **That is the next
+increment**, and it is worth more than the stream API because it is what makes
+this a screencaster rather than an HDR-only recorder.
 
 **D7 — Numbering: the five-feature program is M11–M14; M7 and M8 stand; M9
 and M10 are closed out of order.** The architecture table's M7 (client-compat

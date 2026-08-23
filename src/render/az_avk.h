@@ -3043,6 +3043,34 @@ struct az_avk_output {
 	int64_t rec_last_ns;   /* so a sample's duration is measured, not assumed */
 	uint64_t rec_dropped;
 	/*
+	 * M14/D9: A SAMPLE'S TIME IS WHEN THE FRAME WAS SHOWN, NOT WHEN IT WAS
+	 * READ BACK.
+	 *
+	 * The durations used to be the distance between two readbacks -- the
+	 * instant the timeline wait returned, which is when the compositor got
+	 * around to the picture rather than when the display put it up. Those two
+	 * differ by whatever the frame waited for vblank, so on a variable-rate or
+	 * idle desktop a recording plays back at a subtly wrong speed and there is
+	 * nothing in the file to say so.
+	 *
+	 * The presenter already knows the real instant. One slot, not a queue,
+	 * because the encoder is exactly one capture deep: the packet collected at
+	 * capture k belongs to capture k-1, and k-1's presentation has already
+	 * happened by then. `rec_present_pending` arms at capture time so that the
+	 * NEXT presentation writes the slot; a frame that was not captured
+	 * presents with the flag clear and is ignored.
+	 *
+	 * A frame whose presentation never arrived leaves the slot at zero, and
+	 * that sample falls back to the readback clock and is COUNTED. The count
+	 * is what stops "stamped with its presentation time" from being a claim
+	 * rather than a measurement -- see record_stop's report.
+	 */
+	uint64_t rec_present_ns;      /* presentation of the capture in the encoder */
+	uint64_t rec_last_stamp_ns;   /* the stamp the previous sample used */
+	bool rec_present_pending;     /* a capture is waiting for its presentation */
+	bool rec_last_stamp_presented; /* ...and which clock that stamp came from */
+	uint64_t rec_present_missing; /* samples that fell back to readback */
+	/*
 	 * WHERE THE FRAME TIME GOES, split four ways, because "recording costs
 	 * frame time" is not a number and the four are fixed by different work.
 	 * The timeline wait may be removable outright; the two GPU waits want
@@ -5561,6 +5589,25 @@ static bool az_avk_encode_hdr_still(struct wlr_buffer *frame, Monitor *m,
  * frame of a recording is better than ending it, and a recording that quietly
  * lost some is worse than one that says so at the end.
  */
+/*
+ * M14/D9. The presentation of a captured frame, handed over by the present
+ * path so a sample can be stamped with when the display showed it.
+ *
+ * Only a frame the recorder actually took is wanted, so this writes nothing
+ * unless a capture armed it -- every other presented frame passes through.
+ * `when_ns` must be in the presenter's own clock; the caller checks that it is
+ * monotonic, because the fallback stamp is monotonic and a delta across two
+ * clocks is worse than no delta at all.
+ */
+static void az_avk_record_note_present(struct az_avk_output *out,
+		uint64_t when_ns) {
+	if (out == NULL || !out->recording || !out->rec_present_pending) {
+		return;
+	}
+	out->rec_present_pending = false;
+	out->rec_present_ns = when_ns;
+}
+
 /* Open a recording on one output. Returns false with a reason logged. */
 static bool az_avk_record_open(Monitor *m, const char *path) {
 	if (m == NULL || m->avk == NULL || m->avk->slot == NULL) {
@@ -5678,6 +5725,21 @@ static bool az_avk_record_close(Monitor *m) {
 				+ out->rec_collect_ns + out->rec_write_ns) / n / 1e6,
 			out->rec_worst_ns / 1e6, budget,
 			(unsigned long long)out->rec_skipped);
+		/*
+		 * M14/D9 asks for every frame stamped with its presentation time.
+		 * This is the line that says whether it was: zero missing means every
+		 * sample's duration came from the presenter, and a non-zero count is
+		 * the number that were timed off the readback clock instead. Reported
+		 * always, including the zero, because a criterion nobody measures is
+		 * a criterion nobody meets.
+		 */
+		wlr_log(WLR_INFO,
+			"record: %llu of %llu samples timed from presentation "
+			"(%llu fell back to readback)",
+			(unsigned long long)(out->rec_frames > out->rec_present_missing
+				? out->rec_frames - out->rec_present_missing : 0),
+			(unsigned long long)out->rec_frames,
+			(unsigned long long)out->rec_present_missing);
 	}
 	out->rec_mp4 = NULL;
 	avk_encoder_destroy(out->rec_encoder);
@@ -5718,6 +5780,14 @@ static void az_avk_record_frame(struct az_avk_output *out, Monitor *m,
 	}
 	out->rec_next_ns = now + out->rec_interval_ns;
 
+	/* Consume the slot BEFORE arming it: the packet about to come back belongs
+	 * to the previous capture, and this frame's own presentation is still in
+	 * the future. Arming first would stamp a sample with the presentation of a
+	 * frame that had not happened yet. */
+	uint64_t stamp = out->rec_present_ns;
+	out->rec_present_ns = 0;
+	out->rec_present_pending = true;
+
 	void *pkt = NULL;
 	size_t pkt_len = 0;
 	if (!avk_encoder_encode_frame(out->rec_encoder, target->image,
@@ -5742,9 +5812,20 @@ static void az_avk_record_frame(struct az_avk_output *out, Monitor *m,
 	 * desktop was idle. The first frame has no predecessor and takes one
 	 * refresh interval as its guess.
 	 */
+	bool presented = stamp != 0;
+	if (!presented) {
+		stamp = (uint64_t)now;
+		out->rec_present_missing++;
+	}
+
 	uint32_t duration = 33;
-	if (out->rec_last_ns != 0) {
-		int64_t delta = now - out->rec_last_ns;
+	/* Only between two stamps of the SAME origin. One readback instant and one
+	 * presentation instant are not on a common timeline, and subtracting them
+	 * produces a plausible-looking number that is wrong -- so a change of
+	 * origin restarts from the refresh guess instead. */
+	if (out->rec_last_stamp_ns != 0
+			&& out->rec_last_stamp_presented == presented) {
+		int64_t delta = (int64_t)stamp - (int64_t)out->rec_last_stamp_ns;
 		if (delta < 1000000) {
 			delta = 1000000;          /* a millisecond floor: 0 stalls a player */
 		}
@@ -5755,6 +5836,8 @@ static void az_avk_record_frame(struct az_avk_output *out, Monitor *m,
 	} else if (m->wlr_output->refresh > 0) {
 		duration = (uint32_t)(1000000 / (uint32_t)m->wlr_output->refresh);
 	}
+	out->rec_last_stamp_ns = stamp;
+	out->rec_last_stamp_presented = presented;
 	out->rec_last_ns = now;
 
 	out->rec_convert_ns += out->rec_encoder->last_convert_ns;
