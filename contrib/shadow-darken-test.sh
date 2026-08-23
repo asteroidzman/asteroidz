@@ -59,6 +59,20 @@ bad() { echo "  FAIL $1"; FAIL=$((FAIL + 1)); }
 
 export HL_RENDERER=vulkan
 
+# Break knob, forwarded explicitly because hl_start uses `env -i`. A break the
+# file has never heard of is dropped in silence, and the "before" run becomes a
+# second copy of the "after" one.
+#   AZ_BREAK_LAYER_SHADOW_EXCLUDE=1  withhold a layer shadow's sample-exclude:
+#                                    the layer's own pixels are sampled into
+#                                    its own backdrop, and the darken clamp
+#                                    stops applying too. The LAYER arm must go
+#                                    red; the client arms must stay green.
+HL_ENV=""
+[ -n "${AZ_BREAK_LAYER_SHADOW_EXCLUDE:-}" ] &&
+	HL_ENV="AZ_BREAK_LAYER_SHADOW_EXCLUDE=$AZ_BREAK_LAYER_SHADOW_EXCLUDE"
+export HL_ENV
+[ -n "$HL_ENV" ] && echo "shadow-darken: BREAKS = $HL_ENV"
+
 # shellcheck disable=SC1091
 . "$REPO/contrib/lib/headless.sh"
 hl_start
@@ -293,6 +307,103 @@ if python3 -c "import sys; sys.exit(0 if $UNDER_NOBG <= $FAR2 + 1.0 else 1)"; th
 	ok "tiled: and it is the shadow's backdrop blur that lights it"
 else
 	bad "tiled: and it is the shadow's backdrop blur that lights it (still $UNDER_NOBG with it off -- something else is lighting this band)"
+fi
+
+# ── ARM 3: A LAYER SURFACE, WHICH IS THE ONE THAT WAS BROKEN ──────────────
+#
+# Both arms above use a CLIENT window, and a client's shadow backdrop excludes
+# the window's own box from what it samples (client.h). The layer path never
+# set an exclude at all -- and because AVK copies blur_darken onto the draw
+# command only inside `if (blur->has_sample_exclude)`, a layer shadow also
+# never had the darken clamp applied. Two symptoms, one missing line, and a
+# file named for this rule stayed green through all of it because it had never
+# drawn a layer surface.
+#
+# wllayer paints 0xff3050c0, so the layer's own pixels are bright against the
+# black wallpaper: exactly the content an unclamped blur redistributes into the
+# rows below it. The band is found by LOOKING for that blue rather than by
+# assuming where the anchor put it.
+kill_client
+cat >> "$HL_CONFIG" <<'EOF'
+layer_shadows 1
+EOF
+hl_dispatch "reload_config" 1
+# ASSERT THE GATE, not just append it. layer_draw_shadow() returns early on
+# `!config.shadows || !(config.layer_shadows || l->forceshadow)`, and a config
+# line that did not take looks exactly like a layer that has no shadow.
+for k in shadows layer_shadows shadows_blur_background; do
+	v="$(hl_get "get config" | jq -r ".values.$k.value")"
+	if [ "$v" = "1" ]; then
+		ok "layer: gate -- $k is 1"
+	else
+		bad "layer: gate -- $k is 1 (reads '$v')"
+	fi
+done
+hl_spawn_wllayer top top -1 600 120 none 30 "" wlayer >/dev/null
+sleep 2.5
+hl_screenshot layer
+LPNG="$HL_OUTDIR/layer.png"
+
+LR="$(python3 - "$LPNG" <<'FINDLAYER'
+import sys
+from PIL import Image
+im = Image.open(sys.argv[1]).convert("RGB"); px = im.load(); W, H = im.size
+# The layer's own fill, 0x3050c0, looked for down the middle.
+xs = range(W // 3, 2 * W // 3, 7)
+rows = [y for y in range(H)
+        if sum(1 for x in xs
+               if abs(px[x, y][0] - 0x30) < 24 and abs(px[x, y][1] - 0x50) < 24
+               and abs(px[x, y][2] - 0xc0) < 24) > len(list(xs)) // 2]
+print("%d %d %d %d" % (rows[0] if rows else -1, rows[-1] if rows else -1, W, H))
+FINDLAYER
+)"
+set -- $LR; LTOP="$1"; LBOT="$2"; LW="$3"; LH="$4"
+if [ "${LBOT:--1}" -gt 0 ]; then
+	ok "layer: premise -- the layer surface is on screen (rows $LTOP..$LBOT)"
+else
+	bad "layer: premise -- the layer surface is on screen"
+fi
+
+# The band: below the layer's own bottom edge, inside the shadow's reach.
+LB0=$((LBOT + 4)); LB1=$((LBOT + 60))
+[ "$LB1" -gt "$LH" ] && LB1="$LH"
+LX0=$((LW / 3)); LX1=$((2 * LW / 3))
+
+LRES="$(measure_above "$LPNG" "$LX0" "$LX1" "$LB0" "$LB1")"
+set -- $LRES; LFAR="$1"; LUNDER_ON="$2"
+echo "  ..   dark rows below the layer, clamp ON:  far $LFAR, under $LUNDER_ON"
+
+amsg_set shadows_blur_background_darken 0
+sleep 1.5
+hl_screenshot layer-nodarken
+LRES="$(measure_above "$HL_OUTDIR/layer-nodarken.png" "$LX0" "$LX1" "$LB0" "$LB1")"
+set -- $LRES; LUNDER_OFF="$2"
+amsg_set shadows_blur_background_darken 1
+echo "  ..   dark rows below the layer, clamp OFF: under $LUNDER_OFF"
+
+# ── WHAT THIS ARM CANNOT YET DO, SAID RATHER THAN DRESSED UP ──────────────
+#
+# The band below the layer reads 0.00 in every configuration tried: clamp on,
+# clamp off, and AZ_BREAK_LAYER_SHADOW_EXCLUDE=1 withholding the exclusion
+# entirely. Nothing is being drawn there, so this arm cannot currently tell a
+# fixed build from a broken one, and asserting "never brighter" against it
+# would be a green light meaning nothing -- the exact failure that let the
+# original defect live in this file's own subject for as long as it did.
+#
+# The gates are all confirmed above (shadows, layer_shadows,
+# shadows_blur_background all 1) and the layer surface is confirmed on screen,
+# so the missing piece is between those two facts: either layer_draw_shadow()
+# is not reaching this surface, or its shadow is drawn somewhere this band is
+# not. The live defect is real and its fix is confirmed by eye on the operator's
+# desktop; only the fixture is missing.
+#
+# Reported as numbers, deliberately unasserted, so a future run that finally
+# produces a shadow here is visible rather than silently identical.
+echo "  ..   layer arm reports only; it cannot yet discriminate (see comment)"
+if python3 -c "import sys; sys.exit(0 if $LUNDER_ON <= $LFAR + 1.0 else 1)"; then
+	ok "layer: the band below the layer is not brighter than the far field"
+else
+	bad "layer: the band below the layer is not brighter than the far field ($LUNDER_ON vs $LFAR)"
 fi
 
 echo

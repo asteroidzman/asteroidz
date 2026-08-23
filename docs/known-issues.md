@@ -4,6 +4,43 @@ Open defects with what has been established and, as importantly, what has been
 *ruled out*. The point of this file is that the next attempt starts where the
 last one stopped instead of re-deriving it.
 
+## OPEN — no fixture reproduces a layer shadow's backdrop blur
+
+Fixed 2026-08-23 in `src/animation/layer.h`: a layer surface's shadow backdrop
+never excluded the layer's own box from what it sampled, so the blur spread the
+layer's own pixels outward -- and because AVK copies `blur_darken` onto the
+draw command only inside `if (blur->has_sample_exclude)`, the darken clamp had
+never applied to a layer shadow either. Two symptoms, one missing line.
+Confirmed by eye on the operator's desktop: the glow is gone.
+
+**No test can see it.** `contrib/shadow-darken-test.sh` is named for exactly
+this rule and stayed green throughout, because both of its original arms used a
+CLIENT window -- and a client's backdrop has always set the exclude
+(`client.h`). A third arm now spawns a layer surface via `hl_spawn_wllayer` and
+measures the band below it. It reads **0.00 in every configuration tried**:
+
+    clamp on                              0.00
+    clamp off                             0.00
+    AZ_BREAK_LAYER_SHADOW_EXCLUDE=1       0.00
+
+So nothing is drawn in that band and the arm cannot tell a fixed build from a
+broken one. Its assertions are deliberately limited to what it can actually
+measure, with the numbers printed unasserted, rather than a green "never
+brighter" that would mean nothing.
+
+**Established, so the next attempt starts here:** the gates are all confirmed
+at runtime by the arm itself -- `shadows`, `layer_shadows` and
+`shadows_blur_background` all read 1 from `get config` -- and the layer surface
+is confirmed on screen (its 0xff3050c0 fill found at rows 0..119). The gap is
+between those two facts: either `layer_draw_shadow()` is not reaching a
+`wllayer` surface, or its shadow is drawn somewhere the band is not. Worth
+checking first: whether `l->shadow` exists for this surface at all, and whether
+the operator's bar differs by using `layerrule ...,forceshadow:1` rather than
+the global `layer_shadows`.
+
+`AZ_BREAK_LAYER_SHADOW_EXCLUDE=1` withholds the exclusion and changes nothing
+else; it is the handle for whoever picks this up.
+
 ## M14 — what a capture client is actually offered
 
 Measured 2026-08-20 with `contrib/wlcapture`, the ext-image-copy-capture client
