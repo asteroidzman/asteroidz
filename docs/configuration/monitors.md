@@ -428,21 +428,44 @@ notification that borrowed the keyboard flipped the answer. A fullscreen game
 stays fullscreen while a popup takes focus, so under the output-scoped rule
 nothing is committed.
 
-**Turning it off waits ten seconds; turning it on does not.** Each transition
-is a modeset, and they arrive in pairs: a game that loses the output and takes
-it back — alt-tab, a surface rebuild, a loading screen — costs a blank going
-out and another coming back, for an excursion it was always going to return
-from. Measured live at 9.3s and 8.8s, which is why the hold is ten. If the game
-returns inside that window the pending change is cancelled and **the display
-never changes state at all**. Coming back is immediate: a game should not spend
-its first seconds on the desktop's refresh policy.
+**Turning it off waits for the desktop to actually slow down; turning it on does
+not.** Each transition is a modeset and a visible blank, and they arrive in
+pairs: a game that loses the output and takes it back — alt-tab, a surface
+rebuild, a loading screen — costs one going out and another coming back, for an
+excursion it was always going to return from.
 
-The cost is that VRR can stay on for up to ten seconds on a desktop that really
-has finished with the game. That is deliberate. The reason the desktop does not
-run VRR is that an idle desktop presents at around 13fps and falls through the
-panel's VRR floor — 48Hz on DP-1 here — which shows up as intermittent
-blanking. Reaching that needs a *sustained* idle, not ten seconds of an active
-desktop.
+A fixed wait was the first attempt and it was the wrong shape. Ten seconds,
+chosen from two measured excursions of 9.3s and 8.8s; the next one was 13.8s,
+so the wait expired, VRR dropped, the return brought it back, and the pair cost
+exactly what it always had — ten seconds later. Any constant is a guess about
+how long somebody alt-tabs for, and raising it delays a legitimate turn-off by
+the same amount.
+
+So the condition is the one that actually matters. VRR on the desktop is only
+harmful when the desktop presents **below the panel's refresh floor** — that is
+what makes an idle desktop at ~13fps blank, and it is the whole reason the
+desktop does not run VRR. A busy desktop with adaptive sync on is harmless for
+as long as it stays busy. The pending change therefore waits for a presentation
+interval longer than the floor allows:
+
+| | |
+| --- | --- |
+| alt-tab and keep working | rate stays up, VRR never drops — **no modesets, however long you are away** |
+| alt-tab and walk away | rate falls, VRR drops — one modeset, when it is actually needed |
+
+It cannot oscillate, because nothing turns VRR back on while no game wants it:
+the desktop's own rate can only move the answer one way.
+
+The floor is 48Hz, read from the panel rather than assumed — DP-1 here is an
+AORUS FI32U whose EDID monitor-range descriptor says `vertical 48-144 Hz`.
+wlroots 0.20 exposes no VRR range, so it is a compile-time constant and not per
+output; erring low is safe, since the only consequence of treating a desktop as
+too slow is turning off adaptive sync no game wanted.
+
+One residual, worth knowing: an output that stops presenting **entirely** never
+produces an interval to measure and would keep VRR on. Nothing here does that —
+a clock alone presents once a second, far below the floor — and no fixed wait
+would have helped that case either, since turning VRR off is itself a commit.
 
 `amsg get surface-intent` reports `vrr_off_deferred` and `vrr_off_cancelled`
 per output, so how often the hold saved a pair of modesets is a number rather

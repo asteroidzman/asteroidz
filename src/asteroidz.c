@@ -1260,27 +1260,50 @@ struct Monitor {
 	bool vrr_global_enable; // monitorrule vrr:1 = VRR always on
 	bool is_vrr_opening;	// VRR currently enabled on the output
 	/*
-	 * TURNING VRR OFF WAITS; TURNING IT ON DOES NOT.
+	 * TURNING VRR OFF WAITS FOR EVIDENCE; TURNING IT ON DOES NOT.
 	 *
 	 * Each adaptive-sync transition is a real modeset and a visible blank, and
 	 * they come in pairs: a live session logged the game losing and regaining
 	 * the output 9.3s apart -- pointer unconstrained, surfaces torn down and
 	 * rebuilt, pointer constrained again -- for two blanks either side of one
-	 * alt-tab. Nothing was wrong with the decision; both answers were right at
-	 * the instant they were made.
+	 * alt-tab. Nothing was wrong with either decision; both were right at the
+	 * instant they were made.
 	 *
-	 * So the OFF answer is held for AZ_VRR_OFF_DEBOUNCE_MS before it is acted
-	 * on. If a game comes back inside that window the timer is cancelled and
-	 * the display never changes state at all, which is the whole point: not a
-	 * faster pair of modesets, no pair.
+	 * A FIXED WAIT WAS THE FIRST ANSWER AND IT WAS THE WRONG SHAPE. Ten
+	 * seconds was chosen from two measured excursions, 9.3s and 8.8s. The next
+	 * one was 13.8s: the hold expired, VRR went off, the return turned it back
+	 * on, and the pair cost exactly what it had cost before -- ten seconds
+	 * later. Any constant is a guess about how long somebody alt-tabs for, and
+	 * raising it delays a legitimate turn-off by the same amount.
 	 *
-	 * Armed once, not restarted. check_vrr_enable() runs on every focus
-	 * change, so re-arming on each call would push the transition out
-	 * indefinitely on a busy desktop and VRR would never turn off.
+	 * SO GATE ON THE THING THAT ACTUALLY MATTERS. Adaptive sync on the desktop
+	 * is only harmful when the desktop presents BELOW THE PANEL'S FLOOR --
+	 * that is what makes an idle desktop at ~13fps blank, and it is the entire
+	 * reason the desktop does not run VRR. A busy desktop with VRR on is
+	 * harmless for as long as it stays busy. So the off answer is held until a
+	 * presentation interval is observed that is longer than the floor allows,
+	 * and only then committed:
+	 *
+	 *   alt-tab, keep working   rate stays up   VRR never drops   NO modesets,
+	 *                                                             for any length
+	 *                                                             of excursion
+	 *   alt-tab, walk away      rate falls      VRR drops         one modeset,
+	 *                                                             when it is
+	 *                                                             actually needed
+	 *
+	 * It cannot flap, because nothing turns VRR back on while no game wants
+	 * it: the desktop's own rate moves the answer one way only.
+	 *
+	 * THE RESIDUAL, said rather than hidden: an output that stops presenting
+	 * ENTIRELY produces no interval to observe and would keep VRR on. Nothing
+	 * on this desktop does that -- a clock alone presents once a second, which
+	 * is far below the floor and trips the gate immediately -- but a genuinely
+	 * frozen output would sit there, and no fixed wait would have helped it
+	 * either, since turning VRR off is itself a commit.
 	 */
-	struct wl_event_source *vrr_off_timer;
-	bool vrr_off_armed;
-	uint64_t vrr_off_deferred;   /* off answers held */
+	bool vrr_off_wanted;         /* off is the answer; waiting for the rate */
+	uint64_t vrr_last_present_ns;
+	uint64_t vrr_off_deferred;   /* off answers held for evidence */
 	uint64_t vrr_off_cancelled;  /* ...that a return cancelled: modesets saved */
 	/* DSC/link retrain: cycle through an alternate mode and back to fully
 	 * reinit the sink's DSC decoder (same effect as a VT switch) */
@@ -1927,6 +1950,9 @@ static int32_t keep_idle_inhibit(void *data);
 static void schedule_float_focus_raise(Client *c);
 static void check_keep_idle_inhibit(Client *c);
 static void check_vrr_enable(Client *c);
+/* defined with the VRR policy further down; called from the presentation
+ * path, which is above it */
+static void vrr_rate_gate(Monitor *m, uint64_t interval_ns);
 static int monitor_retrain_step(void *data);
 void monitor_start_retrain(Monitor *m, uint32_t delay_ms);
 static void hdr_resolve(Monitor *m);
@@ -2132,16 +2158,19 @@ static bool start_drag_window = false;
 static int32_t last_apply_drap_time = 0;
 
 /*
- * How long an "adaptive sync should be off" answer is held before it is acted
- * on. Ten seconds because that is what the live measurement asked for: the
- * game-lost-and-regained excursions this exists to absorb were 9.3s and 8.8s,
- * and a debounce shorter than the thing it is debouncing saves nothing. The
- * cost of holding is that VRR stays on for up to this long on a desktop that
- * really has finished with the game -- harmless, because the idle-desktop
- * blanking this policy was built to avoid needs a sustained idle at ~13fps to
- * fall through the panel's 48Hz floor, not ten seconds of an active one.
+ * The presentation interval past which the desktop is no longer refreshing
+ * fast enough for adaptive sync to be safe on it.
+ *
+ * 48Hz, read from this desk's panel rather than assumed: the AORUS FI32U's
+ * EDID monitor-range descriptor says `vertical 48-144 Hz`. wlroots 0.20 does
+ * not expose a VRR range, so it cannot be per output, and a constant is the
+ * honest form -- but it is a constant about a DISPLAY, not about how long a
+ * person alt-tabs for, and erring low is safe: the only consequence of
+ * treating a desktop as too slow is turning off adaptive sync that no game
+ * wanted anyway.
  */
-#define AZ_VRR_OFF_DEBOUNCE_MS 10000
+#define AZ_VRR_FLOOR_HZ 48
+#define AZ_VRR_FLOOR_INTERVAL_NS (1000000000ull / AZ_VRR_FLOOR_HZ)
 
 static struct wlr_output_layout *output_layout;
 /* held so the global filter can name it: xdg-output is hidden from the
@@ -5179,13 +5208,6 @@ void cleanupmon(struct wl_listener *listener, void *data) {
 	if (m->retrain_timer) {
 		wl_event_source_remove(m->retrain_timer);
 		m->retrain_timer = NULL;
-	}
-	/* A held VRR-off answer for an output that is going away has nothing left
-	 * to be right about, and the timer holds this monitor as its data. */
-	if (m->vrr_off_timer) {
-		wl_event_source_remove(m->vrr_off_timer);
-		m->vrr_off_timer = NULL;
-		m->vrr_off_armed = false;
 	}
 	m->wlr_output->data = NULL;
 
@@ -10359,6 +10381,16 @@ static void presentmon(struct wl_listener *listener, void *data) {
 		az_avk_record_note_present(m->avk, when_ns);
 	}
 
+	/*
+	 * The one measurement that decides whether adaptive sync is still safe on
+	 * this output: how long the display went between showing frames. A held
+	 * "turn VRR off" answer waits here rather than on a clock.
+	 */
+	if (m->vrr_last_present_ns != 0 && when_ns > m->vrr_last_present_ns) {
+		vrr_rate_gate(m, when_ns - m->vrr_last_present_ns);
+	}
+	m->vrr_last_present_ns = when_ns;
+
 	if (m->present_clock == PRESENT_CLOCK_UNKNOWN) {
 		struct timespec mono, real;
 		clock_gettime(CLOCK_MONOTONIC, &mono);
@@ -12736,16 +12768,10 @@ static void hdr_resolve_all(void) {
 }
 
 static bool commit_vrr_state(Monitor *m, bool enable) {
-	/* Whatever was queued is answered by this commit -- including an explicit
-	 * set_output_vrr, which must not be undone a few seconds later by a timer
-	 * armed before the operator asked. Disarmed, never destroyed: this is
-	 * reached from the timer's own callback. */
-	if (m->vrr_off_armed) {
-		m->vrr_off_armed = false;
-		if (m->vrr_off_timer != NULL) {
-			wl_event_source_timer_update(m->vrr_off_timer, 0);
-		}
-	}
+	/* Whatever was held is answered by this commit -- including an explicit
+	 * set_output_vrr, which must not be undone by a gate armed before the
+	 * operator asked. */
+	m->vrr_off_wanted = false;
 
 	enum wlr_output_adaptive_sync_status before =
 		m->wlr_output->adaptive_sync_status;
@@ -12840,26 +12866,28 @@ static bool mon_wants_vrr(Monitor *m) {
 }
 
 /*
- * The held OFF answer, re-asked rather than replayed.
+ * The held OFF answer, acted on when the desktop's own rate says it is time.
  *
- * Several seconds have passed and the reason the answer was `false` may have
- * gone away without any caller noticing -- so mon_wants_vrr() decides again
- * here. Acting on the stale answer would turn VRR off under a game that had
- * come back, which is the exact failure this debounce exists to prevent.
+ * Called from the presentation path with the gap since the previous
+ * presentation. Re-asks mon_wants_vrr() rather than trusting the held answer:
+ * arbitrarily long may have passed, and turning VRR off under a game that came
+ * back is the exact failure this gate exists to prevent.
  */
-static int32_t vrr_off_timeout(void *data) {
-	Monitor *m = data;
-	if (m == NULL) {
-		return 0;
+static void vrr_rate_gate(Monitor *m, uint64_t interval_ns) {
+	if (m == NULL || !m->vrr_off_wanted || !m->is_vrr_opening) {
+		return;
 	}
-	m->vrr_off_armed = false;
+	if (interval_ns <= AZ_VRR_FLOOR_INTERVAL_NS) {
+		return;   /* still refreshing fast enough for VRR to be safe */
+	}
 	if (!m->wlr_output || !m->wlr_output->enabled) {
-		return 0;
+		return;
 	}
-	if (m->is_vrr_opening && !mon_wants_vrr(m)) {
-		commit_vrr_state(m, false);
+	if (mon_wants_vrr(m)) {
+		m->vrr_off_wanted = false;
+		return;
 	}
-	return 0;
+	commit_vrr_state(m, false);
 }
 
 /*
@@ -12882,14 +12910,11 @@ void check_vrr_enable(Client *c) {
 
 	if (want) {
 		/* ON IS IMMEDIATE. A game that wants its cadence to drive the display
-		 * should not spend the first seconds of it on the desktop's. This also
-		 * cancels a held-off answer without committing anything when VRR is
+		 * should not spend the first frames of it on the desktop's. This also
+		 * drops a held-off answer without committing anything when VRR is
 		 * already on -- the alt-tab case, and the modeset pair it saves. */
-		if (m->vrr_off_armed) {
-			m->vrr_off_armed = false;
-			if (m->vrr_off_timer != NULL) {
-				wl_event_source_timer_update(m->vrr_off_timer, 0);
-			}
+		if (m->vrr_off_wanted) {
+			m->vrr_off_wanted = false;
 			m->vrr_off_cancelled++;
 		}
 		if (!m->is_vrr_opening) {
@@ -12898,25 +12923,14 @@ void check_vrr_enable(Client *c) {
 		return;
 	}
 
-	if (!m->is_vrr_opening || m->vrr_off_armed) {
-		/* Already off, or already waiting. Re-arming here is what would make
-		 * the wait unbounded. */
+	if (!m->is_vrr_opening) {
+		m->vrr_off_wanted = false;
 		return;
 	}
-
-	if (m->vrr_off_timer == NULL) {
-		m->vrr_off_timer = wl_event_loop_add_timer(
-			wl_display_get_event_loop(dpy), vrr_off_timeout, m);
-		if (m->vrr_off_timer == NULL) {
-			/* No timer, no debounce -- the old behaviour, which is correct if
-			 * abrupt, rather than VRR stuck on for the session. */
-			commit_vrr_state(m, false);
-			return;
-		}
+	if (!m->vrr_off_wanted) {
+		m->vrr_off_wanted = true;
+		m->vrr_off_deferred++;
 	}
-	m->vrr_off_armed = true;
-	m->vrr_off_deferred++;
-	wl_event_source_timer_update(m->vrr_off_timer, AZ_VRR_OFF_DEBOUNCE_MS);
 }
 
 static int32_t float_focus_raise_timeout(void *data) {
