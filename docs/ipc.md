@@ -554,7 +554,7 @@ Each entry in `surfaces` carries:
 | `presentation.vblank_hz` | the panel's scan rate |
 | `presentation.presented_hz` | how often a frame actually reached the screen — **not the same as `vblank_hz` under VRR**, where the panel free-runs faster than the compositor commits |
 | `presentation.presents_per_frame` | presentations per committed client frame; **1.0 means the compositor is pacing to the client**, which is what VRR following a video looks like |
-| `presentation.output_vrr_active` | VRR state of its output, named so it cannot be read as a property of the window |
+| `presentation.output_vrr_active` | VRR state of its output, named so it cannot be read as a property of the window. The **committed** adaptive-sync status, the same source `get all-monitors` reports `vrr` from — not the compositor's request |
 | `render.direct_scanout` | whether this surface's buffer actually went to the display last frame |
 | `render.scanout` | the verdict: `accepted`, `no-candidate`, `rule-disabled`, `no-buffer`, `not-dmabuf`, `geometry`, `transform-mismatch`, `effects-active`, `output-icc`, `tone-map-required`, `modeset-pending`, `kms-refused`, `privacy-shield`, `not-visible`, `not-evaluated` |
 | `render.scanout_why` | the same verdict as a sentence — every refusal has a reason, which is the point |
@@ -568,7 +568,7 @@ silently miss any change that survived rounding, which is the one job the field
 has.
 
 `outputs` carries the state those surfaces were resolved *against*: `hdr`,
-`icc`, the colour `path` (`A-direct-srgb` / `B-encode` / `fallback`),
+`hdr_enabled`, `icc`, the colour `path` (`A-direct-srgb` / `B-encode` / `fallback`),
 `encode_transfer`, `ref_nits`, `peak_scene`, `dither_q`, and the presenter's
 `present_regime`, periods and signed error series, plus `scanout_last` (the
 output's verdict for its last frame — `not-evaluated` when that frame took a
@@ -628,6 +628,14 @@ change", but the flag has a second writer:
 `client_pending_fullscreen_state()` sets it on any fullscreen transition while
 the monitor is HDR, where `m->hdr` does not move at all. A modeset per
 fullscreen transition is a blank per fullscreen transition.
+
+`hdr` and `hdr_enabled` split the same way they do in `get all-monitors`, and
+for the same reason: `hdr` is read back off the connector's
+`HDR_OUTPUT_METADATA`, `hdr_enabled` is the baseline that was asked for. They
+agree in the steady state and disagree exactly when something is wrong, which
+is the only time the pair is worth having. `icc_why` is derived from
+`encode_transfer` rather than from the baseline, so its explanation cannot
+contradict the two fields printed beside it.
 
 **A profile that is loaded is not necessarily applied**, so `icc` (present) and
 `icc_applied` (carried by the encode pass) are separate fields, and `icc_why`

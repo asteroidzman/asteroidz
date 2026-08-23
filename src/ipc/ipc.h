@@ -554,8 +554,21 @@ static cJSON *build_surface_intent_json(struct wlr_surface *s,
 					mean_ns / (double)pres);
 			}
 		}
+		/*
+		 * THE COMMITTED STATUS, NOT OUR REQUEST. This read
+		 * `mon->is_vrr_opening`, which enable_adaptive_sync() raises when
+		 * wlr_output_test_state() ACCEPTS the state -- a test passing is a
+		 * statement about a state object, not about the display, and the
+		 * commit that follows can still be rejected or never happen. It also
+		 * put two disagreeing answers to one question in one dump: the
+		 * monitor JSON's `vrr` and the client JSON's `vrr` both read
+		 * adaptive_sync_status, so a stuck flag showed VRR active here and
+		 * inactive two objects away. Same source as its siblings now.
+		 */
 		cJSON_AddBoolToObject(pc, "output_vrr_active",
-			in.mon != NULL && in.mon->is_vrr_opening);
+			in.mon != NULL && in.mon->wlr_output != NULL
+				&& in.mon->wlr_output->adaptive_sync_status
+					== WLR_OUTPUT_ADAPTIVE_SYNC_ENABLED);
 	}
 
 	cJSON *rn = cJSON_AddObjectToObject(o, "render");
@@ -1225,7 +1238,19 @@ static void handle_command(int client_fd, const char *cmd_raw) {
 			cJSON *e = cJSON_CreateObject();
 			cJSON_AddStringToObject(e, "name", om->wlr_output->name);
 			cJSON_AddBoolToObject(e, "enabled", om->wlr_output->enabled);
-			cJSON_AddBoolToObject(e, "hdr", om->hdr > 0);
+			/*
+			 * THE CONNECTOR, same as `get monitors` -- see build_monitor_json.
+			 * This read `om->hdr`, the intent, under the same plain name that
+			 * dump uses for the wire, so the two commands could answer the
+			 * same question differently and only one of them was right.
+			 * `hdr_enabled` carries the intent, as it does there.
+			 */
+			int om_hdr_wire = mon_connector_hdr_active(om);
+			bool om_hdr = om_hdr_wire >= 0
+				? om_hdr_wire == 1
+				: om->wlr_output->image_description != NULL;
+			cJSON_AddBoolToObject(e, "hdr", om_hdr);
+			cJSON_AddBoolToObject(e, "hdr_enabled", om->hdr > 0);
 			/*
 			 * ── A PROFILE THAT IS LOADED IS NOT NECESSARILY APPLIED ────────
 			 *
@@ -1245,8 +1270,15 @@ static void handle_command(int client_fd, const char *cmd_raw) {
 			cJSON_AddBoolToObject(e, "icc", icc_present);
 			cJSON_AddBoolToObject(e, "icc_applied", icc_applied);
 			if (icc_present && !icc_applied) {
+				/*
+				 * WHY IT IS INERT, from what made it inert: the encode pass
+				 * is PQ, which is the fact `encode_transfer` states two lines
+				 * below. Branching on `om->hdr` explained the state with the
+				 * intent, so a divergence between them produced a reason that
+				 * contradicted the fields either side of it.
+				 */
 				cJSON_AddStringToObject(e, "icc_why",
-					om->hdr > 0
+					om->color_state.encode_tf == AZ_TF_PQ
 						? "inert: the output presents its own HDR image "
 						  "description, and two transforms on one pixel is "
 						  "worse than none (M6B/D3)"
