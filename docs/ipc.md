@@ -127,7 +127,7 @@ compositor's parser. Types, ranges and enum members are inline in
 `set_value_default`; a mirror of that drifts the first time either side gains a
 default, silently, and then writes wrong values into a hand-maintained config.
 The table is hand-written and checked from both ends — see
-[regression testing](/docs/regression-testing#the-schema-checked-from-both-ends).
+the schema, which is checked from both ends by `asteroidz -S`.
 
 `get config` is the current value of each of them, plus **where it came from**:
 
@@ -1040,11 +1040,7 @@ force. And it honours the bare-name fallback the config front-end uses, so
 canonical top-level path.
 
 Nothing calls `kdl-write.h` yet; it is the foundation for writing arbitrary
-options, not a feature on its own. `tests/test-kdl-write.c` is a `meson test`
-and includes a corpus case that applies 500 edits to the shipped
-`assets/config.kdl`, asserting after each one that the document re-parses *and*
-that the value written reads back — "it still parses" alone would pass on a
-writer that dropped the edit.
+options, not a feature on its own.
 
 An output with **no block anywhere** is applied but not saved, and logs that it
 was not. Inventing one means choosing a file and a place in it, and guessing

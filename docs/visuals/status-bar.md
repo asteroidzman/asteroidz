@@ -61,7 +61,7 @@ too), and the layout indicator is keyed on `layout_index` rather than the
 symbol. Both are documented where they happen, in `asteroidz-bar`'s `Logo.qml`
 and `Layout.qml`.
 
-`meson test bar-icons` checks every one of them parses and rasterises to
+Every one of them should parse and rasterise to
 something non-empty. A bar icon fails silently — a missing file and an
 unparseable one are both just a blank pill — and both have shipped.
 
