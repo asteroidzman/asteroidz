@@ -31,7 +31,7 @@ output "<name>" { <property> <value>; <property> <value> }
 | `x` | integer | 0-99999 | X position |
 | `y` | integer | 0-99999 | Y position |
 | `scale` | float | 0.01-100.0 | Monitor scale |
-| `vrr` | integer | 0, 1 | Enable variable refresh rate |
+| `vrr` | integer | 0, 1 | Pin variable refresh rate ON for this output. Leave it unset for the default, which is dynamic: adaptive sync follows a fullscreen GAME-class window rather than the desktop. See [Dynamic VRR](#dynamic-vrr) |
 | `rr` | integer | 0-7 | Monitor transform |
 | `custom` | integer | 0, 1 | Enable custom mode (not supported on all displays — may cause black screen) |
 | `disable` | integer | 0, 1 | Disable the monitor |
@@ -409,3 +409,41 @@ wlr-randr --output HEADLESS-1 --pos 1921,0 --scale 1 --custom-mode 1920x1080@60H
 ```
 
 Virtual monitors can be used for screen sharing with tools like [Sunshine](https://github.com/LizardByte/Sunshine) and [Moonlight](https://github.com/moonlight-stream/moonlight-android), allowing other devices to act as extended monitors.
+
+## Dynamic VRR
+
+With no `vrr` in an output's block, adaptive sync is not pinned either way: it
+is on while a **fullscreen** window on that output is GAME-class — by
+`wp-content-type`, by a `presentation-class "game"` window rule, or by
+`vrr_only_fullscreen` — and off otherwise.
+
+Fullscreen is what makes it correct. A windowed game shares the output with a
+blinking cursor and a clock, and letting its cadence drive the refresh rate
+makes everything else on that display stutter.
+
+**The output decides, not the focused window.** This followed keyboard focus
+once, and a live session logged 18 adaptive-sync resets during a single game —
+each one a real modeset and a visible blank — because every popup and
+notification that borrowed the keyboard flipped the answer. A fullscreen game
+stays fullscreen while a popup takes focus, so under the output-scoped rule
+nothing is committed.
+
+**Turning it off waits ten seconds; turning it on does not.** Each transition
+is a modeset, and they arrive in pairs: a game that loses the output and takes
+it back — alt-tab, a surface rebuild, a loading screen — costs a blank going
+out and another coming back, for an excursion it was always going to return
+from. Measured live at 9.3s and 8.8s, which is why the hold is ten. If the game
+returns inside that window the pending change is cancelled and **the display
+never changes state at all**. Coming back is immediate: a game should not spend
+its first seconds on the desktop's refresh policy.
+
+The cost is that VRR can stay on for up to ten seconds on a desktop that really
+has finished with the game. That is deliberate. The reason the desktop does not
+run VRR is that an idle desktop presents at around 13fps and falls through the
+panel's VRR floor — 48Hz on DP-1 here — which shows up as intermittent
+blanking. Reaching that needs a *sustained* idle, not ten seconds of an active
+desktop.
+
+`amsg get surface-intent` reports `vrr_off_deferred` and `vrr_off_cancelled`
+per output, so how often the hold saved a pair of modesets is a number rather
+than an impression.

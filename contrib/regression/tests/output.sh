@@ -199,3 +199,32 @@ test_the_output_dump_carries_its_change_counters() {
 	hl_assert_true "and the histogram has recorded the output's own creation" \
 		"$(echo "$o" | jq -r '(.resets.create // 0) > 0')"
 }
+
+# ── THE VRR OFF-DEBOUNCE, AS FAR AS A HEADLESS OUTPUT CAN SEE IT ──────────
+#
+# WHAT THIS CANNOT TEST, SAID PLAINLY. The debounce only engages once VRR is
+# actually ON: enable_adaptive_sync() sets is_vrr_opening only when
+# wlr_output_test_state() accepts adaptive sync, and the headless backend does
+# not -- tests/vrr.sh asserts both the client and monitor fields read false
+# here. So the held answer, the cancel and the timer are NOT exercised by this
+# suite and have to be verified on real hardware. The counters below are how
+# that is done, because they are the difference between "no modesets happened"
+# and "no modesets were needed".
+#
+# What this does test is that the counters exist and that an output which never
+# had VRR on has never deferred turning it off -- the half that disappears
+# silently in a refactor.
+test_the_output_dump_carries_the_vrr_debounce_counters() {
+	command -v jq >/dev/null || { echo "  (skip: jq not available)"; return 0; }
+	local o
+	o="$(hl_get "get surface-intent" | jq -r ".outputs[] | select(.name==\"$HL_MON\")")"
+
+	hl_assert_true "outputs[] carries vrr_off_deferred" \
+		"$(echo "$o" | jq -r 'has("vrr_off_deferred")')"
+	hl_assert_true "outputs[] carries vrr_off_cancelled" \
+		"$(echo "$o" | jq -r 'has("vrr_off_cancelled")')"
+	# An output that never had VRR on can never have held an answer about
+	# turning it off. Zero here is a fact, not a default.
+	hl_assert "and nothing was deferred on an output that never had VRR" \
+		"$(echo "$o" | jq -r '.vrr_off_deferred')" "0"
+}

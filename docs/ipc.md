@@ -595,7 +595,7 @@ state `wlr_output_test_state()` had just accepted. A rising `tear_busy_synced`
 means frames are arriving faster than the display retires them, not that
 anything is wrong; a rising `tear_dropped` means frames are being lost.
 
-Three counters answer *how often something changed*, which a single-instant
+These counters answer *how often something changed*, which a single-instant
 dump cannot. An intermittent fault lives entirely in that gap.
 
 | field | meaning |
@@ -603,6 +603,8 @@ dump cannot. An intermittent fault lives entirely in that gap.
 | `scanout_changes` | how many times the evaluated verdict MOVED. `not-evaluated` is never stored, so the per-frame reset does not count as a change |
 | `hdr_state_commits` | how many times the pending colour state was committed. That commit sets `allow_reconfiguration`, making it a **blocking modeset** — on DP, a visible blank |
 | `resets` / `epoch` | the presenter's timing-reset histogram, keyed by reason (`create`, `mode`, `enable`, `scale-transform`, `adaptive-sync`, `request-state`, `session`, `dpms`), and the epoch each reset opens |
+| `vrr_off_deferred` | how many times a "turn adaptive sync off" answer was HELD rather than acted on |
+| `vrr_off_cancelled` | how many of those a returning game cancelled. Each one is a **pair** of modesets that did not happen |
 
 Every reason in `resets` is an output reconfiguration, so the histogram is what
 a "why did my screen flash" question resolves against. Each reset is also
@@ -610,6 +612,15 @@ logged as it happens, with its reason and the new epoch — not rate-limited by
 decade, because a reset cannot recur at frame rate and the decade limit would
 hide occurrences 2 through 9, which is the whole range an occasional fault
 lives in.
+
+`vrr_off_cancelled` is the debounce's evidence, and it is the reason the pair
+is reported rather than just the transitions that occurred. Adaptive sync is
+only turned off after the answer has stayed `false` for ten seconds, because a
+game that loses and regains the output — alt-tab, a surface rebuild, a loading
+screen — used to cost a modeset each way for an excursion it was always going
+to return from. Measured live: 9.3s and 8.8s. `vrr_off_deferred` climbing while
+`vrr_off_cancelled` stays flat means the holds are all real departures and the
+debounce is only delaying them; the two climbing together is it working.
 
 `hdr_state_commits` deserves suspicion when it climbs. The blocking modeset is
 justified in `render_monitor()` as the right trade for "a deliberate, rare HDR

@@ -1290,6 +1290,13 @@ static void handle_command(int client_fd, const char *cmd_raw) {
 				(double)om->tear_unchanged);
 			cJSON_AddNumberToObject(e, "hdr_state_commits",
 				(double)om->hdr_state_commits);
+			/* The debounce's own evidence: how many "turn VRR off" answers
+			 * were held, and how many of those a returning game cancelled.
+			 * A cancelled one is a pair of modesets that did not happen. */
+			cJSON_AddNumberToObject(e, "vrr_off_deferred",
+				(double)om->vrr_off_deferred);
+			cJSON_AddNumberToObject(e, "vrr_off_cancelled",
+				(double)om->vrr_off_cancelled);
 			/* What the torn-flip path did, per outcome. `tear_busy_synced` is
 			 * the one no test can predict: the state was tearable and the
 			 * previous flip simply had not finished, so the frame went out on

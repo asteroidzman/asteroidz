@@ -1259,6 +1259,29 @@ struct Monitor {
 	int32_t asleep;
 	bool vrr_global_enable; // monitorrule vrr:1 = VRR always on
 	bool is_vrr_opening;	// VRR currently enabled on the output
+	/*
+	 * TURNING VRR OFF WAITS; TURNING IT ON DOES NOT.
+	 *
+	 * Each adaptive-sync transition is a real modeset and a visible blank, and
+	 * they come in pairs: a live session logged the game losing and regaining
+	 * the output 9.3s apart -- pointer unconstrained, surfaces torn down and
+	 * rebuilt, pointer constrained again -- for two blanks either side of one
+	 * alt-tab. Nothing was wrong with the decision; both answers were right at
+	 * the instant they were made.
+	 *
+	 * So the OFF answer is held for AZ_VRR_OFF_DEBOUNCE_MS before it is acted
+	 * on. If a game comes back inside that window the timer is cancelled and
+	 * the display never changes state at all, which is the whole point: not a
+	 * faster pair of modesets, no pair.
+	 *
+	 * Armed once, not restarted. check_vrr_enable() runs on every focus
+	 * change, so re-arming on each call would push the transition out
+	 * indefinitely on a busy desktop and VRR would never turn off.
+	 */
+	struct wl_event_source *vrr_off_timer;
+	bool vrr_off_armed;
+	uint64_t vrr_off_deferred;   /* off answers held */
+	uint64_t vrr_off_cancelled;  /* ...that a return cancelled: modesets saved */
 	/* DSC/link retrain: cycle through an alternate mode and back to fully
 	 * reinit the sink's DSC decoder (same effect as a VT switch) */
 	struct wl_event_source *retrain_timer;
@@ -2107,6 +2130,18 @@ static int32_t grabcx, grabcy;						   /* client-relative */
 static int32_t drag_begin_cursorx, drag_begin_cursory; /* client-relative */
 static bool start_drag_window = false;
 static int32_t last_apply_drap_time = 0;
+
+/*
+ * How long an "adaptive sync should be off" answer is held before it is acted
+ * on. Ten seconds because that is what the live measurement asked for: the
+ * game-lost-and-regained excursions this exists to absorb were 9.3s and 8.8s,
+ * and a debounce shorter than the thing it is debouncing saves nothing. The
+ * cost of holding is that VRR stays on for up to this long on a desktop that
+ * really has finished with the game -- harmless, because the idle-desktop
+ * blanking this policy was built to avoid needs a sustained idle at ~13fps to
+ * fall through the panel's 48Hz floor, not ten seconds of an active one.
+ */
+#define AZ_VRR_OFF_DEBOUNCE_MS 10000
 
 static struct wlr_output_layout *output_layout;
 /* held so the global filter can name it: xdg-output is hidden from the
@@ -5144,6 +5179,13 @@ void cleanupmon(struct wl_listener *listener, void *data) {
 	if (m->retrain_timer) {
 		wl_event_source_remove(m->retrain_timer);
 		m->retrain_timer = NULL;
+	}
+	/* A held VRR-off answer for an output that is going away has nothing left
+	 * to be right about, and the timer holds this monitor as its data. */
+	if (m->vrr_off_timer) {
+		wl_event_source_remove(m->vrr_off_timer);
+		m->vrr_off_timer = NULL;
+		m->vrr_off_armed = false;
 	}
 	m->wlr_output->data = NULL;
 
@@ -12694,6 +12736,17 @@ static void hdr_resolve_all(void) {
 }
 
 static bool commit_vrr_state(Monitor *m, bool enable) {
+	/* Whatever was queued is answered by this commit -- including an explicit
+	 * set_output_vrr, which must not be undone a few seconds later by a timer
+	 * armed before the operator asked. Disarmed, never destroyed: this is
+	 * reached from the timer's own callback. */
+	if (m->vrr_off_armed) {
+		m->vrr_off_armed = false;
+		if (m->vrr_off_timer != NULL) {
+			wl_event_source_timer_update(m->vrr_off_timer, 0);
+		}
+	}
+
 	enum wlr_output_adaptive_sync_status before =
 		m->wlr_output->adaptive_sync_status;
 	struct wlr_output_state state;
@@ -12787,6 +12840,29 @@ static bool mon_wants_vrr(Monitor *m) {
 }
 
 /*
+ * The held OFF answer, re-asked rather than replayed.
+ *
+ * Several seconds have passed and the reason the answer was `false` may have
+ * gone away without any caller noticing -- so mon_wants_vrr() decides again
+ * here. Acting on the stale answer would turn VRR off under a game that had
+ * come back, which is the exact failure this debounce exists to prevent.
+ */
+static int32_t vrr_off_timeout(void *data) {
+	Monitor *m = data;
+	if (m == NULL) {
+		return 0;
+	}
+	m->vrr_off_armed = false;
+	if (!m->wlr_output || !m->wlr_output->enabled) {
+		return 0;
+	}
+	if (m->is_vrr_opening && !mon_wants_vrr(m)) {
+		commit_vrr_state(m, false);
+	}
+	return 0;
+}
+
+/*
  * `c` now only says WHICH output to re-evaluate, and may be NULL: the decision
  * itself is mon_wants_vrr()'s. Kept as the signature because every caller
  * already has the client that just changed, and selmon is the right fallback
@@ -12803,9 +12879,44 @@ void check_vrr_enable(Client *c) {
 	/* Compared against what the output IS, so a re-evaluation that reaches the
 	 * same answer commits nothing. Every focus change calls this. */
 	bool want = mon_wants_vrr(m);
-	if (want != m->is_vrr_opening) {
-		commit_vrr_state(m, want);
+
+	if (want) {
+		/* ON IS IMMEDIATE. A game that wants its cadence to drive the display
+		 * should not spend the first seconds of it on the desktop's. This also
+		 * cancels a held-off answer without committing anything when VRR is
+		 * already on -- the alt-tab case, and the modeset pair it saves. */
+		if (m->vrr_off_armed) {
+			m->vrr_off_armed = false;
+			if (m->vrr_off_timer != NULL) {
+				wl_event_source_timer_update(m->vrr_off_timer, 0);
+			}
+			m->vrr_off_cancelled++;
+		}
+		if (!m->is_vrr_opening) {
+			commit_vrr_state(m, true);
+		}
+		return;
 	}
+
+	if (!m->is_vrr_opening || m->vrr_off_armed) {
+		/* Already off, or already waiting. Re-arming here is what would make
+		 * the wait unbounded. */
+		return;
+	}
+
+	if (m->vrr_off_timer == NULL) {
+		m->vrr_off_timer = wl_event_loop_add_timer(
+			wl_display_get_event_loop(dpy), vrr_off_timeout, m);
+		if (m->vrr_off_timer == NULL) {
+			/* No timer, no debounce -- the old behaviour, which is correct if
+			 * abrupt, rather than VRR stuck on for the session. */
+			commit_vrr_state(m, false);
+			return;
+		}
+	}
+	m->vrr_off_armed = true;
+	m->vrr_off_deferred++;
+	wl_event_source_timer_update(m->vrr_off_timer, AZ_VRR_OFF_DEBOUNCE_MS);
 }
 
 static int32_t float_focus_raise_timeout(void *data) {
