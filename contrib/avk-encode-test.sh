@@ -219,6 +219,20 @@ case "$MP4" in
 	*smpte2084*bt2020*) ok "and carries its HDR colour in the container" ;;
 	*) bad "and carries its HDR colour in the container (got: $MP4)" ;;
 esac
+# THE TIMESCALE IS PART OF THE TIMING, AND MILLISECONDS ARE NOT ENOUGH.
+# A 144Hz frame interval is 6.944ms, so a 1/1000 time_base rounds every sample
+# duration by up to half a frame -- and the recorder stamps its samples from
+# the presenter's nanosecond instants specifically so they are not guesses.
+# Written at 1/1000 the file still plays, still decodes, and still passes every
+# other assertion in this file, which is why this one exists.
+TB="$(ffprobe -v error -select_streams v -show_entries stream=time_base \
+	-of default=noprint_wrappers=1:nokey=1 "$WORK/rec.mp4" 2>/dev/null | tr -d '\r\n')"
+if [ "$TB" = "1/90000" ]; then
+	ok "the mp4 carries a media timescale finer than a frame"
+else
+	bad "the mp4 carries a media timescale finer than a frame (got ${TB:-none})"
+fi
+
 MP4N="$(ffprobe -v error -count_frames -show_entries stream=nb_read_frames \
 	-of csv=p=0 "$WORK/rec.mp4" 2>/dev/null | tr -d ',\r\n')"
 if [ "${MP4N:-0}" = "10" ]; then

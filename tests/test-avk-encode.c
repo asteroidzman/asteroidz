@@ -718,7 +718,7 @@ int main(void) {
 					.max_luminance = 10000000, .min_luminance = 1,
 					.max_cll = 1000, .max_fall = 400,
 				};
-				mp4 = avk_mp4_open(mp, 1920, 1080, 1000, &mc);
+				mp4 = avk_mp4_open(mp, 1920, 1080, AVK_MP4_TIMESCALE, &mc);
 				CHECK(mp4 != NULL, "an mp4 recording opens");
 			}
 			for (int i = 0; i < frames && all_ok; i++) {
@@ -763,7 +763,7 @@ int main(void) {
 				if (out != NULL) {
 					fwrite(pkt, plen, 1, out);
 				}
-				if (mp4 != NULL && !avk_mp4_add_sample(mp4, pkt, plen, 1000 / 30)) {
+				if (mp4 != NULL && !avk_mp4_add_sample(mp4, pkt, plen, AVK_MP4_TIMESCALE / 30)) {
 					all_ok = false;
 				}
 				free(pkt);
@@ -778,7 +778,7 @@ int main(void) {
 						fwrite(tail, tail_len, 1, out);
 					}
 					if (mp4 != NULL) {
-						avk_mp4_add_sample(mp4, tail, tail_len, 1000 / 30);
+						avk_mp4_add_sample(mp4, tail, tail_len, AVK_MP4_TIMESCALE / 30);
 					}
 					free(tail);
 				}

@@ -5636,10 +5636,11 @@ static bool az_avk_record_open(Monitor *m, const char *path) {
 		wlr_log(WLR_ERROR, "record: no encoder for %s", m->wlr_output->name);
 		return false;
 	}
-	/* Milliseconds. Enough for any display rate, and legible in a debugger,
-	 * which a 90000-tick media timescale is not. */
+	/* Not milliseconds: at 144Hz a millisecond is 14% of a frame interval, so
+	 * a ms timescale rounds away most of the presentation timing this recorder
+	 * goes to the trouble of measuring. See AVK_MP4_TIMESCALE. */
 	out->rec_mp4 = avk_mp4_open(path, out->rec_encoder->width,
-		out->rec_encoder->height, 1000, &colour);
+		out->rec_encoder->height, AVK_MP4_TIMESCALE, &colour);
 	if (out->rec_mp4 == NULL) {
 		avk_encoder_destroy(out->rec_encoder);
 		out->rec_encoder = NULL;
@@ -5690,7 +5691,8 @@ static bool az_avk_record_close(Monitor *m) {
 	if (out->rec_encoder != NULL
 			&& avk_encoder_drain(out->rec_encoder, &tail, &tail_len)
 			&& out->rec_mp4 != NULL) {
-		if (avk_mp4_add_sample(out->rec_mp4, tail, tail_len, 33)) {
+		if (avk_mp4_add_sample(out->rec_mp4, tail, tail_len,
+				AVK_MP4_TIMESCALE / 30)) {
 			out->rec_frames++;
 		}
 		free(tail);
@@ -5818,7 +5820,7 @@ static void az_avk_record_frame(struct az_avk_output *out, Monitor *m,
 		out->rec_present_missing++;
 	}
 
-	uint32_t duration = 33;
+	uint32_t duration = AVK_MP4_TIMESCALE / 30;
 	/* Only between two stamps of the SAME origin. One readback instant and one
 	 * presentation instant are not on a common timeline, and subtracting them
 	 * produces a plausible-looking number that is wrong -- so a change of
@@ -5832,9 +5834,13 @@ static void az_avk_record_frame(struct az_avk_output *out, Monitor *m,
 		if (delta > 1000000000) {
 			delta = 1000000000;       /* and a second ceiling for a long idle */
 		}
-		duration = (uint32_t)(delta / 1000000);
+		duration = (uint32_t)((uint64_t)delta * AVK_MP4_TIMESCALE
+			/ 1000000000ull);
 	} else if (m->wlr_output->refresh > 0) {
-		duration = (uint32_t)(1000000 / (uint32_t)m->wlr_output->refresh);
+		/* refresh is in mHz, so one period is 1000 * TIMESCALE / refresh
+		 * ticks -- 625 exactly at 144Hz. */
+		duration = (uint32_t)(1000ull * AVK_MP4_TIMESCALE
+			/ (uint32_t)m->wlr_output->refresh);
 	}
 	out->rec_last_stamp_ns = stamp;
 	out->rec_last_stamp_presented = presented;

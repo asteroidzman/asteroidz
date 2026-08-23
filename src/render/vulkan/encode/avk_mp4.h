@@ -47,7 +47,7 @@ struct avk_mp4 {
 	FILE *f;
 	char *path;          /* owned */
 	uint32_t width, height;
-	uint32_t timescale;  /* units per second; 1000 means milliseconds */
+	uint32_t timescale;  /* units per second; see AVK_MP4_TIMESCALE */
 
 	/* The decoder configuration, taken from the first picture's parameter
 	 * sets. They belong in the sample description and NOT in the samples, so
@@ -73,10 +73,21 @@ struct avk_mp4 {
 };
 
 /*
- * Open a recording. `timescale` is the units a duration is expressed in;
- * 1000 makes durations milliseconds, which is enough for any display rate and
- * keeps the arithmetic legible in a debugger.
+ * Open a recording. `timescale` is the units a duration is expressed in.
+ *
+ * 1000 -- milliseconds -- is NOT enough, though it reads as though it must be.
+ * A 144Hz frame interval is 6.944ms, so a whole millisecond is 14% of one, and
+ * every sample duration is rounded by up to half a frame. That is invisible in
+ * a still recording and shows up as cadence jitter in a moving one. Since the
+ * recorder stamps samples from the presenter's own nanosecond instants, a
+ * millisecond timescale throws most of that precision away at the container.
+ *
+ * AVK_MP4_TIMESCALE is the 90000 the MPEG world uses: 11.1us of resolution,
+ * exact for 24/25/30/50/60 and for 144 (90000/144 = 625), and the total
+ * duration is written as a uint32, which at 90000 ticks a second overflows
+ * after about 13 hours rather than after 71 minutes.
  */
+#define AVK_MP4_TIMESCALE 90000
 struct avk_mp4 *avk_mp4_open(const char *path, uint32_t width,
 	uint32_t height, uint32_t timescale, const struct avk_heif_colour *colour);
 
