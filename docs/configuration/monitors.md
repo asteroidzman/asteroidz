@@ -36,7 +36,7 @@ output "<name>" { <property> <value>; <property> <value> }
 | `custom` | integer | 0, 1 | Enable custom mode (not supported on all displays — may cause black screen) |
 | `disable` | integer | 0, 1 | Disable the monitor |
 | `hdr` | integer | 0, 1 | Enable HDR output (BT.2020 primaries + PQ transfer function). Requires a display and driver with HDR support; implies a 10-bit framebuffer when available |
-| `bitdepth` | integer | 8, 10 | Framebuffer bit depth. `10` reduces gradient banding on 10-bit panels; falls back to 8-bit if unsupported |
+| `bitdepth` | integer | 8, 10 | Framebuffer bit depth. `10` reduces gradient banding on 10-bit panels; falls back to 8-bit if unsupported. `amsg get all-monitors` reports the connector's cap as `bitdepth` and this setting as `bitdepth_enabled` |
 | `hdr_max_luminance` | float | 0-10000 | Display peak luminance in cd/m² sent as HDR metadata (see your panel's EDID via `edid-decode`); prevents over-aggressive display tone mapping |
 | `hdr_min_luminance` | float | 0-100 | Display minimum luminance in cd/m² for HDR metadata |
 | `hdr_max_fall` | float | 0-10000 | Display max frame-average luminance in cd/m² for HDR metadata |

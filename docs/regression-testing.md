@@ -2569,13 +2569,13 @@ What to read afterwards, and what each answer means:
 
 | | |
 |---|---|
-| `shm_worker_pack_us_max` ≈ 50000 | the premise: copies really are that slow |
 | `shm_async_join_waits` | frames that blocked. Should be 0 |
 | `shm_stale_frames` | frames that drew a previous generation instead |
-| `handler_over_30ms` | stalls the user would have felt |
 
-**Assert the premise.** A run where `shm_worker_pack_us_max` is small never
-provoked anything, and every assertion below it passes for free.
+**Assert the premise.** A run that never provoked a slow copy passes every
+assertion below it for free. The pack-time counters that stated the premise
+directly are gone — nothing asserted on them — so a run that wants to make this
+claim has to measure it and assert it, which is what it should always have done.
 
 ## A late copy owes a repaint to every output it was drawn on
 
@@ -2623,7 +2623,7 @@ machine.
 | `AZ_AVK_REFUSE_UNDEFINED_PARTIAL` | refuse every clipped FIRST copy, which is what the copy path did before it was told when there is nothing to preserve. A churning client then saves nothing and is not drawn |
 | `AZ_AVK_NO_VISIBLE_REPAIR` | **the break that matters.** Clip the copies and then decline to repair what the clip got wrong. Every cost assertion still passes — fewer bytes, the same counters — and a window that becomes visible shows whatever its image was allocated with. A suite that cannot tell this build from the real one is asserting on cost and calling it correctness |
 
-The counters are `visible_clipped`, `visible_saved_px`, `plan_no_hint`, and
+The counters are `visible_clipped`, `visible_saved_px`, and
 `visible_repairs` / `visible_repair_px` / `visible_repair_deferred` /
 `visible_repair_failed`. `visible_saved_px` is the whole claim; the repair
 counters are what it costs when the hint was too small. A build where repairs

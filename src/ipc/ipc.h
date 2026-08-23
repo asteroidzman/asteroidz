@@ -681,14 +681,30 @@ static cJSON *build_monitor_json(Monitor *m) {
 						   WLR_COLOR_NAMED_PRIMARIES_BT2020) &&
 							  (m->wlr_output->supported_transfer_functions &
 							   WLR_COLOR_TRANSFER_FUNCTION_ST2084_PQ));
-	/* The bit depth in USE, not the one configured. m->bitdepth is the
-	 * config value where 0 means "auto" -- reporting that verbatim answered
-	 * "what depth is this output running at?" with 0, which is not a depth.
-	 * Same split as hdr/hdr_enabled above: the plain name is what the output
-	 * is really doing, *_enabled is what was asked for. */
-	cJSON_AddNumberToObject(
-		resp, "bitdepth",
-		m->wlr_output->render_format == DRM_FORMAT_XRGB2101010 ? 10 : 8);
+	/*
+	 * THREE ANSWERS, because there are three questions and this used to give
+	 * one of them under the name of another.
+	 *
+	 * `bitdepth` is the connector's `max bpc` -- the value the kernel actually
+	 * holds. `bitdepth_render` is the buffer format we composite into, which
+	 * is what wlroots derives that cap FROM, so a disagreement between the two
+	 * means a commit did not take. `bitdepth_enabled` is the config, where 0
+	 * means "auto"; reporting that verbatim once answered "what depth is this
+	 * output running at?" with 0, which is not a depth.
+	 *
+	 * `bitdepth` was the render format until now, i.e. our own choice printed
+	 * as the hardware's answer -- the same defect `hdr` had. It is honest
+	 * about being a CAP rather than the negotiated link depth: nothing in KMS
+	 * reports the latter, and a link too narrow for the cap is clamped inside
+	 * the driver. Falls back to the render format on headless and nested
+	 * outputs, which have no connector to ask.
+	 */
+	int link_bpc = mon_connector_max_bpc(m);
+	int render_bpc =
+		m->wlr_output->render_format == DRM_FORMAT_XRGB2101010 ? 10 : 8;
+	cJSON_AddNumberToObject(resp, "bitdepth",
+		link_bpc > 0 ? link_bpc : render_bpc);
+	cJSON_AddNumberToObject(resp, "bitdepth_render", render_bpc);
 	cJSON_AddNumberToObject(resp, "bitdepth_enabled", m->bitdepth);
 	cJSON_AddNumberToObject(resp, "hdr_max_luminance", m->hdr_max_luminance);
 	cJSON_AddNumberToObject(resp, "hdr_min_luminance", m->hdr_min_luminance);
@@ -1370,7 +1386,20 @@ static void handle_command(int client_fd, const char *cmd_raw) {
 		 *
 		 * Separate from avk-stats because it is not the renderer's: these are
 		 * facts about the display's page flips, and the two answer different
-		 * questions. Observed only -- nothing here is a prediction yet.
+		 * questions.
+		 *
+		 * WHAT IS NOT HERE ANY MORE. This carried the presenter's full working
+		 * set -- period and t_pipe, the armed target, the signed error series,
+		 * the arm-to-photons and commit-to-photons histograms, the per-verdict
+		 * miss breakdown, the stamp-clock skews. Every one of those was added
+		 * to settle a specific question, every one of those questions was
+		 * settled, and not one of them was ever read by a test. Reporting a
+		 * number nothing checks is how an IPC surface becomes a debugger.
+		 *
+		 * The presenter still computes all of it -- it has to, that is how it
+		 * paces -- so this is a reporting change and nothing else. If a future
+		 * pacing investigation wants the series back, it is one revert away,
+		 * and it should come back with an assertion attached.
 		 */
 		resp = cJSON_CreateObject();
 		/* I1: the sampled instant must BE the armed target, every pass. A
@@ -1386,177 +1415,11 @@ static void handle_command(int client_fd, const char *cmd_raw) {
 				continue;
 			cJSON *e = cJSON_CreateObject();
 			cJSON_AddStringToObject(e, "name", pm->wlr_output->name);
+			/* Both, because "nothing reached the screen" and "everything was
+			 * thrown away" are different facts and one alone cannot tell them
+			 * apart. ADR-610 asserts the first is zero on a settled desktop. */
 			cJSON_AddNumberToObject(e, "presented", (double)pm->present_count);
 			cJSON_AddNumberToObject(e, "dropped", (double)pm->present_dropped);
-			cJSON_AddNumberToObject(e, "no_stamp",
-				(double)pm->present_no_stamp);
-			cJSON_AddNumberToObject(e, "last_seq",
-				(double)pm->present_last_seq);
-			/* Both, and never one alone: the nominal figure is what the mode
-			 * claims and the observed one is what the display did. DP-1
-			 * reports 143.999 Hz and they are not the same number. */
-			cJSON_AddNumberToObject(e, "nominal_refresh_mhz",
-				(double)pm->wlr_output->refresh);
-			/* Per VBLANK, from the sequence delta -- not the gap between
-			 * presented frames, which on a damage-driven compositor is an
-			 * arrival rate and not a display period. */
-			cJSON_AddNumberToObject(e, "observed_interval_us",
-				(double)pm->present_interval_ns / 1000.0);
-			cJSON_AddNumberToObject(e, "interval_rejected",
-				(double)pm->present_interval_rejected);
-			/* False means the backend does not count vblanks, and every
-			 * sequence-derived figure below is therefore 0 BY ABSENCE rather
-			 * than by measurement. The headless backend is such a backend. */
-			cJSON_AddBoolToObject(e, "seq_available",
-				pm->present_seq_available);
-			cJSON *cad = cJSON_AddObjectToObject(e, "cadence");
-			cJSON_AddNumberToObject(cad, "x1", (double)pm->present_cadence_1x);
-			cJSON_AddNumberToObject(cad, "x2", (double)pm->present_cadence_2x);
-			cJSON_AddNumberToObject(cad, "x3plus",
-				(double)pm->present_cadence_3x);
-			cJSON_AddStringToObject(e, "stamp_clock",
-				pm->present_clock == PRESENT_CLOCK_MONOTONIC  ? "monotonic"
-				: pm->present_clock == PRESENT_CLOCK_REALTIME ? "realtime"
-				: pm->present_clock == PRESENT_CLOCK_NEITHER  ? "neither"
-				                                              : "unknown");
-			cJSON_AddNumberToObject(e, "stamp_skew_monotonic_us",
-				(double)pm->present_skew_mono_ns / 1000.0);
-			cJSON_AddNumberToObject(e, "stamp_skew_realtime_us",
-				(double)pm->present_skew_real_ns / 1000.0);
-			/* The hardware's own next-refresh guess, which under VRR is the
-			 * only period the display itself states. */
-			cJSON_AddNumberToObject(e, "hw_next_refresh_us",
-				(double)pm->present_hw_refresh_ns / 1000.0);
-			/* M-8: what ADR-605's t_pipe is seeded from. Both intervals,
-			 * because they answer different questions -- arm-to-photons is
-			 * what a predictor must add to `now`, commit-to-photons is how
-			 * much of it is outside the compositor's control. */
-			cJSON *lat = cJSON_AddObjectToObject(e, "latency");
-			cJSON_AddNumberToObject(lat, "samples", (double)pm->m8_samples);
-			cJSON_AddNumberToObject(lat, "unmatched",
-				(double)pm->m8_unmatched);
-			if (pm->m8_samples) {
-				cJSON_AddNumberToObject(lat, "arm_to_present_mean_us",
-					(double)pm->m8_arm_sum_ns / (double)pm->m8_samples / 1e3);
-				cJSON_AddNumberToObject(lat, "arm_to_present_min_us",
-					(double)pm->m8_arm_min_ns / 1e3);
-				cJSON_AddNumberToObject(lat, "arm_to_present_max_us",
-					(double)pm->m8_arm_max_ns / 1e3);
-				cJSON_AddNumberToObject(lat, "commit_to_present_mean_us",
-					(double)pm->m8_commit_sum_ns / (double)pm->m8_samples
-						/ 1e3);
-				cJSON_AddNumberToObject(lat, "commit_to_present_min_us",
-					(double)pm->m8_commit_min_ns / 1e3);
-				cJSON_AddNumberToObject(lat, "commit_to_present_max_us",
-					(double)pm->m8_commit_max_ns / 1e3);
-				/*
-				 * Percentiles off the histogram. p10 is the one that matters:
-				 * it is commit-to-photons with the display READY, which is
-				 * what ADR-605's t_pipe wants -- the queueing case is already
-				 * carried by the predictor's P_min floor, so a mean would
-				 * count the wait twice. p50/p95 are here so the shape can be
-				 * seen rather than inferred from three numbers.
-				 */
-				static const int want[3] = {10, 50, 95};
-				static const char *names[3] = {
-					"commit_to_present_p10_us",
-					"commit_to_present_p50_us",
-					"commit_to_present_p95_us",
-				};
-				for (int w = 0; w < 3; w++) {
-					uint64_t need = pm->m8_samples * (uint64_t)want[w] / 100;
-					uint64_t acc = 0;
-					int b = 0;
-					for (; b < AZ_M8_BUCKETS; b++) {
-						acc += pm->m8_hist[b];
-						if (acc > need)
-							break;
-					}
-					/* The bucket's upper edge, so the figure is an inclusive
-					 * bound rather than a midpoint that no sample had. */
-					cJSON_AddNumberToObject(lat, names[w],
-						(double)((b + 1) * (int)(AZ_M8_BUCKET_NS / 1000)));
-				}
-			}
-			/*
-			 * ADR-601/605. The PRESENTER's view, kept beside the raw
-			 * observations rather than replacing them: the counters above say
-			 * what the display did, and this says whether the prediction was
-			 * any good. Conflating them would leave no way to tell a bad
-			 * predictor from a busy display.
-			 */
-			const struct az_presenter *ps = &pm->presenter;
-			cJSON *pr = cJSON_AddObjectToObject(e, "presenter");
-			cJSON_AddNumberToObject(pr, "epoch", (double)ps->epoch);
-			cJSON_AddStringToObject(pr, "regime",
-				az_present_regime_name(ps->regime));
-			cJSON_AddStringToObject(pr, "sync",
-				ps->sync == AZ_PRESENT_SYNCED ? "synced" : "unsynced");
-			cJSON_AddStringToObject(pr, "clock",
-				ps->clock == AZ_PRESENT_CLOCK_MONOTONIC ? "monotonic"
-				: ps->clock == AZ_PRESENT_CLOCK_FOREIGN ? "foreign"
-				                                        : "unknown");
-			cJSON_AddNumberToObject(pr, "nominal_period_us",
-				(double)ps->nominal_period_ns / 1e3);
-			cJSON_AddNumberToObject(pr, "period_us",
-				(double)az_presenter_period_ns(pm) / 1e3);
-			cJSON_AddNumberToObject(pr, "t_pipe_us",
-				(double)ps->t_pipe_ns / 1e3);
-			/* The instant THIS output's current pass is aiming at. Two outputs
-			 * animating one window aim at different instants, and the gap
-			 * between them times the window's speed is how far apart
-			 * per-output evaluation would place it on each screen -- the
-			 * quantity that decides whether enforcing ADR-611 is a correctness
-			 * nicety or a visible seam. */
-			cJSON_AddNumberToObject(pr, "armed_target_us",
-				(double)ps->last_target_ns / 1e3);
-			cJSON_AddNumberToObject(pr, "last_present_us",
-				(double)ps->last_present_ns / 1e3);
-			cJSON_AddNumberToObject(pr, "accepted",
-				(double)ps->presents_accepted);
-			cJSON_AddNumberToObject(pr, "discarded_pre_epoch",
-				(double)ps->presents_discarded_epoch);
-			/*
-			 * THE ERROR SERIES. Signed: positive means the frame lit up LATER
-			 * than predicted. mean and mean_abs are both here because a
-			 * predictor that is early half the time and late half the time has
-			 * a mean near zero and is not thereby good.
-			 */
-			/*
-			 * ADR-609. Misses by what the timestamps could PROVE, and an
-			 * UNKNOWN that is used honestly rather than as a shrug.
-			 *
-			 * gpu_ts_available is false until VK_EXT_calibrated_timestamps is
-			 * wired, and while it is false GPU_LATE and PRESENTATION_SCHEDULING
-			 * are structurally unreachable -- so a series that is entirely
-			 * UNKNOWN is a stated limitation and not a mystery. Reporting the
-			 * flag beside the counters is what makes the difference readable.
-			 */
-			cJSON *ms = cJSON_AddObjectToObject(pr, "misses");
-			cJSON_AddNumberToObject(ms, "total", (double)ps->misses);
-			/* NOT a miss, and the naming is the point: prediction spread that
-			 * crossed the tolerance. On VRR this is the whole of what the old
-			 * rule was counting. See az_presenter.prediction_exceeded. */
-			cJSON_AddNumberToObject(ms, "prediction_exceeded",
-				(double)ps->prediction_exceeded);
-			cJSON_AddBoolToObject(ms, "gpu_ts_available", false);
-			for (int v = AZ_MISS_CPU_LATE; v < AZ_MISS_COUNT; v++) {
-				cJSON_AddNumberToObject(ms,
-					az_present_verdict_name((enum az_present_verdict)v),
-					(double)ps->verdicts[v]);
-			}
-			cJSON *er = cJSON_AddObjectToObject(pr, "error");
-			cJSON_AddNumberToObject(er, "count", (double)ps->err_count);
-			if (ps->err_count) {
-				cJSON_AddNumberToObject(er, "mean_us",
-					(double)ps->err_sum_ns / (double)ps->err_count / 1e3);
-				cJSON_AddNumberToObject(er, "mean_abs_us",
-					(double)ps->err_abs_sum_ns / (double)ps->err_count / 1e3);
-				cJSON_AddNumberToObject(er, "min_us",
-					(double)ps->err_min_ns / 1e3);
-				cJSON_AddNumberToObject(er, "max_us",
-					(double)ps->err_max_ns / 1e3);
-			}
 			cJSON_AddItemToArray(arr, e);
 		}
 	} else if (strcmp(cmd, "get dmabuf-feedback") == 0) {

@@ -2454,23 +2454,23 @@ are unchanged in kind and in count.
 
 ```text
 graph_passes  graph_resources  graph_uses  graph_barriers
-graph_image_transitions  graph_buffer_barriers  graph_allocs
-graph_frames  graph_build_ns_avg
+graph_allocs  graph_frames  graph_build_ns_avg
 ```
 
 all on `amsg get avk-stats`. `graph_barriers` counts `vkCmdPipelineBarrier2`
-**calls** — the thing that costs a pipeline flush — while
-`graph_image_transitions` counts the `VkImageMemoryBarrier2` structures inside
-them.
+**calls** — the thing that costs a pipeline flush.
 
-`graph_buffer_barriers` is **structurally zero**, and is reported anyway. The
-two buffers AVK owns are already ordered without one: the gradient storage
-buffer and the command buffer both live in a per-frame slot that
-`avk_cmd_ring_begin()` has already waited on, so there is no hazard for a
-barrier to resolve, and SHM staging is ordered by the submission that reads it on
-a different ring. A counter reading zero says that on purpose; no counter would
-make the absence something a reader has to notice, and would leave a future
-buffer resource silently unaccounted for.
+AVK emits **no buffer barriers at all**, structurally. The two buffers it owns
+are already ordered without one: the gradient storage buffer and the command
+buffer both live in a per-frame slot that `avk_cmd_ring_begin()` has already
+waited on, so there is no hazard for a barrier to resolve, and SHM staging is
+ordered by the submission that reads it on a different ring.
+
+This was reported as a counter that always read zero, on the argument that a
+zero states the property on purpose. The counter is gone — nothing ever
+asserted on it, and a number no test reads is not a statement, it is a hope. A
+future buffer resource that needs ordering should arrive with a test that says
+so.
 
 ### No fake barriers
 

@@ -7976,6 +7976,9 @@ static cJSON *az_avk_stats_json(void) {
 	const struct avk_caps *caps = &avk.device->caps;
 	cJSON_AddStringToObject(o, "backend", "avk");
 	cJSON_AddBoolToObject(o, "active", true);
+	/* WHICH GPU. Identity, not instrumentation: no test reads these, but they
+	 * answer "what is this running on", which is the first question of any bug
+	 * report and is documented for users in configuration/miscellaneous.md. */
 	cJSON_AddStringToObject(o, "physical_device", caps->device_name);
 	cJSON_AddStringToObject(o, "driver", caps->driver_name);
 	char drm[64];
@@ -7985,7 +7988,7 @@ static cJSON *az_avk_stats_json(void) {
 	cJSON_AddBoolToObject(o, "wl_compositor_has_renderer", false);
 
 	/* composition */
-	uint64_t surfaces = 0, rects = 0, submit_ns = 0, sync_waits = 0;
+	uint64_t surfaces = 0, rects = 0, sync_waits = 0;
 	uint64_t decode_draws = 0, srgb_segs = 0;
 	uint64_t encode_draws = 0, encode_px = 0, encode_compiles = 0;
 	for (size_t i = 0; i < AZ_AVK_MAX_FORMATS; i++) {
@@ -8000,7 +8003,6 @@ static cJSON *az_avk_stats_json(void) {
 		encode_draws += st->encode_draws;
 		encode_px += st->encode_px;
 		encode_compiles += avk.renderers[i].renderer.encode.compiles;
-		submit_ns += st->cpu_record_ns;
 		sync_waits += st->cpu_sync_waits;
 	}
 	cJSON_AddNumberToObject(o, "frames", (double)avk.frames);
@@ -8041,12 +8043,6 @@ static cJSON *az_avk_stats_json(void) {
 
 	/* import */
 	const struct avk_dmabuf_importer *imp = &avk.importer;
-	cJSON_AddNumberToObject(o, "dmabuf_zero_copy",
-		(double)(imp->imports_explicit + imp->imports_recovered));
-	cJSON_AddNumberToObject(o, "dmabuf_explicit_modifier",
-		(double)imp->imports_explicit);
-	cJSON_AddNumberToObject(o, "dmabuf_implicit_fallback",
-		(double)imp->imports_copied);
 	cJSON_AddNumberToObject(o, "dmabuf_import_failures",
 		(double)imp->imports_failed);
 	cJSON_AddNumberToObject(o, "shm_upload_bytes",
@@ -8058,10 +8054,6 @@ static cJSON *az_avk_stats_json(void) {
 		(double)avk.shm_partial_uploads);
 	cJSON_AddNumberToObject(o, "shm_upload_skips",
 		(double)avk.shm_upload_skips);
-	cJSON_AddNumberToObject(o, "shm_damage_pixels",
-		(double)avk.shm_damage_pixels);
-	cJSON_AddNumberToObject(o, "shm_committed_pixels",
-		(double)avk.shm_committed_pixels);
 	/*
 	 * ── HOW LONG A CLIENT HELD THE EVENT LOOP ────────────────────────────
 	 *
@@ -8091,66 +8083,37 @@ static cJSON *az_avk_stats_json(void) {
 		(double)(avk.shm_copy_ns_max / 1000));
 	cJSON_AddNumberToObject(o, "shm_copy_us_total",
 		(double)(avk.shm_copy_ns_sum / 1000));
-	cJSON_AddNumberToObject(o, "shm_copy_samples",
-		(double)avk.shm_copy_samples);
 	cJSON_AddNumberToObject(o, "shm_async_jobs", (double)avk.shm_async_jobs);
-	cJSON_AddNumberToObject(o, "shm_async_bytes", (double)avk.shm_async_bytes);
 	cJSON_AddNumberToObject(o, "shm_sync_copies", (double)avk.shm_sync_copies);
-	cJSON_AddNumberToObject(o, "shm_async_joins", (double)avk.shm_async_joins);
 	cJSON_AddNumberToObject(o, "shm_async_join_waits",
 		(double)avk.shm_async_join_waits);
 	cJSON_AddNumberToObject(o, "shm_async_join_us_max",
 		(double)(avk.shm_async_join_ns_max / 1000));
-	/* Zero is the working state: the alternating slot has always completed by
-	 * the time the host wants it again. Nonzero means uploads are outrunning
-	 * the transfer queue and the wait is the only thing between that and the
-	 * horizontal banding double buffering was added to stop. */
-	cJSON_AddNumberToObject(o, "shm_staging_waits",
-		(double)avk.shm_staging_waits);
-	cJSON_AddNumberToObject(o, "shm_staging_wait_us_max",
-		(double)(avk.shm_staging_wait_ns_max / 1000));
-	cJSON_AddNumberToObject(o, "shm_staging_reaped",
-		(double)avk.shm_staging_reaped);
-	cJSON_AddNumberToObject(o, "shm_staging_returned",
-		(double)avk.shm_staging_returned);
 	cJSON_AddNumberToObject(o, "visible_clipped",
 		(double)avk.visible_clipped);
 	cJSON_AddNumberToObject(o, "visible_saved_px",
 		(double)avk.visible_saved_px);
-	cJSON_AddNumberToObject(o, "plan_no_hint", (double)avk.plan_no_hint);
-	cJSON_AddNumberToObject(o, "hint_epochs", (double)avk.hint_epochs);
 	cJSON_AddNumberToObject(o, "visible_repairs", (double)avk.repairs);
 	cJSON_AddNumberToObject(o, "visible_repair_px", (double)avk.repair_px);
-	cJSON_AddNumberToObject(o, "visible_repair_deferred",
-		(double)avk.repair_deferred);
 	cJSON_AddNumberToObject(o, "visible_repair_failed",
 		(double)avk.repair_failed);
+	/*
+	 * ITS THREE COMPONENTS, kept because the total is kept. A failure count
+	 * with no breakdown is a number nobody can act on -- the three need
+	 * different answers, and it was the split that found the bug the repair
+	 * path exists for. Removing components while their sum survives is the
+	 * one shape of cull that makes what is left worse than either whole.
+	 */
+	cJSON_AddNumberToObject(o, "visible_repair_deferred",
+		(double)avk.repair_deferred);
 	cJSON_AddNumberToObject(o, "visible_repair_unreadable",
 		(double)avk.repair_unreadable);
 	cJSON_AddNumberToObject(o, "visible_repair_nothing",
 		(double)avk.repair_nothing);
 	cJSON_AddNumberToObject(o, "visible_repair_short",
 		(double)avk.repair_short);
-	cJSON_AddNumberToObject(o, "shm_source_unreadable",
-		(double)avk.shm_source_unreadable);
-	cJSON_AddNumberToObject(o, "shm_plan_failed",
-		(double)avk.shm_plan_failed);
-	cJSON_AddNumberToObject(o, "shm_staging_unavailable",
-		(double)avk.shm_staging_unavailable);
 	cJSON_AddNumberToObject(o, "shm_submit_failed",
 		(double)avk.shm_submit_failed);
-	/*
-	 * THE COUNTER THAT WAS NOT VISIBLE. The upload ring blocks when its next
-	 * slot is still in flight, and it has always counted that -- but only
-	 * logged it at AVK_DEBUG, which is filtered, so a grep for the message
-	 * found nothing and the mechanism was crossed off the list twice. Nonzero
-	 * means uploads are wrapping the ring inside a frame and paying for the
-	 * GPU's backlog on the frame thread.
-	 */
-	cJSON_AddNumberToObject(o, "upload_ring_stalls",
-		(double)avk.importer.upload_ring.stalls);
-	cJSON_AddNumberToObject(o, "upload_ring_slots",
-		(double)avk.importer.upload_ring.slot_count);
 	/*
 	 * WARM VERSUS FAULTED. A staging buffer costs a page fault per page the
 	 * first time it is written, and for a 56MB buffer that is 52ms inside the
@@ -8161,51 +8124,14 @@ static cJSON *az_avk_stats_json(void) {
 	 * these once per frame before that cache existed.
 	 */
 	if (avk.device != NULL) {
-		cJSON_AddNumberToObject(o, "staging_reused",
-			(double)avk.device->staging_reused);
-		cJSON_AddNumberToObject(o, "staging_reclaimed",
-			(double)avk.device->staging_reclaimed);
-		cJSON_AddNumberToObject(o, "staging_created",
-			(double)avk.device->staging_created);
 	}
-	/* Explicit-sync participation, so "is this actually running" is a reading
-	 * and not a belief. acquire_dropped and release_points_dropped must be 0:
-	 * each one is a frame submitted, or a buffer released, without the
-	 * ordering the protocol promises. */
-	cJSON_AddNumberToObject(o, "acquire_waits", (double)avk.acquire_waits);
-	cJSON_AddNumberToObject(o, "acquire_explicit",
-		(double)avk.acquire_explicit);
-	cJSON_AddNumberToObject(o, "acquire_implicit",
-		(double)avk.acquire_implicit);
-	cJSON_AddNumberToObject(o, "acquire_dropped", (double)avk.acquire_dropped);
-	cJSON_AddNumberToObject(o, "acquire_import_fails",
-		(double)avk.acquire_import_fails);
-	cJSON_AddNumberToObject(o, "release_points_set",
-		(double)avk.release_points_set);
-	cJSON_AddNumberToObject(o, "release_points_dropped",
-		(double)avk.release_points_dropped);
 	cJSON_AddNumberToObject(o, "shm_stale_frames",
 		(double)avk.shm_stale_frames);
-	cJSON_AddNumberToObject(o, "shm_stale_from_surface",
-		(double)avk.shm_stale_from_surface);
 	cJSON_AddNumberToObject(o, "shm_stale_multi_output_repaints",
 		(double)avk.shm_stale_multi_output_repaints);
-	cJSON_AddNumberToObject(o, "shm_stale_no_pool",
-		(double)avk.shm_stale_no_pool);
-	cJSON_AddNumberToObject(o, "shm_stale_no_sibling",
-		(double)avk.shm_stale_no_sibling);
-	cJSON_AddNumberToObject(o, "shm_stale_pool_avg",
-		(double)(avk.shm_stale_pool_samples
-			? avk.shm_stale_pool_size_sum / avk.shm_stale_pool_samples : 0));
 	{
 		uint64_t packed = 0, stolen = 0;
 		avk_upload_worker_counts(avk.upload_worker, &packed, &stolen);
-		/* Jobs the posting thread had to pack itself because the worker had
-		 * not started them. Not a failure -- it is strictly better than
-		 * waiting for a busy worker -- but a rising number means one thread is
-		 * no longer enough. */
-		cJSON_AddNumberToObject(o, "shm_worker_packed", (double)packed);
-		cJSON_AddNumberToObject(o, "shm_worker_stolen", (double)stolen);
 
 		/* The copy's OWN duration, measured on the thread that performs it,
 		 * and the rate it implies. This is the number that says whether a long
@@ -8214,12 +8140,6 @@ static cJSON *az_avk_stats_json(void) {
 		uint64_t p_max = 0, p_sum = 0, p_n = 0, p_bytes = 0;
 		avk_upload_worker_timing(avk.upload_worker, &p_max, &p_sum, &p_n,
 			&p_bytes);
-		cJSON_AddNumberToObject(o, "shm_worker_pack_us_max",
-			(double)(p_max / 1000));
-		cJSON_AddNumberToObject(o, "shm_worker_pack_us_avg",
-			(double)(p_n ? p_sum / p_n / 1000 : 0));
-		cJSON_AddNumberToObject(o, "shm_worker_pack_mb_s",
-			p_sum ? (double)p_bytes * 1000.0 / (double)p_sum : 0);
 	}
 	cJSON_AddNumberToObject(o, "buffer_resolve_attempts",
 		(double)avk.buffer_resolve_attempts);
@@ -8267,7 +8187,7 @@ static cJSON *az_avk_stats_json(void) {
 		uint64_t req = 0, hit = 0, reb = 0, inval = 0, bytes = 0;
 		uint64_t hit_k[AVK_BLUR_CACHE_KINDS] = {0};
 		uint64_t reb_k[AVK_BLUR_CACHE_KINDS] = {0};
-		uint64_t s_draws = 0, s_px = 0, s_chains = 0, s_blur = 0;
+		uint64_t s_px = 0, s_chains = 0, s_blur = 0;
 		uint64_t i_gen = 0, i_geo = 0, i_par = 0, i_fmt = 0, i_new = 0,
 		         i_forced = 0, i_src = 0;
 		uint64_t gen_max = 0;
@@ -8282,7 +8202,7 @@ static cJSON *az_avk_stats_json(void) {
 			avk_blur_cache_inventory(c, &inv);
 			req += c->requests; hit += c->hits; reb += c->rebuilds;
 			inval += c->invalidations; bytes += c->bytes;
-			s_draws += c->saved_prefix_draws; s_px += c->saved_prefix_px;
+			s_px += c->saved_prefix_px;
 			s_chains += c->saved_chains; s_blur += c->saved_blur_px;
 			i_gen += c->inv_generation; i_geo += c->inv_geometry;
 			i_par += c->inv_params; i_fmt += c->inv_format;
@@ -8373,28 +8293,9 @@ static cJSON *az_avk_stats_json(void) {
 				 * climbs is a cached picture that has gone stale. There is no
 				 * aggregate in which that is visible: this is the reading.
 				 */
-				for (int k = 0; k < AVK_BLUR_CACHE_KINDS; k++) {
-					const struct avk_blur_cache_image *ci = &c->img[k];
-					const char *kn = avk_blur_cache_kind_name(
-						(enum avk_blur_cache_kind)k);
-					char key[48];
-					snprintf(key, sizeof(key), "%s_built", kn);
-					cJSON_AddBoolToObject(e, key, ci->valid);
-					snprintf(key, sizeof(key), "%s_generation", kn);
-					cJSON_AddNumberToObject(e, key, (double)ci->generation);
-					snprintf(key, sizeof(key), "%s_source_hash", kn);
-					/* As a string: a 64-bit digest does not survive a JSON
-					 * number, and a silently-rounded hash that compares equal
-					 * to a different one is the exact failure this reports. */
-					char hx[24];
-					snprintf(hx, sizeof(hx), "%016" PRIx64, ci->source_hash);
-					cJSON_AddStringToObject(e, key, hx);
-				}
 				cJSON_AddItemToArray(per, e);
 			}
 		}
-		cJSON_AddNumberToObject(o, "blur_cache_saved_prefix_draws",
-			(double)s_draws);
 		cJSON_AddNumberToObject(o, "blur_cache_saved_prefix_px", (double)s_px);
 		cJSON_AddNumberToObject(o, "blur_cache_saved_chains", (double)s_chains);
 		cJSON_AddNumberToObject(o, "blur_cache_saved_blur_px", (double)s_blur);
@@ -8466,22 +8367,11 @@ static cJSON *az_avk_stats_json(void) {
 	}
 	cJSON_AddNumberToObject(o, "blur_nodes_clipped",
 		(double)avk.blur_nodes_clipped);
-	cJSON_AddNumberToObject(o, "implicit_copy_bytes",
-		(double)imp->copied_bytes);
-	cJSON_AddNumberToObject(o, "implicit_copy_us", (double)imp->copied_us);
 
 	/* ownership */
 	cJSON_AddNumberToObject(o, "commit_imports", (double)avk.commit_imports);
 	cJSON_AddNumberToObject(o, "late_imports", (double)avk.late_imports);
-	cJSON_AddNumberToObject(o, "client_images_cached",
-		(double)avk.client_images_cached);
-	cJSON_AddNumberToObject(o, "client_image_cache_hits",
-		(double)avk.cache_hits);
-	cJSON_AddNumberToObject(o, "client_image_cache_misses",
-		(double)avk.cache_misses);
 
-	/* timing */
-	cJSON_AddNumberToObject(o, "gpu_submit_us", (double)(submit_ns / 1000));
 	cJSON_AddNumberToObject(o, "cpu_frame_us", (double)avk.cpu_frame_us);
 	cJSON_AddNumberToObject(o, "cpu_frame_us_max",
 		(double)avk.cpu_frame_us_max);
@@ -8491,12 +8381,6 @@ static cJSON *az_avk_stats_json(void) {
 		az_avk_hist_pct(&avk.cpu_frame_hist, 95.0, AZ_AVK_CPU_BUCKET_US));
 	cJSON_AddNumberToObject(o, "cpu_frame_us_p99",
 		az_avk_hist_pct(&avk.cpu_frame_hist, 99.0, AZ_AVK_CPU_BUCKET_US));
-	cJSON_AddNumberToObject(o, "gpu_submit_us_p95",
-		az_avk_hist_pct(&avk.gpu_submit_hist, 95.0, 5));
-	cJSON_AddNumberToObject(o, "gpu_submit_us_p99",
-		az_avk_hist_pct(&avk.gpu_submit_hist, 99.0, 5));
-	cJSON_AddNumberToObject(o, "damage_ratio_p50",
-		az_avk_hist_pct(&avk.damage_permille_hist, 50.0, 2) / 1000.0);
 	cJSON_AddNumberToObject(o, "damage_ratio_p95",
 		az_avk_hist_pct(&avk.damage_permille_hist, 95.0, 2) / 1000.0);
 	/*
@@ -8597,8 +8481,6 @@ static cJSON *az_avk_stats_json(void) {
 			cJSON_AddNumberToObject(o, "record_ns_max", (double)rec.max);
 			cJSON_AddBoolToObject(o, "record_censored", avk_hist_censored(&rec));
 			cJSON_AddNumberToObject(o, "record_overflow", (double)rec.overflow);
-			cJSON_AddNumberToObject(o, "record_underflow",
-				(double)rec.underflow);
 		} else {
 			cJSON_AddNullToObject(o, "record_ns_p50");
 		}
@@ -8610,7 +8492,6 @@ static cJSON *az_avk_stats_json(void) {
 
 	/* damage */
 	cJSON_AddNumberToObject(o, "damage_pixels", (double)avk.damage_pixels);
-	cJSON_AddNumberToObject(o, "output_pixels", (double)avk.output_pixels);
 	if (avk.output_pixels > 0) {
 		cJSON_AddNumberToObject(o, "damage_ratio",
 			(double)avk.damage_pixels / (double)avk.output_pixels);
@@ -8621,8 +8502,6 @@ static cJSON *az_avk_stats_json(void) {
 		(double)avk.full_redraw_frames);
 	cJSON_AddNumberToObject(o, "partial_redraw_frames",
 		(double)avk.partial_redraw_frames);
-	cJSON_AddNumberToObject(o, "damage_rects_max",
-		(double)avk.damage_rects_max);
 
 	/* synchronisation and presentation */
 	cJSON_AddNumberToObject(o, "cpu_sync_waits", (double)sync_waits);
@@ -8638,8 +8517,6 @@ static cJSON *az_avk_stats_json(void) {
 		(double)avk.present_sync_fails);
 	cJSON_AddNumberToObject(o, "target_state_violations",
 		(double)avk.target_state_violations);
-	cJSON_AddNumberToObject(o, "output_targets_in_flight",
-		(double)avk.output_targets);
 
 	/*
 	 * The largest SHM sources, so a pathological client can be identified
@@ -8681,18 +8558,12 @@ static cJSON *az_avk_stats_json(void) {
 			cJSON_AddStringToObject(src, "buffer", id);
 			cJSON_AddNumberToObject(src, "width", top[i]->src_width);
 			cJSON_AddNumberToObject(src, "height", top[i]->src_height);
-			cJSON_AddBoolToObject(src, "from_surface_commit",
-				top[i]->taken_at_commit);
 			cJSON_AddNumberToObject(src, "generations",
 				(double)top[i]->stat_generations);
 			cJSON_AddNumberToObject(src, "full_uploads",
 				(double)top[i]->stat_full_uploads);
-			cJSON_AddNumberToObject(src, "partial_uploads",
-				(double)top[i]->stat_partial_uploads);
 			cJSON_AddNumberToObject(src, "upload_bytes",
 				(double)top[i]->stat_upload_bytes);
-			cJSON_AddNumberToObject(src, "frame_lookups",
-				(double)top[i]->stat_lookups);
 			cJSON_AddItemToArray(sources, src);
 		}
 	}
@@ -8726,7 +8597,6 @@ static cJSON *az_avk_stats_json(void) {
 	AZ_AVK_PX(bucket, gradient); \
 	AZ_AVK_PX(bucket, target)
 	AZ_AVK_PX_BUCKET(out);
-	AZ_AVK_PX_BUCKET(prefix);
 #undef AZ_AVK_PX_BUCKET
 #undef AZ_AVK_PX
 	cJSON_AddNumberToObject(o, "rounded_clip_draws",
@@ -8799,7 +8669,7 @@ static cJSON *az_avk_stats_json(void) {
 	 * timestamps. A test asserting on 0 there would be asserting that the
 	 * frame took no time.
 	 */
-	uint64_t gpu_ns_total = 0, gpu_samples = 0, gpu_dropped = 0;
+	uint64_t gpu_ns_total = 0, gpu_samples = 0;
 	bool gpu_supported = false;
 	for (size_t i = 0; i < AZ_AVK_MAX_FORMATS; i++) {
 		if (!avk.renderers[i].used) {
@@ -8813,9 +8683,7 @@ static cJSON *az_avk_stats_json(void) {
 		gpu_supported = true;
 		gpu_ns_total += ts->gpu_frame_ns_total;
 		gpu_samples += ts->samples;
-		gpu_dropped += ts->dropped;
 	}
-	cJSON_AddBoolToObject(o, "gpu_timestamps", gpu_supported);
 	if (gpu_supported && gpu_samples > 0) {
 		cJSON_AddNumberToObject(o, "gpu_frame_us_avg",
 			(double)gpu_ns_total / (double)gpu_samples / 1000.0);
@@ -8823,7 +8691,6 @@ static cJSON *az_avk_stats_json(void) {
 		cJSON_AddNullToObject(o, "gpu_frame_us_avg");
 	}
 	cJSON_AddNumberToObject(o, "gpu_samples", (double)gpu_samples);
-	cJSON_AddNumberToObject(o, "gpu_dropped", (double)gpu_dropped);
 
 	/*
 	 * ── GPU DISTRIBUTIONS, AND WHAT EACH SPAN ACTUALLY CONTAINS (M4F.2D) ──
@@ -8850,7 +8717,7 @@ static cJSON *az_avk_stats_json(void) {
 	 */
 	{
 		struct avk_hist frame = {0}, total = {0}, prefix = {0}, down = {0},
-			up = {0}, up0 = {0}, frameblur = {0}, pre = {0}, post = {0};
+			up = {0}, up0 = {0}, frameblur = {0};
 		for (size_t i = 0; i < AZ_AVK_MAX_FORMATS; i++) {
 			if (!avk.renderers[i].used) {
 				continue;
@@ -8863,14 +8730,13 @@ static cJSON *az_avk_stats_json(void) {
 			/* Bucket-wise addition: two renderers' histograms are over the
 			 * same buckets, so this is exact rather than an average of
 			 * percentiles, which would not be a percentile of anything. */
-			const struct avk_hist *src[9] = { &ts->gpu_frame_hist,
+			const struct avk_hist *src[7] = { &ts->gpu_frame_hist,
 				&ts->blur_total_hist, &ts->blur_prefix_hist,
 				&ts->blur_down_hist, &ts->blur_up_hist, &ts->blur_up0_hist,
-				&ts->gpu_frame_blur_hist, &ts->blur_pre_hist,
-				&ts->blur_post_hist };
-			struct avk_hist *dst[9] = { &frame, &total, &prefix, &down, &up,
-				&up0, &frameblur, &pre, &post };
-			for (int k = 0; k < 9; k++) {
+				&ts->gpu_frame_blur_hist };
+			struct avk_hist *dst[7] = { &frame, &total, &prefix, &down, &up,
+				&up0, &frameblur };
+			for (int k = 0; k < 7; k++) {
 				dst[k]->count += src[k]->count;
 				dst[k]->total += src[k]->total;
 				dst[k]->overflow += src[k]->overflow;
@@ -8923,13 +8789,12 @@ static cJSON *az_avk_stats_json(void) {
 				cJSON_AddNumberToObject(o, "gpu_results_straddled", (double)st);
 			}
 		}
-		static const char *names[9] = { "gpu_frame", "gpu_blur_total",
+		static const char *names[7] = { "gpu_frame", "gpu_blur_total",
 			"gpu_blur_prefix", "gpu_blur_down", "gpu_blur_up",
-			"gpu_blur_up0", "gpu_frame_blur", "gpu_frame_preblur",
-			"gpu_frame_postblur" };
-		const struct avk_hist *hs[9] = { &frame, &total, &prefix, &down, &up,
-			&up0, &frameblur, &pre, &post };
-		for (int k = 0; k < 9; k++) {
+			"gpu_blur_up0", "gpu_frame_blur" };
+		const struct avk_hist *hs[7] = { &frame, &total, &prefix, &down, &up,
+			&up0, &frameblur };
+		for (int k = 0; k < 7; k++) {
 			char key[64];
 			snprintf(key, sizeof(key), "%s_samples", names[k]);
 			cJSON_AddNumberToObject(o, key, (double)hs[k]->count);
@@ -8979,7 +8844,6 @@ static cJSON *az_avk_stats_json(void) {
 	 * it twice a few seconds apart is the whole test.
 	 */
 	uint32_t g_passes = 0, g_resources = 0, g_uses = 0, g_barriers = 0;
-	uint32_t g_transitions = 0, g_buffer_barriers = 0;
 	uint64_t g_allocs = 0, g_build_ns = 0, g_frames = 0;
 	uint32_t g_hist[64] = {0};
 	for (size_t i = 0; i < AZ_AVK_MAX_FORMATS; i++) {
@@ -8992,8 +8856,6 @@ static cJSON *az_avk_stats_json(void) {
 		g_resources += gs->resources;
 		g_uses += gs->uses;
 		g_barriers += gs->barriers;
-		g_transitions += gs->image_transitions;
-		g_buffer_barriers += gs->buffer_barriers;
 		g_allocs += gs->allocs;
 		g_build_ns += gs->build_ns;
 		for (int h = 0; h < 64; h++) {
@@ -9005,12 +8867,6 @@ static cJSON *az_avk_stats_json(void) {
 	cJSON_AddNumberToObject(o, "graph_resources", (double)g_resources);
 	cJSON_AddNumberToObject(o, "graph_uses", (double)g_uses);
 	cJSON_AddNumberToObject(o, "graph_barriers", (double)g_barriers);
-	cJSON_AddNumberToObject(o, "graph_image_transitions",
-		(double)g_transitions);
-	/* Zero by construction -- see struct avk_graph_stats. Reported so the
-	 * absence is a stated fact rather than an omission. */
-	cJSON_AddNumberToObject(o, "graph_buffer_barriers",
-		(double)g_buffer_barriers);
 	cJSON_AddNumberToObject(o, "graph_allocs", (double)g_allocs);
 
 	/*
@@ -9033,10 +8889,8 @@ static cJSON *az_avk_stats_json(void) {
 	 * an A/B asserting acquire equality read 264 against 256 for eight extra
 	 * warm-up frames, on runs whose per-frame graph uses were identical.
 	 */
-	uint64_t t_acquires = 0, t_reuses = 0, t_creates = 0, t_retires = 0;
-	uint64_t t_no_key = 0, t_in_use = 0, t_in_flight = 0;
-	uint64_t t_unsafe = 0, t_bytes = 0, t_peak = 0;
-	uint32_t t_live = 0;
+	uint64_t t_acquires = 0, t_reuses = 0, t_creates = 0;
+	uint64_t t_peak = 0;
 	for (size_t i = 0; i < AZ_AVK_MAX_FORMATS; i++) {
 		if (!avk.renderers[i].used) {
 			continue;
@@ -9046,26 +8900,11 @@ static cJSON *az_avk_stats_json(void) {
 		t_acquires += ts->acquires;
 		t_reuses += ts->reuses;
 		t_creates += ts->creates;
-		t_no_key += ts->miss_no_key;
-		t_in_use += ts->miss_in_use;
-		t_in_flight += ts->miss_in_flight;
-		t_retires += ts->retires;
-		t_unsafe += ts->unsafe_reuses;
-		t_bytes += ts->bytes;
 		t_peak += ts->peak_bytes;
-		t_live += ts->live;
 	}
 	cJSON_AddNumberToObject(o, "transient_acquires", (double)t_acquires);
 	cJSON_AddNumberToObject(o, "transient_reuses", (double)t_reuses);
 	cJSON_AddNumberToObject(o, "transient_creates", (double)t_creates);
-	cJSON_AddNumberToObject(o, "transient_miss_no_key", (double)t_no_key);
-	cJSON_AddNumberToObject(o, "transient_miss_in_use", (double)t_in_use);
-	cJSON_AddNumberToObject(o, "transient_miss_in_flight", (double)t_in_flight);
-	cJSON_AddNumberToObject(o, "transient_retires", (double)t_retires);
-	/* MUST stay 0. The only path that can raise it is the M4E.4 break. */
-	cJSON_AddNumberToObject(o, "transient_unsafe_reuses", (double)t_unsafe);
-	cJSON_AddNumberToObject(o, "transient_live", (double)t_live);
-	cJSON_AddNumberToObject(o, "transient_bytes", (double)t_bytes);
 	cJSON_AddNumberToObject(o, "transient_peak_bytes", (double)t_peak);
 
 	/*
@@ -9079,12 +8918,12 @@ static cJSON *az_avk_stats_json(void) {
 	 * measurement rather than against an expectation.
 	 */
 	uint64_t b_replays = 0, b_cmds = 0, b_px = 0;
-	uint64_t b_chains = 0, b_passes = 0, b_transients = 0, b_skipped = 0;
+	uint64_t b_chains = 0, b_passes = 0;
 	uint64_t b_draws = 0, b_soft = 0, b_darken = 0;
 	/* M4F.2B. The six regions, as areas, plus what the two sweeps cost. */
-	uint64_t d_src = 0, d_out = 0, d_rebuild = 0, d_copyable = 0;
-	uint64_t f_rects = 0, f_before = 0, f_after = 0;
-	uint64_t d_dep_full = 0, d_write_full = 0, d_cap_full = 0, d_saved = 0;
+	uint64_t d_src = 0, d_out = 0, d_rebuild = 0;
+	uint64_t f_before = 0, f_after = 0;
+	uint64_t d_write_full = 0, d_cap_full = 0;
 	uint64_t d_touched = 0, d_skipped = 0, d_fallbacks = 0, d_rects = 0;
 	uint64_t d_inherited = 0, d_build_ns = 0;
 	uint64_t d_halo = 0, d_cap_px = 0, d_res_px = 0, d_proc_px = 0;
@@ -9105,22 +8944,16 @@ static cJSON *az_avk_stats_json(void) {
 		b_px += r->blur_prefix_pixels;
 		b_chains += r->blur_stats.chains;
 		b_passes += r->blur_stats.passes;
-		b_transients += r->blur_stats.transients;
-		b_skipped += r->blur_stats.skipped;
 		b_draws += r->stats.blur_draws;
 		b_soft += r->stats.blur_soft_draws;
 		b_darken += r->stats.blur_darken_passes;
 		d_src += r->blur_source_damage_pixels;
 		d_out += r->blur_output_damage_pixels;
 		d_rebuild += r->blur_prefix_rebuild_pixels;
-		d_copyable += r->blur_prefix_copyable_pixels;
-		f_rects += r->blur_fallback_rects;
 		f_before += r->blur_fallback_area_before;
 		f_after += r->blur_fallback_area_after;
-		d_dep_full += r->blur_full_dependency_pixels;
 		d_write_full += r->blur_full_write_pixels;
 		d_cap_full += r->blur_full_capture_pixels;
-		d_saved += r->blur_damage_saved_pixels;
 		d_req_px += r->blur_required_work_pixels;
 		d_touched += r->blur_damage_nodes_touched;
 		d_skipped += r->blur_damage_nodes_skipped;
@@ -9172,8 +9005,6 @@ static cJSON *az_avk_stats_json(void) {
 	cJSON_AddNumberToObject(o, "blur_prefix_pixels", (double)b_px);
 	cJSON_AddNumberToObject(o, "blur_chains", (double)b_chains);
 	cJSON_AddNumberToObject(o, "blur_passes", (double)b_passes);
-	cJSON_AddNumberToObject(o, "blur_transients", (double)b_transients);
-	cJSON_AddNumberToObject(o, "blur_skipped", (double)b_skipped);
 	/* At the DRAW, so these say what the material did rather than what the
 	 * scene asked for -- two different claims, and only one of them is about
 	 * the renderer. */
@@ -9193,50 +9024,11 @@ static cJSON *az_avk_stats_json(void) {
 	cJSON_AddNumberToObject(o, "blur_source_damage_pixels", (double)d_src);
 	cJSON_AddNumberToObject(o, "blur_output_damage_pixels", (double)d_out);
 	cJSON_AddNumberToObject(o, "blur_prefix_rebuild_pixels", (double)d_rebuild);
-	cJSON_AddNumberToObject(o, "blur_prefix_copyable_pixels", (double)d_copyable);
-	/*
-	 * M4H.7. Frames that missed their output's deadline, and by how many
-	 * refreshes. This is the closure metric: a percentile cannot say whether a
-	 * frame missed, and gpu_frame_blur p95 moved from 2880 to 4860us across two
-	 * identical live cohorts while p50 and p99 did not move at all. A count
-	 * does not depend on how many animations happened to be in the sample.
-	 */
-	uint64_t ob_frames = 0, ob = 0, ob2 = 0, ob3 = 0;
-	for (size_t i = 0; i < AZ_AVK_MAX_FORMATS; i++) {
-		if (!avk.renderers[i].used) {
-			continue;
-		}
-		const struct avk_timestamps *t = &avk.renderers[i].renderer.timestamps;
-		ob_frames += t->budget_frames;
-		ob += t->over_budget;
-		ob2 += t->over_budget_2x;
-		ob3 += t->over_budget_3x;
-	}
-	cJSON_AddNumberToObject(o, "budget_frames", (double)ob_frames);
-	cJSON_AddNumberToObject(o, "over_budget", (double)ob);
-	cJSON_AddNumberToObject(o, "commit_us_max", (double)(avk.commit_ns_max / 1000));
-	cJSON_AddNumberToObject(o, "commit_us_avg", (double)(avk.commit_samples
-		? avk.commit_ns_sum / avk.commit_samples / 1000 : 0));
-	cJSON_AddNumberToObject(o, "handler_us_max", (double)(avk.handler_ns_max / 1000));
-	cJSON_AddNumberToObject(o, "handler_us_avg", (double)(avk.commit_samples
-		? avk.handler_ns_sum / avk.commit_samples / 1000 : 0));
-	cJSON_AddNumberToObject(o, "handler_over_10ms", (double)avk.handler_over_10ms);
-	cJSON_AddNumberToObject(o, "handler_over_30ms", (double)avk.handler_over_30ms);
-	cJSON_AddNumberToObject(o, "over_budget_2x", (double)ob2);
-	cJSON_AddNumberToObject(o, "over_budget_3x", (double)ob3);
-	cJSON_AddNumberToObject(o, "blur_full_dependency_pixels",
-		(double)d_dep_full);
 	cJSON_AddNumberToObject(o, "blur_full_write_pixels", (double)d_write_full);
 	cJSON_AddNumberToObject(o, "blur_full_capture_pixels", (double)d_cap_full);
-	cJSON_AddNumberToObject(o, "blur_damage_saved_pixels", (double)d_saved);
 	cJSON_AddNumberToObject(o, "blur_damage_nodes_touched", (double)d_touched);
 	cJSON_AddNumberToObject(o, "blur_damage_nodes_skipped", (double)d_skipped);
 	cJSON_AddNumberToObject(o, "blur_damage_fallbacks", (double)d_fallbacks);
-	/* And what those fallbacks cost. area_after/area_before is the fill the
-	 * bounding-box collapse invented; rects is how fragmented the region was
-	 * when it gave up. A fallback count on its own cannot distinguish a
-	 * collapse that added 10% from one that added 20x. */
-	cJSON_AddNumberToObject(o, "blur_fallback_rects", (double)f_rects);
 
 	cJSON_AddNumberToObject(o, "blur_fallback_area_before", (double)f_before);
 	cJSON_AddNumberToObject(o, "blur_fallback_area_after", (double)f_after);
@@ -9363,8 +9155,6 @@ static cJSON *az_avk_stats_json(void) {
 		(double)avk.cursor_geometry_mismatch);
 	cJSON_AddNumberToObject(o, "hardware_cursor_frames",
 		(double)avk.hardware_cursor_frames);
-	cJSON_AddNumberToObject(o, "cursor_commands",
-		(double)avk.cursor_commands);
 	cJSON_AddNumberToObject(o, "cursor_no_image",
 		(double)avk.cursor_no_image);
 	cJSON_AddNumberToObject(o, "cursor_import_failures",
@@ -9373,8 +9163,6 @@ static cJSON *az_avk_stats_json(void) {
 	cJSON_AddNumberToObject(o, "cursor_moves", (double)avk.cursor_moves);
 	cJSON_AddNumberToObject(o, "cursor_damage_pixels",
 		(double)avk.cursor_damage_pixels);
-	cJSON_AddNumberToObject(o, "cursor_hw_to_sw", (double)avk.cursor_hw_to_sw);
-	cJSON_AddNumberToObject(o, "cursor_sw_to_hw", (double)avk.cursor_sw_to_hw);
 	cJSON_AddNumberToObject(o, "cursor_client_surface_sets",
 		(double)az_cursor.sets_client);
 	cJSON_AddNumberToObject(o, "cursor_shape_sets",
@@ -9416,42 +9204,10 @@ static cJSON *az_avk_stats_json(void) {
 	if (avk.device != NULL) {
 		cJSON_AddNumberToObject(o, "lifecycle_violations",
 			(double)avk.device->lifecycle_violations);
-		cJSON_AddNumberToObject(o, "retire_duplicate_pushes",
-			(double)(avk.importer.retire.duplicate_pushes));
-		cJSON_AddNumberToObject(o, "retire_entries_live",
-			(double)avk.device->live.retire_entries);
 		cJSON_AddNumberToObject(o, "live_images", (double)avk.device->live.images);
-		cJSON_AddNumberToObject(o, "live_image_views",
-			(double)avk.device->live.image_views);
 		cJSON_AddNumberToObject(o, "live_device_memory",
 			(double)avk.device->live.device_memory);
-		cJSON_AddNumberToObject(o, "live_buffers",
-			(double)avk.device->live.buffers);
-		cJSON_AddNumberToObject(o, "live_descriptor_pools",
-			(double)avk.device->live.descriptor_pools);
-		cJSON_AddNumberToObject(o, "live_command_pools",
-			(double)avk.device->live.command_pools);
-		cJSON_AddNumberToObject(o, "live_semaphores",
-			(double)avk.device->live.semaphores);
-		cJSON_AddNumberToObject(o, "live_avk_images",
-			(double)avk.device->live.avk_images);
-		cJSON_AddNumberToObject(o, "live_avk_uploads",
-			(double)avk.device->live.avk_uploads);
 	}
-	/*
-	 * Pointer focus traffic. Not renderer state, and it does not belong to
-	 * AVK -- it is here because this is the channel that can be read from a
-	 * running session, and because the question it answers is otherwise pure
-	 * inference: a client whose hover state flickers while the pointer and
-	 * the window are both stationary is either being told the pointer moved,
-	 * or it is not. These two counters decide it.
-	 */
-	cJSON_AddNumberToObject(o, "pointer_enters", (double)az_pointer_enters);
-	cJSON_AddNumberToObject(o, "pointer_focus_clears",
-		(double)az_pointer_focus_clears);
-	cJSON_AddNumberToObject(o, "pointer_motions", (double)az_pointer_motions);
-	cJSON_AddNumberToObject(o, "pointer_notify_internal",
-		(double)az_pointer_notify_internal);
 	cJSON_AddBoolToObject(o, "cursor_force_software",
 		az_cursor_force_software());
 	/*
@@ -9813,8 +9569,6 @@ static void az_avk_stats_reset(void) {
 				ts->blur_up_hist = (struct avk_hist){0};
 				ts->blur_up0_hist = (struct avk_hist){0};
 				ts->gpu_frame_blur_hist = (struct avk_hist){0};
-				ts->blur_pre_hist = (struct avk_hist){0};
-				ts->blur_post_hist = (struct avk_hist){0};
 				ts->cohort_blur_frames = 0;
 				ts->cohort_idle_frames = 0;
 				ts->straddled = 0;

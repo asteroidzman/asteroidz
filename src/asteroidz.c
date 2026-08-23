@@ -1962,6 +1962,7 @@ void monitor_start_retrain(Monitor *m, uint32_t delay_ms);
 static void hdr_resolve(Monitor *m);
 /* defined below, used from ipc/ipc.h which is included before it */
 static int mon_connector_hdr_active(Monitor *m);
+static int mon_connector_max_bpc(Monitor *m);
 static void hdr_resolve_all(void);
 static void handle_image_copy_capture_new_session(struct wl_listener *listener,
 												  void *data);
@@ -6865,7 +6866,16 @@ static void mon_derive_color_state(Monitor *m,
  * output has no connector, and "unknown" has to stay distinguishable from
  * "off" or the answer is a guess wearing a number.
  */
-static int mon_connector_hdr_active(Monitor *m) {
+/*
+ * ONE NAMED PROPERTY OFF THIS OUTPUT'S DRM CONNECTOR, or -1 when there is none
+ * to ask: a headless or nested output, or a driver that does not carry this
+ * property. Every value these connectors expose is unsigned, so -1 cannot
+ * collide with a real one.
+ *
+ * Shared because the two callers below want the same twenty lines and differ
+ * only in a string -- not because a third is expected.
+ */
+static int64_t mon_connector_prop(Monitor *m, const char *name) {
 	if (m == NULL || m->wlr_output == NULL) {
 		return -1;
 	}
@@ -6890,22 +6900,43 @@ static int mon_connector_hdr_active(Monitor *m) {
 	if (props == NULL) {
 		return -1;
 	}
-	int active = -1;
+	int64_t value = -1;
 	for (uint32_t i = 0; i < props->count_props; i++) {
 		drmModePropertyRes *prop = drmModeGetProperty(fd, props->props[i]);
 		if (prop == NULL) {
 			continue;
 		}
-		if (strcmp(prop->name, "HDR_OUTPUT_METADATA") == 0) {
-			active = props->prop_values[i] != 0 ? 1 : 0;
-		}
+		bool match = strcmp(prop->name, name) == 0;
 		drmModeFreeProperty(prop);
-		if (active >= 0) {
+		if (match) {
+			value = (int64_t)props->prop_values[i];
 			break;
 		}
 	}
 	drmModeFreeObjectProperties(props);
-	return active;
+	return value;
+}
+
+static int mon_connector_hdr_active(Monitor *m) {
+	int64_t v = mon_connector_prop(m, "HDR_OUTPUT_METADATA");
+	return v < 0 ? -1 : (v != 0 ? 1 : 0);
+}
+
+/*
+ * WHAT THE CONNECTOR IS CAPPED AT, which is not what we asked the renderer for.
+ * wlroots sets `max bpc` from the committed render format, so reading it back
+ * separates "we chose a 10-bit buffer" from "the kernel holds 10 for this
+ * connector" -- the same distinction `hdr` draws, for the same reason.
+ *
+ * It is a CAP and it is worth being exact about that: no KMS property reports
+ * the negotiated link depth, and a link that cannot carry the cap is clamped
+ * inside the driver where nothing here can see it. So this answers "what is
+ * the connector allowed to send", not "what is it sending". The only source
+ * for the latter is driver debugfs, which is not worth what reading it costs.
+ */
+static int mon_connector_max_bpc(Monitor *m) {
+	int64_t v = mon_connector_prop(m, "max bpc");
+	return v <= 0 ? -1 : (int)v;
 }
 
 void mon_state_apply_color(Monitor *m, struct wlr_output_state *state) {

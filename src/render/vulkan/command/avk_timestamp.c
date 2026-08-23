@@ -384,11 +384,9 @@ static bool read_slot(struct avk_timestamps *ts, uint32_t slot,
 	/* The two ends of the frame that are not blur. */
 	uint64_t tr_pre = 0, tr_post = 0;
 	if (AVK_TS_SPAN(AVK_TS_FRAME_BEGIN, AVK_TS_BLUR_BEGIN)) {
-		avk_hist_add(&ts->blur_pre_hist, span);
 		tr_pre = span;
 	}
 	if (AVK_TS_SPAN(AVK_TS_BLUR_END, AVK_TS_FRAME_END)) {
-		avk_hist_add(&ts->blur_post_hist, span);
 		tr_post = span;
 	}
 	/* ONLY on a single-chain frame: with two chains this range is

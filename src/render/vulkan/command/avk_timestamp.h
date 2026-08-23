@@ -264,8 +264,6 @@ struct avk_timestamps {
 	 * frame go" was 44% blur and 56% unattributed -- which is not an answer.
 	 * No new queries: both spans come from marks already written.
 	 */
-	struct avk_hist blur_pre_hist;
-	struct avk_hist blur_post_hist;
 
 	/*
 	 * ── COHORT ACCOUNTING ─────────────────────────────────────────────────
