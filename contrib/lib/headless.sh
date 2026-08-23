@@ -927,7 +927,7 @@ hl_spawn_wlbgeffect() { # hl_spawn_wlbgeffect APPID HOLD_S [LOGNAME] -> pid
 	#
 	# WLBGEFFECT_QUAD=1 paints four quadrants instead: still no text, still no
 	# client-side layout, still reproducible between runs, and able to tell all
-	# eight orientations apart. contrib/avk-transform-test.sh sets it by
+	# eight orientations apart. The transform fixture that set it by
 	# default. Anything comparing a rotated output should.
 	local appid="$1" hold="$2" logname="${3:-wlbgeffect}" argb="${4:-}"
 	# shellcheck disable=SC2086

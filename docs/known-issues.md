@@ -606,3 +606,33 @@ The adaptive-sync reason specifically. A headless output is not
 adaptive-sync-capable — `contrib/regression/tests/vrr.sh` says as much and
 asserts wiring rather than value — so the toggle cannot be driven there. The
 scale path exercises the same reset mechanism and is what the test uses instead.
+
+## `border_radius` does not round window corners — OPEN
+
+`border_radius` parses, reaches the config, and has readers in
+`src/animation/layer.h` and `src/asteroidz.c`. It does not appear to round
+anything.
+
+Measured headlessly on a black wallpaper, `borderpx 0`, shadows off, one tiled
+kitty window, spawned fresh after each config change so the map-time path runs:
+
+```
+radius 0    box (10,10)  +2: (71,89,80)  +6: (42,111,214)  +40: (34,170,34)
+radius 30   box (10,10)  +2: (71,89,80)  +6: (42,111,214)  +40: (34,170,34)
+```
+
+Identical at every offset. With the border left on, the two frames differ over
+most of the window — but the top rows containing the corners are byte-identical,
+so that difference is kitty's own content between two spawns, not the corner.
+
+`no_radius_when_single` is not the explanation: its default is 0.
+
+**What this is not.** It is not a config-plumbing fault — `get config` reports
+`border_radius: 30` after the reload. It is not the "applies at map, not on
+reload" trap either; the window is spawned after the change.
+
+**Next.** Check whether the radius reaches the scene node at all
+(`wlr_scene_rect`/the client tree's corner radius) for a TILED window
+specifically, and whether it is floating-only in practice. A pixel test is
+written and was withdrawn from `contrib/regression/tests/effects.sh` rather
+than committed red; it goes back the moment this is understood.

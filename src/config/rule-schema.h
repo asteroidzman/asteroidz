@@ -387,7 +387,7 @@ static const RuleField rule_schema[] = {
  "Let this window's frames reach the screen without waiting for vblank. Lower "
  "latency, visible tearing.",
  RULE_TRISTATE, offsetof(ConfigWinRule, force_tearing), 0, 1, NULL, 0},
-{"xwayland_scale_one", "xwayland-scale-one", "appearance",
+{"xwayland_scale_one", "xwayland-scale-one", "visuals",
  "Native-resolution XWayland",
  "Override misc/xwayland-force-scale-one for this window. On a fractionally "
  "scaled output it renders an X11 window at device resolution instead of "

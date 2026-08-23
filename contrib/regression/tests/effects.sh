@@ -298,3 +298,95 @@ print("only-darker" if worst <= 1 else "brighter-by-%d" % worst)
 PY
 )" "only-darker"
 }
+
+# ── THE TWO EFFECTS THAT ONLY EXIST IN PIXELS ────────────────────────────────
+#
+# Blur and rounded corners are configurable, and until now the suite only ever
+# checked that the KEY was accepted. A key that parses and a renderer that draws
+# are different claims, and the whole AVK fixture corpus that used to make the
+# second one has been retired -- it proved renderer internals (cache hits,
+# barrier counts, damage domains) rather than anything a user can see.
+#
+# So these two assert the visible behaviour, and each is a differential: the
+# same scene rendered twice with one setting flipped. A single-frame threshold
+# would be a number argued from the renderer's own output, which is how a test
+# ends up agreeing with whatever the renderer does.
+
+# A FLAT BACKDROP CANNOT FALSIFY A BLUR. Blurring one colour returns that
+# colour, so a flat wallpaper passes identically whether the blur ran or not --
+# the failure this module's own shadow tests were once blind to. The checker
+# gives the blur something to destroy, and "destroyed" is measurable without a
+# threshold: neighbour-to-neighbour variation collapses.
+test_blur_actually_blurs_the_backdrop() {
+	_blur_scene_config() {
+		cat >> "$HL_CONFIG" <<EOF
+effects { blur { enable $1 ; passes 3 ; radius 10 } }
+blur_optimized 0
+layer_shadows 0
+shadows 0
+EOF
+		hl_dispatch "reload_config" 1
+	}
+
+	# RANDOM NOISE, not a checkerboard: `pattern:checkerboard` is 30px tiles of
+	# one flat colour, so neighbour-to-neighbour difference reads 3 in the FILE
+	# before any compositor is involved. Noise is high-frequency at every pixel
+	# and a blur cannot leave it standing.
+	magick -size "${HL_WIDTH}x${HL_HEIGHT}" xc: +noise Random \
+		"$HL_OUTDIR/noise.png" 2>/dev/null || {
+		hl_skip "blur backdrop: ImageMagick unavailable"; return 0; }
+
+	[ -n "${HL_SWAYBG_PID:-}" ] && kill "$HL_SWAYBG_PID" 2>/dev/null
+	swaybg -o '*' -i "$HL_OUTDIR/noise.png" -m fill >/dev/null 2>&1 &
+	HL_SWAYBG_PID=$!
+	sleep 1.5
+
+	# THROUGH A SURFACE, because nothing blurs bare wallpaper -- asteroidz
+	# blurs what is BEHIND a surface that asks for it. wlbgeffect is
+	# translucent and supplies a real ext-background-effect-v1 region.
+	_blur_scene_config 0
+	hl_spawn_wlbgeffect blurtest 30 blur-client >/dev/null
+	sleep 2.5
+	hl_screenshot blur-off
+
+	_blur_scene_config 1
+	sleep 2.5
+	hl_screenshot blur-on
+
+	# MEASURED WHERE IT CHANGED, not over the frame. The blurred region is
+	# ~264x200 of a 1920x1080 screen; a whole-frame standard deviation moves by
+	# nothing when 2.5% of the pixels change, and an earlier version of this
+	# read an identical 48 either way and called the renderer broken. The
+	# region locates itself from the difference, so the assertion cannot be
+	# aimed at pixels the effect was never going to touch.
+	local verdict
+	verdict="$(python3 - "$HL_OUTDIR/blur-off.png" "$HL_OUTDIR/blur-on.png" <<'PY'
+from PIL import Image, ImageChops
+import sys
+a = Image.open(sys.argv[1]).convert("RGB")
+b = Image.open(sys.argv[2]).convert("RGB")
+box = ImageChops.difference(a, b).getbbox()
+if box is None:
+    print("no-change")
+    raise SystemExit
+def sd(im):
+    g = im.convert("L").crop(box)
+    v = list(g.tobytes())
+    m = sum(v) / len(v)
+    return (sum((p - m) ** 2 for p in v) / len(v)) ** 0.5
+off, on = sd(a), sd(b)
+print("flattened-%d-%d" % (off, on) if on < off * 0.9 else "unchanged-%d-%d" % (off, on))
+PY
+)"
+	# Both halves stated: "the frames differ" alone is satisfied by any change
+	# at all, and "sd dropped" alone cannot run if nothing changed.
+	hl_assert_true "PREMISE: enabling blur changes the frame at all" \
+		"$([ "$verdict" != "no-change" ] && echo true || echo false)"
+	hl_assert_true "blur flattens the backdrop inside the region it changed ($verdict)" \
+		"$(case "$verdict" in flattened-*) echo true ;; *) echo false ;; esac)"
+
+	kill "$HL_SWAYBG_PID" 2>/dev/null
+	swaybg -o '*' -i "$HL_WALLPAPER" -m fill > "$HL_OUTDIR/swaybg.log" 2>&1 &
+	HL_SWAYBG_PID=$!
+	sleep 1
+}

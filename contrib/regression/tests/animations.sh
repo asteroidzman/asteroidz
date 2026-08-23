@@ -7,7 +7,7 @@
 # field isn't exposed over IPC at all). So there's no dispatch-and-poll
 # sequence that can distinguish "snapped instantly" from "mid-animation" for
 # any client. Real animation verification needs pixel/frame-level capture
-# (contrib/anim-test.sh's recording+montage), a fundamentally different kind
+# (a recording-and-montage harness, since retired), a fundamentally different kind
 # of tool than this assertion-based harness -- not something to fake here
 # with a timing-based guess.
 #

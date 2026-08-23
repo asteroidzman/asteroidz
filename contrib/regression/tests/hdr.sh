@@ -7,7 +7,7 @@
 # hits its "output does not support HDR (BT.2020 + PQ)" refusal and
 # reverts m->hdr back to 0 on the very next frame commit, regardless of
 # what toggle_hdr just set it to. Confirmed this is the SAME refusal path
-# contrib/render-matrix-test.sh's own "hdr" case already expects and
+# the retired render-matrix fixture's own "hdr" case already expected and
 # explicitly excludes from its error count (see that script's grep -cvE
 # pattern) -- that harness verifies the toggle is handled gracefully
 # end-to-end (screenshots, no crash), not that real HDR was achieved.
