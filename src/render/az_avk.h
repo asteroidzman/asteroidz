@@ -5118,8 +5118,38 @@ static void az_avk_walk_node(struct az_avk_walk *walk,
  * untrustworthy for months.
  */
 static bool az_avk_output_supported(Monitor *m,
+		const struct wlr_output_state *pending,
 		struct wlr_color_transform *color_transform, const char **why) {
 	struct wlr_output *output = m->wlr_output;
+
+	/*
+	 * ── ASK THE FRAME BEING BUILT, NOT THE ONE ALREADY ON THE WIRE ────────
+	 *
+	 * `output->image_description` is the COMMITTED one, and on the HDR
+	 * transition it is a commit behind the colour state this check compares it
+	 * against. render_monitor's hdr_pending_change branch does, in order:
+	 *
+	 *     mon_state_apply_color(m, &state);   // pending: description -> NULL
+	 *     mon_derive_color_state(m, &state);  // m->color_state -> SDR/LUT1D
+	 *     az_output_build_frame(m, &state);   // ...builds HERE
+	 *     wlr_output_commit_state(...);       // ...and only now is it true
+	 *
+	 * So the frame in between has an SDR colour state and an output still
+	 * carrying its HDR description. az_output_may_drive() reads that as "an
+	 * HDR output whose state says it is not PQ", which is its name for a
+	 * derivation bug, and the refusal is fatal -- turning HDR off aborted the
+	 * compositor and took the session with it.
+	 *
+	 * Nothing about the derivation was wrong: SDR with a matrix-shaper profile
+	 * is Path B + LUT1D and perfectly drivable. Only the question was, asked
+	 * of two states at once. The guard stays exactly as strict; it is simply
+	 * handed one state.
+	 */
+	bool has_image_description = output->image_description != NULL;
+	if (pending != NULL
+			&& (pending->committed & WLR_OUTPUT_STATE_IMAGE_DESCRIPTION)) {
+		has_image_description = pending->image_description != NULL;
+	}
 
 	/* Every `false` below names itself. The caller turns a refusal into a
 	 * fatal error by default, and "AVK refused this output" without the reason
@@ -5151,7 +5181,7 @@ static bool az_avk_output_supported(Monitor *m,
 	 * user enabled HDR for.
 	 */
 	if (!az_output_may_drive(&m->color_state,
-			output->image_description != NULL, color_transform != NULL,
+			has_image_description, color_transform != NULL,
 			az_avk_encode_pass_enabled(NULL))) {
 		if (!avk.warned_color_transform) {
 			avk.warned_color_transform = true;
@@ -6234,7 +6264,7 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 		return false;
 	}
 	const char *refused_why = NULL;
-	if (!az_avk_output_supported(m, color_transform, &refused_why)) {
+	if (!az_avk_output_supported(m, state, color_transform, &refused_why)) {
 		avk.fallback_frames++;
 		/*
 		 * ── FALLING BACK TO SceneFX IS FATAL ─────────────────────────────
