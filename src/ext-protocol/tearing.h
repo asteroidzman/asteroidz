@@ -163,7 +163,8 @@ void apply_tear_state(Monitor *m) {
 	 * buffer directly.
 	 */
 	enum az_scanout_verdict sv = AZ_SCANOUT_NOT_EVALUATED;
-	bool scanned_out = az_scanout_try(m, &state, &sv);
+	struct az_scanout_release release = {0};
+	bool scanned_out = az_scanout_try(m, &state, &sv, &release);
 	az_scanout_record_verdict(m, sv);
 	/*
 	 * ── A TORN FLIP OF A BUFFER ALREADY ON THE PLANE SHOWS NOTHING NEW ────
@@ -281,6 +282,11 @@ void apply_tear_state(Monitor *m) {
 	 * be confused by that.
 	 */
 	if (landed && scanned_out) {
+		/* Only now: the client is told its buffer reached the plane and when
+		 * it comes free. The early return above abandons a built state
+		 * without committing, and a release registered there would free a
+		 * buffer the display is still scanning. */
+		az_scanout_notify_scanned_out(m, &release);
 		pixman_region32_clear(&m->scene_output->pending_commit_damage);
 		struct timespec sdone;
 		clock_gettime(CLOCK_MONOTONIC, &sdone);

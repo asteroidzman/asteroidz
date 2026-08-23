@@ -393,9 +393,39 @@ static inline void az_scanout_record_verdict(Monitor *m,
  * So a client that speaks linux-drm-syncobj gets its acquire point attached to
  * the commit. A client that does not speaks implicit sync, where the kernel
  * carries the dependency on the buffer itself and the display honours it.
+ *
+ * ── AND NEITHER IS THE RELEASE ────────────────────────────────────────────
+ *
+ * The acquire half shipped alone, and the other direction was missing for as
+ * long. The COMPOSITION path has always registered a release point per sampled
+ * surface (az_avk.h, "the release direction is asked for whether or not there
+ * was anything to wait on") with its reason written out: without it wlroots
+ * signals the release at the client's NEXT COMMIT, gated by nothing, so a
+ * client is told its buffer is free while something is still reading it.
+ *
+ * Scanout skipped that entirely. The scene's own scanout does it -- it sets a
+ * signal timeline on the flip and emits a sample event that adds the release
+ * point and marks the surface scanned-out for presentation feedback -- but
+ * this path builds its own state and never goes through the scene, so a
+ * directly scanned-out buffer got a release from nowhere and a presentation
+ * feedback that never said it reached the plane.
+ *
+ * The release point is handed back rather than registered here, and
+ * az_scanout_notify_scanned_out() registers it only once a commit has LANDED.
+ * The tearing path can abandon a built state without committing -- a torn flip
+ * of a buffer already on the plane is skipped -- and a release point registered
+ * against a flip that never happened tells the client its buffer is free while
+ * the display is still scanning it.
  */
+struct az_scanout_release {
+	struct wlr_drm_syncobj_timeline *timeline;   /* NULL: nothing to register */
+	uint64_t point;
+	struct wlr_surface *surface;
+};
+
 static inline bool az_scanout_try(Monitor *m, struct wlr_output_state *state,
-		enum az_scanout_verdict *out_why) {
+		enum az_scanout_verdict *out_why,
+		struct az_scanout_release *out_release) {
 	Client *c = NULL;
 	enum az_scanout_verdict why = az_scanout_eligible(m, state, &c);
 	if (why != AZ_SCANOUT_ACCEPTED) {
@@ -428,6 +458,17 @@ static inline bool az_scanout_try(Monitor *m, struct wlr_output_state *state,
 			sync->acquire_point);
 	}
 
+	/* The release direction, matching what the scene does on its own scanout:
+	 * the flip signals the output's timeline, and that same point is what the
+	 * client is later told its buffer was freed at. */
+	struct wlr_drm_syncobj_timeline *rel_timeline = NULL;
+	uint64_t rel_point = 0;
+	rel_timeline = wlr_scene_output_next_release_point(m->scene_output,
+		&rel_point);
+	if (rel_timeline != NULL) {
+		wlr_output_state_set_signal_timeline(&pending, rel_timeline, rel_point);
+	}
+
 	if (!wlr_output_test_state(m->wlr_output, &pending)) {
 		wlr_output_state_finish(&pending);
 		if (out_why != NULL) {
@@ -436,12 +477,48 @@ static inline bool az_scanout_try(Monitor *m, struct wlr_output_state *state,
 		return false;
 	}
 
+	if (out_release != NULL) {
+		out_release->timeline = rel_timeline;
+		out_release->point = rel_point;
+		out_release->surface = surface;
+	}
 	wlr_output_state_copy(state, &pending);
 	wlr_output_state_finish(&pending);
 	if (out_why != NULL) {
 		*out_why = AZ_SCANOUT_ACCEPTED;
 	}
 	return true;
+}
+
+/*
+ * The half that must wait for the flip to land: tell the client its buffer
+ * reached the plane, and when it will be free.
+ *
+ * Both are what the scene's own scanout does through its sample event, and
+ * neither happened on this path before. Presentation feedback that never says
+ * `scanned out` is not merely missing a flag -- a client using it to reason
+ * about latency is told the frame was composited when it went straight to the
+ * display.
+ */
+static inline void az_scanout_notify_scanned_out(Monitor *m,
+		const struct az_scanout_release *rel) {
+	if (m == NULL || rel == NULL || rel->surface == NULL) {
+		return;
+	}
+
+	wlr_presentation_surface_scanned_out_on_output(rel->surface,
+		m->wlr_output);
+
+	if (rel->timeline == NULL) {
+		return;   /* no output timeline: implicit sync carries the release */
+	}
+	struct wlr_linux_drm_syncobj_surface_v1_state *sync =
+		wlr_linux_drm_syncobj_v1_get_surface_state(rel->surface);
+	if (sync == NULL) {
+		return;   /* client does not speak explicit sync */
+	}
+	wlr_linux_drm_syncobj_v1_state_add_release_point(sync, rel->timeline,
+		rel->point, wl_display_get_event_loop(dpy));
 }
 
 #endif /* AZ_SCANOUT_H */

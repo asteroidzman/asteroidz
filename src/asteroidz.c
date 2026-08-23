@@ -10121,7 +10121,8 @@ static void render_monitor(Monitor *m) {
 		 * an answer only available when the answer is yes is not one.
 		 */
 		enum az_scanout_verdict sv = AZ_SCANOUT_NO_CANDIDATE;
-		bool scanned_out = az_scanout_try(m, &state, &sv);
+		struct az_scanout_release release = {0};
+		bool scanned_out = az_scanout_try(m, &state, &sv, &release);
 		az_scanout_record_verdict(m, sv);
 		if (scanned_out) {
 			bool landed = wlr_output_commit_state(m->wlr_output, &state);
@@ -10135,6 +10136,9 @@ static void render_monitor(Monitor *m) {
 				 * reads as "the fast path is working" while the screen
 				 * stutters. */
 				m->scanout_frames++;
+				/* Same guard, same reason: a release registered for a commit
+				 * that failed frees a buffer the display never took. */
+				az_scanout_notify_scanned_out(m, &release);
 			}
 			wlr_output_state_finish(&state);
 			/*

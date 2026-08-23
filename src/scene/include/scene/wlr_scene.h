@@ -1234,6 +1234,22 @@ struct wlr_scene_output_state_options {
  * Returns true if scene wants to render a new frame. False, if no new frame
  * is needed and an output commit can be skipped for the current frame.
  */
+/*
+ * The output's release timeline, and the next point on it.
+ *
+ * For a state built OUTSIDE the scene -- asteroidz builds its own for direct
+ * scanout and for a torn flip -- which therefore never reaches the scene's own
+ * scanout path and the release bookkeeping that lives there. Returns NULL when
+ * the output has no timeline, in which case there is nothing to attach and
+ * nothing to register.
+ *
+ * The point is CONSUMED by the call. Ask for one only when a commit is going
+ * to be attempted with it; an unsignalled point is harmless, but registering a
+ * client release point against a flip that never happened is not.
+ */
+struct wlr_drm_syncobj_timeline *wlr_scene_output_next_release_point(
+	struct wlr_scene_output *scene_output, uint64_t *point);
+
 bool wlr_scene_output_needs_frame(struct wlr_scene_output *scene_output);
 
 /*

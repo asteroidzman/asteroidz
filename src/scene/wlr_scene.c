@@ -3350,6 +3350,16 @@ static enum scene_direct_scanout_result scene_entry_try_direct_scanout(
 	return SCANOUT_SUCCESS;
 }
 
+struct wlr_drm_syncobj_timeline *wlr_scene_output_next_release_point(
+		struct wlr_scene_output *scene_output, uint64_t *point) {
+	if (scene_output == NULL || scene_output->out_timeline == NULL) {
+		return NULL;
+	}
+	scene_output->out_point++;
+	*point = scene_output->out_point;
+	return scene_output->out_timeline;
+}
+
 bool wlr_scene_output_needs_frame(struct wlr_scene_output *scene_output) {
 	return scene_output->output->needs_frame ||
 		!pixman_region32_empty(&scene_output->pending_commit_damage) ||
