@@ -633,7 +633,22 @@ static cJSON *build_monitor_json(Monitor *m) {
 	 * "*_enabled" is the persisted/intended setting (what a config UI
 	 * should read/write); "*_capable" is a static hardware capability
 	 * check. */
-	cJSON_AddBoolToObject(resp, "hdr", m->wlr_output->image_description != NULL);
+	/*
+	 * THE CONNECTOR, NOT THE COMMIT. This used to be
+	 * `m->wlr_output->image_description != NULL`, which is the description of
+	 * the last state wlroots committed -- i.e. that the commit call returned
+	 * success. A commit can return success and leave the panel in HDR, and
+	 * when it does, reporting the intent says the display changed when it did
+	 * not. Reading HDR_OUTPUT_METADATA back off the connector reports what the
+	 * display is actually being sent.
+	 *
+	 * -1 means there is no connector to ask (headless, nested), and the
+	 * committed description is the only answer available there.
+	 */
+	int hdr_on_wire = mon_connector_hdr_active(m);
+	cJSON_AddBoolToObject(resp, "hdr", hdr_on_wire >= 0
+		? hdr_on_wire == 1
+		: m->wlr_output->image_description != NULL);
 	cJSON_AddBoolToObject(resp, "hdr_enabled", m->hdr);
 	/*
 	 * The BASELINE, as a tri-state: -1 nobody has spoken for this output,

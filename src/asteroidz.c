@@ -67,6 +67,8 @@
 #include <wlr/types/wlr_export_dmabuf_v1.h>
 #include <wlr/types/wlr_ext_data_control_v1.h>
 #include <wlr/types/wlr_ext_foreign_toplevel_list_v1.h>
+#include <wlr/backend/drm.h>
+#include <xf86drmMode.h>
 #include <wlr/types/wlr_ext_image_capture_source_v1.h>
 #include <wlr/types/wlr_ext_image_copy_capture_v1.h>
 /* privacy shield: count live capture sessions to know when to cover
@@ -1958,6 +1960,8 @@ static void vrr_rate_gate(Monitor *m, uint64_t now_ns, uint64_t interval_ns);
 static int monitor_retrain_step(void *data);
 void monitor_start_retrain(Monitor *m, uint32_t delay_ms);
 static void hdr_resolve(Monitor *m);
+/* defined below, used from ipc/ipc.h which is included before it */
+static int mon_connector_hdr_active(Monitor *m);
 static void hdr_resolve_all(void);
 static void handle_image_copy_capture_new_session(struct wl_listener *listener,
 												  void *data);
@@ -6840,6 +6844,68 @@ static void mon_derive_color_state(Monitor *m,
 			m->color_state.peak_scene, m->color_state.dither_q,
 			(int)desc.scanout_srgb_view_ok);
 	}
+}
+
+/*
+ * ── WHAT THE CONNECTOR IS ACTUALLY CARRYING ───────────────────────────────
+ *
+ * Not what was asked for. `wlr_output->image_description` is the description
+ * of the last state wlroots COMMITTED, which says the commit call returned
+ * success and nothing else. A commit can return success and leave the panel
+ * exactly where it was, and when that happens every field derived from it
+ * reports the change that did not happen -- which is worse than reporting
+ * nothing, because it is indistinguishable from the change that did.
+ *
+ * So this reads HDR_OUTPUT_METADATA back off the connector. A non-zero blob is
+ * an InfoFrame the display is being sent; zero is not. The compositor is the
+ * DRM master, so this is the same fact the panel is acting on, not a second
+ * opinion about it.
+ *
+ * Returns -1 when there is nothing to read -- a headless or Wayland-nested
+ * output has no connector, and "unknown" has to stay distinguishable from
+ * "off" or the answer is a guess wearing a number.
+ */
+static int mon_connector_hdr_active(Monitor *m) {
+	if (m == NULL || m->wlr_output == NULL) {
+		return -1;
+	}
+	/* ASKED BEFORE, NOT AFTER. wlr_drm_connector_get_id() is only meaningful
+	 * for a DRM output and calling it on a headless one took the whole
+	 * monitor dump down -- every field in `get all-monitors` came back empty,
+	 * which the regression suite reported as twelve unrelated failures. */
+	if (!wlr_output_is_drm(m->wlr_output)) {
+		return -1;
+	}
+	uint32_t connector_id = wlr_drm_connector_get_id(m->wlr_output);
+	if (connector_id == 0) {
+		return -1;
+	}
+	int fd = wlr_backend_get_drm_fd(m->wlr_output->backend);
+	if (fd < 0) {
+		return -1;
+	}
+
+	drmModeObjectProperties *props = drmModeObjectGetProperties(fd,
+		connector_id, DRM_MODE_OBJECT_CONNECTOR);
+	if (props == NULL) {
+		return -1;
+	}
+	int active = -1;
+	for (uint32_t i = 0; i < props->count_props; i++) {
+		drmModePropertyRes *prop = drmModeGetProperty(fd, props->props[i]);
+		if (prop == NULL) {
+			continue;
+		}
+		if (strcmp(prop->name, "HDR_OUTPUT_METADATA") == 0) {
+			active = props->prop_values[i] != 0 ? 1 : 0;
+		}
+		drmModeFreeProperty(prop);
+		if (active >= 0) {
+			break;
+		}
+	}
+	drmModeFreeObjectProperties(props);
+	return active;
 }
 
 void mon_state_apply_color(Monitor *m, struct wlr_output_state *state) {
