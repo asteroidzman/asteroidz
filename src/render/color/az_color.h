@@ -5,7 +5,7 @@
  * types. Compiled into asteroidz AND linked standalone into the unit tests,
  * which is why it lives in its own directory with no dependency beyond libm.
  *
- * THE VOCABULARY IS THE ADR's (docs/m5-hdr/adr.md) and is used literally:
+ * THE VOCABULARY IS THE ADR's (docs/decisions.md) and is used literally:
  *
  *   scene value       premultiplied linear-light BT.709/D65, 1.0 == SDR
  *                     reference white. Unbounded above; components may be
@@ -164,7 +164,7 @@ void az_mat_saturation(float s, float out[9]);
  * ceiling in scene units). Taking it literally would make f(peak) = 1, i.e.
  * a 1000-nit panel would render its own ceiling at SDR white. The asymptotic
  * form above is the one that satisfies every property the ADR and contract
- * actually assert. See docs/m5-hdr/opus-findings.md.
+ * actually assert. See docs/decisions.md.
  */
 void az_tonemap(float v[3], float knee, float peak);
 

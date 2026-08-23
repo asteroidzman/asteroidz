@@ -50,7 +50,7 @@
  *                      the damage ring and the KMS presentation damage are all
  *                      in ATTACHMENT space; blur source regions are in
  *                      attachment space too but are NOT confined to it (see
- *                      docs/avk-effects.md, "a damage ring cannot carry an
+ *                      docs/architecture.md, "a damage ring cannot carry an
  *                      out-of-bounds rectangle").
  *
  * For a mode of 800x600 at transform 90:

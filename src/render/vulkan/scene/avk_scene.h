@@ -360,7 +360,7 @@ struct avk_cmd {
 	 * IN OUTPUT PIXELS, scaled at the walker beside the box and the radii. The
 	 * reference scales this field and does NOT scale a shadow's blur_sigma, so
 	 * on a fractional-scale output its two edges disagree; AVK scales both. See
-	 * docs/avk-effects.md.
+	 * docs/architecture.md.
 	 */
 	float blur_edge_softness;
 	/*
@@ -376,7 +376,7 @@ struct avk_cmd {
 	 * awareness of it. If a future producer gives it a different meaning -- a
 	 * box of legitimate background to suppress, say -- that is a renderer
 	 * contract change and must be made explicitly, not inherited from the name.
-	 * See docs/avk-effects.md, "sample_exclude -- the producer table".
+	 * See docs/architecture.md, "sample_exclude -- the producer table".
 	 */
 	struct avk_box sample_exclude;
 	bool has_sample_exclude;

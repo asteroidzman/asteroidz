@@ -12,7 +12,7 @@
 # fast as the renderer it replaces". That comparison is unavailable now, and it
 # was already declined on evidence before it became impossible: GPU timestamps
 # are an AVK instrument and the GLES arm emitted a neatly formatted
-# `NO TRACE ROWS` for every scenario. See docs/vulkan-native-architecture.md
+# `NO TRACE ROWS` for every scenario. See docs/architecture.md
 # for the four instruments that were tried and what each of them turned out to
 # be describing. Do not reintroduce a ratio column; there is nothing to divide.
 #

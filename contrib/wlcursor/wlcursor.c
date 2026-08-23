@@ -2,7 +2,7 @@
  * wlcursor — a client that sets its OWN cursor image, via wl_pointer.set_cursor.
  *
  * This is the third cursor source from §5.4g of
- * docs/vulkan-native-architecture.md, and the only one that broke when AVK
+ * docs/architecture.md, and the only one that broke when AVK
  * stopped giving wl_compositor a renderer. xcursor and cursor-shape both end
  * at wlr_xcursor_image_get_buffer() and hand wlroots a wlr_buffer; a client
  * cursor went through wlr_surface_get_texture(), which reads the

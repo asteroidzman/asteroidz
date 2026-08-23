@@ -3,7 +3,7 @@
  *
  * WHY THIS EXISTS
  *
- * §5.4g of docs/vulkan-native-architecture.md audits the three cursor sources
+ * §5.4g of docs/architecture.md audits the three cursor sources
  * and finds that exactly one of them broke when AVK stopped giving
  * wl_compositor a renderer. The break is `wlr_cursor.c:560`:
  *

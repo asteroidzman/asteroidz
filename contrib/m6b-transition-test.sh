@@ -21,7 +21,7 @@
 # all and an "HDR toggle" here would be twenty no-ops reporting success. The
 # profile toggle exercises the same code with a transition that actually
 # happens. The HDR half is live-only on DP-1 and is recorded as outstanding in
-# docs/m7-next/status.md rather than simulated.
+# docs/history.md rather than simulated.
 #
 # ── WHAT IT ASSERTS, AFTER N CYCLES ──────────────────────────────────────
 #

@@ -6256,7 +6256,7 @@ static void az_avk_oracle_frame(struct az_avk_output *out, Monitor *m,
  * This is the function that replaces wlr_scene_output_build_state() in AVK
  * mode, and it is deliberately the only one: everything it does not do --
  * direct scanout, gamma LUTs, dma-buf feedback -- is absent rather than half
- * present, and listed in docs/vulkan-native-architecture.md.
+ * present, and listed in docs/architecture.md.
  */
 static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 		struct wlr_color_transform *color_transform) {

@@ -295,7 +295,7 @@ uint64_t avk_device_timeline_value(struct avk_device *dev);
 uint64_t avk_device_timeline_reserve(struct avk_device *dev);
 
 /* Block until the timeline reaches `value`, or `timeout_ns` elapses.
- * NOT for the frame path -- see docs/vulkan-native-architecture.md §5.7. This
+ * NOT for the frame path -- see docs/architecture.md §5.7. This
  * exists for teardown, for readback, and for genuine ring backpressure. */
 bool avk_device_timeline_wait(struct avk_device *dev, uint64_t value,
 	uint64_t timeout_ns);

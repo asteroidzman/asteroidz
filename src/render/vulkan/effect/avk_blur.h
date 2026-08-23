@@ -96,7 +96,7 @@ struct avk_blur_params {
 	 * attachment it writes. See AZ_BLEND_DARKEN in avk_pipeline.c.
 	 *
 	 * DIVERGENCE FROM THE REFERENCE, stated once here and argued in
-	 * docs/avk-effects.md. blur2.comp skips the clamp inside the sample_exclude
+	 * docs/architecture.md. blur2.comp skips the clamp inside the sample_exclude
 	 * box, because there its "source" is a synthetic stretched-and-mirrored fill
 	 * rather than real backdrop and min() against a fabrication preserves the
 	 * fabrication's hard structure. AVK's source is the current-frame scene

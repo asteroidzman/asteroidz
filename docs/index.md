@@ -26,6 +26,13 @@ Beyond basic window management, asteroidz provides a rich set of features design
 - **Hot-Reload Config** — Simple external configuration that supports hot-reloading without restarting.
 - **Scratchpads** — Support for both Sway-like and named scratchpads.
 
+## Under the hood
+
+- **[Architecture](/docs/architecture)** — AVK, asteroidz's own Vulkan renderer: the frame path, DMA-BUF import, the two colour paths, the presenter.
+- **[Decisions](/docs/decisions)** — every architectural decision the source comments cite, one entry each.
+- **[History](/docs/history)** — how the renderer got built, and the lessons that outlived the milestones that produced them.
+- **[M14](/docs/m14)** — the current milestone: recording and screencasting.
+
 ## Community
 
 - **[asteroidz on GitHub](https://github.com/asteroidzman/asteroidz)** — Report issues or browse the source.

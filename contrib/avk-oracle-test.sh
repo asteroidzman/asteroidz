@@ -139,7 +139,7 @@ echo "── control: a clean single output ────────────
 # been answering a different question than its assertion claims, and failing.
 #
 # The cached-versus-live delta is a REAL and separate question and it is written
-# down as one (docs/vulkan-native-architecture.md, the M4I cache section). It is
+# down as one (docs/architecture.md, the M4I cache section). It is
 # not this fixture's, and leaving it here made this fixture permanently red
 # while measuring nothing about damage.
 HL_ENV="AZ_FRAME_ORACLE=1 AZ_BLUR_CACHE=0"

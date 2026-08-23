@@ -19,7 +19,7 @@
 /* ── diagnostics ────────────────────────────────────────────────────────────
  *
  * Every failure path funnels through here. The rule from
- * docs/vulkan-native-architecture.md §5.2 is that a failed import must never
+ * docs/architecture.md §5.2 is that a failed import must never
  * be silent, and must never leave anyone guessing what the buffer was -- so
  * the log line carries the format name, the modifier name, and every plane's
  * fd, offset and stride. That is the difference between "Electron is blank"

@@ -22,7 +22,7 @@
  *
  * SIGMA IS IN OUTPUT PIXELS by the time it arrives, scaled at the walker beside
  * the box and the radii -- see the M4D note on shadow blur_sigma, and the
- * correction in docs/avk-effects.md about the reference scaling this field but
+ * correction in docs/architecture.md about the reference scaling this field but
  * not the shadow's.
  */
 

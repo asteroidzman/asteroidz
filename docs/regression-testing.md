@@ -566,7 +566,7 @@ cuts the border's inner edge as a square where SceneFX cuts it rounded, leaving
 a wedge of background inside the corner (104 pixels per corner at radius 40,
 against GLES's 0, unchanged by `AZ_AVK_FULL_DAMAGE=1`). It is not part of the
 green suite — the default `BORDER=0` run is — and it must not be made to pass
-by weakening what it expects. See `docs/avk-effects.md`.
+by weakening what it expects. See `docs/architecture.md`.
 
 `contrib/avk-shm-cache-test.sh` is the eleventh, and it is the only one with a
 purpose-built client behind it.
@@ -999,7 +999,7 @@ BREAK=wlroots-xcursor     bash contrib/avk-cursor-owner-test.sh  # must FAIL
 Seven call sites bypassed `az_cursor_set_xcursor()` for wlroots' own, which
 selects a per-output image at native scale — so `az_avk_emit_cursors()` drew
 asteroidz's pixels into wlroots' box. See
-`docs/vulkan-native-architecture.md` §5.4m.
+`docs/architecture.md` §5.4m.
 
 It needs three things at once and asserts all three as premises: software
 composition (`software_cursor_frames > 0`, `hardware_cursor_frames == 0`),
@@ -1086,7 +1086,7 @@ output destruction, which is the shipped ordering restored. It fails every
 cycle with `VUID-vkDestroySemaphore-semaphore-05149`: the per-output present
 fence being destroyed while a submitted batch still refers to it. Normal runs
 report zero. Note what this break does **not** claim — see
-`docs/vulkan-native-architecture.md` §5.4l: the original live abort was never
+`docs/architecture.md` §5.4l: the original live abort was never
 reproduced headlessly, and 46 graceful exits of the unmodified pre-fix build
 produced no validation error at all.
 
@@ -2500,7 +2500,7 @@ leading explanation, not as fact.
 > p50 60 / p95 70 / mean 61 ns.
 >
 > Per-call barrier timing has been removed and `graph_build_ns` is now reported
-> as a distribution. See `docs/avk-effects.md`, "M4F.3/.5 — what
+> as a distribution. See `docs/architecture.md`, "M4F.3/.5 — what
 > `vkCmdPipelineBarrier2` actually costs".
 
 **It is not attributable to M4E either way.** The pre-graph renderer made the

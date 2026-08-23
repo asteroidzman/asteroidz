@@ -368,7 +368,7 @@ test('anim-shatter', test_anim_shatter, timeout : 60)
 
 # ── the Vulkan engine ───────────────────────────────────────────────────────
 #
-# M1 of the migration in docs/vulkan-native-architecture.md. Built whenever
+# M1 of the migration in docs/architecture.md. Built whenever
 # 'vulkan' is in -Drenderers, which it is by default; the compositor does not
 # use it yet (that is M3), so this is a library plus its tests and nothing in
 # asteroidz.c links against it.

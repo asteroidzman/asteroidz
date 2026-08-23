@@ -424,7 +424,7 @@ static void surface_reconfigure(struct wlr_scene_surface *scene_surface) {
 	//
 	// A compositor created with a NULL renderer -- which is what asteroidz
 	// does when its own Vulkan engine composites, see
-	// docs/vulkan-native-architecture.md -- uploads nothing, so surface->buffer
+	// docs/architecture.md -- uploads nothing, so surface->buffer
 	// stays NULL forever. The client's buffer is still right there in the
 	// committed state, and on that path wlroots leaves it LOCKED until the next
 	// commit replaces it, so handing it straight to the scene is both possible

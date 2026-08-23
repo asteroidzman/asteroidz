@@ -5,7 +5,7 @@
  * one, and nothing under src/render/vulkan/ may include a wlroots renderer,
  * EGL or GLES header -- meson enforces that with an include check, because the
  * whole point of this subsystem is that its design is not shaped by an
- * abstraction built for GLES. See docs/vulkan-native-architecture.md.
+ * abstraction built for GLES. See docs/architecture.md.
  *
  * The layer is deliberately compositor-agnostic: its inputs are DRM file
  * descriptors, dmabuf file descriptors and pixels. That is what makes it

@@ -9,7 +9,7 @@
  * PUBLISHED anchors by tests/test-color-math.c, so a drift is a failing
  * assertion against ST 2084 and IEC 61966-2-1, not against each other.
  *
- * THE VOCABULARY IS THE ADR's (docs/m5-hdr/adr.md), used literally:
+ * THE VOCABULARY IS THE ADR's (docs/decisions.md), used literally:
  *   scene value       premultiplied linear-light BT.709/D65, 1.0 = SDR
  *                     reference white; unbounded, components may be negative.
  *   electrical value  transfer-function-encoded, in [0, 1].

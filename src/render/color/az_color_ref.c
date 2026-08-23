@@ -1,7 +1,7 @@
 /*
  * az_color_ref -- the CPU reference pipeline. Contract C4.
  *
- * Read this against docs/m5-hdr/adr.md, not against a shader. The ordering
+ * Read this against docs/decisions.md, not against a shader. The ordering
  * below is transcribed from ADR-005 (decode and premultiplication) and ADR-008
  * (the output transform's seven steps) and each step is named after the step
  * in the ADR, so a disagreement between this and the GPU can be localised to a
@@ -273,7 +273,7 @@ static void decode_texel(const double in[4], const struct az_lum_domain *d,
 	 * 1.0: nothing. The curve is the identity for peak <= 1, so the value
 	 * survives to the attachment and clamps there after all. That is a real
 	 * inconsistency between ADR-007 and ADR-009, not an implementation
-	 * shortcut -- see docs/m5-hdr/opus-findings.md, F5. The reference applies
+	 * shortcut -- see docs/decisions.md, F5. The reference applies
 	 * the curve as specified so that the consequence is measurable rather than
 	 * papered over.
 	 */

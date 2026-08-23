@@ -261,4 +261,4 @@ You will need to build `wlroots` manually as well.
    wlroots still needs a renderer for shm formats, the allocator and
    screencopy, none of which are composition. Who draws the desktop is not a
    choice at all — AVK does, always — and `WLR_RENDERER` has no bearing on it.
-   See [`docs/vulkan-native-architecture.md`](./vulkan-native-architecture.md).
+   See [`docs/architecture.md`](./architecture.md).

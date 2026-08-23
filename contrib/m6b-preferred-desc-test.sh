@@ -24,7 +24,7 @@
 # THE HDR ARM. A headless output does not support BT.2020 + PQ -- the backend
 # says so and the compositor logs it -- so it cannot present an HDR image
 # description and there is nothing for the PQ branch to be read from. That arm
-# is live-only, on DP-1, and is recorded as such in docs/m7-next/status.md
+# is live-only, on DP-1, and is recorded as such in docs/history.md
 # rather than faked here with a forced description that no output is in.
 #
 # What IS covered headlessly is the part that was actually broken: whether the

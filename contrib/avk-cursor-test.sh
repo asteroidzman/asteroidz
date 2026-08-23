@@ -3,7 +3,7 @@
 # is it in the right place?
 #
 # M3.5E's first acceptance test. Three cursor sources exist and they do not
-# share a path (docs/vulkan-native-architecture.md §5.4g):
+# share a path (docs/architecture.md §5.4g):
 #
 #   xcursor        wlr_xcursor_image_get_buffer() -> a wlr_buffer
 #   cursor-shape   mapped onto xcursor, so the same

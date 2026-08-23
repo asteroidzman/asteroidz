@@ -373,7 +373,7 @@ error:
  * and a precondition a caller cannot invoke is not one they can rely on.
  *
  * This is a shutdown and device-loss facility. A frame path that calls it is
- * a bug -- see docs/vulkan-native-architecture.md §5.7 -- and it deliberately
+ * a bug -- see docs/architecture.md §5.7 -- and it deliberately
  * does not touch avk.cpu_sync_waits, which counts stalls in the frame path.
  */
 void avk_device_wait_idle(struct avk_device *dev) {

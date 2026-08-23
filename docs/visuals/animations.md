@@ -116,7 +116,7 @@ spin rate that can be set can be set to something that does not look like
 anything.
 
 **It needs the Vulkan renderer.** Rotation is an
-[`AVK_CMD_TEXTURE_QUAD`](../avk-effects.md#p2--the-arbitrary-corner-textured-quad),
+[`AVK_CMD_TEXTURE_QUAD`](../architecture.md#p2--the-arbitrary-corner-textured-quad),
 a primitive whose four destination corners are placed independently; the
 SceneFX/GLES path has no such primitive and falls back to `fall`. The two
 renderers are allowed to differ here rather than the better one being held back

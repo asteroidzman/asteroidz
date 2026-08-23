@@ -65,7 +65,7 @@ fixture() {
 	# Both of these make the capture reproducible, and BOTH were learned by
 	# measuring the fixture against itself: the same binary, run twice,
 	# differed in 3,213,397 of 6,220,800 bytes. Not one of those bytes was the
-	# renderer's fault. See the note in docs/avk-effects.md.
+	# renderer's fault. See the note in docs/architecture.md.
 	hl_reset_spawn_colors
 	export HL_KITTY_EXTRA="-o cursor_blink_interval=0"
 	# BLUR OFF, EXPLICITLY, and it is the premise of the whole file rather than

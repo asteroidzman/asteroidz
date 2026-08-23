@@ -137,7 +137,7 @@ const char *az_ref_break_name(enum az_ref_break b);
  * it on the encode pass's push constants, not on the per-output state -- and
  * because ADR-009's value of 1.0 interacts with an SDR ceiling of 1.0 in a way
  * that needs to be adjustable to be discussed at all. See
- * docs/m5-hdr/opus-findings.md, F5.
+ * docs/decisions.md, F5.
  *
  * blur_radius drives an optional box blur of the composited scene, present for
  * exactly one reason: the encoded-domain-blur break needs something to break.

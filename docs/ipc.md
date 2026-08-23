@@ -458,7 +458,7 @@ on Navi31 that is every displayable-DCC modifier, importable only to
 2560x2560. Feedback has no size field, so such a pair is a promise that breaks
 the moment a client fills the screen: the import fails, the draw is dropped,
 and the window is simply absent. They are withheld; see
-`docs/vulkan-native-architecture.md` §5.5.
+`docs/architecture.md` §5.5.
 
 `avk_importable` is rebuilt from the format table at query time rather than
 copied from what was advertised — otherwise the subset check would be

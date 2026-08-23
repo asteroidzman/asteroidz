@@ -887,7 +887,7 @@ struct avk_renderer {
 	 * at kernel-tail distance in BOTH blurs, so the error is a product of two
 	 * decays. The edge is still mathematically required and is asserted
 	 * STRUCTURALLY instead, through blur_transitive_damage_pixels below. See
-	 * docs/avk-effects.md.
+	 * docs/architecture.md.
 	 *
 	 * `blur_full_damage_always` is not a break but the ORACLE: it forces the
 	 * complete dependency rebuild and the complete write-region recomposition
