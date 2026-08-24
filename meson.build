@@ -26,12 +26,6 @@ endif
 
 cc = meson.get_compiler('c')
 
-# Which rendering architectures to build.
-#
-# During the migration both are built: GLES via SceneFX is the known-good
-# recovery path and stays selectable, while the asteroidz-owned Vulkan engine
-# grows underneath it. The end state is -Drenderer=vulkan with GLES demoted;
-# until then, dropping either one has to be something you asked for.
 # AVK is the only renderer. There is no option because there is no choice:
 # a build without it is a compositor that cannot draw, and the GLES recovery
 # path it used to select was removed once AVK carried the desktop.
@@ -119,25 +113,10 @@ c_args = [
   '-DASTEROIDZ_PREFIX="@0@"'.format(prefix),
 ]
 
-# add debug args only when debug option is enabled
-if get_option('asan')
-  c_args += [
-    '-fsanitize=address',
-    '-fno-omit-frame-pointer',
-    '-fno-optimize-sibling-calls'
-  ]
-endif
-
 if xcb.found() and xlibs.found()
   c_args += '-DXWAYLAND'
 endif
 
-
-# define link args
-link_args = []
-if get_option('asan')
-  link_args += '-fsanitize=address'
-endif
 
 # The native Vulkan engine is compiled into the compositor when it is built.
 # A separate flag from -Drenderers so the guard in the source says what it
@@ -206,7 +185,6 @@ asteroidz_exe = executable('asteroidz',
   include_directories : include_directories('src', 'src/scene/include'),
   install : true,
   c_args : c_args,
-  link_args : link_args,
 )
 
 # build amsg
