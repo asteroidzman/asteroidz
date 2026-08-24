@@ -422,12 +422,23 @@ static bool create_parameters(struct avk_encoder *enc,
 		 * this corrupted 6 of 144 (content pair x QP) 4K cases and every one
 		 * of them decoded cleanly at 2 or more.
 		 *
-		 * 3 is the ceiling that matters rather than a value tuned to those
-		 * failures: max TB is 32 and min TB is 4, which is three levels of
-		 * split, so a P picture cannot need more. intra gets 4 because
-		 * MaxTrafoDepth adds IntraSplitFlag on top for an intra CU. These are
-		 * also what ffmpeg's hevc_vulkan declares on this same driver, which
-		 * is what put the shallow value in question.
+		 * The legal range is 0..CtbLog2SizeY-MinTbLog2SizeY, which is 0..4
+		 * here (64x64 CTB, 4x4 min TB). Note that trafoDepth counts from the
+		 * CU, not from the largest transform: in a 64x64 CU the 64->32 step is
+		 * an INFERRED split (log2TrafoSize > MaxTbLog2SizeY) and still spends
+		 * a depth, so a flag is read at depth 1 and reaching a 4x4 TU would
+		 * need the full 4. That is why 1 failed only when a 64x64 inter CU was
+		 * present -- a 32x32 CU reads its first flag at depth 0 and was always
+		 * fine, which is what made this look like a content bug.
+		 *
+		 * Measured on this driver: 0 and 1 corrupt, 2, 3 and 4 all decode the
+		 * same bytes correctly, over 80 (content pair x QP) 4K cases from QP
+		 * 18 to 36. So VCN needs at least 2 and never emits a tree deep enough
+		 * to distinguish 2 from 4. Too DEEP is a failure mode as well -- the
+		 * decoder would read a split flag the encoder never wrote -- so this
+		 * is not simply "declare the maximum": 3/4 sits above the measured
+		 * requirement without claiming the untested ceiling, and is what
+		 * ffmpeg's hevc_vulkan declares on this same driver.
 		 */
 		.max_transform_hierarchy_depth_inter = 3,
 		.max_transform_hierarchy_depth_intra = 4,
@@ -1654,27 +1665,43 @@ static bool submit_picture(struct avk_encoder *enc, VkImage src,
 			.pPictureResource = &ref_resource,
 		},
 	};
-	VkVideoBeginCodingInfoKHR begin_coding = {
-		.sType = VK_STRUCTURE_TYPE_VIDEO_BEGIN_CODING_INFO_KHR,
-		.videoSession = enc->session,
-		.videoSessionParameters = enc->params,
-		.referenceSlotCount = key ? 1u : 2u,
-		.pReferenceSlots = begin_slots,
-	};
-	api.begin(enc->cmd, &begin_coding);
-
-	/* A session must be reset before its first picture, and the rate control
-	 * mode is set in the same control command. DISABLED means the QP in the
-	 * slice header is used as given, which is what a still wants: one picture
-	 * has no bitrate to converge on. */
+	/*
+	 * THE RATE CONTROL MODE HAS TO BE STATED ON EVERY SCOPE, NOT SET ONCE.
+	 *
+	 * DISABLED means the QP is used exactly as given, which is what a fixed-QP
+	 * capture wants. It used to be set once, in the control command below, and
+	 * never mentioned again -- and a coding scope whose BeginCoding does not
+	 * carry VkVideoEncodeRateControlInfoKHR is required to be in DEFAULT. So
+	 * every scope ran as DEFAULT while this code believed it was in DISABLED,
+	 * and the constantQp handed to each slice was illegal for the mode the
+	 * scope was actually in:
+	 *
+	 *     VUID-vkCmdBeginVideoCodingKHR-pBeginInfo-08253
+	 *     VUID-vkCmdEncodeVideoKHR-constantQp-08272
+	 *
+	 * RADV honoured the QP regardless, which is why nothing looked wrong.
+	 */
 	VkVideoEncodeRateControlInfoKHR rate = {
 		.sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_RATE_CONTROL_INFO_KHR,
 		.rateControlMode = VK_VIDEO_ENCODE_RATE_CONTROL_MODE_DISABLED_BIT_KHR,
 	};
-	/* RESET is a session-lifetime thing, not a per-picture one: issuing it
+	/*
+	 * The reset gets a scope of its own, BEFORE the first encoding scope.
+	 *
+	 * RESET is a session-lifetime thing, not a per-picture one -- issuing it
 	 * again mid-sequence throws away the DPB the next P picture is about to
-	 * predict from. */
+	 * predict from -- but it also has to happen before any scope claims to be
+	 * in DISABLED, because until the control command runs the session is in
+	 * DEFAULT. Doing it inside the first encoding scope would mean that scope
+	 * began in one mode and encoded in another.
+	 */
 	if (!enc->session_reset) {
+		VkVideoBeginCodingInfoKHR reset_begin = {
+			.sType = VK_STRUCTURE_TYPE_VIDEO_BEGIN_CODING_INFO_KHR,
+			.videoSession = enc->session,
+			.videoSessionParameters = enc->params,
+		};
+		api.begin(enc->cmd, &reset_begin);
 		VkVideoCodingControlInfoKHR control = {
 			.sType = VK_STRUCTURE_TYPE_VIDEO_CODING_CONTROL_INFO_KHR,
 			.pNext = &rate,
@@ -1682,18 +1709,40 @@ static bool submit_picture(struct avk_encoder *enc, VkImage src,
 				| VK_VIDEO_CODING_CONTROL_ENCODE_RATE_CONTROL_BIT_KHR,
 		};
 		api.control(enc->cmd, &control);
+		VkVideoEndCodingInfoKHR reset_end = {
+			.sType = VK_STRUCTURE_TYPE_VIDEO_END_CODING_INFO_KHR,
+		};
+		api.end(enc->cmd, &reset_end);
 		enc->session_reset = true;
 	}
+
+	VkVideoBeginCodingInfoKHR begin_coding = {
+		.sType = VK_STRUCTURE_TYPE_VIDEO_BEGIN_CODING_INFO_KHR,
+		.pNext = &rate,
+		.videoSession = enc->session,
+		.videoSessionParameters = enc->params,
+		.referenceSlotCount = key ? 1u : 2u,
+		.pReferenceSlots = begin_slots,
+	};
+	api.begin(enc->cmd, &begin_coding);
 
 	StdVideoEncodeH265SliceSegmentHeader slice_header = {
 		.flags = {
 			.first_slice_segment_in_pic_flag = 1,
 			.slice_sao_luma_flag = 1,
 			.slice_sao_chroma_flag = 1,
-			/* A P slice states its own reference count rather than
-			 * inheriting the PPS default, which is what lets one picture
-			 * reference exactly one. */
-			.num_ref_idx_active_override_flag = key ? 0u : 1u,
+			/*
+			 * num_ref_idx_active_override_flag is NOT set. It used to be, for
+			 * a P slice, on the reasoning that the slice should state its own
+			 * reference count rather than inherit the PPS default. The driver
+			 * emits 0 regardless -- there is no std flag for it in
+			 * stdSyntaxFlags, so it is the driver's to write -- and the slice
+			 * does inherit the default. Which is correct anyway: the PPS says
+			 * num_ref_idx_l0_default_active_minus1 = 0 and pRefLists below says
+			 * num_ref_idx_l0_active_minus1 = 0, so both routes give exactly one
+			 * active L0 reference. Asking for something the driver discards
+			 * only made this look like a suspect during M14B.
+			 */
 		},
 		.slice_type = key ? STD_VIDEO_H265_SLICE_TYPE_I
 			: STD_VIDEO_H265_SLICE_TYPE_P,
