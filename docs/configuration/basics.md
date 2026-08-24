@@ -98,8 +98,44 @@ copy-pasted offset a red test rather than a rule that silently sets its
 neighbour. None of these flags read your config — they report the compiled-in
 defaults.
 
-Not every option is described yet. `tests/schema-exempt.txt` lists the ones that
-are not, each under a stated reason, so the gap is visible rather than implied.
+### Does the option actually do anything?
+
+`-S` proves a key parses, clamps and lands in the right field. That is not the
+same question as whether anything downstream reads it — `srgb_blending` did the
+first perfectly for a whole release while its only consumer had already left with
+SceneFX.
+
+```bash
+asteroidz -T    # check what the keys and dispatches actually do
+```
+
+`-T` starts a real compositor on the headless backend, in its own process, and
+walks the same two tables — every option in `-L` and every dispatch in `-D`. For
+each one it applies the setting, lets the frame settle, and then reads the
+**result**: composited pixels from the renderer's own capture, or the geometry the
+layout produced. It never reads back the field it just wrote; that is `-S`'s job
+and is true even of a compositor that ignores the value.
+
+```
+-T: 2 window(s) on HEADLESS-1 1280x720
+OK    gappoh                       left edge 44 = w.x 0 + 44
+OK    borderpx                     11 px of border at y=360
+OK    border_radius                100 of 576 corner pixels cut (a square corner cuts 0)
+OK    toggle_fullscreen            1280x720+0+0 covers the 1280x720 output
+SKIP  blur                         no check
+99 options, 111 dispatches, 12 checks, 128 assertions, 198 skipped, 0 failures
+```
+
+An entry with no assertion prints `SKIP`, so coverage is in the output of every
+run rather than in a list that goes stale — a key added to the schema starts life
+visibly unchecked. It exits non-zero on any failure.
+
+It runs against the compiled-in defaults, not your config, so the answer does not
+depend on whose machine it is. Windows come from `contrib/wlbgeffect` unless you
+pass your own `-s '<command>'`; without a client, every check that needs a window
+says so and skips rather than quietly passing. Animations are off for the run,
+which is why the `animations` group cannot be checked this way, and headless has
+no connector, so `vrr`, `bitdepth` and `hdr` skip permanently.
 
 To see where the values you are actually running came from:
 
