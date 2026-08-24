@@ -398,11 +398,39 @@ static bool create_parameters(struct avk_encoder *enc,
 		.log2_diff_max_min_luma_coding_block_size = 3,
 		.log2_min_luma_transform_block_size_minus2 = 0,
 		.log2_diff_max_min_luma_transform_block_size = 3,
-		/* A 64x64 CTB cannot hold a single 32x32 transform, so a depth of 0
-		 * asks for a TU tree that cannot describe the CTB the encoder is
-		 * using. One split is the minimum that is consistent. */
-		.max_transform_hierarchy_depth_inter = 1,
-		.max_transform_hierarchy_depth_intra = 1,
+		/*
+		 * HOW DEEP THE ENCODER IS ALLOWED TO SPLIT A TRANSFORM UNIT -- and
+		 * the answer is "as deep as it actually does", not "as shallow as is
+		 * consistent".
+		 *
+		 * This used to be 1 on the reasoning that a 64x64 CTB cannot hold one
+		 * 32x32 transform, so one split is the minimum that describes it.
+		 * The minimum is the wrong quantity. VCN chooses its own TU depth and
+		 * IGNORES this field entirely: encoding the same picture with 1 and
+		 * with 2 produces a byte-identical slice payload and differs only in
+		 * these bits of the SPS. So the number is not an instruction to the
+		 * encoder, it is a PROMISE TO THE DECODER about data the encoder has
+		 * already decided.
+		 *
+		 * Promise too little and the decoder stops parsing
+		 * split_transform_flag one level early (it is only read while
+		 * trafoDepth < MaxTrafoDepth), reads the encoder's next split flag as
+		 * residual syntax, and desyncs -- surfacing as "cu_qp_delta N is
+		 * outside the valid range", which is a decoder already lost rather
+		 * than a QP problem. It fires only when the encoder actually splits
+		 * deeper than declared, which depends on the content and the QP: at 1
+		 * this corrupted 6 of 144 (content pair x QP) 4K cases and every one
+		 * of them decoded cleanly at 2 or more.
+		 *
+		 * 3 is the ceiling that matters rather than a value tuned to those
+		 * failures: max TB is 32 and min TB is 4, which is three levels of
+		 * split, so a P picture cannot need more. intra gets 4 because
+		 * MaxTrafoDepth adds IntraSplitFlag on top for an intra CU. These are
+		 * also what ffmpeg's hevc_vulkan declares on this same driver, which
+		 * is what put the shallow value in question.
+		 */
+		.max_transform_hierarchy_depth_inter = 3,
+		.max_transform_hierarchy_depth_intra = 4,
 		.pProfileTierLevel = &ptl,
 		.pDecPicBufMgr = &dpb_mgr,
 		.pSequenceParameterSetVui = &vui,
