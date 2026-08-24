@@ -13,48 +13,6 @@
 #include <string.h>
 #include <time.h>
 
-/* AZ_AVK_SKIP_DRAW="shadow,border" -> AVK_PRIM_SHADOW | AVK_PRIM_BORDER.
- * An unrecognised name is LOUD rather than ignored: a typo that silently
- * measured the full frame and got reported as "shadows cost nothing" is the
- * exact failure this whole audit exists to avoid. */
-static uint32_t az_parse_skip_draw(const char *spec) {
-	if (spec == NULL || spec[0] == '\0') {
-		return 0;
-	}
-	static const struct { const char *name; uint32_t bit; } table[] = {
-		{ "clear", AVK_PRIM_CLEAR },
-		{ "content", AVK_PRIM_CONTENT },
-		{ "shadow", AVK_PRIM_SHADOW },
-		{ "border", AVK_PRIM_BORDER },
-		{ "blur", AVK_PRIM_BLUR },
-		{ "gradient", AVK_PRIM_GRADIENT },
-		{ "rect", AVK_PRIM_RECT },
-		{ "round", AVK_PRIM_ROUND },
-	};
-	uint32_t mask = 0;
-	const char *p = spec;
-	while (*p != '\0') {
-		const char *comma = strchr(p, ',');
-		size_t len = comma != NULL ? (size_t)(comma - p) : strlen(p);
-		bool found = false;
-		for (size_t i = 0; i < sizeof(table) / sizeof(table[0]); i++) {
-			if (strlen(table[i].name) == len &&
-					strncmp(p, table[i].name, len) == 0) {
-				mask |= table[i].bit;
-				found = true;
-				break;
-			}
-		}
-		if (!found) {
-			avk_log(AVK_ERROR, "AZ_AVK_SKIP_DRAW: unknown class '%.*s' -- "
-				"IGNORED, so this run does NOT measure what you asked for",
-				(int)len, p);
-		}
-		p = comma != NULL ? comma + 1 : p + len;
-	}
-	return mask;
-}
-
 bool avk_renderer_init(struct avk_renderer *renderer, struct avk_device *dev,
 		VkFormat format) {
 	memset(renderer, 0, sizeof(*renderer));
@@ -120,13 +78,6 @@ bool avk_renderer_init(struct avk_renderer *renderer, struct avk_device *dev,
 	}
 	for (int k = 0; k < AVK_BLUR_CACHE_KINDS; k++) {
 		pixman_region32_init(&renderer->blur_cache_region[k]);
-	}
-	renderer->skip_draw = az_parse_skip_draw(getenv("AZ_AVK_SKIP_DRAW"));
-	if (renderer->skip_draw != 0) {
-		avk_log(AVK_ERROR, "M4H diagnostic active: AZ_AVK_SKIP_DRAW=0x%x -- "
-			"primitive classes are being suppressed at the draw. The desktop "
-			"this renders is WRONG and the frame times are attribution data, "
-			"not a performance result.", renderer->skip_draw);
 	}
 	/*
 	 * THE ORACLE, not a break. Forces the full dependency rebuild and the full
@@ -1057,9 +1008,6 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 		const pixman_box32_t *rects =
 			pixman_region32_rectangles(&region, &count);
 		px->clear += az_region_area(&region);
-		if (count > 0 && (renderer->skip_draw & AVK_PRIM_CLEAR) != 0) {
-			count = 0;
-		}
 		if (count > 0) {
 			vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
 				pipes->rect);
@@ -1154,9 +1102,6 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 		 */
 		float radii[4] = { cmd->corners[0], cmd->corners[1],
 			cmd->corners[2], cmd->corners[3] };
-		if ((renderer->skip_draw & AVK_PRIM_ROUND) != 0) {
-			radii[0] = radii[1] = radii[2] = radii[3] = 0.0f;
-		}
 		az_corner_normalise(radii, (float)cmd->dst.width,
 			(float)cmd->dst.height, pc.corners);
 		if (pc.corners[0] > 0.0f || pc.corners[1] > 0.0f ||
@@ -1188,13 +1133,6 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 				cmd->inner_corners[2], cmd->inner_corners[3] };
 			az_corner_normalise(inner, (float)cmd->inner.width,
 				(float)cmd->inner.height, pc.inner_corners);
-			if ((renderer->skip_draw & AVK_PRIM_ROUND) != 0) {
-				/* The square-hole scissor cut has already been subtracted
-				 * compositor-side, so zeroing the arcs takes the early-out in
-				 * az_rounded_coverage rather than changing what is covered. */
-				pc.inner_corners[0] = pc.inner_corners[1] =
-					pc.inner_corners[2] = pc.inner_corners[3] = 0.0f;
-			}
 			/*
 			 * A SHADOW ALSO CARRIES AN INTERIOR CUT-OUT, so `has_inner` alone
 			 * is not "this is a border" -- az_avk_clip_out_region() serves both
@@ -1593,12 +1531,7 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 				cmd->dst.width, cmd->dst.height, cmd->dst.x, cmd->dst.y,
 				dst_area, area, count,
 				cmd->has_inner ? " cutout" : "",
-				(renderer->skip_draw & klass) != 0 ? " SKIPPED" : "");
-		}
-
-		if ((renderer->skip_draw & klass) != 0) {
-			pixman_region32_fini(&region);
-			continue;
+				"");
 		}
 
 		if (bound != want) {

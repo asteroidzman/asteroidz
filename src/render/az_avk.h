@@ -210,7 +210,7 @@ struct az_avk {
 	uint64_t commit_ns_max, commit_ns_sum, commit_samples;
 	uint64_t handler_ns_max, handler_ns_sum;
 	uint64_t handler_over_10ms, handler_over_30ms;
-	uint64_t fallback_frames;     /* frames AVK declined to build */
+	uint64_t declined_frames;     /* frames AVK declined to build */
 	uint64_t buffer_imports;      /* client buffers resolved to an avk_image */
 	uint64_t buffer_import_fails;
 	uint64_t shm_uploads;         /* re-uploads of CPU buffers */
@@ -2858,9 +2858,9 @@ static const struct wlr_addon_interface az_avk_target_addon_impl = {
  *             release direction comes back out of the same object.
  *
  * There is deliberately no third mechanism. If neither works the output is
- * declined and SceneFX renders it, because the alternative -- present anyway
- * and hope the driver is inserting fences on our behalf -- is exactly the
- * assumption this milestone exists to remove.
+ * declined, because the alternative -- present anyway and hope the driver is
+ * inserting fences on our behalf -- is exactly the assumption this milestone
+ * exists to remove.
  */
 enum az_avk_present_sync {
 	AZ_AVK_PRESENT_SYNC_UNSET,
@@ -5038,7 +5038,7 @@ static bool az_avk_output_supported(Monitor *m,
 		if (!avk.warned_color_transform) {
 			avk.warned_color_transform = true;
 			if (color_transform != NULL
-					|| m->color_state.path == AZ_OUTPUT_PATH_FALLBACK) {
+					|| m->color_state.path == AZ_OUTPUT_PATH_REFUSE) {
 				/*
 				 * M6C. Both profile forms are carried now -- matrix-shaper as a
 				 * 3x3 and 256 taps (G2), everything else as a 65-cube -- so the
@@ -5060,7 +5060,7 @@ static bool az_avk_output_supported(Monitor *m,
 			}
 		}
 		*why = (color_transform != NULL
-				|| m->color_state.path == AZ_OUTPUT_PATH_FALLBACK)
+				|| m->color_state.path == AZ_OUTPUT_PATH_REFUSE)
 			? "a colour transform this renderer cannot express as a matrix and "
 			  "a curve (a cLUT ICC profile)"
 			: "the output presents HDR but the M5 encode pass is not enabled "
@@ -5124,13 +5124,11 @@ static bool az_avk_output_supported(Monitor *m,
 static void az_avk_emit_cursors(struct az_avk_walk *walk,
 		struct wlr_output *output) {
 	/*
-	 * BREAK SWITCH: emit no cursor at all.
-	 *
-	 * With AVK compositing, nothing else draws the cursor into the frame --
-	 * SceneFX is not running for this output -- so setting this makes the
-	 * pointer vanish. That is what distinguishes "AVK draws the cursor" from
-	 * "a cursor appears and nobody checked who put it there", which was true
-	 * of every frame before this function existed.
+	 * NOTHING ELSE DRAWS THE CURSOR INTO THE FRAME. There is no second
+	 * renderer, so if this function does not emit it, the pointer is simply
+	 * absent from the composited output -- which is what distinguishes "AVK
+	 * draws the cursor" from "a cursor appears and nobody checked who put it
+	 * there", true of every frame before this function existed.
 	 */
 	struct wlr_output_cursor *oc;
 	wl_list_for_each(oc, &output->cursors, link) {
@@ -6113,16 +6111,17 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 	}
 	const char *refused_why = NULL;
 	if (!az_avk_output_supported(m, state, color_transform, &refused_why)) {
-		avk.fallback_frames++;
+		avk.declined_frames++;
 		/*
-		 * ── FALLING BACK TO SceneFX IS FATAL ─────────────────────────────
+		 * ── A REFUSAL IS FATAL ───────────────────────────────────────────
 		 *
-		 * Returning false here hands the output to wlr_scene_output_build_state()
-		 * and the desktop keeps working, composited by SceneFX on wlroots' GLES
-		 * renderer. That is precisely the behaviour being removed: the picture
-		 * stays plausible, so the refusal is discovered -- if ever -- as a
-		 * performance mystery or a colour mystery, long after the frame that
-		 * caused it, with a renderer nobody was investigating in the loop.
+		 * Returning false here used to hand the output to
+		 * wlr_scene_output_build_state(), and the desktop kept working,
+		 * composited by SceneFX on wlroots' GLES renderer. That is precisely
+		 * the behaviour that was removed: the picture stayed plausible, so the
+		 * refusal was discovered -- if ever -- as a performance mystery or a
+		 * colour mystery, long after the frame that caused it, with a renderer
+		 * nobody was investigating in the loop.
 		 *
 		 * A refusal is a bug in AVK or an output AVK must learn to drive.
 		 * Either way the useful outcome is a stack and a reason at the moment
@@ -6233,7 +6232,7 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 	uint32_t fourcc = (state->committed & WLR_OUTPUT_STATE_RENDER_FORMAT)
 		? state->render_format : output->render_format;
 	if (!az_attachment_extent_valid(att)) {
-		avk.fallback_frames++;
+		avk.declined_frames++;
 		return false;
 	}
 
@@ -6241,7 +6240,7 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 			|| out->drm_format != fourcc) {
 		struct wlr_drm_format format;
 		if (!az_avk_pick_format(output, fourcc, att.width, att.height, &format)) {
-			avk.fallback_frames++;
+			avk.declined_frames++;
 			return false;
 		}
 		if (out->swapchain != NULL) {
@@ -6255,7 +6254,7 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 		if (out->swapchain == NULL) {
 			wlr_log(WLR_ERROR, "AVK: could not create a %dx%d swapchain for %s",
 				att.width, att.height, output->name);
-			avk.fallback_frames++;
+			avk.declined_frames++;
 			return false;
 		}
 		out->att = att;
@@ -6266,14 +6265,14 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 		out->vk_format = vk_fmt != NULL ? vk_fmt->vk : VK_FORMAT_UNDEFINED;
 		out->slot = az_avk_renderer_for(out->vk_format);
 		if (out->slot == NULL) {
-			avk.fallback_frames++;
+			avk.declined_frames++;
 			return false;
 		}
 		wlr_log(WLR_INFO, "AVK: %s now composited at %dx%d, format 0x%08x",
 			output->name, att.width, att.height, fourcc);
 	}
 	if (out->slot == NULL) {
-		avk.fallback_frames++;
+		avk.declined_frames++;
 		return false;
 	}
 
@@ -6354,7 +6353,7 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 	 * at the end of it? Finding out afterwards would mean either presenting it
 	 * unsynchronised or throwing away work already submitted. */
 	if (!az_avk_present_sync_prepare(out, output)) {
-		avk.fallback_frames++;
+		avk.declined_frames++;
 		return false;
 	}
 
@@ -6362,13 +6361,13 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 	if (buffer == NULL) {
 		wlr_log(WLR_ERROR, "AVK: no free buffer in %s's swapchain",
 			output->name);
-		avk.fallback_frames++;
+		avk.declined_frames++;
 		return false;
 	}
 	struct az_avk_target *target_rec = az_avk_target_for_buffer(buffer);
 	if (target_rec == NULL) {
 		wlr_buffer_unlock(buffer);
-		avk.fallback_frames++;
+		avk.declined_frames++;
 		return false;
 	}
 	struct avk_image *target = target_rec->image;
@@ -6381,7 +6380,7 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 		wlr_log(WLR_ERROR, "AVK: %s's swapchain handed back a target the "
 			"display engine has not released", output->name);
 		wlr_buffer_unlock(buffer);
-		avk.fallback_frames++;
+		avk.declined_frames++;
 		return false;
 	}
 
@@ -6775,7 +6774,7 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 				 * entirely plausible. Falling back hands the frame -- and the
 				 * profile -- back to the renderer that still has it.
 				 */
-				avk.fallback_frames++;
+				avk.declined_frames++;
 				return false;
 			}
 		}
@@ -6794,7 +6793,7 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 					out->slot->renderer.dev, &avk.importer.upload_ring,
 					&out->slot->renderer.retire, m->icc_clut->rgb,
 					m->icc_clut->dim, m->icc_serial) == NULL) {
-				avk.fallback_frames++;
+				avk.declined_frames++;
 				return false;
 			}
 		}
@@ -6901,7 +6900,7 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 		pixman_region32_fini(&ring_damage);
 		pixman_region32_fini(&damage);
 		wlr_buffer_unlock(buffer);
-		avk.fallback_frames++;
+		avk.declined_frames++;
 		return false;
 	}
 	target_rec->state = AZ_AVK_TARGET_RENDERED;
@@ -6909,13 +6908,14 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 	/* Submitted. Now give the display engine something to wait on. */
 	if (!az_avk_present_handover(out, target_rec, buffer, state)) {
 		/* The work is already in flight and will complete; the buffer just
-		 * never becomes a frame. SceneFX renders this one into a different
-		 * buffer, so nothing is torn and nothing is lost but the effort. */
+		 * never becomes a frame. The output is fully damaged so the next frame
+		 * reconstructs it -- nothing is torn, and nothing is lost but the
+		 * effort. */
 		wlr_damage_ring_add_whole(&m->scene_output->damage_ring);
 		pixman_region32_fini(&ring_damage);
 		pixman_region32_fini(&damage);
 		wlr_buffer_unlock(buffer);
-		avk.fallback_frames++;
+		avk.declined_frames++;
 		return false;
 	}
 
@@ -7820,7 +7820,7 @@ static cJSON *az_avk_stats_json(void) {
 		sync_waits += st->cpu_sync_waits;
 	}
 	cJSON_AddNumberToObject(o, "frames", (double)avk.frames);
-	cJSON_AddNumberToObject(o, "fallback_frames", (double)avk.fallback_frames);
+	cJSON_AddNumberToObject(o, "declined_frames", (double)avk.declined_frames);
 	cJSON_AddNumberToObject(o, "surfaces", (double)surfaces);
 	cJSON_AddNumberToObject(o, "rects", (double)rects);
 	/* M5/C7. The two halves of Path A, counted separately -- because "both are
@@ -9188,7 +9188,7 @@ static void az_avk_stats_reset(void) {
 		gs->buffer_reuses = gs->buffer_grows = 0;
 	}
 	avk.frames = 0;
-	avk.fallback_frames = 0;
+	avk.declined_frames = 0;
 	avk.buffer_imports = 0;
 	avk.buffer_import_fails = 0;
 	avk.shm_uploads = 0;
@@ -9386,9 +9386,9 @@ static void az_avk_log_stats(void) {
 	if (!avk.active) {
 		return;
 	}
-	wlr_log(WLR_INFO, "avk.frames=%" PRIu64 " avk.fallback_frames=%" PRIu64
+	wlr_log(WLR_INFO, "avk.frames=%" PRIu64 " avk.declined_frames=%" PRIu64
 		" avk.buffer_imports=%" PRIu64 " avk.buffer_import_fails=%" PRIu64
-		" avk.shm_uploads=%" PRIu64, avk.frames, avk.fallback_frames,
+		" avk.shm_uploads=%" PRIu64, avk.frames, avk.declined_frames,
 		avk.buffer_imports, avk.buffer_import_fails, avk.shm_uploads);
 	wlr_log(WLR_INFO, "avk.shm_commits=%" PRIu64 " avk.shm_full_uploads=%" PRIu64
 		" avk.shm_partial_uploads=%" PRIu64 " avk.shm_upload_skips=%" PRIu64

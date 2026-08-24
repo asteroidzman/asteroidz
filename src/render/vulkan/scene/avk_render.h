@@ -485,9 +485,9 @@ struct avk_blur_damage {
  * backwards, and demand never flows forwards.
  */
 
-/* The primitive classes AZ_AVK_SKIP_DRAW can suppress, and the classes the
- * px_* counters are bucketed by. One enumeration for both so a class cannot be
- * measured under one name and skipped under another. */
+/* The primitive classes the draw ledger and the px_* counters are bucketed by.
+ * One enumeration for both, so a class cannot be counted under one name and
+ * reported under another. */
 enum avk_prim_class {
 	AVK_PRIM_CLEAR = 1u << 0,
 	AVK_PRIM_CONTENT = 1u << 1,
@@ -673,32 +673,6 @@ struct avk_renderer {
 	 * session showed: a smooth falloff quantised to nine 8-bit levels reads as
 	 * concentric halos on a flat backdrop.
 	 */
-	/*
-	 * M4H DIAGNOSTIC ATTRIBUTION MASK -- AZ_AVK_SKIP_DRAW.
-	 *
-	 * A comma-separated list of primitive classes whose vkCmdDraw is suppressed:
-	 * clear, content, shadow, border, blur, gradient, round. Everything else
-	 * about the frame is untouched -- the scene is built identically, the damage
-	 * is identical, every blur chain still runs, every transient is still
-	 * acquired, every barrier is still emitted. Only the rasterisation of that
-	 * class does not happen.
-	 *
-	 * THAT IS THE WHOLE POINT, and it is why this exists rather than the obvious
-	 * alternative of turning the feature off in the config. `shadow { enable 0 }`
-	 * removes a node, which changes the scene, which changes the damage, which
-	 * changes the blur source region and every downstream chain -- so the
-	 * measured difference would be a geometry difference wearing a shadow's name.
-	 * Suppressing the draw and nothing else is the only variant that isolates
-	 * fragment cost.
-	 *
-	 * `round` is the odd one out: it does not skip a draw, it forces every
-	 * radius to zero so the SDF early-outs. That measures the coverage
-	 * evaluation rather than the primitive.
-	 *
-	 * DIAGNOSTIC ONLY. Every one of these renders a visibly wrong desktop, and
-	 * none of them is a performance setting.
-	 */
-	uint32_t skip_draw;
 	/* AZ_AVK_CMD_DUMP=N: log the draw ledger for the first N segments, then
 	 * stop for good. `dump_seg` is the running segment number. */
 	uint32_t cmd_dump;

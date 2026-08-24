@@ -8,9 +8,8 @@
  * already has a slot for: a 3x3 matrix and a per-channel curve. Nothing else.
  *
  * MATRIX-SHAPER ONLY, AND THAT IS A DECISION. A profile carrying cLUT tags
- * (A2B/B2A) is refused by classification, and the refusal keeps today's
- * behaviour -- FALLBACK, SceneFX drives the output, one log line naming the
- * reason. The revival condition is stated so it does not run forever: a real
+ * (A2B/B2A) is refused by classification, with one log line naming the reason.
+ * The revival condition is stated so it does not run forever: a real
  * cLUT profile for a connected display existing on this machine. Not "someday
  * someone might". The only profile this desk has or can produce is
  * matrix-shaper (AORUS FI32U-2: rXYZ/gXYZ/bXYZ + single-gamma TRCs + vcgt, no

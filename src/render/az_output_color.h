@@ -46,15 +46,15 @@
  *    persistent whole-output working image and one damage-scissored encode
  *    pass writes the scanout buffer.
  *
- * FALLBACK  AVK does not drive this output at all; fx_vk does. In M5 that is
- *    exactly the ICC/3D-LUT case (ADR-000 leaves it to M6). It is a state of
+ * REFUSE  AVK will not drive this output. There is no second renderer to hand
+ *    it to -- the refusal is fatal at the frame, named -- so this is a state of
  *    this struct rather than a NULL because "which outputs did AVK refuse and
  *    why" is a question worth being able to answer from one place.
  */
 enum az_output_path {
 	AZ_OUTPUT_PATH_A_DIRECT_SRGB = 0,
 	AZ_OUTPUT_PATH_B_ENCODE,
-	AZ_OUTPUT_PATH_FALLBACK,
+	AZ_OUTPUT_PATH_REFUSE,
 };
 
 /* For logs and test output. Not a parser: nothing reads these back. */
@@ -62,7 +62,7 @@ static inline const char *az_output_path_name(enum az_output_path p) {
 	switch (p) {
 	case AZ_OUTPUT_PATH_A_DIRECT_SRGB: return "A-direct-srgb";
 	case AZ_OUTPUT_PATH_B_ENCODE:      return "B-encode";
-	case AZ_OUTPUT_PATH_FALLBACK:      return "fallback";
+	case AZ_OUTPUT_PATH_REFUSE:        return "refuse";
 	}
 	return "?";
 }
@@ -110,13 +110,12 @@ struct az_output_desc {
 	 * Separate from `has_icc` because the two answer different questions and
 	 * their disagreement is the whole of D2's refusal: `has_icc` is "the
 	 * operator configured a profile", this is "and AVK can carry it". A cLUT
-	 * profile sets the first and not the second, and the output keeps FALLBACK.
+	 * profile sets the first and not the second, and the output is REFUSED.
 	 *
 	 * NULL WHENEVER AVK IS NOT GOING TO DRIVE THE OUTPUT, which the caller
 	 * enforces. That is not a redundancy with az_output_may_drive() below: this
-	 * struct decides what the picture IS, and choosing a curve only AVK can
-	 * apply for an output SceneFX is about to render would strip the profile
-	 * from the one renderer that was still applying it.
+	 * struct decides what the picture IS, and offering a curve for an output
+	 * that will be refused would describe a picture nothing is going to draw.
 	 */
 	const struct az_icc_shaper *icc_shaper;
 	/*
@@ -126,11 +125,9 @@ struct az_output_desc {
 	 * alternatives to choose between per frame (see az_icc.h for why the
 	 * cheaper, better-resolved form wins whenever it exists).
 	 *
-	 * Its presence is what turns D2's old FALLBACK into Path B. NULL WHENEVER
+	 * Its presence is what turns D2's old refusal into Path B. NULL WHENEVER
 	 * AVK IS NOT GOING TO DRIVE THE OUTPUT, exactly as `icc_shaper` is and for
-	 * exactly the same reason: choosing a table only AVK can sample for an
-	 * output SceneFX is about to render strips the profile from the one
-	 * renderer that was still applying it.
+	 * exactly the same reason.
 	 */
 	const struct az_icc_clut *icc_clut;
 };
@@ -178,7 +175,7 @@ static inline void az_output_color_set_identity(float m[9]) {
  *                                  a profile on an HDR output is inert (D3)
  *   ICC + shaper    -> B, LUT1D    the display's own measured curve (G2)
  *   ICC + clut      -> B, CLUT3D   the profiles that do not reduce (M6C)
- *   ICC, neither    -> FALLBACK    unreadable, or refused before either form
+ *   ICC, neither    -> REFUSE      unreadable, or refused before either form
  *                                  could be built
  *   10-bit SDR      -> B, sRGB     no hardware encode at 10 bits
  *   8-bit, probed   -> A, sRGB     hardware decode and encode, free
@@ -187,7 +184,7 @@ static inline void az_output_color_set_identity(float m[9]) {
 static inline struct az_output_color_state
 az_output_color_derive(const struct az_output_desc *o) {
 	struct az_output_color_state s;
-	s.path = AZ_OUTPUT_PATH_FALLBACK;
+	s.path = AZ_OUTPUT_PATH_REFUSE;
 	s.encode_tf = AZ_TF_SRGB;
 	az_output_color_set_identity(s.matrix);
 	s.ref_nits = az_lum_ref_nits(o != NULL ? o->scene_ref_nits : 0.0f);
@@ -292,8 +289,8 @@ az_output_color_derive(const struct az_output_desc *o) {
 		/*
 		 * ── M6C: A PROFILE THAT DOES NOT REDUCE IS A TABLE, NOT A REFUSAL ─
 		 *
-		 * This branch used to be the end of the line -- FALLBACK, SceneFX
-		 * drives the output, the profile still applied by somebody. That was
+		 * This branch used to be the end of the line -- refuse, and SceneFX
+		 * drove the output with the profile still applied by somebody. That was
 		 * true and safe for as long as there WAS a somebody. With SceneFX gone
 		 * a refusal is an abort, so an operator who profiles their display with
 		 * a colorimeter -- which produces a cLUT profile, that being the whole
@@ -325,13 +322,12 @@ az_output_color_derive(const struct az_output_desc *o) {
 		}
 		/*
 		 * Neither form could be built -- an unreadable file, or one refused
-		 * before either reduction was attempted. FALLBACK, which with no second
-		 * renderer left is a refusal to drive the output: rendering a
+		 * before either reduction was attempted. Refuse the output: rendering a
 		 * calibrated display's colour UNMANAGED would be worse, because the
 		 * operator asked for characterised output and would get uncharacterised
 		 * output that looks plausible.
 		 */
-		s.path = AZ_OUTPUT_PATH_FALLBACK;
+		s.path = AZ_OUTPUT_PATH_REFUSE;
 		s.encode_tf = AZ_TF_SRGB;
 		az_output_color_set_identity(s.matrix);
 		s.peak_scene = 1.0f;
@@ -398,7 +394,7 @@ static inline bool az_output_may_drive(const struct az_output_color_state *s,
 	}
 	/* A profile with an owner that is not this renderer; or a state that has
 	 * already said AVK is not driving this output. */
-	if (has_color_transform || s->path == AZ_OUTPUT_PATH_FALLBACK) {
+	if (has_color_transform || s->path == AZ_OUTPUT_PATH_REFUSE) {
 		return false;
 	}
 	if (has_image_description) {
@@ -416,9 +412,9 @@ static inline bool az_output_may_drive(const struct az_output_color_state *s,
 	 * The same interlock as HDR above and for the same reason. LUT1D says the
 	 * output's picture is defined by a table only the encode pass can sample;
 	 * accepting the output with the pass switched off would composite straight
-	 * into the scan-out buffer with no profile applied AND no profile left for
-	 * SceneFX to apply, because C3 took the output off FALLBACK to say AVK
-	 * would handle it. Refusing hands it back, profile intact.
+	 * into the scan-out buffer with no profile applied at all, because C3 took
+	 * the output off REFUSE to say AVK would handle it. Refusing here is what
+	 * keeps a measured display from being shown uncharacterised.
 	 *
 	 * M6C: CLUT3D is the same sentence with a bigger table. The two forms
 	 * differ in what the encode pass samples and in nothing else that matters

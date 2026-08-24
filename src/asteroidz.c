@@ -6481,9 +6481,9 @@ void mon_load_icc_profile(Monitor *m, const char *path) {
 	 * Read here rather than at derive time because this is the only place the
 	 * file's CONTENTS exist -- the wlroots transform is opaque and cannot be
 	 * asked what matrix it holds. A rejection is not a failure of the load:
-	 * the wlroots transform stays, C3 keeps FALLBACK for the output, and
-	 * SceneFX applies the profile exactly as it does today. What is refused is
-	 * AVK's shortcut, not the operator's calibration.
+	 * the wlroots transform stays and C3 keeps the output REFUSED rather than
+	 * claiming AVK will carry a profile it cannot. What is rejected is AVK's
+	 * shortcut, not the operator's calibration.
 	 */
 	struct az_icc_shaper shaper;
 	enum az_icc_reject rc = az_icc_load_shaper(data, (size_t)size, true,
