@@ -76,6 +76,12 @@ enum avk_encode_colour {
  * but nothing here predicts from further back than the previous picture. */
 #define AVK_ENCODE_DPB_SLOTS 2
 
+/* How often a sequence starts again: every 60th SUBMITTED picture is an IDR,
+ * so no picture depends on a chain longer than 59. In pictures rather than
+ * seconds because that is what a seek costs and what a lost picture destroys;
+ * the capture rate is a cap, not a cadence. */
+#define AVK_ENCODE_IDR_PERIOD 60
+
 struct avk_encoder {
 	struct avk_device *dev;   /* borrowed */
 

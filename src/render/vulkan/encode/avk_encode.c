@@ -2022,8 +2022,11 @@ bool avk_encoder_encode_frame(struct avk_encoder *enc, VkImage src,
 		return false;
 	}
 	/* The first picture of a sequence has nothing to predict from, so it is
-	 * an IDR whether or not one was asked for. */
-	bool key = force_key || enc->frame_index == 0 || enc->all_intra;
+	 * an IDR whether or not one was asked for -- and so is every
+	 * AVK_ENCODE_IDR_PERIOD-th after it. frame_index counts pictures that
+	 * were actually submitted, so a dropped one does not spend the period. */
+	bool key = force_key || enc->frame_index % AVK_ENCODE_IDR_PERIOD == 0
+		|| enc->all_intra;
 	if (key) {
 		enc->poc = 0;
 	}
