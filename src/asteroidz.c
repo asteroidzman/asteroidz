@@ -2344,7 +2344,6 @@ static bool cli_check_schema = false;
 static bool cli_list_schema = false;
 static bool cli_dump_source = false;
 static bool cli_list_dispatch = false;
-static bool cli_behaviour_test = false;
 static bool cli_list_rules = false;
 static KeyMode keymode = {
 	.mode = {'d', 'e', 'f', 'a', 'u', 'l', 't', '\0'},
@@ -3056,7 +3055,6 @@ static int32_t record_stop(const Arg *arg) {
 #include "common/async-spawn.h"
 #include "layout/overview.h"
 #include "layout/scroll.h"
-#include "config/behaviour-check.h"
 
 void client_change_mon(Client *c, Monitor *m, uint32_t newtags) {
 	setmon(c, m, newtags, true);
@@ -11002,9 +11000,6 @@ run(char *startup_cmd) {
 	run_exec();
 	run_exec_once();
 
-	if (cli_behaviour_test)
-		bc_arm();
-
 	/* Run the Wayland event loop. This does not return until you exit the
 	 * compositor. Starting the backend rigged up all of the necessary event
 	 * loop configuration to listen to libinput events, DRM events, generate
@@ -14331,7 +14326,7 @@ int32_t main(int32_t argc, char *argv[]) {
 		unsetenv("DISPLAY");
 	}
 
-	while ((c = getopt(argc, argv, "s:c:hdvpSLPDRT")) != -1) {
+	while ((c = getopt(argc, argv, "s:c:hdvpSLPDR")) != -1) {
 		if (c == 's') {
 			startup_cmd = optarg;
 		} else if (c == 'd') {
@@ -14356,8 +14351,6 @@ int32_t main(int32_t argc, char *argv[]) {
 			cli_list_dispatch = true;
 		} else if (c == 'R') {
 			cli_list_rules = true;
-		} else if (c == 'T') {
-			cli_behaviour_test = true;
 		} else {
 			goto usage;
 		}
@@ -14396,58 +14389,6 @@ int32_t main(int32_t argc, char *argv[]) {
 		}
 		return EXIT_FAILURE;
 	}
-	/* Like -p, this keeps stderr on the terminal rather than in the session
-	 * log: the failures ARE the output. Headless is forced rather than
-	 * offered, because a -T run that attached to the real DRM device would
-	 * take over the screen it was launched from. */
-	if (cli_behaviour_test) {
-		if (!getenv("XDG_RUNTIME_DIR"))
-			die("XDG_RUNTIME_DIR must be set");
-		bc_check_dispatch_names();
-		setenv("WLR_BACKENDS", "headless", 1);
-		unsetenv("WAYLAND_DISPLAY");
-		unsetenv("DISPLAY");
-		snprintf(bc.dir, sizeof(bc.dir), "%s/asteroidz-T-XXXXXX",
-				 getenv("XDG_RUNTIME_DIR"));
-		if (mkdtemp(bc.dir) == NULL)
-			die("-T: mkdtemp:");
-		setenv("AZ_AVK_CAPTURE_DIR", bc.dir, 1);
-		/* AGAINST THE COMPILED-IN DEFAULTS, not the user's config -- the same
-		 * reason -S runs before any file is read. A check that inherits
-		 * whatever gaps, layout and window rules happen to be on this machine
-		 * reports something different on every machine, and the exec lines
-		 * would start that machine's whole session beside the test. An empty
-		 * file is a valid KDL document that sets nothing. */
-		{
-			char cfg[256];
-			snprintf(cfg, sizeof(cfg), "%s/config.kdl", bc.dir);
-			FILE *f = fopen(cfg, "w");
-			if (f == NULL)
-				die("-T: cannot write %s:", cfg);
-			fclose(f);
-			cli_config_path = strdup(cfg);
-		}
-		setup();
-		run(startup_cmd != NULL ? startup_cmd : bc_client_command());
-		cleanup();
-		/* The captures are worth 2.7MB a frame and are only ever read by the
-		 * run that wrote them. */
-		DIR *d = opendir(bc.dir);
-		if (d != NULL) {
-			struct dirent *e;
-			while ((e = readdir(d)) != NULL) {
-				if (e->d_name[0] == '.')
-					continue;
-				char f[512];
-				snprintf(f, sizeof(f), "%s/%s", bc.dir, e->d_name);
-				unlink(f);
-			}
-			closedir(d);
-		}
-		rmdir(bc.dir);
-		return bc.failures > 0 ? EXIT_FAILURE : EXIT_SUCCESS;
-	}
-
 	/* after flag parsing, so -p (above) keeps stderr on the terminal */
 	init_persistent_log();
 
@@ -14474,8 +14415,6 @@ usage:
 		   "  -L             List the config schema, one option per line\n"
 		   "  -P             Show where each config value came from\n"
 		   "  -D             List the dispatch actions, one per line\n"
-		   "  -R             List the window-rule schema, one field per line\n"
-		   "  -T             Check what the config keys and dispatches "
-		   "actually do\n");
+		   "  -R             List the window-rule schema, one field per line\n");
 	return EXIT_SUCCESS;
 }
