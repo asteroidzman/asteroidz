@@ -1280,7 +1280,6 @@ struct avk_encoder *avk_encoder_create(struct avk_device *dev,
 		return NULL;
 	}
 	enc->colour = colour;
-	enc->all_intra = getenv("AZ_ENCODE_INTER") == NULL;
 	if (mastering != NULL) {
 		enc->mastering = *mastering;
 	}
@@ -2025,8 +2024,7 @@ bool avk_encoder_encode_frame(struct avk_encoder *enc, VkImage src,
 	 * an IDR whether or not one was asked for -- and so is every
 	 * AVK_ENCODE_IDR_PERIOD-th after it. frame_index counts pictures that
 	 * were actually submitted, so a dropped one does not spend the period. */
-	bool key = force_key || enc->frame_index % AVK_ENCODE_IDR_PERIOD == 0
-		|| enc->all_intra;
+	bool key = force_key || enc->frame_index % AVK_ENCODE_IDR_PERIOD == 0;
 	if (key) {
 		enc->poc = 0;
 	}
