@@ -1561,6 +1561,7 @@ static bool submit_picture(struct avk_encoder *enc, VkImage src,
 	};
 	vkResetCommandBuffer(enc->cmd, 0);
 	if (vkBeginCommandBuffer(enc->cmd, &begin) != VK_SUCCESS) {
+		avk_log(AVK_ERROR, "encode: vkBeginCommandBuffer failed");
 		return false;
 	}
 
@@ -1628,14 +1629,19 @@ static bool submit_picture(struct avk_encoder *enc, VkImage src,
 		.imageViewBinding = enc->dpb_view[ref_slot],
 	};
 	/*
-	 * The REFERENCE describes the PREVIOUS picture, not this one. For the
-	 * first P picture that previous one is the IDR, and calling it a P
-	 * picture describes a DPB entry that does not match what is in the slot.
-	 * The type was taken from whether the CURRENT picture is a key frame,
-	 * which is the one case where the two are guaranteed to differ.
+	 * The REFERENCE describes the PREVIOUS picture, not this one. Calling an
+	 * IDR a P picture describes a DPB entry that does not match what is in
+	 * the slot.
+	 *
+	 * `poc == 1` is what "the previous submitted picture was a key frame"
+	 * actually means here: encode_frame() zeroes poc on any key picture and
+	 * increments it after every successful submit, so a P picture sees 1
+	 * exactly then and >= 2 otherwise. This used to ask `frame_index == 1`,
+	 * which is only the FIRST P of the whole sequence -- true while a
+	 * recording could contain just one IDR, and wrong for every later one.
 	 */
 	StdVideoEncodeH265ReferenceInfo ref_std = {
-		.pic_type = enc->frame_index == 1
+		.pic_type = enc->poc == 1
 			? STD_VIDEO_H265_PICTURE_TYPE_IDR
 			: STD_VIDEO_H265_PICTURE_TYPE_P,
 		.PicOrderCntVal = enc->poc - 1,
@@ -1713,7 +1719,6 @@ static bool submit_picture(struct avk_encoder *enc, VkImage src,
 			.sType = VK_STRUCTURE_TYPE_VIDEO_END_CODING_INFO_KHR,
 		};
 		api.end(enc->cmd, &reset_end);
-		enc->session_reset = true;
 	}
 
 	VkVideoBeginCodingInfoKHR begin_coding = {
@@ -1864,6 +1869,7 @@ static bool submit_picture(struct avk_encoder *enc, VkImage src,
 	api.end(enc->cmd, &end_coding);
 
 	if (vkEndCommandBuffer(enc->cmd) != VK_SUCCESS) {
+		avk_log(AVK_ERROR, "encode: vkEndCommandBuffer failed");
 		return false;
 	}
 	vkResetFences(dev->dev, 1, &enc->fence);
@@ -1877,6 +1883,16 @@ static bool submit_picture(struct avk_encoder *enc, VkImage src,
 		avk_log(AVK_ERROR, "encode: vkQueueSubmit to the encode queue failed");
 		return false;
 	}
+	/*
+	 * ONLY NOW. The RESET above is recorded into this command buffer, so
+	 * latching it when it was recorded claimed a reset that a discarded
+	 * buffer never performed -- and the block is skipped from then on, so the
+	 * session would never be reset again for the rest of its life. Setting it
+	 * here needs no extra state: the block only runs while the flag is false,
+	 * so a successful submit always means the reset either just happened or
+	 * had already happened.
+	 */
+	enc->session_reset = true;
 	enc->last_encode_ns = now_ns() - t1;
 	enc->submitted = true;
 	return true;
@@ -1997,6 +2013,7 @@ bool avk_encoder_encode_still(struct avk_encoder *enc, VkImage src,
 	 * collects in one go. The deferral is a recording's optimisation and
 	 * would only be latency here. */
 	if (!submit_picture(enc, src, src_layout, src_x, src_y, true)) {
+		avk_encoder_reset_sequence(enc);
 		return false;
 	}
 	return collect_picture(enc, out, out_len);
@@ -2033,6 +2050,19 @@ bool avk_encoder_encode_frame(struct avk_encoder *enc, VkImage src,
 		collect_picture(enc, out, out_len);
 	}
 	if (!submit_picture(enc, src, src_layout, src_x, src_y, key)) {
+		/*
+		 * START OVER, because half a picture's worth of state is worse than
+		 * none. `key` has already zeroed poc while frame_index, dpb_slot and
+		 * the DPB contents still describe the last picture that succeeded, so
+		 * the next unforced picture would be a P claiming PicOrderCntVal 0
+		 * and referencing POC -1. Resetting makes it an IDR instead, through
+		 * the frame_index == 0 condition already above.
+		 *
+		 * Here rather than inside submit_picture(): these counters belong to
+		 * this layer -- submit_picture only reads them -- and both callers
+		 * that can leave them inconsistent are the ones that advance them.
+		 */
+		avk_encoder_reset_sequence(enc);
 		return false;
 	}
 	/* Advance only on success: a failed picture must not consume the slot the

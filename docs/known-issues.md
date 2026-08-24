@@ -47,40 +47,11 @@ the benefit stays constant. Between 30 and 60 it decides nothing: 30 costs 2.0x
 (static) to 2.8x (dynamic) the overhead of 60 and buys exactly half the
 worst-case decode. Picking one requires a stated criterion, not more measurement.
 
-### Prerequisites before a cadence ships
-
-**The reference `pic_type` is wrong after any later IDR.** `submit_picture()`
-uses `enc->frame_index == 1`, true only for the first P of the sequence, so
-after a forced IDR the DPB entry is described as a P picture while the slot
-holds an IDR. The authoritative condition needs no new state: `enc->poc == 1`.
-`poc` is zeroed on any key picture and incremented after each successful submit,
-so on a P it means exactly "the previous submitted picture was a key". Verified
-against an independent ground-truth flag: 20 P pictures, no disagreement, across
-a forced cadence, a mid-stream `avk_encoder_reset_sequence()` and a fresh
-encoder. Under all-intra no P is submitted and the field is never consulted.
-
-**A failed submit leaves the sequence unusable.** `enc->session_reset` is
-latched inside the reset block, ahead of the submit, so a discarded command
-buffer leaves the session permanently un-reset while the flag says otherwise.
-And `encode_frame()` zeroes `poc` for a key picture before submitting and
-advances nothing on failure, so the next unforced picture is a P with
-`PicOrderCntVal = 0` whose reference resolves to POC -1 -- malformed, not
-ambiguous -- and the recorder counts a drop and records on into it. Three fixes,
-all reusing existing state:
-
-  - latch `session_reset` only after `vkQueueSubmit` succeeds
-  - call `avk_encoder_reset_sequence()` on any `submit_picture()` failure, so
-    the next picture is an IDR through the `frame_index == 0` condition already
-    there
-  - log the two silent failure returns (`vkBeginCommandBuffer`,
-    `vkEndCommandBuffer`)
-
-This matters more with a cadence than without: today a failure almost always
-lands in the P chain, but forced IDRs put failures on key pictures, which is the
-case that zeroes `poc`.
-
-Nothing is implemented: no cadence, no bound chosen, no promotion.
-`AZ_ENCODE_INTER` stays and all-intra stays the default.
+The encoder side is ready: the reference `pic_type` now uses the authoritative
+`enc->poc == 1`, and a failed submit resets the sequence so the next picture is
+an IDR rather than a P claiming POC 0. What remains is the policy -- no cadence,
+no bound chosen, no promotion. `AZ_ENCODE_INTER` stays and all-intra stays the
+default.
 
 ## OPEN — a tag switch arranges twice
 
