@@ -472,28 +472,6 @@ static void transform_output_box(struct wlr_box *box, const struct render_data *
 }
 
 /*
- * AZ_SCENE_HALO_DAMAGE_RAW=1 -- the break for M4F.2C.4c. TEST ONLY.
- *
- * Records the source halo's damage as the raw out-of-bounds region, exactly as
- * this file did before the fix. wlr_damage_ring_rotate_buffer() intersects what
- * it returns with the buffer rectangle, so every one of those rectangles is
- * discarded and the output renders a frame with no damage in it.
- */
-static bool scene_output_halo_damage_raw(void) {
-	static int cached = -1;
-	if (cached < 0) {
-		const char *env = getenv("AZ_SCENE_HALO_DAMAGE_RAW");
-		cached = env != NULL && env[0] == '1';
-		if (cached) {
-			wlr_log(WLR_ERROR, "AZ_SCENE_HALO_DAMAGE_RAW=1 -- cross-output "
-				"blur source damage is recorded out of bounds, where the "
-				"damage ring discards it. This build is deliberately broken.");
-		}
-	}
-	return cached != 0;
-}
-
-/*
  * ── THE ATTACHMENT EXTENT, UNDER ITS OWN NAME ─────────────────────────────
  *
  * "The output's size" has two answers and they differ by a transpose at 90 and
@@ -687,9 +665,7 @@ static void scene_output_damage(struct wlr_scene_output *scene_output,
 	 * output's own pixels whose blur result can differ. That is in bounds, so
 	 * it survives the ring, it gets the ring's per-buffer history for free (a
 	 * change seen while drawing buffer 1 still reaches buffer 2), and it can go
-	 * into pending_commit_damage like any other damage -- which additionally
-	 * repairs the SceneFX fallback path, where the strip was never repainted at
-	 * all.
+	 * into pending_commit_damage like any other damage.
 	 *
 	 * It needs no new state and no second ring. AVK reconstructs the source
 	 * itself: prefix_rebuild is result_region dilated by the reverse support,
@@ -709,20 +685,9 @@ static void scene_output_damage(struct wlr_scene_output *scene_output,
 		if (!pixman_region32_empty(&halo)) {
 			pixman_region32_t reach;
 			pixman_region32_init(&reach);
-			if (scene_output_halo_damage_raw()) {
-				/*
-				 * THE BREAK. Records the raw out-of-bounds region, which is
-				 * what both earlier versions did and what the ring throws
-				 * away -- so the output is scheduled, renders with no damage
-				 * at all, and leaves the blur fringe along the shared edge
-				 * stale until something unrelated happens to redraw it.
-				 */
-				pixman_region32_copy(&reach, &halo);
-			} else {
-				wlr_region_expand(&reach, &halo, h);
-				pixman_region32_intersect_rect(&reach, &reach, 0, 0,
-					att_width, att_height);
-			}
+			wlr_region_expand(&reach, &halo, h);
+			pixman_region32_intersect_rect(&reach, &reach, 0, 0,
+				att_width, att_height);
 			if (!pixman_region32_empty(&reach)) {
 				wlr_output_schedule_frame(scene_output->output);
 				scene_ring_add_checked(scene_output, &reach, att_width,
@@ -1351,27 +1316,6 @@ void wlr_scene_rect_set_clipped_region(struct wlr_scene_rect *rect,
 	scene_node_update(&rect->node, NULL);
 }
 
-/*
- * AZ_GRADIENT_NOOP_DAMAGE=1 -- the break switch for the repaint storm below.
- *
- * It removes the identical-write check, restoring the exact bug: a settled
- * compositor that never stops repainting itself. Read once.
- */
-static bool gradient_noop_damage(void) {
-	static int cached = -1;
-	if (cached < 0) {
-		const char *env = getenv("AZ_GRADIENT_NOOP_DAMAGE");
-		cached = env != NULL && env[0] == '1';
-		if (cached) {
-			wlr_log(WLR_ERROR, "AZ_GRADIENT_NOOP_DAMAGE=1 -- identical "
-				"gradient writes damage the node again. A focused window "
-				"with a gradient border will repaint forever. This build is "
-				"deliberately broken.");
-		}
-	}
-	return cached != 0;
-}
-
 void wlr_scene_rect_set_gradient(struct wlr_scene_rect *rect, float degree,
 		int linear, int blend, const float origin[2], int count,
 		const float *colors) {
@@ -1403,23 +1347,19 @@ void wlr_scene_rect_set_gradient(struct wlr_scene_rect *rect, float degree,
 	 * animation is untouched.
 	 */
 	bool want = count > 0 && colors != NULL;
-	if (!gradient_noop_damage()) {
-		if (!want && !rect->has_gradient) {
-			return;
-		}
-		if (want && rect->has_gradient && rect->gradient_count == count &&
-				rect->gradient_degree == degree &&
-				rect->gradient_linear == linear &&
-				rect->gradient_blend == blend &&
-				rect->gradient_origin[0] ==
-					(origin != NULL ? origin[0] : 0.5f) &&
-				rect->gradient_origin[1] ==
-					(origin != NULL ? origin[1] : 0.5f) &&
-				rect->gradient_colors != NULL &&
-				memcmp(rect->gradient_colors, colors,
-					sizeof(float) * 4 * (size_t)count) == 0) {
-			return;
-		}
+	if (!want && !rect->has_gradient) {
+		return;
+	}
+	if (want && rect->has_gradient && rect->gradient_count == count &&
+			rect->gradient_degree == degree &&
+			rect->gradient_linear == linear &&
+			rect->gradient_blend == blend &&
+			rect->gradient_origin[0] == (origin != NULL ? origin[0] : 0.5f) &&
+			rect->gradient_origin[1] == (origin != NULL ? origin[1] : 0.5f) &&
+			rect->gradient_colors != NULL &&
+			memcmp(rect->gradient_colors, colors,
+				sizeof(float) * 4 * (size_t)count) == 0) {
+		return;
 	}
 
 	free(rect->gradient_colors);

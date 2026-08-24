@@ -173,9 +173,8 @@ struct avk_transient_pool {
 	 * lives in a 64x64 image and three quarters of it is never written. Relying
 	 * on that memory being zero is relying on an accident: it is whatever the
 	 * driver last left there, which on a reused image is another window's blur.
-	 * AZ_TRANSIENT_POISON=1 makes the accident impossible to depend on.
+	 * Nothing here may read outside what it wrote.
 	 */
-	bool poison;
 };
 
 void avk_transient_pool_init(struct avk_transient_pool *pool,

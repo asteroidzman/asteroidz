@@ -85,17 +85,3 @@ A tag switch emits two `anim start`s per client one frame apart (83 of 250 in a
 20-round-trip run were superseded before their first tick). Harmless now that a
 replaced-but-unsampled segment restarts cleanly, but the second arrange is
 redundant work.
-
-## Spring duration is coupled to spring frequency
-
-Not a defect, but it surprises people and it is what "the animation falls short" turned out to mean.
-
-The spring is evaluated over NORMALISED time, so `frequency` says how many
-radians it travels per configured duration, not per second. Measured with
-`frequency 10`: every MOVE animation configured for 500ms completed in ~202ms
-(`closed=completed`, `dead_tail` ~0) — the spring converges at t≈0.4 and stops.
-An earlier measurement at `frequency 22` finished in 23% of its duration.
-
-`duration` is therefore an upper bound the spring may never reach. The lever is
-`frequency`; roughly 4-5 keeps it in motion for most of the configured time.
-

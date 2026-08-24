@@ -35,7 +35,8 @@
  *
  * scenefx's surface adapter, copying wlroots 0.20.2, initialises `tf` to
  * GAMMA22 and overwrites it only when the surface carries an image description
- * (src/scene/surface.c:329). So a surface that has said NOTHING about its
+ * (surface_reconfigure() in src/scene/surface.c). So a surface that has said
+ * NOTHING about its
  * colour arrives indistinguishable from one that explicitly declared a 2.2
  * power curve -- and on a real desktop essentially every surface is the former.
  *
@@ -87,13 +88,24 @@ static inline struct az_lum_source_desc az_source_desc_from_wlr(
  *
  * Two lookups, in this order: wp-color-management's own description first,
  * then the registered fallback -- az_cm_surface_description(), the multiplexer
- * that puts native wp-cm ahead of frog. src/scene/surface.c makes the same two
- * through the function pointer it is handed at startup.
+ * that puts native wp-cm ahead of frog. The sequence was written out at both
+ * renderer-side call sites, the intent inspector and the scanout gate; this is
+ * the one copy they now share.
  *
- * The sequence was written out at both renderer-side call sites, the intent
- * inspector and the scanout gate. That is two places to edit the day the
- * precedence changes and two chances to edit only one -- the same failure this
- * file's opening comment exists to prevent, one level up.
+ * WHY THE SCENE STILL HAS ITS OWN. surface_reconfigure() in
+ * src/scene/surface.c performs the same two steps, and cannot call this. That
+ * file is a vendored wlroots 0.20.2 copy compiled without any compositor
+ * header -- the meson source list is what keeps it that way -- so it reaches
+ * the fallback through a function POINTER installed at startup rather than by
+ * name. Giving it a getter to borrow, or an include to call this, would trade
+ * a real isolation boundary for a cosmetic one.
+ *
+ * That is not two copies of the POLICY. Which description wins between native
+ * wp-cm and frog is decided in exactly one function,
+ * az_cm_surface_description(), and both paths arrive at it -- the scene
+ * through the registered pointer (installed once, after both protocol inits,
+ * in setup()), the renderer by calling it. What is duplicated is only the two
+ * STEPS around it, and the scene's copy of those is upstream's.
  *
  * Reading from the SURFACE rather than from a scene buffer is also what lets an
  * unmapped or never-drawn surface answer at all.

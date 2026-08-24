@@ -392,35 +392,6 @@ error:
 }
 
 
-/*
- * AVK_UNSAFE_REUSE=1 -- the break switch for image-update ordering.
- *
- * It strips the read-before-write dependency from the barrier that guards
- * overwriting an image a frame in flight may still be sampling.
- *
- * It removes the BARRIER and not a semaphore wait, and that distinction was
- * measured rather than assumed. The caller also passes a timeline wait on the
- * image's last use; removing only that changed nothing and validation stayed
- * clean, because uploads and frames are submitted to the same queue and a
- * pipeline barrier orders against earlier submissions on that queue in
- * submission order. The barrier is what protects this. The timeline wait is
- * belt to its braces, and worth keeping for the day an upload moves to a
- * transfer queue -- but it is not the thing under test.
- */
-static bool unsafe_reuse(void) {
-	static int cached = -1;
-	if (cached < 0) {
-		const char *env = getenv("AVK_UNSAFE_REUSE");
-		cached = env != NULL && env[0] == '1';
-		if (cached) {
-			avk_log(AVK_ERROR, "AVK_UNSAFE_REUSE=1 -- image updates are being "
-				"recorded with no dependency on the frames still reading "
-				"them");
-		}
-	}
-	return cached != 0;
-}
-
 /* lcm(bpp, 4): what Vulkan requires of bufferOffset -- a multiple of 4 and of
  * the texel size. Computed rather than assumed 4, because a format with an odd
  * texel size would silently produce a misaligned copy. */
@@ -590,14 +561,8 @@ static uint64_t submit_copy(struct avk_cmd_ring *ring, VkBuffer src,
 	if (region_count == 0) {
 		return 0;
 	}
-	/* AZ_AVK_REFUSE_UNDEFINED_PARTIAL=1 restores the refusal unconditionally.
-	 * It is the pre-fix build in one switch: the copy path declines every
-	 * clipped first write, so a client that allocates a fresh wl_buffer per
-	 * redraw -- the one this whole subsystem is for -- saves nothing and says
-	 * nothing about it except a line in the log. */
 	if (!full && image->layout == VK_IMAGE_LAYOUT_UNDEFINED
-			&& (!no_prior_contents
-				|| getenv("AZ_AVK_REFUSE_UNDEFINED_PARTIAL") != NULL)) {
+			&& !no_prior_contents) {
 		/* UNDEFINED discards the contents, which for a partial update would
 		 * throw away every pixel outside the damaged rectangles. A partial
 		 * update into an image nothing has written yet is a caller bug --
@@ -633,7 +598,7 @@ static uint64_t submit_copy(struct avk_cmd_ring *ring, VkBuffer src,
 			.layerCount = 1,
 		},
 	};
-	if (image->layout == VK_IMAGE_LAYOUT_UNDEFINED || unsafe_reuse()) {
+	if (image->layout == VK_IMAGE_LAYOUT_UNDEFINED) {
 		/* Nothing has read it yet, and claiming a shader read happened would
 		 * be a barrier describing a dependency that does not exist. */
 		to_dst.srcStageMask = VK_PIPELINE_STAGE_2_NONE;

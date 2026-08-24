@@ -149,8 +149,6 @@ static struct az_cursor {
 	 * read. That turns a bug which only manifested as undefined behaviour into
 	 * a deterministic assertion.
 	 */
-	struct wlr_xcursor *dbg_borrowed;
-	uint64_t dbg_borrowed_generation;
 
 	/* ── client surface source ── */
 	struct wlr_surface *surface;
@@ -175,7 +173,6 @@ static struct az_cursor {
 	uint64_t unsets;            /* set_cursor(NULL), or hidden */
 	/* Borrowed resolutions used after their manager was replaced. Must be 0:
 	 * a nonzero value is a use-after-free that has not faulted yet. */
-	uint64_t stale_xcursor;
 
 	/*
 	 * Whether wlroots currently HAS an image from us.
@@ -228,9 +225,7 @@ static bool az_cursor_force_software(void) {
  */
 static float az_cursor_target_scale(void) {
 	float scale = 1.0f;
-	/* BREAK SWITCH: load only the sharpest scale, as the shipped bug did. */
-	bool one_scale = getenv("AZ_CURSOR_ONE_SCALE") != NULL;
-	if (cursor_mgr != NULL && !one_scale) {
+	if (cursor_mgr != NULL) {
 		wlr_xcursor_manager_load(cursor_mgr, 1.0f);
 	}
 	Monitor *m;
@@ -238,7 +233,7 @@ static float az_cursor_target_scale(void) {
 		if (m->wlr_output == NULL || !m->wlr_output->enabled) {
 			continue;
 		}
-		if (cursor_mgr != NULL && !one_scale) {
+		if (cursor_mgr != NULL) {
 			wlr_xcursor_manager_load(cursor_mgr, m->wlr_output->scale);
 		}
 		if (m->wlr_output->scale > scale) {
@@ -347,40 +342,11 @@ static struct wlr_xcursor *az_cursor_resolve_xcursor(void) {
 		return NULL;
 	}
 
-	/*
-	 * BREAK SWITCH: AZ_CURSOR_STALE_XCURSOR=1 restores the shipped bug --
-	 * keep the borrowed pointer and replay it instead of asking the manager
-	 * again. The generation check in front of the dereference is what makes
-	 * the defect observable: the old code went straight to freed memory and
-	 * only sometimes faulted, which is why ~110 headless attempts under ASan
-	 * never caught it.
-	 */
-	if (getenv("AZ_CURSOR_STALE_XCURSOR") != NULL) {
-		if (az_cursor.dbg_borrowed != NULL) {
-			if (az_cursor.dbg_borrowed_generation != az_cursor_mgr_generation) {
-				az_cursor.stale_xcursor++;
-				wlr_log(WLR_ERROR, "cursor: borrowed xcursor from manager "
-					"generation %" PRIu64 " used at generation %" PRIu64
-					" -- this is the use-after-free M3.5E shipped",
-					az_cursor.dbg_borrowed_generation,
-					az_cursor_mgr_generation);
-				/* Deliberately do NOT dereference it. The point is to prove
-				 * the lifetime is invalid, not to crash the test host. */
-				return NULL;
-			}
-			return az_cursor.dbg_borrowed;
-		}
-	}
-
 	struct wlr_xcursor *xc = wlr_xcursor_manager_get_xcursor(cursor_mgr,
 		az_cursor.xcursor_name, az_cursor.xcursor_scale);
 	if (xc == NULL) {
 		xc = wlr_xcursor_manager_get_xcursor(cursor_mgr, "default",
 			az_cursor.xcursor_scale);
-	}
-	if (xc != NULL && getenv("AZ_CURSOR_STALE_XCURSOR") != NULL) {
-		az_cursor.dbg_borrowed = xc;
-		az_cursor.dbg_borrowed_generation = az_cursor_mgr_generation;
 	}
 	return xc;
 }
@@ -471,36 +437,6 @@ static void az_cursor_set_xcursor(const char *name) {
 	if (cursor_mgr == NULL || name == NULL) {
 		return;
 	}
-	/*
-	 * BREAK SWITCH: hand the selection to wlroots, as the seven call sites
-	 * that bypassed this function used to. One place rather than seven,
-	 * because what is being restored is the OWNERSHIP MODEL, not a particular
-	 * caller -- and a break that has to be spelled out seven times is a break
-	 * that will be half-removed later.
-	 */
-	const char *wlr_break = getenv("AZ_CURSOR_WLROOTS_XCURSOR");
-	if (wlr_break != NULL) {
-		/*
-		 * "moveresize" restores the SHIPPED defect exactly: only the
-		 * compositor's own move/resize shapes went to wlroots, while client
-		 * shapes and motion kept coming through here. That mixture is the
-		 * interesting one -- az_cursor still holds a valid image, so AVK
-		 * still composites, and the disagreement shows up as a box that does
-		 * not fit the image rather than as no cursor at all.
-		 *
-		 * Without the qualifier every selection goes to wlroots, az_cursor
-		 * ends up with no image, and cursor_no_image fires instead. That is a
-		 * louder failure but a different one, and it leaves
-		 * cursor_geometry_mismatch untested -- which is why both exist.
-		 */
-		bool only_moveresize = strcmp(wlr_break, "moveresize") == 0;
-		bool is_moveresize = strcmp(name, "grab") == 0 ||
-			strcmp(name, "grabbing") == 0 || strstr(name, "-resize") != NULL;
-		if (!only_moveresize || is_moveresize) {
-			wlr_cursor_set_xcursor(cursor, cursor_mgr, name);
-			return;
-		}
-	}
 	az_cursor_drop_surface();
 
 	float scale = az_cursor_target_scale();
@@ -532,9 +468,7 @@ static void az_cursor_set_xcursor(const char *name) {
 	 * `last_cursor.shape`, which is usually the shape that was showing when
 	 * the cursor was hidden.
 	 */
-	/* BREAK SWITCH: drop the image_pushed term, restoring the trap. */
-	bool pushed = az_cursor.image_pushed ||
-		getenv("AZ_CURSOR_NO_PUSH_CHECK") != NULL;
+	bool pushed = az_cursor.image_pushed;
 	/*
 	 * Compared by NAME, not by pointer. The pointer test that used to be here
 	 * was wrong twice over: it kept a theme-owned pointer alive as durable
@@ -651,32 +585,8 @@ static void az_cursor_drop_surface(void) {
 	az_cursor.surface = NULL;
 }
 
-/*
- * BREAK SWITCH: put the client cursor back on wlroots' texture path.
- *
- * AZ_CURSOR_LEGACY_SURFACE=1 calls wlr_cursor_set_surface() exactly as
- * asteroidz did before M3.5E, which under a NULL-renderer wl_compositor means
- * wlr_surface_get_texture() returns NULL and the cursor is disabled. This is
- * not a simulated failure: it is the original call, restored. It exists
- * because contrib/avk-cursor-test.sh has to be able to fail, and a cursor test
- * that cannot distinguish "the cursor is drawn" from "no cursor exists and
- * nothing was asserted" is worth nothing.
- */
-static bool az_cursor_legacy_surface(void) {
-	static int value = -1;
-	if (value < 0) {
-		const char *env = getenv("AZ_CURSOR_LEGACY_SURFACE");
-		value = (env != NULL && env[0] != '\0' && strcmp(env, "0") != 0);
-	}
-	return value == 1;
-}
-
 static void az_cursor_set_surface(struct wlr_surface *surface, int hotspot_x,
 		int hotspot_y) {
-	if (az_cursor_legacy_surface()) {
-		wlr_cursor_set_surface(cursor, surface, hotspot_x, hotspot_y);
-		return;
-	}
 	if (surface == NULL) {
 		/* The client asking for NO pointer image. Distinct from the
 		 * compositor hiding it on an idle timeout: this is a request, it

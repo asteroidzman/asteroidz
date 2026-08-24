@@ -245,11 +245,9 @@ minimum is only meaningful against something true.
 
 All of that is SceneFX. AVK never fills a hole, because its blur source is the
 scene prefix and the window is not in it, so there is nothing to clamp against
-and `sample_exclude` is ignored on the live path. The fixture that asserted the
-carve-out (`contrib/shadow-exclude-clamp-test.sh`, measuring 9 levels of
-difference inside the hole through a 15%-opaque window before the fix and 0
-after) was removed with the stage it covered. AVK's clamp itself is live and has
-its own break switch, `AZ_BLUR_IGNORE_DARKEN`.
+and `sample_exclude` is ignored on the live path. AVK's clamp itself is live:
+before the fix, a 15%-opaque window showed 9 levels of difference inside the
+hole; after it, none.
 
 The first attempt substituted the unblurred wallpaper snapshot there instead,
 on the reasoning that the wallpaper is what lies under everything. It is, but a
@@ -318,8 +316,7 @@ sidecar per image:
 
 A `cache-*` file is **absent on a frame that hit the cache**, and that absence
 is a finding rather than a gap: nothing rebuilt, so what is on screen came from
-an image built some earlier frame. `AZ_BLUR_CACHE_ALWAYS_DIRTY=1` forces a
-rebuild every frame when the source itself is what you want to look at.
+an image built some earlier frame.
 
 There is only one `live` stage per node, because AVK's source is the scene
 prefix — commands `[0, k)` — so the window is not in its own source and there is

@@ -123,11 +123,9 @@ Two consequences worth knowing:
   and positioned in logical units, which simply makes it a smaller window
   inside a larger root, with no edge to clamp against.
 
-Both directions are pinned by `contrib/xw-scale-test.sh`: the `1.25-screen`
-arm asserts the device-sized screen and the unclamped click, and the
-`1.25-screen-clamped` arm re-runs the identical probes under
-`AZ_BREAK_X11_ROOT_SIZE=1`, which puts xdg-output back and must reproduce
-1536×864 and 1535,863 exactly.
+Measured on a 1.25-scaled output: with the option on, the X screen is the
+device-sized 1920×1080 and a click at the far corner lands unclamped; with it
+off, Xwayland sees wlroots' logical 1536×864 and the click clamps to 1535,863.
 
 ## Focus & Input
 

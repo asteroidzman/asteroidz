@@ -415,62 +415,8 @@ static void transform_uv(const struct avk_fbox *src, uint32_t image_width,
  * the GPU. It is a race, so it does not fail every run -- which is exactly why
  * it needs the validation layers rather than a pixel assertion.
  */
-/* AZ_BLUR_SKIP_WORK_DERIVATION=1 -- see the call site. Test only. */
-static bool az_avk_blur_skip_derivation(void) {
-	static int cached = -1;
-	if (cached < 0) {
-		const char *env = getenv("AZ_BLUR_SKIP_WORK_DERIVATION");
-		cached = env != NULL && env[0] == '1';
-		if (cached) {
-			avk_log(AVK_INFO, "avk blur: AZ_BLUR_SKIP_WORK_DERIVATION=1 -- the "
-				"required-region derivation is skipped, reconstructing what a "
-				"production frame would cost without the up0 optimisation");
-		}
-	}
-	return cached != 0;
-}
-
-static bool avk_no_sampled_last_use(void) {
-	static int cached = -1;
-	if (cached < 0) {
-		const char *env = getenv("AVK_NO_SAMPLED_LAST_USE");
-		cached = env != NULL && env[0] == '1';
-		if (cached) {
-			avk_log(AVK_ERROR, "AVK_NO_SAMPLED_LAST_USE=1 -- images this frame "
-				"only READ keep their old last_use, so one destroyed now may "
-				"still be in flight. This build is deliberately broken.");
-		}
-	}
-	return cached != 0;
-}
-
-/* Read once. Never true in a session anybody is using -- see the loadOp. */
-static bool avk_no_load_preserve(void) {
-	static int cached = -1;
-	if (cached < 0) {
-		const char *env = getenv("AVK_NO_LOAD_PRESERVE");
-		cached = env != NULL && env[0] == '1';
-		if (cached) {
-			avk_log(AVK_ERROR, "AVK_NO_LOAD_PRESERVE=1 -- the target's "
-				"previous contents are being discarded, so every frame that "
-				"redraws less than the whole output will be wrong");
-		}
-	}
-	return cached != 0;
-}
-
-/*
- * AVK_NO_FOREIGN_ACQUIRE=1 turns the foreign transfer off -- both halves. On a
- * real output that means a white screen, so it is a diagnostic, not a tuning
- * knob.
- */
 static bool az_foreign(const struct avk_image *image) {
-	static int no_foreign = -1;
-	if (no_foreign < 0) {
-		const char *env = getenv("AVK_NO_FOREIGN_ACQUIRE");
-		no_foreign = env != NULL && env[0] == '1';
-	}
-	return !no_foreign && avk_image_is_foreign(image);
+	return avk_image_is_foreign(image);
 }
 
 /*
@@ -956,18 +902,12 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 	 * everything else. The background clear is a normal draw command,
 	 * scissored to the damage like everything else.
 	 *
-	 * AVK_NO_LOAD_PRESERVE=1 replaces it with CLEAR to magenta, which is the
-	 * break test for partial damage: it is precisely the mistake described
-	 * above, and everything outside the damage becomes a colour nothing else on
-	 * a desktop produces.
-	 *
 	 * DONT_CARE was tried first and MEASURED USELESS as a break. It means the
 	 * contents become undefined, and a driver is entitled to leave them alone
 	 * -- which is exactly what RADV does on a desktop GPU, where there are no
 	 * tiles to avoid loading. The whole test suite passed with it set. A break
 	 * switch the hardware is allowed to ignore is not a break switch.
 	 */
-	bool break_preserve = avk_no_load_preserve();
 	VkImageView attach_view = target->view;
 	/*
 	 * WHICH PIPELINE SET THIS SEGMENT DRAWS WITH.
@@ -996,10 +936,8 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 		/* A REGIONAL target is written whole by the segment that owns it, so
 		 * there is nothing to preserve; the output target must preserve
 		 * everything outside this frame's damage. */
-		.loadOp = break_preserve
-			? VK_ATTACHMENT_LOAD_OP_CLEAR
-			: (ctx->load ? VK_ATTACHMENT_LOAD_OP_LOAD
-				: VK_ATTACHMENT_LOAD_OP_DONT_CARE),
+		.loadOp = ctx->load ? VK_ATTACHMENT_LOAD_OP_LOAD
+			: VK_ATTACHMENT_LOAD_OP_DONT_CARE,
 		.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
 		.clearValue = { .color = { .float32 = { 1.0f, 0.0f, 1.0f, 1.0f } } },
 	};
@@ -1070,10 +1008,9 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 	 * The range is the segment's own, so that cannot happen by construction
 	 * rather than by remembering to check.
 	 *
-	 * AZ_AVK_NO_OCCLUSION=1 skips the subtraction and restores the painter's
-	 * algorithm exactly. It is the falsifier: the same scene rendered with and
-	 * without it must be BIT-IDENTICAL, because occlusion culling that changes
-	 * a single pixel is not an optimisation, it is a rendering bug.
+	 * The same scene rendered with and without the subtraction must be
+	 * BIT-IDENTICAL: occlusion culling that changes a single pixel is not an
+	 * optimisation, it is a rendering bug.
 	 */
 	const size_t span = end > begin ? end - begin : 0;
 	if (!avk_render_reserve_regions(renderer, span + 1)) {
@@ -2943,8 +2880,7 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 			 * and the REGION is what shrinks.
 			 *
 			 * Everything outside prefix_rebuild is left undefined (loadOp
-			 * DONT_CARE, and under AZ_TRANSIENT_POISON it is a colour nothing
-			 * produces). Nothing samples it: prefix_rebuild is result_region
+			 * DONT_CARE). Nothing samples it: prefix_rebuild is result_region
 			 * dilated by the full chain support, so every tap taken for a pixel
 			 * of result_region lands inside it.
 			 */
@@ -3060,37 +2996,18 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 		};
 		/*
 		 * WHAT THIS CHAIN WOULD HAVE HAD TO PROCESS, derived BEFORE it is
-		 * declared -- because the falsifier needs the regions in hand to
-		 * scissor a pass to them, and because accumulating the pair here keeps
-		 * actual and required over the same frames and the same chains. A
-		 * ratio taken across different denominators is the mistake this
-		 * pairing exists to prevent.
+		 * declared -- the final upsample scissors itself to these regions, and
+		 * accumulating the pair here keeps actual and required over the same
+		 * frames and the same chains. A ratio taken across different
+		 * denominators is the mistake this pairing exists to prevent.
 		 *
 		 * The demanded region is the composite's own read region, in
 		 * capture-local pixels, as a bounding box. See
 		 * blur_required_work_pixels for why that bias is the safe one.
 		 */
-		/*
-		 * ── THE PRODUCTION-BASELINE CONTROL ───────────────────────────────
-		 *
-		 * AZ_BLUR_SKIP_WORK_DERIVATION=1 skips avk_blur_work_of() entirely.
-		 * TEST ONLY, and it exists to answer one question honestly: a baseline
-		 * production frame with the scissor OFF would not need this derivation
-		 * at all -- it runs today only because M4F.2D.1 wired it for
-		 * accounting. Comparing instrumented OFF against instrumented ON would
-		 * therefore hide most of the CPU cost of KEEPING the optimisation.
-		 *
-		 * The switch is refused when the scissor is on, because a scissor
-		 * without its region would render an arbitrary rectangle -- an invalid
-		 * premise rather than a baseline.
-		 */
 		struct avk_blur_work work;
 		bool have_work = false;
-		bool skip_derive = az_avk_blur_skip_derivation();
-		if (skip_derive && blur_up0_scissor_on()) {
-			skip_derive = false;
-		}
-		if (!skip_derive && pixman_region32_not_empty(&d->result_region)) {
+		if (pixman_region32_not_empty(&d->result_region)) {
 			struct timespec rb0, rb1;
 			clock_gettime(CLOCK_MONOTONIC, &rb0);
 			pixman_box32_t rb = *pixman_region32_extents(&d->result_region);
@@ -3343,12 +3260,10 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 	 * later point, and taking the maximum makes that true without depending on
 	 * the ordering.
 	 */
-	if (!avk_no_sampled_last_use()) {
-		for (size_t i = 0; i < scene->len; i++) {
-			struct avk_image *img = scene->cmds[i].image;
-			if (img != NULL && img->last_use < value) {
-				img->last_use = value;
-			}
+	for (size_t i = 0; i < scene->len; i++) {
+		struct avk_image *img = scene->cmds[i].image;
+		if (img != NULL && img->last_use < value) {
+			img->last_use = value;
 		}
 	}
 

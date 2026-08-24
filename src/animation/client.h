@@ -71,11 +71,6 @@ enum corner_location set_client_corner_location(Client *c) {
 		 * this rule exists for) and an interior seam no longer does.
 		 */
 		struct wlr_box bnd = sgeom;
-		if (getenv("AZ_CORNER_OWNER_MONITOR_BOUND")) {
-			/* THE BREAK: the pre-fix rule. The straddling window's
-			 * overhanging side must go square against it. */
-			bnd = c->mon->m;
-		}
 		int32_t bnd_x = bnd.x, bnd_y = bnd.y;
 		int32_t bnd_r = bnd.x + bnd.width;
 		int32_t bnd_b = bnd.y + bnd.height;
@@ -2677,27 +2672,9 @@ static void fallout_client_next_tick(Client *c, double t) {
  * a negative coordinate is exactly where an asymmetric rule stops being a
  * rounding policy and starts being a drift.
  *
- * AZ_ANIM_TRUNCATE=1 restores truncation, which is the break: the jitter
- * regression must fail with it set, or it is not testing anything.
  */
-static bool anim_truncate_break(void) {
-	static int cached = -1;
-	if (cached < 0) {
-		const char *e = getenv("AZ_ANIM_TRUNCATE");
-		cached = e != NULL && e[0] == '1';
-		if (cached)
-			wlr_log(WLR_ERROR, "AZ_ANIM_TRUNCATE=1 -- animated geometry is "
-				"truncated instead of rounded. TEST ONLY: this reintroduces "
-				"the post-arrival 1px jitter M4G removed.");
-	}
-	return cached != 0;
-}
-
 static inline int32_t anim_lerp(int32_t from, int32_t to, double factor) {
 	double v = (double)from + ((double)to - (double)from) * factor;
-	if (anim_truncate_break()) {
-		return (int32_t)v;
-	}
 	return (int32_t)llround(v);
 }
 
@@ -2858,22 +2835,7 @@ void fadeout_client_animation_next_tick(Client *c, uint64_t sample_ns) {
  *
  * Springs only. Bezier easings keep strict duration semantics: they are
  * defined to arrive exactly at t=1 and users configure them expecting that.
- *
- * AZ_ANIM_NO_CONVERGE=1 is the break -- it restores the dead tail.
  */
-static bool anim_no_converge_break(void) {
-	static int cached = -1;
-	if (cached < 0) {
-		const char *e = getenv("AZ_ANIM_NO_CONVERGE");
-		cached = e != NULL && e[0] == '1';
-		if (cached)
-			wlr_log(WLR_ERROR, "AZ_ANIM_NO_CONVERGE=1 -- a converged spring "
-				"keeps running to duration_ms. TEST ONLY: this reintroduces "
-				"the dead tail M4G removed.");
-	}
-	return cached != 0;
-}
-
 /* Half a device pixel: below this a change cannot survive the round to
  * integer scene coordinates, so it cannot be seen. */
 #define ANIM_CONVERGE_PX 0.5
@@ -2929,7 +2891,7 @@ static inline void anim_curve_all(const Client *c, double t, int32_t type,
  */
 static bool anim_spring_converged(const Client *c, int32_t type, double t,
 		const double factor[ANIM_AXIS_COUNT]) {
-	if (!config.animation_curve_spring || anim_no_converge_break()) {
+	if (!config.animation_curve_spring) {
 		return false;
 	}
 	/* The curve types that actually take the spring branch in

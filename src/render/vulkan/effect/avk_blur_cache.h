@@ -28,15 +28,8 @@ bool avk_blur_params_equal(const struct avk_blur_params *a,
  * never allocates, so the answer can be taken twice (once to decide, once to
  * log) without a side effect between them.
  *
- * `force_rebuild` is the falsifier's entry point -- see
- * AZ_BLUR_CACHE_ALWAYS_DIRTY. It is checked FIRST so that a forced run always
- * reports FORCED rather than whichever ordinary reason happened to also apply.
- */
-/*
- * `shared_identity` is the falsifier for the per-kind record -- see
- * AZ_BLUR_CACHE_SHARED_IDENTITY. True restores the shipped defect: both kinds
- * are validated against the cache-wide identity, which is stamped by whichever
- * kind last rebuilt, so a starved kind is certified by the other one's work.
+ * `force_rebuild` is checked FIRST, so a forced run always reports FORCED
+ * rather than whichever ordinary reason happened to also apply.
  */
 enum avk_blur_cache_reason avk_blur_cache_check(
 	const struct avk_blur_cache *cache, uint64_t generation,

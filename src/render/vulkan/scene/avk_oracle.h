@@ -115,8 +115,7 @@ struct avk_oracle_slot {
 	 *
 	 * Not a convenience. A production prefix transient is written only inside
 	 * prefix_rebuild and everything else in it is deliberately undefined -- it
-	 * is loadOp DONT_CARE, and under AZ_TRANSIENT_POISON it is a colour nothing
-	 * produces. A reference rendered whole writes all of it. Comparing the two
+	 * is loadOp DONT_CARE. A reference rendered whole writes all of it. Comparing the two
 	 * over the full capture therefore reports a difference for every pixel the
 	 * design says nothing about, which is not a defect and would bury the one
 	 * that is.

@@ -262,11 +262,10 @@ struct blur_pass {
 	 * for one purpose -- proving that the derived required region is
 	 * NECESSARY and not merely sufficient.
 	 *
-	 * With AZ_TRANSIENT_POISON=1 every transient starts as garbage, so
-	 * scissoring a pass to region R leaves poison everywhere else at that
-	 * level. Render the DERIVED region and the final image must be unchanged
-	 * (the region is sufficient); render one strip LESS and the final image
-	 * must change (the region is necessary). Either half alone proves nothing.
+	 * Proving it takes both halves: render the DERIVED region and the final
+	 * image must be unchanged (the region is sufficient); render one strip
+	 * LESS and it must change (the region is necessary). Either half alone
+	 * proves nothing.
 	 */
 	int32_t scissor_x, scissor_y;
 	uint32_t scissor_w, scissor_h;
@@ -422,88 +421,13 @@ static void record_blur_pass(VkCommandBuffer cb, void *user) {
 }
 
 /*
- * ── THE REQUIRED-REGION FALSIFIER ─────────────────────────────────────────
- *
- * AZ_BLUR_REQ_SCISSOR=<what>[,<shrink>]   TEST ONLY.
- *
- *   what    "down1".."down6", "up0".."up5", or "all"
- *   shrink  pixels to remove from each edge of the derived region, default 0
- *
- * Scissors the named pass(es) to the region avk_blur_work_of() says they must
- * render. Combined with AZ_TRANSIENT_POISON=1 -- which fills every transient
- * with garbage before use -- this turns the derivation into an experiment with
- * two halves:
- *
- *   shrink=0   everything outside the derived region is poison, and the final
- *              image must be UNCHANGED. The region is SUFFICIENT.
- *   shrink=1   one strip of the derived region is poison instead, and the
- *              final image must CHANGE. The region is NECESSARY there.
- *
- * A derivation that only ever passes the first half is a region that is big
- * enough, which is not the same claim as the one the denominator makes.
- *
- * Production is unaffected: with the variable unset every pass renders its
- * whole level, exactly as M4E left it. M4F.2D has NOT implemented regional
- * filter execution and this is not a step towards doing so behind the
- * milestone's back -- it is how the number in the report is checked.
- */
-struct blur_req_break {
-	bool on;
-	bool all;
-	bool down;          /* true: down pass, false: up pass */
-	uint32_t level;
-	int32_t shrink;
-};
-
-static struct blur_req_break blur_req_break(void) {
-	static struct blur_req_break cached;
-	static bool read;
-	if (read) {
-		return cached;
-	}
-	read = true;
-	const char *env = getenv("AZ_BLUR_REQ_SCISSOR");
-	if (env == NULL || env[0] == '\0') {
-		return cached;
-	}
-	char what[32] = {0};
-	int shrink = 0;
-	if (sscanf(env, "%31[^,],%d", what, &shrink) < 1) {
-		avk_log(AVK_ERROR, "AZ_BLUR_REQ_SCISSOR=%s is not <what>[,<shrink>]",
-			env);
-		return cached;
-	}
-	cached.shrink = shrink;
-	if (strcmp(what, "all") == 0) {
-		cached.on = true;
-		cached.all = true;
-	} else if (strncmp(what, "down", 4) == 0) {
-		cached.on = true;
-		cached.down = true;
-		cached.level = (uint32_t)atoi(what + 4);
-	} else if (strncmp(what, "up", 2) == 0) {
-		cached.on = true;
-		cached.down = false;
-		cached.level = (uint32_t)atoi(what + 2);
-	} else {
-		avk_log(AVK_ERROR, "AZ_BLUR_REQ_SCISSOR: %s is not down<N>/up<N>/all",
-			what);
-		return cached;
-	}
-	avk_log(AVK_WARN, "AZ_BLUR_REQ_SCISSOR=%s -- blur passes render only their "
-		"DERIVED REQUIRED region, shrunk by %d. This build is a measurement "
-		"instrument, not a renderer.", env, shrink);
-	return cached;
-}
-
-/*
  * ── M4F.2D.2: THE UP0-ONLY SCISSOR ────────────────────────────────────────
  *
  * The FINAL, full-resolution upsample renders only the region
  * avk_blur_work_of() derived for it -- and nothing else in the chain changes.
- * ON BY DEFAULT; AZ_BLUR_UP0_SCISSOR=0 restores the baseline, which renders
- * every pass whole exactly as it always has. Both sides are the same binary
- * and differ in one scissor, because an A/B needs both in one build.
+ * Unconditional. The baseline it replaced rendered every pass whole; the two
+ * were measured against each other in one binary before this became the only
+ * behaviour.
  *
  * WHY THIS PASS AND ONLY THIS PASS. Measured on this hardware at levels=3
  * r=5: the up chain is 71% of blur GPU time and the final upsample alone is
@@ -530,50 +454,6 @@ static struct blur_req_break blur_req_break(void) {
  * the frame), and every measured workload removed exactly the predicted number
  * of fragments with the graph and resource topology unchanged.
  */
-static bool blur_up0_scissor_enabled(void) {
-	static int cached = -1;
-	if (cached < 0) {
-		const char *env = getenv("AZ_BLUR_UP0_SCISSOR");
-		cached = !(env != NULL && env[0] == '0');
-		if (!cached) {
-			avk_log(AVK_INFO, "avk blur: AZ_BLUR_UP0_SCISSOR=0 -- the final "
-				"upsample renders its whole level, as it did before M4F.2D.2");
-		}
-	}
-	return cached != 0;
-}
-
-bool blur_up0_scissor_on(void) {
-	return blur_up0_scissor_enabled();
-}
-
-/* The derived region for one pass, with the break's shrink applied. Returns
- * false when this pass is not the one being scissored. */
-static bool blur_req_scissor(const struct avk_blur_work *work, bool down,
-		uint32_t level, int32_t *x, int32_t *y, uint32_t *w, uint32_t *h) {
-	struct blur_req_break b = blur_req_break();
-	if (!b.on || work == NULL) {
-		return false;
-	}
-	if (!b.all && (b.down != down || b.level != level)) {
-		return false;
-	}
-	const struct avk_blur_level_work *lw = down ? &work->down[level]
-		: &work->up[level];
-	int32_t rx = (int32_t)lw->req_x + b.shrink;
-	int32_t ry = (int32_t)lw->req_y + b.shrink;
-	int32_t rw = (int32_t)lw->req_w - 2 * b.shrink;
-	int32_t rh = (int32_t)lw->req_h - 2 * b.shrink;
-	if (rw <= 0 || rh <= 0) {
-		return false;
-	}
-	*x = rx;
-	*y = ry;
-	*w = (uint32_t)rw;
-	*h = (uint32_t)rh;
-	return true;
-}
-
 bool avk_blur_declare(struct avk_graph *graph, struct avk_transient_pool *pool,
 		struct avk_pipelines *pipes, struct avk_blur_stats *stats,
 		uint32_t src_resource, uint32_t dst_resource,
@@ -686,8 +566,6 @@ bool avk_blur_declare(struct avk_graph *graph, struct avk_transient_pool *pool,
 		p->dst_w = dw;
 		p->dst_h = dh;
 		blur_uv(p, src_w, src_h, radius);
-		blur_req_scissor(work, true, i, &p->scissor_x, &p->scissor_y,
-			&p->scissor_w, &p->scissor_h);
 		/* Rectangle arithmetic, not a per-pixel loop: what this pass WILL
 		 * process, so M4F.2D can weigh a per-level scissor against the result
 		 * area it would keep. */
@@ -748,15 +626,8 @@ bool avk_blur_declare(struct avk_graph *graph, struct avk_transient_pool *pool,
 		p->dst_w = dw;
 		p->dst_h = dh;
 		blur_uv(p, src_w, src_h, radius);
-		/*
-		 * THE ONE OPTIMISATION UNDER EVALUATION. The falsifier's own switch
-		 * takes precedence when set, because it is the diagnostic that proved
-		 * this region and must be able to override the thing it validates.
-		 */
 		uint32_t rendered_w = dw, rendered_h = dh;
-		if (!blur_req_scissor(work, false, i - 1, &p->scissor_x, &p->scissor_y,
-					&p->scissor_w, &p->scissor_h)
-				&& last && work != NULL && blur_up0_scissor_enabled()
+		if (last && work != NULL
 				&& work->up[0].req_w > 0 && work->up[0].req_h > 0) {
 			p->scissor_x = (int32_t)work->up[0].req_x;
 			p->scissor_y = (int32_t)work->up[0].req_y;

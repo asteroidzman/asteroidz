@@ -546,32 +546,8 @@ bool avk_oracle_write_ppm(const struct avk_oracle *o, const char *path,
 		fclose(f);
 		return false;
 	}
-	/*
-	 * BREAK SWITCH: read each row one pixel further along than the last.
-	 *
-	 * A readback whose row pitch is wrong by a constant produces a picture
-	 * that is SHEARED rather than corrupt: every pixel is a real pixel, the
-	 * colours are right, and at a glance it looks like a rendering artefact
-	 * somewhere else entirely. That is why the capture-layout test measures a
-	 * straight edge rather than trusting the extents, and this is what proves
-	 * that measurement can fail. Test only; see contrib/avk-capture-layout-test.sh.
-	 */
-	static int skew = -1;
-	if (skew < 0) {
-		const char *env = getenv("AZ_AVK_CAPTURE_ROW_SKEW");
-		skew = env != NULL ? atoi(env) : 0;
-		if (skew != 0) {
-			avk_log(AVK_ERROR, "AZ_AVK_CAPTURE_ROW_SKEW=%d -- every capture is "
-				"read back with a deliberately wrong row pitch", skew);
-		}
-	}
 	for (int y = 0; y < box.height; y++) {
-		const uint8_t *src = px + (size_t)y * stride
-			+ (size_t)((VkDeviceSize)y * (VkDeviceSize)skew * 4);
-		if (skew != 0 && (size_t)((char *)src - (char *)px)
-				+ (size_t)box.width * 4 > (size_t)(stride * box.height)) {
-			src = px + (size_t)y * stride;   /* stay inside the mapping */
-		}
+		const uint8_t *src = px + (size_t)y * stride;
 		for (int x = 0; x < box.width; x++) {
 			row[x * 3 + 0] = src[x * 4 + r];
 			row[x * 3 + 1] = src[x * 4 + g];

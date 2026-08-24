@@ -148,10 +148,9 @@ struct avk_image {
  * headless test suite that passed throughout, because nothing scans a headless
  * buffer out. Headless proves composition; only a display proves presentation.
  *
- * The ACQUIRE half has no measurable effect on this machine (RADV, Navi31),
- * which is why AVK_NO_FOREIGN_ACQUIRE=1 exists -- but note that the switch
- * disables both halves, so it is not a subtle knob: it turns the desktop
- * white.
+ * The ACQUIRE half has no measurable effect on this machine (RADV, Navi31).
+ * The RELEASE half is what the display engine needs, and without it the
+ * monitor comes up white.
  *
  * An image we allocated ourselves (AVK_IMAGE_OWNED, or a dma-buf we copied
  * out of) has no foreign owner and must NOT be transferred, because there is

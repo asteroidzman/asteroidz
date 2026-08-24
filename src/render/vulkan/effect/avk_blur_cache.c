@@ -199,14 +199,13 @@ enum avk_blur_cache_reason avk_blur_cache_check(
 	 * blur_cache_inv_source is how it becomes visible instead of becoming a
 	 * stale picture.
 	 *
-	 * WHICH MEANS AZ_BLUR_CACHE_IGNORE_DIRTY CANNOT TEST THIS. This function
-	 * returns at the first disagreement, so when the generation has moved it
-	 * returns GENERATION and never evaluates the line below; suppressing that
-	 * reason afterwards leaves the source comparison unreached, and a fixture
-	 * built on it reads inv_source == 0 and concludes the digest is inert. The
-	 * break for this rule is AZ_BLUR_CACHE_NO_DIRTY_EDGE, which drops the
-	 * notification so the generations still agree -- which is also the shipped
-	 * defect rather than an invented one.
+	 * WHICH IS NOT REACHABLE BY SUPPRESSING A REASON. This function returns at
+	 * the first disagreement, so when the generation has moved it returns
+	 * GENERATION and never evaluates the line below; anything that lets the
+	 * generation move and then hides the reason leaves this comparison
+	 * unreached, reads inv_source == 0 and concludes the digest is inert. The
+	 * condition this rule exists for is a DROPPED notification: the generations
+	 * still agree, which is the shipped defect rather than an invented one.
 	 */
 	if (was_source != source_hash) {
 		return AVK_BLUR_CACHE_SOURCE;

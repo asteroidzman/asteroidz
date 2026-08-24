@@ -116,29 +116,9 @@ static bool az_dmabuf_format_advertisable(const struct avk_drm_format *fmt,
 static uint32_t az_dmabuf_withheld_pairs;
 static uint32_t az_dmabuf_size_restricted_pairs;
 
-/*
- * BREAK SWITCH: advertise size-restricted pairs, as the compositor did before
- * this rule existed.
- *
- * A test that never saw the defect is not a test. With this set, a nested
- * gamescope going full-screen at 10-bit gets its buffer refused and its window
- * disappears -- which is what the live session did, and what the fixture below
- * this comment reproduces without a GPU.
- */
-static bool az_dmabuf_advertise_size_restricted(void) {
-	if (getenv("AZ_DMABUF_ADVERTISE_SIZE_RESTRICTED") == NULL) {
-		return false;
-	}
-	wlr_log(WLR_ERROR, "AZ_DMABUF_ADVERTISE_SIZE_RESTRICTED=1 -- pairs that "
-		"cannot be imported at full size will be advertised anyway");
-	return true;
-}
-
 static bool az_dmabuf_composition_formats(const struct avk_format_table *table,
 		VkExtent2D required, struct wlr_drm_format_set *out) {
 	*out = (struct wlr_drm_format_set){0};
-	const bool allow_restricted = az_dmabuf_advertise_size_restricted();
-
 	uint32_t pairs = 0, skipped_formats = 0, skipped_pairs = 0;
 	az_dmabuf_size_restricted_pairs = 0;
 	for (uint32_t i = 0; i < table->count; i++) {
@@ -173,7 +153,7 @@ static bool az_dmabuf_composition_formats(const struct avk_format_table *table,
 				usable++;
 			}
 		}
-		const bool keep_restricted = allow_restricted || usable == 0;
+		const bool keep_restricted = usable == 0;
 		if (restricted > 0 && usable == 0) {
 			wlr_log(WLR_ERROR, "dmabuf: every modifier for %s is importable "
 				"only below %ux%u; advertising them anyway because withholding "

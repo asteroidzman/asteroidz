@@ -808,8 +808,8 @@ Fields worth knowing:
 | `cursor_source_commits` / `cursor_source_uploads` / `cursor_source_upload_bytes` / `cursor_source_upload_skips` | the current cursor image's own upload history, read straight off the same per-buffer record every other client buffer uses. This is "position changed != pixels changed" in four numbers: dragging a cursor for thirty seconds must move the skip count and leave commits, uploads and bytes where they were. Absent when the cursor has no image |
 | `cpu_sync_waits` | must be 0 — a nonzero value means the frame path blocks on the GPU |
 | `present_sync_timeline` / `present_sync_dmabuf` | frames handed to the display with a fence, by which route |
-| `present_sync_none` | **must be 0.** Frames handed over unsynchronised — only reachable via `AZ_AVK_NO_PRESENT_SYNC=1` |
-| `present_sync_failures` | a fence could not be attached, so the frame was dropped and SceneFX rendered it instead |
+| `present_sync_none` | **must be 0.** Frames handed over unsynchronised. |
+| `present_sync_failures` | a fence could not be attached, so the frame was dropped |
 | `presentation_waits` | GPU-side waits before reusing a target. Not a stall — the CPU returns immediately. Rare on the timeline route; ~1 per frame on the dma-buf route, where the buffer's fence list also holds our own last write |
 | `target_state_violations` | must be 0 — the swapchain handed back a buffer the display had not released |
 | `validation_errors` | Vulkan validation errors seen this run (needs `ASTEROIDZ_VK_DEBUG=1`) |

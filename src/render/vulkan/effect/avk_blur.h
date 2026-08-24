@@ -146,11 +146,6 @@ struct avk_blur_stats {
  * chain1... so "all the downsamples" is not a contiguous range and cannot be
  * one timestamp pair. See avk_timestamp.h.
  */
-/* Whether the up0-only scissor prototype is enabled (AZ_BLUR_UP0_SCISSOR=1).
- * Exposed so the renderer can refuse the production-baseline switch while it
- * is on: a scissor without its derived region is not a baseline. */
-bool blur_up0_scissor_on(void);
-
 struct avk_blur_marks {
 	enum avk_ts_mark down_end;
 	enum avk_ts_mark up_end;

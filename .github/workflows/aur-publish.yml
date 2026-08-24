@@ -44,20 +44,17 @@ jobs:
           ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
           commit_message: Update to ${{ github.event.release.tag_name }}
           ssh_keyscan_types: rsa,ecdsa,ed25519
-          # test: true was impossible while asteroidz depended on
-          # asteroidz-scenefx: an AUR-only package that this container's plain
-          # pacman cannot resolve (no yay/paru here), so meson setup failed to
-          # find it regardless of test_flags. That blocker is gone -- scenefx
-          # is vendored in-tree and linked statically, and every remaining
-          # dependency comes from the official repositories.
+          # Every dependency now comes from the official repositories, so a
+          # plain pacman in this container can resolve them -- `test: true` is
+          # possible where it once was not.
           #
-          # Left false anyway, for now: turning it on changes what a RELEASE
-          # publish does, and it has not been exercised. Worth trying with
-          # --syncdeps (the action's default --nodeps never installs the
-          # PKGBUILD's makedepends either, which broke the 0.17.0 and first
-          # 0.17.1 publishes with "arch-meson: command not found"). Real
-          # verification -- build plus the full regression suite -- happens
-          # locally before a release is cut either way.
+          # Left false for now: turning it on changes what a RELEASE publish
+          # does, and it has not been exercised. Worth trying with --syncdeps
+          # (the action's default --nodeps never installs the PKGBUILD's
+          # makedepends either, which broke the 0.17.0 and first 0.17.1
+          # publishes with "arch-meson: command not found"). Until then,
+          # verify by running makepkg against the PKGBUILD directly before
+          # cutting a release.
           test: false
 
       # Housekeeping, so the PKGBUILD in this repo shows the version that was

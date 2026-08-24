@@ -382,9 +382,9 @@ az_output_color_derive(const struct az_output_desc *o) {
  *                              already electrical.
  *
  * THE INTERLOCK IS THE POINT. An HDR output accepted while the encode pass is
- * not going to run is far worse than an HDR output refused: refusing costs the
- * SceneFX fallback, accepting costs a wrong picture on the one content type the
- * user turned HDR on for. So acceptance requires the encode pass to be reachable
+ * not going to run is far worse than an HDR output refused: refusing is loud,
+ * accepting costs a wrong picture on the one content type the user turned HDR
+ * on for. So acceptance requires the encode pass to be reachable
  * -- both C3 choosing Path B and the pass being enabled in this session.
  *
  * Pure, and separate from az_avk.h, so the decision table is a unit test rather

@@ -49,21 +49,12 @@ struct avk_upload_worker {
 	 * Written under `lock`, which the worker retakes after the pack anyway.
 	 */
 	uint64_t pack_ns_max, pack_ns_sum, pack_count, pack_bytes;
-	/* Test-only: microseconds to stall after each pack. See the use site. */
-	uint64_t slow_us;
-
 	/*
-	 * AZ_AVK_PACK_CONTROL -- diagnostic. Times an identical-size heap-to-heap
-	 * memcpy immediately after a slow pack, on the same thread, at the same
-	 * instant. It answers the one question the pack time alone cannot: is
-	 * THIS MEMORY slow, or is this MOMENT slow. A standalone benchmark of the
-	 * same bytes into the same Vulkan memory type ran 22x faster than the
-	 * compositor's own copy, which is a difference no property of the
+	 * A standalone benchmark of the same bytes into the same Vulkan memory
+	 * type once ran 22x faster than the compositor's own copy, which is a
+	 * difference no property of the
 	 * allocation can explain.
 	 */
-	bool control;
-	void *ctl_src, *ctl_dst;
-	size_t ctl_size;
 };
 
 /*
@@ -163,60 +154,7 @@ static void *worker_main(void *data) {
 		uint32_t pack_rows = job->plan.height;
 		bool pack_full = job->plan.full;
 		avk_upload_pack(&job->plan, job->src, job->dst);
-		/*
-		 * AZ_AVK_SLOW_UPLOAD_US -- test hook, and the mirror of
-		 * AZ_AVK_NO_STALE: that one forbids the stale path, this one
-		 * guarantees it. A copy only goes late when it loses a race, and
-		 * headless it never does -- a fixture written for the late-copy
-		 * path measured 1202 commits and ONE stale frame, which is not
-		 * something to assert on. Stalling the worker makes the condition
-		 * this code is written for actually occur, instead of hoping the
-		 * machine is slow today.
-		 *
-		 * AFTER the pack, so the pixels are correct and only their ARRIVAL
-		 * is late. Delaying the copy itself would test a different thing.
-		 */
-		if (w->slow_us > 0) {
-			struct timespec ts = {
-				.tv_sec = (time_t)(w->slow_us / 1000000),
-				.tv_nsec = (long)(w->slow_us % 1000000) * 1000L,
-			};
-			nanosleep(&ts, NULL);
-		}
 		uint64_t pack_ns = now_ns() - pack_t0;
-
-		uint64_t ctl_ns = 0, ctl_read_ns = 0, ctl_write_ns = 0;
-		if (w->control && pack_ns > 20000000ull) {
-			if (w->ctl_size < pack_bytes) {
-				free(w->ctl_src);
-				free(w->ctl_dst);
-				w->ctl_src = malloc(pack_bytes);
-				w->ctl_dst = malloc(pack_bytes);
-				w->ctl_size = (w->ctl_src != NULL && w->ctl_dst != NULL)
-					? pack_bytes : 0;
-				if (w->ctl_size > 0) {
-					memset(w->ctl_src, 0x5a, pack_bytes);
-					memset(w->ctl_dst, 0, pack_bytes);
-				}
-			}
-			if (w->ctl_size >= pack_bytes) {
-				uint64_t c0 = now_ns();
-				memcpy(w->ctl_dst, w->ctl_src, pack_bytes);
-				ctl_ns = now_ns() - c0;
-				/* Which SIDE. Read the real source into the heap, then write
-				 * the heap into the real destination -- the same two mappings
-				 * the pack used, one at a time. The second one overwrites the
-				 * staged pixels, so the pack is redone afterwards and the
-				 * frame stays correct; this whole block is env-gated. */
-				c0 = now_ns();
-				memcpy(w->ctl_dst, job->src, pack_bytes);
-				ctl_read_ns = now_ns() - c0;
-				c0 = now_ns();
-				memcpy(job->dst, w->ctl_src, pack_bytes);
-				ctl_write_ns = now_ns() - c0;
-				avk_upload_pack(&job->plan, job->src, job->dst);
-			}
-		}
 
 		atomic_store_explicit(&job->state, AVK_UPLOAD_JOB_DONE,
 			memory_order_release);
@@ -252,20 +190,6 @@ static void *worker_main(void *data) {
 				pack_rects, pack_full ? "whole" : "partial",
 				(double)pack_bytes * 1000.0 / (double)pack_ns,
 				pack_stride, pack_rows);
-			if (ctl_ns > 0) {
-				avk_log(AVK_ERROR,
-					"  control heap->heap memcpy of the same %.2fMB, same "
-					"thread, same instant: %.1fms = %.0fMB/s",
-					(double)pack_bytes / 1e6, (double)ctl_ns / 1e6,
-					(double)pack_bytes * 1000.0 / (double)ctl_ns);
-				avk_log(AVK_ERROR,
-					"  same bytes, one mapping at a time: client shm -> heap "
-					"%.1fms = %.0fMB/s | heap -> staging %.1fms = %.0fMB/s",
-					(double)ctl_read_ns / 1e6,
-					(double)pack_bytes * 1000.0 / (double)ctl_read_ns,
-					(double)ctl_write_ns / 1e6,
-					(double)pack_bytes * 1000.0 / (double)ctl_write_ns);
-			}
 		}
 		pthread_cond_broadcast(&w->finished);
 		notify(w);
@@ -278,16 +202,6 @@ struct avk_upload_worker *avk_upload_worker_create(void) {
 	struct avk_upload_worker *w = calloc(1, sizeof(*w));
 	if (w == NULL) {
 		return NULL;
-	}
-	w->control = getenv("AZ_AVK_PACK_CONTROL") != NULL;
-	const char *slow = getenv("AZ_AVK_SLOW_UPLOAD_US");
-	if (slow != NULL) {
-		long long v = atoll(slow);
-		/* Capped: this stalls a real thread, and a fixture that mistypes a
-		 * zero should be slow, not hung. */
-		if (v > 0) {
-			w->slow_us = (uint64_t)(v > 100000 ? 100000 : v);
-		}
 	}
 	w->notify_fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
 	if (w->notify_fd < 0) {

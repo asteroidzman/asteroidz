@@ -280,6 +280,15 @@ animations {
 }
 ```
 
+**`duration` is an upper bound a spring may never reach.** The spring is
+evaluated over *normalised* time, so `frequency` says how many radians it
+travels per configured duration, not per second — a higher frequency converges
+sooner and stops, leaving the rest of the duration unused. Measured at
+`frequency 10`, every move configured for 500ms finished in about 202ms; at
+`frequency 22`, in 23% of its duration. If a spring animation feels shorter
+than you asked for, the lever is `frequency`, not `duration`: roughly 4–5 keeps
+it in motion for most of the configured time.
+
 ## Tag Animation Direction
 
 Control the direction of tag switch animations.

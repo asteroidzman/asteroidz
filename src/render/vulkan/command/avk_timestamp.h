@@ -283,16 +283,13 @@ struct avk_timestamps {
 	uint64_t straddled;
 
 	/*
-	 * ── THE BREAK ─────────────────────────────────────────────────────────
+	 * ── WHY THE SLOT AND NOT THE CPU ──────────────────────────────────────
 	 *
-	 * AZ_TS_COHORT_WRONG=1 classifies a returned result by what the CPU is
-	 * doing NOW instead of by the slot it came from -- the exact defect this
-	 * design exists to avoid. It is here because a delayed-readback bug is
-	 * invisible in any fixture where every frame is blur-active, which is
-	 * most of them; the sparse-pulse cohort test asserts that turning this on
-	 * CHANGES the answer, so the test is proven able to fail.
+	 * Classifying a returned result by what the CPU is doing NOW is the exact
+	 * defect this design exists to avoid, and it is invisible whenever every
+	 * frame is blur-active -- which is most of the time. Only a sparse pulse
+	 * of blur frames can tell the two apart.
 	 */
-	bool cohort_wrong;
 	bool cur_blur_active;
 	bool trace;
 	/* Set per frame before recording; copied into the slot at begin. */

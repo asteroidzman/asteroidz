@@ -444,7 +444,7 @@ static void az_flush(struct avk_graph *graph, VkCommandBuffer cb,
 	 * NOT individually timed. A bracketing clock_gettime pair costs ~37 ns
 	 * around a call that costs ~60, so the instrument perturbs the measurement
 	 * by more than half and, on a preemptible thread, its mean measures the
-	 * scheduler. tests/test-avk-barrier-cost.c measures this properly, in a
+	 * scheduler. Measured properly, in a
 	 * tight loop, one variable at a time.
 	 */
 	vkCmdPipelineBarrier2(cb, &dep);

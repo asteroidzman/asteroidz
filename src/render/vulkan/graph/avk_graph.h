@@ -24,7 +24,7 @@
  * NOT own window focus, layout decisions, Wayland state, animation, monitor
  * ownership or anything else a compositor knows. Nothing under
  * src/render/vulkan/ may include a wlroots header and
- * tests/check-vulkan-isolation.py fails the build if that changes.
+ * The meson source list is what keeps it that way.
  *
  * IT IS NOT A GENERIC RENDER GRAPH. There is no dependency solver, no automatic
  * pass reordering, no culling of unreachable passes and no aliasing. Passes
@@ -245,7 +245,7 @@ struct avk_graph_stats {
 	 *   vkCmdPipelineBarrier2 itself. Separating it read 35-42us a frame live
 	 *   against 2-7us headless, which looked like a graph that fell apart on
 	 *   real hardware -- and was in fact the instrument, not the call. The call
-	 *   costs ~60 ns (tests/test-avk-barrier-cost.c); bracketing it with a
+	 *   costs ~60 ns, measured; bracketing it with a
 	 *   clock_gettime pair costs ~37, and a scheduler slice landing in that
 	 *   window is charged entirely to it. The emission is now folded back in
 	 *   here and reported as a DISTRIBUTION rather than a mean.
@@ -262,7 +262,7 @@ struct avk_graph_stats {
 	 * 1.9 us headless, 44 us live, which was written up as evidence that
 	 * DCC-compressed scan-out makes barriers expensive.
 	 *
-	 * tests/test-avk-barrier-cost.c then measured the call directly, one
+	 * The call was then measured directly, one
 	 * variable at a time on the same GPU. vkCmdPipelineBarrier2 costs 46-70 ns.
 	 * DCC: 46 ns against 46 ns for the same-size non-DCC modifier. A foreign
 	 * queue-family transfer: 44 ns against 51 ns without. Neither is a factor

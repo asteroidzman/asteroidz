@@ -4,11 +4,10 @@
 /*
  * The compositor half of the native Vulkan path.
  *
- * src/render/vulkan/ is the engine: it knows Vulkan and nothing else, and
- * The meson source list is what enforces it: a wlroots or GLES header
- * ever appears under it. This file is the other side of that boundary -- it
- * knows wlroots and asteroidz, and it is the only place the two vocabularies
- * meet.
+ * src/render/vulkan/ is the engine: it knows Vulkan and nothing else. The
+ * meson source list is what enforces that -- no wlroots or GLES header appears
+ * under it. This file is the other side of that boundary: it knows wlroots and
+ * asteroidz, and it is the only place the two vocabularies meet.
  *
  * What it does, in the order a frame goes through it:
  *
@@ -24,12 +23,13 @@
  *      buffer to the output state. wlr_scene_output_build_state(),
  *      wlr_renderer_begin_buffer_pass() and wlr_render_pass are not involved.
  *
- * And, just as importantly, what it refuses to do. AVK in M3 has no colour
- * management, no effects and no software cursor of its own. Rather than render
- * those frames wrongly, az_avk_build_frame() returns false and the caller
- * falls back to the SceneFX path for that frame. A wrong frame is worse than a
- * slow one, and "AVK handles the outputs it can handle correctly" is a
- * position that can be shipped while the rest is built.
+ * And, just as importantly, what it refuses to do. AVK does colour management,
+ * effects and its own software cursor, but there are still outputs it declines
+ * -- magnification, and a colour transform it cannot express as a matrix. THERE
+ * IS NOWHERE TO DECLINE TO. The GL renderer is gone from the build, so a
+ * refusal aborts, naming the output and the reason, rather than handing the
+ * frame to a second renderer that would make the desktop look fine and the bug
+ * invisible. See az_output_build_frame().
  */
 
 /* The renderer's two raster extents, as two types that cannot be assigned to
@@ -210,7 +210,7 @@ struct az_avk {
 	uint64_t commit_ns_max, commit_ns_sum, commit_samples;
 	uint64_t handler_ns_max, handler_ns_sum;
 	uint64_t handler_over_10ms, handler_over_30ms;
-	uint64_t fallback_frames;     /* frames handed back to the SceneFX path */
+	uint64_t fallback_frames;     /* frames AVK declined to build */
 	uint64_t buffer_imports;      /* client buffers resolved to an avk_image */
 	uint64_t buffer_import_fails;
 	uint64_t shm_uploads;         /* re-uploads of CPU buffers */
@@ -525,8 +525,6 @@ struct az_avk {
 	bool warned_shm;
 	bool warned_shm_source_gone;
 	bool warned_late_import;
-	bool warned_no_present_sync;
-	bool warned_damage_hole;
 };
 
 static struct az_avk avk = {0};
@@ -1087,9 +1085,8 @@ static void az_avk_attribs_from_wlr(struct avk_dmabuf_attributes *dst,
  * WHAT ORDERS THE GPU IS UNCHANGED. The submission still carries a timeline
  * wait on image->last_use and the same read-before-write barrier, still on the
  * main thread and therefore still in submission order against the frames. That
- * matters for more than tidiness: AZ_AVK_UNSAFE_REUSE exists to strip that
- * ordering, and a change that quietly removed the ordering along with the wait
- * would leave the break switch testing nothing.
+ * matters for more than tidiness: a change that removed the ordering along
+ * with the wait would race the frames still sampling the image.
  */
 
 /* Whether a copy may leave this thread at all. */
@@ -1261,7 +1258,7 @@ static enum az_shm_plan_result az_avk_shm_plan(struct az_avk_buffer *entry,
 	 * compares what it is about to draw against `uploaded` and repairs the
 	 * difference before the draw. See az_avk_frame_visibility().
 	 */
-	if (!az_avk_env_flag("AZ_AVK_NO_VISIBLE_CLIP")) {
+	{
 		const pixman_region32_t *hint = az_avk_surface_hint(entry->as,
 			entry->buffer->width, entry->buffer->height);
 		if (hint == NULL) {
@@ -1322,11 +1319,6 @@ static enum az_shm_plan_result az_avk_shm_plan(struct az_avk_buffer *entry,
 			int32_t y2 = boxes[i].y2 > entry->buffer->height
 				? entry->buffer->height : boxes[i].y2;
 			if (x2 <= x1 || y2 <= y1) {
-				continue;
-			}
-			if (az_avk_env_flag("AZ_AVK_OMIT_REGION") && i == rect_count - 1
-					&& rect_count > 1) {
-				/* Break test: drop one rectangle and leave the rest. */
 				continue;
 			}
 			rects[n++] = (struct avk_upload_rect){
@@ -1390,8 +1382,7 @@ static void az_avk_note_uploaded(struct az_avk_buffer *entry) {
 }
 
 /* The ordering that keeps an upload behind the frames still sampling the
- * image. One place, so the sync path and the worker path cannot differ -- and
- * so AZ_AVK_UNSAFE_REUSE strips it from both. */
+ * image. One place, so the sync path and the worker path cannot differ. */
 static uint32_t az_avk_shm_wait(const struct az_avk_buffer *entry,
 		VkSemaphoreSubmitInfo *wait) {
 	*wait = (VkSemaphoreSubmitInfo){
@@ -1400,14 +1391,6 @@ static uint32_t az_avk_shm_wait(const struct az_avk_buffer *entry,
 		.value = entry->image->last_use,
 		.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
 	};
-	if (az_avk_env_flag("AZ_AVK_UNSAFE_REUSE")) {
-		/* Break test: overwrite the image with no ordering against the frames
-		 * still sampling it. The copy races the fragment shader reading the
-		 * previous generation, which synchronisation validation reports as a
-		 * write-after-read hazard -- and which, without validation, shows up
-		 * as an occasional torn surface that looks like a client bug. */
-		return 0;
-	}
 	return entry->image->last_use > 0 ? 1 : 0;
 }
 
@@ -1466,15 +1449,6 @@ static void az_avk_shm_staging_release(struct az_avk_buffer *entry,
 static struct avk_upload *az_avk_shm_staging_take(struct az_avk_buffer *entry,
 		VkDeviceSize size, uint32_t *slot_out) {
 	uint32_t slot = entry->upload_slot ^ 1u;
-	if (az_avk_env_flag("AZ_AVK_UNSAFE_STAGING")) {
-		/* Break test: one staging buffer for every copy, which is what this
-		 * code did before. The host memcpy then overwrites the bytes an
-		 * in-flight vkCmdCopyBufferToImage2 is still reading, which
-		 * synchronisation validation reports as a write-after-read hazard on
-		 * the buffer -- and which, without validation, is the horizontal
-		 * banding that looks like a client rendering bug. */
-		slot = 0;
-	}
 	struct avk_upload *up = &entry->upload[slot];
 
 	/*
@@ -2379,24 +2353,14 @@ static struct avk_image *az_avk_image_for_buffer_ex(struct wlr_buffer *buffer,
 			 * Lookup, not upload. The copy happens only for a generation the
 			 * GPU does not already hold -- see content_generation.
 			 *
-			 * Two break switches, one for each way this can be wrong:
-			 *
-			 *   AZ_AVK_UPLOAD_ON_LOOKUP=1 restores the unconditional upload.
-			 *   Correct pixels, 924 GB a session.
-			 *
-			 *   AZ_AVK_CACHE_BY_IDENTITY=1 caches on the buffer pointer and
-			 *   never re-uploads. Free, and permanently wrong the moment a
-			 *   client reuses a wl_buffer -- which looks fine against every
-			 *   toolkit that rotates a buffer pool, and is why
-			 *   contrib/wlreuse exists.
+			 * Two ways this can be wrong, both of them plausible: uploading
+			 * unconditionally costs 924 GB a session for correct pixels, and
+			 * caching on the buffer POINTER is free and permanently wrong the
+			 * moment a client reuses a wl_buffer -- which looks fine against
+			 * every toolkit that rotates a buffer pool.
 			 */
-			if (az_avk_env_flag("AZ_AVK_CACHE_BY_IDENTITY")) {
-				avk.shm_upload_skips++;
-				return entry->image;
-			}
 			if (entry->uploaded_generation == entry->content_generation
-					&& entry->job == NULL
-					&& !az_avk_env_flag("AZ_AVK_UPLOAD_ON_LOOKUP")) {
+					&& entry->job == NULL) {
 				avk.shm_upload_skips++;
 				return entry->image;
 			}
@@ -2690,9 +2654,6 @@ static void az_avk_vis_note(void *user, const struct avk_cmd *cmd,
 static void az_avk_frame_visibility(const struct avk_renderer *renderer,
 		const struct avk_scene *scene, const struct avk_box *bounds,
 		struct wlr_output *output) {
-	if (az_avk_env_flag("AZ_AVK_NO_VISIBLE_CLIP")) {
-		return;
-	}
 	struct az_avk_vis_pass pass = {0};
 	pass.output = output;
 	struct az_avk_buffer *entry, *tmp;
@@ -2729,19 +2690,6 @@ static void az_avk_frame_visibility(const struct avk_renderer *renderer,
 
 	wl_list_for_each_safe(entry, tmp, &avk.buffers, link) {
 		if (!entry->has_shortfall) {
-			continue;
-		}
-		if (az_avk_env_flag("AZ_AVK_NO_VISIBLE_REPAIR")) {
-			/*
-			 * THE BREAK, and it is the one that matters here.
-			 *
-			 * Clip the copies and then decline to repair what the clip got
-			 * wrong. Everything the optimisation claims still holds -- fewer
-			 * bytes, the same counters -- and a window that becomes visible
-			 * shows whatever its image was allocated with. A suite that cannot
-			 * tell this build from the real one is asserting on cost and
-			 * calling it correctness.
-			 */
 			continue;
 		}
 		if (entry->job != NULL) {
@@ -3174,7 +3122,7 @@ static struct az_avk_renderer_slot *az_avk_renderer_for(VkFormat format) {
  * through an _SRGB attachment view -- i.e. does Path A exist for it?
  *
  * FALSE WHEN AVK IS NOT THE RENDERER, and that is the right answer rather than
- * a missing one: Path A is an AVK path, so an output on the SceneFX renderer
+ * a missing one: Path A is an AVK path, so an output AVK is not driving
  * does not have one to take.
  */
 /* Is AVK the renderer this session? The C3 inputs that are only meaningful for
@@ -3263,24 +3211,16 @@ static bool az_avk_pick_format(struct wlr_output *output, uint32_t fourcc,
 /* ── presentation synchronisation ───────────────────────────────────────── */
 
 /*
- * Two switches, both of them for tests, both of them named for what they
- * break rather than what they enable.
- *
- * AZ_AVK_NO_PRESENT_SYNC=1 hands the frame over with no fence at all. It is
- * the break test for this whole file: with it set, `present_sync_none` climbs
- * and a test that claims to prove synchronisation had better start failing.
- *
- * AZ_AVK_NO_TIMELINE=1 pretends the backend has no drm_syncobj timeline
- * support, which forces the dma-buf reservation path. Without it that path is
- * only reachable on hardware nobody here has, and an untested fallback is a
- * fallback that does not work.
+ * THE DMA-BUF RESERVATION PATH is only reachable on hardware without
+ * drm_syncobj timeline support, which is not the hardware here -- so it is the
+ * half of this file that a desktop never exercises.
  */
 
 /*
  * Decide, once per output, how a finished frame will carry its fence.
  *
  * Returns false when neither mechanism is available, in which case the output
- * is marked BROKEN and stays on the SceneFX path for the rest of the session.
+ * is marked BROKEN for the rest of the session and its frames are refused.
  */
 static bool az_avk_present_sync_prepare(struct az_avk_output *out,
 		struct wlr_output *output) {
@@ -3295,8 +3235,7 @@ static bool az_avk_present_sync_prepare(struct az_avk_output *out,
 		if (!avk_sync_init(&out->sync, avk.device, output->name)) {
 			wlr_log(WLR_ERROR, "AVK: %s cannot be presented safely -- this "
 				"device cannot turn a finished frame into a fence the display "
-				"engine can wait on; staying on the SceneFX path",
-				output->name);
+				"engine can wait on", output->name);
 			out->present_sync = AZ_AVK_PRESENT_SYNC_BROKEN;
 			return false;
 		}
@@ -3304,8 +3243,7 @@ static bool az_avk_present_sync_prepare(struct az_avk_output *out,
 	}
 
 	int drm_fd = wlr_backend_get_drm_fd(output->backend);
-	bool want_timeline = drm_fd >= 0 && output->backend->features.timeline
-		&& !az_avk_env_flag("AZ_AVK_NO_TIMELINE");
+	bool want_timeline = drm_fd >= 0 && output->backend->features.timeline;
 	if (want_timeline) {
 		out->in_timeline = wlr_drm_syncobj_timeline_create(drm_fd);
 		out->out_timeline = wlr_drm_syncobj_timeline_create(drm_fd);
@@ -3328,10 +3266,8 @@ static bool az_avk_present_sync_prepare(struct az_avk_output *out,
 	 * is assumed here and verified on the first frame -- see the handover.
 	 * A kernel too old for the ioctl marks the output BROKEN there. */
 	out->present_sync = AZ_AVK_PRESENT_SYNC_DMABUF;
-	wlr_log(WLR_INFO, "AVK: %s has no drm_syncobj timeline support%s; the "
-		"frame's fence travels on the target's dma-buf instead", output->name,
-		az_avk_env_flag("AZ_AVK_NO_TIMELINE") ? " (forced by "
-			"AZ_AVK_NO_TIMELINE)" : "");
+	wlr_log(WLR_INFO, "AVK: %s has no drm_syncobj timeline support; the "
+		"frame's fence travels on the target's dma-buf instead", output->name);
 	return true;
 }
 
@@ -3445,26 +3381,10 @@ static bool az_avk_present_handover(struct az_avk_output *out,
 		 * cannot, and retrying every frame would produce one error line per
 		 * vblank forever. */
 		wlr_log(WLR_ERROR, "AVK: the frame's completion could not be exported "
-			"as a fence; this output goes back to the SceneFX path");
+			"as a fence; this output can no longer be presented safely");
 		out->present_sync = AZ_AVK_PRESENT_SYNC_BROKEN;
 		avk.present_sync_fails++;
 		return false;
-	}
-
-	if (az_avk_env_flag("AZ_AVK_NO_PRESENT_SYNC")) {
-		if (!avk.warned_no_present_sync) {
-			avk.warned_no_present_sync = true;
-			wlr_log(WLR_ERROR, "AVK: AZ_AVK_NO_PRESENT_SYNC=1 -- frames are "
-				"being handed to the display with no fence attached. This is "
-				"the break test for presentation synchronisation and it must "
-				"never be set on a desktop you care about.");
-		}
-		if (fence >= 0) {
-			close(fence);
-		}
-		avk.present_sync_none++;
-		target->state = AZ_AVK_TARGET_RENDERED;
-		return true;
 	}
 
 	if (out->present_sync == AZ_AVK_PRESENT_SYNC_TIMELINE) {
@@ -3555,8 +3475,7 @@ static bool az_avk_present_handover(struct az_avk_output *out,
 	close(fence);
 	if (!ok) {
 		wlr_log(WLR_ERROR, "AVK: the frame's fence could not be attached to "
-			"the target dma-buf; this output cannot be presented safely and "
-			"is going back to the SceneFX path");
+			"the target dma-buf; this output cannot be presented safely");
 		out->present_sync = AZ_AVK_PRESENT_SYNC_BROKEN;
 		avk.present_sync_fails++;
 		return false;
@@ -4039,13 +3958,10 @@ static void az_avk_corners_from_scenefx(const struct az_avk_walk *walk,
  * part a region can express, and the radii carried to the shader for the arcs
  * it cannot. The M4A wedge is what happens when only one of the two is done,
  * and it would have been a second, identical bug to fix here.
- *
- * `square_inner` restores that defect on demand; see the break switch at the
- * border call site.
  */
 static void az_avk_clip_out_region(const struct az_avk_walk *walk,
 		struct avk_cmd *cmd, const struct wlr_box *dst,
-		const struct clipped_region *region, int lx, int ly, bool square_inner,
+		const struct clipped_region *region, int lx, int ly,
 		const char *what) {
 		struct wlr_box hole = region->area;
 		struct wlr_box hole_out;
@@ -4060,10 +3976,6 @@ static void az_avk_clip_out_region(const struct az_avk_walk *walk,
 		 * ones is a bug that renders perfectly on an unrotated output. */
 		az_avk_corners_from_scenefx(walk, region->corners,
 			cmd->inner_corners);
-		if (square_inner) {
-			cmd->inner_corners[0] = cmd->inner_corners[1] =
-				cmd->inner_corners[2] = cmd->inner_corners[3] = 0.0f;
-		}
 		/*
 		 * Shrink the scissor cut on each edge by 0.3 of the adjoining
 		 * radius, which is SceneFX's rule (apply_clip_region in
@@ -4354,28 +4266,9 @@ static void az_avk_walk_node(struct az_avk_walk *walk,
 		 * the shrink is zero, the region cut is the whole answer, and the
 		 * shader does nothing.
 		 */
-		/* AVK_NO_BORDER_CLIP=1 skips the cut-out, for the same reason: the
-		 * test that asserts a window is not covered by its own border needs a
-		 * build where it fails. */
-		static int no_border_clip = -1;
-		if (no_border_clip < 0) {
-			const char *env = getenv("AVK_NO_BORDER_CLIP");
-			no_border_clip = env != NULL && env[0] == '1';
-		}
-		/*
-		 * AZ_AVK_BORDER_SQUARE_INNER=1 restores the M4A defect precisely: the
-		 * outer edge stays rounded, the inner cut goes back to a full square
-		 * box, and the wedge comes back. It does NOT merely turn borders off
-		 * -- a break that removes the feature proves nothing about the bug.
-		 */
-		static int square_inner = -1;
-		if (square_inner < 0) {
-			const char *env = getenv("AZ_AVK_BORDER_SQUARE_INNER");
-			square_inner = env != NULL && env[0] == '1';
-		}
-		if (!no_border_clip && !wlr_box_empty(&rect->clipped_region.area)) {
+		if (!wlr_box_empty(&rect->clipped_region.area)) {
 			az_avk_clip_out_region(walk, cmd, &dst, &rect->clipped_region,
-				lx, ly, square_inner, "border");
+				lx, ly, "border");
 		}
 		/*
 		 * THE GRADIENT, SNAPSHOT AND NOT BORROWED.
@@ -4498,11 +4391,10 @@ static void az_avk_walk_node(struct az_avk_walk *walk,
 		 * belonging to a monitor 3840 pixels away costs an import per frame,
 		 * and a wallpaper 3840 pixels away is still culled.
 		 */
-		if (!az_avk_env_flag("AZ_AVK_NO_OUTPUT_CULL") &&
-				(dst.x >= walk->att.width + walk->halo
+		if (dst.x >= walk->att.width + walk->halo
 				|| dst.y >= walk->att.height + walk->halo
 				|| dst.x + dst.width <= -walk->halo
-				|| dst.y + dst.height <= -walk->halo)) {
+				|| dst.y + dst.height <= -walk->halo) {
 			avk.nodes_output_culled_before_resolve++;
 			return;
 		}
@@ -4778,7 +4670,7 @@ static void az_avk_walk_node(struct az_avk_walk *walk,
 		 */
 		if (!wlr_box_empty(&shadow->clipped_region.area)) {
 			az_avk_clip_out_region(walk, cmd, &dst,
-				&shadow->clipped_region, lx, ly, false, "shadow");
+				&shadow->clipped_region, lx, ly, "shadow");
 		}
 		return;
 	}
@@ -4834,11 +4726,10 @@ static void az_avk_walk_node(struct az_avk_walk *walk,
 		 * node cannot present here, but its RESULT is part of the prefix a blur
 		 * that IS presented here replays. Blur 2's source contains blur 1.
 		 */
-		if (!az_avk_env_flag("AZ_AVK_NO_OUTPUT_CULL") &&
-				(dst.x >= walk->att.width + walk->halo
+		if (dst.x >= walk->att.width + walk->halo
 				|| dst.y >= walk->att.height + walk->halo
 				|| dst.x + dst.width <= -walk->halo
-				|| dst.y + dst.height <= -walk->halo)) {
+				|| dst.y + dst.height <= -walk->halo) {
 			avk.blur_nodes_culled++;
 			return;
 		}
@@ -4995,23 +4886,10 @@ static void az_avk_walk_node(struct az_avk_walk *walk,
 		 * monitor per frame and only one of them describes the background this
 		 * output is rendering. Nothing is done with the others: not the bounds,
 		 * and above all not the dirty edge, which belongs to whoever owns it. */
-		/* AZ_BLUR_CACHE_WRONG_OUTPUT is the falsifier: it restores the
-		 * last-node-wins behaviour, so an output builds its cache from whichever
-		 * monitor's node the walk happened to reach last. A multi-output oracle
-		 * that stays green with this on is an oracle that is not looking. */
-		static int wrong_output = -1;
-		if (wrong_output < 0) {
-			wrong_output = az_avk_env_flag("AZ_BLUR_CACHE_WRONG_OUTPUT") ? 1 : 0;
-			if (wrong_output) {
-				wlr_log(WLR_ERROR, "M4I break: AZ_BLUR_CACHE_WRONG_OUTPUT -- an "
-					"output may build its background cache from ANOTHER "
-					"monitor's node; this renders a WRONG desktop");
-			}
-		}
 		/* A NULL mon_blur_node rejects everything, deliberately: it means this
 		 * monitor has no background node, and the only thing a foreign node
 		 * could offer such an output is a neighbour's wallpaper. */
-		if (!wrong_output && ob != walk->mon_blur_node) {
+		if (ob != walk->mon_blur_node) {
 			return;
 		}
 		struct blur_data bd = walk->blur;
@@ -5042,14 +4920,11 @@ static void az_avk_walk_node(struct az_avk_walk *walk,
 		 * is precisely the mutable-state-after-snapshot the design forbids.
 		 */
 		/*
-		 * AZ_BLUR_CACHE_NO_DIRTY_EDGE is the falsifier for the SOURCE digest,
-		 * and it models the SHIPPED defect rather than an invented one: the
-		 * background changes and the notification never arrives, so the
-		 * generation stays equal and only a fact about the source can catch it.
-		 *
-		 * NOT AZ_BLUR_CACHE_IGNORE_DIRTY, which is a different condition and
-		 * cannot test this. That one lets the generation move and then
-		 * suppresses the reason -- but avk_blur_cache_check() returns at the
+		 * THE SOURCE DIGEST IS WHAT CATCHES THE SHIPPED DEFECT: the background
+		 * changes and the dirty notification never arrives, so the generation
+		 * stays equal and only a fact about the source can notice. Suppressing
+		 * an invalidation REASON cannot model that -- avk_blur_cache_check()
+		 * returns at the
 		 * first disagreement, so it returns GENERATION and the SOURCE
 		 * comparison below it is never evaluated at all. A fixture built on it
 		 * reports inv_source == 0 and looks like the digest does nothing.
@@ -5058,21 +4933,9 @@ static void az_avk_walk_node(struct az_avk_walk *walk,
 		 * increment instead, which is a delayed notification rather than a lost
 		 * one.
 		 */
-		static int no_dirty_edge = -1;
-		if (no_dirty_edge < 0) {
-			no_dirty_edge = az_avk_env_flag("AZ_BLUR_CACHE_NO_DIRTY_EDGE")
-				? 1 : 0;
-			if (no_dirty_edge) {
-				wlr_log(WLR_ERROR, "M4I break: AZ_BLUR_CACHE_NO_DIRTY_EDGE -- "
-					"the background dirty signal is DROPPED; only the source "
-					"digest can now notice a wallpaper change");
-			}
-		}
 		if (ob->dirty) {
 			ob->dirty = false;
-			if (!no_dirty_edge) {
-				(*walk->mon_blur_generation)++;
-			}
+			(*walk->mon_blur_generation)++;
 		}
 		walk->scene->blur_cache.present = true;
 		walk->scene->blur_cache.prefix_end = walk->scene->len;
@@ -5101,10 +4964,10 @@ static void az_avk_walk_node(struct az_avk_walk *walk,
 /*
  * Is this output one AVK can render correctly right now?
  *
- * Every check here is a thing M3 does not implement. Answering "no" costs a
- * frame on the SceneFX path; answering "yes" when it is not true costs a
- * visibly wrong desktop, which is the failure mode that makes a new renderer
- * untrustworthy for months.
+ * Every check here is a thing AVK does not implement. Answering "no" refuses
+ * the frame, loudly; answering "yes" when it is not true costs a visibly wrong
+ * desktop, which is the failure mode that makes a renderer untrustworthy for
+ * months. There is no third answer -- see az_output_build_frame().
  */
 static bool az_avk_output_supported(Monitor *m,
 		const struct wlr_output_state *pending,
@@ -5165,9 +5028,9 @@ static bool az_avk_output_supported(Monitor *m,
 	 * The interlock that matters: an HDR output is accepted ONLY when the C6
 	 * encode pass will actually run for it. Its scan-out buffer is PQ-encoded
 	 * BT.2020, so compositing into it without the pass writes scene-linear
-	 * values as though they were already electrical -- which is much worse than
-	 * the SceneFX fallback this replaces, and worse on exactly the content the
-	 * user enabled HDR for.
+	 * values as though they were already electrical -- worse than refusing the
+	 * output outright, and worse on exactly the content the user enabled HDR
+	 * for.
 	 */
 	if (!az_output_may_drive(&m->color_state,
 			has_image_description, color_transform != NULL,
@@ -5192,8 +5055,8 @@ static bool az_avk_output_supported(Monitor *m,
 			} else {
 				wlr_log(WLR_INFO, "AVK: %s is presenting HDR but the M5 output "
 					"encode pass is not enabled (AZ_M5_PATH_B=1); refusing "
-					"rather than writing scene values into a PQ buffer -- this "
-					"output stays on the SceneFX path", output->name);
+					"rather than writing scene values into a PQ buffer",
+					output->name);
 			}
 		}
 		*why = (color_transform != NULL
@@ -5210,7 +5073,7 @@ static bool az_avk_output_supported(Monitor *m,
 		if (!avk.warned_zoom) {
 			avk.warned_zoom = true;
 			wlr_log(WLR_INFO, "AVK: output magnification is not implemented "
-				"yet; zoomed frames stay on the SceneFX path");
+				"yet; a zoomed frame is refused");
 		}
 		*why = "output magnification (zoom > 1) is not implemented";
 		return false;
@@ -5269,9 +5132,6 @@ static void az_avk_emit_cursors(struct az_avk_walk *walk,
 	 * "a cursor appears and nobody checked who put it there", which was true
 	 * of every frame before this function existed.
 	 */
-	if (az_avk_env_flag("AZ_AVK_NO_CURSOR")) {
-		return;
-	}
 	struct wlr_output_cursor *oc;
 	wl_list_for_each(oc, &output->cursors, link) {
 		if (!oc->enabled || !oc->visible) {
@@ -5309,10 +5169,9 @@ static void az_avk_emit_cursors(struct az_avk_walk *walk,
 		 * every assertion that counts pixels and only fails one that asks
 		 * where they are. This is that assertion's falsifier.
 		 */
-		bool no_hotspot = az_avk_env_flag("AZ_AVK_NO_CURSOR_HOTSPOT");
 		struct wlr_box box = {
-			.x = (int)oc->x - (no_hotspot ? 0 : oc->hotspot_x),
-			.y = (int)oc->y - (no_hotspot ? 0 : oc->hotspot_y),
+			.x = (int)oc->x - oc->hotspot_x,
+			.y = (int)oc->y - oc->hotspot_y,
 			.width = (int)oc->width,
 			.height = (int)oc->height,
 		};
@@ -6541,11 +6400,10 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 	 * it has never seen comes back fully damaged, which is exactly right for a
 	 * target whose contents are undefined.
 	 *
-	 * It is the *scene's* ring, deliberately, and shared with the SceneFX path:
-	 * a frame that falls back renders into a different buffer, and the ring
-	 * accounts for both because it tracks buffers rather than frames. Keeping a
-	 * second ring here would mean each path silently forgetting the other's
-	 * frames.
+	 * It is the *scene's* ring, deliberately: it tracks BUFFERS rather than
+	 * frames, so a target the renderer has not seen before comes back fully
+	 * damaged without anything here having to remember it. A second ring here
+	 * would be a second history to keep in step.
 	 *
 	 * rotate_buffer MUTATES the ring -- it moves `current` into this buffer's
 	 * entry -- so it happens after every check that can still decline the
@@ -6570,7 +6428,7 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 	 * WHAT THE RING HANDED OVER, kept apart from what is rendered.
 	 *
 	 * `damage` is about to be replaced by the renderer's own post-blur figure,
-	 * and AZ_AVK_FULL_DAMAGE / AZ_AVK_DAMAGE_HOLE may rewrite it before that.
+	 * and AZ_AVK_FULL_DAMAGE may rewrite it before that.
 	 * A forensic line that printed the variable at the end would be reporting
 	 * three different quantities under one name -- which it did, and the
 	 * resulting "no frame ever received out-of-bounds damage" was true of the
@@ -6622,7 +6480,7 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 		 * This is the counter that says so directly, rather than leaving it to
 		 * a screenshot taken after the fact -- which only catches the loss when
 		 * no later damage happens to cover the same pixels, about two runs in
-		 * three. See AZ_SCENE_HALO_DAMAGE_RAW.
+		 * three.
 		 */
 		if (!pixman_region32_not_empty(&damage)) {
 			avk.blur_halo_damage_lost++;
@@ -6640,39 +6498,6 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 		 * would cover a transposed rectangle on a rotated output. */
 		pixman_region32_union_rect(&damage, &damage, 0, 0,
 			att.width, att.height);
-	}
-	/*
-	 * AZ_AVK_DAMAGE_HOLE=x,y,w,h punches that rectangle OUT of every frame's
-	 * damage, in output pixels. TEST ONLY.
-	 *
-	 * A persistence test needs a build that strands a region on purpose, or it
-	 * cannot show that it would notice one -- and "no stale pixels" from a
-	 * fixture that has never seen a stale pixel is not a result. The hole is
-	 * subtracted AFTER the ring has been rotated, so the region counts as
-	 * acknowledged and is never redrawn: precisely the shape of the bug, which
-	 * is a region wrongly believed to be up to date rather than one that is
-	 * merely skipped this frame.
-	 */
-	const char *hole = getenv("AZ_AVK_DAMAGE_HOLE");
-	if (hole != NULL) {
-		int hx, hy, hw, hh;
-		if (sscanf(hole, "%d,%d,%d,%d", &hx, &hy, &hw, &hh) == 4 && hw > 0 &&
-				hh > 0) {
-			pixman_region32_t cut;
-			pixman_region32_init_rect(&cut, hx, hy, (unsigned)hw, (unsigned)hh);
-			pixman_region32_subtract(&damage, &damage, &cut);
-			pixman_region32_fini(&cut);
-			if (!avk.warned_damage_hole) {
-				avk.warned_damage_hole = true;
-				wlr_log(WLR_ERROR, "AZ_AVK_DAMAGE_HOLE=%s -- %dx%d at %d,%d will "
-					"never be redrawn. This build is deliberately broken.",
-					hole, hw, hh, hx, hy);
-			}
-		} else if (!avk.warned_damage_hole) {
-			avk.warned_damage_hole = true;
-			wlr_log(WLR_ERROR, "AZ_AVK_DAMAGE_HOLE=%s is not x,y,w,h -- ignored",
-				hole);
-		}
 	}
 	pixman_region32_copy(&scene.damage, &damage);
 
@@ -8749,7 +8574,6 @@ static cJSON *az_avk_stats_json(void) {
 		 * frame. */
 		{
 			uint64_t cb = 0, ci = 0, cf = 0;
-			bool wrong = false;
 			for (size_t i = 0; i < AZ_AVK_MAX_FORMATS; i++) {
 				if (!avk.renderers[i].used) {
 					continue;
@@ -8759,12 +8583,10 @@ static cJSON *az_avk_stats_json(void) {
 				cb += t->cohort_blur_frames;
 				ci += t->cohort_idle_frames;
 				cf += t->frames_built;
-				wrong = wrong || t->cohort_wrong;
 			}
 			cJSON_AddNumberToObject(o, "cohort_blur_frames", (double)cb);
 			cJSON_AddNumberToObject(o, "cohort_idle_frames", (double)ci);
 			cJSON_AddNumberToObject(o, "cohort_frames_built", (double)cf);
-			cJSON_AddBoolToObject(o, "cohort_classifier_broken", wrong);
 			{
 				uint64_t st = 0;
 				for (size_t i = 0; i < AZ_AVK_MAX_FORMATS; i++) {
@@ -9173,8 +8995,6 @@ static cJSON *az_avk_stats_json(void) {
 	 */
 	cJSON_AddNumberToObject(o, "cursor_client_no_buffer",
 		(double)az_cursor.client_no_buffer);
-	cJSON_AddNumberToObject(o, "cursor_stale_xcursor",
-		(double)az_cursor.stale_xcursor);
 	cJSON_AddNumberToObject(o, "cursor_mgr_generation",
 		(double)az_cursor_mgr_generation);
 	/*
@@ -9640,16 +9460,9 @@ static void az_avk_log_stats(void) {
  * was found through landed inside az_avk_finish(), in the frees that came
  * afterwards, rather than at the destruction that actually caused it.
  *
- * AZ_AVK_NO_TEARDOWN_IDLE=1 removes the wait. That is the break switch, and it
- * puts the compositor back on the code that crashed.
  */
 static void az_avk_quiesce(void) {
 	if (!avk.active) {
-		return;
-	}
-	if (az_avk_env_flag("AZ_AVK_NO_TEARDOWN_IDLE")) {
-		wlr_log(WLR_ERROR, "AZ_AVK_NO_TEARDOWN_IDLE=1 -- outputs will be torn "
-			"down with GPU work still in flight");
 		return;
 	}
 	avk_device_wait_idle(avk.device);

@@ -1353,8 +1353,8 @@ struct Monitor {
 	/*
 	 * ── M6B/G2. THE SAME PROFILE, REDUCED TO WHAT AVK CAN APPLY ───────────
 	 *
-	 * `icc_transform` is wlroots' object and belongs to the SceneFX path; this
-	 * is the matrix-shaper reduction the AVK encode pass applies itself. Both
+	 * `icc_transform` is wlroots' object, which nothing composites with any
+	 * more; this is the matrix-shaper reduction the AVK encode pass applies itself. Both
 	 * are loaded from the same file and exactly one of them may be in force --
 	 * az_output_color_transform() is the interlock, and applying both would be
 	 * the profile twice.
@@ -7608,8 +7608,8 @@ destroynotify(struct wl_listener *listener, void *data) {
 	 * object before its toplevel, so the ordering is already safe. It's
 	 * wl_client_destroy() -- the client process being killed or crashing --
 	 * that tears every resource down in one sweep with the toplevel first.
-	 * The regression suite force-kills its windows, so it reproduces there
-	 * every run; a real browser/game crash reaches it the same way. */
+	 * A force-killed window reproduces it every time; a real browser or game
+	 * crash reaches it the same way. */
 	if (c->decoration) {
 		wl_list_remove(&c->destroy_decoration.link);
 		wl_list_remove(&c->set_decoration_mode.link);
@@ -14050,9 +14050,7 @@ void xwaylandready(struct wl_listener *listener, void *data) {
 	 * 1.5 this lookup returned NULL, XWayland was never given a cursor, and
 	 * every X11 window showed the X server's own 'X' root cursor with nothing
 	 * logged anywhere. */
-	if (getenv("AZ_CURSOR_ONE_SCALE") == NULL) {
-		wlr_xcursor_manager_load(cursor_mgr, 1);
-	}
+	wlr_xcursor_manager_load(cursor_mgr, 1);
 	if ((xcursor = wlr_xcursor_manager_get_xcursor(cursor_mgr, "default", 1))) {
 		struct wlr_buffer *xcursor_buffer =
 			wlr_xcursor_image_get_buffer(xcursor->images[0]);

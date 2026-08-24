@@ -53,15 +53,7 @@ bool avk_timestamps_init(struct avk_timestamps *ts, struct avk_device *dev) {
 
 	ts->supported = true;
 	{
-		const char *e = getenv("AZ_TS_COHORT_WRONG");
-		ts->cohort_wrong = e != NULL && e[0] == '1';
-		if (ts->cohort_wrong) {
-			avk_log(AVK_ERROR, "avk timing: AZ_TS_COHORT_WRONG=1 -- the "
-				"blur-active cohort is deliberately classified by the CURRENT "
-				"frame instead of the originating slot. TEST ONLY; every "
-				"gpu_frame_blur number from this process is wrong on purpose");
-		}
-		e = getenv("AZ_TS_TRACE");
+		const char *e = getenv("AZ_TS_TRACE");
 		ts->trace = e != NULL && e[0] == '1';
 	}
 	avk_log(AVK_INFO, "avk: GPU timestamps on, %.2f ns/tick, %u valid bits, "
@@ -292,13 +284,7 @@ static bool read_slot(struct avk_timestamps *ts, uint32_t slot,
 		 * gpu_blur_total: `s->blur_active` was recorded for THIS frame when it
 		 * was built, so a result arriving three frames later is still
 		 * classified by its own frame. */
-		bool cohort = s->blur_active;
-		if (ts->cohort_wrong) {
-			/* THE BREAK: classify by the current CPU frame instead of the
-			 * originating one. See avk_timestamps.cohort_wrong. */
-			cohort = ts->cur_blur_active;
-		}
-		if (cohort) {
+		if (s->blur_active) {
 			avk_hist_add(&ts->gpu_frame_blur_hist, ts->gpu_frame_ns);
 		}
 		/*
@@ -328,7 +314,7 @@ static bool read_slot(struct avk_timestamps *ts, uint32_t slot,
 			}
 		}
 		ts->trace_gpu_frame_ns = ts->gpu_frame_ns;
-		ts->trace_cohort = cohort;
+		ts->trace_cohort = s->blur_active;
 		ts->trace_slot_active = s->blur_active;
 		ts->trace_cur_active = ts->cur_blur_active;
 		size_t on = 0;
