@@ -2716,8 +2716,23 @@ void fadeout_client_animation_next_tick(Client *c, uint64_t sample_ns) {
 		asteroid_break_next_tick(c, ASTEROIDZ_MIN(animation_passed, 1.0));
 		if (animation_passed >= 1.0) {
 			wl_list_remove(&c->fadeout_link);
-			wlr_scene_node_destroy(&c->scene->node);
+			/*
+			 * THE BREAK BEFORE THE TREE, and the order is the whole of it.
+			 *
+			 * `c->scene` IS `br->tree` (asteroid_break_build sets it), and
+			 * every fragment's wlr_scene_buffer was created as its child. So
+			 * destroying the tree first frees exactly the nodes
+			 * asteroid_break_destroy() then clears the buffer out of -- a
+			 * heap-use-after-free of a 480-byte wlr_scene_buffer, written
+			 * through, whose damage surfaced much later as a doubled
+			 * vkDestroyBuffer and a glibc abort in teardown.
+			 *
+			 * Unlike shatter and fall, which free only their own arrays and
+			 * may be torn down in either order, this one holds scene nodes and
+			 * must go while they are still alive.
+			 */
 			asteroid_break_destroy(c->rocks);
+			wlr_scene_node_destroy(&c->scene->node);
 			free(c);
 		}
 		return;
