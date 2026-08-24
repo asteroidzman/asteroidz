@@ -7,7 +7,7 @@
  * The model itself -- which format/modifier pairs are advertisable, and which
  * device -- lives in az_dmabuf_model.h, which depends on nothing but AVK's
  * format table and wlr_drm_format_set. That split is not tidiness: it is what
- * lets tests/test-dmabuf-feedback.c drive the rule with SYNTHETIC capabilities
+ * lets the rule be driven with SYNTHETIC capabilities
  * and assert the answer, instead of a test that can only ever confirm what
  * this machine's Mesa happens to report today.
  */
@@ -35,25 +35,6 @@ static struct {
  * half needed a SceneFX hook, because wlr_linux_dmabuf_feedback_v1_init_with_
  * options() asserts a renderer and offers no way to pass a format set.
  */
-/*
- * BREAK SWITCH: advertise the compatibility renderer's capabilities in AVK
- * mode, as the compositor did before M3.6.
- *
- * Checked by the CALLER, not here, so that "the break asked for the old
- * behaviour" and "AVK could not describe itself" stay distinguishable: the
- * first must fall through to the renderer path, the second must be fatal.
- * Conflating them made the break switch kill the compositor at startup, which
- * is a failure the test cannot tell apart from the defect.
- */
-static bool az_dmabuf_break_use_gles(void) {
-	if (getenv("AZ_DMABUF_FEEDBACK_GLES") == NULL) {
-		return false;
-	}
-	wlr_log(WLR_ERROR, "AZ_DMABUF_FEEDBACK_GLES=1 -- DMA-BUF feedback will "
-		"describe the compatibility renderer, not the engine that imports");
-	return true;
-}
-
 static struct wlr_linux_dmabuf_v1 *az_dmabuf_create_from_avk(
 		struct wl_display *display) {
 	if (!avk.active) {

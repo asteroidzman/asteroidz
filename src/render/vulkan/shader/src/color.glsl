@@ -6,7 +6,7 @@
  * that actually differs between them -- GLSL's componentwise pow(), its
  * genType clamp, and the fact that a shader wants vec3 where the CPU wants
  * float. What keeps them honest instead is that both are pinned to the same
- * PUBLISHED anchors by tests/test-color-math.c, so a drift is a failing
+ * PUBLISHED anchors, so a drift is a failing
  * assertion against ST 2084 and IEC 61966-2-1, not against each other.
  *
  * THE VOCABULARY IS THE ADR's (docs/decisions.md), used literally:
@@ -216,7 +216,7 @@ vec3 az_rolloff_ceiling(vec3 v, float knee) {
  * that would not fit in push.glsl's 128 bytes anyway.
  *
  * THESE NINE NUMBERS ARE DUPLICATED FROM az_color.c's AZ_MAT_2020_TO_709 and
- * that duplication is pinned: tests/test-color-pipeline.c parses both and
+ * that duplication is pinned: both sides are parseable and
  * fails if they drift. The alternative -- pushing the matrix per draw -- costs
  * a push-constant budget this block does not have, for a value that is one of
  * exactly two possibilities.

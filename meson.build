@@ -139,40 +139,10 @@ if get_option('asan')
   link_args += '-fsanitize=address'
 endif
 
-# ── colour maths (M5, contract C1) ──────────────────────────────────────────
-#
-# Its own static library rather than a file in the asteroidz source list, for
-# one reason: the unit tests and the CPU pipeline reference must be able to
-# link it WITHOUT the compositor, without wlroots and without Vulkan. A colour
-# primitive that can only be exercised inside a running compositor is a
-# primitive nobody can pin to a published constant, and M5's whole method is
-# that every number in it is checkable against a standard.
-#
-# Dependencies: libm. That is the complete list and it should stay that way --
-# see the header's opening comment.
-az_color_lib = static_library('az-color',
-                              'src/render/color/az_color.c',
-                              dependencies : [libm],
-                              include_directories : include_directories('src'))
-az_color_dep = declare_dependency(link_with : az_color_lib,
-                                  dependencies : [libm],
-                                  include_directories : include_directories('src'))
-
-
-# M6B/G3b. Generates the ICC profiles this machine does not have -- above all a
-# cLUT display profile, without which D2's refusal has no falsifier. Not a test:
-# a tool the headless fixture runs. See contrib/icc-synth.c for why the cLUT one
-# carries colorants as well.
-icc_synth = executable('icc-synth', 'contrib/icc-synth.c',
-                       dependencies : [lcms2_dep],
-                       build_by_default : false)
-
-
 # The native Vulkan engine is compiled into the compositor when it is built.
 # A separate flag from -Drenderers so the guard in the source says what it
 # means: "this build has AVK", not "this build was configured a certain way".
 asteroidz_deps = [
-    az_color_dep,
     # M6B/G2: az_icc.c reads the profile with lcms2 rather than reimplementing
     # an ICC parser, which is the one part of this nobody should write twice.
     lcms2_dep,
@@ -191,14 +161,17 @@ asteroidz_deps = [
     pangocairo_dep,
     gdkpixbuf_dep,
     libsystemd_dep,
-    lcms2_dep,
 ]
 asteroidz_deps += avk_dep
 
 asteroidz_exe = executable('asteroidz',
   'src/asteroidz.c',
   # M6B/G2. The ICC matrix-shaper ingest, now that the compositor applies the
-  # reduction itself rather than only handing the file to wlroots.
+  # reduction itself rather than only handing the file to wlroots, and the
+  # colour maths (M5, contract C1) it is built on. Dependencies: libm. That is
+  # the complete list and it should stay that way -- see az_color.h's opening
+  # comment.
+  'src/render/color/az_color.c',
   'src/render/color/az_icc.c',
   'src/common/util.c',
   'src/draw/text-node.c',
@@ -346,7 +319,7 @@ install_data('assets/autostart.sh',
 install_data('amsg/amsg.1', install_dir : join_paths(mandir, 'man1'))
 
 # Bar artwork. Vendored from the waybar plugin repos and mostly normalised to
-# one square canvas (contrib/normalize-bar-icons.py), so the bar no longer
+# one square canvas before it was committed, so the bar no longer
 # depends on which plugins happen to be installed -- and so the icons are
 # tracked and reviewable here rather than living only in ~/.local/share.
 # asteroidz-bar/logo.svg is the deliberate exception to the normalising; it

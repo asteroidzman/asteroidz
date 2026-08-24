@@ -53,11 +53,6 @@ void avk_transient_pool_init(struct avk_transient_pool *pool,
 			"with magenta so that sampling outside a written region shows");
 	}
 	pool->trace = getenv("AZ_TRANSIENT_TRACE") != NULL;
-	pool->break_early_reuse = getenv("AZ_TRANSIENT_EARLY_REUSE") != NULL;
-	if (pool->break_early_reuse) {
-		avk_log(AVK_ERROR, "M4E break switch active: the transient pool will "
-			"hand out images the GPU has not finished with");
-	}
 }
 
 static void destroy_entry(struct avk_transient_pool *pool,
@@ -304,7 +299,7 @@ struct avk_image *avk_transient_acquire(struct avk_transient_pool *pool,
 		if (!ready) {
 			saw_in_flight = true;
 		}
-		if (!ready && !pool->break_early_reuse) {
+		if (!ready) {
 			/* Still in flight. NOT a reason to wait -- fall through and
 			 * allocate. A pool that blocked here would put a CPU wait on the
 			 * frame path to save memory, which is the wrong trade in a

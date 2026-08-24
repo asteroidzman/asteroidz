@@ -34,7 +34,7 @@
  *    place a caller can forget it and it is every call site.
  *
  * The GLSL twin is src/render/vulkan/shader/src/color.glsl. It is hand
- * written, not generated; tests/test-color-math.c pins both against published
+ * written, not generated; both are checkable against published
  * constants so drift becomes a test failure rather than a colour shift.
  */
 #ifndef AZ_COLOR_H

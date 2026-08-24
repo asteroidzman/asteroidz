@@ -276,9 +276,8 @@ It no longer re-runs your `spawn` entries. It used to: applying one option went
 through the full reload path, which respawns every `spawn` command in the
 config, so ten adjustments launched your whole startup list ten times. A reload
 still runs it — that is what a reload is — but one option changing is not a
-reload. See `config_apply_live()` in `src/config/parse_config.h`, and
-`contrib/regression/tests/set-option.sh`, which holds the split in place because
-the symptom is invisible in a single call.
+reload. See `config_apply_live()` in `src/config/parse_config.h`. The symptom
+is invisible in a single call, which is why the split is worth stating here.
 
 ### Cursor Zoom
 

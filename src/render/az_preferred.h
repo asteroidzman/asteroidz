@@ -60,28 +60,6 @@ static inline Monitor *az_surface_effective_output(struct wlr_surface *surface) 
 		return NULL;
 	}
 	/*
-	 * BREAK: AZ_BREAK_FROG_FIRST_HDR_OUTPUT reinstates the policy this file
-	 * replaced -- "the first enabled HDR output, else the focused one" -- so
-	 * the wrong-display defect can be reproduced on demand rather than only
-	 * described. It is deliberately spelled as the OLD CODE, not as a
-	 * perturbation of the new one: a falsifier that merely returns a different
-	 * monitor would prove a fixture can notice a change, where this proves it
-	 * notices THAT change.
-	 */
-	static int break_first_hdr = -1;
-	if (break_first_hdr < 0) {
-		break_first_hdr = getenv("AZ_BREAK_FROG_FIRST_HDR_OUTPUT") != NULL;
-	}
-	if (break_first_hdr) {
-		Monitor *it;
-		wl_list_for_each(it, &mons, link) {
-			if (it->wlr_output->enabled && it->hdr) {
-				return it;
-			}
-		}
-		return selmon;
-	}
-	/*
 	 * ── EVERY SURFACE ROLE, NOT JUST TOPLEVELS ────────────────────────────
 	 *
 	 * This used to walk `clients` comparing client_surface(c) == surface, and

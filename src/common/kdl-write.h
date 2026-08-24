@@ -20,7 +20,7 @@
  * of that.
  *
  * Pure text handling with no compositor types, so it is unit-testable on its
- * own: see tests/test-kdl-write.c, which is what a change here must answer to.
+ * own, which is what a change here must answer to.
  * It writes to the user's config -- it does not get to be "probably right".
  */
 

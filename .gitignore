@@ -9,19 +9,6 @@ util.o
 *-protocol.c
 *-protocol.o
 build/
-contrib/wlvptr/wlvptr
-contrib/wlvkbd/wlvkbd
-contrib/wllayer/wllayer
-contrib/wlstates/wlstates
-contrib/wlbgeffect/wlbgeffect
-contrib/wlbgeffect/xdg-shell-protocol.c
-contrib/wlbgeffect/xdg-shell-client-protocol.h
-contrib/wlbgeffect/ext-background-effect-v1-protocol.c
-contrib/wlbgeffect/ext-background-effect-v1-client-protocol.h
-contrib/wlsandbox/wlsandbox
-contrib/wlcapture/wlcapture
-contrib/wlhdrview/wlhdrview
-contrib/x11check/x11check
 
 /subprojects/.wraplock
 

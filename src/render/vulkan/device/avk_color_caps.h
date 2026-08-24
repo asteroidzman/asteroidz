@@ -17,7 +17,7 @@
  *
  * A question that important should not be answerable only by running on the
  * one machine that has the answer. The bit tests live here, take their inputs
- * as plain flags, and are driven by tests/test-avk-color-caps.c with SYNTHETIC
+ * as plain flags, and can be driven with SYNTHETIC
  * feature sets -- the same technique test-dmabuf-feedback uses, and for the
  * same reason: on a device where the right and wrong answers coincide, a live
  * test certifies nothing.

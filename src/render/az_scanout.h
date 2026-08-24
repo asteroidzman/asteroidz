@@ -322,19 +322,8 @@ static inline enum az_scanout_verdict az_scanout_eligible(Monitor *m,
 	 * az_source_desc_from_wlr() is the same translation the renderer uses, so
 	 * "PQ" here means exactly what it means in the draw path.
 	 */
-	const struct wlr_image_description_v1_data *img =
-		wlr_surface_get_image_description_v1_data(surface);
-	if (img == NULL) {
-		img = az_cm_surface_description(surface);
-	}
-	bool src_hdr = false;
-	if (img != NULL) {
-		struct az_lum_source_desc sd = az_source_desc_from_wlr(
-			wlr_color_manager_v1_transfer_function_to_wlr(img->tf_named),
-			wlr_color_manager_v1_primaries_to_wlr(img->primaries_named),
-			img->max_cll);
-		src_hdr = sd.tagged && az_lum_tf_is_hdr(sd.tf);
-	}
+	const struct az_lum_source_desc sd = az_source_desc_of_surface(surface);
+	const bool src_hdr = sd.tagged && az_lum_tf_is_hdr(sd.tf);
 	if (src_hdr != (m->hdr > 0)) {
 		return AZ_SCANOUT_TONE_MAP_REQUIRED;
 	}

@@ -51,8 +51,8 @@ struct avk_device;
  * HDR10 static metadata: what the DISPLAY can do, not what the picture
  * contains. A tone-mapping player uses it to decide how to fit the second into
  * the first, so the numbers have to come from the monitor rather than from a
- * standard's reference values -- which is exactly what contrib/hdr-record.sh
- * has to fall back on today, because IPC never exposed them.
+ * standard's reference values -- which is what an external recorder has to
+ * fall back on, because IPC never exposed them.
  *
  * Units are the ones the SEI itself uses: chromaticity in 0.00002 increments,
  * luminance in 0.0001 cd/m2. Everything zero means unknown, and then nothing

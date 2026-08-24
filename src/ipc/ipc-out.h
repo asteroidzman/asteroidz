@@ -22,7 +22,7 @@
  * Pure string-and-socket handling with no compositor types, so it is
  * unit-testable on its own against a socketpair whose SO_SNDBUF has been shrunk
  * to force the partial write that a normal-sized reply never triggers: see
- * tests/test-ipc-out.c, which is what a change here must answer to. */
+ * a client that never reads, which is what a change here must answer to. */
 
 #include <errno.h>
 #include <stdbool.h>

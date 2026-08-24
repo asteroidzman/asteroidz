@@ -5,7 +5,7 @@
  *
  * The single place in the whole renderer where scene values become output
  * electrical values on Path B, and -- invariant 1 -- the ONLY shader in the
- * tree permitted to call az_pq_ieotf(). tests/test-color-pipeline.c gate 7
+ * tree permitted to call az_pq_ieotf(). The CPU reference
  * greps every other shader source and fails the suite if a second PQ encode
  * appears anywhere.
  *
@@ -152,9 +152,7 @@ layout(push_constant) uniform Encode {
 	vec4 misc; /* x: dither quantum, peak-to-peak, in electrical units;
 	            * yz: this target's origin in output pixels, so the dither
 	            *     pattern stays anchored to the OUTPUT raster and cannot
-	            *     phase-shift; w: M6C's cube edge, in samples -- NEGATIVE
-	            *     under AZ_BREAK_CLUT_DOMAIN, which is the only thing in
-	            *     this shader that is not the product's behaviour     */
+	            *     phase-shift; w: M6C's cube edge, in samples          */
 } epc;
 
 #define AZ_ENC_KNEE epc.row0.w
@@ -205,9 +203,7 @@ void main() {
 	 * profile with GAMMA-1.0 TRCs, so its domain is linear and its range is
 	 * device code. Sampling it with an sRGB-encoded value instead would be the
 	 * same table read along the wrong axis -- a picture that is smooth,
-	 * plausible, and wrong everywhere except at 0 and 1. AZ_BREAK_CLUT_DOMAIN
-	 * below IS that mistake, made deliberately, so the fixture can be shown to
-	 * notice it.
+	 * plausible, and wrong everywhere except at 0 and 1.
 	 *
 	 * AND THE MATRIX HAS ALREADY BEEN APPLIED -- as the IDENTITY. The cube
 	 * contains the colorant transform itself, so C3 derives the identity for
@@ -218,14 +214,7 @@ void main() {
 	 * The dither at step 6 still applies, unchanged: the cube's OUTPUT is
 	 * electrical, which is the domain the dither has always been in.
 	 */
-	if (AZ_ENC_CLUT_DIM < 0.0) {
-		/* AZ_BREAK_CLUT_DOMAIN: sample where the ENCODED value would put us. */
-		e = texture(az_encode_clut,
-			az_encode_clut_uvw(az_srgb_ieotf(v), -AZ_ENC_CLUT_DIM)).rgb;
-	} else {
-		e = texture(az_encode_clut,
-			az_encode_clut_uvw(v, AZ_ENC_CLUT_DIM)).rgb;
-	}
+	e = texture(az_encode_clut, az_encode_clut_uvw(v, AZ_ENC_CLUT_DIM)).rgb;
 #else
 	if (AZ_ENCODE_TF == AZ_ENCODE_TF_LUT1D) {
 		e.r = texture(az_encode_lut, vec2(az_encode_lut_u(v.r), 0.5)).r;

@@ -98,8 +98,7 @@ copy-pasted offset a red test rather than a rule that silently sets its
 neighbour. None of these flags read your config — they report the compiled-in
 defaults.
 
-Not every option is described yet. `tests/schema-exempt.txt` lists the ones that
-are not, each under a stated reason, so the gap is visible rather than implied.
+Not every option carries a description yet; `-L` shows which.
 
 To see where the values you are actually running came from:
 

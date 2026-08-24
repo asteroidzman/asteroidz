@@ -103,9 +103,9 @@ mid-string.
 Nothing served at the time was large enough to reach it. Replies are now queued
 and flushed across as many event-loop cycles as it takes, and a one-shot
 connection closes when its reply is out rather than when the handler returns.
-See `src/ipc/ipc-out.h`, and `tests/test-ipc-out.c`, which shrinks `SO_SNDBUF`
+See `src/ipc/ipc-out.h`. Anything written against it has to shrink `SO_SNDBUF`
 on a socketpair to force the partial write a normal-sized reply never triggers
-— asserting against a normal socket would pass on the broken code.
+— asserting against a normal socket passes on the broken code.
 
 A subscriber that stops reading is dropped once its backlog passes 4MB, rather
 than growing the compositor's memory on its behalf.
@@ -194,10 +194,8 @@ different questions, and collapsing them broke three things at once — a
   so the next persisting write went to `config.kdl` **without `override:true`
   ever being asked for**.
 
-All three are pinned by
-`contrib/regression/tests/config-write.sh:test_set_config_a_preview_does_not_lose_the_declaration`.
-They matter because a live-preview UI previews *every* edit, so every save in one
-goes through this path.
+All three matter because a live-preview UI previews *every* edit, so every save
+in one goes through this path.
 
 Conversely, a memory-only write that lands on the value the key would have had
 anyway reports `default`, not `runtime`: the state is indistinguishable from never
@@ -1017,8 +1015,7 @@ hand-maintained as well as machine-written, and regenerating the block from the
 `Monitor` struct would be correct and still lose the comment explaining why an
 output is configured the way it is. It is written to a temporary and renamed
 over, so a crash mid-write cannot leave a config that will not parse.
-See `src/common/kdl-edit.h`, and `tests/test-kdl-edit.c`, which is what a
-change there answers to.
+See `src/common/kdl-edit.h`.
 
 Three pieces do this, and they are separate because only the first is specific
 to outputs:

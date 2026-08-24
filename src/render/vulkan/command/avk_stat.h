@@ -14,7 +14,7 @@
  * WHY IT IS HERE AND NOT IN az_avk.h. The compositor has its own copy of this
  * idea for the quantities IT measures -- CPU frame time, damage ratio -- and
  * that one may not be included from inside src/render/vulkan: AVK does not
- * include compositor headers, which is what tests/check-vulkan-isolation.py
+ * include compositor headers, which is what the meson source list
  * enforces. The duplication is 30 lines of arithmetic and buys the isolation
  * rule; sharing it would mean either breaking the rule or moving the
  * compositor's stats into the renderer, and neither is worth it.

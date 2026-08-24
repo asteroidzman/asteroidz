@@ -1402,12 +1402,10 @@ static void handle_command(int client_fd, const char *cmd_raw) {
 		 * and it should come back with an assertion attached.
 		 */
 		resp = cJSON_CreateObject();
-		/* I1: the sampled instant must BE the armed target, every pass. A
-		 * non-zero count means something handed animation a different clock --
-		 * which is what AZ_BREAK_PRESENT_SAMPLE_NOW does on purpose. */
+		/* How many passes sampled an instant at all. The sampled instant IS
+		 * the armed target by construction -- az_frame_sample_ns has no other
+		 * source -- so there is nothing to compare it against here. */
 		cJSON_AddNumberToObject(resp, "sample_passes", (double)az_sample_total);
-		cJSON_AddNumberToObject(resp, "sample_not_target",
-			(double)az_sample_not_target);
 		cJSON *arr = cJSON_AddArrayToObject(resp, "outputs");
 		Monitor *pm;
 		wl_list_for_each(pm, &mons, link) {

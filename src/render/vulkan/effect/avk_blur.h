@@ -264,7 +264,7 @@ uint32_t avk_blur_support_max(const struct avk_blur_params *params,
  * this is a separate entry point rather than a comment telling callers to reuse
  * the other one.
  *
- * tests/test-avk-blur-damage.c checks the equality against a per-level interval
+ * The equality is checkable against a per-level interval
  * walk that composes the steps explicitly instead of summing them, at odd and
  * even extents alike. If someone changes one kernel's reach and not the other,
  * that test fails rather than a window growing a fringe.

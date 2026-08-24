@@ -3338,9 +3338,9 @@ static bool screenshot_ui_save_and_copy(struct wlr_buffer *frame, Monitor *m,
 }
 
 /* raw-frame output dir + monotonic counter for ShotRawHDR captures -- a
- * fixed, simple location an external tool (contrib/hdr-record.sh) owns: it
- * clears the directory before starting a capture session and assembles the
- * numbered frames into an HDR10-tagged video afterward via ffmpeg. */
+ * fixed, simple location an external tool owns: it clears the directory before
+ * starting a capture session and assembles the numbered frames into an
+ * HDR10-tagged video afterward via ffmpeg. */
 #define RAWHDR_DIR "/tmp/asteroidz-rawhdr"
 static uint32_t rawhdr_frame_seq = 0;
 

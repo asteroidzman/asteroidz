@@ -24,6 +24,8 @@
 
 #include <stdint.h>
 #include <wlr/render/color.h>
+#include <wlr/types/wlr_color_management_v1.h>
+#include <wlr/types/wlr_compositor.h>
 
 #include "az_lum.h"
 
@@ -78,6 +80,45 @@ static inline struct az_lum_source_desc az_source_desc_from_wlr(
 		src = (struct az_lum_source_desc){ .tagged = false };
 	}
 	return src;
+}
+
+/*
+ * ── AND WHICH DESCRIPTION APPLIES. ALSO ONE COPY. ─────────────────────────
+ *
+ * Two lookups, in this order: wp-color-management's own description first,
+ * then the registered fallback -- az_cm_surface_description(), the multiplexer
+ * that puts native wp-cm ahead of frog. src/scene/surface.c makes the same two
+ * through the function pointer it is handed at startup.
+ *
+ * The sequence was written out at both renderer-side call sites, the intent
+ * inspector and the scanout gate. That is two places to edit the day the
+ * precedence changes and two chances to edit only one -- the same failure this
+ * file's opening comment exists to prevent, one level up.
+ *
+ * Reading from the SURFACE rather than from a scene buffer is also what lets an
+ * unmapped or never-drawn surface answer at all.
+ */
+static const struct wlr_image_description_v1_data *az_cm_surface_description(
+	struct wlr_surface *surface);
+
+static inline struct az_lum_source_desc az_source_desc_of_surface(
+		struct wlr_surface *surface) {
+	const struct az_lum_source_desc untagged = { .tagged = false };
+	if (surface == NULL) {
+		return untagged;
+	}
+	const struct wlr_image_description_v1_data *img =
+		wlr_surface_get_image_description_v1_data(surface);
+	if (img == NULL) {
+		img = az_cm_surface_description(surface);
+	}
+	if (img == NULL) {
+		return untagged;
+	}
+	return az_source_desc_from_wlr(
+		wlr_color_manager_v1_transfer_function_to_wlr(img->tf_named),
+		wlr_color_manager_v1_primaries_to_wlr(img->primaries_named),
+		img->max_cll);
 }
 
 #endif /* AZ_SOURCE_DESC_H */

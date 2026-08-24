@@ -22,8 +22,9 @@
  *   - `asteroidz -S` (config-schema-check.h) drives the REAL parse_option,
  *     set_value_default and override_config and asserts every default, clamp,
  *     offset and type against them. No C is parsed to do it.
- *   - tests/check-config-schema.py covers the one direction a dynamic check
- *     cannot: keys that exist in parse_option and are MISSING here.
+ *   - the one direction a dynamic check cannot cover -- a key parse_option
+ *     handles that is MISSING here -- is a comparison of `-L` against the
+ *     names in parse_option, run by hand.
  *
  * `offset` is what makes the whole thing affordable. With offset plus type, the
  * IPC layer reads every current value generically instead of needing a second

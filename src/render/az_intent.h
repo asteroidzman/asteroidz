@@ -125,26 +125,8 @@ static inline void az_surface_intent_resolve(struct wlr_surface *surface,
 		}
 	}
 
-	/*
-	 * ── SOURCE COLOUR ─────────────────────────────────────────────────────
-	 *
-	 * The same two lookups src/scene/surface.c makes, in the same order:
-	 * wp-color-management's own description first, then the registered
-	 * fallback -- which is az_cm_surface_description(), the multiplexer that
-	 * puts native wp-cm ahead of frog. Reading it here rather than reading the
-	 * scene buffer means an unmapped or never-drawn surface still answers.
-	 */
-	const struct wlr_image_description_v1_data *img =
-		wlr_surface_get_image_description_v1_data(surface);
-	if (img == NULL) {
-		img = az_cm_surface_description(surface);
-	}
-	if (img != NULL) {
-		out->src = az_source_desc_from_wlr(
-			wlr_color_manager_v1_transfer_function_to_wlr(img->tf_named),
-			wlr_color_manager_v1_primaries_to_wlr(img->primaries_named),
-			img->max_cll);
-	}
+	/* ── SOURCE COLOUR ─────────────────────────────────────────────────── */
+	out->src = az_source_desc_of_surface(surface);
 
 	/* ── the effective output, and everything that follows from it ─────── */
 	Monitor *m = az_surface_effective_output(surface);

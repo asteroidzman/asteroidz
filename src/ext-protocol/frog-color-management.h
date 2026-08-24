@@ -244,19 +244,6 @@ static bool frog_surface_send_preferred_metadata(FrogColorSurface *fs) {
 		 * setmon path re-sends the instant it lands somewhere. */
 		return false;
 	}
-	/*
-	 * BREAK: AZ_BREAK_FROG_SEND_ONCE suppresses every send after the first, so
-	 * the stale-metadata defect is reproducible. The object still exists, the
-	 * walk still reaches it, the identity still changes -- only the wire event
-	 * is withheld, which is exactly the shape of the original bug.
-	 */
-	static int break_send_once = -1;
-	if (break_send_once < 0) {
-		break_send_once = getenv("AZ_BREAK_FROG_SEND_ONCE") != NULL;
-	}
-	if (break_send_once && fs->sent_identity != 0) {
-		return false;
-	}
 	if (pref.identity == fs->sent_identity) {
 		/* ZERO CHURN. An HDR toggle on the other monitor, a hotplug elsewhere,
 		 * a layout change that did not move this surface -- all reach here and

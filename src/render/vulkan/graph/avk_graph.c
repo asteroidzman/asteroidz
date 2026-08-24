@@ -140,12 +140,6 @@ void avk_graph_init(struct avk_graph *graph, struct avk_device *dev) {
 	 * failure is the one specific missing edge, because that is the edge a
 	 * hand-written multipass effect forgets.
 	 */
-	graph->break_missing_write_read =
-		getenv("AZ_GRAPH_NO_WRITE_READ") != NULL;
-	if (graph->break_missing_write_read) {
-		avk_log(AVK_ERROR, "M4E break switch active: the graph is NOT emitting "
-			"write->read barriers between passes");
-	}
 }
 
 void avk_graph_finish(struct avk_graph *graph) {
@@ -378,9 +372,6 @@ static bool az_barrier_for(struct avk_graph *graph,
 	 * so a per-frame acquire of something that arrived from outside is
 	 * untouched.
 	 */
-	bool drop_dependency = graph->break_missing_write_read && !is_write
-		&& !res->read_only_since_write && res->last_usage >= 0;
-
 	VkPipelineStageFlags2 src_stage;
 	VkAccessFlags2 src_access;
 	if (is_write && res->read_only_since_write) {
@@ -397,11 +388,6 @@ static bool az_barrier_for(struct avk_graph *graph,
 		src_stage = res->last_stage;
 		src_access = res->last_access;
 	}
-	if (drop_dependency) {
-		src_stage = VK_PIPELINE_STAGE_2_NONE;
-		src_access = 0;
-	}
-
 	*out = (VkImageMemoryBarrier2){
 		.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
 		.srcStageMask = src_stage,

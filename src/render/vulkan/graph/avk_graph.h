@@ -308,7 +308,6 @@ struct avk_graph {
 	 * which is the one dependency a multipass effect cannot do without: pass B
 	 * samples an image pass A is still writing. Read once at init.
 	 */
-	bool break_missing_write_read;
 };
 
 void avk_graph_init(struct avk_graph *graph, struct avk_device *dev);

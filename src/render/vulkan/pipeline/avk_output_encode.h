@@ -112,10 +112,6 @@ enum avk_encode_tf {
  *            because a wrong dim is a smoothly wrong picture: the coordinate
  *            mapping is (v*(dim-1) + 0.5)/dim, so a dim that disagrees with the
  *            image reads the table at a steadily drifting offset.
- * clut_encoded_domain  AZ_BREAK_CLUT_DOMAIN, plumbed from the object that read
- *            the environment (off the frame path) rather than read here. Makes
- *            the pass sample the cube with the ENCODED value instead of the
- *            linear one -- the domain error this whole path is at risk of.
  */
 struct avk_encode_params {
 	float matrix[9];
@@ -128,7 +124,6 @@ struct avk_encode_params {
 	struct avk_image *lut;
 	struct avk_image *clut;
 	uint32_t clut_dim;
-	bool clut_encoded_domain;
 };
 
 /* Must match the block in shader/src/output_encode.frag exactly. */
@@ -330,9 +325,6 @@ struct avk_encode_clut {
 	struct avk_image *image;
 	uint64_t serial; /* the profile revision `image` holds; 0 = empty */
 	uint32_t dim;
-	/* AZ_BREAK_CLUT_DOMAIN, latched when the table was built so that the frame
-	 * path never reads the environment. The pass reads it from the params. */
-	bool domain_break;
 };
 
 /*

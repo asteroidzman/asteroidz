@@ -450,18 +450,7 @@ void avk_output_encode_record(VkCommandBuffer cb, void *user) {
 	pc.misc[0] = p->params.dither_q;
 	pc.misc[1] = p->params.origin_x;
 	pc.misc[2] = p->params.origin_y;
-	/*
-	 * M6C. The cube's edge, and its SIGN is AZ_BREAK_CLUT_DOMAIN -- the shader
-	 * samples with the sRGB-encoded value instead of the linear one when it is
-	 * negative. A sign rather than a second float because the block is exactly
-	 * 64 bytes and this was its last spare scalar; a sign rather than a
-	 * specialisation constant because a break must be switchable without
-	 * recompiling a pipeline, and a break nobody can run is not a falsifier.
-	 */
-	pc.misc[3] = (float)p->params.clut_dim;
-	if (p->params.clut_encoded_domain) {
-		pc.misc[3] = -pc.misc[3];
-	}
+		pc.misc[3] = (float)p->params.clut_dim;
 	vkCmdPushConstants(cb, p->enc->layout,
 		VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
 		sizeof(pc), &pc);
@@ -681,34 +670,9 @@ struct avk_image *avk_encode_lut_get(struct avk_encode_lut *l,
 			(uint64_t)l->image->image, "avk encode lut");
 	}
 
-	/*
-	 * ── BREAK: AZ_BREAK_ICC_LUT_IDENTITY ──────────────────────────────────
-	 *
-	 * Upload the IDENTITY instead of the measurement -- the table that encodes
-	 * a linear value to itself -- so every stage of the LUT path still runs and
-	 * only the curve's content is wrong. That is the shape of the failure worth
-	 * being able to detect: the descriptor bound, the variant compiled, the
-	 * sample taken, and the display characterisation absent.
-	 *
-	 * The taps are on the squared index, so the identity at tap i is (i/(N-1))^2
-	 * and NOT i/(N-1). Writing the linear ramp here would be a break that also
-	 * silently tests the index warp, which is a different question with its own
-	 * measurement (5.81 codes at a uniform 256, recorded in az_icc.h).
-	 */
-	const bool break_identity = getenv("AZ_BREAK_ICC_LUT_IDENTITY") != NULL;
-
 	/* Interleaved on the stack: 2KB, once per profile change. */
 	uint16_t texels[AVK_ENCODE_LUT_TAPS * 4];
 	for (uint32_t i = 0; i < AVK_ENCODE_LUT_TAPS; i++) {
-		if (break_identity) {
-			float x = (float)i / (float)(AVK_ENCODE_LUT_TAPS - 1);
-			uint16_t v = (uint16_t)(x * x * 65535.0f + 0.5f);
-			texels[i * 4 + 0] = v;
-			texels[i * 4 + 1] = v;
-			texels[i * 4 + 2] = v;
-			texels[i * 4 + 3] = 65535;
-			continue;
-		}
 		texels[i * 4 + 0] = curve[0][i];
 		texels[i * 4 + 1] = curve[1][i];
 		texels[i * 4 + 2] = curve[2][i];
@@ -823,56 +787,15 @@ struct avk_image *avk_encode_clut_get(struct avk_encode_clut *l,
 			(uint64_t)l->image->image, "avk encode clut");
 	}
 
-	/*
-	 * ── BREAK: AZ_BREAK_CLUT_IDENTITY ─────────────────────────────────────
-	 *
-	 * Upload the identity cube -- out = in, device code equal to scene linear --
-	 * instead of the profile's. Every stage still runs: the CLUT3D module is
-	 * compiled, the 3D view exists, the descriptor is bound, the trilinear
-	 * sample is taken. Only the characterisation is absent, which is exactly
-	 * the failure a green fixture would otherwise be hiding.
-	 *
-	 * THE IDENTITY IS ON THE WARPED AXIS: sample i holds (i/(dim-1))^2, not
-	 * i/(dim-1), because the shader indexes with sqrt. Writing the linear ramp
-	 * here would be a break that ALSO silently tests the index warp -- a
-	 * different question with its own measurement (13.82 codes at a uniform 33,
-	 * recorded in az_icc.h), and one this break must not be able to answer by
-	 * accident.
-	 *
-	 * ── BREAK: AZ_BREAK_CLUT_DOMAIN ───────────────────────────────────────
-	 *
-	 * Latched here rather than read on the frame path, and it changes nothing
-	 * about the table: the pass samples the RIGHT cube with the WRONG value.
-	 * Splitting the two breaks this way is deliberate -- one falsifies the
-	 * contents, the other falsifies the domain, and a single break that did both
-	 * could not tell you which of them the fixture is sensitive to.
-	 */
-	const bool break_identity = getenv("AZ_BREAK_CLUT_IDENTITY") != NULL;
-	l->domain_break = getenv("AZ_BREAK_CLUT_DOMAIN") != NULL;
-
 	size_t texels = (size_t)dim * dim * dim;
 	uint16_t *staging_texels = calloc(texels * 4, sizeof(uint16_t));
 	if (staging_texels == NULL) {
 		return NULL;
 	}
 	for (size_t i = 0; i < texels; i++) {
-		if (break_identity) {
-			/* Recover r,g,b from the flat index: R fastest, then G, then B. */
-			uint32_t r = (uint32_t)(i % dim);
-			uint32_t g = (uint32_t)((i / dim) % dim);
-			uint32_t b = (uint32_t)(i / ((size_t)dim * dim));
-			const float last = (float)(dim - 1);
-			const uint32_t idx[3] = { r, g, b };
-			for (int ch = 0; ch < 3; ch++) {
-				float x = (float)idx[ch] / last;
-				staging_texels[i * 4 + ch] =
-					(uint16_t)(x * x * 65535.0f + 0.5f);
-			}
-		} else {
-			staging_texels[i * 4 + 0] = grid[i * 3 + 0];
-			staging_texels[i * 4 + 1] = grid[i * 3 + 1];
-			staging_texels[i * 4 + 2] = grid[i * 3 + 2];
-		}
+		staging_texels[i * 4 + 0] = grid[i * 3 + 0];
+		staging_texels[i * 4 + 1] = grid[i * 3 + 1];
+		staging_texels[i * 4 + 2] = grid[i * 3 + 2];
 		/* Opaque. Nothing reads it; a zero alpha in a sampled image is the kind
 		 * of thing a later reader would have to go and check. */
 		staging_texels[i * 4 + 3] = 65535;

@@ -26,8 +26,8 @@
  *     through parse_option and read back through its own offset, so a wrong
  *     offset or type is a red test rather than a rule that silently sets its
  *     neighbour.
- *   - tests/check-rule-schema.py covers what a dynamic check cannot: a key
- *     `parse_option` handles that is MISSING here.
+ *   - what a dynamic check cannot cover -- a key `parse_option` handles that
+ *     is MISSING here -- is a comparison of `-R` against the parser, by hand.
  *
  * Writing it turned up drift that had been there a while: six fields the parser
  * accepts were in no documentation at all (force_hdr, isnotitlebar, nofocus,

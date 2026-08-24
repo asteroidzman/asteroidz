@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- NOT normalised by contrib/normalize-bar-icons.py, unlike its neighbours.
+<!-- NOT normalised to the shared canvas, unlike its neighbours.
 
-     That tool scales an icon's ink to fill the canvas so a row of glyphs reads
+     The others had their ink scaled to fill the canvas so a row of glyphs reads
      at one visual size. The logo is not in such a row: it is a chip of its own
      at the head of the tag group, drawn with no horizontal padding and an
      iconScale of its own (asteroidz-bar shell/modules/Tags.qml). Filling the

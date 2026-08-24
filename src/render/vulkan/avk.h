@@ -9,7 +9,7 @@
  *
  * The layer is deliberately compositor-agnostic: its inputs are DRM file
  * descriptors, dmabuf file descriptors and pixels. That is what makes it
- * testable without a compositor -- tests/test-avk-core.c opens a render node
+ * testable without a compositor -- opening a render node
  * and drives the whole thing with no Wayland display anywhere.
  */
 

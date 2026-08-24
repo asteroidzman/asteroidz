@@ -18,9 +18,9 @@
  * fills -- 9 floats and 768 taps.
  *
  * PURE CPU. No Vulkan types, no wlroots types, no allocation on a frame path.
- * The same discipline as az_color_ref.c, and for the same reason: a colour
+ * The same discipline as az_color.c, and for the same reason: a colour
  * transform that can only be exercised through a renderer is a colour
- * transform nobody can unit-test.
+ * transform nobody can check against a published constant.
  */
 
 #include <stdbool.h>

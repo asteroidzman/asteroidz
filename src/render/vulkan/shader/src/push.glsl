@@ -126,7 +126,7 @@ vec2 az_frag_global(void) {
  * `struct avk_push_constants pc = {0}` in the tree then renders BLACK unless
  * its author knew to set this field. That is not hypothetical -- it was tried.
  * The blur composite draws through pipes.texture, the blur chain's own passes
- * share this block, and tests/test-avk-multipass.c binds pipes.texture
+ * share this block, and binding pipes.texture
  * directly: four call sites, three of them nowhere near anything called
  * "colour", and every blurred region on screen went black. Fixing it meant
  * four defensive assignments and a comment at each, all of which stay correct

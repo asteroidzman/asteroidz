@@ -354,20 +354,7 @@ void layer_draw_shadow(LayerSurface *l) {
 			.width = layer_box.width,
 			.height = layer_box.height,
 		};
-		/* BREAK: AZ_BREAK_LAYER_SHADOW_EXCLUDE=1 withholds the exclusion and
-		 * changes nothing else, which is the state this shipped in for as
-		 * long as layer shadows have existed -- the layer's own pixels
-		 * sampled into its own backdrop AND, because AVK gates blur_darken on
-		 * has_sample_exclude, the clamp never applied either. It is what
-		 * contrib/shadow-darken-test.sh's layer arm is falsified against. */
-		static int break_layer_exclude = -1;
-		if (break_layer_exclude < 0) {
-			const char *e = getenv("AZ_BREAK_LAYER_SHADOW_EXCLUDE");
-			break_layer_exclude = e && *e && *e != '0';
-		}
-		if (!break_layer_exclude) {
-			wlr_scene_blur_set_sample_exclude(l->shadow_blur, &blur_exclude);
-		}
+		wlr_scene_blur_set_sample_exclude(l->shadow_blur, &blur_exclude);
 		struct fx_corner_radii blur_radii = corner_radii_from_location(
 			config.border_radius, config.border_radius_location_default);
 		if (!fx_corner_radii_eq(l->shadow_blur->corners, blur_radii))

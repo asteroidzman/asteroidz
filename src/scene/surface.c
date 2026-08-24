@@ -542,17 +542,7 @@ static bool scene_buffer_point_accepts_input(struct wlr_scene_buffer *scene_buff
 	// behaviour of every animated client on both renderers -- a much larger
 	// change than this is, for a case where the window is moving under the
 	// pointer anyway.
-	//
-	// BREAK: AZ_BREAK_X11_INPUT_SCALE=1 drops the conversion and nothing
-	// else. It is the shape of the bug this is here to prevent -- a perfect
-	// picture with every click in the wrong place -- and it is what
-	// contrib/xw-scale-test.sh's click assertions are falsified against.
-	static int break_input_scale = -1;
-	if (break_input_scale < 0) {
-		const char *e = getenv("AZ_BREAK_X11_INPUT_SCALE");
-		break_input_scale = e && *e && *e != '0';
-	}
-	if (!break_input_scale && scene_surface->view_scale > 0.0f &&
+	if (scene_surface->view_scale > 0.0f &&
 			scene_surface->view_scale != 1.0f) {
 		*sx *= scene_surface->view_scale;
 		*sy *= scene_surface->view_scale;

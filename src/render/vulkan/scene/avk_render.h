@@ -20,7 +20,7 @@
  * This is the function that exists instead of wlr_renderer_begin_buffer_pass()
  * + wlr_render_pass_add_texture() + wlr_render_pass_submit(). Nothing in here
  * or below it touches a wlr_renderer, a wlr_render_pass or a wlr_texture, and
- * tests/check-vulkan-isolation.py fails the build if that ever stops being
+ * The meson source list is what keeps it
  * true.
  */
 
@@ -81,7 +81,7 @@
  *     picture content it moves. 0.75 leaves three quarters of the range exactly
  *     where ADR-009 promises it.
  *
- * THE FALSIFIERS IT OWES, both asserted in tests/test-avk-render.c:
+ * THE TWO PROPERTIES IT OWES:
  *
  *   an SDR source (scale <= 1) is BIT-IDENTICAL with the ceiling reachable and
  *   with it compiled out -- the knee is simply never set for it;
@@ -231,13 +231,6 @@ struct avk_blur_cache_image {
 	 * ordering it, and the alternation was buying nothing but an
 	 * output-resolution image per kind.
 	 *
-	 * The break that proved this (AZ_BLUR_CACHE_UNSAFE_REUSE, "write the slot
-	 * being read") reported ZERO sync hazards under validate_sync with a control
-	 * proving the layer was watching. It is gone with the alternation, because
-	 * with one slot it describes the ordinary path. What replaced it is stronger
-	 * and still falsifiable: AZ_BLUR_CACHE_ALWAYS_DIRTY rebuilds into the single
-	 * live image EVERY frame while consumers sample it, under validation, and
-	 * the result must still be bit-exact against the forced-live path.
 	 */
 	struct avk_image *image;
 	uint64_t image_bytes;
@@ -645,9 +638,6 @@ struct avk_renderer_stats {
 struct avk_renderer {
 	/* M4A break switches; see avk_render.c. Read once at init, never in the
 	 * draw loop, so a break costs nothing when it is off. */
-	bool break_rounded_off;
-	bool break_rounded_single;
-	bool break_bottom_swap;
 	/*
 	 * P2. Swaps two of a textured quad's four destination corners at record
 	 * time, which folds the quad into a bow tie: the same four points, wound
@@ -655,9 +645,6 @@ struct avk_renderer {
 	 * matching the texture command it should equal, and the rotated quad stops
 	 * matching the transform-enum render it should equal.
 	 */
-	bool break_quad_swap_corners;
-	bool break_rounded_double_scale;
-	float break_scale_hint;
 	/*
 	 * M4D break. Restores a single-radius shadow -- every corner taking the
 	 * top-left's -- which is what an implementation that carried one scalar
@@ -665,7 +652,6 @@ struct avk_renderer {
 	 * match, which is most of them, and is wrong on every titlebar-joined
 	 * one.
 	 */
-	bool break_shadow_single_radius;
 	/*
 	 * M4D.2 break. Re-centres the shadow's envelope on the window it belongs
 	 * to, which is precisely how a symmetric centred glow differs from a
@@ -682,13 +668,11 @@ struct avk_renderer {
 	 * because `inner` is the window's own footprint. It restores the look
 	 * M4D.2 exists to move away from rather than merely turning shadows off.
 	 */
-	bool break_shadow_symmetric;
 	/*
 	 * M4D.4 break. Turns the dither off, restoring the banded shadow the live
 	 * session showed: a smooth falloff quantised to nine 8-bit levels reads as
 	 * concentric halos on a flat backdrop.
 	 */
-	bool break_shadow_no_dither;
 	/*
 	 * M4H DIAGNOSTIC ATTRIBUTION MASK -- AZ_AVK_SKIP_DRAW.
 	 *
@@ -719,17 +703,6 @@ struct avk_renderer {
 	 * stop for good. `dump_seg` is the running segment number. */
 	uint32_t cmd_dump;
 	uint32_t dump_seg;
-	/*
-	 * M4H break -- AZ_AVK_NO_OCCLUSION=1 restores the pure painter's
-	 * algorithm: every command draws its whole damaged extent whether or not
-	 * something opaque covers it.
-	 *
-	 * This is the falsifier for the culling, and it is an unusual one because
-	 * the two builds must agree EXACTLY. An optimisation that changes a pixel
-	 * is a bug, so the test is not "the culled build looks right", it is "the
-	 * two builds are bit-identical and the culled one drew less".
-	 */
-	bool break_no_occlusion;
 	/*
 	 * M5/C7. Select a decode variant from each source's luminance domain.
 	 *
@@ -819,10 +792,6 @@ struct avk_renderer {
 	 * frame path allocates none.
 	 */
 	struct avk_output_encode encode;
-	/* M4H break -- AZ_AVK_OCCLUDE_ALL=1: every command occludes, whatever its
-	 * alpha or shape. The over-culling failure the oracle must be able to
-	 * catch; see az_cmd_opaque_region(). */
-	bool break_occlude_all;
 	/* Per-segment draw regions, computed top-down. Grown, never freed per
 	 * frame; see avk_render_reserve_regions(). */
 	pixman_region32_t *region_scratch;
@@ -841,7 +810,6 @@ struct avk_renderer {
 	 * rather than be papered over, because the whole argument for prefix
 	 * capture is that the defect becomes structurally impossible.
 	 */
-	bool break_blur_scene_after;
 	/*
 	 * M4F.2A.3 breaks.
 	 *
@@ -862,9 +830,6 @@ struct avk_renderer {
 	 * is not. At scale 1.0 it is a no-op by construction; at 1.5 the two edges
 	 * fade over different distances.
 	 */
-	bool break_blur_ignore_darken;
-	bool break_blur_ignore_clip;
-	bool break_blur_edge_logical_sigma;
 	/*
 	 * M4F.2B breaks.
 	 *
@@ -875,10 +840,10 @@ struct avk_renderer {
 	 * the picture can catch it, and what it leaves is a ring of stale blur
 	 * around every change, which is the classic under-damage artifact.
 	 *
-	 * THERE IS NO break_blur_no_transitive_damage, AND THAT IS A MEASUREMENT.
-	 * One was written -- it stopped a blur's output damage from joining the
-	 * prefix damage a later blur reads -- and it could not be made to leave
-	 * more than 4 wrong pixels at 1 code in any geometry tried. The reason is
+	 * A MISSING TRANSITIVE EDGE IS NEARLY INVISIBLE, AND THAT IS A MEASUREMENT.
+	 * Stopping a blur's output damage from joining the prefix damage a later
+	 * blur reads could not be made to leave more than 4 wrong pixels at 1 code
+	 * in any geometry tried. The reason is
 	 * not the implementation: a dual-Kawase blur PRESERVES THE LOCAL MEAN, so
 	 * blurring an already-blurred field gives very nearly what blurring the raw
 	 * field would. Removing blur 1 from a two-blur scene ENTIRELY, replacing
@@ -895,22 +860,7 @@ struct avk_renderer {
 	 * without touching the scene-prefix architecture. A partial frame that
 	 * differs from this by one pixel has a damage bug.
 	 */
-	bool break_blur_under_damage;
-	/*
-	 * M4F.2C break. Clamps a blur's source reconstruction to the OUTPUT's own
-	 * bounds, which is what a renderer that never thought about a second
-	 * monitor does. On a single output it changes nothing at all -- the source
-	 * bounds and the presentation bounds are the same box -- and on a window
-	 * spanning a seam it replaces the source that lies across the join with the
-	 * capture's edge-clamped colour. The result is a visible discontinuity down
-	 * the seam, which is the defect the halo exists to prevent.
-	 */
-	bool break_blur_source_output_clip;
 	bool blur_full_damage;
-	/* What to divide by under break_blur_edge_logical_sigma. The renderer has no
-	 * scale of its own -- geometry arrives already in output pixels -- so the
-	 * break is told, exactly as break_rounded_double_scale is. */
-	float break_blur_edge_scale;
 	float shadow_dither;
 	bool dither_hash;
 	struct avk_device *dev;
@@ -1126,49 +1076,14 @@ struct avk_renderer {
 	 * stale_geometry ignore an extent change. A resize must fail the oracle.
 	 * stale_params   ignore a kernel change. A radius change must fail it.
 	 *
-	 * There is no unsafe_reuse break any more: it meant "rebuild into the slot
-	 * the previous frame is sampling", and with one slot per kind that is the
-	 * ordinary path. always_dirty now covers the same hazard and covers it
-	 * harder -- every frame rather than only on a rebuild.
 	 */
 	bool break_blur_cache_off;
-	bool break_blur_cache_always_dirty;
-	bool break_blur_cache_ignore_dirty;
-	bool break_blur_cache_stale_geometry;
-	bool break_blur_cache_stale_params;
 	/*
-	 * An avk_blur_cache_kind whose consumers are treated as absent, or -1.
-	 *
-	 * NOT A SUPPRESSION OF A CHECK -- it is the other kind of instrument. The
 	 * breaks above hide an invalidation the check already found; this one
 	 * arranges the ORDINARY frame in which a kind is simply not asked for, so
 	 * that the rule about what the other kind's rebuild does to it can be
 	 * stated at all. See avk_render_set_blur_cache_starve().
 	 */
-	int break_blur_cache_starve_kind;
-	/*
-	 * VALIDATE BOTH KINDS AGAINST THE CACHE-WIDE RECORD -- the shipped defect,
-	 * restored on demand.
-	 *
-	 * That record is written by whichever kind last rebuilt, so with this on a
-	 * kind that was starved across a background change is certified by the
-	 * other kind's rebuild and served stale. It is the falsifier for the
-	 * per-kind identity, and it is the ONLY one that can be: nothing else
-	 * produces "every field compares equal and the picture is a wallpaper
-	 * several rotations old".
-	 *
-	 * Pairs with break_blur_cache_starve_kind, which arranges the frame it
-	 * needs. Neither is any use without the other.
-	 */
-	bool break_blur_cache_shared_identity;
-	/*
-	 * AZ_BLUR_CACHE_IGNORE_SOURCE -- restore the pre-fix validity rule, where
-	 * the cache trusted the dirty notification and asked nothing about the
-	 * source it had actually been built from. Paired with IGNORE_DIRTY it is
-	 * the stale-wallpaper defect exactly as it shipped, which is what makes the
-	 * fixture for the fix able to fail.
-	 */
-	bool break_blur_cache_ignore_source;
 	/*
 	 * WHAT THE CHAIN WOULD HAVE TO PROCESS, summed per pass, with every
 	 * filter footprint included -- avk_blur_work_of(). The denominator of the
@@ -1413,33 +1328,6 @@ void avk_render_set_damage_rect_cap(int cap);
 /* M4I. Enable or disable the monitor background blur cache at runtime, on one
  * renderer. See the note at the definition for why this is not env-only. */
 void avk_render_set_blur_cache_enabled(struct avk_renderer *renderer, bool on);
-/*
- * ── STARVE ONE CACHED KIND, ON ONE RENDERER ───────────────────────────────
- *
- * `kind` is an avk_blur_cache_kind, or -1 for none. While set, that kind is
- * treated as having no damaged consumer this frame: it is not checked, not
- * rebuilt, and not served. Everything else -- the other kind, the generation,
- * the source digest -- is untouched.
- *
- * IT MODELS THE ORDINARY FRAME, NOT AN EXOTIC ONE. `want[k]` is already gated
- * on the frame damage reaching a consumer of that kind, so a frame that
- * rebuilds one kind and leaves the other alone is the common case; this makes
- * it happen on demand instead of waiting for the damage to fall the right way.
- *
- * WHY NOT `shadows_blur_background 0`, WHICH REMOVES THE SAME CONSUMERS. That
- * is a config change, and a config change reaches
- * layer_flush_blur_background() and MOVES THE GENERATION. The cache check
- * returns at the first disagreement, so a moved generation is reported as
- * GENERATION and every later rule is never evaluated -- the fixture built on
- * that lever passed on the broken build, having tested nothing. Same trap as
- * AZ_BLUR_CACHE_IGNORE_DIRTY, different road.
- *
- * Runtime rather than env-only because the kind must be starved and un-starved
- * WITHIN one session: a cache torn down between the two starts from
- * NEVER_BUILT and can never be stale.
- */
-void avk_render_set_blur_cache_starve(struct avk_renderer *renderer, int kind);
-
 uint64_t avk_render_frame(struct avk_renderer *renderer,
 	struct avk_image *target, const struct avk_scene *scene,
 	const VkSemaphoreSubmitInfo *wait, uint32_t wait_count,

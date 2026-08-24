@@ -342,15 +342,9 @@ static void az_wpcm_creator_set_tf_named(struct wl_client *c,
 			"transfer function already set");
 		return;
 	}
-	static int break_novalidate = -1;
-	if (break_novalidate < 0) {
-		break_novalidate = getenv("AZ_BREAK_WPCM_NO_VALIDATE") != NULL;
-	}
-	if (!break_novalidate && !az_wpcm_tf_advertised(tf)) {
-		/* BREAK: AZ_BREAK_WPCM_NO_VALIDATE accepts it, and the compositor then
-		 * dies inside scenefx's _to_wlr() the moment the surface is
-		 * reconfigured. The break exists so that "validation is what stands
-		 * between us and an abort" is demonstrated rather than asserted. */
+	/* Validation is what stands between an unadvertised value and an abort
+	 * inside _to_wlr() the moment the surface is reconfigured. */
+	if (!az_wpcm_tf_advertised(tf)) {
 		wl_resource_post_error(r,
 			WP_IMAGE_DESCRIPTION_CREATOR_PARAMS_V1_ERROR_INVALID_TF,
 			"transfer function %u was not advertised", tf);
@@ -378,11 +372,7 @@ static void az_wpcm_creator_set_primaries_named(struct wl_client *c,
 			"primaries already set");
 		return;
 	}
-	static int break_novalidate = -1;
-	if (break_novalidate < 0) {
-		break_novalidate = getenv("AZ_BREAK_WPCM_NO_VALIDATE") != NULL;
-	}
-	if (!break_novalidate && !az_wpcm_primaries_advertised(p)) {
+	if (!az_wpcm_primaries_advertised(p)) {
 		wl_resource_post_error(r,
 			WP_IMAGE_DESCRIPTION_CREATOR_PARAMS_V1_ERROR_INVALID_PRIMARIES_NAMED,
 			"primaries %u were not advertised", p);
@@ -830,24 +820,13 @@ static bool az_wpcm_send_preferred(struct wlr_surface *surface) {
 	if (pref.identity == 0) {
 		return false;
 	}
-	static int break_send_once = -1;
-	if (break_send_once < 0) {
-		break_send_once = getenv("AZ_BREAK_WPCM_SEND_ONCE") != NULL;
-	}
-	static int break_no_gate = -1;
-	if (break_no_gate < 0) {
-		break_no_gate = getenv("AZ_BREAK_WPCM_NO_IDENTITY_GATE") != NULL;
-	}
 	bool sent = false;
 	AzWpcmFeedback *fb;
 	wl_list_for_each(fb, &az_wpcm_feedbacks, link) {
 		if (fb->surface != surface || fb->resource == NULL) {
 			continue;
 		}
-		if (break_send_once && fb->sent_identity != 0) {
-			continue;
-		}
-		if (!break_no_gate && pref.identity == fb->sent_identity) {
+		if (pref.identity == fb->sent_identity) {
 			continue;
 		}
 		uint32_t version = wl_resource_get_version(fb->resource);
@@ -1140,18 +1119,7 @@ static void az_wpcm_bind(struct wl_client *client, void *data,
 	 * az_cm_caps.h builds it, and the wlroots path is handed the same struct
 	 * -- so "the native manager advertises what wlroots advertised" is true by
 	 * construction rather than by a second list that has to be kept in step.
-	 *
-	 * BREAK: AZ_BREAK_WPCM_EMPTY_CAPS suppresses the transfer-function list,
-	 * reproducing the shape of the defect that made the wlroots-renderer list
-	 * come back empty -- no named transfer functions, no client able to attach
-	 * any image description at all. It exists because that failure was silent:
-	 * every call succeeded and every client quietly gave up.
 	 */
-	static int break_empty = -1;
-	if (break_empty < 0) {
-		break_empty = getenv("AZ_BREAK_WPCM_EMPTY_CAPS") != NULL;
-	}
-
 	/*
 	 * FEATURES BEFORE INTENTS, because that is the order wlroots emits them
 	 * and the cutover must not be client-visible. A client that takes the
@@ -1170,11 +1138,9 @@ static void az_wpcm_bind(struct wl_client *client, void *data,
 		wp_color_manager_v1_send_supported_intent(resource,
 			az_cm_render_intents[i]);
 	}
-	if (!break_empty) {
-		for (size_t i = 0; i < az_wpcm_caps.tf_len; i++) {
-			wp_color_manager_v1_send_supported_tf_named(resource,
-				az_wpcm_caps.tfs[i]);
-		}
+	for (size_t i = 0; i < az_wpcm_caps.tf_len; i++) {
+		wp_color_manager_v1_send_supported_tf_named(resource,
+			az_wpcm_caps.tfs[i]);
 	}
 	for (size_t i = 0; i < az_wpcm_caps.primaries_len; i++) {
 		wp_color_manager_v1_send_supported_primaries_named(resource,

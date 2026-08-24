@@ -470,13 +470,6 @@ struct dwl_animation {
 	struct wlr_box current;
 	int32_t action;
 	/*
-	 * AZ_BREAK_ANIM_FRAME_STEP only (falsifier I4): how many ticks this
-	 * animation has received. The break derives progress from this instead of
-	 * from elapsed time, which is what a frame-stepped animation actually is.
-	 * Zero and unread in every normal build.
-	 */
-	uint64_t break_ticks;
-	/*
 	 * The instant this animation was most recently EVALUATED at (ADR-608).
 	 *
 	 * A retarget seeds the new segment with the position the old one had
@@ -1102,10 +1095,6 @@ struct Monitor {
 	 * wall-clock timing run headless.
 	 */
 	bool present_seq_available;
-	/* AZ_BREAK_PRESENT_IDLE_WAKE only (falsifier I5). Null in every normal
-	 * build, which is the point: the guarantee is that no such object
-	 * exists. */
-	struct wl_event_source *break_idle_wake_timer;
 
 	/*
 	 * ── M-8. ARM-TO-PHOTONS AND COMMIT-TO-PHOTONS ─────────────────────────
@@ -2405,7 +2394,6 @@ static int32_t set_t_pipe(const Arg *arg);
 static int32_t set_blur_rect_cap(const Arg *arg);
 static int32_t set_blur_chain_trace(const Arg *arg);
 static int32_t set_blur_cache(const Arg *arg);
-static int32_t set_blur_cache_starve(const Arg *arg);
 static int32_t set_frame_trace(const Arg *arg);
 static int32_t dump_scene(const Arg *arg);
 static int32_t damage_all(const Arg *arg);
@@ -2570,33 +2558,7 @@ static uint64_t az_pointer_notify_internal;
  * semantic/presentation state split (ADR-611) first; this threading is the
  * plumbing for it and is deliberately behaviour-neutral until then.
  */
-static uint64_t az_sample_not_target;   /* I1: must stay 0 */
 static uint64_t az_sample_total;
-
-/*
- * ── AZ_BREAK_PRESENT_IDLE_WAKE (falsifier I5) ─────────────────────────────
- *
- * ADR-610's guarantee is STRUCTURAL: the presenter owns no wl_event_source, so
- * there is no object through which it could wake the loop, and a settled
- * desktop therefore executes none of it. A structural guarantee is worth
- * exactly as much as the test that tries to violate it -- so this break adds
- * the thing the design says does not exist: a 1s timer that schedules a frame,
- * the "just one refresh tick" every predictor invites.
- *
- * A healthy build presents nothing across a settled window. This one presents
- * about once a second, which is the difference between an idle laptop and a
- * warm one.
- */
-static int32_t az_break_idle_wake_cb(void *data) {
-	Monitor *m = data;
-	if (m != NULL && m->wlr_output != NULL) {
-		wlr_output_schedule_frame(m->wlr_output);
-	}
-	if (m != NULL && m->break_idle_wake_timer != NULL) {
-		wl_event_source_timer_update(m->break_idle_wake_timer, 1000);
-	}
-	return 0;
-}
 
 static inline uint64_t az_frame_sample_ns(Monitor *m) {
 	uint64_t t = az_presenter_sample_ns(m);
@@ -2606,38 +2568,7 @@ static inline uint64_t az_frame_sample_ns(Monitor *m) {
 		 * still exactly one time source for the pass. */
 		t = m != NULL ? m->m8_arm_ns : 0;
 	}
-	/*
-	 * ── AZ_BREAK_PRESENT_SAMPLE_NOW (falsifier I1) ────────────────────────
-	 *
-	 * Substitutes the CPU's "now" for the predicted presentation time -- the
-	 * pre-M6A behaviour, and the defect ADR-606 exists to remove. A frame then
-	 * shows the state it had when the CPU walked it rather than the state it
-	 * should have when it lights up.
-	 *
-	 * The invariant this breaks is checkable without inferring anything from
-	 * pixels: `sample_ns == target_ns` for every pass. az_sample_not_target
-	 * counts violations and must be zero, so the break makes a counter move
-	 * rather than making a picture subtly wrong.
-	 */
-	static int break_now = -1;
-	if (break_now < 0) {
-		break_now = getenv("AZ_BREAK_PRESENT_SAMPLE_NOW") != NULL;
-		if (break_now) {
-			wlr_log(WLR_ERROR, "M6A break: AZ_BREAK_PRESENT_SAMPLE_NOW -- "
-				"animations sample CPU-now instead of the predicted "
-				"presentation time; this is the pre-M6A staleness, restored");
-		}
-	}
 	az_sample_total++;
-	if (break_now) {
-		struct timespec bn;
-		clock_gettime(CLOCK_MONOTONIC, &bn);
-		uint64_t now = (uint64_t)bn.tv_sec * 1000000000ull + (uint64_t)bn.tv_nsec;
-		if (now != t) {
-			az_sample_not_target++;
-		}
-		return now;
-	}
 	return t;
 }
 /* M12: the one luminance-rule precedence, between client.h (it reads a rule
@@ -2790,25 +2721,6 @@ static int32_t set_blur_cache(const Arg *arg) {
 	bool on = arg != NULL && arg->i != 0;
 	az_avk_set_blur_cache(on);
 	wlr_log(WLR_INFO, "AVK: monitor background blur cache %s", on ? "ON" : "off");
-	return 0;
-}
-/*
- * `amsg dispatch set_blur_cache_starve,<0|1|2>` -- 0 none, 1 plain, 2 dark.
- *
- * The starved kind is treated as having no damaged consumer, which is what an
- * ordinary frame does to whichever kind the damage missed. It exists so a
- * fixture can put the cache in that state ON PURPOSE and then ask what the
- * other kind's rebuild did to it.
- *
- * 1-BASED, WITH 0 MEANING NONE, so that a dispatch with a missing or
- * unparseable argument (which arrives as 0) turns the instrument OFF rather
- * than silently starving the plain image on a session nobody meant to break.
- */
-static int32_t set_blur_cache_starve(const Arg *arg) {
-	int v = arg != NULL ? arg->i : 0;
-	az_avk_set_blur_cache_starve(v - 1);
-	wlr_log(WLR_INFO, "AVK: blur cache starve -> %s",
-		v == 1 ? "plain" : v == 2 ? "dark" : "none");
 	return 0;
 }
 static int32_t set_blur_rect_cap(const Arg *arg) {
@@ -7254,15 +7166,6 @@ void createmon(struct wl_listener *listener, void *data) {
 	 * error. One wrong field at construction, and nothing after it was right.
 	 */
 	az_presenter_reset(m, AZ_PRESENT_RESET_CREATE);
-	if (getenv("AZ_BREAK_PRESENT_IDLE_WAKE") != NULL) {
-		wlr_log(WLR_ERROR, "M6A break: AZ_BREAK_PRESENT_IDLE_WAKE -- a 1s "
-			"timer now schedules frames on %s; idle is no longer idle",
-			wlr_output->name);
-		m->break_idle_wake_timer = wl_event_loop_add_timer(
-			wl_display_get_event_loop(dpy), az_break_idle_wake_cb, m);
-		wl_event_source_timer_update(m->break_idle_wake_timer, 1000);
-	}
-
 	wl_list_insert(&mons, &m->link);
 
 	m->pertag = calloc(1, sizeof(Pertag));
@@ -11412,23 +11315,8 @@ void setmon(Client *c, Monitor *m, uint32_t newtags, bool focus) {
 
 	/* The monitor decides the X11 scale, so this is the moment it can change.
 	 * Before the resize below, so the configure that follows is already in
-	 * the new unit rather than one frame behind it.
-	 *
-	 * BREAK: AZ_BREAK_X11_MON_MIGRATE=1 skips it, leaving a window measured
-	 * in the units of the display it OPENED on. That is the most plausible
-	 * way to get this wrong, and on a single-output layout it is
-	 * indistinguishable from correct -- which is why
-	 * contrib/xw-mixed-test.sh exists and runs two outputs at two scales. */
-	{
-		static int break_migrate = -1;
-		if (break_migrate < 0) {
-			const char *e = getenv("AZ_BREAK_X11_MON_MIGRATE");
-			break_migrate = e && *e && *e != '0';
-		}
-		if (!break_migrate) {
-			client_update_x11_scale(c);
-		}
-	}
+	 * the new unit rather than one frame behind it. */
+	client_update_x11_scale(c);
 
 	/* Scene graph sends surface leave/enter events on move and resize */
 	if (oldmon)
@@ -11500,19 +11388,6 @@ static void surface_send_preferred_description(struct wlr_surface *surface,
 	struct az_preferred pref;
 	az_preferred_resolve(surface, &pref);
 	m = pref.mon;
-	/*
-	 * BREAK: AZ_BREAK_CM_NO_PREFERRED restores the pre-M6B behaviour exactly --
-	 * the compositor never tells a surface anything, and the client falls back
-	 * to the default. G4's falsifier: with this set, a client that observed
-	 * PQ must observe the default instead.
-	 */
-	static int suppressed = -1;
-	if (suppressed < 0) {
-		suppressed = getenv("AZ_BREAK_CM_NO_PREFERRED") != NULL;
-	}
-	if (suppressed) {
-		return;
-	}
 	/*
 	 * ── WHAT IS LOGGED IS WHAT IS SENT ────────────────────────────────────
 	 *
@@ -12106,20 +11981,13 @@ void setup(void) {
 	 * See src/render/az_dmabuf_caps.h for why this moved.
 	 */
 	if (wlr_renderer_get_texture_formats(drw, WLR_BUFFER_CAP_DMABUF)) {
-		struct wlr_linux_dmabuf_v1 *linux_dmabuf = NULL;
-		if (!az_dmabuf_break_use_gles()) {
-			linux_dmabuf = az_dmabuf_create_from_avk(dpy);
-			if (linux_dmabuf == NULL) {
-				die("AVK is compositing but could not describe its own "
-					"DMA-BUF capabilities; advertising the compatibility "
-					"renderer's instead would tell clients to allocate "
-					"buffers AVK may not be able to import");
-			}
-		}
+		struct wlr_linux_dmabuf_v1 *linux_dmabuf =
+			az_dmabuf_create_from_avk(dpy);
 		if (linux_dmabuf == NULL) {
-			linux_dmabuf =
-				wlr_linux_dmabuf_v1_create_with_renderer(dpy, 5, drw);
-			wlr_log(WLR_INFO, "dmabuf: feedback source: wlroots renderer");
+			die("AVK is compositing but could not describe its own "
+				"DMA-BUF capabilities; advertising the compatibility "
+				"renderer's instead would tell clients to allocate "
+				"buffers AVK may not be able to import");
 		}
 		wlr_scene_set_linux_dmabuf_v1(scene, linux_dmabuf);
 	}
@@ -13775,20 +13643,7 @@ static void x11_scale_apply_iter(struct wlr_scene_buffer *buffer, int32_t sx,
 		return;
 	}
 	float scale = *(float *)data;
-	/* BREAK: AZ_BREAK_X11_VIEW_SCALE=1 sizes the X window in pixels and then
-	 * does NOT tell the scene about it, which is the state the feature is
-	 * half-implemented in. The buffer is magnified exactly as before, so the
-	 * pixel gate in contrib/xw-scale-test.sh must report `scaled` even with
-	 * the option on. Its falsifier: if that gate still passes, it is not
-	 * measuring presentation. */
-	static int break_view_scale = -1;
-	if (break_view_scale < 0) {
-		const char *e = getenv("AZ_BREAK_X11_VIEW_SCALE");
-		break_view_scale = e && *e && *e != '0';
-	}
-	if (!break_view_scale) {
-		wlr_scene_surface_set_view_scale(scene_surface, scale);
-	}
+	wlr_scene_surface_set_view_scale(scene_surface, scale);
 	wlr_scene_buffer_set_filter_mode(buffer, scale == 1.0f
 												 ? WLR_SCALE_FILTER_BILINEAR
 												 : WLR_SCALE_FILTER_NEAREST);

@@ -188,84 +188,6 @@ bool avk_gradient_store_init(struct avk_gradient_store *store,
 	store->retire = retire;
 	store->writing = -1;
 
-	/*
-	 * AZ_GRADIENT_COLOR_OFFSET=1 -- the packing break.
-	 *
-	 * It shifts every record's colour offset by one vec4, so each gradient
-	 * reads the NEXT gradient's first colour (and the last one reads past its
-	 * own colours). It is a break for the indexing invariant specifically:
-	 * everything else about the frame is unchanged, the buffer is the right
-	 * size, the records are all present, and the only thing wrong is which run
-	 * of colours a draw is pointed at. A multi-gradient fixture fails; a
-	 * single-gradient one would not, which is exactly why the packing test
-	 * draws several.
-	 */
-	store->break_color_offset = getenv("AZ_GRADIENT_COLOR_OFFSET") != NULL;
-	if (store->break_color_offset) {
-		avk_log(AVK_ERROR, "AZ_GRADIENT_COLOR_OFFSET=1 -- every gradient is "
-			"reading the wrong run of colours. This build is deliberately "
-			"broken.");
-	}
-	/*
-	 * AZ_GRADIENT_FIRST_COLOR=1 -- the shipped-AVK break.
-	 *
-	 * It writes a colour count of one, which is exactly what the renderer did
-	 * before M4C.2: every gradient collapses to its first stop, a flat fill.
-	 * The colours are still all uploaded and the record is otherwise intact,
-	 * so what fails is the RAMP and nothing else.
-	 */
-	store->break_first_color = getenv("AZ_GRADIENT_FIRST_COLOR") != NULL;
-	if (store->break_first_color) {
-		avk_log(AVK_ERROR, "AZ_GRADIENT_FIRST_COLOR=1 -- every gradient is "
-			"drawn as its first colour. This build is deliberately broken.");
-	}
-	/*
-	 * AZ_GRADIENT_BLEND_SWAP=1 -- the blend-polarity break.
-	 *
-	 * `gradient_blend` is an int, and 1 means INTERPOLATED. Reading it the
-	 * other way round is the plausible mistake -- the field's name suggests
-	 * "blend the colours", which is what an implementer assumes is the default
-	 * rather than the flag. This inverts it, so banded gradients come back
-	 * smooth and smooth ones come back banded, and BOTH fixtures fail: a break
-	 * that only ignores the flag would leave one of the two modes untested.
-	 */
-	store->break_blend_swap = getenv("AZ_GRADIENT_BLEND_SWAP") != NULL;
-	if (store->break_blend_swap) {
-		avk_log(AVK_ERROR, "AZ_GRADIENT_BLEND_SWAP=1 -- banded and "
-			"interpolated gradients are swapped. This build is deliberately "
-			"broken.");
-	}
-	/*
-	 * AZ_GRADIENT_LINEAR_ONLY=1 -- conic evaluated through the linear path.
-	 *
-	 * `gradient_linear` is 1 for linear and 2 for conic, and the field's NAME
-	 * reads like a boolean. Treating it as one -- or simply never implementing
-	 * the second kind, which is what AVK did through M4C.2 -- turns every conic
-	 * gradient into a linear ramp at the same angle. It is a plausible
-	 * regression precisely because the compositor's own two gradient consumers
-	 * are both linear, so nothing on a running desktop would show it.
-	 */
-	store->break_linear_only = getenv("AZ_GRADIENT_LINEAR_ONLY") != NULL;
-	if (store->break_linear_only) {
-		avk_log(AVK_ERROR, "AZ_GRADIENT_LINEAR_ONLY=1 -- conic gradients are "
-			"drawn through the linear path. This build is deliberately "
-			"broken.");
-	}
-	/*
-	 * AZ_GRADIENT_CENTER_ORIGIN=1 -- the origin forced to the middle.
-	 *
-	 * {0.5, 0.5} is the value every caller in asteroidz passes, so a shader
-	 * that hard-coded it would render the whole desktop correctly. This is what
-	 * that build looks like: conic patterns turn about the middle wherever the
-	 * origin says, and linear ramps lose their offset at every angle but zero.
-	 */
-	store->break_center_origin = getenv("AZ_GRADIENT_CENTER_ORIGIN") != NULL;
-	if (store->break_center_origin) {
-		avk_log(AVK_ERROR, "AZ_GRADIENT_CENTER_ORIGIN=1 -- every gradient's "
-			"origin is forced to the centre. This build is deliberately "
-			"broken.");
-	}
-
 	VkDescriptorPoolSize size = {
 		.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
 		.descriptorCount = AVK_FRAMES_IN_FLIGHT,
@@ -373,19 +295,18 @@ uint32_t avk_gradient_store_push(struct avk_gradient_store *store,
 	uint32_t color_at = rec + AVK_GRADIENT_RECORD_VEC4S;
 
 	float *r0 = data + (size_t)rec * 4;
-	r0[0] = store->break_center_origin ? 0.5f : gradient->origin[0];
-	r0[1] = store->break_center_origin ? 0.5f : gradient->origin[1];
+	r0[0] = gradient->origin[0];
+	r0[1] = gradient->origin[1];
 	/* DEGREES on the snapshot, radians on the GPU. The conversion happens here,
 	 * once per command, rather than once per fragment. */
 	r0[2] = gradient->degree * (3.14159265358979323846f / 180.0f);
-	bool blend = gradient->blend != store->break_blend_swap;
+	bool blend = gradient->blend;
 	r0[3] = blend ? 1.0f : 0.0f;
 
 	float *r1 = data + ((size_t)rec + 1) * 4;
-	r1[0] = (float)(store->break_linear_only ? AVK_GRADIENT_LINEAR
-		: gradient->type);
-	r1[1] = (float)(store->break_color_offset ? color_at + 1 : color_at);
-	r1[2] = (float)(store->break_first_color ? 1 : gradient->color_count);
+	r1[0] = (float)gradient->type;
+	r1[1] = (float)color_at;
+	r1[2] = (float)gradient->color_count;
 	r1[3] = 0.0f;
 
 	memcpy(data + (size_t)color_at * 4, colors,

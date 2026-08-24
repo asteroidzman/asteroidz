@@ -2,7 +2,7 @@
  * ── THE SPRING, AND NOTHING ELSE ──────────────────────────────────────────
  *
  * Split out of animation/common.h so it can be driven directly by
- * tests/test-anim-spring.c. Everything here is a pure function of its
+ * a display. Everything here is a pure function of its
  * arguments and the two configured spring constants; it touches no scene, no
  * client, no clock, and allocates nothing.
  *
@@ -31,7 +31,7 @@
  * spring_damping). The window is the mass, the target is the rest length, and
  * `1` is the normalised distance between where the motion started and where it
  * is going. Both closed forms below are that equation's step response, and
- * tests/test-anim-spring.c checks each against a finite difference of the
+ * Each is checkable against a finite difference of the
  * other -- which is what makes "it is the standard solution" a checked claim.
  *
  * ── THE ONE PLACE THIS IS NOT THE PHYSICS ─────────────────────────────────

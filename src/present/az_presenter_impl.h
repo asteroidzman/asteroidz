@@ -377,23 +377,6 @@ static void az_presenter_present(Monitor *m,
 			bool missed = p->regime == AZ_PRESENT_VRR
 				? slipped
 				: (slipped || (exceeded && ready_for_next));
-			/* AZ_BREAK_PRESENT_SPREAD_IS_MISS (falsifier I18): restore the
-			 * pre-correction rule, where prediction spread counted as a lost
-			 * frame on every regime. */
-			static int break_spread = -1;
-			if (break_spread < 0) {
-				break_spread =
-					getenv("AZ_BREAK_PRESENT_SPREAD_IS_MISS") != NULL;
-				if (break_spread) {
-					wlr_log(WLR_ERROR, "M6A break: "
-						"AZ_BREAK_PRESENT_SPREAD_IS_MISS -- prediction spread "
-						"counts as a lost frame again; a VRR panel presenting "
-						"every frame on the next vblank will report misses");
-				}
-			}
-			if (break_spread && exceeded) {
-				missed = true;
-			}
 			if (missed) {
 				enum az_present_verdict v;
 				const int64_t delta = 500000; /* 500us margin */

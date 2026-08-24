@@ -7,9 +7,9 @@
  * different owner, and none of them can be told apart from a frame-rate
  * counter or from watching the screen.
  *
- * So this records the timeline itself, as raw events, and leaves every
- * conclusion to an analyser that can be argued with (contrib/pace-analyse.py).
- * Four event kinds, all on one monotonic clock:
+ * So this records the timeline itself, as raw events, and derives nothing --
+ * every conclusion is drawn by whoever reads the trace, from events they can
+ * argue with. Four event kinds, all on one monotonic clock:
  *
  *   anim start  a semantic change gave a client a new target
  *   anim tick   one interpolation step: the clock it read, the eased factor

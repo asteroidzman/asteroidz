@@ -103,33 +103,6 @@ bool avk_renderer_init(struct avk_renderer *renderer, struct avk_device *dev,
 	avk_graph_init(&renderer->graph, dev);
 	avk_transient_pool_init(&renderer->transients, dev, &renderer->retire);
 
-	/* M4A breaks, read once. Each restores a specific wrong implementation
-	 * rather than merely disabling the feature -- "single radius" and "scaled
-	 * twice" are the two mistakes that render plausibly and are therefore the
-	 * ones worth having a falsifier for. */
-	renderer->break_rounded_off = getenv("AZ_ROUNDED_OFF") != NULL;
-	renderer->break_rounded_single = getenv("AZ_ROUNDED_SINGLE_RADIUS") != NULL;
-	renderer->break_bottom_swap = getenv("AZ_ROUNDED_BOTTOM_SWAP") != NULL;
-	renderer->break_quad_swap_corners =
-		getenv("AZ_BREAK_AVK_QUAD_SWAP_CORNERS") != NULL;
-	renderer->break_shadow_single_radius =
-		getenv("AZ_SHADOW_SINGLE_RADIUS") != NULL;
-	renderer->break_shadow_symmetric =
-		getenv("AZ_SHADOW_SYMMETRIC") != NULL;
-	renderer->break_shadow_no_dither =
-		getenv("AZ_SHADOW_NO_DITHER") != NULL;
-	renderer->break_no_occlusion = getenv("AZ_AVK_NO_OCCLUSION") != NULL;
-	renderer->break_occlude_all = getenv("AZ_AVK_OCCLUDE_ALL") != NULL;
-	if (renderer->break_occlude_all) {
-		avk_log(AVK_ERROR, "M4H break switch active: EVERY command is treated "
-			"as an opaque occluder -- translucent surfaces, shadows and "
-			"rounded corners will erase what is behind them");
-	}
-	if (renderer->break_no_occlusion) {
-		avk_log(AVK_ERROR, "M4H break switch active: opaque occlusion culling "
-			"is OFF -- every hidden layer is drawn. The output must be "
-			"BIT-IDENTICAL to a build without this; only the fill differs.");
-	}
 	const char *dump = getenv("AZ_AVK_CMD_DUMP");
 	renderer->cmd_dump = dump != NULL ? (uint32_t)atoi(dump) : 0;
 	renderer->blur_chain_trace = getenv("AZ_BLUR_CHAIN_TRACE") != NULL;
@@ -141,59 +114,9 @@ bool avk_renderer_init(struct avk_renderer *renderer, struct avk_device *dev,
 	const char *cache_env = getenv("AZ_BLUR_CACHE");
 	renderer->break_blur_cache_off =
 		cache_env != NULL && atoi(cache_env) == 0;
-	renderer->break_blur_cache_always_dirty =
-		getenv("AZ_BLUR_CACHE_ALWAYS_DIRTY") != NULL;
-	renderer->break_blur_cache_ignore_dirty =
-		getenv("AZ_BLUR_CACHE_IGNORE_DIRTY") != NULL;
-	renderer->break_blur_cache_stale_geometry =
-		getenv("AZ_BLUR_CACHE_STALE_GEOMETRY") != NULL;
-	renderer->break_blur_cache_stale_params =
-		getenv("AZ_BLUR_CACHE_STALE_PARAMS") != NULL;
-	renderer->break_blur_cache_ignore_source =
-		getenv("AZ_BLUR_CACHE_IGNORE_SOURCE") != NULL;
-	/* -1 unless named. `plain` and `dark` rather than 0 and 1, because a
-	 * fixture that starves the wrong kind reads as a fixture that found
-	 * nothing, and a number gives it no way to be obviously wrong. */
-	renderer->break_blur_cache_shared_identity =
-		getenv("AZ_BLUR_CACHE_SHARED_IDENTITY") != NULL;
-	if (renderer->break_blur_cache_shared_identity) {
-		avk_log(AVK_ERROR, "M4I break: AZ_BLUR_CACHE_SHARED_IDENTITY -- both "
-			"cached kinds are validated against the record whichever of them "
-			"rebuilt last; a starved kind is served STALE");
-	}
-	renderer->break_blur_cache_starve_kind = -1;
-	{
-		const char *starve = getenv("AZ_BLUR_CACHE_STARVE");
-		if (starve != NULL && strcmp(starve, "plain") == 0) {
-			renderer->break_blur_cache_starve_kind = AVK_BLUR_CACHE_PLAIN;
-		} else if (starve != NULL && strcmp(starve, "dark") == 0) {
-			renderer->break_blur_cache_starve_kind = AVK_BLUR_CACHE_DARK;
-		}
-	}
-	if (renderer->break_blur_cache_starve_kind >= 0) {
-		avk_log(AVK_ERROR, "M4I instrument: AZ_BLUR_CACHE_STARVE=%s -- that "
-			"cached kind is treated as having no damaged consumer",
-			avk_blur_cache_kind_name((enum avk_blur_cache_kind)
-				renderer->break_blur_cache_starve_kind));
-	}
 	if (renderer->break_blur_cache_off) {
 		avk_log(AVK_ERROR, "M4I: the monitor background blur cache is OFF -- "
 			"every backdrop blur reconstructs the background for itself");
-	}
-	if (renderer->break_blur_cache_always_dirty
-			|| renderer->break_blur_cache_ignore_dirty
-			|| renderer->break_blur_cache_stale_geometry
-			|| renderer->break_blur_cache_stale_params
-			|| renderer->break_blur_cache_ignore_source) {
-		avk_log(AVK_ERROR, "M4I break switch active on the blur cache "
-			"(always_dirty=%d ignore_dirty=%d stale_geometry=%d "
-			"stale_params=%d ignore_source=%d) -- this build renders a WRONG "
-			"desktop and exists to make an oracle fail",
-			(int)renderer->break_blur_cache_always_dirty,
-			(int)renderer->break_blur_cache_ignore_dirty,
-			(int)renderer->break_blur_cache_stale_geometry,
-			(int)renderer->break_blur_cache_stale_params,
-			(int)renderer->break_blur_cache_ignore_source);
 	}
 	for (int k = 0; k < AVK_BLUR_CACHE_KINDS; k++) {
 		pixman_region32_init(&renderer->blur_cache_region[k]);
@@ -205,30 +128,6 @@ bool avk_renderer_init(struct avk_renderer *renderer, struct avk_device *dev,
 			"this renders is WRONG and the frame times are attribution data, "
 			"not a performance result.", renderer->skip_draw);
 	}
-	renderer->break_blur_scene_after =
-		getenv("AZ_BLUR_SCENE_AFTER") != NULL;
-	if (renderer->break_blur_scene_after) {
-		avk_log(AVK_ERROR, "M4F break switch active: a blur's source is the "
-			"WHOLE scene, not the prefix behind it -- content drawn after the "
-			"blur node will contaminate it");
-	}
-	renderer->break_blur_ignore_darken =
-		getenv("AZ_BLUR_IGNORE_DARKEN") != NULL;
-	renderer->break_blur_ignore_clip = getenv("AZ_BLUR_IGNORE_CLIP") != NULL;
-	const char *edge_logical = getenv("AZ_BLUR_EDGE_LOGICAL_SIGMA");
-	renderer->break_blur_edge_logical_sigma = edge_logical != NULL;
-	renderer->break_blur_edge_scale = edge_logical != NULL
-		? (float)atof(edge_logical) : 1.0f;
-	if (renderer->break_blur_edge_scale <= 0.0f) {
-		renderer->break_blur_edge_scale = 1.5f;
-	}
-	renderer->break_blur_under_damage =
-		getenv("AZ_BLUR_UNDER_DAMAGE") != NULL;
-	if (renderer->break_blur_under_damage) {
-		avk_log(AVK_ERROR, "M4F.2B break switch active: a blur's source damage "
-			"is NOT expanded by the filter support -- expect a stale ring "
-			"around everything that changes");
-	}
 	/*
 	 * THE ORACLE, not a break. Forces the full dependency rebuild and the full
 	 * write-region recomposition, using the same current-frame prefix
@@ -237,48 +136,17 @@ bool avk_renderer_init(struct avk_renderer *renderer, struct avk_device *dev,
 	 * the reference's historical-source path and does not restore it.
 	 */
 	renderer->blur_full_damage = getenv("AZ_BLUR_FULL_DAMAGE") != NULL;
-	renderer->break_blur_source_output_clip =
-		getenv("AZ_BLUR_SOURCE_OUTPUT_CLIP") != NULL;
-	if (renderer->break_blur_source_output_clip) {
-		avk_log(AVK_ERROR, "M4F.2C break switch active: a blur's source is "
-			"clamped to its own output -- expect a seam through every window "
-			"that spans two displays");
-	}
-	if (renderer->break_blur_ignore_darken || renderer->break_blur_ignore_clip
-			|| renderer->break_blur_edge_logical_sigma) {
-		avk_log(AVK_ERROR, "M4F.2A.3 break switch active: blur material is "
-			"deliberately wrong (no_darken=%d no_clip=%d edge_logical=%d @ %.3f)",
-			renderer->break_blur_ignore_darken,
-			renderer->break_blur_ignore_clip,
-			renderer->break_blur_edge_logical_sigma,
-			renderer->break_blur_edge_scale);
-	}
 	/*
 	 * Derived from the ATTACHMENT's precision, once, at init -- so a 10-bit
 	 * output gets a quarter of the amplitude and an FP16 one gets none,
 	 * without the shader knowing what it is drawing into.
 	 *
-	 * AZ_SHADOW_DITHER_AMP overrides it in 1/255 units, which is what the
-	 * amplitude sweep in test_dither_breaks_banding() drives.
+	 * AZ_SHADOW_DITHER_AMP overrides it in 1/255 units.
 	 */
 	renderer->dither_hash = getenv("AZ_DITHER_HASH") != NULL;
 	const char *amp = getenv("AZ_SHADOW_DITHER_AMP");
 	renderer->shadow_dither = amp != NULL
 		? (float)atof(amp) / 255.0f : avk_dither_amplitude(format);
-	const char *dbl = getenv("AZ_ROUNDED_DOUBLE_SCALE");
-	renderer->break_rounded_double_scale = dbl != NULL;
-	renderer->break_scale_hint = dbl != NULL ? (float)atof(dbl) : 1.0f;
-	if (renderer->break_scale_hint <= 0.0f) {
-		renderer->break_scale_hint = 1.5f;
-	}
-	if (renderer->break_rounded_off || renderer->break_rounded_single ||
-			renderer->break_rounded_double_scale || renderer->break_bottom_swap) {
-		avk_log(AVK_ERROR, "M4A break switch active: rounded clipping is "
-			"deliberately wrong (off=%d single=%d double_scale=%d "
-			"bottom_swap=%d)",
-			renderer->break_rounded_off, renderer->break_rounded_single,
-			renderer->break_rounded_double_scale, renderer->break_bottom_swap);
-	}
 	return true;
 }
 
@@ -461,7 +329,7 @@ static void transform_uv(const struct avk_fbox *src, uint32_t image_width,
 	 * other six. It surfaced through the CURSOR, the first non-uniform texture
 	 * anything had ever compared on a rotated output.
 	 *
-	 * tests/test-avk-render.c asserted the old mapping, agreed with it, and
+	 * A check written against the old mapping agreed with it, and
 	 * therefore could not fail on it. Its table now states the wlroots answer.
 	 *
 	 * The CALLERS were right all along and are unchanged: a command's transform
@@ -610,7 +478,7 @@ static bool az_foreign(const struct avk_image *image) {
  *
  * Two small helpers rather than a dependency. wlroots has wlr_region_expand()
  * and it does exactly this, but nothing under src/render/vulkan/ links against
- * wlroots -- tests/check-vulkan-isolation.py enforces that -- and one function
+ * wlroots -- the meson source list enforces that -- and one function
  * is a smaller price than the exception would be.
  */
 
@@ -707,17 +575,6 @@ void avk_render_set_blur_cache_enabled(struct avk_renderer *renderer, bool on) {
 	if (renderer != NULL) {
 		renderer->break_blur_cache_off = !on;
 	}
-}
-
-void avk_render_set_blur_cache_starve(struct avk_renderer *renderer, int kind) {
-	if (renderer == NULL) {
-		return;
-	}
-	/* Anything outside the enum is "none", so a caller that passes a parsed
-	 * -1, or a kind this build does not have, starves nothing rather than
-	 * indexing past the array. */
-	renderer->break_blur_cache_starve_kind =
-		(kind >= 0 && kind < AVK_BLUR_CACHE_KINDS) ? kind : -1;
 }
 
 void avk_render_set_damage_rect_cap(int cap) {
@@ -856,25 +713,6 @@ static bool az_cmd_opaque_region(const struct avk_renderer *renderer,
 		const struct avk_box *bounds, pixman_region32_t *out) {
 	const pixman_region32_t *client_opaque = NULL;
 
-	/*
-	 * AZ_AVK_OCCLUDE_ALL=1 -- THE BREAK, and it is the one that matters.
-	 *
-	 * The whole risk in occlusion culling is over-reporting: claiming a
-	 * translucent surface, a shadow or a rounded corner hides what is beneath
-	 * it, and erasing pixels that should have been drawn. This asserts exactly
-	 * that -- every command's full destination becomes an occluder -- so a test
-	 * that compares culled against unculled output has something it must
-	 * detect. Without it, "the two builds agree" is also what a build that
-	 * culls NOTHING would report.
-	 */
-	if (renderer->break_occlude_all) {
-		pixman_region32_init_rect(out, cmd->dst.x, cmd->dst.y,
-			(unsigned)(cmd->dst.width > 0 ? cmd->dst.width : 0),
-			(unsigned)(cmd->dst.height > 0 ? cmd->dst.height : 0));
-		pixman_region32_intersect_rect(out, out, bounds->x, bounds->y,
-			(unsigned)bounds->width, (unsigned)bounds->height);
-		return pixman_region32_not_empty(out);
-	}
 	if (cmd->opacity < 1.0f) {
 		return false;
 	}
@@ -1024,9 +862,7 @@ void avk_scene_visibility(const struct avk_renderer *renderer,
 				|| cmd->type == AVK_CMD_TEXTURE_QUAD)) {
 			pixman_region32_t r;
 			command_region(cmd, NULL, bounds, false, &r);
-			if (!renderer->break_no_occlusion) {
-				pixman_region32_subtract(&r, &r, &occluded);
-			}
+			pixman_region32_subtract(&r, &r, &occluded);
 			if (pixman_region32_not_empty(&r)) {
 				fn(user, cmd, &r);
 			}
@@ -1256,12 +1092,8 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 		for (size_t i = end; i-- > begin; ) {
 			const struct avk_cmd *cmd = &scene->cmds[i];
 			pixman_region32_t *r = &regions[i - begin + 1];
-			command_region(cmd, damage, &bounds,
-				cmd->type == AVK_CMD_BLUR && renderer->break_blur_ignore_clip,
-				r);
-			if (!renderer->break_no_occlusion) {
-				pixman_region32_subtract(r, r, &occluded);
-			}
+			command_region(cmd, damage, &bounds, false, r);
+			pixman_region32_subtract(r, r, &occluded);
 			pixman_region32_t op;
 			if (az_cmd_opaque_region(renderer, cmd, &bounds, &op)) {
 				pixman_region32_union(&occluded, &occluded, &op);
@@ -1283,9 +1115,7 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 
 		pixman_region32_t region;
 		command_region(&clear, damage, &bounds, false, &region);
-		if (!renderer->break_no_occlusion) {
-			pixman_region32_subtract(&region, &region, &occluded);
-		}
+		pixman_region32_subtract(&region, &region, &occluded);
 		int count = 0;
 		const pixman_box32_t *rects =
 			pixman_region32_rectangles(&region, &count);
@@ -1346,12 +1176,7 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 			pixman_region32_init(&region);
 			pixman_region32_copy(&region, &regions[i - begin + 1]);
 		} else {
-			/* AZ_BLUR_IGNORE_CLIP drops the clip for blur commands only:
-			 * the composite then covers the whole node instead of the region
-			 * the client or the compositor restricted it to. */
-			command_region(cmd, damage, &bounds,
-				cmd->type == AVK_CMD_BLUR && renderer->break_blur_ignore_clip,
-				&region);
+			command_region(cmd, damage, &bounds, false, &region);
 		}
 		int count = 0;
 		const pixman_box32_t *rects =
@@ -1392,26 +1217,7 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 		 */
 		float radii[4] = { cmd->corners[0], cmd->corners[1],
 			cmd->corners[2], cmd->corners[3] };
-		if (renderer->break_bottom_swap) {
-			/* The exact bug the M4A audit found waiting to happen:
-			 * fx_corner_radii is CLOCKWISE (tl, tr, br, bl) and SceneFX's own
-			 * shader helper takes (tl, tr, bl, br). Handing the struct
-			 * straight over swaps the two bottom corners -- which is only
-			 * visible when they differ, i.e. never in a symmetric test. */
-			float t = radii[2];
-			radii[2] = radii[3];
-			radii[3] = t;
-		}
-		if (renderer->break_rounded_single) {
-			radii[1] = radii[2] = radii[3] = radii[0];
-		}
-		if (renderer->break_rounded_double_scale) {
-			for (int i = 0; i < 4; i++) {
-				radii[i] *= renderer->break_scale_hint;
-			}
-		}
-		if (renderer->break_rounded_off ||
-				(renderer->skip_draw & AVK_PRIM_ROUND) != 0) {
+		if ((renderer->skip_draw & AVK_PRIM_ROUND) != 0) {
 			radii[0] = radii[1] = radii[2] = radii[3] = 0.0f;
 		}
 		az_corner_normalise(radii, (float)cmd->dst.width,
@@ -1503,33 +1309,9 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 			 * them in, so the constant is chosen there and checked not to be
 			 * visible as noise on light ones.
 			 */
-			pc.uv_org_dx[0] = renderer->break_shadow_no_dither
-				? 0.0f : renderer->shadow_dither;
+			pc.uv_org_dx[0] = renderer->shadow_dither;
 			pc.uv_dy[0] = renderer->dither_hash ? 1.0f : 0.0f;
 
-			if (renderer->break_shadow_symmetric && cmd->has_inner) {
-				/* Slide the envelope until its centre is the window's. The
-				 * size is untouched, so the falloff is the same shape -- only
-				 * its direction is gone. */
-				float win_cx = (float)cmd->inner.x
-					+ (float)cmd->inner.width * 0.5f;
-				float win_cy = (float)cmd->inner.y
-					+ (float)cmd->inner.height * 0.5f;
-				float env_cx = (pc.round_box[0] + pc.round_box[2]) * 0.5f;
-				float env_cy = (pc.round_box[1] + pc.round_box[3]) * 0.5f;
-				pc.round_box[0] += win_cx - env_cx;
-				pc.round_box[2] += win_cx - env_cx;
-				pc.round_box[1] += win_cy - env_cy;
-				pc.round_box[3] += win_cy - env_cy;
-			}
-			if (renderer->break_shadow_single_radius) {
-				/* Applied to the push constants and not to the command, so
-				 * the stats below still report what the SCENE asked for --
-				 * a break that also hid its own effect from the counters
-				 * would be much harder to recognise in a failure. */
-				pc.corners[1] = pc.corners[2] = pc.corners[3] =
-					pc.corners[0];
-			}
 			renderer->stats.shadow_draws++;
 			if (cmd->corners[0] > 0.0f || cmd->corners[1] > 0.0f ||
 					cmd->corners[2] > 0.0f || cmd->corners[3] > 0.0f) {
@@ -1599,14 +1381,6 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 			 * falloff's sigma, in output pixels. Two pipelines, one field, and
 			 * they never draw the same command. */
 			float edge = cmd->blur_edge_softness;
-			if (renderer->break_blur_edge_logical_sigma && edge > 0.0f) {
-				/* Back to LOGICAL units, which is what the reference passes a
-				 * shadow. The blur node keeps its scaled edge in the reference
-				 * and the shadow does not, so undoing the scale HERE is what
-				 * makes the two disagree by exactly the factor the reference
-				 * disagrees by. */
-				edge /= renderer->break_blur_edge_scale;
-			}
 			pc.params[1] = edge > 0.0f ? edge : 1.0f;
 
 			VkDescriptorSet set = avk_pipelines_texture_set(pipes,
@@ -1748,15 +1522,6 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 			if (is_quad) {
 				float q[8];
 				memcpy(q, cmd->quad, sizeof(q));
-				if (renderer->break_quad_swap_corners) {
-					/* Corner 1 and corner 2 -- the diagonal pair. Swapping
-					 * them folds the quad into a bow tie: the same four
-					 * points, wound wrongly, which is exactly the defect a
-					 * corner-ordering mistake produces. */
-					float t0 = q[2], t1 = q[3];
-					q[2] = q[4]; q[3] = q[5];
-					q[4] = t0;   q[5] = t1;
-				}
 				pc.round_box[0] = q[0]; pc.round_box[1] = q[1];
 				pc.round_box[2] = q[2]; pc.round_box[3] = q[3];
 				pc.inner_box[0] = q[4]; pc.inner_box[1] = q[5];
@@ -2548,8 +2313,7 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 		0, 0, (int32_t)width, (int32_t)height,
 	};
 	struct avk_box scene_bounds = present_bounds;
-	if (scene->source_bounds.width > 0 && scene->source_bounds.height > 0
-			&& !renderer->break_blur_source_output_clip) {
+	if (scene->source_bounds.width > 0 && scene->source_bounds.height > 0) {
 		scene_bounds = scene->source_bounds;
 	}
 	renderer->blur_halo_pixels +=
@@ -2587,8 +2351,7 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 			.noise = cmd->blur_noise,
 			.apply_effects = cmd->blur_apply_effects,
 			.linear_src = renderer->decode_enabled,
-			.darken = cmd->blur_darken
-				&& !renderer->break_blur_ignore_darken,
+			.darken = cmd->blur_darken,
 		};
 		struct avk_blur_damage *d = &slot->damage;
 		if (!avk_blur_regions_of(&d->regions, &cmd->dst, &slot->params,
@@ -2607,7 +2370,7 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 		pixman_region32_init_rect(&d->write, d->regions.write.x,
 			d->regions.write.y, (unsigned)d->regions.write.width,
 			(unsigned)d->regions.write.height);
-		if (cmd->has_clip && !renderer->break_blur_ignore_clip) {
+		if (cmd->has_clip) {
 			pixman_region32_intersect(&d->write, &d->write,
 				(pixman_region32_t *)&cmd->clip);
 		}
@@ -2661,21 +2424,12 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 		 * so `frame_damage ∩ write` is already inside source_damage, and
 		 * dilation only grows it.
 		 */
-		if (renderer->break_blur_under_damage) {
-			/* The break: skip the forward dilation entirely. The blur is still
-			 * recomputed, the counters still move, and a ring of stale result
-			 * one support wide is left around every change. */
-			pixman_region32_copy(&d->output_damage, &d->source_damage);
-			pixman_region32_intersect(&d->output_damage, &d->output_damage,
-				&d->write);
-		} else {
-			struct avk_blur_support fwd = avk_blur_forward_support_of(
-				&slot->params, (uint32_t)d->regions.write.width,
-				(uint32_t)d->regions.write.height);
-			az_region_expand(&d->output_damage, &d->source_damage, &fwd);
-			pixman_region32_intersect(&d->output_damage, &d->output_damage,
-				&d->write);
-		}
+		struct avk_blur_support fwd = avk_blur_forward_support_of(
+			&slot->params, (uint32_t)d->regions.write.width,
+			(uint32_t)d->regions.write.height);
+		az_region_expand(&d->output_damage, &d->source_damage, &fwd);
+		pixman_region32_intersect(&d->output_damage, &d->output_damage,
+			&d->write);
 		if (renderer->blur_full_damage) {
 			/* The oracle: everything this blur writes, every frame. */
 			pixman_region32_copy(&d->output_damage, &d->write);
@@ -2875,21 +2629,6 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 				want[slots[s].cache_kind]++;
 			}
 		}
-		/*
-		 * THE STARVE INSTRUMENT, applied to the DEMAND and to nothing else.
-		 *
-		 * Written here, on the finished counts, rather than inside the loop:
-		 * `want` is the only thing it is allowed to change, and computing it and
-		 * then zeroing it keeps that visible. The starved kind is now
-		 * indistinguishable from one whose consumers were simply not damaged
-		 * this frame -- which is the frame this exists to produce on demand.
-		 * See avk_render_set_blur_cache_starve().
-		 */
-		if (renderer->break_blur_cache_starve_kind >= 0
-				&& renderer->break_blur_cache_starve_kind
-					< AVK_BLUR_CACHE_KINDS) {
-			want[renderer->break_blur_cache_starve_kind] = 0;
-		}
 	}
 	/*
 	 * PER KIND: check, then rebuild only what something asked for.
@@ -2923,31 +2662,7 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 			(uint32_t)scene->blur_cache.bounds.width,
 			(uint32_t)scene->blur_cache.bounds.height, renderer->format,
 			&cache_params[k], (enum avk_blur_cache_kind)k,
-			renderer->break_blur_cache_always_dirty,
-			renderer->break_blur_cache_shared_identity);
-		/*
-		 * THE STALENESS BREAKS, applied as a SUPPRESSION of the reason the check
-		 * already found. Written this way, and not as a second copy of the
-		 * comparison inside the check, so a break can only ever hide a real
-		 * invalidation -- it can never invent one, and it cannot drift away from
-		 * the test it is meant to disable.
-		 */
-		if (renderer->break_blur_cache_ignore_dirty
-				&& cache_reason[k] == AVK_BLUR_CACHE_GENERATION) {
-			cache_reason[k] = AVK_BLUR_CACHE_OK;
-		}
-		if (renderer->break_blur_cache_stale_geometry
-				&& cache_reason[k] == AVK_BLUR_CACHE_GEOMETRY) {
-			cache_reason[k] = AVK_BLUR_CACHE_OK;
-		}
-		if (renderer->break_blur_cache_stale_params
-				&& cache_reason[k] == AVK_BLUR_CACHE_PARAMS) {
-			cache_reason[k] = AVK_BLUR_CACHE_OK;
-		}
-		if (renderer->break_blur_cache_ignore_source
-				&& cache_reason[k] == AVK_BLUR_CACHE_SOURCE) {
-			cache_reason[k] = AVK_BLUR_CACHE_OK;
-		}
+			false, false);
 		if (want[k] == 0) {
 			continue;
 		}
@@ -3216,9 +2931,8 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 			.origin_x = rg.capture.x,
 			.origin_y = rg.capture.y,
 			.begin = 0,
-			/* [0, k) -- the blur's own command is NOT in its own source.
-			 * The break makes it [0, len), which is the reference's defect. */
-			.end = renderer->break_blur_scene_after ? scene->len : i,
+			/* [0, k) -- the blur's own command is NOT in its own source. */
+			.end = i,
 			/*
 			 * ONLY THE PIXELS THE CHAIN WILL READ. The transient's EXTENT is
 			 * still the whole capture and deliberately so: a dual-Kawase level

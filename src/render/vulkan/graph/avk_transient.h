@@ -135,7 +135,7 @@ struct avk_transient_pool {
 	 *
 	 * The cost is wasted memory, bounded by the granularity: at 64, a
 	 * 1920x1080 request backs onto 1920x1088, which is 0.7%. Measured against
-	 * exact extents in tests/test-avk-transient.c; AZ_TRANSIENT_GRANULARITY
+	 * exact extents; AZ_TRANSIENT_GRANULARITY
 	 * overrides it, and 1 restores exact extents so the two can be compared in
 	 * one run rather than argued about.
 	 */
@@ -162,7 +162,6 @@ struct avk_transient_pool {
 	 * happened to appear. Synchronization validation reports the resulting
 	 * write-after-read hazard as well, which is the second, independent signal.
 	 */
-	bool break_early_reuse;
 
 	/*
 	 * M4F test aid: fill every newly created image with a colour nothing else

@@ -209,9 +209,10 @@ static const cairo_font_options_t *asteroidz_font_options(void) {
  *
  * Cropping makes the surface's extent equal what you can see, which is the
  * assumption the layout and the vertical centring both already make. It is
- * the same trim asteroidz_icon_cache_put_argb32 does to tray pixmaps and
- * contrib/normalize-bar-icons.py does to our own art at build time -- doing it
- * here as well covers the non-square case those two cannot: normalising can
+ * the same trim asteroidz_icon_cache_put_argb32 does to tray pixmaps, and the
+ * same one the vendored bar art was normalised to before it was committed --
+ * doing it here as well covers the non-square case those two cannot: a square
+ * canvas can
  * only fill the LONG axis of a square canvas, so a tall glyph keeps a margin
  * either side no matter how the file is written. */
 static cairo_surface_t *surface_crop_to_ink(cairo_surface_t *src) {
@@ -381,9 +382,10 @@ bool asteroidz_icon_cache_put_argb32(const char *key, const uint8_t *argb_be,
 	 * exactly as "the tray is not aligned".
 	 *
 	 * Cropping to the alpha bounding box makes centring the surface the same
-	 * thing as centring what you see. It is the load-time equivalent of what
-	 * contrib/normalize-bar-icons.py does to our own vendored art, which we
-	 * cannot do ahead of time for pixels an application hands us at runtime. */
+	 * thing as centring what you see. It is the load-time equivalent of the
+	 * normalising our own vendored art had done to it before it was committed,
+	 * which we cannot do ahead of time for pixels an application hands us at
+	 * runtime. */
 	int32_t x0 = w, y0 = h, x1 = -1, y1 = -1;
 	for (int32_t y = 0; y < h; y++) {
 		const uint8_t *srow = argb_be + (size_t)y * w * 4;

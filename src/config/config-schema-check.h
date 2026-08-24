@@ -137,7 +137,7 @@ static bool schema_set(const ConfigOption *o, const char *value) {
 
 /* Dump the table, one option per line, tab separated.
  *
- * So tests/check-config-schema.py can ask the BINARY which keys are described
+ * So a checker can ask the BINARY which keys are described
  * instead of parsing this table out of C. Extracting the key list from a
  * multi-line C initialiser by regex is exactly the kind of fragile step that
  * makes a checker quietly stop checking -- an over-matching pattern reported
@@ -189,7 +189,7 @@ static void config_source_dump(void) {
 
 /* Dump the dispatch-action table, one action per line.
  *
- * Same reason config_schema_list exists: tests/check-dispatch-actions.py asks
+ * Same reason config_schema_list exists: a checker asks
  * the binary rather than regexing a multi-line C initialiser out of the source,
  * because a pattern that quietly over- or under-matches turns a checker into
  * decoration. Declared here and defined in ipc-config.h, which owns the table. */
@@ -410,7 +410,7 @@ static void rule_schema_self_check(void) {
 	free(scratch.window_rules);
 }
 
-/* One rule field per line, for tests/check-rule-schema.py. Same reason
+/* One rule field per line. Same reason
  * config_schema_list exists: the checker asks the binary rather than regexing a
  * multi-line C initialiser, because a pattern that quietly under-matches turns a
  * coverage test into decoration. */

@@ -13,7 +13,7 @@
  * places on a 60Hz and a 144Hz output, drifts on a VRR panel, and -- because
  * rendermon ticks every client on every output's pass -- runs at the SUM of the
  * refresh rates when a window straddles two monitors. None of that is
- * hypothetical; it is what AZ_BREAK_ANIM_FRAME_STEP exists to reproduce.
+ * hypothetical -- it is what an advance-per-frame animation does.
  *
  * So the position is evaluated, never advanced:
  *
@@ -94,32 +94,6 @@ struct ShatterFrag {
 };
 
 /*
- * ── AZ_BREAK_SHATTER_FRAME_STEP (P3's falsifier) ──────────────────────────
- *
- * Replaces the elapsed time with a COUNT OF EVALUATIONS times one 60Hz
- * period -- which is what a frame-stepped break-up genuinely is, and the exact
- * shape ADR-616 forbids. It is deliberately placed in the trajectory rather
- * than in the sample instant, for the same reason AZ_BREAK_ANIM_FRAME_STEP is:
- * a substitute instant cannot express "advanced once per call", because the
- * function does not know how many times it has been called except by counting.
- *
- * It breaks four things at once, and that is the point -- every gate that
- * claims to be testing the closed form has to notice:
- *
- *   purity          the answer now depends on call order and call count
- *   gravity         the second difference no longer recovers g
- *   speed bound     the counter outruns t and the speed exceeds |v0| + g*t
- *   refresh         completion becomes a function of how many outputs tick it
- */
-static bool shatter_frame_step_break(void) {
-	static int on = -1;
-	if (on < 0) {
-		on = getenv("AZ_BREAK_SHATTER_FRAME_STEP") != NULL;
-	}
-	return on != 0;
-}
-
-/*
  * The centre of a fragment at normalised time t. THE closed form.
  *
  * `span` is the window's smaller dimension, the scale every constant above is
@@ -127,13 +101,6 @@ static bool shatter_frame_step_break(void) {
  */
 static inline void shatter_centre_at(const struct ShatterFrag *f, double t,
 		double span, double *out_x, double *out_y) {
-	if (shatter_frame_step_break()) {
-		/* One 60Hz period per evaluation, against a 350ms close. Nothing else
-		 * in this file has state; this is the whole of it, and it exists only
-		 * to be caught. */
-		static uint64_t steps;
-		t = (double)(steps++) * (1000.0 / 60.0) / 350.0;
-	}
 	*out_x = f->x0 + f->vx * t;
 	*out_y = f->y0 + f->vy * t + 0.5 * (SHATTER_GRAVITY * span) * t * t;
 }
@@ -266,7 +233,7 @@ static inline void shatter_frag_init(struct ShatterFrag *f, int32_t col,
  *
  * EVERYTHING BELOW NEEDS THE COMPOSITOR -- wl_list, Monitor, wlr_scene_buffer.
  * Everything above needs a dvec-free struct wlr_box and a min macro, which is
- * what lets tests/test-anim-shatter.c drive the trajectory with no display and
+ * what lets the trajectory be driven with no display and
  * no scene graph. The guard is what keeps that promise honest: the test
  * defines SHATTER_MATH_ONLY and gets exactly the arithmetic.
  *

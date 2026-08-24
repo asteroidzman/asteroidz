@@ -1478,9 +1478,6 @@ FuncType parse_func_name(char *func_name, Arg *arg, char *arg_value,
 	} else if (strcmp(func_name, "set_blur_cache") == 0) {
 		func = set_blur_cache;
 		(*arg).i = atoi(arg_value);
-	} else if (strcmp(func_name, "set_blur_cache_starve") == 0) {
-		func = set_blur_cache_starve;
-		(*arg).i = atoi(arg_value);
 	} else if (strcmp(func_name, "set_blur_chain_trace") == 0) {
 		func = set_blur_chain_trace;
 		(*arg).i = atoi(arg_value);

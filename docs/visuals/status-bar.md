@@ -46,8 +46,7 @@ ask who installs them. They came from a dozen separate waybar plugin repos, so
 which glyphs you had depended on which plugins you had installed, and a bar that
 draws a blank pill because an unrelated package is missing is not a bar anyone
 can debug. They were vendored into `assets/bar-icons` and normalised to one
-canvas (`contrib/normalize-bar-icons.py`) so the set is complete, tracked, and
-reviewable.
+canvas so the set is complete, tracked, and reviewable.
 
 The bar's own `bar { icon-dir }` is a **search path**, tried in order, first hit
 wins — the packaged directory last, so a locally-customised asset still beats

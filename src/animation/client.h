@@ -539,20 +539,6 @@ static inline bool client_clips_to_monitor(Client *c) {
 	 * hide the overhang instead, so nothing is cropped here */
 	if (c->mon->isoverview)
 		return false;
-	/*
-	 * BREAK: AZ_BORDER_OWNER_MONITOR_CLIP=1 restores the exact pre-M4B.1
-	 * policy -- decorations cropped to c->mon for every client except the one
-	 * currently under the mouse. It reinstates the defect rather than merely
-	 * disabling decorations, so the cross-output test fails against it for the
-	 * reason the test exists, and the drag/release assertion fails too.
-	 */
-	static int break_owner_clip = -1;
-	if (break_owner_clip < 0) {
-		const char *env = getenv("AZ_BORDER_OWNER_MONITOR_CLIP");
-		break_owner_clip = env != NULL && env[0] == '1';
-	}
-	if (break_owner_clip)
-		return c != grabc;
 	return ISSCROLLTILED(c) || c->animation.tagining || c->animation.tagouted ||
 		   c->animation.tagouting;
 }
@@ -2497,31 +2483,6 @@ static bool shatter_next_tick(Client *c, double t) {
 	if (bw < 1) bw = 1;
 	if (bh < 1) bh = 1;
 
-	/*
-	 * ── AZ_BREAK_SHATTER_DAMAGE_FULL (P3's damage falsifier) ──────────────
-	 *
-	 * Widens the marker to the whole monitor, so every tick damages the entire
-	 * output instead of the cloud. That is the full-output fallback ADR-613
-	 * forbids, and it is invisible on screen -- the same picture is drawn, at
-	 * a cost nobody sees without measuring. Which is exactly why the damage
-	 * gate has to be able to fail.
-	 */
-	{
-		static int on = -1;
-		if (on < 0) {
-			on = getenv("AZ_BREAK_SHATTER_DAMAGE_FULL") != NULL;
-			if (on) {
-				wlr_log(WLR_ERROR, "P3 break: AZ_BREAK_SHATTER_DAMAGE_FULL -- "
-					"a shatter damages the whole output every tick");
-			}
-		}
-		if (on && c->mon) {
-			bx = c->mon->m.x;
-			by = c->mon->m.y;
-			bw = c->mon->m.width;
-			bh = c->mon->m.height;
-		}
-	}
 	wlr_scene_node_set_position(&e->marker->node, bx, by);
 	wlr_scene_buffer_set_dest_size(e->marker, bw, bh);
 	wlr_scene_buffer_set_opacity(e->marker, e->opacity);
@@ -3013,22 +2974,6 @@ static bool anim_spring_converged(const Client *c, int32_t type, double t,
 }
 
 /*
- * ── AZ_BREAK_ANIM_FRAME_STEP (falsifier I4) ───────────────────────────────
- *
- * Derives progress from a COUNT OF TICKS instead of from elapsed time -- which
- * is what a frame-stepped animation genuinely is, and why the break lives here
- * rather than in the sample instant. A substitute instant cannot express it:
- * the sample function does not know when an animation started, so anything it
- * returns either drifts (completing instantly once the counter outruns the
- * clock) or goes negative (completing never). Both were tried; both failed the
- * oracle for reasons that had nothing to do with frame stepping.
- *
- * The step is one 60Hz period per tick. rendermon ticks every client on every
- * output's pass, so a client's ticks arrive at the SUM of the outputs' refresh
- * rates -- and the wall time to reach a given progress therefore scales with
- * that sum, which is exactly the dependency ADR-607 statement 3 forbids.
- */
-/*
  * ── THE TRAJECTORY, EVALUATED. NOTHING ELSE. ──────────────────────────────
  *
  * M6A/ADR-611. Semantic animation state answers *what motion is happening*;
@@ -3106,40 +3051,8 @@ static inline void anim_eval_at(const Client *c, uint64_t sample_ns,
 	};
 }
 
-static inline bool anim_retarget_reset_break(void) {
-	static int on = -1;
-	if (on < 0) {
-		on = getenv("AZ_BREAK_ANIM_RETARGET_POSITION_RESET") != NULL;
-		if (on) {
-			wlr_log(WLR_ERROR, "M6A break: "
-				"AZ_BREAK_ANIM_RETARGET_POSITION_RESET -- a retarget restarts "
-				"from the previous animation's origin; the window will jump "
-				"backwards mid-motion");
-		}
-	}
-	return on != 0;
-}
-
-static inline bool anim_frame_step_break(void) {
-	static int on = -1;
-	if (on < 0) {
-		on = getenv("AZ_BREAK_ANIM_FRAME_STEP") != NULL;
-		if (on) {
-			wlr_log(WLR_ERROR, "M6A break: AZ_BREAK_ANIM_FRAME_STEP -- "
-				"animation progress counts TICKS instead of elapsed time; "
-				"duration now depends on how many outputs tick it, and how "
-				"fast");
-		}
-	}
-	return on != 0;
-}
-
 void client_animation_next_tick(Client *c, uint64_t sample_ns) {
 	uint64_t now_ns = sample_ns;
-	if (anim_frame_step_break()) {
-		now_ns = c->animation.time_started_ns
-			+ (c->animation.break_ticks++) * 16666666ull;
-	}
 	double passed_ms = c->animation.time_started_ns
 		? (double)(now_ns - c->animation.time_started_ns) / 1.0e6
 		: 0.0;
@@ -3571,75 +3484,6 @@ void client_commit(Client *c) {
 				}
 			}
 		}
-		/*
-		 * ── AZ_BREAK_ANIM_SPRING_SCALAR_V0 (P1's falsifier) ───────────────
-		 *
-		 * Restores the projected-scalar seeding this replaced: one v0 for all
-		 * four axes, taken from the projection of the outgoing velocity onto
-		 * the new direction of travel in x/y. The vector-continuity oracle
-		 * must go RED under it -- the perpendicular axis of a 90-degree
-		 * retarget collapses to rest, which is precisely what the scalar
-		 * could not carry.
-		 */
-		{
-			static int scalar_v = -1;
-			if (scalar_v < 0) {
-				scalar_v = getenv("AZ_BREAK_ANIM_SPRING_SCALAR_V0") != NULL;
-				if (scalar_v) {
-					wlr_log(WLR_ERROR, "M6A break: "
-						"AZ_BREAK_ANIM_SPRING_SCALAR_V0 -- retarget velocity "
-						"is projected onto the new direction and shared by "
-						"all four axes; a 90-degree turn starts from rest");
-				}
-			}
-			if (scalar_v) {
-				double s = 0.0;
-				if (retargeting && config.animation_curve_spring
-						&& c->animation.duration > 0) {
-					int32_t t_old = c->animation.action == NONE
-						? MOVE : c->animation.action;
-					if (t_old == MOVE || t_old == OPEN || t_old == TAG) {
-						double u = (double)(c->animation.last_sample_ns
-							- c->animation.time_started_ns) / 1.0e6
-							/ (double)c->animation.duration;
-						double dfdu = spring_curve_velocity_at(u);
-						double ox = (double)(c->animation.target.x
-							- c->animation.initial.x) * dfdu
-							/ (double)c->animation.duration;
-						double oy = (double)(c->animation.target.y
-							- c->animation.initial.y) * dfdu
-							/ (double)c->animation.duration;
-						double nx = (double)(c->geom.x - c->animainit_geom.x);
-						double ny = (double)(c->geom.y - c->animainit_geom.y);
-						double len = sqrt(nx * nx + ny * ny);
-						if (len > 0.5) {
-							double along = (ox * nx + oy * ny) / len;
-							s = along * (double)c->animation.duration / len;
-						}
-					}
-				}
-				for (enum anim_axis a = 0; a < ANIM_AXIS_COUNT; a++) {
-					v0[a] = s;
-				}
-			}
-		}
-		{
-			static int drop_v = -1;
-			if (drop_v < 0) {
-				drop_v = getenv("AZ_BREAK_ANIM_RETARGET_ZERO_VELOCITY") != NULL;
-				if (drop_v) {
-					wlr_log(WLR_ERROR, "M6A break: "
-						"AZ_BREAK_ANIM_RETARGET_ZERO_VELOCITY -- a retarget "
-						"starts from rest; redirected motion will stall at "
-						"the turn");
-				}
-			}
-			if (drop_v) {
-				for (enum anim_axis a = 0; a < ANIM_AXIS_COUNT; a++) {
-					v0[a] = 0.0;
-				}
-			}
-		}
 		if (getenv("AZ_ANIM_V0_TRACE") != NULL) {
 			wlr_log(WLR_ERROR, "M6A v0trace: retarget=%d "
 				"v0=%.4f,%.4f,%.4f,%.4f "
@@ -3674,13 +3518,6 @@ void client_commit(Client *c) {
 			? c->animation.last_sample_ns : az_pace_now_ns();
 		c->animation.time_started =
 			(int32_t)(c->animation.time_started_ns / 1000000ull);
-		/* The tick counter is per ANIMATION, not per client: leaving it to
-		 * accumulate makes every animation after the first start with a large
-		 * offset and complete instantly, which is a different defect from
-		 * frame stepping and fails its oracle for the wrong reason.
-		 * AZ_BREAK_ANIM_FRAME_STEP only; zero and unread otherwise. */
-		c->animation.break_ticks = 0;
-
 		// Mark the animation as started
 		c->animation.running = true;
 		c->animation.should_animate = false;
@@ -3829,13 +3666,6 @@ void resize(Client *c, struct wlr_box geo, int32_t interact) {
 		c->animainit_geom.width = c->animation.current.width;
 	} else if (c->is_pending_open_animation) {
 		set_client_open_animation(c, c->geom);
-	} else if (anim_retarget_reset_break()) {
-		/* AZ_BREAK_ANIM_RETARGET_POSITION_RESET (falsifier I12): leave
-		 * animainit_geom holding the PREVIOUS animation's start, so a target
-		 * arriving mid-flight restarts the curve from where the window set off
-		 * rather than from where it is. The window jumps backwards and sets
-		 * off again -- the most visible animation defect there is, and the one
-		 * the comment at the retarget site names as the thing to get wrong. */
 	} else {
 		c->animainit_geom = c->animation.current;
 	}

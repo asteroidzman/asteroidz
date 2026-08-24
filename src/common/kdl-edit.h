@@ -11,7 +11,7 @@
  * one value, replace those, and copy the rest through untouched.
  *
  * Pure string manipulation with no compositor types, so it is unit-testable
- * on its own: see tests/test-kdl-edit.c, which is what a change here must
+ * on its own, which is what a change here must
  * answer to. It writes to the user's config -- it does not get to be "probably
  * right".
  */

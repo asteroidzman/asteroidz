@@ -204,12 +204,6 @@ static bool frog_wp_color_manager_visible(const struct wl_client *client,
  * restart. A window that opts OUT still works under a pixel-sized screen: it
  * is sized and positioned in logical units, which simply makes it a smaller
  * window in a larger root, with no edge to clamp against.
- *
- * BREAK: AZ_BREAK_X11_ROOT_SIZE=1 puts wlroots' own xdg-output back in front
- * of Xwayland and withholds ours, which restores the clamp exactly and
- * changes nothing else. It is what contrib/xw-scale-test.sh's root-size
- * assertions are falsified against, and what contrib/xw-mixed-test.sh checks
- * its own X-screen reasoning against.
  */
 #ifdef XWAYLAND
 /* Defined with the other X11 boundaries in asteroidz.c, which is included
@@ -349,14 +343,9 @@ static bool xdg_output_visible_to(const struct wl_client *client,
 	if (!is_xwayland)
 		return !ours;
 
-	static int break_root_size = -1;
-	if (break_root_size < 0) {
-		const char *e = getenv("AZ_BREAK_X11_ROOT_SIZE");
-		break_root_size = e && *e && *e != '0';
-	}
-	/* off, or broken on purpose: Xwayland sees wlroots' logical one and none
-	 * of ours, which is the state the pointer clamp was found in */
-	if (!config.xwayland_force_scale_one || break_root_size)
+	/* off: Xwayland sees wlroots' logical one and none of ours, which is the
+	 * state the pointer clamp was found in */
+	if (!config.xwayland_force_scale_one)
 		return wlroots_one;
 	return ours;
 #else

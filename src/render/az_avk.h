@@ -5,7 +5,7 @@
  * The compositor half of the native Vulkan path.
  *
  * src/render/vulkan/ is the engine: it knows Vulkan and nothing else, and
- * tests/check-vulkan-isolation.py fails the build if a wlroots or GLES header
+ * The meson source list is what enforces it: a wlroots or GLES header
  * ever appears under it. This file is the other side of that boundary -- it
  * knows wlroots and asteroidz, and it is the only place the two vocabularies
  * meet.
@@ -306,8 +306,7 @@ struct az_avk {
 	/* Debts paid on TWO OR MORE outputs at once. Zero is the shape of the
 	 * single-slot `stale_output` defect: a surface spanning a monitor edge
 	 * owes both outputs a repaint and only ever got one. Non-zero only if a
-	 * spanning surface actually drew stale, so a fixture must assert that
-	 * premise too. AZ_BREAK_STALE_ONE_OUTPUT forces it back to zero. */
+	 * spanning surface actually drew stale. */
 	uint64_t shm_stale_multi_output_repaints;
 	uint64_t shm_stale_no_pool;
 	uint64_t shm_stale_no_sibling;
@@ -2144,12 +2143,6 @@ static void az_avk_shm_drain(void) {
 					 */
 					Monitor *dm;
 					uint32_t paid = 0;
-					/* AZ_BREAK_STALE_ONE_OUTPUT: pay only the output
-					 * recorded last, which is the defect this rule
-					 * replaced. The break exists so the fixture can be
-					 * seen to fail. */
-					const bool one_only =
-						az_avk_env_flag("AZ_BREAK_STALE_ONE_OUTPUT");
 					wl_list_for_each(dm, &mons, link) {
 						if (dm->scene_output == NULL || dm->wlr_output == NULL
 								|| !dm->wlr_output->enabled) {
@@ -2177,9 +2170,6 @@ static void az_avk_shm_drain(void) {
 							 * and an output the surface never reached takes
 							 * nothing.
 							 */
-							if (one_only && dm->wlr_output != entry->stale_output) {
-								continue;
-							}
 							if (entry->stale_box.x >= dm->m.x + dm->m.width
 									|| entry->stale_box.y
 										>= dm->m.y + dm->m.height
@@ -3943,7 +3933,6 @@ static struct avk_encode_params az_avk_encode_params(const Monitor *m,
 	if (p.tf == AVK_ENCODE_TF_CLUT3D && clut != NULL) {
 		p.clut = clut->image;
 		p.clut_dim = clut->dim;
-		p.clut_encoded_domain = clut->domain_break;
 	}
 	return p;
 }
@@ -5477,7 +5466,7 @@ static void az_avk_emit_cursors(struct az_avk_walk *walk,
  * The luminance figures are the display's own, read from its EDID. The
  * primaries are BT.2020's reference values, because this project's IPC has
  * never exposed a panel's own chromaticity points -- the same fallback
- * contrib/hdr-record.sh has to make, and the standard thing to do when a
+ * any external recorder has to make, and the standard thing to do when a
  * display's own are unavailable. The luminance is not a guess, and it is the
  * half a tone-mapping player actually uses.
  */
@@ -9285,17 +9274,6 @@ static void az_avk_set_blur_cache(bool on) {
 	for (size_t i = 0; i < AZ_AVK_MAX_FORMATS; i++) {
 		if (avk.renderers[i].used) {
 			avk_render_set_blur_cache_enabled(&avk.renderers[i].renderer, on);
-		}
-	}
-}
-
-/* M4I instrument. -1 none, otherwise an avk_blur_cache_kind whose consumers are
- * treated as absent. Every renderer, because a monitor's cache belongs to
- * whichever format renderer drew it. */
-static void az_avk_set_blur_cache_starve(int kind) {
-	for (size_t i = 0; i < AZ_AVK_MAX_FORMATS; i++) {
-		if (avk.renderers[i].used) {
-			avk_render_set_blur_cache_starve(&avk.renderers[i].renderer, kind);
 		}
 	}
 }
