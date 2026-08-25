@@ -313,6 +313,8 @@ static void query_caps(VkPhysicalDevice phys, struct avk_caps *caps) {
 	caps->synchronization2 = vk13.synchronization2;
 	caps->dynamic_rendering = vk13.dynamicRendering;
 	caps->sampler_ycbcr_conversion = vk11.samplerYcbcrConversion;
+	caps->storage_image_read_without_format =
+		features.features.shaderStorageImageReadWithoutFormat;
 
 	query_queue_families(phys, caps);
 	query_external_sync(phys, caps);

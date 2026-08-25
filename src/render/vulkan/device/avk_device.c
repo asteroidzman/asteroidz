@@ -251,6 +251,12 @@ struct avk_device *avk_device_create(struct avk_instance *inst, int drm_fd) {
 	VkPhysicalDeviceFeatures2 features = {
 		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
 		.pNext = want_encode ? (void *)&rgb_conv : (void *)&vk11,
+		/* See the caps field: the conversion shader reads a storage image
+		 * whose format it cannot name. Enabled only where the device offers
+		 * it, and the encoder refuses to exist without it rather than
+		 * reading undefined values. */
+		.features.shaderStorageImageReadWithoutFormat =
+			dev->caps.storage_image_read_without_format ? VK_TRUE : VK_FALSE,
 	};
 
 	const float priority = 1.0f;

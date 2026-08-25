@@ -59,6 +59,11 @@ struct avk_caps {
 	bool calibrated_timestamps;
 	bool sampler_ycbcr_conversion;
 	bool pipeline_executable_properties;
+	/* Can a shader read a storage image whose format it does not declare?
+	 * The encoder's RGB->P010 conversion needs it: its source is
+	 * A2R10G10B10 and GLSL has no qualifier that spells that format, so
+	 * declaring any of them makes the read undefined. */
+	bool storage_image_read_without_format;
 
 	/* Can a binary semaphore be imported from, and exported to, a sync_file?
 	 * This is what makes implicit-sync interop with clients possible without

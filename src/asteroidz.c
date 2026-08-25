@@ -2863,11 +2863,17 @@ static int32_t screenshot_hdr(const Arg *arg) {
 }
 
 /*
- * `amsg dispatch record_start` / `record_stop` -- an HDR screen recording.
+ * `amsg dispatch record_start` / `record_stop` -- a screen recording.
  *
  * M14B. One output, the focused one, because a recording is a thing with a
  * beginning and an end and two of them running on one keybind is a surprise
  * rather than a feature.
+ *
+ * HDR10 from an HDR output and sRGB from an SDR one, decided from the output
+ * rather than asked for: the recorder encodes what was composited, and the
+ * stream and the container both say which it was. It used to refuse anything
+ * but HDR, which is why a recording could not be made on a laptop panel or
+ * checked headlessly at all.
  *
  * IT COSTS FRAME TIME, but no longer a frame's worth of it. The first version
  * waited for the encode inline and cost 15.20ms per frame against a 6.94ms
@@ -2894,14 +2900,6 @@ static int32_t record_start(const Arg *arg) {
 	Monitor *m = selmon;
 	if (m == NULL || m->avk == NULL || m->avk->slot == NULL) {
 		wlr_log(WLR_ERROR, "record_start: no focused output");
-		return 0;
-	}
-	if (!m->hdr) {
-		/* The same refusal screenshot_hdr makes, for the same reason: an SDR
-		 * attachment is 8-bit and the recording would claim BT.2100 PQ over a
-		 * picture that is neither. */
-		wlr_log(WLR_ERROR, "record_start: %s is not in HDR",
-			m->wlr_output->name);
 		return 0;
 	}
 	if (m->avk->recording) {

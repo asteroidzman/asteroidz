@@ -706,7 +706,7 @@ static bool create_rgb(struct avk_encoder *enc) {
 	VkImageCreateInfo info = {
 		.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
 		.imageType = VK_IMAGE_TYPE_2D,
-		.format = VK_FORMAT_A2R10G10B10_UNORM_PACK32,
+		.format = AVK_ENCODE_RGB_FORMAT,
 		.extent = {enc->coded_width, enc->coded_height, 1},
 		.mipLevels = 1,
 		.arrayLayers = 1,
@@ -743,7 +743,7 @@ static bool create_rgb(struct avk_encoder *enc) {
 		.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
 		.image = enc->rgb_image,
 		.viewType = VK_IMAGE_VIEW_TYPE_2D,
-		.format = VK_FORMAT_A2R10G10B10_UNORM_PACK32,
+		.format = AVK_ENCODE_RGB_FORMAT,
 		.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
 	};
 	return vkCreateImageView(dev->dev, &vinfo, NULL, &enc->rgb_view)
@@ -963,7 +963,8 @@ static bool create_conversion(struct avk_encoder *enc) {
 
 /* Run the conversion on the graphics queue and wait for it. */
 static bool convert_to_p010(struct avk_encoder *enc, VkImage src,
-		VkImageLayout src_layout, int32_t src_x, int32_t src_y) {
+		VkImageLayout src_layout, VkFormat src_format, int32_t src_x,
+		int32_t src_y) {
 	VkImageView src_view = enc->rgb_view;
 	struct avk_device *dev = enc->dev;
 	VkDescriptorImageInfo images[3] = {
@@ -1017,12 +1018,18 @@ static bool convert_to_p010(struct avk_encoder *enc, VkImage src,
 	/* The caller's picture into ours. Both layouts are restored on the way
 	 * out: the source goes back to what it was, because an image borrowed for
 	 * a screenshot must not come back in a different state, and the staging
-	 * copy goes to GENERAL for the compute read. */
+	 * copy goes to GENERAL for the compute read.
+	 *
+	 * ALL_TRANSFER rather than COPY: the transfer below is a copy for one
+	 * source format and a blit for the other, and COPY_BIT does not cover a
+	 * blit. Naming the narrower stage left the blit outside every barrier
+	 * here -- read-after-write against the client's buffer on the way in,
+	 * write-after-read on the way out. */
 	VkImageMemoryBarrier2 in[2] = {
 		{
 			.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
 			.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-			.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+			.dstStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
 			.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT,
 			.oldLayout = src_layout,
 			.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
@@ -1034,7 +1041,7 @@ static bool convert_to_p010(struct avk_encoder *enc, VkImage src,
 		{
 			.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
 			.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-			.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+			.dstStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
 			.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
 			.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
 			.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
@@ -1050,18 +1057,52 @@ static bool convert_to_p010(struct avk_encoder *enc, VkImage src,
 		.pImageMemoryBarriers = in,
 	};
 	vkCmdPipelineBarrier2(enc->conv_cmd, &in_dep);
-	VkImageCopy copy = {
-		.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-		.srcOffset = {src_x, src_y, 0},
-		.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-		.extent = {enc->width, enc->height, 1},
-	};
-	vkCmdCopyImage(enc->conv_cmd, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-		enc->rgb_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+	/*
+	 * A COPY WHEN THE FORMATS AGREE, A BLIT WHEN THEY DO NOT.
+	 *
+	 * vkCmdCopyImage moves bits, so it is only correct between formats that
+	 * mean the same thing by them. The staging image is 10-bit because P010
+	 * is, and an HDR output composites into exactly that format -- that path
+	 * keeps the copy, and keeps it for a reason beyond speed: a copy cannot
+	 * round, so nothing about an HDR10 recording changes by teaching this
+	 * function a second source format.
+	 *
+	 * An SDR output composites 8 bits per channel. Those bits reinterpreted
+	 * as 2:10:10:10 are not a darker picture, they are a different one, which
+	 * is what the caller's format check used to exist to prevent. A blit
+	 * converts instead: both formats are UNORM, so 0..255 lands on 0..1023 by
+	 * the value it denotes rather than by the bits that spell it. The extents
+	 * are equal and the filter is NEAREST, so no sample is resampled either.
+	 */
+	if (src_format == AVK_ENCODE_RGB_FORMAT) {
+		VkImageCopy copy = {
+			.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+			.srcOffset = {src_x, src_y, 0},
+			.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+			.extent = {enc->width, enc->height, 1},
+		};
+		vkCmdCopyImage(enc->conv_cmd, src,
+			VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, enc->rgb_image,
+			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+	} else {
+		VkImageBlit blit = {
+			.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+			.srcOffsets = {{src_x, src_y, 0},
+				{src_x + (int32_t)enc->width, src_y + (int32_t)enc->height,
+					1}},
+			.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+			.dstOffsets = {{0, 0, 0},
+				{(int32_t)enc->width, (int32_t)enc->height, 1}},
+		};
+		vkCmdBlitImage(enc->conv_cmd, src,
+			VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, enc->rgb_image,
+			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit,
+			VK_FILTER_NEAREST);
+	}
 	VkImageMemoryBarrier2 out_b[2] = {
 		{
 			.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-			.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+			.srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
 			.srcAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT,
 			.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
 			.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
@@ -1073,7 +1114,7 @@ static bool convert_to_p010(struct avk_encoder *enc, VkImage src,
 		},
 		{
 			.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-			.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+			.srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
 			.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
 			.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
 			.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
@@ -1238,6 +1279,15 @@ struct avk_encoder *avk_encoder_create(struct avk_device *dev,
 		const struct avk_encode_mastering *mastering) {
 	if (dev == NULL || !dev->has_encode_queue) {
 		avk_log(AVK_ERROR, "encode: this device has no video encode queue");
+		return NULL;
+	}
+	if (!dev->caps.storage_image_read_without_format) {
+		/* rgb_to_p010.comp reads its source without declaring a format,
+		 * because GLSL cannot name the one it has. Declaring a format that
+		 * is not the view's makes the read undefined rather than merely
+		 * unsupported, so this is a refusal and not a fallback. */
+		avk_log(AVK_ERROR, "encode: this device cannot read a storage image "
+			"without a declared format, which the RGB->P010 conversion needs");
 		return NULL;
 	}
 	struct encode_api api;
@@ -1529,7 +1579,8 @@ static uint8_t *encoded_parameters(struct avk_encoder *enc,
 }
 
 static bool submit_picture(struct avk_encoder *enc, VkImage src,
-		VkImageLayout src_layout, int32_t src_x, int32_t src_y, bool key) {
+		VkImageLayout src_layout, VkFormat src_format, int32_t src_x,
+		int32_t src_y, bool key) {
 	if (enc == NULL) {
 		return false;
 	}
@@ -1547,7 +1598,7 @@ static bool submit_picture(struct avk_encoder *enc, VkImage src,
 	 * two queues chained by a fence is easier to reason about than two
 	 * chained by a timeline nothing else uses. */
 	int64_t t0 = now_ns();
-	if (!convert_to_p010(enc, src, src_layout, src_x, src_y)) {
+	if (!convert_to_p010(enc, src, src_layout, src_format, src_x, src_y)) {
 		avk_log(AVK_ERROR, "encode: the RGB->P010 conversion failed");
 		return false;
 	}
@@ -1991,16 +2042,17 @@ void avk_encoder_reset_sequence(struct avk_encoder *enc) {
 }
 
 bool avk_encoder_encode_still(struct avk_encoder *enc, VkImage src,
-		VkImageLayout src_layout, int32_t src_x, int32_t src_y,
-		void **out, size_t *out_len) {
-	if (enc == NULL) {
+		VkImageLayout src_layout, VkFormat src_format, int32_t src_x,
+		int32_t src_y, void **out, size_t *out_len) {
+	if (enc == NULL || !avk_encode_source_supported(src_format)) {
 		return false;
 	}
 	avk_encoder_reset_sequence(enc);
 	/* A still has no next frame to hide the encode behind, so it submits and
 	 * collects in one go. The deferral is a recording's optimisation and
 	 * would only be latency here. */
-	if (!submit_picture(enc, src, src_layout, src_x, src_y, true)) {
+	if (!submit_picture(enc, src, src_layout, src_format, src_x, src_y,
+			true)) {
 		avk_encoder_reset_sequence(enc);
 		return false;
 	}
@@ -2015,9 +2067,9 @@ bool avk_encoder_drain(struct avk_encoder *enc, void **out, size_t *out_len) {
 }
 
 bool avk_encoder_encode_frame(struct avk_encoder *enc, VkImage src,
-		VkImageLayout src_layout, int32_t src_x, int32_t src_y,
-		bool force_key, void **out, size_t *out_len) {
-	if (enc == NULL) {
+		VkImageLayout src_layout, VkFormat src_format, int32_t src_x,
+		int32_t src_y, bool force_key, void **out, size_t *out_len) {
+	if (enc == NULL || !avk_encode_source_supported(src_format)) {
 		return false;
 	}
 	/* The first picture of a sequence has nothing to predict from, so it is
@@ -2039,7 +2091,7 @@ bool avk_encoder_encode_frame(struct avk_encoder *enc, VkImage src,
 	if (enc->submitted) {
 		collect_picture(enc, out, out_len);
 	}
-	if (!submit_picture(enc, src, src_layout, src_x, src_y, key)) {
+	if (!submit_picture(enc, src, src_layout, src_format, src_x, src_y, key)) {
 		/* poc was zeroed for a key picture that never reached the queue, so
 		 * the counters no longer describe the DPB. Reset them and the next
 		 * call must be an IDR, which frame_index == 0 above makes it. Here

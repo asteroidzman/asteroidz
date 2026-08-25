@@ -7,17 +7,17 @@ description: HDR stills and recordings, plus example screenshot keybindings and 
 
 > **Note:** asteroidz has a compositor-native screenshot tool, `screenshot_ui`
 > (region/window/screen capture, no external dependencies) — see
-> [Keybindings](/docs/bindings/keys#screenshot_ui), and native HDR capture
+> [Keybindings](/docs/bindings/keys#screenshot_ui), and GPU capture
 > below. The workflows in the rest of this page are upstream mango's
 > external-utility approach (`grim`/`slurp`/etc.), still useful if you want
 > something `screenshot_ui` doesn't do (e.g. annotation).
 
-## HDR capture
+## GPU capture: HDR stills, and recording
 
-Neither `grim` nor `screenshot_ui` can save what an HDR output is actually
-showing: both hand you 8 bits, tone mapped. Two dispatches capture the frame at
-the panel's own 10 bits instead, encoded on the GPU from the Vulkan attachment
-AVK already has.
+Two dispatches encode the frame on the GPU, straight from the Vulkan
+attachment AVK composited into — no capture client, no external tool, no
+readback to 8 bits. Neither `grim` nor `screenshot_ui` can save what an HDR
+output is actually showing; both hand you 8 bits, tone mapped.
 
 ```bash
 amsg dispatch screenshot_hdr    # an HDR10 HEIF still of every output in HDR
@@ -25,14 +25,16 @@ amsg dispatch record_start      # start recording the focused output
 amsg dispatch record_stop       # stop, and write the index
 ```
 
-`screenshot_hdr` writes one file per output currently running HDR. Unlike
-`screenshot_ui,rawhdr`, which writes the raw picture for inspection, this is a
-file an image viewer opens.
+`screenshot_hdr` writes one file per output currently running HDR, and refuses
+one that is not: an SDR attachment is 8-bit, and the still would be claiming
+BT.2100 PQ over a picture that is neither. Unlike `screenshot_ui,rawhdr`, which
+writes the raw picture for inspection, this is a file an image viewer opens.
 
 `record_start` records the **focused** output to
-`~/Videos/asteroidz_<output>_<timestamp>.mp4` as HDR10. Both refuse an output
-that is not in HDR — an SDR attachment is 8-bit, and the recording would be
-claiming BT.2100 PQ over a picture that is neither.
+`~/Videos/asteroidz_<output>_<timestamp>.mp4`, as **HDR10 from an HDR output
+and sRGB from an SDR one** — it encodes what was composited, and both the
+stream and the container say which it was. There is nothing to choose here: the
+output decides.
 
 Worth knowing before you rely on it:
 

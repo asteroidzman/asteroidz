@@ -37,7 +37,23 @@
 
 layout(local_size_x = 8, local_size_y = 8) in;
 
-layout(set = 0, binding = 0, rgb10_a2) uniform readonly image2D src;
+/*
+ * NO FORMAT QUALIFIER ON THE SOURCE, because GLSL has no name for its format.
+ *
+ * The staging image convert_to_p010 binds here is A2R10G10B10, and there is no
+ * qualifier that spells it. `rgb10_a2` -- what this line used to say -- means
+ * A2B10G10R10: the same bits with red and blue exchanged. "Storage Images must
+ * exactly match", so every read of this image was undefined, for as long as
+ * there has been an encoder. It read correctly anyway on this driver, which is
+ * the kind of luck that stops holding on someone else's.
+ *
+ * An unformatted read says what is actually true -- the format is the view's,
+ * not the shader's business -- and costs one device feature the encoder checks
+ * for: shaderStorageImageReadWithoutFormat.
+ */
+#extension GL_EXT_shader_image_load_formatted : require
+
+layout(set = 0, binding = 0) uniform readonly image2D src;
 layout(set = 0, binding = 1, r16)      uniform writeonly image2D plane_y;
 layout(set = 0, binding = 2, rg16)     uniform writeonly image2D plane_uv;
 

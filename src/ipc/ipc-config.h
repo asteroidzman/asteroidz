@@ -405,8 +405,8 @@ static const DispatchAction dispatch_actions[] = {
 	 "screenshot it is not tone mapped to 8 bits, and unlike screenshot_ui's "
 	 "rawhdr mode it is a file an image viewer opens."},
 	{"record_start", "",
-	 "Start an HDR10 screen recording of the focused output to "
-	 "~/Videos, encoded on the GPU at the panel's own 10-bit depth. Costs "
+	 "Start a screen recording of the focused output to ~/Videos, encoded "
+	 "on the GPU: HDR10 from an HDR output, sRGB from an SDR one. Costs "
 	 "frame time, but not a frame's worth: the encode is collected at the "
 	 "start of the next capture, which is why capture is capped at 30fps "
 	 "(AZ_RECORD_FPS)."},

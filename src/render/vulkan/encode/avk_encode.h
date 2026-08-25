@@ -67,6 +67,23 @@ struct avk_encode_mastering {
 	uint16_t max_frame_average_light_level;
 };
 
+/*
+ * The staging format the conversion reads, which is 10-bit because P010 is.
+ * A source in this format is copied into it; anything else the encoder accepts
+ * is blitted, which converts rather than reinterprets. See convert_to_p010.
+ */
+#define AVK_ENCODE_RGB_FORMAT VK_FORMAT_A2R10G10B10_UNORM_PACK32
+
+/*
+ * The picture formats the encoder will take. Exactly the two AVK composites
+ * an output into: 10-bit for an HDR output or a 10-bit SDR one, 8-bit for an
+ * ordinary SDR one. Asked before a recording opens rather than discovered one
+ * dropped frame at a time.
+ */
+static inline bool avk_encode_source_supported(VkFormat f) {
+	return f == AVK_ENCODE_RGB_FORMAT || f == VK_FORMAT_B8G8R8A8_UNORM;
+}
+
 enum avk_encode_colour {
 	AVK_ENCODE_COLOUR_SDR,     /* BT.709 primaries, sRGB transfer, BT.709 matrix */
 	AVK_ENCODE_COLOUR_HDR10,   /* BT.2020 primaries, PQ transfer, BT.2020 NCL */
@@ -226,8 +243,8 @@ struct avk_encoder {
  * it.
  */
 bool avk_encoder_encode_still(struct avk_encoder *enc, VkImage src,
-	VkImageLayout src_layout, int32_t src_x, int32_t src_y,
-	void **out, size_t *out_len);
+	VkImageLayout src_layout, VkFormat src_format, int32_t src_x,
+	int32_t src_y, void **out, size_t *out_len);
 
 /*
  * One picture of a SEQUENCE.
@@ -253,8 +270,8 @@ bool avk_encoder_encode_still(struct avk_encoder *enc, VkImage src,
  * a caller whose recording is one frame short.
  */
 bool avk_encoder_encode_frame(struct avk_encoder *enc, VkImage src,
-	VkImageLayout src_layout, int32_t src_x, int32_t src_y, bool force_key,
-	void **out, size_t *out_len);
+	VkImageLayout src_layout, VkFormat src_format, int32_t src_x,
+	int32_t src_y, bool force_key, void **out, size_t *out_len);
 
 /* Take the last submitted picture, if one is outstanding. */
 bool avk_encoder_drain(struct avk_encoder *enc, void **out, size_t *out_len);

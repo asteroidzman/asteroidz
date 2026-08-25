@@ -2977,6 +2977,10 @@ struct az_avk_output {
 	struct avk_encoder *rec_encoder;
 	struct avk_mp4 *rec_mp4;
 	bool recording;
+	/* The format the first picture of this recording arrived in. The file's
+	 * colour description is fixed when it opens, so every later picture must
+	 * be the same. UNDEFINED until the first one lands. */
+	VkFormat rec_src_format;
 	uint64_t rec_frames;
 	int64_t rec_last_ns;   /* so a sample's duration is measured, not assumed */
 	uint64_t rec_dropped;
@@ -5330,12 +5334,22 @@ static void az_avk_emit_cursors(struct az_avk_walk *walk,
 /* The same numbers again, in the container's shape. One function so the box
  * and the SEI cannot drift apart -- they describe the same display and a
  * reader is entitled to consult either. */
-static void az_avk_heif_colour_for(const struct avk_encode_mastering *m,
-		struct avk_heif_colour *out) {
+static void az_avk_heif_colour_for(enum avk_encode_colour colour,
+		const struct avk_encode_mastering *m, struct avk_heif_colour *out) {
+	/* The same H.273 code points the SPS carries, from the same choice -- a
+	 * container that disagrees with the bitstream it wraps is worse than one
+	 * that says nothing, because a player believes the container. */
+	bool hdr10 = colour == AVK_ENCODE_COLOUR_HDR10;
 	*out = (struct avk_heif_colour){
-		.primaries = 9, .transfer = 16, .matrix = 9, .full_range = true,
+		.primaries = hdr10 ? 9 : 1,
+		.transfer = hdr10 ? 16 : 13,
+		.matrix = hdr10 ? 9 : 1,
+		.full_range = true,
 	};
-	if (m->max_luminance == 0 && m->white_point_x == 0) {
+	/* Mastering metadata describes an HDR display volume. On an SDR recording
+	 * there is nothing for it to describe, and the defaults below would be a
+	 * guess presented as a measurement. */
+	if (!hdr10 || (m->max_luminance == 0 && m->white_point_x == 0)) {
 		return;
 	}
 	out->has_mastering = true;
@@ -5417,10 +5431,10 @@ static bool az_avk_encode_hdr_still(struct wlr_buffer *frame, Monitor *m,
 	void *stream = NULL;
 	size_t stream_len = 0;
 	bool ok = avk_encoder_encode_still(enc, img->image, img->layout,
-		px.x, px.y, &stream, &stream_len);
+		img->format, px.x, px.y, &stream, &stream_len);
 	if (ok) {
 		struct avk_heif_colour colour;
-		az_avk_heif_colour_for(&mastering, &colour);
+		az_avk_heif_colour_for(AVK_ENCODE_COLOUR_HDR10, &mastering, &colour);
 		void *file = NULL;
 		size_t file_len = 0;
 		/* enc->width, not px.width: the encoder rounds to even and the
@@ -5503,11 +5517,22 @@ static bool az_avk_record_open(Monitor *m, const char *path) {
 	}
 	struct avk_encode_mastering mastering;
 	az_avk_mastering_for(m, &mastering);
+	/*
+	 * WHAT THE OUTPUT IS, NOT WHAT THE RECORDER PREFERS. An HDR output
+	 * composites PQ into a 10-bit attachment and an SDR one composites sRGB,
+	 * and each is encoded as what it is -- labelling the second BT.2100 was
+	 * the whole reason a recording used to refuse it.
+	 *
+	 * Chosen once, here, and carried to the stream's VUI, the SEI and the
+	 * container's colour boxes from this one value.
+	 */
+	enum avk_encode_colour enc_colour = m->hdr
+		? AVK_ENCODE_COLOUR_HDR10 : AVK_ENCODE_COLOUR_SDR;
 	struct avk_heif_colour colour;
-	az_avk_heif_colour_for(&mastering, &colour);
+	az_avk_heif_colour_for(enc_colour, &mastering, &colour);
 
 	out->rec_encoder = avk_encoder_create(r->dev, (uint32_t)att.width,
-		(uint32_t)att.height, AVK_ENCODE_COLOUR_HDR10, &mastering);
+		(uint32_t)att.height, enc_colour, &mastering);
 	if (out->rec_encoder == NULL) {
 		wlr_log(WLR_ERROR, "record: no encoder for %s", m->wlr_output->name);
 		return false;
@@ -5523,6 +5548,7 @@ static bool az_avk_record_open(Monitor *m, const char *path) {
 		return false;
 	}
 	avk_encoder_reset_sequence(out->rec_encoder);
+	out->rec_src_format = VK_FORMAT_UNDEFINED;
 	out->rec_frames = 0;
 	out->rec_dropped = 0;
 	out->rec_skipped = 0;
@@ -5640,7 +5666,28 @@ static void az_avk_record_frame(struct az_avk_output *out, Monitor *m,
 		out->rec_dropped++;
 		return;
 	}
-	if (target->format != VK_FORMAT_A2R10G10B10_UNORM_PACK32) {
+	/*
+	 * ONE FORMAT PER RECORDING, whichever one the first picture arrived in.
+	 *
+	 * The stream's colour description is written into the SPS when the file
+	 * is opened and cannot change afterwards, so a picture in a different
+	 * format is a picture this file cannot honestly carry: an output that
+	 * flips to HDR mid-recording composites PQ into a container still saying
+	 * sRGB. Dropping and counting is what a caller can see; re-labelling is
+	 * not.
+	 */
+	if (out->rec_src_format == VK_FORMAT_UNDEFINED) {
+		/* Latched even when it is a format the encoder cannot take, so the
+		 * complaint is made once rather than once per frame; every picture
+		 * after it is refused by the encoder and counted as a drop, and
+		 * record_stop reports a recording that captured nothing. */
+		out->rec_src_format = target->format;
+		if (!avk_encode_source_supported(target->format)) {
+			wlr_log(WLR_ERROR, "record: %s composites in format %d, which "
+				"the encoder does not take", m->wlr_output->name,
+				(int)target->format);
+		}
+	} else if (target->format != out->rec_src_format) {
 		out->rec_dropped++;
 		return;
 	}
@@ -5669,7 +5716,7 @@ static void az_avk_record_frame(struct az_avk_output *out, Monitor *m,
 	void *pkt = NULL;
 	size_t pkt_len = 0;
 	if (!avk_encoder_encode_frame(out->rec_encoder, target->image,
-			target->layout, 0, 0, false, &pkt, &pkt_len)) {
+			target->layout, target->format, 0, 0, false, &pkt, &pkt_len)) {
 		out->rec_dropped++;
 		return;
 	}
@@ -5784,10 +5831,10 @@ static void az_avk_hdr_shot(struct az_avk_output *out, Monitor *m,
 	void *stream = NULL;
 	size_t stream_len = 0;
 	bool ok = avk_encoder_encode_still(enc, target->image, target->layout,
-		0, 0, &stream, &stream_len);
+		target->format, 0, 0, &stream, &stream_len);
 	if (ok) {
 		struct avk_heif_colour colour;
-		az_avk_heif_colour_for(&mastering, &colour);
+		az_avk_heif_colour_for(AVK_ENCODE_COLOUR_HDR10, &mastering, &colour);
 		void *file = NULL;
 		size_t file_len = 0;
 		if (avk_heif_wrap(stream, stream_len, enc->width, enc->height,
