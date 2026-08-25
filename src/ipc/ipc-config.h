@@ -407,8 +407,9 @@ static const DispatchAction dispatch_actions[] = {
 	{"record_start", "",
 	 "Start an HDR10 screen recording of the focused output to "
 	 "~/Videos, encoded on the GPU at the panel's own 10-bit depth. Costs "
-	 "frame time: every frame is waited for and encoded on the compositor's "
-	 "thread."},
+	 "frame time, but not a frame's worth: the encode is collected at the "
+	 "start of the next capture, which is why capture is capped at 30fps "
+	 "(AZ_RECORD_FPS)."},
 	{"record_stop", "",
 	 "Stop every recording and write each file's index. An MP4 is not "
 	 "playable until this runs, so a compositor killed mid-recording leaves "

@@ -1,17 +1,53 @@
 ---
 
 title: Screenshots
-description: Example screenshot keybindings and capture workflows for asteroidz.
+description: HDR stills and recordings, plus example screenshot keybindings and capture workflows.
 
 ---
 
 > **Note:** asteroidz has a compositor-native screenshot tool, `screenshot_ui`
 > (region/window/screen capture, no external dependencies) — see
-> [Keybindings](/docs/bindings/keys#screenshot_ui). The workflows below are
-> upstream mango's external-utility approach (`grim`/`slurp`/etc.), still
-> useful if you want something `screenshot_ui` doesn't do (e.g. annotation).
+> [Keybindings](/docs/bindings/keys#screenshot_ui), and native HDR capture
+> below. The workflows in the rest of this page are upstream mango's
+> external-utility approach (`grim`/`slurp`/etc.), still useful if you want
+> something `screenshot_ui` doesn't do (e.g. annotation).
 
-For that external-utility approach, compose your own workflow from small
+## HDR capture
+
+Neither `grim` nor `screenshot_ui` can save what an HDR output is actually
+showing: both hand you 8 bits, tone mapped. Two dispatches capture the frame at
+the panel's own 10 bits instead, encoded on the GPU from the Vulkan attachment
+AVK already has.
+
+```bash
+amsg dispatch screenshot_hdr    # an HDR10 HEIF still of every output in HDR
+amsg dispatch record_start      # start recording the focused output
+amsg dispatch record_stop       # stop, and write the index
+```
+
+`screenshot_hdr` writes one file per output currently running HDR. Unlike
+`screenshot_ui,rawhdr`, which writes the raw picture for inspection, this is a
+file an image viewer opens.
+
+`record_start` records the **focused** output to
+`~/Videos/asteroidz_<output>_<timestamp>.mp4` as HDR10. Both refuse an output
+that is not in HDR — an SDR attachment is 8-bit, and the recording would be
+claiming BT.2100 PQ over a picture that is neither.
+
+Worth knowing before you rely on it:
+
+- **The file is not playable until `record_stop`.** An MP4's index lives at the
+  end, so a compositor killed mid-recording leaves a file nothing opens.
+- **Capture is capped at 30fps** (`AZ_RECORD_FPS`), because a 4K picture is
+  ~21ms of encode. Frames above the cap are skipped and counted; `record_stop`
+  reports the split.
+- **A fullscreen client that is being scanned out records nothing.** Nothing is
+  composited, so there is no frame to encode, and the only sign is one line at
+  `record_stop` saying the recording was discarded.
+
+## External utilities
+
+For the external-utility approach, compose your own workflow from small
 Wayland utilities and bind them to keys:
 
 | Tool | Purpose |
