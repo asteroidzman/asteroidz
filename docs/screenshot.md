@@ -49,6 +49,27 @@ one that is not: an SDR attachment is 8-bit, and the still would be claiming
 BT.2100 PQ over a picture that is neither. Unlike `screenshot_ui,rawhdr`, which
 writes the raw picture for inspection, this is a file an image viewer opens.
 
+`azview` is that viewer, and it ships with the compositor:
+
+```bash
+azview ~/Pictures/asteroidz_DP-1_*.heic
+```
+
+It describes the surface the way the **file** describes itself — transfer
+function, primaries, and the mastering display's own luminance — and lets the
+compositor's HDR path run, rather than tone mapping the picture down to SDR
+first the way a viewer that says nothing about its surface must. HEIF, AVIF,
+PNG, JPEG and the rest of the common formats all open; an ordinary sRGB picture
+is left untagged, which is what sRGB means on a Wayland surface.
+
+The picture is scaled to fit the window without changing its proportions. The
+**mouse wheel zooms** (10% a detent, and smoothly by fractions of one on a
+touchpad), `0` returns to the fit, and `q` or `Escape` quits. Zoom crops the
+viewport's source rectangle rather than growing the surface, so a magnified
+picture stays inside the window, and the picture itself is uploaded once — a
+36-megapixel photograph is 145 MB of texture, and re-sending it per wheel click
+is the difference between a zoom that is smooth and one that is not.
+
 `record_start` records the **focused** output to
 `~/Videos/asteroidz_<output>_<timestamp>.mp4`, as **HDR10 from an HDR output
 and sRGB from an SDR one** — it encodes what was composited, and both the
