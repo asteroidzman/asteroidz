@@ -3337,8 +3337,34 @@ static bool screenshot_ui_save_and_copy(struct wlr_buffer *frame, Monitor *m,
 		return false;
 	}
 
-	double sx = m->m.width > 0 ? (double)frame->width / m->m.width : 1.0;
-	double sy = m->m.height > 0 ? (double)frame->height / m->m.height : 1.0;
+	/*
+	 * THE SELECTION IS IN LAYOUT SPACE; THE FROZEN FRAME IS THE ATTACHMENT.
+	 *
+	 * On an unrotated output those differ only by the output scale, and this
+	 * used to be one ratio per axis -- frame->width / m.width and its
+	 * sibling. At 90 or 270 degrees the axes are SWAPPED rather than scaled,
+	 * so that ratio was a portrait box multiplied by a landscape number: a
+	 * 740x1302 window came back as a 1330x737 crop, which is very nearly the
+	 * whole screen and none of the window. At 180 the size happened to come
+	 * out right and the ORIGIN did not, so a top-left selection cropped from
+	 * the bottom-right -- the failure a dimension check cannot see.
+	 *
+	 * So the mapping is done in two steps that are each true on their own: a
+	 * uniform scale from layout to presentation pixels, then the output's own
+	 * transform from presentation into the attachment. `presentation` is the
+	 * attachment with its axes swapped when the transform swaps them, which
+	 * is the same relationship az_presentation_of() states for the frame
+	 * path -- computed here from frame's own extent because bind_define.h is
+	 * included before the renderer that owns that helper.
+	 */
+	const enum wl_output_transform tr = m->wlr_output->transform;
+	const bool axes_swapped = (tr & WL_OUTPUT_TRANSFORM_90) != 0;
+	const int32_t pres_w = axes_swapped ? frame->height : frame->width;
+	const int32_t pres_h = axes_swapped ? frame->width : frame->height;
+	/* One scale, not two: a fractional-scale output scales both axes by the
+	 * same factor, and two ratios computed independently disagree by a
+	 * rounding error that lands the crop a pixel off. */
+	const double scale = m->m.width > 0 ? (double)pres_w / m->m.width : 1.0;
 
 	int32_t rel_x = sel.x - m->m.x;
 	int32_t rel_y = sel.y - m->m.y;
@@ -3355,10 +3381,20 @@ static bool screenshot_ui_save_and_copy(struct wlr_buffer *frame, Monitor *m,
 	if (rel_x2 <= rel_x || rel_y2 <= rel_y)
 		return false;
 
-	int32_t px_x = (int32_t)round(rel_x * sx);
-	int32_t px_y = (int32_t)round(rel_y * sy);
-	int32_t px_w = (int32_t)round((rel_x2 - rel_x) * sx);
-	int32_t px_h = (int32_t)round((rel_y2 - rel_y) * sy);
+	/* Layout -> presentation pixels, then presentation -> attachment. */
+	struct wlr_box pres_box = {
+		.x = (int32_t)round(rel_x * scale),
+		.y = (int32_t)round(rel_y * scale),
+		.width = (int32_t)round((rel_x2 - rel_x) * scale),
+		.height = (int32_t)round((rel_y2 - rel_y) * scale),
+	};
+	struct wlr_box att_box;
+	wlr_box_transform(&att_box, &pres_box, tr, pres_w, pres_h);
+
+	int32_t px_x = att_box.x;
+	int32_t px_y = att_box.y;
+	int32_t px_w = att_box.width;
+	int32_t px_h = att_box.height;
 	if (px_x < 0)
 		px_x = 0;
 	if (px_y < 0)
