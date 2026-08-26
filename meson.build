@@ -233,6 +233,24 @@ executable('asteroidz-avk-probe', 'tools/avk-probe.c',
            c_args : c_args)
 
 
+# azview: look at a picture, including the HDR ones.
+#
+# Installed, because "does this HDR still actually look right" is a question
+# no other viewer on the machine can answer -- they tone map a PQ picture to
+# SDR before it reaches the screen, having told the compositor nothing about
+# it. libheif is this program's dependency and not the compositor's: decoding
+# HEVC is not something a compositor should grow the ability to do.
+executable('azview', 'tools/azview.c', azview_protocol_sources,
+           dependencies : [
+             dependency('wayland-client'),
+             dependency('libheif'),
+             dependency('gdk-pixbuf-2.0'),
+             dependency('xkbcommon'),
+           ],
+           install : true,
+           c_args : c_args)
+
+
 mandir = get_option('mandir')
 desktop_install_dir = join_paths(prefix, 'share/wayland-sessions')
 portal_install_dir = join_paths(prefix, 'share/xdg-desktop-portal')

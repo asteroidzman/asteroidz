@@ -42,3 +42,24 @@ wayland_sources = [
 	wayland_scanner_code.process(wayland_xmls),
 	wayland_scanner_client.process(wayland_xmls),
 ]
+
+# ── CLIENT headers, for the programs in tools/ ────────────────────────────
+#
+# The generator above is named `client` and emits a SERVER header, which is
+# what the compositor needs. A Wayland client needs the other one, so azview
+# gets its own pair rather than the misnamed one being changed underneath the
+# compositor.
+wayland_scanner_client_header = generator(
+	wayland_scanner,
+	output: '@BASENAME@-client-protocol.h',
+	arguments: ['client-header', '@INPUT@', '@OUTPUT@'])
+
+azview_xmls = [
+	wl_protocol_dir + '/stable/xdg-shell/xdg-shell.xml',
+	wl_protocol_dir + '/staging/color-management/color-management-v1.xml',
+	wl_protocol_dir + '/stable/viewporter/viewporter.xml',
+]
+azview_protocol_sources = [
+	wayland_scanner_code.process(azview_xmls),
+	wayland_scanner_client_header.process(azview_xmls),
+]
