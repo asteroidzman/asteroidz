@@ -690,29 +690,33 @@ static struct wl_buffer *img_buffer, *bg_buffer;
  * nothing on top of it.
  */
 /*
- * THE PICTURE IS UPLOADED ONCE.
+ * THE PICTURE IS UPLOADED ONCE, BUT ATTACHED EVERY TIME.
  *
- * A zoom or a resize changes the viewport, and a viewport is surface state:
- * committing it is enough, the content behind it has not moved a pixel.
- * Attaching the same wl_shm buffer again -- with damage covering it, as the
- * first version did -- instead tells the compositor every pixel is new, so it
- * re-uploads the whole picture. For a 6016x6016 photograph that is 145 MB of
- * texture upload per wheel click, which is exactly as slow as it sounds.
+ * A zoom or a resize changes the viewport, and a viewport is surface state --
+ * the content behind it has not moved a pixel. What made the first version
+ * slow was the DAMAGE: damage covering the whole buffer tells the compositor
+ * every pixel is new, so it re-uploads the picture, and for a 6016x6016
+ * photograph that is 145 MB of texture per wheel click.
+ *
+ * So the damage is sent once and the attach stays. Attaching the same
+ * wl_buffer again costs nothing -- with no damage there is no region to
+ * upload -- and dropping the attach as well, which is what the first attempt
+ * at this did, left the window black.
  */
-static bool attached;
+static bool damaged;
 
 static void redraw(void) {
 	if (img_buffer == NULL || bg_buffer == NULL) {
 		return;
 	}
 	apply_fit();
-	if (!attached) {
-		wl_surface_attach(img_surface, img_buffer, 0, 0);
+	wl_surface_attach(img_surface, img_buffer, 0, 0);
+	wl_surface_attach(surface, bg_buffer, 0, 0);
+	if (!damaged) {
 		wl_surface_damage_buffer(img_surface, 0, 0, (int32_t)pic_w,
 			(int32_t)pic_h);
-		wl_surface_attach(surface, bg_buffer, 0, 0);
 		wl_surface_damage_buffer(surface, 0, 0, 1, 1);
-		attached = true;
+		damaged = true;
 	}
 	wl_surface_commit(img_surface);
 	wl_surface_commit(surface);
