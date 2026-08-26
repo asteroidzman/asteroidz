@@ -526,13 +526,43 @@ bool avk_oracle_write_ppm(const struct avk_oracle *o, const char *path,
 	 * like a mirror.
 	 */
 	int r = 2, g = 1, b = 0;
+	bool packed_10 = false;
 	switch (format) {
 	case VK_FORMAT_R8G8B8A8_UNORM:
 	case VK_FORMAT_R8G8B8A8_SRGB:
 		r = 0; g = 1; b = 2;
 		break;
-	default:
+	case VK_FORMAT_B8G8R8A8_UNORM:
+	case VK_FORMAT_B8G8R8A8_SRGB:
 		break;
+	/*
+	 * TEN BITS ARE NOT BYTES.
+	 *
+	 * A 2:10:10:10 pixel is one 32-bit word with three 10-bit fields, so
+	 * indexing it as src[x * 4 + channel] returns arbitrary bit slices --
+	 * which is not noise, it is a plausible picture in the wrong colours. A
+	 * 10-bit capture came out red-tinted (R 224.9 against G 171.1 on a grey
+	 * desktop) and agreed with nothing, while the screenshot and the recorder
+	 * agreed with each other to within 1.76/255.
+	 *
+	 * That matters more than an ordinary rendering bug because this file IS
+	 * the oracle: every pixel claim about a frame is measured against it, so
+	 * a wrong capture does not fail a test, it passes the wrong one.
+	 */
+	case VK_FORMAT_A2R10G10B10_UNORM_PACK32:
+		packed_10 = true; r = 20; g = 10; b = 0;
+		break;
+	case VK_FORMAT_A2B10G10R10_UNORM_PACK32:
+		packed_10 = true; b = 20; g = 10; r = 0;
+		break;
+	default:
+		/* Refused rather than guessed. The byte path above would produce a
+		 * file that opens and means nothing, and an oracle that lies is worse
+		 * than one that is missing. */
+		avk_log(AVK_ERROR, "avk oracle: cannot write %s -- VkFormat %d is not "
+			"a layout this writer knows, and guessing one would produce a "
+			"capture that looks right and is not", path, (int)format);
+		return false;
 	}
 
 	FILE *f = fopen(path, "wb");
@@ -549,9 +579,22 @@ bool avk_oracle_write_ppm(const struct avk_oracle *o, const char *path,
 	for (int y = 0; y < box.height; y++) {
 		const uint8_t *src = px + (size_t)y * stride;
 		for (int x = 0; x < box.width; x++) {
-			row[x * 3 + 0] = src[x * 4 + r];
-			row[x * 3 + 1] = src[x * 4 + g];
-			row[x * 3 + 2] = src[x * 4 + b];
+			if (packed_10) {
+				uint32_t w;
+				memcpy(&w, src + x * 4, sizeof(w));
+				/* 10 bits to 8, rounded: v * 255 / 1023 with the halfway
+				 * case carried rather than truncated. */
+				row[x * 3 + 0] = (uint8_t)((((w >> r) & 0x3ff) * 255 + 511)
+					/ 1023);
+				row[x * 3 + 1] = (uint8_t)((((w >> g) & 0x3ff) * 255 + 511)
+					/ 1023);
+				row[x * 3 + 2] = (uint8_t)((((w >> b) & 0x3ff) * 255 + 511)
+					/ 1023);
+			} else {
+				row[x * 3 + 0] = src[x * 4 + r];
+				row[x * 3 + 1] = src[x * 4 + g];
+				row[x * 3 + 2] = src[x * 4 + b];
+			}
 		}
 		fwrite(row, 1, (size_t)box.width * 3, f);
 	}
