@@ -3035,6 +3035,10 @@ struct az_avk_output {
 	int64_t rec_interval_ns;
 	int64_t rec_next_ns;
 	uint64_t rec_skipped;
+	/* Frames the capture UI excluded, kept apart from the rate cap's skips
+	 * because they answer a different question: not "was the desktop faster
+	 * than the encoder" but "was the overlay up, and for how long". */
+	uint64_t rec_ui_skipped;
 	/* The scene output's halo-damage record count as of this output's last
 	 * frame, so "this frame took damage from the halo" is a delta rather than
 	 * a guess about a region's extents. */
@@ -5552,6 +5556,7 @@ static bool az_avk_record_open(Monitor *m, const char *path) {
 	out->rec_frames = 0;
 	out->rec_dropped = 0;
 	out->rec_skipped = 0;
+	out->rec_ui_skipped = 0;
 	out->rec_last_ns = 0;
 	/* 30 by default: comfortably inside what a 4K encode can sustain, and a
 	 * rate anything plays. AZ_RECORD_FPS moves it for a smaller output or a
@@ -5629,6 +5634,11 @@ static bool az_avk_record_close(Monitor *m) {
 				+ out->rec_collect_ns + out->rec_write_ns) / n / 1e6,
 			out->rec_worst_ns / 1e6, budget,
 			(unsigned long long)out->rec_skipped);
+		/* Always, including the zero: the exclusion is a property worth being
+		 * able to read off a recording rather than infer from its absence. */
+		wlr_log(WLR_INFO, "record: %llu frames excluded while the capture UI "
+			"owned %s", (unsigned long long)out->rec_ui_skipped,
+			m->wlr_output->name);
 		/*
 		 * M14/D9 asks for every frame stamped with its presentation time.
 		 * This is the line that says whether it was: zero missing means every
@@ -5651,10 +5661,41 @@ static bool az_avk_record_close(Monitor *m) {
 	return ok;
 }
 
+/*
+ * ── WHY NO TAP CAN CONTAIN THE CAPTURE UI ─────────────────────────────────
+ *
+ * The overlay is scene nodes in LyrScreenshot, the topmost layer, and the taps
+ * below read `target` AFTER the whole scene has been composited into it. So a
+ * frame taken while the overlay exists would contain it -- the operator's own
+ * selection rectangle baked into the recording they are using it to start.
+ *
+ * The exclusion is an ORDERING rather than a coat of paint: while the overlay
+ * owns this output there is no captured frame at all. Not chrome hidden for
+ * one vblank, which races whatever schedules the hide, and not a second
+ * composite of the same instant, which is two renders that would have to be
+ * proven identical. A recording therefore has a GAP across the overlay, and
+ * the gap is counted so it can be read from outside rather than inferred.
+ *
+ * capture_output is deliberately NOT gated: it answers "what did the renderer
+ * actually draw", and it is the only instrument that can show the overlay on
+ * screen and absent from the recording in the same session.
+ *
+ * A still needs none of this and has a stronger guarantee: rendermon() hands
+ * the frame to screenshot_ui_on_captured(), which is what CREATES shotui.tree.
+ * The tree does not exist when the pixels are taken.
+ */
+static bool az_capture_ui_owns_output(const Monitor *m) {
+	return shotui.active && shotui.mon == m && shotui.tree != NULL;
+}
+
 static void az_avk_record_frame(struct az_avk_output *out, Monitor *m,
 		struct avk_image *target, uint64_t timeline) {
 	if (!out->recording || out->rec_encoder == NULL || out->rec_mp4 == NULL
 			|| timeline == 0) {
+		return;
+	}
+	if (az_capture_ui_owns_output(m)) {
+		out->rec_ui_skipped++;
 		return;
 	}
 	struct avk_renderer *r = &out->slot->renderer;
@@ -5791,7 +5832,8 @@ static void az_avk_record_frame(struct az_avk_output *out, Monitor *m,
 static void az_avk_hdr_shot(struct az_avk_output *out, Monitor *m,
 		struct avk_image *target, uint64_t timeline) {
 	struct avk_renderer *r = &out->slot->renderer;
-	if (!out->hdr_shot_pending || timeline == 0) {
+	if (!out->hdr_shot_pending || timeline == 0
+			|| az_capture_ui_owns_output(m)) {
 		return;
 	}
 	out->hdr_shot_pending = false;

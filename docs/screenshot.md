@@ -25,6 +25,25 @@ amsg dispatch record_start      # start recording the focused output
 amsg dispatch record_stop       # stop, and write the index
 ```
 
+`screenshot_ui` opens the capture overlay — region, window or whole screen —
+and the overlay itself says what it can do:
+
+| key | action |
+| :--- | :--- |
+| `Enter` | save a PNG under `~/Pictures/Screenshots` (and copy it) |
+| `C` | copy to the clipboard **only** — no file is left behind |
+| `R` | start recording this screen, or stop the one already running |
+| `Esc` | cancel |
+
+Clipboard-only needs `wl-copy`: it writes a temporary PNG, hands it over, and
+removes it in the same command. With no `wl-copy` on `PATH` the capture is
+refused outright rather than quietly written to a file you did not ask for.
+
+**The overlay never appears in what is captured.** A still is taken before the
+overlay exists, and while the overlay is up the recorder captures nothing at
+all — the recording has a gap across it, counted and reported at
+`record_stop`.
+
 `screenshot_hdr` writes one file per output currently running HDR, and refuses
 one that is not: an SDR attachment is 8-bit, and the still would be claiming
 BT.2100 PQ over a picture that is neither. Unlike `screenshot_ui,rawhdr`, which

@@ -2768,6 +2768,10 @@ static void screenshot_ui_teardown(void) {
 		asteroidz_jump_label_node_destroy(shotui.label);
 		shotui.label = NULL;
 	}
+	if (shotui.actions) {
+		asteroidz_jump_label_node_destroy(shotui.actions);
+		shotui.actions = NULL;
+	}
 	if (shotui.tree) {
 		wlr_scene_node_destroy(&shotui.tree->node);
 		shotui.tree = NULL;
@@ -2902,6 +2906,51 @@ static void screenshot_ui_update_label(void) {
 	 * first corner is being placed removes it at the one moment it is being
 	 * looked for. */
 	wlr_scene_node_set_enabled(&shotui.label->scene_buffer->node, true);
+}
+
+/*
+ * THE ACTION ROW: what this overlay can do, and which key does it.
+ *
+ * The same label node the dimensions readout uses, so there is one text
+ * primitive and one theme rather than a second chrome for a second purpose.
+ * Pinned to the bottom of the output rather than to the selection: it belongs
+ * to the overlay, not to the rectangle, and a hint that moves while you drag
+ * is a hint you re-read every time.
+ *
+ * The recording entry changes wording with the state it acts on, because "R
+ * record" on an output that is already recording is a lie about what the key
+ * will do.
+ */
+static void screenshot_ui_update_actions(void) {
+	Monitor *m = shotui.mon;
+	if (!shotui.actions || !m)
+		return;
+
+	bool recording = capture_output_recording(m);
+	char text[160];
+	snprintf(text, sizeof(text),
+		"Enter  save file      C  clipboard only      "
+		"R  %s      Esc  cancel",
+		recording ? "stop recording" : "record this screen");
+	asteroidz_jump_label_node_update(shotui.actions, text, 1.0f);
+
+	/* Bottom centre, inside the output. Same clamp the readout needs and for
+	 * the same reason: this tree spans the whole LAYOUT, so a node past this
+	 * monitor's width draws on the neighbour's live desktop. */
+	const int32_t lw = shotui.actions->logical_width;
+	const int32_t lh = shotui.actions->logical_height;
+	int32_t lx = (m->m.width - lw) / 2;
+	int32_t ly = m->m.height - lh - 24;
+	if (lx + lw > m->m.width)
+		lx = m->m.width - lw;
+	if (lx < 0)
+		lx = 0;
+	if (ly + lh > m->m.height)
+		ly = m->m.height - lh;
+	if (ly < 0)
+		ly = 0;
+	wlr_scene_node_set_position(&shotui.actions->scene_buffer->node, lx, ly);
+	wlr_scene_node_set_enabled(&shotui.actions->scene_buffer->node, true);
 }
 
 static void screenshot_ui_update_selection(double cx, double cy) {
@@ -3073,12 +3122,83 @@ static char *screenshot_ui_build_path(void) {
 	return path;
 }
 
+/*
+ * Is wl-copy actually there?
+ *
+ * spawn_shell() forks and forgets, so a missing wl-copy is a shell writing
+ * "command not found" to a stderr nobody reads: the overlay closes, the
+ * notification says the shot was taken, and the clipboard still holds whatever
+ * it held before. That is survivable when a file was written too and fatal
+ * when the clipboard was the whole point, so the answer is needed BEFORE the
+ * destination is acted on rather than after.
+ *
+ * PATH is searched the way the shell would search it. Nothing is cached: a
+ * compositor outlives a package install either way round.
+ */
+static bool screenshot_ui_have_wl_copy(void) {
+	const char *path = getenv("PATH");
+	if (path == NULL || *path == '\0')
+		path = "/usr/local/bin:/usr/bin:/bin";
+	char *dup = strdup(path);
+	if (dup == NULL)
+		return false;
+	bool found = false;
+	for (char *save = NULL, *dir = strtok_r(dup, ":", &save); dir != NULL;
+			dir = strtok_r(NULL, ":", &save)) {
+		if (*dir == '\0')
+			dir = ".";
+		char *cand = string_printf("%s/wl-copy", dir);
+		if (cand != NULL) {
+			found = access(cand, X_OK) == 0;
+			free(cand);
+		}
+		if (found)
+			break;
+	}
+	free(dup);
+	return found;
+}
+
 static void screenshot_ui_copy_to_clipboard(const char *path) {
 	char *cmd = string_printf("wl-copy --type image/png < '%s'", path);
 	if (!cmd)
 		return;
 	spawn_shell(&(Arg){.v = cmd});
 	free(cmd);
+}
+
+/*
+ * The clipboard, and nothing left on disk.
+ *
+ * wl-copy reads a file (or a pipe this compositor has no way to hold open
+ * across a fork-and-forget spawn), so a file has to exist for as long as it
+ * takes to read -- and exactly that long. The removal is part of the same
+ * shell command rather than a call here: wl-copy has to finish reading before
+ * the bytes go, and this process does not wait for it. `rm -f` runs whether
+ * wl-copy succeeded or not, because a temporary file that survives a failure
+ * is the litter this destination exists to avoid.
+ *
+ * wl-copy itself keeps serving the selection from memory after it exits the
+ * foreground, so the clipboard survives the file.
+ */
+static void screenshot_ui_copy_temp_and_remove(const char *path) {
+	char *cmd = string_printf(
+		"wl-copy --type image/png < '%s'; rm -f '%s'", path, path);
+	if (!cmd) {
+		unlink(path);
+		return;
+	}
+	spawn_shell(&(Arg){.v = cmd});
+	free(cmd);
+}
+
+/* /tmp/asteroidz-clip-<pid>-<n>.png: a destination that keeps nothing still
+ * needs somewhere to put the bytes wl-copy will read. Named per process and
+ * per capture so two in flight cannot collide. */
+static char *screenshot_ui_build_temp_path(void) {
+	static uint32_t seq = 0;
+	return string_printf("/tmp/asteroidz-clip-%d-%u.png", (int)getpid(),
+		seq++);
 }
 
 /* Desktop notification for a finished capture: kind, pixel size, file size
@@ -3198,11 +3318,24 @@ static void screenshot_tonemap_pq_to_srgb(uint8_t *pixels, int32_t width,
 }
 
 /* crop [sel] (layout coords) out of [frame] and save+copy it as a PNG */
+/* `dest` decides where the still ends up; everything above it -- the crop, the
+ * alpha fix, the PNG encode -- is the same work either way, which is why there
+ * is one function and a parameter rather than two that drift. */
 static bool screenshot_ui_save_and_copy(struct wlr_buffer *frame, Monitor *m,
 										struct wlr_box sel,
-										ScreenshotMode mode) {
+										ScreenshotMode mode,
+										CaptureDest dest) {
 	if (!frame || !m || sel.width <= 0 || sel.height <= 0)
 		return false;
+	if (dest == CaptureToClipboard && !screenshot_ui_have_wl_copy()) {
+		/* Refused before the encode, not after: a clipboard-only capture with
+		 * no clipboard to put it in has nowhere to go, and writing the file
+		 * anyway would silently substitute the destination the operator
+		 * explicitly did not choose. */
+		wlr_log(WLR_ERROR, "screenshot_ui: wl-copy is not on PATH; "
+			"clipboard-only capture cancelled and nothing was written");
+		return false;
+	}
 
 	double sx = m->m.width > 0 ? (double)frame->width / m->m.width : 1.0;
 	double sy = m->m.height > 0 ? (double)frame->height / m->m.height : 1.0;
@@ -3292,10 +3425,17 @@ static bool screenshot_ui_save_and_copy(struct wlr_buffer *frame, Monitor *m,
 		pixels, CAIRO_FORMAT_ARGB32, px_w, px_h, stride);
 	bool ok = surf && cairo_surface_status(surf) == CAIRO_STATUS_SUCCESS;
 
-	char *path = ok ? screenshot_ui_build_path() : NULL;
+	char *path = ok ? (dest == CaptureToClipboard
+		? screenshot_ui_build_temp_path() : screenshot_ui_build_path()) : NULL;
 	if (ok && path) {
 		ok = cairo_surface_write_to_png(surf, path) == CAIRO_STATUS_SUCCESS;
-		if (ok) {
+		if (ok && dest == CaptureToClipboard) {
+			/* No notification and no HDR sidecar: both name a file, and the
+			 * point of this destination is that there will not be one. */
+			wlr_log(WLR_INFO, "screenshot_ui: %dx%d to the clipboard only",
+				px_w, px_h);
+			screenshot_ui_copy_temp_and_remove(path);
+		} else if (ok) {
 			wlr_log(WLR_INFO, "screenshot_ui: saved %s", path);
 			/*
 			 * On an HDR output the PNG above is a tone-mapped 8-bit rendition
@@ -3414,9 +3554,10 @@ static bool screenshot_ui_save_raw_hdr(struct wlr_buffer *frame) {
 	return ok;
 }
 
-static void screenshot_ui_confirm(void) {
+static void screenshot_ui_confirm(CaptureDest dest) {
+	shotui.dest = dest;
 	screenshot_ui_save_and_copy(shotui.frame, shotui.mon, shotui.sel,
-								shotui.mode);
+								shotui.mode, dest);
 	screenshot_ui_teardown();
 }
 
@@ -3431,7 +3572,8 @@ static void screenshot_ui_on_captured(Monitor *m, ScreenshotMode mode,
 		m->wlr_output->name, (int)mode);
 
 	if (mode == ShotScreen) {
-		screenshot_ui_save_and_copy(frame, m, m->m, ShotScreen);
+		screenshot_ui_save_and_copy(frame, m, m->m, ShotScreen,
+			CaptureToFile);
 		wlr_buffer_unlock(frame);
 		return;
 	}
@@ -3516,7 +3658,16 @@ static void screenshot_ui_on_captured(Monitor *m, ScreenshotMode mode,
 		asteroidz_jump_label_node_set_focus(shotui.label, true);
 		wlr_scene_node_set_enabled(&shotui.label->scene_buffer->node, false);
 	}
+	shotui.actions = asteroidz_jump_label_node_create(shotui.tree,
+		config.theme);
+	if (shotui.actions) {
+		wlr_scene_node_set_enabled(&shotui.actions->scene_buffer->node, false);
+	}
 
+	/* File unless the confirm says otherwise, which is the destination that
+	 * keeps something. A default that discards would be a default that loses
+	 * work on a mistyped key. */
+	shotui.dest = CaptureToFile;
 	shotui.active = true;
 
 	/* Bring the pointer onto the captured output before anything reads it.
@@ -3532,6 +3683,7 @@ static void screenshot_ui_on_captured(Monitor *m, ScreenshotMode mode,
 		screenshot_ui_hover_window(cursor->x, cursor->y);
 	else
 		screenshot_ui_update_selection(cursor->x, cursor->y);
+	screenshot_ui_update_actions();
 
 	/* The keybind that opened this overlay was a keypress, so with
 	 * cursor_hide_on_keypress the pointer is already gone by the time we get
@@ -3563,7 +3715,7 @@ bool screenshot_ui_handle_button(struct wlr_pointer_button_event *event) {
 		} else if (event->state == WL_POINTER_BUTTON_STATE_RELEASED &&
 				  shotui.dragging) {
 			shotui.dragging = false;
-			screenshot_ui_confirm();
+			screenshot_ui_confirm(CaptureToFile);
 		}
 	} else if (shotui.mode == ShotWindow) {
 		if (event->state == WL_POINTER_BUTTON_STATE_PRESSED) {
@@ -3573,7 +3725,7 @@ bool screenshot_ui_handle_button(struct wlr_pointer_button_event *event) {
 			}
 			screenshot_ui_hover_window(cursor->x, cursor->y);
 			if (shotui.sel.width > 0 && shotui.sel.height > 0)
-				screenshot_ui_confirm();
+				screenshot_ui_confirm(CaptureToFile);
 			else
 				screenshot_ui_cancel();
 		}
@@ -3593,10 +3745,42 @@ void screenshot_ui_handle_motion(void) {
 	}
 }
 
-/* called for every keysym on key press while the UI is active */
+/*
+ * Every action this overlay offers, and the only place they are decided.
+ *
+ * Called for each keysym while the UI is active; the action row on screen is
+ * generated from the same set, so a key that does nothing cannot be advertised
+ * and an advertised key cannot be missing.
+ *
+ * RECORDING TEARS THE OVERLAY DOWN FIRST, and that ordering is the feature
+ * rather than tidiness: the recorder skips every frame in which the overlay
+ * owns the output (az_capture_ui_owns_output), so starting one without
+ * tearing down would open a file and immediately begin skipping into it. Stop
+ * is the same key on an output already recording -- see the action row.
+ */
 void screenshot_ui_handle_key(xkb_keysym_t sym) {
-	if (sym == XKB_KEY_Escape)
+	switch (sym) {
+	case XKB_KEY_Escape:
 		screenshot_ui_cancel();
+		break;
+	case XKB_KEY_Return:
+	case XKB_KEY_KP_Enter:
+		screenshot_ui_confirm(CaptureToFile);
+		break;
+	case XKB_KEY_c:
+	case XKB_KEY_C:
+		screenshot_ui_confirm(CaptureToClipboard);
+		break;
+	case XKB_KEY_r:
+	case XKB_KEY_R: {
+		Monitor *m = shotui.mon;
+		screenshot_ui_teardown();
+		capture_recording_toggle(m);
+		break;
+	}
+	default:
+		break;
+	}
 }
 
 int32_t screenshot_ui(const Arg *arg) {

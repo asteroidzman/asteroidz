@@ -2248,6 +2248,23 @@ typedef enum {
 				 * video encoding -- see screenshot_ui_save_raw_hdr */
 } ScreenshotMode;
 
+/*
+ * WHERE A STILL GOES, chosen in the overlay rather than assumed.
+ *
+ * Confirming used to do both: write the PNG under ~/Pictures/Screenshots AND
+ * pipe it into wl-copy. That is the right default and the wrong only option --
+ * pasting one throwaway region into a chat window left a file behind every
+ * time, and the directory filled with shots nobody meant to keep.
+ *
+ * CaptureToClipboard writes nothing the operator has to clean up: wl-copy
+ * reads a file, so one goes into /tmp and the same shell command removes it
+ * once wl-copy has returned. See screenshot_ui_copy_temp_and_remove().
+ */
+typedef enum {
+	CaptureToFile,      /* ~/Pictures/Screenshots, and the clipboard too */
+	CaptureToClipboard, /* the clipboard only; no file survives */
+} CaptureDest;
+
 typedef struct {
 	/* armed by the dispatcher; fulfilled by rendermon() the next time it
 	 * renders capture_mon, which hands us a locked reference to that
@@ -2267,6 +2284,15 @@ typedef struct {
 	struct wlr_scene_rect *dim[4];		 /* dim mask: top, bottom, left, right */
 	struct wlr_scene_rect *border[4];	 /* selection border: same order */
 	struct asteroidz_jump_label_node *label; /* "WxH" dimension tooltip */
+
+	/* Which destination the next confirm will use. Chosen by which key
+	 * confirms, so there is no mode to get stuck in and nothing to toggle. */
+	CaptureDest dest;
+
+	/* The action row: what this overlay can do and which key does it. Its
+	 * text depends on whether a recording is already running, so it is
+	 * rebuilt whenever that changes rather than written once. */
+	struct asteroidz_jump_label_node *actions;
 
 	bool dragging;
 	double start_x, start_y; /* layout coords, region drag anchor */
@@ -2401,6 +2427,19 @@ static int32_t capture_output(const Arg *arg);
 static int32_t screenshot_hdr(const Arg *arg);
 static int32_t record_start(const Arg *arg);
 static int32_t record_stop(const Arg *arg);
+/*
+ * The recorder, as the capture UI needs it.
+ *
+ * bind_define.h is included before render/az_avk.h, so the overlay cannot see
+ * a struct az_avk_output at all -- and should not: what it needs to know is
+ * "is this screen recording" and "start/stop it", which is the same question
+ * the dispatches answer. These three are the whole surface, declared here and
+ * defined once the renderer is in scope, so there is one recorder and one set
+ * of rules about it rather than a second path for the UI.
+ */
+static bool capture_output_recording(const Monitor *m);
+static bool capture_recording_start(Monitor *m);
+static bool capture_recording_toggle(Monitor *m);
 /* Both defined in render/az_avk.h, which is included after bind_define.h. */
 static bool az_avk_record_open(Monitor *m, const char *path);
 static bool az_avk_record_close(Monitor *m);
@@ -2902,23 +2941,7 @@ static int32_t record_start(const Arg *arg) {
 		wlr_log(WLR_ERROR, "record_start: no focused output");
 		return 0;
 	}
-	if (m->avk->recording) {
-		wlr_log(WLR_ERROR, "record_start: %s is already recording",
-			m->wlr_output->name);
-		return 0;
-	}
-	char *path = record_build_path(m->wlr_output->name);
-	if (path == NULL) {
-		return 0;
-	}
-	if (az_avk_record_open(m, path)) {
-		/* A recording of a still desktop is a recording of nothing: an output
-		 * with no damage renders no frames, so the first one has to be asked
-		 * for the same way an armed capture asks. */
-		wlr_damage_ring_add_whole(&m->scene_output->damage_ring);
-		wlr_output_schedule_frame(m->wlr_output);
-	}
-	free(path);
+	capture_recording_start(m);
 	return 0;
 }
 
@@ -2939,6 +2962,61 @@ static int32_t record_stop(const Arg *arg) {
 		wlr_log(WLR_ERROR, "record_stop: nothing is recording");
 	}
 	return 0;
+}
+
+/*
+ * The recorder as the capture UI sees it -- declared beside record_start, and
+ * defined here because this is the first point at which struct az_avk_output
+ * exists.
+ *
+ * capture_recording_toggle() is deliberately a TOGGLE rather than a pair. The
+ * overlay offers one key for recording and that key has to mean the opposite
+ * thing on an output that is already recording; splitting it into start and
+ * stop would put the decision in the caller, which is where two callers start
+ * disagreeing about it. Returns true when a recording is running afterwards.
+ */
+static bool capture_output_recording(const Monitor *m) {
+	return m != NULL && m->avk != NULL && m->avk->recording;
+}
+
+/* The one place a recording is opened. Both the dispatch and the overlay come
+ * through here, so the path, the initial damage and the refusals are decided
+ * once. */
+static bool capture_recording_start(Monitor *m) {
+	if (m == NULL || m->avk == NULL || m->avk->slot == NULL) {
+		wlr_log(WLR_ERROR, "record: no output to record");
+		return false;
+	}
+	if (capture_output_recording(m)) {
+		wlr_log(WLR_ERROR, "record: %s is already recording",
+			m->wlr_output->name);
+		return false;
+	}
+	char *path = record_build_path(m->wlr_output->name);
+	if (path == NULL) {
+		return false;
+	}
+	bool started = az_avk_record_open(m, path);
+	if (started) {
+		/* An output with nothing to redraw renders no frame, so a recording
+		 * of a still desktop would sit at zero frames until something
+		 * happened to damage it. */
+		wlr_damage_ring_add_whole(&m->scene_output->damage_ring);
+		wlr_output_schedule_frame(m->wlr_output);
+	}
+	free(path);
+	return started;
+}
+
+static bool capture_recording_toggle(Monitor *m) {
+	if (m == NULL) {
+		return false;
+	}
+	if (capture_output_recording(m)) {
+		az_avk_record_close(m);
+		return false;
+	}
+	return capture_recording_start(m);
 }
 
 /* M13B: direct scanout eligibility and the attempt. BEFORE ext-protocol/all.h
@@ -8176,9 +8254,10 @@ void keypress(struct wl_listener *listener, void *data) {
 							 keycode))
 		return;
 
-	/* the screenshot overlay owns the keyboard outright while active:
-	 * Escape cancels it, everything else is swallowed so global shortcuts
-	 * and clients underneath the frozen frame don't react to it */
+	/* the capture overlay owns the keyboard outright while active: its own
+	 * actions are taken in screenshot_ui_handle_key() and everything else is
+	 * swallowed, so global shortcuts and clients underneath the frozen frame
+	 * don't react to a keystroke aimed at the overlay */
 	if (shotui.active) {
 		if (event->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
 			for (i = 0; i < nsyms; i++)
