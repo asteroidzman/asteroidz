@@ -739,6 +739,22 @@ static cJSON *build_monitor_json(Monitor *m) {
 							  WLR_OUTPUT_ADAPTIVE_SYNC_ENABLED);
 	cJSON_AddBoolToObject(resp, "vrr_enabled", m->vrr_global_enable);
 	cJSON_AddBoolToObject(resp, "vrr_capable", m->wlr_output->adaptive_sync_supported);
+	/*
+	 * IS THIS SCREEN BEING RECORDED, and why that is a field rather than a dot
+	 * on the screen.
+	 *
+	 * A recording indicator composited into the scene is composited into the
+	 * RECORDING: the recorder reads the same finished frame the display gets,
+	 * so chrome saying "you are recording" ends up inside the thing it
+	 * describes. The capture overlay avoids that by suppressing capture
+	 * entirely while it is up, which is exactly what an indicator must not do.
+	 *
+	 * So the compositor answers the question and the bar decides how to show
+	 * it -- which is where a persistent status light belongs anyway, because a
+	 * separate client's pixels are its own to place, hide, or move off the
+	 * output being recorded.
+	 */
+	cJSON_AddBoolToObject(resp, "recording", capture_output_recording(m));
 	cJSON_AddItemToObject(resp, "modes", build_modes_json(m));
 	if (m->wlr_output->current_mode) {
 		cJSON_AddNumberToObject(resp, "mode_width",
