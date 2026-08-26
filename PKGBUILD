@@ -9,6 +9,9 @@ license=('GPL3' 'MIT' 'CC0')
 depends=(
   'wlroots0.20' 'wayland' 'libinput' 'libxkbcommon' 'pcre2' 'pixman'
   'cjson' 'pango' 'gdk-pixbuf2' 'libdrm' 'systemd-libs'
+  # azview's, not the compositor's: HEIF and AVIF come through libheif, and
+  # everything else through gdk-pixbuf, which is here for the wallpapers too.
+  'libheif'
   'vulkan-icd-loader'
   'xcb-util-wm' 'libxcb'
   # asteroidz-scenefx is GONE, not merely un-packaged. Its scene graph is now

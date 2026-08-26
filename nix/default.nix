@@ -10,6 +10,7 @@
   cjson,
   pixman,
   gdk-pixbuf,
+  libheif,
   systemd,
   vulkan-loader,
   pkg-config,
@@ -57,6 +58,7 @@ stdenv.mkDerivation {
       cjson
       pixman
       gdk-pixbuf
+      libheif
       systemd
       vulkan-loader
       wayland

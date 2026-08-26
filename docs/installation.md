@@ -195,6 +195,7 @@ part-way can be fixed and the script run again. `ASTEROIDZ_TAG`, `BAR_TAG`,
 > - `libxcb`
 > - `libsystemd`
 > - `gdk-pixbuf`
+> - `libheif` (for `azview`)
 > - `vulkan-icd-loader`, `vulkan-headers`, `glslang` (for the experimental Vulkan renderer)
 
 You will need to build `wlroots` manually as well.
@@ -245,8 +246,16 @@ You will need to build `wlroots` manually as well.
    outlier frames), the presenter's error series, and `AZ_PACE`. The build no
    longer fetches anything over the network.
 
-   This installs the `asteroidz` binary, the `amsg` IPC tool, two wayland
-   session entries, and the GlobalShortcuts portal definition.
+   This installs the `asteroidz` binary, the `amsg` IPC tool, the `azview`
+   image viewer, two wayland session entries, and the GlobalShortcuts portal
+   definition.
+
+   `azview` is installed because an HDR still raises one question no other
+   viewer on the machine can answer — whether it actually looks right. They
+   tone map a PQ picture to SDR before it reaches the screen, having told the
+   compositor nothing about the surface; `azview` describes the surface the way
+   the file describes itself and lets the compositor's HDR path run. See
+   [`docs/screenshot.md`](./screenshot.md).
 
    | session | what it is |
    |---|---|
