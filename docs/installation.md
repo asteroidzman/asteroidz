@@ -155,6 +155,20 @@ git clone https://github.com/asteroidzman/asteroidz.git
 bash asteroidz/contrib/install-ubuntu.sh
 ```
 
+It builds the **newest release** of the compositor and the bar, asked of each
+repository when the script runs rather than written into it — a pinned version
+in an install script is only right until the next release, and this one had
+gone four behind. Pin either if you need to:
+
+```bash
+ASTEROIDZ_TAG=0.27.1 BAR_TAG=0.4.0 bash asteroidz/contrib/install-ubuntu.sh
+```
+
+wlroots stays pinned at 0.20.2 and is not resolved this way. It is an ABI the
+compositor is written against, not a version to track: 0.20.0 fails a hundred
+files into the build on a struct member that arrived in 0.20.2, and a newer
+0.21 would fail further in.
+
 Everything asteroidz needs is in the Ubuntu archive **except wlroots**: 26.04
 ships 0.19 and asteroidz needs 0.20.2, so the script builds it into `/usr/local`,
 where it sits beside the packaged 0.19 rather than replacing it — different

@@ -14,8 +14,12 @@
 
 set -euo pipefail
 
-ASTEROIDZ_TAG="${ASTEROIDZ_TAG:-0.24.0}"
-BAR_TAG="${BAR_TAG:-0.4.0}"
+# Empty means "whatever the newest release is", resolved below once git exists.
+# Set either to pin: ASTEROIDZ_TAG=0.27.1 bash install-ubuntu.sh
+ASTEROIDZ_TAG="${ASTEROIDZ_TAG:-}"
+BAR_TAG="${BAR_TAG:-}"
+ASTEROIDZ_URL="https://github.com/asteroidzman/asteroidz.git"
+BAR_URL="https://github.com/asteroidzman/asteroidz-bar.git"
 # 0.20.2, not 0.20.0. The scene graph reads wlr_surface_output.suspended, which
 # arrived after the .0 release -- and 0.20.0 otherwise looks like a perfectly good
 # match, right up to a struct-member error a hundred files into the build.
@@ -38,6 +42,19 @@ WLROOTS_PREFIX="${WLROOTS_PREFIX:-/usr/local}"
 step() { printf '\n\033[1;34m==>\033[0m \033[1m%s\033[0m\n' "$*"; }
 note() { printf '    %s\n' "$*"; }
 die()  { printf '\n\033[1;31m==> %s\033[0m\n' "$*" >&2; exit 1; }
+
+# The newest release tag in a remote, without cloning it and without the GitHub
+# API -- which rate-limits an unauthenticated caller and so is exactly the kind
+# of thing that works when it is written and fails on someone else's machine.
+# `--refs` drops the ^{} dereference lines a tag object produces, and `sort -V`
+# is what puts 0.28.1 after 0.9.2 where a plain sort puts it before.
+latest_tag() {
+	local tag
+	tag=$(git ls-remote --tags --refs "$1" 2>/dev/null \
+		| awk -F/ '{print $NF}' | sort -V | tail -1)
+	[ -n "$tag" ] || die "could not reach $1 to find its latest release -- pass one instead, e.g. $2=0.28.1"
+	printf '%s\n' "$tag"
+}
 
 [ "$(id -u)" -eq 0 ] && die "run this as your normal user; it calls sudo where it needs to"
 command -v sudo >/dev/null || die "sudo is required"
@@ -104,6 +121,18 @@ sudo apt-get install -y --no-install-recommends \
 	"${TOOLS[@]}" "${WLROOTS_DEPS[@]}" "${COMPOSITOR_DEPS[@]}" \
 	"${BAR_DEPS[@]}" "${RUNTIME[@]}"
 
+# ── which release to build ──────────────────────────────────────────────────
+#
+# Asked HERE rather than at the top of the file because it queries a remote, and
+# git is only guaranteed to exist as of the step above -- on a clean 26.04 image
+# it is not installed until then.
+step "Resolving versions"
+[ -n "$ASTEROIDZ_TAG" ] || ASTEROIDZ_TAG=$(latest_tag "$ASTEROIDZ_URL" ASTEROIDZ_TAG)
+[ -n "$BAR_TAG" ] || BAR_TAG=$(latest_tag "$BAR_URL" BAR_TAG)
+note "asteroidz      $ASTEROIDZ_TAG"
+note "asteroidz-bar  $BAR_TAG"
+note "wlroots        $WLROOTS_TAG (pinned, see the comment on WLROOTS_TAG)"
+
 # ── quickshell ──────────────────────────────────────────────────────────────
 #
 # The bar is a quickshell configuration, not a program: without the runtime there
@@ -163,8 +192,7 @@ note "wlroots $(pkg-config --modversion wlroots-0.20) at $WLROOTS_PREFIX"
 step "asteroidz $ASTEROIDZ_TAG"
 mkdir -p "$SRC"
 if [ ! -d "$SRC/asteroidz/.git" ]; then
-	git clone --branch "$ASTEROIDZ_TAG" \
-		https://github.com/asteroidzman/asteroidz.git "$SRC/asteroidz"
+	git clone --branch "$ASTEROIDZ_TAG" "$ASTEROIDZ_URL" "$SRC/asteroidz"
 else
 	git -C "$SRC/asteroidz" fetch --tags --quiet
 	git -C "$SRC/asteroidz" checkout --quiet "$ASTEROIDZ_TAG"
@@ -185,8 +213,7 @@ sudo meson install -C build
 # ── asteroidz-bar ───────────────────────────────────────────────────────────
 step "asteroidz-bar $BAR_TAG"
 if [ ! -d "$SRC/asteroidz-bar/.git" ]; then
-	git clone --branch "$BAR_TAG" \
-		https://github.com/asteroidzman/asteroidz-bar.git "$SRC/asteroidz-bar"
+	git clone --branch "$BAR_TAG" "$BAR_URL" "$SRC/asteroidz-bar"
 else
 	git -C "$SRC/asteroidz-bar" fetch --tags --quiet
 	git -C "$SRC/asteroidz-bar" checkout --quiet "$BAR_TAG"
