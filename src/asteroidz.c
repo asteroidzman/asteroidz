@@ -2438,10 +2438,11 @@ static int32_t record_stop(const Arg *arg);
  * of rules about it rather than a second path for the UI.
  */
 static bool capture_output_recording(const Monitor *m);
-static bool capture_recording_start(Monitor *m);
-static bool capture_recording_toggle(Monitor *m);
+static bool capture_recording_start(Monitor *m, const struct wlr_box *region);
+static bool capture_recording_toggle(Monitor *m, const struct wlr_box *region);
 /* Both defined in render/az_avk.h, which is included after bind_define.h. */
-static bool az_avk_record_open(Monitor *m, const char *path);
+static bool az_avk_record_open(Monitor *m, const char *path,
+	const struct wlr_box *region);
 static bool az_avk_record_close(Monitor *m);
 /* Defined in render/az_avk.h, which is included after bind_define.h -- the
  * screenshot UI needs it and the AVK import it uses is not visible there. */
@@ -2941,7 +2942,7 @@ static int32_t record_start(const Arg *arg) {
 		wlr_log(WLR_ERROR, "record_start: no focused output");
 		return 0;
 	}
-	capture_recording_start(m);
+	capture_recording_start(m, NULL);
 	return 0;
 }
 
@@ -2982,7 +2983,7 @@ static bool capture_output_recording(const Monitor *m) {
 /* The one place a recording is opened. Both the dispatch and the overlay come
  * through here, so the path, the initial damage and the refusals are decided
  * once. */
-static bool capture_recording_start(Monitor *m) {
+static bool capture_recording_start(Monitor *m, const struct wlr_box *region) {
 	if (m == NULL || m->avk == NULL || m->avk->slot == NULL) {
 		wlr_log(WLR_ERROR, "record: no output to record");
 		return false;
@@ -2996,7 +2997,7 @@ static bool capture_recording_start(Monitor *m) {
 	if (path == NULL) {
 		return false;
 	}
-	bool started = az_avk_record_open(m, path);
+	bool started = az_avk_record_open(m, path, region);
 	if (started) {
 		/* An output with nothing to redraw renders no frame, so a recording
 		 * of a still desktop would sit at zero frames until something
@@ -3008,7 +3009,7 @@ static bool capture_recording_start(Monitor *m) {
 	return started;
 }
 
-static bool capture_recording_toggle(Monitor *m) {
+static bool capture_recording_toggle(Monitor *m, const struct wlr_box *region) {
 	if (m == NULL) {
 		return false;
 	}
@@ -3016,7 +3017,7 @@ static bool capture_recording_toggle(Monitor *m) {
 		az_avk_record_close(m);
 		return false;
 	}
-	return capture_recording_start(m);
+	return capture_recording_start(m, region);
 }
 
 /* M13B: direct scanout eligibility and the attempt. BEFORE ext-protocol/all.h

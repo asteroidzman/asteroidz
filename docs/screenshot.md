@@ -32,12 +32,18 @@ and the overlay itself says what it can do:
 | :--- | :--- |
 | `Enter` | save a PNG under `~/Pictures/Screenshots` (and copy it) |
 | `C` | copy to the clipboard **only** — no file is left behind |
-| `R` | start recording this screen, or stop the one already running |
+| `R` | record — the selection if you have dragged one, otherwise the whole screen; or stop the one already running |
 | `Esc` | cancel |
 
 Clipboard-only needs `wl-copy`: it writes a temporary PNG, hands it over, and
 removes it in the same command. With no `wl-copy` on `PATH` the capture is
 refused outright rather than quietly written to a file you did not ask for.
+
+`R` after a drag records **just that rectangle**, and the overlay says so
+before you press it. The encoder is built at the selection's size rather than
+the screen's and cropped afterwards, so a small region costs a small region's
+worth of GPU — which at 4K is the difference between fitting inside the frame
+gap and not.
 
 **The overlay never appears in what is captured.** A still is taken before the
 overlay exists, and while the overlay is up the recorder captures nothing at

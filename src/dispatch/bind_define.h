@@ -2927,11 +2927,13 @@ static void screenshot_ui_update_actions(void) {
 		return;
 
 	bool recording = capture_output_recording(m);
-	char text[160];
+	bool has_area = shotui.sel.width > 0 && shotui.sel.height > 0;
+	char text[192];
 	snprintf(text, sizeof(text),
 		"Enter  save file      C  clipboard only      "
 		"R  %s      Esc  cancel",
-		recording ? "stop recording" : "record this screen");
+		recording ? "stop recording"
+			: has_area ? "record this selection" : "record this screen");
 	asteroidz_jump_label_node_update(shotui.actions, text, 1.0f);
 
 	/* Bottom centre, inside the output. Same clamp the readout needs and for
@@ -2976,6 +2978,7 @@ static void screenshot_ui_update_selection(double cx, double cy) {
 
 	screenshot_ui_layout_dim_and_border();
 	screenshot_ui_update_label();
+	screenshot_ui_update_actions();
 }
 
 /* Windows the frozen frame actually shows on this monitor -- the set window
@@ -3037,6 +3040,7 @@ static void screenshot_ui_hover_window(double cx, double cy) {
 	shotui.sel = box;
 	screenshot_ui_layout_dim_and_border();
 	screenshot_ui_update_label();
+	screenshot_ui_update_actions();
 }
 
 /* ~/Videos/asteroidz_<output>_<timestamp>.mp4. Videos rather than Pictures,
@@ -3318,6 +3322,74 @@ static void screenshot_tonemap_pq_to_srgb(uint8_t *pixels, int32_t width,
 }
 
 /* crop [sel] (layout coords) out of [frame] and save+copy it as a PNG */
+/*
+ * A LAYOUT BOX, IN ATTACHMENT PIXELS. One mapping, two callers.
+ *
+ * The selection the operator drew is in layout coordinates; both a still and a
+ * region recording have to name the same rectangle in the composited image.
+ * On an unrotated output those differ only by the output scale, and this was
+ * one ratio per axis until a 90-degree output showed what that really is: at
+ * 90 or 270 the axes are SWAPPED rather than scaled, so a portrait box got
+ * multiplied by a landscape number and a 748x1310 window came back as a
+ * 1330x737 crop -- very nearly the whole screen and none of the window. At 180
+ * the size came out right and the ORIGIN did not, which no dimension check can
+ * see.
+ *
+ * Two steps that are each true on their own: a uniform scale from layout to
+ * presentation pixels, then the output's own transform from presentation into
+ * the attachment. One scale rather than two, because a fractional-scale output
+ * scales both axes by the same factor and two independently computed ratios
+ * disagree by a rounding error worth a pixel.
+ *
+ * `att_w`/`att_h` are the attachment's own extent -- the frozen frame's for a
+ * still, the output's for a recording. Returns false when the box does not
+ * intersect the output at all.
+ */
+static bool screenshot_ui_box_to_attachment(Monitor *m, struct wlr_box sel,
+		int32_t att_w, int32_t att_h, struct wlr_box *out) {
+	if (m == NULL || att_w <= 0 || att_h <= 0) {
+		return false;
+	}
+	const enum wl_output_transform tr = m->wlr_output->transform;
+	const bool axes_swapped = (tr & WL_OUTPUT_TRANSFORM_90) != 0;
+	const int32_t pres_w = axes_swapped ? att_h : att_w;
+	const int32_t pres_h = axes_swapped ? att_w : att_h;
+	const double scale = m->m.width > 0 ? (double)pres_w / m->m.width : 1.0;
+
+	int32_t rel_x = sel.x - m->m.x;
+	int32_t rel_y = sel.y - m->m.y;
+	if (rel_x < 0)
+		rel_x = 0;
+	if (rel_y < 0)
+		rel_y = 0;
+	int32_t rel_x2 = rel_x + sel.width;
+	int32_t rel_y2 = rel_y + sel.height;
+	if (rel_x2 > m->m.width)
+		rel_x2 = m->m.width;
+	if (rel_y2 > m->m.height)
+		rel_y2 = m->m.height;
+	if (rel_x2 <= rel_x || rel_y2 <= rel_y)
+		return false;
+
+	struct wlr_box pres_box = {
+		.x = (int32_t)round(rel_x * scale),
+		.y = (int32_t)round(rel_y * scale),
+		.width = (int32_t)round((rel_x2 - rel_x) * scale),
+		.height = (int32_t)round((rel_y2 - rel_y) * scale),
+	};
+	wlr_box_transform(out, &pres_box, tr, pres_w, pres_h);
+
+	if (out->x < 0)
+		out->x = 0;
+	if (out->y < 0)
+		out->y = 0;
+	if (out->x + out->width > att_w)
+		out->width = att_w - out->x;
+	if (out->y + out->height > att_h)
+		out->height = att_h - out->y;
+	return out->width > 0 && out->height > 0;
+}
+
 /* `dest` decides where the still ends up; everything above it -- the crop, the
  * alpha fix, the PNG encode -- is the same work either way, which is why there
  * is one function and a parameter rather than two that drift. */
@@ -3337,74 +3409,13 @@ static bool screenshot_ui_save_and_copy(struct wlr_buffer *frame, Monitor *m,
 		return false;
 	}
 
-	/*
-	 * THE SELECTION IS IN LAYOUT SPACE; THE FROZEN FRAME IS THE ATTACHMENT.
-	 *
-	 * On an unrotated output those differ only by the output scale, and this
-	 * used to be one ratio per axis -- frame->width / m.width and its
-	 * sibling. At 90 or 270 degrees the axes are SWAPPED rather than scaled,
-	 * so that ratio was a portrait box multiplied by a landscape number: a
-	 * 740x1302 window came back as a 1330x737 crop, which is very nearly the
-	 * whole screen and none of the window. At 180 the size happened to come
-	 * out right and the ORIGIN did not, so a top-left selection cropped from
-	 * the bottom-right -- the failure a dimension check cannot see.
-	 *
-	 * So the mapping is done in two steps that are each true on their own: a
-	 * uniform scale from layout to presentation pixels, then the output's own
-	 * transform from presentation into the attachment. `presentation` is the
-	 * attachment with its axes swapped when the transform swaps them, which
-	 * is the same relationship az_presentation_of() states for the frame
-	 * path -- computed here from frame's own extent because bind_define.h is
-	 * included before the renderer that owns that helper.
-	 */
-	const enum wl_output_transform tr = m->wlr_output->transform;
-	const bool axes_swapped = (tr & WL_OUTPUT_TRANSFORM_90) != 0;
-	const int32_t pres_w = axes_swapped ? frame->height : frame->width;
-	const int32_t pres_h = axes_swapped ? frame->width : frame->height;
-	/* One scale, not two: a fractional-scale output scales both axes by the
-	 * same factor, and two ratios computed independently disagree by a
-	 * rounding error that lands the crop a pixel off. */
-	const double scale = m->m.width > 0 ? (double)pres_w / m->m.width : 1.0;
-
-	int32_t rel_x = sel.x - m->m.x;
-	int32_t rel_y = sel.y - m->m.y;
-	if (rel_x < 0)
-		rel_x = 0;
-	if (rel_y < 0)
-		rel_y = 0;
-	int32_t rel_x2 = rel_x + sel.width;
-	int32_t rel_y2 = rel_y + sel.height;
-	if (rel_x2 > m->m.width)
-		rel_x2 = m->m.width;
-	if (rel_y2 > m->m.height)
-		rel_y2 = m->m.height;
-	if (rel_x2 <= rel_x || rel_y2 <= rel_y)
-		return false;
-
-	/* Layout -> presentation pixels, then presentation -> attachment. */
-	struct wlr_box pres_box = {
-		.x = (int32_t)round(rel_x * scale),
-		.y = (int32_t)round(rel_y * scale),
-		.width = (int32_t)round((rel_x2 - rel_x) * scale),
-		.height = (int32_t)round((rel_y2 - rel_y) * scale),
-	};
 	struct wlr_box att_box;
-	wlr_box_transform(&att_box, &pres_box, tr, pres_w, pres_h);
-
-	int32_t px_x = att_box.x;
-	int32_t px_y = att_box.y;
-	int32_t px_w = att_box.width;
-	int32_t px_h = att_box.height;
-	if (px_x < 0)
-		px_x = 0;
-	if (px_y < 0)
-		px_y = 0;
-	if (px_x + px_w > frame->width)
-		px_w = frame->width - px_x;
-	if (px_y + px_h > frame->height)
-		px_h = frame->height - px_y;
-	if (px_w <= 0 || px_h <= 0)
+	if (!screenshot_ui_box_to_attachment(m, sel, frame->width, frame->height,
+			&att_box)) {
 		return false;
+	}
+	int32_t px_x = att_box.x, px_y = att_box.y;
+	int32_t px_w = att_box.width, px_h = att_box.height;
 
 	struct wlr_texture *tex = wlr_texture_from_buffer(drw, frame);
 	if (!tex) {
@@ -3809,9 +3820,35 @@ void screenshot_ui_handle_key(xkb_keysym_t sym) {
 		break;
 	case XKB_KEY_r:
 	case XKB_KEY_R: {
+		/*
+		 * THE SELECTION IS WHAT GETS RECORDED, mapped through the same
+		 * layout-to-attachment helper a still uses -- so "what this rectangle
+		 * means" is answered once and a rotated output cannot make the two
+		 * disagree.
+		 *
+		 * Read BEFORE teardown, which clears every field it reads. Falls back
+		 * to the whole output when the selection has no area, which is what a
+		 * region overlay opened and not dragged looks like: the operator
+		 * asked to record, not to record nothing.
+		 *
+		 * Rounded DOWN to even. The encoder codes at its own alignment and
+		 * removes the difference with a conformance window whose offsets are
+		 * in chroma samples, so it can only express an even crop; rounding up
+		 * instead would read a column that is not in the attachment.
+		 */
 		Monitor *m = shotui.mon;
+		struct wlr_box att;
+		bool have_region = shotui.frame != NULL && shotui.sel.width > 0
+			&& shotui.sel.height > 0
+			&& screenshot_ui_box_to_attachment(m, shotui.sel,
+				shotui.frame->width, shotui.frame->height, &att);
+		if (have_region) {
+			att.width &= ~1;
+			att.height &= ~1;
+			have_region = att.width > 0 && att.height > 0;
+		}
 		screenshot_ui_teardown();
-		capture_recording_toggle(m);
+		capture_recording_toggle(m, have_region ? &att : NULL);
 		break;
 	}
 	default:

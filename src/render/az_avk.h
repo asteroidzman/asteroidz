@@ -2981,6 +2981,10 @@ struct az_avk_output {
 	 * colour description is fixed when it opens, so every later picture must
 	 * be the same. UNDEFINED until the first one lands. */
 	VkFormat rec_src_format;
+	/* Where in the attachment this recording is taken from. The encoder is
+	 * sized to it and every picture is read at this offset, so a region
+	 * recording costs the encoder its own area rather than the screen's. */
+	int32_t rec_src_x, rec_src_y;
 	uint64_t rec_frames;
 	int64_t rec_last_ns;   /* so a sample's duration is measured, not assumed */
 	uint64_t rec_dropped;
@@ -5503,7 +5507,17 @@ static void az_avk_record_note_present(struct az_avk_output *out,
 }
 
 /* Open a recording on one output. Returns false with a reason logged. */
-static bool az_avk_record_open(Monitor *m, const char *path) {
+/*
+ * `region` is in ATTACHMENT pixels, or NULL for the whole output.
+ *
+ * Sized here rather than cropped later: an encoder built at the region's size
+ * encodes that many pixels, where encoding the screen and cropping afterwards
+ * would spend the whole frame's worth of GPU on a rectangle the operator did
+ * not ask for -- and at 4K that is the difference between fitting in the frame
+ * gap and not.
+ */
+static bool az_avk_record_open(Monitor *m, const char *path,
+		const struct wlr_box *region) {
 	if (m == NULL || m->avk == NULL || m->avk->slot == NULL) {
 		return false;
 	}
@@ -5535,8 +5549,26 @@ static bool az_avk_record_open(Monitor *m, const char *path) {
 	struct avk_heif_colour colour;
 	az_avk_heif_colour_for(enc_colour, &mastering, &colour);
 
-	out->rec_encoder = avk_encoder_create(r->dev, (uint32_t)att.width,
-		(uint32_t)att.height, enc_colour, &mastering);
+	int32_t rec_w = att.width, rec_h = att.height, rec_x = 0, rec_y = 0;
+	if (region != NULL) {
+		if (region->width <= 0 || region->height <= 0
+				|| region->x < 0 || region->y < 0
+				|| region->x + region->width > att.width
+				|| region->y + region->height > att.height) {
+			wlr_log(WLR_ERROR, "record: %s: the region %dx%d+%d+%d is not "
+				"inside the %dx%d attachment", m->wlr_output->name,
+				region->width, region->height, region->x, region->y,
+				att.width, att.height);
+			return false;
+		}
+		rec_w = region->width; rec_h = region->height;
+		rec_x = region->x; rec_y = region->y;
+	}
+	out->rec_src_x = rec_x;
+	out->rec_src_y = rec_y;
+
+	out->rec_encoder = avk_encoder_create(r->dev, (uint32_t)rec_w,
+		(uint32_t)rec_h, enc_colour, &mastering);
 	if (out->rec_encoder == NULL) {
 		wlr_log(WLR_ERROR, "record: no encoder for %s", m->wlr_output->name);
 		return false;
@@ -5578,7 +5610,8 @@ static bool az_avk_record_open(Monitor *m, const char *path) {
 	out->rec_write_ns = 0;
 	out->rec_worst_ns = 0;
 	out->recording = true;
-	wlr_log(WLR_INFO, "record: %s -> %s (%dx%d)", m->wlr_output->name, path,
+	wlr_log(WLR_INFO, "record: %s -> %s (%dx%d+%d+%d of %dx%d)",
+		m->wlr_output->name, path, rec_w, rec_h, rec_x, rec_y,
 		att.width, att.height);
 	return true;
 }
@@ -5757,7 +5790,8 @@ static void az_avk_record_frame(struct az_avk_output *out, Monitor *m,
 	void *pkt = NULL;
 	size_t pkt_len = 0;
 	if (!avk_encoder_encode_frame(out->rec_encoder, target->image,
-			target->layout, target->format, 0, 0, false, &pkt, &pkt_len)) {
+			target->layout, target->format, out->rec_src_x, out->rec_src_y,
+			false, &pkt, &pkt_len)) {
 		out->rec_dropped++;
 		return;
 	}
