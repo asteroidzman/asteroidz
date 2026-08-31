@@ -204,13 +204,41 @@ static bool ast_frag_render(AsteroidFrag *f, const float color[4], double alpha,
 	if (side < 4)
 		return false;
 
-	cairo_surface_t *surface =
-		cairo_image_surface_create(CAIRO_FORMAT_ARGB32, side, side);
+	/*
+	 * ONE BUFFER FOR THE FRAGMENT'S WHOLE RUN, redrawn in place.
+	 *
+	 * `side` comes from f->radius, which is fixed when the fragment is seeded,
+	 * so the buffer never has to change size. This used to allocate a fresh
+	 * cairo surface and a fresh wlr_buffer per fragment per tick -- and with
+	 * them, through the scene, a fresh AVK import carrying its own VkImage,
+	 * memory, view and descriptor set. Ten fragments over one close animation
+	 * left about 115 of those behind per window, and they were still there
+	 * when the compositor exited.
+	 *
+	 * REDRAWING A BUFFER THE COMPOSITOR IS SHOWING is safe here and would not
+	 * be for a client: an ast_buffer has neither a dma-buf nor an shm fd, so
+	 * AVK's asynchronous upload declines it -- az_avk_shm_job_start() needs a
+	 * mappable source and gets none -- and the copy is always taken
+	 * synchronously, on this thread, inside the frame that samples it. No
+	 * worker can be reading these pixels while cairo writes them.
+	 */
+	bool reuse = f->buffer != NULL && f->buffer->base.width == side
+		&& f->buffer->base.height == side;
+	cairo_surface_t *surface = reuse ? f->buffer->surface
+		: cairo_image_surface_create(CAIRO_FORMAT_ARGB32, side, side);
 	if (cairo_surface_status(surface) != CAIRO_STATUS_SUCCESS) {
-		cairo_surface_destroy(surface);
+		if (!reuse)
+			cairo_surface_destroy(surface);
 		return false;
 	}
 	cairo_t *cr = cairo_create(surface);
+	if (reuse) {
+		/* The previous tick's fragment is still in these pixels, and the
+		 * stroke below only adds to them. */
+		cairo_set_operator(cr, CAIRO_OPERATOR_CLEAR);
+		cairo_paint(cr);
+		cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
+	}
 	cairo_translate(cr, side / 2.0, side / 2.0);
 	cairo_rotate(cr, angle);
 	cairo_set_line_width(cr, 2.0);
@@ -227,20 +255,37 @@ static bool ast_frag_render(AsteroidFrag *f, const float color[4], double alpha,
 	cairo_destroy(cr);
 	cairo_surface_flush(surface);
 
-	struct ast_buffer *buf = calloc(1, sizeof(*buf));
-	if (!buf) {
-		cairo_surface_destroy(surface);
-		return false;
-	}
-	wlr_buffer_init(&buf->base, &ast_buffer_impl, side, side);
-	buf->surface = surface;
+	if (reuse) {
+		/*
+		 * Same pointer, new pixels -- so the scene has to be TOLD, and told
+		 * with damage. It is this call that drives
+		 * az_avk_scene_content_notify(), which bumps the generation AVK
+		 * re-uploads on; plain set_buffer() on an unchanged pointer would
+		 * leave the fragment frozen on its first tick with nothing to
+		 * report it.
+		 */
+		pixman_region32_t damage;
+		pixman_region32_init_rect(&damage, 0, 0, (uint32_t)side,
+								  (uint32_t)side);
+		wlr_scene_buffer_set_buffer_with_damage(f->node, &f->buffer->base,
+											   &damage);
+		pixman_region32_fini(&damage);
+	} else {
+		struct ast_buffer *buf = calloc(1, sizeof(*buf));
+		if (!buf) {
+			cairo_surface_destroy(surface);
+			return false;
+		}
+		wlr_buffer_init(&buf->base, &ast_buffer_impl, side, side);
+		buf->surface = surface;
 
-	/* Attach before dropping: the node must never point at a freed buffer,
-	 * even for an instant. */
-	wlr_scene_buffer_set_buffer(f->node, &buf->base);
-	if (f->buffer)
-		wlr_buffer_drop(&f->buffer->base);
-	f->buffer = buf;
+		/* Attach before dropping: the node must never point at a freed
+		 * buffer, even for an instant. */
+		wlr_scene_buffer_set_buffer(f->node, &buf->base);
+		if (f->buffer)
+			wlr_buffer_drop(&f->buffer->base);
+		f->buffer = buf;
+	}
 	wlr_scene_buffer_set_dest_size(f->node, side, side);
 	wlr_scene_node_set_position(&f->node->node, (int32_t)(cx - side / 2.0),
 								(int32_t)(cy - side / 2.0));

@@ -70,6 +70,17 @@ backdrop cannot show that the blur raised the mean; an opaque test window cannot
 show a shadow's exclusion fill bleeding through a translucent one. Use
 high-frequency content and translucent windows.
 
+**A fresh buffer per frame is a fresh GPU import per frame.** The compositor's
+own cairo producers hand the scene a new `wlr_buffer` on every update, and each
+one AVK sees becomes an imported image with its own memory, view and descriptor
+set. A close animation drawing ten fragments this way left about 115 of them
+behind per window. Redrawing one buffer in place is safe for these — they have
+no dma-buf and no shm fd, so the upload is always synchronous on the same
+thread — as long as the scene is told with
+`wlr_scene_buffer_set_buffer_with_damage()`, which is what drives the content
+hook AVK re-uploads on. `text-node.c` and `ufo-node.c` still allocate per
+update.
+
 **A one-window fixture allocates nothing, so it can prove nothing about
 allocation.** pixman keeps a single rectangle inside the region struct, so
 copying one-rect damage never touches the heap. A per-frame region that was
