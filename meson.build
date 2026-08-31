@@ -334,3 +334,13 @@ install_data('assets/bar-icons/asteroidz-bar/logo.svg',
              install_dir : join_paths(prefix, 'share/icons/hicolor/scalable/apps'),
              rename : 'asteroidz-settings.svg')
 
+# azview as an APPLICATION, which is a different kind of entry from the two
+# above: those are wayland-sessions, offered by a login manager, and this is
+# something a file manager opens a picture with. It carries its own icon name
+# rather than the compositor's, because a viewer and a session are not the same
+# thing to anything that lists either.
+install_data('assets/azview.desktop',
+             install_dir : join_paths(prefix, 'share/applications'))
+install_data('assets/azview.svg',
+             install_dir : join_paths(prefix, 'share/icons/hicolor/scalable/apps'))
+

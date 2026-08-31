@@ -247,8 +247,8 @@ You will need to build `wlroots` manually as well.
    longer fetches anything over the network.
 
    This installs the `asteroidz` binary, the `amsg` IPC tool, the `azview`
-   image viewer, two wayland session entries, and the GlobalShortcuts portal
-   definition.
+   image viewer with its desktop entry and icon, two wayland session entries,
+   and the GlobalShortcuts portal definition.
 
    `azview` is installed because an HDR still raises one question no other
    viewer on the machine can answer — whether it actually looks right. They

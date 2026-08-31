@@ -1,0 +1,18 @@
+[Desktop Entry]
+Type=Application
+Version=1.5
+Name=azview
+GenericName=Image Viewer
+Comment=View images, including HDR ones
+Exec=azview %f
+Icon=azview
+Terminal=false
+Categories=Graphics;2DGraphics;RasterGraphics;Viewer;
+StartupWMClass=azview
+# What azview can actually open, which is libheif's formats plus gdk-pixbuf's
+# BUILT-IN loaders and nothing else. WebP, JPEG XL, SVG and OpenEXR are
+# deliberately absent: gdk-pixbuf reads those only through loader modules that
+# ship separately, and nothing in this package's dependencies pulls one in --
+# claiming them would put azview in a file manager's "Open With" for files it
+# would then refuse.
+MimeType=image/heif;image/heic;image/avif;image/png;image/jpeg;image/gif;image/bmp;image/tiff;image/vnd.microsoft.icon;image/x-icns;image/x-tga;image/x-xpixmap;image/x-xbitmap;image/qoi;image/x-portable-anymap;image/x-portable-bitmap;image/x-portable-graymap;image/x-portable-pixmap;

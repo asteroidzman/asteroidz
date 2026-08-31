@@ -61,6 +61,13 @@ writes the raw picture for inspection, this is a file an image viewer opens.
 azview ~/Pictures/asteroidz_DP-1_*.heic
 ```
 
+It registers a desktop entry too, so a file manager offers it under **Open
+With** for the formats it can actually decode — libheif's HEIF, HEIC and AVIF,
+plus gdk-pixbuf's built-in loaders. WebP, JPEG XL, SVG and OpenEXR are
+deliberately not claimed: gdk-pixbuf reads those only through loader modules
+that ship separately, and offering to open a file and then refusing it is worse
+than not offering.
+
 It describes the surface the way the **file** describes itself — transfer
 function, primaries, and the mastering display's own luminance — and lets the
 compositor's HDR path run, rather than tone mapping the picture down to SDR

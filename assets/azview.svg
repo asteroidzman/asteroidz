@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- azview: the same 1979-arcade vector-wireframe language as the asteroidz
+       mark. A picture inside a frame, drawn as strokes rather than fills: a
+       horizon, two peaks and a sun, with the warm amber accent for the light.
+       An asteroid drifts past the corner so the viewer reads as ours. -->
+  <defs>
+    <radialGradient id="field" cx="50%" cy="42%" r="75%">
+      <stop offset="0%" stop-color="#15131f"/>
+      <stop offset="55%" stop-color="#0c0b13"/>
+      <stop offset="100%" stop-color="#050509"/>
+    </radialGradient>
+    <radialGradient id="sunglow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#ffd9a8" stop-opacity="0.9"/>
+      <stop offset="45%" stop-color="#ffb86b" stop-opacity="0.45"/>
+      <stop offset="100%" stop-color="#ffb86b" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="512" height="512" rx="96" fill="url(#field)"/>
+
+  <g fill="none" stroke="#f4f2ff" stroke-width="11"
+     stroke-linecap="round" stroke-linejoin="round">
+    <!-- the frame -->
+    <rect x="96" y="120" width="320" height="248" rx="22"/>
+
+    <!-- the light behind the peaks, drawn before them so they occlude it -->
+    <circle cx="196" cy="212" r="30" stroke="#ffb86b"/>
+
+    <!-- two peaks and the horizon they stand on -->
+    <path d="M110 330 L196 236 L246 292 L300 226 L402 330"/>
+    <path d="M110 330 L402 330" stroke-opacity="0.55"/>
+
+    <!-- an asteroid, tumbling past the lower-right corner -->
+    <path d="M366 402 L392 386 L420 398 L426 424 L406 442 L376 434 Z"
+          stroke-width="9" stroke-opacity="0.8"/>
+  </g>
+
+  <circle cx="196" cy="212" r="58" fill="url(#sunglow)"/>
+</svg>
