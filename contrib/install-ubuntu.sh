@@ -171,10 +171,21 @@ else
 			https://gitlab.freedesktop.org/wlroots/wlroots.git "$SRC/wlroots"
 	fi
 	cd "$SRC/wlroots"
+	# rm -rf, NOT `meson setup --wipe`. --wipe wipes the tree and then
+	# reconfigures "using previous command line options" -- it replays whatever
+	# is in meson-private/cmd_line.txt. This directory is reused across runs and
+	# across VERSIONS, so those saved options can name something the checkout no
+	# longer has, and an unknown top-level option is a hard error:
+	#
+	#     meson.build:1:0: ERROR: Unknown option: "tracy".
+	#
+	# which is a stale build directory reporting itself as a broken source tree.
+	# Configuring fresh means every run uses the flags below and nothing else.
 	# xwayland and color-management are both explicitly enabled rather than left
 	# to auto-detect: they are the two that silently come out NO when a header is
 	# missing, and asteroidz fails to compile against a wlroots without either.
-	meson setup build --wipe --prefix="$WLROOTS_PREFIX" --buildtype=release \
+	rm -rf build
+	meson setup build --prefix="$WLROOTS_PREFIX" --buildtype=release \
 		-Dexamples=false -Dwerror=false \
 		-Dxwayland=enabled -Dcolor-management=enabled
 	meson compile -C build -j "$JOBS"
@@ -200,7 +211,8 @@ fi
 cd "$SRC/asteroidz"
 # The scene graph is asteroidz source now (src/scene/), so there is no
 # separate library to fetch or keep in version lockstep.
-meson setup build --wipe --prefix="$PREFIX" --sysconfdir=/etc \
+rm -rf build
+meson setup build --prefix="$PREFIX" --sysconfdir=/etc \
 	--buildtype=debugoptimized -Db_lto=true
 meson compile -C build -j "$JOBS"
 
@@ -224,7 +236,8 @@ cd "$SRC/asteroidz-bar"
 # PAM reads /etc/pam.d and nowhere else -- with the default prefix-relative
 # sysconfdir it lands in /usr/local/etc/pam.d, where nothing will ever find it.
 # The lock screen then comes up, takes a password, and refuses it.
-meson setup build --wipe --prefix="$PREFIX" --sysconfdir=/etc \
+rm -rf build
+meson setup build --prefix="$PREFIX" --sysconfdir=/etc \
 	--buildtype=debugoptimized
 meson compile -C build -j "$JOBS"
 sudo meson install -C build
