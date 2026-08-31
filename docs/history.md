@@ -70,6 +70,16 @@ backdrop cannot show that the blur raised the mean; an opaque test window cannot
 show a shadow's exclusion fill bleeding through a translucent one. Use
 high-frequency content and translucent windows.
 
+**A one-window fixture allocates nothing, so it can prove nothing about
+allocation.** pixman keeps a single rectangle inside the region struct, so
+copying one-rect damage never touches the heap. A per-frame region that was
+never finished leaked a gigabyte of resident memory in three and a half days on
+the desktop, three objects in five minutes against one window, and not one byte
+against an idle output — same binary, same code path. A leak fixture needs two
+outputs, two drawing clients and the real config's effects, and the oracle is
+the sanitiser's report rather than RSS: the ASan allocator ramps 130 MB in three
+minutes and buries what you came to measure.
+
 **GPU occupancy is not GPU load**, and a "2.6× faster warm GPU" result was
 unequal animation counts rather than physics. Match the workload before
 comparing the numbers.

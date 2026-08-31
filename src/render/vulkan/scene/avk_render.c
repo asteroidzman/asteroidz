@@ -1881,6 +1881,27 @@ static bool az_blur_cache_rebuild(struct avk_renderer *renderer,
 	return true;
 }
 
+/*
+ * What a frame lends to avk_graph_execute(), taken back once it has recorded.
+ *
+ * The graph holds raw pointers into all three -- the segments, the regions the
+ * segments point at (which live in the slots), and `frame_damage`, which is the
+ * output segment's active region -- so none of them can be released until the
+ * recording is done. Every exit past that point owes exactly this, and the two
+ * that wrote it out by hand had already drifted: one finished `frame_damage`
+ * twice, the others not at all.
+ */
+static void frame_scratch_release(struct avk_render_segment *prefix_segs,
+		struct az_blur_slot *slots, size_t slot_len,
+		pixman_region32_t *frame_damage) {
+	free(prefix_segs);
+	for (size_t s = 0; s < slot_len; s++) {
+		az_blur_damage_finish(&slots[s].damage);
+	}
+	free(slots);
+	pixman_region32_fini(frame_damage);
+}
+
 uint64_t avk_render_frame(struct avk_renderer *renderer,
 		struct avk_image *target, const struct avk_scene *scene,
 		const VkSemaphoreSubmitInfo *wait, uint32_t wait_count,
@@ -2145,10 +2166,9 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 				scene->len * sizeof(*renderer->blur_results));
 			if (grown == NULL) {
 				free(slots);
-	pixman_region32_fini(&frame_damage);
 				pixman_region32_fini(&prefix_damage);
 				pixman_region32_fini(&frame_damage);
-    pixman_region32_fini(&blur_generated);
+				pixman_region32_fini(&blur_generated);
 				avk_cmd_ring_abandon(&renderer->ring);
 				return 0;
 			}
@@ -3071,6 +3091,7 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 
 	if (!avk_render_declare_segment(graph, &ctx, r_compose)) {
 		avk_cmd_ring_abandon(&renderer->ring);
+		frame_scratch_release(prefix_segs, slots, slot_len, &frame_damage);
 		return 0;
 	}
 
@@ -3110,6 +3131,8 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 				|| !avk_graph_use(graph, r_target, AVK_USE_COLOR_WRITE, NULL)) {
 			avk_graph_pass_end(graph);
 			avk_cmd_ring_abandon(&renderer->ring);
+			frame_scratch_release(prefix_segs, slots, slot_len,
+				&frame_damage);
 			return 0;
 		}
 		avk_graph_pass_end(graph);
@@ -3132,12 +3155,15 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 	 * hand every foreign image back to its real owner. */
 	avk_graph_execute(graph, cb, &renderer->timestamps, ts_slot);
 	/* Recorded; the graph no longer holds these -- nor the regions the segments
-	 * pointed at, which live in the slots. */
-	free(prefix_segs);
-	for (size_t s = 0; s < slot_len; s++) {
-		az_blur_damage_finish(&slots[s].damage);
-	}
-	free(slots);
+	 * pointed at, which live in the slots, nor `frame_damage`, which was kept
+	 * alive for precisely that reason and then never released. A region copy
+	 * owns a heap array as soon as it holds more than one rectangle, so on a
+	 * desktop whose frames damage several boxes that was a leak EVERY FRAME:
+	 * a few hundred bytes at a hundred-odd frames a second, which is how a
+	 * compositor reaches a gigabyte of resident memory in three days without
+	 * any single allocation looking wrong. A one-window test never sees it --
+	 * one rectangle lives inside the region struct and allocates nothing. */
+	frame_scratch_release(prefix_segs, slots, slot_len, &frame_damage);
 	renderer->stats.barriers += graph->stats.image_transitions
 		+ graph->stats.memory_barriers;
 
