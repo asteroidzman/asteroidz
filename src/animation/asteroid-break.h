@@ -84,6 +84,16 @@ struct ast_buffer {
 
 static void ast_buffer_destroy(struct wlr_buffer *wlr_buffer) {
 	struct ast_buffer *buf = wl_container_of(wlr_buffer, buf, base);
+	/*
+	 * FIRST, AND IT IS NOT OPTIONAL. wlroots' buffer_consider_destroy() calls
+	 * this impl and nothing else -- it does not emit events.destroy and does
+	 * not finish the addon set, because doing both is the implementation's
+	 * job. Omitting it frees the memory with every addon still attached, so
+	 * whoever put one there is left holding a pointer into a freed buffer:
+	 * AVK's imported image, with its VkImage, memory, view and descriptor
+	 * set, leaked for the life of the session and dangled for the rest of it.
+	 */
+	wlr_buffer_finish(wlr_buffer);
 	cairo_surface_destroy(buf->surface);
 	free(buf);
 }

@@ -70,6 +70,17 @@ backdrop cannot show that the blur raised the mean; an opaque test window cannot
 show a shadow's exclusion fill bleeding through a translucent one. Use
 high-frequency content and translucent windows.
 
+**A `wlr_buffer` implementation must call `wlr_buffer_finish()`.** wlroots'
+`buffer_consider_destroy()` calls `impl->destroy` and nothing else — emitting
+`events.destroy` and finishing the addon set is the implementation's job, and
+omitting it is silent. All three of asteroidz's cairo-backed buffers did omit
+it, so every one they made was freed with its addons still attached: AVK's
+imported image leaked for the session and its pointer dangled for the rest of
+it, and the teardown walk over those entries was the intermittent
+`corrupted size vs. prev_size`. Nothing reports this; the compositor just gets
+slowly heavier. Any new buffer implementation needs that call as its first
+statement.
+
 **A fresh buffer per frame is a fresh GPU import per frame.** The compositor's
 own cairo producers hand the scene a new `wlr_buffer` on every update, and each
 one AVK sees becomes an imported image with its own memory, view and descriptor
