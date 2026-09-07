@@ -2412,6 +2412,12 @@ struct Pertag {
 	int32_t scroller_ignore_proportion_single[LENGTH(tags) + 1];
 	struct DwindleNode *dwindle_root[LENGTH(tags) + 1];
 	const Layout *ltidxs[LENGTH(tags) + 1];
+	/* What a `tag N { layout ... }` rule last put in ltidxs[N], so a reload
+	 * can tell an edited config from a re-read of an unchanged one. NULL is
+	 * unambiguous here -- no entry in layouts[] is at address zero, so calloc's
+	 * zero can only mean "no rule has named a layout for this tag yet", not a
+	 * layout that happens to compare equal. See parse_tagrule. */
+	const Layout *cfg_ltidxs[LENGTH(tags) + 1];
 	struct TagScrollerState *scroller_state[LENGTH(tags) + 1];
 };
 /* Defined after render/az_avk.h is available; named by the dispatch table in

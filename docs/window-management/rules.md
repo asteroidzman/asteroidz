@@ -358,6 +358,15 @@ You can set all parameters in one line. If only `id` is set, the rule is followe
 
 > **Warning:** Layouts set in tag rules have a higher priority than monitor rule layouts.
 
+`layout` is the tag's *starting* layout, not a lock on it. `set_layout`,
+`switch_layout` and the bar all write the same per-tag slot, and a reload
+re-applies the rule only when the configured layout has actually **changed** —
+so switching a tag to another layout by hand survives a `reload_config`. Edit
+the rule and reload and the new layout takes effect as usual. This matters
+because a reload is not always something you asked for: matugen dispatches one
+on every wallpaper change, and every one of those used to snap each tag back to
+its configured layout.
+
 **Format:**
 
 ```kdl

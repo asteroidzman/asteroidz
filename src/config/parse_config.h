@@ -5664,10 +5664,26 @@ void parse_tagrule(Monitor *m) {
 
 		if (config.tag_rules_count > 0 && match_rule) {
 
+			/* Only on an actual change -- the same rule apply_rule_to_state
+			 * follows for a mode, and for the same reason: reapply_tagrule
+			 * runs on every reload_config, and matugen dispatches one on every
+			 * wallpaper change. The layout is not a config value that merely
+			 * lives here; set_layout, switch_layout and the dwl-ipc
+			 * set_layout all write this same slot, so re-asserting an
+			 * unchanged config over it threw away whatever the user had
+			 * switched to, at a moment that had nothing to do with layouts.
+			 *
+			 * An edited config still wins: cfg_ltidxs is what the rule last
+			 * applied, so a changed `layout` compares unequal and takes
+			 * effect. It is NULL on a freshly calloc'd Pertag, which makes the
+			 * first apply -- monitor creation, and a hotplug -- unconditional. */
 			for (jk = 0; jk < LENGTH(layouts); jk++) {
 				if (tr.layout_name &&
 					strcmp(layouts[jk].name, tr.layout_name) == 0) {
-					m->pertag->ltidxs[tr.id] = &layouts[jk];
+					if (m->pertag->cfg_ltidxs[tr.id] != &layouts[jk]) {
+						m->pertag->cfg_ltidxs[tr.id] = &layouts[jk];
+						m->pertag->ltidxs[tr.id] = &layouts[jk];
+					}
 				}
 			}
 
