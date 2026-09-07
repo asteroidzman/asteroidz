@@ -3836,6 +3836,12 @@ static struct avk_encode_params az_avk_encode_params(const Monitor *m,
 	 * mixes, and the result is a plausible picture with the wrong white. */
 	p.anchor = s->ref_nits / 10000.0f;
 	p.dither_q = s->dither_q;
+	/* The operator's look, carried straight through. C3 already decided this
+	 * output has a pass to apply it in -- an output that would have taken
+	 * Path A is moved to Path B by a configured look, precisely so this
+	 * assignment is never a value nothing reads. */
+	p.look_chroma = s->look_chroma;
+	p.look_black = s->look_black;
 	/* The whole-output pass: this attachment IS the output raster, so the
 	 * dither's anchor is the identity. The field exists so that a regional
 	 * encode cannot be written without confronting the question. */

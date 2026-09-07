@@ -103,6 +103,25 @@ struct az_output_desc {
 	float hdr_max_nits;
 	float scene_ref_nits;
 	float sdr_saturation;
+	/*
+	 * THE OPERATOR'S LOOK, applied in Oklab by the encode pass (az_look).
+	 *
+	 * Deliberately NOT beside sdr_saturation in meaning, though they sit
+	 * beside each other here. sdr_saturation is a gamut-conversion control
+	 * that exists only where scene BT.709 is being stretched to BT.2020, and
+	 * both SDR branches below exclude it for a stated reason. These two are a
+	 * LOOK: they change the image before any of that, so they apply wherever
+	 * an encode pass runs -- profiled or not, HDR or not -- and an output that
+	 * would otherwise take Path A is moved to Path B to get one, because Path
+	 * A has no pass to put them in.
+	 *
+	 * Neutral is 1.0 or 0.0 for chroma and 0.0 for black. Zero being neutral
+	 * for a MULTIPLIER is the same convention sdr_saturation uses next door,
+	 * and it exists so a zeroed config field cannot read as "remove all
+	 * colour" -- the ecalloc-zero trap this tree has been bitten by twice.
+	 */
+	float look_chroma;
+	float look_black;
 	bool scanout_srgb_view_ok;
 	/*
 	 * M6B/G2. The profile REDUCED TO A FORM THE ENCODE PASS CAN APPLY, or NULL.
@@ -156,7 +175,23 @@ struct az_output_color_state {
 	float ref_nits;
 	float peak_scene;
 	float dither_q;
+	/* Carried through unchanged from the desc: the look is not a function of
+	 * the path, and every path that has an encode pass applies it. */
+	float look_chroma;
+	float look_black;
 };
+
+/*
+ * Is a look configured at all?
+ *
+ * One predicate, because three places ask -- the state copy, the Path A/B
+ * decision, and the shader's own early-out -- and a look that the decision
+ * table thinks is present while the shader treats it as neutral would cost an
+ * encode pass to change nothing.
+ */
+static inline bool az_output_look_active(float chroma, float black) {
+	return (chroma > 0.0f && chroma != 1.0f) || (black > 0.0f && black < 1.0f);
+}
 
 static inline void az_output_color_set_identity(float m[9]) {
 	for (int i = 0; i < 9; i++) {
@@ -199,6 +234,15 @@ az_output_color_derive(const struct az_output_desc *o) {
 	 * silent zero. */
 	const int bpc = o->bits_per_channel > 0 ? o->bits_per_channel : 8;
 	const float quantum = 1.0f / (float)((1u << bpc) - 1u);
+
+	/* Before every branch below, because the look is orthogonal to all of
+	 * them: each returns its own path, and each of those paths has an encode
+	 * pass that must be told. The one path that does not is Path A, and the
+	 * bottom of this function moves an output off it rather than dropping the
+	 * look silently. */
+	s.look_chroma = o->look_chroma;
+	s.look_black = o->look_black;
+	const bool look = az_output_look_active(o->look_chroma, o->look_black);
 
 	/*
 	 * ── M6B/D3: hdr IS DECIDED BEFORE has_icc, AND THAT IS THE POINT ──────
@@ -341,7 +385,18 @@ az_output_color_derive(const struct az_output_desc *o) {
 	 * output to act on. */
 	s.encode_tf = AZ_TF_SRGB;
 	s.peak_scene = 1.0f;
-	if (bpc > 8 || !o->scanout_srgb_view_ok) {
+	/*
+	 * A LOOK IS A REASON TO ENCODE, exactly as >8bpc is.
+	 *
+	 * Path A hands the scanout buffer an _SRGB view and lets the hardware do
+	 * the transfer function; there is no pass, so there is nowhere to apply a
+	 * chroma gain. Without this an 8-bit output would accept the setting in
+	 * its config, report it back over IPC, and render as though it were unset
+	 * -- which is the failure the operator had just been bitten by from the
+	 * other direction, sdr_saturation going quiet when an output left HDR.
+	 * The cost is one full-screen pass and the dither that comes with it.
+	 */
+	if (bpc > 8 || !o->scanout_srgb_view_ok || look) {
 		s.path = AZ_OUTPUT_PATH_B_ENCODE;
 		s.dither_q = quantum;
 		return s;

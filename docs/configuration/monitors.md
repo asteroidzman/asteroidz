@@ -125,6 +125,49 @@ misc {
 
 Takes effect on config reload without a restart.
 
+### The look: vividness and black depth
+
+`sdr { saturation }` above is a *gamut-conversion* control: it exists only
+where scene BT.709 is being stretched into an HDR output's BT.2020, and both
+SDR branches deliberately leave it out — including a profiled one, where
+multiplying a measurement by a taste control produces output that is neither
+characterised nor honestly uncharacterised. So it stops applying the moment an
+output leaves HDR, which is a genuine trap: the value stays in your config and
+silently does nothing.
+
+The **look** is the control that does not do that. It applies wherever the
+encode pass runs — SDR or HDR, profiled or not:
+
+```kdl
+misc {
+    look {
+        chroma 1.25       // >1 more colourful, 1.0 (or 0) neutral, max 3
+        black-point 0.03  // Oklab L below this goes to black, max 0.5
+    }
+}
+```
+
+Both act in **Oklab**, and both run on the scene value *before* the tone map,
+the gamut matrix and the display's transfer curve. That ordering is the whole
+argument for why this is allowed on a calibrated display: the profile is still
+reproducing faithfully, it is just reproducing an image you asked to be more
+colourful. A look is not a characterisation.
+
+`chroma` scales Oklab's a and b, so lightness and hue angle are held while
+colourfulness moves — which is exactly what the RGB saturation matrix cannot
+do, since it mixes toward a luma axis and bends hue on the saturated reds and
+blues you reach for the control to fix. `black-point` is a black point rather
+than a gamma: lightness below it goes to zero and the rest is rescaled, so
+shadows deepen while the rest of the picture keeps its brightness.
+
+> **Note:** a look forces an 8-bit output off the direct-scanout path onto the
+> encode pass, because the direct path has no pass to apply it in. That costs
+> one full-screen pass and brings the dither with it. Check with
+> `amsg get all-monitors` — `color_path` reads `B-encode` rather than
+> `A-direct-srgb` once a look is set.
+
+Takes effect on config reload without a restart.
+
 ### Recording/screenshotting an HDR output
 
 Screencopy protocols don't carry colorimetry metadata, so a capture of an HDR

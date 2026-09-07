@@ -37,7 +37,7 @@ struct avk_cmd_ring;
  *
  * ── ITS OWN PIPELINE LAYOUT, SHARING ONE DESCRIPTOR SET LAYOUT ───────────
  *
- * The push block is 64 bytes and is NOT push.glsl's: that block is exactly the
+ * The push block is 80 bytes and is NOT push.glsl's: that block is exactly the
  * 128-byte guaranteed minimum and already dual-purpose across four pipelines,
  * with no room for a 3x3 matrix and four scalars. But the descriptor set
  * layout IS avk_pipelines' texture set layout, borrowed rather than
@@ -120,6 +120,11 @@ struct avk_encode_params {
 	float anchor;
 	float dither_q;
 	float origin_x, origin_y;
+	/* The operator's look, applied in Oklab before the tone map. Neutral is
+	 * 1.0 OR 0.0 for chroma and 0.0 for black -- see az_look() for why a
+	 * zeroed field must not read as "remove all colour". */
+	float look_chroma;
+	float look_black;
 	enum avk_encode_tf tf;
 	struct avk_image *lut;
 	struct avk_image *clut;
@@ -133,8 +138,9 @@ struct avk_encode_push {
 	float row2[4]; /* xyz matrix row 2, w anchor */
 	float misc[4]; /* x dither quantum, yz origin, w the cLUT edge (negated
 	                * under the domain break) */
+	float look[4]; /* x Oklab chroma gain, y Oklab black point, zw unused */
 };
-_Static_assert(sizeof(struct avk_encode_push) == 64,
+_Static_assert(sizeof(struct avk_encode_push) == 80,
 	"the encode push block must match output_encode.frag");
 
 struct avk_encode_variant {

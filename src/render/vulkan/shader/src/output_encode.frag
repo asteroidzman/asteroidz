@@ -18,6 +18,10 @@
  * THE STEP ORDER IS ADR-008's, AND IT IS NOT NEGOTIABLE:
  *
  *   1  sample the composited scene value
+ *   1.5 the operator's look (Oklab chroma and black point), which is not part
+ *      of ADR-008 and sits here because it is the only place the steps below
+ *      still hold: it must precede the bound the tone map applies and the
+ *      primaries the matrix converts to
  *   2  tone map, on the COMPOSITED value (fx_vk maps per source and then sums,
  *      which overshoots the panel wherever two HDR windows overlap)
  *   3  gamut matrix, then clamp negatives
@@ -153,6 +157,7 @@ layout(push_constant) uniform Encode {
 	            * yz: this target's origin in output pixels, so the dither
 	            *     pattern stays anchored to the OUTPUT raster and cannot
 	            *     phase-shift; w: M6C's cube edge, in samples          */
+	vec4 look; /* x: Oklab chroma gain   y: Oklab black point   zw: unused  */
 } epc;
 
 #define AZ_ENC_KNEE epc.row0.w
@@ -161,6 +166,8 @@ layout(push_constant) uniform Encode {
 #define AZ_ENC_DITHER epc.misc.x
 #define AZ_ENC_ORIGIN epc.misc.yz
 #define AZ_ENC_CLUT_DIM epc.misc.w
+#define AZ_ENC_LOOK_CHROMA epc.look.x
+#define AZ_ENC_LOOK_BLACK epc.look.y
 
 layout(set = 0, binding = 0) uniform sampler2D scene;
 
@@ -170,6 +177,18 @@ layout(location = 0) out vec4 out_color;
 void main() {
 	/* 1. the composited scene value. Alpha is dead here. */
 	vec3 v = texture(scene, v_uv).rgb;
+
+	/* 1.5 the look, if one is configured. BEFORE the tone map, which is the
+	 *    only position that keeps every guarantee below it intact: chroma
+	 *    boosted afterwards could climb back over the panel peak the tone map
+	 *    had just bounded, and applied after the matrix it would be operating
+	 *    on device primaries while Oklab's own matrices expect BT.709. Here
+	 *    the input is exactly what Oklab is defined on, and everything from
+	 *    step 2 down treats the result as it would treat any other scene
+	 *    value -- including an ICC-characterised output, which goes on
+	 *    reproducing faithfully what it is now given. A look is not a
+	 *    characterisation; see az_look(). */
+	v = az_look(v, AZ_ENC_LOOK_CHROMA, AZ_ENC_LOOK_BLACK);
 
 	/* 2. tone map. Identity below the knee and identity for peak <= 1, so an
 	 *    SDR-only frame on an SDR output passes through untouched. */

@@ -6810,6 +6810,13 @@ static void mon_derive_color_state(Monitor *m,
 		.hdr_max_nits = m->hdr_max_luminance,
 		.scene_ref_nits = config.sdr_reference_luminance,
 		.sdr_saturation = config.sdr_saturation,
+		/* Global, not per-output: a look is the operator's taste in a
+		 * picture, and two screens showing the same desktop with different
+		 * amounts of colour in it is not a thing anyone asks for. Per-output
+		 * would also re-create the trap this exists to close -- a value that
+		 * silently stops applying when something about the output changes. */
+		.look_chroma = config.look_chroma,
+		.look_black = config.look_black_point,
 		/* Per FORMAT, not per modifier: a modifier belongs to a swapchain
 		 * buffer and is not known here, and F11 established the answer does
 		 * not vary by modifier. False whenever AVK is not the renderer, which

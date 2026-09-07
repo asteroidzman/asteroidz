@@ -451,6 +451,8 @@ void avk_output_encode_record(VkCommandBuffer cb, void *user) {
 	pc.misc[1] = p->params.origin_x;
 	pc.misc[2] = p->params.origin_y;
 		pc.misc[3] = (float)p->params.clut_dim;
+	pc.look[0] = p->params.look_chroma;
+	pc.look[1] = p->params.look_black;
 	vkCmdPushConstants(cb, p->enc->layout,
 		VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
 		sizeof(pc), &pc);

@@ -244,6 +244,93 @@ vec3 az_2020_to_709(vec3 v) {
 		AZ_2020_TO_709_R2, v);
 }
 
+/* ── Oklab, and the look built on it ────────────────────────────────────── */
+
+/*
+ * Oklab. Input and output are LINEAR BT.709, which is what the scene
+ * intermediate already is (ADR-002), so no decode belongs on either side.
+ *
+ * These lived in blur.glsl, which grew them first for the blur's own
+ * saturation and recorded the reason there: an RGB saturation matrix shifts
+ * hue and distorts luminance as chroma grows past 1, which on saturated
+ * content reads as a colour cast rather than as more colour. That reason is
+ * not specific to a blur, so the functions are here and blur.glsl includes
+ * this file rather than the two of them drifting.
+ */
+vec3 az_linear_to_oklab(vec3 c) {
+	float l = dot(vec3(0.4122214708, 0.5363325363, 0.0514459929), c);
+	float m = dot(vec3(0.2119034982, 0.6806995451, 0.1073969566), c);
+	float s = dot(vec3(0.0883024619, 0.2817188376, 0.6299787005), c);
+	vec3 lms = pow(max(vec3(l, m, s), vec3(0.0)), vec3(1.0 / 3.0));
+	return vec3(
+		dot(vec3(0.2104542553, 0.7936177850, -0.0040720468), lms),
+		dot(vec3(1.9779984951, -2.4285922050, 0.4505937099), lms),
+		dot(vec3(0.0259040371, 0.7827717662, -0.8086757660), lms));
+}
+
+vec3 az_oklab_to_linear(vec3 lab) {
+	vec3 lms = vec3(
+		lab.x + 0.3963377774 * lab.y + 0.2158037573 * lab.z,
+		lab.x - 0.1055613458 * lab.y - 0.0638541728 * lab.z,
+		lab.x - 0.0894841775 * lab.y - 1.2914855480 * lab.z);
+	lms = lms * lms * lms;
+	return vec3(
+		dot(vec3(4.0767416621, -3.3077115913, 0.2309699292), lms),
+		dot(vec3(-1.2684380046, 2.6097574011, -0.3413193965), lms),
+		dot(vec3(-0.0041960863, -0.7034186147, 1.7076147010), lms));
+}
+
+/*
+ * THE LOOK: a chroma gain and a black point, both in Oklab.
+ *
+ * A LOOK IS NOT A CHARACTERISATION, AND THE ORDER IS THE WHOLE ARGUMENT.
+ * This runs on the SCENE value, before the tone map and long before the gamut
+ * matrix and the display's own transfer curve. So an ICC-profiled output is
+ * still reproducing faithfully -- it is reproducing an image the operator
+ * asked to be more colourful, rather than having a taste control multiplied
+ * into its measurement, which az_output_color.h refuses in as many words and
+ * is right to.
+ *
+ * `chroma` scales a and b, which is the axis Oklab exists to give: L and hue
+ * angle are held while colourfulness moves. The RGB saturation matrix on the
+ * HDR path (az_mat_saturation) cannot do that -- it mixes toward a luma axis,
+ * so it drags lightness with it and bends hue on exactly the saturated reds
+ * and blues the control is reached for.
+ *
+ * `black` is a black POINT, not a gamma: L below it goes to zero and what is
+ * left is rescaled, so shadows deepen and the rest of the picture keeps its
+ * brightness. A gamma on L would darken the midtones too, which is dimming
+ * the desktop rather than blackening its blacks.
+ *
+ * Chroma is scaled AFTER the black point, on the rescaled L. Doing it the
+ * other way lets a boosted near-black colour survive a black point that was
+ * supposed to remove it.
+ *
+ * NEUTRAL IS BOTH 1.0 AND 0.0 for `chroma`, matching sdr_saturation next door:
+ * the value is a multiplier whose unset state is a zeroed config field, and a
+ * zeroed field must not mean "remove all colour".
+ *
+ * No clamp here. Boosting chroma can put a component outside BT.709 and the
+ * caller already has two steps for that -- the tone map bounds the maximum
+ * channel and the gamut matrix is followed by a negative clamp (ADR-010) --
+ * so clamping here would bound the value twice and hide which step did it.
+ */
+vec3 az_look(vec3 v, float chroma, float black) {
+	bool do_chroma = chroma > 0.0 && chroma != 1.0;
+	bool do_black = black > 0.0 && black < 1.0;
+	if (!do_chroma && !do_black) {
+		return v;
+	}
+	vec3 lab = az_linear_to_oklab(v);
+	if (do_black) {
+		lab.x = max(lab.x - black, 0.0) / (1.0 - black);
+	}
+	if (do_chroma) {
+		lab.yz *= chroma;
+	}
+	return az_oklab_to_linear(lab);
+}
+
 /* ── dither (ADR-011) ───────────────────────────────────────────────────── */
 
 /* Interleaved gradient noise, [0, 1). Identical arithmetic to

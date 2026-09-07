@@ -75,35 +75,11 @@ vec4 az_blur_tap(sampler2D tex, vec2 uv) {
 #define AZ_BLUR_LINEAR_SRC  (pc.inner_corners.y > 0.5)
 
 /*
- * Oklab chroma scaling for saturation.
- *
- * Not the legacy RGB saturation matrix: that shifts hue and distorts luminance
- * as chroma grows past 1, which on a wallpaper with saturated regions reads as
- * a colour cast rather than as more colour. Requires linear input, hence the
- * round trip below.
+ * Oklab chroma scaling for saturation lives in color.glsl now -- the reason it
+ * is not the legacy RGB saturation matrix is written there, and it was never a
+ * fact about blurring.
  */
-vec3 az_linear_to_oklab(vec3 c) {
-	float l = dot(vec3(0.4122214708, 0.5363325363, 0.0514459929), c);
-	float m = dot(vec3(0.2119034982, 0.6806995451, 0.1073969566), c);
-	float s = dot(vec3(0.0883024619, 0.2817188376, 0.6299787005), c);
-	vec3 lms = pow(max(vec3(l, m, s), vec3(0.0)), vec3(1.0 / 3.0));
-	return vec3(
-		dot(vec3(0.2104542553, 0.7936177850, -0.0040720468), lms),
-		dot(vec3(1.9779984951, -2.4285922050, 0.4505937099), lms),
-		dot(vec3(0.0259040371, 0.7827717662, -0.8086757660), lms));
-}
-
-vec3 az_oklab_to_linear(vec3 lab) {
-	vec3 lms = vec3(
-		lab.x + 0.3963377774 * lab.y + 0.2158037573 * lab.z,
-		lab.x - 0.1055613458 * lab.y - 0.0638541728 * lab.z,
-		lab.x - 0.0894841775 * lab.y - 1.2914855480 * lab.z);
-	lms = lms * lms * lms;
-	return vec3(
-		dot(vec3(4.0767416621, -3.3077115913, 0.2309699292), lms),
-		dot(vec3(-1.2684380046, 2.6097574011, -0.3413193965), lms),
-		dot(vec3(-0.0041960863, -0.7034186147, 1.7076147010), lms));
-}
+#include "color.glsl"
 
 float az_blur_noise(vec2 p) {
 	vec3 p3 = fract(vec3(p.xyx) * 1689.1984);

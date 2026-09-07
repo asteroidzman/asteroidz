@@ -386,6 +386,12 @@ typedef struct {
 	int32_t blur_optimized;
 	float sdr_reference_luminance; // cd/m2 SDR white on HDR outputs, 0 = spec default (203)
 	float sdr_saturation;		   // SDR vibrancy on HDR outputs, 1.0/0 = neutral
+	/* The look: Oklab chroma gain and black point, applied by the encode pass
+	 * on EVERY output rather than only an HDR one. Unlike sdr_saturation these
+	 * change the image before any gamut or transfer work, so they survive an
+	 * output changing mode -- see az_look() and az_output_color_derive(). */
+	float look_chroma;			   // 1.0/0 = neutral, >1 more colourful
+	float look_black_point;		   // 0 = neutral; Oklab L below this goes black
 	int32_t dpms_wake_retrain;	   // mode-cycle sinks after DPMS wake (DSC fix)
 	int32_t border_radius;
 	int32_t border_radius_location_default;
@@ -1849,6 +1855,12 @@ bool parse_option(Config *config, char *key, char *value) {
 		config->sdr_reference_luminance = CLAMP_FLOAT(atof(value), 0.0f, 10000.0f);
 	} else if (strcmp(key, "sdr_saturation") == 0) {
 		config->sdr_saturation = CLAMP_FLOAT(atof(value), 0.0f, 3.0f);
+	} else if (strcmp(key, "look_chroma") == 0) {
+		config->look_chroma = CLAMP_FLOAT(atof(value), 0.0f, 3.0f);
+	} else if (strcmp(key, "look_black_point") == 0) {
+		/* Capped well below 1: Oklab L is perceptual lightness, so even 0.2
+		 * is a heavy crush, and the formula divides by (1 - black). */
+		config->look_black_point = CLAMP_FLOAT(atof(value), 0.0f, 0.5f);
 	} else if (strcmp(key, "dpms_wake_retrain") == 0) {
 		config->dpms_wake_retrain = CLAMP_INT(atoi(value), 0, 1);
 	} else if (strcmp(key, "blur") == 0) {
@@ -3776,6 +3788,8 @@ static const struct {
 	{"misc/render-late-cap", "render_late_cap"},
 	{"misc/sdr/reference-luminance", "sdr_reference_luminance"},
 	{"misc/sdr/saturation", "sdr_saturation"},
+	{"misc/look/chroma", "look_chroma"},
+	{"misc/look/black-point", "look_black_point"},
 	{"misc/dpms-wake-retrain", "dpms_wake_retrain"},
 	{"misc/drag-tile-to-tile", "drag_tile_to_tile"},
 	{"misc/prefer-no-csd", "prefer_no_csd"},
@@ -5037,6 +5051,8 @@ void set_value_default() {
 	config.blur_layer = 0;
 	config.sdr_reference_luminance = 0.0f;
 	config.sdr_saturation = 0.0f;
+	config.look_chroma = 1.0f;
+	config.look_black_point = 0.0f;
 	config.dpms_wake_retrain = 0;
 	config.blur_optimized = 1;
 	/* Exactly the constants these replaced: behaviour is unchanged unless a
