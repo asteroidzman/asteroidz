@@ -122,6 +122,36 @@ float az_rounded_coverage(vec2 pos, vec2 size, vec4 radii, bool is_cutout) {
 		max(az_corner_dist(q_bl, r_bl), az_corner_dist(q_br, r_br)));
 
 	float aa = max(fwidth(dist), 1e-4);
-	float result = smoothstep(0.0, aa, dist);
+
+	/*
+	 * THE BAND STRADDLES THE EDGE FOR A CUT-OUT AND SITS OUTSIDE IT FOR AN
+	 * OUTER EDGE. That asymmetry is geometry, not taste, and leaving it out
+	 * put a transparent hairline around every window.
+	 *
+	 * smoothstep(0, aa, dist) reaches 1.0 only a full band OUTSIDE the box and
+	 * is 0.0 exactly ON it. For the outer edge that costs nothing: everything
+	 * from the boundary outwards is off the quad and never rasterised, so the
+	 * half the band would have eaten is clipped away and the edge is hard.
+	 *
+	 * A cut-out has no such clipping. Its band lies INSIDE THE RING -- the
+	 * scissor deliberately stops short of the hole by ceil(0.3r)+1 so the
+	 * shader can paint the arcs (az_avk_clip_out_region) -- so the ring's
+	 * innermost pixel came out at ~0.5 coverage over whatever was BEHIND the
+	 * window rather than over its content, which begins exactly at the hole.
+	 * Measured on a 1900x1060 window with bw 2: the ring's outer pixel solid,
+	 * its inner pixel the border colour at alpha 0.48 over the root background
+	 * -- the desktop, showing through a half-pixel seam all the way round.
+	 * Width-independent (bw 6 gave 5 solid + 1) and gone at radius 0, where
+	 * the early-out above hands the whole job to pixman.
+	 *
+	 * Shifting the cut-out's band half a width earlier centres it on the
+	 * boundary, which is the ordinary SDF rule: full ring at dist 0, fading
+	 * into the hole rather than out of the ring. For an axis-aligned edge
+	 * whose boundary lands on a pixel edge this is exactly the old answer at
+	 * every sample point, so the arcs are the only place the two differ -- and
+	 * the outer edge is deliberately NOT moved with it, because there the
+	 * shift would trade a hard edge for a soft one at fractional scale.
+	 */
+	float result = smoothstep(0.0, aa, dist + (is_cutout ? 0.5 * aa : 0.0));
 	return is_cutout ? result : 1.0 - result;
 }
