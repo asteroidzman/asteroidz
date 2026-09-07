@@ -5682,8 +5682,14 @@ void parse_tagrule(Monitor *m) {
 
 			/* Only on an actual change -- the same rule apply_rule_to_state
 			 * follows for a mode, and for the same reason: reapply_tagrule
-			 * runs on every reload_config, and matugen dispatches one on every
-			 * wallpaper change. The layout is not a config value that merely
+			 * runs on every reload_config, and a reload is very often not
+			 * something anyone asked for. Changing the wallpaper causes one
+			 * (the bar re-derives its palette, rewrites colors.kdl and runs
+			 * that template's post-hook, which is `amsg dispatch
+			 * reload_config`), and so does every set-config write and every
+			 * window- or tag-rule save, both of which reach this function
+			 * through config_apply_live() without any reload being typed.
+			 * The layout is not a config value that merely
 			 * lives here; set_layout, switch_layout and the dwl-ipc
 			 * set_layout all write this same slot, so re-asserting an
 			 * unchanged config over it threw away whatever the user had

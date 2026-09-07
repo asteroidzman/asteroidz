@@ -363,9 +363,12 @@ You can set all parameters in one line. If only `id` is set, the rule is followe
 re-applies the rule only when the configured layout has actually **changed** —
 so switching a tag to another layout by hand survives a `reload_config`. Edit
 the rule and reload and the new layout takes effect as usual. This matters
-because a reload is not always something you asked for: matugen dispatches one
-on every wallpaper change, and every one of those used to snap each tag back to
-its configured layout.
+because a reload is very often not something you asked for. Changing the
+wallpaper causes one — the bar re-derives its palette, rewrites `colors.kdl`
+and runs that template's post-hook, which is `amsg dispatch reload_config` — and
+so does saving a window rule, a tag rule, or any setting from the settings
+window, since those reach the same re-apply pass without a reload being typed.
+Every one of them used to snap each tag back to its configured layout.
 
 **Format:**
 
