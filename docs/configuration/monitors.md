@@ -160,6 +160,11 @@ blues you reach for the control to fix. `black-point` is a black point rather
 than a gamma: lightness below it goes to zero and the rest is rescaled, so
 shadows deepen while the rest of the picture keeps its brightness.
 
+Both appear in the settings window under **Appearance → Look**, and both can be
+driven over IPC — `amsg set-config` with `misc/look/chroma` or
+`misc/look/black-point`, `persist:false` for a live preview as you drag. A value
+past the bounds above is refused with those bounds rather than quietly clamped.
+
 > **Note:** a look forces an 8-bit output off the direct-scanout path onto the
 > encode pass, because the direct path has no pass to apply it in. That costs
 > one full-screen pass and brings the dither with it. Check with

@@ -319,6 +319,26 @@ static const ConfigOption config_schema[] = {
 	 "Padding (vertical)", "Vertical padding inside a native overlay.",
 	 OPT_INT, offsetof(Config, theme.padding_y), 0, 0, 64, NULL, 0, "0", 0},
 
+	/* ===== appearance / look =====
+	 *
+	 * The two taste controls, as distinct from `sdr { saturation }`, which is
+	 * NOT here and should not be: that one is a gamut-conversion control that
+	 * exists only where scene BT.709 is stretched to an HDR output's BT.2020,
+	 * so it goes quiet whenever an output is not in HDR. Offering it as a
+	 * slider would be offering one that does nothing on most desktops.
+	 *
+	 * These apply wherever the encode pass runs. See az_look(). */
+	{"look_chroma", "misc/look/chroma", "appearance", "look", "Vividness",
+	 "How colourful the whole screen is, scaled in Oklab so lightness and hue "
+	 "hold while colourfulness moves. 1 is untouched; above it adds colour.",
+	 OPT_FLOAT, offsetof(Config, look_chroma), 0, 0, 3, NULL, 0, "1", 0},
+	{"look_black_point", "misc/look/black-point", "appearance", "look",
+	 "Black point",
+	 "Deepens shadows. Lightness below this goes to black and the rest is "
+	 "rescaled, so the picture keeps its brightness. 0 is untouched.",
+	 OPT_FLOAT, offsetof(Config, look_black_point), 0, 0, 0.5, NULL, 0, "0",
+	 0},
+
 	/* ===== effects / blur ===== */
 	{"blur", "effects/blur/enable", "effects", "blur", "Blur",
 	 "Frost the area behind a transparent window.", OPT_BOOL,
