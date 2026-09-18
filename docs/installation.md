@@ -210,7 +210,7 @@ part-way can be fixed and the script run again. `ASTEROIDZ_TAG`, `BAR_TAG`,
 > - `libsystemd`
 > - `gdk-pixbuf`
 > - `libheif` (for `azview`)
-> - `vulkan-icd-loader`, `vulkan-headers`, `glslang` (for the experimental Vulkan renderer)
+> - `vulkan-icd-loader`, `vulkan-headers`, `glslang` (for AVK, the renderer — not optional)
 
 You will need to build `wlroots` manually as well.
 

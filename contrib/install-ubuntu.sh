@@ -81,16 +81,25 @@ WLROOTS_DEPS=(
 	libxcb-errors-dev libxcb-render-util0-dev libxcb-xfixes0-dev
 	libxcb-composite0-dev libxcb-render0-dev libxcb-res0-dev libxcb-ewmh-dev
 	libpng-dev libudev-dev
+	# wlroots' GLES renderer, which asteroidz never selects -- libEGL and
+	# libGLESv2 do not appear in the compositor's NEEDED at all. They are here
+	# rather than below because wlroots is what fails to configure without them.
+	libegl-dev libgles-dev
 )
 
 COMPOSITOR_DEPS=(
 	libwayland-dev wayland-protocols libinput-dev libxkbcommon-dev
-	libpixman-1-dev libdrm-dev libgbm-dev libegl-dev libgles-dev
+	libpixman-1-dev libdrm-dev libgbm-dev
 	libpcre2-dev libcjson-dev libpango1.0-dev libgdk-pixbuf-2.0-dev
 	libsystemd-dev libxcb1-dev libxcb-icccm4-dev
-	# The Vulkan renderer. asteroidz builds both renderers into one binary and
-	# ships a second session file for the Vulkan one, so these are not optional.
+	# AVK, asteroidz's own Vulkan renderer and the only renderer there is: both
+	# installed sessions run it, the second with the validation layers on.
+	# glslang compiles the shaders at build time, so neither is optional.
 	libvulkan-dev glslang-tools
+	# azview's, not the compositor's: HEIF and AVIF reach it through libheif.
+	# The bar lists it again below rather than relying on this line, because
+	# these arrays exist to name the thing that will not build.
+	libheif-dev
 )
 
 BAR_DEPS=(
@@ -258,8 +267,13 @@ cat <<EOF
 
 Next:
 
-  1. Log out and pick "Asteroidz" from your display manager's session list.
-     A second entry runs the experimental Vulkan renderer.
+  1. Log out and pick "Asteroidz (AVK native Vulkan)" from your display
+     manager's session list.
+
+     The other entry, "Asteroidz (AVK + Vulkan validation)", is the same
+     compositor with the Vulkan validation layers loaded. It exists to debug a
+     render fault and is markedly slower; it is not a second renderer to choose
+     between, because there is only one.
 
   2. Copy the default config AND its palette before editing:
 
@@ -283,12 +297,19 @@ Next:
 
          asteroidz-bar
 
-  5. For wallpaper-driven theming, install matugen and wire up the template:
+  5. Wallpaper-driven theming needs nothing extra installed. The bar derives
+     the Material palette itself when the wallpaper changes and renders the
+     templates in process, so the matugen TOOL is not required.
+
+     What it still uses is matugen's FILE FORMAT. ~/.config/matugen/config.toml
+     names each template and the post-hook to run after rendering it, and the
+     asteroidz entry's hook is what tells the compositor to re-read its new
+     palette. The bar writes that file itself if it is not there.
 
          see /usr/share/asteroidz-bar/matugen/README.md
 
-     Until then the palette is whatever colors.kdl says, which is a real
-     Material palette rather than a placeholder.
+     Until a wallpaper is set the palette is whatever colors.kdl says, which is
+     a real Material palette rather than a placeholder.
 
 Because wlroots went to $WLROOTS_PREFIX rather than into a package, an Ubuntu
 update that changes libwayland or libinput can leave it stale. If asteroidz stops
