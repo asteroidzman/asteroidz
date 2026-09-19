@@ -62,8 +62,6 @@ source, or an output carrying a colour transform. Those need linear light, and
 an appearance preference must not be able to break them — so a `force_hdr`
 window keeps the correct path while everything else blends the expected way.
 
-The GLES renderer already blends encoded values; the setting is a no-op there.
-
 ---
 
 ## Shadows
@@ -99,7 +97,7 @@ the scene image holds the previous frame there, because the blur draws beneath
 the window and an undamaged region is never re-rendered. Without the exclusion
 the blur picks the window's own pixels up and spreads them outward: a halo in
 the window's own colour, a glow rather than a shadow on a dark backdrop
-(measured on black: 13 levels of stray light on GLES, 71 on Vulkan, 0 with it).
+(measured on black: 71 levels of stray light without it, 0 with it).
 
 Under the window the true backdrop is unknowable, and what goes in its place is
 what the kernel spreads outward — so it cannot be a stand-in for the backdrop,
@@ -224,8 +222,9 @@ read, no extra buffer and no copy. It applies to shadow backdrop blurs and
 nothing else, because a frosted panel is *supposed* to be able to come out
 lighter than what is behind it.
 
-Compute path only. The GLES renderer and the Vulkan graphics ping-pong fallback
-have both overwritten the source by the time the last pass runs.
+That was SceneFX's compute path only: its GLES renderer and its Vulkan graphics
+ping-pong fallback had both overwritten the source by the time the last pass
+ran. AVK blurs with fragment shaders and has neither.
 
 `contrib/shadow-darken-test.sh` holds the line, against fine bright lines on
 black — the structure of text without needing a terminal to make it. Measured
@@ -254,7 +253,7 @@ on the reasoning that the wallpaper is what lies under everything. It is, but a
 floating window usually sits over *another window* rather than over the
 wallpaper, and a wallpaper brighter than that window bled out as a halo of its
 own — the same artefact wearing different colours (measured on a dark window
-under a bright wallpaper: 8 levels on GLES, 28 on Vulkan, 0 with edge
+under a bright wallpaper: 28 levels of halo, 0 with edge
 extension). See `wlr_scene_blur_set_sample_exclude()` in scenefx.
 
 ```kdl
