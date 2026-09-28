@@ -106,6 +106,10 @@ float az_gradient_step(vec2 box_pos, vec2 box_size, vec2 origin, float rad,
 	vec2 uv = normal - origin;
 
 	if (type == AZ_GRADIENT_CONIC) {
+		/* atan(0, 0) is undefined and can reach the colour-array index. */
+		if (all(equal(uv, vec2(0.0)))) {
+			return 0.5;
+		}
 		uv = vec2(uv.x * cos(rad) - uv.y * sin(rad),
 			uv.x * sin(rad) + uv.y * cos(rad));
 		return -atan(uv.y, uv.x) / 3.14159265 * 0.5 + 0.5;

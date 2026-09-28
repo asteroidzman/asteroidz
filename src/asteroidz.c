@@ -466,21 +466,14 @@ struct dwl_animation {
 	 */
 	uint64_t time_started_ns;
 	uint32_t duration;
+	/* The outgoing segment survives resize() selecting the next action/duration. */
+	uint32_t segment_duration;
+	int32_t segment_action;
 	struct wlr_box initial;
 	struct wlr_box current;
 	int32_t action;
-	/*
-	 * The instant this animation was most recently EVALUATED at (ADR-608).
-	 *
-	 * A retarget seeds the new segment with the position the old one had
-	 * reached -- and under target-time sampling that position was computed for
-	 * a moment in the FUTURE, not for now. Starting the new clock at CPU-now
-	 * while seeding with X(s) claims the window is at X(s) at time now, when
-	 * it will not be there until s: the lead interval gets counted twice and
-	 * the window jumps forward by up to one frame's travel. Anchoring the new
-	 * segment at `s` instead is the one place presentation-time sampling
-	 * changes retarget arithmetic.
-	 */
+	/* Instant at which the shared scene last evaluated this segment. Retargets
+	 * anchor both the initial box and the clock here, preserving continuity. */
 	uint64_t last_sample_ns;
 	/*
 	 * The spring's initial velocity, in normalised curve units (dy/dt at
@@ -567,7 +560,6 @@ typedef struct {
 struct FalloutShard;
 struct ShatterEmitter;
 /* the vector break-up of the "asteroid" close animation */
-typedef struct AsteroidBreak AsteroidBreak;
 
 struct Client {
 	/* Must keep these three elements in this order */
@@ -631,16 +623,8 @@ struct Client {
 	 * of tiles that scatter and fall. NULL for every real client. */
 	struct FalloutShard *shards;
 	int32_t nshards;
-	/* "asteroid" close animation only, on the throwaway fadeout client: the
-	 * window replaced by a vector rock that splits and tumbles. NULL for every
-	 * real client, and never set at the same time as `shards` -- the two are
-	 * different animations, not two halves of one. */
-	AsteroidBreak *rocks;
-	/* "shatter" close animation only, on the throwaway fadeout client: the
-	 * window's own pixels as a grid of fragments that tumble and fall. NULL
-	 * for every real client, and never set at the same time as `shards` or
-	 * `rocks` -- the three are different animations. Needs AVK; the SceneFX
-	 * path cannot rotate a primitive and falls back to "fall". */
+	/* Glass close effect (asteroid/shatter), owned only by a fadeout client.
+	 * Mutually exclusive with the rectangular tile effect above. */
 	struct ShatterEmitter *shatter;
 	union {
 		struct wlr_xdg_surface *xdg;
@@ -2589,35 +2573,16 @@ static uint64_t az_pointer_notify_internal;
  * tearing path is one of az_output_build_frame()'s four callers. */
 #include "present/az_presenter_impl.h"
 
-/*
- * The instant this pass's frame is meant to represent, for the animation code
- * to sample against (ADR-606).
- *
- * Currently the presenter's armed target where one exists. It falls back to
- * the arm instant rather than reading a clock, so there is exactly one time
- * source per pass either way -- the fallback changes WHICH instant, never how
- * many.
- *
- * NOTE, and it is the reason the value is not yet the target everywhere:
- * rendermon walks EVERY client on EVERY output's pass and mutates the client's
- * one shared animation state. Handing each pass its own output's target would
- * therefore make a window straddling two outputs alternate between two
- * instants up to ~10ms apart, frame by frame. Per-output sampling needs the
- * semantic/presentation state split (ADR-611) first; this threading is the
- * plumbing for it and is deliberately behaviour-neutral until then.
- */
+/* The scene is shared by all outputs, so its mutable animation state must
+ * follow the monotonic render-pass clock. Independent predicted presentation
+ * times can run backwards between outputs (or jump ahead by a slower output's
+ * refresh period). Keep those predictions for scheduling; sampling them needs
+ * per-output presentation state first. Read the clock once, in render_monitor. */
 static uint64_t az_sample_total;
 
 static inline uint64_t az_frame_sample_ns(Monitor *m) {
-	uint64_t t = az_presenter_sample_ns(m);
-	if (t == 0) {
-		/* No armed target -- a pass outside the presenter's knowledge. Fall
-		 * back to the arm instant rather than to a clock read, so there is
-		 * still exactly one time source for the pass. */
-		t = m != NULL ? m->m8_arm_ns : 0;
-	}
 	az_sample_total++;
-	return t;
+	return m != NULL ? m->m8_arm_ns : 0;
 }
 /* M12: the one luminance-rule precedence, between client.h (it reads a rule
  * off Client) and the renderer that applies it. */

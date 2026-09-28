@@ -238,7 +238,7 @@ uint64_t avk_cmd_ring_submit(struct avk_cmd_ring *ring,
 	}
 
 	slot->timeline_value = value;
-	ring->next = (ring->next + 1) % AVK_FRAMES_IN_FLIGHT;
+	ring->next = (ring->next + 1) % ring->slot_count;
 	ring->submits++;
 	return value;
 }

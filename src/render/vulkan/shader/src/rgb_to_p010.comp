@@ -58,7 +58,7 @@ layout(set = 0, binding = 1, r16)      uniform writeonly image2D plane_y;
 layout(set = 0, binding = 2, rg16)     uniform writeonly image2D plane_uv;
 
 layout(push_constant) uniform Push {
-	ivec2 size;        /* luma extent */
+	ivec2 size;        /* valid RGB extent, excluding encoder padding */
 	vec4 luma;         /* kr, kg, kb, unused */
 	vec2 cbcr_scale;   /* the Cb and Cr divisors for this matrix */
 } push;
@@ -78,7 +78,7 @@ void main() {
 	 * sample would have three of every four doing nothing but a redundant
 	 * chroma write. */
 	ivec2 uv_pos = ivec2(gl_GlobalInvocationID.xy);
-	ivec2 uv_size = (push.size + 1) / 2;
+	ivec2 uv_size = imageSize(plane_uv);
 	if (uv_pos.x >= uv_size.x || uv_pos.y >= uv_size.y) {
 		return;
 	}
@@ -97,16 +97,16 @@ void main() {
 			 * bottom of every unaligned capture. */
 			ivec2 c = min(p, push.size - 1);
 			vec3 rgb = imageLoad(src, c).rgb;
-			imageStore(plane_y, p, vec4(pack10(luma(rgb)), 0.0, 0.0, 0.0));
+			if (all(lessThan(p, imageSize(plane_y)))) {
+				imageStore(plane_y, p, vec4(pack10(luma(rgb)), 0.0, 0.0, 0.0));
+			}
 			sum += rgb;
 			taken++;
 		}
 	}
 
-	/* Chroma from the average of the block. Averaging the RGB and converting
-	 * once is not the same as converting four times and averaging, but the
-	 * difference is below the quantiser at 10 bits and this is one pass
-	 * rather than four. */
+	/* The matrix is linear: averaging RGB before conversion is equivalent
+	 * to averaging unquantised YUV, with just one final quantisation. */
 	vec3 avg = sum / float(taken);
 	float y = luma(avg);
 	/* Cb and Cr are the blue and red differences, scaled so that they span

@@ -97,7 +97,9 @@ float az_dither_hash(vec2 output_pixel) {
 	uvec2 q = uvec2(ivec2(output_pixel));
 	uint n = q.x * 1597334673u ^ q.y * 3812015801u;
 	n = n * (n ^ (n >> 15));
-	return float(n) * (1.0 / 4294967296.0);
+	/* Keep the integer exactly representable: rounding UINT32_MAX to float
+	 * produces 2^32, which would put the supposedly [0,1) result at 1. */
+	return float(n >> 8) * (1.0 / 16777216.0);
 }
 
 /* Selected at draw time only while the two are being compared; see

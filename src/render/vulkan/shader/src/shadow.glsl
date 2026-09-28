@@ -52,7 +52,7 @@ float az_shadow_x(float x, float y, float sigma, float corner_l,
 	float curved_r = half_size.x - corner_r
 		+ sqrt(max(0.0, corner_r * corner_r - delta_r * delta_r));
 	vec2 integral = 0.5 + 0.5
-		* az_erf((x + vec2(-curved_l, curved_r)) * (sqrt(0.5) / sigma));
+		* az_erf((x + vec2(-curved_r, curved_l)) * (sqrt(0.5) / sigma));
 	return integral.y - integral.x;
 }
 

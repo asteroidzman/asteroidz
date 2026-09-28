@@ -1335,6 +1335,16 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 			pc.uv_org_dx[3] = dx[1];
 			pc.uv_dy[0] = dy[0];
 			pc.uv_dy[1] = dy[1];
+			if (is_quad && cmd->quad_uv_custom) {
+				for (int k = 0; k < 2; k++) {
+					pc.uv_org_dx[k] = origin[k] + cmd->quad_uv[0] * dx[k]
+						+ cmd->quad_uv[1] * dy[k];
+					pc.uv_org_dx[k + 2] = (cmd->quad_uv[2] - cmd->quad_uv[0]) * dx[k]
+						+ (cmd->quad_uv[3] - cmd->quad_uv[1]) * dy[k];
+					pc.uv_dy[k] = (cmd->quad_uv[4] - cmd->quad_uv[0]) * dx[k]
+						+ (cmd->quad_uv[5] - cmd->quad_uv[1]) * dy[k];
+				}
+			}
 			/* 1.0 keeps the sampled alpha, 0.0 forces opaque -- the DRM X
 			 * formats have a fourth channel that means nothing. */
 			pc.params[1] = cmd->image->has_alpha ? 1.0f : 0.0f;
@@ -3240,6 +3250,15 @@ uint64_t avk_render_frame(struct avk_renderer *renderer,
 	 */
 	if (path_b && compose != target) {
 		compose->last_use = value;
+	}
+	if (path_b) {
+		struct avk_image *table = renderer->encode_params.tf == AVK_ENCODE_TF_CLUT3D
+			? renderer->encode_params.clut
+			: renderer->encode_params.tf == AVK_ENCODE_TF_LUT1D
+				? renderer->encode_params.lut : NULL;
+		if (table != NULL && table->last_use < value) {
+			table->last_use = value;
+		}
 	}
 	renderer->stats.frames++;
 

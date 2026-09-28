@@ -486,6 +486,8 @@ struct az_avk {
 	 */
 	int frame_acquire_fds[AZ_AVK_MAX_ACQUIRE];
 	uint32_t frame_acquire_count;
+	uint64_t frame_attempt;
+	bool frame_acquire_failed;
 	/*
 	 * Surfaces this frame sampled that use explicit sync, so each can be told
 	 * WHEN the read finished. Collected even when the surface attached no
@@ -2256,10 +2258,10 @@ static void az_avk_collect_acquire(struct az_avk_buffer *entry) {
 	}
 	/* Once per frame per buffer: the same buffer resolves again on a second
 	 * output and on every cache hit, and a sync_file may be waited on once. */
-	if (entry->acquire_frame == avk.frames + 1) {
+	if (entry->acquire_frame == avk.frame_attempt) {
 		return;
 	}
-	entry->acquire_frame = avk.frames + 1;
+	entry->acquire_frame = avk.frame_attempt;
 
 	int fence = -1;
 	bool explicit_point = false;
@@ -2273,12 +2275,16 @@ static void az_avk_collect_acquire(struct az_avk_buffer *entry) {
 				avk.frame_surfaces[avk.frame_surface_count++] = surface;
 			} else {
 				avk.release_points_dropped++;
+				avk.frame_acquire_failed = true;
 			}
 		}
 		if (st != NULL && st->acquire_timeline != NULL) {
 			fence = wlr_drm_syncobj_timeline_export_sync_file(
 				st->acquire_timeline, st->acquire_point);
 			explicit_point = true;
+			if (fence < 0) {
+				avk.frame_acquire_failed = true;
+			}
 		}
 	}
 	if (fence < 0 && !explicit_point) {
@@ -2291,6 +2297,7 @@ static void az_avk_collect_acquire(struct az_avk_buffer *entry) {
 			if (!avk_sync_dmabuf_fences(dmabuf.fd[0], DMA_BUF_SYNC_READ,
 					&fence)) {
 				fence = -1;
+				avk.frame_acquire_failed = true;
 			}
 		}
 	}
@@ -2300,10 +2307,9 @@ static void az_avk_collect_acquire(struct az_avk_buffer *entry) {
 		return;
 	}
 	if (avk.frame_acquire_count >= AZ_AVK_MAX_ACQUIRE) {
-		/* Said out loud rather than dropped quietly: past this point the
-		 * frame is submitted without waiting for a client that is still
-		 * drawing, which is the very thing this exists to prevent. */
+		/* Refuse this frame rather than sample a client without its fence. */
 		avk.acquire_dropped++;
+		avk.frame_acquire_failed = true;
 		close(fence);
 		return;
 	}
@@ -3364,7 +3370,9 @@ static bool az_avk_target_acquire(struct az_avk_output *out,
 	};
 	(*wait_count)++;
 	avk.presentation_waits++;
-	target->state = AZ_AVK_TARGET_FREE;
+	/* Keep the release fence live until a render is actually submitted. A
+	 * later failure may abandon this wait; the next attempt must import it
+	 * again rather than assume the display engine has released the target. */
 	return true;
 }
 
@@ -3505,6 +3513,11 @@ static bool az_avk_present_handover(struct az_avk_output *out,
 static void az_avk_output_finish(struct az_avk_output *out) {
 	if (out == NULL) {
 		return;
+	}
+	/* Hot-unplug does not pass through the compositor shutdown idle wait.
+	 * Drain before destroying the sync bridge or signalling client releases. */
+	if (out->sync_ready) {
+		avk_device_wait_idle(out->sync.dev);
 	}
 	/*
 	 * A recording is FINISHED, not abandoned.
@@ -4504,30 +4517,24 @@ static void az_avk_walk_node(struct az_avk_walk *walk,
 				}
 				const float *cor = &shatter->corners[i * 8];
 
-				/*
-				 * Layout pixels to output pixels, THROUGH THE EXISTING
-				 * CONVERSION, one corner at a time as a 1x1 box.
-				 *
-				 * az_avk_box_to_output already handles the output's origin,
-				 * its scale and all eight transforms, and is exercised by
-				 * every other command in the tree. A second, quad-only
-				 * conversion would be a second chance to get a rotated output
-				 * wrong -- and that class of bug renders perfectly on the
-				 * machine it was written on. The cost is that corners land on
-				 * whole output pixels, which is the same quantisation every
-				 * other scene node's position already has.
-				 */
+				/* Transform points, not 1x1 boxes: retain subpixel motion and
+				 * avoid the one-pixel offset a reflected box would introduce. */
 				float q[8];
 				bool sane = true;
 				for (int k = 0; k < 4; k++) {
-					struct wlr_box pt;
-					az_avk_box_to_output(walk, (int)lroundf(cor[k * 2]),
-						(int)lroundf(cor[k * 2 + 1]), 1, 1, &pt);
-					q[k * 2] = (float)pt.x;
-					q[k * 2 + 1] = (float)pt.y;
 					if (!isfinite(cor[k * 2]) || !isfinite(cor[k * 2 + 1])) {
 						sane = false;
+						break;
 					}
+					struct wlr_fbox pt = {
+						.x = (cor[k * 2] - walk->ox) * walk->scale,
+						.y = (cor[k * 2 + 1] - walk->oy) * walk->scale,
+					};
+					wlr_fbox_transform(&pt, &pt,
+						wlr_output_transform_invert(walk->transform),
+						walk->pres.width, walk->pres.height);
+					q[k * 2] = (float)pt.x;
+					q[k * 2 + 1] = (float)pt.y;
 				}
 				if (!sane) {
 					continue;
@@ -4554,11 +4561,17 @@ static void az_avk_walk_node(struct az_avk_walk *walk,
 				fc->image = image;
 				fc->opacity = shatter->opacity;
 				fc->lum = az_avk_lum_of(buf, walk->scene_ref_nits);
-				fc->src = (struct avk_fbox){ shatter->frags[i].sx,
-					shatter->frags[i].sy, shatter->frags[i].sw,
-					shatter->frags[i].sh };
-				fc->transform = az_avk_transform(wlr_output_transform_compose(
-					buf->transform, walk->transform));
+				fc->lum.scale *= shatter_light_at(&shatter->frags[i], shatter->progress);
+				struct wlr_fbox crop = buf->src_box;
+				if (wlr_fbox_empty(&crop)) {
+					crop = (struct wlr_fbox){0, 0, image->extent.width, image->extent.height};
+				}
+				fc->src = (struct avk_fbox){crop.x, crop.y, crop.width, crop.height};
+				/* Geometry already carries the output rotation. UVs follow only
+				 * the buffer's transform, so the image rotates with the shard. */
+				fc->transform = az_avk_transform(wlr_output_transform_invert(buf->transform));
+				fc->quad_uv_custom = true;
+				memcpy(fc->quad_uv, shatter->frags[i].uv, sizeof(fc->quad_uv));
 				/* Always linear: a rotated fragment never samples 1:1, so
 				 * nearest would crawl along its edges as it turns. */
 				fc->filter_linear = true;
@@ -6289,6 +6302,11 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 	/* Zeroed here so what accumulates below belongs to THIS frame. */
 	avk.frame_join_ns = 0;
 	avk.frame_output = m->wlr_output;
+	/* A failed submission is still a new attempt: its fences must be
+	 * collected again on retry, even though avk.frames did not advance. */
+	avk.frame_attempt++;
+	avk.frame_acquire_failed = false;
+	avk.frame_surface_count = 0;
 	/* Any fence left from a frame that bailed out before submitting is closed
 	 * here: it belongs to a submission that never happened. */
 	for (uint32_t i = 0; i < avk.frame_acquire_count; i++) {
@@ -6949,11 +6967,13 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 	 * indistinguishable from the corruption this whole path exists to remove
 	 * -- so it is counted and named.
 	 */
+	bool acquire_ok = !avk.frame_acquire_failed;
 	for (uint32_t i = 0; i < avk.frame_acquire_count; i++) {
 		VkSemaphore sem = avk_sync_import_sync_file(&out->sync,
 			avk.frame_acquire_fds[i]);
 		if (sem == VK_NULL_HANDLE) {
 			avk.acquire_import_fails++;
+			acquire_ok = false;
 			continue;
 		}
 		waits[wait_count++] = (VkSemaphoreSubmitInfo){
@@ -6966,8 +6986,11 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 	/* Owned by the import now (or closed by the failure above). */
 	avk.frame_acquire_count = 0;
 
-	uint64_t timeline = avk_render_frame(&out->slot->renderer, target, &scene,
-		waits, wait_count, signals, 1);
+	/* Use the common failed-frame cleanup below, including damage restoration.
+	 * Every fd above is consumed even when one import fails. */
+	uint64_t timeline = acquire_ok
+		? avk_render_frame(&out->slot->renderer, target, &scene,
+			waits, wait_count, signals, 1) : 0;
 	/*
 	 * ── decode_enabled AND encode_srgb OUTLIVE THE PRODUCTION RENDER ──────
 	 *
@@ -7021,6 +7044,7 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 	out->frame_seq++;
 	avk_scene_finish(&scene);
 	if (timeline == 0) {
+		avk.frame_surface_count = 0;
 		/* The ring has already been rotated, so the damage this frame was
 		 * going to draw is now recorded as drawn. Trashing it is the only
 		 * honest recovery: the next frame redraws everything rather than
@@ -7605,7 +7629,7 @@ static void az_avk_surface_commit(struct wl_listener *listener, void *data) {
  * no commit, so the hook above never sees them -- and without a second source
  * of generations they would be uploaded once and then frozen.
  *
- * Every one of today's producers (text-node.c, ufo-node.c, asteroid-break.h)
+ * Every one of today's producers (text-node.c, ufo-node.c)
  * happens to allocate a FRESH wlr_buffer per update and drop the old one,
  * which would make buffer identity a valid content version for them. That was
  * checked rather than assumed -- and it is still not what this hangs on,

@@ -1141,8 +1141,8 @@ static bool convert_to_p010(struct avk_encoder *enc, VkImage src,
 	 * BT.2020 and BT.709 differ in both, and the pair used here is the pair
 	 * named in the SPS -- see create_parameters. */
 	struct conv_push push = {
-		.width = (int32_t)enc->coded_width,
-		.height = (int32_t)enc->coded_height,
+		.width = (int32_t)enc->width,
+		.height = (int32_t)enc->height,
 	};
 	if (enc->colour == AVK_ENCODE_COLOUR_HDR10) {
 		push.kr = 0.2627f; push.kg = 0.6780f; push.kb = 0.0593f;

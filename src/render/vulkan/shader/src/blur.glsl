@@ -98,7 +98,10 @@ float az_blur_noise(vec2 p) {
  * that path live, so the shapes are chosen now rather than retrofitted.
  */
 vec4 az_blur_effects(vec4 color, vec2 uv) {
-	vec3 rgb = max(color.rgb, vec3(0.0));
+	/* Nonlinear colour operations act on straight RGB, then restore the
+	 * blurred coverage. Applying contrast to premultiplied RGB lifts edges. */
+	float alpha = max(color.a, 0.0);
+	vec3 rgb = alpha > 0.0 ? max(color.rgb / alpha, vec3(0.0)) : vec3(0.0);
 
 	/*
 	 * ── THE DOMAIN THESE PARAMETERS MEAN SOMETHING IN ─────────────────────
@@ -136,7 +139,11 @@ vec4 az_blur_effects(vec4 color, vec2 uv) {
 		lab.yz *= AZ_BLUR_SATURATION;
 		rgb = pow(max(az_oklab_to_linear(lab), vec3(0.0)), vec3(1.0 / 2.2));
 	}
-	if (AZ_BLUR_CONTRAST != 1.0) {
+	if (AZ_BLUR_CONTRAST <= 0.0) {
+		/* The zero-contrast limit for positive channels is mid grey; black
+		 * remains black. Never feed pow() the undefined pair (0, 0). */
+		rgb = mix(vec3(0.5), vec3(0.0), lessThanEqual(rgb, vec3(0.0)));
+	} else if (AZ_BLUR_CONTRAST != 1.0) {
 		rgb = 0.5 * pow(rgb * 2.0, vec3(AZ_BLUR_CONTRAST));
 	}
 	rgb *= AZ_BLUR_BRIGHTNESS * (1.0 + az_blur_noise(uv));
@@ -147,5 +154,5 @@ vec4 az_blur_effects(vec4 color, vec2 uv) {
 	if (AZ_BLUR_LINEAR_SRC) {
 		rgb = pow(max(rgb, vec3(0.0)), vec3(2.2));
 	}
-	return vec4(rgb, color.a);
+	return vec4(rgb * alpha, alpha);
 }

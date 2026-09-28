@@ -323,7 +323,11 @@ vec3 az_look(vec3 v, float chroma, float black) {
 	}
 	vec3 lab = az_linear_to_oklab(v);
 	if (do_black) {
-		lab.x = max(lab.x - black, 0.0) / (1.0 - black);
+		float lightness = max(lab.x - black, 0.0) / (1.0 - black);
+		/* Chroma must follow lightness: L=0 with nonzero a/b converts back
+		 * to coloured RGB, so the negative clamp would resurrect crushed blacks. */
+		lab.yz *= lab.x > 0.0 ? lightness / lab.x : 0.0;
+		lab.x = lightness;
 	}
 	if (do_chroma) {
 		lab.yz *= chroma;

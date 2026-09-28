@@ -36,35 +36,37 @@ misc {
 }
 ```
 
-### `asteroid` — the default close animation
+### `asteroid` and `shatter` — breaking glass
 
-The window comes apart the way a rock does in the arcade game: it is replaced
-by a jagged **vector outline** of the same size which splits into four smaller
-rocks, each tumbling and drifting straight out from the centre, with a handful
-of line streaks thrown off alongside. They fade as they go and are gone inside
-the close duration.
+Both names select the glass close effect. `asteroid` remains the default.
+The window cracks outward from an impact point into irregular triangular
+shards. The pieces keep the window's image, separate briefly along the cracks,
+then tumble, catch small glints and fall under gravity. They fade during the
+latter part of the animation.
 
 ```kdl
 animations {
     window-close {
-        type asteroid
-        duration 250
+        type asteroid       // shatter selects the same effect
+        duration 350
+        shatter-fragments 6 // fracture density (2–12, default 6)
     }
 }
 ```
 
-Not the window's own pixels. The 1979 machine drew everything as white line
-loops, and a rock breaking up is that loop becoming smaller loops — so the
-pixels go and the outline takes over. Slicing the snapshot into moving tiles is
-a different effect, and it is still here under its old name:
+`shatter-fragments` controls the density of radial and crosswise cracks, not a
+square tile grid. The default makes 72 shards; the range makes 8–336. The same
+setting applies to both names. Motion is evaluated from elapsed time, so it
+does not speed up with refresh rate or with the number of monitors.
 
-### `fall` — the window's own pixels, in pieces
+Fragments sample the existing window buffer through Vulkan; no per-frame
+snapshot copies or CPU rasterization are needed. Debris disappears when it
+crosses into a neighboring monitor or leaves the visible desktop.
 
-`fall` breaks the closing window into a grid of tiles that fly out from the
-centre and fade. It reads as breaking glass rather than as an explosion,
-because the pieces carry photographic content and — this is the constraint that
-shapes both animations — **cannot rotate**. A scene node has a position, a size
-and a crop, and no transform.
+### `fall` — a grid of tiles
+
+`fall` keeps the rectangular tile effect: pieces move outward without rotating.
+Its column and row settings are independent of the glass effect.
 
 ```kdl
 animations {
@@ -72,79 +74,10 @@ animations {
         type fall
         duration 250
         fall-columns 4   // tiles across (1–12, default 4)
-        fall-rows 3      // tiles down  (1–12, default 3)
+        fall-rows 3      // tiles down (1–12, default 3)
     }
 }
 ```
-
-`fall-columns` and `fall-rows` apply to this one only; `asteroid` always makes
-four rocks, because that is what a rock does in the game and a dozen pieces of
-a window read as confetti.
-
-Neither uses gravity, an arc, or any settling: debris in that game leaves the
-wreck in a straight line and fades before it gets anywhere. Distance eases out
-in both, putting most of the travel in the first third, which is what sells a
-burst at a duration short enough to stay out of the way.
-
-### `shatter` — the same pixels, tumbling, under gravity
-
-`fall`'s note above — that the pieces **cannot rotate**, because a scene node
-has a position, a size and a crop and no transform — was a statement about the
-renderer, not about the animation. `shatter` is what the animation looks like
-once that stops being true.
-
-The window breaks into a square grid of fragments which are thrown outward,
-**rotate as they go**, and **fall under gravity**, arcing over instead of
-travelling in a straight line. It reads as glass hitting a floor rather than as
-a burst.
-
-```kdl
-animations {
-    window-close {
-        type shatter
-        duration 350
-        shatter-fragments 6   // fragments PER AXIS (2–12, default 6)
-    }
-}
-```
-
-One number and not a column/row pair: the grid is square. Gravity, launch speed
-and spin are **not settings**. They are internal constants with deterministic
-per-fragment jitter, because the three are not independent — the launch speed
-that reads as *thrown* depends on the gravity that reads as *falling*, and a
-spin rate that can be set can be set to something that does not look like
-anything.
-
-**It needs the Vulkan renderer.** Rotation is an
-[`AVK_CMD_TEXTURE_QUAD`](../architecture.md#p2--the-arbitrary-corner-textured-quad),
-a primitive whose four destination corners are placed independently; the
-SceneFX/GLES path has no such primitive and falls back to `fall`. The two
-renderers are allowed to differ here rather than the better one being held back
-to what the older one can express.
-
-The trajectory is a **closed form in wall-clock time** — `p(t) = p₀ + v₀t +
-½gt²`, `θ(t) = θ₀ + ωt` — evaluated at each output's own presentation instant,
-never advanced once per frame. That is what keeps a close finishing at the same
-moment on a 60 Hz and a 144 Hz screen, and on a window spanning both.
-
-**No shader is involved, and none is needed.** Rotation is why `asteroid` is
-drawn rather than sliced: a tumbling fragment has to be re-drawn at its current
-angle every frame, so each one is a handful of stroked cairo paths into its own
-small `wlr_buffer` — the same thing the UFO easter egg, every text node and
-every icon in this compositor already do. A dozen polygons a frame is work a
-CPU does not notice, and the scene graph only ever sees an ARGB buffer, so it
-renders identically on the GLES and Vulkan backends. A GPU pass would mean
-renderer-specific code twice over for no visible difference. Per-fragment
-buffers rather than one screen-sized surface, too: a fullscreen window would
-otherwise mean an 11 MB allocation every frame.
-
-Debris also never lands on a screen it did not come from. These are nodes in a
-global layer, so a piece thrown past the edge of its monitor would otherwise
-turn up on the neighbouring one. A fragment is dropped on **entering** another
-monitor rather than on leaving its own — a maximised window's outer pieces
-start flush against their own edge, so the stricter test would blink the whole
-outer ring out on the first frame. Flying off the outside edge of the desk is
-fine; there is nothing out there to pollute.
 
 ## Fade Settings
 

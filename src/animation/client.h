@@ -1,5 +1,4 @@
 #include "wlr/util/log.h"
-#include "asteroid-break.h"
 void client_actual_size(Client *c, int32_t *width, int32_t *height) {
 	*width = c->animation.current.width - 2 * (int32_t)c->bw;
 
@@ -2034,166 +2033,8 @@ static void fallout_slice_tree(struct wlr_scene_node *node,
 	 * per-tile crop and the pieces are gone within a few hundred ms. */
 }
 
-/* Build the vector break-up for `fadeout_client` from `c`'s geometry.
- *
- * Geometry only: the window's pixels play no part, because the arcade rock is
- * an outline and so is this. What the window contributes is its box -- the
- * rock is inscribed in it, so a wide window comes apart into a wide spray and
- * a small one into a small one. */
-static bool init_asteroid_break(Client *fadeout_client, Client *c) {
-	struct wlr_box win = c->animation.current;
-	if (win.width <= 0 || win.height <= 0)
-		return false;
-
-	AsteroidBreak *br = ecalloc(1, sizeof(*br));
-	br->tree = wlr_scene_tree_create(layers[LyrFadeOut]);
-	if (!br->tree) {
-		free(br);
-		return false;
-	}
-	br->mon = c->mon;
-	/* The arcade drew in white. Follow the theme's foreground instead: this is
-	 * a desktop, and a hard white flash on a themed desk reads as a glitch
-	 * rather than as a nod. */
-	memcpy(br->color, config.theme.fg_color, sizeof(br->color));
-
-	double ox = win.x + win.width / 2.0, oy = win.y + win.height / 2.0;
-	double span = ASTEROIDZ_MIN(win.width, win.height);
-	/* How far the pieces get. Two thirds of the smaller dimension is enough to
-	 * clear the window's own footprint without still travelling when they have
-	 * already faded out. */
-	double reach = span * 0.66;
-
-	/* Four rocks, arranged as quarters of the window, plus streaks. Four
-	 * because that is what a rock does in the game -- it halves, twice -- and
-	 * because a dozen pieces of a window read as confetti rather than as
-	 * something breaking. */
-	static const double quad[4][2] = {
-		{-0.25, -0.25}, {0.25, -0.25}, {-0.25, 0.25}, {0.25, 0.25}};
-	int32_t n = 0;
-	for (int32_t i = 0; i < 4 && n < AST_MAX_FRAGS; i++) {
-		AsteroidFrag *f = &br->frags[n];
-		double cx = ox + win.width * quad[i][0];
-		double cy = oy + win.height * quad[i][1];
-		/* Sized so the four together roughly cover the window: a quarter of
-		 * each dimension, taking the smaller so a very wide window does not
-		 * produce rocks wider than they are tall. */
-		double size = ASTEROIDZ_MIN(win.width, win.height) * 0.28;
-		ast_make_frag(f, (uint32_t)(i * 131 + 7), cx, cy, ox, oy, size, reach);
-		n++;
-	}
-	for (int32_t i = 0; n < AST_MAX_FRAGS; i++, n++)
-		ast_make_spark(&br->frags[n], (uint32_t)(i * 733 + 29), ox, oy, reach);
-
-	for (int32_t i = 0; i < n; i++) {
-		br->frags[i].node = wlr_scene_buffer_create(br->tree, NULL);
-		if (!br->frags[i].node) {
-			n = i;
-			break;
-		}
-	}
-	if (n == 0) {
-		wlr_scene_node_destroy(&br->tree->node);
-		free(br);
-		return false;
-	}
-	br->nfrags = n;
-
-	fadeout_client->scene = br->tree;
-	fadeout_client->rocks = br;
-	return true;
-}
-
-/* Advance every fragment: drift outward, keep turning, fade.
- *
- * Distance eases out for the same reason the tile version does -- most of the
- * travel in the first third is what makes a burst read as a burst -- but the
- * SPIN is linear. A rock that visibly slows its rotation looks like it is
- * being braked by something, and there is nothing out there to brake it. */
-static void asteroid_break_next_tick(Client *c, double t) {
-	AsteroidBreak *br = c->rocks;
-	if (!br)
-		return;
-	if (br->drawn && fabs(t - br->last_t) < 1e-6)
-		return; /* same instant, already on screen */
-	br->last_t = t;
-	br->drawn = true;
-
-	/* Opened after the same-instant guard so the zone counts real work only.
-	 * Each fragment is re-rasterised with cairo into its own buffer every
-	 * frame -- the scene graph cannot rotate a node, so the rotation has to be
-	 * baked in per tick. That is the most expensive thing asteroidz does per
-	 * frame and, until now, the least measured; the fragment count is attached
-	 * because cost scales with it and it is what a budget would be spent on. */
-	double travel = 1.0 - (1.0 - t) * (1.0 - t);
-	/* Hold full opacity briefly so the break is legible, then go. */
-	double alpha = t < 0.25 ? 1.0 : 1.0 - (t - 0.25) / 0.75;
-	if (alpha < 0.0)
-		alpha = 0.0;
-
-	for (int32_t i = 0; i < br->nfrags; i++) {
-		AsteroidFrag *f = &br->frags[i];
-		if (!f->node)
-			continue;
-		double cx = f->cx + f->dx * travel;
-		double cy = f->cy + f->dy * travel;
-
-		/* Same rule as the tile version: debris never lands on a screen it did
-		 * not come from. */
-		struct wlr_box box = {.x = (int32_t)(cx - f->radius),
-							  .y = (int32_t)(cy - f->radius),
-							  .width = (int32_t)(f->radius * 2),
-							  .height = (int32_t)(f->radius * 2)};
-		bool trespassing = false;
-		Monitor *other = NULL;
-		wl_list_for_each(other, &mons, link) {
-			struct wlr_box hit;
-			if (other == br->mon || !other->wlr_output ||
-				!other->wlr_output->enabled)
-				continue;
-			if (wlr_box_intersection(&hit, &box, &other->m)) {
-				trespassing = true;
-				break;
-			}
-		}
-		if (trespassing || alpha <= 0.0) {
-			wlr_scene_node_set_enabled(&f->node->node, false);
-			continue;
-		}
-		wlr_scene_node_set_enabled(&f->node->node, true);
-		ast_frag_render(f, br->color, alpha, f->angle + f->spin * t, cx, cy);
-	}
-}
-
-static void asteroid_break_destroy(AsteroidBreak *br) {
-	if (!br)
-		return;
-	for (int32_t i = 0; i < br->nfrags; i++) {
-		if (br->frags[i].node)
-			wlr_scene_buffer_set_buffer(br->frags[i].node, NULL);
-		if (br->frags[i].buffer)
-			wlr_buffer_drop(&br->frags[i].buffer->base);
-	}
-	free(br);
-}
-
-/* Build the tile grid for `fadeout_client` from `c`'s current appearance.
- * Returns false if the window can't be sliced, in which case the caller falls
- * back to one of the whole-window close animations. */
-/*
- * ── SHATTER: BUILDING THE CLOUD ───────────────────────────────────────────
- *
- * One scene node, not one per fragment. `fall` gives every tile its own
- * wlr_scene_tree with a sliced copy of the snapshot inside it, which is the
- * only way to move pieces independently when the primitive cannot rotate. A
- * shatter fragment DOES rotate (AVK_CMD_TEXTURE_QUAD), and the renderer can
- * place four corners per fragment from one node's worth of state -- so the
- * scene holds a single marker node and the walker expands it.
- *
- * That is not just tidier. 6x6 is 36 fragments; as scene trees that is 36
- * nodes to position, damage and cull every tick, against one.
- */
-
+/* The glass cloud uses one scene marker and samples the window's existing
+ * buffer. AVK expands it into independently moving textured triangles. */
 /* The largest buffer node in a snapshot: the window's own content, as opposed
  * to its titlebar, shadow or border. Largest rather than first because tree
  * order is not content order. */
@@ -2222,6 +2063,7 @@ static void shatter_find_main_buffer(struct wlr_scene_node *node,
 
 static bool init_shatter_frags(Client *fadeout_client, Client *c) {
 	int32_t n = CLAMP_INT(config.shatter_fragments, 2, 12);
+	int32_t count = shatter_frag_count(n);
 	struct wlr_box win = c->animation.current;
 	if (win.width <= 0 || win.height <= 0) {
 		wlr_log(WLR_ERROR, "shatter: declined, empty geometry %dx%d",
@@ -2258,9 +2100,9 @@ static bool init_shatter_frags(Client *fadeout_client, Client *c) {
 		wlr_scene_buffer_create(layers[LyrFadeOut], src->buffer);
 	struct ShatterEmitter *e = marker ? calloc(1, sizeof(*e)) : NULL;
 	struct ShatterFrag *frags = e
-		? calloc((size_t)n * (size_t)n, sizeof(*frags)) : NULL;
+		? calloc((size_t)count, sizeof(*frags)) : NULL;
 	float *corners = frags
-		? calloc((size_t)n * (size_t)n * 8, sizeof(*corners)) : NULL;
+		? calloc((size_t)count * 8, sizeof(*corners)) : NULL;
 	if (!corners) {
 		free(frags);
 		free(e);
@@ -2270,18 +2112,14 @@ static bool init_shatter_frags(Client *fadeout_client, Client *c) {
 		return false;
 	}
 
-	double img_w = src->buffer->width, img_h = src->buffer->height;
-	if (src->transform & WL_OUTPUT_TRANSFORM_90) {
-		double swap = img_w;
-		img_w = img_h;
-		img_h = swap;
-	}
-
-	for (int32_t row = 0; row < n; row++) {
-		for (int32_t col = 0; col < n; col++) {
-			shatter_frag_init(&frags[row * n + col], col, row, n, &win,
-				img_w, img_h);
-		}
+	/* Preserve the source's viewport crop and buffer transform. Shard UVs
+	 * describe the displayed pane, independently of the output transform. */
+	wlr_scene_buffer_set_source_box(marker, &src->src_box);
+	wlr_scene_buffer_set_transform(marker, src->transform);
+	for (int32_t i = 0; i < count; i++) {
+		shatter_frag_init(&frags[i], i, n, &win);
+		shatter_corners_at(&frags[i], 0.0,
+			ASTEROIDZ_MIN(win.width, win.height), &corners[i * 8]);
 	}
 
 	wlr_scene_node_destroy(&snap->node);
@@ -2306,11 +2144,9 @@ static bool init_shatter_frags(Client *fadeout_client, Client *c) {
 	}
 	e->marker = marker;
 	e->frags = frags;
-	e->nfrags = n * n;
+	e->nfrags = count;
 	e->corners = corners;
 	e->span = (double)ASTEROIDZ_MIN(win.width, win.height);
-	e->img_w = img_w;
-	e->img_h = img_h;
 	e->opacity = 1.0f;
 	wl_list_insert(&shatter_emitters, &e->link);
 
@@ -2361,7 +2197,9 @@ static bool shatter_next_tick(Client *c, double t) {
 	if (!e)
 		return false;
 
-	double fade = find_animation_curve_at(t, OPAFADEOUT);
+	e->progress = t;
+	/* Keep the pane legible while cracks form; fade the falling debris. */
+	double fade = find_animation_curve_at(fmax(0.0, (t - 0.30) / 0.70), OPAFADEOUT);
 	e->opacity = (float)ASTEROIDZ_MAX(
 		config.fadeout_begin_opacity - fade * config.fadeout_begin_opacity, 0);
 
@@ -2400,8 +2238,8 @@ static bool shatter_next_tick(Client *c, double t) {
 		if (!f->dropped) {
 			struct wlr_box box = {
 				.x = (int32_t)floor(fx0), .y = (int32_t)floor(fy0),
-				.width = (int32_t)ceil(fx1 - fx0) + 1,
-				.height = (int32_t)ceil(fy1 - fy0) + 1};
+				.width = (int32_t)ceil(fx1) - (int32_t)floor(fx0),
+				.height = (int32_t)ceil(fy1) - (int32_t)floor(fy0)};
 			Monitor *other = NULL;
 			wl_list_for_each(other, &mons, link) {
 				struct wlr_box hit;
@@ -2436,8 +2274,8 @@ static bool shatter_next_tick(Client *c, double t) {
 		{
 			struct wlr_box probe = {
 				.x = (int32_t)floor(fx0), .y = (int32_t)floor(fy0),
-				.width = (int32_t)ceil(fx1 - fx0) + 1,
-				.height = (int32_t)ceil(fy1 - fy0) + 1};
+				.width = (int32_t)ceil(fx1) - (int32_t)floor(fx0),
+				.height = (int32_t)ceil(fy1) - (int32_t)floor(fy0)};
 			bool on_a_screen = false;
 			Monitor *m = NULL;
 			wl_list_for_each(m, &mons, link) {
@@ -2703,6 +2541,7 @@ void fadeout_client_animation_next_tick(Client *c, uint64_t sample_ns) {
 
 	uint64_t now_ns = sample_ns;
 	double passed_ms = c->animation.time_started_ns
+		&& now_ns > c->animation.time_started_ns
 		? (double)(now_ns - c->animation.time_started_ns) / 1.0e6
 		: 0.0;
 	double animation_passed =
@@ -2710,39 +2549,7 @@ void fadeout_client_animation_next_tick(Client *c, uint64_t sample_ns) {
 			? passed_ms / (double)c->animation.duration
 			: 1.0;
 
-	/* The vector break-up owns a tree of its own nodes, each re-rendered per
-	 * frame, so it has its own tick and teardown. */
-	if (c->rocks) {
-		asteroid_break_next_tick(c, ASTEROIDZ_MIN(animation_passed, 1.0));
-		if (animation_passed >= 1.0) {
-			wl_list_remove(&c->fadeout_link);
-			/*
-			 * THE BREAK BEFORE THE TREE, and the order is the whole of it.
-			 *
-			 * `c->scene` IS `br->tree` (asteroid_break_build sets it), and
-			 * every fragment's wlr_scene_buffer was created as its child. So
-			 * destroying the tree first frees exactly the nodes
-			 * asteroid_break_destroy() then clears the buffer out of -- a
-			 * heap-use-after-free of a 480-byte wlr_scene_buffer, written
-			 * through, whose damage surfaced much later as a doubled
-			 * vkDestroyBuffer and a glibc abort in teardown.
-			 *
-			 * Unlike shatter and fall, which free only their own arrays and
-			 * may be torn down in either order, this one holds scene nodes and
-			 * must go while they are still alive.
-			 */
-			asteroid_break_destroy(c->rocks);
-			wlr_scene_node_destroy(&c->scene->node);
-			free(c);
-		}
-		return;
-	}
-
-	/*
-	 * "shatter": one marker node the AVK walker expands into a quad per
-	 * fragment. Its own tick and teardown, and the only one of the three that
-	 * can finish EARLY -- see shatter_next_tick.
-	 */
+	/* Glass pieces can finish early when none remain visible. */
 	if (c->shatter) {
 		bool alive = shatter_next_tick(c, ASTEROIDZ_MIN(animation_passed, 1.0));
 		if (!alive || animation_passed >= 1.0) {
@@ -2996,6 +2803,7 @@ static inline double anim_eval_settle(const struct anim_eval *ev) {
 static inline void anim_eval_at(const Client *c, uint64_t sample_ns,
 		struct anim_eval *out) {
 	double passed_ms = c->animation.time_started_ns
+		&& sample_ns > c->animation.time_started_ns
 		? (double)(sample_ns - c->animation.time_started_ns) / 1.0e6
 		: 0.0;
 	out->linear = c->animation.duration
@@ -3031,6 +2839,7 @@ static inline void anim_eval_at(const Client *c, uint64_t sample_ns,
 void client_animation_next_tick(Client *c, uint64_t sample_ns) {
 	uint64_t now_ns = sample_ns;
 	double passed_ms = c->animation.time_started_ns
+		&& now_ns > c->animation.time_started_ns
 		? (double)(now_ns - c->animation.time_started_ns) / 1.0e6
 		: 0.0;
 	int32_t passed_time = (int32_t)passed_ms;   /* the trace's units only */
@@ -3225,38 +3034,19 @@ void init_fadeout_client(Client *c) {
 		c->overview_scene_surface = NULL;
 	}
 
-	/* Two different animations, not two names for one:
-	 *
-	 *   asteroid  the window becomes a vector rock and splits, tumbling
-	 *   fall      the window's own pixels break into tiles that scatter
-	 *
-	 * "fall" was what "asteroid" used to be, so it keeps working -- but it now
-	 * selects the tile effect it always actually was, which is a perfectly
-	 * good thing to want and nothing else does. */
 	const char *close_type = c->animation_type_close ? c->animation_type_close
-													 : config.animation_type_close;
-	bool want_rock = close_type && strcmp(close_type, "asteroid") == 0;
+		: config.animation_type_close;
+	/* Keep both existing names: the default break-apart animation and the
+	 * explicit shatter selection now share the glass effect. */
+	bool want_shatter = close_type && (strcmp(close_type, "asteroid") == 0
+		|| strcmp(close_type, "shatter") == 0);
 	bool want_fall = close_type && strcmp(close_type, "fall") == 0;
-	/*
-	 * "shatter" NEEDS AVK. Its fragments rotate, and rotation is an
-	 * AVK_CMD_TEXTURE_QUAD -- a primitive the SceneFX/GLES path does not have
-	 * and cannot express with a scene node's position, size and crop.
-	 *
-	 * So on the other renderer it becomes "fall", which is the same pixels
-	 * breaking into the same grid without the rotation or the gravity. The
-	 * renderers are allowed to differ; the alternative is holding the Vulkan
-	 * engine down to what the older one can draw, which is the opposite of why
-	 * it exists.
-	 */
-	bool want_shatter = close_type && strcmp(close_type, "shatter") == 0;
 
 	/* Both builders can decline (a zero-sized window, a failed allocation), in
 	 * which case the plain whole-window snapshot below still gives the close a
 	 * fade to play. */
 	bool built = false;
-	if (want_rock)
-		built = init_asteroid_break(fadeout_client, c);
-	else if (want_shatter)
+	if (want_shatter)
 		built = init_shatter_frags(fadeout_client, c);
 	else if (want_fall)
 		built = init_fallout_shards(fadeout_client, c);
@@ -3421,13 +3211,14 @@ void client_commit(Client *c) {
 		 */
 		double v0[ANIM_AXIS_COUNT] = {0.0, 0.0, 0.0, 0.0};
 		if (retargeting && config.animation_curve_spring
-				&& c->animation.duration > 0) {
-			int32_t t_old = c->animation.action == NONE
-				? MOVE : c->animation.action;
+				&& c->animation.duration > 0 && c->animation.segment_duration > 0) {
+			int32_t t_old = c->animation.segment_action == NONE
+				? MOVE : c->animation.segment_action;
 			if (t_old == MOVE || t_old == OPEN || t_old == TAG) {
 				double u = (double)(c->animation.last_sample_ns
 					- c->animation.time_started_ns) / 1.0e6
-					/ (double)c->animation.duration;
+					/ (double)c->animation.segment_duration;
+				double old_dur = (double)c->animation.segment_duration;
 				double dur = (double)c->animation.duration;
 				/* The segment being LEFT: its own start, its own target, and
 				 * its own initial velocity -- the last of which matters when
@@ -3444,17 +3235,17 @@ void client_commit(Client *c) {
 				};
 				/* The segment being STARTED. */
 				const double new_span[ANIM_AXIS_COUNT] = {
-					[ANIM_AXIS_X] = (double)(c->geom.x - c->animainit_geom.x),
-					[ANIM_AXIS_Y] = (double)(c->geom.y - c->animainit_geom.y),
-					[ANIM_AXIS_W] = (double)(c->geom.width
+					[ANIM_AXIS_X] = (double)(c->current.x - c->animainit_geom.x),
+					[ANIM_AXIS_Y] = (double)(c->current.y - c->animainit_geom.y),
+					[ANIM_AXIS_W] = (double)(c->current.width
 						- c->animainit_geom.width),
-					[ANIM_AXIS_H] = (double)(c->geom.height
+					[ANIM_AXIS_H] = (double)(c->current.height
 						- c->animainit_geom.height),
 				};
 				for (enum anim_axis a = 0; a < ANIM_AXIS_COUNT; a++) {
 					double dfdu = spring_curve_velocity_at_v(u,
 						c->animation.spring_v0[a]);
-					double px_per_ms = old_span[a] * dfdu / dur;
+					double px_per_ms = old_span[a] * dfdu / old_dur;
 					if (fabs(new_span[a]) > 0.5) {
 						v0[a] = px_per_ms * dur / new_span[a];
 					}
@@ -3478,19 +3269,11 @@ void client_commit(Client *c) {
 		}
 
 		c->animation.initial = c->animainit_geom;
-		c->animation.target = c->geom;
-		/*
-		 * A RETARGET ANCHORS AT THE INSTANT THE OLD SEGMENT WAS LAST
-		 * EVALUATED; a fresh animation anchors at now (ADR-608, ADR-611).
-		 *
-		 * The distinction is not cosmetic. `initial` above is the position the
-		 * old trajectory had reached, and under target-time sampling that was
-		 * computed for a moment in the future. Starting the clock at now would
-		 * assert the window is already there, counting the lead interval twice
-		 * and jumping it forward by up to one frame's travel. A NEW animation
-		 * has no such history -- the decision genuinely happens at CPU time,
-		 * which is why semantic start times are CPU-now by design.
-		 */
+		c->animation.target = c->current;
+		c->animation.segment_duration = c->animation.duration;
+		c->animation.segment_action = c->animation.action;
+		/* The initial box was evaluated at last_sample_ns. Continue from
+		 * that instant; a fresh segment starts at the decision's CPU time. */
 		c->animation.time_started_ns = retargeting
 			? c->animation.last_sample_ns : az_pace_now_ns();
 		c->animation.time_started =

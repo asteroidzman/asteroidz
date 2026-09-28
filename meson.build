@@ -1,5 +1,5 @@
 project('asteroidz', ['c'],
-  version : '0.21.1',
+  version : '0.31.0',
 )
 
 subdir('protocols')
@@ -32,6 +32,13 @@ cc = meson.get_compiler('c')
 subdir('src/render/vulkan')
 
 libm = cc.find_library('m')
+test('animation-math', executable('test-animation-math',
+  'tests/animation-math.c', include_directories : include_directories('src'),
+  dependencies : libm, c_args : ['-UNDEBUG']))
+test('avk-command', executable('test-avk-command',
+  'tests/avk-command.c', 'src/render/vulkan/command/avk_command.c',
+  include_directories : include_directories('src'),
+  dependencies : vulkan_dep, c_args : ['-UNDEBUG']))
 libdrm = dependency('libdrm')
 xcb = dependency('xcb', required : get_option('xwayland'))
 xlibs = dependency('xcb-icccm', required : get_option('xwayland'))
@@ -343,4 +350,3 @@ install_data('assets/azview.desktop',
              install_dir : join_paths(prefix, 'share/applications'))
 install_data('assets/azview.svg',
              install_dir : join_paths(prefix, 'share/icons/hicolor/scalable/apps'))
-

@@ -262,6 +262,11 @@ struct avk_cmd {
 	 * A dst that does not contain all four corners clips the quad.
 	 */
 	float quad[8];
+	/* Optional UV coordinates at vertices 0, 1 and 2, relative to src.
+	 * Vertex 3 follows the affine basis. A repeated destination vertex 2
+	 * makes a textured triangle, used by the glass fracture mesh. */
+	bool quad_uv_custom;
+	float quad_uv[6];
 
 	/*
 	 * Rounded corners, in OUTPUT PIXELS, clockwise from the top left:
