@@ -139,157 +139,69 @@ bool check_tearing_frame_allow(Monitor *m) {
  * regression; losing the frame is a visible stall.
  */
 void apply_tear_state(Monitor *m) {
-	if (m == NULL || m->wlr_output == NULL || m->scene_output == NULL) {
+	if (m == NULL || m->wlr_output == NULL || m->scene_output == NULL ||
+			!wlr_scene_output_needs_frame(m->scene_output))
 		return;
-	}
-	if (!wlr_scene_output_needs_frame(m->scene_output)) {
-		return;
-	}
 
 	struct wlr_output_state state;
 	wlr_output_state_init(&state);
+	/* After rejection, build a NEW state on the next frame and request a
+	 * regular flip. Adaptive sync is unchanged. Never replay the failed state. */
+	state.tearing_page_flip = !m->tear_retry_synced;
+	if (m->tear_retry_synced)
+		m->tear_backoff++;
 
-	/*
-	 * ── A TORN FRAME CAN SCAN OUT TOO ─────────────────────────────────────
-	 *
-	 * M13B shipped with these mutually exclusive: rendermon takes the tearing
-	 * branch before the branch that tries scanout, and returns. So a window
-	 * that tears never scanned out -- and a tearing fullscreen game is exactly
-	 * the case that most wants it. Both want the same thing, latency, and
-	 * getting one silently cost the other.
-	 *
-	 * Scanout first, because it is the cheaper frame: if the client's buffer IS
-	 * the picture, there is nothing to composite and the torn flip carries that
-	 * buffer directly.
-	 */
 	enum az_scanout_verdict sv = AZ_SCANOUT_NOT_EVALUATED;
 	struct az_scanout_release release = {0};
 	bool scanned_out = az_scanout_try(m, &state, &sv, &release);
 	az_scanout_record_verdict(m, sv);
-	/*
-	 * ── A TORN FLIP OF A BUFFER ALREADY ON THE PLANE SHOWS NOTHING NEW ────
-	 *
-	 * Tearing buys sub-vblank latency for NEW content. Re-flipping the buffer
-	 * the display is already scanning changes no pixel, and pays for that with
-	 * the scanout address moving mid-picture.
-	 *
-	 * needs_frame() cannot bound this, which is why the early-out above is not
-	 * enough and why an added duplicate of it in render_monitor() bounded
-	 * nothing. It is the OR of three terms -- output->needs_frame,
-	 * pending_commit_damage, gamma_lut_changed -- and this function clears only
-	 * the second. Either of the others holds it true and the flip repeats.
-	 *
-	 * Measured on DP-1, Warhammer under gamescope: the client committed at
-	 * 100.98Hz against a 143.87Hz panel while this path flipped 11,060 times a
-	 * second -- about 110 torn flips per commit, every one of them the same
-	 * picture. Bounding on the commit counter ties the flip rate to the rate
-	 * new frames actually arrive, which is the only rate tearing has a reason
-	 * to run at.
-	 *
-	 * SCANOUT ONLY. A composited torn frame can legitimately differ without a
-	 * client commit -- a cursor, an overlay, an animation -- and gating that on
-	 * the client's counter would freeze them.
-	 */
-	if (scanned_out) {
-		Client *cand = mon_hdr_scanout_candidate(m);
-		if (cand != NULL) {
-			if (cand->commit_count == m->tear_last_commit) {
-				m->tear_unchanged++;
-				wlr_output_state_finish(&state);
-				return;
-			}
-			m->tear_last_commit = cand->commit_count;
-		}
+	Client *candidate = scanned_out ? mon_hdr_scanout_candidate(m) : NULL;
+	if (candidate != NULL && !m->tear_retry_synced &&
+			!m->scene_output->gamma_lut_changed &&
+			candidate->id == m->tear_last_client &&
+			candidate->commit_count == m->tear_last_commit) {
+		m->tear_unchanged++;
+		wlr_output_state_finish(&state);
+		return;
 	}
 	if (!scanned_out) {
-		struct az_frame_options frame_options = {
-			.color_transform = az_output_color_transform(m),
-		};
-		if (!az_output_build_frame(m, &state, &frame_options)) {
-			wlr_log(WLR_ERROR, "tearing: failed to build frame for %s",
-				m->wlr_output->name);
+		struct az_frame_options opts = {.color_transform = az_output_color_transform(m)};
+		if (!az_output_build_frame(m, &state, &opts)) {
 			wlr_output_state_finish(&state);
 			return;
 		}
 	}
 
-	state.tearing_page_flip = true;
-	if (!wlr_output_test_state(m->wlr_output, &state)) {
-		/* Present it on the vblank instead. A torn frame silently not tearing
-		 * is exactly the kind of thing that gets measured and disbelieved, so
-		 * it is still said out loud -- but by a counter plus a decade of log
-		 * lines, not by one line per frame. */
+	/* Scanout already tested the actual requested tearing state. Composition
+	 * needs its own test because its buffer is different. */
+	if (!scanned_out && state.tearing_page_flip &&
+			!wlr_output_test_state(m->wlr_output, &state)) {
 		state.tearing_page_flip = false;
 		m->tear_test_refused++;
-		if (az_log_decade(m->tear_test_refused)) {
-			wlr_log(WLR_DEBUG, "tearing: %s refused a torn flip; presenting "
-				"synced (%" PRIu64 " so far)",
-				m->wlr_output->name, m->tear_test_refused);
-		}
 	}
-
-	bool landed = wlr_output_commit_state(m->wlr_output, &state);
-
-	/*
-	 * ── WHY THE FRAME IS DROPPED RATHER THAN RETRIED ──────────────────────
-	 *
-	 * A commit refused with EBUSY can be committed again without the tearing
-	 * bit and it lands -- 2004 of them did. That was this file's first answer
-	 * and it is withdrawn, because of what the state contains on this path:
-	 * with direct scanout it is the CLIENT's buffer plus the acquire fence
-	 * that orders the flip against the client's own GPU writes. Committing it
-	 * a second time replays that, and the operator saw RGB flashing in
-	 * gamescope on the build that did -- on the same games, same scanout, same
-	 * tearing that had been clean the night before.
-	 *
-	 * Losing the tear is a latency regression and losing the frame is a
-	 * visible stall, both of which this file has said. Presenting a buffer the
-	 * client may still be writing is worse than either, and a retry that is
-	 * safe has to build a fresh state rather than reuse this one. Until it
-	 * does, the frame is dropped and counted.
-	 */
-
-	bool torn = landed && state.tearing_page_flip;
+	if (scanned_out)
+		az_output_sample_surface(m, release.surface, true);
+	bool landed = az_output_commit_frame(m, &state);
 	if (!landed) {
 		m->tear_dropped++;
-		if (az_log_decade(m->tear_dropped)) {
-			wlr_log(WLR_ERROR, "tearing: failed to commit frame for %s "
-				"(%" PRIu64 " dropped)",
+		m->tear_retry_synced = true;
+		if (az_log_decade(m->tear_dropped))
+			wlr_log(WLR_ERROR, "tearing: commit rejected on %s; retrying a fresh "
+				"frame without tearing (%" PRIu64 " rejected)",
 				m->wlr_output->name, m->tear_dropped);
-		}
 		az_output_commit_failed(m);
 	} else {
-		if (torn) {
+		if (state.tearing_page_flip)
 			m->tear_torn++;
-		}
 		if (scanned_out) {
 			m->scanout_frames++;
+			if (candidate != NULL) {
+				m->tear_last_client = candidate->id;
+				m->tear_last_commit = candidate->commit_count;
+			}
+			az_scanout_notify_scanned_out(m, &release);
+			pixman_region32_clear(&m->scene_output->pending_commit_damage);
 		}
 	}
 	wlr_output_state_finish(&state);
-
-	/*
-	 * Same debt the composition path settles: scanout leaves the scene's
-	 * pending damage untouched, and an output that never stops needing a frame
-	 * re-scans-out at the panel's maximum rate forever.
-	 *
-	 * ONLY WHEN THE FRAME LANDED. Settling it for a commit that failed pays a
-	 * debt out of a frame nobody saw: the damage is forgotten, so the dropped
-	 * picture is never redrawn, and frame-done tells the client its buffer is
-	 * finished with when the display never took it. A client that tracks its
-	 * own buffer lifetimes -- gamescope does, and says "compositor released us
-	 * but we were not acquired" when the accounting disagrees -- is entitled to
-	 * be confused by that.
-	 */
-	if (landed && scanned_out) {
-		/* Only now: the client is told its buffer reached the plane and when
-		 * it comes free. The early return above abandons a built state
-		 * without committing, and a release registered there would free a
-		 * buffer the display is still scanning. */
-		az_scanout_notify_scanned_out(m, &release);
-		pixman_region32_clear(&m->scene_output->pending_commit_damage);
-		struct timespec sdone;
-		clock_gettime(CLOCK_MONOTONIC, &sdone);
-		wlr_scene_output_send_frame_done(m->scene_output, &sdone);
-	}
 }

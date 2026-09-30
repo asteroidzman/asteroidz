@@ -695,6 +695,10 @@ struct wlr_scene_tree *wlr_scene_tree_create(struct wlr_scene_tree *parent);
  * ² xwayland stacking order is undefined when the xwayland surfaces do not
  * intersect.
  */
+/* Output used for surface frame callbacks and presentation feedback. */
+struct wlr_output *wlr_scene_surface_get_frame_pacing_output(
+	struct wlr_scene_surface *scene_surface);
+
 struct wlr_scene_surface *wlr_scene_surface_create(struct wlr_scene_tree *parent,
 	struct wlr_surface *surface);
 
@@ -1251,6 +1255,11 @@ struct wlr_drm_syncobj_timeline *wlr_scene_output_next_release_point(
 	struct wlr_scene_output *scene_output, uint64_t *point);
 
 bool wlr_scene_output_needs_frame(struct wlr_scene_output *scene_output);
+
+/* Add a pending gamma update, or reject an unsupported client request.
+ * Successful output commits acknowledge it; failed commits leave it pending. */
+void wlr_scene_output_prepare_gamma(struct wlr_scene_output *scene_output,
+	struct wlr_output_state *state);
 
 /*
  * No wlr_scene_output_commit() and no wlr_scene_output_build_state(): this

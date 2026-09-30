@@ -41,7 +41,9 @@ static double get_surface_preferred_buffer_scale(struct wlr_surface *surface) {
 
 // Output used for frame pacing (surface frame callbacks, presentation
 // time feedback, etc), may be NULL
-static struct wlr_output *get_surface_frame_pacing_output(struct wlr_surface *surface) {
+struct wlr_output *wlr_scene_surface_get_frame_pacing_output(
+		struct wlr_scene_surface *scene_surface) {
+	struct wlr_surface *surface = scene_surface->surface;
 	struct wlr_output *frame_pacing_output = NULL;
 	struct wlr_surface_output *surface_output;
 	wl_list_for_each(surface_output, &surface->current_outputs, link) {
@@ -176,7 +178,7 @@ static void handle_scene_buffer_output_sample(
 		wl_container_of(listener, surface, output_sample);
 	const struct wlr_scene_output_sample_event *event = data;
 	struct wlr_output *output = event->output->output;
-	if (get_surface_frame_pacing_output(surface->surface) != output) {
+	if (wlr_scene_surface_get_frame_pacing_output(surface) != output) {
 		return;
 	}
 
@@ -199,7 +201,7 @@ static void handle_scene_buffer_frame_done(
 	struct wlr_scene_surface *surface =
 		wl_container_of(listener, surface, frame_done);
 	struct wlr_scene_frame_done_event *event = data;
-	if (get_surface_frame_pacing_output(surface->surface) != event->output->output) {
+	if (wlr_scene_surface_get_frame_pacing_output(surface) != event->output->output) {
 		return;
 	}
 
@@ -508,7 +510,7 @@ static void handle_scene_surface_surface_commit(
 	// the surface anyway.
 	int lx, ly;
 	bool enabled = wlr_scene_node_coords(&scene_buffer->node, &lx, &ly);
-	struct wlr_output *output = get_surface_frame_pacing_output(surface->surface);
+	struct wlr_output *output = wlr_scene_surface_get_frame_pacing_output(surface);
 	if (!wl_list_empty(&surface->surface->current.frame_callback_list) && output && enabled) {
 		wlr_output_schedule_frame(output);
 	}

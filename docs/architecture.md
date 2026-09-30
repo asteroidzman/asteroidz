@@ -37,10 +37,20 @@ wlr_output_state { .buffer, .signal_timeline, HDR image_description }
 wlroots DRM backend → atomic KMS commit → connector
 ```
 
-The compositor's coupling to the renderer is deliberately thin — one
-`wlr_renderer *`, one `wlr_allocator *`, and a short list of creation and
-commit sites. The GPU architecture lives behind `wlr_scene_output_build_state`,
-not in `asteroidz.c`.
+Output commits have one boundary for composition and direct scanout. AVK targets
+remain rendered-but-unpresented until wlroots accepts the commit; only then is
+the backend's release timeline authoritative. A rejected torn flip is rebuilt
+as a fresh regular flip on a subsequent frame, retaining VRR. Recoverable frame
+build failures preserve the displayed buffer and use bounded retries.
+
+Pending gamma updates are applied through the output state and acknowledged
+on successful commit, or rejected explicitly when unsupported. Composited
+surfaces receive presentation feedback for the matching accepted commit;
+failed commits discard their feedback without claiming presentation.
+
+AVK owns frame construction. The wlroots renderer supplies compatibility
+services such as hardware-cursor preparation and capture; the allocator and
+output-state API connect the rendered buffers to the backend.
 
 ## Layout
 

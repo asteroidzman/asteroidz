@@ -981,6 +981,8 @@ struct Monitor {
 	 * pointed to: a pointer member invites exactly the stale-across-hotplug
 	 * class this milestone exists to make impossible. */
 	struct az_presenter presenter;
+	struct wl_list presentation_feedback;
+	uint64_t frame_build_failures;
 	uint64_t present_last_ns;   /* ev->when of the last PRESENTED frame */
 	uint64_t present_last_seq;
 	uint64_t present_count;     /* frames that actually reached the screen */
@@ -1032,11 +1034,8 @@ struct Monitor {
 	uint64_t tear_test_refused;
 	uint64_t tear_busy_synced;
 	uint64_t tear_dropped;
-	/* How long to leave a busy CRTC alone, and how many frames that spared.
-	 * See the backoff in apply_tear_state(): the refusals arrive in bursts a
-	 * fraction of a frame long, and asking again inside one is free of any
-	 * chance of succeeding. */
-	uint64_t tear_busy_until_ns;
+	/* Retry a rejected torn flip with a fresh regular-flip state. */
+	bool tear_retry_synced;
 	uint64_t tear_backoff;
 	/*
 	 * THE LAST CLIENT COMMIT THIS OUTPUT TORE TO, and how many flips were
@@ -1046,6 +1045,7 @@ struct Monitor {
 	 * true and the flip repeats with the same buffer already on the plane.
 	 */
 	uint64_t tear_last_commit;
+	uint32_t tear_last_client;
 	uint64_t tear_unchanged;
 	/*
 	 * CADENCE, FROM PRESENTATION RATHER THAN FROM GPU TIMING.
@@ -1165,6 +1165,7 @@ struct Monitor {
 	double render_late_frac;    /* fraction of the interval to defer (adaptive) */
 	uint64_t render_late_last_ns; /* timestamp of the previous frame event */
 	bool render_late_deferred;  /* did we defer the previous frame? */
+	bool frame_retry_pending;
 	bool render_late_pending;   /* a deferred render is armed (ignore new frames) */
 	int32_t render_late_good;   /* consecutive on-time deferred frames */
 	struct wlr_box m;		  /* monitor area, layout-relative */
@@ -2587,6 +2588,8 @@ static inline uint64_t az_frame_sample_ns(Monitor *m) {
 /* M12: the one luminance-rule precedence, between client.h (it reads a rule
  * off Client) and the renderer that applies it. */
 #include "render/az_lum_rules.h"
+static void az_output_sample_surface(Monitor *m, struct wlr_surface *surface,
+	bool zero_copy);
 #include "render/az_avk.h"
 #include "present/az_tag_cost.h"
 #include "render/az_dmabuf_caps.h"
@@ -5178,6 +5181,7 @@ void cleanupmon(struct wl_listener *listener, void *data) {
 	 * carries the addon that retires this output's target image. Leaving it
 	 * until after the output is gone would mean rendering into a swapchain
 	 * sized for a monitor that no longer exists. */
+	az_output_feedback_discard(m, true);
 	az_avk_output_finish(m->avk);
 	m->avk = NULL;
 
@@ -7059,6 +7063,7 @@ void createmon(struct wl_listener *listener, void *data) {
 
 	struct wl_event_loop *loop = wl_display_get_event_loop(dpy);
 	m = wlr_output->data = ecalloc(1, sizeof(*m));
+	wl_list_init(&m->presentation_feedback);
 
 	m->iscleanuping = false;
 	m->skip_frame_timeout =
@@ -10073,7 +10078,8 @@ static void render_monitor(Monitor *m) {
 	 * are gated on, and bounds itself on new content besides -- see the note
 	 * there, and the correction in known-issues.md about an earlier gate here
 	 * that duplicated the first test and could not have bounded anything. */
-	if (config.allow_tearing && frame_allow_tearing) {
+	if (config.allow_tearing && frame_allow_tearing && !m->hdr_pending_change &&
+			!(shotui.want_capture && shotui.capture_mon == m)) {
 		apply_tear_state(m);
 	} else if (shotui.want_capture && shotui.capture_mon == m) {
 		wlr_log(WLR_DEBUG, "screenshot_ui: fulfilling capture on %s",
@@ -10091,7 +10097,7 @@ static void render_monitor(Monitor *m) {
 		if (az_output_build_frame(m, &state, &frame_options)) {
 			if (state.buffer)
 				captured = wlr_buffer_lock(state.buffer);
-			if (!wlr_output_commit_state(m->wlr_output, &state)) {
+			if (!az_output_commit_frame(m, &state)) {
 				wlr_log(WLR_ERROR,
 						"screenshot_ui: failed to commit capture frame on %s",
 						m->wlr_output->name);
@@ -10153,7 +10159,7 @@ static void render_monitor(Monitor *m) {
 			.color_transform = m->hdr ? NULL : az_output_color_transform(m),
 		};
 		if (az_output_build_frame(m, &state, &frame_options)) {
-			if (!wlr_output_commit_state(m->wlr_output, &state)) {
+			if (!az_output_commit_frame(m, &state)) {
 				wlr_log(WLR_ERROR,
 						"HDR pending-change commit failed on %s, retraining",
 						m->wlr_output->name);
@@ -10222,7 +10228,8 @@ static void render_monitor(Monitor *m) {
 		bool scanned_out = az_scanout_try(m, &state, &sv, &release);
 		az_scanout_record_verdict(m, sv);
 		if (scanned_out) {
-			bool landed = wlr_output_commit_state(m->wlr_output, &state);
+			az_output_sample_surface(m, release.surface, true);
+			bool landed = az_output_commit_frame(m, &state);
 			if (!landed) {
 				wlr_log(WLR_ERROR, "scanout: commit failed on %s",
 					m->wlr_output->name);
@@ -10301,7 +10308,7 @@ static void render_monitor(Monitor *m) {
 			clock_gettime(CLOCK_MONOTONIC, &cc);
 			uint64_t commit_call_ns =
 				(uint64_t)cc.tv_sec * 1000000000ull + (uint64_t)cc.tv_nsec;
-			if (!wlr_output_commit_state(m->wlr_output, &state)) {
+			if (!az_output_commit_frame(m, &state)) {
 				wlr_log(WLR_ERROR, "Failed to commit frame on %s",
 						m->wlr_output->name);
 				az_output_commit_failed(m);
@@ -10480,6 +10487,7 @@ skip:
 static void presentmon(struct wl_listener *listener, void *data) {
 	Monitor *m = wl_container_of(listener, m, present);
 	const struct wlr_output_event_present *ev = data;
+	az_output_feedback_present(m, ev);
 
 	/* A dropped update still fires this signal. Folding one into the interval
 	 * series would invent a refresh that never happened. */
@@ -10680,6 +10688,8 @@ static void pacepresent(struct wl_listener *listener, void *data) {
 // where fixed-interval deferral doesn't apply.
 void rendermon(struct wl_listener *listener, void *data) {
 	Monitor *m = wl_container_of(listener, m, frame);
+	if (m->frame_retry_pending)
+		return;
 
 	bool eligible = config.render_late && m->render_timer && !m->skiping_frame &&
 					!m->is_vrr_opening && allow_frame_scheduling &&
@@ -10783,8 +10793,13 @@ void rendermon(struct wl_listener *listener, void *data) {
 
 static int render_timer_cb(void *data) {
 	Monitor *m = data;
-	m->render_late_pending = false; /* deadline reached; render now */
-	render_monitor(m);
+	m->render_late_pending = false;
+	if (m->frame_retry_pending) {
+		m->frame_retry_pending = false;
+		wlr_output_schedule_frame(m->wlr_output);
+	} else {
+		render_monitor(m);
+	}
 	return 0;
 }
 

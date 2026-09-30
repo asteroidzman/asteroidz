@@ -79,3 +79,17 @@ A tag switch emits two `anim start`s per client one frame apart (83 of 250 in a
 20-round-trip run were superseded before their first tick). Harmless now that a
 replaced-but-unsampled segment restarts cleanly, but the second arrange is
 redundant work.
+
+## OPEN — CPU allocations remain at shutdown under LeakSanitizer
+
+A headless run with a changing SHM client reports retained fontconfig/Pango
+allocations and the scene-owned DMA-BUF format set allocated by
+`wlr_scene_set_linux_dmabuf_capabilities()`. The unchanged 0.31.0 release and
+the presentation-boundary fixes produced the same report: 630,374 bytes in
+15,190 allocations on this system. The exact font-cache size is environment
+dependent.
+
+Both runs reached `CLEANUP_END`; AVK's GPU object counts were zero and Vulkan
+validation reported no errors. ASan reported no invalid accesses in this test,
+but LeakSanitizer made the process exit nonzero. This is a remaining teardown
+issue, not a clean sanitizer result.

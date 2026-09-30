@@ -2731,8 +2731,14 @@ static void scene_output_handle_commit(struct wl_listener *listener, void *data)
 		wlr_output_schedule_frame(scene_output->output);
 	}
 
-	// Next time the output is enabled, try to re-apply the gamma LUT
-	if (scene_output->scene->gamma_control_manager_v1 &&
+	/* Clear only the gamma change this successful commit actually applied. */
+	if ((state->committed & WLR_OUTPUT_STATE_COLOR_TRANSFORM) &&
+			state->color_transform == scene_output->gamma_lut_color_transform) {
+		scene_output->gamma_lut_changed = false;
+	}
+
+	// Reapply an active LUT after DPMS; there is nothing to restore otherwise.
+	if (scene_output->gamma_lut != NULL &&
 			(state->committed & WLR_OUTPUT_STATE_ENABLED) &&
 			!scene_output->output->enabled) {
 		scene_output->gamma_lut_changed = true;
@@ -3364,22 +3370,25 @@ static bool apply_blur_region(struct wlr_scene_node *node, struct blur_data *blu
  * back to and no reason to keep an entry point into one.
  */
 
-static void scene_output_state_attempt_gamma(struct wlr_scene_output *scene_output,
+void wlr_scene_output_prepare_gamma(struct wlr_scene_output *scene_output,
 		struct wlr_output_state *state) {
 	if (!scene_output->gamma_lut_changed) {
 		return;
 	}
 
+	/* Colour-state updates require a regular flip, with VRR left intact. */
+	state->tearing_page_flip = false;
 	struct wlr_output_state gamma_pending = {0};
 	if (!wlr_output_state_copy(&gamma_pending, state)) {
 		return;
 	}
 
 	wlr_output_state_set_color_transform(&gamma_pending, scene_output->gamma_lut_color_transform);
-	scene_output->gamma_lut_changed = false;
-
 	if (!wlr_output_test_state(scene_output->output, &gamma_pending)) {
-		wlr_gamma_control_v1_send_failed_and_destroy(scene_output->gamma_lut);
+		if (scene_output->gamma_lut != NULL)
+			wlr_gamma_control_v1_send_failed_and_destroy(scene_output->gamma_lut);
+		/* An unsupported gamma request must not keep the frame loop awake. */
+		scene_output->gamma_lut_changed = false;
 
 		scene_output->gamma_lut = NULL;
 		wlr_color_transform_unref(scene_output->gamma_lut_color_transform);

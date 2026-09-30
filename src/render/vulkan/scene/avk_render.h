@@ -636,6 +636,10 @@ struct avk_renderer_stats {
 };
 
 struct avk_renderer {
+	/* Optional per-frame notification for texture commands actually drawn.
+	 * The caller owns feedback delivery and failed-submit recovery. */
+	void (*sampled)(void *data, const struct avk_cmd *cmd);
+	void *sampled_data;
 	/* M4A break switches; see avk_render.c. Read once at init, never in the
 	 * draw loop, so a break costs nothing when it is off. */
 	/*

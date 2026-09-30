@@ -3310,20 +3310,18 @@ static bool az_avk_target_acquire(struct az_avk_output *out,
 	if (out->present_sync == AZ_AVK_PRESENT_SYNC_TIMELINE) {
 		bool signalled = false;
 		if (wlr_drm_syncobj_timeline_check(out->out_timeline,
-				target->release_point, 0, &signalled) && signalled) {
+				target->release_point, DRM_SYNCOBJ_WAIT_FLAGS_WAIT_FOR_SUBMIT,
+				&signalled) && signalled) {
 			target->state = AZ_AVK_TARGET_FREE;
 			return true;
 		}
-		/* Not signalled. Either the display engine is still using it, or the
-		 * commit that would have signalled it was rejected and the point will
-		 * never materialise. Those need opposite responses, and asking is one
-		 * ioctl. */
+		/* This target belongs to an accepted commit. An absent release fence
+		 * or a failed query never grants permission to overwrite it. */
 		bool available = false;
 		if (!wlr_drm_syncobj_timeline_check(out->out_timeline,
 				target->release_point, DRM_SYNCOBJ_WAIT_FLAGS_WAIT_AVAILABLE,
 				&available) || !available) {
-			target->state = AZ_AVK_TARGET_FREE;
-			return true;
+			return false;
 		}
 		fence = wlr_drm_syncobj_timeline_export_sync_file(out->out_timeline,
 			target->release_point);
@@ -3364,9 +3362,9 @@ static bool az_avk_target_acquire(struct az_avk_output *out,
 	waits[*wait_count] = (VkSemaphoreSubmitInfo){
 		.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
 		.semaphore = sem,
-		/* The wait guards the colour attachment write, so that is the stage
-		 * that has to block. Everything earlier in the pipeline may run. */
-		.stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+		/* Include the foreign queue-ownership acquire and layout transition,
+		 * as well as the eventual colour-attachment write. */
+		.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
 	};
 	(*wait_count)++;
 	avk.presentation_waits++;
@@ -3386,7 +3384,7 @@ static bool az_avk_target_acquire(struct az_avk_output *out,
  * and the resulting tearing is indistinguishable from a damage-tracking bug.
  */
 static bool az_avk_present_handover(struct az_avk_output *out,
-		struct az_avk_target *target, struct wlr_buffer *buffer,
+		struct wlr_buffer *buffer,
 		struct wlr_output_state *state) {
 	/* The export happens first and unconditionally, even in the break test.
 	 * A binary semaphore signalled by one submission and then signalled again
@@ -3459,16 +3457,13 @@ static bool az_avk_present_handover(struct az_avk_output *out,
 		out->out_point++;
 		wlr_output_state_set_signal_timeline(state, out->out_timeline,
 			out->out_point);
-		target->release_point = out->out_point;
-		target->state = AZ_AVK_TARGET_IN_FLIGHT;
+		/* The commit boundary records backend ownership only after acceptance. */
 		avk.present_sync_timeline++;
 		return true;
 	}
 
 	if (fence < 0) {
 		/* Already complete. Nothing to attach, and nothing to wait for. */
-		target->release_point = 0;
-		target->state = AZ_AVK_TARGET_IN_FLIGHT;
 		avk.present_sync_dmabuf++;
 		return true;
 	}
@@ -3501,8 +3496,6 @@ static bool az_avk_present_handover(struct az_avk_output *out,
 		return false;
 	}
 
-	target->release_point = 0;
-	target->state = AZ_AVK_TARGET_IN_FLIGHT;
 	avk.present_sync_dmabuf++;
 	return true;
 }
@@ -4466,6 +4459,7 @@ static void az_avk_walk_node(struct az_avk_walk *walk,
 		uint64_t resolve_t0 = az_avk_now_ns();
 		uint64_t creates_before = avk.cache_misses;
 		struct avk_image *image = az_avk_image_for_buffer(buf->buffer);
+		bool current_content = avk.frame_stale_entry == NULL;
 		avk.frame_resolve_ns += az_avk_now_ns() - resolve_t0;
 		avk.frame_resolve_creates +=
 			avk.cache_misses - creates_before;
@@ -4584,6 +4578,7 @@ static void az_avk_walk_node(struct az_avk_walk *walk,
 		if (cmd == NULL) {
 			return;
 		}
+		cmd->source = current_content ? buf : NULL;
 		cmd->dst = (struct avk_box){ dst.x, dst.y, dst.width, dst.height };
 		cmd->image = image;
 		cmd->opacity = buf->opacity;
@@ -5034,9 +5029,8 @@ static bool az_avk_output_supported(Monitor *m,
 		has_image_description = pending->image_description != NULL;
 	}
 
-	/* Every `false` below names itself. The caller turns a refusal into a
-	 * fatal error by default, and "AVK refused this output" without the reason
-	 * is the diagnostic this whole change exists to stop producing. */
+	/* Every refusal names its cause. The caller keeps the displayed frame
+	 * and schedules a bounded retry, without handing work to another renderer. */
 	*why = "unknown";
 
 	/* Decided once, on the first frame, and permanent: an output whose frames
@@ -6238,14 +6232,20 @@ static void az_avk_oracle_frame(struct az_avk_output *out, Monitor *m,
 	}
 }
 
-/*
- * Build a frame with AVK, or return false and let the caller fall back.
- *
- * This is the function that replaces wlr_scene_output_build_state() in AVK
- * mode, and it is deliberately the only one: everything it does not do --
- * direct scanout, gamma LUTs, dma-buf feedback -- is absent rather than half
- * present, and listed in docs/architecture.md.
- */
+
+static void az_avk_sample_presented(void *data, const struct avk_cmd *cmd) {
+	Monitor *m = data;
+	struct wlr_scene_buffer *buffer = cmd->source;
+	if (buffer == NULL || cmd->opacity <= 0.0f)
+		return;
+	struct wlr_scene_surface *surface = wlr_scene_surface_try_from_buffer(buffer);
+	if (surface != NULL &&
+			wlr_scene_surface_get_frame_pacing_output(surface) == m->wlr_output) {
+		az_output_sample_surface(m, surface->surface, false);
+	}
+}
+
+/* Build an AVK frame. A failed build leaves the displayed buffer intact. */
 static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 		struct wlr_color_transform *color_transform) {
 	if (!avk.active || m->scene_output == NULL) {
@@ -6254,33 +6254,10 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 	const char *refused_why = NULL;
 	if (!az_avk_output_supported(m, state, color_transform, &refused_why)) {
 		avk.declined_frames++;
-		/*
-		 * ── A REFUSAL IS FATAL ───────────────────────────────────────────
-		 *
-		 * Returning false here used to hand the output to
-		 * wlr_scene_output_build_state(), and the desktop kept working,
-		 * composited by SceneFX on wlroots' GLES renderer. That is precisely
-		 * the behaviour that was removed: the picture stayed plausible, so the
-		 * refusal was discovered -- if ever -- as a performance mystery or a
-		 * colour mystery, long after the frame that caused it, with a renderer
-		 * nobody was investigating in the loop.
-		 *
-		 * A refusal is a bug in AVK or an output AVK must learn to drive.
-		 * Either way the useful outcome is a stack and a reason at the moment
-		 * it happens, not a second renderer quietly covering for it. So this
-		 * aborts, naming the output and the condition.
-		 *
-		 * There is deliberately NO environment variable to re-enable the
-		 * fallback. An escape hatch is a fallback with an extra step: it gets
-		 * set once to get past a bad login, stays set, and the next refusal is
-		 * silent again -- which is the exact failure this replaces.
-		 */
-		wlr_log(WLR_ERROR,
-			"AVK REFUSED %s: %s. This compositor does not composite with GL, "
-			"so there is nothing to fall back to and this is fatal.",
-			m->wlr_output != NULL ? m->wlr_output->name : "(output)",
-			refused_why != NULL ? refused_why : "unknown");
-		abort();
+		if (m->frame_build_failures == 0)
+			wlr_log(WLR_ERROR, "AVK refused %s: %s", m->wlr_output->name,
+				refused_why != NULL ? refused_why : "unknown");
+		return false;
 	}
 
 	struct timespec frame_t0;
@@ -6988,9 +6965,15 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 
 	/* Use the common failed-frame cleanup below, including damage restoration.
 	 * Every fd above is consumed even when one import fails. */
+	/* Sample only commands the renderer actually draws, including blur
+	 * sources. Keep this hook off for capture/oracle replays. */
+	out->slot->renderer.sampled = az_avk_sample_presented;
+	out->slot->renderer.sampled_data = m;
 	uint64_t timeline = acquire_ok
 		? avk_render_frame(&out->slot->renderer, target, &scene,
 			waits, wait_count, signals, 1) : 0;
+	out->slot->renderer.sampled = NULL;
+	out->slot->renderer.sampled_data = NULL;
 	/*
 	 * ── decode_enabled AND encode_srgb OUTLIVE THE PRODUCTION RENDER ──────
 	 *
@@ -7042,6 +7025,7 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 	out->slot->renderer.decode_enabled = false;
 	out->slot->renderer.encode_srgb = false;
 	out->frame_seq++;
+
 	avk_scene_finish(&scene);
 	if (timeline == 0) {
 		avk.frame_surface_count = 0;
@@ -7059,7 +7043,7 @@ static bool az_avk_build_frame(Monitor *m, struct wlr_output_state *state,
 	target_rec->state = AZ_AVK_TARGET_RENDERED;
 
 	/* Submitted. Now give the display engine something to wait on. */
-	if (!az_avk_present_handover(out, target_rec, buffer, state)) {
+	if (!az_avk_present_handover(out, buffer, state)) {
 		/* The work is already in flight and will complete; the buffer just
 		 * never becomes a frame. The output is fully damaged so the next frame
 		 * reconstructs it -- nothing is torn, and nothing is lost but the

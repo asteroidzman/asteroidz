@@ -1564,6 +1564,10 @@ static void az_record_compose(VkCommandBuffer cb, void *user) {
 			vkCmdDraw(cb, 4, 1, 0, 0);
 			renderer->stats.draws++;
 		}
+		if (count > 0 && cmd->source != NULL && cmd->image != NULL &&
+				renderer->sampled != NULL) {
+			renderer->sampled(renderer->sampled_data, cmd);
+		}
 		pixman_region32_fini(&region);
 	}
 

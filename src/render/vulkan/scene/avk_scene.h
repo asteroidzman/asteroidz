@@ -199,6 +199,8 @@ struct avk_gradient {
 
 struct avk_cmd {
 	enum avk_cmd_type type;
+	/* Borrowed compositor source, valid for this frame. AVK never dereferences it. */
+	void *source;
 
 	/* Where it lands, in output pixels. */
 	struct avk_box dst;

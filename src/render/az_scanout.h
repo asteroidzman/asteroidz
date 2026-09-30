@@ -479,24 +479,13 @@ static inline bool az_scanout_try(Monitor *m, struct wlr_output_state *state,
 	return true;
 }
 
-/*
- * The half that must wait for the flip to land: tell the client its buffer
- * reached the plane, and when it will be free.
- *
- * Both are what the scene's own scanout does through its sample event, and
- * neither happened on this path before. Presentation feedback that never says
- * `scanned out` is not merely missing a flag -- a client using it to reason
- * about latency is told the frame was composited when it went straight to the
- * display.
- */
+/* Register the client release only after the backend accepted the buffer.
+ * Presentation feedback is sampled before committing by az_output.h. */
 static inline void az_scanout_notify_scanned_out(Monitor *m,
 		const struct az_scanout_release *rel) {
 	if (m == NULL || rel == NULL || rel->surface == NULL) {
 		return;
 	}
-
-	wlr_presentation_surface_scanned_out_on_output(rel->surface,
-		m->wlr_output);
 
 	if (rel->timeline == NULL) {
 		return;   /* no output timeline: implicit sync carries the release */
