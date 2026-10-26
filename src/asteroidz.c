@@ -13606,9 +13606,14 @@ urgent(struct wl_listener *listener, void *data) {
 		now_ms - last_x11_unfocus_ms < FOCUS_ACTIVATE_STEAL_MS ||
 		now_ms - last_user_view_ms < FOCUS_VIEW_STEAL_MS;
 
+	/* The same split as activatex11(): the guards exist to stop an activate
+	 * changing the viewed tag, so a client already on it is honoured. */
+	bool same_view = selmon && c->mon == selmon &&
+					 (c->tags & c->mon->tagset[c->mon->seltags]);
+
 	if (config.focus_on_activate && !c->istagsilent && c != selmon->sel &&
-			!activate_is_steal) {
-		if (!(c->mon == selmon && c->tags & c->mon->tagset[c->mon->seltags]))
+			(!activate_is_steal || same_view)) {
+		if (!same_view)
 			view_in_mon(&(Arg){.ui = c->tags}, true, c->mon, true);
 		focusclient(c, 1);
 	} else if (c != focustop(selmon)) {
@@ -14065,9 +14070,33 @@ void activatex11(struct wl_listener *listener, void *data) {
 	 * for exactly that reason, and an X11 activate arriving during output
 	 * teardown reaches this. The guard covers the body too: c->mon == selmon
 	 * is TRUE when both are NULL, which would then walk into c->mon->tagset. */
+	/*
+	 * ALREADY ON THE VIEWED TAG? THEN THE GUARDS HAVE NOTHING TO PROTECT.
+	 *
+	 * Both steal guards justify themselves purely by what they stop changing:
+	 * "no activate may change the viewed tag", "the view gets yanked back to
+	 * the app's tag". Withholding FOCUS as well is what leaves a game that was
+	 * launched from Steam running, mapped, visible in the overview and
+	 * unfocusable -- Steam defocusing as the game maps arms the GLOBAL
+	 * last_x11_unfocus_ms (every XWayland window shares one X server, so the
+	 * server hands focus to a sibling), and the game's own activate lands
+	 * inside that window. Timing decides it, which is why it happens only
+	 * sometimes.
+	 *
+	 * For a client already on the tag being looked at there is no view change
+	 * to suppress, so the activate is honoured. The per-client clause still
+	 * covers the case the guards were written for: an Electron app re-firing
+	 * activate the instant IT was defocused is caught by c->last_unfocus_ms.
+	 * What this does newly allow is a same-tag sibling that was never itself
+	 * unfocused taking focus -- a focus change without a view change.
+	 */
+	bool same_view = selmon && c->mon == selmon &&
+					 (c->tags & c->mon->tagset[c->mon->seltags]);
+
 	if (config.focus_on_activate && !c->istagsilent && selmon &&
-			c != selmon->sel && !activate_is_steal && !in_overview) {
-		if (!(c->mon == selmon && c->tags & c->mon->tagset[c->mon->seltags]))
+			c != selmon->sel && !in_overview &&
+			(!activate_is_steal || same_view)) {
+		if (!same_view)
 			view_in_mon(&(Arg){.ui = c->tags}, true, c->mon, true);
 		wlr_xwayland_surface_activate(c->surface.xwayland, 1);
 		focusclient(c, 1);
