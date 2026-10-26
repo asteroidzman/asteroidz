@@ -3227,6 +3227,13 @@ void client_replace(Client *c, Client *w) {
 		wlr_scene_node_destroy(&w->scene_surface->node);
 		w->scene_surface = w->overview_scene_surface;
 		w->overview_scene_surface = NULL;
+		/* The nodes the view scale was applied to have just been DESTROYED and
+		 * replaced by the overview's, which default to 1.0.
+		 * client_update_x11_scale() cannot see that: it compares the
+		 * REMEMBERED scale, which has not changed, and returns. Same fix as
+		 * 9c58b7ec at the map site, same reason -- and free when the nodes
+		 * already agree, because the setter early-returns. */
+		client_apply_x11_view_scale(w);
 	}
 
 	if (c->mon && c->mon->isoverview && config.ov_no_resize) {
@@ -7959,6 +7966,37 @@ void focusclient(Client *c, int32_t lift) {
 	wl_list_for_each(constraint, &pointer_constraints->constraints, link) {
 		if (constraint->surface == client_surface(c)) {
 			cursorconstrain(constraint);
+			/*
+			 * A CONSTRAINT IS HALF OF A LOCK; POINTER FOCUS IS THE OTHER HALF.
+			 *
+			 * motionnotify() freezes the cursor on exactly one test --
+			 * active_constraint->surface == pointer_state.focused_surface --
+			 * and the two sides are written by different code at different
+			 * times: this loop activates the constraint from KEYBOARD focus,
+			 * while pointer focus comes only from xytonode() on the cursor
+			 * position. When they disagree the failure is silent and total:
+			 * the cursor moves freely and the client receives nothing, which
+			 * reads as a game losing the mouse rather than as a focus bug.
+			 *
+			 * The overview is how they come apart. pointerfocus() deliberately
+			 * withholds pointer focus while a monitor is in overview mode, so
+			 * a locked game cannot grab the pointer out of a thumbnail -- and
+			 * with a hot corner that state is entered by moving the mouse.
+			 * Coming back out, keyboard focus returns to the game and the
+			 * constraint is re-activated here, but nothing re-resolves the
+			 * pointer.
+			 *
+			 * So re-resolve it, and only when the pair actually disagrees.
+			 * motionnotify(0, ...) is the compositor's own "work out what the
+			 * pointer is over" call; it resolves from the cursor position,
+			 * which for a locked pointer is inside the window by construction.
+			 * Not in the overview, where withholding it is the correct
+			 * behaviour and this would undo it.
+			 */
+			if (seat->pointer_state.focused_surface != client_surface(c) &&
+					!(c->mon && c->mon->isoverview)) {
+				motionnotify(0, NULL, 0, 0, 0, 0);
+			}
 			break;
 		}
 	}
@@ -11440,6 +11478,11 @@ void setmon(Client *c, Monitor *m, uint32_t newtags, bool focus) {
 	 * Before the resize below, so the configure that follows is already in
 	 * the new unit rather than one frame behind it. */
 	client_update_x11_scale(c);
+	/* And re-assert it on the nodes unconditionally. update() returns early
+	 * when the NUMBER is unchanged, which says nothing about whether the nodes
+	 * it was applied to are the ones still there -- a window that went through
+	 * the overview carries a surface that never had it. Free when they agree. */
+	client_apply_x11_view_scale(c);
 
 	/* Scene graph sends surface leave/enter events on move and resize */
 	if (oldmon)
@@ -12694,6 +12737,11 @@ void overview_restore(Client *c, const Arg *arg) {
 		wlr_scene_node_destroy(&c->scene_surface->node);
 		c->scene_surface = c->overview_scene_surface;
 		c->overview_scene_surface = NULL;
+		/* Leaving the overview swaps the surface the view scale lived on, so
+		 * re-assert it here for the same reason as in client_replace() above:
+		 * the Client still says 1.5 and the new nodes say 1.0, and nothing
+		 * that compares the remembered value can tell. */
+		client_apply_x11_view_scale(c);
 	}
 
 	if (c->isfloating) {
