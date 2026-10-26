@@ -222,6 +222,27 @@ static cJSON *build_client_json(Client *c) {
 	cJSON_AddNumberToObject(obj, "anim_y", c->animation.current.y);
 	cJSON_AddNumberToObject(obj, "anim_width", c->animation.current.width);
 	cJSON_AddNumberToObject(obj, "anim_height", c->animation.current.height);
+	/*
+	 * THE UNIT AN X11 WINDOW IS MEASURED IN, which has no other route out.
+	 *
+	 * Stored on the Client but APPLIED to scene buffer nodes that are rebuilt
+	 * on every map, so the two can disagree -- that disagreement was three
+	 * separate defects (9c58b7ec, 28cd48cc, 42ad2087) and each one was found
+	 * by reasoning rather than by reading, because nothing reports it. 1.0 for
+	 * every Wayland client and for X11 at output scale <= 1.
+	 */
+	cJSON_AddNumberToObject(obj, "x11_scale", client_x11_scale(c));
+	/*
+	 * How long ago this client lost focus, or -1 if it never has.
+	 *
+	 * The per-client half of the focus-steal guard: activatex11() refuses an
+	 * activate that lands within FOCUS_ACTIVATE_STEAL_MS of this. Reported
+	 * next to the two globals on `get all-clients` so a window that will not
+	 * take focus can be told apart from one that was never asked to.
+	 */
+	cJSON_AddNumberToObject(obj, "unfocus_age_ms",
+		c->last_unfocus_ms ? (double)(get_now_in_ms() - c->last_unfocus_ms)
+						   : -1.0);
 	cJSON_AddStringToObject(obj, "icon", c->icon_name ? c->icon_name : "");
 	cJSON_AddStringToObject(obj, "monitor",
 							c->mon ? c->mon->wlr_output->name : "");
@@ -1047,6 +1068,56 @@ static void handle_command(int client_fd, const char *cmd_raw) {
 									cursor_shape_name(last_cursor.shape));
 			cJSON_AddBoolToObject(resp, "cursor-surface", false);
 		}
+		/*
+		 * ── THE TWO HALVES OF A POINTER LOCK, WHICH ONLY WORK TOGETHER ────
+		 *
+		 * A locked pointer needs BOTH that a constraint is active and that its
+		 * surface is the one holding pointer focus. motionnotify() checks
+		 * exactly that pair before it freezes the cursor:
+		 *
+		 *     if (active_constraint->surface ==
+		 *             seat->pointer_state.focused_surface) {
+		 *         if (type == LOCKED) return;
+		 *
+		 *     Those two are set by different code at different times --
+		 * focusclient() walks the constraint list, while pointer focus comes
+		 * only from xytonode() on the cursor position -- so they can disagree,
+		 * and when they do the failure is silent and total: the cursor moves
+		 * freely and the client receives nothing, which reads as "the game
+		 * lost the mouse" rather than as a focus bug.
+		 *
+		 * Neither half had any route out of the compositor, and neither can be
+		 * reproduced headlessly: wlr_seat_set_capabilities() is called only
+		 * from inputdevice(), a headless seat advertises no pointer, so no
+		 * client can create a pointer constraint there at all.
+		 */
+		if (active_constraint) {
+			cJSON *con = cJSON_AddObjectToObject(resp, "constraint");
+			cJSON_AddStringToObject(con, "type",
+				active_constraint->type == WLR_POINTER_CONSTRAINT_V1_LOCKED
+					? "locked" : "confined");
+			/* The predicate motionnotify actually evaluates. False here with a
+			 * live constraint IS the defect, not a step towards finding it. */
+			cJSON_AddBoolToObject(con, "has-pointer-focus",
+				active_constraint->surface ==
+					seat->pointer_state.focused_surface);
+		} else {
+			cJSON_AddNullToObject(resp, "constraint");
+		}
+		/* Who holds pointer focus, by app-id -- a layer surface reports
+		 * "layer-shell" and nothing at all reports null, which are three
+		 * different answers rather than degrees of one. */
+		{
+			struct wlr_surface *pfs = seat->pointer_state.focused_surface;
+			Client *pfc = NULL;
+			LayerSurface *pfl = NULL;
+			if (pfs && toplevel_from_wlr_surface(pfs, &pfc, &pfl) >= 0) {
+				cJSON_AddStringToObject(resp, "pointer-focus",
+					pfc ? client_get_appid(pfc) : "layer-shell");
+			} else {
+				cJSON_AddNullToObject(resp, "pointer-focus");
+			}
+		}
 	} else if (strcmp(cmd, "get idle") == 0) {
 		resp = build_idle_response();
 	} else if (strcmp(cmd, "get keymode") == 0) {
@@ -1138,6 +1209,19 @@ static void handle_command(int client_fd, const char *cmd_raw) {
 			cJSON_AddItemToArray(arr, build_client_json(c));
 		resp = cJSON_CreateObject();
 		cJSON_AddItemToObject(resp, "clients", arr);
+		/* The two GLOBAL halves of the focus-steal guard, which no per-client
+		 * field can carry: any X11 client losing focus arms the first (every
+		 * XWayland window shares one X server, so the server hands focus to a
+		 * sibling that then activates), and any deliberate tag switch arms the
+		 * second. An activate inside either window is refused, so these are
+		 * what distinguish "this window will not focus" from "nothing asked
+		 * it to". -1 means never armed. */
+		cJSON_AddNumberToObject(resp, "x11_unfocus_age_ms",
+			last_x11_unfocus_ms
+				? (double)(get_now_in_ms() - last_x11_unfocus_ms) : -1.0);
+		cJSON_AddNumberToObject(resp, "user_view_age_ms",
+			last_user_view_ms
+				? (double)(get_now_in_ms() - last_user_view_ms) : -1.0);
 	} else if (strcmp(cmd, "get all-monitors") == 0) {
 		cJSON *arr = cJSON_CreateArray();
 		Monitor *m;

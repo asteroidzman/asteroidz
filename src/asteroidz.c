@@ -2127,6 +2127,17 @@ static struct wlr_pointer_constraints_v1 *pointer_constraints;
 static struct wlr_relative_pointer_manager_v1 *relative_pointer_mgr;
 static struct wlr_pointer_constraint_v1 *active_constraint;
 
+/* Declared here, defined with their rationale beside the focus-steal guards
+ * that read them: ipc/ipc.h is included before those definitions and
+ * `get all-clients` reports both ages. Tentative definitions, not second ones.
+ *
+ * They are reported because they are the only account of WHY an activate was
+ * refused. A window that runs, maps and never takes focus looks identical
+ * whichever of the three clauses fired, and two of the three are globals no
+ * per-client field can show. */
+static uint32_t last_x11_unfocus_ms;
+static uint32_t last_user_view_ms;
+
 static struct wlr_seat *seat;
 static KeyboardGroup *kb_group;
 static struct wl_list inputdevices;
