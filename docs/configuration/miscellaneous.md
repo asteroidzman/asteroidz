@@ -131,7 +131,7 @@ off, Xwayland sees wlroots' logical 1536×864 and the click clamps to 1535,863.
 
 | Setting | Default | Description |
 | :--- | :--- | :--- |
-| `focus_on_activate` | `1` | Automatically focus windows when they request activation. |
+| `focus_on_activate` | `1` | Automatically focus windows when they request activation. An activate that lands within ~1s of an X11 window losing focus, or ~1.5s of a deliberate tag switch, is treated as a focus steal and refused — an Electron app re-firing activate the instant it is defocused would otherwise yank the view back to its tag. The **view** change is what gets refused: a window already on the tag you are looking at is still focused, since there is no view change to suppress. That matters for games launched from Steam, where the launcher defocusing as the game maps looks exactly like a sibling steal. |
 | `sloppyfocus` | `1` | Focus follows the mouse cursor. |
 | `float_click_to_focus` | `1` | In the floating layout, change focus only on click (not on pointer hover), so overlapping floating windows don't steal focus/auto-raise as the cursor crosses them. Set `0` to make `sloppyfocus` apply in float layout too. KDL: `layout { floating { click-to-focus 0 } }`. |
 | `warpcursor` | `1` | Warp the cursor to the center of the window when focus changes via keyboard. |
